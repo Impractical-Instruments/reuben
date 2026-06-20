@@ -112,11 +112,7 @@ fn topo_order(graph: &Graph) -> Result<Vec<NodeKey>, PlanError> {
     }
 
     // Seed with zero-indegree nodes in stable key order.
-    let mut queue: Vec<NodeKey> = graph
-        .nodes
-        .keys()
-        .filter(|k| indegree[*k] == 0)
-        .collect();
+    let mut queue: Vec<NodeKey> = graph.nodes.keys().filter(|k| indegree[*k] == 0).collect();
     let mut order = Vec::with_capacity(graph.nodes.len());
 
     while let Some(k) = queue.pop() {

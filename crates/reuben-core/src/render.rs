@@ -51,7 +51,9 @@ impl Renderer<SerialExecutor> {
 impl<E: Executor> Renderer<E> {
     pub fn with_executor(plan: &Plan, executor: E) -> Self {
         let block_size = plan.config.block_size;
-        let arena = (0..plan.num_buffers).map(|_| vec![0.0; block_size]).collect();
+        let arena = (0..plan.num_buffers)
+            .map(|_| vec![0.0; block_size])
+            .collect();
         Self {
             arena,
             executor,
@@ -107,7 +109,9 @@ struct NodeRoute {
 
 /// Match each message to a node by address prefix, then classify param vs event.
 fn route_messages(plan: &Plan, messages: &[Message]) -> Vec<NodeRoute> {
-    let mut routes: Vec<NodeRoute> = (0..plan.nodes.len()).map(|_| NodeRoute::default()).collect();
+    let mut routes: Vec<NodeRoute> = (0..plan.nodes.len())
+        .map(|_| NodeRoute::default())
+        .collect();
     for msg in messages {
         for (i, node) in plan.nodes.iter().enumerate() {
             let Some(local) = local_address(&msg.addr, &node.address) else {
@@ -205,8 +209,10 @@ fn process_node(
                 .iter()
                 .map(|o| o.map(|i| &arena[i][seg_start..seg_end]))
                 .collect();
-            let mut out_slices: Vec<&mut [f32]> =
-                outs.iter_mut().map(|b| &mut b[seg_start..seg_end]).collect();
+            let mut out_slices: Vec<&mut [f32]> = outs
+                .iter_mut()
+                .map(|b| &mut b[seg_start..seg_end])
+                .collect();
 
             let mut io = Io::new(
                 sample_rate,
