@@ -1,0 +1,15 @@
+[workspace]
+resolver = "2"
+members = ["crates/reuben-core", "crates/reuben-native"]
+
+[workspace.package]
+version = "0.0.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/Impractical-Instruments/reuben"
+
+[workspace.dependencies]
+slotmap = "1"
+smallvec = "1"
+hound = "3"
+approx = "0.5"

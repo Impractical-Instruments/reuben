@@ -1,0 +1,10 @@
+[package]
+name = "reuben-native"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Removable native layer for reuben (audio I/O, OSC adapters). Stub until run 2."
+
+[dependencies]
+reuben-core = { path = "../reuben-core" }
