@@ -12,4 +12,4 @@ Music is the primary payload, but the same data (notes, chords, timing, gestures
 - **[docs/adr/](docs/adr/)** — the architectural decisions and the reasoning behind them.
 - **[docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)** — the design backlog: decisions not yet made.
 
-Status: **design phase.** No engine code yet — see the roadmap for the MVP spine ("it makes a sound" headless core, driven over OSC from TouchOSC/Max).
+Status: **first sound.** The portable core (`crates/reuben-core`) makes a verifiable, deterministic tone offline: Signal/Message data model, Operator trait + descriptors, Graph → Plan (Instantiate) → block-sliced serial Render, five operators (oscillator, envelope, filter, monophonic voicer, output), 12-TET tuning. Run `cargo run -p reuben-core --example first_sound` to write `first_sound.wav`. Next: OSC-in, JSON instrument loading, live audio via cpal, polyphony — see the roadmap.
