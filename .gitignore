@@ -72,3 +72,4 @@ Testing/
 /target
 **/*.rs.bk
 *.wav
+/.claude/worktrees/
