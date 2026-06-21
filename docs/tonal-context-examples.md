@@ -78,7 +78,7 @@ Context: C major, chord = Cmaj `{0,2,4}` → tones C(60) E(64) G(67).
 |---|---|---|---|
 | 62.0 (D) | **Chord** (strict) | **C (60)** | D isn't a chord tone; C,E both dist 2 → tie down → C |
 | 62.0 (D) | **ChordThenScale** | **D (62)** | D *is* a scale tone → kept; chord-preference only breaks ties, never forces a valid scale tone off-scale |
-| 63.0 (D♯) | **Chord** | **C (60)** | nearest chord tone among C,E (both dist 3) → tie down |
+| 63.0 (D♯) | **Chord** | **E (64)** | nearest chord tone: E(64) is dist 1, C(60) is dist 3 → E |
 | 63.0 (D♯) | **ChordThenScale** | **E (64)** | nearest *scale* tones are D(62)/E(64), tie → but E is a chord tone → chord breaks the tie up to E |
 | 65.0 (F) | **Chord** | **E (64)** | F not a chord tone; nearest chord tone E(64) |
 | 65.0 (F) | **ChordThenScale** | **F (65)** | F is in scale → kept |

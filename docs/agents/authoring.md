@@ -24,6 +24,10 @@ Nesting is an authoring concept only; at runtime everything inlines into one fla
 - **Message** — a discrete, OSC-shaped payload: address path + typed args + sample-accurate
   timetag. Notes, chords, triggers, gestures, param values, all external I/O. An internal
   Message and an external OSC packet are the same shape. (`message.rs`)
+- **Context** — a latched tonal-context struct (key/scale/chord) that rides the Message wire
+  as a struct-valued read service: a `context` Operator publishes it, followers read "the
+  current value" via `io.context` ([ADR-0015](../adr/0015-latched-context-read.md)). Not a
+  third edge type — a third read accessor over the one Message wire. (`context.rs`)
 
 ## The Operator contract (`crates/reuben-core/src/operator.rs`)
 
@@ -56,11 +60,17 @@ pub trait Operator: Send {
   - `io.events() -> &[Event]` — for event operators (Voicer, Clock): zero-copy views of
     routed Messages, address local to the node, segment-relative `frame`.
   - `io.emit(port, addr, args, frame)` — emit a Message onto a **Message output port**
-    ([ADR-0014](../adr/0014-internal-message-graph.md)), e.g. a sequencer emitting `note`
+    ([ADR-0014](../adr/0014-internal-message-graph.md)), e.g. a sequencer emitting `degree`
     into a Voicer. `addr` is a `&'static str` and the wired edge does the routing, so a
     note emit allocates nothing; `frame` is segment-relative. Delivered as an `Event` to
     nodes downstream this block. Emission is single-Lane (Lane 0 only) — pre-fan-out. See
     `sequencer.rs` as the template.
+  - `io.context(port) -> Context` — read the latched tonal **Context** on a Context input
+    port ([ADR-0015](../adr/0015-latched-context-read.md)): the current key/scale/chord,
+    constant for the (sub)block (the engine slices at context changes), carrying the
+    resolver (`hz`/`snap`/`chord_tone`). Unconnected → the C-major/12-TET default. The
+    Voicer and `snap.rs` are the templates. A `context` Operator writes the other side with
+    `io.publish_context(port, frame, ctx)` (single-Lane, like `emit`) — see `context.rs`.
   - `io.lane()` / `io.lanes()` — most operators ignore these; an *expander* like the
     Voicer uses them to emit one Voice's output per call.
 - **`spawn()`** — usually `Box::new(Self::new())`. Resets per-Lane state only; the engine
@@ -78,7 +88,7 @@ serialization, connection type-checking, and AI grounding
 ```rust
 Descriptor {
     type_name: "lfo",                 // stable id + default address segment
-    inputs:  vec![],                  // Port::signal(name) | Port::message(name)
+    inputs:  vec![],                  // Port::signal(name) | Port::message(name) | Port::context(name)
     outputs: vec![Port::signal("out")],
     params: vec![
         ParamMeta { name: "rate", min: 0.01, max: 20.0, default: 5.0,

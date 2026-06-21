@@ -1,6 +1,6 @@
 {
   "instrument": "sequence",
-  "doc": "A self-playing step melody. The Clock's beat gate drives a sequencer that emits note Messages — one per beat through an 8-step pattern (a C-major scale by default) — into a Voicer, then an oscillator + envelope. Because the sequencer is a note source on the internal message graph, this routes exactly like external notes: polyphony-, transpose-, and snap-ready. Set tempo via /clock/tempo; edit the line via /sequencer/step1../sequencer/step8 (MIDI note, below 0 = rest) and /sequencer/length; send /clock/reset to relocate beat 1.",
+  "doc": "A self-playing step melody. The Clock's beat gate drives a sequencer that emits degree Messages — one per beat through an 8-step pattern (an ascending scale, degrees 0..7) — into a Voicer, which resolves each degree to Hz through the tonal context (default C-major/12-TET, so this sounds identical to the old MIDI default). Set tempo via /clock/tempo; edit the line via /sequencer/step1../sequencer/step8 (scale degree, below 0 = rest) and /sequencer/length; send /clock/reset to relocate beat 1. To make it re-spell in another key, see scale-demo.json.",
   "nodes": [
     { "type": "clock", "address": "/clock", "doc": "Beat phasor + beat gate.", "params": { "tempo": 120.0 } },
     { "type": "sequencer", "address": "/sequencer", "doc": "Walks the pattern one step per beat -> note Messages." },
@@ -12,7 +12,7 @@
   ],
   "connections": [
     { "from": { "node": "/clock", "port": "gate" }, "to": { "node": "/sequencer", "port": "clock" } },
-    { "from": { "node": "/sequencer", "port": "notes" }, "to": { "node": "/voicer", "port": "notes" } },
+    { "from": { "node": "/sequencer", "port": "degrees" }, "to": { "node": "/voicer", "port": "notes" } },
     { "from": { "node": "/voicer", "port": "freq" }, "to": { "node": "/osc", "port": "freq" } },
     { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/filter", "port": "audio" } },
     { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env", "port": "audio" } },

@@ -9,6 +9,7 @@
 //! removable native layer.
 
 pub mod config;
+pub mod context;
 pub mod descriptor;
 pub mod format;
 pub mod graph;
@@ -24,6 +25,7 @@ pub mod signal;
 pub mod tuning;
 
 pub use config::AudioConfig;
+pub use context::{Chord, ChordTag, Context, ScaleField, SnapDir, SnapPolicy, SnapTarget};
 pub use descriptor::Descriptor;
 pub use format::{load, InstrumentDoc, LoadError};
 pub use graph::{Graph, NodeKey};

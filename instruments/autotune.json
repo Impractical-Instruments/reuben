@@ -1,0 +1,26 @@
+{
+  "instrument": "autotune",
+  "doc": "Play any pitch; hear the nearest scale tone. External absolute notes at /snap/note [midi, vel] are quantized to the tonal context by a snap operator, which emits scale degrees into the Voicer (the 'always in key' good-button). Set the key/scale on /context (root, s0..s6, degrees); set snap behaviour with /snap/target (0 Scale, 1 Chord, 2 ChordThenScale) and /snap/direction (0 Nearest, 1 Up, 2 Down). Both the snap and the Voicer read the same context, so changing key re-tunes held notes live.",
+  "nodes": [
+    { "type": "context", "address": "/context", "doc": "C major, 12-TET (default scale)." },
+    { "type": "snap", "address": "/snap", "doc": "Absolute note -> nearest in-scale degree." },
+    { "type": "voicer", "address": "/voicer", "doc": "Degrees -> Hz via the context.", "params": { "voices": 6 } },
+    { "type": "oscillator", "address": "/osc" },
+    { "type": "filter", "address": "/filter", "params": { "cutoff": 3000.0 } },
+    { "type": "envelope", "address": "/env", "params": { "attack": 0.01, "decay": 0.2, "sustain": 0.6, "release": 0.2 } },
+    { "type": "output", "address": "/out" }
+  ],
+  "connections": [
+    { "from": { "node": "/context", "port": "ctx" }, "to": { "node": "/snap", "port": "ctx" } },
+    { "from": { "node": "/context", "port": "ctx" }, "to": { "node": "/voicer", "port": "ctx" } },
+    { "from": { "node": "/snap", "port": "degrees" }, "to": { "node": "/voicer", "port": "notes" } },
+    { "from": { "node": "/voicer", "port": "freq" }, "to": { "node": "/osc", "port": "freq" } },
+    { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/filter", "port": "audio" } },
+    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env", "port": "audio" } },
+    { "from": { "node": "/voicer", "port": "gate" }, "to": { "node": "/env", "port": "gate" } },
+    { "from": { "node": "/env", "port": "audio" }, "to": { "node": "/out", "port": "audio" } }
+  ],
+  "outputs": [
+    { "node": "/out", "port": "audio" }
+  ]
+}

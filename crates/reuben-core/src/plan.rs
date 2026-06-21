@@ -39,6 +39,16 @@ pub struct PlanNode {
     /// node indices (into [`Plan::nodes`]) that receive its emissions. Empty for a node
     /// with no Message outputs.
     pub msg_targets: Vec<Vec<usize>>,
+    /// Context-edge routing (ADR-0015): for each Context input port (Context-input ordinal
+    /// order — the index [`crate::operator::Io::context`] uses), the source's context-arena
+    /// slot, or `None` if unconnected (reads the default context). Followers read here.
+    pub context_inputs: Vec<Option<usize>>,
+    /// For each Context output port (Context-output ordinal order — the index
+    /// [`crate::operator::Io::publish_context`] uses), this node's context-arena slot.
+    pub context_outputs: Vec<usize>,
+    /// For each Context output port, the node indices that read it — so a publish re-slices
+    /// them (the third route lane). Sibling of `msg_targets`.
+    pub ctx_targets: Vec<Vec<usize>>,
 }
 
 /// The immutable execution image.
@@ -48,6 +58,8 @@ pub struct Plan {
     pub nodes: Vec<PlanNode>,
     /// Total number of edge buffers in the arena.
     pub num_buffers: usize,
+    /// Total number of context-arena slots (one per Context output port; ADR-0015).
+    pub num_context_slots: usize,
     /// Master taps: each is a tapped port's per-Lane buffers, all summed into the output.
     pub output_taps: Vec<Vec<usize>>,
 }
@@ -108,6 +120,23 @@ impl Plan {
             .map(|(k, p)| out_buffers[*k][*p].clone())
             .collect();
 
+        // Assign a context-arena slot per (node, Context output port). Independent of Lanes
+        // (context is single-Lane, pre-fan-out; ADR-0015). `src_port` here is the full port
+        // index, matching how connections reference ports.
+        let mut next_ctx_slot = 0usize;
+        let mut ctx_slot: SecondaryMap<NodeKey, std::collections::BTreeMap<usize, usize>> =
+            SecondaryMap::new();
+        for (key, node) in &graph.nodes {
+            let mut m = std::collections::BTreeMap::new();
+            for (port, p) in node.descriptor.outputs.iter().enumerate() {
+                if p.kind == PortKind::Context {
+                    m.insert(port, next_ctx_slot);
+                    next_ctx_slot += 1;
+                }
+            }
+            ctx_slot.insert(key, m);
+        }
+
         // Node index in execution order, for resolving Message-edge targets to Plan indices.
         let mut index_of: SecondaryMap<NodeKey, usize> = SecondaryMap::new();
         for (i, key) in order.iter().enumerate() {
@@ -126,7 +155,9 @@ impl Plan {
                 .iter()
                 .enumerate()
                 .map(|(port, p)| {
-                    if p.kind == PortKind::Message {
+                    // Only Signal inputs take an arena buffer; Message and Context inputs
+                    // carry no Signal data (events/context arrive via routing).
+                    if p.kind != PortKind::Signal {
                         return None;
                     }
                     graph
@@ -143,6 +174,41 @@ impl Plan {
                 .iter()
                 .enumerate()
                 .filter(|(_, p)| p.kind == PortKind::Message)
+                .map(|(port, _)| {
+                    graph
+                        .connections
+                        .iter()
+                        .filter(|c| c.src == *key && c.src_port == port)
+                        .map(|c| index_of[c.dst])
+                        .collect()
+                })
+                .collect();
+            // Context-edge wiring (ADR-0015), Context-ordinal order.
+            let context_inputs = descriptor
+                .inputs
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.kind == PortKind::Context)
+                .map(|(port, _)| {
+                    graph
+                        .connections
+                        .iter()
+                        .find(|c| c.dst == *key && c.dst_port == port)
+                        .map(|c| ctx_slot[c.src][&c.src_port])
+                })
+                .collect();
+            let context_outputs = descriptor
+                .outputs
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.kind == PortKind::Context)
+                .map(|(port, _)| ctx_slot[*key][&port])
+                .collect();
+            let ctx_targets = descriptor
+                .outputs
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.kind == PortKind::Context)
                 .map(|(port, _)| {
                     graph
                         .connections
@@ -169,6 +235,9 @@ impl Plan {
                 inputs,
                 outputs,
                 msg_targets,
+                context_inputs,
+                context_outputs,
+                ctx_targets,
             });
         }
 
@@ -176,6 +245,7 @@ impl Plan {
             config,
             nodes,
             num_buffers: next_buffer,
+            num_context_slots: next_ctx_slot,
             output_taps,
         })
     }

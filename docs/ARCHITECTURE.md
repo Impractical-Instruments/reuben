@@ -67,12 +67,13 @@ Operators are **single-Lane** by default ([ADR-0010](adr/0010-single-lane-operat
 
 **Voices** (independent sounding instances, from a pre-allocated pool bounded at Instantiate) are distinct from **Channels** (n-channel signal paths); a stereo Voice spans two Channels.
 
-**Message delivery** ([ADR-0011](adr/0011-message-delivery-and-timing.md)) is sample-accurate but author-transparent: the engine **block-slices** at Message boundaries so a single-Lane author just reads "my current value" while a knob change lands at the exact sample. Event-oriented Operators (the Clock, the Voicer, future sequencers) instead receive the routed Messages as zero-copy `Event` views (address local to the node, args, segment-relative frame) via `Io::events`, because they reason in events.
+**Message delivery** ([ADR-0011](adr/0011-message-delivery-and-timing.md)) is sample-accurate but author-transparent: the engine **block-slices** at Message boundaries so a single-Lane author just reads "my current value" while a knob change lands at the exact sample. Event-oriented Operators (the Clock, the Voicer, the sequencer) instead receive the routed Messages as zero-copy `Event` views (address local to the node, args, segment-relative frame) via `Io::events`, because they reason in events. Operators also **emit** Messages onto wired Message edges ([ADR-0014](adr/0014-internal-message-graph.md)) — a sequencer feeding a Voicer — and a `context` Operator **publishes** a latched tonal-context struct read back via `Io::context` ([ADR-0015](adr/0015-latched-context-read.md)), the struct-valued sibling of a knob.
 
 ## Musical layer
 
 - **Clock** ([ADR-0006](adr/0006-clock-and-musical-time.md)): a global default Clock so everything grooves together out of the box; Clocks are also Operators for polytempo/generative timing. The Clock provides base timing only — groove, swing, and feel are separate Operators. Timetags default to musical time, resolved against the Clock at dispatch.
 - **Pitch and tuning** ([ADR-0008](adr/0008-pitch-and-tuning.md)): symbolic Pitch (scale-degree primary, float-MIDI-note available) resolved to frequency by a **Tuning**. Tunings import from Scala `.scl`/`.kbm`, supporting any non-Western or user-defined system; 12-TET is just the default. The active Tuning rides the **tonal-context** bus alongside key/scale/chord, queried continuously, so retuning while notes sound works.
+- **Tonal-context bus** ([ADR-0013](adr/0013-tonal-context-bus-mechanics.md), [ADR-0015](adr/0015-latched-context-read.md)): the key/scale/chord is a latched `Copy` struct a `context` Operator publishes and followers read via `Io::context` — the resolver (`hz`/`snap`/`chord_tone`) lives in that one struct, so a follower stays dumb. Degree notes resolve to Hz through it (a held line **re-spells live** on a key/scale change), a `snap` Operator quantizes arbitrary pitch to the nearest in-scale degree, and changes are sample-accurate on the same timeline as notes. *(Built for 12-TET; the Scala-tuning swap rides the same step-space seam and is deferred.)*
 
 ## Boundary protocols
 
@@ -80,7 +81,7 @@ The core speaks only OSC-shaped Messages. MIDI, Ableton Link, OSC tempo sync, an
 
 ## MVP and beyond
 
-The MVP is a headless "it makes a sound" spine: the portable-core / native-crate split, Signal + Message, the Plan + Instantiate→Render loop, single-Lane fan-out, determinism, a serial executor behind the real interface, the core Operators (oscillator, envelope, filter, Voicer, output, Clock), OSC-in from TouchOSC/Max, default 12-TET. Get past the prototype graveyard fast, then build the UX. V1.1 has since added music Operators (delay, reverb, LFO). Full tiers — MVP, v1, later, someday, never — are in [ROADMAP.md](../ROADMAP.md). For the code-level operator contract and how to add one, see [docs/agents/authoring.md](agents/authoring.md).
+The MVP is a headless "it makes a sound" spine: the portable-core / native-crate split, Signal + Message, the Plan + Instantiate→Render loop, single-Lane fan-out, determinism, a serial executor behind the real interface, the core Operators (oscillator, envelope, filter, Voicer, output, Clock), OSC-in from TouchOSC/Max, default 12-TET. Get past the prototype graveyard fast, then build the UX. V1.1 has since added music Operators (delay, reverb, LFO, sequencer), the internal message graph (operators emit Messages), and the tonal-context bus (a `context` Operator + degree resolution + a `snap` Operator). Full tiers — MVP, v1, later, someday, never — are in [ROADMAP.md](../ROADMAP.md). For the code-level operator contract and how to add one, see [docs/agents/authoring.md](agents/authoring.md).
 
 ## Decision index (ADRs)
 

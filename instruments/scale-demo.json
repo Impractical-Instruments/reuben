@@ -1,0 +1,27 @@
+{
+  "instrument": "scale-demo",
+  "doc": "The same self-playing sequence as sequence.json, but the Voicer resolves each step degree through a tonal context set to C natural minor — so the identical degree pattern (0..7) re-spells into the minor scale with no edit to the line. Change the key live with /context/root (MIDI), or reshape the scale with /context/s0../context/s6 (step offsets) and /context/degrees; both apply sample-accurately. Send a chord with /context/chord [tag, d0, d1, ...] (tag 1 = scale-relative, 2 = absolute, 0 = clear).",
+  "nodes": [
+    { "type": "clock", "address": "/clock", "params": { "tempo": 110.0 } },
+    { "type": "sequencer", "address": "/sequencer", "doc": "Default ascending pattern, degrees 0..7." },
+    { "type": "context", "address": "/context", "doc": "C natural minor, 12-TET.", "params": { "root": 60.0, "degrees": 7.0, "s0": 0.0, "s1": 2.0, "s2": 3.0, "s3": 5.0, "s4": 7.0, "s5": 8.0, "s6": 10.0 } },
+    { "type": "voicer", "address": "/voicer", "doc": "Degrees -> Hz via the context.", "params": { "voices": 4 } },
+    { "type": "oscillator", "address": "/osc" },
+    { "type": "filter", "address": "/filter", "params": { "cutoff": 2500.0 } },
+    { "type": "envelope", "address": "/env", "params": { "attack": 0.005, "decay": 0.14, "sustain": 0.3, "release": 0.1 } },
+    { "type": "output", "address": "/out" }
+  ],
+  "connections": [
+    { "from": { "node": "/clock", "port": "gate" }, "to": { "node": "/sequencer", "port": "clock" } },
+    { "from": { "node": "/sequencer", "port": "degrees" }, "to": { "node": "/voicer", "port": "notes" } },
+    { "from": { "node": "/context", "port": "ctx" }, "to": { "node": "/voicer", "port": "ctx" } },
+    { "from": { "node": "/voicer", "port": "freq" }, "to": { "node": "/osc", "port": "freq" } },
+    { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/filter", "port": "audio" } },
+    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env", "port": "audio" } },
+    { "from": { "node": "/voicer", "port": "gate" }, "to": { "node": "/env", "port": "gate" } },
+    { "from": { "node": "/env", "port": "audio" }, "to": { "node": "/out", "port": "audio" } }
+  ],
+  "outputs": [
+    { "node": "/out", "port": "audio" }
+  ]
+}
