@@ -1,6 +1,6 @@
 # Open Design Questions
 
-Decisions not yet made. This is the design backlog — distinct from [ROADMAP.md](../ROADMAP.md) (feature priority) and [docs/adr/](adr/) (decisions already made). Each entry has enough context to resume a grilling session cold. None of these block the MVP.
+Decisions not yet made. This is the design backlog — distinct from [ROADMAP.md](../ROADMAP.md) (feature priority) and [docs/adr/](adr/) (decisions already made). Each entry has enough context to resume a grilling session cold. None blocked the (now-complete) MVP; several are the threads the [v1 plan](../ROADMAP.md#v1-first-real-release) flags for a grilling session before their phase starts.
 
 ## Major threads (ungrilled)
 
