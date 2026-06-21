@@ -80,7 +80,7 @@ The core speaks only OSC-shaped Messages. MIDI, Ableton Link, OSC tempo sync, an
 
 ## MVP and beyond
 
-The MVP is a headless "it makes a sound" spine: the portable-core / native-crate split, Signal + Message, the Plan + Instantiate→Render loop, single-Lane fan-out, determinism, a serial executor behind the real interface, ~5 Operators, OSC-in from TouchOSC/Max, default 12-TET. Get past the prototype graveyard fast, then build the UX. Full tiers — MVP, v1, later, someday, never — are in [ROADMAP.md](../ROADMAP.md).
+The MVP is a headless "it makes a sound" spine: the portable-core / native-crate split, Signal + Message, the Plan + Instantiate→Render loop, single-Lane fan-out, determinism, a serial executor behind the real interface, the core Operators (oscillator, envelope, filter, Voicer, output, Clock), OSC-in from TouchOSC/Max, default 12-TET. Get past the prototype graveyard fast, then build the UX. V1.1 has since added music Operators (delay, reverb, LFO). Full tiers — MVP, v1, later, someday, never — are in [ROADMAP.md](../ROADMAP.md). For the code-level operator contract and how to add one, see [docs/agents/authoring.md](agents/authoring.md).
 
 ## Decision index (ADRs)
 

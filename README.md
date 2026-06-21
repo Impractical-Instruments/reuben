@@ -1,15 +1,87 @@
 # reuben
 
-A configurable musical instrument built from composable **Operators** that each do something simple and combine into complex musical behavior. Easy for beginners via ready-made **Toys**; deeply customizable once you get the hang of it. Rube Goldberg machines, for music — hence "reuben."
+A configurable musical instrument built from composable **Operators** that each do
+something simple and combine into complex musical behavior. Easy to start with via
+ready-made example rigs; deeply customizable once you get the hang of it. Rube Goldberg
+machines, for music — hence "reuben."
 
-Music is the primary payload, but the same data (notes, chords, timing, gestures) can drive anything controllable over time — lights, video, game engines. **OSC is the lingua franca**, internally and externally. n-channel in and out. Easy defaults always provided. Ships Linux (lead) + Windows; the native layer is fully removable and the library is portable to mobile, the web, and game engines.
+Music is the primary payload, but the same data (notes, chords, timing, gestures) can
+drive anything controllable over time — lights, video, game engines. **OSC is the lingua
+franca**, in and out.
 
-## Start here
+## Prerequisites
+
+- **Rust** (stable) — install via [rustup](https://rustup.rs).
+- **Linux:** ALSA development headers for audio output:
+  ```sh
+  sudo apt-get install libasound2-dev      # Debian/Ubuntu
+  ```
+  (Windows needs nothing extra — audio goes through WASAPI.)
+- **Optional:** an OSC sender to play notes — [TouchOSC](https://hexler.net/touchosc),
+  Max/Pd, or any script that can send a UDP OSC message. Some example rigs play on their
+  own and need no sender.
+
+## Quickstart
+
+Run the default synth — opens your default audio device and listens for OSC on UDP
+`0.0.0.0:9000`:
+
+```sh
+cargo run -p reuben-native --bin reuben
+```
+
+Play a note by sending OSC `/voicer/note [midi, gate]` from any OSC source:
+
+- `[69.0, 1.0]` — note-on, A4
+- `[69.0, 0.0]` — note-off
+
+Send several `/voicer/note` messages to play a chord.
+
+## Run the examples
+
+Instruments are **data** — JSON files in [`instruments/`](instruments/). Load one by
+passing its path:
+
+```sh
+cargo run -p reuben-native --bin reuben -- instruments/<name>.json
+```
+
+| Rig          | Plays on its own? | What it is                                                         |
+|--------------|-------------------|-------------------------------------------------------------------|
+| `default`    | needs OSC notes   | Polyphonic synth (8 voices): voicer → osc → filter → ADSR → out.  |
+| `metronome`  | **yes**           | A click on every beat from the Clock. `/clock/tempo` to change.   |
+| `echo`       | needs OSC notes   | The synth with a feedback delay. Tweak `/delay/{time,feedback,mix}`. |
+| `vibrato`    | **yes**           | Self-playing drone; an LFO sweeps the pitch. Tweak `/lfo/{rate,depth,center}`. |
+| `reverb`     | needs OSC notes   | The synth with a mono Freeverb. Tweak `/reverb/{room,damp,mix}`.   |
+
+`metronome` and `vibrato` make sound immediately — good for a first run with no OSC
+sender. Every node's params are live over OSC at its address (e.g. `/delay/time`).
+
+Write your own rig and load it the same way; documents are validated against a JSON
+Schema generated from the operators (`crates/reuben-core/schema/instrument.schema.json`).
+
+### Offline (no audio device)
+
+Render a tone straight to a WAV file:
+
+```sh
+cargo run -p reuben-core --example first_sound    # writes first_sound.wav
+```
+
+## Status
+
+**MVP complete; v1 in progress.** The headless "it makes a sound" spine works end to end.
+See [ROADMAP.md](ROADMAP.md) for what's done and what's next.
+
+## Going deeper
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the design, end to end.
 - **[CONTEXT.md](CONTEXT.md)** — the glossary / ubiquitous language. Read this first if a term is unclear.
 - **[ROADMAP.md](ROADMAP.md)** — what's MVP, v1, later, someday, and never.
 - **[docs/adr/](docs/adr/)** — the architectural decisions and the reasoning behind them.
 - **[docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)** — the design backlog: decisions not yet made.
+- **[docs/agents/authoring.md](docs/agents/authoring.md)** — building Operators and Instruments (for contributors and agents).
 
-Status: **MVP complete; v1 in progress.** The headless "it makes a sound" spine is done end-to-end, and v1 has begun — see the [roadmap](ROADMAP.md). The portable core (`crates/reuben-core`) makes a verifiable, deterministic tone offline — Signal/Message data model, Operator trait + descriptors, Graph → Plan (Instantiate) → block-sliced **allocation-free** serial Render (`tests/rt_safe.rs` asserts zero per-block heap allocation), six operators (oscillator, envelope, filter, polyphonic voicer, output, clock), 12-TET tuning, and **polyphony** — the voicer expands into a Voice pool (default 8, steal-oldest) and the engine replicates the chain per Voice with independent state, summing Voices at the master tap (ADR-0010). **Musical time** lives in the `clock` operator: a sample-accurate beat phasor at `tempo` with a beat gate, the home of sample-accuracy (external OSC is block-quantized by design — UDP arrival jitter makes a finer frame fake precision). The removable native layer (`crates/reuben-native`) plays it live: `cargo run -p reuben-native --bin reuben` opens the default audio device and listens for OSC on UDP `0.0.0.0:9000`. Play notes by sending `/voicer/note [midi, gate]` (e.g. `[69.0, 1.0]` for note-on A4, `[69.0, 0.0]` for note-off) from any OSC source. Instruments are **data**: rigs are defined in JSON (`instruments/default.json` is a playable synth, `instruments/metronome.json` clicks on the beat), loaded through a type registry, and validated by a JSON Schema auto-generated from the operator descriptors (`crates/reuben-core/schema/instrument.schema.json`, regenerate via `cargo run -p reuben-core --example gen_schema`). Load your own with `cargo run -p reuben-native --bin reuben -- path/to/instrument.json`. Send several `/voicer/note` messages to play chords. Offline: `cargo run -p reuben-core --example first_sound` writes `first_sound.wav`.
+## License
+
+MIT OR Apache-2.0.
