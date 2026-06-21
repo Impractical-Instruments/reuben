@@ -1,0 +1,23 @@
+{
+  "instrument": "echo",
+  "doc": "Default monophonic rig with a feedback delay between the envelope and the output. Send /voicer/note [midi, gate] to play (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off). Tweak the echo live over OSC: /delay/time (seconds), /delay/feedback (0..0.95), /delay/mix (dry/wet 0..1).",
+  "nodes": [
+    { "type": "voicer", "address": "/voicer", "doc": "Note -> per-Voice freq + gate CV.", "params": { "voices": 8 } },
+    { "type": "oscillator", "address": "/osc" },
+    { "type": "filter", "address": "/filter", "doc": "Gentle lowpass.", "params": { "cutoff": 3000.0 } },
+    { "type": "envelope", "address": "/env", "doc": "ADSR VCA, gated by the voicer." },
+    { "type": "delay", "address": "/delay", "doc": "Feedback echo on the voice.", "params": { "time": 0.3, "feedback": 0.4, "mix": 0.5 } },
+    { "type": "output", "address": "/out" }
+  ],
+  "connections": [
+    { "from": { "node": "/voicer", "port": "freq" }, "to": { "node": "/osc", "port": "freq" } },
+    { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/filter", "port": "audio" } },
+    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env", "port": "audio" } },
+    { "from": { "node": "/voicer", "port": "gate" }, "to": { "node": "/env", "port": "gate" } },
+    { "from": { "node": "/env", "port": "audio" }, "to": { "node": "/delay", "port": "audio" } },
+    { "from": { "node": "/delay", "port": "audio" }, "to": { "node": "/out", "port": "audio" } }
+  ],
+  "outputs": [
+    { "node": "/out", "port": "audio" }
+  ]
+}

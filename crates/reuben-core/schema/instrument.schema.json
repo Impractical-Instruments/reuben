@@ -52,6 +52,49 @@
           "if": {
             "properties": {
               "type": {
+                "const": "delay"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "feedback": {
+                    "default": 0.4000000059604645,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 0.949999988079071,
+                    "minimum": 0.0,
+                    "type": "number"
+                  },
+                  "mix": {
+                    "default": 0.5,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  },
+                  "time": {
+                    "default": 0.30000001192092896,
+                    "description": "unit: s, curve: Linear",
+                    "maximum": 2.0,
+                    "minimum": 0.0010000000474974513,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
                 "const": "envelope"
               }
             },
@@ -234,6 +277,7 @@
         "type": {
           "enum": [
             "clock",
+            "delay",
             "envelope",
             "filter",
             "oscillator",
