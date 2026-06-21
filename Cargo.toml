@@ -5,7 +5,7 @@ members = ["crates/reuben-core", "crates/reuben-native"]
 [workspace.package]
 version = "0.0.0"
 edition = "2021"
-license = "MIT OR Apache-2.0"
+license = "BSD-3-Clause"
 repository = "https://github.com/Impractical-Instruments/reuben"
 
 [workspace.dependencies]
