@@ -238,6 +238,49 @@
           "if": {
             "properties": {
               "type": {
+                "const": "reverb"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "damp": {
+                    "default": 0.5,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  },
+                  "mix": {
+                    "default": 0.30000001192092896,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  },
+                  "room": {
+                    "default": 0.5,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
                 "const": "voicer"
               }
             },
@@ -282,6 +325,7 @@
             "filter",
             "oscillator",
             "output",
+            "reverb",
             "voicer"
           ]
         }
