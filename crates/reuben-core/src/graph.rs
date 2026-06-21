@@ -51,10 +51,21 @@ impl Graph {
     /// Add an operator instance with default params. Returns its stable key.
     pub fn add<T: Operator + 'static>(&mut self, address: &str, op: T) -> NodeKey {
         let descriptor = T::descriptor();
+        self.add_boxed(address, Box::new(op), descriptor)
+    }
+
+    /// Add an already-boxed operator with its descriptor (params defaulted from it).
+    /// Used by the instrument loader, which builds operators from a [`crate::registry`].
+    pub fn add_boxed(
+        &mut self,
+        address: &str,
+        op: Box<dyn Operator>,
+        descriptor: Descriptor,
+    ) -> NodeKey {
         let params = descriptor.default_params();
         self.nodes.insert(Node {
             address: address.to_string(),
-            op: Box::new(op),
+            op,
             descriptor,
             params,
         })

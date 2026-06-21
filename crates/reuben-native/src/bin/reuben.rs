@@ -1,7 +1,8 @@
-//! `reuben` — play the default rig live, driven by OSC over UDP.
+//! `reuben` — play an instrument live, driven by OSC over UDP.
 //!
-//! Listens for OSC on UDP `0.0.0.0:9000` and renders the default rig to the default audio
-//! device. Play a note by sending, e.g.:
+//! Listens for OSC on UDP `0.0.0.0:9000` and renders an instrument to the default audio
+//! device. With no argument it plays the built-in default rig; pass a path to load a
+//! different instrument JSON: `reuben path/to/instrument.json`. Play a note by sending:
 //!
 //! ```text
 //! /voicer/note  [69.0, 1.0]   # note-on  (MIDI 69 = A4, gate 1)
@@ -15,8 +16,9 @@ use std::sync::mpsc;
 use std::thread;
 
 use reuben_core::plan::Plan;
+use reuben_core::{load, Registry};
 use reuben_native::engine::Engine;
-use reuben_native::rigs::default_rig;
+use reuben_native::rigs::DEFAULT_JSON;
 use reuben_native::{audio, osc};
 
 const BLOCK_SIZE: usize = 256;
@@ -59,12 +61,25 @@ fn main() {
         }
     });
 
+    // Instrument source: a path argument, else the embedded default.
+    let instrument_json = match std::env::args().nth(1) {
+        Some(path) => {
+            println!("instrument: {path}");
+            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"))
+        }
+        None => {
+            println!("instrument: <default> (pass a path to load your own)");
+            DEFAULT_JSON.to_string()
+        }
+    };
+
     let _stream = audio::start(rx, BLOCK_SIZE, |cfg| {
         println!(
             "audio out @ {} Hz, block {}",
             cfg.sample_rate, cfg.block_size
         );
-        let plan = Plan::instantiate(default_rig(), cfg).expect("instantiate rig");
+        let graph = load(&instrument_json, &Registry::builtin()).expect("load instrument");
+        let plan = Plan::instantiate(graph, cfg).expect("instantiate rig");
         Engine::new(plan)
     })
     .expect("start audio");
