@@ -84,4 +84,4 @@ See [ROADMAP.md](ROADMAP.md) for what's done and what's next.
 
 ## License
 
-MIT OR Apache-2.0.
+BSD 3-Clause. See [LICENSE](LICENSE).
