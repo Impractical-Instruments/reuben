@@ -15,6 +15,7 @@ use reuben_core::render::Renderer;
 use reuben_core::{load, AudioConfig, Registry};
 
 const DEFAULT_JSON: &str = include_str!("../../../instruments/default.json");
+const SEQUENCE_JSON: &str = include_str!("../../../instruments/sequence.json");
 
 /// Number of `alloc`/`realloc` calls since process start.
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
@@ -80,5 +81,26 @@ fn render_block_is_allocation_free_after_warmup() {
     assert_eq!(
         with_msgs, 0,
         "message-bearing render allocated {with_msgs} time(s)"
+    );
+
+    // Operator-emitted messages (ADR-0014) must also be allocation-free in steady state:
+    // the sequence rig has a sequencer emitting `note` Messages into a Voicer every beat.
+    let graph = load(SEQUENCE_JSON, &Registry::builtin()).expect("load sequence.json");
+    let mut plan = Plan::instantiate(graph, cfg).expect("instantiate");
+    let mut r = Renderer::new(&plan);
+
+    // Warm up across more than a full beat (24000 frames @ 120 BPM) so every emit pool and
+    // per-node event Vec reaches steady-state capacity, spanning several note on/off emits.
+    for _ in 0..200 {
+        r.render_block(&mut plan, &[], &mut out);
+    }
+    let before = ALLOCS.load(Ordering::Relaxed);
+    for _ in 0..1000 {
+        r.render_block(&mut plan, &[], &mut out);
+    }
+    let emitting = ALLOCS.load(Ordering::Relaxed) - before;
+    assert_eq!(
+        emitting, 0,
+        "emitting-sequencer render allocated {emitting} time(s)"
     );
 }

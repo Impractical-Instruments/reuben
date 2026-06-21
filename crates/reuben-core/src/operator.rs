@@ -10,7 +10,7 @@
 use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
-use crate::message::Event;
+use crate::message::{Arg, Emit, Event};
 
 /// The per-call I/O view handed to [`Operator::process`] for one (sub)block of one Lane.
 ///
@@ -26,6 +26,12 @@ pub struct Io<'a> {
     events: &'a [Event<'a>],
     lane: usize,
     lanes: usize,
+    /// Sink for Messages this call emits (ADR-0014), or `None` when this Lane does not
+    /// collect emissions. Only Lane 0 collects — emission is single-Lane (pre-fan-out).
+    emit: Option<&'a mut Vec<Emit>>,
+    /// Block-absolute frame of this (sub)block's start, added to an emitted frame so the
+    /// operator can work in segment-relative time.
+    frame_offset: usize,
 }
 
 impl<'a> Io<'a> {
@@ -55,6 +61,8 @@ impl<'a> Io<'a> {
             events,
             lane: 0,
             lanes: 1,
+            emit: None,
+            frame_offset: 0,
         }
     }
 
@@ -62,6 +70,14 @@ impl<'a> Io<'a> {
     pub(crate) fn with_lane(mut self, lane: usize, lanes: usize) -> Self {
         self.lane = lane;
         self.lanes = lanes;
+        self
+    }
+
+    /// Attach the emit sink and segment frame offset (Lane 0 only). Messages passed to
+    /// [`Io::emit`] are collected into `buf` with `frame_offset` added.
+    pub(crate) fn with_emit(mut self, buf: &'a mut Vec<Emit>, frame_offset: usize) -> Self {
+        self.emit = Some(buf);
+        self.frame_offset = frame_offset;
         self
     }
 
@@ -94,6 +110,29 @@ impl<'a> Io<'a> {
     /// Used by event operators such as the Voicer. Zero-copy views (no allocation).
     pub fn events(&self) -> &[Event<'_>] {
         self.events
+    }
+
+    /// Emit a Message onto Message output `port` at segment-relative `frame` (ADR-0014).
+    /// `addr` is the node-local address the destination matches (e.g. `"note"`); it is
+    /// `&'static str`, so a wired-edge emit allocates nothing. The engine delivers it as an
+    /// [`Event`] to nodes downstream of this one in the same block. A no-op on Lanes that
+    /// do not collect emissions (every Lane but 0).
+    pub fn emit(
+        &mut self,
+        port: usize,
+        addr: &'static str,
+        args: impl IntoIterator<Item = Arg>,
+        frame: usize,
+    ) {
+        let frame = self.frame_offset + frame;
+        if let Some(buf) = self.emit.as_mut() {
+            buf.push(Emit {
+                port,
+                addr,
+                args: args.into_iter().collect(),
+                frame,
+            });
+        }
     }
 
     /// Which Lane (Voice) this call represents, in `0..lanes()`. Single-Lane operators can

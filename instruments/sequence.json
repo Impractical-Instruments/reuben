@@ -1,0 +1,25 @@
+{
+  "instrument": "sequence",
+  "doc": "A self-playing step melody. The Clock's beat gate drives a sequencer that emits note Messages — one per beat through an 8-step pattern (a C-major scale by default) — into a Voicer, then an oscillator + envelope. Because the sequencer is a note source on the internal message graph, this routes exactly like external notes: polyphony-, transpose-, and snap-ready. Set tempo via /clock/tempo; edit the line via /sequencer/step1../sequencer/step8 (MIDI note, below 0 = rest) and /sequencer/length; send /clock/reset to relocate beat 1.",
+  "nodes": [
+    { "type": "clock", "address": "/clock", "doc": "Beat phasor + beat gate.", "params": { "tempo": 120.0 } },
+    { "type": "sequencer", "address": "/sequencer", "doc": "Walks the pattern one step per beat -> note Messages." },
+    { "type": "voicer", "address": "/voicer", "doc": "Note -> per-Voice freq + gate CV.", "params": { "voices": 4 } },
+    { "type": "oscillator", "address": "/osc" },
+    { "type": "filter", "address": "/filter", "doc": "Gentle lowpass.", "params": { "cutoff": 3000.0 } },
+    { "type": "envelope", "address": "/env", "doc": "Plucked note, gated per step.", "params": { "attack": 0.005, "decay": 0.12, "sustain": 0.3, "release": 0.1 } },
+    { "type": "output", "address": "/out" }
+  ],
+  "connections": [
+    { "from": { "node": "/clock", "port": "gate" }, "to": { "node": "/sequencer", "port": "clock" } },
+    { "from": { "node": "/sequencer", "port": "notes" }, "to": { "node": "/voicer", "port": "notes" } },
+    { "from": { "node": "/voicer", "port": "freq" }, "to": { "node": "/osc", "port": "freq" } },
+    { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/filter", "port": "audio" } },
+    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env", "port": "audio" } },
+    { "from": { "node": "/voicer", "port": "gate" }, "to": { "node": "/env", "port": "gate" } },
+    { "from": { "node": "/env", "port": "audio" }, "to": { "node": "/out", "port": "audio" } }
+  ],
+  "outputs": [
+    { "node": "/out", "port": "audio" }
+  ]
+}

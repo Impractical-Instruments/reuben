@@ -324,6 +324,91 @@
           "if": {
             "properties": {
               "type": {
+                "const": "sequencer"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "length": {
+                    "default": 8.0,
+                    "description": "unit: steps, curve: Linear",
+                    "maximum": 8.0,
+                    "minimum": 1.0,
+                    "type": "number"
+                  },
+                  "step1": {
+                    "default": 60.0,
+                    "description": "unit: MIDI, curve: Linear",
+                    "maximum": 127.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  },
+                  "step2": {
+                    "default": 62.0,
+                    "description": "unit: MIDI, curve: Linear",
+                    "maximum": 127.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  },
+                  "step3": {
+                    "default": 64.0,
+                    "description": "unit: MIDI, curve: Linear",
+                    "maximum": 127.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  },
+                  "step4": {
+                    "default": 65.0,
+                    "description": "unit: MIDI, curve: Linear",
+                    "maximum": 127.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  },
+                  "step5": {
+                    "default": 67.0,
+                    "description": "unit: MIDI, curve: Linear",
+                    "maximum": 127.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  },
+                  "step6": {
+                    "default": 69.0,
+                    "description": "unit: MIDI, curve: Linear",
+                    "maximum": 127.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  },
+                  "step7": {
+                    "default": 71.0,
+                    "description": "unit: MIDI, curve: Linear",
+                    "maximum": 127.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  },
+                  "step8": {
+                    "default": 72.0,
+                    "description": "unit: MIDI, curve: Linear",
+                    "maximum": 127.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
                 "const": "voicer"
               }
             },
@@ -370,6 +455,7 @@
             "oscillator",
             "output",
             "reverb",
+            "sequencer",
             "voicer"
           ]
         }

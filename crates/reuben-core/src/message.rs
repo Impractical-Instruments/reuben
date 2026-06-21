@@ -64,6 +64,25 @@ impl Message {
     }
 }
 
+/// A Message an operator emits during `process` onto a Message output port (ADR-0014),
+/// before the engine stamps it block-absolute and routes it to downstream nodes' event
+/// lists. Distinct from the boundary [`Message`]: its address is a `&'static str` and its
+/// args are inline, so emitting a note on the wired hot path touches no allocator.
+#[derive(Debug, Clone)]
+pub struct Emit {
+    /// Which Message output port it went to, as an ordinal among the operator's Message
+    /// outputs (a separate index space from Signal outputs).
+    pub port: usize,
+    /// Node-local address the destination matches in [`Io::events`](crate::operator::Io::events),
+    /// e.g. `"note"`. Static — the wired edge, not this string, is the routing.
+    pub addr: &'static str,
+    /// Typed arguments.
+    pub args: Args,
+    /// Sample offset within the Render block. Segment-relative when the operator calls
+    /// `emit`; the engine stamps it block-absolute.
+    pub frame: usize,
+}
+
 /// A routed event handed to an event operator for one (sub)block, via
 /// [`crate::operator::Io::events`]. A zero-copy view onto the originating block
 /// [`Message`]: the address *local* to the receiving node, the typed args, and a
