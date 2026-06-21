@@ -55,6 +55,12 @@ pub trait Operator: Send {
     just read "my current value").
   - `io.events() -> &[Event]` — for event operators (Voicer, Clock): zero-copy views of
     routed Messages, address local to the node, segment-relative `frame`.
+  - `io.emit(port, addr, args, frame)` — emit a Message onto a **Message output port**
+    ([ADR-0014](../adr/0014-internal-message-graph.md)), e.g. a sequencer emitting `note`
+    into a Voicer. `addr` is a `&'static str` and the wired edge does the routing, so a
+    note emit allocates nothing; `frame` is segment-relative. Delivered as an `Event` to
+    nodes downstream this block. Emission is single-Lane (Lane 0 only) — pre-fan-out. See
+    `sequencer.rs` as the template.
   - `io.lane()` / `io.lanes()` — most operators ignore these; an *expander* like the
     Voicer uses them to emit one Voice's output per call.
 - **`spawn()`** — usually `Box::new(Self::new())`. Resets per-Lane state only; the engine

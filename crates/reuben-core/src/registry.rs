@@ -10,7 +10,9 @@ use std::collections::BTreeMap;
 
 use crate::descriptor::Descriptor;
 use crate::operator::Operator;
-use crate::operators::{Clock, Delay, Envelope, Filter, Lfo, Oscillator, Output, Reverb, Voicer};
+use crate::operators::{
+    Clock, Delay, Envelope, Filter, Lfo, Oscillator, Output, Reverb, Sequencer, Voicer,
+};
 
 /// One registered operator type: how to build it, and its self-description.
 pub struct Entry {
@@ -46,6 +48,7 @@ impl Registry {
         r.register(|| Box::new(Delay::new()), Delay::descriptor());
         r.register(|| Box::new(Reverb::new()), Reverb::descriptor());
         r.register(|| Box::new(Lfo::new()), Lfo::descriptor());
+        r.register(|| Box::new(Sequencer::new()), Sequencer::descriptor());
         r
     }
 
@@ -90,6 +93,7 @@ mod tests {
                 "oscillator",
                 "output",
                 "reverb",
+                "sequencer",
                 "voicer"
             ]
         );

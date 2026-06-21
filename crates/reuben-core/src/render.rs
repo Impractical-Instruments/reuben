@@ -21,7 +21,7 @@
 
 use smallvec::SmallVec;
 
-use crate::message::{Event, Message};
+use crate::message::{Emit, Event, Message};
 use crate::operator::Io;
 use crate::plan::{Plan, PlanNode};
 
@@ -46,6 +46,11 @@ impl Executor for SerialExecutor {
     }
 }
 
+/// Preallocated capacity for the per-block emit pool and scratch. Sized to absorb a
+/// typical block's emissions without reallocating on the audio thread; emitting beyond it
+/// grows the Vec once (allocation), which steady-state graphs do not reach.
+const EMIT_POOL_CAP: usize = 256;
+
 /// Owns the edge-buffer arena and drives Render for a single Plan.
 ///
 /// All buffers and per-block scratch are allocated once here and reused, so
@@ -59,6 +64,11 @@ pub struct Renderer<E: Executor = SerialExecutor> {
     out_scratch: Vec<Vec<f32>>,
     /// Per-block message routing, one entry per node. Reused; inner Vecs cleared per block.
     routes: Vec<NodeRoute>,
+    /// Block-lifetime pool of operator-emitted Messages (ADR-0014). Routed events borrow
+    /// from it, so it is grown once and only cleared (never freed) per block.
+    emitted: Vec<Emit>,
+    /// One node's emissions for the current node, drained into `emitted` after it runs.
+    emit_scratch: Vec<Emit>,
     /// Per-node block-slice boundaries scratch. Cleared per node — capacity retained.
     bounds: Vec<usize>,
     /// Execution order for the block, refilled by the executor into reused capacity.
@@ -100,6 +110,8 @@ impl<E: Executor> Renderer<E> {
             arena,
             out_scratch,
             routes,
+            emitted: Vec::with_capacity(EMIT_POOL_CAP),
+            emit_scratch: Vec::with_capacity(EMIT_POOL_CAP),
             bounds,
             order,
             executor,
@@ -117,8 +129,10 @@ impl<E: Executor> Renderer<E> {
             buf.iter_mut().for_each(|s| *s = 0.0);
         }
 
-        // Route messages to nodes, split into param updates vs raw events. Reuses scratch.
+        // Route external messages to nodes, split into param updates vs raw events. Reuses
+        // scratch. Operator-emitted messages are routed later, interleaved with execution.
         route_messages(&mut self.routes, plan, messages);
+        self.emitted.clear();
 
         // Executor decides node order for the block (into reused capacity).
         self.executor.order(plan, &mut self.order);
@@ -132,12 +146,15 @@ impl<E: Executor> Renderer<E> {
             arena,
             out_scratch,
             routes,
+            emitted,
+            emit_scratch,
             bounds,
             order,
             ..
         } = self;
 
         for &i in order.iter() {
+            emit_scratch.clear();
             process_node(
                 arena,
                 out_scratch,
@@ -145,9 +162,25 @@ impl<E: Executor> Renderer<E> {
                 &routes[i],
                 &mut plan.nodes[i],
                 messages,
+                emitted,
+                emit_scratch,
                 sample_rate,
                 block_size,
             );
+
+            // Route this node's emissions (ADR-0014): each goes into the block-lifetime
+            // pool, and a zero-copy event reference is delivered to every downstream target
+            // of its Message output port — which run later in topo order, so they see it.
+            for e in emit_scratch.drain(..) {
+                let port = e.port;
+                let pool_idx = emitted.len();
+                for &dst in &plan.nodes[i].msg_targets[port] {
+                    routes[dst].events.push(RoutedEvent {
+                        src: EventSrc::Emitted(pool_idx),
+                    });
+                }
+                emitted.push(e);
+            }
         }
 
         // Sum master taps: every Lane of every tapped port, in fixed order.
@@ -162,14 +195,22 @@ impl<E: Executor> Renderer<E> {
     }
 }
 
-/// One routed event: an index into the block's Messages plus the byte offset at which
-/// the address local to the receiving node begins. A zero-copy reference — turning it
-/// into an [`Event`] at delivery allocates nothing.
+/// Where a routed event's payload lives: an external block-input Message, or a Message an
+/// upstream operator emitted this block (ADR-0014). Either way delivery is zero-copy — the
+/// [`Event`] borrows the source.
+#[derive(Clone, Copy)]
+enum EventSrc {
+    /// Index into the block `messages` slice, plus the byte offset where the node-local
+    /// address begins (the external address is a full OSC path).
+    External { msg: usize, local_start: usize },
+    /// Index into the per-block emit pool. Its address is already node-local.
+    Emitted(usize),
+}
+
+/// One routed event: where its payload lives. Turning it into an [`Event`] at delivery
+/// allocates nothing.
 struct RoutedEvent {
-    /// Index into the block `messages` slice.
-    src: usize,
-    /// Byte offset into the source Message's address where the node-local part begins.
-    local_start: usize,
+    src: EventSrc,
 }
 
 /// Per-node routed messages for one block.
@@ -209,8 +250,10 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
                     // `local` is a suffix of `msg.addr`; record where it starts.
                     let local_start = msg.addr.len() - local.len();
                     routes[i].events.push(RoutedEvent {
-                        src: mi,
-                        local_start,
+                        src: EventSrc::External {
+                            msg: mi,
+                            local_start,
+                        },
                     });
                 }
             }
@@ -243,6 +286,8 @@ fn process_node(
     route: &NodeRoute,
     node: &mut PlanNode,
     messages: &[Message],
+    emitted: &[Emit],
+    emit_scratch: &mut Vec<Emit>,
     sample_rate: f32,
     block_size: usize,
 ) {
@@ -284,14 +329,24 @@ fn process_node(
 
         // Events whose frame falls in this segment, as zero-copy views with
         // segment-relative frames. Inline storage — no heap for the common small case.
+        // The payload is an external block Message or an upstream-emitted one (ADR-0014).
         let mut seg_events: SmallVec<[Event; 8]> = SmallVec::new();
         for re in &route.events {
-            let m = &messages[re.src];
-            if m.frame >= seg_start && m.frame < seg_end {
+            let (addr, args, frame): (&str, &crate::message::Args, usize) = match re.src {
+                EventSrc::External { msg, local_start } => {
+                    let m = &messages[msg];
+                    (&m.addr[local_start..], &m.args, m.frame)
+                }
+                EventSrc::Emitted(idx) => {
+                    let e = &emitted[idx];
+                    (e.addr, &e.args, e.frame)
+                }
+            };
+            if frame >= seg_start && frame < seg_end {
                 seg_events.push(Event {
-                    addr: &m.addr[re.local_start..],
-                    args: &m.args,
-                    frame: m.frame - seg_start,
+                    addr,
+                    args,
+                    frame: frame - seg_start,
                 });
             }
         }
@@ -313,7 +368,7 @@ fn process_node(
                 .filter(|(idx, _)| idx % lanes == lane)
                 .map(|(_, buf)| &mut buf[seg_start..seg_end]);
 
-            let mut io = Io::new(
+            let io = Io::new(
                 sample_rate,
                 seg_end - seg_start,
                 inputs,
@@ -322,6 +377,13 @@ fn process_node(
                 &seg_events,
             )
             .with_lane(lane, node.lanes);
+            // Lane 0 collects emissions; emitted frames are stamped block-absolute by
+            // adding this segment's start (ADR-0014). Other Lanes do not emit.
+            let mut io = if lane == 0 {
+                io.with_emit(&mut *emit_scratch, seg_start)
+            } else {
+                io
+            };
             node.ops[lane].process(&mut io);
         }
     }

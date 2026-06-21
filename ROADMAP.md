@@ -43,8 +43,8 @@ Each phase lists the open-design threads it forces (see [OPEN-QUESTIONS.md](docs
   - ✅ **delay** — feedback echo (`/delay/{time,feedback,mix}`, `instruments/echo.json`).
   - ✅ **reverb** — mono Freeverb (`/reverb/{room,damp,mix}`, `instruments/reverb.json`).
   - ✅ **LFO / mod source** — sine modulation on the sample timeline (`/lfo/{rate,depth,center}`, `instruments/vibrato.json`).
-  - **Sequencer** — drives the Clock's beat grid. *(Remaining.)*
-  - **Sample player.** *(Remaining.)*
+  - ✅ **Sequencer** — clock-driven step sequencer; walks an 8-step pitch pattern, one note per beat, and **emits `note` Messages** into a Voicer (`instruments/sequence.json`). Forced the **internal message graph** — operators emitting Messages ([ADR-0014](docs/adr/0014-internal-message-graph.md)), the foundation note ops, the tonal-context bus, and meta-effects all build on. So a sequence is polyphony-, transpose-, and snap-composable, not a Signal-domain dead end.
+  - **Sample player.** *(Remaining — blocked on the "Format & library" thread: needs sample-data references in the JSON format + a non-RT resource-load step. Grill before building.)*
 - **Tonal-context / harmony bus** (ADR-0008) — scale broadcast + snap-to-scale + chord-progression publishing; followers (arp, voicing, melody) subscribe. Makes "always in key" mechanical, not hope. *(Mechanics grilled — see [ADR-0013](docs/adr/0013-tonal-context-bus-mechanics.md) + [worked examples](docs/tonal-context-examples.md); ready to build.)*
 
 ### V1.2 — Playable surface

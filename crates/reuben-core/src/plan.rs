@@ -13,7 +13,7 @@
 use slotmap::SecondaryMap;
 
 use crate::config::AudioConfig;
-use crate::descriptor::{Descriptor, LaneRule};
+use crate::descriptor::{Descriptor, LaneRule, PortKind};
 use crate::graph::{Graph, NodeKey};
 use crate::operator::Operator;
 
@@ -34,6 +34,11 @@ pub struct PlanNode {
     pub inputs: Vec<Option<Vec<usize>>>,
     /// For each output port: this node's per-Lane arena buffer indices (length `lanes`).
     pub outputs: Vec<Vec<usize>>,
+    /// Message-edge routing (ADR-0014): for each of this node's Message output ports (in
+    /// Message-output ordinal order — the index [`crate::operator::Io::emit`] uses), the
+    /// node indices (into [`Plan::nodes`]) that receive its emissions. Empty for a node
+    /// with no Message outputs.
+    pub msg_targets: Vec<Vec<usize>>,
 }
 
 /// The immutable execution image.
@@ -103,13 +108,27 @@ impl Plan {
             .map(|(k, p)| out_buffers[*k][*p].clone())
             .collect();
 
+        // Node index in execution order, for resolving Message-edge targets to Plan indices.
+        let mut index_of: SecondaryMap<NodeKey, usize> = SecondaryMap::new();
+        for (i, key) in order.iter().enumerate() {
+            index_of.insert(*key, i);
+        }
+
         // 3. Build PlanNodes in execution order, replicating operators per Lane.
         let mut nodes = Vec::with_capacity(order.len());
         for key in &order {
             let n_lanes = lanes[*key];
-            let in_count = graph.nodes[*key].descriptor.inputs.len();
-            let inputs = (0..in_count)
-                .map(|port| {
+            let descriptor = &graph.nodes[*key].descriptor;
+            // Signal inputs wire to the source's arena buffers; Message inputs carry no
+            // Signal data (events arrive via routing, ADR-0014) so they take no buffer.
+            let inputs = descriptor
+                .inputs
+                .iter()
+                .enumerate()
+                .map(|(port, p)| {
+                    if p.kind == PortKind::Message {
+                        return None;
+                    }
                     graph
                         .connections
                         .iter()
@@ -118,6 +137,21 @@ impl Plan {
                 })
                 .collect();
             let outputs = out_buffers[*key].clone();
+            // Message-edge targets, one entry per Message output port (ordinal order).
+            let msg_targets = descriptor
+                .outputs
+                .iter()
+                .enumerate()
+                .filter(|(_, p)| p.kind == PortKind::Message)
+                .map(|(port, _)| {
+                    graph
+                        .connections
+                        .iter()
+                        .filter(|c| c.src == *key && c.src_port == port)
+                        .map(|c| index_of[c.dst])
+                        .collect()
+                })
+                .collect();
 
             let node = graph.nodes.remove(*key).expect("key from topo order");
             let mut ops: Vec<Box<dyn Operator>> = Vec::with_capacity(n_lanes);
@@ -134,6 +168,7 @@ impl Plan {
                 lanes: n_lanes,
                 inputs,
                 outputs,
+                msg_targets,
             });
         }
 
