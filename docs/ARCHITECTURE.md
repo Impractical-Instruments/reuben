@@ -67,7 +67,7 @@ Operators are **single-Lane** by default ([ADR-0010](adr/0010-single-lane-operat
 
 **Voices** (independent sounding instances, from a pre-allocated pool bounded at Instantiate) are distinct from **Channels** (n-channel signal paths); a stereo Voice spans two Channels.
 
-**Message delivery** ([ADR-0011](adr/0011-message-delivery-and-timing.md)) is sample-accurate but author-transparent: the engine **block-slices** at Message boundaries so a single-Lane author just reads "my current value" while a knob change lands at the exact sample. Event-oriented Operators (sequencers, the Voicer) instead receive raw timetagged lists, because they reason in events.
+**Message delivery** ([ADR-0011](adr/0011-message-delivery-and-timing.md)) is sample-accurate but author-transparent: the engine **block-slices** at Message boundaries so a single-Lane author just reads "my current value" while a knob change lands at the exact sample. Event-oriented Operators (the Clock, the Voicer, future sequencers) instead receive the routed Messages as zero-copy `Event` views (address local to the node, args, segment-relative frame) via `Io::events`, because they reason in events.
 
 ## Musical layer
 

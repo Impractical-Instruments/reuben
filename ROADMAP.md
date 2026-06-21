@@ -31,15 +31,15 @@ The actual product. The MVP proved the engine spine; v1 is **the path to a delig
 
 Each phase lists the open-design threads it forces (see [OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)) — those get a grilling session before the phase starts.
 
-### V1.0 — Engine hardening (only what the rest of v1 leans on)
+### V1.0 — Engine hardening (only what the rest of v1 leans on) — ✅ DONE
 
 - ✅ **RT-safe Render** — edge-buffer arena + all per-block scratch preallocated and reused; zero-copy events. `render_block` is allocation-free after warmup (asserted by `tests/rt_safe.rs`).
-- **External OSC timing is block-quantized by design** — *not* a task. Reconstructing a sub-block `frame` from a UDP datagram's arrival time is fake precision: arrival jitter already dwarfs sample resolution. Sample-accuracy is an internal property delivered by the Clock below; external messages apply at the next block boundary (see `crates/reuben-native/src/osc.rs`).
-- **Clock + musical time** (ADR-0006) — the home of sample-accurate timing: a sample timeline + tempo + beat grid, with internally-generated events landing on exact samples. First slice: a `Clock` operator (sample-accurate beat phasor at `tempo`, with a beat gate, honoring a `reset` event). Groove box and sequencers build on it. *(Forces: nothing new — ADR-0006 settled in principle.)*
+- **External OSC timing is block-quantized by design** — *not* a task. Reconstructing a sub-block `frame` from a UDP datagram's arrival time is fake precision: arrival jitter already dwarfs sample resolution. Sample-accuracy is an internal property delivered by the Clock; external messages apply at the next block boundary (see `crates/reuben-native/src/osc.rs`).
+- ✅ **Clock + musical time** (ADR-0006), first slice — the home of sample-accurate timing: a `clock` operator with a sample-accurate beat phasor at `tempo`, a beat gate (sample-accurate trigger), and a `reset` event (sample-accurate locate); phase in f64 so the grid never drifts. `instruments/metronome.json` clicks on the beat. *Remaining for later phases:* meter/bars, musical-time timetag resolution (schedule "beat 2.5"), and groove/swing as separate re-timing operators.
 
 ### V1.1 — Operators for music
 
-- **More operators** — clock/sequencer, sample player, LFO/mod source, delay + reverb meta-effects. Toys are assembled from these. *(Forces: Operator-authoring contract is now concrete from the MVP; this is mostly mechanical, parallelizable.)*
+- **More operators** — sequencer (drives the Clock's beat grid), sample player, LFO/mod source, delay + reverb meta-effects. Toys are assembled from these. *(Forces: Operator-authoring contract is now concrete from the MVP; this is mostly mechanical, parallelizable.)*
 - **Tonal-context / harmony bus** (ADR-0008) — scale broadcast + snap-to-scale + chord-progression publishing; followers (arp, voicing, melody) subscribe. Makes "always in key" mechanical, not hope. *(Forces: tonal-context bus mechanics — grill first.)*
 
 ### V1.2 — Playable surface
