@@ -55,6 +55,7 @@ impl Operator for Clock {
                 unit: "BPM",
                 curve: Curve::Linear,
             }],
+            resources: vec![],
             lanes: LaneRule::Inherit,
         }
     }

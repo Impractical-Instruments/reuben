@@ -29,6 +29,7 @@ impl Operator for Output {
             inputs: vec![Port::signal("audio")],
             outputs: vec![Port::signal("audio")],
             params: vec![],
+            resources: vec![],
             lanes: LaneRule::Inherit,
         }
     }

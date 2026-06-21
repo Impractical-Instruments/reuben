@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use crate::descriptor::Descriptor;
 use crate::operator::Operator;
 use crate::operators::{
-    Clock, ContextOp, Delay, Envelope, Filter, Lfo, Oscillator, Output, Reverb, Sequencer, Snap,
-    Voicer,
+    Clock, ContextOp, Delay, Envelope, Filter, Lfo, Oscillator, Output, Reverb, SamplePlayer,
+    Sequencer, Snap, Voicer,
 };
 
 /// One registered operator type: how to build it, and its self-description.
@@ -37,7 +37,7 @@ impl Registry {
     }
 
     /// The built-in operator set: oscillator, envelope, filter, voicer, output, clock, delay,
-    /// reverb, lfo.
+    /// reverb, lfo, sequencer, context, snap, sample.
     pub fn builtin() -> Self {
         let mut r = Self::new();
         r.register(|| Box::new(Oscillator::new()), Oscillator::descriptor());
@@ -52,6 +52,7 @@ impl Registry {
         r.register(|| Box::new(Sequencer::new()), Sequencer::descriptor());
         r.register(|| Box::new(ContextOp::new()), ContextOp::descriptor());
         r.register(|| Box::new(Snap::new()), Snap::descriptor());
+        r.register(|| Box::new(SamplePlayer::new()), SamplePlayer::descriptor());
         r
     }
 
@@ -97,6 +98,7 @@ mod tests {
                 "oscillator",
                 "output",
                 "reverb",
+                "sample",
                 "sequencer",
                 "snap",
                 "voicer"

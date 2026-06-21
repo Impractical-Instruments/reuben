@@ -135,6 +135,7 @@ impl Operator for Reverb {
                     curve: Curve::Linear,
                 },
             ],
+            resources: vec![],
             lanes: LaneRule::Inherit,
         }
     }

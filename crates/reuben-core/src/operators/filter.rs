@@ -53,6 +53,7 @@ impl Operator for Filter {
                     curve: Curve::Linear,
                 },
             ],
+            resources: vec![],
             lanes: LaneRule::Inherit,
         }
     }

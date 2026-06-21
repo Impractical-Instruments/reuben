@@ -75,13 +75,27 @@ Operators are **single-Lane** by default ([ADR-0010](adr/0010-single-lane-operat
 - **Pitch and tuning** ([ADR-0008](adr/0008-pitch-and-tuning.md)): symbolic Pitch (scale-degree primary, float-MIDI-note available) resolved to frequency by a **Tuning**. Tunings import from Scala `.scl`/`.kbm`, supporting any non-Western or user-defined system; 12-TET is just the default. The active Tuning rides the **tonal-context** bus alongside key/scale/chord, queried continuously, so retuning while notes sound works.
 - **Tonal-context bus** ([ADR-0013](adr/0013-tonal-context-bus-mechanics.md), [ADR-0015](adr/0015-latched-context-read.md)): the key/scale/chord is a latched `Copy` struct a `context` Operator publishes and followers read via `Io::context` — the resolver (`hz`/`snap`/`chord_tone`) lives in that one struct, so a follower stays dumb. Degree notes resolve to Hz through it (a held line **re-spells live** on a key/scale change), a `snap` Operator quantizes arbitrary pitch to the nearest in-scale degree, and changes are sample-accurate on the same timeline as notes. *(Built for 12-TET; the Scala-tuning swap rides the same step-space seam and is deferred.)*
 
+## Resources (sample data)
+
+Most Operators are pure functions of params + edges; the **sample player** is the first to
+depend on **external decoded audio** ([ADR-0016](adr/0016-sample-player-and-resource-store.md)).
+An instrument document carries a top-level `resources` table (logical id → source); decoded
+audio lives in a central `ResourceStore` the Coordinator builds at load and Render reads
+immutable. A type-erased Operator receives it through a two-phase `bind_resources` hook
+(driven by a descriptor resource slot), and the read path is a **pure `(id, channel, frame)`
+accessor** — resident in v1.1, the same signature the future streaming "audio bank" reuses,
+so determinism holds (a bank that falls behind underruns, never substitutes silence). Codecs
+stay out of the portable core: a `ResourceResolver` seam in the native layer owns filesystem
+IO and WAV decode. A missing or undecodable sample **degrades to silence with a load
+warning** rather than crashing a live rig; structural/wiring errors stay fatal.
+
 ## Boundary protocols
 
 The core speaks only OSC-shaped Messages. MIDI, Ableton Link, OSC tempo sync, and future protocols are isolated, removable adapters that convert to/from OSC at the I/O boundary ([ADR-0007](adr/0007-osc-only-core.md)). Each adapter is part of the removable native layer.
 
 ## MVP and beyond
 
-The MVP is a headless "it makes a sound" spine: the portable-core / native-crate split, Signal + Message, the Plan + Instantiate→Render loop, single-Lane fan-out, determinism, a serial executor behind the real interface, the core Operators (oscillator, envelope, filter, Voicer, output, Clock), OSC-in from TouchOSC/Max, default 12-TET. Get past the prototype graveyard fast, then build the UX. V1.1 has since added music Operators (delay, reverb, LFO, sequencer), the internal message graph (operators emit Messages), and the tonal-context bus (a `context` Operator + degree resolution + a `snap` Operator). Full tiers — MVP, v1, later, someday, never — are in [ROADMAP.md](../ROADMAP.md). For the code-level operator contract and how to add one, see [docs/agents/authoring.md](agents/authoring.md).
+The MVP is a headless "it makes a sound" spine: the portable-core / native-crate split, Signal + Message, the Plan + Instantiate→Render loop, single-Lane fan-out, determinism, a serial executor behind the real interface, the core Operators (oscillator, envelope, filter, Voicer, output, Clock), OSC-in from TouchOSC/Max, default 12-TET. Get past the prototype graveyard fast, then build the UX. V1.1 has since added music Operators (delay, reverb, LFO, sequencer, sample player), the internal message graph (operators emit Messages), the tonal-context bus (a `context` Operator + degree resolution + a `snap` Operator), and the resource store (decoded sample data as a shared, bank-ready read service). Full tiers — MVP, v1, later, someday, never — are in [ROADMAP.md](../ROADMAP.md). For the code-level operator contract and how to add one, see [docs/agents/authoring.md](agents/authoring.md).
 
 ## Decision index (ADRs)
 
@@ -98,3 +112,6 @@ The MVP is a headless "it makes a sound" spine: the portable-core / native-crate
 - [0011 — Message delivery and sample-accurate timing](adr/0011-message-delivery-and-timing.md)
 - [0012 — Boundary and threading: single-writer Coordinator, read-only Render](adr/0012-boundary-and-threading.md)
 - [0013 — Tonal-context bus: mechanics (latched context Operator, snap, sample-accurate timing)](adr/0013-tonal-context-bus-mechanics.md)
+- [0014 — Internal message graph: Operators emit Messages on wired edges](adr/0014-internal-message-graph.md)
+- [0015 — Latched context read: a struct-valued read service over the Message wire](adr/0015-latched-context-read.md)
+- [0016 — Sample player and the resource store: decoded audio as a shared, bank-ready read service](adr/0016-sample-player-and-resource-store.md)

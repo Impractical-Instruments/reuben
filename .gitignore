@@ -4,6 +4,8 @@
 
 # Generated audio (example output, e.g. first_sound.wav)
 *.wav
+# ...but committed sample fixtures (worked-example instruments) are kept.
+!instruments/samples/*.wav
 
 # Editor / OS
 *.swp

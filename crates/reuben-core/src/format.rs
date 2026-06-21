@@ -12,12 +12,14 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
 use crate::descriptor::{Descriptor, PortKind};
 use crate::graph::Graph;
 use crate::registry::Registry;
+use crate::resources::{ResolvedRefs, ResourceResolver, ResourceStore, SampleBuffer, SampleId};
 
 /// A complete instrument document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -27,6 +29,12 @@ pub struct InstrumentDoc {
     /// Optional note for humans and agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
+    /// Decoded-resource table (ADR-0016): logical id → source (a file path today). A node
+    /// references a resource by id via its `sample` field; the loader resolves+decodes each
+    /// referenced id once (dedup) into the [`ResourceStore`]. Entries no node uses are
+    /// ignored.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub resources: BTreeMap<String, String>,
     pub nodes: Vec<NodeDoc>,
     #[serde(default)]
     pub connections: Vec<ConnectionDoc>,
@@ -47,6 +55,11 @@ pub struct NodeDoc {
     /// Param overrides by name; omitted params use the descriptor default.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub params: BTreeMap<String, f32>,
+    /// Resource reference (ADR-0016): a logical id into the document's `resources` table.
+    /// Only valid on an operator whose descriptor declares a `sample` resource slot (the
+    /// sample player); rejected elsewhere as a structural [`LoadError::UnknownResource`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sample: Option<String>,
 }
 
 /// A reference to one node's port, by names.
@@ -81,6 +94,9 @@ pub enum LoadError {
     UnknownParam { node: String, param: String },
     /// A connection joins ports of different kinds (Signal vs Message).
     PortKindMismatch { from: String, to: String },
+    /// A node carries a `sample` reference but its operator declares no such resource slot
+    /// (ADR-0016) — a structural misuse, fatal like the other wiring errors.
+    UnknownResource { node: String, slot: String },
 }
 
 impl fmt::Display for LoadError {
@@ -104,6 +120,9 @@ impl fmt::Display for LoadError {
                     "connection {from} -> {to} joins a Signal and a Message port"
                 )
             }
+            LoadError::UnknownResource { node, slot } => {
+                write!(f, "node {node:?} has no resource slot {slot:?}")
+            }
         }
     }
 }
@@ -118,8 +137,109 @@ impl std::error::Error for LoadError {
 }
 
 /// Parse JSON and build the [`Graph`], resolving operator types via `registry`.
+///
+/// This path resolves no resources — a sample-bearing instrument loaded this way binds its
+/// players to nothing (they play silence). Use [`load_instrument`] to resolve and bind
+/// decoded audio.
 pub fn load(json: &str, registry: &Registry) -> Result<Graph, LoadError> {
     InstrumentDoc::from_json(json)?.build(registry)
+}
+
+/// A non-fatal resource problem found at load (ADR-0016). The owning node still builds and
+/// binds to an empty buffer (so it plays silence); the boundary surfaces these to the user
+/// because they are authoring errors, just not crashing ones.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum LoadWarning {
+    /// A node names a resource id absent from the `resources` table.
+    MissingResource { node: String, id: String },
+    /// A resource id resolves to a source that could not be loaded/decoded.
+    ResolveFailed {
+        id: String,
+        source: String,
+        reason: String,
+    },
+}
+
+impl fmt::Display for LoadWarning {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            LoadWarning::MissingResource { node, id } => {
+                write!(f, "node {node:?}: sample {id:?} not in resources table")
+            }
+            LoadWarning::ResolveFailed { id, source, reason } => {
+                write!(f, "sample {id:?} ({source:?}): {reason}")
+            }
+        }
+    }
+}
+
+/// The result of [`load_instrument`]: the built graph (resources bound) plus any non-fatal
+/// [`LoadWarning`]s. Core returns structured warnings; the boundary decides how to present
+/// them (ADR-0016).
+pub struct Loaded {
+    pub graph: Graph,
+    pub warnings: Vec<LoadWarning>,
+}
+
+/// Parse, build, and **resolve + bind decoded resources** (ADR-0016) — the full authoring
+/// load path. Structural/wiring problems are fatal ([`LoadError`]); resource problems are
+/// non-fatal: a missing id or a resolve/decode failure binds the node to an empty buffer
+/// (it plays silence) and is reported as a [`LoadWarning`]. Each referenced id is resolved
+/// exactly once (dedup) via `resolver`; unreferenced `resources` entries are ignored.
+pub fn load_instrument(
+    json: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> Result<Loaded, LoadError> {
+    let doc = InstrumentDoc::from_json(json)?;
+    let mut graph = doc.build(registry)?;
+    let mut warnings = Vec::new();
+
+    // Resolve every referenced id once into the store; record id -> handle for binding.
+    let mut store = ResourceStore::new();
+    let mut handles: BTreeMap<String, SampleId> = BTreeMap::new();
+    for n in &doc.nodes {
+        let Some(id) = &n.sample else { continue };
+        if handles.contains_key(id) {
+            continue; // dedup: already resolved by an earlier node
+        }
+        let buffer = match doc.resources.get(id) {
+            None => {
+                warnings.push(LoadWarning::MissingResource {
+                    node: n.address.clone(),
+                    id: id.clone(),
+                });
+                SampleBuffer::empty()
+            }
+            Some(source) => match resolver.resolve(source) {
+                Ok(b) => b,
+                Err(e) => {
+                    warnings.push(LoadWarning::ResolveFailed {
+                        id: id.clone(),
+                        source: source.clone(),
+                        reason: e.to_string(),
+                    });
+                    SampleBuffer::empty()
+                }
+            },
+        };
+        handles.insert(id.clone(), store.insert(id.clone(), buffer));
+    }
+
+    let store = Arc::new(store);
+
+    // Bind each resource-bearing node's Lane-0 op (spawn carries it to the other Voices).
+    for n in &doc.nodes {
+        let Some(id) = &n.sample else { continue };
+        let handle = handles[id];
+        let mut refs = ResolvedRefs::new();
+        refs.set("sample", handle);
+        if let Some(key) = graph.find(&n.address) {
+            graph.nodes[key].op.bind_resources(&store, &refs);
+        }
+    }
+
+    Ok(Loaded { graph, warnings })
 }
 
 impl InstrumentDoc {
@@ -150,6 +270,13 @@ impl InstrumentDoc {
                 return Err(LoadError::DuplicateAddress(n.address.clone()));
             }
             let descriptor = entry.descriptor.clone();
+            // A `sample` ref is only valid on an operator that declares the slot (ADR-0016).
+            if n.sample.is_some() && !descriptor.has_resource("sample") {
+                return Err(LoadError::UnknownResource {
+                    node: n.address.clone(),
+                    slot: "sample".to_string(),
+                });
+            }
             let key = graph.add_boxed(&n.address, (entry.make)(), descriptor.clone());
             for (name, value) in &n.params {
                 if descriptor.param_index(name).is_none() {
@@ -205,6 +332,10 @@ impl InstrumentDoc {
                     address: node.address.clone(),
                     doc: None,
                     params,
+                    // A built Graph does not retain the logical resource id (it is consumed
+                    // into the ResourceStore at load), so save does not round-trip a sample
+                    // ref in v1.1 — acceptable until the library thread lands (ADR-0016).
+                    sample: None,
                 }
             })
             .collect();
@@ -249,6 +380,7 @@ impl InstrumentDoc {
         Self {
             instrument: instrument.into(),
             doc: None,
+            resources: BTreeMap::new(),
             nodes,
             connections,
             outputs,

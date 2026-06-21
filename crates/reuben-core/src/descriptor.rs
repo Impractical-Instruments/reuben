@@ -46,6 +46,22 @@ impl Port {
     }
 }
 
+/// A declared **resource slot**: external data (a sample) a node depends on, named so the
+/// loader knows which nodes need a ref, the format can validate the node's `sample` field,
+/// and the schema / AI-grounding can express it (ADR-0016). Distinct from params (which are
+/// `f32`) and ports (which carry edges) — a resource is decoded once and bound out-of-band
+/// via [`Operator::bind_resources`](crate::operator::Operator::bind_resources).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResourceSlot {
+    pub name: &'static str,
+}
+
+impl ResourceSlot {
+    pub const fn new(name: &'static str) -> Self {
+        Self { name }
+    }
+}
+
 /// How a control responds across its range — the good-button curve.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Curve {
@@ -94,6 +110,10 @@ pub struct Descriptor {
     pub inputs: Vec<Port>,
     pub outputs: Vec<Port>,
     pub params: Vec<ParamMeta>,
+    /// Declared resource slots (ADR-0016) — external data this operator binds out-of-band.
+    /// Empty for every operator that is a pure function of params + edges (all but the
+    /// sample player today).
+    pub resources: Vec<ResourceSlot>,
     /// How this operator determines its output Lane count. Defaults to [`LaneRule::Inherit`].
     pub lanes: LaneRule,
 }
@@ -107,5 +127,10 @@ impl Descriptor {
     /// Default values for every param, in slot order.
     pub fn default_params(&self) -> Vec<f32> {
         self.params.iter().map(|p| p.default).collect()
+    }
+
+    /// Whether this operator declares a resource slot of the given name (ADR-0016).
+    pub fn has_resource(&self, name: &str) -> bool {
+        self.resources.iter().any(|r| r.name == name)
     }
 }

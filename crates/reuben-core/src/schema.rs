@@ -58,6 +58,11 @@ pub fn generate(registry: &Registry) -> Value {
         "properties": {
             "instrument": { "type": "string" },
             "doc": { "type": "string" },
+            "resources": {
+                "type": "object",
+                "description": "Logical resource id -> source (a file path today). Referenced by a node's `sample` field (ADR-0016).",
+                "additionalProperties": { "type": "string" }
+            },
             "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
             "connections": { "type": "array", "items": { "$ref": "#/$defs/connection" } },
             "outputs": { "type": "array", "items": { "$ref": "#/$defs/portRef" } }
@@ -86,7 +91,11 @@ pub fn generate(registry: &Registry) -> Value {
                     "type": { "enum": type_names },
                     "address": { "type": "string" },
                     "doc": { "type": "string" },
-                    "params": { "type": "object" }
+                    "params": { "type": "object" },
+                    "sample": {
+                        "type": "string",
+                        "description": "Resource id into the document's `resources` table; only valid on a `sample` node (ADR-0016)."
+                    }
                 },
                 "allOf": branches
             }

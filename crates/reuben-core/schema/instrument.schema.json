@@ -444,6 +444,56 @@
           "if": {
             "properties": {
               "type": {
+                "const": "sample"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "channel": {
+                    "default": -1.0,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 31.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  },
+                  "gain": {
+                    "default": 1.0,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 4.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  },
+                  "root": {
+                    "default": 60.0,
+                    "description": "unit: MIDI, curve: Linear",
+                    "maximum": 127.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  },
+                  "start": {
+                    "default": 0.0,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
                 "const": "sequencer"
               }
             },
@@ -601,6 +651,10 @@
         "params": {
           "type": "object"
         },
+        "sample": {
+          "description": "Resource id into the document's `resources` table; only valid on a `sample` node (ADR-0016).",
+          "type": "string"
+        },
         "type": {
           "enum": [
             "clock",
@@ -612,6 +666,7 @@
             "oscillator",
             "output",
             "reverb",
+            "sample",
             "sequencer",
             "snap",
             "voicer"
@@ -668,6 +723,13 @@
         "$ref": "#/$defs/portRef"
       },
       "type": "array"
+    },
+    "resources": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "description": "Logical resource id -> source (a file path today). Referenced by a node's `sample` field (ADR-0016).",
+      "type": "object"
     }
   },
   "required": [

@@ -90,6 +90,7 @@ impl Operator for Envelope {
                 },
                 time("release", 0.2),
             ],
+            resources: vec![],
             lanes: LaneRule::Inherit,
         }
     }

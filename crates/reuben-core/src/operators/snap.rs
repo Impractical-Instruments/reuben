@@ -80,6 +80,7 @@ impl Operator for Snap {
                     curve: Curve::Linear,
                 },
             ],
+            resources: vec![],
             lanes: LaneRule::Inherit,
         }
     }

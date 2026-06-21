@@ -51,6 +51,7 @@ impl Operator for Oscillator {
                     curve: Curve::Linear,
                 },
             ],
+            resources: vec![],
             lanes: LaneRule::Inherit,
         }
     }

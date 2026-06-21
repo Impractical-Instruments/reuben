@@ -69,6 +69,7 @@ impl Operator for Lfo {
                     curve: Curve::Linear,
                 },
             ],
+            resources: vec![],
             lanes: LaneRule::Inherit,
         }
     }

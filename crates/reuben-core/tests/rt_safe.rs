@@ -8,11 +8,14 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 
 use reuben_core::message::{Arg, Message};
+use reuben_core::operators::{Output, SamplePlayer, Voicer};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
-use reuben_core::{load, AudioConfig, Registry};
+use reuben_core::resources::{ResolvedRefs, ResourceStore, SampleBuffer};
+use reuben_core::{load, AudioConfig, Graph, Registry};
 
 const DEFAULT_JSON: &str = include_str!("../../../instruments/default.json");
 const SEQUENCE_JSON: &str = include_str!("../../../instruments/sequence.json");
@@ -145,5 +148,63 @@ fn render_block_is_allocation_free_after_warmup() {
     assert_eq!(
         ctx_changing, 0,
         "context-changing render allocated {ctx_changing} time(s)"
+    );
+
+    // The sample player (ADR-0016) must be allocation-free too: a voicer -> sample -> out rig
+    // bound to a resident buffer. The RT read goes through the store's pure accessor and the
+    // Arc rides on the operator (cloned per call — an atomic bump, not a heap allocation), so
+    // neither a sounding one-shot nor a retriggering note grows the heap.
+    let mut g = Graph::new();
+    let voicer = g.add("/voicer", Voicer::new());
+    g.set_param(voicer, "voices", 1.0);
+    let sample = g.add("/sample", SamplePlayer::new());
+    g.set_param(sample, "root", 69.0);
+    let sink = g.add("/out", Output::new());
+
+    // Bind the sample player to a synthetic resident buffer (a long ramp, so the one-shot
+    // sounds across many blocks before reaching the end).
+    let ramp: Vec<f32> = (0..48_000).map(|i| (i as f32 / 48_000.0) - 0.5).collect();
+    let mut store = ResourceStore::new();
+    let id = store.insert("s", SampleBuffer::new(vec![ramp], 48_000.0));
+    let store = Arc::new(store);
+    let mut refs = ResolvedRefs::new();
+    refs.set("sample", id);
+    g.nodes[sample].op.bind_resources(&store, &refs);
+
+    // voicer.freq(0) -> sample.freq(0), voicer.gate(1) -> sample.gate(1), sample.audio -> out.
+    g.connect(voicer, 0, sample, 0);
+    g.connect(voicer, 1, sample, 1);
+    g.connect(sample, 0, sink, 0);
+    g.tap_output(sink, 0);
+
+    let mut plan = Plan::instantiate(g, cfg).expect("instantiate sample rig");
+    let mut r = Renderer::new(&plan);
+
+    // Warm up: fire a note, render enough to grow every scratch buffer to steady state.
+    r.render_block(&mut plan, &note_on, &mut out);
+    for _ in 0..16 {
+        r.render_block(&mut plan, &[], &mut out);
+    }
+
+    // Steady state: a sounding/parked one-shot with no new messages must not allocate.
+    let before = ALLOCS.load(Ordering::Relaxed);
+    for _ in 0..1000 {
+        r.render_block(&mut plan, &[], &mut out);
+    }
+    let sample_held = ALLOCS.load(Ordering::Relaxed) - before;
+    assert_eq!(
+        sample_held, 0,
+        "sample rig steady-state allocated {sample_held} time(s)"
+    );
+
+    // Retriggering every block (gate edges) must also be allocation-free.
+    let before = ALLOCS.load(Ordering::Relaxed);
+    for _ in 0..100 {
+        r.render_block(&mut plan, &note_on, &mut out);
+    }
+    let sample_retrig = ALLOCS.load(Ordering::Relaxed) - before;
+    assert_eq!(
+        sample_retrig, 0,
+        "retriggering sample render allocated {sample_retrig} time(s)"
     );
 }

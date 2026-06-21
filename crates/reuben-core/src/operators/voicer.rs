@@ -132,6 +132,7 @@ impl Operator for Voicer {
                 unit: "",
                 curve: Curve::Linear,
             }],
+            resources: vec![],
             lanes: LaneRule::FromParam(P_VOICES),
         }
     }

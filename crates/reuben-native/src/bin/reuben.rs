@@ -12,12 +12,14 @@
 //! Any OSC source works (TouchOSC, a Max/Pd patch, `oscsend`, a Python script).
 
 use std::net::UdpSocket;
+use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
 
 use reuben_core::plan::Plan;
-use reuben_core::{load, Registry};
+use reuben_core::{load_instrument, Registry};
 use reuben_native::engine::Engine;
+use reuben_native::resources::FsResolver;
 use reuben_native::rigs::DEFAULT_JSON;
 use reuben_native::{audio, osc};
 
@@ -61,15 +63,24 @@ fn main() {
         }
     });
 
-    // Instrument source: a path argument, else the embedded default.
-    let instrument_json = match std::env::args().nth(1) {
+    // Instrument source: a path argument, else the embedded default. Resource paths (sample
+    // files) resolve relative to the instrument file's directory; the embedded default has
+    // none, so it roots at the current directory.
+    let (instrument_json, base_dir) = match std::env::args().nth(1) {
         Some(path) => {
             println!("instrument: {path}");
-            std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"))
+            let json =
+                std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
+            let base = PathBuf::from(&path)
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(|p| p.to_path_buf())
+                .unwrap_or_else(|| PathBuf::from("."));
+            (json, base)
         }
         None => {
             println!("instrument: <default> (pass a path to load your own)");
-            DEFAULT_JSON.to_string()
+            (DEFAULT_JSON.to_string(), PathBuf::from("."))
         }
     };
 
@@ -78,8 +89,15 @@ fn main() {
             "audio out @ {} Hz, block {}",
             cfg.sample_rate, cfg.block_size
         );
-        let graph = load(&instrument_json, &Registry::builtin()).expect("load instrument");
-        let plan = Plan::instantiate(graph, cfg).expect("instantiate rig");
+        let resolver = FsResolver::new(&base_dir);
+        let loaded = load_instrument(&instrument_json, &Registry::builtin(), &resolver)
+            .expect("load instrument");
+        // Resource problems are non-fatal (ADR-0016): the rig still plays, but the user must
+        // see them — they are authoring errors.
+        for w in &loaded.warnings {
+            eprintln!("warning: {w}");
+        }
+        let plan = Plan::instantiate(loaded.graph, cfg).expect("instantiate rig");
         Engine::new(plan)
     })
     .expect("start audio");

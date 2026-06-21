@@ -74,6 +74,7 @@ impl Operator for Delay {
                     curve: Curve::Linear,
                 },
             ],
+            resources: vec![],
             lanes: LaneRule::Inherit,
         }
     }
