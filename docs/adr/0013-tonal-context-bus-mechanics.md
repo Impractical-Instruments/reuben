@@ -82,3 +82,40 @@ Partial sample-accuracy is worse than none (sample-accurate notes + block-quanti
 - **Authority is last-write-wins:** an active publisher overwrites a manual/external set on its next write. A manual-override/latch mode is a later refinement.
 - **Context read-back** (OSC-out so a UI shows current key/chord) is deferred to External OSC I/O (V1.5) and the introspection thread.
 - Worked examples that exercise these semantics live in [tonal-context-examples.md](../tonal-context-examples.md).
+
+## Amendment (2026-06)
+
+Grounding this ADR against what actually got built ([ADR-0014](0014-internal-message-graph.md),
+the wired internal message graph) corrected three things. The decisions above stand; their
+*justifications* and *transport* are amended, and the read-side mechanics are settled in
+[ADR-0015](0015-latched-context-read.md).
+
+- **The spawn-reset justification was wrong for this engine.** The decision said a naive
+  per-follower latch "would reset on `spawn()`; that is the trap." But `spawn()` is called
+  **only at Instantiate** (`plan.rs`), never during render: the Lane pool is fixed and Voice
+  stealing reassigns a slot without resetting downstream per-Lane operator state. So under the
+  current model a per-follower self-latch is in fact *correct*. The engine-managed latch is
+  justified instead by **authoring simplicity** (followers read a constant, not raw events) +
+  **sample-accuracy done once** + **future-proofing dynamically-spawned Voices** (where a
+  shared latch *upstream of fan-out* is genuinely required and self-latch breaks). The "keep
+  the latch upstream of fan-out" instinct was right; the stated mechanism was not.
+
+- **Transport is the wired Message edge, not wildcard dispatch.** ADR-0014 built statically
+  wired, typed Message edges and deferred address/wildcard dispatch. Context travels on a wired
+  edge (publisher → context node) like any other emission; wildcards layer on later for the
+  boundary, not under the audio-rate latch.
+
+- **The latch is not literally the f32 param path.** Param block-slicing is f32-only and
+  external-input-only. Context is a *struct* whose changes are *emitted* by an upstream
+  publisher, so ADR-0015 generalizes the emit→route drain into a third route lane that
+  re-slices downstream followers, and represents the latched value as a `Copy` struct indexing
+  an immutable `ScaleRegistry` (so snapshots are alloc-free). The "latch via slicing of a
+  structured value" *intent* holds; the mechanism is ADR-0015's, not the existing param code.
+
+- **Notes are symbolic, resolved late.** Consistent with the two-layer model: a note carries a
+  `Pitch` (scale **degree** when known, absolute MIDI otherwise); degree→step→Hz happens at the
+  **Voicer** through `io.context()` (default context = 12-TET → existing rigs sound identical),
+  so a key/scale change re-spells the line live. **Snap** (absolute→degree quantize) is a
+  separate optional upstream Message operator, policy supplied per-insertion. Degree vs absolute
+  is an explicit, minimal **pitch type** (see [ADR-0008](0008-pitch-and-tuning.md) amendment),
+  type-checked at load.

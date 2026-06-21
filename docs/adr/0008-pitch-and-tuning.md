@@ -24,3 +24,39 @@ Sources: Scala format (huygens-fokker.org/scala/scl_format.html), MTS-ESP (githu
 - Need a Scala parser in Rust (small) or an FFI to `tuning-library`.
 - The tonal-context bus must carry the active Tuning, not just key/scale/chord.
 - SonicWeave `.swi` import is a possible later addition; Scala covers v1.
+
+## Amendment (2026-06): explicit, minimal pitch types
+
+Designing the tonal-context note path ([ADR-0013](0013-tonal-context-bus-mechanics.md),
+[ADR-0015](0015-latched-context-read.md)) forced a decision this ADR left implicit: whether
+pitch-like numbers are typed or "just numbers." Resolution — the two regimes already present in
+the engine want **opposite** answers:
+
+- **Signal domain stays numeric.** A freq Signal is Hz-as-f32; CV is f32. Untyped, fungible,
+  patch-anything-into-anything (audio-rate FM, a pitch envelope into a cutoff). The useful
+  "weird" lives here; keep it untyped.
+- **Message domain is explicitly typed.** Discrete musical events are where "just a number"
+  causes silent misreads (MIDI vs degree vs Hz). Type them.
+
+**Decision:** in the Message domain, pitch is **explicitly typed**, starting **minimal** — two
+kinds: `AbsolutePitch` (MIDI/Hz-bound) and `ScaleDegree` (context-relative). The distinction is
+expressed via **port/address role** first (`note` = absolute, `degree` = symbolic), reusing the
+existing Instantiate-time type-check (`PortKindMismatch`) so a degree source into an absolute
+input is a **load error**. This is preferred over type-discriminated args (`Int`=degree,
+`Float`=MIDI) because the latter **collides at the OSC boundary** — a MIDI keyboard sends note
+numbers as ints meaning *absolute*, which a type tag would silently reinterpret as degrees.
+
+**Converters are explicit operators**, each context-aware and well-defined: a `quantize` op
+(absolute→degree, reads context) and the resolver in the Voicer (degree→Hz, reads context).
+This makes "diatonic vs chromatic transpose" expressible — an ambiguity raw numbers cannot
+carry: the transpose op's behavior is defined by the pitch type it receives.
+
+**Grow on demand.** Promote to a first-class `Arg`/value type (and add kinds like `Interval`,
+pitch-class) only when an operator must carry mixed pitch kinds on one port; until then,
+port-role typing is lighter and keeps the OSC boundary simple. Signals remain untyped — cross-
+domain weirdness is an *explicit* convert to CV, then patch the result anywhere.
+
+Consequence: the sequencer emits `ScaleDegree` (`degree` port). Its default pattern `[0..7]`
+under the default C-major/12-TET context is **bit-identical** to the prior MIDI default
+`[60,62,64,65,67,69,71,72]` (determinism invariant, ADR-0001), but now re-spells live on a
+key/scale change.
