@@ -10,6 +10,7 @@ pub mod envelope;
 pub mod filter;
 pub mod oscillator;
 pub mod output;
+pub mod reverb;
 pub mod voicer;
 
 pub use clock::Clock;
@@ -18,4 +19,5 @@ pub use envelope::Envelope;
 pub use filter::Filter;
 pub use oscillator::Oscillator;
 pub use output::Output;
+pub use reverb::Reverb;
 pub use voicer::Voicer;
