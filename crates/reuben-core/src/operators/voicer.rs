@@ -9,7 +9,7 @@
 //! replace it later.)
 //!
 //! - input 0: `notes` (Message) — note events arrive by address routing, read via
-//!   [`Io::messages`]; this port is documentary (no Signal edge).
+//!   [`Io::events`]; this port is documentary (no Signal edge).
 //! - output 0: `freq` (Signal) — resolved frequency in Hz of this Voice's note.
 //! - output 1: `gate` (Signal) — 1.0 while this Voice holds a note, else 0.0.
 //! - param 0: `voices` — Voice-pool size (structural; read at Instantiate).
@@ -132,18 +132,18 @@ impl Operator for Voicer {
         }
 
         // Snapshot note events for this (sub)block, sorted by frame. (Can't read
-        // `io.messages()` while an output borrow is live, so snapshot first.)
+        // `io.events()` while an output borrow is live, so snapshot first.)
         let mut events: SmallVec<[(usize, f32, bool); 8]> = SmallVec::new();
-        for msg in io.messages() {
-            if msg.addr != "note" {
+        for ev in io.events() {
+            if ev.addr != "note" {
                 continue;
             }
-            let frame = msg.frame.min(n);
-            let midi = match msg.args.first().and_then(Arg::as_f32) {
+            let frame = ev.frame.min(n);
+            let midi = match ev.args.first().and_then(Arg::as_f32) {
                 Some(v) => v,
                 None => continue,
             };
-            let on = msg.args.get(1).and_then(Arg::as_f32).unwrap_or(0.0) > 0.0;
+            let on = ev.args.get(1).and_then(Arg::as_f32).unwrap_or(0.0) > 0.0;
             events.push((frame, midi, on));
         }
         events.sort_by_key(|e| e.0);
@@ -200,7 +200,7 @@ impl Operator for Voicer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::Message;
+    use crate::message::{Event, Message};
     use crate::operator::Io;
 
     /// Run one Voicer Lane over a block; returns its (freq, gate) buffers.
@@ -213,11 +213,19 @@ mod tests {
     ) -> (Vec<f32>, Vec<f32>) {
         let mut f = vec![0.0f32; n];
         let mut gt = vec![0.0f32; n];
+        // The Render loop hands the Voicer zero-copy Event views; mirror that here.
+        let evs: Vec<Event> = events
+            .iter()
+            .map(|m| Event {
+                addr: &m.addr,
+                args: &m.args,
+                frame: m.frame,
+            })
+            .collect();
         {
-            let mut outs: Vec<&mut [f32]> = vec![&mut f[..], &mut gt[..]];
+            let outs: Vec<&mut [f32]> = vec![&mut f[..], &mut gt[..]];
             let inputs: Vec<Option<&[f32]>> = vec![None];
-            let mut io =
-                Io::new(48_000.0, n, &inputs, &mut outs, &[], events).with_lane(lane, lanes);
+            let mut io = Io::new(48_000.0, n, inputs, outs, &[], &evs).with_lane(lane, lanes);
             v.process(&mut io);
         }
         (f, gt)

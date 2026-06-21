@@ -106,13 +106,14 @@ mod tests {
         let mut filter = Filter::new();
         let mut out_buf = vec![0.0f32; n];
 
-        let inputs: Vec<Option<&[f32]>> = vec![Some(input)];
-        let mut outputs: Vec<&mut [f32]> = vec![out_buf.as_mut_slice()];
         let params = [cutoff, resonance];
         let messages = [];
-
-        let mut io = Io::new(sample_rate, n, &inputs, &mut outputs, &params, &messages);
-        filter.process(&mut io);
+        {
+            let inputs: Vec<Option<&[f32]>> = vec![Some(input)];
+            let outputs: Vec<&mut [f32]> = vec![out_buf.as_mut_slice()];
+            let mut io = Io::new(sample_rate, n, inputs, outputs, &params, &messages);
+            filter.process(&mut io);
+        }
         out_buf
     }
 
@@ -195,14 +196,14 @@ mod tests {
         let half = n / 2;
         {
             let inputs: Vec<Option<&[f32]>> = vec![Some(&input[..half])];
-            let mut outputs: Vec<&mut [f32]> = vec![&mut out_buf[..half]];
-            let mut io = Io::new(sr, half, &inputs, &mut outputs, &params, &messages);
+            let outputs: Vec<&mut [f32]> = vec![&mut out_buf[..half]];
+            let mut io = Io::new(sr, half, inputs, outputs, &params, &messages);
             filter.process(&mut io);
         }
         {
             let inputs: Vec<Option<&[f32]>> = vec![Some(&input[half..])];
-            let mut outputs: Vec<&mut [f32]> = vec![&mut out_buf[half..]];
-            let mut io = Io::new(sr, n - half, &inputs, &mut outputs, &params, &messages);
+            let outputs: Vec<&mut [f32]> = vec![&mut out_buf[half..]];
+            let mut io = Io::new(sr, n - half, inputs, outputs, &params, &messages);
             filter.process(&mut io);
         }
 

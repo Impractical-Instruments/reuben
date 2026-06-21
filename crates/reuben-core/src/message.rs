@@ -63,3 +63,18 @@ impl Message {
         self.args.first().and_then(Arg::as_f32)
     }
 }
+
+/// A routed event handed to an event operator for one (sub)block, via
+/// [`crate::operator::Io::events`]. A zero-copy view onto the originating block
+/// [`Message`]: the address *local* to the receiving node, the typed args, and a
+/// segment-relative frame. The Render loop builds these in place (no allocation),
+/// which is what keeps Render realtime-safe even while delivering events.
+#[derive(Debug, Clone, Copy)]
+pub struct Event<'a> {
+    /// Address local to the receiving node, e.g. `note` for `/voicer/note` under `/voicer`.
+    pub addr: &'a str,
+    /// Typed arguments, borrowed from the source Message.
+    pub args: &'a Args,
+    /// Sample offset within the current (sub)block at which this event applies.
+    pub frame: usize,
+}

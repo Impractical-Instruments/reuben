@@ -4,22 +4,26 @@
 //! (sub)block at a time, and the engine fans it out across Lanes with per-Lane state.
 //! The process function is allocation-free and sees params held constant for the whole
 //! call (the engine block-slices at Message boundaries, ADR-0011), so the author simply
-//! reads "my current value". Event-oriented operators (the Voicer) instead read the raw
-//! Message list via [`Io::messages`].
+//! reads "my current value". Event-oriented operators (the Voicer) instead read the
+//! routed [`Event`] list via [`Io::events`].
+
+use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
-use crate::message::Message;
+use crate::message::Event;
 
 /// The per-call I/O view handed to [`Operator::process`] for one (sub)block of one Lane.
 ///
 /// All slices are exactly [`Io::frames`] samples long. Params are constant for the call.
+/// The port reference lists are collected into inline [`SmallVec`]s, so building an `Io`
+/// allocates nothing for the common low-port-count case (≤4 inputs, ≤2 outputs).
 pub struct Io<'a> {
     sample_rate: f32,
     frames: usize,
-    inputs: &'a [Option<&'a [f32]>],
-    outputs: &'a mut [&'a mut [f32]],
+    inputs: SmallVec<[Option<&'a [f32]>; 4]>,
+    outputs: SmallVec<[&'a mut [f32]; 2]>,
     params: &'a [f32],
-    messages: &'a [Message],
+    events: &'a [Event<'a>],
     lane: usize,
     lanes: usize,
 }
@@ -27,21 +31,28 @@ pub struct Io<'a> {
 impl<'a> Io<'a> {
     /// Internal constructor used by the Render loop. Defaults to a single Lane (lane 0 of
     /// 1); the engine sets the real Lane via [`Io::with_lane`] when replicating.
-    pub(crate) fn new(
+    ///
+    /// `inputs`/`outputs` are taken as iterators so the Render loop can wire ports straight
+    /// from the arena without an intermediate heap allocation.
+    pub(crate) fn new<I, O>(
         sample_rate: f32,
         frames: usize,
-        inputs: &'a [Option<&'a [f32]>],
-        outputs: &'a mut [&'a mut [f32]],
+        inputs: I,
+        outputs: O,
         params: &'a [f32],
-        messages: &'a [Message],
-    ) -> Self {
+        events: &'a [Event<'a>],
+    ) -> Self
+    where
+        I: IntoIterator<Item = Option<&'a [f32]>>,
+        O: IntoIterator<Item = &'a mut [f32]>,
+    {
         Self {
             sample_rate,
             frames,
-            inputs,
-            outputs,
+            inputs: inputs.into_iter().collect(),
+            outputs: outputs.into_iter().collect(),
             params,
-            messages,
+            events,
             lane: 0,
             lanes: 1,
         }
@@ -79,10 +90,10 @@ impl<'a> Io<'a> {
         self.params[slot]
     }
 
-    /// Raw Messages for this (sub)block, frames relative to the segment start.
-    /// Used by event operators such as the Voicer.
-    pub fn messages(&self) -> &[Message] {
-        self.messages
+    /// Routed [`Event`]s for this (sub)block, frames relative to the segment start.
+    /// Used by event operators such as the Voicer. Zero-copy views (no allocation).
+    pub fn events(&self) -> &[Event<'_>] {
+        self.events
     }
 
     /// Which Lane (Voice) this call represents, in `0..lanes()`. Single-Lane operators can

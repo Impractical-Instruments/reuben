@@ -103,21 +103,12 @@ impl Operator for Envelope {
         let decay_step = per_sample_step(io.param(P_DECAY), sample_rate) * (1.0 - sustain);
         let release_step = per_sample_step(io.param(P_RELEASE), sample_rate) * sustain.max(1e-6);
 
-        // Snapshot the inputs so we can take a mutable borrow of the output. Both
-        // are at most `frames` long; an unconnected input reads as silence/gate-off.
-        let audio: Vec<f32> = io
-            .input(IN_AUDIO)
-            .map(|s| s.to_vec())
-            .unwrap_or_else(|| vec![0.0; n]);
-        let gate: Vec<f32> = io
-            .input(IN_GATE)
-            .map(|s| s.to_vec())
-            .unwrap_or_else(|| vec![0.0; n]);
-
-        let out = io.output(OUT_AUDIO);
-
+        // Read each input sample with a short-lived borrow that ends before the output
+        // write, so `process` stays allocation-free. Unconnected inputs read as
+        // silence / gate-off.
         for i in 0..n {
-            let gate_on = gate[i] > 0.5;
+            let gate_on = io.input(IN_GATE).map_or(0.0, |s| s[i]) > 0.5;
+            let audio_in = io.input(IN_AUDIO).map_or(0.0, |s| s[i]);
 
             // Edge detection against the previous sample's held flag.
             if gate_on && !self.held {
@@ -157,7 +148,7 @@ impl Operator for Envelope {
                 }
             }
 
-            out[i] = audio[i] * self.level;
+            io.output(OUT_AUDIO)[i] = audio_in * self.level;
         }
     }
 
@@ -180,9 +171,9 @@ mod tests {
         let n = audio.len();
         let mut out = vec![0.0f32; n];
         {
-            let mut outs: Vec<&mut [f32]> = vec![&mut out[..]];
+            let outs: Vec<&mut [f32]> = vec![&mut out[..]];
             let inputs: Vec<Option<&[f32]>> = vec![Some(audio), Some(gate)];
-            let mut io = Io::new(SR, n, &inputs, &mut outs, params, &[]);
+            let mut io = Io::new(SR, n, inputs, outs, params, &[]);
             env.process(&mut io);
         }
         out
@@ -265,10 +256,10 @@ mod tests {
         let n = 256;
         let mut out = vec![0.0f32; n];
         {
-            let mut outs: Vec<&mut [f32]> = vec![&mut out[..]];
+            let outs: Vec<&mut [f32]> = vec![&mut out[..]];
             // No audio, no gate.
             let inputs: Vec<Option<&[f32]>> = vec![None, None];
-            let mut io = Io::new(SR, n, &inputs, &mut outs, &params, &[]);
+            let mut io = Io::new(SR, n, inputs, outs, &params, &[]);
             Envelope::new().process(&mut io);
         }
         assert!(out.iter().all(|&s| s == 0.0));
