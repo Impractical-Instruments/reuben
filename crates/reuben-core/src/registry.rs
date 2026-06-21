@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 
 use crate::descriptor::Descriptor;
 use crate::operator::Operator;
-use crate::operators::{Clock, Envelope, Filter, Oscillator, Output, Voicer};
+use crate::operators::{Clock, Delay, Envelope, Filter, Oscillator, Output, Voicer};
 
 /// One registered operator type: how to build it, and its self-description.
 pub struct Entry {
@@ -33,7 +33,7 @@ impl Registry {
         Self::default()
     }
 
-    /// The built-in operator set: oscillator, envelope, filter, voicer, output, clock.
+    /// The built-in operator set: oscillator, envelope, filter, voicer, output, clock, delay.
     pub fn builtin() -> Self {
         let mut r = Self::new();
         r.register(|| Box::new(Oscillator::new()), Oscillator::descriptor());
@@ -42,6 +42,7 @@ impl Registry {
         r.register(|| Box::new(Voicer::new()), Voicer::descriptor());
         r.register(|| Box::new(Output::new()), Output::descriptor());
         r.register(|| Box::new(Clock::new()), Clock::descriptor());
+        r.register(|| Box::new(Delay::new()), Delay::descriptor());
         r
     }
 
@@ -79,6 +80,7 @@ mod tests {
             names,
             vec![
                 "clock",
+                "delay",
                 "envelope",
                 "filter",
                 "oscillator",

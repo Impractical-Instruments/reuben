@@ -5,6 +5,7 @@
 //! the rig builder wires against — see each module's descriptor.
 
 pub mod clock;
+pub mod delay;
 pub mod envelope;
 pub mod filter;
 pub mod oscillator;
@@ -12,6 +13,7 @@ pub mod output;
 pub mod voicer;
 
 pub use clock::Clock;
+pub use delay::Delay;
 pub use envelope::Envelope;
 pub use filter::Filter;
 pub use oscillator::Oscillator;
