@@ -96,3 +96,4 @@ The MVP is a headless "it makes a sound" spine: the portable-core / native-crate
 - [0010 — Single-Lane Operators; cross-cutting work above the operator layer](adr/0010-single-lane-operators.md)
 - [0011 — Message delivery and sample-accurate timing](adr/0011-message-delivery-and-timing.md)
 - [0012 — Boundary and threading: single-writer Coordinator, read-only Render](adr/0012-boundary-and-threading.md)
+- [0013 — Tonal-context bus: mechanics (latched context Operator, snap, sample-accurate timing)](adr/0013-tonal-context-bus-mechanics.md)
