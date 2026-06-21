@@ -1,0 +1,154 @@
+# Authoring: Operators, Instruments, Rigs
+
+The grounding doc for building reuben — the concrete code contract behind the conceptual
+narrative in [ARCHITECTURE.md](../ARCHITECTURE.md). Capitalized terms (Operator, Lane,
+Plan…) are defined in [CONTEXT.md](../../CONTEXT.md). The ADRs are the source of truth;
+this doc tells you where the contract lives in code and how to extend it.
+
+## The recursive model
+
+One concept at every scale ([ADR-0003](../adr/0003-recursive-composition.md)): a graph of
+nodes with typed ports.
+
+- **Operator** — the smallest unit of behavior; does one simple thing.
+- **Instrument** — a named subgraph of Operators exposing boundary ports; reusable inside
+  another Instrument *as if it were an Operator*.
+- **Rig** — a full playable system: Instruments wired with routing.
+
+Nesting is an authoring concept only; at runtime everything inlines into one flat graph.
+
+## Two things flow on edges ([ADR-0001](../adr/0001-unified-block-graph-execution.md))
+
+- **Signal** — a continuous audio-rate float buffer, one block per Channel. CV and audio
+  are the same type; there is no separate control-rate signal. (`signal.rs`)
+- **Message** — a discrete, OSC-shaped payload: address path + typed args + sample-accurate
+  timetag. Notes, chords, triggers, gestures, param values, all external I/O. An internal
+  Message and an external OSC packet are the same shape. (`message.rs`)
+
+## The Operator contract (`crates/reuben-core/src/operator.rs`)
+
+Operators are authored **single-Lane** ([ADR-0010](../adr/0010-single-lane-operators.md)):
+you write one mono, single-Voice stream a (sub)block at a time, and the engine fans it out
+across Lanes (Voice × Channel) with per-Lane state. The trait is three methods:
+
+```rust
+pub trait Operator: Send {
+    /// Static self-description (ports + param metadata). Drives serialization,
+    /// connection checking, good-button controls, and AI grounding.
+    fn descriptor() -> Descriptor where Self: Sized;
+
+    /// Process exactly one (sub)block for one Lane. Must not allocate.
+    fn process(&mut self, io: &mut Io);
+
+    /// Fresh-state instance of the same type, for another Voice's Lane.
+    fn spawn(&self) -> Box<dyn Operator>;
+}
+```
+
+- **`descriptor()`** — see below. The single source of an operator's ports and params.
+- **`process(io)`** — the only realtime path. **Allocation-free.** Read inputs/params,
+  write outputs through the `Io` view (`crates/reuben-core/src/operator.rs`):
+  - `io.input(port) -> Option<&[f32]>`, `io.output(port) -> &mut [f32]` — Signal ports,
+    each exactly `io.frames()` long.
+  - `io.param(slot) -> f32` — constant for the whole call (the engine block-slices at
+    Message boundaries, [ADR-0011](../adr/0011-message-delivery-and-timing.md), so you
+    just read "my current value").
+  - `io.events() -> &[Event]` — for event operators (Voicer, Clock): zero-copy views of
+    routed Messages, address local to the node, segment-relative `frame`.
+  - `io.lane()` / `io.lanes()` — most operators ignore these; an *expander* like the
+    Voicer uses them to emit one Voice's output per call.
+- **`spawn()`** — usually `Box::new(Self::new())`. Resets per-Lane state only; the engine
+  applies params separately.
+
+State that must persist across blocks lives on the struct (e.g. an oscillator's phase).
+Hold accumulating phase in `f64` so it doesn't drift over a long session (see `lfo.rs`).
+
+## The Descriptor (`crates/reuben-core/src/descriptor.rs`)
+
+An operator's self-description, separate from `process` — the seat of "good button",
+serialization, connection type-checking, and AI grounding
+([ADR-0004](../adr/0004-ai-authorability-first-class.md)):
+
+```rust
+Descriptor {
+    type_name: "lfo",                 // stable id + default address segment
+    inputs:  vec![],                  // Port::signal(name) | Port::message(name)
+    outputs: vec![Port::signal("out")],
+    params: vec![
+        ParamMeta { name: "rate", min: 0.01, max: 20.0, default: 5.0,
+                    unit: "Hz", curve: Curve::Exponential },
+        // ...
+    ],
+    lanes: LaneRule::Inherit,         // or LaneRule::FromParam(slot) for an expander
+}
+```
+
+- **Ports** are referenced by **name** in the JSON format, not by index — names are the
+  stable contract the rig builder wires against.
+- **`ParamMeta`** carries range, default, unit, and response `Curve` — enough to render a
+  control that can't sound bad and to ground an agent. Index constants (e.g. `P_RATE`) are
+  exported per-operator for `process` to read against.
+- **`LaneRule`** — `Inherit` (Lane count = max of input Lane counts; the default) or
+  `FromParam(slot)` (this operator *expands*, producing that many Lanes; the Voicer is the
+  canonical expander). Read once at Instantiate — it's structural.
+
+## Adding an Operator
+
+1. **Create** `crates/reuben-core/src/operators/<name>.rs` — a struct + `impl Operator`.
+   Export `pub const`s for port/param indices. Follow `lfo.rs` (simplest source op) or
+   `delay.rs` (input + state) as a template.
+2. **Wire the module** in `crates/reuben-core/src/operators/mod.rs`: `pub mod <name>;`
+   and `pub use <name>::<Type>;`.
+3. **Register it** in `crates/reuben-core/src/registry.rs` `Registry::builtin()`:
+   `r.register(|| Box::new(<Type>::new()), <Type>::descriptor());`.
+   The registry maps the `type_name` string (from JSON) to a constructor + descriptor.
+4. **Regenerate the schema** so JSON validation knows the new type/params:
+   ```sh
+   cargo run -p reuben-core --example gen_schema
+   ```
+   Commit the updated `crates/reuben-core/schema/instrument.schema.json`. The
+   `schema_is_in_sync` test fails if it's stale.
+5. **Test** in the operator module, test-first. At minimum cover: output correctness,
+   phase/state continuity across back-to-back blocks (one whole block == two half-blocks
+   sharing the instance), and that a `spawn()`ed copy starts fresh. See `lfo.rs` tests.
+
+Embedders can add their own types without touching the core via `Registry::register` — the
+seam for the "agents author new Operators in Rust" goal ([ADR-0004](../adr/0004-ai-authorability-first-class.md)).
+
+## The Instrument format (`crates/reuben-core/src/format.rs`)
+
+An Instrument is plain JSON data: `nodes` (operator `type` + `address` + optional `params`
+overrides + optional `doc`), `connections` between named ports, and master `outputs`.
+Ports are referenced by name; addresses are OSC paths, unique within the instrument and the
+routing prefix for that node's params (so `/delay/time` sets the `time` param of the node at
+`/delay`). `format::load` resolves types via a `Registry` and returns a `Graph`. Loading is
+an authoring step — it lives in the portable core but never runs on the audio thread. See
+`instruments/*.json` for worked examples.
+
+## Addressing
+
+Every node has an OSC **address**, derived from graph structure by default. A Message
+targets a node by address prefix; the local remainder becomes the `Event` address (e.g.
+`/voicer/note` under node `/voicer` arrives as event `note`). Full wildcard dispatch
+(`/drums/*/decay` hitting many nodes at once) is designed but not built yet — today a
+Message targets at most one node ([ADR-0005](../adr/0005-osc-namespace-and-wildcards.md)).
+
+## Invariants you must not break
+
+- **Determinism** — output is bit-identical regardless of executor or thread interleaving
+  ([ADR-0001](../adr/0001-unified-block-graph-execution.md)). No wall-clock, no RNG without
+  a seeded, plan-owned source.
+- **RT-safe Render** — `render_block` is allocation-free after warmup, asserted by
+  `crates/reuben-core/tests/rt_safe.rs`. `process` must not allocate, lock, or block. All
+  scratch is preallocated and reused; routed events are zero-copy.
+- **OSC-only core** — the core speaks only OSC-shaped Messages. MIDI, Ableton Link, tempo
+  sync, etc. are removable boundary adapters that convert to/from OSC in the native layer
+  ([ADR-0007](../adr/0007-osc-only-core.md)).
+- **Single-writer boundary** — the Coordinator is the only writer of graph structure;
+  Render only ever reads an immutable Plan
+  ([ADR-0012](../adr/0012-boundary-and-threading.md)).
+
+## ADR index
+
+The decisions and reasoning behind all of the above live in [docs/adr/](../adr/) — start
+there when a contract's *why* is unclear.

@@ -39,7 +39,12 @@ Each phase lists the open-design threads it forces (see [OPEN-QUESTIONS.md](docs
 
 ### V1.1 — Operators for music
 
-- **More operators** — sequencer (drives the Clock's beat grid), sample player, LFO/mod source, delay + reverb meta-effects. Toys are assembled from these. *(Forces: Operator-authoring contract is now concrete from the MVP; this is mostly mechanical, parallelizable.)*
+- **More operators** — Toys are assembled from these. *(Operator-authoring contract is now concrete — see [docs/agents/authoring.md](docs/agents/authoring.md); the rest is mostly mechanical, parallelizable.)*
+  - ✅ **delay** — feedback echo (`/delay/{time,feedback,mix}`, `instruments/echo.json`).
+  - ✅ **reverb** — mono Freeverb (`/reverb/{room,damp,mix}`, `instruments/reverb.json`).
+  - ✅ **LFO / mod source** — sine modulation on the sample timeline (`/lfo/{rate,depth,center}`, `instruments/vibrato.json`).
+  - **Sequencer** — drives the Clock's beat grid. *(Remaining.)*
+  - **Sample player.** *(Remaining.)*
 - **Tonal-context / harmony bus** (ADR-0008) — scale broadcast + snap-to-scale + chord-progression publishing; followers (arp, voicing, melody) subscribe. Makes "always in key" mechanical, not hope. *(Mechanics grilled — see [ADR-0013](docs/adr/0013-tonal-context-bus-mechanics.md) + [worked examples](docs/tonal-context-examples.md); ready to build.)*
 
 ### V1.2 — Playable surface
