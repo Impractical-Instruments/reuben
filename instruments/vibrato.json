@@ -1,0 +1,16 @@
+{
+  "instrument": "vibrato",
+  "doc": "A self-playing vibrato drone. An LFO sweeps the oscillator's freq around 440 Hz, so it sounds the moment you run it — no input needed. Nudge it live over OSC: /lfo/rate (sweep speed, Hz), /lfo/depth (vibrato width), /lfo/center (the pitch it swings around).",
+  "nodes": [
+    { "type": "lfo", "address": "/lfo", "doc": "Sine modulation of the oscillator freq.", "params": { "rate": 5.0, "depth": 10.0, "center": 440.0 } },
+    { "type": "oscillator", "address": "/osc", "doc": "Drone tone, freq driven by the LFO." },
+    { "type": "output", "address": "/out" }
+  ],
+  "connections": [
+    { "from": { "node": "/lfo", "port": "out" }, "to": { "node": "/osc", "port": "freq" } },
+    { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/out", "port": "audio" } }
+  ],
+  "outputs": [
+    { "node": "/out", "port": "audio" }
+  ]
+}
