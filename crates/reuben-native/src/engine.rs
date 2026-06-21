@@ -3,12 +3,15 @@
 //! A cpal callback asks for an arbitrary number of frames at unpredictable times; the
 //! core [`Renderer`] produces exactly `block_size` samples per call. [`Engine`] owns the
 //! Plan + Renderer and a small scratch block, rendering a fresh block whenever the
-//! scratch is drained. Incoming Messages are queued and applied at the start of the next
-//! rendered block (block-quantized timing for now; sample-accurate timetags later).
+//! scratch is drained. Incoming external Messages are queued and applied at the start of
+//! the next rendered block — **block-quantized by design**: their UDP arrival jitter
+//! dwarfs sample resolution, so a finer frame would be fake precision (see [`crate::osc`]).
+//! Sample-accurate timing comes from inside the graph (the Clock), not from this queue.
 //!
-//! NOTE (RT-debt): [`Renderer::render_block`] still allocates per block, so [`Engine::fill`]
-//! is not yet allocation-free in the audio thread. Good enough to play; a lock-free,
-//! preallocated pass is tracked for later.
+//! NOTE (RT-debt): [`Renderer::render_block`] is allocation-free, but [`Engine::fill`]'s
+//! message handoff (the `pending` Vec) still churns the heap when messages flow, so the
+//! audio callback isn't fully allocation-free yet. A lock-free, preallocated handoff is
+//! tracked for later.
 
 use reuben_core::message::Message;
 use reuben_core::plan::Plan;

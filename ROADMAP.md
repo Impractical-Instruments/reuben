@@ -33,9 +33,9 @@ Each phase lists the open-design threads it forces (see [OPEN-QUESTIONS.md](docs
 
 ### V1.0 — Engine hardening (only what the rest of v1 leans on)
 
-- **RT-safe Render** — eliminate per-block allocation; pre-size all buffers at Instantiate. The architecture's allocation-free Render target; a latent glitch source today.
-- **Sample-accurate OSC timing** — wire real frame offsets from arrival time into `Message.frame` (currently always 0). The block-slicing contract (ADR-0011) is already built; this feeds it real data. Required before clock/groove feel tight.
-- **Clock + musical time** (ADR-0006) — transport, tempo, beat grid. Groove box and sequencers depend on it. *(Forces: nothing new — ADR-0006 settled in principle.)*
+- ✅ **RT-safe Render** — edge-buffer arena + all per-block scratch preallocated and reused; zero-copy events. `render_block` is allocation-free after warmup (asserted by `tests/rt_safe.rs`).
+- **External OSC timing is block-quantized by design** — *not* a task. Reconstructing a sub-block `frame` from a UDP datagram's arrival time is fake precision: arrival jitter already dwarfs sample resolution. Sample-accuracy is an internal property delivered by the Clock below; external messages apply at the next block boundary (see `crates/reuben-native/src/osc.rs`).
+- **Clock + musical time** (ADR-0006) — the home of sample-accurate timing: a sample timeline + tempo + beat grid, with internally-generated events landing on exact samples. First slice: a `Clock` operator (sample-accurate beat phasor at `tempo`, with a beat gate, honoring a `reset` event). Groove box and sequencers build on it. *(Forces: nothing new — ADR-0006 settled in principle.)*
 
 ### V1.1 — Operators for music
 
