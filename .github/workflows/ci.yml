@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    # `ready_for_review` so converting a draft to ready triggers a run.
+    types: [opened, synchronize, reopened, ready_for_review]
+
+# Cancel superseded runs on the same ref so the latest push wins and minutes aren't wasted.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: fmt + clippy + test
+    runs-on: ubuntu-latest
+    # Skip draft PRs; always run on push to main (which has no pull_request payload).
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0 # faster, smaller cache on CI's cold builds
+      RUSTFLAGS: -D warnings
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust (stable, with rustfmt + clippy)
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Format
+        run: cargo fmt --all --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace
