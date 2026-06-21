@@ -9,8 +9,22 @@
 
 use smallvec::SmallVec;
 
+use crate::context::Context;
 use crate::descriptor::Descriptor;
 use crate::message::{Arg, Emit, Event};
+
+/// A tonal-[`Context`] snapshot an operator publishes during `process` onto a Context output
+/// port (ADR-0015), before the engine routes it to downstream readers' context slices.
+/// Sibling of [`Emit`]; `ctx` is `Copy`, so the engine snapshots it allocation-free.
+#[derive(Debug, Clone, Copy)]
+pub struct CtxPublish {
+    /// Context-output ordinal (separate index space from Signal/Message outputs).
+    pub port: usize,
+    /// Sample offset within the block. Segment-relative when the operator calls
+    /// `publish_context`; the engine stamps it block-absolute.
+    pub frame: usize,
+    pub ctx: Context,
+}
 
 /// The per-call I/O view handed to [`Operator::process`] for one (sub)block of one Lane.
 ///
@@ -29,8 +43,15 @@ pub struct Io<'a> {
     /// Sink for Messages this call emits (ADR-0014), or `None` when this Lane does not
     /// collect emissions. Only Lane 0 collects — emission is single-Lane (pre-fan-out).
     emit: Option<&'a mut Vec<Emit>>,
-    /// Block-absolute frame of this (sub)block's start, added to an emitted frame so the
-    /// operator can work in segment-relative time.
+    /// Resolved tonal [`Context`] for each Context **input** port this segment (ADR-0015),
+    /// in context-input ordinal order. Constant for the call (the engine slices at context
+    /// changes). Empty for operators with no Context inputs; borrowed from the Render loop.
+    contexts: &'a [Context],
+    /// Sink for Context snapshots this call publishes (ADR-0015), or `None` when this Lane
+    /// does not publish. Like `emit`, single-Lane (the context node is pre-fan-out).
+    ctx_publish: Option<&'a mut Vec<CtxPublish>>,
+    /// Block-absolute frame of this (sub)block's start, added to an emitted/published frame
+    /// so the operator can work in segment-relative time.
     frame_offset: usize,
 }
 
@@ -62,6 +83,8 @@ impl<'a> Io<'a> {
             lane: 0,
             lanes: 1,
             emit: None,
+            contexts: &[],
+            ctx_publish: None,
             frame_offset: 0,
         }
     }
@@ -77,6 +100,24 @@ impl<'a> Io<'a> {
     /// [`Io::emit`] are collected into `buf` with `frame_offset` added.
     pub(crate) fn with_emit(mut self, buf: &'a mut Vec<Emit>, frame_offset: usize) -> Self {
         self.emit = Some(buf);
+        self.frame_offset = frame_offset;
+        self
+    }
+
+    /// Set the resolved Context for each Context input port this segment (ADR-0015).
+    pub(crate) fn with_contexts(mut self, contexts: &'a [Context]) -> Self {
+        self.contexts = contexts;
+        self
+    }
+
+    /// Attach the context-publish sink and segment frame offset (Lane 0 only). Snapshots
+    /// passed to [`Io::publish_context`] are collected into `buf` with `frame_offset` added.
+    pub(crate) fn with_context_publish(
+        mut self,
+        buf: &'a mut Vec<CtxPublish>,
+        frame_offset: usize,
+    ) -> Self {
+        self.ctx_publish = Some(buf);
         self.frame_offset = frame_offset;
         self
     }
@@ -132,6 +173,25 @@ impl<'a> Io<'a> {
                 args: args.into_iter().collect(),
                 frame,
             });
+        }
+    }
+
+    /// The current tonal [`Context`] on Context input `port` (ADR-0015) — the latched
+    /// "what's the key/chord right now", constant for this (sub)block. Returns the default
+    /// (C major, 12-TET) when `port` is unconnected, so a degree resolves identically to the
+    /// prior 12-TET behavior in a rig with no context node.
+    pub fn context(&self, port: usize) -> Context {
+        self.contexts.get(port).copied().unwrap_or_default()
+    }
+
+    /// Publish a tonal [`Context`] snapshot onto Context output `port` at segment-relative
+    /// `frame` (ADR-0015). The engine latches it (shared, persistent across blocks) and
+    /// re-slices downstream readers at `frame`, so a chord/key change is sample-accurate on
+    /// the same timeline as notes. A no-op on Lanes that do not publish (every Lane but 0).
+    pub fn publish_context(&mut self, port: usize, frame: usize, ctx: Context) {
+        let frame = self.frame_offset + frame;
+        if let Some(buf) = self.ctx_publish.as_mut() {
+            buf.push(CtxPublish { port, frame, ctx });
         }
     }
 

@@ -12,6 +12,10 @@ pub enum PortKind {
     Signal,
     /// Discrete [`crate::message::Message`] stream.
     Message,
+    /// Latched tonal [`crate::context::Context`] — a struct-valued read service over the
+    /// Message wire (ADR-0015): a context node publishes it; followers read "the current
+    /// value". Carries no Signal buffer; the value rides a dedicated context arena.
+    Context,
 }
 
 /// A named input or output port.
@@ -32,6 +36,12 @@ impl Port {
         Self {
             name,
             kind: PortKind::Message,
+        }
+    }
+    pub const fn context(name: &'static str) -> Self {
+        Self {
+            name,
+            kind: PortKind::Context,
         }
     }
 }

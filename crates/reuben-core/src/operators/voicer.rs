@@ -9,13 +9,18 @@
 //! replace it later.)
 //!
 //! - input 0: `notes` (Message) — note events arrive by address routing, read via
-//!   [`Io::events`]; this port is documentary (no Signal edge).
+//!   [`Io::events`]; this port is documentary (no Signal edge). Accepts both **absolute**
+//!   notes (`note [midi, vel]`) and **degree** notes (`degree [degree, vel]`); a degree is
+//!   resolved to Hz through the tonal context, so the line re-spells live on a key/scale
+//!   change (ADR-0008 amendment, ADR-0015).
+//! - input 1: `ctx` (Context) — the tonal context degree notes resolve against. Unconnected
+//!   → the default (C major, 12-TET), so absolute-note rigs are unchanged.
 //! - output 0: `freq` (Signal) — resolved frequency in Hz of this Voice's note.
 //! - output 1: `gate` (Signal) — 1.0 while this Voice holds a note, else 0.0.
 //! - param 0: `voices` — Voice-pool size (structural; read at Instantiate).
 //!
-//! Note event: local address `note`, arg 0 = float MIDI note, arg 1 = velocity
-//! (0 = note-off).
+//! Note event: local address `note` (arg 0 = float MIDI) or `degree` (arg 0 = scale degree),
+//! arg 1 = velocity (0 = note-off).
 
 use smallvec::SmallVec;
 
@@ -23,32 +28,44 @@ use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
 use crate::message::Arg;
 use crate::operator::{Io, Operator};
 use crate::pitch::Pitch;
-use crate::tuning::{Tuning, TwelveTet};
 
 pub const IN_NOTES: usize = 0;
+/// Context-input ordinal of the `ctx` port (the index [`Io::context`] uses — a separate
+/// index space from Signal/Message inputs, so the only Context input is ordinal 0).
+pub const IN_CTX: usize = 0;
 pub const OUT_FREQ: usize = 0;
 pub const OUT_GATE: usize = 1;
 pub const P_VOICES: usize = 0;
 
+/// Do two pitches denote the same note for note-off matching? Degrees match by degree;
+/// absolute notes by MIDI. (A degree and an absolute never match — distinct identities.)
+fn same_note(a: Pitch, b: Pitch) -> bool {
+    match (a.degree, b.degree) {
+        (Some(x), Some(y)) => x == y,
+        (None, None) => a.midi == b.midi,
+        _ => false,
+    }
+}
+
 /// One slot in the Voice pool.
 #[derive(Clone, Copy)]
 struct Voice {
-    /// MIDI note this Voice was assigned (for note-off matching).
-    midi: f32,
+    /// Symbolic pitch this Voice holds — a degree (resolved through the context, re-spells
+    /// live) or an absolute MIDI note. Frequency is derived from it each block via the
+    /// current context, never stored, so a key/scale change moves a held note's Hz.
+    pitch: Pitch,
     /// Whether the Voice is currently holding a note.
     on: bool,
-    /// Resolved frequency in Hz (held through release).
-    freq: f32,
     /// Assignment stamp; higher = more recently assigned (for steal-oldest).
     age: u64,
 }
 
 impl Default for Voice {
     fn default() -> Self {
+        // Idle pitch = A4, so an unplayed Voice reads 440 Hz (the prior default).
         Self {
-            midi: 0.0,
+            pitch: Pitch::from_midi(69.0),
             on: false,
-            freq: 440.0,
             age: 0,
         }
     }
@@ -56,7 +73,6 @@ impl Default for Voice {
 
 #[derive(Default)]
 pub struct Voicer {
-    tuning: TwelveTet,
     /// The global Voice pool, sized to the Lane count. Every replica keeps an identical
     /// copy (same events + same algorithm), and emits only its own Lane's Voice.
     voices: Vec<Voice>,
@@ -69,8 +85,8 @@ impl Voicer {
         Self::default()
     }
 
-    /// Assign `midi` to a Voice: a free one (lowest index), else steal the oldest.
-    fn assign(&mut self, midi: f32) {
+    /// Assign `pitch` to a Voice: a free one (lowest index), else steal the oldest.
+    fn assign(&mut self, pitch: Pitch) {
         let idx = self.voices.iter().position(|v| !v.on).unwrap_or_else(|| {
             self.voices
                 .iter()
@@ -81,20 +97,19 @@ impl Voicer {
         });
         self.counter += 1;
         self.voices[idx] = Voice {
-            midi,
+            pitch,
             on: true,
-            freq: self.tuning.hz(Pitch::from_midi(midi)),
             age: self.counter,
         };
     }
 
-    /// Release the oldest Voice currently holding `midi`, if any.
-    fn release(&mut self, midi: f32) {
+    /// Release the oldest Voice currently holding `pitch`, if any.
+    fn release(&mut self, pitch: Pitch) {
         if let Some(idx) = self
             .voices
             .iter()
             .enumerate()
-            .filter(|(_, v)| v.on && v.midi == midi)
+            .filter(|(_, v)| v.on && same_note(v.pitch, pitch))
             .min_by_key(|(_, v)| v.age)
             .map(|(i, _)| i)
         {
@@ -107,7 +122,7 @@ impl Operator for Voicer {
     fn descriptor() -> Descriptor {
         Descriptor {
             type_name: "voicer",
-            inputs: vec![Port::message("notes")],
+            inputs: vec![Port::message("notes"), Port::context("ctx")],
             outputs: vec![Port::signal("freq"), Port::signal("gate")],
             params: vec![ParamMeta {
                 name: "voices",
@@ -125,6 +140,9 @@ impl Operator for Voicer {
         let n = io.frames();
         let lanes = io.lanes().max(1);
         let me = io.lane().min(lanes - 1);
+        // Current context (constant this segment; the engine slices at context changes, so a
+        // held degree re-spells at the change frame). Default when unconnected.
+        let ctx = io.context(IN_CTX);
 
         // Size the pool to the Lane count (identical across replicas).
         if self.voices.len() != lanes {
@@ -132,37 +150,48 @@ impl Operator for Voicer {
         }
 
         // Snapshot note events for this (sub)block, sorted by frame. (Can't read
-        // `io.events()` while an output borrow is live, so snapshot first.)
-        let mut events: SmallVec<[(usize, f32, bool); 8]> = SmallVec::new();
+        // `io.events()` while an output borrow is live, so snapshot first.) An `note` event
+        // is absolute; a `degree` event is context-relative.
+        let mut events: SmallVec<[(usize, bool, Pitch); 8]> = SmallVec::new();
         for ev in io.events() {
-            if ev.addr != "note" {
-                continue;
-            }
+            let degree = match ev.addr {
+                "note" => false,
+                "degree" => true,
+                _ => continue,
+            };
             let frame = ev.frame.min(n);
-            let midi = match ev.args.first().and_then(Arg::as_f32) {
+            let v0 = match ev.args.first().and_then(Arg::as_f32) {
                 Some(v) => v,
                 None => continue,
             };
             let on = ev.args.get(1).and_then(Arg::as_f32).unwrap_or(0.0) > 0.0;
-            events.push((frame, midi, on));
+            let pitch = if degree {
+                Pitch::from_degree(v0.round() as i32)
+            } else {
+                Pitch::from_midi(v0)
+            };
+            events.push((frame, on, pitch));
         }
         events.sort_by_key(|e| e.0);
 
-        // Run the global allocation, recording only THIS Lane's change-points.
-        let mut cur_freq = self.voices[me].freq;
+        // Run the global allocation, recording only THIS Lane's change-points. Frequency is
+        // resolved through the context, so a re-spell (context changed across segments) shows
+        // up as the new frame-0 value.
+        let mut cur_freq = ctx.hz(self.voices[me].pitch);
         let mut cur_gate = self.voices[me].on;
         let mut changes: SmallVec<[(usize, f32, bool); 8]> = SmallVec::new();
         let (mut last_freq, mut last_gate) = (cur_freq, cur_gate);
-        for &(frame, midi, on) in &events {
+        for &(frame, on, pitch) in &events {
             if on {
-                self.assign(midi);
+                self.assign(pitch);
             } else {
-                self.release(midi);
+                self.release(pitch);
             }
             let v = self.voices[me];
-            if v.freq != last_freq || v.on != last_gate {
-                changes.push((frame, v.freq, v.on));
-                last_freq = v.freq;
+            let f = ctx.hz(v.pitch);
+            if f != last_freq || v.on != last_gate {
+                changes.push((frame, f, v.on));
+                last_freq = f;
                 last_gate = v.on;
             }
         }
@@ -200,15 +229,17 @@ impl Operator for Voicer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::context::Context;
     use crate::message::{Event, Message};
     use crate::operator::Io;
 
-    /// Run one Voicer Lane over a block; returns its (freq, gate) buffers.
-    fn run_lane(
+    /// Run one Voicer Lane over a block against `ctx`; returns its (freq, gate) buffers.
+    fn run_lane_ctx(
         v: &mut Voicer,
         n: usize,
         lanes: usize,
         lane: usize,
+        ctx: Context,
         events: &[Message],
     ) -> (Vec<f32>, Vec<f32>) {
         let mut f = vec![0.0f32; n];
@@ -222,13 +253,26 @@ mod tests {
                 frame: m.frame,
             })
             .collect();
+        let ctxs = [ctx];
         {
             let outs: Vec<&mut [f32]> = vec![&mut f[..], &mut gt[..]];
             let inputs: Vec<Option<&[f32]>> = vec![None];
-            let mut io = Io::new(48_000.0, n, inputs, outs, &[], &evs).with_lane(lane, lanes);
+            let mut io = Io::new(48_000.0, n, inputs, outs, &[], &evs)
+                .with_lane(lane, lanes)
+                .with_contexts(&ctxs);
             v.process(&mut io);
         }
         (f, gt)
+    }
+
+    fn run_lane(
+        v: &mut Voicer,
+        n: usize,
+        lanes: usize,
+        lane: usize,
+        events: &[Message],
+    ) -> (Vec<f32>, Vec<f32>) {
+        run_lane_ctx(v, n, lanes, lane, Context::default(), events)
     }
 
     /// Mono convenience (single Voice).
@@ -237,7 +281,7 @@ mod tests {
     }
 
     fn hz(midi: f32) -> f32 {
-        TwelveTet::default().hz(Pitch::from_midi(midi))
+        Context::default().hz(Pitch::from_midi(midi))
     }
 
     // --- monophonic behavior (Lane count 1) ---
@@ -363,6 +407,47 @@ mod tests {
         // Voice 1 turns on at its note-on (frame 10) and stays on.
         assert!(out[1].1[..10].iter().all(|&g| g == 0.0));
         assert!(out[1].1[10..].iter().all(|&g| g == 1.0));
+    }
+
+    // --- degree resolution through the tonal context ---
+
+    #[test]
+    fn degree_note_resolves_through_context() {
+        // Degree 4 in C major → G (MIDI 67).
+        let n = 64;
+        let mut v = Voicer::new();
+        let events = vec![Message::new(
+            "degree",
+            [Arg::Float(4.0), Arg::Float(1.0)],
+            0,
+        )];
+        let (f, gt) = run(&mut v, n, &events);
+        approx::assert_relative_eq!(f[n - 1], hz(67.0), epsilon = 1e-2);
+        assert!(gt.iter().all(|&g| g == 1.0));
+    }
+
+    #[test]
+    fn held_degree_respells_when_context_changes() {
+        // Hold degree 2. In C major it is E (64); switch the scale to C minor and the *same
+        // held degree* re-spells to E♭ (63) on the next block — no new note needed.
+        let n = 64;
+        let mut v = Voicer::new();
+        let on = vec![Message::new(
+            "degree",
+            [Arg::Float(2.0), Arg::Float(1.0)],
+            0,
+        )];
+        let c_major = Context::default();
+        let (f1, _) = run_lane_ctx(&mut v, n, 1, 0, c_major, &on);
+        approx::assert_relative_eq!(f1[n - 1], hz(64.0), epsilon = 1e-2); // E
+
+        let c_minor = Context {
+            scale: crate::context::ScaleField::new(&[0, 2, 3, 5, 7, 8, 10]),
+            ..Context::default()
+        };
+        let (f2, gt2) = run_lane_ctx(&mut v, n, 1, 0, c_minor, &[]); // no new events
+        approx::assert_relative_eq!(f2[n - 1], hz(63.0), epsilon = 1e-2); // E♭ — re-spelled
+        assert!(gt2.iter().all(|&g| g == 1.0), "still held");
     }
 
     #[test]

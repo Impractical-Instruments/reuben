@@ -5,6 +5,7 @@
 //! the rig builder wires against — see each module's descriptor.
 
 pub mod clock;
+pub mod context;
 pub mod delay;
 pub mod envelope;
 pub mod filter;
@@ -13,9 +14,11 @@ pub mod oscillator;
 pub mod output;
 pub mod reverb;
 pub mod sequencer;
+pub mod snap;
 pub mod voicer;
 
 pub use clock::Clock;
+pub use context::ContextOp;
 pub use delay::Delay;
 pub use envelope::Envelope;
 pub use filter::Filter;
@@ -24,4 +27,5 @@ pub use oscillator::Oscillator;
 pub use output::Output;
 pub use reverb::Reverb;
 pub use sequencer::Sequencer;
+pub use snap::Snap;
 pub use voicer::Voicer;

@@ -53,9 +53,13 @@ cargo run -p reuben-native --bin reuben -- instruments/<name>.json
 | `echo`       | needs OSC notes   | The synth with a feedback delay. Tweak `/delay/{time,feedback,mix}`. |
 | `vibrato`    | **yes**           | Self-playing drone; an LFO sweeps the pitch. Tweak `/lfo/{rate,depth,center}`. |
 | `reverb`     | needs OSC notes   | The synth with a mono Freeverb. Tweak `/reverb/{room,damp,mix}`.   |
+| `sequence`   | **yes**           | A clock-driven step melody; the sequencer walks an 8-step degree pattern into the synth. `/sequencer/step1`..`step8`, `/sequencer/length`, `/clock/tempo`. |
+| `scale-demo` | **yes**           | `sequence` resolved through a tonal context set to C minor — the same degree pattern re-spells live. Change key with `/context/root`, reshape with `/context/s0`..`s6`. |
+| `autotune`   | needs OSC notes   | Play any pitch at `/snap/note [midi, gate]`; it snaps to the nearest scale tone. Set the key on `/context`, snap mode on `/snap/{target,direction}`. |
 
-`metronome` and `vibrato` make sound immediately — good for a first run with no OSC
-sender. Every node's params are live over OSC at its address (e.g. `/delay/time`).
+`metronome`, `vibrato`, `sequence`, and `scale-demo` make sound immediately — good for a
+first run with no OSC sender. Every node's params are live over OSC at its address (e.g.
+`/delay/time`).
 
 Write your own rig and load it the same way; documents are validated against a JSON
 Schema generated from the operators (`crates/reuben-core/schema/instrument.schema.json`).

@@ -21,8 +21,9 @@
 
 use smallvec::SmallVec;
 
+use crate::context::Context;
 use crate::message::{Emit, Event, Message};
-use crate::operator::Io;
+use crate::operator::{CtxPublish, Io};
 use crate::plan::{Plan, PlanNode};
 
 /// Decides the order in which nodes are processed for a block.
@@ -69,6 +70,18 @@ pub struct Renderer<E: Executor = SerialExecutor> {
     emitted: Vec<Emit>,
     /// One node's emissions for the current node, drained into `emitted` after it runs.
     emit_scratch: Vec<Emit>,
+    /// Persistent latched context per slot (ADR-0015): the value a follower reads at frame 0,
+    /// carried across blocks. One per Context output port; init to the default context.
+    context_arena: Vec<Context>,
+    /// Block-lifetime pool of published context snapshots. Reader slices index it; grown
+    /// once, cleared per block.
+    context_pool: Vec<Context>,
+    /// One node's context publishes for the current node, drained after it runs.
+    ctx_publish_scratch: Vec<CtxPublish>,
+    /// Deferred per-slot baseline update: the `context_pool` index of this block's last
+    /// publish to each slot, applied to `context_arena` at block end so pre-change segments
+    /// still read the prior value. `usize::MAX` = no publish this block.
+    ctx_pending: Vec<usize>,
     /// Per-node block-slice boundaries scratch. Cleared per node — capacity retained.
     bounds: Vec<usize>,
     /// Execution order for the block, refilled by the executor into reused capacity.
@@ -112,6 +125,10 @@ impl<E: Executor> Renderer<E> {
             routes,
             emitted: Vec::with_capacity(EMIT_POOL_CAP),
             emit_scratch: Vec::with_capacity(EMIT_POOL_CAP),
+            context_arena: vec![Context::default(); plan.num_context_slots],
+            context_pool: Vec::with_capacity(EMIT_POOL_CAP),
+            ctx_publish_scratch: Vec::with_capacity(EMIT_POOL_CAP),
+            ctx_pending: vec![usize::MAX; plan.num_context_slots],
             bounds,
             order,
             executor,
@@ -133,6 +150,7 @@ impl<E: Executor> Renderer<E> {
         // scratch. Operator-emitted messages are routed later, interleaved with execution.
         route_messages(&mut self.routes, plan, messages);
         self.emitted.clear();
+        self.context_pool.clear();
 
         // Executor decides node order for the block (into reused capacity).
         self.executor.order(plan, &mut self.order);
@@ -148,6 +166,10 @@ impl<E: Executor> Renderer<E> {
             routes,
             emitted,
             emit_scratch,
+            context_arena,
+            context_pool,
+            ctx_publish_scratch,
+            ctx_pending,
             bounds,
             order,
             ..
@@ -155,6 +177,7 @@ impl<E: Executor> Renderer<E> {
 
         for &i in order.iter() {
             emit_scratch.clear();
+            ctx_publish_scratch.clear();
             process_node(
                 arena,
                 out_scratch,
@@ -164,6 +187,9 @@ impl<E: Executor> Renderer<E> {
                 messages,
                 emitted,
                 emit_scratch,
+                context_arena,
+                context_pool,
+                ctx_publish_scratch,
                 sample_rate,
                 block_size,
             );
@@ -180,6 +206,29 @@ impl<E: Executor> Renderer<E> {
                     });
                 }
                 emitted.push(e);
+            }
+
+            // Route this node's context publishes (ADR-0015): snapshot into the block pool,
+            // record a (frame, slot, pool_idx) reader-slice for every downstream reader, and
+            // remember the last publish per slot for the deferred baseline update.
+            for cp in ctx_publish_scratch.drain(..) {
+                let slot = plan.nodes[i].context_outputs[cp.port];
+                let pool_idx = context_pool.len();
+                context_pool.push(cp.ctx);
+                for &dst in &plan.nodes[i].ctx_targets[cp.port] {
+                    routes[dst].context.push((cp.frame, slot, pool_idx));
+                }
+                ctx_pending[slot] = pool_idx;
+            }
+        }
+
+        // Deferred baseline: a slot's persistent value becomes this block's last publish, so
+        // next block's frame-0 readers see it — while this block's pre-change segments still
+        // read the prior value (they consult the pool, not the baseline, past a publish).
+        for (slot, p) in ctx_pending.iter_mut().enumerate() {
+            if *p != usize::MAX {
+                context_arena[slot] = context_pool[*p];
+                *p = usize::MAX;
             }
         }
 
@@ -220,6 +269,10 @@ struct NodeRoute {
     params: Vec<(usize, usize, f32)>,
     /// Routed events (by reference into the block's Messages) — for event operators.
     events: Vec<RoutedEvent>,
+    /// (frame, context slot, pool index) — a context change a follower reads; each frame
+    /// also becomes a slice boundary (ADR-0015). Filled by the publish drain, not by
+    /// `route_messages`.
+    context: Vec<(usize, usize, usize)>,
 }
 
 /// Match each message to a node by address prefix, then classify param vs event.
@@ -232,6 +285,7 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
     for r in routes.iter_mut() {
         r.params.clear();
         r.events.clear();
+        r.context.clear();
     }
 
     for (mi, msg) in messages.iter().enumerate() {
@@ -288,20 +342,31 @@ fn process_node(
     messages: &[Message],
     emitted: &[Emit],
     emit_scratch: &mut Vec<Emit>,
+    context_arena: &[Context],
+    context_pool: &[Context],
+    ctx_publish_scratch: &mut Vec<CtxPublish>,
     sample_rate: f32,
     block_size: usize,
 ) {
     let params = &route.params;
 
-    // Segment boundaries: 0, every interior param frame, block_size. Shared across Lanes.
+    // Segment boundaries: 0, block_size, every interior param frame, every interior context
+    // change frame (ADR-0015 — so a chord/key change splits the block and the follower reads
+    // the right context per segment). Sort + dedup since param and context frames interleave.
     bounds.clear();
     bounds.push(0);
+    bounds.push(block_size);
     for &(f, _, _) in params {
         if f > 0 && f < block_size {
             bounds.push(f);
         }
     }
-    bounds.push(block_size);
+    for &(f, _, _) in &route.context {
+        if f > 0 && f < block_size {
+            bounds.push(f);
+        }
+    }
+    bounds.sort_unstable();
     bounds.dedup();
 
     // Swap this node's output buffers out of the arena into `out_scratch` (disjoint from
@@ -325,6 +390,33 @@ fn process_node(
             if f == seg_start {
                 node.params[slot] = v;
             }
+        }
+
+        // Resolve the Context for each Context input port at this segment's start (ADR-0015):
+        // the latest publish with frame ≤ seg_start (last-write-wins on equal frames), else
+        // the persistent baseline. Constant across the segment and across Lanes.
+        let mut seg_contexts: SmallVec<[Context; 2]> = SmallVec::new();
+        for &slot_opt in &node.context_inputs {
+            let ctx = match slot_opt {
+                None => Context::default(),
+                Some(slot) => {
+                    let mut best: Option<(usize, usize)> = None; // (frame, pool_idx)
+                    for &(f, s, pidx) in &route.context {
+                        if s == slot && f <= seg_start {
+                            let take =
+                                best.is_none_or(|(bf, bi)| f > bf || (f == bf && pidx >= bi));
+                            if take {
+                                best = Some((f, pidx));
+                            }
+                        }
+                    }
+                    match best {
+                        Some((_, pidx)) => context_pool[pidx],
+                        None => context_arena[slot],
+                    }
+                }
+            };
+            seg_contexts.push(ctx);
         }
 
         // Events whose frame falls in this segment, as zero-copy views with
@@ -376,11 +468,14 @@ fn process_node(
                 &node.params,
                 &seg_events,
             )
-            .with_lane(lane, node.lanes);
-            // Lane 0 collects emissions; emitted frames are stamped block-absolute by
-            // adding this segment's start (ADR-0014). Other Lanes do not emit.
+            .with_lane(lane, node.lanes)
+            .with_contexts(&seg_contexts);
+            // Lane 0 collects emissions and context publishes; their frames are stamped
+            // block-absolute by adding this segment's start (ADR-0014, ADR-0015). Other Lanes
+            // neither emit nor publish (single-Lane, pre-fan-out).
             let mut io = if lane == 0 {
                 io.with_emit(&mut *emit_scratch, seg_start)
+                    .with_context_publish(&mut *ctx_publish_scratch, seg_start)
             } else {
                 io
             };
