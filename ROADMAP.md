@@ -12,32 +12,63 @@ Living priority buckets. Maintained during design sessions. An item moves down a
 
 ---
 
-## Now (MVP / spike) — headless "it makes a sound" spine
+## Now (MVP / spike) — headless "it makes a sound" spine — ✅ DONE
 
-Goal: exercise the whole spine end-to-end as cheaply as possible, then get out of the way for UX/Toy work. Drive it from TouchOSC (stand-in GUI) and Max (test harness) over OSC — no GUI.
+Goal: exercise the whole spine end-to-end as cheaply as possible, then get out of the way for UX/Toy work. Driven from any OSC source (TouchOSC / Max / scripts) — no GUI. **All items shipped.**
 
-- Rust workspace: portable `core` crate + `native` crate (audio out via `cpal`) — the ADR-0012 seam from line one
-- Signal + Message types; topological **Plan**; Instantiate → Render loop; single-Lane fan-out (ADR-0010)
-- Determinism invariant baked in from the start (ADR-0001)
-- Executor *interface* present, **single-threaded implementation first** (parallel pool deferred)
-- ~5 operators: oscillator, envelope, filter, Voicer, output sink
-- **OSC-in boundary adapter (UDP)** — drive from TouchOSC / Max / scripts (ADR-0007)
-- Load one JSON Instrument → Instantiate (Swap-from-empty) → Render → audio out
-- Default 12-TET Tuning only; symbolic-pitch seam present (ADR-0008)
+- ✅ Rust workspace: portable `core` crate + `native` crate (audio out via `cpal`) — the ADR-0012 seam from line one
+- ✅ Signal + Message types; topological **Plan**; Instantiate → Render loop; single-Lane fan-out (ADR-0010), expanded to polyphony (Voicer + per-Voice replication, steal-oldest)
+- ✅ Determinism invariant baked in from the start (ADR-0001)
+- ✅ Executor *interface* present, **single-threaded implementation** (parallel pool deferred to v1)
+- ✅ 5 operators: oscillator, envelope, filter, Voicer, output sink
+- ✅ **OSC-in boundary adapter (UDP)** — `/voicer/note [midi, gate]` from any OSC source (ADR-0007)
+- ✅ JSON Instrument format + type registry + auto-generated JSON Schema; load → Instantiate (Swap-from-empty) → Render → live audio out
+- ✅ Default 12-TET Tuning; symbolic-pitch seam present (ADR-0008)
 
 ## v1 (first real release)
 
-- Parallel executor implementation (lock-free worker pool) behind the existing interface
-- Lock-free live graph hot-swap + per-operator state preservation
-- External OSC I/O (the lingua franca crossing the process boundary)
-- MIDI I/O; drive external gear/synths (boundary adapter — core stays OSC-only, ADR-0007)
-- Ableton Link / MIDI clock / OSC tempo sync, feeding the Clock (boundary adapters)
-- n-channel input and output, with easy defaults
-- Toys: groove box, tap-to-play chord/melody, drag/strum instrument, meta-effects
-- Good-button UX layer
-- Linux (lead) + Windows builds
-- Agent skills — developer: scaffold a new Operator (Rust + descriptor + tests)
-- Agent skills — patcher: build/modify Instruments and Rigs via the JSON schema + introspection API
+The actual product. The MVP proved the engine spine; v1 is **the path to a delightful playable Toy a non-technical person enjoys**, then the reach to ship it on two platforms. Sequenced into phases by dependency, not by tier. The through-line: front-load what Toys and the good-button surface depend on; defer engine-internal performance work (parallel executor, hot-swap) until it actually bites.
+
+Each phase lists the open-design threads it forces (see [OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)) — those get a grilling session before the phase starts.
+
+### V1.0 — Engine hardening (only what the rest of v1 leans on)
+
+- **RT-safe Render** — eliminate per-block allocation; pre-size all buffers at Instantiate. The architecture's allocation-free Render target; a latent glitch source today.
+- **Sample-accurate OSC timing** — wire real frame offsets from arrival time into `Message.frame` (currently always 0). The block-slicing contract (ADR-0011) is already built; this feeds it real data. Required before clock/groove feel tight.
+- **Clock + musical time** (ADR-0006) — transport, tempo, beat grid. Groove box and sequencers depend on it. *(Forces: nothing new — ADR-0006 settled in principle.)*
+
+### V1.1 — Operators for music
+
+- **More operators** — clock/sequencer, sample player, LFO/mod source, delay + reverb meta-effects. Toys are assembled from these. *(Forces: Operator-authoring contract is now concrete from the MVP; this is mostly mechanical, parallelizable.)*
+- **Tonal-context / harmony bus** (ADR-0008) — scale broadcast + snap-to-scale + chord-progression publishing; followers (arp, voicing, melody) subscribe. Makes "always in key" mechanical, not hope. *(Forces: tonal-context bus mechanics — grill first.)*
+
+### V1.2 — Playable surface
+
+- **Performance-input mapping** — how gestures (tap-to-play, drag/strum, XY pad, controller) map to Messages. The bridge from UX to engine. *(Forces: playable-surface thread — grill first.)*
+- **Curated control surface** — an Instrument exposes a public set of good-buttons over its structural addresses (the "easy to learn" half of the gradient).
+
+### V1.3 — The Toys
+
+- **Groove box, tap-to-play chord/melody, drag/strum instrument, meta-effects** — built from V1.1 operators over the V1.2 surface. The payoff: instant music for beginners. *(Forces: Toy-design thread — grill per Toy.)*
+
+### V1.4 — Good-button UX layer
+
+- The surface a human actually touches. Driven over OSC first (TouchOSC / web stand-in), proving the control-surface API before any native GUI commitment.
+
+### V1.5 — Reach & robustness (parallelizable; ship)
+
+- **Lock-free live graph hot-swap + per-operator state preservation** — edit an Instrument without dropping audio (live authoring). Swap-from-empty already works; this is the in-place case.
+- **External OSC I/O (out)** — the lingua franca crossing the process boundary outward.
+- **MIDI I/O** — drive external gear/synths (boundary adapter; core stays OSC-only, ADR-0007).
+- **Ableton Link / MIDI clock / OSC tempo sync** — feed the Clock (boundary adapters).
+- **n-channel input and output**, with easy defaults.
+- **Parallel executor** (lock-free worker pool) behind the existing trait — built when the serial executor stops keeping up, not before.
+- **Linux (lead) + Windows builds.**
+
+### V1.6 — Agent skills
+
+- **Developer skill** — scaffold a new Operator (Rust + descriptor + tests).
+- **Patcher skill** — build/modify Instruments and Rigs via the JSON schema + introspection API. *(Forces: introspection/query API shape — grill first.)*
 
 ## Later (post-v1)
 
