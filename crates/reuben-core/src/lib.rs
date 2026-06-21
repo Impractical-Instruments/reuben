@@ -10,20 +10,25 @@
 
 pub mod config;
 pub mod descriptor;
+pub mod format;
 pub mod graph;
 pub mod message;
 pub mod operator;
 pub mod operators;
 pub mod pitch;
 pub mod plan;
+pub mod registry;
 pub mod render;
+pub mod schema;
 pub mod signal;
 pub mod tuning;
 
 pub use config::AudioConfig;
 pub use descriptor::Descriptor;
+pub use format::{load, InstrumentDoc, LoadError};
 pub use graph::{Graph, NodeKey};
 pub use message::{Arg, Message};
 pub use operator::{Io, Operator};
 pub use plan::{Plan, PlanError};
+pub use registry::Registry;
 pub use render::{Renderer, SerialExecutor};

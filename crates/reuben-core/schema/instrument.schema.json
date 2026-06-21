@@ -1,0 +1,265 @@
+{
+  "$defs": {
+    "connection": {
+      "additionalProperties": false,
+      "properties": {
+        "from": {
+          "$ref": "#/$defs/portRef"
+        },
+        "to": {
+          "$ref": "#/$defs/portRef"
+        }
+      },
+      "required": [
+        "from",
+        "to"
+      ],
+      "type": "object"
+    },
+    "node": {
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "envelope"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "attack": {
+                    "default": 0.009999999776482582,
+                    "description": "unit: s, curve: Exponential",
+                    "maximum": 5.0,
+                    "minimum": 0.0010000000474974513,
+                    "type": "number"
+                  },
+                  "decay": {
+                    "default": 0.10000000149011612,
+                    "description": "unit: s, curve: Exponential",
+                    "maximum": 5.0,
+                    "minimum": 0.0010000000474974513,
+                    "type": "number"
+                  },
+                  "release": {
+                    "default": 0.20000000298023224,
+                    "description": "unit: s, curve: Exponential",
+                    "maximum": 5.0,
+                    "minimum": 0.0010000000474974513,
+                    "type": "number"
+                  },
+                  "sustain": {
+                    "default": 0.699999988079071,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "filter"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "cutoff": {
+                    "default": 1000.0,
+                    "description": "unit: Hz, curve: Exponential",
+                    "maximum": 20000.0,
+                    "minimum": 20.0,
+                    "type": "number"
+                  },
+                  "resonance": {
+                    "default": 0.20000000298023224,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "oscillator"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "freq": {
+                    "default": 440.0,
+                    "description": "unit: Hz, curve: Exponential",
+                    "maximum": 20000.0,
+                    "minimum": 20.0,
+                    "type": "number"
+                  },
+                  "waveform": {
+                    "default": 0.0,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "output"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "voicer"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              }
+            }
+          }
+        }
+      ],
+      "properties": {
+        "address": {
+          "type": "string"
+        },
+        "doc": {
+          "type": "string"
+        },
+        "params": {
+          "type": "object"
+        },
+        "type": {
+          "enum": [
+            "envelope",
+            "filter",
+            "oscillator",
+            "output",
+            "voicer"
+          ]
+        }
+      },
+      "required": [
+        "type",
+        "address"
+      ],
+      "type": "object"
+    },
+    "portRef": {
+      "additionalProperties": false,
+      "properties": {
+        "node": {
+          "type": "string"
+        },
+        "port": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "node",
+        "port"
+      ],
+      "type": "object"
+    }
+  },
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "description": "A reuben instrument: operator nodes, port connections, and master outputs.",
+  "properties": {
+    "connections": {
+      "items": {
+        "$ref": "#/$defs/connection"
+      },
+      "type": "array"
+    },
+    "doc": {
+      "type": "string"
+    },
+    "instrument": {
+      "type": "string"
+    },
+    "nodes": {
+      "items": {
+        "$ref": "#/$defs/node"
+      },
+      "type": "array"
+    },
+    "outputs": {
+      "items": {
+        "$ref": "#/$defs/portRef"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "instrument",
+    "nodes"
+  ],
+  "title": "reuben instrument",
+  "type": "object"
+}

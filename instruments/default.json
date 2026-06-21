@@ -1,0 +1,21 @@
+{
+  "instrument": "default",
+  "doc": "Default monophonic playable rig. Send /voicer/note [midi, gate] to play (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off).",
+  "nodes": [
+    { "type": "voicer", "address": "/voicer", "doc": "Monophonic note -> freq + gate CV." },
+    { "type": "oscillator", "address": "/osc" },
+    { "type": "filter", "address": "/filter", "doc": "Gentle lowpass.", "params": { "cutoff": 3000.0 } },
+    { "type": "envelope", "address": "/env", "doc": "ADSR VCA, gated by the voicer." },
+    { "type": "output", "address": "/out" }
+  ],
+  "connections": [
+    { "from": { "node": "/voicer", "port": "freq" }, "to": { "node": "/osc", "port": "freq" } },
+    { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/filter", "port": "audio" } },
+    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env", "port": "audio" } },
+    { "from": { "node": "/voicer", "port": "gate" }, "to": { "node": "/env", "port": "gate" } },
+    { "from": { "node": "/env", "port": "audio" }, "to": { "node": "/out", "port": "audio" } }
+  ],
+  "outputs": [
+    { "node": "/out", "port": "audio" }
+  ]
+}
