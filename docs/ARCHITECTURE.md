@@ -35,7 +35,7 @@ Everything is **addressable** by an OSC path derived from graph structure, plus 
 
 - **Build** — compile the engine binary. Operator *types* exist; nothing user-specific.
 - **Swap** — the one runtime transition that changes the graph: **Instantiate** a new **Plan** off the audio thread (allocate the delta, build the parallel schedule), atomically install it at a block boundary, migrate surviving Operators' state, reclaim the old Plan. The first build is just a Swap from the empty Plan — no special cold-start path.
-- **Render** — execute the current Plan per block on the audio thread. Hard realtime, allocation-free *(target; the MVP renderer still allocates per block — an RT-safe pass is pending)*. Playing notes and turning knobs happen here.
+- **Render** — execute the current Plan per block on the audio thread. Hard realtime, allocation-free: the [`Renderer`](../crates/reuben-core/src/render.rs) preallocates its edge-buffer arena and all per-block scratch at construction and reuses them; routed events are zero-copy views onto the caller's Messages, so a warmed-up `render_block` performs no heap allocation even while delivering notes (asserted by `crates/reuben-core/tests/rt_safe.rs`). Playing notes and turning knobs happen here.
 
 **Boundary and threading** ([ADR-0012](adr/0012-boundary-and-threading.md)): one writer of structure (the **Coordinator**), one reader at Render (an immutable Plan), everything else lock-free message passing.
 

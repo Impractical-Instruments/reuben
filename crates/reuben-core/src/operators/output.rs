@@ -35,12 +35,12 @@ impl Operator for Output {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        let input: Vec<f32> = io
-            .input(IN_AUDIO)
-            .map(|s| s.to_vec())
-            .unwrap_or_else(|| vec![0.0; n]);
-        let out = io.output(OUT_AUDIO);
-        out[..n].copy_from_slice(&input[..n]);
+        // Copy input -> output one sample at a time so the input borrow ends before each
+        // output write — passthrough with no allocation (realtime-safe).
+        for i in 0..n {
+            let v = io.input(IN_AUDIO).map_or(0.0, |s| s[i]);
+            io.output(OUT_AUDIO)[i] = v;
+        }
     }
 
     fn spawn(&self) -> Box<dyn Operator> {

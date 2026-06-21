@@ -152,10 +152,10 @@ mod tests {
     ) -> Vec<f32> {
         let mut o0 = vec![0.0f32; n];
         {
-            let mut outs: Vec<&mut [f32]> = vec![&mut o0[..]];
+            let outs: Vec<&mut [f32]> = vec![&mut o0[..]];
             let inputs: Vec<Option<&[f32]>> = vec![freq_input];
             let params = vec![freq_param, waveform];
-            let mut io = Io::new(sample_rate, n, &inputs, &mut outs, &params, &[]);
+            let mut io = Io::new(sample_rate, n, inputs, outs, &params, &[]);
             osc.process(&mut io);
         }
         o0
