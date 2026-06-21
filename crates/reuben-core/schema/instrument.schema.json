@@ -181,6 +181,49 @@
           "if": {
             "properties": {
               "type": {
+                "const": "lfo"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "center": {
+                    "default": 440.0,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 20000.0,
+                    "minimum": -1000.0,
+                    "type": "number"
+                  },
+                  "depth": {
+                    "default": 10.0,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 1000.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  },
+                  "rate": {
+                    "default": 5.0,
+                    "description": "unit: Hz, curve: Exponential",
+                    "maximum": 20.0,
+                    "minimum": 0.009999999776482582,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
                 "const": "oscillator"
               }
             },
@@ -323,6 +366,7 @@
             "delay",
             "envelope",
             "filter",
+            "lfo",
             "oscillator",
             "output",
             "reverb",
