@@ -23,6 +23,35 @@
           "if": {
             "properties": {
               "type": {
+                "const": "clock"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "tempo": {
+                    "default": 120.0,
+                    "description": "unit: BPM, curve: Linear",
+                    "maximum": 999.0,
+                    "minimum": 1.0,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
                 "const": "envelope"
               }
             },
@@ -204,6 +233,7 @@
         },
         "type": {
           "enum": [
+            "clock",
             "envelope",
             "filter",
             "oscillator",

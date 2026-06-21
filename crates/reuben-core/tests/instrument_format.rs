@@ -7,6 +7,7 @@ use reuben_core::render::Renderer;
 use reuben_core::{load, AudioConfig, Graph, InstrumentDoc, Registry};
 
 const DEFAULT_JSON: &str = include_str!("../../../instruments/default.json");
+const METRONOME_JSON: &str = include_str!("../../../instruments/metronome.json");
 const COMMITTED_SCHEMA: &str = include_str!("../schema/instrument.schema.json");
 
 /// Render `seconds` of `graph`, holding note A4 (MIDI 69) from frame 0.
@@ -143,4 +144,57 @@ fn committed_schema_is_in_sync() {
         COMMITTED_SCHEMA, fresh,
         "schema/instrument.schema.json is stale — run `cargo run -p reuben-core --example gen_schema`"
     );
+}
+
+#[test]
+fn clock_makes_a_sample_accurate_metronome() {
+    // The metronome rig (Clock beat-gate -> plucked envelope -> tone) clicks on every beat
+    // with no external input: a click fires right after each beat boundary and the gap
+    // between beats is silent. Beats are on the sample grid (no drift), and it's
+    // deterministic.
+    let cfg = AudioConfig::new(48_000.0, 256);
+    let reg = Registry::builtin();
+
+    let render_clicks = |seconds: f32| -> Vec<f32> {
+        let graph = load(METRONOME_JSON, &reg).expect("load metronome.json");
+        let mut plan = Plan::instantiate(graph, cfg).expect("instantiate");
+        let mut r = Renderer::new(&plan);
+        let blocks = (cfg.sample_rate * seconds) as usize / cfg.block_size;
+        let mut buf = vec![0.0f32; cfg.block_size];
+        let mut all = Vec::with_capacity(blocks * cfg.block_size);
+        for _ in 0..blocks {
+            r.render_block(&mut plan, &[], &mut buf);
+            all.extend_from_slice(&buf);
+        }
+        all
+    };
+
+    let out = render_clicks(2.0);
+    let spb = 24_000usize; // 120 BPM @ 48 kHz
+
+    let peak = |w: &[f32]| w.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+    for beat in 0..4 {
+        let b = beat * spb;
+        // A click fires in the window right after the beat boundary.
+        let click_end = (b + 2_400).min(out.len());
+        assert!(
+            peak(&out[b..click_end]) > 0.05,
+            "no click at beat {beat} (sample {b})"
+        );
+        // The remainder of the beat (sustain is 0) is silent.
+        let gap = (b + 12_000)..(b + spb).min(out.len());
+        if gap.start < gap.end {
+            assert!(
+                peak(&out[gap]) < 0.01,
+                "beat {beat} should be silent before the next beat"
+            );
+        }
+    }
+
+    // Determinism holds for internally-clocked timing.
+    let again = render_clicks(2.0);
+    assert_eq!(out.len(), again.len());
+    for (i, (x, y)) in out.iter().zip(&again).enumerate() {
+        assert_eq!(x.to_bits(), y.to_bits(), "non-deterministic at sample {i}");
+    }
 }

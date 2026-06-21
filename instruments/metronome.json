@@ -1,0 +1,18 @@
+{
+  "instrument": "metronome",
+  "doc": "A click on every beat. The Clock's beat gate retriggers an envelope on an 880 Hz tone — sample-accurate timing with no external input. Send /clock/reset to relocate beat 1; set tempo via /clock/tempo.",
+  "nodes": [
+    { "type": "clock", "address": "/clock", "doc": "Beat phasor + beat gate.", "params": { "tempo": 120.0 } },
+    { "type": "oscillator", "address": "/osc", "doc": "Fixed click tone.", "params": { "freq": 880.0 } },
+    { "type": "envelope", "address": "/env", "doc": "Plucked click, gated by the beat.", "params": { "attack": 0.001, "decay": 0.05, "sustain": 0.0, "release": 0.05 } },
+    { "type": "output", "address": "/out" }
+  ],
+  "connections": [
+    { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/env", "port": "audio" } },
+    { "from": { "node": "/clock", "port": "gate" }, "to": { "node": "/env", "port": "gate" } },
+    { "from": { "node": "/env", "port": "audio" }, "to": { "node": "/out", "port": "audio" } }
+  ],
+  "outputs": [
+    { "node": "/out", "port": "audio" }
+  ]
+}

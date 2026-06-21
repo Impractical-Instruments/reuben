@@ -2,8 +2,16 @@
 //!
 //! OSC is reuben's lingua franca, so an external packet and an internal Message are the
 //! same shape (address + typed args). We map OSC argument types onto [`Arg`], flatten
-//! bundles into their contained messages, and stamp `frame = 0` (block-quantized; the
-//! bundle timetag is ignored until musical-time scheduling lands).
+//! bundles into their contained messages, and stamp `frame = 0`.
+//!
+//! **External OSC is block-quantized by design.** Reconstructing a sub-block sample
+//! position from a UDP datagram's arrival time is pointless: network + scheduler jitter on
+//! that arrival (often well over a block) already dwarfs sample resolution, so a `frame`
+//! derived from it would be precise-looking noise. Sample-accurate timing is an *internal*
+//! property — events generated inside the graph (the Clock and what it drives) sit on the
+//! deterministic sample timeline and carry real frames. Bundle timetags are likewise
+//! ignored here; explicit musical-time scheduling resolves against the Clock (ADR-0006),
+//! not against wall-clock arrival.
 
 use reuben_core::message::{Arg, Message};
 use rosc::{OscPacket, OscType};
