@@ -12,6 +12,7 @@ pub mod lfo;
 pub mod oscillator;
 pub mod output;
 pub mod reverb;
+pub mod sequencer;
 pub mod voicer;
 
 pub use clock::Clock;
@@ -22,4 +23,5 @@ pub use lfo::Lfo;
 pub use oscillator::Oscillator;
 pub use output::Output;
 pub use reverb::Reverb;
+pub use sequencer::Sequencer;
 pub use voicer::Voicer;

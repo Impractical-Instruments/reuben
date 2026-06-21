@@ -8,6 +8,7 @@ use reuben_core::{load, AudioConfig, Graph, InstrumentDoc, Registry};
 
 const DEFAULT_JSON: &str = include_str!("../../../instruments/default.json");
 const METRONOME_JSON: &str = include_str!("../../../instruments/metronome.json");
+const SEQUENCE_JSON: &str = include_str!("../../../instruments/sequence.json");
 const COMMITTED_SCHEMA: &str = include_str!("../schema/instrument.schema.json");
 
 /// Render `seconds` of `graph`, holding note A4 (MIDI 69) from frame 0.
@@ -193,6 +194,64 @@ fn clock_makes_a_sample_accurate_metronome() {
 
     // Determinism holds for internally-clocked timing.
     let again = render_clicks(2.0);
+    assert_eq!(out.len(), again.len());
+    for (i, (x, y)) in out.iter().zip(&again).enumerate() {
+        assert_eq!(x.to_bits(), y.to_bits(), "non-deterministic at sample {i}");
+    }
+}
+
+#[test]
+fn sequencer_self_plays_a_changing_melody() {
+    // The sequence rig (Clock beat-gate -> sequencer -> osc + envelope) plays itself with
+    // no external input: each beat sounds, and the pitch changes from one beat to the next
+    // (the default pattern is an ascending scale). Deterministic, like the metronome.
+    let cfg = AudioConfig::new(48_000.0, 256);
+    let reg = Registry::builtin();
+
+    let render_seq = |seconds: f32| -> Vec<f32> {
+        let graph = load(SEQUENCE_JSON, &reg).expect("load sequence.json");
+        let mut plan = Plan::instantiate(graph, cfg).expect("instantiate");
+        let mut r = Renderer::new(&plan);
+        let blocks = (cfg.sample_rate * seconds) as usize / cfg.block_size;
+        let mut buf = vec![0.0f32; cfg.block_size];
+        let mut all = Vec::with_capacity(blocks * cfg.block_size);
+        for _ in 0..blocks {
+            r.render_block(&mut plan, &[], &mut buf);
+            all.extend_from_slice(&buf);
+        }
+        all
+    };
+
+    let out = render_seq(2.0);
+    let spb = 24_000usize; // 120 BPM @ 48 kHz
+
+    // Each beat sounds (a note plays right after the beat boundary).
+    let peak = |w: &[f32]| w.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+    for beat in 0..4 {
+        let b = beat * spb;
+        let note_end = (b + 4_000).min(out.len());
+        assert!(
+            peak(&out[b..note_end]) > 0.02,
+            "no note at beat {beat} (sample {b})"
+        );
+    }
+
+    // The first two beats are different pitches (60 then 62): the dominant frequency
+    // differs, so the two beats' waveforms are not the same buffer.
+    let beat0 = &out[2_000..6_000];
+    let beat1 = &out[(spb + 2_000)..(spb + 6_000)];
+    let diff = beat0
+        .iter()
+        .zip(beat1)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0f32, f32::max);
+    assert!(
+        diff > 0.01,
+        "beats 0 and 1 should be audibly different pitches"
+    );
+
+    // Determinism holds for the internally-clocked sequence.
+    let again = render_seq(2.0);
     assert_eq!(out.len(), again.len());
     for (i, (x, y)) in out.iter().zip(&again).enumerate() {
         assert_eq!(x.to_bits(), y.to_bits(), "non-deterministic at sample {i}");
