@@ -1,29 +1,39 @@
-//! Plan — the static execution image produced by Instantiate (ADR-0009).
+//! Plan — the static execution image produced by Instantiate (ADR-0009, ADR-0010).
 //!
-//! Instantiate consumes a [`Graph`], topologically orders its nodes, and assigns each
-//! output port a slot in the edge-buffer arena. The result is immutable and is what
-//! [`crate::render`] executes per block. For the "first sound" run the schedule is a
-//! plain linear topo order (the serial executor walks it in sequence); the parallel
-//! cluster plan (ADR-0001) is a later refinement behind the same structure.
+//! Instantiate consumes a [`Graph`], topologically orders its nodes, computes each node's
+//! **Lane (Voice) count**, replicates Lane-expanded operators per Voice with independent
+//! state, and assigns every (output port, Lane) a slot in the edge-buffer arena. The
+//! result is immutable and is what [`crate::render`] executes per block.
+//!
+//! Lane counts: a node whose descriptor declares [`LaneRule::FromParam`] (the Voicer)
+//! expands to that param's value; every other node inherits the max Lane count of its
+//! inputs (1 if it has none). Because all fan-out shapes are fixed here, Render pays
+//! nothing for them (ADR-0010).
 
 use slotmap::SecondaryMap;
 
 use crate::config::AudioConfig;
-use crate::descriptor::Descriptor;
+use crate::descriptor::{Descriptor, LaneRule};
 use crate::graph::{Graph, NodeKey};
 use crate::operator::Operator;
 
-/// A node in execution order, with its arena buffer wiring resolved.
+/// A node in execution order, with its Lane fan-out and arena buffer wiring resolved.
 pub struct PlanNode {
     pub address: String,
-    pub op: Box<dyn Operator>,
+    /// One operator instance per Lane (Voice); `ops.len() == lanes`. Lane 0 is the
+    /// graph's original instance; the rest are fresh-state [`Operator::spawn`] copies.
+    pub ops: Vec<Box<dyn Operator>>,
     pub descriptor: Descriptor,
-    /// Current param values, in descriptor slot order. Mutated by Render (block-slicing).
+    /// Current param values, in descriptor slot order. Shared across Lanes; mutated by
+    /// Render (block-slicing).
     pub params: Vec<f32>,
-    /// Arena buffer index feeding each input port, or `None` if unconnected.
-    pub inputs: Vec<Option<usize>>,
-    /// Arena buffer index each output port writes to.
-    pub outputs: Vec<usize>,
+    /// Lane (Voice) count at this node.
+    pub lanes: usize,
+    /// For each input port: the source's per-Lane arena buffer indices, or `None` if
+    /// unconnected. The inner length is the *source's* Lane count (1 broadcasts).
+    pub inputs: Vec<Option<Vec<usize>>>,
+    /// For each output port: this node's per-Lane arena buffer indices (length `lanes`).
+    pub outputs: Vec<Vec<usize>>,
 }
 
 /// The immutable execution image.
@@ -33,8 +43,8 @@ pub struct Plan {
     pub nodes: Vec<PlanNode>,
     /// Total number of edge buffers in the arena.
     pub num_buffers: usize,
-    /// Arena indices summed into the rendered master output.
-    pub output_taps: Vec<usize>,
+    /// Master taps: each is a tapped port's per-Lane buffers, all summed into the output.
+    pub output_taps: Vec<Vec<usize>>,
 }
 
 /// Why Instantiate failed.
@@ -47,31 +57,56 @@ pub enum PlanError {
 impl Plan {
     /// Instantiate a Graph into an executable Plan (the construction sub-step of a Swap).
     pub fn instantiate(mut graph: Graph, config: AudioConfig) -> Result<Plan, PlanError> {
-        // Assign every (node, output port) a unique arena buffer index.
-        let mut next_buffer = 0usize;
-        let mut out_buffers: SecondaryMap<NodeKey, Vec<usize>> = SecondaryMap::new();
-        for (key, node) in &graph.nodes {
-            let bufs = (0..node.descriptor.outputs.len())
-                .map(|_| {
-                    let i = next_buffer;
-                    next_buffer += 1;
-                    i
-                })
-                .collect();
-            out_buffers.insert(key, bufs);
+        let order = topo_order(&graph)?;
+
+        // 1. Lane count per node, in topo order (sources resolved before dependents).
+        let mut lanes: SecondaryMap<NodeKey, usize> = SecondaryMap::new();
+        for key in &order {
+            let node = &graph.nodes[*key];
+            let count = match node.descriptor.lanes {
+                LaneRule::FromParam(slot) => {
+                    (node.params.get(slot).copied().unwrap_or(1.0).round() as usize).max(1)
+                }
+                LaneRule::Inherit => graph
+                    .connections
+                    .iter()
+                    .filter(|c| c.dst == *key)
+                    .map(|c| lanes.get(c.src).copied().unwrap_or(1))
+                    .max()
+                    .unwrap_or(1),
+            };
+            lanes.insert(*key, count);
         }
 
-        let order = topo_order(&graph)?;
+        // 2. Assign every (node, output port, Lane) a unique arena buffer index.
+        let mut next_buffer = 0usize;
+        let mut out_buffers: SecondaryMap<NodeKey, Vec<Vec<usize>>> = SecondaryMap::new();
+        for (key, node) in &graph.nodes {
+            let n_lanes = lanes[key];
+            let ports = (0..node.descriptor.outputs.len())
+                .map(|_| {
+                    (0..n_lanes)
+                        .map(|_| {
+                            let i = next_buffer;
+                            next_buffer += 1;
+                            i
+                        })
+                        .collect()
+                })
+                .collect();
+            out_buffers.insert(key, ports);
+        }
 
         let output_taps = graph
             .outputs
             .iter()
-            .map(|(k, p)| out_buffers[*k][*p])
+            .map(|(k, p)| out_buffers[*k][*p].clone())
             .collect();
 
+        // 3. Build PlanNodes in execution order, replicating operators per Lane.
         let mut nodes = Vec::with_capacity(order.len());
         for key in &order {
-            // Resolve inputs against connections before removing the node.
+            let n_lanes = lanes[*key];
             let in_count = graph.nodes[*key].descriptor.inputs.len();
             let inputs = (0..in_count)
                 .map(|port| {
@@ -79,16 +114,24 @@ impl Plan {
                         .connections
                         .iter()
                         .find(|c| c.dst == *key && c.dst_port == port)
-                        .map(|c| out_buffers[c.src][c.src_port])
+                        .map(|c| out_buffers[c.src][c.src_port].clone())
                 })
                 .collect();
             let outputs = out_buffers[*key].clone();
+
             let node = graph.nodes.remove(*key).expect("key from topo order");
+            let mut ops: Vec<Box<dyn Operator>> = Vec::with_capacity(n_lanes);
+            ops.push(node.op);
+            for _ in 1..n_lanes {
+                ops.push(ops[0].spawn());
+            }
+
             nodes.push(PlanNode {
                 address: node.address,
-                op: node.op,
+                ops,
                 descriptor: node.descriptor,
                 params: node.params,
+                lanes: n_lanes,
                 inputs,
                 outputs,
             });

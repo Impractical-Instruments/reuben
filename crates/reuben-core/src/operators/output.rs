@@ -7,7 +7,7 @@
 //! - input 0: `audio` (Signal)
 //! - output 0: `audio` (Signal) — copy of the input, tapped as master.
 
-use crate::descriptor::{Descriptor, Port};
+use crate::descriptor::{Descriptor, LaneRule, Port};
 use crate::operator::{Io, Operator};
 
 pub const IN_AUDIO: usize = 0;
@@ -29,6 +29,7 @@ impl Operator for Output {
             inputs: vec![Port::signal("audio")],
             outputs: vec![Port::signal("audio")],
             params: vec![],
+            lanes: LaneRule::Inherit,
         }
     }
 
@@ -40,5 +41,9 @@ impl Operator for Output {
             .unwrap_or_else(|| vec![0.0; n]);
         let out = io.output(OUT_AUDIO);
         out[..n].copy_from_slice(&input[..n]);
+    }
+
+    fn spawn(&self) -> Box<dyn Operator> {
+        Box::new(Self::new())
     }
 }

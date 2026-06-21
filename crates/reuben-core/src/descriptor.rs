@@ -63,6 +63,19 @@ impl ParamMeta {
     }
 }
 
+/// How an operator sets the Lane (Voice) count of its outputs (ADR-0010).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum LaneRule {
+    /// Lane count = the max of the operator's input Lane counts (1 if it has none).
+    /// The default: ordinary single-Lane operators are replicated to match their inputs.
+    #[default]
+    Inherit,
+    /// This operator *expands* the Lane count: it produces as many Lanes as the value of
+    /// the named param slot (rounded, min 1). The Voicer is the canonical expander —
+    /// `voices` Lanes out, regardless of input. Read once at Instantiate (structural).
+    FromParam(usize),
+}
+
 /// An Operator's full self-description.
 #[derive(Debug, Clone)]
 pub struct Descriptor {
@@ -71,6 +84,8 @@ pub struct Descriptor {
     pub inputs: Vec<Port>,
     pub outputs: Vec<Port>,
     pub params: Vec<ParamMeta>,
+    /// How this operator determines its output Lane count. Defaults to [`LaneRule::Inherit`].
+    pub lanes: LaneRule,
 }
 
 impl Descriptor {

@@ -32,6 +32,32 @@ fn render(graph: Graph, cfg: AudioConfig, seconds: f32) -> Vec<f32> {
     all
 }
 
+/// Render `seconds` of `graph`, holding every MIDI note in `midis` from frame 0.
+fn render_notes(graph: Graph, cfg: AudioConfig, seconds: f32, midis: &[f32]) -> Vec<f32> {
+    let mut plan = Plan::instantiate(graph, cfg).expect("instantiate");
+    let mut r = Renderer::new(&plan);
+    let blocks = (cfg.sample_rate * seconds) as usize / cfg.block_size;
+    let mut buf = vec![0.0f32; cfg.block_size];
+    let mut all = Vec::with_capacity(blocks * cfg.block_size);
+    for b in 0..blocks {
+        let msgs: Vec<Message> = if b == 0 {
+            midis
+                .iter()
+                .map(|&m| Message::new("/voicer/note", [Arg::Float(m), Arg::Float(1.0)], 0))
+                .collect()
+        } else {
+            Vec::new()
+        };
+        r.render_block(&mut plan, &msgs, &mut buf);
+        all.extend_from_slice(&buf);
+    }
+    all
+}
+
+fn rms(buf: &[f32]) -> f32 {
+    (buf.iter().map(|x| x * x).sum::<f32>() / buf.len() as f32).sqrt()
+}
+
 #[test]
 fn default_instrument_loads_and_makes_a_440hz_tone() {
     let cfg = AudioConfig::new(48_000.0, 256);
@@ -76,6 +102,37 @@ fn save_then_reload_renders_identically() {
     assert_eq!(a.len(), b.len());
     for (i, (x, y)) in a.iter().zip(&b).enumerate() {
         assert_eq!(x.to_bits(), y.to_bits(), "differ at sample {i}");
+    }
+}
+
+#[test]
+fn plays_a_chord_polyphonically() {
+    // A C-major triad: three notes sounding at once exercises per-Voice fan-out and the
+    // Lane-summing master tap. A single note uses one Voice; the triad uses three, so it
+    // carries clearly more energy, and it must stay deterministic.
+    let cfg = AudioConfig::new(48_000.0, 256);
+    let reg = Registry::builtin();
+    let chord = [60.0, 64.0, 67.0];
+
+    let single = render_notes(load(DEFAULT_JSON, &reg).unwrap(), cfg, 0.5, &chord[..1]);
+    let triad = render_notes(load(DEFAULT_JSON, &reg).unwrap(), cfg, 0.5, &chord);
+
+    // Past the attack, three voices sum to more energy than one.
+    let win =
+        |b: &[f32]| rms(&b[(cfg.sample_rate as usize / 5)..(cfg.sample_rate as usize / 5 + 4096)]);
+    assert!(win(&triad) > 0.05, "triad near-silent");
+    assert!(
+        win(&triad) > win(&single) * 1.3,
+        "triad ({}) should carry more energy than a single note ({})",
+        win(&triad),
+        win(&single)
+    );
+
+    // Determinism holds with polyphony.
+    let again = render_notes(load(DEFAULT_JSON, &reg).unwrap(), cfg, 0.5, &chord);
+    assert_eq!(triad.len(), again.len());
+    for (i, (x, y)) in triad.iter().zip(&again).enumerate() {
+        assert_eq!(x.to_bits(), y.to_bits(), "non-deterministic at sample {i}");
     }
 }
 

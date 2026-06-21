@@ -20,10 +20,13 @@ pub struct Io<'a> {
     outputs: &'a mut [&'a mut [f32]],
     params: &'a [f32],
     messages: &'a [Message],
+    lane: usize,
+    lanes: usize,
 }
 
 impl<'a> Io<'a> {
-    /// Internal constructor used by the Render loop.
+    /// Internal constructor used by the Render loop. Defaults to a single Lane (lane 0 of
+    /// 1); the engine sets the real Lane via [`Io::with_lane`] when replicating.
     pub(crate) fn new(
         sample_rate: f32,
         frames: usize,
@@ -39,7 +42,16 @@ impl<'a> Io<'a> {
             outputs,
             params,
             messages,
+            lane: 0,
+            lanes: 1,
         }
+    }
+
+    /// Set which Lane (Voice) of how many this call is, for replicated operators.
+    pub(crate) fn with_lane(mut self, lane: usize, lanes: usize) -> Self {
+        self.lane = lane;
+        self.lanes = lanes;
+        self
     }
 
     /// Sample rate in Hz.
@@ -72,6 +84,17 @@ impl<'a> Io<'a> {
     pub fn messages(&self) -> &[Message] {
         self.messages
     }
+
+    /// Which Lane (Voice) this call represents, in `0..lanes()`. Single-Lane operators can
+    /// ignore it; an expander like the Voicer uses it to emit just this Voice's output.
+    pub fn lane(&self) -> usize {
+        self.lane
+    }
+
+    /// Total Lane (Voice) count at this point in the graph.
+    pub fn lanes(&self) -> usize {
+        self.lanes
+    }
 }
 
 /// A unit of behavior. Authored single-Lane; replicated across Lanes by the engine.
@@ -84,4 +107,9 @@ pub trait Operator: Send {
 
     /// Process exactly one (sub)block for one Lane. Must not allocate.
     fn process(&mut self, io: &mut Io);
+
+    /// Make a fresh-state instance of the same operator type, for the engine to use as
+    /// another Voice's Lane. Params are applied by the engine separately, so this only
+    /// needs to reset per-Lane state (typically `Box::new(Self::new())`).
+    fn spawn(&self) -> Box<dyn Operator>;
 }

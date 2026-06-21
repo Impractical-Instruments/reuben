@@ -7,7 +7,7 @@
 //! - output 0: `audio` (Signal) — `audio * env`.
 //! - params 0..3: `attack`, `decay`, `sustain`, `release`.
 
-use crate::descriptor::{Curve, Descriptor, ParamMeta, Port};
+use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
 use crate::operator::{Io, Operator};
 
 pub const IN_AUDIO: usize = 0;
@@ -90,6 +90,7 @@ impl Operator for Envelope {
                 },
                 time("release", 0.2),
             ],
+            lanes: LaneRule::Inherit,
         }
     }
 
@@ -158,6 +159,10 @@ impl Operator for Envelope {
 
             out[i] = audio[i] * self.level;
         }
+    }
+
+    fn spawn(&self) -> Box<dyn Operator> {
+        Box::new(Self::new())
     }
 }
 
