@@ -7,6 +7,8 @@
 //!   block-size core and a real-time audio callback).
 //! - [`osc`] — decoding external OSC/UDP packets into core [`Message`](reuben_core::Message)s.
 //! - [`audio`] — a cpal output stream driving the engine live.
+//! - [`resources`] — a filesystem + WAV [`ResourceResolver`](reuben_core::resources::ResourceResolver)
+//!   decoding sample data for the sample player (ADR-0016).
 //! - [`rigs`] — ready-made instrument graphs (the default playable rig for now).
 //!
 //! The portable core does all the DSP; everything here is I/O glue and is meant to be
@@ -15,6 +17,7 @@
 pub mod audio;
 pub mod engine;
 pub mod osc;
+pub mod resources;
 pub mod rigs;
 
 pub use engine::Engine;

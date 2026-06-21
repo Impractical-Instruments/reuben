@@ -120,6 +120,7 @@ impl Operator for ContextOp {
             inputs: vec![Port::message("set")],
             outputs: vec![Port::context("ctx")],
             params,
+            resources: vec![],
             lanes: LaneRule::Inherit,
         }
     }

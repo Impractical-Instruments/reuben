@@ -97,6 +97,7 @@ impl Operator for Sequencer {
             inputs: vec![Port::signal("clock")],
             outputs: vec![Port::message("degrees")],
             params,
+            resources: vec![],
             lanes: LaneRule::Inherit,
         }
     }

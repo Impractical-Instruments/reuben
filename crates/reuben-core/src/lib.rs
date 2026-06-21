@@ -20,6 +20,7 @@ pub mod pitch;
 pub mod plan;
 pub mod registry;
 pub mod render;
+pub mod resources;
 pub mod schema;
 pub mod signal;
 pub mod tuning;
@@ -27,10 +28,13 @@ pub mod tuning;
 pub use config::AudioConfig;
 pub use context::{Chord, ChordTag, Context, ScaleField, SnapDir, SnapPolicy, SnapTarget};
 pub use descriptor::Descriptor;
-pub use format::{load, InstrumentDoc, LoadError};
+pub use format::{load, load_instrument, InstrumentDoc, LoadError, LoadWarning, Loaded};
 pub use graph::{Graph, NodeKey};
 pub use message::{Arg, Message};
 pub use operator::{Io, Operator};
 pub use plan::{Plan, PlanError};
 pub use registry::Registry;
 pub use render::{Renderer, SerialExecutor};
+pub use resources::{
+    ResolveError, ResolvedRefs, ResourceResolver, ResourceStore, SampleBuffer, SampleId,
+};

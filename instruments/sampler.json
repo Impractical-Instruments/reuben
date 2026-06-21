@@ -1,0 +1,20 @@
+{
+  "instrument": "sampler",
+  "doc": "One-shot trigger sampler (ADR-0016). A note's gate fires the 'blip' sample; its pitch shifts the playback rate around root MIDI 57 (the sample's recorded pitch, ~220 Hz). Send /voicer/note [midi, gate] to play (e.g. [57.0, 1.0] plays at natural pitch; [69.0, 1.0] an octave up). 4 voices.",
+  "resources": {
+    "blip": "samples/blip.wav"
+  },
+  "nodes": [
+    { "type": "voicer", "address": "/voicer", "doc": "Note -> per-Voice freq + gate CV.", "params": { "voices": 4 } },
+    { "type": "sample", "address": "/sample", "sample": "blip", "doc": "Gate edge fires the sample; freq sets the playback rate.", "params": { "root": 57.0 } },
+    { "type": "output", "address": "/out" }
+  ],
+  "connections": [
+    { "from": { "node": "/voicer", "port": "freq" }, "to": { "node": "/sample", "port": "freq" } },
+    { "from": { "node": "/voicer", "port": "gate" }, "to": { "node": "/sample", "port": "gate" } },
+    { "from": { "node": "/sample", "port": "audio" }, "to": { "node": "/out", "port": "audio" } }
+  ],
+  "outputs": [
+    { "node": "/out", "port": "audio" }
+  ]
+}

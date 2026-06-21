@@ -93,4 +93,13 @@ impl Graph {
     pub fn tap_output(&mut self, node: NodeKey, port: usize) {
         self.outputs.push((node, port));
     }
+
+    /// Find a node by its OSC address. Used by the loader to bind resources to the right
+    /// node after the graph is built (ADR-0016).
+    pub fn find(&self, address: &str) -> Option<NodeKey> {
+        self.nodes
+            .iter()
+            .find(|(_, n)| n.address == address)
+            .map(|(k, _)| k)
+    }
 }

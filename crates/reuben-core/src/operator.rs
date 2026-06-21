@@ -7,11 +7,14 @@
 //! reads "my current value". Event-oriented operators (the Voicer) instead read the
 //! routed [`Event`] list via [`Io::events`].
 
+use std::sync::Arc;
+
 use smallvec::SmallVec;
 
 use crate::context::Context;
 use crate::descriptor::Descriptor;
 use crate::message::{Arg, Emit, Event};
+use crate::resources::{ResolvedRefs, ResourceStore};
 
 /// A tonal-[`Context`] snapshot an operator publishes during `process` onto a Context output
 /// port (ADR-0015), before the engine routes it to downstream readers' context slices.
@@ -220,6 +223,15 @@ pub trait Operator: Send {
 
     /// Make a fresh-state instance of the same operator type, for the engine to use as
     /// another Voice's Lane. Params are applied by the engine separately, so this only
-    /// needs to reset per-Lane state (typically `Box::new(Self::new())`).
+    /// needs to reset per-Lane state (typically `Box::new(Self::new())`). An operator that
+    /// holds a resource binding (see [`Operator::bind_resources`]) must carry it forward
+    /// here while resetting playback state, so every Voice shares the decoded data.
     fn spawn(&self) -> Box<dyn Operator>;
+
+    /// Receive decoded resources after construction, before Plan fan-out (ADR-0016). The
+    /// loader calls this on every node that declares a resource slot in its descriptor,
+    /// handing the shared [`ResourceStore`] (clone the `Arc` to hold it) and the node's
+    /// [`ResolvedRefs`] (resolved handles by slot name). Default no-op — the two-phase
+    /// init pattern for a type-erased registry, so operators with no resources ignore it.
+    fn bind_resources(&mut self, _store: &Arc<ResourceStore>, _refs: &ResolvedRefs) {}
 }

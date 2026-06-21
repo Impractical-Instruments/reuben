@@ -46,6 +46,10 @@ pub trait Operator: Send {
 
     /// Fresh-state instance of the same type, for another Voice's Lane.
     fn spawn(&self) -> Box<dyn Operator>;
+
+    /// Receive decoded resources after construction, before fan-out. Default no-op;
+    /// only resource-bearing operators (the sample player) override it.
+    fn bind_resources(&mut self, store: &Arc<ResourceStore>, refs: &ResolvedRefs) {}
 }
 ```
 
@@ -74,7 +78,16 @@ pub trait Operator: Send {
   - `io.lane()` / `io.lanes()` — most operators ignore these; an *expander* like the
     Voicer uses them to emit one Voice's output per call.
 - **`spawn()`** — usually `Box::new(Self::new())`. Resets per-Lane state only; the engine
-  applies params separately.
+  applies params separately. A resource-bearing operator instead carries its binding (the
+  `Arc<ResourceStore>` + resolved handle) forward through `..Self::default()` while resetting
+  playback state, so every Voice shares the decoded data — see `sample.rs`.
+- **`bind_resources(store, refs)`** — the two-phase-init hook for operators that depend on
+  **external decoded data** ([ADR-0016](../adr/0016-sample-player-and-resource-store.md)).
+  Construction is zero-arg and type-erased, so a sample player can't take its audio as a
+  constructor arg; instead the loader resolves+decodes the document's `resources` table into
+  a shared `ResourceStore` and calls this hook on each node that declares a resource slot.
+  Default no-op. The descriptor declares the slot; the RT read goes through the store's pure
+  `(id, channel, frame)` accessor (bank-streaming-safe). `sample.rs` is the template.
 
 State that must persist across blocks lives on the struct (e.g. an oscillator's phase).
 Hold accumulating phase in `f64` so it doesn't drift over a long session (see `lfo.rs`).
@@ -95,6 +108,7 @@ Descriptor {
                     unit: "Hz", curve: Curve::Exponential },
         // ...
     ],
+    resources: vec![],                // or vec![ResourceSlot::new("sample")] — see ADR-0016
     lanes: LaneRule::Inherit,         // or LaneRule::FromParam(slot) for an expander
 }
 ```
@@ -140,6 +154,14 @@ routing prefix for that node's params (so `/delay/time` sets the `time` param of
 `/delay`). `format::load` resolves types via a `Registry` and returns a `Graph`. Loading is
 an authoring step — it lives in the portable core but never runs on the audio thread. See
 `instruments/*.json` for worked examples.
+
+A document may also carry a top-level `resources` table (logical id → source path) that
+resource-bearing nodes reference by a `sample` field
+([ADR-0016](../adr/0016-sample-player-and-resource-store.md)). Resolving + decoding those
+needs a `ResourceResolver`, so use `format::load_instrument(json, registry, resolver)` — it
+returns the `Graph` plus any non-fatal `LoadWarning`s (a missing/undecodable sample degrades
+to silence). `instruments/sampler.json` is the worked example; `reuben-native` supplies a
+filesystem WAV resolver.
 
 ## Addressing
 

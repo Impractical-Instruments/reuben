@@ -612,6 +612,7 @@ version = "0.0.0"
 dependencies = [
  "approx",
  "cpal",
+ "hound",
  "reuben-core",
  "rosc",
 ]

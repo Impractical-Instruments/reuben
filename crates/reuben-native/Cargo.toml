@@ -10,6 +10,7 @@ description = "Removable native layer for reuben: live audio (cpal) + OSC-in (UD
 reuben-core = { path = "../reuben-core" }
 cpal.workspace = true
 rosc.workspace = true
+hound.workspace = true
 
 [dev-dependencies]
 approx.workspace = true
