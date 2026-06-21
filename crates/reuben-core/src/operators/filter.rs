@@ -7,7 +7,7 @@
 //! - param 0: `cutoff` (Hz)
 //! - param 1: `resonance` (0..1)
 
-use crate::descriptor::{Curve, Descriptor, ParamMeta, Port};
+use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
 use crate::operator::{Io, Operator};
 
 pub const IN_AUDIO: usize = 0;
@@ -53,6 +53,7 @@ impl Operator for Filter {
                     curve: Curve::Linear,
                 },
             ],
+            lanes: LaneRule::Inherit,
         }
     }
 
@@ -86,6 +87,10 @@ impl Operator for Filter {
             // Low-pass output.
             io.output(OUT_AUDIO)[i] = v2;
         }
+    }
+
+    fn spawn(&self) -> Box<dyn Operator> {
+        Box::new(Self::new())
     }
 }
 

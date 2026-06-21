@@ -1,18 +1,26 @@
-//! Voicer — assigns incoming note Messages to a Voice and emits control Signals.
+//! Voicer — assigns incoming note Messages to Voices and emits per-Voice control Signals.
 //!
-//! Monophonic for the "first sound" run (last-note priority); the fixed-pool, voice-
-//! stealing polyphonic Voicer + per-Voice fan-out is the next increment (ADR-0010).
-//! Ports are FROZEN (Stage A); behavior is filled test-first in Stage B.
+//! The Voicer is the **fan-out point** (ADR-0010): it expands the Lane count to its
+//! `voices` param, and the engine replicates the downstream chain once per Voice. Each
+//! replica of the Voicer runs the *same* global voice allocation (fixed-pool,
+//! steal-oldest) over the identical note stream, and emits only its own Voice's signals —
+//! so all replicas stay in lock-step and the result is deterministic. (Redundant
+//! allocation work per replica, but the Voice count is small; an all-Lanes path can
+//! replace it later.)
 //!
 //! - input 0: `notes` (Message) — note events arrive by address routing, read via
 //!   [`Io::messages`]; this port is documentary (no Signal edge).
-//! - output 0: `freq` (Signal) — resolved frequency in Hz of the active note.
-//! - output 1: `gate` (Signal) — 1.0 while a note is held, else 0.0.
+//! - output 0: `freq` (Signal) — resolved frequency in Hz of this Voice's note.
+//! - output 1: `gate` (Signal) — 1.0 while this Voice holds a note, else 0.0.
+//! - param 0: `voices` — Voice-pool size (structural; read at Instantiate).
 //!
 //! Note event: local address `note`, arg 0 = float MIDI note, arg 1 = velocity
 //! (0 = note-off).
 
-use crate::descriptor::{Descriptor, Port};
+use smallvec::SmallVec;
+
+use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
+use crate::message::Arg;
 use crate::operator::{Io, Operator};
 use crate::pitch::Pitch;
 use crate::tuning::{Tuning, TwelveTet};
@@ -20,28 +28,78 @@ use crate::tuning::{Tuning, TwelveTet};
 pub const IN_NOTES: usize = 0;
 pub const OUT_FREQ: usize = 0;
 pub const OUT_GATE: usize = 1;
+pub const P_VOICES: usize = 0;
 
-pub struct Voicer {
-    tuning: TwelveTet,
-    /// Current frequency in Hz (held across blocks).
+/// One slot in the Voice pool.
+#[derive(Clone, Copy)]
+struct Voice {
+    /// MIDI note this Voice was assigned (for note-off matching).
+    midi: f32,
+    /// Whether the Voice is currently holding a note.
+    on: bool,
+    /// Resolved frequency in Hz (held through release).
     freq: f32,
-    /// Whether a note is currently held.
-    gate: bool,
+    /// Assignment stamp; higher = more recently assigned (for steal-oldest).
+    age: u64,
 }
 
-impl Default for Voicer {
+impl Default for Voice {
     fn default() -> Self {
         Self {
-            tuning: TwelveTet::default(),
+            midi: 0.0,
+            on: false,
             freq: 440.0,
-            gate: false,
+            age: 0,
         }
     }
+}
+
+#[derive(Default)]
+pub struct Voicer {
+    tuning: TwelveTet,
+    /// The global Voice pool, sized to the Lane count. Every replica keeps an identical
+    /// copy (same events + same algorithm), and emits only its own Lane's Voice.
+    voices: Vec<Voice>,
+    /// Monotonic assignment counter, for steal-oldest ordering.
+    counter: u64,
 }
 
 impl Voicer {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Assign `midi` to a Voice: a free one (lowest index), else steal the oldest.
+    fn assign(&mut self, midi: f32) {
+        let idx = self.voices.iter().position(|v| !v.on).unwrap_or_else(|| {
+            self.voices
+                .iter()
+                .enumerate()
+                .min_by_key(|(_, v)| v.age)
+                .map(|(i, _)| i)
+                .unwrap_or(0)
+        });
+        self.counter += 1;
+        self.voices[idx] = Voice {
+            midi,
+            on: true,
+            freq: self.tuning.hz(Pitch::from_midi(midi)),
+            age: self.counter,
+        };
+    }
+
+    /// Release the oldest Voice currently holding `midi`, if any.
+    fn release(&mut self, midi: f32) {
+        if let Some(idx) = self
+            .voices
+            .iter()
+            .enumerate()
+            .filter(|(_, v)| v.on && v.midi == midi)
+            .min_by_key(|(_, v)| v.age)
+            .map(|(i, _)| i)
+        {
+            self.voices[idx].on = false;
+        }
     }
 }
 
@@ -51,99 +109,130 @@ impl Operator for Voicer {
             type_name: "voicer",
             inputs: vec![Port::message("notes")],
             outputs: vec![Port::signal("freq"), Port::signal("gate")],
-            params: vec![],
+            params: vec![ParamMeta {
+                name: "voices",
+                min: 1.0,
+                max: 32.0,
+                default: 8.0,
+                unit: "",
+                curve: Curve::Linear,
+            }],
+            lanes: LaneRule::FromParam(P_VOICES),
         }
     }
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
+        let lanes = io.lanes().max(1);
+        let me = io.lane().min(lanes - 1);
 
-        // Collect note events for this (sub)block, sorted by frame so that
-        // last-note priority within the call resolves in time order. We keep a
-        // small scratch of (frame, freq, gate) deltas; allocation-free for the
-        // common empty case (no events), and bounded by the message count.
-        // We cannot read `io.messages()` while holding an output borrow, so
-        // snapshot the events first.
-        let mut events: smallvec::SmallVec<[(usize, f32, bool); 8]> = smallvec::SmallVec::new();
+        // Size the pool to the Lane count (identical across replicas).
+        if self.voices.len() != lanes {
+            self.voices = vec![Voice::default(); lanes];
+        }
+
+        // Snapshot note events for this (sub)block, sorted by frame. (Can't read
+        // `io.messages()` while an output borrow is live, so snapshot first.)
+        let mut events: SmallVec<[(usize, f32, bool); 8]> = SmallVec::new();
         for msg in io.messages() {
             if msg.addr != "note" {
                 continue;
             }
             let frame = msg.frame.min(n);
-            let midi = match msg.args.first().and_then(crate::message::Arg::as_f32) {
+            let midi = match msg.args.first().and_then(Arg::as_f32) {
                 Some(v) => v,
                 None => continue,
             };
-            let vel = msg
-                .args
-                .get(1)
-                .and_then(crate::message::Arg::as_f32)
-                .unwrap_or(0.0);
-            if vel > 0.0 {
-                // Note-on: set freq, gate on.
-                let hz = self.tuning.hz(Pitch::from_midi(midi));
-                events.push((frame, hz, true));
-            } else {
-                // Note-off: keep freq, gate off.
-                events.push((frame, self.freq, false));
-            }
+            let on = msg.args.get(1).and_then(Arg::as_f32).unwrap_or(0.0) > 0.0;
+            events.push((frame, midi, on));
         }
         events.sort_by_key(|e| e.0);
 
-        // Fill freq first, advancing state through events at their frames.
-        let mut freq = self.freq;
-        let mut gate = self.gate;
+        // Run the global allocation, recording only THIS Lane's change-points.
+        let mut cur_freq = self.voices[me].freq;
+        let mut cur_gate = self.voices[me].on;
+        let mut changes: SmallVec<[(usize, f32, bool); 8]> = SmallVec::new();
+        let (mut last_freq, mut last_gate) = (cur_freq, cur_gate);
+        for &(frame, midi, on) in &events {
+            if on {
+                self.assign(midi);
+            } else {
+                self.release(midi);
+            }
+            let v = self.voices[me];
+            if v.freq != last_freq || v.on != last_gate {
+                changes.push((frame, v.freq, v.on));
+                last_freq = v.freq;
+                last_gate = v.on;
+            }
+        }
+
+        // Fill freq, then gate (separate passes: can't hold two output borrows).
         {
-            let mut ev = 0;
             let out = io.output(OUT_FREQ);
+            let mut ci = 0;
             for (i, s) in out[..n].iter_mut().enumerate() {
-                while ev < events.len() && events[ev].0 == i {
-                    freq = events[ev].1;
-                    gate = events[ev].2;
-                    ev += 1;
+                while ci < changes.len() && changes[ci].0 == i {
+                    cur_freq = changes[ci].1;
+                    ci += 1;
                 }
-                *s = freq;
+                *s = cur_freq;
             }
         }
-
-        // Re-walk for gate using the same event stream (independent of freq pass).
-        let mut gate_acc = self.gate;
         {
-            let mut ev = 0;
             let out = io.output(OUT_GATE);
+            let mut ci = 0;
             for (i, s) in out[..n].iter_mut().enumerate() {
-                while ev < events.len() && events[ev].0 == i {
-                    gate_acc = events[ev].2;
-                    ev += 1;
+                while ci < changes.len() && changes[ci].0 == i {
+                    cur_gate = changes[ci].2;
+                    ci += 1;
                 }
-                *s = if gate_acc { 1.0 } else { 0.0 };
+                *s = if cur_gate { 1.0 } else { 0.0 };
             }
         }
+    }
 
-        // Persist resolved state across calls.
-        self.freq = freq;
-        self.gate = gate;
+    fn spawn(&self) -> Box<dyn Operator> {
+        Box::new(Self::new())
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::{Arg, Message};
+    use crate::message::Message;
     use crate::operator::Io;
 
-    /// Run the voicer over one block with the given events; returns (freq, gate) buffers.
-    fn run(v: &mut Voicer, n: usize, events: &[Message]) -> (Vec<f32>, Vec<f32>) {
+    /// Run one Voicer Lane over a block; returns its (freq, gate) buffers.
+    fn run_lane(
+        v: &mut Voicer,
+        n: usize,
+        lanes: usize,
+        lane: usize,
+        events: &[Message],
+    ) -> (Vec<f32>, Vec<f32>) {
         let mut f = vec![0.0f32; n];
         let mut gt = vec![0.0f32; n];
         {
             let mut outs: Vec<&mut [f32]> = vec![&mut f[..], &mut gt[..]];
             let inputs: Vec<Option<&[f32]>> = vec![None];
-            let mut io = Io::new(48_000.0, n, &inputs, &mut outs, &[], events);
+            let mut io =
+                Io::new(48_000.0, n, &inputs, &mut outs, &[], events).with_lane(lane, lanes);
             v.process(&mut io);
         }
         (f, gt)
     }
+
+    /// Mono convenience (single Voice).
+    fn run(v: &mut Voicer, n: usize, events: &[Message]) -> (Vec<f32>, Vec<f32>) {
+        run_lane(v, n, 1, 0, events)
+    }
+
+    fn hz(midi: f32) -> f32 {
+        TwelveTet::default().hz(Pitch::from_midi(midi))
+    }
+
+    // --- monophonic behavior (Lane count 1) ---
 
     #[test]
     fn note_on_at_frame_zero_sets_freq_and_gate() {
@@ -193,10 +282,9 @@ mod tests {
     }
 
     #[test]
-    fn last_note_priority_freq_follows_second_on() {
+    fn one_voice_steals_so_last_note_wins() {
         let n = 128;
         let mut v = Voicer::new();
-        // A4 (69) then A5 (81, an octave up → 880 Hz) within one call.
         let events = vec![
             Message::new("note", [Arg::Float(69.0), Arg::Float(1.0)], 0),
             Message::new("note", [Arg::Float(81.0), Arg::Float(1.0)], 32),
@@ -214,12 +302,73 @@ mod tests {
         let on = vec![Message::new("note", [Arg::Float(69.0), Arg::Float(1.0)], 0)];
         let (_f1, gt1) = run(&mut v, n, &on);
         assert!(gt1.iter().all(|&g| g == 1.0));
-
-        // Next call with no events: still held, freq unchanged.
         let (f2, gt2) = run(&mut v, n, &[]);
         assert!(gt2.iter().all(|&g| g == 1.0));
         for &s in &f2 {
             approx::assert_relative_eq!(s, 440.0, epsilon = 1e-3);
         }
+    }
+
+    // --- polyphonic behavior (Lane count > 1) ---
+
+    /// Drive `lanes` independent replicas with the same events; return per-Lane outputs.
+    fn run_poly(lanes: usize, n: usize, events: &[Message]) -> Vec<(Vec<f32>, Vec<f32>)> {
+        let mut replicas: Vec<Voicer> = (0..lanes).map(|_| Voicer::new()).collect();
+        (0..lanes)
+            .map(|l| run_lane(&mut replicas[l], n, lanes, l, events))
+            .collect()
+    }
+
+    #[test]
+    fn two_simultaneous_notes_occupy_two_voices() {
+        let n = 64;
+        let events = vec![
+            Message::new("note", [Arg::Float(60.0), Arg::Float(1.0)], 0),
+            Message::new("note", [Arg::Float(64.0), Arg::Float(1.0)], 0),
+        ];
+        let out = run_poly(3, n, &events);
+        // Voice 0 -> first note (60), Voice 1 -> second (64), Voice 2 idle.
+        approx::assert_relative_eq!(out[0].0[n - 1], hz(60.0), epsilon = 1e-2);
+        assert!(out[0].1.iter().all(|&g| g == 1.0));
+        approx::assert_relative_eq!(out[1].0[n - 1], hz(64.0), epsilon = 1e-2);
+        assert!(out[1].1.iter().all(|&g| g == 1.0));
+        assert!(
+            out[2].1.iter().all(|&g| g == 0.0),
+            "third voice should be idle"
+        );
+    }
+
+    #[test]
+    fn out_of_voices_steals_the_oldest() {
+        let n = 64;
+        // 3 notes, 2 voices: the third steals voice 0 (the oldest).
+        let events = vec![
+            Message::new("note", [Arg::Float(60.0), Arg::Float(1.0)], 0),
+            Message::new("note", [Arg::Float(64.0), Arg::Float(1.0)], 10),
+            Message::new("note", [Arg::Float(67.0), Arg::Float(1.0)], 20),
+        ];
+        let out = run_poly(2, n, &events);
+        approx::assert_relative_eq!(out[0].0[n - 1], hz(67.0), epsilon = 1e-2); // stolen -> 67
+        approx::assert_relative_eq!(out[1].0[n - 1], hz(64.0), epsilon = 1e-2); // untouched
+                                                                                // Voice 0 holds from frame 0 (reassigned 60 -> 67, stays gated).
+        assert!(out[0].1.iter().all(|&g| g == 1.0));
+        // Voice 1 turns on at its note-on (frame 10) and stays on.
+        assert!(out[1].1[..10].iter().all(|&g| g == 0.0));
+        assert!(out[1].1[10..].iter().all(|&g| g == 1.0));
+    }
+
+    #[test]
+    fn note_off_releases_only_the_matching_voice() {
+        let n = 64;
+        let events = vec![
+            Message::new("note", [Arg::Float(60.0), Arg::Float(1.0)], 0),
+            Message::new("note", [Arg::Float(64.0), Arg::Float(1.0)], 0),
+            Message::new("note", [Arg::Float(60.0), Arg::Float(0.0)], 32),
+        ];
+        let out = run_poly(2, n, &events);
+        // Voice 0 (60) releases at 32; Voice 1 (64) stays on.
+        assert!(out[0].1[..32].iter().all(|&g| g == 1.0));
+        assert!(out[0].1[32..].iter().all(|&g| g == 0.0));
+        assert!(out[1].1.iter().all(|&g| g == 1.0));
     }
 }

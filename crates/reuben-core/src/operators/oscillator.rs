@@ -7,7 +7,7 @@
 //! - param 0: `freq` (Hz) — used when the freq input is unconnected.
 //! - param 1: `waveform` — 0.0 = sine, 1.0 = saw.
 
-use crate::descriptor::{Curve, Descriptor, ParamMeta, Port};
+use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
 use crate::operator::{Io, Operator};
 
 pub const IN_FREQ: usize = 0;
@@ -51,6 +51,7 @@ impl Operator for Oscillator {
                     curve: Curve::Linear,
                 },
             ],
+            lanes: LaneRule::Inherit,
         }
     }
 
@@ -103,6 +104,10 @@ impl Operator for Oscillator {
             phase -= phase.floor();
         }
         self.phase = phase;
+    }
+
+    fn spawn(&self) -> Box<dyn Operator> {
+        Box::new(Self::new())
     }
 }
 

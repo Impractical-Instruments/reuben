@@ -2,7 +2,7 @@
   "instrument": "default",
   "doc": "Default monophonic playable rig. Send /voicer/note [midi, gate] to play (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off).",
   "nodes": [
-    { "type": "voicer", "address": "/voicer", "doc": "Monophonic note -> freq + gate CV." },
+    { "type": "voicer", "address": "/voicer", "doc": "Note -> per-Voice freq + gate CV.", "params": { "voices": 8 } },
     { "type": "oscillator", "address": "/osc" },
     { "type": "filter", "address": "/filter", "doc": "Gentle lowpass.", "params": { "cutoff": 3000.0 } },
     { "type": "envelope", "address": "/env", "doc": "ADSR VCA, gated by the voicer." },

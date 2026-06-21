@@ -177,7 +177,15 @@
             "properties": {
               "params": {
                 "additionalProperties": false,
-                "properties": {},
+                "properties": {
+                  "voices": {
+                    "default": 8.0,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 32.0,
+                    "minimum": 1.0,
+                    "type": "number"
+                  }
+                },
                 "type": "object"
               }
             }

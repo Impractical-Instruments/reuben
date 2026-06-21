@@ -1,15 +1,18 @@
-//! Render — executing a [`Plan`] per block (ADR-0009, ADR-0011).
+//! Render — executing a [`Plan`] per block (ADR-0009, ADR-0010, ADR-0011).
 //!
 //! The serial executor walks the topologically-ordered nodes. For each node, incoming
 //! Messages are routed: those whose local address names a param drive **block-slicing**
 //! (the block is split at their frames so [`Operator::process`] always sees a constant
 //! param value); everything else is delivered raw via [`Io::messages`] for event
-//! operators (the Voicer) to time themselves. Output taps are summed into the master
-//! buffer. Fan-in sums in fixed buffer order, so output is deterministic (ADR-0001).
+//! operators (the Voicer) to time themselves.
 //!
-//! The [`Executor`] trait is the pluggable-executor seam (ADR-0001): it only decides the
-//! order/concurrency of node processing. The MVP ships [`SerialExecutor`]; a parallel
-//! cluster executor slots in behind the same trait later.
+//! Each node is processed once **per Lane (Voice)**: the engine runs `node.ops[lane]`
+//! with that Lane's input/output buffers and `io.lane()` set, so single-Lane operators
+//! are transparently replicated (ADR-0010). A single-Lane source feeding a multi-Lane
+//! node broadcasts. Master taps sum every Lane of the tapped port, in fixed order, so
+//! output is deterministic (ADR-0001).
+//!
+//! The [`Executor`] trait is the pluggable-executor seam (ADR-0001).
 
 use crate::message::Message;
 use crate::operator::Io;
@@ -88,11 +91,13 @@ impl<E: Executor> Renderer<E> {
             );
         }
 
-        // Sum master taps.
+        // Sum master taps: every Lane of every tapped port, in fixed order.
         out.iter_mut().for_each(|s| *s = 0.0);
-        for &tap in &plan.output_taps {
-            for (o, s) in out.iter_mut().zip(&self.arena[tap]) {
-                *o += *s;
+        for tap in &plan.output_taps {
+            for &buf in tap {
+                for (o, s) in out.iter_mut().zip(&self.arena[buf]) {
+                    *o += *s;
+                }
             }
         }
     }
@@ -149,7 +154,8 @@ fn local_address<'a>(addr: &'a str, node_addr: &str) -> Option<&'a str> {
     rest.strip_prefix('/')
 }
 
-/// Process one node for the block, applying block-slicing at param-message frames.
+/// Process one node for the block: block-slice at param frames, and within each segment
+/// run every Lane (Voice).
 fn process_node(
     arena: &mut [Vec<f32>],
     node: &mut PlanNode,
@@ -158,7 +164,7 @@ fn process_node(
     sample_rate: f32,
     block_size: usize,
 ) {
-    // Segment boundaries: 0, every interior param frame, block_size.
+    // Segment boundaries: 0, every interior param frame, block_size. Shared across Lanes.
     let mut bounds: Vec<usize> = Vec::with_capacity(params.len() + 2);
     bounds.push(0);
     for &(f, _, _) in params {
@@ -169,13 +175,26 @@ fn process_node(
     bounds.push(block_size);
     bounds.dedup();
 
+    // Take this node's output buffers out of the arena (disjoint from inputs — no
+    // self-loops; cycles error). Shape mirrors node.outputs: [port][lane].
+    let mut taken: Vec<Vec<Vec<f32>>> = node
+        .outputs
+        .iter()
+        .map(|lanes| {
+            lanes
+                .iter()
+                .map(|&i| std::mem::take(&mut arena[i]))
+                .collect()
+        })
+        .collect();
+
     for w in bounds.windows(2) {
         let (seg_start, seg_end) = (w[0], w[1]);
         if seg_start >= seg_end {
             continue;
         }
 
-        // Apply param updates landing exactly at this segment's start.
+        // Apply param updates landing at this segment's start (shared across Lanes).
         for &(f, slot, v) in params {
             if f == seg_start {
                 node.params[slot] = v;
@@ -193,25 +212,23 @@ fn process_node(
             })
             .collect();
 
-        // Take this node's output buffers out of the arena to satisfy the borrow
-        // checker (outputs are disjoint from inputs — no self-loops; cycles error).
-        let mut outs: Vec<Vec<f32>> = node
-            .outputs
-            .iter()
-            .map(|&i| std::mem::take(&mut arena[i]))
-            .collect();
-
-        // Scope the borrows of `arena` (inputs) and `outs` (outputs) so they release
-        // before the output buffers are written back into the arena.
-        {
+        for lane in 0..node.lanes {
+            // Input slices for this Lane; a single-Lane source broadcasts.
             let in_refs: Vec<Option<&[f32]>> = node
                 .inputs
                 .iter()
-                .map(|o| o.map(|i| &arena[i][seg_start..seg_end]))
+                .map(|src| {
+                    src.as_ref().map(|bufs| {
+                        let bi = if bufs.len() == 1 { bufs[0] } else { bufs[lane] };
+                        &arena[bi][seg_start..seg_end]
+                    })
+                })
                 .collect();
-            let mut out_slices: Vec<&mut [f32]> = outs
+
+            // Output slices for this Lane, from the taken-out buffers.
+            let mut out_slices: Vec<&mut [f32]> = taken
                 .iter_mut()
-                .map(|b| &mut b[seg_start..seg_end])
+                .map(|port| &mut port[lane][seg_start..seg_end])
                 .collect();
 
             let mut io = Io::new(
@@ -221,12 +238,16 @@ fn process_node(
                 &mut out_slices,
                 &node.params,
                 &seg_events,
-            );
-            node.op.process(&mut io);
+            )
+            .with_lane(lane, node.lanes);
+            node.ops[lane].process(&mut io);
         }
+    }
 
-        for (&i, buf) in node.outputs.iter().zip(outs) {
-            arena[i] = buf;
+    // Return the output buffers to the arena.
+    for (port, lane_bufs) in taken.into_iter().enumerate() {
+        for (lane, buf) in lane_bufs.into_iter().enumerate() {
+            arena[node.outputs[port][lane]] = buf;
         }
     }
 }
