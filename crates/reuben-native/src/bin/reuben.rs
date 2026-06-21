@@ -25,9 +25,17 @@ const OSC_BIND: &str = "0.0.0.0:9000";
 fn main() {
     let (tx, rx) = mpsc::channel();
 
+    // Log incoming OSC only when asked: this runs on the receive path, and the stdout
+    // lock would add latency/jitter if it fired on every note while playing. Off by
+    // default; flip on to confirm wiring during bring-up.
+    let log_osc = std::env::var_os("REUBEN_LOG_OSC").is_some();
+
     // OSC/UDP receiver thread: decode datagrams and forward Messages to the audio thread.
     let socket = UdpSocket::bind(OSC_BIND).expect("bind OSC socket");
     println!("OSC-in listening on {OSC_BIND}  (send /voicer/note [midi, gate])");
+    if !log_osc {
+        println!("  (set REUBEN_LOG_OSC=1 to log received OSC)");
+    }
     thread::spawn(move || {
         let mut buf = [0u8; 1024];
         loop {
@@ -35,6 +43,9 @@ fn main() {
                 Ok((n, _)) => match osc::decode(&buf[..n]) {
                     Ok(msgs) => {
                         for m in msgs {
+                            if log_osc {
+                                println!("recv {} {:?}", m.addr, m.args.as_slice());
+                            }
                             let _ = tx.send(m);
                         }
                     }
