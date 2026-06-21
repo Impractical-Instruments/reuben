@@ -58,6 +58,45 @@ fn sampler_loads_resolves_wav_and_plays_a_note() {
 }
 
 #[test]
+fn sampler_arp_self_plays_a_sequenced_arpeggio() {
+    // The clock-driven rig needs no external notes: the sequencer emits a major arpeggio
+    // into the Voicer, whose gate edges fire the sample. Just render and listen for sound.
+    let dir = instruments_dir();
+    let json =
+        std::fs::read_to_string(dir.join("sampler-arp.json")).expect("read sampler-arp.json");
+    let resolver = FsResolver::new(&dir);
+
+    let loaded =
+        load_instrument(&json, &Registry::builtin(), &resolver).expect("load sampler-arp.json");
+    assert!(
+        loaded.warnings.is_empty(),
+        "unexpected load warnings: {:?}",
+        loaded.warnings
+    );
+
+    let cfg = AudioConfig::new(48_000.0, 256);
+    let mut plan = Plan::instantiate(loaded.graph, cfg).expect("instantiate");
+    let mut r = Renderer::new(&plan);
+
+    // ~1 s at 132 BPM is ~2.2 beats — several arpeggio steps fire with no input.
+    let blocks = cfg.sample_rate as usize / cfg.block_size;
+    let mut buf = vec![0.0f32; cfg.block_size];
+    let mut peak = 0.0f32;
+    for _ in 0..blocks {
+        r.render_block(&mut plan, &[], &mut buf);
+        for &s in &buf {
+            assert!(s.is_finite(), "non-finite sample in sampler-arp render");
+            peak = peak.max(s.abs());
+        }
+    }
+
+    assert!(
+        peak > 0.05,
+        "sampler-arp produced near-silence (peak {peak})"
+    );
+}
+
+#[test]
 fn missing_sample_warns_but_still_loads() {
     // A resources table pointing at a nonexistent file: load succeeds with a warning, and
     // the node plays silence rather than crashing (ADR-0016 degrade-to-silence).

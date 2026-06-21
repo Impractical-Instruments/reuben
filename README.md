@@ -57,8 +57,9 @@ cargo run -p reuben-native --bin reuben -- instruments/<name>.json
 | `scale-demo` | **yes**           | `sequence` resolved through a tonal context set to C minor — the same degree pattern re-spells live. Change key with `/context/root`, reshape with `/context/s0`..`s6`. |
 | `autotune`   | needs OSC notes   | Play any pitch at `/snap/note [midi, gate]`; it snaps to the nearest scale tone. Set the key on `/context`, snap mode on `/snap/{target,direction}`. |
 | `sampler`    | needs OSC notes   | One-shot trigger sampler: a note fires `samples/blip.wav`; pitch shifts the playback rate. `/sample/{root,gain,start,channel}`. |
+| `sampler-arp` | **yes**          | A self-playing sample arpeggio: a clock-driven sequencer fires `samples/blip.wav` through a major arpeggio. `/clock/tempo`, `/sequencer/step1`..`step6`, `/sequencer/length`. |
 
-`metronome`, `vibrato`, `sequence`, and `scale-demo` make sound immediately — good for a
+`metronome`, `vibrato`, `sequence`, `scale-demo`, and `sampler-arp` make sound immediately — good for a
 first run with no OSC sender. Every node's params are live over OSC at its address (e.g.
 `/delay/time`).
 

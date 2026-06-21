@@ -1,0 +1,24 @@
+{
+  "instrument": "sampler-arp",
+  "doc": "A self-playing sample arpeggio. The Clock's beat gate drives a sequencer that emits scale degrees — a major arpeggio (degrees 0 2 4 7 4 2 = root, third, fifth, octave, fifth, third) — one per beat into a Voicer, which resolves each degree to Hz through the default C-major/12-TET tonal context. The Voicer's per-Voice freq + gate fire the 'blip' sample (recorded pitch MIDI 57, ~220 Hz); pitch shifts the playback rate. Set tempo via /clock/tempo; edit the line via /sequencer/step1../sequencer/step6 and /sequencer/length; play in another key by adding a context op (see scale-demo.json).",
+  "resources": {
+    "blip": "samples/blip.wav"
+  },
+  "nodes": [
+    { "type": "clock", "address": "/clock", "doc": "Beat phasor + beat gate.", "params": { "tempo": 132.0 } },
+    { "type": "sequencer", "address": "/sequencer", "doc": "Walks a major arpeggio one step per beat -> degree Messages.", "params": { "length": 6, "step1": 0.0, "step2": 2.0, "step3": 4.0, "step4": 7.0, "step5": 4.0, "step6": 2.0 } },
+    { "type": "voicer", "address": "/voicer", "doc": "Degree -> per-Voice freq + gate CV.", "params": { "voices": 4 } },
+    { "type": "sample", "address": "/sample", "sample": "blip", "doc": "Gate edge fires the sample; freq sets the playback rate.", "params": { "root": 57.0 } },
+    { "type": "output", "address": "/out" }
+  ],
+  "connections": [
+    { "from": { "node": "/clock", "port": "gate" }, "to": { "node": "/sequencer", "port": "clock" } },
+    { "from": { "node": "/sequencer", "port": "degrees" }, "to": { "node": "/voicer", "port": "notes" } },
+    { "from": { "node": "/voicer", "port": "freq" }, "to": { "node": "/sample", "port": "freq" } },
+    { "from": { "node": "/voicer", "port": "gate" }, "to": { "node": "/sample", "port": "gate" } },
+    { "from": { "node": "/sample", "port": "audio" }, "to": { "node": "/out", "port": "audio" } }
+  ],
+  "outputs": [
+    { "node": "/out", "port": "audio" }
+  ]
+}
