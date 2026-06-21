@@ -28,6 +28,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Install ALSA dev headers (cpal, for reuben-native)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
+
       - name: Install Rust (stable, with rustfmt + clippy)
         uses: dtolnay/rust-toolchain@stable
         with:

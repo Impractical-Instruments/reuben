@@ -4,7 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Removable native layer for reuben (audio I/O, OSC adapters). Stub until run 2."
+description = "Removable native layer for reuben: live audio (cpal) + OSC-in (UDP)."
 
 [dependencies]
 reuben-core = { path = "../reuben-core" }
+cpal.workspace = true
+rosc.workspace = true
+
+[dev-dependencies]
+approx.workspace = true
+
+[[bin]]
+name = "reuben"
+path = "src/bin/reuben.rs"

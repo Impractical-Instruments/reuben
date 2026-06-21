@@ -13,3 +13,6 @@ slotmap = "1"
 smallvec = "1"
 hound = "3"
 approx = "0.5"
+# Native layer (reuben-native) only.
+cpal = "0.15"
+rosc = "0.10"
