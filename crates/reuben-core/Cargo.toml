@@ -15,9 +15,21 @@ serde_json.workspace = true
 [dev-dependencies]
 approx.workspace = true
 hound.workspace = true
+# Perf infra (ADR-0019). criterion: local wall-clock. iai-callgrind: CI regression gate.
+criterion = "0.8"
+iai-callgrind = "0.16"
 
 [[example]]
 name = "first_sound"
 
 [[example]]
 name = "gen_schema"
+
+# Macro render_block benches. `harness = false` — both bring their own main().
+[[bench]]
+name = "macro_criterion"
+harness = false
+
+[[bench]]
+name = "macro_iai"
+harness = false
