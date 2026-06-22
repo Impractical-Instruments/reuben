@@ -19,3 +19,4 @@ serde_json = "1"
 # Native layer (reuben-native) only.
 cpal = "0.15"
 rosc = "0.10"
+clap = { version = "4", features = ["derive"] }

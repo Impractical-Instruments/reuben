@@ -15,6 +15,7 @@
 //! swappable per platform (or removed entirely when embedding the core elsewhere).
 
 pub mod audio;
+pub mod cli;
 pub mod engine;
 pub mod osc;
 pub mod resources;
