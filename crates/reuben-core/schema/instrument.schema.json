@@ -16,6 +16,34 @@
       ],
       "type": "object"
     },
+    "control": {
+      "additionalProperties": false,
+      "description": "Public-control metadata for a generated control surface (ADR-0018). Marks this node as player-facing; the engine ignores it. `label` is required; range/`unit` default from the bound param's metadata (a direct param) or the node's `in_min`/`in_max` params (a `map` front-end) and may be overridden here.",
+      "properties": {
+        "default": {
+          "type": "number"
+        },
+        "label": {
+          "type": "string"
+        },
+        "max": {
+          "type": "number"
+        },
+        "min": {
+          "type": "number"
+        },
+        "unit": {
+          "type": "string"
+        },
+        "widget": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "label"
+      ],
+      "type": "object"
+    },
     "node": {
       "additionalProperties": false,
       "allOf": [
@@ -476,6 +504,13 @@
                     "minimum": 0.0,
                     "type": "number"
                   },
+                  "default": {
+                    "default": 0.0,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 1000000.0,
+                    "minimum": -1000000.0,
+                    "type": "number"
+                  },
                   "in_max": {
                     "default": 1.0,
                     "description": "unit: , curve: Linear",
@@ -835,6 +870,9 @@
       "properties": {
         "address": {
           "type": "string"
+        },
+        "control": {
+          "$ref": "#/$defs/control"
         },
         "doc": {
           "type": "string"

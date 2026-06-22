@@ -129,6 +129,7 @@ pub const P_IN_MAX: usize = 1;
 pub const P_OUT_MIN: usize = 2;
 pub const P_OUT_MAX: usize = 3;
 pub const P_CURVE: usize = 4;
+pub const P_DEFAULT: usize = 5;
 
 /// Affine (optionally exponential) remap of `v` from `[in_min, in_max]` onto
 /// `[out_min, out_max]`, clamped to the input range. Exponential is used only when both
@@ -151,17 +152,26 @@ fn remap(v: f32, in_min: f32, in_max: f32, out_min: f32, out_max: f32, exp: bool
 ///
 /// - input 0: `in` (Message) — value events; the first numeric arg is remapped.
 /// - output 0 (Message): `out` — the remapped value at the same frame.
-/// - params: `in_min`, `in_max`, `out_min`, `out_max`, `curve` (0 = linear, 1 = exponential).
+/// - params: `in_min`, `in_max`, `out_min`, `out_max`, `curve` (0 = linear, 1 = exponential),
+///   `default` (input-domain resting value, ADR-0018).
 ///
 /// Default params are the identity `[0,1] → [0,1]` linear, so an unconfigured `map` is a
 /// transparent pass-through (the public face of a Good Button). Single-Lane (ADR-0014):
 /// emission is pre-fan-out.
+///
+/// **Emit-on-init (ADR-0018):** on its first block, before any message, `map` emits
+/// `remap(default)` at frame 0 so a Good Button's whole downstream chain converges to the
+/// resting position its control-surface widget shows — sound and UI agree at rest. The seed
+/// fires once per instance and re-arms on [`spawn`](Operator::spawn).
 #[derive(Default)]
-pub struct Map;
+pub struct Map {
+    /// Whether the resting `default` has been emitted yet (emit-on-init). Reset on `spawn()`.
+    seeded: bool,
+}
 
 impl Map {
     pub fn new() -> Self {
-        Self
+        Self::default()
     }
 }
 
@@ -212,6 +222,17 @@ impl Operator for Map {
                     unit: "",
                     curve: Curve::Linear,
                 },
+                // Input-domain resting value (ADR-0018). The static default equals the default
+                // `in_min`; an instrument that customizes the input range should set `default`
+                // to taste so the resting position stays inside it.
+                ParamMeta {
+                    name: "default",
+                    min: -1_000_000.0,
+                    max: 1_000_000.0,
+                    default: 0.0,
+                    unit: "",
+                    curve: Curve::Linear,
+                },
             ],
             resources: vec![],
             lanes: LaneRule::Inherit,
@@ -224,6 +245,15 @@ impl Operator for Map {
         let out_min = io.param(P_OUT_MIN);
         let out_max = io.param(P_OUT_MAX);
         let exp = io.param(P_CURVE) >= 0.5;
+
+        // Emit the resting value once, before any message, so a Good Button's chain converges
+        // to the position its widget shows (ADR-0018). A real event at frame 0 lands after this
+        // and wins, so live input still overrides the resting default.
+        if !self.seeded {
+            let out = remap(io.param(P_DEFAULT), in_min, in_max, out_min, out_max, exp);
+            io.emit(MSG_OUT, "out", [Arg::Float(out)], 0);
+            self.seeded = true;
+        }
 
         // Snapshot value events (can't read events while emitting).
         let mut values: smallvec::SmallVec<[(usize, f32); 8]> = smallvec::SmallVec::new();
@@ -457,45 +487,76 @@ mod tests {
     fn map_identity_passes_value_through() {
         let emits = run_msg(
             &mut Map::new(),
-            &[0.0, 1.0, 0.0, 1.0, 0.0],
+            &[0.0, 1.0, 0.0, 1.0, 0.0, 0.0],
             &[val("in", 0.42, 7)],
         );
-        assert_eq!(emits.len(), 1);
-        assert_eq!(emits[0].addr, "out");
-        assert_eq!(emits[0].frame, 7);
-        approx::assert_relative_eq!(emits[0].args[0].as_f32().unwrap(), 0.42);
+        // First block seeds the resting default (0.0) at frame 0 (ADR-0018), then the value.
+        assert_eq!(emits.len(), 2);
+        assert_eq!(emits[0].frame, 0);
+        approx::assert_relative_eq!(emits[0].args[0].as_f32().unwrap(), 0.0);
+        assert_eq!(emits[1].addr, "out");
+        assert_eq!(emits[1].frame, 7);
+        approx::assert_relative_eq!(emits[1].args[0].as_f32().unwrap(), 0.42);
     }
 
     #[test]
     fn map_linear_remaps_range_and_clamps() {
         // [0,1] -> [800,10000] linear. 0.5 -> 5400; an over-range 2.0 clamps to 10000.
-        let params = [0.0, 1.0, 800.0, 10_000.0, 0.0];
+        // emits[0] is the resting seed (default 0.0 -> 800).
+        let params = [0.0, 1.0, 800.0, 10_000.0, 0.0, 0.0];
         let emits = run_msg(
             &mut Map::new(),
             &params,
             &[val("in", 0.5, 0), val("in", 2.0, 1)],
         );
-        approx::assert_relative_eq!(emits[0].args[0].as_f32().unwrap(), 5400.0);
-        approx::assert_relative_eq!(emits[1].args[0].as_f32().unwrap(), 10_000.0);
+        approx::assert_relative_eq!(emits[0].args[0].as_f32().unwrap(), 800.0);
+        approx::assert_relative_eq!(emits[1].args[0].as_f32().unwrap(), 5400.0);
+        approx::assert_relative_eq!(emits[2].args[0].as_f32().unwrap(), 10_000.0);
     }
 
     #[test]
     fn map_exponential_curve_is_geometric_midpoint() {
         // [0,1] -> [100,10000] exponential: t=0.5 -> sqrt(100*10000)=1000.
-        let params = [0.0, 1.0, 100.0, 10_000.0, 1.0];
+        // emits[0] is the resting seed (default 0.0, t=0 -> out_min 100).
+        let params = [0.0, 1.0, 100.0, 10_000.0, 1.0, 0.0];
         let emits = run_msg(&mut Map::new(), &params, &[val("in", 0.5, 0)]);
-        approx::assert_relative_eq!(emits[0].args[0].as_f32().unwrap(), 1000.0, epsilon = 1e-1);
+        approx::assert_relative_eq!(emits[1].args[0].as_f32().unwrap(), 1000.0, epsilon = 1e-1);
     }
 
     #[test]
     fn map_consumes_events_regardless_of_address() {
         // External OSC to the node address arrives with an empty local address; chained
-        // emits arrive as "out". Both must drive the map.
-        let p = [0.0, 1.0, 0.0, 10.0, 0.0];
+        // emits arrive as "out". Both must drive the map. emits[0] is the resting seed.
+        let p = [0.0, 1.0, 0.0, 10.0, 0.0, 0.0];
         let from_external = run_msg(&mut Map::new(), &p, &[val("", 0.5, 0)]);
         let from_chain = run_msg(&mut Map::new(), &p, &[val("out", 0.5, 0)]);
-        approx::assert_relative_eq!(from_external[0].args[0].as_f32().unwrap(), 5.0);
-        approx::assert_relative_eq!(from_chain[0].args[0].as_f32().unwrap(), 5.0);
+        approx::assert_relative_eq!(from_external[1].args[0].as_f32().unwrap(), 5.0);
+        approx::assert_relative_eq!(from_chain[1].args[0].as_f32().unwrap(), 5.0);
+    }
+
+    #[test]
+    fn map_emits_resting_default_once_on_first_block() {
+        // default=0.5 over [0,1]->[0,100]: first block emits 50 at frame 0 with no events;
+        // a second block with no events emits nothing — the seed fires once per instance.
+        let mut m = Map::new();
+        let params = [0.0, 1.0, 0.0, 100.0, 0.0, 0.5];
+        let first = run_msg(&mut m, &params, &[]);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].frame, 0);
+        approx::assert_relative_eq!(first[0].args[0].as_f32().unwrap(), 50.0);
+        let second = run_msg(&mut m, &params, &[]);
+        assert!(second.is_empty(), "resting seed fires once per instance");
+    }
+
+    #[test]
+    fn spawned_map_re_seeds_resting_default() {
+        let mut m = Map::new();
+        let params = [0.0, 1.0, 0.0, 100.0, 0.0, 0.5];
+        let _ = run_msg(&mut m, &params, &[]);
+        let mut m2 = m.spawn();
+        let emits = run_msg(&mut *m2, &params, &[]);
+        assert_eq!(emits.len(), 1, "spawn re-arms the resting seed");
+        approx::assert_relative_eq!(emits[0].args[0].as_f32().unwrap(), 50.0);
     }
 
     #[test]
