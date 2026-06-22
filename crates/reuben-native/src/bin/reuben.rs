@@ -13,6 +13,9 @@
 //!   params, and resource slots). The introspection half of the Patcher skill (ADR-0020).
 //! - `reuben validate <path> [--json]` — load + plan an instrument with no audio device and
 //!   report structural/wiring errors. Exit 1 if invalid; warnings alone stay exit 0.
+//! - `reuben scaffold-operator --spec <path> [--json]` — generate a new Operator's Rust skeleton
+//!   from a contract spec and wire its registration. The codegen half of the create-operator
+//!   skill (ADR-0021).
 
 use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
@@ -28,7 +31,7 @@ use reuben_native::cli::{describe, validate};
 use reuben_native::engine::Engine;
 use reuben_native::resources::FsResolver;
 use reuben_native::rigs::DEFAULT_JSON;
-use reuben_native::{audio, osc};
+use reuben_native::{audio, osc, scaffold};
 
 const BLOCK_SIZE: usize = 256;
 const OSC_BIND: &str = "0.0.0.0:9000";
@@ -63,6 +66,18 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Generate a new Operator's Rust skeleton from a contract spec and wire its registration.
+    ScaffoldOperator {
+        /// Contract JSON (type_name, inputs, outputs, params, resources, lanes).
+        #[arg(long)]
+        spec: PathBuf,
+        /// reuben-core source root holding `operators/` and `registry.rs`.
+        #[arg(long, default_value = "crates/reuben-core/src")]
+        core_root: PathBuf,
+        /// Emit machine-readable JSON instead of a human summary.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -73,7 +88,43 @@ fn main() -> ExitCode {
         }
         Command::Describe { op, json } => cmd_describe(op.as_deref(), json),
         Command::Validate { path, json } => cmd_validate(&path, json),
+        Command::ScaffoldOperator {
+            spec,
+            core_root,
+            json,
+        } => cmd_scaffold(&spec, &core_root, json),
     }
+}
+
+/// `scaffold-operator`: generate a new operator skeleton + registration from a contract spec.
+fn cmd_scaffold(spec: &Path, core_root: &Path, json: bool) -> ExitCode {
+    let report = match scaffold::run_scaffold(spec, core_root) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).expect("serialize scaffold report")
+        );
+    } else {
+        println!("created {} ({})", report.created, report.struct_name);
+        for f in &report.edited {
+            println!("  edited {f}");
+        }
+        if !report.formatted {
+            eprintln!("warning: `cargo fmt` did not run; format the touched files manually");
+        }
+        println!(
+            "next: implement `{}` test-first — the scaffolded test starts red (ADR-0021).",
+            report.type_name
+        );
+    }
+    ExitCode::SUCCESS
 }
 
 /// `describe`: dump the operator set (or one operator) as human text or JSON.
