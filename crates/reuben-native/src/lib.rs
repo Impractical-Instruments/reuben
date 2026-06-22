@@ -20,6 +20,7 @@ pub mod engine;
 pub mod osc;
 pub mod resources;
 pub mod rigs;
+pub mod scaffold;
 
 pub use engine::Engine;
 
