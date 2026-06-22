@@ -11,6 +11,9 @@ reuben-core = { path = "../reuben-core" }
 cpal.workspace = true
 rosc.workspace = true
 hound.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+clap.workspace = true
 
 [dev-dependencies]
 approx.workspace = true

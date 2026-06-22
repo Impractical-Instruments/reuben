@@ -78,7 +78,7 @@ Each phase lists the open-design threads it forces (see [OPEN-QUESTIONS.md](docs
 ### V1.6 — Agent skills
 
 - **Developer skill** — scaffold a new Operator (Rust + descriptor + tests).
-- **Patcher skill** — build/modify Instruments and Rigs via the JSON schema + introspection API. *(Forces: introspection/query API shape — grill first.)*
+- ✅ **Patcher skill** ([ADR-0020](docs/adr/0020-introspection-and-patcher-skill.md)) — the `patcher` skill drafts/edits the instrument graph and proves it on the real engine load path. Settled the **introspection/query API shape**: a thin CLI over the live registry + loader — `reuben describe [op]` (operator ports/params) and `reuben validate <path>` (load + plan, no audio; catches kind-mismatches and cycles), both with `--json`. The `reuben` binary moved to clap subcommands (`play`/`describe`/`validate`). Live-graph query (inspect a *running* rig) deferred — no consumer yet.
 
 ## Later (post-v1)
 

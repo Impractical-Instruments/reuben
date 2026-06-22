@@ -1,23 +1,30 @@
-//! `reuben` — play an instrument live, driven by OSC over UDP.
+//! `reuben` — the command-line entry point.
 //!
-//! Listens for OSC on UDP `0.0.0.0:9000` and renders an instrument to the default audio
-//! device. With no argument it plays the built-in default rig; pass a path to load a
-//! different instrument JSON: `reuben path/to/instrument.json`. Play a note by sending:
+//! Three subcommands:
+//! - `reuben play [path]` — render an instrument live, driven by OSC over UDP. With no path
+//!   it plays the built-in default rig. Send notes with:
 //!
-//! ```text
-//! /voicer/note  [69.0, 1.0]   # note-on  (MIDI 69 = A4, gate 1)
-//! /voicer/note  [69.0, 0.0]   # note-off (gate 0)
-//! ```
+//!   ```text
+//!   /voicer/note  [69.0, 1.0]   # note-on  (MIDI 69 = A4, gate 1)
+//!   /voicer/note  [69.0, 0.0]   # note-off (gate 0)
+//!   ```
 //!
-//! Any OSC source works (TouchOSC, a Max/Pd patch, `oscsend`, a Python script).
+//! - `reuben describe [op] [--json]` — print the operator set (or one operator's ports,
+//!   params, and resource slots). The introspection half of the Patcher skill (ADR-0020).
+//! - `reuben validate <path> [--json]` — load + plan an instrument with no audio device and
+//!   report structural/wiring errors. Exit 1 if invalid; warnings alone stay exit 0.
 
 use std::net::UdpSocket;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 use std::sync::mpsc;
 use std::thread;
 
+use clap::{Parser, Subcommand};
+
 use reuben_core::plan::Plan;
 use reuben_core::{load_instrument, Registry};
+use reuben_native::cli::{describe, validate};
 use reuben_native::engine::Engine;
 use reuben_native::resources::FsResolver;
 use reuben_native::rigs::DEFAULT_JSON;
@@ -26,7 +33,146 @@ use reuben_native::{audio, osc};
 const BLOCK_SIZE: usize = 256;
 const OSC_BIND: &str = "0.0.0.0:9000";
 
-fn main() {
+#[derive(Parser)]
+#[command(name = "reuben", about = "Play and author reuben instruments.")]
+struct Cli {
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand)]
+enum Command {
+    /// Render an instrument live, driven by OSC over UDP (default: the built-in rig).
+    Play {
+        /// Instrument JSON to play; omit for the built-in default rig.
+        path: Option<PathBuf>,
+    },
+    /// Print the operator set, or one operator's ports/params/resources.
+    Describe {
+        /// Operator type to describe; omit to list them all.
+        op: Option<String>,
+        /// Emit machine-readable JSON instead of a human summary.
+        #[arg(long)]
+        json: bool,
+    },
+    /// Load + plan an instrument (no audio) and report errors/warnings.
+    Validate {
+        /// Instrument JSON to validate.
+        path: PathBuf,
+        /// Emit machine-readable JSON instead of a human summary.
+        #[arg(long)]
+        json: bool,
+    },
+}
+
+fn main() -> ExitCode {
+    match Cli::parse().command {
+        Command::Play { path } => {
+            play(path);
+            ExitCode::SUCCESS
+        }
+        Command::Describe { op, json } => cmd_describe(op.as_deref(), json),
+        Command::Validate { path, json } => cmd_validate(&path, json),
+    }
+}
+
+/// `describe`: dump the operator set (or one operator) as human text or JSON.
+fn cmd_describe(op: Option<&str>, json: bool) -> ExitCode {
+    let ops = match describe(&Registry::builtin(), op) {
+        Ok(ops) => ops,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&ops).expect("serialize describe")
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    for o in &ops {
+        println!("{}", o.type_name);
+        let ports = |dir: &str, ps: &[reuben_native::cli::PortInfo]| {
+            for p in ps {
+                println!("  {dir} {} : {}", p.name, p.kind);
+            }
+        };
+        ports("in ", &o.inputs);
+        ports("out", &o.outputs);
+        for p in &o.params {
+            let unit = if p.unit.is_empty() {
+                String::new()
+            } else {
+                format!(" {}", p.unit)
+            };
+            println!(
+                "  param {} = {}{} [{}..{}] ({})",
+                p.name, p.default, unit, p.min, p.max, p.curve
+            );
+        }
+        for r in &o.resources {
+            println!("  resource {r}");
+        }
+    }
+    ExitCode::SUCCESS
+}
+
+/// `validate`: report whether an instrument loads + plans cleanly. Exit 1 only on hard errors;
+/// warnings (e.g. an unresolved sample) are advisory and keep exit 0.
+fn cmd_validate(path: &Path, json: bool) -> ExitCode {
+    let instrument_json = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: read {}: {e}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let base_dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let report = validate(
+        &instrument_json,
+        &Registry::builtin(),
+        &FsResolver::new(base_dir),
+    );
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&report).expect("serialize report")
+        );
+    } else {
+        for e in &report.errors {
+            match (&e.node, &e.port) {
+                (Some(n), Some(p)) => eprintln!("error [{n} {p}]: {}", e.message),
+                (Some(n), None) => eprintln!("error [{n}]: {}", e.message),
+                _ => eprintln!("error: {}", e.message),
+            }
+        }
+        for w in &report.warnings {
+            eprintln!("warning: {w}");
+        }
+        if report.ok {
+            println!("ok ({} warning(s))", report.warnings.len());
+        }
+    }
+
+    if report.ok {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// `play`: the live audio path — load an instrument and render it, driven by incoming OSC.
+fn play(path: Option<PathBuf>) {
     let (tx, rx) = mpsc::channel();
 
     // Log incoming OSC only when asked: this runs on the receive path, and the stdout
@@ -66,15 +212,15 @@ fn main() {
     // Instrument source: a path argument, else the embedded default. Resource paths (sample
     // files) resolve relative to the instrument file's directory; the embedded default has
     // none, so it roots at the current directory.
-    let (instrument_json, base_dir) = match std::env::args().nth(1) {
+    let (instrument_json, base_dir) = match path {
         Some(path) => {
-            println!("instrument: {path}");
-            let json =
-                std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("read {path}: {e}"));
-            let base = PathBuf::from(&path)
+            println!("instrument: {}", path.display());
+            let json = std::fs::read_to_string(&path)
+                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
+            let base = path
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
-                .map(|p| p.to_path_buf())
+                .map(Path::to_path_buf)
                 .unwrap_or_else(|| PathBuf::from("."));
             (json, base)
         }
