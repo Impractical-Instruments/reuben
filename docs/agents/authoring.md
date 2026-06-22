@@ -122,6 +122,27 @@ Descriptor {
   `FromParam(slot)` (this operator *expands*, producing that many Lanes; the Voicer is the
   canonical expander). Read once at Instantiate — it's structural.
 
+### The one-port-one-type rule ([ADR-0017](../adr/0017-playable-surface-and-control-domain.md))
+
+A functional input is **exactly one port of one type** — never a param *and* a CV (Signal)
+port for the same quantity.
+
+- **Favor a Signal input** where audio-rate modulation is musical (freq, cutoff, amp, pan);
+  use a **Message param** for discrete/structural controls (waveform, mode, voice count, room
+  size). In doubt, favor the higher-resolution (Signal) input.
+- A **Signal input port carries an unwired default scalar** — static use ("cutoff sits at
+  2000") needs no upstream node; the default is the one scalar that survives from the old
+  "param." Read inputs as `io.input(port) -> Option<&[f32]>`, falling back to the default when
+  unwired (the oscillator's `freq` is the template).
+- To drive a Signal input from **Messages**, the author inserts the explicit **Message→Signal
+  converter** (its `mode` param picks snap/slew/smooth/glide). Interpolation/smoothing logic
+  lives *once* in that converter — never re-implement it per operator.
+- Cross-domain wiring (Message port → Signal port, or vice-versa) is a **type error**
+  (`PortKindMismatch`); resolve it with an explicit converter, never an implicit coercion.
+
+There is therefore no "combine a param and a CV value at one port" question — base-plus-
+modulation is built explicitly with an `add` operator in the relevant domain.
+
 ## Adding an Operator
 
 1. **Create** `crates/reuben-core/src/operators/<name>.rs` — a struct + `impl Operator`.
