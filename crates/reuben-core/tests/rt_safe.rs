@@ -20,6 +20,7 @@ use reuben_core::{load, AudioConfig, Graph, Registry};
 const DEFAULT_JSON: &str = include_str!("../../../instruments/default.json");
 const SEQUENCE_JSON: &str = include_str!("../../../instruments/sequence.json");
 const SCALE_DEMO_JSON: &str = include_str!("../../../instruments/scale-demo.json");
+const GOOD_BUTTON_JSON: &str = include_str!("../../../instruments/good-button.json");
 
 /// Number of `alloc`/`realloc` calls since process start.
 static ALLOCS: AtomicUsize = AtomicUsize::new(0);
@@ -148,6 +149,48 @@ fn render_block_is_allocation_free_after_warmup() {
     assert_eq!(
         ctx_changing, 0,
         "context-changing render allocated {ctx_changing} time(s)"
+    );
+
+    // The math family + M→S converter (ADR-0017) must be allocation-free too: the Good Button
+    // rig fans a `map` emit to two ranged `map`s into two `m2s` converters driving the filter's
+    // Signal cutoff/resonance. Emits route into the precapped pool; converters write CV buffers.
+    let graph = load(GOOD_BUTTON_JSON, &Registry::builtin()).expect("load good-button.json");
+    let mut plan = Plan::instantiate(graph, cfg).expect("instantiate");
+    let mut r = Renderer::new(&plan);
+
+    // Build the Good Button + note messages up front (their address Strings allocate here).
+    let bright = [Message::new("/brightness", [Arg::Float(1.0)], 0)];
+    let note = [Message::new(
+        "/voicer/note",
+        [Arg::Float(57.0), Arg::Float(1.0)],
+        0,
+    )];
+
+    r.render_block(&mut plan, &note, &mut out);
+    for _ in 0..16 {
+        r.render_block(&mut plan, &bright, &mut out);
+    }
+    // Steady state: the converters hold their last value with no new messages.
+    let before = ALLOCS.load(Ordering::Relaxed);
+    for _ in 0..1000 {
+        r.render_block(&mut plan, &[], &mut out);
+    }
+    let gb_steady = ALLOCS.load(Ordering::Relaxed) - before;
+    assert_eq!(
+        gb_steady, 0,
+        "good-button steady-state allocated {gb_steady} time(s)"
+    );
+
+    // Sweeping the Good Button every block (a `map` emit fanned through the chain each block)
+    // must also be allocation-free.
+    let before = ALLOCS.load(Ordering::Relaxed);
+    for _ in 0..100 {
+        r.render_block(&mut plan, &bright, &mut out);
+    }
+    let gb_sweeping = ALLOCS.load(Ordering::Relaxed) - before;
+    assert_eq!(
+        gb_sweeping, 0,
+        "good-button sweeping allocated {gb_sweeping} time(s)"
     );
 
     // The sample player (ADR-0016) must be allocation-free too: a voicer -> sample -> out rig

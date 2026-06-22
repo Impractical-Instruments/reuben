@@ -9,6 +9,8 @@ use reuben_core::{load, AudioConfig, Graph, InstrumentDoc, Registry};
 const DEFAULT_JSON: &str = include_str!("../../../instruments/default.json");
 const METRONOME_JSON: &str = include_str!("../../../instruments/metronome.json");
 const SEQUENCE_JSON: &str = include_str!("../../../instruments/sequence.json");
+const GOOD_BUTTON_JSON: &str = include_str!("../../../instruments/good-button.json");
+const AUTO_FILTER_JSON: &str = include_str!("../../../instruments/auto-filter.json");
 const COMMITTED_SCHEMA: &str = include_str!("../schema/instrument.schema.json");
 
 /// Render `seconds` of `graph`, holding note A4 (MIDI 69) from frame 0.
@@ -134,6 +136,124 @@ fn plays_a_chord_polyphonically() {
     let again = render_notes(load(DEFAULT_JSON, &reg).unwrap(), cfg, 0.5, &chord);
     assert_eq!(triad.len(), again.len());
     for (i, (x, y)) in triad.iter().zip(&again).enumerate() {
+        assert_eq!(x.to_bits(), y.to_bits(), "non-deterministic at sample {i}");
+    }
+}
+
+/// Render `seconds` of `graph`, holding note A4 from frame 0 and sending one extra control
+/// Message (e.g. a Good Button value) at frame 0 of the first block.
+fn render_with_control(graph: Graph, cfg: AudioConfig, seconds: f32, control: Message) -> Vec<f32> {
+    let mut plan = Plan::instantiate(graph, cfg).expect("instantiate");
+    let mut r = Renderer::new(&plan);
+    let blocks = (cfg.sample_rate * seconds) as usize / cfg.block_size;
+    let mut buf = vec![0.0f32; cfg.block_size];
+    let mut all = Vec::with_capacity(blocks * cfg.block_size);
+    for b in 0..blocks {
+        let msgs: Vec<Message> = if b == 0 {
+            vec![
+                Message::new("/voicer/note", [Arg::Float(57.0), Arg::Float(1.0)], 0),
+                control.clone(),
+            ]
+        } else {
+            Vec::new()
+        };
+        r.render_block(&mut plan, &msgs, &mut buf);
+        all.extend_from_slice(&buf);
+    }
+    all
+}
+
+#[test]
+fn good_button_brightness_opens_the_filter() {
+    // ADR-0017 Good Button: one /brightness knob fanned (identity map -> two ranged maps ->
+    // two m2s converters) into the filter's Signal cutoff + resonance. Brightness 1.0 opens
+    // the filter far wider than 0.0, so the held saw carries clearly more energy.
+    let cfg = AudioConfig::new(48_000.0, 256);
+    let reg = Registry::builtin();
+
+    let dark = render_with_control(
+        load(GOOD_BUTTON_JSON, &reg).expect("load good-button.json"),
+        cfg,
+        1.0,
+        Message::new("/brightness", [Arg::Float(0.0)], 0),
+    );
+    let bright = render_with_control(
+        load(GOOD_BUTTON_JSON, &reg).expect("load good-button.json"),
+        cfg,
+        1.0,
+        Message::new("/brightness", [Arg::Float(1.0)], 0),
+    );
+
+    // Steady-state window past the attack and the converter's smoothing settle.
+    let win =
+        |b: &[f32]| rms(&b[(cfg.sample_rate as usize / 2)..(cfg.sample_rate as usize / 2 + 8192)]);
+    let (d, br) = (win(&dark), win(&bright));
+    assert!(br > 0.02, "bright render near-silent ({br})");
+    assert!(
+        br > d * 1.4,
+        "brightness should open the filter: dark {d}, bright {br}"
+    );
+
+    // Determinism: the same Good Button value renders bit-identically.
+    let again = render_with_control(
+        load(GOOD_BUTTON_JSON, &reg).unwrap(),
+        cfg,
+        1.0,
+        Message::new("/brightness", [Arg::Float(1.0)], 0),
+    );
+    for (i, (x, y)) in bright.iter().zip(&again).enumerate() {
+        assert_eq!(x.to_bits(), y.to_bits(), "non-deterministic at sample {i}");
+    }
+}
+
+#[test]
+fn auto_filter_base_plus_lfo_modulation_sounds_and_wobbles() {
+    // ADR-0017 base-plus-modulation: a Signal `add` sums a base-cutoff CV (m2s) and an LFO
+    // wobble, feeding the filter's Signal cutoff. The rig must sound; and turning the LFO
+    // depth to 0 (a static cutoff) must change the output — which proves the LFO -> add ->
+    // filter.cutoff modulation path is actually live, not bypassed.
+    let cfg = AudioConfig::new(48_000.0, 256);
+    let reg = Registry::builtin();
+
+    let wobble = render_with_control(
+        load(AUTO_FILTER_JSON, &reg).expect("load auto-filter.json"),
+        cfg,
+        1.0,
+        Message::new("/lfo/depth", [Arg::Float(1500.0)], 0),
+    );
+    let still = render_with_control(
+        load(AUTO_FILTER_JSON, &reg).unwrap(),
+        cfg,
+        1.0,
+        Message::new("/lfo/depth", [Arg::Float(0.0)], 0),
+    );
+
+    let peak = wobble.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+    assert!(peak > 0.05, "auto-filter near-silent (peak {peak})");
+
+    // Past the converter settle, the moving cutoff makes the wobble render diverge from the
+    // static one. Compare RMS of the difference to the signal's own RMS.
+    let sr = cfg.sample_rate as usize;
+    let seg = sr / 2..sr / 2 + 8192;
+    let diff: Vec<f32> = wobble[seg.clone()]
+        .iter()
+        .zip(&still[seg.clone()])
+        .map(|(a, b)| a - b)
+        .collect();
+    let rel = rms(&diff) / rms(&wobble[seg]);
+    assert!(
+        rel > 0.1,
+        "LFO modulation should visibly alter the output vs a static cutoff (relative diff {rel})"
+    );
+
+    // Determinism: the wobble render is bit-identical on a re-run.
+    let again = render_with_control(
+        load(AUTO_FILTER_JSON, &reg).unwrap(),
+        cfg,
+        1.0,
+        Message::new("/lfo/depth", [Arg::Float(1500.0)], 0),
+    );
+    for (i, (x, y)) in wobble.iter().zip(&again).enumerate() {
         assert_eq!(x.to_bits(), y.to_bits(), "non-deterministic at sample {i}");
     }
 }
