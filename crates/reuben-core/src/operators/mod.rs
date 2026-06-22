@@ -7,6 +7,7 @@
 pub mod clock;
 pub mod context;
 pub mod delay;
+pub mod djfilter;
 pub mod envelope;
 pub mod filter;
 pub mod lfo;
@@ -23,6 +24,7 @@ pub mod voicer;
 pub use clock::Clock;
 pub use context::ContextOp;
 pub use delay::Delay;
+pub use djfilter::Djfilter;
 pub use envelope::Envelope;
 pub use filter::Filter;
 pub use lfo::Lfo;

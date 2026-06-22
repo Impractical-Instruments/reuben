@@ -1,0 +1,31 @@
+{
+  "instrument": "djfilter-demo",
+  "doc": "A self-playing saw arpeggio through the DJ-mixer `djfilter` knob. The Clock's beat gate drives a sequencer (a major arpeggio) into a 4-voice Voicer; each voice fires a saw oscillator through `/djfilter` and an ADSR into the output. The star is the one bipolar filter knob: a public identity `map` (`/filter_knob`, rests at North = 0) smoothed through an `m2s` into the djfilter's Signal `position` input — so turning it is zipper-free. Send /filter_knob [-1..1]: 0 = open/no filter, negative (CCW) sweeps a low-pass down, positive (CW) sweeps a high-pass up. Set tempo via /clock/tempo; edit the line via /sequencer/step1../sequencer/step8.",
+  "nodes": [
+    { "type": "clock", "address": "/clock", "doc": "Beat phasor + beat gate.", "params": { "tempo": 115.0 }, "control": { "label": "Tempo", "param": "tempo" } },
+    { "type": "sequencer", "address": "/sequencer", "doc": "Walks a major arpeggio one step per beat -> degree Messages.", "params": { "length": 8, "step1": 0.0, "step2": 2.0, "step3": 4.0, "step4": 7.0, "step5": 9.0, "step6": 7.0, "step7": 4.0, "step8": 2.0 } },
+    { "type": "voicer", "address": "/voicer", "doc": "Degree -> per-Voice freq + gate CV.", "params": { "voices": 4 } },
+    { "type": "oscillator", "address": "/osc", "doc": "Saw tone (rich harmonics for the filter to chew).", "params": { "waveform": 1.0 } },
+    { "type": "djfilter", "address": "/djfilter", "doc": "The DJ filter. position is driven by the smoothed knob; resonance set to sing on sweeps.", "params": { "resonance": 0.35 }, "control": { "label": "Resonance", "param": "resonance" } },
+    { "type": "envelope", "address": "/env", "doc": "Plucky ADSR VCA, gated per step.", "params": { "attack": 0.01, "decay": 0.15, "sustain": 0.5, "release": 0.2 } },
+    { "type": "output", "address": "/out" },
+
+    { "type": "map", "address": "/filter_knob", "doc": "PUBLIC DJ filter knob. Identity pass-through over [-1,1]; rests at North = 0 (emitted on init so the chain and any control surface agree at rest). Send /filter_knob [-1..1].", "params": { "in_min": -1.0, "in_max": 1.0, "out_min": -1.0, "out_max": 1.0, "default": 0.0 }, "control": { "label": "Filter" } },
+    { "type": "m2s", "address": "/cv_position", "doc": "Smooth the knob into a CV signal feeding the djfilter position; default 0 (North) before any knob move.", "params": { "mode": 2.0, "time": 0.05, "default": 0.0 } }
+  ],
+  "connections": [
+    { "from": { "node": "/clock", "port": "gate" }, "to": { "node": "/sequencer", "port": "clock" } },
+    { "from": { "node": "/sequencer", "port": "degrees" }, "to": { "node": "/voicer", "port": "notes" } },
+    { "from": { "node": "/voicer", "port": "freq" }, "to": { "node": "/osc", "port": "freq" } },
+    { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/djfilter", "port": "audio" } },
+    { "from": { "node": "/djfilter", "port": "audio" }, "to": { "node": "/env", "port": "audio" } },
+    { "from": { "node": "/voicer", "port": "gate" }, "to": { "node": "/env", "port": "gate" } },
+    { "from": { "node": "/env", "port": "audio" }, "to": { "node": "/out", "port": "audio" } },
+
+    { "from": { "node": "/filter_knob", "port": "out" }, "to": { "node": "/cv_position", "port": "in" } },
+    { "from": { "node": "/cv_position", "port": "out" }, "to": { "node": "/djfilter", "port": "position" } }
+  ],
+  "outputs": [
+    { "node": "/out", "port": "audio" }
+  ]
+}
