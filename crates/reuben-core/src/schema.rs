@@ -96,17 +96,24 @@ pub fn generate(registry: &Registry) -> Value {
                         "type": "string",
                         "description": "Resource id into the document's `resources` table; only valid on a `sample` node (ADR-0016)."
                     },
-                    "control": { "$ref": "#/$defs/control" }
+                    "control": {
+                        "description": "Public-control metadata for a generated control surface (ADR-0018). One control spec, or an array of them for a multi-param node (e.g. a sequencer's steps).",
+                        "oneOf": [
+                            { "$ref": "#/$defs/controlSpec" },
+                            { "type": "array", "items": { "$ref": "#/$defs/controlSpec" } }
+                        ]
+                    }
                 },
                 "allOf": branches
             },
-            "control": {
+            "controlSpec": {
                 "type": "object",
-                "description": "Public-control metadata for a generated control surface (ADR-0018). Marks this node as player-facing; the engine ignores it. `label` is required; range/`unit` default from the bound param's metadata (a direct param) or the node's `in_min`/`in_max` params (a `map` front-end) and may be overridden here.",
+                "description": "One player-facing control (ADR-0018); the engine ignores it. `label` is required. With no `param`, the widget binds to the node address (a `map` Good Button, range from its `in_min`/`in_max`); with a `param`, it binds to `/<node>/<param>` (range/`unit`/`default` from the param's metadata). Any of those may be overridden here.",
                 "required": ["label"],
                 "additionalProperties": false,
                 "properties": {
                     "label": { "type": "string" },
+                    "param": { "type": "string" },
                     "unit": { "type": "string" },
                     "widget": { "type": "string" },
                     "min": { "type": "number" },
