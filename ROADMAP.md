@@ -60,10 +60,13 @@ Each phase lists the open-design threads it forces (see [OPEN-QUESTIONS.md](docs
 
 - **Groove box, tap-to-play chord/melody, drag/strum instrument, meta-effects** — built from V1.1 operators over the V1.2 surface. The payoff: instant music for beginners. *(Forces: Toy-design thread — grill per Toy.)*
 
-### V1.4 — Good-button UX layer
+### V1.4 — Good-button UX layer — ✅ DONE
 
-- The surface a human actually touches. Driven over OSC first (TouchOSC / web stand-in), proving the control-surface API before any native GUI commitment.
-- 🟡 *Early step shipped:* the **`control-surface` skill** ([ADR-0018](docs/adr/0018-control-surface-generation.md)) generates a Hexler TouchOSC layout (`.tosc`) from an instrument's `control` blocks (Good Buttons, params, a `note-toggle` play control) — the OSC-driven surface, ahead of any native GUI. Adds an opt-in, engine-ignored `control` block to the Instrument format and a resting `default` to the `map` operator. The human-facing UX/GUI layer itself remains.
+The surface a human actually touches, driven over OSC first — proving the control-surface API before any native GUI commitment. The **TouchOSC layout *is* that surface**: a player holds an instrument on a phone/tablet and OSC goes straight to reuben's node addresses, no engine I/O work and no GUI commitment. (TouchOSC *was* the roadmap's "TouchOSC / web stand-in" — the web stand-in was an *alternative* carrier, not an additional requirement.)
+
+- ✅ **`control-surface` skill** ([ADR-0018](docs/adr/0018-control-surface-generation.md)) — generates a Hexler TouchOSC layout (`.tosc`) from an instrument's `control` blocks (Good Buttons, params, a `note-toggle` play control); on an un-annotated instrument it infers candidates and **writes `control` blocks back into the JSON**. Adds an opt-in, engine-ignored `control` block to the Instrument format and a resting `default` to the `map` operator.
+- ✅ **Hands-on proof** — `instruments/good-button.json` and `instruments/djfilter-demo.json` ship annotated, with generated surfaces in `control-surfaces/`; human TouchOSC walkthrough in [docs/v1.4-control-surface-testing.md](docs/v1.4-control-surface-testing.md).
+- *Deferred → [Later](#later-post-v1):* the reactive **auto-UI / native-or-web app** (an app that builds a playable surface live from an instrument, plus two-way OSC feedback). This disposable generator de-risks it by getting us playing first (ADR-0018).
 
 ### V1.5 — Reach & robustness (parallelizable; ship)
 
@@ -82,6 +85,7 @@ Each phase lists the open-design threads it forces (see [OPEN-QUESTIONS.md](docs
 
 ## Later (post-v1)
 
+- **Reactive auto-UI / native-or-web UX layer** — an app that builds a playable surface *live* from an instrument (the generalization of V1.4's disposable `control-surface` generator, and ADR-0018's named "auto-UI system"), plus two-way OSC feedback so the surface reflects current values (needs an engine OSC *sender* — reuben is OSC-in only today). V1.4's TouchOSC generator de-risks this; it is deliberately not part of v1.
 - CLAP plugin hosting (in scope, designed-for but not built for MVP)
 - C ABI boundary for embedding (cbindgen)
 - Embedded executor backends (game-engine job systems)
