@@ -11,8 +11,8 @@ same graph, not different file types — this skill authors all three. It ground
 **live operator set** (`reuben describe`) and proves its work on the **real engine load path**
 (`reuben validate`) before finishing (ADR-0020).
 
-It does **not** author new Operators (that is Rust — the Developer skill), write `control` blocks
-(that is the `control-surface` skill, ADR-0018), or edit the schema/core.
+It does **not** author new Operators (that is Rust — the `create-operator` skill, ADR-0021), write
+`control` blocks (that is the `control-surface` skill, ADR-0018), or edit the schema/core.
 
 ## The loop: introspect → draft → validate → report
 
@@ -82,7 +82,7 @@ cycle, advisory warning) and describe (list-all, one-op fields, unknown-op error
 |---|---|
 | Instrument/Rig graph — nodes, params, connections, outputs, resources | **author / edit** (validate before done) |
 | `control` blocks (player-facing UI metadata) | **never** — that is the `control-surface` skill |
-| New Operator types (Rust) | **never** — that is the Developer skill |
+| New Operator types (Rust) | **never** — that is the `create-operator` skill (ADR-0021) |
 | `instrument.schema.json` / core crates | **never edit** — read the schema for grounding only |
 
 ## Report
