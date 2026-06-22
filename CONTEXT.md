@@ -85,7 +85,8 @@ A control that targets many destinations at once via wildcard [[address]] matchi
 _Avoid_: macro, rack (rack is a kind of meta-effect, not a separate mechanism).
 
 **Good Button**:
-The core design principle: every control is hard to make sound bad. Energy in produces juicy musical feedback out. Easy defaults always provided.
+Both a principle and an artifact. *As principle*: every control is hard to make sound bad — energy in produces juicy musical feedback out, easy defaults always provided. *As artifact*: a curated, often mapped control on an [[instrument]]'s surface (e.g. one "brightness" knob fanned to filter cutoff + resonance, each over its own range) — built from composition (`map` Operators + Message fan-out), not a special type. A Good Button (artifact) embodies the Good Button (principle).
+_Avoid_: meta param, meta-control, macro (all name the artifact — say Good Button).
 
 **Signal**:
 A continuous audio-rate float buffer flowing between Operators — one block of samples per channel. CV and audio are the same thing: both are Signals. Sub-audio-rate control is not a Signal; it is a Message.
