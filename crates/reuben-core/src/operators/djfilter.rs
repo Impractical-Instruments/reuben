@@ -185,8 +185,7 @@ impl Operator for Djfilter {
         if !position_wired {
             // Fast path: the knob is constant for this (sub)block, so mode + coefficients are
             // computed once.
-            let (use_hp, cutoff) =
-                target(position_default, lp_start, lp_end, hp_start, hp_end);
+            let (use_hp, cutoff) = target(position_default, lp_start, lp_end, hp_start, hp_end);
             let (k, a1, a2, a3) = coeffs(cutoff, resonance, sample_rate);
             for i in 0..n {
                 let x = io.input(IN_AUDIO).map(|s| s[i]).unwrap_or(0.0);
@@ -390,7 +389,10 @@ mod tests {
         // Both bands have unit amplitude, so both halves carry roughly one tone's worth of energy
         // — the point is each half is dominated by a *different* tone, which the band tests above
         // already prove per-mode. Here we just assert both halves stay alive and bounded.
-        assert!(early > 0.1 && late > 0.1, "both halves audible: {early}, {late}");
+        assert!(
+            early > 0.1 && late > 0.1,
+            "both halves audible: {early}, {late}"
+        );
         for (i, &s) in out.iter().enumerate() {
             assert!(s.is_finite() && s.abs() < 8.0, "sample {i} unbounded: {s}");
         }
