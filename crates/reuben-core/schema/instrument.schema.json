@@ -294,6 +294,70 @@
           "if": {
             "properties": {
               "type": {
+                "const": "djfilter"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "hp_end": {
+                    "default": 6000.0,
+                    "description": "unit: Hz, curve: Exponential",
+                    "maximum": 20000.0,
+                    "minimum": 20.0,
+                    "type": "number"
+                  },
+                  "hp_start": {
+                    "default": 20.0,
+                    "description": "unit: Hz, curve: Exponential",
+                    "maximum": 20000.0,
+                    "minimum": 20.0,
+                    "type": "number"
+                  },
+                  "lp_end": {
+                    "default": 200.0,
+                    "description": "unit: Hz, curve: Exponential",
+                    "maximum": 20000.0,
+                    "minimum": 20.0,
+                    "type": "number"
+                  },
+                  "lp_start": {
+                    "default": 20000.0,
+                    "description": "unit: Hz, curve: Exponential",
+                    "maximum": 20000.0,
+                    "minimum": 20.0,
+                    "type": "number"
+                  },
+                  "position": {
+                    "default": 0.0,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 1.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  },
+                  "resonance": {
+                    "default": 0.10000000149011612,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
                 "const": "envelope"
               }
             },
@@ -911,6 +975,7 @@
             "context",
             "delay",
             "differentiate",
+            "djfilter",
             "envelope",
             "filter",
             "integrate",
