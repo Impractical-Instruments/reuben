@@ -184,6 +184,16 @@ returns the `Graph` plus any non-fatal `LoadWarning`s (a missing/undecodable sam
 to silence). `instruments/sampler.json` is the worked example; `reuben-native` supplies a
 filesystem WAV resolver.
 
+A node may also carry an optional **`control`** block
+([ADR-0018](../adr/0018-control-surface-generation.md)) — surface metadata marking it
+player-facing: a `label` (required) plus optional `unit`/`widget`/range, a `param` (to bind a
+specific param instead of the node address), or `widget: "note-toggle"` with a `note`/`port`
+(a play toggle). It is **opaque to the engine** — an untyped passthrough on `NodeDoc` that
+round-trips through load/save but is never read at runtime; the [`control-surface`
+skill](../../.claude/skills/control-surface/SKILL.md) reads it to generate a TouchOSC surface.
+A `control` value is a single spec or an array (a multi-param node like a sequencer's steps).
+`instruments/good-button.json` is the worked example.
+
 ## Addressing
 
 Every node has an OSC **address**, derived from graph structure by default. A Message

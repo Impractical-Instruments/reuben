@@ -63,6 +63,7 @@ Each phase lists the open-design threads it forces (see [OPEN-QUESTIONS.md](docs
 ### V1.4 — Good-button UX layer
 
 - The surface a human actually touches. Driven over OSC first (TouchOSC / web stand-in), proving the control-surface API before any native GUI commitment.
+- 🟡 *Early step shipped:* the **`control-surface` skill** ([ADR-0018](docs/adr/0018-control-surface-generation.md)) generates a Hexler TouchOSC layout (`.tosc`) from an instrument's `control` blocks (Good Buttons, params, a `note-toggle` play control) — the OSC-driven surface, ahead of any native GUI. Adds an opt-in, engine-ignored `control` block to the Instrument format and a resting `default` to the `map` operator. The human-facing UX/GUI layer itself remains.
 
 ### V1.5 — Reach & robustness (parallelizable; ship)
 

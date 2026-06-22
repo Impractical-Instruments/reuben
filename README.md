@@ -72,6 +72,11 @@ and the Message→Signal converter).
 Write your own rig and load it the same way; documents are validated against a JSON
 Schema generated from the operators (`crates/reuben-core/schema/instrument.schema.json`).
 
+**Play it on a tablet:** annotate an instrument's player-facing nodes with a `control` block
+and generate a [TouchOSC](https://hexler.net/touchosc) surface with the `control-surface`
+skill ([ADR-0018](docs/adr/0018-control-surface-generation.md)); `.tosc` layouts land in
+`control-surfaces/`. `control-surfaces/good-button.tosc` is a worked example.
+
 ### Offline (no audio device)
 
 Render a tone straight to a WAV file:
