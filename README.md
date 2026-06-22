@@ -58,10 +58,16 @@ cargo run -p reuben-native --bin reuben -- instruments/<name>.json
 | `autotune`   | needs OSC notes   | Play any pitch at `/snap/note [midi, gate]`; it snaps to the nearest scale tone. Set the key on `/context`, snap mode on `/snap/{target,direction}`. |
 | `sampler`    | needs OSC notes   | One-shot trigger sampler: a note fires `samples/blip.wav`; pitch shifts the playback rate. `/sample/{root,gain,start,channel}`. |
 | `sampler-arp` | **yes**          | A self-playing sample arpeggio: a clock-driven sequencer fires `samples/blip.wav` through a major arpeggio. `/clock/tempo`, `/sequencer/step1`..`step6`, `/sequencer/length`. |
+| `good-button` | needs OSC notes   | The synth with one **Good Button** (ADR-0017): sweep `/brightness [0..1]` — a single knob fanned to filter cutoff *and* resonance, each over its own range. Built from `map` + `m2s` operators, no format change. |
+| `auto-filter` | needs OSC notes   | The synth with a base-plus-LFO auto-wah: a Signal `add` sums a base cutoff CV with an LFO wobble into the filter. `/cutoff [Hz]`, `/lfo/{rate,depth}`. |
 
 `metronome`, `vibrato`, `sequence`, `scale-demo`, and `sampler-arp` make sound immediately — good for a
 first run with no OSC sender. Every node's params are live over OSC at its address (e.g.
 `/delay/time`).
+
+See **[docs/v1.2-playable-surface-testing.md](docs/v1.2-playable-surface-testing.md)** for a
+step-by-step OSC walkthrough of the V1.2 control surface (Good Buttons, the math operators,
+and the Message→Signal converter).
 
 Write your own rig and load it the same way; documents are validated against a JSON
 Schema generated from the operators (`crates/reuben-core/schema/instrument.schema.json`).

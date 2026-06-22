@@ -92,6 +92,16 @@ An asymmetry is structural and accepted: **Signal is f32-only** (audio buffers a
 **Messages are multi-type** (`Float | Int | Bool | Sym`). So int math exists only in the
 Message domain; the Signal mirror is f32 alone.
 
+*Implementation note (V1.2 as built).* A second asymmetry surfaced from the message-routing
+model and is accepted: a delivered `Event` carries only its node-local **address**, not the
+destination **input port** it arrived on, so a *multi-input* Message operator can't tell its
+operands apart. The V1.2 family is therefore split by arity, not mirrored one-for-one:
+**binary ops (`add`, `mul`) are Signal-domain** (two buffers — and combining two *streams* is
+modulation, which is where the Signal domain naturally lives), while the **Message domain gets
+the single-input ops** (`map`, `differentiate`, `integrate`), which consume any incoming value
+event and so compose freely. Multi-input Message arithmetic (and the per-int-type Message
+shells) waits on **port-tagged Message routing** — a small, isolated deferral, noted below.
+
 - **Pointwise ops** (`map`, `add`, `mul`) need no time.
 - **Calculus ops** (`differentiate`, `integrate`) need `dt`. In the Message domain `dt` is
   **real time from the sample-accurate `frame`** every Message already carries — `velocity =
@@ -173,13 +183,22 @@ they leave V1.2:
 
 ## Consequences
 
-- **New operators (the V1.2 build):**
-  - A **math family** — at least `map`, `add`, `mul`, `differentiate`, `integrate` — generated
-    by a macro from a single `Number`-generic core, in **both** domains (Message per numeric
-    type; Signal f32). `map` is 1:1. Calculus ops use frame-based `dt`. Each registered in
-    `Registry::builtin()`; schema regenerated.
-  - One **M→S converter** operator: Message in → Signal out, `mode` ∈ {snap, slew, smooth,
-    glide} + `rate`/`time`. (S→M deferred.)
+- **New operators (the V1.2 build, as shipped):**
+  - A **math family** from a single `Number`-generic core (`operators/math.rs`): a
+    `signal_pointwise!` macro stamps the Signal binary ops **`add`** / **`mul`** (each input's
+    unwired default is the op's identity, so wiring one side passes the other through);
+    Message-domain **`map`** (1:1 affine remap with input/output ranges + linear/exponential
+    curve — the Good Button workhorse), **`differentiate`** and **`integrate`** (frame-based
+    `dt`, accumulated across blocks). All registered in `Registry::builtin()`; schema
+    regenerated. (Binary Message ops + per-int-type shells deferred to port-tagged routing —
+    see the math-family note above.)
+  - One **M→S converter** (`operators/m2s.rs`): Message in → Signal out, `mode` ∈ {snap, slew,
+    smooth, glide} + `rate`/`time` + a `default` (resting value before the first message). The
+    one sanctioned Message→Signal bridge. (S→M deferred.)
+  - Worked examples: **`instruments/good-button.json`** (a brightness Good Button — `map` fan
+    → `m2s` → filter cutoff/resonance) and **`instruments/auto-filter.json`** (base + LFO via
+    Signal `add`). Both covered by integration tests and the `rt_safe` allocation check; a
+    human OSC walkthrough lives in [v1.2-playable-surface-testing.md](../v1.2-playable-surface-testing.md).
 - **Operator sweep (one-port-one-type):** every existing operator reclassified to one port per
   function; Signal input ports gain unwired default scalars. **Oscillator `freq` → Signal-only**
   (param becomes the port default); **filter `cutoff`/`resonance` → Signal inputs**. Update each
@@ -196,3 +215,7 @@ they leave V1.2:
   stable node `id` + opt-in refactor safety; additive-then-encapsulating surface; the
   address-rename tool (with id auto-pin); Signal→Message conversion; wildcard dispatch
   ([ADR-0005](0005-osc-namespace-and-wildcards.md)); a reserved `Scalar`/`Number` noun.
+  **Port-tagged Message routing** — tag a delivered `Event` with the destination input port
+  (not just the node-local address) so a *multi-input* Message operator can tell its operands
+  apart; unlocks binary Message arithmetic (`add`/`mul` per numeric type) without the
+  Signal-domain detour. Small and isolated to the routing layer.

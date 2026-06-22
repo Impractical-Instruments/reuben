@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use crate::descriptor::Descriptor;
 use crate::operator::Operator;
 use crate::operators::{
-    Clock, ContextOp, Delay, Envelope, Filter, Lfo, Oscillator, Output, Reverb, SamplePlayer,
-    Sequencer, Snap, Voicer,
+    Add, Clock, ContextOp, Delay, Differentiate, Envelope, Filter, Integrate, Lfo, M2s, Map, Mul,
+    Oscillator, Output, Reverb, SamplePlayer, Sequencer, Snap, Voicer,
 };
 
 /// One registered operator type: how to build it, and its self-description.
@@ -37,7 +37,8 @@ impl Registry {
     }
 
     /// The built-in operator set: oscillator, envelope, filter, voicer, output, clock, delay,
-    /// reverb, lfo, sequencer, context, snap, sample.
+    /// reverb, lfo, sequencer, context, snap, sample, and the V1.2 control-surface ops (ADR-0017)
+    /// — the math family `map`/`add`/`mul`/`differentiate`/`integrate` and the `m2s` converter.
     pub fn builtin() -> Self {
         let mut r = Self::new();
         r.register(|| Box::new(Oscillator::new()), Oscillator::descriptor());
@@ -53,6 +54,16 @@ impl Registry {
         r.register(|| Box::new(ContextOp::new()), ContextOp::descriptor());
         r.register(|| Box::new(Snap::new()), Snap::descriptor());
         r.register(|| Box::new(SamplePlayer::new()), SamplePlayer::descriptor());
+        // Math-operator family + Message→Signal converter (ADR-0017).
+        r.register(|| Box::new(Map::new()), Map::descriptor());
+        r.register(|| Box::new(Add::new()), Add::descriptor());
+        r.register(|| Box::new(Mul::new()), Mul::descriptor());
+        r.register(
+            || Box::new(Differentiate::new()),
+            Differentiate::descriptor(),
+        );
+        r.register(|| Box::new(Integrate::new()), Integrate::descriptor());
+        r.register(|| Box::new(M2s::new()), M2s::descriptor());
         r
     }
 
@@ -89,12 +100,18 @@ mod tests {
         assert_eq!(
             names,
             vec![
+                "add",
                 "clock",
                 "context",
                 "delay",
+                "differentiate",
                 "envelope",
                 "filter",
+                "integrate",
                 "lfo",
+                "m2s",
+                "map",
+                "mul",
                 "oscillator",
                 "output",
                 "reverb",

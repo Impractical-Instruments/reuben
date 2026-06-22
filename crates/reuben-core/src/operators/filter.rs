@@ -1,16 +1,26 @@
 //! Filter — state-variable filter, low-pass output.
 //!
-//! Ports/params are FROZEN (Stage A). DSP body is filled test-first in Stage B.
+//! One-port-one-type (ADR-0017): `cutoff` and `resonance` are **Signal inputs**, the
+//! canonical audio-rate sweep targets. Each carries an **unwired default scalar** — the
+//! `cutoff`/`resonance` *params*, which survive only as the value the port reads when no
+//! Signal is wired. So a static filter (`/filter/cutoff 3000`) needs no upstream node and
+//! is bit-identical to the old param-only behavior, while a Good Button or LFO can sweep
+//! the same port by wiring a Signal (e.g. an `m2s` converter, ADR-0017). To drive cutoff
+//! from Messages, insert the `m2s` converter — the smoothing policy lives there, once.
 //!
-//! - input 0: `audio` (Signal)
+//! - input 0: `audio` (Signal) — the signal to filter.
+//! - input 1: `cutoff` (Signal) — per-sample cutoff in Hz; unwired → the `cutoff` param.
+//! - input 2: `resonance` (Signal) — per-sample resonance 0..1; unwired → the param.
 //! - output 0: `audio` (Signal) — low-pass output.
-//! - param 0: `cutoff` (Hz)
-//! - param 1: `resonance` (0..1)
+//! - param 0: `cutoff` (Hz) — the cutoff Signal port's unwired default.
+//! - param 1: `resonance` (0..1) — the resonance Signal port's unwired default.
 
 use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
 use crate::operator::{Io, Operator};
 
 pub const IN_AUDIO: usize = 0;
+pub const IN_CUTOFF: usize = 1;
+pub const IN_RESONANCE: usize = 2;
 pub const OUT_AUDIO: usize = 0;
 pub const P_CUTOFF: usize = 0;
 pub const P_RESONANCE: usize = 1;
@@ -27,13 +37,43 @@ impl Filter {
     pub fn new() -> Self {
         Self::default()
     }
+
+    /// One Cytomic SVF sample step against precomputed coefficients; returns the low-pass
+    /// output and advances the integrator state. Shared by the constant and modulated paths.
+    #[inline]
+    fn svf_step(&mut self, x: f32, a1: f32, a2: f32, a3: f32) -> f32 {
+        let v3 = x - self.ic2eq;
+        let v1 = a1 * self.ic1eq + a2 * v3;
+        let v2 = self.ic2eq + a2 * self.ic1eq + a3 * v3;
+        self.ic1eq = 2.0 * v1 - self.ic1eq;
+        self.ic2eq = 2.0 * v2 - self.ic2eq;
+        v2
+    }
+}
+
+/// TPT / zero-delay-feedback SVF coefficients for a given cutoff (Hz) and resonance (0..1).
+/// Cutoff is clamped to a safe range so `tan` never blows up; resonance maps to damping
+/// `k = 1/Q` (k = 2 ⇒ no resonance, smaller k ⇒ more), clamped away from 0 for stability.
+#[inline]
+fn coeffs(cutoff: f32, resonance: f32, sample_rate: f32) -> (f32, f32, f32) {
+    let cutoff = cutoff.clamp(20.0, 0.45 * sample_rate);
+    let k = (2.0 - 1.9 * resonance.clamp(0.0, 1.0)).max(0.1);
+    let g = (std::f32::consts::PI * cutoff / sample_rate).tan();
+    let a1 = 1.0 / (1.0 + g * (g + k));
+    let a2 = g * a1;
+    let a3 = g * a2;
+    (a1, a2, a3)
 }
 
 impl Operator for Filter {
     fn descriptor() -> Descriptor {
         Descriptor {
             type_name: "filter",
-            inputs: vec![Port::signal("audio")],
+            inputs: vec![
+                Port::signal("audio"),
+                Port::signal("cutoff"),
+                Port::signal("resonance"),
+            ],
             outputs: vec![Port::signal("audio")],
             params: vec![
                 ParamMeta {
@@ -62,30 +102,33 @@ impl Operator for Filter {
         let n = io.frames();
         let sample_rate = io.sample_rate();
 
-        // Cutoff clamped to a safe range so `tan` never blows up.
-        let cutoff = io.param(P_CUTOFF).clamp(20.0, 0.45 * sample_rate);
-        // Resonance -> damping k = 1/Q. k = 2 means no resonance (Q = 0.5);
-        // smaller k means higher resonance. Clamp away from 0 to stay stable.
-        let resonance = io.param(P_RESONANCE).clamp(0.0, 1.0);
-        let k = (2.0 - 1.9 * resonance).max(0.1);
+        // Unwired defaults: the cutoff/resonance params survive only as the value each
+        // Signal port reads when nothing is wired (ADR-0017 one-port-one-type).
+        let cutoff_default = io.param(P_CUTOFF);
+        let resonance_default = io.param(P_RESONANCE);
+        let cutoff_wired = io.input(IN_CUTOFF).is_some();
+        let resonance_wired = io.input(IN_RESONANCE).is_some();
 
-        // TPT / zero-delay-feedback bilinear prewarp.
-        let g = (std::f32::consts::PI * cutoff / sample_rate).tan();
-        let a1 = 1.0 / (1.0 + g * (g + k));
-        let a2 = g * a1;
-        let a3 = g * a2;
+        if !cutoff_wired && !resonance_wired {
+            // Fast path: both controls constant for the (sub)block, coefficients computed
+            // once. Bit-identical to the prior param-only filter.
+            let (a1, a2, a3) = coeffs(cutoff_default, resonance_default, sample_rate);
+            for i in 0..n {
+                let x = io.input(IN_AUDIO).map(|s| s[i]).unwrap_or(0.0);
+                let v2 = self.svf_step(x, a1, a2, a3);
+                io.output(OUT_AUDIO)[i] = v2;
+            }
+            return;
+        }
 
+        // Modulated path: read cutoff/resonance per sample (audio-rate sweep) and recompute
+        // coefficients each sample. Each input falls back to its param default when unwired.
         for i in 0..n {
             let x = io.input(IN_AUDIO).map(|s| s[i]).unwrap_or(0.0);
-
-            // Andrew Simper / Cytomic SVF update.
-            let v3 = x - self.ic2eq;
-            let v1 = a1 * self.ic1eq + a2 * v3;
-            let v2 = self.ic2eq + a2 * self.ic1eq + a3 * v3;
-            self.ic1eq = 2.0 * v1 - self.ic1eq;
-            self.ic2eq = 2.0 * v2 - self.ic2eq;
-
-            // Low-pass output.
+            let cutoff = io.input(IN_CUTOFF).map_or(cutoff_default, |s| s[i]);
+            let resonance = io.input(IN_RESONANCE).map_or(resonance_default, |s| s[i]);
+            let (a1, a2, a3) = coeffs(cutoff, resonance, sample_rate);
+            let v2 = self.svf_step(x, a1, a2, a3);
             io.output(OUT_AUDIO)[i] = v2;
         }
     }
@@ -178,6 +221,68 @@ mod tests {
             assert!(s.is_finite(), "sample {i} not finite: {s}");
             assert!(s.abs() < 1_000.0, "sample {i} unbounded: {s}");
         }
+    }
+
+    /// Run `input` with explicit per-sample cutoff/resonance Signal inputs.
+    fn render_modulated(
+        input: &[f32],
+        sample_rate: f32,
+        cutoff: Option<&[f32]>,
+        resonance: Option<&[f32]>,
+        cutoff_default: f32,
+        resonance_default: f32,
+    ) -> Vec<f32> {
+        let n = input.len();
+        let mut filter = Filter::new();
+        let mut out_buf = vec![0.0f32; n];
+        let params = [cutoff_default, resonance_default];
+        {
+            let inputs: Vec<Option<&[f32]>> = vec![Some(input), cutoff, resonance];
+            let outputs: Vec<&mut [f32]> = vec![out_buf.as_mut_slice()];
+            let mut io = Io::new(sample_rate, n, inputs, outputs, &params, &[]);
+            filter.process(&mut io);
+        }
+        out_buf
+    }
+
+    #[test]
+    fn wired_cutoff_input_matches_equivalent_param() {
+        // A constant cutoff Signal must produce exactly the same output as the same value
+        // set as the param (the unwired default) — the modulated path with a flat control
+        // equals the fast path.
+        let sr = 48_000.0;
+        let n = 4096;
+        let input = sine(8_000.0, sr, n);
+        let via_param = render(&input, sr, 1_000.0, 0.0);
+        let cutoff_buf = vec![1_000.0f32; n];
+        let via_input = render_modulated(&input, sr, Some(&cutoff_buf), None, 3_000.0, 0.0);
+        for i in 0..n {
+            assert!(
+                (via_param[i] - via_input[i]).abs() < 1e-4,
+                "wired cutoff should match param at {i}: {} vs {}",
+                via_param[i],
+                via_input[i]
+            );
+        }
+    }
+
+    #[test]
+    fn sweeping_cutoff_opens_the_filter() {
+        // A rising cutoff sweep lets progressively more of a fixed high tone through: the
+        // second half (cutoff high) is louder than the first (cutoff low).
+        let sr = 48_000.0;
+        let n = 8192;
+        let input = sine(6_000.0, sr, n);
+        let cutoff: Vec<f32> = (0..n)
+            .map(|i| 300.0 + (i as f32 / n as f32) * 11_700.0)
+            .collect();
+        let out = render_modulated(&input, sr, Some(&cutoff), None, 1_000.0, 0.0);
+        let first = rms(&out[1024..n / 2]);
+        let second = rms(&out[n / 2..]);
+        assert!(
+            second > first * 2.0,
+            "opening the cutoff should pass more signal: first {first}, second {second}"
+        );
     }
 
     #[test]

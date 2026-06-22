@@ -1,0 +1,34 @@
+{
+  "instrument": "good-button",
+  "doc": "A playable saw synth with one 'brightness' Good Button (ADR-0017). Send /voicer/note [midi, gate] to play, then sweep /brightness [0..1] — a single knob fanned to filter cutoff AND resonance, each over its own musical range, smoothed into the audio rate. Built entirely from composition: a public identity `map` fanned to two ranged `map`s, each through an `m2s` converter into the filter's Signal cutoff/resonance inputs. No new instrument-format machinery.",
+  "nodes": [
+    { "type": "voicer", "address": "/voicer", "doc": "Note -> per-Voice freq + gate.", "params": { "voices": 8 } },
+    { "type": "oscillator", "address": "/osc", "doc": "Saw tone (harmonics for the filter to chew).", "params": { "waveform": 1.0 } },
+    { "type": "filter", "address": "/filter", "doc": "Cutoff + resonance are Signal inputs, driven by the Good Button." },
+    { "type": "envelope", "address": "/env", "doc": "ADSR VCA, gated by the voicer." },
+    { "type": "output", "address": "/out" },
+
+    { "type": "map", "address": "/brightness", "doc": "PUBLIC Good Button. Identity [0,1] pass-through; its value is fanned to the two ranged maps below. Send /brightness [0..1]." },
+    { "type": "map", "address": "/map_cutoff", "doc": "brightness [0,1] -> cutoff [400,12000] Hz, exponential (perceptually even).", "params": { "out_min": 400.0, "out_max": 12000.0, "curve": 1.0 } },
+    { "type": "map", "address": "/map_res", "doc": "brightness [0,1] -> resonance [0.1,0.85], linear.", "params": { "out_min": 0.1, "out_max": 0.85 } },
+    { "type": "m2s", "address": "/cv_cutoff", "doc": "Smooth the mapped cutoff into a CV signal; default 2500 Hz before any knob move.", "params": { "mode": 2.0, "time": 0.03, "default": 2500.0 } },
+    { "type": "m2s", "address": "/cv_res", "doc": "Smooth the mapped resonance into a CV signal; default 0.3.", "params": { "mode": 2.0, "time": 0.03, "default": 0.3 } }
+  ],
+  "connections": [
+    { "from": { "node": "/voicer", "port": "freq" }, "to": { "node": "/osc", "port": "freq" } },
+    { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/filter", "port": "audio" } },
+    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env", "port": "audio" } },
+    { "from": { "node": "/voicer", "port": "gate" }, "to": { "node": "/env", "port": "gate" } },
+    { "from": { "node": "/env", "port": "audio" }, "to": { "node": "/out", "port": "audio" } },
+
+    { "from": { "node": "/brightness", "port": "out" }, "to": { "node": "/map_cutoff", "port": "in" } },
+    { "from": { "node": "/brightness", "port": "out" }, "to": { "node": "/map_res", "port": "in" } },
+    { "from": { "node": "/map_cutoff", "port": "out" }, "to": { "node": "/cv_cutoff", "port": "in" } },
+    { "from": { "node": "/map_res", "port": "out" }, "to": { "node": "/cv_res", "port": "in" } },
+    { "from": { "node": "/cv_cutoff", "port": "out" }, "to": { "node": "/filter", "port": "cutoff" } },
+    { "from": { "node": "/cv_res", "port": "out" }, "to": { "node": "/filter", "port": "resonance" } }
+  ],
+  "outputs": [
+    { "node": "/out", "port": "audio" }
+  ]
+}
