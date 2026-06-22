@@ -121,13 +121,27 @@ impl Operator for Filter {
             return;
         }
 
-        // Modulated path: read cutoff/resonance per sample (audio-rate sweep) and recompute
-        // coefficients each sample. Each input falls back to its param default when unwired.
+        // Modulated path: at least one of cutoff/resonance is a wired Signal. Read each per
+        // sample (audio-rate sweep), falling back to its param default when unwired.
+        // Coefficients are recomputed only when the (cutoff, resonance) pair actually changes
+        // from the previous sample, so a settled or slowly-moving control costs one compare
+        // per sample instead of a `tan()`. `coeffs` is pure, so reusing the cached triple on
+        // an unchanged input is bit-identical to recomputing it every sample. A genuinely
+        // audio-rate sweep still recomputes per sample; a coarser control-rate recompute for
+        // that case is tracked in #24.
+        let mut last_cutoff = f32::NAN;
+        let mut last_resonance = f32::NAN;
+        let (mut a1, mut a2, mut a3) = (0.0, 0.0, 0.0);
         for i in 0..n {
             let x = io.input(IN_AUDIO).map(|s| s[i]).unwrap_or(0.0);
             let cutoff = io.input(IN_CUTOFF).map_or(cutoff_default, |s| s[i]);
             let resonance = io.input(IN_RESONANCE).map_or(resonance_default, |s| s[i]);
-            let (a1, a2, a3) = coeffs(cutoff, resonance, sample_rate);
+            // NaN seed forces a compute on the first sample (NaN != anything).
+            if cutoff != last_cutoff || resonance != last_resonance {
+                (a1, a2, a3) = coeffs(cutoff, resonance, sample_rate);
+                last_cutoff = cutoff;
+                last_resonance = resonance;
+            }
             let v2 = self.svf_step(x, a1, a2, a3);
             io.output(OUT_AUDIO)[i] = v2;
         }
@@ -283,6 +297,35 @@ mod tests {
             second > first * 2.0,
             "opening the cutoff should pass more signal: first {first}, second {second}"
         );
+    }
+
+    #[test]
+    fn cached_coeffs_are_bit_identical_to_per_sample_recompute() {
+        // The modulated path caches coefficients and recomputes only when (cutoff, resonance)
+        // changes. Because `coeffs` is pure, the output must be bit-for-bit identical to
+        // recomputing every sample — both for a constant control and a per-sample sweep.
+        let sr = 48_000.0;
+        let n = 4096;
+        let input = sine(6_000.0, sr, n);
+
+        // Constant control: every sample reuses the cache after the first.
+        let constant = vec![2_500.0f32; n];
+        let out = render_modulated(&input, sr, Some(&constant), None, 1_000.0, 0.0);
+
+        // Reference: a fresh filter stepping the same once-computed coeffs every sample.
+        let mut reference = Filter::new();
+        let (a1, a2, a3) = coeffs(2_500.0, 0.0, sr);
+        let mut ref_out = vec![0.0f32; n];
+        for i in 0..n {
+            ref_out[i] = reference.svf_step(input[i], a1, a2, a3);
+        }
+        for i in 0..n {
+            assert_eq!(
+                out[i].to_bits(),
+                ref_out[i].to_bits(),
+                "cached constant-control output diverged at {i}"
+            );
+        }
     }
 
     #[test]
