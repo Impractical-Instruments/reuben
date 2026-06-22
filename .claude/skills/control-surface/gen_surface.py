@@ -35,7 +35,6 @@ import sys
 import uuid
 import zlib
 from pathlib import Path
-from xml.etree import ElementTree as ET
 
 # Canvas + grid defaults (Q5: uniform grid, declaration order, tablet landscape).
 CANVAS_W, CANVAS_H = 1024, 768
@@ -105,6 +104,15 @@ def resolve_control(node: dict, spec: dict, meta: dict) -> dict:
     widget = spec.get("widget", "fader")
     param = spec.get("param")
 
+    if widget == "note-toggle":
+        # A play toggle: fires `<node>/<port> [note, gate]` (e.g. /voicer/note). The note is a
+        # constant so note-off carries the same MIDI as note-on and matches the held voice.
+        port = spec.get("port", "note")
+        return {
+            "kind": "note-toggle", "label": label, "widget": widget,
+            "osc_addr": f"{addr}/{port}", "note": float(spec.get("note", 60)),
+        }
+
     if param is None:
         # Good Button: range is the map instance's input range; default is the map's resting
         # value (ADR-0018); the OSC address is the bare node address.
@@ -128,7 +136,7 @@ def resolve_control(node: dict, spec: dict, meta: dict) -> dict:
     hi = float(spec.get("max", hi))
     default = float(spec.get("default", default))
     return {
-        "label": label, "widget": widget, "osc_addr": osc_addr,
+        "kind": "fader", "label": label, "widget": widget, "osc_addr": osc_addr,
         "min": lo, "max": hi, "default": default, "unit": unit,
     }
 
@@ -184,102 +192,169 @@ def _id(*parts) -> str:
     return str(uuid.uuid5(uuid.NAMESPACE_URL, "reuben-surface:" + ":".join(map(str, parts))))
 
 
-def _prop(parent: ET.Element, type_code: str, key: str, value):
-    """Append a <property type=..><key/><value/></property>. Frame (r) and colour (c) nest
-    their components under <value>; scalars put text directly. (The r/c nesting-vs-attribute
-    form is the one format detail to confirm in the on-device verify pass.)"""
-    p = ET.SubElement(parent, "property", {"type": type_code})
-    ET.SubElement(p, "key").text = key
-    v = ET.SubElement(p, "value")
-    if type_code == "r":
-        for k in ("x", "y", "w", "h"):
-            ET.SubElement(v, k).text = str(value[k])
-    elif type_code == "c":
-        for k in ("r", "g", "b", "a"):
-            ET.SubElement(v, k).text = str(value[k])
-    else:
-        v.text = str(value)
+# The emitter clones the structure of a known-good TouchOSC export (lexml version 6): typed
+# <property> elements with CDATA keys, control values in <values>, and OSC messages whose
+# <partial>/<trigger> use child elements (not attributes). Keys/strings are CDATA-wrapped to
+# match the editor's output. Property sets per control type mirror the reference defaults so
+# controls actually render — substituting only name/frame/text/value/message.
+
+def _cd(s) -> str:
+    """CDATA-wrap text the way TouchOSC wraps keys and string values; neutralise any `]]>`."""
+    return "<![CDATA[" + str(s).replace("]]>", "]]]]><![CDATA[>") + "]]>"
 
 
-def _frame(x, y, w, h):
-    return {"x": x, "y": y, "w": w, "h": h}
+def _num(v) -> str:
+    if isinstance(v, bool):
+        return "1" if v else "0"
+    if isinstance(v, int):
+        return str(v)
+    return f"{v:g}"
 
 
-def _control_node(parent: ET.Element, ctype: str, cid: str, name: str, frame: dict):
-    n = ET.SubElement(parent, "node", {"ID": cid, "type": ctype})
-    props = ET.SubElement(n, "properties")
-    _prop(props, "s", "name", name)
-    _prop(props, "r", "frame", frame)
-    return n
+def _p(type_code: str, key: str, body: str) -> str:
+    return f"<property type='{type_code}'><key>{_cd(key)}</key><value>{body}</value></property>"
 
 
-def _osc_send(node: ET.Element, osc_addr: str, lo: float, hi: float):
-    """Attach a one-way OSC send: fader value x in [0,1] is scaled to [lo,hi] (real values,
-    Q9) and sent to `osc_addr`."""
-    msgs = ET.SubElement(node, "messages")
-    osc = ET.SubElement(msgs, "osc")
-    ET.SubElement(osc, "enabled").text = "1"
-    ET.SubElement(osc, "send").text = "1"
-    ET.SubElement(osc, "receive").text = "0"      # one-way (Q6)
-    ET.SubElement(osc, "feedback").text = "0"
-    ET.SubElement(osc, "connections").text = "00001"
-    trg = ET.SubElement(osc, "triggers")
-    ET.SubElement(trg, "trigger", {"var": "x", "con": "ANY"})
-    path = ET.SubElement(osc, "path")
-    ET.SubElement(path, "partial",
-                  {"type": "CONSTANT", "conversion": "STRING", "value": osc_addr,
-                   "scaleMin": "0", "scaleMax": "1"})
-    args = ET.SubElement(osc, "arguments")
-    ET.SubElement(args, "partial",
-                  {"type": "VALUE", "conversion": "FLOAT", "value": "x",
-                   "scaleMin": str(lo), "scaleMax": str(hi)})
+def _pb(k, v): return _p("b", k, "1" if v else "0")
+def _pi(k, v): return _p("i", k, str(int(v)))
+def _pf(k, v): return _p("f", k, _num(v))
+def _ps(k, v): return _p("s", k, _cd(v))
+def _pr(k, x, y, w, h): return _p("r", k, f"<x>{int(x)}</x><y>{int(y)}</y><w>{int(w)}</w><h>{int(h)}</h>")
+def _pc(k, r, g, b, a): return _p("c", k, f"<r>{_num(r)}</r><g>{_num(g)}</g><b>{_num(b)}</b><a>{_num(a)}</a>")
 
 
-def _fader_value(node: ET.Element, default_x: float):
-    vals = ET.SubElement(node, "values")
-    v = ET.SubElement(vals, "value")
-    ET.SubElement(v, "key").text = "x"
-    ET.SubElement(v, "locked").text = "0"
-    ET.SubElement(v, "lockedDefaultCurrent").text = "0"
-    ET.SubElement(v, "default").text = f"{default_x:.6g}"
-    ET.SubElement(v, "defaultPull").text = "0"
+def _value(key: str, default: str, locked_default_current: int = 0) -> str:
+    return (f"<value><key>{_cd(key)}</key><locked>0</locked>"
+            f"<lockedDefaultCurrent>{locked_default_current}</lockedDefaultCurrent>"
+            f"<default>{_cd(default)}</default><defaultPull>0</defaultPull></value>")
+
+
+def _partial(ptype: str, conversion: str, value, lo=0, hi=1) -> str:
+    return (f"<partial><type>{ptype}</type><conversion>{conversion}</conversion>"
+            f"<value>{_cd(value)}</value><scaleMin>{_num(lo)}</scaleMin>"
+            f"<scaleMax>{_num(hi)}</scaleMax></partial>")
+
+
+def _osc_msg(addr: str, arguments: list) -> str:
+    """One-way OSC send to `addr` with the given argument partials. The path + trigger use child
+    elements, matching the editor's export."""
+    return (
+        "<osc><enabled>1</enabled><send>1</send><receive>0</receive><feedback>0</feedback>"
+        "<noDuplicates>0</noDuplicates><connections>1111111111</connections>"
+        f"<triggers><trigger><var>{_cd('x')}</var><condition>ANY</condition></trigger></triggers>"
+        f"<path>{_partial('CONSTANT', 'STRING', addr)}</path>"
+        f"<arguments>{''.join(arguments)}</arguments></osc>"
+    )
+
+
+def _osc_fader(addr: str, lo: float, hi: float) -> str:
+    """Fader send: `x` (0..1) scaled to the control's real range [lo,hi]."""
+    return _osc_msg(addr, [_partial("VALUE", "FLOAT", "x", lo, hi)])
+
+
+def _osc_note(addr: str, note: float) -> str:
+    """Note toggle send: `<addr> [note, gate]` — a constant MIDI note plus the button's `x`
+    (0/1) as velocity/gate. Constant note => note-off matches note-on."""
+    return _osc_msg(addr, [_partial("CONSTANT", "FLOAT", _num(note)),
+                           _partial("VALUE", "FLOAT", "x")])
+
+
+def _group_props(w, h) -> str:
+    return "".join([
+        _pb("background", True), _pc("color", 0, 0, 0, 1), _pf("cornerRadius", 1),
+        _pr("frame", 0, 0, w, h), _pb("grabFocus", False), _pb("interactive", False),
+        _pb("locked", False), _pi("orientation", 0), _pb("outline", True),
+        _pi("outlineStyle", 0), _pi("pointerPriority", 0), _pi("shape", 1), _pb("visible", True),
+    ])
+
+
+def _fader_props(name, frame) -> str:
+    x, y, w, h = frame
+    return "".join([
+        _pb("background", True), _pb("bar", True), _pi("barDisplay", 0), _pc("color", 1, 0, 0, 1),
+        _pf("cornerRadius", 1), _pb("cursor", True), _pi("cursorDisplay", 0), _pr("frame", x, y, w, h),
+        _pb("grabFocus", True), _pb("grid", True), _pc("gridColor", 0, 0, 0, 0.25), _pi("gridSteps", 13),
+        _pb("interactive", True), _pb("locked", False), _ps("name", name), _pi("orientation", 0),
+        _pb("outline", True), _pi("outlineStyle", 1), _pi("pointerPriority", 0), _pi("response", 0),
+        _pi("responseFactor", 100), _pi("shape", 1), _pb("visible", True),
+    ])
+
+
+def _button_props(name, frame) -> str:
+    x, y, w, h = frame
+    # buttonType 2 = Toggle Press (from the reference export).
+    return "".join([
+        _pb("background", True), _pi("buttonType", 2), _pc("color", 1, 0, 0, 1), _pf("cornerRadius", 1),
+        _pr("frame", x, y, w, h), _pb("grabFocus", True), _pb("interactive", True), _pb("locked", False),
+        _ps("name", name), _pi("orientation", 0), _pb("outline", True), _pi("outlineStyle", 1),
+        _pi("pointerPriority", 0), _pb("press", True), _pb("release", True), _pi("shape", 1),
+        _pb("valuePosition", False), _pb("visible", True),
+    ])
+
+
+def _label_props(name, frame) -> str:
+    x, y, w, h = frame
+    return "".join([
+        _pb("background", True), _pc("color", 0, 0, 0, 0.25), _pf("cornerRadius", 1), _pi("font", 0),
+        _pr("frame", x, y, w, h), _pb("grabFocus", True), _pb("interactive", False), _pb("locked", False),
+        _ps("name", name), _pi("orientation", 0), _pb("outline", True), _pi("outlineStyle", 1),
+        _pi("pointerPriority", 0), _pi("shape", 1), _pi("textAlignH", 1), _pi("textAlignV", 2),
+        _pb("textClip", True), _pc("textColor", 1, 1, 1, 1), _pi("textLength", 0), _pi("textSize", 14),
+        _pb("visible", True),
+    ])
+
+
+def _node(cid: str, ctype: str, props: str, values: str = "", messages: str = "") -> str:
+    inner = f"<properties>{props}</properties>"
+    if values:
+        inner += f"<values>{values}</values>"
+    if messages:
+        inner += f"<messages>{messages}</messages>"
+    return f"<node ID='{cid}' type='{ctype}'>{inner}</node>"
 
 
 def build_tosc(instrument: dict, controls: list, cols: int) -> bytes:
     name = instrument.get("instrument", "surface")
-    lexml = ET.Element("lexml", {"version": "3"})
-    root = ET.SubElement(lexml, "node", {"ID": _id(name, "root"), "type": "GROUP"})
-    rprops = ET.SubElement(root, "properties")
-    _prop(rprops, "s", "name", name)
-    _prop(rprops, "r", "frame", _frame(0, 0, CANVAS_W, CANVAS_H))
-    children = ET.SubElement(root, "children")
-
     cols = max(1, min(cols, len(controls)))
     rows = max(1, (len(controls) + cols - 1) // cols)
     cell_w = (CANVAS_W - PAD * (cols + 1)) / cols
     cell_h = (CANVAS_H - PAD * (rows + 1)) / rows
 
+    kids = []
     for i, c in enumerate(controls):
         col, row = i % cols, i // cols
         x = PAD + col * (cell_w + PAD)
         y = PAD + row * (cell_h + PAD)
-        # A label above the widget so the surface reads its name + range.
-        rng = f"{c['min']:g}–{c['max']:g}{(' ' + c['unit']) if c['unit'] else ''}"
-        _control_node(children, "LABEL", _id(name, c["osc_addr"], "label"),
-                      f"{c['label']} ({rng})", _frame(int(x), int(y), int(cell_w), LABEL_H))
+        lframe = (int(x), int(y), int(cell_w), LABEL_H)
+        wframe = (int(x), int(y + LABEL_H), int(cell_w), int(cell_h - LABEL_H))
 
-        wtype = {"fader": "FADER", "button": "BUTTON", "label": "LABEL"}.get(c["widget"], "FADER")
-        wn = _control_node(children, wtype, _id(name, c["osc_addr"], "widget"),
-                           c["label"],
-                           _frame(int(x), int(y + LABEL_H), int(cell_w), int(cell_h - LABEL_H)))
-        _osc_send(wn, c["osc_addr"], c["min"], c["max"])
-        if wtype == "FADER":
+        if c["kind"] == "note-toggle":
+            caption = f"{c['label']} (note {int(c['note'])})"
+            widget = _node(_id(name, c["osc_addr"], "widget"), "BUTTON",
+                           _button_props(c["label"], wframe),
+                           values=_value("x", "0") + _value("touch", "false"),
+                           messages=_osc_note(c["osc_addr"], c["note"]))
+        else:
+            rng = f"{c['min']:g}–{c['max']:g}{(' ' + c['unit']) if c['unit'] else ''}"
+            caption = f"{c['label']} ({rng})"
             span = c["max"] - c["min"]
             default_x = 0.0 if span == 0 else max(0.0, min(1.0, (c["default"] - c["min"]) / span))
-            _fader_value(wn, default_x)
+            widget = _node(_id(name, c["osc_addr"], "widget"), "FADER",
+                           _fader_props(c["label"], wframe),
+                           values=_value("x", _num(default_x)) + _value("touch", "false"),
+                           messages=_osc_fader(c["osc_addr"], c["min"], c["max"]))
 
-    xml = b'<?xml version="1.0" encoding="UTF-8"?>\n' + ET.tostring(lexml, encoding="utf-8")
-    return zlib.compress(xml)
+        # A label above the widget so the surface reads its name (text lives in <values>).
+        lvals = _value("text", caption, locked_default_current=1) + _value("touch", "false")
+        kids.append(_node(_id(name, c["osc_addr"], "label"), "LABEL", _label_props(c["label"], lframe), values=lvals))
+        kids.append(widget)
+
+    root = (f"<node ID='{_id(name, 'root')}' type='GROUP'><includes/>"
+            f"<properties>{_group_props(CANVAS_W, CANVAS_H)}</properties>"
+            f"<values>{_value('touch', 'false')}</values>"
+            f"<children>{''.join(kids)}</children></node>")
+    xml = "<?xml version='1.0' encoding='UTF-8'?><lexml version='6'>" + root + "</lexml>"
+    return zlib.compress(xml.encode("utf-8"))
 
 
 # --- cli --------------------------------------------------------------------------------
@@ -318,7 +393,12 @@ def main(argv=None):
     controls = collect_controls(instrument, meta)
     if not controls:
         sys.exit(f"{inst_path}: no `control` blocks found — run `infer` and add them first (ADR-0018).")
-    out = Path(args.out) if args.out else inst_path.with_suffix(".tosc")
+    # Generated surfaces live in the repo's versioned `control-surfaces/` dir (shareable).
+    if args.out:
+        out = Path(args.out)
+    else:
+        out = script.resolve().parents[3] / "control-surfaces" / f"{inst_path.stem}.tosc"
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(build_tosc(instrument, controls, args.cols))
     print(f"wrote {out} — {len(controls)} control(s), send to {args.host}:{args.port}")
     print("NOTE: in TouchOSC, set the OSC connection host/port to the machine running reuben.")

@@ -44,33 +44,37 @@ Run from the repo root. The script is `gen_surface.py` in this skill's directory
    - Good Button: `"control": { "label": "Brightness", "unit": "%" }`
    - one param: `"control": { "label": "Tempo", "param": "tempo" }`
    - many params on one node: `"control": [ { "label": "Step 1", "param": "step1" }, ... ]`
+   - play toggle: `"control": { "label": "Play C", "widget": "note-toggle", "port": "note", "note": 60 }`
    `label` is required; `unit`/`widget`/`min`/`max`/`default` are optional overrides (otherwise
-   inferred). `widget` ∈ `fader` (default), `button`, `label`.
+   inferred). `widget` ∈ `fader` (default), `note-toggle`. A `note-toggle` plays `<node>/<port>
+   [note, gate]` with a constant `note` so note-off matches (TouchOSC can't share a value
+   between two controls without scripting, so a separate slider + gate isn't possible natively).
 
 4. **Emit the surface:**
-   `python3 <skilldir>/gen_surface.py emit instruments/<name>.json --host <host> --out <name>.tosc`
-   Widgets send real values (the fader's 0..1 is scaled to the control's range); faders init to
-   the resting default; the connection is one-way (surface → reuben).
+   `python3 <skilldir>/gen_surface.py emit instruments/<name>.json --host <host>`
+   Writes `control-surfaces/<name>.tosc` (the repo's versioned, shareable surface dir;
+   override with `--out`). Faders send real values (0..1 scaled to range) and init to the
+   resting default; the connection is one-way (surface → reuben). A `note-toggle` control emits
+   a toggle button that plays a fixed `note` through a message port, e.g. `/voicer/note`.
 
-5. **Verify on device** (this is required — the `.tosc` format has not been device-tested from
-   the generator yet). Have the user: open the `.tosc` in TouchOSC, set the OSC **connection
-   host/port** to the machine running reuben, and move a control while reuben listens. If it
-   won't open or controls don't move anything, see *Format notes* and iterate.
+5. **Open + verify on device.** Have the user open `control-surfaces/<name>.tosc` in TouchOSC,
+   set the OSC **connection host/port** to the machine running reuben, and play. The format is
+   confirmed against a real export (see *Format notes*), so this is a sanity check, not a
+   debugging round — but always confirm new control *kinds* (a widget type not yet exercised).
 
-## Format notes (for the verify loop)
+## Format notes
 
-The emitter hand-builds the format (no external dep). Two details are reverse-engineered and are
-the first suspects if a file won't load:
-- **`r`/`c` properties** (frame, colour) are written as nested `<value><x>..</x>…</value>`. Some
-  references use attributes (`<property type="r" x=".."/>`) instead — flip `_prop` in
-  `gen_surface.py` if needed.
-- The leading `<?xml …?>` declaration and the `<values>`/`<messages>` block shapes may need
-  tweaks per TouchOSC version. The payload is **zlib**-compressed (not gzip).
+The emitter hand-builds the format (no external dep, `zlib`-compressed `lexml version="6"`),
+**cloned from a known-good editor export**: `fixtures/REUBEN_REF.tosc`. The test
+`FixtureMatchTest` asserts our per-control property keys still match that fixture, so format
+drift fails CI. If a future TouchOSC version changes the format, or you add a new widget type:
+rebuild the fixture in the editor (one of each control, distinctive values), replace
+`fixtures/REUBEN_REF.tosc`, and diff to update the property sets in `gen_surface.py`.
 
 ## Run the tests
 
 `cd <skilldir> && python3 -m unittest` — covers metadata resolution, inference, OSC addressing,
-and the zlib/XML round-trip (not on-device loading).
+the zlib/XML round-trip, and the structural match against `fixtures/REUBEN_REF.tosc`.
 
 ## Scope
 

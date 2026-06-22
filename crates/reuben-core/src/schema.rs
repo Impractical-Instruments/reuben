@@ -108,7 +108,7 @@ pub fn generate(registry: &Registry) -> Value {
             },
             "controlSpec": {
                 "type": "object",
-                "description": "One player-facing control (ADR-0018); the engine ignores it. `label` is required. With no `param`, the widget binds to the node address (a `map` Good Button, range from its `in_min`/`in_max`); with a `param`, it binds to `/<node>/<param>` (range/`unit`/`default` from the param's metadata). Any of those may be overridden here.",
+                "description": "One player-facing control (ADR-0018); the engine ignores it. `label` is required. With no `param`, the widget binds to the node address (a `map` Good Button, range from its `in_min`/`in_max`); with a `param`, it binds to `/<node>/<param>` (range/`unit`/`default` from the param's metadata). `widget: \"note-toggle\"` emits a toggle that plays a fixed `note` (default 60) through a message `port` (default `note`), e.g. a voicer's `/voicer/note [note, gate]`. Any field may be overridden here.",
                 "required": ["label"],
                 "additionalProperties": false,
                 "properties": {
@@ -118,7 +118,9 @@ pub fn generate(registry: &Registry) -> Value {
                     "widget": { "type": "string" },
                     "min": { "type": "number" },
                     "max": { "type": "number" },
-                    "default": { "type": "number" }
+                    "default": { "type": "number" },
+                    "port": { "type": "string" },
+                    "note": { "type": "number" }
                 }
             }
         }
