@@ -47,3 +47,53 @@ jobs:
 
       - name: Test
         run: cargo test --workspace
+
+  bench:
+    name: perf gate (render_block Ir)
+    runs-on: ubuntu-latest
+    # Same draft-skip as `check`. Runs in parallel — nobody waits on valgrind for fmt/test.
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0 # need the baseline commit (PR base / previous push) in history
+
+      - name: Install valgrind (callgrind backend for iai-callgrind)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends valgrind
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@v2
+
+      # The runner binary must match the iai-callgrind dev-dependency (0.16.x).
+      - name: Cache iai-callgrind-runner
+        id: iai-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/.cargo/bin/iai-callgrind-runner
+          key: iai-callgrind-runner-0.16.1-${{ runner.os }}
+      - name: Install iai-callgrind-runner
+        if: steps.iai-cache.outputs.cache-hit != 'true'
+        run: cargo install iai-callgrind-runner --version 0.16.1
+
+      - name: Resolve baseline ref
+        id: base
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            sha="${{ github.event.pull_request.base.sha }}"
+          else
+            sha="${{ github.event.before }}"
+            # New branch / first push reports a null SHA; fall back to the first parent.
+            case "$sha" in ""|0000000000000000000000000000000000000000)
+              sha="$(git rev-parse HEAD~1 2>/dev/null || echo '')" ;;
+            esac
+          fi
+          echo "sha=$sha" >>"$GITHUB_OUTPUT"
+
+      - name: Compare render_block instruction counts vs baseline
+        run: ./.github/scripts/perf-gate.sh "${{ steps.base.outputs.sha }}"
