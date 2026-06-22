@@ -72,7 +72,9 @@ its address (e.g. `/delay/time`).
 
 See **[docs/v1.2-playable-surface-testing.md](docs/v1.2-playable-surface-testing.md)** for a
 step-by-step OSC walkthrough of the V1.2 control surface (Good Buttons, the math operators,
-and the Message→Signal converter).
+and the Message→Signal converter), and
+**[docs/v1.4-control-surface-testing.md](docs/v1.4-control-surface-testing.md)** for playing an
+instrument from a phone/tablet via a generated TouchOSC layout (the `control-surface` skill).
 
 ### Offline (no audio device)
 
