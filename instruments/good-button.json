@@ -8,7 +8,7 @@
     { "type": "envelope", "address": "/env", "doc": "ADSR VCA, gated by the voicer." },
     { "type": "output", "address": "/out" },
 
-    { "type": "map", "address": "/brightness", "doc": "PUBLIC Good Button. Identity [0,1] pass-through; its value is fanned to the two ranged maps below. Send /brightness [0..1]." },
+    { "type": "map", "address": "/brightness", "doc": "PUBLIC Good Button. Identity [0,1] pass-through; its value is fanned to the two ranged maps below. Send /brightness [0..1]. Rests at 0.5 (ADR-0018), emitted on init so the chain and any generated control surface agree at rest.", "params": { "default": 0.5 }, "control": { "label": "Brightness", "widget": "fader" } },
     { "type": "map", "address": "/map_cutoff", "doc": "brightness [0,1] -> cutoff [400,12000] Hz, exponential (perceptually even).", "params": { "out_min": 400.0, "out_max": 12000.0, "curve": 1.0 } },
     { "type": "map", "address": "/map_res", "doc": "brightness [0,1] -> resonance [0.1,0.85], linear.", "params": { "out_min": 0.1, "out_max": 0.85 } },
     { "type": "m2s", "address": "/cv_cutoff", "doc": "Smooth the mapped cutoff into a CV signal; default 2500 Hz before any knob move.", "params": { "mode": 2.0, "time": 0.03, "default": 2500.0 } },

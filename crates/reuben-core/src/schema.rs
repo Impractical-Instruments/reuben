@@ -95,9 +95,24 @@ pub fn generate(registry: &Registry) -> Value {
                     "sample": {
                         "type": "string",
                         "description": "Resource id into the document's `resources` table; only valid on a `sample` node (ADR-0016)."
-                    }
+                    },
+                    "control": { "$ref": "#/$defs/control" }
                 },
                 "allOf": branches
+            },
+            "control": {
+                "type": "object",
+                "description": "Public-control metadata for a generated control surface (ADR-0018). Marks this node as player-facing; the engine ignores it. `label` is required; range/`unit` default from the bound param's metadata (a direct param) or the node's `in_min`/`in_max` params (a `map` front-end) and may be overridden here.",
+                "required": ["label"],
+                "additionalProperties": false,
+                "properties": {
+                    "label": { "type": "string" },
+                    "unit": { "type": "string" },
+                    "widget": { "type": "string" },
+                    "min": { "type": "number" },
+                    "max": { "type": "number" },
+                    "default": { "type": "number" }
+                }
             }
         }
     })

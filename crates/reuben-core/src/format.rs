@@ -60,6 +60,13 @@ pub struct NodeDoc {
     /// sample player); rejected elsewhere as a structural [`LoadError::UnknownResource`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sample: Option<String>,
+    /// Public-control metadata for a generated control surface (ADR-0018): marks this node as
+    /// player-facing and carries display hints (`label`, optional `unit`/`widget`/range). The
+    /// engine never reads it — it is passed through opaquely so it survives load → round-trip →
+    /// re-serialize (serde would otherwise drop an unknown field, erasing it on `from_graph`).
+    /// A control-surface generator reads it; `None` means the node is internal plumbing.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub control: Option<serde_json::Value>,
 }
 
 /// A reference to one node's port, by names.
@@ -336,6 +343,10 @@ impl InstrumentDoc {
                     // into the ResourceStore at load), so save does not round-trip a sample
                     // ref in v1.1 — acceptable until the library thread lands (ADR-0016).
                     sample: None,
+                    // Control metadata (ADR-0018) lives on the document, not the built Graph,
+                    // so the save-from-graph path does not reconstruct it; document-level
+                    // round-trip (load → re-serialize) preserves it via serde.
+                    control: None,
                 }
             })
             .collect();
@@ -507,6 +518,23 @@ mod tests {
         let doc = InstrumentDoc::from_json(TWO_NODE).expect("parse");
         let reparsed = InstrumentDoc::from_json(&doc.to_json_pretty()).expect("reparse");
         assert_eq!(doc, reparsed);
+    }
+
+    #[test]
+    fn control_block_survives_doc_round_trip() {
+        // ADR-0018: `control` is opaque passthrough — the engine ignores it, but it must
+        // survive load -> re-serialize so a surface generator can read what it wrote.
+        let json = r#"{"instrument":"t",
+            "nodes":[{"type":"map","address":"/brightness",
+                      "control":{"label":"Brightness","widget":"fader","unit":"%"}}]}"#;
+        let doc = InstrumentDoc::from_json(json).expect("parse");
+        let ctl = doc.nodes[0]
+            .control
+            .as_ref()
+            .expect("control preserved on load");
+        assert_eq!(ctl["label"], "Brightness");
+        let reparsed = InstrumentDoc::from_json(&doc.to_json_pretty()).expect("reparse");
+        assert_eq!(doc, reparsed, "control block must round-trip unchanged");
     }
 
     #[test]
