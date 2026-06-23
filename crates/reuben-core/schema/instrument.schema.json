@@ -1051,6 +1051,49 @@
           "if": {
             "properties": {
               "type": {
+                "const": "strum"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "octaves": {
+                    "default": 1.0,
+                    "description": "unit: oct, curve: Linear",
+                    "maximum": 4.0,
+                    "minimum": 1.0,
+                    "type": "number"
+                  },
+                  "strings": {
+                    "default": 8.0,
+                    "description": "unit: strings, curve: Linear",
+                    "maximum": 32.0,
+                    "minimum": 1.0,
+                    "type": "number"
+                  },
+                  "velocity": {
+                    "default": 1.0,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
                 "const": "voicer"
               }
             },
@@ -1128,6 +1171,7 @@
             "sample",
             "sequencer",
             "snap",
+            "strum",
             "voicer"
           ]
         }

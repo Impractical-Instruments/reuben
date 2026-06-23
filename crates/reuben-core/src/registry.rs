@@ -12,7 +12,7 @@ use crate::descriptor::Descriptor;
 use crate::operator::Operator;
 use crate::operators::{
     Add, Chord, Clock, ContextOp, Delay, Differentiate, Djfilter, Envelope, Filter, Integrate, Lfo,
-    M2s, Map, Mul, Noise, Oscillator, Output, Reverb, SamplePlayer, Sequencer, Snap, Voicer,
+    M2s, Map, Mul, Noise, Oscillator, Output, Reverb, SamplePlayer, Sequencer, Snap, Strum, Voicer,
 };
 
 /// One registered operator type: how to build it, and its self-description.
@@ -67,6 +67,7 @@ impl Registry {
         r.register(|| Box::new(Djfilter::new()), Djfilter::descriptor());
         r.register(|| Box::new(Noise::new()), Noise::descriptor());
         r.register(|| Box::new(Chord::new()), Chord::descriptor());
+        r.register(|| Box::new(Strum::new()), Strum::descriptor());
         r
     }
 
@@ -124,6 +125,7 @@ mod tests {
                 "sample",
                 "sequencer",
                 "snap",
+                "strum",
                 "voicer",
             ]
         );

@@ -1,0 +1,41 @@
+{
+  "instrument": "strum-harp",
+  "doc": "Toy 3 of 3 (V1.3 'The Toys', ADR-0022 §3): a drag-to-strum harp. One big fader is the strum bar — stream /strum_bar [0..1] and the `strum` op plucks a note each time the position crosses a string boundary (both directions strum). Strings are scale degrees resolved through the tonal context, so an open full-diatonic scale reads as a harp glissando and stays in key. Change the key live with /context/root (MIDI) or reshape the scale with /context/s0../context/s6. Sweep /brightness [0..1] to open the plucked tone (a Good Button on filter cutoff + resonance). Set the string span with /strum/octaves [1..4].",
+  "nodes": [
+    { "type": "map", "address": "/strum_bar", "doc": "PUBLIC strum bar. Identity [0,1] pass-through; its position streams to the strum op. Send /strum_bar [0..1] (the fader). Rests at 0.0 (bottom string) so no note fires at load.", "params": { "default": 0.0 }, "control": { "label": "Strum", "widget": "fader" } },
+    { "type": "strum", "address": "/strum", "doc": "Position crossings -> degree plucks. 8 strings over 1 octave by default; /strum/octaves widens the span.", "params": { "strings": 8.0, "octaves": 1.0, "velocity": 1.0 }, "control": { "label": "Range", "param": "octaves" } },
+
+    { "type": "context", "address": "/context", "doc": "C major, 12-TET. The strum degrees resolve through this, so the harp is always in key; change /context/root to transpose, /context/s0..s6 to reshape the scale. The Key control steps the root across one octave (C3..C4).", "params": { "root": 60.0, "degrees": 7.0, "s0": 0.0, "s1": 2.0, "s2": 4.0, "s3": 5.0, "s4": 7.0, "s5": 9.0, "s6": 11.0 }, "control": { "label": "Key", "param": "root", "min": 48, "max": 60 } },
+    { "type": "voicer", "address": "/voicer", "doc": "Degree plucks -> per-Voice freq + gate. Polyphonic so overlapping plucks ring together (a glissando).", "params": { "voices": 8 } },
+    { "type": "oscillator", "address": "/osc", "doc": "Triangle tone — a soft, harp-like pluck timbre.", "params": { "waveform": 2.0 } },
+    { "type": "filter", "address": "/filter", "doc": "Cutoff + resonance are Signal inputs, driven by the Brightness Good Button." },
+    { "type": "envelope", "address": "/env", "doc": "Percussive pluck: near-instant attack, short decay, no sustain — each pluck rings out on its own. Gated by the voicer; the strum op's paired note-off frees the voice.", "params": { "attack": 0.002, "decay": 0.35, "sustain": 0.0, "release": 0.3 } },
+    { "type": "output", "address": "/out" },
+
+    { "type": "map", "address": "/brightness", "doc": "PUBLIC Good Button. Identity [0,1]; fanned to the two ranged maps below. Send /brightness [0..1]. Rests at 0.6 so the plucks are bright at load.", "params": { "default": 0.6 }, "control": { "label": "Brightness", "widget": "fader" } },
+    { "type": "map", "address": "/map_cutoff", "doc": "brightness [0,1] -> cutoff [600,11000] Hz, exponential.", "params": { "out_min": 600.0, "out_max": 11000.0, "curve": 1.0 } },
+    { "type": "map", "address": "/map_res", "doc": "brightness [0,1] -> resonance [0.1,0.7], linear.", "params": { "out_min": 0.1, "out_max": 0.7 } },
+    { "type": "m2s", "address": "/cv_cutoff", "doc": "Smooth the mapped cutoff into a CV signal; default 4000 Hz before any knob move.", "params": { "mode": 2.0, "time": 0.03, "default": 4000.0 } },
+    { "type": "m2s", "address": "/cv_res", "doc": "Smooth the mapped resonance into a CV signal; default 0.3.", "params": { "mode": 2.0, "time": 0.03, "default": 0.3 } }
+  ],
+  "connections": [
+    { "from": { "node": "/strum_bar", "port": "out" }, "to": { "node": "/strum", "port": "position" } },
+    { "from": { "node": "/strum", "port": "degrees" }, "to": { "node": "/voicer", "port": "notes" } },
+    { "from": { "node": "/context", "port": "ctx" }, "to": { "node": "/voicer", "port": "ctx" } },
+    { "from": { "node": "/voicer", "port": "freq" }, "to": { "node": "/osc", "port": "freq" } },
+    { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/filter", "port": "audio" } },
+    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env", "port": "audio" } },
+    { "from": { "node": "/voicer", "port": "gate" }, "to": { "node": "/env", "port": "gate" } },
+    { "from": { "node": "/env", "port": "audio" }, "to": { "node": "/out", "port": "audio" } },
+
+    { "from": { "node": "/brightness", "port": "out" }, "to": { "node": "/map_cutoff", "port": "in" } },
+    { "from": { "node": "/brightness", "port": "out" }, "to": { "node": "/map_res", "port": "in" } },
+    { "from": { "node": "/map_cutoff", "port": "out" }, "to": { "node": "/cv_cutoff", "port": "in" } },
+    { "from": { "node": "/map_res", "port": "out" }, "to": { "node": "/cv_res", "port": "in" } },
+    { "from": { "node": "/cv_cutoff", "port": "out" }, "to": { "node": "/filter", "port": "cutoff" } },
+    { "from": { "node": "/cv_res", "port": "out" }, "to": { "node": "/filter", "port": "resonance" } }
+  ],
+  "outputs": [
+    { "node": "/out", "port": "audio" }
+  ]
+}

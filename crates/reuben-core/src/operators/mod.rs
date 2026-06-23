@@ -21,6 +21,7 @@ pub mod reverb;
 pub mod sample;
 pub mod sequencer;
 pub mod snap;
+pub mod strum;
 pub mod voicer;
 
 pub use chord::Chord;
@@ -40,4 +41,5 @@ pub use reverb::Reverb;
 pub use sample::SamplePlayer;
 pub use sequencer::Sequencer;
 pub use snap::Snap;
+pub use strum::Strum;
 pub use voicer::Voicer;
