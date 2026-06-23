@@ -22,7 +22,9 @@ smallvec = "1"
 # Compile-time operator self-registration (ADR-0024). linkme is the no_std fallback.
 inventory = "0.3"
 # Compile-time operator contract codegen (ADR-0025): the operator_contract! proc-macro.
-syn = { version = "2", features = ["full"] }
+# Parses its own grammar (not Rust items/exprs), so it needs only syn's parsing/printing
+# primitives — not the heavy `full` AST.
+syn = { version = "2", default-features = false, features = ["parsing", "printing", "proc-macro"] }
 quote = "1"
 proc-macro2 = "1"
 hound = "3"
