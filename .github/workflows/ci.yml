@@ -16,6 +16,16 @@ permissions:
   contents: read
 
 jobs:
+  lockstep:
+    name: MSRV lockstep (toolchain == rust-version)
+    runs-on: ubuntu-latest
+    # Same draft-skip as the other jobs. Pure text check — no toolchain, seconds to run.
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert rust-toolchain.toml channel == Cargo.toml rust-version (ADR-0023)
+        run: ./.github/scripts/check-msrv-lockstep.sh
+
   check:
     name: fmt + clippy + test
     runs-on: ubuntu-latest
@@ -31,10 +41,10 @@ jobs:
       - name: Install ALSA dev headers (cpal, for reuben-native)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
 
-      - name: Install Rust (stable, with rustfmt + clippy)
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          components: rustfmt, clippy
+      # Single source of truth = rust-toolchain.toml (ADR-0023); the composite
+      # installs + caches the pinned channel. No version hardcoded here.
+      - name: Setup pinned Rust toolchain
+        uses: ./.github/actions/setup-rust
 
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@v2
@@ -64,8 +74,9 @@ jobs:
       - name: Install valgrind (callgrind backend for iai-callgrind)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends valgrind
 
-      - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
+      # Same pinned toolchain as `check`, via the shared composite (ADR-0023).
+      - name: Setup pinned Rust toolchain
+        uses: ./.github/actions/setup-rust
 
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@v2

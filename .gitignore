@@ -11,6 +11,7 @@
 *.swp
 *.bak
 .DS_Store
+.idea/
 
 # Claude Code worktrees
 /.claude/worktrees/

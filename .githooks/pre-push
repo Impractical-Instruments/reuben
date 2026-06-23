@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# Block pushes that would fail CI's clippy gate (.github/workflows/ci.yml).
+# Mirrors CI exactly: whole-workspace, all-targets, warnings-as-errors.
+# Runs at the push boundary (not per-commit) so the compile cost is amortized.
+# Skips when the pushed commits touch no Rust (docs/config-only pushes).
+# Shared via core.hooksPath — see CONTRIBUTING.md.  Bypass:  git push --no-verify
+set -euo pipefail
+
+# stdin gives one line per pushed ref:  <local ref> <local sha> <remote ref> <remote sha>
+rust_touched=0
+while read -r _local_ref local_sha _remote_ref remote_sha; do
+    # All-zero local sha == branch deletion: nothing to lint.
+    case "$local_sha" in *[!0]*) ;; *) continue ;; esac
+
+    # All-zero remote sha == new branch on remote: no baseline to diff. Lint to be safe.
+    case "$remote_sha" in
+        *[!0]*) ;;
+        *) rust_touched=1; break ;;
+    esac
+
+    # Remote sha may not be a local object (stale repo, force-push from elsewhere):
+    # diffing it would error and `set -e` would abort the push. No baseline → lint to be safe.
+    if ! git cat-file -e "${remote_sha}^{commit}" 2>/dev/null; then
+        rust_touched=1
+        break
+    fi
+
+    # Capture first, then grep a here-string: a piped `grep -q` can short-circuit and
+    # SIGPIPE git mid-write, which under `pipefail` reports failure and would skip the
+    # clippy run on exactly the large pushes that need it.
+    changed=$(git diff --name-only --diff-filter=ACMR "$remote_sha" "$local_sha")
+    if grep -q '\.rs$' <<<"$changed"; then
+        rust_touched=1
+        break
+    fi
+done
+
+[ "$rust_touched" -eq 0 ] && exit 0
+
+if ! cargo clippy --workspace --all-targets -- -D warnings; then
+    echo
+    echo "✗ pre-push: clippy found issues — CI's clippy gate will fail."
+    echo "  Inspect: cargo clippy --workspace --all-targets -- -D warnings"
+    echo "  Bypass:  git push --no-verify"
+    exit 1
+fi
