@@ -6,6 +6,11 @@
 # Bump procedure (keep MSRV in lockstep — see ADR-0023):
 #   1. edit `channel` below
 #   2. edit `rust-version` in Cargo.toml [workspace.package] to the SAME version
+# `profile = "minimal"` keeps installs lean (rustc + std + cargo only); the two
+# components we actually gate on are listed explicitly below. This shrinks CI's
+# toolchain fetch on the runs where the pin has drifted behind the runner image's
+# pre-installed stable and a real download happens.
 [toolchain]
 channel = "1.96.0"
+profile = "minimal"
 components = ["rustfmt", "clippy"]

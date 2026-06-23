@@ -31,11 +31,10 @@ jobs:
       - name: Install ALSA dev headers (cpal, for reuben-native)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
 
-      # Single source of truth = rust-toolchain.toml (ADR-0023). `rustup toolchain
-      # install` with no arg reads that file and installs the pinned channel + its
-      # components. No version hardcoded here; bump only the toml.
-      - name: Provision pinned toolchain (rust-toolchain.toml)
-        run: rustup toolchain install
+      # Single source of truth = rust-toolchain.toml (ADR-0023); the composite
+      # installs + caches the pinned channel. No version hardcoded here.
+      - name: Setup pinned Rust toolchain
+        uses: ./.github/actions/setup-rust
 
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@v2
@@ -65,9 +64,9 @@ jobs:
       - name: Install valgrind (callgrind backend for iai-callgrind)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends valgrind
 
-      # Same pinned toolchain as `check` — sourced from rust-toolchain.toml (ADR-0023).
-      - name: Provision pinned toolchain (rust-toolchain.toml)
-        run: rustup toolchain install
+      # Same pinned toolchain as `check`, via the shared composite (ADR-0023).
+      - name: Setup pinned Rust toolchain
+        uses: ./.github/actions/setup-rust
 
       - name: Cache cargo registry + build
         uses: Swatinem/rust-cache@v2

@@ -1,0 +1,21 @@
+# Provision the toolchain pinned in rust-toolchain.toml (ADR-0023) and cache it.
+# `rustup toolchain install` (no arg) reads the toml and installs the pinned
+# channel + components. The runner's pre-installed stable advances continuously
+# while the pin is bumped only occasionally, so most of the time the pin trails
+# the image and the install is a real download — caching ~/.rustup/toolchains
+# makes that a one-time cost per pin instead of per run. Cache key is the toml
+# hash, so a bump (channel/profile/components) busts it automatically.
+name: Setup pinned Rust toolchain
+description: Install and cache the toolchain pinned in rust-toolchain.toml.
+runs:
+  using: composite
+  steps:
+    - name: Cache pinned toolchain (~/.rustup)
+      uses: actions/cache@v4
+      with:
+        path: ~/.rustup/toolchains
+        key: rustup-${{ runner.os }}-${{ hashFiles('rust-toolchain.toml') }}
+
+    - name: Provision pinned toolchain (rust-toolchain.toml)
+      shell: bash
+      run: rustup toolchain install
