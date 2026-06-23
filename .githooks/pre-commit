@@ -6,7 +6,11 @@
 set -euo pipefail
 
 # Any staged *.rs? (Added/Copied/Modified/Renamed — not deletions.)
-if ! git diff --cached --name-only --diff-filter=ACMR | grep -q '\.rs$'; then
+# Capture first, then grep a here-string: a piped `grep -q` can short-circuit and
+# SIGPIPE git mid-write, which under `pipefail` reports failure and would skip the
+# fmt run on exactly the large commits that need it.
+staged=$(git diff --cached --name-only --diff-filter=ACMR)
+if ! grep -q '\.rs$' <<<"$staged"; then
     exit 0
 fi
 
