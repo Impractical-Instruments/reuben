@@ -138,6 +138,18 @@ def resolve_control(node: dict, spec: dict, meta: dict) -> dict:
             "default": float(spec.get("default", node_param(node, param, 0.0))),
         }
 
+    if widget == "chord-button":
+        # A chord button (V1.3 Chord-player, ADR-0022): a toggle that fires `<node>/<port>
+        # [degree, gate]` — a constant scale **degree** (the chord root) plus the button's gate.
+        # Same custom-2-arg-payload mechanism as `note-toggle`, but the constant rides as a scale
+        # degree (resolved downstream by the `chord` op + voicer), not an absolute MIDI note; the
+        # constant degree means the release carries the same root and stops the held chord.
+        port = spec.get("port", "set")
+        return {
+            "kind": "chord-button", "label": label, "widget": widget,
+            "osc_addr": f"{addr}/{port}", "degree": float(spec.get("degree", 0)),
+        }
+
     if param is None:
         # Good Button: range is the map instance's input range; default is the map's resting
         # value (ADR-0018); the OSC address is the bare node address.
@@ -289,6 +301,14 @@ def _osc_param_toggle(addr: str) -> str:
     `<node>/<param>`. No scaling — a gate step's domain is already [0,1]."""
     return _osc_msg(addr, [_partial("VALUE", "FLOAT", "x")])
 
+def _osc_chord(addr: str, degree: float) -> str:
+    """Chord button send: `<addr> [degree, gate]` — a constant scale **degree** (the chord
+    root) plus the button's `x` (0/1) as gate. Constant degree => release stops the same
+    held chord. Same 2-arg shape as `_osc_note`, but the constant is a degree, not a MIDI
+    note (the `chord` op stacks thirds; the voicer resolves degrees through the context)."""
+    return _osc_msg(addr, [_partial("CONSTANT", "FLOAT", _num(degree)),
+                           _partial("VALUE", "FLOAT", "x")])
+
 
 def _group_props(w, h) -> str:
     return "".join([
@@ -383,6 +403,12 @@ def _widget_node(name: str, c: dict, wframe) -> tuple:
                               _button_props(c["label"], wframe),
                               values=_value("x", "0") + _value("touch", "false"),
                               messages=_osc_note(c["osc_addr"], c["note"]))
+    if c["kind"] == "chord-button":
+        caption = f"{c['label']} (deg {int(c['degree'])})"
+        return caption, _node(_id(name, c["osc_addr"], "widget"), "BUTTON",
+                              _button_props(c["label"], wframe),
+                              values=_value("x", "0") + _value("touch", "false"),
+                              messages=_osc_chord(c["osc_addr"], c["degree"]))
     if c["kind"] == "param-toggle":
         return c["label"], _node(_id(name, c["osc_addr"], "widget"), "BUTTON",
                                  _button_props(c["label"], wframe),

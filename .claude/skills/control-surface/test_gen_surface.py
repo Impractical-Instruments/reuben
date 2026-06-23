@@ -176,6 +176,56 @@ class ParamToggleTest(unittest.TestCase):
         self.assertEqual([c["label"] for c in rows[-1]], ["Tempo"], "non-toggle controls grid below")
 
 
+class ChordButtonTest(unittest.TestCase):
+    """The V1.3 chord buttons (ADR-0022): a toggle whose payload is a custom `[degree, gate]`,
+    sent to the `chord` op's address. Same 2-arg button mechanism as note-toggle, but the
+    constant is a scale degree (the chord root), not an absolute MIDI note."""
+
+    NODE = {"type": "chord", "address": "/chord",
+            "control": {"label": "IV", "widget": "chord-button", "port": "set", "degree": 3}}
+
+    def test_resolves_to_node_port_address_and_degree(self):
+        r = g.resolve_control(self.NODE, self.NODE["control"], META)
+        self.assertEqual(r["kind"], "chord-button")
+        self.assertEqual(r["osc_addr"], "/chord/set")
+        self.assertEqual(r["degree"], 3.0)
+
+    def test_port_defaults_to_set(self):
+        node = {"type": "chord", "address": "/chord",
+                "control": {"label": "I", "widget": "chord-button", "degree": 0}}
+        r = g.resolve_control(node, node["control"], META)
+        self.assertEqual(r["osc_addr"], "/chord/set")
+
+    def test_emits_a_toggle_button_with_constant_degree_and_gate(self):
+        c = g.resolve_control(self.NODE, self.NODE["control"], META)
+        doc = ET.fromstring(zlib.decompress(g.build_tosc({"instrument": "t"}, [c], 1)))
+        btn = doc.find(".//node[@type='BUTTON']")
+        self.assertIsNotNone(btn, "chord-button must emit a BUTTON")
+        btype = [p for p in btn.findall("./properties/property") if p.find("key").text == "buttonType"][0]
+        self.assertEqual(btype.find("value").text, "2", "buttonType 2 = Toggle Press")
+        args = btn.findall("./messages/osc/arguments/partial")
+        self.assertEqual(args[0].find("type").text, "CONSTANT")
+        self.assertEqual(args[0].find("value").text, "3")    # the fixed chord-root degree
+        self.assertEqual(args[1].find("type").text, "VALUE")
+        self.assertEqual(args[1].find("value").text, "x")    # the gate
+        self.assertEqual(btn.find("./messages/osc/path/partial/value").text, "/chord/set")
+
+    def test_seven_chord_buttons_each_send_their_own_degree(self):
+        # The Chord-player surface: 7 buttons, root degrees 0..6 -> /chord/set.
+        nodes = [{"type": "chord", "address": "/chord",
+                  "control": [{"label": f"d{d}", "widget": "chord-button", "degree": d}
+                              for d in range(7)]}]
+        controls = g.collect_controls({"instrument": "cp", "nodes": nodes}, META)
+        self.assertEqual(len(controls), 7)
+        doc = ET.fromstring(zlib.decompress(g.build_tosc({"instrument": "cp"}, controls, 7)))
+        degrees = []
+        for btn in doc.findall(".//node[@type='BUTTON']"):
+            addr = btn.find("./messages/osc/path/partial/value").text
+            self.assertEqual(addr, "/chord/set", "all chord buttons hit one address")
+            degrees.append(btn.findall("./messages/osc/arguments/partial")[0].find("value").text)
+        self.assertEqual(degrees, ["0", "1", "2", "3", "4", "5", "6"])
+
+
 class EmitTest(unittest.TestCase):
     def setUp(self):
         controls = g.collect_controls(INSTRUMENT, META)

@@ -108,7 +108,7 @@ pub fn generate(registry: &Registry) -> Value {
             },
             "controlSpec": {
                 "type": "object",
-                "description": "One player-facing control (ADR-0018); the engine ignores it. `label` is required. With no `param`, the widget binds to the node address (a `map` Good Button, range from its `in_min`/`in_max`); with a `param`, it binds to `/<node>/<param>` (range/`unit`/`default` from the param's metadata). `widget: \"note-toggle\"` emits a toggle that plays a fixed `note` (default 60) through a message `port` (default `note`), e.g. a voicer's `/voicer/note [note, gate]`. Any field may be overridden here.",
+                "description": "One player-facing control (ADR-0018); the engine ignores it. `label` is required. With no `param`, the widget binds to the node address (a `map` Good Button, range from its `in_min`/`in_max`); with a `param`, it binds to `/<node>/<param>` (range/`unit`/`default` from the param's metadata). `widget: \"note-toggle\"` emits a toggle that plays a fixed `note` (default 60) through a message `port` (default `note`), e.g. a voicer's `/voicer/note [note, gate]`. `widget: \"chord-button\"` (ADR-0022) emits a toggle that sends a fixed scale `degree` (default 0) through a message `port` (default `set`) as `[degree, gate]`, e.g. a chord op's `/chord/set [degree, gate]`. Any field may be overridden here.",
                 "required": ["label"],
                 "additionalProperties": false,
                 "properties": {
@@ -120,7 +120,8 @@ pub fn generate(registry: &Registry) -> Value {
                     "max": { "type": "number" },
                     "default": { "type": "number" },
                     "port": { "type": "string" },
-                    "note": { "type": "number" }
+                    "note": { "type": "number" },
+                    "degree": { "type": "number" }
                 }
             }
         }
