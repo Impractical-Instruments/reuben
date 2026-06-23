@@ -201,9 +201,8 @@ fn render_operator(spec: &OperatorSpec) -> String {
     // The single-source contract (ADR-0025): the macro plants the IN_/OUT_/P_ index consts AND the
     // matching `Descriptor` from these same tokens, so name↔slot drift is impossible.
     out.push_str(
-        "// Ports/params declared once (ADR-0025): the macro plants the IN_/OUT_/P_ index consts and the\n",
+        "// Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.\n",
     );
-    out.push_str("// matching `Descriptor` from one source, so they cannot drift.\n");
     out.push_str(&render_contract_call(spec));
     out.push('\n');
 

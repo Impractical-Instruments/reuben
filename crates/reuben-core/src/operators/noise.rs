@@ -15,8 +15,7 @@
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Ports/params declared once (ADR-0025): the macro plants the IN_/OUT_/P_ index consts and the
-// matching `Descriptor` from one source, so they cannot drift.
+// Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.
 crate::operator_contract!(Noise {
     outputs: { out: signal },
 });
