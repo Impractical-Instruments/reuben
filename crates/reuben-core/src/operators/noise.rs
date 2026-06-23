@@ -12,10 +12,14 @@
 //! - output 0: `out` (Signal) — uniform white noise in ~[-1, 1], roughly zero-mean.
 //! - params: none.
 
-use crate::descriptor::{Descriptor, LaneRule, Port};
+use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-pub const OUT_OUT: usize = 0;
+// Ports/params declared once (ADR-0025): the macro plants the IN_/OUT_/P_ index consts and the
+// matching `Descriptor` from one source, so they cannot drift.
+crate::operator_contract!(Noise {
+    outputs: { out: signal },
+});
 
 /// Fixed deterministic seed a fresh / spawned Noise starts from. Non-zero (xorshift can't leave
 /// the zero state). An arbitrary odd constant; the exact value only matters for reproducibility.
@@ -62,14 +66,7 @@ impl Noise {
 
 impl Operator for Noise {
     fn descriptor() -> Descriptor {
-        Descriptor {
-            type_name: "noise",
-            inputs: vec![],
-            outputs: vec![Port::signal("out")],
-            params: vec![],
-            resources: vec![],
-            lanes: LaneRule::Inherit,
-        }
+        Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {

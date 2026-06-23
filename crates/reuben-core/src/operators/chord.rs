@@ -26,14 +26,17 @@
 
 use smallvec::SmallVec;
 
-use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
+use crate::descriptor::Descriptor;
 use crate::message::Arg;
 use crate::operator::{Io, Operator};
 
-pub const IN_SET: usize = 0;
-/// Message-output ordinal of the `degrees` port (the index [`Io::emit`] uses).
-pub const OUT_DEGREES: usize = 0;
-pub const P_SIZE: usize = 0;
+// Ports/params declared once (ADR-0025): the macro plants the IN_/OUT_/P_ index consts and the
+// matching `Descriptor` from one source, so they cannot drift.
+crate::operator_contract!(Chord {
+    inputs:  { set: message },
+    outputs: { degrees: message },
+    params:  { size: { 3.0..=4.0, default 3.0, "tones", lin } },
+});
 
 /// Max chord tones a single press can hold (seventh = 4; headroom for a future `size`).
 const MAX_TONES: usize = 4;
@@ -75,21 +78,7 @@ fn chord_tones(root: i32, size: usize) -> ([i32; MAX_TONES], usize) {
 
 impl Operator for Chord {
     fn descriptor() -> Descriptor {
-        Descriptor {
-            type_name: "chord",
-            inputs: vec![Port::message("set")],
-            outputs: vec![Port::message("degrees")],
-            params: vec![ParamMeta {
-                name: "size",
-                min: 3.0,
-                max: 4.0,
-                default: 3.0,
-                unit: "tones",
-                curve: Curve::Linear,
-            }],
-            resources: vec![],
-            lanes: LaneRule::Inherit,
-        }
+        Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {

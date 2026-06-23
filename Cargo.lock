@@ -995,6 +995,14 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "reuben-contract"
+version = "0.0.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "reuben-core"
 version = "0.0.0"
 dependencies = [
@@ -1003,10 +1011,22 @@ dependencies = [
  "hound",
  "iai-callgrind",
  "inventory",
+ "reuben-macros",
  "serde",
  "serde_json",
  "slotmap",
  "smallvec",
+]
+
+[[package]]
+name = "reuben-macros"
+version = "0.0.0"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "reuben-contract",
+ "serde_json",
+ "syn",
 ]
 
 [[package]]
@@ -1017,6 +1037,7 @@ dependencies = [
  "clap",
  "cpal",
  "hound",
+ "reuben-contract",
  "reuben-core",
  "rosc",
  "serde",

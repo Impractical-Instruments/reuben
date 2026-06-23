@@ -18,18 +18,18 @@
 //! Single-Lane (ADR-0014): emission is pre-fan-out.
 
 use crate::context::{SnapDir, SnapPolicy, SnapTarget};
-use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
+use crate::descriptor::Descriptor;
 use crate::message::Arg;
 use crate::operator::{Io, Operator};
 
-pub const IN_NOTES: usize = 0;
-/// Context-input ordinal of the `ctx` port (the index [`Io::context`] uses — its own index
-/// space, so the only Context input is ordinal 0, even though its full-port index is 1).
-pub const IN_CTX: usize = 0;
-/// Message-output ordinal of the `degrees` port (the index [`Io::emit`] uses).
-pub const MSG_DEGREES: usize = 0;
-pub const P_TARGET: usize = 0;
-pub const P_DIRECTION: usize = 1;
+// Ports/params declared once (ADR-0025): the macro plants the IN_/OUT_/P_ index consts and the
+// matching `Descriptor` from one source, so they cannot drift.
+crate::operator_contract!(Snap {
+    inputs:  { notes: message, ctx: context },
+    outputs: { degrees: message },
+    params:  { target:    { 0.0..=2.0, default 0.0, "", lin },
+               direction: { 0.0..=2.0, default 0.0, "", lin } },
+});
 
 #[derive(Default)]
 pub struct Snap;
@@ -58,31 +58,7 @@ fn direction_of(v: f32) -> SnapDir {
 
 impl Operator for Snap {
     fn descriptor() -> Descriptor {
-        Descriptor {
-            type_name: "snap",
-            inputs: vec![Port::message("notes"), Port::context("ctx")],
-            outputs: vec![Port::message("degrees")],
-            params: vec![
-                ParamMeta {
-                    name: "target",
-                    min: 0.0,
-                    max: 2.0,
-                    default: 0.0,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-                ParamMeta {
-                    name: "direction",
-                    min: 0.0,
-                    max: 2.0,
-                    default: 0.0,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-            ],
-            resources: vec![],
-            lanes: LaneRule::Inherit,
-        }
+        Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {
@@ -110,14 +86,14 @@ impl Operator for Snap {
             let pitch = ctx.snap(midi, policy);
             match pitch.degree {
                 Some(d) => io.emit(
-                    MSG_DEGREES,
+                    OUT_DEGREES,
                     "degree",
                     [Arg::Float(d as f32), Arg::Float(vel)],
                     frame,
                 ),
                 // An absolute (frozen-chord) target has no degree — pass the MIDI through.
                 None => io.emit(
-                    MSG_DEGREES,
+                    OUT_DEGREES,
                     "note",
                     [Arg::Float(pitch.midi), Arg::Float(vel)],
                     frame,

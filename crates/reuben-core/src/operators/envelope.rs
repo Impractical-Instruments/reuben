@@ -7,16 +7,19 @@
 //! - output 0: `audio` (Signal) — `audio * env`.
 //! - params 0..3: `attack`, `decay`, `sustain`, `release`.
 
-use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
+use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-pub const IN_AUDIO: usize = 0;
-pub const IN_GATE: usize = 1;
-pub const OUT_AUDIO: usize = 0;
-pub const P_ATTACK: usize = 0;
-pub const P_DECAY: usize = 1;
-pub const P_SUSTAIN: usize = 2;
-pub const P_RELEASE: usize = 3;
+// Ports/params declared once (ADR-0025): the macro plants the IN_/OUT_/P_ index consts and the
+// matching `Descriptor` from one source, so they cannot drift.
+crate::operator_contract!(Envelope {
+    inputs:  { audio: signal, gate: signal },
+    outputs: { audio: signal },
+    params:  { attack:  { 0.001..=5.0, default 0.01, "s", exp },
+               decay:   { 0.001..=5.0, default 0.1,  "s", exp },
+               sustain: { 0.0..=1.0,   default 0.7,  "",  lin },
+               release: { 0.001..=5.0, default 0.2,  "s", exp } },
+});
 
 /// Which segment of the ADSR contour the envelope is currently traversing.
 #[derive(Clone, Copy, PartialEq, Eq, Default)]
@@ -67,36 +70,7 @@ fn per_sample_step(seconds: f32, sample_rate: f32) -> f32 {
 
 impl Operator for Envelope {
     fn descriptor() -> Descriptor {
-        fn time(name: &'static str, default: f32) -> ParamMeta {
-            ParamMeta {
-                name,
-                min: 0.001,
-                max: 5.0,
-                default,
-                unit: "s",
-                curve: Curve::Exponential,
-            }
-        }
-        Descriptor {
-            type_name: "envelope",
-            inputs: vec![Port::signal("audio"), Port::signal("gate")],
-            outputs: vec![Port::signal("audio")],
-            params: vec![
-                time("attack", 0.01),
-                time("decay", 0.1),
-                ParamMeta {
-                    name: "sustain",
-                    min: 0.0,
-                    max: 1.0,
-                    default: 0.7,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-                time("release", 0.2),
-            ],
-            resources: vec![],
-            lanes: LaneRule::Inherit,
-        }
+        Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {

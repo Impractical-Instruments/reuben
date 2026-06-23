@@ -24,14 +24,17 @@
 
 use smallvec::SmallVec;
 
-use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
+use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-pub const IN_SYNC: usize = 0;
-pub const OUT_PHASE: usize = 0;
-pub const OUT_GATE: usize = 1;
-pub const P_TEMPO: usize = 0;
-pub const P_DIVISION: usize = 1;
+// Ports/params declared once (ADR-0025): the macro plants the IN_/OUT_/P_ index consts and the
+// matching `Descriptor` from one source, so they cannot drift.
+crate::operator_contract!(Clock {
+    inputs:  { sync: message },
+    outputs: { phase: signal, gate: signal },
+    params:  { tempo:    { 1.0..=999.0, default 120.0, "BPM", lin },
+               division: { 1.0..=64.0,  default 1.0,   "",    lin } },
+});
 
 #[derive(Default)]
 pub struct Clock {
@@ -49,31 +52,7 @@ impl Clock {
 
 impl Operator for Clock {
     fn descriptor() -> Descriptor {
-        Descriptor {
-            type_name: "clock",
-            inputs: vec![Port::message("sync")],
-            outputs: vec![Port::signal("phase"), Port::signal("gate")],
-            params: vec![
-                ParamMeta {
-                    name: "tempo",
-                    min: 1.0,
-                    max: 999.0,
-                    default: 120.0,
-                    unit: "BPM",
-                    curve: Curve::Linear,
-                },
-                ParamMeta {
-                    name: "division",
-                    min: 1.0,
-                    max: 64.0,
-                    default: 1.0,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-            ],
-            resources: vec![],
-            lanes: LaneRule::Inherit,
-        }
+        Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {

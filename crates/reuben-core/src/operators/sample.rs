@@ -24,17 +24,22 @@
 
 use std::sync::Arc;
 
-use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port, ResourceSlot};
+use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 use crate::resources::{ResolvedRefs, ResourceStore, SampleId};
 
-pub const IN_FREQ: usize = 0;
-pub const IN_GATE: usize = 1;
-pub const OUT_AUDIO: usize = 0;
-pub const P_ROOT: usize = 0;
-pub const P_GAIN: usize = 1;
-pub const P_START: usize = 2;
-pub const P_CHANNEL: usize = 3;
+// Ports/params declared once (ADR-0025): the macro plants the IN_/OUT_/P_ index consts and the
+// matching `Descriptor` from one source, so they cannot drift.
+crate::operator_contract!(SamplePlayer {
+    type_name: "sample",
+    inputs:    { freq: signal, gate: signal },
+    outputs:   { audio: signal },
+    params:    { root:    { 0.0..=127.0, default 60.0, "MIDI", lin },
+                 gain:    { 0.0..=4.0,   default 1.0,  "",     lin },
+                 start:   { 0.0..=1.0,   default 0.0,  "",     lin },
+                 channel: { -1.0..=31.0, default -1.0, "",     lin } },
+    resources: { sample },
+});
 
 #[derive(Default)]
 pub struct SamplePlayer {
@@ -65,47 +70,7 @@ impl SamplePlayer {
 
 impl Operator for SamplePlayer {
     fn descriptor() -> Descriptor {
-        Descriptor {
-            type_name: "sample",
-            inputs: vec![Port::signal("freq"), Port::signal("gate")],
-            outputs: vec![Port::signal("audio")],
-            params: vec![
-                ParamMeta {
-                    name: "root",
-                    min: 0.0,
-                    max: 127.0,
-                    default: 60.0,
-                    unit: "MIDI",
-                    curve: Curve::Linear,
-                },
-                ParamMeta {
-                    name: "gain",
-                    min: 0.0,
-                    max: 4.0,
-                    default: 1.0,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-                ParamMeta {
-                    name: "start",
-                    min: 0.0,
-                    max: 1.0,
-                    default: 0.0,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-                ParamMeta {
-                    name: "channel",
-                    min: -1.0,
-                    max: 31.0,
-                    default: -1.0,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-            ],
-            resources: vec![ResourceSlot::new("sample")],
-            lanes: LaneRule::Inherit,
-        }
+        Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {

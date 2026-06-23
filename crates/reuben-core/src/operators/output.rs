@@ -7,11 +7,15 @@
 //! - input 0: `audio` (Signal)
 //! - output 0: `audio` (Signal) — copy of the input, tapped as master.
 
-use crate::descriptor::{Descriptor, LaneRule, Port};
+use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-pub const IN_AUDIO: usize = 0;
-pub const OUT_AUDIO: usize = 0;
+// Ports/params declared once (ADR-0025): the macro plants the IN_/OUT_/P_ index consts and the
+// matching `Descriptor` from one source, so they cannot drift.
+crate::operator_contract!(Output {
+    inputs:  { audio: signal },
+    outputs: { audio: signal },
+});
 
 #[derive(Default)]
 pub struct Output;
@@ -24,14 +28,7 @@ impl Output {
 
 impl Operator for Output {
     fn descriptor() -> Descriptor {
-        Descriptor {
-            type_name: "output",
-            inputs: vec![Port::signal("audio")],
-            outputs: vec![Port::signal("audio")],
-            params: vec![],
-            resources: vec![],
-            lanes: LaneRule::Inherit,
-        }
+        Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {

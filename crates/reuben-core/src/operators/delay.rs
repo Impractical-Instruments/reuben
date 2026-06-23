@@ -15,14 +15,18 @@
 //! mix. The ring buffer and head index are continuous across calls / block slices, and
 //! `process` allocates nothing in steady state.
 
-use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
+use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-pub const IN_AUDIO: usize = 0;
-pub const OUT_AUDIO: usize = 0;
-pub const P_TIME: usize = 0;
-pub const P_FEEDBACK: usize = 1;
-pub const P_MIX: usize = 2;
+// Ports/params declared once (ADR-0025): the macro plants the IN_/OUT_/P_ index consts and the
+// matching `Descriptor` from one source, so they cannot drift.
+crate::operator_contract!(Delay {
+    inputs:  { audio: signal },
+    outputs: { audio: signal },
+    params:  { time:     { 0.001..=2.0, default 0.3, "s", lin },
+               feedback: { 0.0..=0.95,  default 0.4, "",  lin },
+               mix:      { 0.0..=1.0,   default 0.5, "",  lin } },
+});
 
 /// Maximum delay time in seconds; sizes the ring buffer.
 const MAX_DELAY_SECS: f32 = 2.0;
@@ -44,39 +48,7 @@ impl Delay {
 
 impl Operator for Delay {
     fn descriptor() -> Descriptor {
-        Descriptor {
-            type_name: "delay",
-            inputs: vec![Port::signal("audio")],
-            outputs: vec![Port::signal("audio")],
-            params: vec![
-                ParamMeta {
-                    name: "time",
-                    min: 0.001,
-                    max: 2.0,
-                    default: 0.3,
-                    unit: "s",
-                    curve: Curve::Linear,
-                },
-                ParamMeta {
-                    name: "feedback",
-                    min: 0.0,
-                    max: 0.95,
-                    default: 0.4,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-                ParamMeta {
-                    name: "mix",
-                    min: 0.0,
-                    max: 1.0,
-                    default: 0.5,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-            ],
-            resources: vec![],
-            lanes: LaneRule::Inherit,
-        }
+        Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {

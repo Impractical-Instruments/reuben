@@ -24,18 +24,19 @@
 
 use smallvec::SmallVec;
 
-use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
+use crate::descriptor::Descriptor;
 use crate::message::Arg;
 use crate::operator::{Io, Operator};
 use crate::pitch::Pitch;
 
-pub const IN_NOTES: usize = 0;
-/// Context-input ordinal of the `ctx` port (the index [`Io::context`] uses — a separate
-/// index space from Signal/Message inputs, so the only Context input is ordinal 0).
-pub const IN_CTX: usize = 0;
-pub const OUT_FREQ: usize = 0;
-pub const OUT_GATE: usize = 1;
-pub const P_VOICES: usize = 0;
+// Ports/params declared once (ADR-0025): the macro plants the IN_/OUT_/P_ index consts and the
+// matching `Descriptor` from one source, so they cannot drift.
+crate::operator_contract!(Voicer {
+    inputs:  { notes: message, ctx: context },
+    outputs: { freq: signal, gate: signal },
+    params:  { voices: { 1.0..=32.0, default 8.0, "", lin } },
+    lanes: from_param(voices),
+});
 
 /// Do two pitches denote the same note for note-off matching? Degrees match by degree;
 /// absolute notes by MIDI. (A degree and an absolute never match — distinct identities.)
@@ -120,21 +121,7 @@ impl Voicer {
 
 impl Operator for Voicer {
     fn descriptor() -> Descriptor {
-        Descriptor {
-            type_name: "voicer",
-            inputs: vec![Port::message("notes"), Port::context("ctx")],
-            outputs: vec![Port::signal("freq"), Port::signal("gate")],
-            params: vec![ParamMeta {
-                name: "voices",
-                min: 1.0,
-                max: 32.0,
-                default: 8.0,
-                unit: "",
-                curve: Curve::Linear,
-            }],
-            resources: vec![],
-            lanes: LaneRule::FromParam(P_VOICES),
-        }
+        Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {

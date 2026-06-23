@@ -9,6 +9,8 @@ description = "Removable native layer for reuben: live audio (cpal) + OSC-in (UD
 
 [dependencies]
 reuben-core = { path = "../reuben-core" }
+# Shared operator-contract spec types + validation, single-sourced with the macro (ADR-0025).
+reuben-contract = { path = "../reuben-contract" }
 cpal.workspace = true
 rosc.workspace = true
 hound.workspace = true
