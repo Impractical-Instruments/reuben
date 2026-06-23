@@ -35,5 +35,6 @@ The pinned version and the MSRV are kept **in lockstep** (see
 1. `channel` in `rust-toolchain.toml`
 2. `rust-version` in `Cargo.toml` `[workspace.package]` — set to the **same** version
 
-Two spots, one conceptual change. CI then verifies the new floor for free (it builds on
+Two spots, one conceptual change. The `lockstep` CI job fails the build if they don't match,
+so a forgotten second edit is caught immediately. CI then verifies the new floor for free (it builds on
 the pinned toolchain, which equals the MSRV).

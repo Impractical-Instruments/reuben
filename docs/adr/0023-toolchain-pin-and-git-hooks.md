@@ -37,7 +37,12 @@ auto-provisions from the file. This keeps the version in **one** place.
 `Cargo.toml` `[workspace.package]` declares `rust-version = "1.96.0"`, equal to the pin. The
 rule: **MSRV always equals the pinned channel; they are bumped together.** This keeps the
 MSRV self-verifying for free — CI builds on the pinned toolchain, which *is* the MSRV, so no
-separate MSRV job is needed.
+separate build-against-MSRV job is needed.
+
+The equality itself is the one thing a human can forget on a bump, so it is enforced rather
+than trusted: a fast, toolchain-free `lockstep` CI job
+([.github/scripts/check-msrv-lockstep.sh](../../.github/scripts/check-msrv-lockstep.sh))
+asserts `channel` == `rust-version` and fails the build on drift.
 
 The trade is explicit: an MSRV that tracks the pin is a *floor that declares "you need the
 version I develop on,"* not a promise of support across a range of older Rust. The day reuben
@@ -74,7 +79,8 @@ Hooks live in version-controlled [`.githooks/`](../../.githooks); contributors r
 ## Consequences
 
 - Bumping Rust = edit two spots, kept equal: `channel` in `rust-toolchain.toml` and
-  `rust-version` in `Cargo.toml`. A grep catches both; CI re-verifies the floor automatically.
+  `rust-version` in `Cargo.toml`. The `lockstep` CI job fails if they drift, and CI builds on
+  the pinned toolchain so the floor is re-verified automatically.
 - Newcomers get the exact toolchain with no choice, and the fmt/clippy gates locally before
   CI — after one setup line.
 - An older-Rust support story is explicitly out of scope until the lockstep rule is lifted.
