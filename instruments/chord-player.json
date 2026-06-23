@@ -19,6 +19,9 @@
     { "type": "oscillator", "address": "/osc", "doc": "Saw pad tone (harmonics for the filter to shape).", "params": { "waveform": 1.0 } },
     { "type": "filter", "address": "/filter", "doc": "Lowpass; cutoff is a Signal input driven by the brightness Good Button." },
     { "type": "envelope", "address": "/env", "doc": "Slow-attack pad VCA, gated by the voicer.", "params": { "attack": 0.6, "decay": 0.3, "sustain": 0.8, "release": 0.8 }, "control": [ { "label": "Attack", "param": "attack" }, { "label": "Release", "param": "release" } ] },
+
+    { "type": "m2s", "address": "/vgain", "doc": "Per-voice headroom: constant equal-power gain (1/sqrt(12) ~ 0.289) held forever (no input). Single-lane -> broadcasts to every voice's /vmix. The 12 voice lanes sum straight into the master (no auto gain comp), so each voice is scaled here to keep a full 12-voice chord off the clip ceiling while staying loud at a typical 3-6 note chord.", "params": { "mode": 0.0, "default": 0.289 } },
+    { "type": "mul", "address": "/vmix", "doc": "Per-voice gain stage: env audio (a) * /vgain scalar (b). Replicated per voice (inherits the 12 lanes from env); the constant gain broadcasts in on b." },
     { "type": "output", "address": "/out" },
 
     { "type": "map", "address": "/brightness", "doc": "PUBLIC Good Button. Identity [0,1] pass-through, fanned to the ranged cutoff map. Send /brightness [0..1]. Rests at 0.5 (ADR-0018).", "params": { "default": 0.5 }, "control": { "label": "Brightness", "widget": "fader", "unit": "%" } },
@@ -33,7 +36,9 @@
     { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/filter", "port": "audio" } },
     { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env", "port": "audio" } },
     { "from": { "node": "/voicer", "port": "gate" }, "to": { "node": "/env", "port": "gate" } },
-    { "from": { "node": "/env", "port": "audio" }, "to": { "node": "/out", "port": "audio" } },
+    { "from": { "node": "/env", "port": "audio" }, "to": { "node": "/vmix", "port": "a" } },
+    { "from": { "node": "/vgain", "port": "out" }, "to": { "node": "/vmix", "port": "b" } },
+    { "from": { "node": "/vmix", "port": "out" }, "to": { "node": "/out", "port": "audio" } },
 
     { "from": { "node": "/brightness", "port": "out" }, "to": { "node": "/map_cutoff", "port": "in" } },
     { "from": { "node": "/map_cutoff", "port": "out" }, "to": { "node": "/cv_cutoff", "port": "in" } },
