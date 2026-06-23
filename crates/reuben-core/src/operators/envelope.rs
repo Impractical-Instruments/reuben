@@ -42,6 +42,10 @@ pub struct Envelope {
     held: bool,
     /// Current ADSR segment.
     stage: Stage,
+    /// Per-sample decrement for the in-progress Release, fixed at the note-off edge from the
+    /// level *at that instant* so the level always falls to 0 in `release` seconds — regardless
+    /// of `sustain`, and correct when the gate falls mid-decay. Persists across blocks.
+    release_step: f32,
 }
 
 impl Envelope {
@@ -102,7 +106,10 @@ impl Operator for Envelope {
         let sustain = io.param(P_SUSTAIN).clamp(0.0, 1.0);
         let attack_step = per_sample_step(io.param(P_ATTACK), sample_rate);
         let decay_step = per_sample_step(io.param(P_DECAY), sample_rate) * (1.0 - sustain);
-        let release_step = per_sample_step(io.param(P_RELEASE), sample_rate) * sustain.max(1e-6);
+        // Base per-sample rate that would span the full [0,1] range in `release` seconds. The
+        // actual Release decrement is this scaled by the level at the note-off edge (below), so
+        // release lasts `release` seconds from wherever the level is — never frozen at sustain=0.
+        let release_rate = per_sample_step(io.param(P_RELEASE), sample_rate);
 
         // Read each input sample with a short-lived borrow that ends before the output
         // write, so `process` stays allocation-free. Unconnected inputs read as
@@ -116,6 +123,10 @@ impl Operator for Envelope {
                 self.stage = Stage::Attack;
             } else if !gate_on && self.held {
                 self.stage = Stage::Release;
+                // Lock the release slope to the current level: fall to 0 over `release` seconds
+                // from here. For a note held to sustain this equals the old sustain-scaled rate;
+                // for sustain=0 or a release mid-decay it still terminates instead of sticking.
+                self.release_step = self.level * release_rate;
             }
             self.held = gate_on;
 
@@ -141,7 +152,7 @@ impl Operator for Envelope {
                     self.level = sustain;
                 }
                 Stage::Release => {
-                    self.level -= release_step;
+                    self.level -= self.release_step;
                     if self.level <= 0.0 {
                         self.level = 0.0;
                         self.stage = Stage::Idle;
@@ -236,6 +247,69 @@ mod tests {
         assert!(out[release_samples / 2] > 0.0);
         // Past the release time the level has reached zero.
         assert_abs_diff_eq!(out[rel_n - 1], 0.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn groovebox_snare_decays_to_zero_while_gate_held() {
+        // Exact snare-noise envelope from instruments/groovebox.json. sustain = 0, so a held
+        // gate must still fall silent after attack+decay (a percussive "snap"), not drone.
+        let attack = 0.001;
+        let decay = 0.09;
+        let sustain = 0.0;
+        let release = 0.06;
+        let params = vec![attack, decay, sustain, release];
+
+        // Gate held high for 0.5 s — far longer than attack+decay (~0.091 s).
+        let n = (0.5 * SR) as usize;
+        let audio = vec![1.0f32; n];
+        let gate = vec![1.0f32; n];
+
+        let mut env = Envelope::new();
+        let out = run(&mut env, &audio, &gate, &params);
+
+        // By the end of attack+decay the level has reached sustain (0.0)…
+        let settle = ((attack + decay) * SR) as usize + 64;
+        assert_abs_diff_eq!(out[settle], 0.0, epsilon = 1e-6);
+        // …and stays there for the rest of the held gate (no drone / stuck-open).
+        assert_abs_diff_eq!(out[n - 1], 0.0, epsilon = 1e-6);
+    }
+
+    #[test]
+    fn short_gate_with_zero_sustain_releases_to_zero() {
+        // The groovebox snare bug: sustain = 0 and the gate falls *before* decay completes, so
+        // Release starts mid-decay (level well above 0). The level must still reach 0 within the
+        // release time — not freeze at the note-off level (which droned the snare noise).
+        let attack = 0.001;
+        let decay = 0.09;
+        let sustain = 0.0;
+        let release = 0.06;
+        let params = vec![attack, decay, sustain, release];
+
+        let mut env = Envelope::new();
+
+        // Block 1: gate high for ~62 ms — shorter than decay (90 ms), so it falls mid-decay.
+        let gate_samples = (0.0625 * SR) as usize;
+        let audio1 = vec![1.0f32; gate_samples];
+        let gate1 = vec![1.0f32; gate_samples];
+        let held = run(&mut env, &audio1, &gate1, &params);
+        assert!(
+            held[gate_samples - 1] > 0.05,
+            "still decaying when the gate falls"
+        );
+
+        // Block 2: gate low. After the release time the level is 0 and stays there.
+        let release_samples = (release * SR) as usize;
+        let rel_n = release_samples + 4_800;
+        let audio2 = vec![1.0f32; rel_n];
+        let gate2 = vec![0.0f32; rel_n];
+        let out = run(&mut env, &audio2, &gate2, &params);
+
+        assert_abs_diff_eq!(out[rel_n - 1], 0.0, epsilon = 1e-6);
+        // And nothing lingers past the release window (the "stays open" symptom).
+        assert!(
+            out[release_samples + 2_400] == 0.0,
+            "noise still audible after release — envelope stayed open"
+        );
     }
 
     #[test]

@@ -10,11 +10,16 @@
 //!   [`crate::operator::Io::events`]; this port is documentary (no Signal edge). The
 //!   `reset` event re-zeroes the phase at its (sample-accurate) frame, locating position 1.
 //! - output 0: `phase` (Signal) — beat phasor, a [0, 1) sawtooth that wraps once per beat.
-//! - output 1: `gate` (Signal) — 1.0 for the first half of each beat, else 0.0; its rising
-//!   edge is a sample-accurate beat trigger (drive an envelope's gate with it).
+//!   **Unaffected by `division`** — it is always the once-per-beat phasor.
+//! - output 1: `gate` (Signal) — 1.0 for the first half of each **1/`division` sub-beat**, else
+//!   0.0; its rising edge is a sample-accurate trigger. At the default `division` 1 this is the
+//!   original once-per-beat gate, high for the first half of the beat. At `division` N the gate
+//!   pulses N times per beat — a 16th-note grid is `division` 4 (ADR-0022, the thin slice of
+//!   ADR-0006's deferred subdivision).
 //! - param 0: `tempo` (BPM).
+//! - param 1: `division` — gate subdivisions per beat (1 = once per beat, default; 4 = 16ths).
 //!
-//! Tempo is an ordinary param, so the engine block-slices on tempo changes and a new tempo
+//! Tempo/division are ordinary params, so the engine block-slices on a change and the new value
 //! takes effect at the exact sample of the change.
 
 use smallvec::SmallVec;
@@ -26,6 +31,7 @@ pub const IN_SYNC: usize = 0;
 pub const OUT_PHASE: usize = 0;
 pub const OUT_GATE: usize = 1;
 pub const P_TEMPO: usize = 0;
+pub const P_DIVISION: usize = 1;
 
 #[derive(Default)]
 pub struct Clock {
@@ -47,14 +53,24 @@ impl Operator for Clock {
             type_name: "clock",
             inputs: vec![Port::message("sync")],
             outputs: vec![Port::signal("phase"), Port::signal("gate")],
-            params: vec![ParamMeta {
-                name: "tempo",
-                min: 1.0,
-                max: 999.0,
-                default: 120.0,
-                unit: "BPM",
-                curve: Curve::Linear,
-            }],
+            params: vec![
+                ParamMeta {
+                    name: "tempo",
+                    min: 1.0,
+                    max: 999.0,
+                    default: 120.0,
+                    unit: "BPM",
+                    curve: Curve::Linear,
+                },
+                ParamMeta {
+                    name: "division",
+                    min: 1.0,
+                    max: 64.0,
+                    default: 1.0,
+                    unit: "",
+                    curve: Curve::Linear,
+                },
+            ],
             resources: vec![],
             lanes: LaneRule::Inherit,
         }
@@ -70,6 +86,9 @@ impl Operator for Clock {
         } else {
             0.0
         };
+        // Gate subdivisions per beat. division 1 = the original once-per-beat gate; N pulses N
+        // times per beat. Rounded and floored at 1 so it never collapses the gate.
+        let division = (io.param(P_DIVISION).round() as f64).max(1.0);
 
         // Reset frames within this (sub)block, sorted. A `reset` event re-zeroes the phase
         // at its exact sample — sample-accurate position locate.
@@ -111,7 +130,10 @@ impl Operator for Clock {
                     phase = 0.0;
                     ri += 1;
                 }
-                *s = if phase < 0.5 { 1.0 } else { 0.0 };
+                // Sub-beat phasor: phase·division wrapped to [0,1); gate high for its first
+                // half. division 1 reduces to `phase < 0.5` exactly (bit-identical default).
+                let sub = (phase * division).fract();
+                *s = if sub < 0.5 { 1.0 } else { 0.0 };
                 phase += dt;
                 phase -= phase.floor();
             }
@@ -132,9 +154,20 @@ mod tests {
 
     const SR: f32 = 48_000.0;
 
-    /// Run `clock` over one block of `n` frames at `tempo`, with optional reset events.
-    /// Returns the (phase, gate) buffers.
+    /// Run `clock` over one block of `n` frames at `tempo` (division 1), with optional reset
+    /// events. Returns the (phase, gate) buffers.
     fn run(clock: &mut Clock, n: usize, tempo: f32, events: &[Message]) -> (Vec<f32>, Vec<f32>) {
+        run_div(clock, n, tempo, 1.0, events)
+    }
+
+    /// Like [`run`] but with an explicit gate `division`.
+    fn run_div(
+        clock: &mut Clock,
+        n: usize,
+        tempo: f32,
+        division: f32,
+        events: &[Message],
+    ) -> (Vec<f32>, Vec<f32>) {
         let mut phase = vec![0.0f32; n];
         let mut gate = vec![0.0f32; n];
         let evs: Vec<Event> = events
@@ -148,7 +181,7 @@ mod tests {
         {
             let outs: Vec<&mut [f32]> = vec![&mut phase[..], &mut gate[..]];
             let inputs: Vec<Option<&[f32]>> = vec![None];
-            let params = [tempo];
+            let params = [tempo, division];
             let mut io = Io::new(SR, n, inputs, outs, &params, &evs);
             clock.process(&mut io);
         }
@@ -255,10 +288,75 @@ mod tests {
         {
             let outs: Vec<&mut [f32]> = vec![&mut phase[..], &mut gate[..]];
             let inputs: Vec<Option<&[f32]>> = vec![None];
-            let params = [120.0f32];
+            let params = [120.0f32, 1.0];
             let mut io = Io::new(SR, 1, inputs, outs, &params, &[]);
             b.process(&mut io);
         }
         assert_eq!(phase[0], 0.0, "spawned clock starts fresh at phase 0");
+    }
+
+    // --- V1.3 `division` param: subdivide the gate (ADR-0022) ---
+
+    #[test]
+    fn division_one_is_bit_identical_to_the_default_gate() {
+        // division 1 must reproduce the original once-per-beat gate exactly. The original logic
+        // was `gate = if phase < 0.5 { 1 } else { 0 }` on the f64 beat phasor; replay that exact
+        // accumulator here as the reference and compare bit-for-bit.
+        let n = 96_000;
+        let mut c = Clock::new();
+        let (_phase, gate) = run_div(&mut c, n, 120.0, 1.0, &[]);
+
+        let dt = (120.0_f64 / 60.0) / SR as f64;
+        let mut ref_phase = 0.0f64;
+        for (i, &g) in gate.iter().enumerate() {
+            let expected: f32 = if ref_phase < 0.5 { 1.0 } else { 0.0 };
+            assert_eq!(g.to_bits(), expected.to_bits(), "gate differs at {i}");
+            ref_phase += dt;
+            ref_phase -= ref_phase.floor();
+        }
+    }
+
+    #[test]
+    fn division_four_quadruples_the_rising_edges() {
+        // 120 BPM @ 48 kHz over 1 beat (24000 frames): division 1 fires 1 rising edge, division
+        // 4 fires 4 (one per 16th note). The phase phasor is unchanged either way.
+        let n = 24_000;
+        let mut c1 = Clock::new();
+        let (_p1, g1) = run_div(&mut c1, n, 120.0, 1.0, &[]);
+        let mut c4 = Clock::new();
+        let (p4, g4) = run_div(&mut c4, n, 120.0, 4.0, &[]);
+
+        assert_eq!(rising_edges(&g1).len(), 1, "division 1: one beat trigger");
+        let edges4 = rising_edges(&g4);
+        assert_eq!(
+            edges4.len(),
+            4,
+            "division 4: four 16th triggers, got {edges4:?}"
+        );
+        // Edges land at the quarter-beat marks (0, 6000, 12000, 18000).
+        for (k, &e) in edges4.iter().enumerate() {
+            let expected = k * 6_000;
+            assert!(
+                e.abs_diff(expected) <= 1,
+                "16th {k} edge at {e}, expected ~{expected}"
+            );
+        }
+
+        // The phase output is still the once-per-beat phasor regardless of division.
+        assert_eq!(p4[0], 0.0, "phase still starts at the downbeat");
+        let phase_edges = {
+            // phase wraps once per beat: it never resets within this single beat.
+            let mut wraps = 0;
+            for i in 1..n {
+                if p4[i] < p4[i - 1] {
+                    wraps += 1;
+                }
+            }
+            wraps
+        };
+        assert_eq!(
+            phase_edges, 0,
+            "phase wraps once per beat, not per sub-beat"
+        );
     }
 }

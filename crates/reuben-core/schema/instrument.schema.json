@@ -93,6 +93,13 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "division": {
+                    "default": 1.0,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 64.0,
+                    "minimum": 1.0,
+                    "type": "number"
+                  },
                   "tempo": {
                     "default": 120.0,
                     "description": "unit: BPM, curve: Linear",
@@ -427,6 +434,13 @@
                     "minimum": 20.0,
                     "type": "number"
                   },
+                  "mode": {
+                    "default": 0.0,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 2.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  },
                   "resonance": {
                     "default": 0.20000000298023224,
                     "description": "unit: , curve: Linear",
@@ -643,6 +657,27 @@
           "if": {
             "properties": {
               "type": {
+                "const": "noise"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
                 "const": "oscillator"
               }
             },
@@ -805,14 +840,77 @@
               "params": {
                 "additionalProperties": false,
                 "properties": {
+                  "gate_mode": {
+                    "default": 0.0,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 1.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  },
                   "length": {
                     "default": 8.0,
                     "description": "unit: steps, curve: Linear",
-                    "maximum": 8.0,
+                    "maximum": 16.0,
                     "minimum": 1.0,
                     "type": "number"
                   },
+                  "pitch": {
+                    "default": 0.0,
+                    "description": "unit: degree, curve: Linear",
+                    "maximum": 24.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  },
                   "step1": {
+                    "default": 0.0,
+                    "description": "unit: degree, curve: Linear",
+                    "maximum": 24.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  },
+                  "step10": {
+                    "default": 0.0,
+                    "description": "unit: degree, curve: Linear",
+                    "maximum": 24.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  },
+                  "step11": {
+                    "default": 0.0,
+                    "description": "unit: degree, curve: Linear",
+                    "maximum": 24.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  },
+                  "step12": {
+                    "default": 0.0,
+                    "description": "unit: degree, curve: Linear",
+                    "maximum": 24.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  },
+                  "step13": {
+                    "default": 0.0,
+                    "description": "unit: degree, curve: Linear",
+                    "maximum": 24.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  },
+                  "step14": {
+                    "default": 0.0,
+                    "description": "unit: degree, curve: Linear",
+                    "maximum": 24.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  },
+                  "step15": {
+                    "default": 0.0,
+                    "description": "unit: degree, curve: Linear",
+                    "maximum": 24.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  },
+                  "step16": {
                     "default": 0.0,
                     "description": "unit: degree, curve: Linear",
                     "maximum": 24.0,
@@ -863,6 +961,13 @@
                   },
                   "step8": {
                     "default": 7.0,
+                    "description": "unit: degree, curve: Linear",
+                    "maximum": 24.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  },
+                  "step9": {
+                    "default": 0.0,
                     "description": "unit: degree, curve: Linear",
                     "maximum": 24.0,
                     "minimum": -1.0,
@@ -983,6 +1088,7 @@
             "m2s",
             "map",
             "mul",
+            "noise",
             "oscillator",
             "output",
             "reverb",
