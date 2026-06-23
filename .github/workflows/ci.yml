@@ -16,6 +16,16 @@ permissions:
   contents: read
 
 jobs:
+  lockstep:
+    name: MSRV lockstep (toolchain == rust-version)
+    runs-on: ubuntu-latest
+    # Same draft-skip as the other jobs. Pure text check — no toolchain, seconds to run.
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    steps:
+      - uses: actions/checkout@v4
+      - name: Assert rust-toolchain.toml channel == Cargo.toml rust-version (ADR-0023)
+        run: ./.github/scripts/check-msrv-lockstep.sh
+
   check:
     name: fmt + clippy + test
     runs-on: ubuntu-latest
