@@ -3,9 +3,21 @@ name: CI
 on:
   push:
     branches: [main]
+    # Docs-only changes can't affect the Rust build/test/perf gate — skip CI for them.
+    # `paths-ignore` skips only when EVERY changed file matches, so a mixed docs+code
+    # change still runs. Safe to skip silently: no ruleset requires these status checks
+    # (verified 2026-06-23) — a doc-only PR stays mergeable without a CI run.
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - LICENSE
   pull_request:
     # `ready_for_review` so converting a draft to ready triggers a run.
     types: [opened, synchronize, reopened, ready_for_review]
+    paths-ignore:
+      - "**/*.md"
+      - "docs/**"
+      - LICENSE
 
 # Cancel superseded runs on the same ref so the latest push wins and minutes aren't wasted.
 concurrency:
