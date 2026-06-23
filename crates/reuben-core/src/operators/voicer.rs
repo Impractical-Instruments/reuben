@@ -227,6 +227,8 @@ impl Operator for Voicer {
     }
 }
 
+crate::register_operator!(Voicer);
+
 #[cfg(test)]
 mod tests {
     use super::*;

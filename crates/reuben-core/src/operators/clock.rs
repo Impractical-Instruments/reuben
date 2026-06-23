@@ -146,6 +146,8 @@ impl Operator for Clock {
     }
 }
 
+crate::register_operator!(Clock);
+
 #[cfg(test)]
 mod tests {
     use super::*;

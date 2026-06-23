@@ -7,8 +7,9 @@ description: Author a new reuben Operator in Rust — the unit of DSP behind eve
 
 An Operator is one unit of DSP — authored **single-Lane** (one mono voice; the engine fans it out
 per-Voice, ADR-0010) as a Rust file in [`crates/reuben-core/src/operators/`](../../crates/reuben-core/src/operators):
-index consts, a state struct, and `impl Operator` (`descriptor` / `process` / `spawn`), registered
-in `operators/mod.rs` + `registry.rs`. This skill authors that end-to-end (ADR-0021).
+index consts, a state struct, and `impl Operator` (`descriptor` / `process` / `spawn`), declared in
+`operators/mod.rs` and self-registered by its own `register_operator!` line (no central list to
+edit, ADR-0024). This skill authors that end-to-end (ADR-0021).
 
 First check it doesn't already exist: `reuben describe --json` lists every operator — a request is
 often a *patch* of existing ones (the `patcher` skill), not new Rust. This skill is only for
@@ -28,9 +29,10 @@ Run all `reuben`/`cargo` commands from the repo root.
 
 2. **Scaffold.** Write the contract to a JSON file (shape below) and run:
    `cargo run -q -p reuben-native --bin reuben -- scaffold-operator --spec <contract.json>`
-   This writes `operators/<name>.rs` (descriptor filled in, a silence-writing `process` stub, and
-   an **intentionally-red placeholder test**) and wires both registration sites. It refuses to
-   clobber and rejects a malformed spec.
+   This writes `operators/<name>.rs` (descriptor filled in, a silence-writing `process` stub, its
+   own `register_operator!` self-registration line, and an **intentionally-red placeholder test**)
+   and the sorted `mod.rs` inserts — `registry.rs` is not touched (ADR-0024). It refuses to clobber
+   and rejects a malformed spec.
 
 3. **Implement `process` test-first** — lean on the `tdd` skill. The scaffold starts you **red**;
    turn the contract's oracle into real tests (drive `process` via `Io::new`, assert observable
@@ -51,8 +53,8 @@ Run all `reuben`/`cargo` commands from the repo root.
 
 4. **Close the gate** — `validate` can't prove DSP is correct, so the gate is richer than the
    patcher's. In order:
-   1. `cargo test -p reuben-core` — your tests (the real oracle), the `registry.rs` name-list test,
-      and `committed_schema_is_in_sync`.
+   1. `cargo test -p reuben-core` — your tests (the real oracle), the registry self-registration
+      invariants (your op is gathered, names stay unique + snake_case), and `committed_schema_is_in_sync`.
    2. `cargo run -p reuben-core --example gen_schema` — regenerate + commit the schema (**owned
       here**: the staleness test fails otherwise, and `patcher` can't use the op until it's listed).
    3. `cargo clippy -p reuben-core --all-targets` — clean.

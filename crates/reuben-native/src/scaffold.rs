@@ -1,11 +1,13 @@
-//! `scaffold-operator` (ADR-0021): generate a new Operator's Rust skeleton and wire its three
+//! `scaffold-operator` (ADR-0021): generate a new Operator's Rust skeleton and wire its
 //! registration sites from a contract spec.
 //!
 //! The deterministic, error-prone half of authoring an Operator is mechanical: a new file in
-//! `operators/`, plus sorted inserts into `operators/mod.rs` and `registry.rs` (including its
-//! name-list test). Like the `describe`/`validate` introspection (ADR-0020), this lives as pure
-//! functions over source **text** — the binary does the filesystem I/O around them — so the
-//! tricky sorted-insertion logic is tested directly, not through a spawned process.
+//! `operators/`, plus sorted inserts into `operators/mod.rs`. Registration itself is compile-time
+//! and self-contained (ADR-0024): the generated file carries its own `register_operator!` line,
+//! so the scaffold no longer edits `registry.rs` — that central list (and its merge conflicts)
+//! is gone. Like the `describe`/`validate` introspection (ADR-0020), this lives as pure functions
+//! over source **text** — the binary does the filesystem I/O around them — so the tricky
+//! sorted-insertion logic is tested directly, not through a spawned process.
 
 use std::path::Path;
 use std::process::Command;
@@ -63,23 +65,22 @@ pub struct OperatorSpec {
     pub lanes: LaneSpec,
 }
 
-/// The current contents of the two registration files the scaffold must edit.
+/// The current contents of the registration file the scaffold must edit (`operators/mod.rs`).
 pub struct ScaffoldInputs<'a> {
     pub mod_rs: &'a str,
-    pub registry_rs: &'a str,
 }
 
-/// What the scaffold produced: the new operator file plus the two edited registration files.
+/// What the scaffold produced: the new operator file plus the edited `mod.rs`. Registration is
+/// in the operator file itself (`register_operator!`, ADR-0024), so `registry.rs` is untouched.
 #[derive(Debug)]
 pub struct ScaffoldOutputs {
     /// File stem (also the module name), e.g. `"my_op"` — the binary writes `operators/<stem>.rs`.
     pub file_stem: String,
     pub operator_rs: String,
     pub mod_rs: String,
-    pub registry_rs: String,
 }
 
-/// Generate the skeleton + registration edits for `spec`, given the current registration files.
+/// Generate the skeleton + `mod.rs` edits for `spec`, given the current `mod.rs`.
 pub fn scaffold(spec: &OperatorSpec, inputs: &ScaffoldInputs) -> Result<ScaffoldOutputs, String> {
     validate_spec(spec)?;
     let stem = spec.type_name.clone();
@@ -87,13 +88,11 @@ pub fn scaffold(spec: &OperatorSpec, inputs: &ScaffoldInputs) -> Result<Scaffold
 
     let operator_rs = render_operator(spec);
     let mod_rs = edit_mod(inputs.mod_rs, &stem, &st)?;
-    let registry_rs = edit_registry(inputs.registry_rs, &stem, &st)?;
 
     Ok(ScaffoldOutputs {
         file_stem: stem,
         operator_rs,
         mod_rs,
-        registry_rs,
     })
 }
 
@@ -109,8 +108,10 @@ pub struct ScaffoldReport {
 }
 
 /// Read a contract spec from `spec_path`, generate the operator under `core_root`
-/// (`crates/reuben-core/src`), and write all three touched files — refusing to clobber an
-/// existing operator file. Best-effort `cargo fmt` finalises the re-emitted lists.
+/// (`crates/reuben-core/src`), and write the new operator file plus the edited `operators/mod.rs`
+/// — refusing to clobber an existing operator file. The operator self-registers at compile time
+/// (ADR-0024), so `registry.rs` is not touched. Best-effort `cargo fmt` finalises the re-emitted
+/// `mod.rs` lists.
 pub fn run_scaffold(spec_path: &Path, core_root: &Path) -> Result<ScaffoldReport, String> {
     let spec_text = std::fs::read_to_string(spec_path)
         .map_err(|e| format!("read spec {}: {e}", spec_path.display()))?;
@@ -118,19 +119,10 @@ pub fn run_scaffold(spec_path: &Path, core_root: &Path) -> Result<ScaffoldReport
         serde_json::from_str(&spec_text).map_err(|e| format!("parse spec: {e}"))?;
 
     let mod_path = core_root.join("operators/mod.rs");
-    let registry_path = core_root.join("registry.rs");
     let mod_rs = std::fs::read_to_string(&mod_path)
         .map_err(|e| format!("read {}: {e}", mod_path.display()))?;
-    let registry_rs = std::fs::read_to_string(&registry_path)
-        .map_err(|e| format!("read {}: {e}", registry_path.display()))?;
 
-    let out = scaffold(
-        &spec,
-        &ScaffoldInputs {
-            mod_rs: &mod_rs,
-            registry_rs: &registry_rs,
-        },
-    )?;
+    let out = scaffold(&spec, &ScaffoldInputs { mod_rs: &mod_rs })?;
 
     let op_path = core_root.join(format!("operators/{}.rs", out.file_stem));
     if op_path.exists() {
@@ -144,8 +136,6 @@ pub fn run_scaffold(spec_path: &Path, core_root: &Path) -> Result<ScaffoldReport
         .map_err(|e| format!("write {}: {e}", op_path.display()))?;
     std::fs::write(&mod_path, &out.mod_rs)
         .map_err(|e| format!("write {}: {e}", mod_path.display()))?;
-    std::fs::write(&registry_path, &out.registry_rs)
-        .map_err(|e| format!("write {}: {e}", registry_path.display()))?;
 
     let formatted = Command::new("cargo")
         .args(["fmt", "-p", "reuben-core"])
@@ -157,10 +147,7 @@ pub fn run_scaffold(spec_path: &Path, core_root: &Path) -> Result<ScaffoldReport
         type_name: spec.type_name.clone(),
         struct_name: struct_name(&spec.type_name),
         created: op_path.display().to_string(),
-        edited: vec![
-            mod_path.display().to_string(),
-            registry_path.display().to_string(),
-        ],
+        edited: vec![mod_path.display().to_string()],
         formatted,
     })
 }
@@ -219,132 +206,6 @@ fn insert_line_sorted(
         out.push('\n');
     }
     Ok(out)
-}
-
-/// Wire the operator into `registry.rs`: its struct into the `use crate::operators::{..}` import,
-/// a `register(..)` call in `builtin()`, and its type name into the name-list test — all sorted.
-fn edit_registry(src: &str, stem: &str, st: &str) -> Result<String, String> {
-    let src = insert_into_braced_list(src, "use crate::operators::{", "}", st, "import")?;
-    let src = insert_register_call(&src, st)?;
-    insert_into_braced_list_at(
-        &src,
-        "names,",
-        "vec![",
-        "]",
-        &format!("\"{stem}\""),
-        "name-list",
-    )
-}
-
-/// Insert `register(..)` for the operator at the end of `builtin()`, just before its `r` return.
-fn insert_register_call(src: &str, st: &str) -> Result<String, String> {
-    let call = format!("        r.register(|| Box::new({st}::new()), {st}::descriptor());\n");
-    let anchor = "        r\n    }";
-    let at = src.find(anchor).ok_or_else(|| {
-        "could not find builtin()'s `r` return to anchor the register call".to_string()
-    })?;
-    if src.contains(&call) {
-        return Err(format!("register call for {st} already exists"));
-    }
-    let mut out = String::with_capacity(src.len() + call.len());
-    out.push_str(&src[..at]);
-    out.push_str(&call);
-    out.push_str(&src[at..]);
-    Ok(out)
-}
-
-/// Insert `item` (sorted) into the first `open..close` list found after `start`, re-emitting the
-/// list packed. Items are the comma-separated tokens between the delimiters.
-fn insert_into_braced_list_at(
-    src: &str,
-    start: &str,
-    open: &str,
-    close: &str,
-    item: &str,
-    what: &str,
-) -> Result<String, String> {
-    let from = src
-        .find(start)
-        .ok_or_else(|| format!("could not find {what} anchor {start:?}"))?;
-    insert_into_braced_list(&src[from..], open, close, item, what)
-        .map(|edited| format!("{}{}", &src[..from], edited))
-}
-
-/// Insert `item` (sorted, deduped) into the first `open..close` delimited, comma-separated list,
-/// re-emitting it packed at ~96 columns. `open`/`close` are literal delimiters (`{`/`}`, `[`/`]`).
-fn insert_into_braced_list(
-    src: &str,
-    open: &str,
-    close: &str,
-    item: &str,
-    what: &str,
-) -> Result<String, String> {
-    let open_at = src
-        .find(open)
-        .ok_or_else(|| format!("could not find {what} list open {open:?}"))?;
-    let body_start = open_at + open.len();
-    let close_rel = src[body_start..]
-        .find(close)
-        .ok_or_else(|| format!("could not find {what} list close {close:?}"))?;
-    let body = &src[body_start..body_start + close_rel];
-
-    let mut items: Vec<String> = body
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect();
-    if items.iter().any(|i| i == item) {
-        return Err(format!("{what} already contains {item}"));
-    }
-    items.push(item.to_string());
-    items.sort();
-
-    // Re-emit the body one indent level in, with the closing delimiter back at the list's own
-    // indent. `cargo fmt` finalises exact wrapping; this stays close so it barely churns.
-    let base = line_indent(src, open_at);
-    let body_indent = format!("{base}    ");
-    let packed = pack_items(&items, &body_indent, 96);
-    Ok(format!(
-        "{}\n{}{}{}",
-        &src[..body_start],
-        packed,
-        base,
-        &src[body_start + close_rel..]
-    ))
-}
-
-/// The leading spaces of the line containing byte offset `at`.
-fn line_indent(src: &str, at: usize) -> String {
-    let line_start = src[..at].rfind('\n').map(|i| i + 1).unwrap_or(0);
-    src[line_start..]
-        .chars()
-        .take_while(|c| *c == ' ')
-        .collect()
-}
-
-/// Greedily pack `items` (each gets a trailing comma) into lines no wider than `width`, indented.
-fn pack_items(items: &[String], indent: &str, width: usize) -> String {
-    let mut out = String::new();
-    let mut line = String::new();
-    for it in items {
-        let piece = format!("{it},");
-        if line.is_empty() {
-            line = format!("{indent}{piece}");
-        } else if line.len() + 1 + piece.len() <= width {
-            line.push(' ');
-            line.push_str(&piece);
-        } else {
-            out.push_str(&line);
-            out.push('\n');
-            line = format!("{indent}{piece}");
-        }
-    }
-    if !line.is_empty() {
-        out.push_str(&line);
-        out.push('\n');
-    }
-    out
 }
 
 /// Reject a malformed contract before anything is written. A bad spec here would otherwise emit
@@ -574,6 +435,10 @@ fn render_operator(spec: &OperatorSpec) -> String {
     }
     out.push_str("}\n\n");
 
+    // Compile-time self-registration (ADR-0024) — this is the whole of "wiring it in": no edit to
+    // registry.rs, no central list. `grep register_operator!` is the census of built-in operators.
+    out.push_str(&format!("crate::register_operator!({st});\n\n"));
+
     out.push_str(&render_test_module(spec));
     out
 }
@@ -670,19 +535,12 @@ mod tests {
         serde_json::from_str(json).expect("valid spec")
     }
 
-    // The real registration files, compiled in — the strongest fixture for the sorted inserts.
+    // The real `mod.rs`, compiled in — the strongest fixture for the sorted inserts.
     const REAL_MOD: &str = include_str!("../../reuben-core/src/operators/mod.rs");
-    const REAL_REGISTRY: &str = include_str!("../../reuben-core/src/registry.rs");
 
     fn scaffold_real(json: &str) -> ScaffoldOutputs {
-        scaffold(
-            &spec(json),
-            &ScaffoldInputs {
-                mod_rs: REAL_MOD,
-                registry_rs: REAL_REGISTRY,
-            },
-        )
-        .expect("scaffold against real files")
+        scaffold(&spec(json), &ScaffoldInputs { mod_rs: REAL_MOD })
+            .expect("scaffold against real files")
     }
 
     fn render(json: &str) -> String {
@@ -807,45 +665,21 @@ mod tests {
     }
 
     #[test]
-    fn wires_registry_import_register_and_name_list() {
+    fn render_emits_self_registration() {
+        // The operator wires itself in (ADR-0024): the generated file carries its own
+        // `register_operator!` call — there is no registry.rs edit to make.
         let out = scaffold_real(r#"{ "type_name": "tremolo" }"#);
-        let reg = &out.registry_rs;
-
-        // Struct imported, registered once, and the name added to the test's sorted list.
-        assert!(reg.contains("Tremolo"), "struct imported: {reg}");
-        let registers = reg.matches("Box::new(Tremolo::new())").count();
-        assert_eq!(registers, 1, "exactly one register call: {reg}");
         assert!(
-            reg.contains("Tremolo::descriptor()"),
-            "register passes the descriptor: {reg}"
+            out.operator_rs
+                .contains("crate::register_operator!(Tremolo);"),
+            "generated file must self-register:\n{}",
+            out.operator_rs
         );
-        assert!(
-            reg.contains("\"tremolo\""),
-            "type name added to the name-list test: {reg}"
-        );
-
-        // The name-list test stays sorted.
-        let names: Vec<&str> = reg
-            .lines()
-            .filter_map(|l| {
-                let t = l.trim().trim_end_matches(',');
-                (t.starts_with('"') && t.ends_with('"') && t.len() > 2).then(|| t.trim_matches('"'))
-            })
-            .collect();
-        let mut sorted = names.clone();
-        sorted.sort();
-        assert_eq!(names, sorted, "name-list must stay sorted: {names:?}");
     }
 
     fn scaffold_err(json: &str) -> String {
-        scaffold(
-            &spec(json),
-            &ScaffoldInputs {
-                mod_rs: REAL_MOD,
-                registry_rs: REAL_REGISTRY,
-            },
-        )
-        .expect_err("spec should be rejected")
+        scaffold(&spec(json), &ScaffoldInputs { mod_rs: REAL_MOD })
+            .expect_err("spec should be rejected")
     }
 
     #[test]
@@ -882,13 +716,11 @@ mod tests {
 
     #[test]
     fn refuses_to_register_a_duplicate_type() {
-        // "reverb" already exists — every registration site should reject it rather than double it.
+        // "reverb" already has a module in mod.rs — the sorted insert must reject it rather than
+        // emit a second `pub mod reverb;` (which would then fail to compile).
         let err = scaffold(
             &spec(r#"{ "type_name": "reverb" }"#),
-            &ScaffoldInputs {
-                mod_rs: REAL_MOD,
-                registry_rs: REAL_REGISTRY,
-            },
+            &ScaffoldInputs { mod_rs: REAL_MOD },
         )
         .unwrap_err();
         assert!(

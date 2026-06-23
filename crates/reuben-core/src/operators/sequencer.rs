@@ -197,6 +197,8 @@ impl Operator for Sequencer {
     }
 }
 
+crate::register_operator!(Sequencer);
+
 #[cfg(test)]
 mod tests {
     use super::*;

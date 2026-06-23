@@ -112,6 +112,8 @@ impl Operator for Oscillator {
     }
 }
 
+crate::register_operator!(Oscillator);
+
 /// PolyBLEP residual for a sawtooth discontinuity at phase wrap (0/1 boundary).
 ///
 /// `t` is the phase in turns [0, 1); `dt` is the per-sample phase increment.

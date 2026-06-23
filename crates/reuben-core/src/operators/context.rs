@@ -180,6 +180,8 @@ impl Operator for ContextOp {
     }
 }
 
+crate::register_operator!(ContextOp);
+
 #[cfg(test)]
 mod tests {
     use super::*;

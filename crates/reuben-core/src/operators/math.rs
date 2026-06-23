@@ -103,6 +103,8 @@ macro_rules! signal_pointwise {
                 Box::new(Self::new())
             }
         }
+
+        $crate::register_operator!($name);
     };
 }
 
@@ -273,6 +275,8 @@ impl Operator for Map {
     }
 }
 
+crate::register_operator!(Map);
+
 // --- Message-domain calculus (frame-based dt) ---
 
 /// `differentiate` — Message-domain rate of change. Emits `Δvalue / Δt_sec` per input event,
@@ -339,6 +343,8 @@ impl Operator for Differentiate {
     }
 }
 
+crate::register_operator!(Differentiate);
+
 /// `integrate` — Message-domain running integral. Treats the input as a piecewise-constant
 /// signal held at the previous value, accumulating `Σ value · Δt_sec`, and emits the running
 /// total per input event. The first event seeds the accumulator (emits the current total, 0).
@@ -403,6 +409,8 @@ impl Operator for Integrate {
         Box::new(Self::new())
     }
 }
+
+crate::register_operator!(Integrate);
 
 #[cfg(test)]
 mod tests {

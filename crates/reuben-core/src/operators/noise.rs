@@ -85,6 +85,8 @@ impl Operator for Noise {
     }
 }
 
+crate::register_operator!(Noise);
+
 #[cfg(test)]
 mod tests {
     use super::*;

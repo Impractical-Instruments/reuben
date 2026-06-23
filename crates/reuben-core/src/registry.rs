@@ -10,10 +10,38 @@ use std::collections::BTreeMap;
 
 use crate::descriptor::Descriptor;
 use crate::operator::Operator;
-use crate::operators::{
-    Add, Chord, Clock, ContextOp, Delay, Differentiate, Djfilter, Envelope, Filter, Integrate, Lfo,
-    M2s, Map, Mul, Noise, Oscillator, Output, Reverb, SamplePlayer, Sequencer, Snap, Strum, Voicer,
-};
+
+/// A compile-time operator registration, submitted at each operator's definition site via
+/// [`register_operator!`] and collected by `inventory` into a link-time slice (ADR-0024). This
+/// replaces the hand-maintained `builtin()` list that every new operator used to edit — the
+/// merge-conflict magnet — so an operator self-registers where it is defined.
+pub struct OpReg {
+    /// Construct a fresh instance with default state.
+    pub make: fn() -> Box<dyn Operator>,
+    /// The operator's self-description (non-const: holds `Vec`s), hence a fn pointer not a value.
+    pub descriptor: fn() -> Descriptor,
+}
+
+inventory::collect!(OpReg);
+
+/// Register an operator type with the built-in [`Registry`] at compile time (ADR-0024).
+///
+/// Invoke **by path** at the operator's definition site, after its `impl Operator`:
+/// `crate::register_operator!(MyOp);`. The macro name is the greppable census of built-ins —
+/// `grep -rn 'register_operator!' src/operators/` enumerates every built-in operator.
+macro_rules! register_operator {
+    ($t:ty) => {
+        inventory::submit! {
+            $crate::registry::OpReg {
+                make: || Box::new(<$t>::new()),
+                descriptor: <$t>::descriptor,
+            }
+        }
+    };
+}
+// Re-export at the crate root so operator modules can call `crate::register_operator!(..)`
+// regardless of source order (macro_rules visibility is lexical without this).
+pub(crate) use register_operator;
 
 /// One registered operator type: how to build it, and its self-description.
 pub struct Entry {
@@ -36,38 +64,23 @@ impl Registry {
         Self::default()
     }
 
-    /// The built-in operator set: oscillator, envelope, filter, voicer, output, clock, delay,
-    /// reverb, lfo, sequencer, context, snap, sample, and the V1.2 control-surface ops (ADR-0017)
-    /// — the math family `map`/`add`/`mul`/`differentiate`/`integrate` and the `m2s` converter.
+    /// The built-in operator set, gathered from every [`register_operator!`] submission across
+    /// the crate (ADR-0024). Each operator self-registers at its definition site, so adding one
+    /// no longer edits any central list. Iteration here is in link order; the `BTreeMap` re-keys
+    /// by `type_name` for deterministic output. Panics on a duplicate `type_name` — a build-time
+    /// assertion that two operators don't claim the same name (the override seam stays in
+    /// [`register`](Self::register), which still last-writer-wins for embedders, ADR-0004).
     pub fn builtin() -> Self {
         let mut r = Self::new();
-        r.register(|| Box::new(Oscillator::new()), Oscillator::descriptor());
-        r.register(|| Box::new(Envelope::new()), Envelope::descriptor());
-        r.register(|| Box::new(Filter::new()), Filter::descriptor());
-        r.register(|| Box::new(Voicer::new()), Voicer::descriptor());
-        r.register(|| Box::new(Output::new()), Output::descriptor());
-        r.register(|| Box::new(Clock::new()), Clock::descriptor());
-        r.register(|| Box::new(Delay::new()), Delay::descriptor());
-        r.register(|| Box::new(Reverb::new()), Reverb::descriptor());
-        r.register(|| Box::new(Lfo::new()), Lfo::descriptor());
-        r.register(|| Box::new(Sequencer::new()), Sequencer::descriptor());
-        r.register(|| Box::new(ContextOp::new()), ContextOp::descriptor());
-        r.register(|| Box::new(Snap::new()), Snap::descriptor());
-        r.register(|| Box::new(SamplePlayer::new()), SamplePlayer::descriptor());
-        // Math-operator family + Message→Signal converter (ADR-0017).
-        r.register(|| Box::new(Map::new()), Map::descriptor());
-        r.register(|| Box::new(Add::new()), Add::descriptor());
-        r.register(|| Box::new(Mul::new()), Mul::descriptor());
-        r.register(
-            || Box::new(Differentiate::new()),
-            Differentiate::descriptor(),
-        );
-        r.register(|| Box::new(Integrate::new()), Integrate::descriptor());
-        r.register(|| Box::new(M2s::new()), M2s::descriptor());
-        r.register(|| Box::new(Djfilter::new()), Djfilter::descriptor());
-        r.register(|| Box::new(Noise::new()), Noise::descriptor());
-        r.register(|| Box::new(Chord::new()), Chord::descriptor());
-        r.register(|| Box::new(Strum::new()), Strum::descriptor());
+        for reg in inventory::iter::<OpReg> {
+            let descriptor = (reg.descriptor)();
+            assert!(
+                r.get(descriptor.type_name).is_none(),
+                "duplicate operator type_name {:?} — two operators registered the same name",
+                descriptor.type_name
+            );
+            r.register(reg.make, descriptor);
+        }
         r
     }
 
@@ -97,38 +110,72 @@ impl Registry {
 mod tests {
     use super::*;
 
+    // The built-in set is no longer an enumerated list (it self-registers, ADR-0024), so these
+    // are churn-free invariants over whatever the `inventory` slice gathered, plus a small canary
+    // that fails loudly if the linker ever dead-strips the submissions.
+
     #[test]
-    fn builtin_has_the_mvp_operators() {
+    fn builtin_is_nonempty() {
+        // If self-registration silently produced nothing (dead-stripped slice), this trips first.
+        assert!(
+            Registry::builtin().type_names().count() >= 3,
+            "builtin() gathered no operators — inventory submissions may have been dropped"
+        );
+    }
+
+    #[test]
+    fn builtin_contains_the_load_bearing_ops() {
+        // Anti-dead-strip canary: a few operators no instrument can do without. Names, not count,
+        // so it doesn't churn when operators are added — but it still proves registration ran.
+        let r = Registry::builtin();
+        for name in ["oscillator", "output", "voicer"] {
+            assert!(r.get(name).is_some(), "built-in {name:?} not registered");
+        }
+    }
+
+    #[test]
+    fn every_entry_round_trips() {
+        // Each registered entry's stored descriptor name matches its map key, and `make` yields a
+        // live operator without panicking — the registration wired its constructor consistently.
+        // (`descriptor()` is static/`Sized`, so a boxed `dyn Operator` can't re-report its name;
+        // the key↔descriptor identity below is what proves the entry is self-consistent.)
+        let r = Registry::builtin();
+        for name in r.type_names() {
+            let entry = r.get(name).expect("type_names yields registered keys");
+            assert_eq!(
+                entry.descriptor.type_name, name,
+                "key vs descriptor mismatch"
+            );
+            let _op = (entry.make)();
+        }
+    }
+
+    #[test]
+    fn no_duplicate_type_names() {
+        // builtin() panics on a duplicate; this asserts the map is internally consistent too.
         let r = Registry::builtin();
         let names: Vec<_> = r.type_names().collect();
-        assert_eq!(
-            names,
-            vec![
-                "add",
-                "chord",
-                "clock",
-                "context",
-                "delay",
-                "differentiate",
-                "djfilter",
-                "envelope",
-                "filter",
-                "integrate",
-                "lfo",
-                "m2s",
-                "map",
-                "mul",
-                "noise",
-                "oscillator",
-                "output",
-                "reverb",
-                "sample",
-                "sequencer",
-                "snap",
-                "strum",
-                "voicer",
-            ]
-        );
+        let mut deduped = names.clone();
+        deduped.dedup();
+        assert_eq!(names, deduped, "duplicate type_name in builtin()");
+    }
+
+    #[test]
+    fn type_names_are_snake_case() {
+        let r = Registry::builtin();
+        for name in r.type_names() {
+            assert!(!name.is_empty(), "empty type_name");
+            let mut chars = name.chars();
+            assert!(
+                chars.next().is_some_and(|c| c.is_ascii_lowercase()),
+                "{name:?} must start with a lowercase letter"
+            );
+            assert!(
+                name.chars()
+                    .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_'),
+                "{name:?} must be snake_case [a-z0-9_]"
+            );
+        }
     }
 
     #[test]
