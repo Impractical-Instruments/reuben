@@ -48,3 +48,5 @@ impl Operator for Output {
         Box::new(Self::new())
     }
 }
+
+crate::register_operator!(Output);

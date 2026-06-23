@@ -131,6 +131,8 @@ impl Operator for Snap {
     }
 }
 
+crate::register_operator!(Snap);
+
 #[cfg(test)]
 mod tests {
     use super::*;

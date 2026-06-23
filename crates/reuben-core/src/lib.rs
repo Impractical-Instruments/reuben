@@ -34,6 +34,9 @@ pub use message::{Arg, Message};
 pub use operator::{Io, Operator};
 pub use plan::{Plan, PlanError};
 pub use registry::Registry;
+// Re-export the self-registration macro at the crate root so operator modules can call
+// `crate::register_operator!(..)` regardless of module declaration order (ADR-0024).
+pub(crate) use registry::register_operator;
 pub use render::{Renderer, SerialExecutor};
 pub use resources::{
     ResolveError, ResolvedRefs, ResourceResolver, ResourceStore, SampleBuffer, SampleId,

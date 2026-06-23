@@ -1,5 +1,13 @@
 # Scaffolding a new Operator: the `scaffold-operator` subcommand and the `create-operator` skill
 
+> **Superseded in part by [ADR-0024](0024-compile-time-operator-registration.md).** This ADR
+> describes registration as edits to **three sites** (`mod.rs`, `registry.rs` `builtin()`, and a
+> name-list test). ADR-0024 replaced the latter two with compile-time self-registration: an
+> operator carries its own `register_operator!` line, `builtin()` gathers them, and the name-list
+> test is gone. The scaffold now edits only `mod.rs` (and emits the self-registration line in the
+> generated file). Everything else here — the subcommand, the red placeholder test, the skill loop
+> — stands.
+
 ## Context
 
 [ADR-0004](0004-ai-authorability-first-class.md) frames a suite of agent skills serving three

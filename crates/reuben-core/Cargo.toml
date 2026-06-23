@@ -12,6 +12,7 @@ slotmap.workspace = true
 smallvec.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+inventory.workspace = true
 
 [dev-dependencies]
 approx.workspace = true

@@ -195,6 +195,8 @@ impl Operator for M2s {
     }
 }
 
+crate::register_operator!(M2s);
+
 #[cfg(test)]
 mod tests {
     use super::*;

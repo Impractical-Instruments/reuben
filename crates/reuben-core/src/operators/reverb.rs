@@ -191,6 +191,8 @@ impl Operator for Reverb {
     }
 }
 
+crate::register_operator!(Reverb);
+
 #[cfg(test)]
 mod tests {
     use super::*;

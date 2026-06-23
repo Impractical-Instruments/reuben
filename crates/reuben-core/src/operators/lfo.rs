@@ -103,6 +103,8 @@ impl Operator for Lfo {
     }
 }
 
+crate::register_operator!(Lfo);
+
 #[cfg(test)]
 mod tests {
     use super::*;

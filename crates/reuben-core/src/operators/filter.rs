@@ -217,6 +217,8 @@ impl Operator for Filter {
     }
 }
 
+crate::register_operator!(Filter);
+
 #[cfg(test)]
 mod tests {
     use super::*;

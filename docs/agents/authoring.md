@@ -150,9 +150,12 @@ modulation is built explicitly with an `add` operator in the relevant domain.
    `delay.rs` (input + state) as a template.
 2. **Wire the module** in `crates/reuben-core/src/operators/mod.rs`: `pub mod <name>;`
    and `pub use <name>::<Type>;`.
-3. **Register it** in `crates/reuben-core/src/registry.rs` `Registry::builtin()`:
-   `r.register(|| Box::new(<Type>::new()), <Type>::descriptor());`.
-   The registry maps the `type_name` string (from JSON) to a constructor + descriptor.
+3. **Self-register** by adding one line at the operator's module top level, after its
+   `impl Operator` block: `crate::register_operator!(<Type>);`. This submits the type to a
+   compile-time `inventory` slice that `Registry::builtin()` gathers ([ADR-0024](../adr/0024-compile-time-operator-registration.md)),
+   so there is **no central list to edit** — operators self-register where they're defined, and
+   parallel branches no longer collide in `registry.rs`. (`grep -rn register_operator! operators/`
+   is the census of built-ins.)
 4. **Regenerate the schema** so JSON validation knows the new type/params:
    ```sh
    cargo run -p reuben-core --example gen_schema
