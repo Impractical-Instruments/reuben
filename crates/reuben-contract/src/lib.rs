@@ -102,6 +102,18 @@ impl std::fmt::Display for ContractError {
     }
 }
 
+/// A non-empty snake_case identifier: a lowercase letter then `[a-z0-9_]`. This is the rule for
+/// `type_name` and for every port/param name. Requiring it on names (not just `type_name`) keeps
+/// `naming::screaming` injective — distinct names can never collapse to the same `IN_`/`OUT_`/`P_`
+/// const — and guarantees the names the macro emits as tokens are valid Rust identifiers.
+fn is_snake_case(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && name
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
 /// Reject a malformed contract before any code is generated. A bad spec would otherwise emit
 /// source that fails to compile (duplicate consts, dangling lane param) far from its cause. This
 /// is the **one** validator: the macro runs it at expansion time (turning each error into a
@@ -111,12 +123,7 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
     if name.is_empty() {
         return Err(ContractError::new(Locus::TypeName, "type_name is empty"));
     }
-    let mut chars = name.chars();
-    let starts_ok = chars.next().is_some_and(|c| c.is_ascii_lowercase());
-    let rest_ok = name
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
-    if !starts_ok || !rest_ok {
+    if !is_snake_case(name) {
         return Err(ContractError::new(
             Locus::TypeName,
             format!("type_name {name:?} must be snake_case: a lowercase letter then [a-z0-9_]"),
@@ -126,6 +133,15 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
     let mut seen_param = std::collections::BTreeSet::new();
     for (i, p) in spec.params.iter().enumerate() {
         let at = Locus::Param(i);
+        if !is_snake_case(&p.name) {
+            return Err(ContractError::new(
+                at,
+                format!(
+                    "param name {:?} must be snake_case: a lowercase letter then [a-z0-9_]",
+                    p.name
+                ),
+            ));
+        }
         if !seen_param.insert(p.name.as_str()) {
             return Err(ContractError::new(
                 at,
@@ -173,6 +189,15 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
                     format!(
                         "{label} {:?}: kind {:?} must be \"signal\", \"message\", or \"context\"",
                         p.name, p.kind
+                    ),
+                ));
+            }
+            if !is_snake_case(&p.name) {
+                return Err(ContractError::new(
+                    at,
+                    format!(
+                        "{label} port name {:?} must be snake_case: a lowercase letter then [a-z0-9_]",
+                        p.name
                     ),
                 ));
             }
@@ -243,6 +268,28 @@ mod tests {
         let oob =
             err(r#"{ "type_name": "x", "params": [ {"name":"a","min":0,"max":1,"default":5} ] }"#);
         assert!(oob.message.contains("outside"), "{}", oob.message);
+    }
+
+    #[test]
+    fn rejects_non_snake_case_port_name_at_that_port() {
+        for bad in ["in gain", "2x", "Freq"] {
+            let json = format!(
+                r#"{{ "type_name": "x", "inputs": [ {{"name":{bad:?},"kind":"signal"}} ] }}"#
+            );
+            let e = err(&json);
+            assert_eq!(e.locus, Locus::Input(0), "{}", e.message);
+            assert!(e.message.contains("snake_case"), "{}", e.message);
+        }
+    }
+
+    #[test]
+    fn rejects_non_snake_case_param_name_at_that_param() {
+        // `Freq` would otherwise screaming-collide with `freq` into one `P_FREQ` const.
+        let e = err(
+            r#"{ "type_name": "x", "params": [ {"name":"Freq","min":0,"max":1,"default":0} ] }"#,
+        );
+        assert_eq!(e.locus, Locus::Param(0), "{}", e.message);
+        assert!(e.message.contains("snake_case"), "{}", e.message);
     }
 
     #[test]
