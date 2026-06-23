@@ -64,7 +64,11 @@ fn report_snare_gate_shape() {
     let (rise, fall) = edges(&gate);
 
     eprintln!("--- /snare_v gate over 4 s @120BPM ---");
-    eprintln!("samples high: {high}/{} ({:.1}% duty)", gate.len(), frac * 100.0);
+    eprintln!(
+        "samples high: {high}/{} ({:.1}% duty)",
+        gate.len(),
+        frac * 100.0
+    );
     eprintln!("rising edges ({}): {:?}", rise.len(), rise);
     eprintln!("falling edges ({}): {:?}", fall.len(), fall);
     let durs: Vec<f32> = rise

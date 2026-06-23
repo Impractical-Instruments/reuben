@@ -292,7 +292,10 @@ mod tests {
         let audio1 = vec![1.0f32; gate_samples];
         let gate1 = vec![1.0f32; gate_samples];
         let held = run(&mut env, &audio1, &gate1, &params);
-        assert!(held[gate_samples - 1] > 0.05, "still decaying when the gate falls");
+        assert!(
+            held[gate_samples - 1] > 0.05,
+            "still decaying when the gate falls"
+        );
 
         // Block 2: gate low. After the release time the level is 0 and stays there.
         let release_samples = (release * SR) as usize;
