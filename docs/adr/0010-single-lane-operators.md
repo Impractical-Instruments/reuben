@@ -18,3 +18,9 @@ A synth may have many Voices, each spanning multiple Channels. The product is a 
 - The engine carries fan-out machinery and per-(Voice, Channel) state arrays — real complexity, but centralized once instead of smeared across every operator.
 - Mixing is a connection-layer concern, not an operator.
 - All fan-out/fan-in shapes are known at Instantiate, so they cost nothing at Render.
+
+## Update (ADR-0025)
+
+The per-kind ordinal counting described here is no longer hand-written as a `pub const` block.
+[ADR-0025](0025-single-source-operator-contract.md) computes it once inside the `operator_contract!`
+macro, which emits the `IN_/OUT_/P_` index consts and the `Descriptor` from one declaration.

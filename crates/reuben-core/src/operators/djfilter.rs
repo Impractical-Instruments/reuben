@@ -28,19 +28,21 @@
 //! - param 4: `hp_start` (Hz) — high-pass cutoff at North (open end of the CW sweep).
 //! - param 5: `hp_end`   (Hz) — high-pass cutoff fully CW (position +1).
 
-use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
+use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Port + param indices — the wiring contract downstream nodes reference (ADR-0010).
-pub const IN_AUDIO: usize = 0;
-pub const IN_POSITION: usize = 1;
-pub const OUT_AUDIO: usize = 0;
-pub const P_POSITION: usize = 0;
-pub const P_RESONANCE: usize = 1;
-pub const P_LP_START: usize = 2;
-pub const P_LP_END: usize = 3;
-pub const P_HP_START: usize = 4;
-pub const P_HP_END: usize = 5;
+// Ports/params declared once (ADR-0025): the macro plants the IN_/OUT_/P_ index consts and the
+// matching `Descriptor` from one source, so they cannot drift.
+crate::operator_contract!(Djfilter {
+    inputs:  { audio: signal, position: signal },
+    outputs: { audio: signal },
+    params:  { position:  { -1.0..=1.0,     default 0.0,     "",   lin },
+               resonance: { 0.0..=1.0,      default 0.1,     "",   lin },
+               lp_start:  { 20.0..=20000.0, default 20000.0, "Hz", exp },
+               lp_end:    { 20.0..=20000.0, default 200.0,   "Hz", exp },
+               hp_start:  { 20.0..=20000.0, default 20.0,    "Hz", exp },
+               hp_end:    { 20.0..=20000.0, default 6000.0,  "Hz", exp } },
+});
 
 #[derive(Default)]
 pub struct Djfilter {
@@ -107,63 +109,7 @@ fn coeffs(cutoff: f32, resonance: f32, sample_rate: f32) -> (f32, f32, f32, f32)
 
 impl Operator for Djfilter {
     fn descriptor() -> Descriptor {
-        Descriptor {
-            type_name: "djfilter",
-            inputs: vec![Port::signal("audio"), Port::signal("position")],
-            outputs: vec![Port::signal("audio")],
-            params: vec![
-                ParamMeta {
-                    name: "position",
-                    min: -1.0,
-                    max: 1.0,
-                    default: 0.0,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-                ParamMeta {
-                    name: "resonance",
-                    min: 0.0,
-                    max: 1.0,
-                    default: 0.1,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-                ParamMeta {
-                    name: "lp_start",
-                    min: 20.0,
-                    max: 20000.0,
-                    default: 20000.0,
-                    unit: "Hz",
-                    curve: Curve::Exponential,
-                },
-                ParamMeta {
-                    name: "lp_end",
-                    min: 20.0,
-                    max: 20000.0,
-                    default: 200.0,
-                    unit: "Hz",
-                    curve: Curve::Exponential,
-                },
-                ParamMeta {
-                    name: "hp_start",
-                    min: 20.0,
-                    max: 20000.0,
-                    default: 20.0,
-                    unit: "Hz",
-                    curve: Curve::Exponential,
-                },
-                ParamMeta {
-                    name: "hp_end",
-                    min: 20.0,
-                    max: 20000.0,
-                    default: 6000.0,
-                    unit: "Hz",
-                    curve: Curve::Exponential,
-                },
-            ],
-            resources: vec![],
-            lanes: LaneRule::Inherit,
-        }
+        Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {

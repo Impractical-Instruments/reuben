@@ -1,6 +1,11 @@
 [workspace]
 resolver = "2"
-members = ["crates/reuben-core", "crates/reuben-native"]
+members = [
+    "crates/reuben-contract",
+    "crates/reuben-macros",
+    "crates/reuben-core",
+    "crates/reuben-native",
+]
 
 [workspace.package]
 version = "0.0.0"
@@ -16,6 +21,10 @@ slotmap = "1"
 smallvec = "1"
 # Compile-time operator self-registration (ADR-0024). linkme is the no_std fallback.
 inventory = "0.3"
+# Compile-time operator contract codegen (ADR-0025): the operator_contract! proc-macro.
+syn = { version = "2", features = ["full"] }
+quote = "1"
+proc-macro2 = "1"
 hound = "3"
 approx = "0.5"
 # Instrument format (serde) — portable core authoring layer.

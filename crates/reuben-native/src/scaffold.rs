@@ -4,66 +4,21 @@
 //! The deterministic, error-prone half of authoring an Operator is mechanical: a new file in
 //! `operators/`, plus sorted inserts into `operators/mod.rs`. Registration itself is compile-time
 //! and self-contained (ADR-0024): the generated file carries its own `register_operator!` line,
-//! so the scaffold no longer edits `registry.rs` — that central list (and its merge conflicts)
-//! is gone. Like the `describe`/`validate` introspection (ADR-0020), this lives as pure functions
-//! over source **text** — the binary does the filesystem I/O around them — so the tricky
-//! sorted-insertion logic is tested directly, not through a spawned process.
+//! so the scaffold no longer edits `registry.rs`. Like the `describe`/`validate` introspection
+//! (ADR-0020), this lives as pure functions over source **text** — the binary does the filesystem
+//! I/O around them — so the tricky sorted-insertion logic is tested directly.
+//!
+//! The contract itself (ports/params) is emitted as a single `operator_contract!` call (ADR-0025):
+//! the scaffold no longer writes a hand const block *and* a `Descriptor` literal that could drift.
+//! The spec types and the validator are shared with that macro via the `reuben-contract` crate —
+//! one validator, not a scaffold copy and a macro copy that could themselves diverge.
 
 use std::path::Path;
 use std::process::Command;
 
-use serde::{Deserialize, Serialize};
-
-/// A port in the contract: a name and a kind (`signal` | `message` | `context`).
-#[derive(Debug, Deserialize)]
-pub struct PortSpec {
-    pub name: String,
-    pub kind: String,
-}
-
-/// One parameter's metadata, mirroring [`reuben_core::descriptor::ParamMeta`].
-#[derive(Debug, Deserialize)]
-pub struct ParamSpec {
-    pub name: String,
-    pub min: f32,
-    pub max: f32,
-    pub default: f32,
-    #[serde(default)]
-    pub unit: String,
-    #[serde(default = "default_curve")]
-    pub curve: String,
-}
-
-fn default_curve() -> String {
-    "linear".to_string()
-}
-
-/// How the operator sets its output Lane count (mirrors [`reuben_core::descriptor::LaneRule`]).
-#[derive(Debug, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum LaneSpec {
-    #[default]
-    Inherit,
-    /// Expand to as many Lanes as the named param's value (the Voicer pattern).
-    FromParam(String),
-}
-
-/// The contract for a new Operator — the deterministic input the skill writes from the design
-/// interview and a human can hand-author. Mirrors a [`reuben_core::descriptor::Descriptor`].
-#[derive(Debug, Deserialize)]
-pub struct OperatorSpec {
-    pub type_name: String,
-    #[serde(default)]
-    pub inputs: Vec<PortSpec>,
-    #[serde(default)]
-    pub outputs: Vec<PortSpec>,
-    #[serde(default)]
-    pub params: Vec<ParamSpec>,
-    #[serde(default)]
-    pub resources: Vec<String>,
-    #[serde(default)]
-    pub lanes: LaneSpec,
-}
+use reuben_contract::naming::{screaming, struct_name};
+use reuben_contract::{validate, LaneSpec, OperatorSpec, ParamSpec, PortSpec};
+use serde::Serialize;
 
 /// The current contents of the registration file the scaffold must edit (`operators/mod.rs`).
 pub struct ScaffoldInputs<'a> {
@@ -82,7 +37,7 @@ pub struct ScaffoldOutputs {
 
 /// Generate the skeleton + `mod.rs` edits for `spec`, given the current `mod.rs`.
 pub fn scaffold(spec: &OperatorSpec, inputs: &ScaffoldInputs) -> Result<ScaffoldOutputs, String> {
-    validate_spec(spec)?;
+    validate(spec).map_err(|e| e.to_string())?;
     let stem = spec.type_name.clone();
     let st = struct_name(&stem);
 
@@ -208,141 +163,9 @@ fn insert_line_sorted(
     Ok(out)
 }
 
-/// Reject a malformed contract before anything is written. A bad spec here would otherwise emit
-/// source that fails to compile (duplicate consts, dangling lane param) far from its cause.
-fn validate_spec(spec: &OperatorSpec) -> Result<(), String> {
-    let name = &spec.type_name;
-    if name.is_empty() {
-        return Err("type_name is empty".to_string());
-    }
-    let mut chars = name.chars();
-    let starts_ok = chars.next().is_some_and(|c| c.is_ascii_lowercase());
-    let rest_ok = name
-        .chars()
-        .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
-    if !starts_ok || !rest_ok {
-        return Err(format!(
-            "type_name {name:?} must be snake_case: a lowercase letter then [a-z0-9_]"
-        ));
-    }
-
-    let mut seen_param = std::collections::BTreeSet::new();
-    for p in &spec.params {
-        if !seen_param.insert(p.name.as_str()) {
-            return Err(format!("duplicate param name {:?}", p.name));
-        }
-        if p.min > p.max {
-            return Err(format!("param {:?}: min {} > max {}", p.name, p.min, p.max));
-        }
-        if p.default < p.min || p.default > p.max {
-            return Err(format!(
-                "param {:?}: default {} outside [{}, {}]",
-                p.name, p.default, p.min, p.max
-            ));
-        }
-        if !matches!(p.curve.as_str(), "linear" | "exponential") {
-            return Err(format!(
-                "param {:?}: curve {:?} must be \"linear\" or \"exponential\"",
-                p.name, p.curve
-            ));
-        }
-    }
-
-    for (label, ports) in [("input", &spec.inputs), ("output", &spec.outputs)] {
-        let mut seen = std::collections::BTreeSet::new();
-        for p in ports {
-            if !matches!(p.kind.as_str(), "signal" | "message" | "context") {
-                return Err(format!(
-                    "{label} {:?}: kind {:?} must be \"signal\", \"message\", or \"context\"",
-                    p.name, p.kind
-                ));
-            }
-            if !seen.insert(p.name.as_str()) {
-                return Err(format!("duplicate {label} port name {:?}", p.name));
-            }
-        }
-    }
-
-    if let LaneSpec::FromParam(param) = &spec.lanes {
-        if !spec.params.iter().any(|p| &p.name == param) {
-            return Err(format!(
-                "lanes.from_param {param:?} names no declared param"
-            ));
-        }
-    }
-
-    Ok(())
-}
-
-/// `my_op` -> `MyOp`. The struct name for the operator's type.
-fn struct_name(type_name: &str) -> String {
-    type_name
-        .split(|c: char| !c.is_ascii_alphanumeric())
-        .filter(|s| !s.is_empty())
-        .map(|s| {
-            let mut c = s.chars();
-            match c.next() {
-                Some(first) => first.to_ascii_uppercase().to_string() + c.as_str(),
-                None => String::new(),
-            }
-        })
-        .collect()
-}
-
-/// `freq` -> `FREQ`. The const-name fragment for a port/param.
-fn screaming(name: &str) -> String {
-    name.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() {
-                c.to_ascii_uppercase()
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
-/// The `Port::<kind>` constructor for a port kind, plus which index-space it advances. Ports are
-/// numbered **per kind** (ADR-0010 ordinals): a message and a context input both start at 0.
-fn port_ctor(kind: &str) -> &'static str {
-    match kind {
-        "message" => "Port::message",
-        "context" => "Port::context",
-        _ => "Port::signal",
-    }
-}
-
-/// Index consts for a set of ports, numbered within each kind, with `prefix` (`IN`/`OUT`).
-fn port_consts(ports: &[PortSpec], prefix: &str) -> String {
-    let (mut sig, mut msg, mut ctx) = (0usize, 0usize, 0usize);
-    let mut out = String::new();
-    for p in ports {
-        let idx = match p.kind.as_str() {
-            "message" => {
-                let i = msg;
-                msg += 1;
-                i
-            }
-            "context" => {
-                let i = ctx;
-                ctx += 1;
-                i
-            }
-            _ => {
-                let i = sig;
-                sig += 1;
-                i
-            }
-        };
-        out.push_str(&format!(
-            "pub const {prefix}_{}: usize = {idx};\n",
-            screaming(&p.name)
-        ));
-    }
-    out
-}
-
-/// Signal-output port consts in signal-index order — the ports the silence stub writes.
+/// Signal-output port consts in signal-index order — the ports the silence stub writes. These
+/// const names (`OUT_<NAME>`) are the same the `operator_contract!` macro emits, so the stub
+/// references real consts.
 fn signal_output_consts(spec: &OperatorSpec) -> Vec<String> {
     spec.outputs
         .iter()
@@ -362,35 +185,26 @@ fn render_operator(spec: &OperatorSpec) -> String {
         "//! {name} — TODO one-line description (ADR-0021 scaffold; fill in Stage B).\n\n"
     ));
 
-    // Imports — pull in ResourceSlot + the bind_resources types only when there are resources.
-    let mut desc_imports = vec!["Curve", "Descriptor", "LaneRule", "ParamMeta", "Port"];
+    // Imports — pull in the bind_resources types only when there are resources. The contract
+    // macro emits fully-qualified `Descriptor`/`Port`/etc paths, so the file needs only
+    // `Descriptor` (for the `descriptor()` delegate's return type).
     if has_resources {
-        desc_imports.push("ResourceSlot");
-        desc_imports.sort_unstable();
         out.push_str("use std::sync::Arc;\n\n");
     }
-    out.push_str(&format!(
-        "use crate::descriptor::{{{}}};\n",
-        desc_imports.join(", ")
-    ));
+    out.push_str("use crate::descriptor::Descriptor;\n");
     out.push_str("use crate::operator::{Io, Operator};\n");
     if has_resources {
         out.push_str("use crate::resources::{ResolvedRefs, ResourceStore};\n");
     }
     out.push('\n');
 
-    // Index consts — the wiring contract the rig builder references (ADR-0010). Per-kind ordinals.
+    // The single-source contract (ADR-0025): the macro plants the IN_/OUT_/P_ index consts AND the
+    // matching `Descriptor` from these same tokens, so name↔slot drift is impossible.
     out.push_str(
-        "// Port + param indices — the wiring contract downstream nodes reference (ADR-0010).\n",
+        "// Ports/params declared once (ADR-0025): the macro plants the IN_/OUT_/P_ index consts and the\n",
     );
-    out.push_str(&port_consts(&spec.inputs, "IN"));
-    out.push_str(&port_consts(&spec.outputs, "OUT"));
-    for (i, p) in spec.params.iter().enumerate() {
-        out.push_str(&format!(
-            "pub const P_{}: usize = {i};\n",
-            screaming(&p.name)
-        ));
-    }
+    out.push_str("// matching `Descriptor` from one source, so they cannot drift.\n");
+    out.push_str(&render_contract_call(spec));
     out.push('\n');
 
     // State struct — empty by default; Stage B adds per-Lane fields (reset in `spawn`).
@@ -402,29 +216,10 @@ fn render_operator(spec: &OperatorSpec) -> String {
         "impl {st} {{\n    pub fn new() -> Self {{\n        Self::default()\n    }}\n}}\n\n"
     ));
 
-    // impl Operator.
+    // impl Operator. `descriptor()` delegates to the macro-planted inherent `contract()` (ADR-0025).
     out.push_str(&format!("impl Operator for {st} {{\n"));
-    out.push_str("    fn descriptor() -> Descriptor {\n        Descriptor {\n");
-    out.push_str(&format!("            type_name: \"{name}\",\n"));
-    out.push_str(&format!(
-        "            inputs: {},\n",
-        render_ports(&spec.inputs)
-    ));
-    out.push_str(&format!(
-        "            outputs: {},\n",
-        render_ports(&spec.outputs)
-    ));
-    out.push_str(&render_params(&spec.params));
-    out.push_str(&format!(
-        "            resources: {},\n",
-        render_resources(spec)
-    ));
-    out.push_str(&format!("            lanes: {},\n", render_lanes(spec)));
-    out.push_str("        }\n    }\n\n");
-
-    // process stub — writes silence so the operator is valid but silent until Stage B.
+    out.push_str("    fn descriptor() -> Descriptor {\n        Self::contract()\n    }\n\n");
     out.push_str(&render_process(spec));
-
     out.push_str(
         "\n    fn spawn(&self) -> Box<dyn Operator> {\n        Box::new(Self::new())\n    }\n",
     );
@@ -435,65 +230,73 @@ fn render_operator(spec: &OperatorSpec) -> String {
     }
     out.push_str("}\n\n");
 
-    // Compile-time self-registration (ADR-0024) — this is the whole of "wiring it in": no edit to
-    // registry.rs, no central list. `grep register_operator!` is the census of built-in operators.
+    // Compile-time self-registration (ADR-0024).
     out.push_str(&format!("crate::register_operator!({st});\n\n"));
 
     out.push_str(&render_test_module(spec));
     out
 }
 
-/// `vec![Port::signal("a"), Port::message("b")]`, or `vec![]` when empty.
-fn render_ports(ports: &[PortSpec]) -> String {
-    if ports.is_empty() {
-        return "vec![]".to_string();
-    }
-    let items: Vec<String> = ports
-        .iter()
-        .map(|p| format!("{}(\"{}\")", port_ctor(&p.kind), p.name))
-        .collect();
-    format!("vec![{}]", items.join(", "))
-}
-
-/// The `params: vec![ ParamMeta { .. }, .. ],` block (multi-line), or a one-line empty vec.
-fn render_params(params: &[ParamSpec]) -> String {
-    if params.is_empty() {
-        return "            params: vec![],\n".to_string();
-    }
-    let mut out = String::from("            params: vec![\n");
-    for p in params {
-        let curve = if p.curve == "exponential" {
-            "Curve::Exponential"
-        } else {
-            "Curve::Linear"
-        };
+/// Render the `operator_contract!` invocation (ADR-0025) — the one declaration of the contract.
+fn render_contract_call(spec: &OperatorSpec) -> String {
+    let st = struct_name(&spec.type_name);
+    let mut out = format!("crate::operator_contract!({st} {{\n");
+    out.push_str(&format!("    type_name: {:?},\n", spec.type_name));
+    if !spec.inputs.is_empty() {
         out.push_str(&format!(
-            "                ParamMeta {{ name: \"{}\", min: {:?}, max: {:?}, default: {:?}, unit: \"{}\", curve: {} }},\n",
-            p.name, p.min, p.max, p.default, p.unit, curve
+            "    inputs: {{ {} }},\n",
+            render_macro_ports(&spec.inputs)
         ));
     }
-    out.push_str("            ],\n");
+    if !spec.outputs.is_empty() {
+        out.push_str(&format!(
+            "    outputs: {{ {} }},\n",
+            render_macro_ports(&spec.outputs)
+        ));
+    }
+    if !spec.params.is_empty() {
+        out.push_str("    params: {\n");
+        for p in &spec.params {
+            out.push_str(&format!("        {}\n", render_macro_param(p)));
+        }
+        out.push_str("    },\n");
+    }
+    if !spec.resources.is_empty() {
+        let rs: Vec<&str> = spec.resources.iter().map(String::as_str).collect();
+        out.push_str(&format!("    resources: {{ {} }},\n", rs.join(", ")));
+    }
+    out.push_str(&format!("    lanes: {},\n", render_macro_lanes(spec)));
+    out.push_str("});\n");
     out
 }
 
-/// `vec![ResourceSlot::new("x")]`, or `vec![]`.
-fn render_resources(spec: &OperatorSpec) -> String {
-    if spec.resources.is_empty() {
-        return "vec![]".to_string();
-    }
-    let items: Vec<String> = spec
-        .resources
+/// `name: kind, name: kind` — the macro's port-list body.
+fn render_macro_ports(ports: &[PortSpec]) -> String {
+    ports
         .iter()
-        .map(|r| format!("ResourceSlot::new(\"{r}\")"))
-        .collect();
-    format!("vec![{}]", items.join(", "))
+        .map(|p| format!("{}: {}", p.name, p.kind))
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
-/// `LaneRule::Inherit` or `LaneRule::FromParam(P_<NAME>)`.
-fn render_lanes(spec: &OperatorSpec) -> String {
+/// `name: { MIN..=MAX, default D, "unit", curve },` — one param in the macro grammar.
+fn render_macro_param(p: &ParamSpec) -> String {
+    let curve = if p.curve == "exponential" {
+        "exp"
+    } else {
+        "lin"
+    };
+    format!(
+        "{}: {{ {:?}..={:?}, default {:?}, {:?}, {} }},",
+        p.name, p.min, p.max, p.default, p.unit, curve
+    )
+}
+
+/// `inherit` or `from_param(<param>)`.
+fn render_macro_lanes(spec: &OperatorSpec) -> String {
     match &spec.lanes {
-        LaneSpec::Inherit => "LaneRule::Inherit".to_string(),
-        LaneSpec::FromParam(name) => format!("LaneRule::FromParam(P_{})", screaming(name)),
+        LaneSpec::Inherit => "inherit".to_string(),
+        LaneSpec::FromParam(name) => format!("from_param({name})"),
     }
 }
 
@@ -548,11 +351,20 @@ mod tests {
     }
 
     #[test]
-    fn renders_an_operator_file_with_the_typed_descriptor() {
+    fn renders_an_operator_file_that_delegates_to_the_contract() {
         let src = render(r#"{ "type_name": "my_op" }"#);
+        // The contract is declared once via the macro, and descriptor() delegates to it (ADR-0025).
+        assert!(
+            src.contains("crate::operator_contract!(MyOp {"),
+            "should emit the contract macro call:\n{src}"
+        );
         assert!(
             src.contains("type_name: \"my_op\""),
-            "descriptor should carry the type name:\n{src}"
+            "contract should carry the type name:\n{src}"
+        );
+        assert!(
+            src.contains("fn descriptor() -> Descriptor {\n        Self::contract()\n    }"),
+            "descriptor() should delegate to the macro-planted contract():\n{src}"
         );
         assert!(
             src.contains("impl Operator for MyOp"),
@@ -561,35 +373,31 @@ mod tests {
     }
 
     #[test]
-    fn ports_are_numbered_per_kind() {
-        // A message input and a context input both start at ordinal 0 (separate index spaces,
-        // ADR-0010); two signal outputs are 0 and 1.
+    fn ports_are_declared_in_the_contract_call_by_kind() {
+        // Per-kind ordinals are now the macro's job; the scaffold just declares the ports by kind.
         let src = render(
             r#"{ "type_name": "v",
                  "inputs": [ {"name":"notes","kind":"message"}, {"name":"ctx","kind":"context"} ],
                  "outputs": [ {"name":"freq","kind":"signal"}, {"name":"gate","kind":"signal"} ] }"#,
         );
-        assert!(src.contains("pub const IN_NOTES: usize = 0;"), "{src}");
-        assert!(src.contains("pub const IN_CTX: usize = 0;"), "{src}");
-        assert!(src.contains("pub const OUT_FREQ: usize = 0;"), "{src}");
-        assert!(src.contains("pub const OUT_GATE: usize = 1;"), "{src}");
         assert!(
-            src.contains("inputs: vec![Port::message(\"notes\"), Port::context(\"ctx\")]"),
+            src.contains("inputs: { notes: message, ctx: context }"),
+            "{src}"
+        );
+        assert!(
+            src.contains("outputs: { freq: signal, gate: signal }"),
             "{src}"
         );
     }
 
     #[test]
-    fn params_render_with_meta_and_curve() {
+    fn params_render_in_the_macro_grammar_with_curve() {
         let src = render(
             r#"{ "type_name": "lfoish",
                  "params": [ {"name":"rate","min":0.01,"max":20.0,"default":5.0,"unit":"Hz","curve":"exponential"} ] }"#,
         );
-        assert!(src.contains("pub const P_RATE: usize = 0;"), "{src}");
         assert!(
-            src.contains(
-                "ParamMeta { name: \"rate\", min: 0.01, max: 20.0, default: 5.0, unit: \"Hz\", curve: Curve::Exponential }"
-            ),
+            src.contains(r#"rate: { 0.01..=20.0, default 5.0, "Hz", exp },"#),
             "{src}"
         );
     }
@@ -603,25 +411,19 @@ mod tests {
     }
 
     #[test]
-    fn lane_expander_references_the_param_const() {
+    fn lane_expander_renders_from_param() {
         let src = render(
             r#"{ "type_name": "vox",
                  "params": [ {"name":"voices","min":1.0,"max":16.0,"default":4.0} ],
                  "lanes": { "from_param": "voices" } }"#,
         );
-        assert!(
-            src.contains("lanes: LaneRule::FromParam(P_VOICES),"),
-            "{src}"
-        );
+        assert!(src.contains("lanes: from_param(voices),"), "{src}");
     }
 
     #[test]
-    fn resources_pull_in_bind_resources() {
+    fn resources_render_in_the_contract_and_pull_in_bind_resources() {
         let src = render(r#"{ "type_name": "smp", "resources": ["wave"] }"#);
-        assert!(
-            src.contains("resources: vec![ResourceSlot::new(\"wave\")]"),
-            "{src}"
-        );
+        assert!(src.contains("resources: { wave },"), "{src}");
         assert!(src.contains("fn bind_resources("), "{src}");
         assert!(src.contains("use std::sync::Arc;"), "{src}");
     }

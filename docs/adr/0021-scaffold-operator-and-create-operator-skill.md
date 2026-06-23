@@ -131,3 +131,9 @@ the living docs (`sync-docs`).
   deterministic — owned by the TDD step); it does not regenerate the schema or edit docs (owned
   by the gate and `sync-docs`); there is no detection of audible-but-empty operators (an ear
   concern, as audible-but-empty patches are for the patcher).
+
+## Update (ADR-0025)
+
+The scaffold no longer emits a hand-written const block plus a `Descriptor` literal: per
+[ADR-0025](0025-single-source-operator-contract.md) it emits a single `operator_contract!` call,
+and its spec types + validator are shared with that macro via the `reuben-contract` crate.

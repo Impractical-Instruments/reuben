@@ -28,16 +28,20 @@
 //! OSC (to the node address) and an upstream emit. State (current value, glide ramp) carries
 //! across blocks.
 
-use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
+use crate::descriptor::Descriptor;
 use crate::message::Arg;
 use crate::operator::{Io, Operator};
 
-pub const IN_IN: usize = 0;
-pub const OUT_OUT: usize = 0;
-pub const P_MODE: usize = 0;
-pub const P_RATE: usize = 1;
-pub const P_TIME: usize = 2;
-pub const P_DEFAULT: usize = 3;
+// Ports/params declared once (ADR-0025): the macro plants the IN_/OUT_/P_ index consts and the
+// matching `Descriptor` from one source, so they cannot drift.
+crate::operator_contract!(M2s {
+    inputs:  { in: message },
+    outputs: { out: signal },
+    params:  { mode:    { 0.0..=3.0,                  default 2.0,     "",   lin },
+               rate:    { 0.0..=1_000_000.0,          default 1_000.0, "/s", exp },
+               time:    { 0.0..=10.0,                 default 0.05,    "s",  exp },
+               default: { -1_000_000.0..=1_000_000.0, default 0.0,     "",   lin } },
+});
 
 const MODE_SNAP: i32 = 0;
 const MODE_SLEW: i32 = 1;
@@ -65,47 +69,7 @@ impl M2s {
 
 impl Operator for M2s {
     fn descriptor() -> Descriptor {
-        Descriptor {
-            type_name: "m2s",
-            inputs: vec![Port::message("in")],
-            outputs: vec![Port::signal("out")],
-            params: vec![
-                ParamMeta {
-                    name: "mode",
-                    min: 0.0,
-                    max: 3.0,
-                    default: 2.0,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-                ParamMeta {
-                    name: "rate",
-                    min: 0.0,
-                    max: 1_000_000.0,
-                    default: 1_000.0,
-                    unit: "/s",
-                    curve: Curve::Exponential,
-                },
-                ParamMeta {
-                    name: "time",
-                    min: 0.0,
-                    max: 10.0,
-                    default: 0.05,
-                    unit: "s",
-                    curve: Curve::Exponential,
-                },
-                ParamMeta {
-                    name: "default",
-                    min: -1_000_000.0,
-                    max: 1_000_000.0,
-                    default: 0.0,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-            ],
-            resources: vec![],
-            lanes: LaneRule::Inherit,
-        }
+        Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {

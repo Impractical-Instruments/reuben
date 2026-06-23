@@ -7,13 +7,18 @@
 //! - param 0: `freq` (Hz) — used when the freq input is unconnected.
 //! - param 1: `waveform` — 0.0 = sine, 1.0 = saw.
 
-use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
+use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-pub const IN_FREQ: usize = 0;
-pub const OUT_AUDIO: usize = 0;
-pub const P_FREQ: usize = 0;
-pub const P_WAVEFORM: usize = 1;
+// Ports/params declared once (ADR-0025): the macro plants IN_FREQ/OUT_AUDIO/P_FREQ/P_WAVEFORM and
+// the matching `Descriptor`, so the index consts and the descriptor can't drift.
+crate::operator_contract!(Oscillator {
+    inputs:  { freq: signal },
+    outputs: { audio: signal },
+    params:  { freq:     { 20.0..=20_000.0, default 440.0, "Hz", exp },
+               waveform: { 0.0..=1.0,        default 0.0,   "",  lin } },
+    lanes: inherit,
+});
 
 #[derive(Default)]
 pub struct Oscillator {
@@ -29,31 +34,7 @@ impl Oscillator {
 
 impl Operator for Oscillator {
     fn descriptor() -> Descriptor {
-        Descriptor {
-            type_name: "oscillator",
-            inputs: vec![Port::signal("freq")],
-            outputs: vec![Port::signal("audio")],
-            params: vec![
-                ParamMeta {
-                    name: "freq",
-                    min: 20.0,
-                    max: 20_000.0,
-                    default: 440.0,
-                    unit: "Hz",
-                    curve: Curve::Exponential,
-                },
-                ParamMeta {
-                    name: "waveform",
-                    min: 0.0,
-                    max: 1.0,
-                    default: 0.0,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-            ],
-            resources: vec![],
-            lanes: LaneRule::Inherit,
-        }
+        Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {

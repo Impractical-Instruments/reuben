@@ -155,3 +155,9 @@ and integration tests, and a single sorted line merges cleanly.
 - **[ADR-0021](0021-scaffold-operator-and-create-operator-skill.md) is superseded in part:** its
   "three registration sites" is now one (`mod.rs`) plus a self-registration line; the subcommand,
   the red placeholder test, and the skill loop stand.
+
+## Update (ADR-0025)
+
+`register_operator!` self-*registers* an operator; its sibling `operator_contract!`
+([ADR-0025](0025-single-source-operator-contract.md)) self-*describes* one — single-sourcing the
+port/param index consts and the `Descriptor`. Both turn a stated-twice fact into one declaration.

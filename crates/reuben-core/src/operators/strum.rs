@@ -32,17 +32,19 @@
 
 use smallvec::SmallVec;
 
-use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
+use crate::descriptor::Descriptor;
 use crate::message::Arg;
 use crate::operator::{Io, Operator};
 
-// Port + param indices — the wiring contract downstream nodes reference (ADR-0010).
-pub const IN_POSITION: usize = 0;
-/// Message output ordinal of the `degrees` port (the index [`Io::emit`] uses).
-pub const OUT_DEGREES: usize = 0;
-pub const P_STRINGS: usize = 0;
-pub const P_OCTAVES: usize = 1;
-pub const P_VELOCITY: usize = 2;
+// Ports/params declared once (ADR-0025): the macro plants the IN_/OUT_/P_ index consts and the
+// matching `Descriptor` from one source, so they cannot drift.
+crate::operator_contract!(Strum {
+    inputs:  { position: message },
+    outputs: { degrees: message },
+    params:  { strings:  { 1.0..=32.0, default 8.0, "strings", lin },
+               octaves:  { 1.0..=4.0,  default 1.0, "oct",     lin },
+               velocity: { 0.0..=1.0,  default 1.0, "",        lin } },
+});
 
 /// Diatonic degrees spanned per octave (0..6 then the octave at 7).
 const DEGREES_PER_OCTAVE: f32 = 7.0;
@@ -96,39 +98,7 @@ impl Strum {
 
 impl Operator for Strum {
     fn descriptor() -> Descriptor {
-        Descriptor {
-            type_name: "strum",
-            inputs: vec![Port::message("position")],
-            outputs: vec![Port::message("degrees")],
-            params: vec![
-                ParamMeta {
-                    name: "strings",
-                    min: 1.0,
-                    max: 32.0,
-                    default: 8.0,
-                    unit: "strings",
-                    curve: Curve::Linear,
-                },
-                ParamMeta {
-                    name: "octaves",
-                    min: 1.0,
-                    max: 4.0,
-                    default: 1.0,
-                    unit: "oct",
-                    curve: Curve::Linear,
-                },
-                ParamMeta {
-                    name: "velocity",
-                    min: 0.0,
-                    max: 1.0,
-                    default: 1.0,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-            ],
-            resources: vec![],
-            lanes: LaneRule::Inherit,
-        }
+        Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {

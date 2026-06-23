@@ -15,13 +15,17 @@
 //! `rate` is an ordinary param, so the engine block-slices on a rate change and the new rate
 //! takes effect at the exact sample of the change. The phase stays continuous across the cut.
 
-use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
+use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-pub const OUT_OUT: usize = 0;
-pub const P_RATE: usize = 0;
-pub const P_DEPTH: usize = 1;
-pub const P_CENTER: usize = 2;
+// Ports/params declared once (ADR-0025): the macro plants the IN_/OUT_/P_ index consts and the
+// matching `Descriptor` from one source, so they cannot drift.
+crate::operator_contract!(Lfo {
+    outputs: { out: signal },
+    params:  { rate:   { 0.01..=20.0,        default 5.0,   "Hz", exp },
+               depth:  { 0.0..=1000.0,       default 10.0,  "",   lin },
+               center: { -1000.0..=20_000.0, default 440.0, "",   lin } },
+});
 
 #[derive(Default)]
 pub struct Lfo {
@@ -39,39 +43,7 @@ impl Lfo {
 
 impl Operator for Lfo {
     fn descriptor() -> Descriptor {
-        Descriptor {
-            type_name: "lfo",
-            inputs: vec![],
-            outputs: vec![Port::signal("out")],
-            params: vec![
-                ParamMeta {
-                    name: "rate",
-                    min: 0.01,
-                    max: 20.0,
-                    default: 5.0,
-                    unit: "Hz",
-                    curve: Curve::Exponential,
-                },
-                ParamMeta {
-                    name: "depth",
-                    min: 0.0,
-                    max: 1000.0,
-                    default: 10.0,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-                ParamMeta {
-                    name: "center",
-                    min: -1000.0,
-                    max: 20_000.0,
-                    default: 440.0,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-            ],
-            resources: vec![],
-            lanes: LaneRule::Inherit,
-        }
+        Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {

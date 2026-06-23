@@ -21,16 +21,18 @@
 //! - param 1: `resonance` (0..1) — the resonance Signal port's unwired default.
 //! - param 2: `mode` — 0 = lowpass (default), 1 = highpass, 2 = bandpass.
 
-use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
+use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-pub const IN_AUDIO: usize = 0;
-pub const IN_CUTOFF: usize = 1;
-pub const IN_RESONANCE: usize = 2;
-pub const OUT_AUDIO: usize = 0;
-pub const P_CUTOFF: usize = 0;
-pub const P_RESONANCE: usize = 1;
-pub const P_MODE: usize = 2;
+// Ports/params declared once (ADR-0025): the macro plants the IN_/OUT_/P_ index consts and the
+// matching `Descriptor` from one source, so they cannot drift.
+crate::operator_contract!(Filter {
+    inputs:  { audio: signal, cutoff: signal, resonance: signal },
+    outputs: { audio: signal },
+    params:  { cutoff:    { 20.0..=20_000.0, default 1_000.0, "Hz", exp },
+               resonance: { 0.0..=1.0,       default 0.2,     "",   lin },
+               mode:      { 0.0..=2.0,       default 0.0,     "",   lin } },
+});
 
 /// Filter response selected by the `mode` param.
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -112,43 +114,7 @@ fn coeffs(cutoff: f32, resonance: f32, sample_rate: f32) -> (f32, f32, f32, f32)
 
 impl Operator for Filter {
     fn descriptor() -> Descriptor {
-        Descriptor {
-            type_name: "filter",
-            inputs: vec![
-                Port::signal("audio"),
-                Port::signal("cutoff"),
-                Port::signal("resonance"),
-            ],
-            outputs: vec![Port::signal("audio")],
-            params: vec![
-                ParamMeta {
-                    name: "cutoff",
-                    min: 20.0,
-                    max: 20_000.0,
-                    default: 1_000.0,
-                    unit: "Hz",
-                    curve: Curve::Exponential,
-                },
-                ParamMeta {
-                    name: "resonance",
-                    min: 0.0,
-                    max: 1.0,
-                    default: 0.2,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-                ParamMeta {
-                    name: "mode",
-                    min: 0.0,
-                    max: 2.0,
-                    default: 0.0,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-            ],
-            resources: vec![],
-            lanes: LaneRule::Inherit,
-        }
+        Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {

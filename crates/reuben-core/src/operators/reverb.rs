@@ -9,14 +9,18 @@
 //! - param 1: `damp` — high-frequency damping (0..1).
 //! - param 2: `mix` — dry/wet (0..1).
 
-use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
+use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-pub const IN_AUDIO: usize = 0;
-pub const OUT_AUDIO: usize = 0;
-pub const P_ROOM: usize = 0;
-pub const P_DAMP: usize = 1;
-pub const P_MIX: usize = 2;
+// Ports/params declared once (ADR-0025): the macro plants the IN_/OUT_/P_ index consts and the
+// matching `Descriptor` from one source, so they cannot drift.
+crate::operator_contract!(Reverb {
+    inputs:  { audio: signal },
+    outputs: { audio: signal },
+    params:  { room: { 0.0..=1.0, default 0.5, "", lin },
+               damp: { 0.0..=1.0, default 0.5, "", lin },
+               mix:  { 0.0..=1.0, default 0.3, "", lin } },
+});
 
 /// Standard Freeverb comb-filter delay lengths, in samples at 44100 Hz.
 const COMB_TUNING: [usize; 8] = [1116, 1188, 1277, 1356, 1422, 1491, 1557, 1617];
@@ -105,39 +109,7 @@ impl Reverb {
 
 impl Operator for Reverb {
     fn descriptor() -> Descriptor {
-        Descriptor {
-            type_name: "reverb",
-            inputs: vec![Port::signal("audio")],
-            outputs: vec![Port::signal("audio")],
-            params: vec![
-                ParamMeta {
-                    name: "room",
-                    min: 0.0,
-                    max: 1.0,
-                    default: 0.5,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-                ParamMeta {
-                    name: "damp",
-                    min: 0.0,
-                    max: 1.0,
-                    default: 0.5,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-                ParamMeta {
-                    name: "mix",
-                    min: 0.0,
-                    max: 1.0,
-                    default: 0.3,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-            ],
-            resources: vec![],
-            lanes: LaneRule::Inherit,
-        }
+        Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {

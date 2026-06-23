@@ -96,28 +96,42 @@ Hold accumulating phase in `f64` so it doesn't drift over a long session (see `l
 
 An operator's self-description, separate from `process` — the seat of "good button",
 serialization, connection type-checking, and AI grounding
-([ADR-0004](../adr/0004-ai-authorability-first-class.md)):
+([ADR-0004](../adr/0004-ai-authorability-first-class.md)).
+
+You declare it **once**, in an `operator_contract!` call
+([ADR-0025](../adr/0025-single-source-operator-contract.md)). The macro plants, at module scope,
+the `IN_/OUT_/P_` index consts **and** an inherent `fn contract() -> Descriptor` from the same
+tokens — so the consts and the descriptor can't drift. The trait's `descriptor()` delegates to it:
 
 ```rust
-Descriptor {
-    type_name: "lfo",                 // stable id + default address segment
-    inputs:  vec![],                  // Port::signal(name) | Port::message(name) | Port::context(name)
-    outputs: vec![Port::signal("out")],
-    params: vec![
-        ParamMeta { name: "rate", min: 0.01, max: 20.0, default: 5.0,
-                    unit: "Hz", curve: Curve::Exponential },
-        // ...
-    ],
-    resources: vec![],                // or vec![ResourceSlot::new("sample")] — see ADR-0016
-    lanes: LaneRule::Inherit,         // or LaneRule::FromParam(slot) for an expander
+crate::operator_contract!(Lfo {
+    outputs: { out: signal },                 // name: signal | message | context, per kind
+    params:  { rate:   { 0.01..=20.0, default 5.0, "Hz", exp },   // min..=max, default, unit, lin|exp
+               depth:  { 0.0..=1000.0, default 10.0, "", lin } },
+    // resources: { sample },                 // optional — see ADR-0016
+    lanes: inherit,                           // or from_param(<param>) for an expander
+});
+
+impl Operator for Lfo {
+    fn descriptor() -> Descriptor { Self::contract() }   // one-liner delegate (ADR-0025)
+    // process / spawn ...
 }
 ```
 
+An operator with no explicit `type_name:` takes the snake_case of its struct name; pass
+`type_name: "sample"` when they diverge (e.g. `SamplePlayer`). The macro **does not** own the whole
+operator — `process`/`spawn` stay hand-written and read `io.param(P_RATE)` against the planted const.
+
 - **Ports** are referenced by **name** in the JSON format, not by index — names are the
-  stable contract the rig builder wires against.
-- **`ParamMeta`** carries range, default, unit, and response `Curve` — enough to render a
-  control that can't sound bad and to ground an agent. Index constants (e.g. `P_RATE`) are
-  exported per-operator for `process` to read against.
+  stable contract the rig builder wires against. Per-kind ordinals (signal/message/context are
+  separate index spaces, [ADR-0010](../adr/0010-single-lane-operators.md)) are computed by the
+  macro.
+- **Params** carry range, default, unit, and response curve (`lin`/`exp`) — enough to render a
+  control that can't sound bad and to ground an agent. The index consts (e.g. `P_RATE`) the macro
+  emits are what `process` reads against.
+- **Exceptions:** `math.rs` (five operators in one module) and `context.rs` / `sequencer.rs`
+  (param banks built by a loop) keep a hand-written `descriptor()` — the macro is for the
+  static-contract, one-operator-per-module common case.
 - **`LaneRule`** — `Inherit` (Lane count = max of input Lane counts; the default) or
   `FromParam(slot)` (this operator *expands*, producing that many Lanes; the Voicer is the
   canonical expander). Read once at Instantiate — it's structural.
@@ -146,8 +160,11 @@ modulation is built explicitly with an `add` operator in the relevant domain.
 ## Adding an Operator
 
 1. **Create** `crates/reuben-core/src/operators/<name>.rs` — a struct + `impl Operator`.
-   Export `pub const`s for port/param indices. Follow `lfo.rs` (simplest source op) or
-   `delay.rs` (input + state) as a template.
+   Declare the contract once with `crate::operator_contract!(..)` (it plants the `IN_/OUT_/P_`
+   index consts + the `Descriptor`, [ADR-0025](../adr/0025-single-source-operator-contract.md)) and
+   delegate `fn descriptor() -> Descriptor { Self::contract() }`. Follow `lfo.rs` (simplest source
+   op) or `delay.rs` (input + state) as a template. (`reuben scaffold-operator` writes this shape
+   for you.)
 2. **Wire the module** in `crates/reuben-core/src/operators/mod.rs`: `pub mod <name>;`
    and `pub use <name>::<Type>;`.
 3. **Self-register** by adding one line at the operator's module top level, after its

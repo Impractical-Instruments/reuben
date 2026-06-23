@@ -1,0 +1,20 @@
+[package]
+name = "reuben-macros"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "The operator_contract! proc-macro: emits an operator's index consts + Descriptor from one declaration (ADR-0025)."
+
+[lib]
+proc-macro = true
+
+[dependencies]
+reuben-contract = { path = "../reuben-contract" }
+syn.workspace = true
+quote.workspace = true
+proc-macro2.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

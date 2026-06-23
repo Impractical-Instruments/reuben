@@ -8,6 +8,10 @@
 //! This crate has no OS dependencies; audio I/O and protocol adapters live in the
 //! removable native layer.
 
+// The `operator_contract!` macro (ADR-0025) expands to fully-qualified `::reuben_core::…` paths so
+// it works for any embedder. Inside this crate, that name must resolve to *us* — hence the alias.
+extern crate self as reuben_core;
+
 pub mod config;
 pub mod context;
 pub mod descriptor;
@@ -33,7 +37,10 @@ pub use graph::{Graph, NodeKey};
 pub use message::{Arg, Message};
 pub use operator::{Io, Operator};
 pub use plan::{Plan, PlanError};
+// The single-source operator contract macro (ADR-0025). Re-exported at the crate root so operator
+// modules can call `crate::operator_contract!(..)`, mirroring `register_operator!`.
 pub use registry::Registry;
+pub use reuben_macros::operator_contract;
 // Re-export the self-registration macro at the crate root so operator modules can call
 // `crate::register_operator!(..)` regardless of module declaration order (ADR-0024).
 pub(crate) use registry::register_operator;
