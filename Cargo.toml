@@ -5,6 +5,9 @@ members = ["crates/reuben-core", "crates/reuben-native"]
 [workspace.package]
 version = "0.0.0"
 edition = "2021"
+# MSRV — kept in lockstep with rust-toolchain.toml's `channel` (ADR-0023).
+# Self-verified: CI runs on the pinned toolchain, which == this floor.
+rust-version = "1.96.0"
 license = "BSD-3-Clause"
 repository = "https://github.com/Impractical-Instruments/reuben"
 

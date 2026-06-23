@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Block commits that would fail CI's `cargo fmt --all --check` (.github/workflows/ci.yml).
+# Mirrors CI exactly: whole-workspace, check-only — never rewrites your files.
+# Skips when no Rust is staged (docs-only commits don't pay for a fmt run).
+# Shared via core.hooksPath — see CONTRIBUTING.md.  Bypass:  git commit --no-verify
+set -euo pipefail
+
+# Any staged *.rs? (Added/Copied/Modified/Renamed — not deletions.)
+if ! git diff --cached --name-only --diff-filter=ACMR | grep -q '\.rs$'; then
+    exit 0
+fi
+
+if ! cargo fmt --all --check; then
+    echo
+    echo "✗ pre-commit: rustfmt would change the above — CI's 'cargo fmt --all --check' will fail."
+    echo "  Fix:    cargo fmt --all && git add -u"
+    echo "  Bypass: git commit --no-verify"
+    exit 1
+fi
