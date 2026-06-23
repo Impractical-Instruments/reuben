@@ -41,6 +41,7 @@ CANVAS_W, CANVAS_H = 1024, 768
 PAD = 12
 LABEL_H = 28
 DEFAULT_COLS = 4
+STEP_COLS = 16  # a gate-step lane lays out as a full-width row, wrapping past this many buttons
 
 
 # --- metadata from the committed schema -------------------------------------------------
@@ -91,6 +92,17 @@ def map_inputs_connected(instrument: dict) -> set:
     return {c["to"]["node"] for c in instrument.get("connections", [])}
 
 
+def is_gate_step(node: dict, param) -> bool:
+    """True when `param` is a `stepN` on a sequencer running `gate_mode`=1 — i.e. a boolean
+    on/off step (ADR-0022), not a continuous degree. Such a step is faithfully a toggle button,
+    not a fader: the button's `x` (0/1) is exactly the param's domain."""
+    if node.get("type") != "sequencer" or not param:
+        return False
+    if not (param.startswith("step") and param[4:].isdigit()):
+        return False
+    return node_param(node, "gate_mode", 0.0) == 1.0
+
+
 def resolve_control(node: dict, spec: dict, meta: dict) -> dict:
     """Resolve one control spec on `node` into the concrete fields the emitter needs.
 
@@ -111,6 +123,19 @@ def resolve_control(node: dict, spec: dict, meta: dict) -> dict:
         return {
             "kind": "note-toggle", "label": label, "widget": widget,
             "osc_addr": f"{addr}/{port}", "note": float(spec.get("note", 60)),
+        }
+
+    if widget == "param-toggle" or is_gate_step(node, param):
+        # A boolean step button: sends `<node>/<param> [x]` where `x` is the button's own 0/1.
+        # Unlike note-toggle (a constant note to a *port*, where the value is velocity), the
+        # button value IS the payload set onto the param — so on->off carries through. Default
+        # = the step's resting param value in the instrument, so the surface mirrors the pattern.
+        if param is None:
+            raise SystemExit(f"node {addr}: param-toggle control {label!r} needs a `param`")
+        return {
+            "kind": "param-toggle", "label": label, "widget": "param-toggle",
+            "osc_addr": f"{addr}/{param}", "node": addr,
+            "default": float(spec.get("default", node_param(node, param, 0.0))),
         }
 
     if param is None:
@@ -259,6 +284,12 @@ def _osc_note(addr: str, note: float) -> str:
                            _partial("VALUE", "FLOAT", "x")])
 
 
+def _osc_param_toggle(addr: str) -> str:
+    """Toggle button -> param: the button's `x` (0/1) is the sole arg, set straight onto
+    `<node>/<param>`. No scaling — a gate step's domain is already [0,1]."""
+    return _osc_msg(addr, [_partial("VALUE", "FLOAT", "x")])
+
+
 def _group_props(w, h) -> str:
     return "".join([
         _pb("background", True), _pc("color", 0, 0, 0, 1), _pf("cornerRadius", 1),
@@ -313,41 +344,80 @@ def _node(cid: str, ctype: str, props: str, values: str = "", messages: str = ""
     return f"<node ID='{cid}' type='{ctype}'>{inner}</node>"
 
 
+def layout_rows(controls: list, cols: int) -> list:
+    """Pack controls into rows of varying width. A run of consecutive `param-toggle` controls
+    sharing one node (a sequencer lane) becomes its own full-width row, wrapping at STEP_COLS;
+    everything else flows into uniform rows of `cols`. Declaration order is preserved, so a lane's
+    16 steps line up as one row and the misc controls (tempo, volumes, tone) grid up below."""
+    rows, grid = [], []
+
+    def flush_grid():
+        for k in range(0, len(grid), cols):
+            rows.append(grid[k:k + cols])
+        grid.clear()
+
+    i, n = 0, len(controls)
+    while i < n:
+        c = controls[i]
+        if c["kind"] == "param-toggle":
+            flush_grid()
+            node, j = c["node"], i
+            while j < n and controls[j]["kind"] == "param-toggle" and controls[j]["node"] == node:
+                j += 1
+            lane = controls[i:j]
+            for k in range(0, len(lane), STEP_COLS):
+                rows.append(lane[k:k + STEP_COLS])
+            i = j
+        else:
+            grid.append(c)
+            i += 1
+    flush_grid()
+    return rows
+
+
+def _widget_node(name: str, c: dict, wframe) -> tuple:
+    """Build a control's widget <node> and its label caption."""
+    if c["kind"] == "note-toggle":
+        caption = f"{c['label']} (note {int(c['note'])})"
+        return caption, _node(_id(name, c["osc_addr"], "widget"), "BUTTON",
+                              _button_props(c["label"], wframe),
+                              values=_value("x", "0") + _value("touch", "false"),
+                              messages=_osc_note(c["osc_addr"], c["note"]))
+    if c["kind"] == "param-toggle":
+        return c["label"], _node(_id(name, c["osc_addr"], "widget"), "BUTTON",
+                                 _button_props(c["label"], wframe),
+                                 values=_value("x", _num(c["default"])) + _value("touch", "false"),
+                                 messages=_osc_param_toggle(c["osc_addr"]))
+    rng = f"{c['min']:g}–{c['max']:g}{(' ' + c['unit']) if c['unit'] else ''}"
+    span = c["max"] - c["min"]
+    default_x = 0.0 if span == 0 else max(0.0, min(1.0, (c["default"] - c["min"]) / span))
+    return f"{c['label']} ({rng})", _node(_id(name, c["osc_addr"], "widget"), "FADER",
+                                          _fader_props(c["label"], wframe),
+                                          values=_value("x", _num(default_x)) + _value("touch", "false"),
+                                          messages=_osc_fader(c["osc_addr"], c["min"], c["max"]))
+
+
 def build_tosc(instrument: dict, controls: list, cols: int) -> bytes:
     name = instrument.get("instrument", "surface")
-    cols = max(1, min(cols, len(controls)))
-    rows = max(1, (len(controls) + cols - 1) // cols)
-    cell_w = (CANVAS_W - PAD * (cols + 1)) / cols
-    cell_h = (CANVAS_H - PAD * (rows + 1)) / rows
+    cols = max(1, cols)
+    rows = layout_rows(controls, cols)
+    nrows = max(1, len(rows))
+    cell_h = (CANVAS_H - PAD * (nrows + 1)) / nrows
 
     kids = []
-    for i, c in enumerate(controls):
-        col, row = i % cols, i // cols
-        x = PAD + col * (cell_w + PAD)
-        y = PAD + row * (cell_h + PAD)
-        lframe = (int(x), int(y), int(cell_w), LABEL_H)
-        wframe = (int(x), int(y + LABEL_H), int(cell_w), int(cell_h - LABEL_H))
-
-        if c["kind"] == "note-toggle":
-            caption = f"{c['label']} (note {int(c['note'])})"
-            widget = _node(_id(name, c["osc_addr"], "widget"), "BUTTON",
-                           _button_props(c["label"], wframe),
-                           values=_value("x", "0") + _value("touch", "false"),
-                           messages=_osc_note(c["osc_addr"], c["note"]))
-        else:
-            rng = f"{c['min']:g}–{c['max']:g}{(' ' + c['unit']) if c['unit'] else ''}"
-            caption = f"{c['label']} ({rng})"
-            span = c["max"] - c["min"]
-            default_x = 0.0 if span == 0 else max(0.0, min(1.0, (c["default"] - c["min"]) / span))
-            widget = _node(_id(name, c["osc_addr"], "widget"), "FADER",
-                           _fader_props(c["label"], wframe),
-                           values=_value("x", _num(default_x)) + _value("touch", "false"),
-                           messages=_osc_fader(c["osc_addr"], c["min"], c["max"]))
-
-        # A label above the widget so the surface reads its name (text lives in <values>).
-        lvals = _value("text", caption, locked_default_current=1) + _value("touch", "false")
-        kids.append(_node(_id(name, c["osc_addr"], "label"), "LABEL", _label_props(c["label"], lframe), values=lvals))
-        kids.append(widget)
+    for r, row in enumerate(rows):
+        ncol = max(1, len(row))
+        cell_w = (CANVAS_W - PAD * (ncol + 1)) / ncol
+        y = PAD + r * (cell_h + PAD)
+        for col, c in enumerate(row):
+            x = PAD + col * (cell_w + PAD)
+            lframe = (int(x), int(y), int(cell_w), LABEL_H)
+            wframe = (int(x), int(y + LABEL_H), int(cell_w), int(cell_h - LABEL_H))
+            caption, widget = _widget_node(name, c, wframe)
+            # A label above the widget so the surface reads its name (text lives in <values>).
+            lvals = _value("text", caption, locked_default_current=1) + _value("touch", "false")
+            kids.append(_node(_id(name, c["osc_addr"], "label"), "LABEL", _label_props(c["label"], lframe), values=lvals))
+            kids.append(widget)
 
     root = (f"<node ID='{_id(name, 'root')}' type='GROUP'><includes/>"
             f"<properties>{_group_props(CANVAS_W, CANVAS_H)}</properties>"

@@ -29,6 +29,11 @@ SCHEMA = {
          "then": {"properties": {"params": {"properties": {
              "tempo": {"minimum": 1.0, "maximum": 999.0, "default": 120.0, "description": "unit: BPM, curve: Linear"},
          }}}}},
+        {"if": {"properties": {"type": {"const": "sequencer"}}},
+         "then": {"properties": {"params": {"properties": {
+             "step1": {"minimum": 0.0, "maximum": 1.0, "default": 0.0, "description": "unit: , curve: Linear"},
+             "step2": {"minimum": 0.0, "maximum": 1.0, "default": 0.0, "description": "unit: , curve: Linear"},
+         }}}}},
     ]}}
 }
 
@@ -124,6 +129,51 @@ class NoteToggleTest(unittest.TestCase):
         self.assertEqual(args[1].find("type").text, "VALUE")
         self.assertEqual(args[1].find("value").text, "x")    # the gate
         self.assertEqual(btn.find("./messages/osc/path/partial/value").text, "/voicer/note")
+
+
+class ParamToggleTest(unittest.TestCase):
+    # A gate-mode sequencer lane: stepN are boolean on/off (ADR-0022), each carrying a control.
+    LANE = {"type": "sequencer", "address": "/kick",
+            "params": {"gate_mode": 1.0, "length": 16.0, "step1": 1.0, "step2": 0.0},
+            "control": [{"label": "K1", "param": "step1", "min": 0.0, "max": 1.0},
+                        {"label": "K2", "param": "step2", "min": 0.0, "max": 1.0}]}
+
+    def test_gate_step_autodetected_as_toggle(self):
+        r = g.resolve_control(self.LANE, self.LANE["control"][0], META)
+        self.assertEqual(r["kind"], "param-toggle")
+        self.assertEqual(r["osc_addr"], "/kick/step1")
+        self.assertEqual(r["node"], "/kick")
+        self.assertEqual(r["default"], 1.0)   # mirrors the instrument's resting step value
+
+    def test_continuous_sequencer_step_stays_a_fader(self):
+        # gate_mode=0 -> stepN is a continuous degree, not a boolean; must remain a fader.
+        node = dict(self.LANE, params={"gate_mode": 0.0})
+        r = g.resolve_control(node, {"label": "K1", "param": "step1", "min": 0.0, "max": 1.0}, META)
+        self.assertEqual(r["kind"], "fader")
+
+    def test_emits_a_button_sending_x_to_the_param(self):
+        c = g.resolve_control(self.LANE, self.LANE["control"][0], META)
+        doc = ET.fromstring(zlib.decompress(g.build_tosc({"instrument": "t"}, [c], 4)))
+        btn = doc.find(".//node[@type='BUTTON']")
+        self.assertIsNotNone(btn, "param-toggle must emit a BUTTON")
+        btype = [p for p in btn.findall("./properties/property") if p.find("key").text == "buttonType"][0]
+        self.assertEqual(btype.find("value").text, "2", "buttonType 2 = Toggle Press")
+        self.assertEqual(btn.find("./messages/osc/path/partial/value").text, "/kick/step1")
+        args = btn.findall("./messages/osc/arguments/partial")
+        self.assertEqual(len(args), 1, "the button's x IS the payload — no constant note")
+        self.assertEqual(args[0].find("type").text, "VALUE")
+        self.assertEqual(args[0].find("value").text, "x")
+
+    def test_lane_packs_into_one_full_width_row(self):
+        # 16 steps + a trailing fader: the steps share one row of 16; the fader drops below.
+        controls = [g.resolve_control(
+            {"type": "sequencer", "address": "/kick", "params": {"gate_mode": 1.0}},
+            {"label": f"K{i}", "param": f"step{i}"}, META) for i in range(1, 17)]
+        controls.append(g.resolve_control(INSTRUMENT["nodes"][2], {"label": "Tempo", "param": "tempo"}, META))
+        rows = g.layout_rows(controls, cols=4)
+        self.assertEqual(len(rows[0]), 16, "all 16 lane steps share one row")
+        self.assertTrue(all(c["kind"] == "param-toggle" for c in rows[0]))
+        self.assertEqual([c["label"] for c in rows[-1]], ["Tempo"], "non-toggle controls grid below")
 
 
 class EmitTest(unittest.TestCase):
