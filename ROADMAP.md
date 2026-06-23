@@ -58,7 +58,14 @@ Each phase lists the open-design threads it forces (see [OPEN-QUESTIONS.md](docs
 
 ### V1.3 — The Toys
 
-- **Groove box, tap-to-play chord/melody, drag/strum instrument, meta-effects** — built from V1.1 operators over the V1.2 surface. The payoff: instant music for beginners. *(Forces: Toy-design thread — grill per Toy.)*
+*Grilled → [ADR-0022](docs/adr/0022-the-toys.md). The payoff: **instant music for a non-technical person**. Depth over breadth — **three** Toys, one per distinct player gesture (rhythm/auto, tap-harmony, continuous-drag), not the full archetype list. Melody-player overlaps tap-harmony and meta-effects overlap the existing fx instruments (`echo`/`reverb`/`djfilter`), so both are deferred. Each Toy is **one self-contained Instrument JSON** (the unit `control-surface` consumes — V1.4 shipped ahead of this) + a generated `.tosc`; internally a graph of existing + a few new Operators. The build is **new Operators, not new format machinery** (ADR-0017). The generator draws only fader/stepper/button widgets, so every gesture reduces to those three.*
+
+- **Groove box** — free-running multi-track **synthesized** drum machine (3 lanes: kick/snare/hat; no drum samples exist, so drums are built from Operators — the reuben thesis). Each lane `sequencer` → `voicer`(1) → drum-synth subgraph → lane volume → mix → master filter Good Button. Kick = osc + pitch-drop env; snare = noise + tone, env; hat = noise → highpass → short env. *Surface:* 48 step toggles + tempo + 3 lane volumes + master filter knob.
+- **Chord player** — tap-to-play diatonic harmony: 7 buttons (I–vii°) → new `chord` op (stacked thirds via the context bus, always in key) → poly `voicer` → pad voice. A key selector (`context` op) **re-spells chords live** on a key change. *Surface:* 7 chord buttons + brightness + key selector.
+- **Strum (harp)** — drag-to-strum: one big fader streams position → new `strum` op emits a note per string-crossing (scale degrees via context) → poly `voicer` → plucked voice. Open-scale harp glissando; no new widget type (reuses the fader). *Surface:* strum fader + brightness + key selector + octave-range knob.
+- **Engine work it forces** (all modifies backwards-compatible; new ops via `create-operator`, test-first): `sequencer` `gate_mode` + per-lane `pitch` + 8→16 steps; **new `noise` op**; `filter` `mode` (LP/HP/BP); `clock` `division` (gate N×/beat — a thin slice of ADR-0006's deferred subdivision); **new `chord` op** (degree-in-arg, sidesteps deferred port-routing, future-proofs the sequenced chord-progression op); **new `strum` op**; `control-surface` generator emits custom `[degree,gate]` button payloads.
+- **Build order:** ops → generator extension → assemble 3 JSONs via `patcher` → generate surfaces via `control-surface` → hands-on TouchOSC proof doc.
+- *Deferred (not V1.3):* 7th-chord toggle, clap/toms, chord-locked strum, multi-touch/XY widgets, single-op `drum-sequencer`, per-step drum pitch.
 
 ### V1.4 — Good-button UX layer — ✅ DONE
 
