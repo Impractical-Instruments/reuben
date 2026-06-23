@@ -4,6 +4,7 @@
 //! A) and is filled in test-first in Stage B. Port/param indices are part of the contract
 //! the rig builder wires against — see each module's descriptor.
 
+pub mod chord;
 pub mod clock;
 pub mod context;
 pub mod delay;
@@ -22,6 +23,7 @@ pub mod sequencer;
 pub mod snap;
 pub mod voicer;
 
+pub use chord::Chord;
 pub use clock::Clock;
 pub use context::ContextOp;
 pub use delay::Delay;

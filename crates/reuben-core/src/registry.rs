@@ -11,8 +11,8 @@ use std::collections::BTreeMap;
 use crate::descriptor::Descriptor;
 use crate::operator::Operator;
 use crate::operators::{
-    Add, Clock, ContextOp, Delay, Differentiate, Djfilter, Envelope, Filter, Integrate, Lfo, M2s,
-    Map, Mul, Noise, Oscillator, Output, Reverb, SamplePlayer, Sequencer, Snap, Voicer,
+    Add, Chord, Clock, ContextOp, Delay, Differentiate, Djfilter, Envelope, Filter, Integrate, Lfo,
+    M2s, Map, Mul, Noise, Oscillator, Output, Reverb, SamplePlayer, Sequencer, Snap, Voicer,
 };
 
 /// One registered operator type: how to build it, and its self-description.
@@ -66,6 +66,7 @@ impl Registry {
         r.register(|| Box::new(M2s::new()), M2s::descriptor());
         r.register(|| Box::new(Djfilter::new()), Djfilter::descriptor());
         r.register(|| Box::new(Noise::new()), Noise::descriptor());
+        r.register(|| Box::new(Chord::new()), Chord::descriptor());
         r
     }
 
@@ -103,6 +104,7 @@ mod tests {
             names,
             vec![
                 "add",
+                "chord",
                 "clock",
                 "context",
                 "delay",

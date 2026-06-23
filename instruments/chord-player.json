@@ -1,0 +1,50 @@
+{
+  "instrument": "chord-player",
+  "doc": "V1.3 Toy 2 — the Chord player (ADR-0022). Seven buttons play the diatonic triads I–vii° of the current key: tap-and-hold sustains a chord, release stops it. Each button sends /chord/set [degree, gate] (a chord-root scale degree + gate); the `chord` op stacks scale-relative thirds and emits `degree` notes, which the voicer resolves through the tonal context — so held and tapped chords RE-SPELL LIVE when you change the key (send /context/root [48..72]). A pad voice (saw -> filter -> slow-attack envelope) and a 'brightness' Good Button (/brightness [0..1] -> filter cutoff) round it out. Polyphonic: 12 voices cover four held seventh chords. Built entirely from composition — no new instrument-format machinery.",
+  "nodes": [
+    { "type": "chord", "address": "/chord", "doc": "Tap-to-harmony: /chord/set [degree, gate] -> stacked-thirds `degree` notes. `size` 3 = triad (default), 4 = seventh. No context input — the voicer resolves degrees, so chords re-spell on key change. The 7 chord buttons each send a fixed root degree 0..6 (I–vii°) via the chord-button widget.", "params": { "size": 3.0 }, "control": [
+      { "label": "I",    "widget": "chord-button", "port": "set", "degree": 0 },
+      { "label": "ii",   "widget": "chord-button", "port": "set", "degree": 1 },
+      { "label": "iii",  "widget": "chord-button", "port": "set", "degree": 2 },
+      { "label": "IV",   "widget": "chord-button", "port": "set", "degree": 3 },
+      { "label": "V",    "widget": "chord-button", "port": "set", "degree": 4 },
+      { "label": "vi",   "widget": "chord-button", "port": "set", "degree": 5 },
+      { "label": "vii",  "widget": "chord-button", "port": "set", "degree": 6 }
+    ] },
+
+    { "type": "context", "address": "/context", "doc": "The tonal context the voicer resolves degrees against. KEY SELECTOR: send /context/root [48..72] (MIDI tonic) to transpose; held & tapped chords re-spell live. Default C major.", "control": { "label": "Key", "param": "root", "min": 48.0, "max": 72.0 } },
+
+    { "type": "voicer", "address": "/voicer", "doc": "Polyphonic note allocator. Degree notes from /chord re-spell through /context. 12 voices = four held seventh chords.", "params": { "voices": 12.0 } },
+
+    { "type": "oscillator", "address": "/osc", "doc": "Saw pad tone (harmonics for the filter to shape).", "params": { "waveform": 1.0 } },
+    { "type": "filter", "address": "/filter", "doc": "Lowpass; cutoff is a Signal input driven by the brightness Good Button." },
+    { "type": "envelope", "address": "/env", "doc": "Slow-attack pad VCA, gated by the voicer.", "params": { "attack": 0.6, "decay": 0.3, "sustain": 0.8, "release": 0.8 }, "control": [ { "label": "Attack", "param": "attack" }, { "label": "Release", "param": "release" } ] },
+
+    { "type": "m2s", "address": "/vgain", "doc": "Per-voice headroom: constant equal-power gain (1/sqrt(12) ~ 0.289) held forever (no input). Single-lane -> broadcasts to every voice's /vmix. The 12 voice lanes sum straight into the master (no auto gain comp), so each voice is scaled here to keep a full 12-voice chord off the clip ceiling while staying loud at a typical 3-6 note chord.", "params": { "mode": 0.0, "default": 0.289 } },
+    { "type": "mul", "address": "/vmix", "doc": "Per-voice gain stage: env audio (a) * /vgain scalar (b). Replicated per voice (inherits the 12 lanes from env); the constant gain broadcasts in on b." },
+    { "type": "output", "address": "/out" },
+
+    { "type": "map", "address": "/brightness", "doc": "PUBLIC Good Button. Identity [0,1] pass-through, fanned to the ranged cutoff map. Send /brightness [0..1]. Rests at 0.5 (ADR-0018).", "params": { "default": 0.5 }, "control": { "label": "Brightness", "widget": "fader", "unit": "%" } },
+    { "type": "map", "address": "/map_cutoff", "doc": "brightness [0,1] -> cutoff [300,9000] Hz, exponential (perceptually even).", "params": { "out_min": 300.0, "out_max": 9000.0, "curve": 1.0 } },
+    { "type": "m2s", "address": "/cv_cutoff", "doc": "Smooth the mapped cutoff into a CV signal; default 1800 Hz before any knob move.", "params": { "mode": 2.0, "time": 0.03, "default": 1800.0 } }
+  ],
+  "connections": [
+    { "from": { "node": "/chord", "port": "degrees" }, "to": { "node": "/voicer", "port": "notes" } },
+    { "from": { "node": "/context", "port": "ctx" }, "to": { "node": "/voicer", "port": "ctx" } },
+
+    { "from": { "node": "/voicer", "port": "freq" }, "to": { "node": "/osc", "port": "freq" } },
+    { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/filter", "port": "audio" } },
+    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env", "port": "audio" } },
+    { "from": { "node": "/voicer", "port": "gate" }, "to": { "node": "/env", "port": "gate" } },
+    { "from": { "node": "/env", "port": "audio" }, "to": { "node": "/vmix", "port": "a" } },
+    { "from": { "node": "/vgain", "port": "out" }, "to": { "node": "/vmix", "port": "b" } },
+    { "from": { "node": "/vmix", "port": "out" }, "to": { "node": "/out", "port": "audio" } },
+
+    { "from": { "node": "/brightness", "port": "out" }, "to": { "node": "/map_cutoff", "port": "in" } },
+    { "from": { "node": "/map_cutoff", "port": "out" }, "to": { "node": "/cv_cutoff", "port": "in" } },
+    { "from": { "node": "/cv_cutoff", "port": "out" }, "to": { "node": "/filter", "port": "cutoff" } }
+  ],
+  "outputs": [
+    { "node": "/out", "port": "audio" }
+  ]
+}
