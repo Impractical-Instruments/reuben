@@ -12,6 +12,14 @@
 // it works for any embedder. Inside this crate, that name must resolve to *us* — hence the alias.
 extern crate self as reuben_core;
 
+/// Crate-private `Io`-construction bridge for the per-operator micro benchmarks (#30, ADR-0019).
+/// Gated behind the non-default `bench` feature so the bridge never leaks into the public API:
+/// the `[[bench]]` micro targets declare `required-features = ["bench"]`, and CI runs them (plus
+/// the forcing-function test below) with `--features bench`. A normal build/publish never compiles
+/// it, so the `pub(crate)` `Io` builders it reaches for stay internal.
+#[cfg(feature = "bench")]
+pub mod bench_support;
+
 pub mod config;
 pub mod context;
 pub mod descriptor;

@@ -7,6 +7,13 @@ license.workspace = true
 repository.workspace = true
 description = "Portable, OS-free realtime core for reuben: graph, plan, render."
 
+[features]
+# Exposes `bench_support` (the per-operator micro-bench `Io` bridge, #30 / ADR-0019). Non-default
+# so the bridge never ships in a normal build/publish; the micro `[[bench]]` targets below declare
+# `required-features = ["bench"]`, and CI runs the micro layer + its forcing-function test with
+# `--features bench` (locally: `cargo reuben-core-bench`, see .cargo/config.toml).
+bench = []
+
 [dependencies]
 slotmap.workspace = true
 smallvec.workspace = true
@@ -37,3 +44,16 @@ harness = false
 [[bench]]
 name = "macro_iai"
 harness = false
+
+# Per-operator micro benches (#30). `required-features = ["bench"]` ⇒ cargo SKIPS these (no error)
+# unless the bridge feature is on, so a bare `cargo bench` runs only the macro layer while the full
+# run (`cargo reuben-core-bench`) covers both. Same two layers as the macro set (ADR-0019).
+[[bench]]
+name = "micro_criterion"
+harness = false
+required-features = ["bench"]
+
+[[bench]]
+name = "micro_iai"
+harness = false
+required-features = ["bench"]

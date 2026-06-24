@@ -64,11 +64,17 @@ jobs:
       - name: Format
         run: cargo fmt --all --check
 
+      # `--features reuben-core/bench` so clippy lints the per-operator micro-bench code (#30): its
+      # `[[bench]]` targets declare `required-features = ["bench"]`, so without the flag
+      # `--all-targets` silently skips them.
       - name: Clippy
-        run: cargo clippy --workspace --all-targets -- -D warnings
+        run: cargo clippy --workspace --all-targets --features reuben-core/bench -- -D warnings
 
+      # Same flag so the #30 forcing-function tests run (they live in the feature-gated
+      # `bench_support` module): they red CI if a new operator lacks a micro-bench workload, or if
+      # the iai gate list drifts from it.
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --features reuben-core/bench
 
   windows:
     name: build + test (windows)
@@ -96,11 +102,13 @@ jobs:
       - name: Build
         run: cargo build --workspace
 
+      # `--features reuben-core/bench` for parity with `check`: compiles `bench_support` + runs the
+      # #30 forcing-function tests on Windows too.
       - name: Test
-        run: cargo test --workspace
+        run: cargo test --workspace --features reuben-core/bench
 
   bench:
-    name: perf gate (render_block Ir)
+    name: perf gate (macro + micro Ir)
     runs-on: ubuntu-latest
     # Same draft-skip as `check`. Runs in parallel — nobody waits on valgrind for fmt/test.
     if: github.event_name == 'push' || github.event.pull_request.draft == false
@@ -147,5 +155,5 @@ jobs:
           fi
           echo "sha=$sha" >>"$GITHUB_OUTPUT"
 
-      - name: Compare render_block instruction counts vs baseline
+      - name: Compare instruction counts vs baseline (macro render_block + per-operator process)
         run: ./.github/scripts/perf-gate.sh "${{ steps.base.outputs.sha }}"
