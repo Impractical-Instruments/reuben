@@ -1,12 +1,16 @@
 //! Delay — feedback echo with a dry/wet mix.
 //!
-//! Ports/params are FROZEN (Stage A). DSP body is filled test-first in Stage B.
+//! Shape model (ADR-0028): `time`, `feedback`, and `mix` are **`Float` inputs**, each owning its
+//! unwired default. When nothing is wired the engine materializes the input from its latched
+//! default; when an LFO or envelope is wired the source buffer passes through. They are read
+//! block-rate via `io.value` (same semantics as the old params), and `io.signal(IN_AUDIO)` is
+//! always a buffer (wired source or materialized latch).
 //!
-//! - input 0: `audio` (Signal)
-//! - output 0: `audio` (Signal) — the dry+wet mix.
-//! - param 0: `time` (s) — delay time.
-//! - param 1: `feedback` (0..0.95)
-//! - param 2: `mix` (0..1) — dry/wet blend.
+//! - input 0: `audio` (`Float`) — the signal to delay.
+//! - input 1: `time` (`Float`, s) — delay time (materialized default 0.3).
+//! - input 2: `feedback` (`Float`) — feedback amount 0..0.95 (materialized default 0.4).
+//! - input 3: `mix` (`Float`) — dry/wet blend 0..1 (materialized default 0.5).
+//! - output 0: `audio` (`Float`) — the dry+wet mix.
 //!
 //! DSP: a ring buffer sized to the maximum delay (2 s) is allocated lazily on the first
 //! `process` call (mirrors the Voicer idiom — sample_rate isn't known in `new()`). Per
@@ -18,13 +22,13 @@
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.
+// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Delay {
-    inputs:  { audio: signal },
-    outputs: { audio: signal },
-    params:  { time:     { 0.001..=2.0, default 0.3, "s", lin },
-               feedback: { 0.0..=0.95,  default 0.4, "",  lin },
-               mix:      { 0.0..=1.0,   default 0.5, "",  lin } },
+    inputs:  { audio: float,
+               time:     float { 0.001..=2.0, default 0.3, "s", lin },
+               feedback: float { 0.0..=0.95,  default 0.4, "",  lin },
+               mix:      float { 0.0..=1.0,   default 0.5, "",  lin } },
+    outputs: { audio: float },
 });
 
 /// Maximum delay time in seconds; sizes the ring buffer.
@@ -62,15 +66,15 @@ impl Operator for Delay {
             self.head = 0;
         }
 
-        let feedback = io.param(P_FEEDBACK).clamp(0.0, 0.95);
-        let mix = io.param(P_MIX).clamp(0.0, 1.0);
+        let feedback = io.value(IN_FEEDBACK).clamp(0.0, 0.95);
+        let mix = io.value(IN_MIX).clamp(0.0, 1.0);
         // Read offset in samples; clamp so the interpolated tap stays inside the buffer.
-        let time = io.param(P_TIME).clamp(0.001, MAX_DELAY_SECS);
+        let time = io.value(IN_TIME).clamp(0.001, MAX_DELAY_SECS);
         let delay_samples = (time * sample_rate).clamp(1.0, (cap - 1) as f32);
 
         let len = self.buf.len();
         for i in 0..n {
-            let x = io.input(IN_AUDIO).map(|s| s[i]).unwrap_or(0.0);
+            let x = io.signal(IN_AUDIO).get(i).copied().unwrap_or(0.0);
 
             // Fractional read position `delay_samples` behind the write head.
             let read_pos = self.head as f32 + len as f32 - delay_samples;
@@ -102,16 +106,27 @@ mod tests {
     use super::*;
     use crate::operator::Io;
 
-    /// Run `input` through a fresh Delay at the given params and return the output buffer.
+    /// Run `input` through a fresh Delay at the given values and return the output buffer.
+    /// `time`/`feedback`/`mix` are `Float` inputs now (ADR-0028), so they are supplied as the
+    /// constant per-sample buffers the engine would materialize, in port order
+    /// (audio, time, feedback, mix).
     fn render(input: &[f32], sample_rate: f32, time: f32, feedback: f32, mix: f32) -> Vec<f32> {
         let n = input.len();
         let mut delay = Delay::new();
         let mut out_buf = vec![0.0f32; n];
 
-        let params = [time, feedback, mix];
+        let params: [f32; 0] = [];
         let messages = [];
+        let time_buf = vec![time; n];
+        let feedback_buf = vec![feedback; n];
+        let mix_buf = vec![mix; n];
         {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(input)];
+            let inputs: Vec<Option<&[f32]>> = vec![
+                Some(input),
+                Some(&time_buf),
+                Some(&feedback_buf),
+                Some(&mix_buf),
+            ];
             let outputs: Vec<&mut [f32]> = vec![out_buf.as_mut_slice()];
             let mut io = Io::new(sample_rate, n, inputs, outputs, &params, &messages);
             delay.process(&mut io);
@@ -233,17 +248,30 @@ mod tests {
 
         let mut delay = Delay::new();
         let mut out_buf = vec![0.0f32; n];
-        let params = [time, fb, mix];
+        let params: [f32; 0] = [];
         let messages = [];
+        let time_buf = vec![time; n];
+        let feedback_buf = vec![fb; n];
+        let mix_buf = vec![mix; n];
         let half = n / 2;
         {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&input[..half])];
+            let inputs: Vec<Option<&[f32]>> = vec![
+                Some(&input[..half]),
+                Some(&time_buf[..half]),
+                Some(&feedback_buf[..half]),
+                Some(&mix_buf[..half]),
+            ];
             let outputs: Vec<&mut [f32]> = vec![&mut out_buf[..half]];
             let mut io = Io::new(sr, half, inputs, outputs, &params, &messages);
             delay.process(&mut io);
         }
         {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&input[half..])];
+            let inputs: Vec<Option<&[f32]>> = vec![
+                Some(&input[half..]),
+                Some(&time_buf[half..]),
+                Some(&feedback_buf[half..]),
+                Some(&mix_buf[half..]),
+            ];
             let outputs: Vec<&mut [f32]> = vec![&mut out_buf[half..]];
             let mut io = Io::new(sr, n - half, inputs, outputs, &params, &messages);
             delay.process(&mut io);
