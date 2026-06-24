@@ -35,4 +35,4 @@ Use the project's exact terms (Operator, Instrument, Rig, Plan, Swap, Lane, Voic
 - **[Domain docs](docs/agents/domain.md)** — read CONTEXT.md + relevant ADRs before exploring.
 - **[Issue tracker](docs/agents/issue-tracker.md)** — GitHub Issues via `gh`; external PRs are not a triage surface.
 - **[Triage labels](docs/agents/triage-labels.md)** — needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix.
-- **[CONTRIBUTING.md](CONTRIBUTING.md)** · **[Architecture](docs/ARCHITECTURE.md)** · **[Roadmap](ROADMAP.md)** · **[ADRs](docs/adr/)**
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** · **[Architecture](docs/ARCHITECTURE.md)** · **[ADRs](docs/adr/)**

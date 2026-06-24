@@ -1,6 +1,6 @@
 ---
 name: sync-docs
-description: Bring reuben's living docs back in sync with the code after a feature lands. Sweeps ROADMAP, ARCHITECTURE, README, and docs/agents/authoring.md against the current code + git diff, regenerates the instrument schema, and flags new domain terms. Use when a feature is implemented, before opening a PR, or when the user says "sync docs", "update the docs", "currentness pass", or "currency pass".
+description: Bring reuben's living docs back in sync with the code after a feature lands. Sweeps ARCHITECTURE, README, and docs/agents/authoring.md against the current code + git diff, regenerates the instrument schema, and flags new domain terms. Use when a feature is implemented, before opening a PR, or when the user says "sync docs", "update the docs", "currentness pass", or "currency pass".
 ---
 
 # sync-docs
@@ -23,9 +23,8 @@ Run from the feature branch so the diff is meaningful.
    capabilities, new tests asserting an invariant.
 
 2. **Sweep each living doc** against what's now true (edit only what drifted):
-   - **ROADMAP.md** — tick (`✅`) shipped items; if every sub-item of a tier is done, mark
-     the tier `✅ DONE`. Note what *remains* on a partially-done item. Items move tiers
-     only by explicit decision — don't reorder on your own.
+   - **GitHub issues** — when a feature ships, close (or note progress on) the tracking
+     issue. The open work and design backlog live in the issue tracker, not a roadmap doc.
    - **docs/ARCHITECTURE.md** — clear inline "not built yet" / "isn't built yet" flags once
      a mechanism ships; fix operator counts and name-lists; keep the status line honest.
      This doc describes the *target* design — don't delete future-tense design, just drop
@@ -51,7 +50,7 @@ Run from the feature branch so the diff is meaningful.
 
 | Doc | Action |
 |-----|--------|
-| ROADMAP.md, ARCHITECTURE.md, README.md, docs/agents/authoring.md | **edit** to match reality |
+| ARCHITECTURE.md, README.md, docs/agents/authoring.md | **edit** to match reality |
 | instrument schema | **regenerate** via gen_schema |
 | CONTEXT.md (glossary) | **flag** new terms → suggest /domain-modeling, don't auto-edit |
 | docs/adr/* | **never touch** — decisions, not status |
