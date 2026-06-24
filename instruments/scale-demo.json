@@ -9,6 +9,8 @@
     { "type": "oscillator", "address": "/osc" },
     { "type": "filter", "address": "/filter", "params": { "cutoff": 2500.0 } },
     { "type": "envelope", "address": "/env", "params": { "attack": 0.005, "decay": 0.14, "sustain": 0.3, "release": 0.1 } },
+    { "type": "power", "address": "/env_curve", "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2)." },
+    { "type": "mul", "address": "/env_vca", "doc": "VCA: audio * shaped envelope CV." },
     { "type": "output", "address": "/out" }
   ],
   "connections": [
@@ -17,9 +19,11 @@
     { "from": { "node": "/context", "port": "ctx" }, "to": { "node": "/voicer", "port": "ctx" } },
     { "from": { "node": "/voicer", "port": "freq" }, "to": { "node": "/osc", "port": "freq" } },
     { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/filter", "port": "audio" } },
-    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env", "port": "audio" } },
+    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env_vca", "port": "a" } },
+    { "from": { "node": "/env", "port": "cv" }, "to": { "node": "/env_curve", "port": "x" } },
+    { "from": { "node": "/env_curve", "port": "out" }, "to": { "node": "/env_vca", "port": "b" } },
     { "from": { "node": "/voicer", "port": "gate" }, "to": { "node": "/env", "port": "gate" } },
-    { "from": { "node": "/env", "port": "audio" }, "to": { "node": "/out", "port": "audio" } }
+    { "from": { "node": "/env_vca", "port": "out" }, "to": { "node": "/out", "port": "audio" } }
   ],
   "outputs": [
     { "node": "/out", "port": "audio" }

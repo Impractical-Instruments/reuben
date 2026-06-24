@@ -18,7 +18,9 @@
 
     { "type": "oscillator", "address": "/osc", "doc": "Saw pad tone (harmonics for the filter to shape).", "params": { "waveform": 1.0 } },
     { "type": "filter", "address": "/filter", "doc": "Lowpass; cutoff is a Signal input driven by the brightness Good Button." },
-    { "type": "envelope", "address": "/env", "doc": "Slow-attack pad VCA, gated by the voicer.", "params": { "attack": 0.6, "decay": 0.3, "sustain": 0.8, "release": 0.8 }, "control": [ { "label": "Attack", "param": "attack" }, { "label": "Release", "param": "release" } ] },
+    { "type": "envelope", "address": "/env", "doc": "Slow-attack pad envelope (linear CV), gated by the voicer.", "params": { "attack": 0.6, "decay": 0.3, "sustain": 0.8, "release": 0.8 }, "control": [ { "label": "Attack", "param": "attack" }, { "label": "Release", "param": "release" } ] },
+    { "type": "power", "address": "/env_curve", "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2)." },
+    { "type": "mul", "address": "/env_vca", "doc": "VCA: audio * shaped envelope CV." },
 
     { "type": "m2s", "address": "/vgain", "doc": "Per-voice headroom: constant equal-power gain (1/sqrt(12) ~ 0.289) held forever (no input). Single-lane -> broadcasts to every voice's /vmix. The 12 voice lanes sum straight into the master (no auto gain comp), so each voice is scaled here to keep a full 12-voice chord off the clip ceiling while staying loud at a typical 3-6 note chord.", "params": { "mode": 0.0, "default": 0.289 } },
     { "type": "mul", "address": "/vmix", "doc": "Per-voice gain stage: env audio (a) * /vgain scalar (b). Replicated per voice (inherits the 12 lanes from env); the constant gain broadcasts in on b." },
@@ -34,9 +36,11 @@
 
     { "from": { "node": "/voicer", "port": "freq" }, "to": { "node": "/osc", "port": "freq" } },
     { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/filter", "port": "audio" } },
-    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env", "port": "audio" } },
+    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env_vca", "port": "a" } },
+    { "from": { "node": "/env", "port": "cv" }, "to": { "node": "/env_curve", "port": "x" } },
+    { "from": { "node": "/env_curve", "port": "out" }, "to": { "node": "/env_vca", "port": "b" } },
     { "from": { "node": "/voicer", "port": "gate" }, "to": { "node": "/env", "port": "gate" } },
-    { "from": { "node": "/env", "port": "audio" }, "to": { "node": "/vmix", "port": "a" } },
+    { "from": { "node": "/env_vca", "port": "out" }, "to": { "node": "/vmix", "port": "a" } },
     { "from": { "node": "/vgain", "port": "out" }, "to": { "node": "/vmix", "port": "b" } },
     { "from": { "node": "/vmix", "port": "out" }, "to": { "node": "/out", "port": "audio" } },
 

@@ -56,9 +56,8 @@ operator djfilter
   param[5] hp_end min=20.0 max=20000.0 default=6000.0 unit="Hz" curve=exponential
   lanes inherit
 operator envelope
-  in[0] signal audio
-  in[1] signal gate
-  out[0] signal audio
+  in[0] signal gate
+  out[0] signal cv
   param[0] attack min=0.001 max=5.0 default=0.01 unit="s" curve=exponential
   param[1] decay min=0.001 max=5.0 default=0.1 unit="s" curve=exponential
   param[2] sustain min=0.0 max=1.0 default=0.7 unit="" curve=linear
@@ -128,6 +127,11 @@ operator pan
   out[0] signal left
   out[1] signal right
   param[0] pan min=-1.0 max=1.0 default=0.0 unit="" curve=linear
+  lanes inherit
+operator power
+  in[0] signal x
+  out[0] signal out
+  param[0] exponent min=0.0 max=8.0 default=2.0 unit="" curve=linear
   lanes inherit
 operator reverb
   in[0] signal audio

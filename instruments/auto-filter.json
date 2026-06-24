@@ -6,6 +6,8 @@
     { "type": "oscillator", "address": "/osc", "params": { "waveform": 1.0 } },
     { "type": "filter", "address": "/filter", "doc": "Cutoff driven by base + LFO; resonant so the sweep sings.", "params": { "resonance": 0.7 } },
     { "type": "envelope", "address": "/env" },
+    { "type": "power", "address": "/env_curve", "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2)." },
+    { "type": "mul", "address": "/env_vca", "doc": "VCA: audio * shaped envelope CV." },
     { "type": "output", "address": "/out" },
 
     { "type": "lfo", "address": "/lfo", "doc": "Wobble around 0 (center 0), added onto the base cutoff.", "params": { "rate": 2.0, "depth": 1500.0, "center": 0.0 } },
@@ -15,9 +17,11 @@
   "connections": [
     { "from": { "node": "/voicer", "port": "freq" }, "to": { "node": "/osc", "port": "freq" } },
     { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/filter", "port": "audio" } },
-    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env", "port": "audio" } },
+    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env_vca", "port": "a" } },
+    { "from": { "node": "/env", "port": "cv" }, "to": { "node": "/env_curve", "port": "x" } },
+    { "from": { "node": "/env_curve", "port": "out" }, "to": { "node": "/env_vca", "port": "b" } },
     { "from": { "node": "/voicer", "port": "gate" }, "to": { "node": "/env", "port": "gate" } },
-    { "from": { "node": "/env", "port": "audio" }, "to": { "node": "/out", "port": "audio" } },
+    { "from": { "node": "/env_vca", "port": "out" }, "to": { "node": "/out", "port": "audio" } },
 
     { "from": { "node": "/cutoff", "port": "out" }, "to": { "node": "/add", "port": "a" } },
     { "from": { "node": "/lfo", "port": "out" }, "to": { "node": "/add", "port": "b" } },

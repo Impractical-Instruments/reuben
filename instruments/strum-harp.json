@@ -10,6 +10,8 @@
     { "type": "oscillator", "address": "/osc", "doc": "Triangle tone — a soft, harp-like pluck timbre.", "params": { "waveform": 2.0 } },
     { "type": "filter", "address": "/filter", "doc": "Cutoff + resonance are Signal inputs, driven by the Brightness Good Button." },
     { "type": "envelope", "address": "/env", "doc": "Percussive pluck: near-instant attack, short decay, no sustain — each pluck rings out on its own. Gated by the voicer; the strum op's paired note-off frees the voice.", "params": { "attack": 0.002, "decay": 0.0, "sustain": 1.0, "release": 0.8 } },
+    { "type": "power", "address": "/env_curve", "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2)." },
+    { "type": "mul", "address": "/env_vca", "doc": "VCA: audio * shaped envelope CV." },
     { "type": "output", "address": "/out" },
 
     { "type": "map", "address": "/brightness", "doc": "PUBLIC Good Button. Identity [0,1]; fanned to the two ranged maps below. Send /brightness [0..1]. Rests at 0.6 so the plucks are bright at load.", "params": { "default": 0.6 }, "control": { "label": "Brightness", "widget": "fader" } },
@@ -24,9 +26,11 @@
     { "from": { "node": "/context", "port": "ctx" }, "to": { "node": "/voicer", "port": "ctx" } },
     { "from": { "node": "/voicer", "port": "freq" }, "to": { "node": "/osc", "port": "freq" } },
     { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/filter", "port": "audio" } },
-    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env", "port": "audio" } },
+    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env_vca", "port": "a" } },
+    { "from": { "node": "/env", "port": "cv" }, "to": { "node": "/env_curve", "port": "x" } },
+    { "from": { "node": "/env_curve", "port": "out" }, "to": { "node": "/env_vca", "port": "b" } },
     { "from": { "node": "/voicer", "port": "gate" }, "to": { "node": "/env", "port": "gate" } },
-    { "from": { "node": "/env", "port": "audio" }, "to": { "node": "/out", "port": "audio" } },
+    { "from": { "node": "/env_vca", "port": "out" }, "to": { "node": "/out", "port": "audio" } },
 
     { "from": { "node": "/brightness", "port": "out" }, "to": { "node": "/map_cutoff", "port": "in" } },
     { "from": { "node": "/brightness", "port": "out" }, "to": { "node": "/map_res", "port": "in" } },

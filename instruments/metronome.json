@@ -5,12 +5,16 @@
     { "type": "clock", "address": "/clock", "doc": "Beat phasor + beat gate.", "params": { "tempo": 120.0 } },
     { "type": "oscillator", "address": "/osc", "doc": "Fixed click tone.", "params": { "freq": 880.0 } },
     { "type": "envelope", "address": "/env", "doc": "Plucked click, gated by the beat.", "params": { "attack": 0.001, "decay": 0.05, "sustain": 0.0, "release": 0.05 } },
+    { "type": "power", "address": "/env_curve", "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2)." },
+    { "type": "mul", "address": "/env_vca", "doc": "VCA: audio * shaped envelope CV." },
     { "type": "output", "address": "/out" }
   ],
   "connections": [
-    { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/env", "port": "audio" } },
+    { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/env_vca", "port": "a" } },
+    { "from": { "node": "/env", "port": "cv" }, "to": { "node": "/env_curve", "port": "x" } },
+    { "from": { "node": "/env_curve", "port": "out" }, "to": { "node": "/env_vca", "port": "b" } },
     { "from": { "node": "/clock", "port": "gate" }, "to": { "node": "/env", "port": "gate" } },
-    { "from": { "node": "/env", "port": "audio" }, "to": { "node": "/out", "port": "audio" } }
+    { "from": { "node": "/env_vca", "port": "out" }, "to": { "node": "/out", "port": "audio" } }
   ],
   "outputs": [
     { "node": "/out", "port": "audio" }
