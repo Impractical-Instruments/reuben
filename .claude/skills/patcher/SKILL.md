@@ -5,11 +5,12 @@ description: Build or modify a reuben Instrument or Rig — the playable JSON gr
 
 # patcher
 
-A reuben Instrument is one recursive JSON graph: **Operators** (nodes) wired by **connections**,
-with declared **outputs** (CONTEXT.md; ADR-0003). Operator / Instrument / Rig are *scales* of the
-same graph, not different file types — this skill authors all three. It grounds itself on the
-**live operator set** (`reuben describe`) and proves its work on the **real engine load path**
-(`reuben validate`) before finishing (ADR-0020).
+A reuben Instrument is one recursive JSON graph: **Operators** (nodes), each with an **`inputs`**
+map (literals + wire-refs) and an optional **`config`** block, with declared **outputs**
+(CONTEXT.md; ADR-0003, ADR-0028). Operator / Instrument / Rig are *scales* of the same graph, not
+different file types — this skill authors all three. It grounds itself on the **live operator set**
+(`reuben describe`) and proves its work on the **real engine load path** (`reuben validate`) before
+finishing (ADR-0020).
 
 It does **not** author new Operators (that is Rust — the `create-operator` skill, ADR-0021), write
 `control` blocks (that is the `control-surface` skill, ADR-0018), or edit the schema/core.
@@ -18,31 +19,42 @@ It does **not** author new Operators (that is Rust — the `create-operator` ski
 
 Run all `reuben` commands from the repo root.
 
-1. **Introspect the operators you need.** Never guess ports/params — ask the binary:
+1. **Introspect the operators you need.** Never guess ports/inputs — ask the binary:
    - `cargo run -q -p reuben-native --bin reuben -- describe --json` — every operator.
    - `cargo run -q -p reuben-native --bin reuben -- describe <op> --json` — one operator's
-     ports (`name`+`kind`), params (`min`/`max`/`default`/`unit`/`curve`), resource slots.
+     ports (`name`+`kind`, where `kind` is the shape word: `signal`=Float, `enum`, `message`=Note,
+     `context`=Harmony), settable inputs (`min`/`max`/`default`/`unit`/`curve`), enum inputs
+     (`variants`+`default`), resource slots.
    The schema at `crates/reuben-core/schema/instrument.schema.json` is the same data as a
    document shape; `describe` is the per-operator view.
 
 2. **Draft the graph.** Start from a **canonical recipe** (below) or an existing
-   `instruments/*.json` (e.g. `good-button.json`) rather than a blank file. Honour the rules the
-   loader enforces (so step 3 passes first try):
+   `instruments/*.json` (e.g. `good-button.json`) rather than a blank file. The format (ADR-0028):
+   each node carries an **`inputs`** map and an optional **`config`** block — there is **no
+   top-level `connections` array** and **no per-node `params` map**. Honour the rules the loader
+   enforces (so step 3 passes first try):
    - **Every node** has a unique `address` and a registered `type`.
-   - **Connections join same-kind ports**: Signal↔Signal, Message↔Message, Context↔Context. A
-     Signal→Message wire is a hard error. (Check `kind` from `describe`.)
-   - **Signal inputs can't be driven by a Message directly** — convert through a `map`→`m2s`
-     front-end (a Good Button), exactly as `good-button.json` feeds the filter's cutoff.
-   - `params` override descriptor defaults by name; values out of `[min,max]` are silently
-     clamped, so stay in range.
+   - **An `inputs` value is a literal or a wire-ref.** A literal sets a `Float` default
+     (`"cutoff": 1500`) or an `Enum` by symbol (`"mode": "Hp"`). A wire-ref connects an upstream
+     output: `"audio": { "from": "/osc.audio" }`, or the sole-output sugar `{ "from": "/osc" }`
+     when the source has exactly one output. `"cutoff": 1500` and `"cutoff": {"from":"/lfo"}` target
+     the same slot.
+   - **A wire must join matching shapes.** Float→Float, Note→Note, Harmony→Harmony. A Float wired
+     into a Note input (or a symbol into an audio input) is a `ShapeMismatch` error. There is **no
+     Message-vs-Signal carrier** anymore: a `Float` input takes a literal, a wire, OR live OSC
+     directly — you do **not** need a `map`→`m2s` front-end just to drive a filter's `cutoff`.
+   - **`Constant`s go in `config`, not `inputs`.** Today that's the Voicer's `voices`
+     (`"config": { "voices": 8 }`). Putting it in `inputs` is a `ConstantInInputs` error.
+   - Out-of-range `Float` literals are clamped; an unknown `Enum` symbol or out-of-range index is
+     an error (it never snaps to a default).
    - A node needing a sample names a `sample` id present in the top-level `resources` table.
 
 3. **Validate — loop until `ok`.**
    `cargo run -q -p reuben-native --bin reuben -- validate <path> --json`
    Returns `{ok, errors:[{node?,port?,message}], warnings:[...]}`. Fix each error (it names the
-   offending node/port) and re-run until `ok:true`. This runs the real `load_instrument` +
-   `Plan::instantiate`, so it catches unknown type/port/param, duplicate address, kind
-   mismatches, **and cycles** — without playing audio.
+   offending node/input) and re-run until `ok:true`. This runs the real `load_instrument` +
+   `Plan::instantiate`, so it catches unknown type/input, duplicate address, shape mismatches,
+   constants-in-inputs, **and cycles** — without playing audio.
 
 4. **Sanity-check that it's audible.** `validate` proves the graph is *legal*, **not that it
    makes sound** — a disconnected oscillator or a missing `output` validates clean and is silent.
@@ -59,10 +71,14 @@ voicer ─freq→ oscillator ─audio→ filter ─audio→ envelope ─audio→
 voicer ─gate───────────────────────────────────→ envelope(gate)
 ```
 
-- `voicer` turns `/voicer/note [midi, gate]` into per-Voice `freq` (Signal) + `gate` (Signal).
-- `filter` `cutoff`/`resonance` are **Signal** inputs — leave them at descriptor defaults, or
-  drive them from a **Good Button**: `map`(public, message in) → `map`(ranged) → `m2s`(smooth to
-  Signal) → filter input. See `good-button.json` for the worked fan-out.
+- `voicer` turns `/voicer/note [midi, gate]` into per-Voice `freq` + `gate` (`Float` outputs);
+  wire them into the chain via `"freq": {"from":"/voicer.freq"}` etc.
+- `filter` `cutoff`/`resonance` are `Float` inputs — leave them at their literal defaults
+  (`"cutoff": 1200`), wire a modulator (`"cutoff": {"from":"/lfo.audio"}`), or drive them live over
+  OSC (`/filter/cutoff 1500`). `mode` is an `Enum` (`"mode": "Hp"`). A **Good Button** is still a
+  nicety for a curated player control — `map`(public) → `map`(ranged) → filter input, optionally
+  with an `m2s`/`slew` shaper for zipper-free smoothing — but it is no longer *required* to reach a
+  `Float` input. See `good-button.json` for the worked fan-out.
 - Play it: `reuben play <file>` then send `/voicer/note [60, 1]` (note-on) / `[60, 0]` (off).
 
 **Self-playing** (no external notes): add a `clock` + `sequencer` feeding the voicer, as in
@@ -80,7 +96,7 @@ cycle, advisory warning) and describe (list-all, one-op fields, unknown-op error
 
 | Thing | Action |
 |---|---|
-| Instrument/Rig graph — nodes, params, connections, outputs, resources | **author / edit** (validate before done) |
+| Instrument/Rig graph — nodes, `inputs` (literals + wire-refs), `config`, outputs, resources | **author / edit** (validate before done) |
 | `control` blocks (player-facing UI metadata) | **never** — that is the `control-surface` skill |
 | New Operator types (Rust) | **never** — that is the `create-operator` skill (ADR-0021) |
 | `instrument.schema.json` / core crates | **never edit** — read the schema for grounding only |

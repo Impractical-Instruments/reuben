@@ -1,5 +1,11 @@
 # Latched context read: a struct-valued latch service over the Message wire
 
+> **Amended by [ADR-0028](0028-one-input-shape.md).** "Context" becomes the **`Harmony`** shape.
+> The latch + `Copy` resolver struct survive unchanged; the dedicated context arena/accessor folds
+> into shape delivery (a held-struct discipline). Read it with `io.harmony(IN)`, publish with
+> `io.publish_harmony(OUT, frame, h)` — the `io.context`/`io.publish_context` names persist as
+> aliases until the struct itself is renamed.
+
 ## Context
 
 [ADR-0013](0013-tonal-context-bus-mechanics.md) decided tonal context is an Operator

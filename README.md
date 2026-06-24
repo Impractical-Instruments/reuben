@@ -80,7 +80,7 @@ cargo run -p reuben-native --bin reuben -- play instruments/<name>.json
 | `djfilter-demo` | **yes**         | Self-playing saw arpeggio through a DJ-mixer filter knob. One bipolar control: `/filter_knob [-1..1]` — 0 = open, CCW sweeps a low-pass down, CW sweeps a high-pass up (zipper-free via an `m2s` smoother). `/clock/tempo`, `/djfilter/resonance`. |
 
 `metronome`, `vibrato`, `sequence`, `scale-demo`, `sampler-arp`, and `djfilter-demo` make sound
-immediately — good for a first run with no OSC sender. Every node's params are live over OSC at
+immediately — good for a first run with no OSC sender. Every node's inputs are live over OSC at
 its address (e.g. `/delay/time`).
 
 See **[docs/v1.2-playable-surface-testing.md](docs/v1.2-playable-surface-testing.md)** for a
@@ -122,7 +122,7 @@ A typical first session, by hand or by skill:
    cargo run -p reuben-native --bin reuben -- describe filter   # one operator's ports/params
    ```
    This is the same introspection the `patcher` skill reads ([ADR-0020](docs/adr/0020-introspection-and-patcher-skill.md)).
-2. **Patch.** Copy an instrument in `instruments/`, rewire nodes/connections, or ask the
+2. **Patch.** Copy an instrument in `instruments/`, rewire node `inputs` (a literal or a wire-ref `{"from":"/node.port"}`), or ask the
    `patcher` skill for a sound. Documents are validated against a JSON Schema generated from
    the operators (`crates/reuben-core/schema/instrument.schema.json`).
 3. **Validate before you play** — load + plan with no audio, surfacing errors/warnings:

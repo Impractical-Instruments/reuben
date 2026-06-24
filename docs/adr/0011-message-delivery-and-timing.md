@@ -1,5 +1,11 @@
 # Message delivery and sample-accurate timing
 
+> **Amended by [ADR-0028](0028-one-input-shape.md).** Block-slicing now serves only the
+> scalar/event shapes (`Enum`, `Harmony`, `Note`), whose reads need a sub-block boundary. A
+> `Float` param/control update is no longer applied by slicing — it is **materialized into the
+> input buffer at its frame** (sample-accurate, one `process()` call). The hybrid split below
+> (param/control vs event) survives, reframed in terms of shape.
+
 ## Context
 
 Messages carry sample-accurate timetags (ADR-0001, ADR-0006). During Render, an operator processes a block; a Message may land mid-block (e.g. a note-on at sample 37 of 128). We must honor that timing without forcing single-Lane operators (ADR-0010) to juggle sample offsets, which would destroy their authoring simplicity and AI-authorability.
