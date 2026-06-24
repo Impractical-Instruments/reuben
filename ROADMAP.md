@@ -31,7 +31,7 @@ The actual product. The MVP proved the engine spine; v1 is **the path to a delig
 
 Each phase lists the open-design threads it forces (see [OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)) — those get a grilling session before the phase starts.
 
-**Status:** V1.0–V1.4 and V1.6 all ✅ shipped. **V1.5 (reach & robustness) is the sole remaining v1 phase** — the Toys, the playable surface, and the agent skills are done; what's left is platform reach (Windows build), external I/O (OSC-out, MIDI, clock sync), live hot-swap, and the parallel executor when perf demands it.
+**Status:** V1.0–V1.4 and V1.6 all ✅ shipped. **V1.5 (the finish line) is the sole remaining v1 phase** — grilled and rescoped to three items ([ADR-0026](docs/adr/0026-v1-finish-line-osc-out-and-stereo.md)): **OSC-out**, **stereo output + a `pan` op**, and the **Windows build + a release workflow**. The other former-V1.5 items (live hot-swap, MIDI, clock sync, full n-channel, the parallel executor) moved to [Later](#later-post-v1) by explicit decision. reuben is an engine *always driven by something else*, so a dedicated UI is out of scope for the project entirely.
 
 ### V1.0 — Engine hardening (only what the rest of v1 leans on) — ✅ DONE
 
@@ -76,15 +76,15 @@ The surface a human actually touches, driven over OSC first — proving the cont
 - ✅ **Hands-on proof** — `instruments/good-button.json` and `instruments/djfilter-demo.json` ship annotated, with generated surfaces in `control-surfaces/`; human TouchOSC walkthrough in [docs/v1.4-control-surface-testing.md](docs/v1.4-control-surface-testing.md).
 - *Deferred → [Later](#later-post-v1):* the reactive **auto-UI / native-or-web app** (an app that builds a playable surface live from an instrument, plus two-way OSC feedback). This disposable generator de-risks it by getting us playing first (ADR-0018).
 
-### V1.5 — Reach & robustness (parallelizable; ship)
+### V1.5 — The finish line (ship)
 
-- **Lock-free live graph hot-swap + per-operator state preservation** — edit an Instrument without dropping audio (live authoring). Swap-from-empty already works; this is the in-place case.
-- **External OSC I/O (out)** — the lingua franca crossing the process boundary outward.
-- **MIDI I/O** — drive external gear/synths (boundary adapter; core stays OSC-only, ADR-0007).
-- **Ableton Link / MIDI clock / OSC tempo sync** — feed the Clock (boundary adapters).
-- **n-channel input and output**, with easy defaults.
-- **Parallel executor** (lock-free worker pool) behind the existing trait — built when the serial executor stops keeping up, not before. *Measurement gate already in place:* two-layer benchmarks (`benches/`, criterion + iai) + a deterministic CI compare-against-base ([ADR-0019](docs/adr/0019-performance-benchmarking.md)), so "stops keeping up" is observed, not guessed.
-- **Linux (lead) + Windows builds.**
+*Grilled → [ADR-0026](docs/adr/0026-v1-finish-line-osc-out-and-stereo.md). The old "Reach & robustness" bucket conflated "things the engine could grow" with "things v1 must ship." The cut: v1's stated definition (Linux+Windows, Toys, good-button UX) is met except platform reach, so v1 = **three items**. Two framings drove it: reuben is an **engine always driven by something else** (so a dedicated UI is out of scope for the project, not just deferred — it belongs to a consuming app), and the only in-scope integration model is **out-of-process** (OSC) plus **in-process Rust** (already works via the cargo workspace — a non-issue, settled when the first consuming app is built). Build order: stereo first (the riskier core-contract edit), then OSC-out, then Windows + release.*
+
+- **Stereo output + `pan` op** — mono-only output is indefensible for a modern audio engine. The Signal stays **mono (one channel per edge)**; "stereo" is two edges on an **N-wide logical master bus**: a tap gains an optional **`channel: <int>`** index (omitted → broadcast to all channels, so existing instruments are bit-identical), `render_block` fills N buffers, and **audio.rs owns the logical→device map** (the one home for non-stereo-device policy). New `pan` op (1 Signal in → out 0/1, equal-power; pan amount as a Signal input per the one-port-one-type rule). Full n-channel and a multi-channel Signal stay deferred — stereo-as-two-edges sidesteps them.
+- **External OSC I/O (out)** — the lingua franca crossing the process boundary outward, as a **boundary sink operator** (`osc-out`): core collects its input Messages on an outbound route (mirroring the context lane), native gains `osc::encode` + a UDP sender to a **static `--osc-out host:port` target**. **Message-domain only** — sending live Signal values out needs the deferred Signal→Message sampler. Unblocks two-way Good Button feedback (and, post-v1, the reactive UI).
+- **Linux + Windows builds + a release workflow** — the stated reach promise, packaged. CI matrix `{ubuntu, windows}` builds + runs the non-audio tests; **Windows audio is verified by a manual smoke pass on real hardware** (CI can't see WASAPI device init). A **`v*`-tagged release workflow** builds `--release` on both platforms and attaches a bare binary in a versioned archive (zip/Win, tar.gz/Linux) — **no installer** (reuben is a headless CLI; the crate is the primary product, the binary a convenience). Build-from-source stays the documented primary path.
+
+*Deferred → [Later](#later-post-v1) (each by explicit decision, not drift): live hot-swap, MIDI I/O, clock sync (Link/MIDI/OSC), **full** n-channel I/O, the parallel executor (still perf-gated, [ADR-0019](docs/adr/0019-performance-benchmarking.md)), the in-process non-Rust / C ABI boundary, and the dedicated UI (out of project entirely).*
 
 ### V1.6 — Agent skills
 
@@ -93,7 +93,17 @@ The surface a human actually touches, driven over OSC first — proving the cont
 
 ## Later (post-v1)
 
-- **Reactive auto-UI / native-or-web UX layer** — an app that builds a playable surface *live* from an instrument (the generalization of V1.4's disposable `control-surface` generator, and ADR-0018's named "auto-UI system"), plus two-way OSC feedback so the surface reflects current values (needs an engine OSC *sender* — reuben is OSC-in only today). V1.4's TouchOSC generator de-risks this; it is deliberately not part of v1.
+**Former-V1.5 engine work** — moved here by explicit decision ([ADR-0026](docs/adr/0026-v1-finish-line-osc-out-and-stereo.md)), not drift:
+
+- **Lock-free live graph hot-swap + per-operator state preservation** — edit an Instrument without dropping audio (live authoring). Swap-from-empty already works; this is the in-place case.
+- **MIDI I/O** — drive external gear/synths (boundary adapter; core stays OSC-only, ADR-0007).
+- **Ableton Link / MIDI clock / OSC tempo sync** — feed the Clock (boundary adapters).
+- **Full n-channel input and output**, with easy defaults — the general case beyond V1.5's stereo (which keeps the Signal mono and does channels as separate edges; full n-channel is a multi-channel Signal touching every operator).
+- **Parallel executor** (lock-free worker pool) behind the existing trait — built when the serial executor stops keeping up, not before. *Measurement gate already in place:* two-layer benchmarks (`benches/`, criterion + iai) + a deterministic CI compare-against-base ([ADR-0019](docs/adr/0019-performance-benchmarking.md)), so "stops keeping up" is observed, not guessed.
+
+**Other:**
+
+- **Reactive auto-UI / native-or-web UX layer** — an app that builds a playable surface *live* from an instrument, plus two-way OSC feedback. **Belongs to a consuming application, not reuben itself** (ADR-0026): reuben is an engine *always driven by something else*, so a dedicated UI is out of scope for the project entirely — this lives in its own repo, on top of reuben's OSC contract (V1.5's OSC-out sender unblocks the two-way feedback). V1.4's TouchOSC generator already gives players a real surface.
 - CLAP plugin hosting (in scope, designed-for but not built for MVP)
 - C ABI boundary for embedding (cbindgen)
 - Embedded executor backends (game-engine job systems)
