@@ -227,9 +227,23 @@ Message targets at most one node ([ADR-0005](../adr/0005-osc-namespace-and-wildc
 - **Determinism** — output is bit-identical regardless of executor or thread interleaving
   ([ADR-0001](../adr/0001-unified-block-graph-execution.md)). No wall-clock, no RNG without
   a seeded, plan-owned source.
-- **RT-safe Render** — `render_block` is allocation-free after warmup, asserted by
-  `crates/reuben-core/tests/rt_safe.rs`. `process` must not allocate, lock, or block. All
-  scratch is preallocated and reused; routed events are zero-copy.
+- <a id="rt-safe-render"></a>**RT-safe Render** — `render_block` is allocation-free after
+  warmup, asserted by `crates/reuben-core/tests/rt_safe.rs`. Code that runs on the audio
+  render thread(s) — the **hot** path — must not allocate, lock, or block, and must not
+  panic. All scratch is preallocated and reused; routed events are zero-copy.
+  - **The hot/cold boundary** is the audio render thread, not a file or type. **Hot** = any
+    code reachable from a `fn process` body (plus the per-block render path —
+    `render_block`/`render_into`/`process_node` — and the message drain/route that runs on
+    the audio thread). **Cold** = everything else: `descriptor()`/`operator_contract!`,
+    `new`/`Default`/`spawn`/`bind_resources`, `RenderContext` preallocation, and the whole
+    Coordinator region (Instantiate, Swap-construction, (de)serialization, reclaim) plus the
+    patcher/schema/CLI. The line cuts *through* a single file — `spawn` allocates by design
+    inches from an alloc-free `process`. Judge each by which thread runs it.
+  - **Hot-path totality** — stay panic-free with the codebase's own idioms (`map_or`,
+    `unwrap_or`, `.clamp()`); a panic in the audio callback unwinds across the cpal FFI
+    boundary. `debug_assert!` is fine (it vanishes in release); plain in-bounds indexing
+    (`buf[i]` for `i < n`) is fine. `unsafe` on the hot path is a last resort that requires
+    a committed benchmark ([ADR-0019](../adr/0019-performance-benchmarking.md)) proving it.
 - **OSC-only core** — the core speaks only OSC-shaped Messages. MIDI, Ableton Link, tempo
   sync, etc. are removable boundary adapters that convert to/from OSC in the native layer
   ([ADR-0007](../adr/0007-osc-only-core.md)).

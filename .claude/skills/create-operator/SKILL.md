@@ -39,7 +39,10 @@ Run all `reuben`/`cargo` commands from the repo root.
    output), then write the DSP to pass. **Copy the structure of
    [`lfo.rs`](../../crates/reuben-core/src/operators/lfo.rs)** — a clean stateful operator with a
    `run` harness and continuity/spawn tests. Honour the **realtime authoring contract**:
-   - `process` **must not allocate** — it runs on the audio thread.
+   - `process` runs on the **hot** path — it must not allocate, lock, block, or panic. The
+     canonical hot/cold boundary + RT rules live in
+     [authoring.md#rt-safe-render](../../docs/agents/authoring.md#rt-safe-render) (single
+     source); the operator-specific contract follows.
    - **Single-Lane**: write one mono stream; ignore `io.lane()` unless you're an *expander*
      (`LaneRule::FromParam`, the Voicer pattern).
    - **Params are constant for the call** — the engine block-slices at Message boundaries
