@@ -81,21 +81,21 @@ operator lfo
   lanes inherit
 operator m2s
   in[0] message in
+  in[1] enum mode variants=["Snap", "Slew", "Smooth", "Glide"] default=2
+  in[2] float rate min=0.0 max=1000000.0 default=1000.0 unit="/s" curve=exponential
+  in[3] float time min=0.0 max=10.0 default=0.05 unit="s" curve=exponential
+  in[4] float default min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   out[0] signal out
-  param[0] mode min=0.0 max=3.0 default=2.0 unit="" curve=linear
-  param[1] rate min=0.0 max=1000000.0 default=1000.0 unit="/s" curve=exponential
-  param[2] time min=0.0 max=10.0 default=0.05 unit="s" curve=exponential
-  param[3] default min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   lanes inherit
 operator map
   in[0] message in
+  in[1] float in_min min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[2] float in_max min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
+  in[3] float out_min min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[4] float out_max min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
+  in[5] enum curve variants=["Linear", "Exponential"] default=0
+  in[6] float default min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   out[0] message out
-  param[0] in_min min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
-  param[1] in_max min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
-  param[2] out_min min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
-  param[3] out_max min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
-  param[4] curve min=0.0 max=1.0 default=0.0 unit="" curve=linear
-  param[5] default min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   lanes inherit
 operator mul
   in[0] signal a

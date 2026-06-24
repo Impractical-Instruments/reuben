@@ -586,11 +586,24 @@
                     "type": "number"
                   },
                   "mode": {
-                    "default": 2.0,
-                    "description": "unit: , curve: Linear",
-                    "maximum": 3.0,
-                    "minimum": 0.0,
-                    "type": "number"
+                    "default": 2,
+                    "description": "one of [\"Snap\", \"Slew\", \"Smooth\", \"Glide\"] (or its index)",
+                    "oneOf": [
+                      {
+                        "enum": [
+                          "Snap",
+                          "Slew",
+                          "Smooth",
+                          "Glide"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "maximum": 3,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    ]
                   },
                   "rate": {
                     "default": 1000.0,
@@ -629,11 +642,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "curve": {
-                    "default": 0.0,
-                    "description": "unit: , curve: Linear",
-                    "maximum": 1.0,
-                    "minimum": 0.0,
-                    "type": "number"
+                    "default": 0,
+                    "description": "one of [\"Linear\", \"Exponential\"] (or its index)",
+                    "oneOf": [
+                      {
+                        "enum": [
+                          "Linear",
+                          "Exponential"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "maximum": 1,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    ]
                   },
                   "default": {
                     "default": 0.0,
