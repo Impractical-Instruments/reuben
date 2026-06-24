@@ -25,47 +25,69 @@ const CHORD: [f32; 4] = [60.0, 64.0, 67.0, 72.0];
 /// Note-off at 0.5 s — exercises gate-on, sustain, *and* the release tail.
 const NOTE_OFF_SAMPLE: usize = SAMPLE_RATE as usize / 2;
 
-/// The benched instruments, each a real shipped JSON. Curated to span the heavy
-/// operator families with no redundancy: reverb, delay, the modulation stack, and
-/// the sampler/sequencer (non-oscillator) path (ADR-0019).
-const FIXTURES: &[(&str, &str)] = &[
-    (
-        "reverb",
-        include_str!("../../../../instruments/reverb.json"),
-    ),
-    ("echo", include_str!("../../../../instruments/echo.json")),
-    (
-        "auto-filter",
-        include_str!("../../../../instruments/auto-filter.json"),
-    ),
-    (
-        "sampler-arp",
-        include_str!("../../../../instruments/sampler-arp.json"),
-    ),
+/// A benched instrument: its name, its shipped JSON, and the OSC address external note-on/off
+/// Messages enter on. The address differs per graph — most take notes straight at the Voicer
+/// (`/voicer/note`), but the tonal `autotune` graph feeds its quantizer first (`/snap/note`),
+/// which resolves and forwards degrees to the Voicer.
+struct Fixture {
+    name: &'static str,
+    json: &'static str,
+    note_addr: &'static str,
+}
+
+/// The benched instruments, each a real shipped JSON. Curated to span the heavy operator families
+/// with no redundancy: reverb (comb/allpass banks), echo (delay feedback), auto-filter (the
+/// lfo + m2s + math modulation stack), sampler-arp (sample + clock + sequencer, the non-oscillator
+/// path), and autotune — the tonal-context path (context → snap → voicer), which exercises the
+/// `hz`/`snap`/`chord_tone` resolver and context-driven block-slicing nothing else here touches
+/// (#30, ADR-0013/0019).
+const FIXTURES: &[Fixture] = &[
+    Fixture {
+        name: "reverb",
+        json: include_str!("../../../../instruments/reverb.json"),
+        note_addr: "/voicer/note",
+    },
+    Fixture {
+        name: "echo",
+        json: include_str!("../../../../instruments/echo.json"),
+        note_addr: "/voicer/note",
+    },
+    Fixture {
+        name: "auto-filter",
+        json: include_str!("../../../../instruments/auto-filter.json"),
+        note_addr: "/voicer/note",
+    },
+    Fixture {
+        name: "sampler-arp",
+        json: include_str!("../../../../instruments/sampler-arp.json"),
+        note_addr: "/voicer/note",
+    },
+    Fixture {
+        name: "autotune",
+        json: include_str!("../../../../instruments/autotune.json"),
+        note_addr: "/snap/note",
+    },
 ];
 
 /// Names of the benched fixtures, for harnesses that iterate (criterion).
-pub const FIXTURE_NAMES: &[&str] = &["reverb", "echo", "auto-filter", "sampler-arp"];
+pub const FIXTURE_NAMES: &[&str] = &["reverb", "echo", "auto-filter", "sampler-arp", "autotune"];
 
-fn fixture_json(name: &str) -> &'static str {
+fn fixture(name: &str) -> &'static Fixture {
     FIXTURES
         .iter()
-        .find(|(n, _)| *n == name)
+        .find(|f| f.name == name)
         .unwrap_or_else(|| panic!("unknown bench fixture {name:?}"))
-        .1
 }
 
 /// The fixed messages for block `b`, with frames *relative to the block start*
 /// (the contract `render_block` expects). Note-on at frame 0; note-off at 0.5 s.
-fn block_messages(b: usize) -> Vec<Message> {
+/// `note_addr` is the fixture's note entry point (e.g. `/voicer/note`, or `/snap/note` for the
+/// tonal graph), so the same chord schedule drives every graph at its own front door.
+fn block_messages(b: usize, note_addr: &str) -> Vec<Message> {
     let mut msgs = Vec::new();
     if b == 0 {
         for &m in &CHORD {
-            msgs.push(Message::new(
-                "/voicer/note",
-                [Arg::Float(m), Arg::Float(1.0)],
-                0,
-            ));
+            msgs.push(Message::new(note_addr, [Arg::Float(m), Arg::Float(1.0)], 0));
         }
     }
     let off_block = NOTE_OFF_SAMPLE / BLOCK_SIZE;
@@ -73,7 +95,7 @@ fn block_messages(b: usize) -> Vec<Message> {
     if b == off_block {
         for &m in &CHORD {
             msgs.push(Message::new(
-                "/voicer/note",
+                note_addr,
                 [Arg::Float(m), Arg::Float(0.0)],
                 off_frame,
             ));
@@ -95,11 +117,14 @@ pub struct BenchState {
 /// Load `name`, instantiate its plan, prime the renderer, and precompute the
 /// message schedule. Setup only — never call this inside a measured region.
 pub fn build_state(name: &str) -> BenchState {
-    let graph = load(fixture_json(name), &Registry::builtin()).expect("fixture loads");
+    let fx = fixture(name);
+    let graph = load(fx.json, &Registry::builtin()).expect("fixture loads");
     let plan = Plan::instantiate(graph, AudioConfig::new(SAMPLE_RATE, BLOCK_SIZE))
         .expect("fixture instantiates");
     let renderer = Renderer::new(&plan);
-    let schedule = (0..BLOCKS).map(block_messages).collect();
+    let schedule = (0..BLOCKS)
+        .map(|b| block_messages(b, fx.note_addr))
+        .collect();
     BenchState {
         plan,
         renderer,

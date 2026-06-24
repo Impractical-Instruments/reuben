@@ -17,6 +17,7 @@ use std::hint::black_box;
 #[bench::echo(args = ("echo",), setup = build_state)]
 #[bench::auto_filter(args = ("auto-filter",), setup = build_state)]
 #[bench::sampler_arp(args = ("sampler-arp",), setup = build_state)]
+#[bench::autotune(args = ("autotune",), setup = build_state)]
 fn render(state: BenchState) -> f32 {
     black_box(state.render())
 }

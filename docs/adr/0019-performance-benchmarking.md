@@ -85,7 +85,18 @@ CI stays `contents: read`).
 
 ## Deferred
 
-- **Micro per-operator benches** — needs a crate-private access bridge; a follow-up.
+- **Micro per-operator benches** — ✅ landed in #30. The crate-private access bridge is a
+  feature-gated [`bench_support`](../../crates/reuben-core/src/bench_support.rs) module (non-default
+  `bench` feature, so it never leaks into the public API): its `OpHarness` reaches the `pub(crate)`
+  `Io` builders and drives one operator's `process` directly. A single `WORKLOADS` table is the
+  source of truth — `micro_criterion` iterates it, `micro_iai` lists it, and a forcing-function test
+  (run in `check` under `--features bench`) reds CI if it drifts from the operator registry or the
+  iai gate list. Both layers, both the macro and micro sets, now gate (perf-gate.sh runs each
+  independently).
+- **Tonal-context resolver coverage** — ✅ also #30: the `autotune` instrument (context → snap →
+  voicer) joined the macro fixture set, exercising the `hz`/`snap`/`chord_tone` resolver and
+  context-driven block-slicing (ADR-0013) that the original four fixtures never touched. The
+  per-operator layer additionally micro-benches `snap`/`context`/`m2s` directly.
 - **Promoting the 3% warn to a machine-enforced annotation** — currently best-effort from the
   summary JSON; harden once a real CI run confirms the 0.16 schema path.
 - **Marking `bench` a required check** — after a bake-in period.

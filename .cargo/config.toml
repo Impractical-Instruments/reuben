@@ -1,0 +1,7 @@
+# Cargo aliases for this workspace.
+[alias]
+# Run the full benchmark suite — both the macro (render_block) layer and the per-operator micro
+# layer — with the `bench` feature the micro `[[bench]]` targets require (#30, ADR-0019). A bare
+# `cargo bench` still runs the macro layer; the micro targets declare `required-features = ["bench"]`
+# so they're skipped (not errored) without this flag. Use this alias to get everything in one word.
+reuben-core-bench = "bench -p reuben-core --features bench"
