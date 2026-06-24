@@ -1,22 +1,38 @@
 # reuben
 
-## Agent skills
+A configurable musical instrument built from composable **Operators** — small
+single-purpose DSP units patched into playable Instruments and Rigs. OSC is the
+lingua franca, in and out.
 
-### Issue tracker
+**Stack:** Rust workspace (Cargo). Core: `reuben-core`; binary: `reuben-native`.
 
-Issues are tracked in GitHub Issues for `Impractical-Instruments/reuben` via the `gh` CLI. External PRs are not a triage surface. See `docs/agents/issue-tracker.md`.
+## Commands
 
-### Triage labels
+```sh
+cargo test --workspace
+cargo fmt --all --check                                # CI format gate
+cargo clippy --workspace --all-targets -- -D warnings  # CI lint gate
+cargo run -p reuben-core --example gen_schema          # after ANY operator-contract change
+cargo run -p reuben-native --bin reuben -- describe    # list operators/ports/params
+```
 
-Default label vocabulary: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
+One-time setup: `git config core.hooksPath .githooks` (fmt pre-commit, clippy pre-push).
 
-### Domain docs
+## Non-negotiable invariants (every code change)
 
-Single-context: one `CONTEXT.md` + `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+Determinism · RT-safe Render (`process` never allocates/locks/blocks) · OSC-only
+core · single-writer Coordinator. Details + enforcing tests:
+[authoring.md](docs/agents/authoring.md#invariants-you-must-not-break).
 
-### Authoring
+## Language
 
-How to build Operators and Instruments — the code-level contract (Operator trait,
-descriptor, `spawn`), the JSON format, adding an operator, and the determinism/rt-safe
-invariants. The grounding doc the V1.6 operator-authoring and patcher skills lean on. See
-`docs/agents/authoring.md`.
+Use the project's exact terms (Operator, Instrument, Rig, Plan, Swap, Lane, Voice…).
+[CONTEXT.md](CONTEXT.md) is the glossary — don't drift to synonyms it says to avoid.
+
+## Guides
+
+- **[Authoring](docs/agents/authoring.md)** — operator trait, descriptor macro, adding an operator, JSON format.
+- **[Domain docs](docs/agents/domain.md)** — read CONTEXT.md + relevant ADRs before exploring.
+- **[Issue tracker](docs/agents/issue-tracker.md)** — GitHub Issues via `gh`; external PRs are not a triage surface.
+- **[Triage labels](docs/agents/triage-labels.md)** — needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix.
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** · **[Architecture](docs/ARCHITECTURE.md)** · **[Roadmap](ROADMAP.md)** · **[ADRs](docs/adr/)**
