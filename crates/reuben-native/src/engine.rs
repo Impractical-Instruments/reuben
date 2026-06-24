@@ -17,15 +17,19 @@ use reuben_core::message::Message;
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
 
-/// Owns a Plan + Renderer and serves audio one block at a time into arbitrary buffers.
+/// Owns a Plan + Renderer and serves **interleaved logical** audio one block at a time into
+/// arbitrary buffers. "Logical" = the instrument's master channels (ADR-0026); mapping those
+/// onto the real device's channel count is `audio.rs`'s job, not the engine's.
 pub struct Engine {
     plan: Plan,
     renderer: Renderer,
     /// Messages to apply at the start of the next rendered block.
     pending: Vec<Message>,
-    /// One block of rendered, not-yet-consumed mono samples.
-    scratch: Vec<f32>,
-    /// Index of the next unread sample in `scratch`; `>= block_size` means exhausted.
+    /// Logical master channel count, fixed for this Plan.
+    channels: usize,
+    /// One block of rendered, not-yet-consumed samples, planar: `scratch[channel][frame]`.
+    scratch: Vec<Vec<f32>>,
+    /// Index of the next unread frame in `scratch`; `>= block_size` means exhausted.
     pos: usize,
 }
 
@@ -33,12 +37,14 @@ impl Engine {
     /// Build an engine for `plan` (uses the default serial executor).
     pub fn new(plan: Plan) -> Self {
         let block_size = plan.config.block_size;
+        let channels = plan.config.channels;
         let renderer = Renderer::new(&plan);
         Self {
             plan,
             renderer,
             pending: Vec::new(),
-            scratch: vec![0.0; block_size],
+            channels,
+            scratch: vec![vec![0.0; block_size]; channels],
             pos: block_size, // exhausted -> first fill renders immediately
         }
     }
@@ -46,6 +52,11 @@ impl Engine {
     /// The core block size this engine renders in.
     pub fn block_size(&self) -> usize {
         self.plan.config.block_size
+    }
+
+    /// Logical master channel count (ADR-0026). `fill` interleaves this many channels.
+    pub fn channels(&self) -> usize {
+        self.channels
     }
 
     /// Sample rate this engine's Plan was instantiated for.
@@ -58,14 +69,25 @@ impl Engine {
         self.pending.push(msg);
     }
 
-    /// Fill `out` (any length) with mono samples, rendering core blocks as needed.
+    /// Fill `out` with **interleaved logical** samples, rendering core blocks as needed.
+    /// `out.len()` must be a multiple of [`Engine::channels`]; frame `f`, channel `c` lands at
+    /// `out[f * channels + c]`.
     pub fn fill(&mut self, out: &mut [f32]) {
-        for sample in out.iter_mut() {
-            if self.pos >= self.scratch.len() {
+        let ch = self.channels;
+        debug_assert_eq!(
+            out.len() % ch,
+            0,
+            "fill buffer must be a multiple of channels"
+        );
+        let frames = out.len() / ch;
+        for f in 0..frames {
+            if self.pos >= self.block_size() {
                 self.render_next();
                 self.pos = 0;
             }
-            *sample = self.scratch[self.pos];
+            for c in 0..ch {
+                out[f * ch + c] = self.scratch[c][self.pos];
+            }
             self.pos += 1;
         }
     }
@@ -74,7 +96,7 @@ impl Engine {
     fn render_next(&mut self) {
         let msgs = std::mem::take(&mut self.pending);
         self.renderer
-            .render_block(&mut self.plan, &msgs, &mut self.scratch);
+            .render_block_multi(&mut self.plan, &msgs, &mut self.scratch);
     }
 }
 
@@ -104,16 +126,21 @@ mod tests {
     #[test]
     fn default_rig_makes_a_tone() {
         let mut e = engine_with_note();
-        let mut out = vec![0.0f32; 48_000]; // 1 s, not a multiple of block_size
+        // The default rig is mono (broadcast) -> floors to 2 logical channels.
+        assert_eq!(e.channels(), 2);
+        let mut out = vec![0.0f32; 48_000]; // ~0.5 s interleaved stereo, not a block multiple
         e.fill(&mut out);
         assert!(peak(&out) > 0.05, "engine produced near-silence");
     }
 
     #[test]
     fn fill_is_independent_of_chunk_size() {
-        // One big fill must equal many ragged fills, sample-for-sample: the engine's
-        // block boundary is decoupled from the caller's buffer size.
-        let total = 5_000;
+        // One big fill must equal many ragged fills, sample-for-sample: the engine's block
+        // boundary is decoupled from the caller's buffer size. Chunk sizes are in *frames*,
+        // scaled to interleaved samples so each fill lands on a frame boundary.
+        let ch = engine_with_note().channels();
+        let total_frames = 5_000;
+        let total = total_frames * ch;
 
         let mut whole = engine_with_note();
         let mut a = vec![0.0f32; total];
@@ -122,11 +149,11 @@ mod tests {
         let mut chunked = engine_with_note();
         let mut b = vec![0.0f32; total];
         let mut i = 0;
-        for step in [37usize, 256, 1, 500, 129].iter().cycle() {
+        for step_frames in [37usize, 256, 1, 500, 129].iter().cycle() {
             if i >= total {
                 break;
             }
-            let end = (i + step).min(total);
+            let end = (i + step_frames * ch).min(total);
             chunked.fill(&mut b[i..end]);
             i = end;
         }
@@ -140,7 +167,7 @@ mod tests {
     fn queued_messages_are_consumed_once() {
         // After a block renders, the queue is empty (the note isn't re-sent every block).
         let mut e = engine_with_note();
-        let mut out = vec![0.0f32; e.block_size()];
+        let mut out = vec![0.0f32; e.block_size() * e.channels()];
         e.fill(&mut out);
         assert!(e.pending.is_empty(), "pending messages not drained");
     }

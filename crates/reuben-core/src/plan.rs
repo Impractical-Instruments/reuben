@@ -51,6 +51,15 @@ pub struct PlanNode {
     pub ctx_targets: Vec<Vec<usize>>,
 }
 
+/// One master tap: a tapped port's per-Lane arena buffers, summed into the master output.
+pub struct OutputTap {
+    /// Logical master channel this tap feeds (ADR-0026), or `None` to broadcast to every
+    /// channel (the historical mono fan).
+    pub channel: Option<usize>,
+    /// Per-Lane arena buffer indices of the tapped port; all summed.
+    pub buffers: Vec<usize>,
+}
+
 /// The immutable execution image.
 pub struct Plan {
     pub config: AudioConfig,
@@ -60,8 +69,8 @@ pub struct Plan {
     pub num_buffers: usize,
     /// Total number of context-arena slots (one per Context output port; ADR-0015).
     pub num_context_slots: usize,
-    /// Master taps: each is a tapped port's per-Lane buffers, all summed into the output.
-    pub output_taps: Vec<Vec<usize>>,
+    /// Master taps, summed into the per-channel master output (ADR-0026).
+    pub output_taps: Vec<OutputTap>,
 }
 
 /// Why Instantiate failed.
@@ -73,8 +82,19 @@ pub enum PlanError {
 
 impl Plan {
     /// Instantiate a Graph into an executable Plan (the construction sub-step of a Swap).
-    pub fn instantiate(mut graph: Graph, config: AudioConfig) -> Result<Plan, PlanError> {
+    pub fn instantiate(mut graph: Graph, mut config: AudioConfig) -> Result<Plan, PlanError> {
         let order = topo_order(&graph)?;
+
+        // Logical master width is derived from the instrument, not the device (ADR-0026):
+        // the highest referenced channel index + 1, floored to stereo so a mono patch still
+        // presents two channels. A broadcast tap (`None`) imposes no width on its own.
+        config.channels = graph
+            .outputs
+            .iter()
+            .filter_map(|(_, _, ch)| ch.map(|c| c + 1))
+            .max()
+            .unwrap_or(0)
+            .max(AudioConfig::MIN_CHANNELS);
 
         // 1. Lane count per node, in topo order (sources resolved before dependents).
         let mut lanes: SecondaryMap<NodeKey, usize> = SecondaryMap::new();
@@ -117,7 +137,10 @@ impl Plan {
         let output_taps = graph
             .outputs
             .iter()
-            .map(|(k, p)| out_buffers[*k][*p].clone())
+            .map(|(k, p, channel)| OutputTap {
+                channel: *channel,
+                buffers: out_buffers[*k][*p].clone(),
+            })
             .collect();
 
         // Assign a context-arena slot per (node, Context output port). Independent of Lanes

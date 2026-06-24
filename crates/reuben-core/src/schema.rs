@@ -72,7 +72,15 @@ pub fn generate(registry: &Registry) -> Value {
                 "type": "object",
                 "required": ["node", "port"],
                 "additionalProperties": false,
-                "properties": { "node": { "type": "string" }, "port": { "type": "string" } }
+                "properties": {
+                    "node": { "type": "string" },
+                    "port": { "type": "string" },
+                    "channel": {
+                        "type": "integer",
+                        "minimum": 0,
+                        "description": "Logical master channel an `outputs` tap feeds (ADR-0026): 0 = left, 1 = right, etc. Omitted → broadcast to every channel. Ignored on a connection endpoint."
+                    }
+                }
             },
             "connection": {
                 "type": "object",

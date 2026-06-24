@@ -119,6 +119,13 @@ operator output
   in[0] signal audio
   out[0] signal audio
   lanes inherit
+operator pan
+  in[0] signal audio
+  in[1] signal pan
+  out[0] signal left
+  out[1] signal right
+  param[0] pan min=-1.0 max=1.0 default=0.0 unit="" curve=linear
+  lanes inherit
 operator reverb
   in[0] signal audio
   out[0] signal audio

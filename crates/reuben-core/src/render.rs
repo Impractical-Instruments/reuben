@@ -86,6 +86,10 @@ pub struct Renderer<E: Executor = SerialExecutor> {
     bounds: Vec<usize>,
     /// Execution order for the block, refilled by the executor into reused capacity.
     order: Vec<usize>,
+    /// Per-channel master scratch (ADR-0026), one buffer per logical channel, each
+    /// `block_size` long. Used by the mono [`Renderer::render_block`] convenience so it can
+    /// compute the full N-channel master and hand back channel 0; preallocated and reused.
+    master: Vec<Vec<f32>>,
     /// The pluggable executor (ADR-0001). Decides node order each block.
     executor: E,
     block_size: usize,
@@ -131,16 +135,49 @@ impl<E: Executor> Renderer<E> {
             ctx_pending: vec![usize::MAX; plan.num_context_slots],
             bounds,
             order,
+            master: (0..plan.config.channels)
+                .map(|_| vec![0.0; block_size])
+                .collect(),
             executor,
             block_size,
         }
     }
 
-    /// Render one block. `messages` are the inputs for this block (frames in
-    /// `0..block_size`); `out` is the master output buffer (length == block_size).
+    /// Render one block into a mono buffer — the historical convenience, kept for tests,
+    /// examples, and single-channel callers. `out` is `block_size` long and receives **logical
+    /// channel 0** of the master. For a broadcast/mono instrument every channel is identical,
+    /// so this is bit-identical to the pre-stereo output; for a true stereo patch it is the
+    /// left channel only (use [`Renderer::render_block_multi`] for both). Allocation-free.
     pub fn render_block(&mut self, plan: &mut Plan, messages: &[Message], out: &mut [f32]) {
         debug_assert_eq!(out.len(), self.block_size);
+        // Borrow `master` out of `self` so `render_into` can take `&mut self` (the buffers are
+        // preallocated; `take` swaps in an empty Vec, no allocation).
+        let mut master = std::mem::take(&mut self.master);
+        self.render_into(plan, messages, &mut master);
+        if let Some(ch0) = master.first() {
+            out.copy_from_slice(&ch0[..out.len()]);
+        } else {
+            out.iter_mut().for_each(|s| *s = 0.0);
+        }
+        self.master = master;
+    }
 
+    /// Render one block across **N logical master channels** (ADR-0026). `out` has one buffer
+    /// per channel (`out.len() == plan.config.channels`), each `block_size` long. This is the
+    /// stereo/multichannel path the engine drives. Allocation-free in steady state.
+    pub fn render_block_multi(
+        &mut self,
+        plan: &mut Plan,
+        messages: &[Message],
+        out: &mut [Vec<f32>],
+    ) {
+        self.render_into(plan, messages, out);
+    }
+
+    /// The shared render path: execute every node for the block and sum the master taps into
+    /// `master` (one buffer per logical channel). `master.len()` should equal
+    /// `plan.config.channels`; a tap addressing a channel beyond `master` is dropped.
+    fn render_into(&mut self, plan: &mut Plan, messages: &[Message], master: &mut [Vec<f32>]) {
         // Fresh edge buffers each block (upstream writes before downstream reads).
         for buf in &mut self.arena {
             buf.iter_mut().for_each(|s| *s = 0.0);
@@ -232,12 +269,33 @@ impl<E: Executor> Renderer<E> {
             }
         }
 
-        // Sum master taps: every Lane of every tapped port, in fixed order.
-        out.iter_mut().for_each(|s| *s = 0.0);
+        // Sum master taps into the per-channel master (ADR-0026): every Lane of every tapped
+        // port, in fixed order, so output stays deterministic (ADR-0001). A broadcast tap
+        // (`channel: None`) adds to every channel — the historical mono fan, so channel 0 of a
+        // fully-broadcast instrument is bit-identical to the pre-stereo single buffer. A
+        // channel-pinned tap adds to that one channel only.
+        for chan in master.iter_mut() {
+            chan.iter_mut().for_each(|s| *s = 0.0);
+        }
         for tap in &plan.output_taps {
-            for &buf in tap {
-                for (o, s) in out.iter_mut().zip(arena[buf].iter()) {
-                    *o += *s;
+            match tap.channel {
+                None => {
+                    for &buf in &tap.buffers {
+                        for chan in master.iter_mut() {
+                            for (o, s) in chan.iter_mut().zip(arena[buf].iter()) {
+                                *o += *s;
+                            }
+                        }
+                    }
+                }
+                Some(c) => {
+                    if let Some(chan) = master.get_mut(c) {
+                        for &buf in &tap.buffers {
+                            for (o, s) in chan.iter_mut().zip(arena[buf].iter()) {
+                                *o += *s;
+                            }
+                        }
+                    }
                 }
             }
         }

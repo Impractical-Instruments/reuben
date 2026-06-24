@@ -767,6 +767,35 @@
           "if": {
             "properties": {
               "type": {
+                "const": "pan"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "pan": {
+                    "default": 0.0,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 1.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
                 "const": "reverb"
               }
             },
@@ -1167,6 +1196,7 @@
             "noise",
             "oscillator",
             "output",
+            "pan",
             "reverb",
             "sample",
             "sequencer",
@@ -1185,6 +1215,11 @@
     "portRef": {
       "additionalProperties": false,
       "properties": {
+        "channel": {
+          "description": "Logical master channel an `outputs` tap feeds (ADR-0026): 0 = left, 1 = right, etc. Omitted → broadcast to every channel. Ignored on a connection endpoint.",
+          "minimum": 0,
+          "type": "integer"
+        },
         "node": {
           "type": "string"
         },
