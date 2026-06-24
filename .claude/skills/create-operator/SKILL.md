@@ -14,7 +14,9 @@ edit, ADR-0024). This skill authors that end-to-end (ADR-0021).
 First check it doesn't already exist: `reuben describe --json` lists every operator — a request is
 often a *patch* of existing ones (the `patcher` skill), not new Rust. This skill is only for
 behavior no operator provides. It does **not** build graphs (`patcher`), write `control` blocks
-(`control-surface`, ADR-0018), or edit the living docs (`sync-docs`).
+(`control-surface`, ADR-0018), or edit the living docs (`sync-docs`). Its review mirror is
+[`rust-hot-path-review`](../rust-hot-path-review/SKILL.md) — run that over the diff to check the
+`process` you wrote stays RT-safe.
 
 ## The loop: align → scaffold → implement (TDD) → gate → hand off
 
