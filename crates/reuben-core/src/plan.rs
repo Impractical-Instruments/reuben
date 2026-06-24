@@ -40,6 +40,12 @@ pub struct PlanNode {
     /// `input_latches[port]`, writing mid-block changes at their frame. Wired Float inputs are
     /// absent — their dense source passes straight through.
     pub materialize: Vec<(usize, usize)>,
+    /// Per `materialize` entry (same index): `true` once the scratch buffer holds the latch
+    /// uniformly across the block, so a held-unchanged Float input can skip its refill (ADR-0028
+    /// "cached, refilled only on change"). Carried across blocks. Render clears it the moment a
+    /// mid-block change writes a gradient, and re-sets it after the next constant block refloods.
+    /// Starts `false` (the freshly-allocated arena is zero, not the latch) so the first block fills.
+    pub materialize_clean: Vec<bool>,
     /// Latched current scalar per input port (ADR-0028), carried across blocks. Meaningful only
     /// for ports listed in `materialize`; other slots are unused. Seeded from each input's default.
     pub input_latches: Vec<f32>,
@@ -89,6 +95,10 @@ pub struct Plan {
     pub nodes: Vec<PlanNode>,
     /// Total number of edge buffers in the arena.
     pub num_buffers: usize,
+    /// Length `num_buffers`: `true` at each arena slot that is a materialize **scratch** buffer
+    /// (ADR-0028). Render skips these in its per-block "fresh edge buffers" clear, so a held Float
+    /// input's buffer persists and need not be re-written every block (see `materialize_clean`).
+    pub materialize_scratch_mask: Vec<bool>,
     /// Total number of context-arena slots (one per Context output port; ADR-0015).
     pub num_context_slots: usize,
     /// Master taps, summed into the per-channel master output (ADR-0026).
@@ -190,6 +200,9 @@ impl Plan {
 
         // 3. Build PlanNodes in execution order, replicating operators per Lane.
         let mut nodes = Vec::with_capacity(order.len());
+        // Arena slots that are materialize scratch (ADR-0028); Render skips them in its per-block
+        // clear so held Float inputs persist. Collected as buffers are assigned below.
+        let mut scratch_buffers: Vec<usize> = Vec::new();
         for key in &order {
             let n_lanes = lanes[*key];
             let descriptor = &graph.nodes[*key].descriptor;
@@ -247,6 +260,7 @@ impl Plan {
                                 .map(|(_, v)| *v)
                                 .unwrap_or(meta.default);
                             materialize.push((port, buf));
+                            scratch_buffers.push(buf);
                             inputs.push(Some(vec![buf]));
                         }
                         // Legacy signal input, unwired: the operator falls back to its
@@ -314,6 +328,7 @@ impl Plan {
                 ops.push(ops[0].spawn());
             }
 
+            let materialize_clean = vec![false; materialize.len()];
             nodes.push(PlanNode {
                 address: node.address,
                 ops,
@@ -322,6 +337,7 @@ impl Plan {
                 lanes: n_lanes,
                 inputs,
                 materialize,
+                materialize_clean,
                 input_latches,
                 varying,
                 enum_latches,
@@ -333,10 +349,16 @@ impl Plan {
             });
         }
 
+        let mut materialize_scratch_mask = vec![false; next_buffer];
+        for b in scratch_buffers {
+            materialize_scratch_mask[b] = true;
+        }
+
         Ok(Plan {
             config,
             nodes,
             num_buffers: next_buffer,
+            materialize_scratch_mask,
             num_context_slots: next_ctx_slot,
             output_taps,
         })

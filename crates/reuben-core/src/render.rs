@@ -200,8 +200,14 @@ impl<E: Executor> Renderer<E> {
         master: &mut [Vec<f32>],
         outbound: &mut Vec<Message>,
     ) {
-        // Fresh edge buffers each block (upstream writes before downstream reads).
-        for buf in &mut self.arena {
+        // Fresh edge buffers each block (upstream writes before downstream reads). Materialize
+        // scratch buffers are excluded (ADR-0028): they are fully written by the materialize step
+        // and persist a held Float input's value across blocks, so zeroing them would only force a
+        // needless refill. `process_node` keeps each one fully defined (see `materialize_clean`).
+        for (i, buf) in self.arena.iter_mut().enumerate() {
+            if plan.materialize_scratch_mask[i] {
+                continue;
+            }
             buf.iter_mut().for_each(|s| *s = 0.0);
         }
 
@@ -486,36 +492,44 @@ fn process_node(
     // only materialized ports are rewritten here, so legacy / wired ports keep `true` (the same
     // conservative default `Io::varying` reports for an unattached slice).
     //
-    // NOTE: the trailing fill rewrites the whole buffer every block, even when `!changed`. ADR-0028
-    // frames held-unchanged Float inputs as "cached, refilled only on change, steady-state ~nil" —
-    // that is NOT yet realized, because `render_block` blanket-zeroes the entire arena each block
-    // ("fresh edge buffers" invariant), so the held value must be re-written over those zeros
-    // regardless. Realizing the cache means excluding materialize scratch from that clear and
-    // guarding this fill on `changed`; deferred past Phase 0 (no correctness impact, output is
-    // identical either way).
+    // Cached steady state (ADR-0028): a held-unchanged Float input is refilled only when it must
+    // be. Its scratch buffer is excluded from the per-block arena clear, so it persists; a constant
+    // block leaves it untouched (steady-state ~nil work). We refill only on a mid-block change, or
+    // the one block after a change/at startup that must re-flatten the buffer to the latch
+    // (`materialize_clean`). Output is identical to rewriting every block.
     for k in 0..node.materialize.len() {
         let (port, buf) = node.materialize[k];
         let target = &mut arena[buf];
+        let changed = route.floats.iter().any(|&(_, p, _)| p == port);
+        if !changed {
+            // Held constant this block. Re-flatten to the latch only if the buffer is not already
+            // uniformly it (first block, or a prior block left a mid-block gradient); otherwise the
+            // persisted buffer is already correct and we touch nothing.
+            if !node.materialize_clean[k] {
+                target[..block_size].fill(node.input_latches[port]);
+                node.materialize_clean[k] = true;
+            }
+            node.varying[port] = false;
+            continue;
+        }
+        // Changed: fill from the latch, overwriting with each mid-block change from its frame
+        // onward; persist the final value as the next block's latch. The buffer now holds a
+        // gradient, so the next constant block must re-flatten it.
         let mut v = node.input_latches[port];
-        let mut changed = false;
         let mut cursor = 0usize;
         for &(f, p, val) in &route.floats {
             if p != port {
                 continue;
             }
             let f = f.min(block_size);
-            for slot in &mut target[cursor..f] {
-                *slot = v;
-            }
+            target[cursor..f].fill(v);
             cursor = f;
             v = val;
-            changed = true;
         }
-        for slot in &mut target[cursor..block_size] {
-            *slot = v;
-        }
+        target[cursor..block_size].fill(v);
         node.input_latches[port] = v;
-        node.varying[port] = changed;
+        node.varying[port] = true;
+        node.materialize_clean[k] = false;
     }
 
     // Segment boundaries: 0, block_size, every interior param frame, every interior enum-change
