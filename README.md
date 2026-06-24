@@ -21,6 +21,19 @@ franca**, in and out.
   Max/Pd, or any script that can send a UDP OSC message. Some example rigs play on their
   own and need no sender.
 
+## Prebuilt binaries
+
+Building from source (below) is the primary path — trivial with Rust installed. As a
+convenience, each tagged release also ships a prebuilt `reuben` binary for Linux and
+Windows on the [Releases page](https://github.com/Impractical-Instruments/reuben/releases):
+
+- Download the archive for your platform (`…-x86_64-unknown-linux-gnu.tar.gz` /
+  `…-x86_64-pc-windows-msvc.zip`) and extract it. Each archive bundles the `reuben` binary
+  plus `LICENSE` and `README.md`; a matching `.sha256` sidecar lets you verify the download
+  (`sha256sum -c <file>.sha256` on Linux, `Get-FileHash <file>` on Windows).
+- It's a headless CLI — run it from a terminal (no installer): `./reuben play` (Linux) or
+  `reuben.exe play` (Windows). All the subcommands below apply.
+
 ## Quickstart
 
 Run the default synth — opens your default audio device and listens for OSC on UDP

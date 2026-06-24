@@ -1,0 +1,95 @@
+name: Release
+
+# Fires on a `v*` tag (ADR-0026). Both GitHub's Releases GUI and
+# `gh release create vX.Y.Z` create the tag and trigger this. Builds a
+# `--release` `reuben` binary on Linux + Windows and attaches each as a
+# versioned archive (tar.gz / zip) + a SHA256 sidecar to the GitHub Release.
+# No installer: reuben is a headless CLI; the bare binary is the convenience
+# artifact, build-from-source stays the primary path.
+on:
+  push:
+    tags:
+      - "v*"
+
+# Needed to create the Release and upload assets.
+permissions:
+  contents: write
+
+# One release per tag; never let two pushes of the same tag race.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            ext: tar.gz
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            ext: zip
+    env:
+      CARGO_TERM_COLOR: always
+    steps:
+      - uses: actions/checkout@v4
+
+      # ALSA dev headers for cpal (Linux only); Windows links WASAPI.
+      - name: Install ALSA dev headers (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
+
+      # Single source of truth = rust-toolchain.toml (ADR-0023).
+      - name: Setup pinned Rust toolchain
+        uses: ./.github/actions/setup-rust
+
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build release binary
+        run: cargo build --release --bin reuben
+
+      # Stage binary + LICENSE + README, archive, and emit a SHA256 sidecar.
+      # The two package steps differ only by platform tooling (tar+sha256sum vs
+      # Compress-Archive+Get-FileHash); both export ASSET/CHECKSUM for upload.
+      - name: Package (Linux)
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          staging="reuben-${{ github.ref_name }}-${{ matrix.target }}"
+          mkdir "$staging"
+          cp target/release/reuben "$staging"/
+          cp LICENSE README.md "$staging"/
+          tar czf "$staging.${{ matrix.ext }}" "$staging"
+          sha256sum "$staging.${{ matrix.ext }}" > "$staging.${{ matrix.ext }}.sha256"
+          echo "ASSET=$staging.${{ matrix.ext }}" >> "$GITHUB_ENV"
+          echo "CHECKSUM=$staging.${{ matrix.ext }}.sha256" >> "$GITHUB_ENV"
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $staging = "reuben-${{ github.ref_name }}-${{ matrix.target }}"
+          New-Item -ItemType Directory -Path $staging | Out-Null
+          Copy-Item target/release/reuben.exe $staging/
+          Copy-Item LICENSE,README.md $staging/
+          $asset = "$staging.${{ matrix.ext }}"
+          Compress-Archive -Path $staging -DestinationPath $asset
+          $hash = (Get-FileHash $asset -Algorithm SHA256).Hash.ToLower()
+          "$hash  $asset" | Out-File -Encoding ascii "$asset.sha256"
+          "ASSET=$asset" | Out-File -FilePath $env:GITHUB_ENV -Append
+          "CHECKSUM=$asset.sha256" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      # Each matrix job uploads its own assets; the action gets-or-creates the
+      # Release for this tag, so Linux and Windows land on the same Release.
+      - name: Attach to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            ${{ env.ASSET }}
+            ${{ env.CHECKSUM }}
