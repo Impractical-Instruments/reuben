@@ -46,7 +46,7 @@ fn channel_taps_route_to_separate_channels() {
     let mut master = vec![vec![0.0f32; 256], vec![0.0f32; 256]];
     // Warm up a couple blocks so the oscillator is well into its waveform.
     for _ in 0..4 {
-        r.render_block_multi(&mut plan, &[], &mut master);
+        r.render_block_multi(&mut plan, &[], &mut master, &mut Vec::new());
     }
     assert!(
         peak(&master[0]) > 0.1,
@@ -99,7 +99,7 @@ fn broadcast_instrument_is_bit_identical_mono_and_across_channels() {
 
     for _ in 0..3 {
         ra.render_block(&mut plan_a, &[], &mut mono);
-        rb.render_block_multi(&mut plan_b, &[], &mut master);
+        rb.render_block_multi(&mut plan_b, &[], &mut master, &mut Vec::new());
         for i in 0..128 {
             assert_eq!(
                 mono[i].to_bits(),

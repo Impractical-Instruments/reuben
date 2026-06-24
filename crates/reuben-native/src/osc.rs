@@ -14,7 +14,7 @@
 //! not against wall-clock arrival.
 
 use reuben_core::message::{Arg, Message};
-use rosc::{OscPacket, OscType};
+use rosc::{OscMessage, OscPacket, OscType};
 
 /// Decode a single UDP datagram of OSC into zero or more Messages.
 ///
@@ -38,6 +38,29 @@ fn flatten(packet: OscPacket, out: &mut Vec<Message>) {
                 flatten(content, out);
             }
         }
+    }
+}
+
+/// Encode an outbound Message (ADR-0026) into a single OSC/UDP datagram — the trivial inverse
+/// of [`decode`]. The outbound route is Message-domain, so every [`Arg`] maps to an OSC type;
+/// this only errors if the encoder itself rejects the packet. `addr` is the full OSC path (the
+/// `osc_out` node's address); `args` are sent verbatim.
+pub fn encode(addr: &str, args: &[Arg]) -> Result<Vec<u8>, rosc::OscError> {
+    rosc::encoder::encode(&OscPacket::Message(OscMessage {
+        addr: addr.to_string(),
+        args: args.iter().map(arg_to_osc).collect(),
+    }))
+}
+
+/// Map a core [`Arg`] back onto an OSC argument (inverse of [`arg_from_osc`]). Int → OSC `Int`
+/// (i32), the type [`decode`] reads back as [`Arg::Int`]; control-feedback values sit well
+/// inside i32, and i32 is the most widely-understood OSC integer (TouchOSC et al.).
+fn arg_to_osc(a: &Arg) -> OscType {
+    match a {
+        Arg::Float(f) => OscType::Float(*f),
+        Arg::Int(i) => OscType::Int(*i as i32),
+        Arg::Bool(b) => OscType::Bool(*b),
+        Arg::Sym(s) => OscType::String(s.clone()),
     }
 }
 
@@ -113,6 +136,25 @@ mod tests {
         });
         let msgs = decode(&encode(&packet)).expect("decode");
         assert_eq!(msgs[0].args.as_slice(), &[Arg::Float(1.0)]);
+    }
+
+    #[test]
+    fn encode_round_trips_through_decode() {
+        // encode is the inverse of decode for every representable arg (ADR-0026): floats, ints
+        // in i32 range, bools, and symbols all survive the boundary out-and-back.
+        let addr = "/fb/level";
+        let args = [
+            Arg::Float(0.5),
+            Arg::Int(7),
+            Arg::Bool(true),
+            Arg::Sym("hi".into()),
+        ];
+        // `super::encode` — the module's pub fn, not the local `OscPacket` test helper above.
+        let bytes = super::encode(addr, &args).expect("encode");
+        let msgs = decode(&bytes).expect("decode");
+        assert_eq!(msgs.len(), 1);
+        assert_eq!(msgs[0].addr, addr);
+        assert_eq!(msgs[0].args.as_slice(), &args);
     }
 
     #[test]

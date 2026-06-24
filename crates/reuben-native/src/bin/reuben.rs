@@ -25,6 +25,7 @@ use std::thread;
 
 use clap::{Parser, Subcommand};
 
+use reuben_core::message::Message;
 use reuben_core::plan::Plan;
 use reuben_core::{load_instrument, Registry};
 use reuben_native::cli::{describe, validate};
@@ -49,6 +50,10 @@ enum Command {
     Play {
         /// Instrument JSON to play; omit for the built-in default rig.
         path: Option<PathBuf>,
+        /// Send OSC out to this `host:port` (e.g. `127.0.0.1:9001`) — the static target an
+        /// `osc_out` node's Messages are encoded and UDP-sent to (ADR-0026). Omit to disable.
+        #[arg(long, value_name = "HOST:PORT")]
+        osc_out: Option<String>,
     },
     /// Print the operator set, or one operator's ports/params/resources.
     Describe {
@@ -82,8 +87,8 @@ enum Command {
 
 fn main() -> ExitCode {
     match Cli::parse().command {
-        Command::Play { path } => {
-            play(path);
+        Command::Play { path, osc_out } => {
+            play(path, osc_out);
             ExitCode::SUCCESS
         }
         Command::Describe { op, json } => cmd_describe(op.as_deref(), json),
@@ -223,13 +228,40 @@ fn cmd_validate(path: &Path, json: bool) -> ExitCode {
 }
 
 /// `play`: the live audio path — load an instrument and render it, driven by incoming OSC.
-fn play(path: Option<PathBuf>) {
+fn play(path: Option<PathBuf>, osc_out_target: Option<String>) {
     let (tx, rx) = mpsc::channel();
 
-    // Log incoming OSC only when asked: this runs on the receive path, and the stdout
-    // lock would add latency/jitter if it fired on every note while playing. Off by
+    // Log incoming/outgoing OSC only when asked: this runs on the I/O paths, and the stdout
+    // lock would add latency/jitter if it fired on every message while playing. Off by
     // default; flip on to confirm wiring during bring-up.
     let log_osc = std::env::var_os("REUBEN_LOG_OSC").is_some();
+
+    // OSC-out sender thread (ADR-0026): bind a UDP socket to the static `--osc-out host:port`
+    // target and encode + send each outbound Message off the audio thread. `None` when no target
+    // is configured — the engine still drains its outbound route, but audio.rs drops it (warning
+    // once if a rig actually sends). Mirrors the OSC-in receiver thread below.
+    let osc_out_tx = osc_out_target.map(|target| {
+        let socket = UdpSocket::bind("0.0.0.0:0").expect("bind OSC-out socket");
+        socket
+            .connect(&target)
+            .unwrap_or_else(|e| panic!("connect OSC-out {target}: {e}"));
+        println!("OSC-out sending to {target}");
+        let (out_tx, out_rx) = mpsc::channel::<Message>();
+        thread::spawn(move || {
+            for m in out_rx {
+                match osc::encode(&m.addr, &m.args) {
+                    Ok(bytes) => {
+                        if log_osc {
+                            println!("send {} {:?}", m.addr, m.args.as_slice());
+                        }
+                        let _ = socket.send(&bytes);
+                    }
+                    Err(e) => eprintln!("OSC encode error: {e}"),
+                }
+            }
+        });
+        out_tx
+    });
 
     // OSC/UDP receiver thread: decode datagrams and forward Messages to the audio thread.
     let socket = UdpSocket::bind(OSC_BIND).expect("bind OSC socket");
@@ -281,7 +313,7 @@ fn play(path: Option<PathBuf>) {
         }
     };
 
-    let _stream = audio::start(rx, BLOCK_SIZE, |cfg| {
+    let _stream = audio::start(rx, BLOCK_SIZE, osc_out_tx, |cfg| {
         println!(
             "audio out @ {} Hz, block {}",
             cfg.sample_rate, cfg.block_size

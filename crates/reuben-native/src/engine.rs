@@ -25,6 +25,10 @@ pub struct Engine {
     renderer: Renderer,
     /// Messages to apply at the start of the next rendered block.
     pending: Vec<Message>,
+    /// Outbound Messages an `osc_out` sink sent (ADR-0026), accumulated across the block(s) one
+    /// [`Engine::fill`] renders and drained by the caller after fill (native encodes + UDP-sends
+    /// them). Cleared at the top of each `fill`.
+    outbound: Vec<Message>,
     /// Logical master channel count, fixed for this Plan.
     channels: usize,
     /// One block of rendered, not-yet-consumed samples, planar: `scratch[channel][frame]`.
@@ -43,6 +47,7 @@ impl Engine {
             plan,
             renderer,
             pending: Vec::new(),
+            outbound: Vec::new(),
             channels,
             scratch: vec![vec![0.0; block_size]; channels],
             pos: block_size, // exhausted -> first fill renders immediately
@@ -69,6 +74,13 @@ impl Engine {
         self.pending.push(msg);
     }
 
+    /// Drain the outbound Messages produced by the most recent [`Engine::fill`] (ADR-0026), in
+    /// emission order. The caller (native's OSC-out path) encodes and UDP-sends them. Empty unless
+    /// the instrument has an `osc_out` sink that fired; call right after `fill`, before the next.
+    pub fn drain_outbound(&mut self) -> std::vec::Drain<'_, Message> {
+        self.outbound.drain(..)
+    }
+
     /// Fill `out` with **interleaved logical** samples, rendering core blocks as needed.
     /// `out.len()` must be a multiple of [`Engine::channels`]; frame `f`, channel `c` lands at
     /// `out[f * channels + c]`.
@@ -80,6 +92,8 @@ impl Engine {
             "fill buffer must be a multiple of channels"
         );
         let frames = out.len() / ch;
+        // Fresh outbound collection for this fill; the render path appends, the caller drains.
+        self.outbound.clear();
         for f in 0..frames {
             if self.pos >= self.block_size() {
                 self.render_next();
@@ -95,8 +109,12 @@ impl Engine {
     /// Render one block into `scratch`, consuming any queued Messages.
     fn render_next(&mut self) {
         let msgs = std::mem::take(&mut self.pending);
-        self.renderer
-            .render_block_multi(&mut self.plan, &msgs, &mut self.scratch);
+        self.renderer.render_block_multi(
+            &mut self.plan,
+            &msgs,
+            &mut self.scratch,
+            &mut self.outbound,
+        );
     }
 }
 
@@ -161,6 +179,37 @@ mod tests {
         for (k, (x, y)) in a.iter().zip(&b).enumerate() {
             assert_eq!(x.to_bits(), y.to_bits(), "mismatch at sample {k}");
         }
+    }
+
+    /// A rig with a normal audio path (for a master tap) plus an `osc_out` sink at `/fb`.
+    fn osc_out_plan() -> Plan {
+        use reuben_core::graph::Graph;
+        use reuben_core::operators::{OscOut, Oscillator, Output};
+        let mut g = Graph::new();
+        let osc = g.add("/osc", Oscillator::new());
+        let out = g.add("/out", Output::new());
+        g.connect(osc, 0, out, 0);
+        g.tap_output(out, 0);
+        g.add("/fb", OscOut::new());
+        Plan::instantiate(g, AudioConfig::new(48_000.0, 256)).expect("instantiate")
+    }
+
+    #[test]
+    fn outbound_messages_drain_after_fill() {
+        // A value addressed to the sink's node routes in and comes back out on the outbound
+        // route, stamped with the node address (ADR-0026).
+        let mut e = Engine::new(osc_out_plan());
+        e.queue(Message::new("/fb", [Arg::Float(0.7)], 0));
+        let mut out = vec![0.0f32; e.block_size() * e.channels()];
+        e.fill(&mut out);
+
+        let drained: Vec<_> = e.drain_outbound().collect();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].addr, "/fb");
+        assert_eq!(drained[0].args.as_slice(), &[Arg::Float(0.7)]);
+        // Drained once: the next fill (no input) yields nothing.
+        e.fill(&mut out);
+        assert_eq!(e.drain_outbound().count(), 0);
     }
 
     #[test]

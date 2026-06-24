@@ -22,7 +22,7 @@
 use smallvec::SmallVec;
 
 use crate::context::Context;
-use crate::message::{Emit, Event, Message};
+use crate::message::{Emit, Event, Message, Outbound};
 use crate::operator::{CtxPublish, Io};
 use crate::plan::{Plan, PlanNode};
 
@@ -78,6 +78,12 @@ pub struct Renderer<E: Executor = SerialExecutor> {
     context_pool: Vec<Context>,
     /// One node's context publishes for the current node, drained after it runs.
     ctx_publish_scratch: Vec<CtxPublish>,
+    /// One node's outbound-route sends for the current node (ADR-0026), drained into the caller's
+    /// outbound `Vec<Message>` (stamped with the node address) after it runs.
+    outbound_scratch: Vec<Outbound>,
+    /// Throwaway outbound sink for the mono [`Renderer::render_block`] convenience, which has no
+    /// outbound out-parameter. Preallocated and cleared per call so render_block stays alloc-free.
+    outbound_sink: Vec<Message>,
     /// Deferred per-slot baseline update: the `context_pool` index of this block's last
     /// publish to each slot, applied to `context_arena` at block end so pre-change segments
     /// still read the prior value. `usize::MAX` = no publish this block.
@@ -132,6 +138,8 @@ impl<E: Executor> Renderer<E> {
             context_arena: vec![Context::default(); plan.num_context_slots],
             context_pool: Vec::with_capacity(EMIT_POOL_CAP),
             ctx_publish_scratch: Vec::with_capacity(EMIT_POOL_CAP),
+            outbound_scratch: Vec::with_capacity(EMIT_POOL_CAP),
+            outbound_sink: Vec::with_capacity(EMIT_POOL_CAP),
             ctx_pending: vec![usize::MAX; plan.num_context_slots],
             bounds,
             order,
@@ -150,34 +158,48 @@ impl<E: Executor> Renderer<E> {
     /// left channel only (use [`Renderer::render_block_multi`] for both). Allocation-free.
     pub fn render_block(&mut self, plan: &mut Plan, messages: &[Message], out: &mut [f32]) {
         debug_assert_eq!(out.len(), self.block_size);
-        // Borrow `master` out of `self` so `render_into` can take `&mut self` (the buffers are
-        // preallocated; `take` swaps in an empty Vec, no allocation).
+        // Borrow `master`/`outbound_sink` out of `self` so `render_into` can take `&mut self` (both
+        // preallocated; `take` swaps in an empty Vec, no allocation). The mono path discards
+        // outbound (ADR-0026) — it has no out-parameter — so it renders into a throwaway sink.
         let mut master = std::mem::take(&mut self.master);
-        self.render_into(plan, messages, &mut master);
+        let mut outbound = std::mem::take(&mut self.outbound_sink);
+        outbound.clear();
+        self.render_into(plan, messages, &mut master, &mut outbound);
         if let Some(ch0) = master.first() {
             out.copy_from_slice(&ch0[..out.len()]);
         } else {
             out.iter_mut().for_each(|s| *s = 0.0);
         }
         self.master = master;
+        self.outbound_sink = outbound;
     }
 
     /// Render one block across **N logical master channels** (ADR-0026). `out` has one buffer
     /// per channel (`out.len() == plan.config.channels`), each `block_size` long. This is the
-    /// stereo/multichannel path the engine drives. Allocation-free in steady state.
+    /// stereo/multichannel path the engine drives. `outbound` receives any Messages an `osc_out`
+    /// sink sent this block (ADR-0026), each stamped with its node's address; it is **appended to,
+    /// never cleared** — the caller drains it (so an Engine can accumulate across several blocks of
+    /// one callback). Allocation-free in steady state (a String per outbound Message when one flows).
     pub fn render_block_multi(
         &mut self,
         plan: &mut Plan,
         messages: &[Message],
         out: &mut [Vec<f32>],
+        outbound: &mut Vec<Message>,
     ) {
-        self.render_into(plan, messages, out);
+        self.render_into(plan, messages, out, outbound);
     }
 
     /// The shared render path: execute every node for the block and sum the master taps into
     /// `master` (one buffer per logical channel). `master.len()` should equal
     /// `plan.config.channels`; a tap addressing a channel beyond `master` is dropped.
-    fn render_into(&mut self, plan: &mut Plan, messages: &[Message], master: &mut [Vec<f32>]) {
+    fn render_into(
+        &mut self,
+        plan: &mut Plan,
+        messages: &[Message],
+        master: &mut [Vec<f32>],
+        outbound: &mut Vec<Message>,
+    ) {
         // Fresh edge buffers each block (upstream writes before downstream reads).
         for buf in &mut self.arena {
             buf.iter_mut().for_each(|s| *s = 0.0);
@@ -206,6 +228,7 @@ impl<E: Executor> Renderer<E> {
             context_arena,
             context_pool,
             ctx_publish_scratch,
+            outbound_scratch,
             ctx_pending,
             bounds,
             order,
@@ -215,6 +238,7 @@ impl<E: Executor> Renderer<E> {
         for &i in order.iter() {
             emit_scratch.clear();
             ctx_publish_scratch.clear();
+            outbound_scratch.clear();
             process_node(
                 arena,
                 out_scratch,
@@ -227,9 +251,20 @@ impl<E: Executor> Renderer<E> {
                 context_arena,
                 context_pool,
                 ctx_publish_scratch,
+                outbound_scratch,
                 sample_rate,
                 block_size,
             );
+
+            // Drain this node's outbound sends (ADR-0026): stamp each with the node's address (the
+            // outbound OSC address) and push past the boundary, appending to the caller's buffer.
+            for o in outbound_scratch.drain(..) {
+                outbound.push(Message {
+                    addr: plan.nodes[i].address.clone(),
+                    args: o.args,
+                    frame: o.frame,
+                });
+            }
 
             // Route this node's emissions (ADR-0014): each goes into the block-lifetime
             // pool, and a zero-copy event reference is delivered to every downstream target
@@ -403,6 +438,7 @@ fn process_node(
     context_arena: &[Context],
     context_pool: &[Context],
     ctx_publish_scratch: &mut Vec<CtxPublish>,
+    outbound_scratch: &mut Vec<Outbound>,
     sample_rate: f32,
     block_size: usize,
 ) {
@@ -534,6 +570,7 @@ fn process_node(
             let mut io = if lane == 0 {
                 io.with_emit(&mut *emit_scratch, seg_start)
                     .with_context_publish(&mut *ctx_publish_scratch, seg_start)
+                    .with_outbound(&mut *outbound_scratch, seg_start)
             } else {
                 io
             };

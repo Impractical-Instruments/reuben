@@ -13,7 +13,7 @@ use smallvec::SmallVec;
 
 use crate::context::Context;
 use crate::descriptor::Descriptor;
-use crate::message::{Arg, Emit, Event};
+use crate::message::{Arg, Emit, Event, Outbound};
 use crate::resources::{ResolvedRefs, ResourceStore};
 
 /// A tonal-[`Context`] snapshot an operator publishes during `process` onto a Context output
@@ -53,6 +53,10 @@ pub struct Io<'a> {
     /// Sink for Context snapshots this call publishes (ADR-0015), or `None` when this Lane
     /// does not publish. Like `emit`, single-Lane (the context node is pre-fan-out).
     ctx_publish: Option<&'a mut Vec<CtxPublish>>,
+    /// Sink for boundary-bound Messages this call sends out (ADR-0026) — the outbound route, or
+    /// `None` when this Lane does not collect. Like `emit`, single-Lane (the sink is pre-fan-out);
+    /// an `osc_out` op forwards its input events here and the engine drains them past the boundary.
+    outbound: Option<&'a mut Vec<Outbound>>,
     /// Block-absolute frame of this (sub)block's start, added to an emitted/published frame
     /// so the operator can work in segment-relative time.
     frame_offset: usize,
@@ -88,6 +92,7 @@ impl<'a> Io<'a> {
             emit: None,
             contexts: &[],
             ctx_publish: None,
+            outbound: None,
             frame_offset: 0,
         }
     }
@@ -121,6 +126,14 @@ impl<'a> Io<'a> {
         frame_offset: usize,
     ) -> Self {
         self.ctx_publish = Some(buf);
+        self.frame_offset = frame_offset;
+        self
+    }
+
+    /// Attach the outbound-route sink and segment frame offset (Lane 0 only). Messages passed to
+    /// [`Io::send_outbound`] are collected into `buf` with `frame_offset` added (ADR-0026).
+    pub(crate) fn with_outbound(mut self, buf: &'a mut Vec<Outbound>, frame_offset: usize) -> Self {
+        self.outbound = Some(buf);
         self.frame_offset = frame_offset;
         self
     }
@@ -173,6 +186,20 @@ impl<'a> Io<'a> {
             buf.push(Emit {
                 port,
                 addr,
+                args: args.into_iter().collect(),
+                frame,
+            });
+        }
+    }
+
+    /// Send a Message past the boundary on the outbound route (ADR-0026). The engine stamps it
+    /// block-absolute and with this node's address (the outbound OSC address), then drains it to
+    /// native's UDP sender. **Message-domain only**; carries no address (the sink is address-fixed,
+    /// so the wiring is the node). A no-op on Lanes that do not collect (every Lane but 0).
+    pub fn send_outbound(&mut self, args: impl IntoIterator<Item = Arg>, frame: usize) {
+        let frame = self.frame_offset + frame;
+        if let Some(buf) = self.outbound.as_mut() {
+            buf.push(Outbound {
                 args: args.into_iter().collect(),
                 frame,
             });

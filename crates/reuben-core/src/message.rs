@@ -83,6 +83,20 @@ pub struct Emit {
     pub frame: usize,
 }
 
+/// A boundary-bound Message an `osc_out` sink collects during `process` onto the **outbound
+/// route** (ADR-0026) — the fourth lane, modelled on the context lane's publish mechanics
+/// (ADR-0015). The engine stamps it block-absolute and with the node's address (the outbound
+/// OSC address), then drains it past the boundary for native to encode + UDP-send. Carries no
+/// address of its own: the sink is address-fixed, so the node *is* the routing, not this payload.
+#[derive(Debug, Clone)]
+pub struct Outbound {
+    /// Typed arguments to send out.
+    pub args: Args,
+    /// Sample offset within the Render block. Segment-relative when the operator calls
+    /// `send_outbound`; the engine stamps it block-absolute.
+    pub frame: usize,
+}
+
 /// A routed event handed to an event operator for one (sub)block, via
 /// [`crate::operator::Io::events`]. A zero-copy view onto the originating block
 /// [`Message`]: the address *local* to the receiving node, the typed args, and a

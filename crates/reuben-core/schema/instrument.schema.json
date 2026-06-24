@@ -710,6 +710,27 @@
           "if": {
             "properties": {
               "type": {
+                "const": "osc_out"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
                 "const": "oscillator"
               }
             },
@@ -1194,6 +1215,7 @@
             "map",
             "mul",
             "noise",
+            "osc_out",
             "oscillator",
             "output",
             "pan",
