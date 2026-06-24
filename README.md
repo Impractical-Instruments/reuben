@@ -144,15 +144,12 @@ Need behavior no operator provides? That's a new **Operator** in Rust — `scaff
 ## Status
 
 **MVP complete; v1 in progress.** The headless "it makes a sound" spine works end to end.
-See [ROADMAP.md](ROADMAP.md) for what's done and what's next.
 
 ## Going deeper
 
 - **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the design, end to end.
 - **[CONTEXT.md](CONTEXT.md)** — the glossary / ubiquitous language. Read this first if a term is unclear.
-- **[ROADMAP.md](ROADMAP.md)** — what's MVP, v1, later, someday, and never.
 - **[docs/adr/](docs/adr/)** — the architectural decisions and the reasoning behind them.
-- **[docs/OPEN-QUESTIONS.md](docs/OPEN-QUESTIONS.md)** — the design backlog: decisions not yet made.
 - **[docs/agents/authoring.md](docs/agents/authoring.md)** — building Operators and Instruments (for contributors and agents).
 
 ## License

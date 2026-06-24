@@ -1,8 +1,8 @@
 # reuben — Architecture
 
-The design end to end. This narrative ties together the glossary ([CONTEXT.md](../CONTEXT.md)), the decisions ([docs/adr/](adr/)), the plan ([ROADMAP.md](../ROADMAP.md)), and the open design backlog ([OPEN-QUESTIONS.md](OPEN-QUESTIONS.md)). When a term is capitalized (Operator, Plan, Lane…) it's defined in the glossary.
+The design end to end. This narrative ties together the glossary ([CONTEXT.md](../CONTEXT.md)) and the decisions ([docs/adr/](adr/)); the open work and design backlog live in the GitHub issue tracker. When a term is capitalized (Operator, Plan, Lane…) it's defined in the glossary.
 
-> **This describes the target design, not the current build state.** For what actually exists today, see the [README](../README.md) status line and the [ROADMAP](../ROADMAP.md). Where a described mechanism isn't built yet, it's flagged inline.
+> **This describes the target design, not the current build state.** For what actually exists today, see the [README](../README.md) status line. Where a described mechanism isn't built yet, it's flagged inline.
 
 ## What reuben is
 
@@ -95,7 +95,7 @@ The core speaks only OSC-shaped Messages. MIDI, Ableton Link, OSC tempo sync, an
 
 ## MVP and beyond
 
-The MVP is a headless "it makes a sound" spine: the portable-core / native-crate split, Signal + Message, the Plan + Instantiate→Render loop, single-Lane fan-out, determinism, a serial executor behind the real interface, the core Operators (oscillator, envelope, filter, Voicer, output, Clock), OSC-in from TouchOSC/Max, default 12-TET. Get past the prototype graveyard fast, then build the UX. V1.1 has since added music Operators (delay, reverb, LFO, sequencer, sample player), the internal message graph (operators emit Messages), the tonal-context bus (a `context` Operator + degree resolution + a `snap` Operator), and the resource store (decoded sample data as a shared, bank-ready read service). Full tiers — MVP, v1, later, someday, never — are in [ROADMAP.md](../ROADMAP.md). For the code-level operator contract and how to add one, see [docs/agents/authoring.md](agents/authoring.md).
+The MVP is a headless "it makes a sound" spine: the portable-core / native-crate split, Signal + Message, the Plan + Instantiate→Render loop, single-Lane fan-out, determinism, a serial executor behind the real interface, the core Operators (oscillator, envelope, filter, Voicer, output, Clock), OSC-in from TouchOSC/Max, default 12-TET. Get past the prototype graveyard fast, then build the UX. V1.1 has since added music Operators (delay, reverb, LFO, sequencer, sample player), the internal message graph (operators emit Messages), the tonal-context bus (a `context` Operator + degree resolution + a `snap` Operator), and the resource store (decoded sample data as a shared, bank-ready read service). For the code-level operator contract and how to add one, see [docs/agents/authoring.md](agents/authoring.md).
 
 ## Decision index (ADRs)
 
