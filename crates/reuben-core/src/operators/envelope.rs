@@ -7,21 +7,30 @@
 //! exponential-style amplitude decay) and into a `mul` against the audio. Keeping the EG linear
 //! makes it the flexible primitive — linear *or* any curve is a choice of downstream op.
 //!
-//! - input 0: `gate` (Signal) — > 0.5 means held; the rising/falling edge triggers A/R.
-//! - output 0: `cv` (Signal) — the ADSR level contour, linear `[0, 1]`.
-//! - params 0..3: `attack`, `decay`, `sustain`, `release`.
+//! Shape model (ADR-0028): the ADSR times (`attack`, `decay`, `sustain`, `release`) are now
+//! **`Float` inputs**, each owning its unwired default — read once per block via `io.value` (the
+//! ADSR shape is block-rate, exactly as the old params were). `gate` is a bare `Float` wire-in,
+//! read per sample via `io.signal` (always a buffer now; an unwired gate materializes to 0). There
+//! are no params left.
+//!
+//! - input 0: `gate` (`Float`) — > 0.5 means held; the rising/falling edge triggers A/R.
+//! - input 1: `attack` (`Float`) — attack time in seconds.
+//! - input 2: `decay` (`Float`) — decay time in seconds.
+//! - input 3: `sustain` (`Float`) — sustain level 0..1.
+//! - input 4: `release` (`Float`) — release time in seconds.
+//! - output 0: `cv` (`Float`) — the ADSR level contour, linear `[0, 1]`.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.
+// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Envelope {
-    inputs:  { gate: signal },
-    outputs: { cv: signal },
-    params:  { attack:  { 0.001..=5.0, default 0.01, "s", exp },
-               decay:   { 0.001..=5.0, default 0.1,  "s", exp },
-               sustain: { 0.0..=1.0,   default 0.7,  "",  lin },
-               release: { 0.001..=5.0, default 0.2,  "s", exp } },
+    inputs:  { gate:    float,
+               attack:  float { 0.001..=5.0, default 0.01, "s", exp },
+               decay:   float { 0.001..=5.0, default 0.1,  "s", exp },
+               sustain: float { 0.0..=1.0,   default 0.7,  "",  lin },
+               release: float { 0.001..=5.0, default 0.2,  "s", exp } },
+    outputs: { cv: float },
 });
 
 /// Which segment of the ADSR contour the envelope is currently traversing.
@@ -80,18 +89,21 @@ impl Operator for Envelope {
         let n = io.frames();
         let sample_rate = io.sample_rate();
 
-        let sustain = io.param(P_SUSTAIN).clamp(0.0, 1.0);
-        let attack_step = per_sample_step(io.param(P_ATTACK), sample_rate);
-        let decay_step = per_sample_step(io.param(P_DECAY), sample_rate) * (1.0 - sustain);
+        // ADSR times are `Float` inputs, read once at block rate via `io.value` — the shape is
+        // block-rate, exactly as the old params were (ADR-0028).
+        let sustain = io.value(IN_SUSTAIN).clamp(0.0, 1.0);
+        let attack_step = per_sample_step(io.value(IN_ATTACK), sample_rate);
+        let decay_step = per_sample_step(io.value(IN_DECAY), sample_rate) * (1.0 - sustain);
         // Base per-sample rate that would span the full [0,1] range in `release` seconds. The
         // actual Release decrement is this scaled by the level at the note-off edge (below), so
         // release lasts `release` seconds from wherever the level is — never frozen at sustain=0.
-        let release_rate = per_sample_step(io.param(P_RELEASE), sample_rate);
+        let release_rate = per_sample_step(io.value(IN_RELEASE), sample_rate);
 
-        // Read each input sample with a short-lived borrow that ends before the output
-        // write, so `process` stays allocation-free. An unconnected gate reads as gate-off.
+        // `gate` is a `Float` input — always a buffer (wired source or materialized latch). Read
+        // each sample with a short-lived borrow that ends before the output write, so `process`
+        // stays allocation-free. An unwired gate materializes to 0 (gate-off).
         for i in 0..n {
-            let gate_on = io.input(IN_GATE).map_or(0.0, |s| s[i]) > 0.5;
+            let gate_on = io.signal(IN_GATE).get(i).copied().unwrap_or(0.0) > 0.5;
 
             // Edge detection against the previous sample's held flag.
             if gate_on && !self.held {
@@ -155,14 +167,27 @@ mod tests {
     const SR: f32 = 48_000.0;
 
     /// Run `env` over a single block of `n` frames with the given gate input and ADSR
-    /// params, returning the emitted CV contour (the level per sample).
-    fn run(env: &mut Envelope, gate: &[f32], params: &[f32]) -> Vec<f32> {
+    /// times, returning the emitted CV contour (the level per sample). The ADSR times are
+    /// `Float` inputs now (ADR-0028), supplied as the constant per-sample buffers the engine
+    /// would materialize. `adsr` is `[attack, decay, sustain, release]`, in input-port order.
+    fn run(env: &mut Envelope, gate: &[f32], adsr: &[f32]) -> Vec<f32> {
         let n = gate.len();
+        let attack = vec![adsr[0]; n];
+        let decay = vec![adsr[1]; n];
+        let sustain = vec![adsr[2]; n];
+        let release = vec![adsr[3]; n];
         let mut out = vec![0.0f32; n];
         {
             let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let inputs: Vec<Option<&[f32]>> = vec![Some(gate)];
-            let mut io = Io::new(SR, n, inputs, outs, params, &[]);
+            // Input port order: gate, attack, decay, sustain, release.
+            let inputs: Vec<Option<&[f32]>> = vec![
+                Some(gate),
+                Some(&attack),
+                Some(&decay),
+                Some(&sustain),
+                Some(&release),
+            ];
+            let mut io = Io::new(SR, n, inputs, outs, &[], &[]);
             env.process(&mut io);
         }
         out
@@ -312,14 +337,14 @@ mod tests {
 
     #[test]
     fn unconnected_gate_is_silent() {
-        let params = vec![0.01, 0.1, 0.7, 0.2];
         let n = 256;
         let mut out = vec![0.0f32; n];
         {
             let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            // No gate.
-            let inputs: Vec<Option<&[f32]>> = vec![None];
-            let mut io = Io::new(SR, n, inputs, outs, &params, &[]);
+            // Nothing wired: gate (and the ADSR inputs) read as empty/0. A gate that never goes
+            // high holds the envelope Idle at 0 regardless of the ADSR times.
+            let inputs: Vec<Option<&[f32]>> = vec![None, None, None, None, None];
+            let mut io = Io::new(SR, n, inputs, outs, &[], &[]);
             Envelope::new().process(&mut io);
         }
         assert!(out.iter().all(|&s| s == 0.0));

@@ -801,7 +801,15 @@
             "properties": {
               "params": {
                 "additionalProperties": false,
-                "properties": {},
+                "properties": {
+                  "audio": {
+                    "default": 0.0,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 1.0,
+                    "minimum": -1.0,
+                    "type": "number"
+                  }
+                },
                 "type": "object"
               }
             }

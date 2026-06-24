@@ -57,11 +57,11 @@ operator djfilter
   lanes inherit
 operator envelope
   in[0] signal gate
+  in[1] float attack min=0.001 max=5.0 default=0.01 unit="s" curve=exponential
+  in[2] float decay min=0.001 max=5.0 default=0.1 unit="s" curve=exponential
+  in[3] float sustain min=0.0 max=1.0 default=0.7 unit="" curve=linear
+  in[4] float release min=0.001 max=5.0 default=0.2 unit="s" curve=exponential
   out[0] signal cv
-  param[0] attack min=0.001 max=5.0 default=0.01 unit="s" curve=exponential
-  param[1] decay min=0.001 max=5.0 default=0.1 unit="s" curve=exponential
-  param[2] sustain min=0.0 max=1.0 default=0.7 unit="" curve=linear
-  param[3] release min=0.001 max=5.0 default=0.2 unit="s" curve=exponential
   lanes inherit
 operator filter
   in[0] signal audio
@@ -75,10 +75,10 @@ operator integrate
   out[0] message out
   lanes inherit
 operator lfo
+  in[0] float rate min=0.01 max=20.0 default=5.0 unit="Hz" curve=exponential
+  in[1] float depth min=0.0 max=1000.0 default=10.0 unit="" curve=linear
+  in[2] float center min=-1000.0 max=20000.0 default=440.0 unit="" curve=linear
   out[0] signal out
-  param[0] rate min=0.01 max=20.0 default=5.0 unit="Hz" curve=exponential
-  param[1] depth min=0.0 max=1000.0 default=10.0 unit="" curve=linear
-  param[2] center min=-1000.0 max=20000.0 default=440.0 unit="" curve=linear
   lanes inherit
 operator m2s
   in[0] message in
@@ -115,20 +115,19 @@ operator oscillator
   out[0] signal audio
   lanes inherit
 operator output
-  in[0] signal audio
+  in[0] float audio min=-1.0 max=1.0 default=0.0 unit="" curve=linear
   out[0] signal audio
   lanes inherit
 operator pan
   in[0] signal audio
-  in[1] signal pan
+  in[1] float pan min=-1.0 max=1.0 default=0.0 unit="" curve=linear
   out[0] signal left
   out[1] signal right
-  param[0] pan min=-1.0 max=1.0 default=0.0 unit="" curve=linear
   lanes inherit
 operator power
   in[0] signal x
+  in[1] float exponent min=0.0 max=8.0 default=2.0 unit="" curve=linear
   out[0] signal out
-  param[0] exponent min=0.0 max=8.0 default=2.0 unit="" curve=linear
   lanes inherit
 operator reverb
   in[0] signal audio

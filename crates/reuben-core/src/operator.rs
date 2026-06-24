@@ -33,11 +33,14 @@ pub struct CtxPublish {
 ///
 /// All slices are exactly [`Io::frames`] samples long. Params are constant for the call.
 /// The port reference lists are collected into inline [`SmallVec`]s, so building an `Io`
-/// allocates nothing for the common low-port-count case (≤4 inputs, ≤2 outputs).
+/// allocates nothing for the common low-port-count case. The inline input capacity is sized for
+/// ADR-0028 operators whose former params became `Float` inputs (an envelope is gate + 4 ADSR =
+/// 5; a filter is audio + cutoff + resonance + mode = 4) — RT-safety (`rt_safe`) depends on not
+/// spilling here on the audio thread.
 pub struct Io<'a> {
     sample_rate: f32,
     frames: usize,
-    inputs: SmallVec<[Option<&'a [f32]>; 4]>,
+    inputs: SmallVec<[Option<&'a [f32]>; 8]>,
     outputs: SmallVec<[&'a mut [f32]; 2]>,
     params: &'a [f32],
     events: &'a [Event<'a>],
