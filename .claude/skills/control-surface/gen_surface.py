@@ -10,8 +10,8 @@ Two subcommands:
 
   infer  INSTRUMENT [--schema P]
       Read-only. Print JSON describing every control *candidate* — externally-driven Good
-      Buttons (a `map` whose message input has no incoming connection) and each node param,
-      with its resolved address, range, unit and default. The agent curates this into
+      Buttons (a `map` whose input is not wired from another node) and each settable `Float`
+      input, with its resolved address, range, unit and default. The agent curates this into
       `control` blocks. Nothing is written.
 
   emit   INSTRUMENT [--schema P] [--host H] [--port N] [--out F] [--cols N]
@@ -24,9 +24,10 @@ script never re-implements operator metadata, it reads the single source of trut
 
 OSC addressing (verified against the core router, ADR-0011):
   - Good Button (a `map` front-end): the widget sends to the node address, e.g. `/brightness`.
-    Range = the node's `in_min`/`in_max` *instance* param values (default 0..1).
-  - Direct param:                    the widget sends to `/<node>/<param>`, e.g. `/clock/tempo`.
-    Range = the param's schema min/max; unit/default likewise.
+    Range = the node's `in_min`/`in_max` *instance* input values (default 0..1).
+  - Direct input:                    the widget sends to `/<node>/<input>`, e.g. `/clock/tempo`
+    or `/filter/cutoff`. Range = the input's schema min/max; unit/default likewise. A `Float`
+    input is settable directly now (ADR-0028) — no `m2s` front-end needed to reach it.
 """
 
 import argparse
@@ -52,15 +53,34 @@ def default_schema_path(script: Path) -> Path:
     return root / "crates" / "reuben-core" / "schema" / "instrument.schema.json"
 
 
+def _number_form(prop: dict) -> dict | None:
+    """The numeric (fader-settable) form of an `inputs` property's schema, or `None` (ADR-0028).
+
+    An input is either a plain number schema or a `oneOf` of forms — a settable `Float` carries a
+    `{"type": "number", ...}` member with its min/max/default/description. A bare-`float` audio
+    input (only a wire-ref form) and an `Enum` input (a string-enum form) have no number form, so
+    they are not faders and return `None`."""
+    if prop.get("type") == "number":
+        return prop
+    for form in prop.get("oneOf", []):
+        if form.get("type") == "number":
+            return form
+    return None
+
+
 def load_param_meta(schema: dict) -> dict:
-    """type_name -> { param_name -> {min,max,default,unit,curve} }, parsed from the schema's
-    per-type param branches (description is 'unit: X, curve: Y')."""
+    """type_name -> { input_name -> {min,max,default,unit,curve} } for each settable `Float`
+    input, parsed from the schema's per-type `inputs` branches (ADR-0028; description is
+    'unit: X, curve: Y'). `config` Constants and non-numeric inputs (audio/Enum) are skipped."""
     out = {}
     for branch in schema["$defs"]["node"].get("allOf", []):
         type_name = branch["if"]["properties"]["type"]["const"]
-        props = branch["then"]["properties"].get("params", {}).get("properties", {})
+        props = branch["then"]["properties"].get("inputs", {}).get("properties", {})
         params = {}
-        for name, p in props.items():
+        for name, prop in props.items():
+            p = _number_form(prop)
+            if p is None:
+                continue  # audio passthrough or an Enum input — not a fader control
             unit, curve = "", "Linear"
             for part in str(p.get("description", "")).split(","):
                 part = part.strip()
@@ -82,14 +102,23 @@ def load_param_meta(schema: dict) -> dict:
 # --- control resolution -----------------------------------------------------------------
 
 def node_param(node: dict, name: str, fallback: float) -> float:
-    v = node.get("params", {}).get(name)
-    return float(v) if v is not None else fallback
+    """A node's literal `inputs[name]` value as a float (ADR-0028). A wire-ref (`{"from": ...}`)
+    or an Enum symbol is not numeric, so it falls back."""
+    v = node.get("inputs", {}).get(name)
+    if isinstance(v, bool) or not isinstance(v, (int, float)):
+        return fallback
+    return float(v)
 
 
 def map_inputs_connected(instrument: dict) -> set:
-    """Addresses of `map` nodes whose message input is fed by an internal connection (so they
-    are plumbing, not a public Good Button face)."""
-    return {c["to"]["node"] for c in instrument.get("connections", [])}
+    """Addresses of nodes whose `inputs` include a wire-ref (ADR-0028: wiring lives in each
+    node's `inputs` as `{"from": "/src.port"}`, not a top-level `connections` array). A `map`
+    whose input is wired is internal plumbing, not a public Good Button face."""
+    fed = set()
+    for node in instrument.get("nodes", []):
+        if any(isinstance(v, dict) and "from" in v for v in node.get("inputs", {}).values()):
+            fed.add(node["address"])
+    return fed
 
 
 def is_gate_step(node: dict, param) -> bool:
