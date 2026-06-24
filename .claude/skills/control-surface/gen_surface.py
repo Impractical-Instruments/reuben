@@ -19,7 +19,7 @@ Two subcommands:
       a `.tosc` surface targeting `host:port`.
 
 Metadata is read from the committed instrument schema (the per-type param ranges + unit/curve),
-which is kept in sync with the operator descriptors by the `schema_is_in_sync` test — so this
+which is kept in sync with the operator descriptors by the `committed_schema_is_in_sync` test — so this
 script never re-implements operator metadata, it reads the single source of truth.
 
 OSC addressing (verified against the core router, ADR-0011):

@@ -37,7 +37,7 @@ Run from the feature branch so the diff is meaningful.
 3. **Regenerate the schema** (if any operator/param changed):
    `cargo run -p reuben-core --example gen_schema`, then commit
    `crates/reuben-core/schema/instrument.schema.json` if it changed. The
-   `schema_is_in_sync` test fails when it's stale.
+   `committed_schema_is_in_sync` test fails when it's stale.
 
 4. **Flag, don't edit, new vocabulary.** If the feature introduces a domain term not in
    CONTEXT.md, surface it and suggest `/domain-modeling` — the glossary is grilled, not
