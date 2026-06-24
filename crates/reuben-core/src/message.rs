@@ -28,19 +28,6 @@ impl Arg {
             Arg::Sym(_) => None,
         }
     }
-
-    /// View as an [`Shape::Enum`](crate::descriptor::Shape) wire token (ADR-0028), for resolving
-    /// against an input's [`EnumMeta`](crate::descriptor::EnumMeta): a [`Sym`](Arg::Sym) is the
-    /// human-legible **symbol** (`"Hp"`); a numeric arg is its **index** fallback (`1` → `"1"`).
-    /// Floats round to the nearest integer so `1.0` and `1` resolve alike.
-    pub fn enum_token(&self) -> String {
-        match self {
-            Arg::Sym(s) => s.clone(),
-            Arg::Int(v) => v.to_string(),
-            Arg::Bool(v) => (if *v { 1 } else { 0 }).to_string(),
-            Arg::Float(v) => (v.round() as i64).to_string(),
-        }
-    }
 }
 
 /// Inline storage for the common small-arg case; spills to the heap beyond it.

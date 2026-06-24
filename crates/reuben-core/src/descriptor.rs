@@ -91,6 +91,23 @@ impl EnumMeta {
             .filter(|&i| i < self.variants.len())
     }
 
+    /// Resolve an [`Arg`](crate::message::Arg) to a variant index without allocating — the
+    /// render-thread form of [`resolve`](Self::resolve). A [`Sym`](crate::message::Arg::Sym)
+    /// is matched by symbol (then index fallback) against its borrowed `&str`; a numeric arg
+    /// maps straight to its index (rounding a [`Float`](crate::message::Arg::Float), as the
+    /// string form did) with no intermediate `String`. Used by `route_messages` so an Enum
+    /// control message (`/filt/mode "Hp"`) touches no allocator on the audio thread.
+    pub fn resolve_arg(&self, arg: &crate::message::Arg) -> Option<usize> {
+        use crate::message::Arg;
+        let idx = match arg {
+            Arg::Sym(s) => return self.resolve(s.as_str()),
+            Arg::Int(v) => usize::try_from(*v).ok()?,
+            Arg::Bool(b) => *b as usize,
+            Arg::Float(v) => usize::try_from(v.round() as i64).ok()?,
+        };
+        (idx < self.variants.len()).then_some(idx)
+    }
+
     /// The default variant's symbol.
     pub fn default_symbol(&self) -> &'static str {
         self.variants[self.default]

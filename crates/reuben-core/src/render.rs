@@ -409,7 +409,7 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
             // An Enum input resolves its first arg as a wire token (symbol `"Hp"` or fallback
             // index `"1"`) to a held variant index; like a param it splits the block (ADR-0028).
             if let Some((port, e)) = node.descriptor.enum_input(local) {
-                if let Some(idx) = msg.args.first().and_then(|a| e.resolve(&a.enum_token())) {
+                if let Some(idx) = msg.args.first().and_then(|a| e.resolve_arg(a)) {
                     routes[i].enums.push((msg.frame, port, idx));
                 }
                 break;

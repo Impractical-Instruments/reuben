@@ -68,6 +68,12 @@ pub struct ContextOp {
     /// Last value published, to publish only on change (ADR-0015). `None` until the first
     /// block, which always publishes (so the baseline picks up a non-default config).
     last: Option<Context>,
+    /// Reused scratch for the candidate publish frames, cleared each block and kept across
+    /// blocks so steady state never reallocates (mirrors the render loop's reused `bounds`).
+    /// A `Float` field wired to a per-sample source can push up to `block_size - 1` change
+    /// frames; a fixed inline buffer would spill to the heap on the audio thread, so this is a
+    /// node-owned `Vec` that grows once to block size during warmup.
+    frames: Vec<usize>,
 }
 
 impl Default for ContextOp {
@@ -75,6 +81,7 @@ impl Default for ContextOp {
         Self {
             chord: Chord::empty(),
             last: None,
+            frames: Vec::new(),
         }
     }
 }
@@ -153,7 +160,11 @@ impl Operator for ContextOp {
         // so steady state is free — ADR-0028), and every chord-write frame. A static field is a
         // per-sample buffer now, so a mid-block `/context/root` lands at its exact frame.
         let n = io.frames();
-        let mut frames: SmallVec<[usize; 8]> = SmallVec::new();
+        // Take the reused scratch out so the publish walk below can borrow `self` mutably; it
+        // is restored at the end, retaining its capacity for the next block (alloc-free steady
+        // state). `mem::take` leaves an empty `Vec` behind, which does not allocate.
+        let mut frames = std::mem::take(&mut self.frames);
+        frames.clear();
         frames.push(0);
         for port in [IN_ROOT, IN_DEGREES]
             .into_iter()
@@ -176,7 +187,7 @@ impl Operator for ContextOp {
 
         // Walk the frames in order: apply any chord write landing here (LWW), then publish the
         // resolved context if it differs from the last published value.
-        for f in frames {
+        for &f in &frames {
             for (wf, chord) in &writes {
                 if *wf == f {
                     self.chord = *chord;
@@ -188,6 +199,8 @@ impl Operator for ContextOp {
                 self.last = Some(cur);
             }
         }
+
+        self.frames = frames;
     }
 
     fn spawn(&self) -> Box<dyn Operator> {
