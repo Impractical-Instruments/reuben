@@ -6,24 +6,63 @@
 //! from the operators (a committed copy is checked for staleness by a test + regenerated
 //! by `cargo run -p reuben-core --example gen_schema`).
 //!
-//! Per-operator param validation is emitted as `if`/`then` branches keyed on the node
-//! `type`, so `params` are checked against the right operator's ranges.
+//! Per-operator validation is emitted as `if`/`then` branches keyed on the node `type`, so each
+//! node's `inputs` (literals or wire-refs) and `config` (constants) are checked against the right
+//! operator's ports/ranges (ADR-0028).
 
 use serde_json::{json, Map, Value};
 
 use crate::registry::Registry;
 
+/// A wire-ref schema (`{ "from": "/node.port" }`) — one input value form (ADR-0028).
+fn wire_ref() -> Value {
+    json!({
+        "type": "object",
+        "required": ["from"],
+        "additionalProperties": false,
+        "properties": { "from": { "type": "string" } },
+        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output."
+    })
+}
+
 /// Build the JSON Schema (draft 2020-12) for instrument documents valid against `registry`.
 pub fn generate(registry: &Registry) -> Value {
     let type_names: Vec<Value> = registry.type_names().map(|n| json!(n)).collect();
 
-    // One `if type == X then params: {ranges}` branch per operator.
+    // One `if type == X then { inputs, config }` branch per operator.
     let mut branches: Vec<Value> = Vec::new();
     for entry in registry.entries() {
         let d = &entry.descriptor;
-        let mut props = Map::new();
+
+        // `inputs`: one property per input port — each accepts a wire-ref, plus the literal forms
+        // its shape allows (a `Float` number, an `Enum` symbol/index) — and per non-constant param,
+        // which is settable only as a number literal.
+        let mut in_props = Map::new();
+        for port in &d.inputs {
+            let mut forms: Vec<Value> = Vec::new();
+            if let Some(e) = &port.enum_meta {
+                forms.push(json!({ "type": "string", "enum": e.variants }));
+                forms.push(
+                    json!({ "type": "integer", "minimum": 0, "maximum": e.variants.len() - 1 }),
+                );
+            }
+            if let Some(m) = &port.meta {
+                forms.push(json!({
+                    "type": "number",
+                    "minimum": m.min as f64,
+                    "maximum": m.max as f64,
+                    "default": m.default as f64,
+                    "description": format!("unit: {}, curve: {:?}", m.unit, m.curve),
+                }));
+            }
+            forms.push(wire_ref());
+            in_props.insert(port.name.to_string(), json!({ "oneOf": forms }));
+        }
         for p in &d.params {
-            props.insert(
+            if d.is_constant_param(p.name) {
+                continue;
+            }
+            in_props.insert(
                 p.name.to_string(),
                 json!({
                     "type": "number",
@@ -34,44 +73,34 @@ pub fn generate(registry: &Registry) -> Value {
                 }),
             );
         }
-        // Materialized Float inputs (ADR-0028) are settable literals too — the old
-        // "signal port + same-named unwired-default param" is now one input, addressed by the
-        // same name in the `params` map (the loader bridges it). Emit them with identical
-        // metadata so an author can still set e.g. `oscillator` `freq`/`waveform`.
-        for (name, m) in d.settable_inputs() {
-            props.insert(
-                name.to_string(),
+
+        // `config`: the operator's `Constant`, if any (today only a voicer's `voices`).
+        let mut cfg_props = Map::new();
+        if let Some(c) = d.constant_param() {
+            cfg_props.insert(
+                c.name.to_string(),
                 json!({
-                    "type": "number",
-                    "minimum": m.min as f64,
-                    "maximum": m.max as f64,
-                    "default": m.default as f64,
-                    "description": format!("unit: {}, curve: {:?}", m.unit, m.curve),
+                    "type": "integer",
+                    "minimum": c.min as f64,
+                    "maximum": c.max as f64,
+                    "default": c.default as f64,
+                    "description": "instantiate-time constant (changing it rebuilds the graph)"
                 }),
             );
         }
-        // Enum inputs (ADR-0028) are settable by **symbol** (`"Hp"`) or fallback **index** (`1`),
-        // so accept either form. Single-sourced off `enum_inputs` like the Float surface above.
-        for (name, e) in d.enum_inputs() {
-            props.insert(
-                name.to_string(),
-                json!({
-                    "oneOf": [
-                        { "type": "string", "enum": e.variants },
-                        { "type": "integer", "minimum": 0, "maximum": e.variants.len() - 1 },
-                    ],
-                    "default": e.default,
-                    "description": format!("one of {:?} (or its index)", e.variants),
-                }),
-            );
-        }
+
         branches.push(json!({
             "if": { "properties": { "type": { "const": d.type_name } }, "required": ["type"] },
             "then": {
                 "properties": {
-                    "params": {
+                    "inputs": {
                         "type": "object",
-                        "properties": Value::Object(props),
+                        "properties": Value::Object(in_props),
+                        "additionalProperties": false
+                    },
+                    "config": {
+                        "type": "object",
+                        "properties": Value::Object(cfg_props),
                         "additionalProperties": false
                     }
                 }
@@ -82,7 +111,7 @@ pub fn generate(registry: &Registry) -> Value {
     json!({
         "$schema": "https://json-schema.org/draft/2020-12/schema",
         "title": "reuben instrument",
-        "description": "A reuben instrument: operator nodes, port connections, and master outputs.",
+        "description": "A reuben instrument: operator nodes (each with an `inputs` map and `config` block) and master outputs (ADR-0028).",
         "type": "object",
         "required": ["instrument", "nodes"],
         "additionalProperties": false,
@@ -95,7 +124,6 @@ pub fn generate(registry: &Registry) -> Value {
                 "additionalProperties": { "type": "string" }
             },
             "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
-            "connections": { "type": "array", "items": { "$ref": "#/$defs/connection" } },
             "outputs": { "type": "array", "items": { "$ref": "#/$defs/portRef" } }
         },
         "$defs": {
@@ -109,17 +137,8 @@ pub fn generate(registry: &Registry) -> Value {
                     "channel": {
                         "type": "integer",
                         "minimum": 0,
-                        "description": "Logical master channel an `outputs` tap feeds (ADR-0026): 0 = left, 1 = right, etc. Omitted → broadcast to every channel. Ignored on a connection endpoint."
+                        "description": "Logical master channel an `outputs` tap feeds (ADR-0026): 0 = left, 1 = right, etc. Omitted → broadcast to every channel."
                     }
-                }
-            },
-            "connection": {
-                "type": "object",
-                "required": ["from", "to"],
-                "additionalProperties": false,
-                "properties": {
-                    "from": { "$ref": "#/$defs/portRef" },
-                    "to": { "$ref": "#/$defs/portRef" }
                 }
             },
             "node": {
@@ -130,7 +149,8 @@ pub fn generate(registry: &Registry) -> Value {
                     "type": { "enum": type_names },
                     "address": { "type": "string" },
                     "doc": { "type": "string" },
-                    "params": { "type": "object" },
+                    "inputs": { "type": "object" },
+                    "config": { "type": "object" },
                     "sample": {
                         "type": "string",
                         "description": "Resource id into the document's `resources` table; only valid on a `sample` node (ADR-0016)."
@@ -191,23 +211,41 @@ mod tests {
     }
 
     #[test]
-    fn emits_param_ranges_per_type() {
+    fn emits_input_ranges_per_type() {
         let reg = Registry::builtin();
         let schema = generate(&reg);
-        // `cutoff` is a materialized `Float` input now (ADR-0028), surfaced into the schema's
-        // `params` props by `settable_inputs` — read its range from the input's meta.
+        // `cutoff` is a materialized `Float` input (ADR-0028): its `inputs` schema is a `oneOf` of
+        // the number form (with the range) and a wire-ref.
         let binding = reg.get("filter").unwrap();
         let (_, filter_cutoff) = binding.descriptor.materialized_input("cutoff").unwrap();
 
-        // Find the if/then branch for "filter" and check its cutoff bounds.
+        // Find the if/then branch for "filter" and check its cutoff number-form bounds.
         let branches = schema["$defs"]["node"]["allOf"].as_array().unwrap();
         let filter_branch = branches
             .iter()
             .find(|b| b["if"]["properties"]["type"]["const"] == json!("filter"))
             .expect("filter branch");
-        let cutoff = &filter_branch["then"]["properties"]["params"]["properties"]["cutoff"];
-        assert_eq!(cutoff["minimum"], json!(filter_cutoff.min as f64));
-        assert_eq!(cutoff["maximum"], json!(filter_cutoff.max as f64));
+        let cutoff = &filter_branch["then"]["properties"]["inputs"]["properties"]["cutoff"];
+        let number_form = cutoff["oneOf"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|f| f["type"] == json!("number"))
+            .expect("cutoff number form");
+        assert_eq!(number_form["minimum"], json!(filter_cutoff.min as f64));
+        assert_eq!(number_form["maximum"], json!(filter_cutoff.max as f64));
+    }
+
+    #[test]
+    fn emits_voices_constant_in_config() {
+        let schema = generate(&Registry::builtin());
+        let branches = schema["$defs"]["node"]["allOf"].as_array().unwrap();
+        let voicer = branches
+            .iter()
+            .find(|b| b["if"]["properties"]["type"]["const"] == json!("voicer"))
+            .expect("voicer branch");
+        let voices = &voicer["then"]["properties"]["config"]["properties"]["voices"];
+        assert_eq!(voices["type"], json!("integer"));
     }
 
     #[test]

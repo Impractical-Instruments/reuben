@@ -158,10 +158,15 @@ impl Diag {
             LoadError::UnknownType { address, .. } => (Some(address.clone()), None),
             LoadError::DuplicateAddress(a) | LoadError::UnknownNode(a) => (Some(a.clone()), None),
             LoadError::UnknownPort { node, port } => (Some(node.clone()), Some(port.clone())),
-            LoadError::UnknownParam { node, .. } | LoadError::UnknownResource { node, .. } => {
-                (Some(node.clone()), None)
+            LoadError::UnknownInput { node, input } => (Some(node.clone()), Some(input.clone())),
+            LoadError::BadInputValue { node, input, .. } => {
+                (Some(node.clone()), Some(input.clone()))
             }
-            LoadError::PortKindMismatch { .. } | LoadError::Json(_) => (None, None),
+            LoadError::UnknownConfig { node, .. }
+            | LoadError::ConstantInInputs { node, .. }
+            | LoadError::AmbiguousWire { node, .. }
+            | LoadError::UnknownResource { node, .. } => (Some(node.clone()), None),
+            LoadError::ShapeMismatch { .. } | LoadError::Json(_) => (None, None),
         };
         Diag {
             node,

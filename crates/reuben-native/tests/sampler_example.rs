@@ -104,14 +104,10 @@ fn missing_sample_warns_but_still_loads() {
       "instrument": "broken",
       "resources": { "ghost": "samples/does_not_exist.wav" },
       "nodes": [
-        { "type": "voicer", "address": "/voicer", "params": { "voices": 1 } },
-        { "type": "sample", "address": "/s", "sample": "ghost" },
-        { "type": "output", "address": "/out" }
-      ],
-      "connections": [
-        { "from": {"node":"/voicer","port":"freq"}, "to": {"node":"/s","port":"freq"} },
-        { "from": {"node":"/voicer","port":"gate"}, "to": {"node":"/s","port":"gate"} },
-        { "from": {"node":"/s","port":"audio"}, "to": {"node":"/out","port":"audio"} }
+        { "type": "voicer", "address": "/voicer", "config": { "voices": 1 } },
+        { "type": "sample", "address": "/s", "sample": "ghost",
+          "inputs": { "freq": {"from":"/voicer.freq"}, "gate": {"from":"/voicer.gate"} } },
+        { "type": "output", "address": "/out", "inputs": { "audio": {"from":"/s"} } }
       ],
       "outputs": [ {"node":"/out","port":"audio"} ]
     }"#;

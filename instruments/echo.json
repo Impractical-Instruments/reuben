@@ -1,27 +1,95 @@
 {
-  "instrument": "echo",
   "doc": "Default monophonic rig with a feedback delay between the envelope and the output. Send /voicer/note [midi, gate] to play (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off). Tweak the echo live over OSC: /delay/time (seconds), /delay/feedback (0..0.95), /delay/mix (dry/wet 0..1).",
+  "instrument": "echo",
   "nodes": [
-    { "type": "voicer", "address": "/voicer", "doc": "Note -> per-Voice freq + gate CV.", "params": { "voices": 8 } },
-    { "type": "oscillator", "address": "/osc" },
-    { "type": "filter", "address": "/filter", "doc": "Gentle lowpass.", "params": { "cutoff": 3000.0 } },
-    { "type": "envelope", "address": "/env", "doc": "ADSR envelope (linear CV), gated by the voicer." },
-    { "type": "power", "address": "/env_curve", "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2)." },
-    { "type": "mul", "address": "/env_vca", "doc": "VCA: audio * shaped envelope CV." },
-    { "type": "delay", "address": "/delay", "doc": "Feedback echo on the voice.", "params": { "time": 0.3, "feedback": 0.4, "mix": 0.5 } },
-    { "type": "output", "address": "/out" }
-  ],
-  "connections": [
-    { "from": { "node": "/voicer", "port": "freq" }, "to": { "node": "/osc", "port": "freq" } },
-    { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/filter", "port": "audio" } },
-    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env_vca", "port": "a" } },
-    { "from": { "node": "/env", "port": "cv" }, "to": { "node": "/env_curve", "port": "x" } },
-    { "from": { "node": "/env_curve", "port": "out" }, "to": { "node": "/env_vca", "port": "b" } },
-    { "from": { "node": "/voicer", "port": "gate" }, "to": { "node": "/env", "port": "gate" } },
-    { "from": { "node": "/env_vca", "port": "out" }, "to": { "node": "/delay", "port": "audio" } },
-    { "from": { "node": "/delay", "port": "audio" }, "to": { "node": "/out", "port": "audio" } }
+    {
+      "address": "/voicer",
+      "config": {
+        "voices": 8
+      },
+      "doc": "Note -> per-Voice freq + gate CV.",
+      "type": "voicer"
+    },
+    {
+      "address": "/osc",
+      "inputs": {
+        "freq": {
+          "from": "/voicer.freq"
+        }
+      },
+      "type": "oscillator"
+    },
+    {
+      "address": "/filter",
+      "doc": "Gentle lowpass.",
+      "inputs": {
+        "audio": {
+          "from": "/osc"
+        },
+        "cutoff": 3000.0
+      },
+      "type": "filter"
+    },
+    {
+      "address": "/env",
+      "doc": "ADSR envelope (linear CV), gated by the voicer.",
+      "inputs": {
+        "gate": {
+          "from": "/voicer.gate"
+        }
+      },
+      "type": "envelope"
+    },
+    {
+      "address": "/env_curve",
+      "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
+      "inputs": {
+        "x": {
+          "from": "/env"
+        }
+      },
+      "type": "power"
+    },
+    {
+      "address": "/env_vca",
+      "doc": "VCA: audio * shaped envelope CV.",
+      "inputs": {
+        "a": {
+          "from": "/filter"
+        },
+        "b": {
+          "from": "/env_curve"
+        }
+      },
+      "type": "mul"
+    },
+    {
+      "address": "/delay",
+      "doc": "Feedback echo on the voice.",
+      "inputs": {
+        "audio": {
+          "from": "/env_vca"
+        },
+        "feedback": 0.4,
+        "mix": 0.5,
+        "time": 0.3
+      },
+      "type": "delay"
+    },
+    {
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/delay"
+        }
+      },
+      "type": "output"
+    }
   ],
   "outputs": [
-    { "node": "/out", "port": "audio" }
+    {
+      "node": "/out",
+      "port": "audio"
+    }
   ]
 }

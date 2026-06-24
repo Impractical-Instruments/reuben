@@ -1,30 +1,107 @@
 {
-  "instrument": "autotune",
   "doc": "Play any pitch; hear the nearest scale tone. External absolute notes at /snap/note [midi, vel] are quantized to the tonal context by a snap operator, which emits scale degrees into the Voicer (the 'always in key' good-button). Set the key/scale on /context (root, s0..s6, degrees); set snap behaviour with /snap/target (0 Scale, 1 Chord, 2 ChordThenScale) and /snap/direction (0 Nearest, 1 Up, 2 Down). Both the snap and the Voicer read the same context, so changing key re-tunes held notes live.",
+  "instrument": "autotune",
   "nodes": [
-    { "type": "context", "address": "/context", "doc": "C major, 12-TET (default scale)." },
-    { "type": "snap", "address": "/snap", "doc": "Absolute note -> nearest in-scale degree." },
-    { "type": "voicer", "address": "/voicer", "doc": "Degrees -> Hz via the context.", "params": { "voices": 6 } },
-    { "type": "oscillator", "address": "/osc" },
-    { "type": "filter", "address": "/filter", "params": { "cutoff": 3000.0 } },
-    { "type": "envelope", "address": "/env", "params": { "attack": 0.01, "decay": 0.2, "sustain": 0.6, "release": 0.2 } },
-    { "type": "power", "address": "/env_curve", "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2)." },
-    { "type": "mul", "address": "/env_vca", "doc": "VCA: audio * shaped envelope CV." },
-    { "type": "output", "address": "/out" }
-  ],
-  "connections": [
-    { "from": { "node": "/context", "port": "ctx" }, "to": { "node": "/snap", "port": "ctx" } },
-    { "from": { "node": "/context", "port": "ctx" }, "to": { "node": "/voicer", "port": "ctx" } },
-    { "from": { "node": "/snap", "port": "degrees" }, "to": { "node": "/voicer", "port": "notes" } },
-    { "from": { "node": "/voicer", "port": "freq" }, "to": { "node": "/osc", "port": "freq" } },
-    { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/filter", "port": "audio" } },
-    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env_vca", "port": "a" } },
-    { "from": { "node": "/env", "port": "cv" }, "to": { "node": "/env_curve", "port": "x" } },
-    { "from": { "node": "/env_curve", "port": "out" }, "to": { "node": "/env_vca", "port": "b" } },
-    { "from": { "node": "/voicer", "port": "gate" }, "to": { "node": "/env", "port": "gate" } },
-    { "from": { "node": "/env_vca", "port": "out" }, "to": { "node": "/out", "port": "audio" } }
+    {
+      "address": "/context",
+      "doc": "C major, 12-TET (default scale).",
+      "type": "context"
+    },
+    {
+      "address": "/snap",
+      "doc": "Absolute note -> nearest in-scale degree.",
+      "inputs": {
+        "ctx": {
+          "from": "/context"
+        }
+      },
+      "type": "snap"
+    },
+    {
+      "address": "/voicer",
+      "config": {
+        "voices": 6
+      },
+      "doc": "Degrees -> Hz via the context.",
+      "inputs": {
+        "ctx": {
+          "from": "/context"
+        },
+        "notes": {
+          "from": "/snap"
+        }
+      },
+      "type": "voicer"
+    },
+    {
+      "address": "/osc",
+      "inputs": {
+        "freq": {
+          "from": "/voicer.freq"
+        }
+      },
+      "type": "oscillator"
+    },
+    {
+      "address": "/filter",
+      "inputs": {
+        "audio": {
+          "from": "/osc"
+        },
+        "cutoff": 3000.0
+      },
+      "type": "filter"
+    },
+    {
+      "address": "/env",
+      "inputs": {
+        "attack": 0.01,
+        "decay": 0.2,
+        "gate": {
+          "from": "/voicer.gate"
+        },
+        "release": 0.2,
+        "sustain": 0.6
+      },
+      "type": "envelope"
+    },
+    {
+      "address": "/env_curve",
+      "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
+      "inputs": {
+        "x": {
+          "from": "/env"
+        }
+      },
+      "type": "power"
+    },
+    {
+      "address": "/env_vca",
+      "doc": "VCA: audio * shaped envelope CV.",
+      "inputs": {
+        "a": {
+          "from": "/filter"
+        },
+        "b": {
+          "from": "/env_curve"
+        }
+      },
+      "type": "mul"
+    },
+    {
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/env_vca"
+        }
+      },
+      "type": "output"
+    }
   ],
   "outputs": [
-    { "node": "/out", "port": "audio" }
+    {
+      "node": "/out",
+      "port": "audio"
+    }
   ]
 }

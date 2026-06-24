@@ -275,6 +275,23 @@ impl Descriptor {
         self.params.iter().position(|p| p.name == name)
     }
 
+    /// The one param that is a **`Constant`** (ADR-0028): instantiate-time config that, if changed,
+    /// would rebuild the graph. Derived — not separately declared — from [`LaneRule::FromParam`]:
+    /// the lane-count param (`voices`) is the canonical and, today, only such value ("a value is a
+    /// Constant iff changing it would rebuild the graph"). `None` for an [`LaneRule::Inherit`]
+    /// operator. The loader routes it to the patch's `config` block, not `inputs`.
+    pub fn constant_param(&self) -> Option<&ParamMeta> {
+        match self.lanes {
+            LaneRule::FromParam(slot) => self.params.get(slot),
+            LaneRule::Inherit => None,
+        }
+    }
+
+    /// Whether `name` is this operator's [`Constant`](Self::constant_param) param.
+    pub fn is_constant_param(&self, name: &str) -> bool {
+        self.constant_param().is_some_and(|p| p.name == name)
+    }
+
     /// Default values for every param, in slot order.
     pub fn default_params(&self) -> Vec<f32> {
         self.params.iter().map(|p| p.default).collect()
