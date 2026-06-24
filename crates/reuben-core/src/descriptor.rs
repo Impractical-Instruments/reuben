@@ -5,27 +5,10 @@
 //! bad), of serialization, of connection type-checking, and of AI grounding. Run 2
 //! generates the JSON schema from these descriptors.
 
-/// What kind of data a port carries.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PortKind {
-    /// Audio-rate [`crate::signal::Block`].
-    Signal,
-    /// Discrete [`crate::message::Message`] stream.
-    Message,
-    /// Latched tonal [`crate::context::Context`] — a struct-valued read service over the
-    /// Message wire (ADR-0015): a context node publishes it; followers read "the current
-    /// value". Carries no Signal buffer; the value rides a dedicated context arena.
-    Context,
-}
-
 /// The single axis describing an [`Input`](Port)/output (ADR-0028): one closed, named set
 /// from which delivery and read-style **follow**. There is no separate temporality axis and
-/// no author-visible carrier.
-///
-/// During the migration (ADR-0028 is landed phase-by-phase) [`PortKind`] still rides on every
-/// [`Port`] as the legacy carrier; `shape` is the forward-looking view. The two map 1:1 today
-/// (`Signal→Float`, `Message→Note`, `Context→Harmony`) and [`PortKind`] is retired once every
-/// operator is migrated.
+/// no author-visible carrier — `shape` is the sole descriptor of what a port carries (the
+/// legacy `Signal/Message/Context` carrier was retired once the operator sweep completed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Shape {
     /// A number — freq, cutoff, amp, a contour, a control. Always materialized to a per-sample
@@ -37,18 +20,6 @@ pub enum Shape {
     Harmony,
     /// A pitch/velocity event. A sparse, frame-stamped event list.
     Note,
-}
-
-impl PortKind {
-    /// The forward-looking [`Shape`] this legacy carrier maps onto (ADR-0028). Used while both
-    /// coexist so unmigrated operators present a `shape` without re-declaring their ports.
-    pub const fn shape(self) -> Shape {
-        match self {
-            PortKind::Signal => Shape::Float,
-            PortKind::Message => Shape::Note,
-            PortKind::Context => Shape::Harmony,
-        }
-    }
 }
 
 /// The shape of an instantiate-time [`Constant`](ConstantMeta) (ADR-0028) — config that, if
@@ -116,16 +87,17 @@ impl EnumMeta {
 
 /// A named input or output port.
 ///
-/// `kind` is the legacy [`PortKind`] carrier (ADR-0017); `shape` is the ADR-0028 axis. `meta`
-/// is `Some` only for a **new-style materialized [`Shape::Float`] input** — an input that owns
-/// its unwired default and is served as a per-sample buffer the engine fills from a latched
-/// scalar (ADR-0028 materialize). A legacy `signal` input leaves `meta` `None` and keeps the
-/// old "unwired ⇒ `None`, fall back to a same-named param" behavior until its operator migrates.
-/// `enum_meta` is `Some` only for an [`Shape::Enum`] input.
+/// `shape` is the sole axis (ADR-0028): it says what the port carries and, from that, how it is
+/// delivered and read. `meta` is `Some` only for a **materialized [`Shape::Float`] input** — an
+/// input that owns its unwired default and is served as a per-sample buffer the engine fills from
+/// a latched scalar (ADR-0028 materialize). A bare `signal` input (audio passthrough) leaves
+/// `meta` `None`. `enum_meta` is `Some` only for an [`Shape::Enum`] input.
+///
+/// The `signal`/`message`/`context` constructors are authoring conveniences (the macro DSL still
+/// names ports that way) that set the corresponding `shape` — `Float`/`Note`/`Harmony`.
 #[derive(Debug, Clone)]
 pub struct Port {
     pub name: &'static str,
-    pub kind: PortKind,
     pub shape: Shape,
     pub meta: Option<ParamMeta>,
     pub enum_meta: Option<EnumMeta>,
@@ -135,7 +107,6 @@ impl Port {
     pub const fn signal(name: &'static str) -> Self {
         Self {
             name,
-            kind: PortKind::Signal,
             shape: Shape::Float,
             meta: None,
             enum_meta: None,
@@ -144,7 +115,6 @@ impl Port {
     pub const fn message(name: &'static str) -> Self {
         Self {
             name,
-            kind: PortKind::Message,
             shape: Shape::Note,
             meta: None,
             enum_meta: None,
@@ -153,7 +123,6 @@ impl Port {
     pub const fn context(name: &'static str) -> Self {
         Self {
             name,
-            kind: PortKind::Context,
             shape: Shape::Harmony,
             meta: None,
             enum_meta: None,
@@ -168,7 +137,6 @@ impl Port {
     pub fn float(meta: ParamMeta) -> Self {
         Self {
             name: meta.name,
-            kind: PortKind::Signal,
             shape: Shape::Float,
             meta: Some(meta),
             enum_meta: None,
@@ -176,14 +144,10 @@ impl Port {
     }
 
     /// An [`Shape::Enum`] input (ADR-0028): a held, live-switchable named choice (filter `mode`,
-    /// osc `waveform`). `kind` is set to the legacy [`PortKind::Message`] carrier — an honest
-    /// placeholder (an `Enum` change rides the message wire as a block-sliced discrete update);
-    /// `Enum` is new in ADR-0028 and has no true legacy carrier, so this field is vestigial here
-    /// and retired with [`PortKind`] once the sweep completes. `shape`/`enum_meta` are the truth.
+    /// osc `waveform`). An `Enum` change rides the message wire as a block-sliced discrete update.
     pub fn enumerated(meta: EnumMeta) -> Self {
         Self {
             name: meta.name,
-            kind: PortKind::Message,
             shape: Shape::Enum,
             meta: None,
             enum_meta: Some(meta),

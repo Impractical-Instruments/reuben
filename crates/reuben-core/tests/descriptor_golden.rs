@@ -9,14 +9,19 @@
 //! To intentionally re-bless after a deliberate descriptor change: `REUBEN_BLESS=1 cargo test -p
 //! reuben-core --test descriptor_golden`.
 
-use reuben_core::descriptor::{Curve, Descriptor, LaneRule, PortKind};
+use reuben_core::descriptor::{Curve, Descriptor, LaneRule, Shape};
 use reuben_core::registry::Registry;
 
-fn kind(k: PortKind) -> &'static str {
-    match k {
-        PortKind::Signal => "signal",
-        PortKind::Message => "message",
-        PortKind::Context => "context",
+/// The legacy carrier word for a bare port's [`Shape`] — kept stable so the golden snapshot
+/// stays byte-identical now that `PortKind` is retired (ADR-0028). Materialized Float and Enum
+/// inputs render via their own branches; this names the carrier-style ports (audio Float,
+/// Note, Harmony).
+fn kind(s: Shape) -> &'static str {
+    match s {
+        Shape::Float => "signal",
+        Shape::Enum => "enum",
+        Shape::Note => "message",
+        Shape::Harmony => "context",
     }
 }
 
@@ -50,11 +55,11 @@ fn render(d: &Descriptor) -> String {
                 "  in[{i}] enum {} variants={:?} default={}\n",
                 p.name, e.variants, e.default
             )),
-            (None, None) => s.push_str(&format!("  in[{i}] {} {}\n", kind(p.kind), p.name)),
+            (None, None) => s.push_str(&format!("  in[{i}] {} {}\n", kind(p.shape), p.name)),
         }
     }
     for (i, p) in d.outputs.iter().enumerate() {
-        s.push_str(&format!("  out[{i}] {} {}\n", kind(p.kind), p.name));
+        s.push_str(&format!("  out[{i}] {} {}\n", kind(p.shape), p.name));
     }
     for (i, p) in d.params.iter().enumerate() {
         s.push_str(&format!(

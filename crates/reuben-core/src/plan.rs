@@ -13,7 +13,7 @@
 use slotmap::SecondaryMap;
 
 use crate::config::AudioConfig;
-use crate::descriptor::{Descriptor, LaneRule, PortKind};
+use crate::descriptor::{Descriptor, LaneRule, Shape};
 use crate::graph::{Graph, NodeKey};
 use crate::operator::Operator;
 
@@ -184,7 +184,7 @@ impl Plan {
         for (key, node) in &graph.nodes {
             let mut m = std::collections::BTreeMap::new();
             for (port, p) in node.descriptor.outputs.iter().enumerate() {
-                if p.kind == PortKind::Context {
+                if p.shape == Shape::Harmony {
                     m.insert(port, next_ctx_slot);
                     next_ctx_slot += 1;
                 }
@@ -233,9 +233,9 @@ impl Plan {
             // Preallocated once; Render reuses it every block (no audio-thread alloc, ADR-0028).
             let varying: Vec<bool> = vec![true; descriptor.inputs.len()];
             for (port, p) in descriptor.inputs.iter().enumerate() {
-                // Only Signal inputs take an arena buffer; Message and Context inputs carry no
-                // Signal data (events/context arrive via routing).
-                if p.kind != PortKind::Signal {
+                // Only Float inputs take an arena buffer; Enum/Note/Harmony inputs carry no
+                // Signal data (events/enum changes/context arrive via routing).
+                if p.shape != Shape::Float {
                     inputs.push(None);
                     continue;
                 }
@@ -275,7 +275,7 @@ impl Plan {
                 .outputs
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| p.kind == PortKind::Message)
+                .filter(|(_, p)| p.shape == Shape::Note)
                 .map(|(port, _)| {
                     graph
                         .connections
@@ -290,7 +290,7 @@ impl Plan {
                 .inputs
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| p.kind == PortKind::Context)
+                .filter(|(_, p)| p.shape == Shape::Harmony)
                 .map(|(port, _)| {
                     graph
                         .connections
@@ -303,14 +303,14 @@ impl Plan {
                 .outputs
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| p.kind == PortKind::Context)
+                .filter(|(_, p)| p.shape == Shape::Harmony)
                 .map(|(port, _)| ctx_slot[*key][&port])
                 .collect();
             let ctx_targets = descriptor
                 .outputs
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| p.kind == PortKind::Context)
+                .filter(|(_, p)| p.shape == Shape::Harmony)
                 .map(|(port, _)| {
                     graph
                         .connections

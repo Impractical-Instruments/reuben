@@ -4,7 +4,7 @@
 //! These back the `reuben describe` / `reuben validate` subcommands but are pure functions
 //! over [`Registry`] + JSON so they test through real load/plan code paths, not a process.
 
-use reuben_core::descriptor::{Curve, Descriptor, PortKind};
+use reuben_core::descriptor::{Curve, Descriptor, Shape};
 use reuben_core::format::LoadError;
 use reuben_core::plan::Plan;
 use reuben_core::resources::ResourceResolver;
@@ -38,7 +38,9 @@ pub struct EnumInfo {
 #[derive(Debug, Serialize)]
 pub struct PortInfo {
     pub name: String,
-    /// `"signal"`, `"message"`, or `"context"`.
+    /// The port's [`Shape`] as a word: `"signal"` (Float), `"enum"`, `"message"` (Note), or
+    /// `"context"` (Harmony). The signal/message/context words are kept for the Patcher's wiring
+    /// vocabulary; `enum` is surfaced honestly (its variants live in the operator's `enums`).
     pub kind: String,
 }
 
@@ -54,11 +56,12 @@ pub struct ParamInfo {
     pub curve: String,
 }
 
-fn port_kind(k: PortKind) -> &'static str {
-    match k {
-        PortKind::Signal => "signal",
-        PortKind::Message => "message",
-        PortKind::Context => "context",
+fn port_kind(s: Shape) -> &'static str {
+    match s {
+        Shape::Float => "signal",
+        Shape::Enum => "enum",
+        Shape::Note => "message",
+        Shape::Harmony => "context",
     }
 }
 
@@ -75,7 +78,7 @@ impl OperatorInfo {
             ps.iter()
                 .map(|p| PortInfo {
                     name: p.name.to_string(),
-                    kind: port_kind(p.kind).to_string(),
+                    kind: port_kind(p.shape).to_string(),
                 })
                 .collect()
         };
