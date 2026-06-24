@@ -1,0 +1,5 @@
+# Golden snapshots are compared byte-for-byte by tests (ADR-0025). They must stay
+# LF on every platform: Windows CI runners default core.autocrlf=true, which would
+# otherwise check these out as CRLF and break the byte-exact compare against the
+# descriptor renderer's `\n`-only output.
+crates/reuben-core/tests/golden/** text eol=lf
