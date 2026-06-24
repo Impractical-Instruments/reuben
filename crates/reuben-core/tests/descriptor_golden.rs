@@ -33,10 +33,11 @@ fn render(d: &Descriptor) -> String {
     let mut s = format!("operator {}\n", d.type_name);
     for (i, p) in d.inputs.iter().enumerate() {
         // A new-style materialized Float input (ADR-0028) carries its own metadata; render it so
-        // the snapshot captures the default/range that used to live on a same-named param. Legacy
-        // signal/message/context inputs (no `meta`) render byte-identically to before.
-        match &p.meta {
-            Some(m) => s.push_str(&format!(
+        // the snapshot captures the default/range that used to live on a same-named param. An
+        // `Enum` input renders its ordered variants + default index. Legacy signal/message/context
+        // inputs (no `meta`/`enum_meta`) render byte-identically to before.
+        match (&p.meta, &p.enum_meta) {
+            (Some(m), _) => s.push_str(&format!(
                 "  in[{i}] float {} min={:?} max={:?} default={:?} unit={:?} curve={}\n",
                 p.name,
                 m.min,
@@ -45,7 +46,11 @@ fn render(d: &Descriptor) -> String {
                 m.unit,
                 curve(m.curve)
             )),
-            None => s.push_str(&format!("  in[{i}] {} {}\n", kind(p.kind), p.name)),
+            (_, Some(e)) => s.push_str(&format!(
+                "  in[{i}] enum {} variants={:?} default={}\n",
+                p.name, e.variants, e.default
+            )),
+            (None, None) => s.push_str(&format!("  in[{i}] {} {}\n", kind(p.kind), p.name)),
         }
     }
     for (i, p) in d.outputs.iter().enumerate() {
@@ -79,6 +84,31 @@ fn render_all() -> String {
         .entries()
         .map(|e| render(&e.descriptor))
         .collect()
+}
+
+/// The formatter renders an ADR-0028 `Enum` input (variants + default) — exercised here on a
+/// synthetic descriptor because no built-in operator declares an `Enum` until the Phase 2 sweep.
+/// This keeps the golden *machinery* ready before any real descriptor changes (and re-blesses).
+#[test]
+fn renders_enum_input_line() {
+    use reuben_core::descriptor::{Descriptor, EnumMeta, LaneRule, Port};
+    let d = Descriptor {
+        type_name: "demo",
+        inputs: vec![Port::enumerated(EnumMeta {
+            name: "mode",
+            variants: &["Lp", "Hp", "Bp"],
+            default: 0,
+        })],
+        outputs: vec![],
+        params: vec![],
+        resources: vec![],
+        lanes: LaneRule::Inherit,
+    };
+    assert!(
+        render(&d).contains(r#"  in[0] enum mode variants=["Lp", "Hp", "Bp"] default=0"#),
+        "{}",
+        render(&d)
+    );
 }
 
 #[test]

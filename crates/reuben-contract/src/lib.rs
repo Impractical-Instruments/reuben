@@ -12,13 +12,43 @@ use serde::Deserialize;
 
 pub mod naming;
 
-/// A port in the contract: a name and a kind (`signal` | `message` | `context`). Kept as a
-/// `String` kind (not an enum) so the same struct round-trips from the scaffold's JSON spec and
-/// from the proc-macro's parsed `name: kind` tokens with no conversion.
+/// The `{ min, max, default, unit, curve }` block on a `float`-shape port (ADR-0028): its unwired
+/// default, range, and display metadata. Mirrors [`ParamSpec`] without the name. `None` on a bare
+/// `float` (a pure wire-in or an output — no settable default).
+#[derive(Debug, Clone, Deserialize)]
+pub struct FloatMeta {
+    pub min: f32,
+    pub max: f32,
+    pub default: f32,
+    #[serde(default)]
+    pub unit: String,
+    #[serde(default = "default_curve")]
+    pub curve: String,
+}
+
+/// A port in the contract. Two surfaces coexist during the ADR-0028 migration:
+/// - **legacy carrier** — `kind` ∈ {`signal`,`message`,`context`}, `shape` `None` (an unmigrated
+///   operator declared `name: signal`);
+/// - **shape** (ADR-0028) — `shape` ∈ {`float`,`enum`}, `kind` empty; `float` carries the
+///   `float { .. }` meta and `variants` the `enum { .. }` choices.
+///
+/// Kept as `String` fields (not enums) so the struct round-trips from the scaffold's JSON spec and
+/// from the proc-macro's parsed tokens with no conversion.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PortSpec {
     pub name: String,
+    /// Legacy carrier kind; empty when `shape` is set.
+    #[serde(default)]
     pub kind: String,
+    /// ADR-0028 shape (`float` | `enum`); `None` for a legacy `kind`-declared port.
+    #[serde(default)]
+    pub shape: Option<String>,
+    /// `Some` for `float { .. }` — a materialized Float input's default/range.
+    #[serde(default)]
+    pub float: Option<FloatMeta>,
+    /// The ordered choices of an `enum { .. }` port (empty otherwise).
+    #[serde(default)]
+    pub variants: Vec<String>,
 }
 
 /// One parameter's metadata, mirroring [`reuben_core::descriptor::ParamMeta`].
@@ -66,8 +96,13 @@ pub struct OperatorSpec {
     pub lanes: LaneSpec,
 }
 
-/// The three legal port kinds. Centralised so both the scaffold and the macro reject the same set.
+/// The three legal legacy port kinds. Centralised so both the scaffold and the macro reject the
+/// same set.
 pub const PORT_KINDS: [&str; 3] = ["signal", "message", "context"];
+
+/// The ADR-0028 port shapes the contract surface accepts today. `harmony`/`note` join in the
+/// Phase 2 sweep when an operator first declares them.
+pub const SHAPES: [&str; 2] = ["float", "enum"];
 
 /// Where in the spec a validation error sits, so the proc-macro can attach a source span to the
 /// offending token. The scaffold ignores the locus and just formats the message.
@@ -112,6 +147,104 @@ fn is_snake_case(name: &str) -> bool {
         && name
             .chars()
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+}
+
+/// A non-empty Rust identifier: an ASCII letter then `[A-Za-z0-9_]`. The rule for `enum` variant
+/// symbols (`Lp`, `Sine`) — they are emitted both as enum variant idents and as `&str` wire
+/// symbols, so they must be valid identifiers (PascalCase is conventional but not enforced here).
+fn is_ident(name: &str) -> bool {
+    let mut chars = name.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphabetic())
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+}
+
+/// Validate one ADR-0028 shape-declared port's internal consistency (`shape` legal; `float` meta
+/// only on `float`; `enum` variants present, identifier-shaped, and unique).
+fn validate_shaped_port(
+    at: Locus,
+    label: &str,
+    p: &PortSpec,
+    shape: &str,
+) -> Result<(), ContractError> {
+    if !SHAPES.contains(&shape) {
+        return Err(ContractError::new(
+            at,
+            format!(
+                "{label} {:?}: shape {shape:?} must be one of {SHAPES:?}",
+                p.name
+            ),
+        ));
+    }
+    match shape {
+        "float" => {
+            if !p.variants.is_empty() {
+                return Err(ContractError::new(
+                    at,
+                    format!("{label} {:?}: a `float` port has no variants", p.name),
+                ));
+            }
+            if let Some(m) = &p.float {
+                if m.min > m.max {
+                    return Err(ContractError::new(
+                        at,
+                        format!("{label} {:?}: min {} > max {}", p.name, m.min, m.max),
+                    ));
+                }
+                if m.default < m.min || m.default > m.max {
+                    return Err(ContractError::new(
+                        at,
+                        format!(
+                            "{label} {:?}: default {} outside [{}, {}]",
+                            p.name, m.default, m.min, m.max
+                        ),
+                    ));
+                }
+                if !matches!(m.curve.as_str(), "linear" | "exponential") {
+                    return Err(ContractError::new(
+                        at,
+                        format!(
+                            "{label} {:?}: curve {:?} must be \"linear\" or \"exponential\"",
+                            p.name, m.curve
+                        ),
+                    ));
+                }
+            }
+        }
+        "enum" => {
+            if p.float.is_some() {
+                return Err(ContractError::new(
+                    at,
+                    format!("{label} {:?}: an `enum` port has no float meta", p.name),
+                ));
+            }
+            if p.variants.is_empty() {
+                return Err(ContractError::new(
+                    at,
+                    format!(
+                        "{label} {:?}: an `enum` port needs at least one variant",
+                        p.name
+                    ),
+                ));
+            }
+            let mut seen = std::collections::BTreeSet::new();
+            for v in &p.variants {
+                if !is_ident(v) {
+                    return Err(ContractError::new(
+                        at,
+                        format!("{label} {:?}: variant {v:?} must be an identifier", p.name),
+                    ));
+                }
+                if !seen.insert(v.as_str()) {
+                    return Err(ContractError::new(
+                        at,
+                        format!("{label} {:?}: duplicate variant {v:?}", p.name),
+                    ));
+                }
+            }
+        }
+        _ => unreachable!("shape membership checked above"),
+    }
+    Ok(())
 }
 
 /// Reject a malformed contract before any code is generated. A bad spec would otherwise emit
@@ -183,15 +316,6 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
             } else {
                 Locus::Output(i)
             };
-            if !PORT_KINDS.contains(&p.kind.as_str()) {
-                return Err(ContractError::new(
-                    at,
-                    format!(
-                        "{label} {:?}: kind {:?} must be \"signal\", \"message\", or \"context\"",
-                        p.name, p.kind
-                    ),
-                ));
-            }
             if !is_snake_case(&p.name) {
                 return Err(ContractError::new(
                     at,
@@ -206,6 +330,21 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
                     at,
                     format!("duplicate {label} port name {:?}", p.name),
                 ));
+            }
+            // A port is declared either by ADR-0028 `shape` or by the legacy `kind` carrier.
+            match &p.shape {
+                Some(shape) => validate_shaped_port(at, label, p, shape)?,
+                None => {
+                    if !PORT_KINDS.contains(&p.kind.as_str()) {
+                        return Err(ContractError::new(
+                            at,
+                            format!(
+                                "{label} {:?}: kind {:?} must be \"signal\", \"message\", or \"context\"",
+                                p.name, p.kind
+                            ),
+                        ));
+                    }
+                }
             }
         }
     }
@@ -290,6 +429,49 @@ mod tests {
         );
         assert_eq!(e.locus, Locus::Param(0), "{}", e.message);
         assert!(e.message.contains("snake_case"), "{}", e.message);
+    }
+
+    #[test]
+    fn accepts_shape_declared_ports() {
+        // A filter-shaped contract: bare float, float-with-meta, and an enum input.
+        assert!(validate(&spec(
+            r#"{ "type_name": "filter",
+                 "inputs": [
+                   {"name":"audio","shape":"float"},
+                   {"name":"cutoff","shape":"float","float":{"min":20,"max":20000,"default":1000,"unit":"Hz","curve":"exponential"}},
+                   {"name":"mode","shape":"enum","variants":["Lp","Hp","Bp"]} ],
+                 "outputs": [ {"name":"audio","shape":"float"} ] }"#
+        ))
+        .is_ok());
+    }
+
+    #[test]
+    fn rejects_malformed_shaped_ports() {
+        let bad_shape =
+            err(r#"{ "type_name": "x", "inputs": [ {"name":"a","shape":"harmony"} ] }"#);
+        assert_eq!(bad_shape.locus, Locus::Input(0));
+        assert!(bad_shape.message.contains("shape"), "{}", bad_shape.message);
+
+        let no_variants = err(r#"{ "type_name": "x", "inputs": [ {"name":"a","shape":"enum"} ] }"#);
+        assert!(
+            no_variants.message.contains("variant"),
+            "{}",
+            no_variants.message
+        );
+
+        let dup_variant = err(
+            r#"{ "type_name": "x", "inputs": [ {"name":"a","shape":"enum","variants":["Lp","Lp"]} ] }"#,
+        );
+        assert!(
+            dup_variant.message.contains("duplicate"),
+            "{}",
+            dup_variant.message
+        );
+
+        let oob = err(
+            r#"{ "type_name": "x", "inputs": [ {"name":"a","shape":"float","float":{"min":0,"max":1,"default":5}} ] }"#,
+        );
+        assert!(oob.message.contains("outside"), "{}", oob.message);
     }
 
     #[test]

@@ -222,6 +222,17 @@ of carrier. One `inputs` map; a value is a **literal** *or* a **wire-ref**; Cons
 `cutoff: 1000` and `cutoff: { "from": "/lfo.audio" }` target the **same slot**; `mode` is a named
 enum, not `0`/`1`/`2`.
 
+### Enum over the wire: symbol primary, index fallback
+
+An `Enum` input is addressed **by symbol** — its variant name (`/filt/mode "Hp"`, `"mode": "Hp"`):
+the human-legible, refactor-stable form, and what an OSC string carries. A bare **integer index**
+(`/filt/mode 1`) is accepted as a **fallback** (the on-wire form of the variant's position), in
+range. Resolution lives in one place — `EnumMeta::resolve` (match a variant symbol, else parse an
+in-range index) — single-sourced with the macro-generated `Enum` type's `VARIANTS` / `from_index`
+so the descriptor and the type cannot drift. An unknown symbol or an out-of-range index is a
+**shape-mismatch error**; it never silently snaps to the default. This binding is locked before the
+operator sweep so every `Enum` operator agrees on it (refactor plan §1.7).
+
 ### The contract macro declares it once
 
 [ADR-0025](0025-single-source-operator-contract.md)'s single-source `operator_contract!` stays

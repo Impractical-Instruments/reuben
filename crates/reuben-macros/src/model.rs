@@ -5,13 +5,30 @@
 
 use reuben_contract::{naming, LaneSpec, OperatorSpec, PortSpec};
 
-/// One resolved port: its index const (`IN_FREQ`), its per-kind ordinal, and its source name/kind.
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// The resolved `float { .. }` meta on a shaped port (ADR-0028), curve normalised to
+/// `"linear"`/`"exponential"`. Mirrors [`ParamModel`] minus the const/index.
+#[derive(Debug, Clone, PartialEq)]
+pub struct FloatModel {
+    pub min: f32,
+    pub max: f32,
+    pub default: f32,
+    pub unit: String,
+    pub curve: String,
+}
+
+/// One resolved port: its index const (`IN_FREQ`), ordinal, source name, and either its legacy
+/// `kind` or its ADR-0028 `shape` (+ the `float`/`enum` payload the shape carries). For a shaped
+/// port the ordinal is **sequential** within inputs/outputs (the new world numbers ports in
+/// declaration order); a wholly-legacy port list keeps the historical **per-kind** ordinals.
+#[derive(Debug, Clone, PartialEq)]
 pub struct PortModel {
     pub const_name: String,
     pub ordinal: usize,
     pub name: String,
     pub kind: String,
+    pub shape: Option<String>,
+    pub float: Option<FloatModel>,
+    pub variants: Vec<String>,
 }
 
 /// One resolved param: its index const (`P_FREQ`), slot index, and metadata. `curve` is already
@@ -51,25 +68,33 @@ pub struct ContractModel {
 /// start at ordinal 0, two signal outputs are 0 and 1. This is the single home of that counting
 /// — it used to live, hand-written, in `scaffold::port_consts`.
 fn port_models(ports: &[PortSpec], prefix: &str) -> Vec<PortModel> {
+    // ADR-0028: a shape-declared list numbers ports sequentially (the new world indexes inputs in
+    // declaration order); a wholly-legacy list keeps the per-kind ordinals it always had.
+    let shaped = ports.iter().any(|p| p.shape.is_some());
     let (mut sig, mut msg, mut ctx) = (0usize, 0usize, 0usize);
     ports
         .iter()
-        .map(|p| {
-            let ordinal = match p.kind.as_str() {
-                "message" => {
-                    let i = msg;
-                    msg += 1;
-                    i
-                }
-                "context" => {
-                    let i = ctx;
-                    ctx += 1;
-                    i
-                }
-                _ => {
-                    let i = sig;
-                    sig += 1;
-                    i
+        .enumerate()
+        .map(|(idx, p)| {
+            let ordinal = if shaped {
+                idx
+            } else {
+                match p.kind.as_str() {
+                    "message" => {
+                        let i = msg;
+                        msg += 1;
+                        i
+                    }
+                    "context" => {
+                        let i = ctx;
+                        ctx += 1;
+                        i
+                    }
+                    _ => {
+                        let i = sig;
+                        sig += 1;
+                        i
+                    }
                 }
             };
             PortModel {
@@ -77,6 +102,15 @@ fn port_models(ports: &[PortSpec], prefix: &str) -> Vec<PortModel> {
                 ordinal,
                 name: p.name.clone(),
                 kind: p.kind.clone(),
+                shape: p.shape.clone(),
+                float: p.float.as_ref().map(|m| FloatModel {
+                    min: m.min,
+                    max: m.max,
+                    default: m.default,
+                    unit: m.unit.clone(),
+                    curve: m.curve.clone(),
+                }),
+                variants: p.variants.clone(),
             }
         })
         .collect()
@@ -171,6 +205,30 @@ mod tests {
         assert_eq!(m.params[0].const_name, "P_VOICES");
         assert_eq!(m.params[0].index, 0);
         assert_eq!(m.lanes, LaneModel::FromParam("P_VOICES".to_string()));
+    }
+
+    // ADR-0028: a shape-declared input list numbers ports sequentially (declaration order),
+    // carrying the shape + payload, unlike the per-kind legacy numbering above.
+    #[test]
+    fn shaped_ports_number_sequentially() {
+        let m = build(&spec(
+            r#"{ "type_name": "filter",
+                 "inputs": [ {"name":"audio","shape":"float"},
+                             {"name":"cutoff","shape":"float","float":{"min":20,"max":20000,"default":1000,"unit":"Hz","curve":"exponential"}},
+                             {"name":"mode","shape":"enum","variants":["Lp","Hp","Bp"]} ] }"#,
+        ));
+        assert_eq!(
+            (m.inputs[0].const_name.as_str(), m.inputs[0].ordinal),
+            ("IN_AUDIO", 0)
+        );
+        assert_eq!(
+            (m.inputs[2].const_name.as_str(), m.inputs[2].ordinal),
+            ("IN_MODE", 2)
+        );
+        assert_eq!(m.inputs[1].shape.as_deref(), Some("float"));
+        assert_eq!(m.inputs[1].float.as_ref().map(|f| f.default), Some(1000.0));
+        assert_eq!(m.inputs[2].shape.as_deref(), Some("enum"));
+        assert_eq!(m.inputs[2].variants, vec!["Lp", "Hp", "Bp"]);
     }
 
     // Tracer step 3 (cont): a six-param shape (the `map` profile) with mixed curves and units.

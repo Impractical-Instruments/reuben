@@ -60,6 +60,43 @@ pub enum ConstantShape {
     Enum,
 }
 
+/// Metadata for an [`Shape::Enum`] input (ADR-0028): the closed, ordered set of named choices an
+/// author may pick, plus which one is the unwired default.
+///
+/// `variants` are the stable wire **symbols** — PascalCase Rust identifiers (`"Lp"`, `"Sine"`) —
+/// emitted by the `operator_contract!`-generated `Enum` type (its `VARIANTS`), so the descriptor
+/// and the type never drift. A variant's position is its on-wire integer **index** (the fallback
+/// form). See [`EnumMeta::resolve`] for the symbol-primary / index-fallback binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumMeta {
+    pub name: &'static str,
+    pub variants: &'static [&'static str],
+    /// Index into `variants` of the unwired default choice.
+    pub default: usize,
+}
+
+impl EnumMeta {
+    /// Resolve a wire token to a variant index — the ADR-0028 **Enum-over-OSC binding**. A
+    /// **symbol** (`"Hp"`) is matched against [`variants`](Self::variants); that is the primary,
+    /// human-legible form an author writes (`"mode": "Hp"`) and an OSC string carries. A bare
+    /// **integer** (`"1"`) is accepted as a fallback index, in range. `None` if it is neither a
+    /// known symbol nor an in-range index.
+    pub fn resolve(&self, token: &str) -> Option<usize> {
+        if let Some(i) = self.variants.iter().position(|v| *v == token) {
+            return Some(i);
+        }
+        token
+            .parse::<usize>()
+            .ok()
+            .filter(|&i| i < self.variants.len())
+    }
+
+    /// The default variant's symbol.
+    pub fn default_symbol(&self) -> &'static str {
+        self.variants[self.default]
+    }
+}
+
 /// A named input or output port.
 ///
 /// `kind` is the legacy [`PortKind`] carrier (ADR-0017); `shape` is the ADR-0028 axis. `meta`
@@ -67,12 +104,14 @@ pub enum ConstantShape {
 /// its unwired default and is served as a per-sample buffer the engine fills from a latched
 /// scalar (ADR-0028 materialize). A legacy `signal` input leaves `meta` `None` and keeps the
 /// old "unwired ⇒ `None`, fall back to a same-named param" behavior until its operator migrates.
+/// `enum_meta` is `Some` only for an [`Shape::Enum`] input.
 #[derive(Debug, Clone)]
 pub struct Port {
     pub name: &'static str,
     pub kind: PortKind,
     pub shape: Shape,
     pub meta: Option<ParamMeta>,
+    pub enum_meta: Option<EnumMeta>,
 }
 
 impl Port {
@@ -82,6 +121,7 @@ impl Port {
             kind: PortKind::Signal,
             shape: Shape::Float,
             meta: None,
+            enum_meta: None,
         }
     }
     pub const fn message(name: &'static str) -> Self {
@@ -90,6 +130,7 @@ impl Port {
             kind: PortKind::Message,
             shape: Shape::Note,
             meta: None,
+            enum_meta: None,
         }
     }
     pub const fn context(name: &'static str) -> Self {
@@ -98,6 +139,7 @@ impl Port {
             kind: PortKind::Context,
             shape: Shape::Harmony,
             meta: None,
+            enum_meta: None,
         }
     }
 
@@ -112,6 +154,22 @@ impl Port {
             kind: PortKind::Signal,
             shape: Shape::Float,
             meta: Some(meta),
+            enum_meta: None,
+        }
+    }
+
+    /// An [`Shape::Enum`] input (ADR-0028): a held, live-switchable named choice (filter `mode`,
+    /// osc `waveform`). `kind` is set to the legacy [`PortKind::Message`] carrier — an honest
+    /// placeholder (an `Enum` change rides the message wire as a block-sliced discrete update);
+    /// `Enum` is new in ADR-0028 and has no true legacy carrier, so this field is vestigial here
+    /// and retired with [`PortKind`] once the sweep completes. `shape`/`enum_meta` are the truth.
+    pub fn enumerated(meta: EnumMeta) -> Self {
+        Self {
+            name: meta.name,
+            kind: PortKind::Message,
+            shape: Shape::Enum,
+            meta: None,
+            enum_meta: Some(meta),
         }
     }
 
@@ -219,5 +277,16 @@ impl Descriptor {
             .enumerate()
             .find(|(_, p)| p.name == name && p.is_materialized())
             .and_then(|(i, p)| p.meta.as_ref().map(|m| (i, m)))
+    }
+
+    /// Index + metadata of an [`Shape::Enum`] input named `name` (ADR-0028), for resolving a
+    /// `/node/<name> "Hp"` symbol (or fallback index) to its held variant. `None` for non-enum
+    /// inputs and non-inputs.
+    pub fn enum_input(&self, name: &str) -> Option<(usize, &EnumMeta)> {
+        self.inputs
+            .iter()
+            .enumerate()
+            .find(|(_, p)| p.name == name && p.enum_meta.is_some())
+            .and_then(|(i, p)| p.enum_meta.as_ref().map(|m| (i, m)))
     }
 }
