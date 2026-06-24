@@ -464,37 +464,44 @@ fn process_node(
     // final value as the next block's latch, and flag `varying` (changed this block). Done before
     // the output-swap — scratch buffers are inputs, disjoint from this node's outputs. Float
     // changes do NOT split the block; sample-accuracy comes from writing them into the buffer at
-    // their frame. Legacy / wired inputs keep `varying == true` (the empty-slice default).
-    let varying: SmallVec<[bool; 8]> = if node.materialize.is_empty() {
-        SmallVec::new()
-    } else {
-        let mut varying = SmallVec::<[bool; 8]>::from_elem(true, node.inputs.len());
-        for k in 0..node.materialize.len() {
-            let (port, buf) = node.materialize[k];
-            let target = &mut arena[buf];
-            let mut v = node.input_latches[port];
-            let mut changed = false;
-            let mut cursor = 0usize;
-            for &(f, p, val) in &route.floats {
-                if p != port {
-                    continue;
-                }
-                let f = f.min(block_size);
-                for slot in &mut target[cursor..f] {
-                    *slot = v;
-                }
-                cursor = f;
-                v = val;
-                changed = true;
+    // their frame.
+    //
+    // `node.varying` is preallocated at instantiate (length = input count) and reused — the audio
+    // thread never allocates it, even for an operator with >8 inputs. It is all-`true` to start;
+    // only materialized ports are rewritten here, so legacy / wired ports keep `true` (the same
+    // conservative default `Io::varying` reports for an unattached slice).
+    //
+    // NOTE: the trailing fill rewrites the whole buffer every block, even when `!changed`. ADR-0028
+    // frames held-unchanged Float inputs as "cached, refilled only on change, steady-state ~nil" —
+    // that is NOT yet realized, because `render_block` blanket-zeroes the entire arena each block
+    // ("fresh edge buffers" invariant), so the held value must be re-written over those zeros
+    // regardless. Realizing the cache means excluding materialize scratch from that clear and
+    // guarding this fill on `changed`; deferred past Phase 0 (no correctness impact, output is
+    // identical either way).
+    for k in 0..node.materialize.len() {
+        let (port, buf) = node.materialize[k];
+        let target = &mut arena[buf];
+        let mut v = node.input_latches[port];
+        let mut changed = false;
+        let mut cursor = 0usize;
+        for &(f, p, val) in &route.floats {
+            if p != port {
+                continue;
             }
-            for slot in &mut target[cursor..block_size] {
+            let f = f.min(block_size);
+            for slot in &mut target[cursor..f] {
                 *slot = v;
             }
-            node.input_latches[port] = v;
-            varying[port] = changed;
+            cursor = f;
+            v = val;
+            changed = true;
         }
-        varying
-    };
+        for slot in &mut target[cursor..block_size] {
+            *slot = v;
+        }
+        node.input_latches[port] = v;
+        node.varying[port] = changed;
+    }
 
     // Segment boundaries: 0, block_size, every interior param frame, every interior context
     // change frame (ADR-0015 — so a chord/key change splits the block and the follower reads
@@ -616,7 +623,7 @@ fn process_node(
             )
             .with_lane(lane, node.lanes)
             .with_contexts(&seg_contexts)
-            .with_varying(&varying);
+            .with_varying(&node.varying);
             // Lane 0 collects emissions and context publishes; their frames are stamped
             // block-absolute by adding this segment's start (ADR-0014, ADR-0015). Other Lanes
             // neither emit nor publish (single-Lane, pre-fan-out).

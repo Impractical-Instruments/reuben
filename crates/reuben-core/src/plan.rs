@@ -43,6 +43,11 @@ pub struct PlanNode {
     /// Latched current scalar per input port (ADR-0028), carried across blocks. Meaningful only
     /// for ports listed in `materialize`; other slots are unused. Seeded from each input's default.
     pub input_latches: Vec<f32>,
+    /// Per-input `varying` hint (ADR-0028), in input-port order — preallocated here (length known
+    /// at instantiate) and reused every block so the audio thread never allocates it, even for an
+    /// operator with >8 inputs. Initialised all-`true`; Render rewrites only the materialized
+    /// ports each block (`false` ⇒ held unchanged this block). Legacy / wired ports stay `true`.
+    pub varying: Vec<bool>,
     /// For each output port: this node's per-Lane arena buffer indices (length `lanes`).
     pub outputs: Vec<Vec<usize>>,
     /// Message-edge routing (ADR-0014): for each of this node's Message output ports (in
@@ -190,6 +195,8 @@ impl Plan {
             let mut inputs: Vec<Option<Vec<usize>>> = Vec::with_capacity(descriptor.inputs.len());
             let mut materialize: Vec<(usize, usize)> = Vec::new();
             let mut input_latches: Vec<f32> = vec![0.0; descriptor.inputs.len()];
+            // Preallocated once; Render reuses it every block (no audio-thread alloc, ADR-0028).
+            let varying: Vec<bool> = vec![true; descriptor.inputs.len()];
             for (port, p) in descriptor.inputs.iter().enumerate() {
                 // Only Signal inputs take an arena buffer; Message and Context inputs carry no
                 // Signal data (events/context arrive via routing).
@@ -294,6 +301,7 @@ impl Plan {
                 inputs,
                 materialize,
                 input_latches,
+                varying,
                 outputs,
                 msg_targets,
                 context_inputs,
