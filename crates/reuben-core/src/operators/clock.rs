@@ -96,7 +96,12 @@ impl Operator for Clock {
                 }
                 *s = phase as f32;
                 phase += dt;
-                phase -= phase.floor();
+                // Wrap to [0,1). `dt` is beats/sample (≤ 999/60/sr ≪ 1), so after one increment
+                // `phase < 2` and a single conditional subtraction is exactly `phase.floor()` here
+                // — without the per-sample out-of-line libm `floor` call (hot path, ADR-0019).
+                if phase >= 1.0 {
+                    phase -= 1.0;
+                }
             }
             end = phase;
         }
@@ -114,7 +119,12 @@ impl Operator for Clock {
                 let sub = (phase * division).fract();
                 *s = if sub < 0.5 { 1.0 } else { 0.0 };
                 phase += dt;
-                phase -= phase.floor();
+                // Wrap to [0,1). `dt` is beats/sample (≤ 999/60/sr ≪ 1), so after one increment
+                // `phase < 2` and a single conditional subtraction is exactly `phase.floor()` here
+                // — without the per-sample out-of-line libm `floor` call (hot path, ADR-0019).
+                if phase >= 1.0 {
+                    phase -= 1.0;
+                }
             }
         }
         self.phase = end;
