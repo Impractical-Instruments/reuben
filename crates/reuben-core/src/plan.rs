@@ -48,6 +48,12 @@ pub struct PlanNode {
     /// operator with >8 inputs. Initialised all-`true`; Render rewrites only the materialized
     /// ports each block (`false` ⇒ held unchanged this block). Legacy / wired ports stay `true`.
     pub varying: Vec<bool>,
+    /// Held [`Shape::Enum`](crate::descriptor::Shape) value per input port (ADR-0028), as the
+    /// variant index. In input-port order (length = input count); `0` for non-enum ports. Seeded
+    /// from each enum input's default (or an author override) and carried across blocks; Render
+    /// block-slices at enum changes and updates the slot at each change frame. Read via
+    /// [`Io::enum_index`](crate::operator::Io::enum_index).
+    pub enum_latches: Vec<usize>,
     /// For each output port: this node's per-Lane arena buffer indices (length `lanes`).
     pub outputs: Vec<Vec<usize>>,
     /// Message-edge routing (ADR-0014): for each of this node's Message output ports (in
@@ -188,6 +194,22 @@ impl Plan {
             let n_lanes = lanes[*key];
             let descriptor = &graph.nodes[*key].descriptor;
             let overrides = &graph.nodes[*key].input_overrides;
+            let enum_overrides = &graph.nodes[*key].enum_overrides;
+            // Held enum value per input port (ADR-0028): an enum input's default (or an author
+            // override), `0` elsewhere. Carried across blocks; Render updates it at change frames.
+            let enum_latches: Vec<usize> = descriptor
+                .inputs
+                .iter()
+                .enumerate()
+                .map(|(port, p)| match &p.enum_meta {
+                    Some(e) => enum_overrides
+                        .iter()
+                        .find(|(po, _)| *po == port)
+                        .map(|(_, i)| *i)
+                        .unwrap_or(e.default),
+                    None => 0,
+                })
+                .collect();
             // Signal inputs wire to the source's arena buffers; Message inputs carry no
             // Signal data (events arrive via routing, ADR-0014) so they take no buffer. A
             // new-style materialized Float input that is unwired gets a dedicated scratch
@@ -302,6 +324,7 @@ impl Plan {
                 materialize,
                 input_latches,
                 varying,
+                enum_latches,
                 outputs,
                 msg_targets,
                 context_inputs,

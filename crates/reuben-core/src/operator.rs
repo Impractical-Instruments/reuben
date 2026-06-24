@@ -65,6 +65,10 @@ pub struct Io<'a> {
     /// const-folding operator may reuse cached coefficients. Empty when unattached — `varying()`
     /// then conservatively reports `true` (always recompute), which a naive operator ignores.
     varying: &'a [bool],
+    /// Held [`Shape::Enum`](crate::descriptor::Shape) value per input port (ADR-0028), as the
+    /// variant **index**, constant for this (sub)block (the engine block-slices at enum changes).
+    /// In input-port order; `0` for non-enum / unconnected ports. Read via [`Io::enum_index`].
+    enums: &'a [usize],
 }
 
 impl<'a> Io<'a> {
@@ -100,6 +104,7 @@ impl<'a> Io<'a> {
             outbound: None,
             frame_offset: 0,
             varying: &[],
+            enums: &[],
         }
     }
 
@@ -107,6 +112,13 @@ impl<'a> Io<'a> {
     /// read by [`Io::varying`]. Unattached ⇒ `varying()` reports `true`.
     pub(crate) fn with_varying(mut self, varying: &'a [bool]) -> Self {
         self.varying = varying;
+        self
+    }
+
+    /// Attach the held [`Shape::Enum`](crate::descriptor::Shape) values for this segment (ADR-0028),
+    /// in input-port order. Read by [`Io::enum_index`]. Unattached ⇒ `enum_index()` reports `0`.
+    pub(crate) fn with_enums(mut self, enums: &'a [usize]) -> Self {
+        self.enums = enums;
         self
     }
 
@@ -207,6 +219,15 @@ impl<'a> Io<'a> {
     /// Current value of a param slot (constant for this call).
     pub fn param(&self, slot: usize) -> f32 {
         self.params[slot]
+    }
+
+    /// **Held read view of an [`Shape::Enum`](crate::descriptor::Shape) input** (ADR-0028) — the
+    /// current variant **index**, constant for this (sub)block (the engine block-slices at enum
+    /// changes, so an operator sees one choice per call). The operator maps it to its generated
+    /// enum type, e.g. `Waveform::from_index(io.enum_index(IN_WAVEFORM)).unwrap_or_default()`.
+    /// Returns the input's latched default (or `0` when unattached / non-enum).
+    pub fn enum_index(&self, port: usize) -> usize {
+        self.enums.get(port).copied().unwrap_or(0)
     }
 
     /// Routed [`Event`]s for this (sub)block, frames relative to the segment start.

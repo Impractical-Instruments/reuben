@@ -292,11 +292,13 @@ impl InstrumentDoc {
             }
             let key = graph.add_boxed(&n.address, (entry.make)(), descriptor.clone());
             for (name, value) in &n.params {
-                // A value targets either a param slot or a materialized Float input (ADR-0028:
-                // the old "signal port + same-named unwired-default param" is now one input).
-                // `set_param` routes to whichever matches; an unknown name is a load error.
+                // A value targets a param slot, a materialized Float input, or an Enum input
+                // (ADR-0028: the old "signal port + same-named unwired-default param" is now one
+                // input; an enum choice set as its index). `set_param` routes to whichever matches;
+                // an unknown name is a load error.
                 if descriptor.param_index(name).is_none()
                     && descriptor.materialized_input(name).is_none()
+                    && descriptor.enum_input(name).is_none()
                 {
                     return Err(LoadError::UnknownParam {
                         node: n.address.clone(),
@@ -341,13 +343,23 @@ impl InstrumentDoc {
             .nodes
             .values()
             .map(|node| {
-                let params = node
+                let mut params: BTreeMap<String, f32> = node
                     .descriptor
                     .params
                     .iter()
                     .enumerate()
                     .map(|(i, p)| (p.name.to_string(), node.params[i]))
                     .collect();
+                // Materialized `Float` input overrides (ADR-0028) round-trip as the input's name —
+                // the old "unwired-default param" now lives on the input, so save must emit it.
+                for &(port, v) in &node.input_overrides {
+                    params.insert(node.descriptor.inputs[port].name.to_string(), v);
+                }
+                // `Enum` input overrides save as the variant **index** (the numeric settable
+                // surface the loader reads back via `set_param`'s index fallback).
+                for &(port, idx) in &node.enum_overrides {
+                    params.insert(node.descriptor.inputs[port].name.to_string(), idx as f32);
+                }
                 NodeDoc {
                     type_name: node.descriptor.type_name.to_string(),
                     address: node.address.clone(),

@@ -20,7 +20,19 @@ pub struct OperatorInfo {
     pub outputs: Vec<PortInfo>,
     pub params: Vec<ParamInfo>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub enums: Vec<EnumInfo>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<String>,
+}
+
+/// One settable `Enum` input (ADR-0028): a held, live-switchable named choice, surfaced for an
+/// author alongside the numeric `params` (it is a separate, non-numeric settable surface).
+#[derive(Debug, Serialize)]
+pub struct EnumInfo {
+    pub name: String,
+    pub variants: Vec<String>,
+    /// The unwired default variant symbol.
+    pub default: String,
 }
 
 #[derive(Debug, Serialize)]
@@ -92,11 +104,22 @@ impl OperatorInfo {
                 curve: curve(m.curve).to_string(),
             });
         }
+        // Enum inputs (ADR-0028) are a non-numeric settable surface — list their variants + default
+        // so an author can set e.g. `mode`/`waveform` by name.
+        let enums = d
+            .enum_inputs()
+            .map(|(name, e)| EnumInfo {
+                name: name.to_string(),
+                variants: e.variants.iter().map(|v| v.to_string()).collect(),
+                default: e.default_symbol().to_string(),
+            })
+            .collect();
         OperatorInfo {
             type_name: d.type_name.to_string(),
             inputs: ports(&d.inputs),
             outputs: ports(&d.outputs),
             params,
+            enums,
             resources: d.resources.iter().map(|r| r.name.to_string()).collect(),
         }
     }

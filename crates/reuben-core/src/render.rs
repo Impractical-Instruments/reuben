@@ -365,6 +365,11 @@ struct NodeRoute {
     /// the input's materialized buffer at their frame, so a per-sample reader sees them
     /// sample-accurately in one `process` call. Sorted by frame.
     floats: Vec<(usize, usize, f32)>,
+    /// (frame, input port, variant index) — a change to an [`Shape::Enum`] input (ADR-0028). Like
+    /// `params` these **split** the block (a held discrete choice is constant per `process` call):
+    /// each interior frame becomes a segment boundary and updates the port's enum latch. Sorted
+    /// by frame.
+    enums: Vec<(usize, usize, usize)>,
     /// Routed events (by reference into the block's Messages) — for event operators.
     events: Vec<RoutedEvent>,
     /// (frame, context slot, pool index) — a context change a follower reads; each frame
@@ -383,6 +388,7 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
     for r in routes.iter_mut() {
         r.params.clear();
         r.floats.clear();
+        r.enums.clear();
         r.events.clear();
         r.context.clear();
     }
@@ -397,6 +403,14 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
             if let Some((port, meta)) = node.descriptor.materialized_input(local) {
                 if let Some(v) = msg.first_f32() {
                     routes[i].floats.push((msg.frame, port, meta.clamp(v)));
+                }
+                break;
+            }
+            // An Enum input resolves its first arg as a wire token (symbol `"Hp"` or fallback
+            // index `"1"`) to a held variant index; like a param it splits the block (ADR-0028).
+            if let Some((port, e)) = node.descriptor.enum_input(local) {
+                if let Some(idx) = msg.args.first().and_then(|a| e.resolve(&a.enum_token())) {
+                    routes[i].enums.push((msg.frame, port, idx));
                 }
                 break;
             }
@@ -424,6 +438,7 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
     for r in routes.iter_mut() {
         r.params.sort_by_key(|(f, _, _)| *f);
         r.floats.sort_by_key(|(f, _, _)| *f);
+        r.enums.sort_by_key(|(f, _, _)| *f);
     }
 }
 
@@ -503,13 +518,19 @@ fn process_node(
         node.varying[port] = changed;
     }
 
-    // Segment boundaries: 0, block_size, every interior param frame, every interior context
-    // change frame (ADR-0015 — so a chord/key change splits the block and the follower reads
-    // the right context per segment). Sort + dedup since param and context frames interleave.
+    // Segment boundaries: 0, block_size, every interior param frame, every interior enum-change
+    // frame (ADR-0028 — a held discrete choice is constant per call), and every interior context
+    // change frame (ADR-0015 — so a chord/key change splits the block and the follower reads the
+    // right context per segment). Sort + dedup since these frames interleave.
     bounds.clear();
     bounds.push(0);
     bounds.push(block_size);
     for &(f, _, _) in params {
+        if f > 0 && f < block_size {
+            bounds.push(f);
+        }
+    }
+    for &(f, _, _) in &route.enums {
         if f > 0 && f < block_size {
             bounds.push(f);
         }
@@ -536,6 +557,14 @@ fn process_node(
         let (seg_start, seg_end) = (w[0], w[1]);
         if seg_start >= seg_end {
             continue;
+        }
+
+        // Apply enum updates landing at this segment's start: latch the held variant index, read
+        // by every Lane via `io.enum_index` (ADR-0028). Persists across blocks.
+        for &(f, port, idx) in &route.enums {
+            if f == seg_start {
+                node.enum_latches[port] = idx;
+            }
         }
 
         // Apply param updates landing at this segment's start (shared across Lanes).
@@ -623,7 +652,8 @@ fn process_node(
             )
             .with_lane(lane, node.lanes)
             .with_contexts(&seg_contexts)
-            .with_varying(&node.varying);
+            .with_varying(&node.varying)
+            .with_enums(&node.enum_latches);
             // Lane 0 collects emissions and context publishes; their frames are stamped
             // block-absolute by adding this segment's start (ADR-0014, ADR-0015). Other Lanes
             // neither emit nor publish (single-Lane, pre-fan-out).

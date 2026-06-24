@@ -467,11 +467,23 @@
                     "type": "number"
                   },
                   "mode": {
-                    "default": 0.0,
-                    "description": "unit: , curve: Linear",
-                    "maximum": 2.0,
-                    "minimum": 0.0,
-                    "type": "number"
+                    "default": 0,
+                    "description": "one of [\"Lp\", \"Hp\", \"Bp\"] (or its index)",
+                    "oneOf": [
+                      {
+                        "enum": [
+                          "Lp",
+                          "Hp",
+                          "Bp"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "maximum": 2,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    ]
                   },
                   "resonance": {
                     "default": 0.20000000298023224,
@@ -751,11 +763,22 @@
                     "type": "number"
                   },
                   "waveform": {
-                    "default": 0.0,
-                    "description": "unit: , curve: Linear",
-                    "maximum": 1.0,
-                    "minimum": 0.0,
-                    "type": "number"
+                    "default": 0,
+                    "description": "one of [\"Sine\", \"Saw\"] (or its index)",
+                    "oneOf": [
+                      {
+                        "enum": [
+                          "Sine",
+                          "Saw"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "maximum": 1,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    ]
                   }
                 },
                 "type": "object"

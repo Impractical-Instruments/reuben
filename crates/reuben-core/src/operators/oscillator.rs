@@ -10,20 +10,24 @@
 //!   changes at their frame; when wired (an LFO, a Voicer) the source buffer passes through. No
 //!   more "signal port + same-named unwired-default param" pair, and no wired/unwired branch in
 //!   `process` — `io.signal(IN_FREQ)` is always a buffer.
-//! - input 1: `waveform` (`Float`) — 0.0 = sine, ≥0.5 = saw. Read block-rate via `io.value`.
-//!   (Becomes an `Enum` input in the Phase 2 sweep; a `Float` here keeps Phase 0 scoped to the
-//!   materialize discipline.)
+//! - input 1: `waveform` (`Enum` {Sine, Saw}) — held, live-switchable choice read via
+//!   `io.enum_index` (the Phase 2 reclassification of the Phase 0 placeholder `Float`).
 //! - output 0: `audio` (`Float`).
 
-use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
+use crate::descriptor::{Curve, Descriptor, EnumMeta, LaneRule, ParamMeta, Port};
 use crate::operator::{Io, Operator};
 
 /// `freq` input (materialized `Float`).
 pub const IN_FREQ: usize = 0;
-/// `waveform` input (materialized `Float`).
+/// `waveform` input (`Enum` {Sine, Saw}).
 pub const IN_WAVEFORM: usize = 1;
 /// `audio` output (`Float`).
 pub const OUT_AUDIO: usize = 0;
+
+/// `waveform` variant indices (the on-wire symbol table — index-aligned with [`WAVEFORMS`]).
+const WAVEFORMS: &[&str] = &["Sine", "Saw"];
+const WAVE_SINE: usize = 0;
+const WAVE_SAW: usize = 1;
 
 #[derive(Default)]
 pub struct Oscillator {
@@ -50,13 +54,10 @@ impl Operator for Oscillator {
                     unit: "Hz",
                     curve: Curve::Exponential,
                 }),
-                Port::float(ParamMeta {
+                Port::enumerated(EnumMeta {
                     name: "waveform",
-                    min: 0.0,
-                    max: 1.0,
-                    default: 0.0,
-                    unit: "",
-                    curve: Curve::Linear,
+                    variants: WAVEFORMS,
+                    default: WAVE_SINE,
                 }),
             ],
             outputs: vec![Port::signal("audio")],
@@ -75,8 +76,8 @@ impl Operator for Oscillator {
             0.0
         };
 
-        // Waveform is a block-rate choice — one scalar read of the materialized value.
-        let is_saw = io.value(IN_WAVEFORM) >= 0.5;
+        // Waveform is a held `Enum` choice (ADR-0028) — one index read, constant for this call.
+        let is_saw = io.enum_index(IN_WAVEFORM) == WAVE_SAW;
 
         // Stage 1: copy the per-sample frequency into the output buffer. `freq` is a `Float`
         // input, so it is always a buffer (wired source or materialized latch) — one read path,
@@ -143,7 +144,7 @@ mod tests {
     use super::*;
     use crate::config::AudioConfig;
     use crate::graph::Graph;
-    use crate::message::Message;
+    use crate::message::{Arg, Message};
     use crate::operator::Io;
     use crate::plan::Plan;
     use crate::render::Renderer;
@@ -156,16 +157,17 @@ mod tests {
         sample_rate: f32,
         n: usize,
         freq: f32,
-        waveform: f32,
+        waveform: usize,
     ) -> Vec<f32> {
         let freq_buf = vec![freq; n];
-        let wave_buf = vec![waveform; n];
         let mut o0 = vec![0.0f32; n];
         {
             let outs: Vec<&mut [f32]> = vec![&mut o0[..]];
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&freq_buf[..]), Some(&wave_buf[..])];
+            // `freq` is a `Float` input (buffer); `waveform` is an `Enum` input (held index, no buffer).
+            let inputs: Vec<Option<&[f32]>> = vec![Some(&freq_buf[..]), None];
             let params: Vec<f32> = vec![];
-            let mut io = Io::new(sample_rate, n, inputs, outs, &params, &[]);
+            let enums = [0usize, waveform];
+            let mut io = Io::new(sample_rate, n, inputs, outs, &params, &[]).with_enums(&enums);
             osc.process(&mut io);
         }
         o0
@@ -189,7 +191,7 @@ mod tests {
         let sr = 48_000.0f32;
         let n = sr as usize; // ~1 second in a single call
         let mut osc = Oscillator::new();
-        let out = render_once(&mut osc, sr, n, 440.0, 0.0);
+        let out = render_once(&mut osc, sr, n, 440.0, WAVE_SINE);
 
         let crossings = upward_crossings(&out);
         assert!(
@@ -212,8 +214,8 @@ mod tests {
         let freq = 440.0f32;
         let mut osc = Oscillator::new();
 
-        let a = render_once(&mut osc, sr, n, freq, 0.0);
-        let b = render_once(&mut osc, sr, n, freq, 0.0);
+        let a = render_once(&mut osc, sr, n, freq, WAVE_SINE);
+        let b = render_once(&mut osc, sr, n, freq, WAVE_SINE);
 
         let mut max_inblock = 0.0f32;
         for w in a.windows(2) {
@@ -240,7 +242,7 @@ mod tests {
         let sr = 48_000.0f32;
         let n = sr as usize;
         let mut osc = Oscillator::new();
-        let out = render_once(&mut osc, sr, n, 880.0, 0.0);
+        let out = render_once(&mut osc, sr, n, 880.0, WAVE_SINE);
 
         let crossings = upward_crossings(&out);
         assert!(
@@ -256,7 +258,7 @@ mod tests {
         let freq = 100.0f32;
         let n = (sr / freq) as usize; // exactly one period worth of samples
         let mut osc = Oscillator::new();
-        let out = render_once(&mut osc, sr, n, freq, 1.0);
+        let out = render_once(&mut osc, sr, n, freq, WAVE_SAW);
 
         let min = out.iter().fold(f32::INFINITY, |m, &s| m.min(s));
         let max = out.iter().fold(f32::NEG_INFINITY, |m, &s| m.max(s));
@@ -403,6 +405,56 @@ mod tests {
         assert!(
             (95..=105).contains(&crossings),
             "latched 1000 Hz should persist into block 2 (~100 crossings), got {crossings}"
+        );
+    }
+
+    /// Count the fraction of consecutive samples that rise — ~1.0 for a saw ramp, ~0.5 for a sine.
+    fn rising_fraction(buf: &[f32]) -> f32 {
+        let rising = buf.windows(2).filter(|w| w[1] > w[0]).count();
+        rising as f32 / (buf.len() - 1) as f32
+    }
+
+    /// (9) Enum delivery, end-to-end (ADR-0028). The default `waveform` is `Sine`; a live
+    /// `/osc/waveform "Saw"` message (resolved by symbol through the engine's enum route + latch)
+    /// switches the shape to a near-monotonic ramp, and the latch persists into the next block.
+    #[test]
+    fn waveform_enum_switches_live_via_message() {
+        let sr = 48_000.0f32;
+        let block = 4800usize; // 0.1 s
+        let cfg = AudioConfig::new(sr, block);
+        let mut g = Graph::new();
+        let osc = g.add("/osc", Oscillator::new());
+        g.set_input(osc, "freq", 100.0); // 100 Hz → 10 long periods per block
+        g.tap_output(osc, OUT_AUDIO);
+        let mut plan = Plan::instantiate(g, cfg).unwrap();
+        let mut r = Renderer::new(&plan);
+
+        // Block 1: default Sine — rises roughly half the time.
+        let mut sine = vec![0.0f32; block];
+        r.render_block(&mut plan, &[], &mut sine);
+        assert!(
+            (0.4..=0.6).contains(&rising_fraction(&sine)),
+            "default waveform should be a sine, rising frac {}",
+            rising_fraction(&sine)
+        );
+
+        // Block 2: switch to Saw by symbol at frame 0 — mostly rising (ramp).
+        let mut saw = vec![0.0f32; block];
+        let switch = Message::new("/osc/waveform", [Arg::Sym("Saw".into())], 0);
+        r.render_block(&mut plan, std::slice::from_ref(&switch), &mut saw);
+        assert!(
+            rising_fraction(&saw) > 0.9,
+            "Saw should be a near-monotonic ramp, rising frac {}",
+            rising_fraction(&saw)
+        );
+
+        // Block 3: no message — the enum latch persists as Saw.
+        let mut saw2 = vec![0.0f32; block];
+        r.render_block(&mut plan, &[], &mut saw2);
+        assert!(
+            rising_fraction(&saw2) > 0.9,
+            "Saw latch should persist into block 3, rising frac {}",
+            rising_fraction(&saw2)
         );
     }
 }

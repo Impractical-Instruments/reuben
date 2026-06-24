@@ -168,10 +168,14 @@ fn describe_one_operator_surfaces_its_ports_and_params() {
         .outputs
         .iter()
         .any(|p| p.name == "audio" && p.kind == "signal"));
-    assert!(
-        osc.params.iter().any(|p| p.name == "waveform"),
-        "waveform param"
-    );
+    // `waveform` is an Enum input now (ADR-0028) — surfaced among `enums`, not numeric `params`.
+    let waveform = osc
+        .enums
+        .iter()
+        .find(|e| e.name == "waveform")
+        .expect("waveform enum");
+    assert_eq!(waveform.variants, ["Sine", "Saw"]);
+    assert_eq!(waveform.default, "Sine");
 }
 
 #[test]

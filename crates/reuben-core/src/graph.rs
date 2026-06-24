@@ -28,6 +28,11 @@ pub struct Node {
     /// literal sets, seeding the input's latch at Instantiate. Empty unless an author overrides
     /// a Float input's default. The successor to a legacy "unwired-default param".
     pub input_overrides: Vec<(usize, f32)>,
+    /// Initial choice overrides for **[`Shape::Enum`](crate::descriptor::Shape) inputs** (ADR-0028),
+    /// as `(input port, variant index)` — the unwired default a `/node/<input> "Hp"` literal sets,
+    /// seeding the input's enum latch at Instantiate. Empty unless an author overrides an enum's
+    /// default. Sibling of `input_overrides`, for the discrete (non-numeric) settable surface.
+    pub enum_overrides: Vec<(usize, usize)>,
 }
 
 /// A directed connection from one node's output port to another's input port.
@@ -76,6 +81,7 @@ impl Graph {
             descriptor,
             params,
             input_overrides: Vec::new(),
+            enum_overrides: Vec::new(),
         })
     }
 
@@ -89,7 +95,14 @@ impl Graph {
             n.params[i] = n.descriptor.params[i].clamp(value);
             return;
         }
-        self.set_input(node, name, value);
+        if n.descriptor.materialized_input(name).is_some() {
+            self.set_input(node, name, value);
+            return;
+        }
+        // An [`Shape::Enum`] input set as a numeric literal: the value is the variant **index**
+        // fallback (ADR-0028). A string symbol (`"Hp"`) arrives via the loader's typed path; this
+        // f32 surface carries the index. No-op if `name` is not an enum input.
+        self.set_enum(node, name, &(value.round() as i64).to_string());
     }
 
     /// Override a materialized [`Shape::Float`] input's unwired default by name (ADR-0028),
@@ -107,6 +120,25 @@ impl Graph {
         match n.input_overrides.iter_mut().find(|(p, _)| *p == port) {
             Some(slot) => slot.1 = v,
             None => n.input_overrides.push((port, v)),
+        }
+    }
+
+    /// Override an [`Shape::Enum`] input's unwired default by name (ADR-0028), resolving a wire
+    /// **token** (symbol `"Hp"` or fallback index `"1"`) against the input's variants. No-op if
+    /// `name` is not an enum input or `token` resolves to no variant. Upserts the `(port, index)`
+    /// override consumed by [`Plan::instantiate`](crate::plan::Plan::instantiate).
+    pub fn set_enum(&mut self, node: NodeKey, name: &str, token: &str) {
+        let n = &mut self.nodes[node];
+        let Some((port, idx)) = n
+            .descriptor
+            .enum_input(name)
+            .and_then(|(p, e)| e.resolve(token).map(|i| (p, i)))
+        else {
+            return;
+        };
+        match n.enum_overrides.iter_mut().find(|(p, _)| *p == port) {
+            Some(slot) => slot.1 = idx,
+            None => n.enum_overrides.push((port, idx)),
         }
     }
 

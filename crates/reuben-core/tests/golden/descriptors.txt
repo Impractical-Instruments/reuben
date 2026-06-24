@@ -65,12 +65,10 @@ operator envelope
   lanes inherit
 operator filter
   in[0] signal audio
-  in[1] signal cutoff
-  in[2] signal resonance
+  in[1] float cutoff min=20.0 max=20000.0 default=1000.0 unit="Hz" curve=exponential
+  in[2] float resonance min=0.0 max=1.0 default=0.2 unit="" curve=linear
+  in[3] enum mode variants=["Lp", "Hp", "Bp"] default=0
   out[0] signal audio
-  param[0] cutoff min=20.0 max=20000.0 default=1000.0 unit="Hz" curve=exponential
-  param[1] resonance min=0.0 max=1.0 default=0.2 unit="" curve=linear
-  param[2] mode min=0.0 max=2.0 default=0.0 unit="" curve=linear
   lanes inherit
 operator integrate
   in[0] message in
@@ -113,7 +111,7 @@ operator osc_out
   lanes inherit
 operator oscillator
   in[0] float freq min=20.0 max=20000.0 default=440.0 unit="Hz" curve=exponential
-  in[1] float waveform min=0.0 max=1.0 default=0.0 unit="" curve=linear
+  in[1] enum waveform variants=["Sine", "Saw"] default=0
   out[0] signal audio
   lanes inherit
 operator output

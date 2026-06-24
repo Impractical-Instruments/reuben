@@ -50,6 +50,21 @@ pub fn generate(registry: &Registry) -> Value {
                 }),
             );
         }
+        // Enum inputs (ADR-0028) are settable by **symbol** (`"Hp"`) or fallback **index** (`1`),
+        // so accept either form. Single-sourced off `enum_inputs` like the Float surface above.
+        for (name, e) in d.enum_inputs() {
+            props.insert(
+                name.to_string(),
+                json!({
+                    "oneOf": [
+                        { "type": "string", "enum": e.variants },
+                        { "type": "integer", "minimum": 0, "maximum": e.variants.len() - 1 },
+                    ],
+                    "default": e.default,
+                    "description": format!("one of {:?} (or its index)", e.variants),
+                }),
+            );
+        }
         branches.push(json!({
             "if": { "properties": { "type": { "const": d.type_name } }, "required": ["type"] },
             "then": {
@@ -179,14 +194,10 @@ mod tests {
     fn emits_param_ranges_per_type() {
         let reg = Registry::builtin();
         let schema = generate(&reg);
-        let filter_cutoff = reg
-            .get("filter")
-            .unwrap()
-            .descriptor
-            .params
-            .iter()
-            .find(|p| p.name == "cutoff")
-            .unwrap();
+        // `cutoff` is a materialized `Float` input now (ADR-0028), surfaced into the schema's
+        // `params` props by `settable_inputs` — read its range from the input's meta.
+        let binding = reg.get("filter").unwrap();
+        let (_, filter_cutoff) = binding.descriptor.materialized_input("cutoff").unwrap();
 
         // Find the if/then branch for "filter" and check its cutoff bounds.
         let branches = schema["$defs"]["node"]["allOf"].as_array().unwrap();
