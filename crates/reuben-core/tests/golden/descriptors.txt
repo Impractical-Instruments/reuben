@@ -109,6 +109,9 @@ operator mul
 operator noise
   out[0] signal out
   lanes inherit
+operator osc_out
+  in[0] message in
+  lanes inherit
 operator oscillator
   in[0] signal freq
   out[0] signal audio

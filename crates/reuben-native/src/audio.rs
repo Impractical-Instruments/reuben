@@ -13,7 +13,7 @@
 //! The returned [`cpal::Stream`] must be kept alive for audio to keep playing.
 
 use std::fmt;
-use std::sync::mpsc::Receiver;
+use std::sync::mpsc::{Receiver, Sender};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream};
@@ -56,11 +56,15 @@ impl std::error::Error for AudioError {}
 /// Start live playback on the default output device.
 ///
 /// `block_size` is the core render block size; `make_engine` builds the engine once the
-/// device sample rate is known (so the Plan's tuning matches the hardware). Returns the
-/// live [`Stream`] — keep it alive.
+/// device sample rate is known (so the Plan's tuning matches the hardware). `osc_out` is the
+/// optional OSC-out sink (ADR-0026): when `Some`, the callback forwards each outbound Message to
+/// it (a sender thread encodes + UDP-sends, off the audio thread); when `None`, outbound is
+/// drained and dropped, with one warning the first time a rig actually sends. Returns the live
+/// [`Stream`] — keep it alive.
 pub fn start<F>(
     rx: Receiver<Message>,
     block_size: usize,
+    osc_out: Option<Sender<Message>>,
     make_engine: F,
 ) -> Result<Stream, AudioError>
 where
@@ -84,6 +88,8 @@ where
     // Scratch for one callback's worth of interleaved logical samples; grows to the largest
     // callback (audio-thread allocation only while warming up, never in steady state).
     let mut buf: Vec<f32> = Vec::new();
+    // Warn at most once if a rig sends OSC out with no target configured (ADR-0026).
+    let mut warned_no_target = false;
 
     let stream = device
         .build_output_stream(
@@ -97,6 +103,24 @@ where
                     buf.resize(frames * logical, 0.0);
                 }
                 engine.fill(&mut buf[..frames * logical]);
+                // Forward this callback's outbound Messages (ADR-0026). The sender thread does the
+                // UDP I/O, so the audio thread only hands off. No target -> drain and drop, warning
+                // once so a misconfigured feedback rig isn't silently dead.
+                for m in engine.drain_outbound() {
+                    match &osc_out {
+                        Some(tx) => {
+                            let _ = tx.send(m);
+                        }
+                        None => {
+                            if !warned_no_target {
+                                warned_no_target = true;
+                                eprintln!(
+                                    "warning: instrument sends OSC out but no --osc-out target; dropping"
+                                );
+                            }
+                        }
+                    }
+                }
                 for (frame, dst) in data.chunks_mut(channels).enumerate() {
                     let src = &buf[frame * logical..frame * logical + logical];
                     map_frame(src, dst);
