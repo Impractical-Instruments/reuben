@@ -100,12 +100,13 @@ fn report_snare_nenv_output_decays_between_hits() {
     // the next hit at 72000. With attack 1ms / decay 90ms / sustain 0 / release 60ms the sound
     // must be gone well before the gap, so a deep gap window is ~silent. If it isn't, *that* is
     // the "stays open" — energy sustaining where there should be none.
-    let (env, cfg) = render_probe("/snare_nenv", "audio", 4.0);
+    // The enveloped noise audio is now the VCA output (env -> power -> mul), ADR-0027.
+    let (env, cfg) = render_probe("/snare_nenv_vca", "out", 4.0);
     let sr = cfg.sample_rate as usize;
 
     let hit = rms(&env[24_000..30_000]); // the first snare snap (attack+decay+release)
     let gap = rms(&env[40_000..70_000]); // deep gap: should be silent
-    eprintln!("--- /snare_nenv audio ---");
+    eprintln!("--- /snare_nenv_vca out ---");
     eprintln!("hit RMS (0.5–0.625 s): {hit:.5}");
     eprintln!("gap RMS (0.83–1.46 s): {gap:.5}");
     eprintln!("gap/hit ratio: {:.4}", gap / hit.max(1e-9));

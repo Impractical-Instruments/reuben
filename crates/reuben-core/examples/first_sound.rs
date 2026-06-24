@@ -1,15 +1,15 @@
 //! first_sound — render the MVP rig to a WAV file so you can hear it.
 //!
-//! Rig: Voicer -> Oscillator -> Filter -> Envelope(VCA) -> Output. A single held note
-//! (A4) is sent at frame 0. Until the Stage B DSP lands this writes silence; once the
-//! operators are implemented it writes an audible tone.
+//! Rig: Voicer -> Oscillator -> Filter -> VCA(mul) -> Output, with the VCA gain driven by
+//! an Envelope -> Power (exponential-style volume curve, ADR-0027). A single held note
+//! (A4) is sent at frame 0.
 //!
 //! Run: `cargo run -p reuben-core --example first_sound` -> `first_sound.wav`.
 
 use reuben_core::graph::Graph;
 use reuben_core::message::{Arg, Message};
-use reuben_core::operators::{envelope, oscillator, output, voicer};
-use reuben_core::operators::{Envelope, Filter, Oscillator, Output, Voicer};
+use reuben_core::operators::{envelope, math, oscillator, output, power, voicer};
+use reuben_core::operators::{Envelope, Filter, Mul, Oscillator, Output, Power, Voicer};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
 use reuben_core::AudioConfig;
@@ -22,13 +22,18 @@ fn main() {
     let osc = g.add("/osc", Oscillator::new());
     let filt = g.add("/filter", Filter::new());
     let env = g.add("/env", Envelope::new());
+    let curve = g.add("/env_curve", Power::new());
+    let vca = g.add("/env_vca", Mul::new());
     let out = g.add("/out", Output::new());
 
     g.connect(v, voicer::OUT_FREQ, osc, oscillator::IN_FREQ);
     g.connect(osc, oscillator::OUT_AUDIO, filt, 0);
-    g.connect(filt, 0, env, envelope::IN_AUDIO);
+    // VCA: filtered audio * shaped envelope CV (env -> power -> mul).
+    g.connect(filt, 0, vca, math::IN_A);
     g.connect(v, voicer::OUT_GATE, env, envelope::IN_GATE);
-    g.connect(env, envelope::OUT_AUDIO, out, output::IN_AUDIO);
+    g.connect(env, envelope::OUT_CV, curve, power::IN_X);
+    g.connect(curve, power::OUT_OUT, vca, math::IN_B);
+    g.connect(vca, math::OUT_OUT, out, output::IN_AUDIO);
     g.tap_output(out, output::OUT_AUDIO);
 
     g.set_param(filt, "cutoff", 3_000.0);

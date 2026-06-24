@@ -5,7 +5,9 @@
     { "type": "voicer", "address": "/voicer", "doc": "Note -> per-Voice freq + gate.", "params": { "voices": 8 }, "control": { "label": "Play C", "widget": "note-toggle", "port": "note", "note": 60 } },
     { "type": "oscillator", "address": "/osc", "doc": "Saw tone (harmonics for the filter to chew).", "params": { "waveform": 1.0 } },
     { "type": "filter", "address": "/filter", "doc": "Cutoff + resonance are Signal inputs, driven by the Good Button." },
-    { "type": "envelope", "address": "/env", "doc": "ADSR VCA, gated by the voicer.", "control": [ { "label": "Attack", "param": "attack" }, { "label": "Decay", "param": "decay" }, { "label": "Sustain", "param": "sustain" }, { "label": "Release", "param": "release" } ] },
+    { "type": "envelope", "address": "/env", "doc": "ADSR envelope (linear CV), gated by the voicer.", "control": [ { "label": "Attack", "param": "attack" }, { "label": "Decay", "param": "decay" }, { "label": "Sustain", "param": "sustain" }, { "label": "Release", "param": "release" } ] },
+    { "type": "power", "address": "/env_curve", "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2)." },
+    { "type": "mul", "address": "/env_vca", "doc": "VCA: audio * shaped envelope CV." },
     { "type": "output", "address": "/out" },
 
     { "type": "map", "address": "/brightness", "doc": "PUBLIC Good Button. Identity [0,1] pass-through; its value is fanned to the two ranged maps below. Send /brightness [0..1]. Rests at 0.5 (ADR-0018), emitted on init so the chain and any generated control surface agree at rest.", "params": { "default": 0.5 }, "control": { "label": "Brightness", "widget": "fader" } },
@@ -17,9 +19,11 @@
   "connections": [
     { "from": { "node": "/voicer", "port": "freq" }, "to": { "node": "/osc", "port": "freq" } },
     { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/filter", "port": "audio" } },
-    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env", "port": "audio" } },
+    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env_vca", "port": "a" } },
+    { "from": { "node": "/env", "port": "cv" }, "to": { "node": "/env_curve", "port": "x" } },
+    { "from": { "node": "/env_curve", "port": "out" }, "to": { "node": "/env_vca", "port": "b" } },
     { "from": { "node": "/voicer", "port": "gate" }, "to": { "node": "/env", "port": "gate" } },
-    { "from": { "node": "/env", "port": "audio" }, "to": { "node": "/out", "port": "audio" } },
+    { "from": { "node": "/env_vca", "port": "out" }, "to": { "node": "/out", "port": "audio" } },
 
     { "from": { "node": "/brightness", "port": "out" }, "to": { "node": "/map_cutoff", "port": "in" } },
     { "from": { "node": "/brightness", "port": "out" }, "to": { "node": "/map_res", "port": "in" } },

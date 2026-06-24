@@ -817,6 +817,35 @@
           "if": {
             "properties": {
               "type": {
+                "const": "power"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "params": {
+                "additionalProperties": false,
+                "properties": {
+                  "exponent": {
+                    "default": 2.0,
+                    "description": "unit: , curve: Linear",
+                    "maximum": 8.0,
+                    "minimum": 0.0,
+                    "type": "number"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
                 "const": "reverb"
               }
             },
@@ -1219,6 +1248,7 @@
             "oscillator",
             "output",
             "pan",
+            "power",
             "reverb",
             "sample",
             "sequencer",
