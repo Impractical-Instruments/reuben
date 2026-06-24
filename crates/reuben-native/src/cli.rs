@@ -82,17 +82,15 @@ impl OperatorInfo {
         // Materialized Float inputs (ADR-0028) are settable literals — the old "signal port +
         // same-named unwired-default param" is now one input, addressed by the same name. Surface
         // their range/default alongside params so `describe` still shows what an author can set.
-        for p in &d.inputs {
-            if let Some(m) = &p.meta {
-                params.push(ParamInfo {
-                    name: p.name.to_string(),
-                    default: m.default,
-                    min: m.min,
-                    max: m.max,
-                    unit: m.unit.to_string(),
-                    curve: curve(m.curve).to_string(),
-                });
-            }
+        for (name, m) in d.settable_inputs() {
+            params.push(ParamInfo {
+                name: name.to_string(),
+                default: m.default,
+                min: m.min,
+                max: m.max,
+                unit: m.unit.to_string(),
+                curve: curve(m.curve).to_string(),
+            });
         }
         OperatorInfo {
             type_name: d.type_name.to_string(),

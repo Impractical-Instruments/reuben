@@ -279,6 +279,17 @@ impl Descriptor {
             .and_then(|(i, p)| p.meta.as_ref().map(|m| (i, m)))
     }
 
+    /// Every input an author may set as a **numeric literal** (ADR-0028): each materialized
+    /// [`Shape::Float`] input, paired with its [`ParamMeta`]. The JSON-schema generator and the
+    /// CLI `describe` both surface these alongside the real params (the old "signal port +
+    /// same-named unwired-default param" is now one input), so reading them from this single
+    /// definition keeps the two from drifting. Enums are a separate, non-numeric settable surface.
+    pub fn settable_inputs(&self) -> impl Iterator<Item = (&'static str, &ParamMeta)> {
+        self.inputs
+            .iter()
+            .filter_map(|p| p.meta.as_ref().map(|m| (p.name, m)))
+    }
+
     /// Index + metadata of an [`Shape::Enum`] input named `name` (ADR-0028), for resolving a
     /// `/node/<name> "Hp"` symbol (or fallback index) to its held variant. `None` for non-enum
     /// inputs and non-inputs.
