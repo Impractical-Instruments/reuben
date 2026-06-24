@@ -70,6 +70,35 @@ jobs:
       - name: Test
         run: cargo test --workspace
 
+  windows:
+    name: build + test (windows)
+    runs-on: windows-latest
+    # Same draft-skip as `check`. Proves the build + non-audio logic on Windows
+    # (ADR-0026): a headless runner can't init WASAPI, so audio out is verified by
+    # a manual smoke pass on real hardware — not here. fmt/clippy/lockstep are
+    # platform-independent and stay ubuntu-only (`check`); no need to re-run them.
+    # No ALSA install: cpal links WASAPI on Windows, and tests open no device.
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      RUSTFLAGS: -D warnings # catch platform-gated warnings the Linux build can't see
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same pinned toolchain as `check`, via the shared composite (ADR-0023).
+      - name: Setup pinned Rust toolchain
+        uses: ./.github/actions/setup-rust
+
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --workspace
+
+      - name: Test
+        run: cargo test --workspace
+
   bench:
     name: perf gate (render_block Ir)
     runs-on: ubuntu-latest
