@@ -34,6 +34,24 @@ pub fn generate(registry: &Registry) -> Value {
                 }),
             );
         }
+        // Materialized Float inputs (ADR-0028) are settable literals too — the old
+        // "signal port + same-named unwired-default param" is now one input, addressed by the
+        // same name in the `params` map (the loader bridges it). Emit them with identical
+        // metadata so an author can still set e.g. `oscillator` `freq`/`waveform`.
+        for p in &d.inputs {
+            if let Some(m) = &p.meta {
+                props.insert(
+                    p.name.to_string(),
+                    json!({
+                        "type": "number",
+                        "minimum": m.min as f64,
+                        "maximum": m.max as f64,
+                        "default": m.default as f64,
+                        "description": format!("unit: {}, curve: {:?}", m.unit, m.curve),
+                    }),
+                );
+            }
+        }
         branches.push(json!({
             "if": { "properties": { "type": { "const": d.type_name } }, "required": ["type"] },
             "then": {

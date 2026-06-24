@@ -60,6 +60,11 @@ pub struct Io<'a> {
     /// Block-absolute frame of this (sub)block's start, added to an emitted/published frame
     /// so the operator can work in segment-relative time.
     frame_offset: usize,
+    /// Per-input `varying` hint (ADR-0028), in input-port order: `false` when a materialized
+    /// [`Shape::Float`](crate::descriptor::Shape) input held its value unchanged this block, so a
+    /// const-folding operator may reuse cached coefficients. Empty when unattached — `varying()`
+    /// then conservatively reports `true` (always recompute), which a naive operator ignores.
+    varying: &'a [bool],
 }
 
 impl<'a> Io<'a> {
@@ -94,7 +99,15 @@ impl<'a> Io<'a> {
             ctx_publish: None,
             outbound: None,
             frame_offset: 0,
+            varying: &[],
         }
+    }
+
+    /// Attach the per-input `varying` hints for this segment (ADR-0028). In input-port order;
+    /// read by [`Io::varying`]. Unattached ⇒ `varying()` reports `true`.
+    pub(crate) fn with_varying(mut self, varying: &'a [bool]) -> Self {
+        self.varying = varying;
+        self
     }
 
     /// Set which Lane (Voice) of how many this call is, for replicated operators.
@@ -153,9 +166,42 @@ impl<'a> Io<'a> {
         self.inputs.get(port).copied().flatten()
     }
 
+    /// **Per-sample read view of a [`Shape::Float`](crate::descriptor::Shape) input** (ADR-0028).
+    /// Always a buffer `frames` long: the wired source when connected, else the engine's
+    /// materialized buffer filled from the input's latched default (with mid-block changes written
+    /// at their frame). The single read path that replaces the old
+    /// `io.input(..).map_or(io.param(..), ..)` two-step. Returns an empty slice only for a port
+    /// that has neither a wire nor materialization (a not-yet-migrated input); migrated operators
+    /// always get `frames` samples.
+    pub fn signal(&self, port: usize) -> &[f32] {
+        self.inputs.get(port).copied().flatten().unwrap_or(&[])
+    }
+
+    /// **Block-rate / scalar read view of a [`Shape::Float`](crate::descriptor::Shape) input**
+    /// (ADR-0028) — the latched current value at this segment's start, for operators that do not
+    /// process per-sample (a clock reading tempo, a sample-and-hold). Reads the head of the
+    /// materialized buffer without looping it.
+    pub fn value(&self, port: usize) -> f32 {
+        self.signal(port).first().copied().unwrap_or(0.0)
+    }
+
+    /// The `varying` hint for a [`Shape::Float`](crate::descriptor::Shape) input (ADR-0028):
+    /// `false` when a materialized input held its value unchanged this block (so a const-folding
+    /// op may reuse cached state), `true` when it is dense or changed this block. Conservatively
+    /// `true` when unattached — a naive operator ignores it and reads `signal()[i]`.
+    pub fn varying(&self, port: usize) -> bool {
+        self.varying.get(port).copied().unwrap_or(true)
+    }
+
     /// Borrow an output Signal port for writing (length == `frames`).
     pub fn output(&mut self, port: usize) -> &mut [f32] {
         &mut self.outputs[port][..]
+    }
+
+    /// **Per-sample write view of a [`Shape::Float`](crate::descriptor::Shape) output** (ADR-0028)
+    /// — the forward-looking name for [`Io::output`]. Length == `frames`.
+    pub fn signal_mut(&mut self, port: usize) -> &mut [f32] {
+        self.output(port)
     }
 
     /// Current value of a param slot (constant for this call).
@@ -212,6 +258,13 @@ impl<'a> Io<'a> {
     /// prior 12-TET behavior in a rig with no context node.
     pub fn context(&self, port: usize) -> Context {
         self.contexts.get(port).copied().unwrap_or_default()
+    }
+
+    /// The current [`Harmony`](crate::descriptor::Shape::Harmony) on a held-struct input
+    /// (ADR-0028) — the forward-looking name for [`Io::context`]. Same latched read service; the
+    /// [`Context`] struct is renamed `Harmony` once the carrier vocabulary is retired.
+    pub fn harmony(&self, port: usize) -> Context {
+        self.context(port)
     }
 
     /// Publish a tonal [`Context`] snapshot onto Context output `port` at segment-relative

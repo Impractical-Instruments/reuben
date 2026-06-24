@@ -30,8 +30,19 @@ pub struct PlanNode {
     /// Lane (Voice) count at this node.
     pub lanes: usize,
     /// For each input port: the source's per-Lane arena buffer indices, or `None` if
-    /// unconnected. The inner length is the *source's* Lane count (1 broadcasts).
+    /// unconnected. The inner length is the *source's* Lane count (1 broadcasts). A new-style
+    /// materialized [`Shape::Float`](crate::descriptor::Shape) input that is **unwired** points
+    /// at a dedicated single-Lane **scratch** buffer (see `materialize`) the engine fills each
+    /// block, so the operator reads it through the same path as a wired source (ADR-0028).
     pub inputs: Vec<Option<Vec<usize>>>,
+    /// Materialized Float inputs (ADR-0028): `(input port, scratch arena buffer)` for each
+    /// **unwired** new-style Float input. The engine fills the buffer per block from
+    /// `input_latches[port]`, writing mid-block changes at their frame. Wired Float inputs are
+    /// absent — their dense source passes straight through.
+    pub materialize: Vec<(usize, usize)>,
+    /// Latched current scalar per input port (ADR-0028), carried across blocks. Meaningful only
+    /// for ports listed in `materialize`; other slots are unused. Seeded from each input's default.
+    pub input_latches: Vec<f32>,
     /// For each output port: this node's per-Lane arena buffer indices (length `lanes`).
     pub outputs: Vec<Vec<usize>>,
     /// Message-edge routing (ADR-0014): for each of this node's Message output ports (in
@@ -171,25 +182,50 @@ impl Plan {
         for key in &order {
             let n_lanes = lanes[*key];
             let descriptor = &graph.nodes[*key].descriptor;
+            let overrides = &graph.nodes[*key].input_overrides;
             // Signal inputs wire to the source's arena buffers; Message inputs carry no
-            // Signal data (events arrive via routing, ADR-0014) so they take no buffer.
-            let inputs = descriptor
-                .inputs
-                .iter()
-                .enumerate()
-                .map(|(port, p)| {
-                    // Only Signal inputs take an arena buffer; Message and Context inputs
-                    // carry no Signal data (events/context arrive via routing).
-                    if p.kind != PortKind::Signal {
-                        return None;
-                    }
-                    graph
-                        .connections
-                        .iter()
-                        .find(|c| c.dst == *key && c.dst_port == port)
-                        .map(|c| out_buffers[c.src][c.src_port].clone())
-                })
-                .collect();
+            // Signal data (events arrive via routing, ADR-0014) so they take no buffer. A
+            // new-style materialized Float input that is unwired gets a dedicated scratch
+            // buffer the engine fills from a latch (ADR-0028 materialize).
+            let mut inputs: Vec<Option<Vec<usize>>> = Vec::with_capacity(descriptor.inputs.len());
+            let mut materialize: Vec<(usize, usize)> = Vec::new();
+            let mut input_latches: Vec<f32> = vec![0.0; descriptor.inputs.len()];
+            for (port, p) in descriptor.inputs.iter().enumerate() {
+                // Only Signal inputs take an arena buffer; Message and Context inputs carry no
+                // Signal data (events/context arrive via routing).
+                if p.kind != PortKind::Signal {
+                    inputs.push(None);
+                    continue;
+                }
+                let wired = graph
+                    .connections
+                    .iter()
+                    .find(|c| c.dst == *key && c.dst_port == port)
+                    .map(|c| out_buffers[c.src][c.src_port].clone());
+                match wired {
+                    Some(bufs) => inputs.push(Some(bufs)),
+                    None => match &p.meta {
+                        // Materialized Float input, unwired: allocate a scratch buffer + seed the
+                        // latch from the input's default. The operator reads it like any source.
+                        Some(meta) => {
+                            let buf = next_buffer;
+                            next_buffer += 1;
+                            // Seed the latch from an author override (a literal for this input),
+                            // else the input's declared default (ADR-0028).
+                            input_latches[port] = overrides
+                                .iter()
+                                .find(|(p, _)| *p == port)
+                                .map(|(_, v)| *v)
+                                .unwrap_or(meta.default);
+                            materialize.push((port, buf));
+                            inputs.push(Some(vec![buf]));
+                        }
+                        // Legacy signal input, unwired: the operator falls back to its
+                        // same-named param (one-port-one-type), so it takes no buffer.
+                        None => inputs.push(None),
+                    },
+                }
+            }
             let outputs = out_buffers[*key].clone();
             // Message-edge targets, one entry per Message output port (ordinal order).
             let msg_targets = descriptor
@@ -256,6 +292,8 @@ impl Plan {
                 params: node.params,
                 lanes: n_lanes,
                 inputs,
+                materialize,
+                input_latches,
                 outputs,
                 msg_targets,
                 context_inputs,

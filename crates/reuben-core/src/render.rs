@@ -360,6 +360,11 @@ struct RoutedEvent {
 struct NodeRoute {
     /// (frame, param slot, value) — drive block-slicing.
     params: Vec<(usize, usize, f32)>,
+    /// (frame, input port, value) — a change to a materialized [`Shape::Float`] input
+    /// (ADR-0028). Unlike `params` these do **not** split the block; the engine writes them into
+    /// the input's materialized buffer at their frame, so a per-sample reader sees them
+    /// sample-accurately in one `process` call. Sorted by frame.
+    floats: Vec<(usize, usize, f32)>,
     /// Routed events (by reference into the block's Messages) — for event operators.
     events: Vec<RoutedEvent>,
     /// (frame, context slot, pool index) — a context change a follower reads; each frame
@@ -377,6 +382,7 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
     }
     for r in routes.iter_mut() {
         r.params.clear();
+        r.floats.clear();
         r.events.clear();
         r.context.clear();
     }
@@ -386,6 +392,14 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
             let Some(local) = local_address(&msg.addr, &node.address) else {
                 continue;
             };
+            // A new-style materialized Float input takes precedence: its value rides the
+            // materialize buffer (written at `frame`), not a block-slicing param (ADR-0028).
+            if let Some((port, meta)) = node.descriptor.materialized_input(local) {
+                if let Some(v) = msg.first_f32() {
+                    routes[i].floats.push((msg.frame, port, meta.clamp(v)));
+                }
+                break;
+            }
             match node.descriptor.param_index(local) {
                 Some(slot) => {
                     if let Some(v) = msg.first_f32() {
@@ -409,6 +423,7 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
     }
     for r in routes.iter_mut() {
         r.params.sort_by_key(|(f, _, _)| *f);
+        r.floats.sort_by_key(|(f, _, _)| *f);
     }
 }
 
@@ -443,6 +458,43 @@ fn process_node(
     block_size: usize,
 ) {
     let params = &route.params;
+
+    // Materialize each unwired Float input into its scratch buffer (ADR-0028): fill from the
+    // latched scalar, overwrite with each mid-block change from its frame onward, persist the
+    // final value as the next block's latch, and flag `varying` (changed this block). Done before
+    // the output-swap — scratch buffers are inputs, disjoint from this node's outputs. Float
+    // changes do NOT split the block; sample-accuracy comes from writing them into the buffer at
+    // their frame. Legacy / wired inputs keep `varying == true` (the empty-slice default).
+    let varying: SmallVec<[bool; 8]> = if node.materialize.is_empty() {
+        SmallVec::new()
+    } else {
+        let mut varying = SmallVec::<[bool; 8]>::from_elem(true, node.inputs.len());
+        for k in 0..node.materialize.len() {
+            let (port, buf) = node.materialize[k];
+            let target = &mut arena[buf];
+            let mut v = node.input_latches[port];
+            let mut changed = false;
+            let mut cursor = 0usize;
+            for &(f, p, val) in &route.floats {
+                if p != port {
+                    continue;
+                }
+                let f = f.min(block_size);
+                for slot in &mut target[cursor..f] {
+                    *slot = v;
+                }
+                cursor = f;
+                v = val;
+                changed = true;
+            }
+            for slot in &mut target[cursor..block_size] {
+                *slot = v;
+            }
+            node.input_latches[port] = v;
+            varying[port] = changed;
+        }
+        varying
+    };
 
     // Segment boundaries: 0, block_size, every interior param frame, every interior context
     // change frame (ADR-0015 — so a chord/key change splits the block and the follower reads
@@ -563,7 +615,8 @@ fn process_node(
                 &seg_events,
             )
             .with_lane(lane, node.lanes)
-            .with_contexts(&seg_contexts);
+            .with_contexts(&seg_contexts)
+            .with_varying(&varying);
             // Lane 0 collects emissions and context publishes; their frames are stamped
             // block-absolute by adding this segment's start (ADR-0014, ADR-0015). Other Lanes
             // neither emit nor publish (single-Lane, pre-fan-out).

@@ -292,7 +292,12 @@ impl InstrumentDoc {
             }
             let key = graph.add_boxed(&n.address, (entry.make)(), descriptor.clone());
             for (name, value) in &n.params {
-                if descriptor.param_index(name).is_none() {
+                // A value targets either a param slot or a materialized Float input (ADR-0028:
+                // the old "signal port + same-named unwired-default param" is now one input).
+                // `set_param` routes to whichever matches; an unknown name is a load error.
+                if descriptor.param_index(name).is_none()
+                    && descriptor.materialized_input(name).is_none()
+                {
                     return Err(LoadError::UnknownParam {
                         node: n.address.clone(),
                         param: name.clone(),

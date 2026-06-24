@@ -67,22 +67,38 @@ impl OperatorInfo {
                 })
                 .collect()
         };
+        let mut params: Vec<ParamInfo> = d
+            .params
+            .iter()
+            .map(|p| ParamInfo {
+                name: p.name.to_string(),
+                default: p.default,
+                min: p.min,
+                max: p.max,
+                unit: p.unit.to_string(),
+                curve: curve(p.curve).to_string(),
+            })
+            .collect();
+        // Materialized Float inputs (ADR-0028) are settable literals — the old "signal port +
+        // same-named unwired-default param" is now one input, addressed by the same name. Surface
+        // their range/default alongside params so `describe` still shows what an author can set.
+        for p in &d.inputs {
+            if let Some(m) = &p.meta {
+                params.push(ParamInfo {
+                    name: p.name.to_string(),
+                    default: m.default,
+                    min: m.min,
+                    max: m.max,
+                    unit: m.unit.to_string(),
+                    curve: curve(m.curve).to_string(),
+                });
+            }
+        }
         OperatorInfo {
             type_name: d.type_name.to_string(),
             inputs: ports(&d.inputs),
             outputs: ports(&d.outputs),
-            params: d
-                .params
-                .iter()
-                .map(|p| ParamInfo {
-                    name: p.name.to_string(),
-                    default: p.default,
-                    min: p.min,
-                    max: p.max,
-                    unit: p.unit.to_string(),
-                    curve: curve(p.curve).to_string(),
-                })
-                .collect(),
+            params,
             resources: d.resources.iter().map(|r| r.name.to_string()).collect(),
         }
     }

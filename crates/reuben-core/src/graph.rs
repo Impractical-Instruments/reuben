@@ -23,6 +23,11 @@ pub struct Node {
     pub descriptor: Descriptor,
     /// Initial param values, in descriptor slot order.
     pub params: Vec<f32>,
+    /// Initial value overrides for **materialized [`Shape::Float`](crate::descriptor::Shape)
+    /// inputs** (ADR-0028), as `(input port, value)` — the unwired-default a `/node/<input> v`
+    /// literal sets, seeding the input's latch at Instantiate. Empty unless an author overrides
+    /// a Float input's default. The successor to a legacy "unwired-default param".
+    pub input_overrides: Vec<(usize, f32)>,
 }
 
 /// A directed connection from one node's output port to another's input port.
@@ -70,14 +75,38 @@ impl Graph {
             op,
             descriptor,
             params,
+            input_overrides: Vec::new(),
         })
     }
 
-    /// Override a single param by name on a node (clamped to its range).
+    /// Override a single value by name on a node (clamped to its range). Sets the param slot when
+    /// `name` is a param; otherwise, when `name` is a materialized [`Shape::Float`] input
+    /// (ADR-0028), records an input override that seeds that input's latch at Instantiate. Unknown
+    /// names are ignored (the loader validates names up front).
     pub fn set_param(&mut self, node: NodeKey, name: &str, value: f32) {
         let n = &mut self.nodes[node];
         if let Some(i) = n.descriptor.param_index(name) {
             n.params[i] = n.descriptor.params[i].clamp(value);
+            return;
+        }
+        self.set_input(node, name, value);
+    }
+
+    /// Override a materialized [`Shape::Float`] input's unwired default by name (ADR-0028),
+    /// clamped to its range. No-op if `name` is not such an input. Upserts the `(port, value)`
+    /// override consumed by [`Plan::instantiate`](crate::plan::Plan::instantiate).
+    pub fn set_input(&mut self, node: NodeKey, name: &str, value: f32) {
+        let n = &mut self.nodes[node];
+        let Some((port, v)) = n
+            .descriptor
+            .materialized_input(name)
+            .map(|(p, m)| (p, m.clamp(value)))
+        else {
+            return;
+        };
+        match n.input_overrides.iter_mut().find(|(p, _)| *p == port) {
+            Some(slot) => slot.1 = v,
+            None => n.input_overrides.push((port, v)),
         }
     }
 

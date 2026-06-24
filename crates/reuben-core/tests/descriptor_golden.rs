@@ -32,7 +32,21 @@ fn curve(c: Curve) -> &'static str {
 fn render(d: &Descriptor) -> String {
     let mut s = format!("operator {}\n", d.type_name);
     for (i, p) in d.inputs.iter().enumerate() {
-        s.push_str(&format!("  in[{i}] {} {}\n", kind(p.kind), p.name));
+        // A new-style materialized Float input (ADR-0028) carries its own metadata; render it so
+        // the snapshot captures the default/range that used to live on a same-named param. Legacy
+        // signal/message/context inputs (no `meta`) render byte-identically to before.
+        match &p.meta {
+            Some(m) => s.push_str(&format!(
+                "  in[{i}] float {} min={:?} max={:?} default={:?} unit={:?} curve={}\n",
+                p.name,
+                m.min,
+                m.max,
+                m.default,
+                m.unit,
+                curve(m.curve)
+            )),
+            None => s.push_str(&format!("  in[{i}] {} {}\n", kind(p.kind), p.name)),
+        }
     }
     for (i, p) in d.outputs.iter().enumerate() {
         s.push_str(&format!("  out[{i}] {} {}\n", kind(p.kind), p.name));

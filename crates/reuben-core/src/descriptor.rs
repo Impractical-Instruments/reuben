@@ -18,11 +18,61 @@ pub enum PortKind {
     Context,
 }
 
+/// The single axis describing an [`Input`](Port)/output (ADR-0028): one closed, named set
+/// from which delivery and read-style **follow**. There is no separate temporality axis and
+/// no author-visible carrier.
+///
+/// During the migration (ADR-0028 is landed phase-by-phase) [`PortKind`] still rides on every
+/// [`Port`] as the legacy carrier; `shape` is the forward-looking view. The two map 1:1 today
+/// (`Signal→Float`, `Message→Note`, `Context→Harmony`) and [`PortKind`] is retired once every
+/// operator is migrated.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Shape {
+    /// A number — freq, cutoff, amp, a contour, a control. Always materialized to a per-sample
+    /// buffer (ADR-0028); read per-sample (`io.signal`) or block-rate (`io.value`).
+    Float,
+    /// A named discrete choice (filter `mode`, osc `waveform`). A held scalar, block-sliced.
+    Enum,
+    /// The tonal-context struct (`root`/`scale`/`chord` + resolvers). A held struct, block-sliced.
+    Harmony,
+    /// A pitch/velocity event. A sparse, frame-stamped event list.
+    Note,
+}
+
+impl PortKind {
+    /// The forward-looking [`Shape`] this legacy carrier maps onto (ADR-0028). Used while both
+    /// coexist so unmigrated operators present a `shape` without re-declaring their ports.
+    pub const fn shape(self) -> Shape {
+        match self {
+            PortKind::Signal => Shape::Float,
+            PortKind::Message => Shape::Note,
+            PortKind::Context => Shape::Harmony,
+        }
+    }
+}
+
+/// The shape of an instantiate-time [`Constant`](ConstantMeta) (ADR-0028) — config that, if
+/// changed, would rebuild the graph (e.g. `voices`). Not a runtime [`Shape`]; a runtime integer
+/// is a rounded `Float` or an `Enum`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConstantShape {
+    Int,
+    Enum,
+}
+
 /// A named input or output port.
+///
+/// `kind` is the legacy [`PortKind`] carrier (ADR-0017); `shape` is the ADR-0028 axis. `meta`
+/// is `Some` only for a **new-style materialized [`Shape::Float`] input** — an input that owns
+/// its unwired default and is served as a per-sample buffer the engine fills from a latched
+/// scalar (ADR-0028 materialize). A legacy `signal` input leaves `meta` `None` and keeps the
+/// old "unwired ⇒ `None`, fall back to a same-named param" behavior until its operator migrates.
 #[derive(Debug, Clone)]
 pub struct Port {
     pub name: &'static str,
     pub kind: PortKind,
+    pub shape: Shape,
+    pub meta: Option<ParamMeta>,
 }
 
 impl Port {
@@ -30,19 +80,45 @@ impl Port {
         Self {
             name,
             kind: PortKind::Signal,
+            shape: Shape::Float,
+            meta: None,
         }
     }
     pub const fn message(name: &'static str) -> Self {
         Self {
             name,
             kind: PortKind::Message,
+            shape: Shape::Note,
+            meta: None,
         }
     }
     pub const fn context(name: &'static str) -> Self {
         Self {
             name,
             kind: PortKind::Context,
+            shape: Shape::Harmony,
+            meta: None,
         }
+    }
+
+    /// A **new-style materialized [`Shape::Float`] input** (ADR-0028): one `Input` declared once,
+    /// carrying its own unwired default in `meta`. When unwired the engine materializes a
+    /// per-sample buffer from the latched default (and writes mid-block changes at their frame);
+    /// when wired it passes the source buffer through. Replaces the legacy "signal port + a
+    /// same-named param" pair with a single declaration.
+    pub fn float(meta: ParamMeta) -> Self {
+        Self {
+            name: meta.name,
+            kind: PortKind::Signal,
+            shape: Shape::Float,
+            meta: Some(meta),
+        }
+    }
+
+    /// Whether this is a new-style materialized Float input (ADR-0028) — the engine fills a
+    /// latched buffer for it when unwired, rather than handing the operator `None`.
+    pub fn is_materialized(&self) -> bool {
+        self.meta.is_some()
     }
 }
 
@@ -132,5 +208,16 @@ impl Descriptor {
     /// Whether this operator declares a resource slot of the given name (ADR-0016).
     pub fn has_resource(&self, name: &str) -> bool {
         self.resources.iter().any(|r| r.name == name)
+    }
+
+    /// Index + metadata of a **new-style materialized [`Shape::Float`] input** named `name`
+    /// (ADR-0028), for routing an incoming `/node/<name> v` message to its latch/materialize
+    /// buffer instead of a param slot. `None` for legacy signal inputs (no `meta`) and non-inputs.
+    pub fn materialized_input(&self, name: &str) -> Option<(usize, &ParamMeta)> {
+        self.inputs
+            .iter()
+            .enumerate()
+            .find(|(_, p)| p.name == name && p.is_materialized())
+            .and_then(|(i, p)| p.meta.as_ref().map(|m| (i, m)))
     }
 }
