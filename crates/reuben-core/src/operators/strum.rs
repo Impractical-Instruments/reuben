@@ -17,12 +17,12 @@
 //!   velocity (the `velocity` param on a pluck, 0 on the paired note-off). The Voicer resolves
 //!   the degree through the tonal context (ADR-0008 amendment), so the harp re-spells live on a
 //!   key/scale change.
-//! - param 0: `strings` — number of strings the 0..1 range is divided into (1..=32, default 8
-//!   = one diatonic octave).
-//! - param 1: `octaves` — the degree span the strings cover (1..=4, default 1). String `k`
-//!   plucks degree `round(k * octaves * 7 / (strings-1))`, so the bottom string is degree 0 and
+//! - input 1: `strings` (`Float`) — number of strings the 0..1 range is divided into (1..=32,
+//!   default 8 = one diatonic octave), read block-rate via `io.value`.
+//! - input 2: `octaves` (`Float`) — the degree span the strings cover (1..=4, default 1). String
+//!   `k` plucks degree `round(k * octaves * 7 / (strings-1))`, so the bottom string is degree 0 and
 //!   the top string is `octaves*7` (one full diatonic octave per `octaves`).
-//! - param 2: `velocity` — pluck velocity (0..1, default 1).
+//! - input 3: `velocity` (`Float`) — pluck velocity (0..1, default 1).
 //!
 //! **Plucks, not held notes** (ADR-0022 "no held gate"): each crossing emits a note-on
 //! immediately followed by a note-off `PLUCK_SAMPLES` later, so the downstream percussive
@@ -36,13 +36,13 @@ use crate::descriptor::Descriptor;
 use crate::message::Arg;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.
+// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Strum {
-    inputs:  { position: message },
+    inputs:  { position: message,
+               strings:  float { 1.0..=32.0, default 8.0, "strings", lin },
+               octaves:  float { 1.0..=4.0,  default 1.0, "oct",     lin },
+               velocity: float { 0.0..=1.0,  default 1.0, "",        lin } },
     outputs: { degrees: message },
-    params:  { strings:  { 1.0..=32.0, default 8.0, "strings", lin },
-               octaves:  { 1.0..=4.0,  default 1.0, "oct",     lin },
-               velocity: { 0.0..=1.0,  default 1.0, "",        lin } },
 });
 
 /// Diatonic degrees spanned per octave (0..6 then the octave at 7).
@@ -102,9 +102,9 @@ impl Operator for Strum {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        let strings = (io.param(P_STRINGS).round() as i64).clamp(1, 32);
-        let octaves = io.param(P_OCTAVES).max(1.0);
-        let velocity = io.param(P_VELOCITY).clamp(0.0, 1.0);
+        let strings = (io.value(IN_STRINGS).round() as i64).clamp(1, 32);
+        let octaves = io.value(IN_OCTAVES).max(1.0);
+        let velocity = io.value(IN_VELOCITY).clamp(0.0, 1.0);
 
         // Snapshot incoming position events (can't read events while emitting), sorted by frame.
         // First numeric arg is the position. Multiple events in a block are walked in order, so
@@ -182,8 +182,14 @@ mod tests {
     const SR: f32 = 48_000.0;
 
     /// Run `strum` over one block with the given position events; returns the emitted Messages
-    /// (block-absolute frames). Positions are `(frame, value)`.
-    fn run(strum: &mut Strum, n: usize, params: &[f32], positions: &[(usize, f32)]) -> Vec<Emit> {
+    /// (block-absolute frames). Positions are `(frame, value)`. `params` is `[strings, octaves,
+    /// velocity]`, supplied as the `Float` input buffers (ADR-0028) in port order after `position`.
+    fn run(
+        strum: &mut Strum,
+        n: usize,
+        params: &[f32; 3],
+        positions: &[(usize, f32)],
+    ) -> Vec<Emit> {
         let args: Vec<crate::message::Args> = positions
             .iter()
             .map(|(_, v)| {
@@ -201,11 +207,20 @@ mod tests {
                 frame: *frame,
             })
             .collect();
+        let strings_buf = vec![params[0]; n];
+        let octaves_buf = vec![params[1]; n];
+        let velocity_buf = vec![params[2]; n];
         let mut emits: Vec<Emit> = Vec::new();
         {
             let outs: Vec<&mut [f32]> = vec![]; // Message port — no Signal buffer.
-            let inputs: Vec<Option<&[f32]>> = vec![None];
-            let mut io = Io::new(SR, n, inputs, outs, params, &evs).with_emit(&mut emits, 0);
+                                                // Port order: position (message, no buffer), strings, octaves, velocity (Float buffers).
+            let inputs: Vec<Option<&[f32]>> = vec![
+                None,
+                Some(&strings_buf[..]),
+                Some(&octaves_buf[..]),
+                Some(&velocity_buf[..]),
+            ];
+            let mut io = Io::new(SR, n, inputs, outs, &[], &evs).with_emit(&mut emits, 0);
             strum.process(&mut io);
         }
         emits
@@ -375,10 +390,19 @@ mod tests {
             frame: 0,
         }];
         {
-            let outs: Vec<&mut [f32]> = vec![];
-            let inputs: Vec<Option<&[f32]>> = vec![None];
+            let n = 50;
             let p = params(8.0, 1.0, 1.0);
-            let mut io = Io::new(SR, 50, inputs, outs, &p, &evs).with_emit(&mut emits, 0);
+            let strings_buf = vec![p[0]; n];
+            let octaves_buf = vec![p[1]; n];
+            let velocity_buf = vec![p[2]; n];
+            let outs: Vec<&mut [f32]> = vec![];
+            let inputs: Vec<Option<&[f32]>> = vec![
+                None,
+                Some(&strings_buf[..]),
+                Some(&octaves_buf[..]),
+                Some(&velocity_buf[..]),
+            ];
+            let mut io = Io::new(SR, n, inputs, outs, &[], &evs).with_emit(&mut emits, 0);
             b.process(&mut io);
         }
         assert!(

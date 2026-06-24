@@ -8,10 +8,11 @@
 //!
 //! Per-field **last-write-wins** (ADR-0013):
 //! - **Static fields** — `root` and the scale (`degrees` + `s0`..`s11` step offsets) — are
-//!   ordinary f32 params (the good-button: dial the key, shape the scale), so an external
-//!   `/context/root` or `/context/s2` is sample-accurate via block-slicing. (Named scales
-//!   like `"dorian"` and non-12-TET tunings are a deferred preset/registry layer; the scale
-//!   here is the explicit step-offset list ADR-0013 specifies.)
+//!   `Float` inputs (ADR-0028; the good-button: dial the key, shape the scale). They are per-sample
+//!   buffers, so `process` scans them for change frames and publishes at the exact frame — a
+//!   mid-block `/context/root` stays sample-accurate (ADR-0015) and each can now be
+//!   *wired*/modulated. (Named scales like `"dorian"` and non-12-TET tunings are a deferred
+//!   preset/registry layer; the scale here is the explicit step-offset list ADR-0013 specifies.)
 //! - **Dynamic field** — `chord` — arrives as a `chord` Message on the `set` input
 //!   (`/context/chord [tag, d0, d1, …]`, `tag`: 0 = clear, 1 = scale-relative, 2 = absolute).
 //!
@@ -20,26 +21,46 @@
 //! allocation-free. A chord change mid-block publishes at the change frame, so it is
 //! sample-accurate on the same timeline as notes.
 //!
-//! - input 0: `set` (Message) — `chord` writes (also reachable from an internal
-//!   chord-progression op wired to this port; that op is deferred).
-//! - output 0: `ctx` (Context) — the latched context followers read.
+//! - input `set` (Message) — `chord` writes (also reachable from an internal chord-progression
+//!   op wired to this port; that op is deferred).
+//! - inputs `root`, `degrees`, `s0`..`s11` (`Float`) — the static key/scale fields.
+//! - output `ctx` (Harmony) — the latched context followers read.
 
 use smallvec::SmallVec;
 
 use crate::context::{Chord, ChordTag, Context, ScaleField, CHORD_CAP, SCALE_CAP};
-use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
+use crate::descriptor::Descriptor;
 use crate::message::Arg;
 use crate::operator::{Io, Operator};
 
-pub const IN_SET: usize = 0;
-/// Context-output ordinal of the `ctx` port (the index [`Io::publish_context`] uses).
-pub const CTX_OUT: usize = 0;
-pub const P_ROOT: usize = 0;
-pub const P_DEGREES: usize = 1;
-/// Slot of the first scale step offset; degree `k` is param `P_STEP0 + k`.
-pub const P_STEP0: usize = 2;
 /// Number of scale step-offset slots (max scale length within a 12-TET period).
 pub const NUM_STEPS: usize = SCALE_CAP;
+
+// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor.
+// `root`, `degrees`, and `s0`..`s11` are now `Float` inputs (read block-rate via `io.value`),
+// so they can be wired/modulated; `set` stays a Message; `ctx` is the Harmony carrier output.
+crate::operator_contract!(ContextOp {
+    type_name: "context",
+    inputs:  { set:     message,
+               root:    float { 0.0..=127.0,      default 60.0,  "MIDI",  lin },
+               degrees: float { 1.0..=12.0,       default 7.0,   "steps", lin },
+               s0:      float { -24.0..=24.0,     default 0.0,   "steps", lin },
+               s1:      float { -24.0..=24.0,     default 2.0,   "steps", lin },
+               s2:      float { -24.0..=24.0,     default 4.0,   "steps", lin },
+               s3:      float { -24.0..=24.0,     default 5.0,   "steps", lin },
+               s4:      float { -24.0..=24.0,     default 7.0,   "steps", lin },
+               s5:      float { -24.0..=24.0,     default 9.0,   "steps", lin },
+               s6:      float { -24.0..=24.0,     default 11.0,  "steps", lin },
+               s7:      float { -24.0..=24.0,     default 0.0,   "steps", lin },
+               s8:      float { -24.0..=24.0,     default 0.0,   "steps", lin },
+               s9:      float { -24.0..=24.0,     default 0.0,   "steps", lin },
+               s10:     float { -24.0..=24.0,     default 0.0,   "steps", lin },
+               s11:     float { -24.0..=24.0,     default 0.0,   "steps", lin } },
+    outputs: { ctx: context },
+});
+
+/// Input ordinal of the first scale step offset; degree `k` is input `IN_S0 + k`.
+pub const IN_STEP0: usize = IN_S0;
 
 pub struct ContextOp {
     /// Latched chord, persisted across blocks (LWW from `chord` writes).
@@ -63,13 +84,21 @@ impl ContextOp {
         Self::default()
     }
 
-    /// Build the current context from this segment's (constant) params + latched chord.
-    fn current(&self, io: &Io) -> Context {
-        let root = io.param(P_ROOT).round() as i32;
-        let degrees = (io.param(P_DEGREES).round() as usize).clamp(1, NUM_STEPS);
+    /// Build the current context from the `Float` inputs **at frame `f`** + the latched chord.
+    /// The static fields are per-sample buffers now (ADR-0028), so reading them at the change
+    /// frame is what keeps a mid-block `/context/root` sample-accurate (ADR-0015).
+    fn current_at(&self, io: &Io, f: usize) -> Context {
+        let at = |port| {
+            io.signal(port)
+                .get(f)
+                .copied()
+                .unwrap_or_else(|| io.value(port))
+        };
+        let root = at(IN_ROOT).round() as i32;
+        let degrees = (at(IN_DEGREES).round() as usize).clamp(1, NUM_STEPS);
         let mut offsets = [0i16; SCALE_CAP];
         for (k, o) in offsets.iter_mut().enumerate().take(degrees) {
-            *o = io.param(P_STEP0 + k).round() as i16;
+            *o = at(IN_STEP0 + k).round() as i16;
         }
         Context {
             root,
@@ -81,48 +110,9 @@ impl ContextOp {
 
 impl Operator for ContextOp {
     fn descriptor() -> Descriptor {
-        // Default scale = C major; root = middle C. So the default context equals the engine
-        // default (existing rigs unchanged).
-        const DEFAULT_OFFSETS: [f32; NUM_STEPS] =
-            [0.0, 2.0, 4.0, 5.0, 7.0, 9.0, 11.0, 0.0, 0.0, 0.0, 0.0, 0.0];
-        let mut params = Vec::with_capacity(NUM_STEPS + 2);
-        params.push(ParamMeta {
-            name: "root",
-            min: 0.0,
-            max: 127.0,
-            default: 60.0,
-            unit: "MIDI",
-            curve: Curve::Linear,
-        });
-        params.push(ParamMeta {
-            name: "degrees",
-            min: 1.0,
-            max: NUM_STEPS as f32,
-            default: 7.0,
-            unit: "steps",
-            curve: Curve::Linear,
-        });
-        const STEP_NAMES: [&str; NUM_STEPS] = [
-            "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10", "s11",
-        ];
-        for (name, default) in STEP_NAMES.iter().zip(DEFAULT_OFFSETS) {
-            params.push(ParamMeta {
-                name,
-                min: -24.0,
-                max: 24.0,
-                default,
-                unit: "steps",
-                curve: Curve::Linear,
-            });
-        }
-        Descriptor {
-            type_name: "context",
-            inputs: vec![Port::message("set")],
-            outputs: vec![Port::context("ctx")],
-            params,
-            resources: vec![],
-            lanes: LaneRule::Inherit,
-        }
+        // Default scale = C major; root = middle C (the per-input defaults in the contract). So
+        // the default context equals the engine default (existing rigs unchanged).
+        Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {
@@ -158,18 +148,43 @@ impl Operator for ContextOp {
         }
         writes.sort_by_key(|w| w.0);
 
-        // Publish at frame 0 if root/scale/chord changed since the last publish (or first
-        // block); then publish at each chord-write frame that changes the value.
-        let cur = self.current(io);
-        if self.last != Some(cur) {
-            io.publish_context(CTX_OUT, 0, cur);
-            self.last = Some(cur);
+        // Candidate publish frames: frame 0 (first-block / cross-block change), every interior
+        // frame where a static `Float` field changes (scan only the inputs that varied this block,
+        // so steady state is free — ADR-0028), and every chord-write frame. A static field is a
+        // per-sample buffer now, so a mid-block `/context/root` lands at its exact frame.
+        let n = io.frames();
+        let mut frames: SmallVec<[usize; 8]> = SmallVec::new();
+        frames.push(0);
+        for port in [IN_ROOT, IN_DEGREES]
+            .into_iter()
+            .chain(IN_STEP0..IN_STEP0 + NUM_STEPS)
+        {
+            if io.varying(port) {
+                let buf = io.signal(port);
+                for i in 1..buf.len().min(n) {
+                    if buf[i] != buf[i - 1] {
+                        frames.push(i);
+                    }
+                }
+            }
         }
-        for (frame, chord) in writes {
-            self.chord = chord;
-            let cur = self.current(io);
+        for (f, _) in &writes {
+            frames.push(*f);
+        }
+        frames.sort_unstable();
+        frames.dedup();
+
+        // Walk the frames in order: apply any chord write landing here (LWW), then publish the
+        // resolved context if it differs from the last published value.
+        for f in frames {
+            for (wf, chord) in &writes {
+                if *wf == f {
+                    self.chord = *chord;
+                }
+            }
+            let cur = self.current_at(io, f);
             if self.last != Some(cur) {
-                io.publish_context(CTX_OUT, frame, cur);
+                io.publish_harmony(OUT_CTX, f, cur);
                 self.last = Some(cur);
             }
         }
@@ -191,12 +206,24 @@ mod tests {
 
     const SR: f32 = 48_000.0;
 
-    fn default_params() -> Vec<f32> {
-        ContextOp::descriptor().default_params()
+    /// Number of Float inputs (root, degrees, s0..s11) — the `set` Message input excluded.
+    const NUM_VALUES: usize = NUM_STEPS + 2;
+
+    /// Default values for the Float inputs in port order (root, degrees, s0..s11), pulled from
+    /// the contract's per-input defaults. Index with `IN_ROOT - 1` etc. (offset by the leading
+    /// `set` Message input).
+    fn default_values() -> Vec<f32> {
+        ContextOp::descriptor()
+            .inputs
+            .iter()
+            .filter_map(|p| p.meta.as_ref().map(|m| m.default))
+            .collect()
     }
 
-    /// Run one block; return published snapshots (block-absolute frames).
-    fn run(op: &mut ContextOp, n: usize, params: &[f32], events: &[Message]) -> Vec<CtxPublish> {
+    /// Run one block; return published snapshots (block-absolute frames). `values` are the Float
+    /// inputs (root, degrees, s0..s11) in port order — each materialized into a constant per-sample
+    /// buffer the way the engine would for an unwired input. `set` is delivered via `events`.
+    fn run(op: &mut ContextOp, n: usize, values: &[f32], events: &[Message]) -> Vec<CtxPublish> {
         let evs: Vec<Event> = events
             .iter()
             .map(|m| Event {
@@ -205,12 +232,17 @@ mod tests {
                 frame: m.frame,
             })
             .collect();
+        let bufs: Vec<Vec<f32>> = values.iter().map(|&v| vec![v; n]).collect();
         let mut pubs: Vec<CtxPublish> = Vec::new();
         {
             let outs: Vec<&mut [f32]> = vec![];
-            let inputs: Vec<Option<&[f32]>> = vec![None];
+            // Port order: set (Message, no buffer), then root, degrees, s0..s11 (Float buffers).
+            let mut inputs: Vec<Option<&[f32]>> = Vec::with_capacity(NUM_VALUES + 1);
+            inputs.push(None);
+            inputs.extend(bufs.iter().map(|b| Some(&b[..])));
+            let params: [f32; 0] = [];
             let mut io =
-                Io::new(SR, n, inputs, outs, params, &evs).with_context_publish(&mut pubs, 0);
+                Io::new(SR, n, inputs, outs, &params, &evs).with_context_publish(&mut pubs, 0);
             op.process(&mut io);
         }
         pubs
@@ -219,7 +251,7 @@ mod tests {
     #[test]
     fn publishes_default_once_then_stays_quiet() {
         let mut op = ContextOp::new();
-        let p = default_params();
+        let p = default_values();
         let first = run(&mut op, 128, &p, &[]);
         assert_eq!(first.len(), 1, "first block publishes the initial context");
         assert_eq!(first[0].frame, 0);
@@ -232,7 +264,7 @@ mod tests {
     #[test]
     fn chord_write_publishes_at_its_frame() {
         let mut op = ContextOp::new();
-        let p = default_params();
+        let p = default_values();
         let _ = run(&mut op, 128, &p, &[]); // consume the initial publish
         let set = Message::new(
             "chord",
@@ -253,9 +285,9 @@ mod tests {
     #[test]
     fn root_change_publishes() {
         let mut op = ContextOp::new();
-        let mut p = default_params();
+        let mut p = default_values();
         let _ = run(&mut op, 128, &p, &[]);
-        p[P_ROOT] = 62.0; // move to D
+        p[IN_ROOT - 1] = 62.0; // move to D ( `values` excludes the leading `set` Message input )
         let pubs = run(&mut op, 128, &p, &[]);
         assert_eq!(pubs.len(), 1);
         assert_eq!(pubs[0].ctx.root, 62);

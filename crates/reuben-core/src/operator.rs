@@ -34,13 +34,13 @@ pub struct CtxPublish {
 /// All slices are exactly [`Io::frames`] samples long. Params are constant for the call.
 /// The port reference lists are collected into inline [`SmallVec`]s, so building an `Io`
 /// allocates nothing for the common low-port-count case. The inline input capacity is sized for
-/// ADR-0028 operators whose former params became `Float` inputs (an envelope is gate + 4 ADSR =
-/// 5; a filter is audio + cutoff + resonance + mode = 4) — RT-safety (`rt_safe`) depends on not
-/// spilling here on the audio thread.
+/// the widest ADR-0028 operator once its former params became `Float`/`Enum` inputs — the
+/// sequencer is `clock` + `length` + 16 × `step` + `gate_mode` + `pitch` = 20 — because
+/// RT-safety (`rt_safe`) depends on not spilling here on the audio thread.
 pub struct Io<'a> {
     sample_rate: f32,
     frames: usize,
-    inputs: SmallVec<[Option<&'a [f32]>; 8]>,
+    inputs: SmallVec<[Option<&'a [f32]>; 20]>,
     outputs: SmallVec<[&'a mut [f32]; 2]>,
     params: &'a [f32],
     events: &'a [Event<'a>],
@@ -300,6 +300,13 @@ impl<'a> Io<'a> {
         if let Some(buf) = self.ctx_publish.as_mut() {
             buf.push(CtxPublish { port, frame, ctx });
         }
+    }
+
+    /// Publish a [`Harmony`](crate::descriptor::Shape::Harmony) snapshot onto a held-struct output
+    /// (ADR-0028) — the forward-looking name for [`Io::publish_context`]. Same latch+re-slice
+    /// service; the [`Context`] struct is renamed `Harmony` once the carrier vocabulary is retired.
+    pub fn publish_harmony(&mut self, port: usize, frame: usize, harmony: Context) {
+        self.publish_context(port, frame, harmony);
     }
 
     /// Which Lane (Voice) this call represents, in `0..lanes()`. Single-Lane operators can

@@ -1,5 +1,5 @@
 //! Sequencer — a clock-driven step sequencer that emits note Messages (V1.1, ADR-0014; V1.3
-//! gate-mode + 16 steps, ADR-0022).
+//! gate-mode + 16 steps, ADR-0022; shape model, ADR-0028).
 //!
 //! Walks a fixed pattern, one step per beat, driven by the [`Clock`]'s beat `gate`: each rising
 //! edge of the clock input advances to the next step (wrapping at `length`) and **emits a `note`
@@ -8,47 +8,74 @@
 //! [`Voicer`](crate::operators::Voicer) (`sequencer.degrees → voicer.notes`) and the sequence is
 //! polyphony-, transpose-, and snap-composable, exactly like notes arriving from outside.
 //!
-//! Two step interpretations, selected by `gate_mode` (ADR-0022):
-//! - **degree mode** (`gate_mode` = 0, default): each `stepN` *is* the scale degree to play that
-//!   beat; a value below 0 is a rest. The default pattern `[0..7]` under the default
-//!   C-major/12-TET context is bit-identical to the prior MIDI default
-//!   `[60,62,64,65,67,69,71,72]`.
-//! - **gate mode** (`gate_mode` = 1): each `stepN` reads as a **boolean on/off** (≥ 0.5 = hit)
-//!   and every hit emits the single per-lane `pitch` degree. This is the groove-box step grid —
-//!   a row of toggles that all play one drum voice (ADR-0022).
+//! Shape model (ADR-0028): `length`, `step1`..`step16`, and `pitch` are **`Float` inputs**, each
+//! owning its unwired default — read block-rate via `io.value`. `gate_mode` is an **`Enum` input**
+//! {`Degree`, `Gate`}: a held, live-switchable choice read via `io.enum_index`. `clock` is a bare
+//! `Float` wire-in, read per-sample via `io.signal` for edge detection.
 //!
-//! - input 0: `clock` (Signal) — the Clock's beat gate. A rising edge (crossing 0.5 upward)
+//! Two step interpretations, selected by `gate_mode` (ADR-0022):
+//! - **degree mode** (`Degree`, default): each `stepN` *is* the scale degree to play that beat; a
+//!   value below 0 is a rest. The default pattern `[0..7]` under the default C-major/12-TET
+//!   context is bit-identical to the prior MIDI default `[60,62,64,65,67,69,71,72]`.
+//! - **gate mode** (`Gate`): each `stepN` reads as a **boolean on/off** (≥ 0.5 = hit) and every
+//!   hit emits the single per-lane `pitch` degree. This is the groove-box step grid — a row of
+//!   toggles that all play one drum voice (ADR-0022).
+//!
+//! - input 0: `clock` (`Float`) — the Clock's beat gate. A rising edge (crossing 0.5 upward)
 //!   advances the step and emits a note-on; the following falling edge emits the note-off. The
 //!   clock's previous level is held across blocks, so an edge straddling a block boundary fires
 //!   exactly once.
+//! - inputs 1..=17: `length` (number of active steps 1..=16; default 8) then `step1`..`step16`
+//!   (per-step value — a degree in degree mode, a boolean hit in gate mode).
+//! - input 18: `gate_mode` (`Enum` {Degree, Gate}) — `Degree` is the default.
+//! - input 19: `pitch` (`Float`) — the degree emitted on each hit in gate mode (default 0 = root).
 //! - output 0 (Message): `degrees` — `degree` Messages, arg 0 = **scale degree**, arg 1 =
 //!   velocity (1 = on, 0 = off). The Voicer resolves the degree through the tonal context.
-//! - param 0: `length` — number of active steps (1..=16); the pattern wraps at it. Default 8.
-//! - params 1..=16: `step1`..`step16` — per-step value (a degree in degree mode, a boolean hit
-//!   in gate mode).
-//! - param 17: `gate_mode` — 0 = degree (default), 1 = boolean gate.
-//! - param 18: `pitch` — the degree emitted on each hit in gate mode (default 0 = root).
 //!
 //! Single-Lane by design (ADR-0014): emission happens pre-fan-out, a mono note line; the
-//! downstream Voicer expands it to Voices. All params are ordinary, so a change is sample-accurate
-//! via block-slicing; the step machine stays continuous across the cut.
+//! downstream Voicer expands it to Voices. The Float inputs are read block-rate, so a change is
+//! sample-accurate via block-slicing; the step machine stays continuous across the cut.
 
-use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
+use crate::descriptor::Descriptor;
 use crate::message::Arg;
 use crate::operator::{Io, Operator};
 
-pub const IN_CLOCK: usize = 0;
-/// Message output ordinal of the `degrees` port (the index [`Io::emit`] uses).
-pub const MSG_NOTES: usize = 0;
-pub const P_LENGTH: usize = 0;
-/// Slot of the first step value; step `k` (0-based) is param `P_STEP0 + k`.
-pub const P_STEP0: usize = 1;
 /// Number of step slots in the pattern (V1.3: expanded 8 → 16, ADR-0022).
 pub const NUM_STEPS: usize = 16;
-/// Boolean-step mode toggle: 0 = degree (default), 1 = gate. Param index past the last step.
-pub const P_GATE_MODE: usize = P_STEP0 + NUM_STEPS; // 17
-/// The single degree emitted per hit in gate mode.
-pub const P_PITCH: usize = P_GATE_MODE + 1; // 18
+
+// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts, the `GateMode` enum
+// type, and the Descriptor; no drift.
+crate::operator_contract!(Sequencer {
+    inputs:  { clock:  float,
+               length: float { 1.0..=16.0, default 8.0, "steps", lin },
+               step1:  float { -1.0..=24.0, default 0.0, "degree", lin },
+               step2:  float { -1.0..=24.0, default 1.0, "degree", lin },
+               step3:  float { -1.0..=24.0, default 2.0, "degree", lin },
+               step4:  float { -1.0..=24.0, default 3.0, "degree", lin },
+               step5:  float { -1.0..=24.0, default 4.0, "degree", lin },
+               step6:  float { -1.0..=24.0, default 5.0, "degree", lin },
+               step7:  float { -1.0..=24.0, default 6.0, "degree", lin },
+               step8:  float { -1.0..=24.0, default 7.0, "degree", lin },
+               step9:  float { -1.0..=24.0, default 0.0, "degree", lin },
+               step10: float { -1.0..=24.0, default 0.0, "degree", lin },
+               step11: float { -1.0..=24.0, default 0.0, "degree", lin },
+               step12: float { -1.0..=24.0, default 0.0, "degree", lin },
+               step13: float { -1.0..=24.0, default 0.0, "degree", lin },
+               step14: float { -1.0..=24.0, default 0.0, "degree", lin },
+               step15: float { -1.0..=24.0, default 0.0, "degree", lin },
+               step16: float { -1.0..=24.0, default 0.0, "degree", lin },
+               gate_mode: enum { Degree, Gate },
+               pitch:  float { -1.0..=24.0, default 0.0, "degree", lin } },
+    outputs: { degrees: message },
+});
+
+/// Message output ordinal of the `degrees` port (the index [`Io::emit`] uses).
+pub const MSG_NOTES: usize = OUT_DEGREES;
+
+/// Per-sample value of step `k` (0-based): input `IN_STEP1 + k`.
+const fn in_step(k: usize) -> usize {
+    IN_STEP1 + k
+}
 
 pub struct Sequencer {
     /// Index of the current step, or -1 before the first beat edge. Continuous across
@@ -79,74 +106,21 @@ impl Sequencer {
 
 impl Operator for Sequencer {
     fn descriptor() -> Descriptor {
-        // Default pattern: an ascending one-octave scale by degree (0..7) on the first 8 steps,
-        // so the instrument sings out of the box. Steps 9..16 default to degree 0; with the
-        // default `length` of 8 they never play, so existing 8-step rigs stay bit-identical.
-        const DEFAULT_DEGREES: [f32; NUM_STEPS] = [
-            0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0, // original 8
-            0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, // new 9..16 (inert at default length 8)
-        ];
-        const STEP_NAMES: [&str; NUM_STEPS] = [
-            "step1", "step2", "step3", "step4", "step5", "step6", "step7", "step8", "step9",
-            "step10", "step11", "step12", "step13", "step14", "step15", "step16",
-        ];
-        let mut params = Vec::with_capacity(NUM_STEPS + 3);
-        params.push(ParamMeta {
-            name: "length",
-            min: 1.0,
-            max: NUM_STEPS as f32,
-            // Default stays 8 (not 16) so existing instruments behave identically (ADR-0022).
-            default: 8.0,
-            unit: "steps",
-            curve: Curve::Linear,
-        });
-        for (name, default) in STEP_NAMES.iter().zip(DEFAULT_DEGREES) {
-            params.push(ParamMeta {
-                name,
-                min: -1.0,
-                max: 24.0,
-                default,
-                unit: "degree",
-                curve: Curve::Linear,
-            });
-        }
-        params.push(ParamMeta {
-            name: "gate_mode",
-            min: 0.0,
-            max: 1.0,
-            default: 0.0,
-            unit: "",
-            curve: Curve::Linear,
-        });
-        params.push(ParamMeta {
-            name: "pitch",
-            min: -1.0,
-            max: 24.0,
-            default: 0.0,
-            unit: "degree",
-            curve: Curve::Linear,
-        });
-        Descriptor {
-            type_name: "sequencer",
-            inputs: vec![Port::signal("clock")],
-            outputs: vec![Port::message("degrees")],
-            params,
-            resources: vec![],
-            lanes: LaneRule::Inherit,
-        }
+        Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        let length = (io.param(P_LENGTH).round() as i64).clamp(1, NUM_STEPS as i64);
-        let gate_mode = io.param(P_GATE_MODE) >= 0.5;
-        let pitch = io.param(P_PITCH);
+        let length = (io.value(IN_LENGTH).round() as i64).clamp(1, NUM_STEPS as i64);
+        let gate_mode =
+            GateMode::from_index(io.enum_index(IN_GATE_MODE)).unwrap_or_default() == GateMode::Gate;
+        let pitch = io.value(IN_PITCH);
 
-        // Snapshot the step values: constant for this (sub)block, and `io.param` can't be
+        // Snapshot the step values: constant for this (sub)block, and a Float input can't be
         // read while emitting.
         let mut steps = [0.0f32; NUM_STEPS];
         for (k, p) in steps.iter_mut().enumerate() {
-            *p = io.param(P_STEP0 + k);
+            *p = io.value(in_step(k));
         }
         // The degree to emit for a given step, or None for a rest / off-step.
         // - degree mode: the step value IS the degree; below 0 is a rest.
@@ -168,7 +142,7 @@ impl Operator for Sequencer {
         let mut prev = self.prev_clock;
         let mut held = self.held;
         for i in 0..n {
-            let g = io.input(IN_CLOCK).map_or(0.0, |c| c[i]);
+            let g = io.signal(IN_CLOCK).get(i).copied().unwrap_or(0.0);
             if prev < 0.5 && g >= 0.5 {
                 // Rising edge: end any held note, advance, and play the new step.
                 if let Some(m) = held.take() {
@@ -209,13 +183,36 @@ mod tests {
 
     /// Run `seq` over one block of `clock` samples; returns the emitted Messages
     /// (block-absolute frames).
-    fn run(seq: &mut Sequencer, clock: &[f32], params: &[f32]) -> Vec<Emit> {
+    ///
+    /// `controls` carries the former param layout `[length, step1..step16, gate_mode, pitch]`. The
+    /// Float inputs (length, steps, pitch) are materialized as per-sample buffers `vec![v; n]` in
+    /// port order; `gate_mode` is supplied as a held `Enum` index via `.with_enums` (ADR-0028).
+    fn run(seq: &mut Sequencer, clock: &[f32], controls: &[f32]) -> Vec<Emit> {
         let n = clock.len();
         let mut emits: Vec<Emit> = Vec::new();
+        // length + 16 steps come first; gate_mode and pitch are the last two entries.
+        let pitch = controls[NUM_STEPS + 2];
+        let mode_index = controls[NUM_STEPS + 1] as usize; // Degree=0, Gate=1
+                                                           // Float buffers in port order: clock, length, step1..step16, (gate_mode), pitch.
+        let float_bufs: Vec<Vec<f32>> = (0..=NUM_STEPS)
+            .map(|k| vec![controls[k]; n]) // length, then the 16 steps
+            .chain(std::iter::once(vec![pitch; n]))
+            .collect();
         {
             let outs: Vec<&mut [f32]> = vec![]; // `degrees` is a Message port — no Signal buffer.
-            let inputs: Vec<Option<&[f32]>> = vec![Some(clock)];
-            let mut io = Io::new(SR, n, inputs, outs, params, &[]).with_emit(&mut emits, 0);
+                                                // Ports: clock(0), length(1), step1..step16(2..=17), gate_mode(18), pitch(19).
+            let mut inputs: Vec<Option<&[f32]>> = vec![Some(clock)];
+            for b in &float_bufs[..=NUM_STEPS] {
+                inputs.push(Some(b.as_slice())); // length + 16 steps
+            }
+            inputs.push(None); // gate_mode is an Enum input — no Float buffer
+            inputs.push(Some(float_bufs[NUM_STEPS + 1].as_slice())); // pitch
+                                                                     // Held enum index at the IN_GATE_MODE slot; other slots 0.
+            let mut enums = [0usize; 20];
+            enums[IN_GATE_MODE] = mode_index;
+            let mut io = Io::new(SR, n, inputs, outs, &[], &[])
+                .with_emit(&mut emits, 0)
+                .with_enums(&enums);
             seq.process(&mut io);
         }
         emits
@@ -232,20 +229,23 @@ mod tests {
         g
     }
 
-    /// Build a degree-mode param vector: `length` + 16 step degrees (`gate_mode`=0, `pitch`=0).
+    /// Build a degree-mode control vector: `length` + 16 step degrees (`gate_mode`=Degree(0),
+    /// `pitch`=0). `run` materializes the Float entries as buffers and the `gate_mode` entry as a
+    /// held `Enum` index.
     fn params(length: f32, pitches: [f32; NUM_STEPS]) -> Vec<f32> {
         let mut p = vec![length];
         p.extend_from_slice(&pitches);
-        p.push(0.0); // gate_mode
+        p.push(0.0); // gate_mode -> GateMode::Degree
         p.push(0.0); // pitch
         p
     }
 
-    /// Build a gate-mode param vector: `length` + 16 boolean steps + `pitch`.
+    /// Build a gate-mode control vector: `length` + 16 boolean steps + `pitch`
+    /// (`gate_mode`=Gate(1)).
     fn gate_params(length: f32, steps: [f32; NUM_STEPS], pitch: f32) -> Vec<f32> {
         let mut p = vec![length];
         p.extend_from_slice(&steps);
-        p.push(1.0); // gate_mode
+        p.push(1.0); // gate_mode -> GateMode::Gate
         p.push(pitch);
         p
     }
@@ -350,9 +350,23 @@ mod tests {
         let mut emits: Vec<Emit> = Vec::new();
         {
             let outs: Vec<&mut [f32]> = vec![];
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&one[..])];
+            let n = one.len();
             let p = params(3.0, degrees);
-            let mut io = Io::new(SR, one.len(), inputs, outs, &p, &[]).with_emit(&mut emits, 0);
+            // length + 16 steps as Float buffers, then pitch; gate_mode via held Enum index.
+            let float_bufs: Vec<Vec<f32>> = (0..=NUM_STEPS)
+                .map(|k| vec![p[k]; n])
+                .chain(std::iter::once(vec![p[NUM_STEPS + 2]; n]))
+                .collect();
+            let mut inputs: Vec<Option<&[f32]>> = vec![Some(&one[..])];
+            for buf in &float_bufs[..=NUM_STEPS] {
+                inputs.push(Some(buf.as_slice()));
+            }
+            inputs.push(None); // gate_mode (Enum)
+            inputs.push(Some(float_bufs[NUM_STEPS + 1].as_slice())); // pitch
+            let enums = [0usize; 20];
+            let mut io = Io::new(SR, n, inputs, outs, &[], &[])
+                .with_emit(&mut emits, 0)
+                .with_enums(&enums);
             b.process(&mut io);
         }
         let first_on = emits.iter().find(|e| vel(e) > 0.5).expect("a note-on");
@@ -363,20 +377,31 @@ mod tests {
 
     #[test]
     fn default_descriptor_preserves_eight_step_behavior() {
-        // The descriptor's defaults (length 8, degree mode, ascending 0..7) must reproduce the
-        // prior 8-step ascending pattern bit-for-bit, proving existing rigs are unchanged.
-        let defaults: Vec<f32> = Sequencer::descriptor()
-            .params
-            .iter()
-            .map(|p| p.default)
-            .collect();
+        // The descriptor's input defaults (length 8, degree mode, ascending 0..7) must reproduce
+        // the prior 8-step ascending pattern bit-for-bit, proving existing rigs are unchanged.
+        // Defaults now live on the Float/Enum inputs (ADR-0028), not a `params` block.
+        let desc = Sequencer::descriptor();
+        // Float-input defaults in port order: length(1), step1..step16(2..=17), pitch(19).
+        let length_default = desc.inputs[IN_LENGTH].meta.as_ref().unwrap().default;
+        assert_eq!(length_default, 8.0, "default length stays 8");
         assert_eq!(
-            defaults.len(),
-            NUM_STEPS + 3,
-            "length + 16 steps + mode + pitch"
+            desc.inputs[IN_GATE_MODE]
+                .enum_meta
+                .as_ref()
+                .unwrap()
+                .default,
+            GateMode::Degree.to_index(),
+            "default is degree mode"
         );
-        assert_eq!(defaults[P_LENGTH], 8.0, "default length stays 8");
-        assert_eq!(defaults[P_GATE_MODE], 0.0, "default is degree mode");
+
+        // Rebuild the former `[length, step1..step16, gate_mode, pitch]` control vector from the
+        // input defaults (gate_mode 0 = Degree).
+        let mut defaults = vec![length_default];
+        for k in 0..NUM_STEPS {
+            defaults.push(desc.inputs[in_step(k)].meta.as_ref().unwrap().default);
+        }
+        defaults.push(0.0); // gate_mode -> Degree
+        defaults.push(desc.inputs[IN_PITCH].meta.as_ref().unwrap().default); // pitch
 
         let clock = beat_gate(100, 8);
         let mut seq = Sequencer::new();

@@ -983,11 +983,22 @@
                 "additionalProperties": false,
                 "properties": {
                   "gate_mode": {
-                    "default": 0.0,
-                    "description": "unit: , curve: Linear",
-                    "maximum": 1.0,
-                    "minimum": 0.0,
-                    "type": "number"
+                    "default": 0,
+                    "description": "one of [\"Degree\", \"Gate\"] (or its index)",
+                    "oneOf": [
+                      {
+                        "enum": [
+                          "Degree",
+                          "Gate"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "maximum": 1,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    ]
                   },
                   "length": {
                     "default": 8.0,
@@ -1138,18 +1149,42 @@
                 "additionalProperties": false,
                 "properties": {
                   "direction": {
-                    "default": 0.0,
-                    "description": "unit: , curve: Linear",
-                    "maximum": 2.0,
-                    "minimum": 0.0,
-                    "type": "number"
+                    "default": 0,
+                    "description": "one of [\"Nearest\", \"Up\", \"Down\"] (or its index)",
+                    "oneOf": [
+                      {
+                        "enum": [
+                          "Nearest",
+                          "Up",
+                          "Down"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "maximum": 2,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    ]
                   },
                   "target": {
-                    "default": 0.0,
-                    "description": "unit: , curve: Linear",
-                    "maximum": 2.0,
-                    "minimum": 0.0,
-                    "type": "number"
+                    "default": 0,
+                    "description": "one of [\"Scale\", \"Chord\", \"ChordThenScale\"] (or its index)",
+                    "oneOf": [
+                      {
+                        "enum": [
+                          "Scale",
+                          "Chord",
+                          "ChordThenScale"
+                        ],
+                        "type": "string"
+                      },
+                      {
+                        "maximum": 2,
+                        "minimum": 0,
+                        "type": "integer"
+                      }
+                    ]
                   }
                 },
                 "type": "object"

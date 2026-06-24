@@ -16,11 +16,12 @@
 //!   original once-per-beat gate, high for the first half of the beat. At `division` N the gate
 //!   pulses N times per beat — a 16th-note grid is `division` 4 (ADR-0022, the thin slice of
 //!   ADR-0006's deferred subdivision).
-//! - param 0: `tempo` (BPM).
-//! - param 1: `division` — gate subdivisions per beat (1 = once per beat, default; 4 = 16ths).
+//! - input 1: `tempo` (`Float`, BPM) — read block-rate via `io.value`.
+//! - input 2: `division` (`Float`) — gate subdivisions per beat (1 = once per beat, default;
+//!   4 = 16ths), read block-rate via `io.value`.
 //!
-//! Tempo/division are ordinary params, so the engine block-slices on a change and the new value
-//! takes effect at the exact sample of the change.
+//! `tempo`/`division` are `Float` inputs (ADR-0028): read block-rate, so a change block-slices and
+//! takes effect at the exact sample of the change — and each can now be *wired* and modulated.
 
 use smallvec::SmallVec;
 
@@ -29,10 +30,10 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.
 crate::operator_contract!(Clock {
-    inputs:  { sync: message },
-    outputs: { phase: signal, gate: signal },
-    params:  { tempo:    { 1.0..=999.0, default 120.0, "BPM", lin },
-               division: { 1.0..=64.0,  default 1.0,   "",    lin } },
+    inputs:  { sync: message,
+               tempo:    float { 1.0..=999.0, default 120.0, "BPM", lin },
+               division: float { 1.0..=64.0,  default 1.0,   "",    lin } },
+    outputs: { phase: float, gate: float },
 });
 
 #[derive(Default)]
@@ -60,13 +61,13 @@ impl Operator for Clock {
 
         // Beats advanced per sample. Tempo is constant for this (sub)block (block-sliced).
         let dt: f64 = if sample_rate > 0.0 {
-            (io.param(P_TEMPO).max(0.0) as f64 / 60.0) / sample_rate as f64
+            (io.value(IN_TEMPO).max(0.0) as f64 / 60.0) / sample_rate as f64
         } else {
             0.0
         };
         // Gate subdivisions per beat. division 1 = the original once-per-beat gate; N pulses N
         // times per beat. Rounded and floored at 1 so it never collapses the gate.
-        let division = (io.param(P_DIVISION).round() as f64).max(1.0);
+        let division = (io.value(IN_DIVISION).round() as f64).max(1.0);
 
         // Reset frames within this (sub)block, sorted. A `reset` event re-zeroes the phase
         // at its exact sample — sample-accurate position locate.
@@ -158,10 +159,16 @@ mod tests {
                 frame: m.frame,
             })
             .collect();
+        // tempo/division are `Float` inputs now (ADR-0028) — supply the per-sample buffers the
+        // engine would materialize, in port order (sync, tempo, division). `sync` is a message
+        // input (no Signal buffer); events are delivered via the events arg.
+        let tempo_buf = vec![tempo; n];
+        let division_buf = vec![division; n];
         {
             let outs: Vec<&mut [f32]> = vec![&mut phase[..], &mut gate[..]];
-            let inputs: Vec<Option<&[f32]>> = vec![None];
-            let params = [tempo, division];
+            let inputs: Vec<Option<&[f32]>> =
+                vec![None, Some(&tempo_buf[..]), Some(&division_buf[..])];
+            let params: [f32; 0] = [];
             let mut io = Io::new(SR, n, inputs, outs, &params, &evs);
             clock.process(&mut io);
         }
@@ -267,8 +274,9 @@ mod tests {
         let mut gate = [0.0f32; 1];
         {
             let outs: Vec<&mut [f32]> = vec![&mut phase[..], &mut gate[..]];
-            let inputs: Vec<Option<&[f32]>> = vec![None];
-            let params = [120.0f32, 1.0];
+            let (tempo, division) = ([120.0f32], [1.0f32]);
+            let inputs: Vec<Option<&[f32]>> = vec![None, Some(&tempo[..]), Some(&division[..])];
+            let params: [f32; 0] = [];
             let mut io = Io::new(SR, 1, inputs, outs, &params, &[]);
             b.process(&mut io);
         }
