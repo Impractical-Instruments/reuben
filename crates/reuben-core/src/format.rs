@@ -74,6 +74,12 @@ pub struct NodeDoc {
 pub struct PortRef {
     pub node: String,
     pub port: String,
+    /// Logical master channel this tap feeds (ADR-0026), only meaningful in `outputs`:
+    /// `0` = first channel (left), `1` = second (right), and so on. Omitted → broadcast to
+    /// every channel (the historical mono fan; existing instruments are bit-identical). The
+    /// field is ignored on a connection endpoint.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<usize>,
 }
 
 /// A connection from one node's output port to another's input port.
@@ -314,7 +320,10 @@ impl InstrumentDoc {
         for o in &self.outputs {
             let (key, desc) = lookup(&by_addr, &o.node)?;
             let (port, _) = out_port(desc, o)?;
-            graph.tap_output(key, port);
+            match o.channel {
+                Some(channel) => graph.tap_output_channel(key, port, channel),
+                None => graph.tap_output(key, port),
+            }
         }
 
         Ok(graph)
@@ -361,12 +370,14 @@ impl InstrumentDoc {
                     port: graph.nodes[c.src].descriptor.outputs[c.src_port]
                         .name
                         .to_string(),
+                    channel: None,
                 },
                 to: PortRef {
                     node: graph.nodes[c.dst].address.clone(),
                     port: graph.nodes[c.dst].descriptor.inputs[c.dst_port]
                         .name
                         .to_string(),
+                    channel: None,
                 },
             })
             .collect();
@@ -382,9 +393,10 @@ impl InstrumentDoc {
         let outputs = graph
             .outputs
             .iter()
-            .map(|(key, port)| PortRef {
+            .map(|(key, port, channel)| PortRef {
                 node: graph.nodes[*key].address.clone(),
                 port: graph.nodes[*key].descriptor.outputs[*port].name.to_string(),
+                channel: *channel,
             })
             .collect();
 

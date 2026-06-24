@@ -39,8 +39,10 @@ pub struct Connection {
 pub struct Graph {
     pub nodes: SlotMap<NodeKey, Node>,
     pub connections: Vec<Connection>,
-    /// Master output taps (node + output port), summed into the rendered output.
-    pub outputs: Vec<(NodeKey, usize)>,
+    /// Master output taps: `(node, output port, channel)`. `channel` is the logical master
+    /// channel index this tap feeds (ADR-0026); `None` broadcasts to every channel (the
+    /// historical mono fan). Summed into the rendered output.
+    pub outputs: Vec<(NodeKey, usize, Option<usize>)>,
 }
 
 impl Graph {
@@ -89,9 +91,15 @@ impl Graph {
         });
     }
 
-    /// Designate a master output tap (summed into the rendered audio).
+    /// Designate a master output tap broadcast to every logical channel (the mono fan).
     pub fn tap_output(&mut self, node: NodeKey, port: usize) {
-        self.outputs.push((node, port));
+        self.outputs.push((node, port, None));
+    }
+
+    /// Designate a master output tap feeding a single logical master `channel` (ADR-0026) —
+    /// e.g. a `pan` op's `left`/`right` tapped as channel 0 / 1.
+    pub fn tap_output_channel(&mut self, node: NodeKey, port: usize, channel: usize) {
+        self.outputs.push((node, port, Some(channel)));
     }
 
     /// Find a node by its OSC address. Used by the loader to bind resources to the right

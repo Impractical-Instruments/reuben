@@ -17,6 +17,7 @@ const CHORD_PLAYER: &str = include_str!("../../../instruments/chord-player.json"
 const CFG: AudioConfig = AudioConfig {
     sample_rate: 48_000.0,
     block_size: 256,
+    channels: AudioConfig::MIN_CHANNELS,
 };
 
 fn hz(midi: f32) -> f32 {

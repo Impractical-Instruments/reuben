@@ -32,6 +32,19 @@ fn validate_accepts_a_worked_instrument() {
 }
 
 #[test]
+fn validate_accepts_the_stereo_autopan_example() {
+    let dir = instruments_dir();
+    let json =
+        std::fs::read_to_string(dir.join("stereo-autopan.json")).expect("read stereo-autopan.json");
+    let report = validate(&json, &Registry::builtin(), &FsResolver::new(&dir));
+    assert!(
+        report.ok && report.errors.is_empty(),
+        "stereo-autopan.json should validate: {:?}",
+        report.errors
+    );
+}
+
+#[test]
 fn validate_rejects_unknown_operator_and_names_the_node() {
     let json = r#"{
       "instrument": "typo",
