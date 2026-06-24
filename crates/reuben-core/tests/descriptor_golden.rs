@@ -9,14 +9,19 @@
 //! To intentionally re-bless after a deliberate descriptor change: `REUBEN_BLESS=1 cargo test -p
 //! reuben-core --test descriptor_golden`.
 
-use reuben_core::descriptor::{Curve, Descriptor, LaneRule, PortKind};
+use reuben_core::descriptor::{Curve, Descriptor, LaneRule, Shape};
 use reuben_core::registry::Registry;
 
-fn kind(k: PortKind) -> &'static str {
-    match k {
-        PortKind::Signal => "signal",
-        PortKind::Message => "message",
-        PortKind::Context => "context",
+/// The legacy carrier word for a bare port's [`Shape`] — kept stable so the golden snapshot
+/// stays byte-identical now that `PortKind` is retired (ADR-0028). Materialized Float and Enum
+/// inputs render via their own branches; this names the carrier-style ports (audio Float,
+/// Note, Harmony).
+fn kind(s: Shape) -> &'static str {
+    match s {
+        Shape::Float => "signal",
+        Shape::Enum => "enum",
+        Shape::Note => "message",
+        Shape::Harmony => "context",
     }
 }
 
@@ -32,10 +37,29 @@ fn curve(c: Curve) -> &'static str {
 fn render(d: &Descriptor) -> String {
     let mut s = format!("operator {}\n", d.type_name);
     for (i, p) in d.inputs.iter().enumerate() {
-        s.push_str(&format!("  in[{i}] {} {}\n", kind(p.kind), p.name));
+        // A new-style materialized Float input (ADR-0028) carries its own metadata; render it so
+        // the snapshot captures the default/range that used to live on a same-named param. An
+        // `Enum` input renders its ordered variants + default index. Legacy signal/message/context
+        // inputs (no `meta`/`enum_meta`) render byte-identically to before.
+        match (&p.meta, &p.enum_meta) {
+            (Some(m), _) => s.push_str(&format!(
+                "  in[{i}] float {} min={:?} max={:?} default={:?} unit={:?} curve={}\n",
+                p.name,
+                m.min,
+                m.max,
+                m.default,
+                m.unit,
+                curve(m.curve)
+            )),
+            (_, Some(e)) => s.push_str(&format!(
+                "  in[{i}] enum {} variants={:?} default={}\n",
+                p.name, e.variants, e.default
+            )),
+            (None, None) => s.push_str(&format!("  in[{i}] {} {}\n", kind(p.shape), p.name)),
+        }
     }
     for (i, p) in d.outputs.iter().enumerate() {
-        s.push_str(&format!("  out[{i}] {} {}\n", kind(p.kind), p.name));
+        s.push_str(&format!("  out[{i}] {} {}\n", kind(p.shape), p.name));
     }
     for (i, p) in d.params.iter().enumerate() {
         s.push_str(&format!(
@@ -65,6 +89,31 @@ fn render_all() -> String {
         .entries()
         .map(|e| render(&e.descriptor))
         .collect()
+}
+
+/// The formatter renders an ADR-0028 `Enum` input (variants + default) — exercised here on a
+/// synthetic descriptor because no built-in operator declares an `Enum` until the Phase 2 sweep.
+/// This keeps the golden *machinery* ready before any real descriptor changes (and re-blesses).
+#[test]
+fn renders_enum_input_line() {
+    use reuben_core::descriptor::{Descriptor, EnumMeta, LaneRule, Port};
+    let d = Descriptor {
+        type_name: "demo",
+        inputs: vec![Port::enumerated(EnumMeta {
+            name: "mode",
+            variants: &["Lp", "Hp", "Bp"],
+            default: 0,
+        })],
+        outputs: vec![],
+        params: vec![],
+        resources: vec![],
+        lanes: LaneRule::Inherit,
+    };
+    assert!(
+        render(&d).contains(r#"  in[0] enum mode variants=["Lp", "Hp", "Bp"] default=0"#),
+        "{}",
+        render(&d)
+    );
 }
 
 #[test]

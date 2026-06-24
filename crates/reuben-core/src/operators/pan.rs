@@ -17,11 +17,11 @@
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.
+// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Pan {
-    inputs:  { audio: signal, pan: signal },
-    outputs: { left: signal, right: signal },
-    params:  { pan: { -1.0..=1.0, default 0.0, "", lin } },
+    inputs:  { audio: float,
+               pan:   float { -1.0..=1.0, default 0.0, "", lin } },
+    outputs: { left: float, right: float },
 });
 
 #[derive(Default)]
@@ -40,24 +40,20 @@ impl Operator for Pan {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        let pan_param = io.param(P_PAN);
-        // Per-sample position only when wired; otherwise the constant param (block-sliced).
-        let pan_connected = io.input(IN_PAN).is_some();
 
         for i in 0..n {
-            // Read inputs one sample at a time so each immutable borrow of `io` ends before
-            // the output writes below — keeps `process` allocation-free.
-            let a = io.input(IN_AUDIO).map_or(0.0, |s| s[i]);
-            let p = if pan_connected {
-                io.input(IN_PAN).map_or(pan_param, |s| s[i])
-            } else {
-                pan_param
-            };
+            // `audio`/`pan` are `Float` inputs — always a buffer (wired source or materialized
+            // latch), one read path (ADR-0028). Read both into locals first so each immutable
+            // borrow of `io` ends before the two output writes — keeps `process` allocation-free.
+            let a = io.signal(IN_AUDIO).get(i).copied().unwrap_or(0.0);
+            let p = io.signal(IN_PAN).get(i).copied().unwrap_or(0.0);
             // Equal-power law: map [-1, 1] -> [0, π/2], split with cos/sin. cos²+sin²=1 keeps
             // total power constant across the sweep; center (p=0) is cos(π/4)=sin(π/4)≈0.707.
             let theta = (p.clamp(-1.0, 1.0) + 1.0) * (core::f32::consts::FRAC_PI_4);
-            io.output(OUT_LEFT)[i] = a * theta.cos();
-            io.output(OUT_RIGHT)[i] = a * theta.sin();
+            let l = a * theta.cos();
+            let r = a * theta.sin();
+            io.output(OUT_LEFT)[i] = l;
+            io.output(OUT_RIGHT)[i] = r;
         }
     }
 
@@ -75,15 +71,18 @@ mod tests {
 
     const SR: f32 = 48_000.0;
 
-    /// Run pan over one block: `audio` constant 1.0, position from the param (no pan input).
+    /// Run pan over one block: `audio` constant 1.0, position from a constant `pan` buffer —
+    /// `pan` is a `Float` input now (ADR-0028), supplied as the per-sample buffer the engine
+    /// would materialize from the input's latched default.
     fn run_param(pan: f32, n: usize) -> (Vec<f32>, Vec<f32>) {
         let audio = vec![1.0f32; n];
+        let pan_buf = vec![pan; n];
         let mut left = vec![0.0f32; n];
         let mut right = vec![0.0f32; n];
         {
             let outs: Vec<&mut [f32]> = vec![&mut left[..], &mut right[..]];
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&audio[..]), None];
-            let params = [pan];
+            let inputs: Vec<Option<&[f32]>> = vec![Some(&audio[..]), Some(&pan_buf[..])];
+            let params: [f32; 0] = [];
             let mut io = Io::new(SR, n, inputs, outs, &params, &[]);
             Pan::new().process(&mut io);
         }
@@ -132,7 +131,7 @@ mod tests {
 
     #[test]
     fn pan_input_overrides_param() {
-        // Param says center, but a connected pan input says hard-left.
+        // A wired `pan` buffer says hard-left — the single read path (ADR-0028) follows it.
         let n = 8;
         let audio = vec![1.0f32; n];
         let pan_in = vec![-1.0f32; n];
@@ -141,7 +140,7 @@ mod tests {
         {
             let outs: Vec<&mut [f32]> = vec![&mut left[..], &mut right[..]];
             let inputs: Vec<Option<&[f32]>> = vec![Some(&audio[..]), Some(&pan_in[..])];
-            let params = [0.0];
+            let params: [f32; 0] = [];
             let mut io = Io::new(SR, n, inputs, outs, &params, &[]);
             Pan::new().process(&mut io);
         }

@@ -20,11 +20,8 @@ const HARD_LEFT: &str = r#"
 {
   "instrument": "stereo-test",
   "nodes": [
-    { "type": "oscillator", "address": "/osc", "params": { "freq": 220.0 } },
-    { "type": "pan", "address": "/pan", "params": { "pan": -1.0 } }
-  ],
-  "connections": [
-    { "from": {"node":"/osc","port":"audio"}, "to": {"node":"/pan","port":"audio"} }
+    { "type": "oscillator", "address": "/osc", "inputs": { "freq": 220.0 } },
+    { "type": "pan", "address": "/pan", "inputs": { "pan": -1.0, "audio": { "from": "/osc" } } }
   ],
   "outputs": [
     { "node": "/pan", "port": "left",  "channel": 0 },
@@ -64,7 +61,7 @@ fn master_width_floors_to_stereo_for_a_mono_instrument() {
     // No channel indices anywhere (all broadcast) -> still presents two channels.
     let json = r#"{
       "instrument": "mono",
-      "nodes": [{ "type": "oscillator", "address": "/osc", "params": { "freq": 220.0 } }],
+      "nodes": [{ "type": "oscillator", "address": "/osc", "inputs": { "freq": 220.0 } }],
       "outputs": [{ "node": "/osc", "port": "audio" }]
     }"#;
     let g = load(json, &reg()).expect("load");
@@ -79,11 +76,8 @@ fn broadcast_instrument_is_bit_identical_mono_and_across_channels() {
     let json = r#"{
       "instrument": "mono",
       "nodes": [
-        { "type": "oscillator", "address": "/osc", "params": { "freq": 330.0 } },
-        { "type": "output", "address": "/out" }
-      ],
-      "connections": [
-        { "from": {"node":"/osc","port":"audio"}, "to": {"node":"/out","port":"audio"} }
+        { "type": "oscillator", "address": "/osc", "inputs": { "freq": 330.0 } },
+        { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/osc" } } }
       ],
       "outputs": [{ "node": "/out", "port": "audio" }]
     }"#;

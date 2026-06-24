@@ -5,44 +5,159 @@
 //! bad), of serialization, of connection type-checking, and of AI grounding. Run 2
 //! generates the JSON schema from these descriptors.
 
-/// What kind of data a port carries.
+/// The single axis describing an [`Input`](Port)/output (ADR-0028): one closed, named set
+/// from which delivery and read-style **follow**. There is no separate temporality axis and
+/// no author-visible carrier — `shape` is the sole descriptor of what a port carries (the
+/// legacy `Signal/Message/Context` carrier was retired once the operator sweep completed).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum PortKind {
-    /// Audio-rate [`crate::signal::Block`].
-    Signal,
-    /// Discrete [`crate::message::Message`] stream.
-    Message,
-    /// Latched tonal [`crate::context::Context`] — a struct-valued read service over the
-    /// Message wire (ADR-0015): a context node publishes it; followers read "the current
-    /// value". Carries no Signal buffer; the value rides a dedicated context arena.
-    Context,
+pub enum Shape {
+    /// A number — freq, cutoff, amp, a contour, a control. Always materialized to a per-sample
+    /// buffer (ADR-0028); read per-sample (`io.signal`) or block-rate (`io.value`).
+    Float,
+    /// A named discrete choice (filter `mode`, osc `waveform`). A held scalar, block-sliced.
+    Enum,
+    /// The tonal-context struct (`root`/`scale`/`chord` + resolvers). A held struct, block-sliced.
+    Harmony,
+    /// A pitch/velocity event. A sparse, frame-stamped event list.
+    Note,
+}
+
+/// The shape of an instantiate-time [`Constant`](ConstantMeta) (ADR-0028) — config that, if
+/// changed, would rebuild the graph (e.g. `voices`). Not a runtime [`Shape`]; a runtime integer
+/// is a rounded `Float` or an `Enum`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConstantShape {
+    Int,
+    Enum,
+}
+
+/// Metadata for an [`Shape::Enum`] input (ADR-0028): the closed, ordered set of named choices an
+/// author may pick, plus which one is the unwired default.
+///
+/// `variants` are the stable wire **symbols** — PascalCase Rust identifiers (`"Lp"`, `"Sine"`) —
+/// emitted by the `operator_contract!`-generated `Enum` type (its `VARIANTS`), so the descriptor
+/// and the type never drift. A variant's position is its on-wire integer **index** (the fallback
+/// form). See [`EnumMeta::resolve`] for the symbol-primary / index-fallback binding.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EnumMeta {
+    pub name: &'static str,
+    pub variants: &'static [&'static str],
+    /// Index into `variants` of the unwired default choice.
+    pub default: usize,
+}
+
+impl EnumMeta {
+    /// Resolve a wire token to a variant index — the ADR-0028 **Enum-over-OSC binding**. A
+    /// **symbol** (`"Hp"`) is matched against [`variants`](Self::variants); that is the primary,
+    /// human-legible form an author writes (`"mode": "Hp"`) and an OSC string carries. A bare
+    /// **integer** (`"1"`) is accepted as a fallback index, in range. `None` if it is neither a
+    /// known symbol nor an in-range index.
+    pub fn resolve(&self, token: &str) -> Option<usize> {
+        if let Some(i) = self.variants.iter().position(|v| *v == token) {
+            return Some(i);
+        }
+        token
+            .parse::<usize>()
+            .ok()
+            .filter(|&i| i < self.variants.len())
+    }
+
+    /// Resolve an [`Arg`](crate::message::Arg) to a variant index without allocating — the
+    /// render-thread form of [`resolve`](Self::resolve). A [`Sym`](crate::message::Arg::Sym)
+    /// is matched by symbol (then index fallback) against its borrowed `&str`; a numeric arg
+    /// maps straight to its index (rounding a [`Float`](crate::message::Arg::Float), as the
+    /// string form did) with no intermediate `String`. Used by `route_messages` so an Enum
+    /// control message (`/filt/mode "Hp"`) touches no allocator on the audio thread.
+    pub fn resolve_arg(&self, arg: &crate::message::Arg) -> Option<usize> {
+        use crate::message::Arg;
+        let idx = match arg {
+            Arg::Sym(s) => return self.resolve(s.as_str()),
+            Arg::Int(v) => usize::try_from(*v).ok()?,
+            Arg::Bool(b) => *b as usize,
+            Arg::Float(v) => usize::try_from(v.round() as i64).ok()?,
+        };
+        (idx < self.variants.len()).then_some(idx)
+    }
+
+    /// The default variant's symbol.
+    pub fn default_symbol(&self) -> &'static str {
+        self.variants[self.default]
+    }
 }
 
 /// A named input or output port.
+///
+/// `shape` is the sole axis (ADR-0028): it says what the port carries and, from that, how it is
+/// delivered and read. `meta` is `Some` only for a **materialized [`Shape::Float`] input** — an
+/// input that owns its unwired default and is served as a per-sample buffer the engine fills from
+/// a latched scalar (ADR-0028 materialize). A bare `signal` input (audio passthrough) leaves
+/// `meta` `None`. `enum_meta` is `Some` only for an [`Shape::Enum`] input.
+///
+/// The `signal`/`message`/`context` constructors are authoring conveniences (the macro DSL still
+/// names ports that way) that set the corresponding `shape` — `Float`/`Note`/`Harmony`.
 #[derive(Debug, Clone)]
 pub struct Port {
     pub name: &'static str,
-    pub kind: PortKind,
+    pub shape: Shape,
+    pub meta: Option<ParamMeta>,
+    pub enum_meta: Option<EnumMeta>,
 }
 
 impl Port {
     pub const fn signal(name: &'static str) -> Self {
         Self {
             name,
-            kind: PortKind::Signal,
+            shape: Shape::Float,
+            meta: None,
+            enum_meta: None,
         }
     }
     pub const fn message(name: &'static str) -> Self {
         Self {
             name,
-            kind: PortKind::Message,
+            shape: Shape::Note,
+            meta: None,
+            enum_meta: None,
         }
     }
     pub const fn context(name: &'static str) -> Self {
         Self {
             name,
-            kind: PortKind::Context,
+            shape: Shape::Harmony,
+            meta: None,
+            enum_meta: None,
         }
+    }
+
+    /// A **new-style materialized [`Shape::Float`] input** (ADR-0028): one `Input` declared once,
+    /// carrying its own unwired default in `meta`. When unwired the engine materializes a
+    /// per-sample buffer from the latched default (and writes mid-block changes at their frame);
+    /// when wired it passes the source buffer through. Replaces the legacy "signal port + a
+    /// same-named param" pair with a single declaration.
+    pub fn float(meta: ParamMeta) -> Self {
+        Self {
+            name: meta.name,
+            shape: Shape::Float,
+            meta: Some(meta),
+            enum_meta: None,
+        }
+    }
+
+    /// An [`Shape::Enum`] input (ADR-0028): a held, live-switchable named choice (filter `mode`,
+    /// osc `waveform`). An `Enum` change rides the message wire as a block-sliced discrete update.
+    pub fn enumerated(meta: EnumMeta) -> Self {
+        Self {
+            name: meta.name,
+            shape: Shape::Enum,
+            meta: None,
+            enum_meta: Some(meta),
+        }
+    }
+
+    /// Whether this is a new-style materialized Float input (ADR-0028) — the engine fills a
+    /// latched buffer for it when unwired, rather than handing the operator `None`.
+    pub fn is_materialized(&self) -> bool {
+        self.meta.is_some()
     }
 }
 
@@ -124,6 +239,23 @@ impl Descriptor {
         self.params.iter().position(|p| p.name == name)
     }
 
+    /// The one param that is a **`Constant`** (ADR-0028): instantiate-time config that, if changed,
+    /// would rebuild the graph. Derived — not separately declared — from [`LaneRule::FromParam`]:
+    /// the lane-count param (`voices`) is the canonical and, today, only such value ("a value is a
+    /// Constant iff changing it would rebuild the graph"). `None` for an [`LaneRule::Inherit`]
+    /// operator. The loader routes it to the patch's `config` block, not `inputs`.
+    pub fn constant_param(&self) -> Option<&ParamMeta> {
+        match self.lanes {
+            LaneRule::FromParam(slot) => self.params.get(slot),
+            LaneRule::Inherit => None,
+        }
+    }
+
+    /// Whether `name` is this operator's [`Constant`](Self::constant_param) param.
+    pub fn is_constant_param(&self, name: &str) -> bool {
+        self.constant_param().is_some_and(|p| p.name == name)
+    }
+
     /// Default values for every param, in slot order.
     pub fn default_params(&self) -> Vec<f32> {
         self.params.iter().map(|p| p.default).collect()
@@ -132,5 +264,48 @@ impl Descriptor {
     /// Whether this operator declares a resource slot of the given name (ADR-0016).
     pub fn has_resource(&self, name: &str) -> bool {
         self.resources.iter().any(|r| r.name == name)
+    }
+
+    /// Index + metadata of a **new-style materialized [`Shape::Float`] input** named `name`
+    /// (ADR-0028), for routing an incoming `/node/<name> v` message to its latch/materialize
+    /// buffer instead of a param slot. `None` for legacy signal inputs (no `meta`) and non-inputs.
+    pub fn materialized_input(&self, name: &str) -> Option<(usize, &ParamMeta)> {
+        self.inputs
+            .iter()
+            .enumerate()
+            .find(|(_, p)| p.name == name && p.is_materialized())
+            .and_then(|(i, p)| p.meta.as_ref().map(|m| (i, m)))
+    }
+
+    /// Every input an author may set as a **numeric literal** (ADR-0028): each materialized
+    /// [`Shape::Float`] input, paired with its [`ParamMeta`]. The JSON-schema generator and the
+    /// CLI `describe` both surface these alongside the real params (the old "signal port +
+    /// same-named unwired-default param" is now one input), so reading them from this single
+    /// definition keeps the two from drifting. Enums are a separate, non-numeric settable surface.
+    pub fn settable_inputs(&self) -> impl Iterator<Item = (&'static str, &ParamMeta)> {
+        self.inputs
+            .iter()
+            .filter_map(|p| p.meta.as_ref().map(|m| (p.name, m)))
+    }
+
+    /// Every [`Shape::Enum`] input an author may set as a **named choice** (ADR-0028), paired with
+    /// its [`EnumMeta`]. The non-numeric sibling of [`settable_inputs`](Self::settable_inputs): the
+    /// JSON-schema generator and the CLI `describe` both surface these (variants + default) so an
+    /// author can set e.g. filter `mode` to `"Hp"`. Single definition keeps the two from drifting.
+    pub fn enum_inputs(&self) -> impl Iterator<Item = (&'static str, &EnumMeta)> {
+        self.inputs
+            .iter()
+            .filter_map(|p| p.enum_meta.as_ref().map(|e| (p.name, e)))
+    }
+
+    /// Index + metadata of an [`Shape::Enum`] input named `name` (ADR-0028), for resolving a
+    /// `/node/<name> "Hp"` symbol (or fallback index) to its held variant. `None` for non-enum
+    /// inputs and non-inputs.
+    pub fn enum_input(&self, name: &str) -> Option<(usize, &EnumMeta)> {
+        self.inputs
+            .iter()
+            .enumerate()
+            .find(|(_, p)| p.name == name && p.enum_meta.is_some())
+            .and_then(|(i, p)| p.enum_meta.as_ref().map(|m| (i, m)))
     }
 }

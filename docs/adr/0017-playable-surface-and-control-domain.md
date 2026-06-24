@@ -1,5 +1,13 @@
 # The playable surface: Message-first control, one-port-one-type, and Good Buttons from composition
 
+> **Superseded in part by [ADR-0028](0028-one-input-shape.md).** The carrier doctrine here —
+> "Message is the default control domain, Signal the opt-in special case," "two carriers, one
+> value," the **one-port-one-type rule**, and the explicit Message→Signal (`m2s`) converter — is
+> retired: there is now one `Input` per function described by a `shape`, a `Float` is always
+> materialized to a buffer (so sparse→dense is automatic), and the only illegal wiring is a
+> *shape* mismatch. **Retained:** the math-operator family (`add`/`mul`/`map`/`differentiate`/
+> `integrate`) and **Good Button** composition — now operating on `Float`s.
+
 ## Context
 
 The [V1.2 roadmap](../../ROADMAP.md) names two deliverables — *performance-input mapping*

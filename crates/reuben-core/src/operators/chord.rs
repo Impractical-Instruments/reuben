@@ -18,8 +18,8 @@
 //!
 //! - input 0: `set` (Message) — `set [degree, gate]`; arg0 = chord-root scale degree, arg1 = gate
 //!   (> 0 = note-on, else note-off). One input port/address (degree rides the arg, ADR-0022).
+//! - input 1: `size` (`Float`) — chord tones: 3 = triad (default) / 4 = seventh; read block-rate.
 //! - output 0 (Message): `degrees` — `degree [degree, vel]` per chord tone; wire to a Voicer.
-//! - param 0: `size` — chord tones: 3 = triad (default) / 4 = seventh.
 //!
 //! The third is **scale-relative** (`+2` degrees), so the same op spells a major, minor, or
 //! diminished triad depending on where the root sits in the scale — the diatonic I–vii° set.
@@ -32,9 +32,9 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.
 crate::operator_contract!(Chord {
-    inputs:  { set: message },
+    inputs:  { set: message,
+               size: float { 3.0..=4.0, default 3.0, "tones", lin } },
     outputs: { degrees: message },
-    params:  { size: { 3.0..=4.0, default 3.0, "tones", lin } },
 });
 
 /// Max chord tones a single press can hold (seventh = 4; headroom for a future `size`).
@@ -82,7 +82,7 @@ impl Operator for Chord {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        let size = (io.param(P_SIZE).round() as usize).clamp(3, MAX_TONES);
+        let size = (io.value(IN_SIZE).round() as usize).clamp(3, MAX_TONES);
 
         // Snapshot the set events for this (sub)block, sorted by frame — can't read events
         // while emitting. Each: (frame, root degree, on?).
@@ -162,11 +162,14 @@ mod tests {
                 frame: m.frame,
             })
             .collect();
-        let params = [size];
+        // `size` is a `Float` input now (ADR-0028) — supply the per-sample buffer the engine
+        // would materialize. Port order: set (Message, via events), size (Float).
+        let size_buf = vec![size; n];
         let mut emits: Vec<Emit> = Vec::new();
         {
             let outs: Vec<&mut [f32]> = vec![]; // `degrees` is a Message port — no Signal buffer.
-            let inputs: Vec<Option<&[f32]>> = vec![None];
+            let inputs: Vec<Option<&[f32]>> = vec![None, Some(&size_buf[..])];
+            let params: [f32; 0] = [];
             let mut io = Io::new(SR, n, inputs, outs, &params, &evs).with_emit(&mut emits, 0);
             chord.process(&mut io);
         }
@@ -314,8 +317,9 @@ mod tests {
                 frame: 0,
             }];
             let outs: Vec<&mut [f32]> = vec![];
-            let inputs: Vec<Option<&[f32]>> = vec![None];
-            let params = [3.0f32];
+            let size_buf = vec![3.0f32; 128];
+            let inputs: Vec<Option<&[f32]>> = vec![None, Some(&size_buf[..])];
+            let params: [f32; 0] = [];
             let mut io = Io::new(SR, 128, inputs, outs, &params, &evs).with_emit(&mut emits, 0);
             bb.process(&mut io);
         }

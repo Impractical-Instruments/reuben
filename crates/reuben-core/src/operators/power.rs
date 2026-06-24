@@ -9,19 +9,24 @@
 //! no silence floor to fudge. Patch it between an `envelope` and a `mul`: `env.cv -> power.x`,
 //! `power.out -> mul`, audio -> the other `mul` input.
 //!
-//! - input 0: `x` (Signal) — the value to shape; treated as unipolar (negatives clamp to 0 so a
+//! Shape model (ADR-0028): `exponent` is a **`Float` input** owning its unwired default, always
+//! materialized to a buffer — read once block-rate via `io.value` (the curve shape is held for the
+//! call, not swept per sample). `x` is a bare `Float` wire-in (unwired reads as 0). No param slot.
+//!
+//! - input 0: `x` (`Float`) — the value to shape; treated as unipolar (negatives clamp to 0 so a
 //!   fractional exponent never yields NaN). Unwired reads as 0.
-//! - output 0: `out` (Signal) — `x^exponent`.
-//! - param 0: `exponent` — the power. Default 2 (a musical amplitude curve); 1 is a pass-through.
+//! - input 1: `exponent` (`Float`) — the power. Default 2 (a musical amplitude curve); 1 is a
+//!   pass-through.
+//! - output 0: `out` (`Float`) — `x^exponent`.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor.
+// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor.
 crate::operator_contract!(Power {
-    inputs:  { x: signal },
-    outputs: { out: signal },
-    params:  { exponent: { 0.0..=8.0, default 2.0, "", lin } },
+    inputs:  { x: float,
+               exponent: float { 0.0..=8.0, default 2.0, "", lin } },
+    outputs: { out: float },
 });
 
 #[derive(Default)]
@@ -40,11 +45,14 @@ impl Operator for Power {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        let exponent = io.param(P_EXPONENT);
+        // `exponent` is a `Float` input (always a buffer); read it once block-rate — the curve
+        // shape is held for the call, not swept per sample.
+        let exponent = io.value(IN_EXPONENT);
         for i in 0..n {
             // Unipolar: clamp the input to [0, ∞) so a fractional exponent can't produce NaN
             // from a negative base. The envelope CV this is built for is already in [0, 1].
-            let x = io.input(IN_X).map_or(0.0, |s| s[i]).max(0.0);
+            // `x` is a `Float` input — always a buffer; read into a local before the output write.
+            let x = io.signal(IN_X).get(i).copied().unwrap_or(0.0).max(0.0);
             io.output(OUT_OUT)[i] = x.powf(exponent);
         }
     }
@@ -63,13 +71,16 @@ mod tests {
 
     const SR: f32 = 48_000.0;
 
-    /// Run `power` over one block with the given input and exponent; returns `out`.
+    /// Run `power` over one block with the given input and exponent; returns `out`. `x` and
+    /// `exponent` are `Float` inputs now (ADR-0028), supplied as the per-sample buffers the engine
+    /// would materialize (port order: x, exponent).
     fn run(x: Option<&[f32]>, exponent: f32) -> Vec<f32> {
         let n = x.map_or(4, <[f32]>::len);
         let mut out = vec![0.0f32; n];
-        let params = [exponent];
+        let exp_buf = vec![exponent; n];
+        let params: [f32; 0] = [];
         {
-            let inputs: Vec<Option<&[f32]>> = vec![x];
+            let inputs: Vec<Option<&[f32]>> = vec![x, Some(&exp_buf[..])];
             let outs: Vec<&mut [f32]> = vec![&mut out[..]];
             let mut io = Io::new(SR, n, inputs, outs, &params, &[]);
             Power::new().process(&mut io);
@@ -127,11 +138,12 @@ mod tests {
         let x = [0.2, 0.6, 1.0];
         let direct = run(Some(&x), 3.0);
         let mut out = vec![0.0f32; x.len()];
+        let exp_buf = vec![3.0f32; x.len()];
         {
             let spawned = Power::new().spawn();
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&x)];
+            let inputs: Vec<Option<&[f32]>> = vec![Some(&x), Some(&exp_buf[..])];
             let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let mut io = Io::new(SR, x.len(), inputs, outs, &[3.0], &[]);
+            let mut io = Io::new(SR, x.len(), inputs, outs, &[], &[]);
             let mut op = spawned;
             op.process(&mut io);
         }

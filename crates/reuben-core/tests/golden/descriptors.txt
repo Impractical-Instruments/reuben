@@ -5,40 +5,40 @@ operator add
   lanes inherit
 operator chord
   in[0] message set
+  in[1] float size min=3.0 max=4.0 default=3.0 unit="tones" curve=linear
   out[0] message degrees
-  param[0] size min=3.0 max=4.0 default=3.0 unit="tones" curve=linear
   lanes inherit
 operator clock
   in[0] message sync
+  in[1] float tempo min=1.0 max=999.0 default=120.0 unit="BPM" curve=linear
+  in[2] float division min=1.0 max=64.0 default=1.0 unit="" curve=linear
   out[0] signal phase
   out[1] signal gate
-  param[0] tempo min=1.0 max=999.0 default=120.0 unit="BPM" curve=linear
-  param[1] division min=1.0 max=64.0 default=1.0 unit="" curve=linear
   lanes inherit
 operator context
   in[0] message set
+  in[1] float root min=0.0 max=127.0 default=60.0 unit="MIDI" curve=linear
+  in[2] float degrees min=1.0 max=12.0 default=7.0 unit="steps" curve=linear
+  in[3] float s0 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
+  in[4] float s1 min=-24.0 max=24.0 default=2.0 unit="steps" curve=linear
+  in[5] float s2 min=-24.0 max=24.0 default=4.0 unit="steps" curve=linear
+  in[6] float s3 min=-24.0 max=24.0 default=5.0 unit="steps" curve=linear
+  in[7] float s4 min=-24.0 max=24.0 default=7.0 unit="steps" curve=linear
+  in[8] float s5 min=-24.0 max=24.0 default=9.0 unit="steps" curve=linear
+  in[9] float s6 min=-24.0 max=24.0 default=11.0 unit="steps" curve=linear
+  in[10] float s7 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
+  in[11] float s8 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
+  in[12] float s9 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
+  in[13] float s10 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
+  in[14] float s11 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
   out[0] context ctx
-  param[0] root min=0.0 max=127.0 default=60.0 unit="MIDI" curve=linear
-  param[1] degrees min=1.0 max=12.0 default=7.0 unit="steps" curve=linear
-  param[2] s0 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
-  param[3] s1 min=-24.0 max=24.0 default=2.0 unit="steps" curve=linear
-  param[4] s2 min=-24.0 max=24.0 default=4.0 unit="steps" curve=linear
-  param[5] s3 min=-24.0 max=24.0 default=5.0 unit="steps" curve=linear
-  param[6] s4 min=-24.0 max=24.0 default=7.0 unit="steps" curve=linear
-  param[7] s5 min=-24.0 max=24.0 default=9.0 unit="steps" curve=linear
-  param[8] s6 min=-24.0 max=24.0 default=11.0 unit="steps" curve=linear
-  param[9] s7 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
-  param[10] s8 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
-  param[11] s9 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
-  param[12] s10 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
-  param[13] s11 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
   lanes inherit
 operator delay
   in[0] signal audio
+  in[1] float time min=0.001 max=2.0 default=0.3 unit="s" curve=linear
+  in[2] float feedback min=0.0 max=0.95 default=0.4 unit="" curve=linear
+  in[3] float mix min=0.0 max=1.0 default=0.5 unit="" curve=linear
   out[0] signal audio
-  param[0] time min=0.001 max=2.0 default=0.3 unit="s" curve=linear
-  param[1] feedback min=0.0 max=0.95 default=0.4 unit="" curve=linear
-  param[2] mix min=0.0 max=1.0 default=0.5 unit="" curve=linear
   lanes inherit
 operator differentiate
   in[0] message in
@@ -46,59 +46,56 @@ operator differentiate
   lanes inherit
 operator djfilter
   in[0] signal audio
-  in[1] signal position
+  in[1] float position min=-1.0 max=1.0 default=0.0 unit="" curve=linear
+  in[2] float resonance min=0.0 max=1.0 default=0.1 unit="" curve=linear
+  in[3] float lp_start min=20.0 max=20000.0 default=20000.0 unit="Hz" curve=exponential
+  in[4] float lp_end min=20.0 max=20000.0 default=200.0 unit="Hz" curve=exponential
+  in[5] float hp_start min=20.0 max=20000.0 default=20.0 unit="Hz" curve=exponential
+  in[6] float hp_end min=20.0 max=20000.0 default=6000.0 unit="Hz" curve=exponential
   out[0] signal audio
-  param[0] position min=-1.0 max=1.0 default=0.0 unit="" curve=linear
-  param[1] resonance min=0.0 max=1.0 default=0.1 unit="" curve=linear
-  param[2] lp_start min=20.0 max=20000.0 default=20000.0 unit="Hz" curve=exponential
-  param[3] lp_end min=20.0 max=20000.0 default=200.0 unit="Hz" curve=exponential
-  param[4] hp_start min=20.0 max=20000.0 default=20.0 unit="Hz" curve=exponential
-  param[5] hp_end min=20.0 max=20000.0 default=6000.0 unit="Hz" curve=exponential
   lanes inherit
 operator envelope
   in[0] signal gate
+  in[1] float attack min=0.001 max=5.0 default=0.01 unit="s" curve=exponential
+  in[2] float decay min=0.001 max=5.0 default=0.1 unit="s" curve=exponential
+  in[3] float sustain min=0.0 max=1.0 default=0.7 unit="" curve=linear
+  in[4] float release min=0.001 max=5.0 default=0.2 unit="s" curve=exponential
   out[0] signal cv
-  param[0] attack min=0.001 max=5.0 default=0.01 unit="s" curve=exponential
-  param[1] decay min=0.001 max=5.0 default=0.1 unit="s" curve=exponential
-  param[2] sustain min=0.0 max=1.0 default=0.7 unit="" curve=linear
-  param[3] release min=0.001 max=5.0 default=0.2 unit="s" curve=exponential
   lanes inherit
 operator filter
   in[0] signal audio
-  in[1] signal cutoff
-  in[2] signal resonance
+  in[1] float cutoff min=20.0 max=20000.0 default=1000.0 unit="Hz" curve=exponential
+  in[2] float resonance min=0.0 max=1.0 default=0.2 unit="" curve=linear
+  in[3] enum mode variants=["Lp", "Hp", "Bp"] default=0
   out[0] signal audio
-  param[0] cutoff min=20.0 max=20000.0 default=1000.0 unit="Hz" curve=exponential
-  param[1] resonance min=0.0 max=1.0 default=0.2 unit="" curve=linear
-  param[2] mode min=0.0 max=2.0 default=0.0 unit="" curve=linear
   lanes inherit
 operator integrate
   in[0] message in
   out[0] message out
   lanes inherit
 operator lfo
+  in[0] float rate min=0.01 max=20.0 default=5.0 unit="Hz" curve=exponential
+  in[1] float depth min=0.0 max=1000.0 default=10.0 unit="" curve=linear
+  in[2] float center min=-1000.0 max=20000.0 default=440.0 unit="" curve=linear
   out[0] signal out
-  param[0] rate min=0.01 max=20.0 default=5.0 unit="Hz" curve=exponential
-  param[1] depth min=0.0 max=1000.0 default=10.0 unit="" curve=linear
-  param[2] center min=-1000.0 max=20000.0 default=440.0 unit="" curve=linear
   lanes inherit
 operator m2s
   in[0] message in
+  in[1] enum mode variants=["Snap", "Slew", "Smooth", "Glide"] default=2
+  in[2] float rate min=0.0 max=1000000.0 default=1000.0 unit="/s" curve=exponential
+  in[3] float time min=0.0 max=10.0 default=0.05 unit="s" curve=exponential
+  in[4] float default min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   out[0] signal out
-  param[0] mode min=0.0 max=3.0 default=2.0 unit="" curve=linear
-  param[1] rate min=0.0 max=1000000.0 default=1000.0 unit="/s" curve=exponential
-  param[2] time min=0.0 max=10.0 default=0.05 unit="s" curve=exponential
-  param[3] default min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   lanes inherit
 operator map
   in[0] message in
+  in[1] float in_min min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[2] float in_max min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
+  in[3] float out_min min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[4] float out_max min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
+  in[5] enum curve variants=["Linear", "Exponential"] default=0
+  in[6] float default min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   out[0] message out
-  param[0] in_min min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
-  param[1] in_max min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
-  param[2] out_min min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
-  param[3] out_max min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
-  param[4] curve min=0.0 max=1.0 default=0.0 unit="" curve=linear
-  param[5] default min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   lanes inherit
 operator mul
   in[0] signal a
@@ -112,80 +109,78 @@ operator osc_out
   in[0] message in
   lanes inherit
 operator oscillator
-  in[0] signal freq
+  in[0] float freq min=20.0 max=20000.0 default=440.0 unit="Hz" curve=exponential
+  in[1] enum waveform variants=["Sine", "Saw"] default=0
   out[0] signal audio
-  param[0] freq min=20.0 max=20000.0 default=440.0 unit="Hz" curve=exponential
-  param[1] waveform min=0.0 max=1.0 default=0.0 unit="" curve=linear
   lanes inherit
 operator output
-  in[0] signal audio
+  in[0] float audio min=-1.0 max=1.0 default=0.0 unit="" curve=linear
   out[0] signal audio
   lanes inherit
 operator pan
   in[0] signal audio
-  in[1] signal pan
+  in[1] float pan min=-1.0 max=1.0 default=0.0 unit="" curve=linear
   out[0] signal left
   out[1] signal right
-  param[0] pan min=-1.0 max=1.0 default=0.0 unit="" curve=linear
   lanes inherit
 operator power
   in[0] signal x
+  in[1] float exponent min=0.0 max=8.0 default=2.0 unit="" curve=linear
   out[0] signal out
-  param[0] exponent min=0.0 max=8.0 default=2.0 unit="" curve=linear
   lanes inherit
 operator reverb
   in[0] signal audio
+  in[1] float room min=0.0 max=1.0 default=0.5 unit="" curve=linear
+  in[2] float damp min=0.0 max=1.0 default=0.5 unit="" curve=linear
+  in[3] float mix min=0.0 max=1.0 default=0.3 unit="" curve=linear
   out[0] signal audio
-  param[0] room min=0.0 max=1.0 default=0.5 unit="" curve=linear
-  param[1] damp min=0.0 max=1.0 default=0.5 unit="" curve=linear
-  param[2] mix min=0.0 max=1.0 default=0.3 unit="" curve=linear
   lanes inherit
 operator sample
   in[0] signal freq
   in[1] signal gate
+  in[2] float root min=0.0 max=127.0 default=60.0 unit="MIDI" curve=linear
+  in[3] float gain min=0.0 max=4.0 default=1.0 unit="" curve=linear
+  in[4] float start min=0.0 max=1.0 default=0.0 unit="" curve=linear
+  in[5] float channel min=-1.0 max=31.0 default=-1.0 unit="" curve=linear
   out[0] signal audio
-  param[0] root min=0.0 max=127.0 default=60.0 unit="MIDI" curve=linear
-  param[1] gain min=0.0 max=4.0 default=1.0 unit="" curve=linear
-  param[2] start min=0.0 max=1.0 default=0.0 unit="" curve=linear
-  param[3] channel min=-1.0 max=31.0 default=-1.0 unit="" curve=linear
   resource[0] sample
   lanes inherit
 operator sequencer
   in[0] signal clock
+  in[1] float length min=1.0 max=16.0 default=8.0 unit="steps" curve=linear
+  in[2] float step1 min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
+  in[3] float step2 min=-1.0 max=24.0 default=1.0 unit="degree" curve=linear
+  in[4] float step3 min=-1.0 max=24.0 default=2.0 unit="degree" curve=linear
+  in[5] float step4 min=-1.0 max=24.0 default=3.0 unit="degree" curve=linear
+  in[6] float step5 min=-1.0 max=24.0 default=4.0 unit="degree" curve=linear
+  in[7] float step6 min=-1.0 max=24.0 default=5.0 unit="degree" curve=linear
+  in[8] float step7 min=-1.0 max=24.0 default=6.0 unit="degree" curve=linear
+  in[9] float step8 min=-1.0 max=24.0 default=7.0 unit="degree" curve=linear
+  in[10] float step9 min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
+  in[11] float step10 min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
+  in[12] float step11 min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
+  in[13] float step12 min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
+  in[14] float step13 min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
+  in[15] float step14 min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
+  in[16] float step15 min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
+  in[17] float step16 min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
+  in[18] enum gate_mode variants=["Degree", "Gate"] default=0
+  in[19] float pitch min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
   out[0] message degrees
-  param[0] length min=1.0 max=16.0 default=8.0 unit="steps" curve=linear
-  param[1] step1 min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
-  param[2] step2 min=-1.0 max=24.0 default=1.0 unit="degree" curve=linear
-  param[3] step3 min=-1.0 max=24.0 default=2.0 unit="degree" curve=linear
-  param[4] step4 min=-1.0 max=24.0 default=3.0 unit="degree" curve=linear
-  param[5] step5 min=-1.0 max=24.0 default=4.0 unit="degree" curve=linear
-  param[6] step6 min=-1.0 max=24.0 default=5.0 unit="degree" curve=linear
-  param[7] step7 min=-1.0 max=24.0 default=6.0 unit="degree" curve=linear
-  param[8] step8 min=-1.0 max=24.0 default=7.0 unit="degree" curve=linear
-  param[9] step9 min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
-  param[10] step10 min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
-  param[11] step11 min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
-  param[12] step12 min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
-  param[13] step13 min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
-  param[14] step14 min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
-  param[15] step15 min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
-  param[16] step16 min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
-  param[17] gate_mode min=0.0 max=1.0 default=0.0 unit="" curve=linear
-  param[18] pitch min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
   lanes inherit
 operator snap
   in[0] message notes
   in[1] context ctx
+  in[2] enum target variants=["Scale", "Chord", "ChordThenScale"] default=0
+  in[3] enum direction variants=["Nearest", "Up", "Down"] default=0
   out[0] message degrees
-  param[0] target min=0.0 max=2.0 default=0.0 unit="" curve=linear
-  param[1] direction min=0.0 max=2.0 default=0.0 unit="" curve=linear
   lanes inherit
 operator strum
   in[0] message position
+  in[1] float strings min=1.0 max=32.0 default=8.0 unit="strings" curve=linear
+  in[2] float octaves min=1.0 max=4.0 default=1.0 unit="oct" curve=linear
+  in[3] float velocity min=0.0 max=1.0 default=1.0 unit="" curve=linear
   out[0] message degrees
-  param[0] strings min=1.0 max=32.0 default=8.0 unit="strings" curve=linear
-  param[1] octaves min=1.0 max=4.0 default=1.0 unit="oct" curve=linear
-  param[2] velocity min=0.0 max=1.0 default=1.0 unit="" curve=linear
   lanes inherit
 operator voicer
   in[0] message notes

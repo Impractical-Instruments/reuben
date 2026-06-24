@@ -33,11 +33,14 @@ pub struct CtxPublish {
 ///
 /// All slices are exactly [`Io::frames`] samples long. Params are constant for the call.
 /// The port reference lists are collected into inline [`SmallVec`]s, so building an `Io`
-/// allocates nothing for the common low-port-count case (≤4 inputs, ≤2 outputs).
+/// allocates nothing for the common low-port-count case. The inline input capacity is sized for
+/// the widest ADR-0028 operator once its former params became `Float`/`Enum` inputs — the
+/// sequencer is `clock` + `length` + 16 × `step` + `gate_mode` + `pitch` = 20 — because
+/// RT-safety (`rt_safe`) depends on not spilling here on the audio thread.
 pub struct Io<'a> {
     sample_rate: f32,
     frames: usize,
-    inputs: SmallVec<[Option<&'a [f32]>; 4]>,
+    inputs: SmallVec<[Option<&'a [f32]>; 20]>,
     outputs: SmallVec<[&'a mut [f32]; 2]>,
     params: &'a [f32],
     events: &'a [Event<'a>],
@@ -60,6 +63,15 @@ pub struct Io<'a> {
     /// Block-absolute frame of this (sub)block's start, added to an emitted/published frame
     /// so the operator can work in segment-relative time.
     frame_offset: usize,
+    /// Per-input `varying` hint (ADR-0028), in input-port order: `false` when a materialized
+    /// [`Shape::Float`](crate::descriptor::Shape) input held its value unchanged this block, so a
+    /// const-folding operator may reuse cached coefficients. Empty when unattached — `varying()`
+    /// then conservatively reports `true` (always recompute), which a naive operator ignores.
+    varying: &'a [bool],
+    /// Held [`Shape::Enum`](crate::descriptor::Shape) value per input port (ADR-0028), as the
+    /// variant **index**, constant for this (sub)block (the engine block-slices at enum changes).
+    /// In input-port order; `0` for non-enum / unconnected ports. Read via [`Io::enum_index`].
+    enums: &'a [usize],
 }
 
 impl<'a> Io<'a> {
@@ -94,7 +106,23 @@ impl<'a> Io<'a> {
             ctx_publish: None,
             outbound: None,
             frame_offset: 0,
+            varying: &[],
+            enums: &[],
         }
+    }
+
+    /// Attach the per-input `varying` hints for this segment (ADR-0028). In input-port order;
+    /// read by [`Io::varying`]. Unattached ⇒ `varying()` reports `true`.
+    pub(crate) fn with_varying(mut self, varying: &'a [bool]) -> Self {
+        self.varying = varying;
+        self
+    }
+
+    /// Attach the held [`Shape::Enum`](crate::descriptor::Shape) values for this segment (ADR-0028),
+    /// in input-port order. Read by [`Io::enum_index`]. Unattached ⇒ `enum_index()` reports `0`.
+    pub(crate) fn with_enums(mut self, enums: &'a [usize]) -> Self {
+        self.enums = enums;
+        self
     }
 
     /// Set which Lane (Voice) of how many this call is, for replicated operators.
@@ -153,14 +181,56 @@ impl<'a> Io<'a> {
         self.inputs.get(port).copied().flatten()
     }
 
+    /// **Per-sample read view of a [`Shape::Float`](crate::descriptor::Shape) input** (ADR-0028).
+    /// Always a buffer `frames` long: the wired source when connected, else the engine's
+    /// materialized buffer filled from the input's latched default (with mid-block changes written
+    /// at their frame). The single read path that replaces the old
+    /// `io.input(..).map_or(io.param(..), ..)` two-step. Returns an empty slice only for a port
+    /// that has neither a wire nor materialization (a not-yet-migrated input); migrated operators
+    /// always get `frames` samples.
+    pub fn signal(&self, port: usize) -> &[f32] {
+        self.inputs.get(port).copied().flatten().unwrap_or(&[])
+    }
+
+    /// **Block-rate / scalar read view of a [`Shape::Float`](crate::descriptor::Shape) input**
+    /// (ADR-0028) — the latched current value at this segment's start, for operators that do not
+    /// process per-sample (a clock reading tempo, a sample-and-hold). Reads the head of the
+    /// materialized buffer without looping it.
+    pub fn value(&self, port: usize) -> f32 {
+        self.signal(port).first().copied().unwrap_or(0.0)
+    }
+
+    /// The `varying` hint for a [`Shape::Float`](crate::descriptor::Shape) input (ADR-0028):
+    /// `false` when a materialized input held its value unchanged this block (so a const-folding
+    /// op may reuse cached state), `true` when it is dense or changed this block. Conservatively
+    /// `true` when unattached — a naive operator ignores it and reads `signal()[i]`.
+    pub fn varying(&self, port: usize) -> bool {
+        self.varying.get(port).copied().unwrap_or(true)
+    }
+
     /// Borrow an output Signal port for writing (length == `frames`).
     pub fn output(&mut self, port: usize) -> &mut [f32] {
         &mut self.outputs[port][..]
     }
 
+    /// **Per-sample write view of a [`Shape::Float`](crate::descriptor::Shape) output** (ADR-0028)
+    /// — the forward-looking name for [`Io::output`]. Length == `frames`.
+    pub fn signal_mut(&mut self, port: usize) -> &mut [f32] {
+        self.output(port)
+    }
+
     /// Current value of a param slot (constant for this call).
     pub fn param(&self, slot: usize) -> f32 {
         self.params[slot]
+    }
+
+    /// **Held read view of an [`Shape::Enum`](crate::descriptor::Shape) input** (ADR-0028) — the
+    /// current variant **index**, constant for this (sub)block (the engine block-slices at enum
+    /// changes, so an operator sees one choice per call). The operator maps it to its generated
+    /// enum type, e.g. `Waveform::from_index(io.enum_index(IN_WAVEFORM)).unwrap_or_default()`.
+    /// Returns the input's latched default (or `0` when unattached / non-enum).
+    pub fn enum_index(&self, port: usize) -> usize {
+        self.enums.get(port).copied().unwrap_or(0)
     }
 
     /// Routed [`Event`]s for this (sub)block, frames relative to the segment start.
@@ -214,6 +284,13 @@ impl<'a> Io<'a> {
         self.contexts.get(port).copied().unwrap_or_default()
     }
 
+    /// The current [`Harmony`](crate::descriptor::Shape::Harmony) on a held-struct input
+    /// (ADR-0028) — the forward-looking name for [`Io::context`]. Same latched read service; the
+    /// [`Context`] struct is renamed `Harmony` once the carrier vocabulary is retired.
+    pub fn harmony(&self, port: usize) -> Context {
+        self.context(port)
+    }
+
     /// Publish a tonal [`Context`] snapshot onto Context output `port` at segment-relative
     /// `frame` (ADR-0015). The engine latches it (shared, persistent across blocks) and
     /// re-slices downstream readers at `frame`, so a chord/key change is sample-accurate on
@@ -223,6 +300,13 @@ impl<'a> Io<'a> {
         if let Some(buf) = self.ctx_publish.as_mut() {
             buf.push(CtxPublish { port, frame, ctx });
         }
+    }
+
+    /// Publish a [`Harmony`](crate::descriptor::Shape::Harmony) snapshot onto a held-struct output
+    /// (ADR-0028) — the forward-looking name for [`Io::publish_context`]. Same latch+re-slice
+    /// service; the [`Context`] struct is renamed `Harmony` once the carrier vocabulary is retired.
+    pub fn publish_harmony(&mut self, port: usize, frame: usize, harmony: Context) {
+        self.publish_context(port, frame, harmony);
     }
 
     /// Which Lane (Voice) this call represents, in `0..lanes()`. Single-Lane operators can

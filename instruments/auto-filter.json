@@ -1,33 +1,117 @@
 {
-  "instrument": "auto-filter",
   "doc": "A saw synth whose filter cutoff is a base value PLUS an LFO wobble — base-plus-modulation built explicitly with a Signal `add` operator (ADR-0017). Play with /voicer/note [midi, gate]. Move the base cutoff with /cutoff [20..12000]; change the wobble with /lfo/rate (Hz) and /lfo/depth (Hz of sweep). The LFO swings around 0 and `add` sums it onto the base CV, which feeds the filter's Signal cutoff input.",
+  "instrument": "auto-filter",
   "nodes": [
-    { "type": "voicer", "address": "/voicer", "params": { "voices": 8 } },
-    { "type": "oscillator", "address": "/osc", "params": { "waveform": 1.0 } },
-    { "type": "filter", "address": "/filter", "doc": "Cutoff driven by base + LFO; resonant so the sweep sings.", "params": { "resonance": 0.7 } },
-    { "type": "envelope", "address": "/env" },
-    { "type": "power", "address": "/env_curve", "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2)." },
-    { "type": "mul", "address": "/env_vca", "doc": "VCA: audio * shaped envelope CV." },
-    { "type": "output", "address": "/out" },
-
-    { "type": "lfo", "address": "/lfo", "doc": "Wobble around 0 (center 0), added onto the base cutoff.", "params": { "rate": 2.0, "depth": 1500.0, "center": 0.0 } },
-    { "type": "m2s", "address": "/cutoff", "doc": "Base cutoff as a smoothed CV; default 2000 Hz. Send /cutoff [Hz].", "params": { "mode": 2.0, "time": 0.05, "default": 2000.0 } },
-    { "type": "add", "address": "/add", "doc": "out = base cutoff (a) + LFO wobble (b)." }
-  ],
-  "connections": [
-    { "from": { "node": "/voicer", "port": "freq" }, "to": { "node": "/osc", "port": "freq" } },
-    { "from": { "node": "/osc", "port": "audio" }, "to": { "node": "/filter", "port": "audio" } },
-    { "from": { "node": "/filter", "port": "audio" }, "to": { "node": "/env_vca", "port": "a" } },
-    { "from": { "node": "/env", "port": "cv" }, "to": { "node": "/env_curve", "port": "x" } },
-    { "from": { "node": "/env_curve", "port": "out" }, "to": { "node": "/env_vca", "port": "b" } },
-    { "from": { "node": "/voicer", "port": "gate" }, "to": { "node": "/env", "port": "gate" } },
-    { "from": { "node": "/env_vca", "port": "out" }, "to": { "node": "/out", "port": "audio" } },
-
-    { "from": { "node": "/cutoff", "port": "out" }, "to": { "node": "/add", "port": "a" } },
-    { "from": { "node": "/lfo", "port": "out" }, "to": { "node": "/add", "port": "b" } },
-    { "from": { "node": "/add", "port": "out" }, "to": { "node": "/filter", "port": "cutoff" } }
+    {
+      "address": "/voicer",
+      "config": {
+        "voices": 8
+      },
+      "type": "voicer"
+    },
+    {
+      "address": "/osc",
+      "inputs": {
+        "freq": {
+          "from": "/voicer.freq"
+        },
+        "waveform": "Saw"
+      },
+      "type": "oscillator"
+    },
+    {
+      "address": "/filter",
+      "doc": "Cutoff driven by base + LFO; resonant so the sweep sings.",
+      "inputs": {
+        "audio": {
+          "from": "/osc"
+        },
+        "cutoff": {
+          "from": "/add"
+        },
+        "resonance": 0.7
+      },
+      "type": "filter"
+    },
+    {
+      "address": "/env",
+      "inputs": {
+        "gate": {
+          "from": "/voicer.gate"
+        }
+      },
+      "type": "envelope"
+    },
+    {
+      "address": "/env_curve",
+      "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
+      "inputs": {
+        "x": {
+          "from": "/env"
+        }
+      },
+      "type": "power"
+    },
+    {
+      "address": "/env_vca",
+      "doc": "VCA: audio * shaped envelope CV.",
+      "inputs": {
+        "a": {
+          "from": "/filter"
+        },
+        "b": {
+          "from": "/env_curve"
+        }
+      },
+      "type": "mul"
+    },
+    {
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/env_vca"
+        }
+      },
+      "type": "output"
+    },
+    {
+      "address": "/lfo",
+      "doc": "Wobble around 0 (center 0), added onto the base cutoff.",
+      "inputs": {
+        "center": 0.0,
+        "depth": 1500.0,
+        "rate": 2.0
+      },
+      "type": "lfo"
+    },
+    {
+      "address": "/cutoff",
+      "doc": "Base cutoff as a smoothed CV; default 2000 Hz. Send /cutoff [Hz].",
+      "inputs": {
+        "default": 2000.0,
+        "mode": "Smooth",
+        "time": 0.05
+      },
+      "type": "m2s"
+    },
+    {
+      "address": "/add",
+      "doc": "out = base cutoff (a) + LFO wobble (b).",
+      "inputs": {
+        "a": {
+          "from": "/cutoff"
+        },
+        "b": {
+          "from": "/lfo"
+        }
+      },
+      "type": "add"
+    }
   ],
   "outputs": [
-    { "node": "/out", "port": "audio" }
+    {
+      "node": "/out",
+      "port": "audio"
+    }
   ]
 }

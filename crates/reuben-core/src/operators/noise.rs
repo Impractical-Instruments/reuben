@@ -9,15 +9,18 @@
 //! Voice always starts from the same point — reproducible renders (ADR-0010).
 //!
 //! - inputs: none.
-//! - output 0: `out` (Signal) — uniform white noise in ~[-1, 1], roughly zero-mean.
+//! - output 0: `out` (`Float`) — uniform white noise in ~[-1, 1], roughly zero-mean.
 //! - params: none.
+//!
+//! Already shape-clean under ADR-0028 — no inputs, no params, so no `io.input`/`io.param` to
+//! migrate; the sweep only renames the output shape to `float`.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.
+// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Noise {
-    outputs: { out: signal },
+    outputs: { out: float },
 });
 
 /// Fixed deterministic seed a fresh / spawned Noise starts from. Non-zero (xorshift can't leave

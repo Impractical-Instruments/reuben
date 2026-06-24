@@ -1,14 +1,17 @@
-//! Instrument format — the JSON canonical document (ADR-0004).
+//! Instrument format — the JSON canonical document (ADR-0004, ADR-0028).
 //!
-//! An instrument is plain data: a list of operator `nodes` (type + address + params),
-//! `connections` between named ports, and master `outputs`. Ports are referenced by
-//! **name** (from the operator's [`Descriptor`](crate::descriptor::Descriptor)), not by
-//! brittle index. Optional `doc` fields carry human/agent notes. The schema that
-//! validates these documents is generated from the operator descriptors ([`crate::schema`]).
+//! An instrument is plain data: a list of operator `nodes`, each carrying one `inputs` map
+//! (ADR-0028) and an optional `config` block, plus master `outputs`. A node's `inputs` entry is
+//! either a **literal** (a number, or an `Enum` symbol like `"Hp"`) or a **wire-ref** to another
+//! node's output (`{ "from": "/osc.audio" }`, or `{ "from": "/osc" }` when the source has a single
+//! output). `config` carries instantiate-time **`Constant`s** (e.g. a voicer's `voices`). Ports are
+//! referenced by **name** (from the operator's [`Descriptor`](crate::descriptor::Descriptor)), not
+//! by brittle index. Optional `doc` fields carry human/agent notes. The schema that validates these
+//! documents is generated from the operator descriptors ([`crate::schema`]).
 //!
-//! [`load`] turns JSON into a [`Graph`] (resolving types via a [`Registry`]); [`InstrumentDoc::from_graph`]
-//! goes the other way. Loading is an authoring step, not a realtime path — it lives in the
-//! portable core but never runs on the audio thread.
+//! [`load`] turns JSON into a [`Graph`] (resolving types via a [`Registry`]);
+//! [`InstrumentDoc::from_graph`] goes the other way. Loading is an authoring step, not a realtime
+//! path — it lives in the portable core but never runs on the audio thread.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -16,13 +19,14 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::descriptor::{Descriptor, PortKind};
+use crate::descriptor::{Descriptor, Shape};
 use crate::graph::Graph;
 use crate::registry::Registry;
 use crate::resources::{ResolvedRefs, ResourceResolver, ResourceStore, SampleBuffer, SampleId};
 
 /// A complete instrument document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct InstrumentDoc {
     /// Human-facing name / id of this instrument.
     pub instrument: String,
@@ -37,13 +41,12 @@ pub struct InstrumentDoc {
     pub resources: BTreeMap<String, String>,
     pub nodes: Vec<NodeDoc>,
     #[serde(default)]
-    pub connections: Vec<ConnectionDoc>,
-    #[serde(default)]
     pub outputs: Vec<PortRef>,
 }
 
 /// One operator instance.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct NodeDoc {
     /// Operator type name (must be registered, e.g. `"oscillator"`).
     #[serde(rename = "type")]
@@ -52,9 +55,17 @@ pub struct NodeDoc {
     pub address: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
-    /// Param overrides by name; omitted params use the descriptor default.
+    /// Instantiate-time **`Constant`s** (ADR-0028) by name, e.g. `{ "voices": 8 }`. A name here
+    /// must be a declared [`Constant`](Descriptor::constant_param); a runtime input set here, or a
+    /// constant set in `inputs`, is a load error.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub params: BTreeMap<String, f32>,
+    pub config: BTreeMap<String, ConfigValue>,
+    /// One value per wired/settable input (ADR-0028): a **literal** (a number, or an `Enum` symbol
+    /// like `"Hp"`) or a **wire-ref** (`{ "from": "/node.port" }`). Replaces the old `params` map
+    /// and top-level `connections` array — a `Float` input and the wire that drives it now target
+    /// the same slot. Omitted inputs use the descriptor default.
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub inputs: BTreeMap<String, InputValue>,
     /// Resource reference (ADR-0016): a logical id into the document's `resources` table.
     /// Only valid on an operator whose descriptor declares a `sample` resource slot (the
     /// sample player); rejected elsewhere as a structural [`LoadError::UnknownResource`].
@@ -69,24 +80,48 @@ pub struct NodeDoc {
     pub control: Option<serde_json::Value>,
 }
 
-/// A reference to one node's port, by names.
+/// One [`NodeDoc::inputs`] value (ADR-0028): a wire-ref, an `Enum` symbol, or a numeric literal.
+///
+/// Untagged: a JSON object `{ "from": ... }` is a [`Wire`](Self::Wire); a JSON string is a
+/// [`Symbol`](Self::Symbol) (an `Enum` variant name); a JSON number is a [`Number`](Self::Number)
+/// (a `Float`/param value, or an `Enum` index fallback).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum InputValue {
+    /// A wire-ref to a source output: `"/node.port"`, or `"/node"` when the source has exactly
+    /// one output (the sole-output sugar).
+    Wire { from: String },
+    /// An `Enum` input symbol, e.g. `"Hp"` (ADR-0028 enum-over-the-wire, symbol primary).
+    Symbol(String),
+    /// A numeric literal — a `Float` input/param value, or an `Enum` variant index (fallback form).
+    Number(f64),
+}
+
+/// One [`NodeDoc::config`] value (ADR-0028): an instantiate-time `Constant`.
+///
+/// Untagged: a JSON number is a [`Number`](Self::Number) (an `Int` constant such as `voices`); a
+/// JSON string is a [`Symbol`](Self::Symbol) (an `Enum` constant, none today). Floats are accepted
+/// and rounded so `8` and `8.0` both name 8 voices.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ConfigValue {
+    /// An `Int` constant (e.g. `voices`), applied rounded.
+    Number(f64),
+    /// An `Enum` constant symbol (none today; forward-compatible).
+    Symbol(String),
+}
+
+/// A reference to one node's port, by names. Used only in `outputs` (a master tap, ADR-0026);
+/// node-to-node wiring lives in [`NodeDoc::inputs`] as a [`InputValue::Wire`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PortRef {
     pub node: String,
     pub port: String,
-    /// Logical master channel this tap feeds (ADR-0026), only meaningful in `outputs`:
-    /// `0` = first channel (left), `1` = second (right), and so on. Omitted → broadcast to
-    /// every channel (the historical mono fan; existing instruments are bit-identical). The
-    /// field is ignored on a connection endpoint.
+    /// Logical master channel this tap feeds (ADR-0026): `0` = first channel (left), `1` = second
+    /// (right), and so on. Omitted → broadcast to every channel (the historical mono fan; existing
+    /// instruments are bit-identical).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<usize>,
-}
-
-/// A connection from one node's output port to another's input port.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct ConnectionDoc {
-    pub from: PortRef,
-    pub to: PortRef,
 }
 
 /// Why loading an instrument document failed. Messages are written for an author
@@ -99,14 +134,35 @@ pub enum LoadError {
     UnknownType { address: String, type_name: String },
     /// Two nodes share an address.
     DuplicateAddress(String),
-    /// A connection or output references a node that doesn't exist.
+    /// A wire-ref or output references a node that doesn't exist.
     UnknownNode(String),
     /// A node has no port with that name (in the required direction).
     UnknownPort { node: String, port: String },
-    /// A node has no param with that name.
-    UnknownParam { node: String, param: String },
-    /// A connection joins ports of different kinds (Signal vs Message).
-    PortKindMismatch { from: String, to: String },
+    /// A node has no input (port, settable param, or enum) with that name.
+    UnknownInput { node: String, input: String },
+    /// An `inputs` entry sets a value the descriptor can't read as that input — an `Enum` symbol on
+    /// a non-enum input, or a symbol/index that names no variant (ADR-0028: never snaps to default).
+    BadInputValue {
+        node: String,
+        input: String,
+        value: String,
+    },
+    /// A `config` name is not a declared [`Constant`](Descriptor::constant_param).
+    UnknownConfig { node: String, name: String },
+    /// A `Constant` (e.g. `voices`) appears in `inputs` — it must live in `config`, since changing
+    /// it would rebuild the graph (ADR-0028).
+    ConstantInInputs { node: String, name: String },
+    /// A wire-ref uses the sole-output sugar (`"/node"`) but the source has more than one output,
+    /// so the intended port is ambiguous.
+    AmbiguousWire { node: String, reference: String },
+    /// A wire joins two ports of different [`Shape`]s (e.g. `Float` → `Note`) — the one illegal
+    /// wiring (ADR-0028), replacing the old Signal-vs-Message `PortKind` check.
+    ShapeMismatch {
+        from: String,
+        from_shape: Shape,
+        to: String,
+        to_shape: Shape,
+    },
     /// A node carries a `sample` reference but its operator declares no such resource slot
     /// (ADR-0016) — a structural misuse, fatal like the other wiring errors.
     UnknownResource { node: String, slot: String },
@@ -124,15 +180,33 @@ impl fmt::Display for LoadError {
             LoadError::UnknownPort { node, port } => {
                 write!(f, "node {node:?} has no port {port:?}")
             }
-            LoadError::UnknownParam { node, param } => {
-                write!(f, "node {node:?} has no param {param:?}")
+            LoadError::UnknownInput { node, input } => {
+                write!(f, "node {node:?} has no input {input:?}")
             }
-            LoadError::PortKindMismatch { from, to } => {
-                write!(
-                    f,
-                    "connection {from} -> {to} joins a Signal and a Message port"
-                )
+            LoadError::BadInputValue { node, input, value } => {
+                write!(f, "node {node:?} input {input:?}: invalid value {value:?}")
             }
+            LoadError::UnknownConfig { node, name } => {
+                write!(f, "node {node:?} has no config constant {name:?}")
+            }
+            LoadError::ConstantInInputs { node, name } => write!(
+                f,
+                "node {node:?}: {name:?} is a constant — set it in `config`, not `inputs`"
+            ),
+            LoadError::AmbiguousWire { node, reference } => write!(
+                f,
+                "node {node:?}: wire-ref {reference:?} is ambiguous (source has multiple outputs; \
+                 name one as \"/node.port\")"
+            ),
+            LoadError::ShapeMismatch {
+                from,
+                from_shape,
+                to,
+                to_shape,
+            } => write!(
+                f,
+                "wire {from} ({from_shape:?}) -> {to} ({to_shape:?}) joins ports of different shapes"
+            ),
             LoadError::UnknownResource { node, slot } => {
                 write!(f, "node {node:?} has no resource slot {slot:?}")
             }
@@ -267,11 +341,16 @@ impl InstrumentDoc {
     }
 
     /// Build the [`Graph`] this document describes.
+    ///
+    /// Two passes: pass 1 creates every node and applies its `config` constants and literal
+    /// `inputs`; pass 2 resolves wire-refs (which may name a node declared later) into edges,
+    /// shape-checking each (ADR-0028).
     pub fn build(&self, registry: &Registry) -> Result<Graph, LoadError> {
         let mut graph = Graph::new();
-        // address -> (key, descriptor) for resolving connections and outputs.
+        // address -> (key, descriptor) for resolving wire-refs and outputs.
         let mut by_addr: BTreeMap<&str, (crate::graph::NodeKey, Descriptor)> = BTreeMap::new();
 
+        // Pass 1: nodes, config constants, literal inputs.
         for n in &self.nodes {
             let entry = registry
                 .get(&n.type_name)
@@ -291,35 +370,98 @@ impl InstrumentDoc {
                 });
             }
             let key = graph.add_boxed(&n.address, (entry.make)(), descriptor.clone());
-            for (name, value) in &n.params {
-                if descriptor.param_index(name).is_none() {
-                    return Err(LoadError::UnknownParam {
+
+            // `config`: every name must be a declared Constant; apply it at the param slot the
+            // lane rule reads (ADR-0028).
+            for (name, value) in &n.config {
+                if !descriptor.is_constant_param(name) {
+                    return Err(LoadError::UnknownConfig {
                         node: n.address.clone(),
-                        param: name.clone(),
+                        name: name.clone(),
                     });
                 }
-                graph.set_param(key, name, *value);
+                match value {
+                    ConfigValue::Number(v) => graph.set_param(key, name, *v as f32),
+                    ConfigValue::Symbol(s) => graph.set_enum(key, name, s),
+                }
             }
+
+            // `inputs`: a Constant here is an error; literals apply now, wire-refs in pass 2.
+            for (name, value) in &n.inputs {
+                if descriptor.is_constant_param(name) {
+                    return Err(LoadError::ConstantInInputs {
+                        node: n.address.clone(),
+                        name: name.clone(),
+                    });
+                }
+                match value {
+                    InputValue::Wire { .. } => {} // pass 2
+                    InputValue::Number(v) => {
+                        if descriptor.param_index(name).is_none()
+                            && descriptor.materialized_input(name).is_none()
+                            && descriptor.enum_input(name).is_none()
+                        {
+                            return Err(LoadError::UnknownInput {
+                                node: n.address.clone(),
+                                input: name.clone(),
+                            });
+                        }
+                        graph.set_param(key, name, *v as f32);
+                    }
+                    InputValue::Symbol(s) => {
+                        // An `Enum` symbol is only valid on an enum input, and must name a variant
+                        // (ADR-0028: an unknown symbol is an error, never a silent default).
+                        let Some((_, e)) = descriptor.enum_input(name) else {
+                            return Err(LoadError::UnknownInput {
+                                node: n.address.clone(),
+                                input: name.clone(),
+                            });
+                        };
+                        if e.resolve(s).is_none() {
+                            return Err(LoadError::BadInputValue {
+                                node: n.address.clone(),
+                                input: name.clone(),
+                                value: s.clone(),
+                            });
+                        }
+                        graph.set_enum(key, name, s);
+                    }
+                }
+            }
+
             by_addr.insert(&n.address, (key, descriptor));
         }
 
-        for c in &self.connections {
-            let (src_key, src_desc) = lookup(&by_addr, &c.from.node)?;
-            let (dst_key, dst_desc) = lookup(&by_addr, &c.to.node)?;
-            let (src_port, src_kind) = out_port(src_desc, &c.from)?;
-            let (dst_port, dst_kind) = in_port(dst_desc, &c.to)?;
-            if src_kind != dst_kind {
-                return Err(LoadError::PortKindMismatch {
-                    from: format!("{}:{}", c.from.node, c.from.port),
-                    to: format!("{}:{}", c.to.node, c.to.port),
-                });
+        // Pass 2: wire-refs -> edges (shape-checked).
+        for n in &self.nodes {
+            let (dst_key, dst_desc) = lookup(&by_addr, &n.address)?;
+            for (name, value) in &n.inputs {
+                let InputValue::Wire { from } = value else {
+                    continue;
+                };
+                let dst_port = in_port(dst_desc, &n.address, name)?;
+                let (src_addr, src_port_name) = parse_wire(from);
+                let (src_key, src_desc) = lookup(&by_addr, src_addr)?;
+                let src_port = resolve_out_port(src_desc, &n.address, from, src_port_name)?;
+
+                let from_shape = src_desc.outputs[src_port].shape;
+                let to_shape = dst_desc.inputs[dst_port].shape;
+                if from_shape != to_shape {
+                    return Err(LoadError::ShapeMismatch {
+                        from: format!("{}.{}", src_addr, src_desc.outputs[src_port].name),
+                        from_shape,
+                        to: format!("{}.{}", n.address, name),
+                        to_shape,
+                    });
+                }
+                graph.connect(src_key, src_port, dst_key, dst_port);
             }
-            graph.connect(src_key, src_port, dst_key, dst_port);
         }
 
+        // `outputs`: master taps (ADR-0026).
         for o in &self.outputs {
             let (key, desc) = lookup(&by_addr, &o.node)?;
-            let (port, _) = out_port(desc, o)?;
+            let port = out_port(desc, o)?;
             match o.channel {
                 Some(channel) => graph.tap_output_channel(key, port, channel),
                 None => graph.tap_output(key, port),
@@ -329,66 +471,91 @@ impl InstrumentDoc {
         Ok(graph)
     }
 
-    /// Derive a document from a built [`Graph`] (the canonical "save" path). Nodes and
-    /// connections are emitted in a stable order so output is deterministic.
+    /// Derive a document from a built [`Graph`] (the canonical "save" path). Nodes are emitted in
+    /// a stable order, and within a node `config`/`inputs` keys are sorted (BTreeMap), so output is
+    /// deterministic. A `Constant` param goes to `config`; a non-default param, a materialized
+    /// `Float` override, an `Enum` choice (as its symbol), and every inbound wire go to `inputs`.
     pub fn from_graph(graph: &Graph, instrument: impl Into<String>) -> Self {
         let mut nodes: Vec<NodeDoc> = graph
             .nodes
-            .values()
-            .map(|node| {
-                let params = node
-                    .descriptor
-                    .params
-                    .iter()
-                    .enumerate()
-                    .map(|(i, p)| (p.name.to_string(), node.params[i]))
-                    .collect();
+            .iter()
+            .map(|(key, node)| {
+                let d = &node.descriptor;
+                let mut config: BTreeMap<String, ConfigValue> = BTreeMap::new();
+                let mut inputs: BTreeMap<String, InputValue> = BTreeMap::new();
+
+                // Params: the Constant goes to `config`; others to `inputs` only when non-default
+                // (defaults reload as defaults, keeping save minimal and round-trips stable).
+                for (i, p) in d.params.iter().enumerate() {
+                    if d.is_constant_param(p.name) {
+                        config.insert(
+                            p.name.to_string(),
+                            ConfigValue::Number(node.params[i] as f64),
+                        );
+                    } else if node.params[i] != p.default {
+                        inputs.insert(
+                            p.name.to_string(),
+                            InputValue::Number(node.params[i] as f64),
+                        );
+                    }
+                }
+                // Materialized `Float` input overrides (ADR-0028) — the unwired-default a literal
+                // set — round-trip as the input's name.
+                for &(port, v) in &node.input_overrides {
+                    inputs.insert(
+                        d.inputs[port].name.to_string(),
+                        InputValue::Number(v as f64),
+                    );
+                }
+                // `Enum` input overrides save as the variant **symbol** (the primary wire form).
+                for &(port, idx) in &node.enum_overrides {
+                    let sym = d.inputs[port]
+                        .enum_meta
+                        .as_ref()
+                        .and_then(|e| e.variants.get(idx))
+                        .copied()
+                        .unwrap_or_default();
+                    inputs.insert(
+                        d.inputs[port].name.to_string(),
+                        InputValue::Symbol(sym.to_string()),
+                    );
+                }
+                // Inbound wires: each edge whose destination is this node becomes a wire-ref, using
+                // the sole-output sugar when the source has a single output.
+                for c in graph.connections.iter().filter(|c| c.dst == key) {
+                    let src = &graph.nodes[c.src];
+                    let from = if src.descriptor.outputs.len() == 1 {
+                        src.address.clone()
+                    } else {
+                        format!(
+                            "{}.{}",
+                            src.address, src.descriptor.outputs[c.src_port].name
+                        )
+                    };
+                    inputs.insert(
+                        d.inputs[c.dst_port].name.to_string(),
+                        InputValue::Wire { from },
+                    );
+                }
+
                 NodeDoc {
-                    type_name: node.descriptor.type_name.to_string(),
+                    type_name: d.type_name.to_string(),
                     address: node.address.clone(),
                     doc: None,
-                    params,
-                    // A built Graph does not retain the logical resource id (it is consumed
-                    // into the ResourceStore at load), so save does not round-trip a sample
-                    // ref in v1.1 — acceptable until the library thread lands (ADR-0016).
+                    config,
+                    inputs,
+                    // A built Graph does not retain the logical resource id (consumed into the
+                    // ResourceStore at load), so save does not round-trip a sample ref — acceptable
+                    // until the library thread lands (ADR-0016).
                     sample: None,
-                    // Control metadata (ADR-0018) lives on the document, not the built Graph,
-                    // so the save-from-graph path does not reconstruct it; document-level
-                    // round-trip (load → re-serialize) preserves it via serde.
+                    // Control metadata (ADR-0018) lives on the document, not the built Graph, so the
+                    // save-from-graph path does not reconstruct it; document-level round-trip
+                    // (load → re-serialize) preserves it via serde.
                     control: None,
                 }
             })
             .collect();
         nodes.sort_by(|a, b| a.address.cmp(&b.address));
-
-        let mut connections: Vec<ConnectionDoc> = graph
-            .connections
-            .iter()
-            .map(|c| ConnectionDoc {
-                from: PortRef {
-                    node: graph.nodes[c.src].address.clone(),
-                    port: graph.nodes[c.src].descriptor.outputs[c.src_port]
-                        .name
-                        .to_string(),
-                    channel: None,
-                },
-                to: PortRef {
-                    node: graph.nodes[c.dst].address.clone(),
-                    port: graph.nodes[c.dst].descriptor.inputs[c.dst_port]
-                        .name
-                        .to_string(),
-                    channel: None,
-                },
-            })
-            .collect();
-        connections.sort_by(|a, b| {
-            (&a.from.node, &a.from.port, &a.to.node, &a.to.port).cmp(&(
-                &b.from.node,
-                &b.from.port,
-                &b.to.node,
-                &b.to.port,
-            ))
-        });
 
         let outputs = graph
             .outputs
@@ -405,7 +572,6 @@ impl InstrumentDoc {
             doc: None,
             resources: BTreeMap::new(),
             nodes,
-            connections,
             outputs,
         }
     }
@@ -421,25 +587,57 @@ fn lookup<'a>(
         .ok_or_else(|| LoadError::UnknownNode(node.to_string()))
 }
 
-fn out_port(desc: &Descriptor, r: &PortRef) -> Result<(usize, PortKind), LoadError> {
+/// Split a wire-ref string into `(node, Some(port))` (`"/osc.audio"`) or `(node, None)` (`"/osc"`,
+/// the sole-output sugar). Node addresses carry no `.`, so the last `.` separates node from port.
+fn parse_wire(reference: &str) -> (&str, Option<&str>) {
+    match reference.rsplit_once('.') {
+        Some((node, port)) => (node, Some(port)),
+        None => (reference, None),
+    }
+}
+
+/// Resolve a wire-ref's source output to a port index: the named port, or — under the sole-output
+/// sugar — the source's single output (ambiguous, hence an error, if it has several).
+fn resolve_out_port(
+    desc: &Descriptor,
+    dst_node: &str,
+    reference: &str,
+    port: Option<&str>,
+) -> Result<usize, LoadError> {
+    match port {
+        Some(p) => desc
+            .outputs
+            .iter()
+            .position(|o| o.name == p)
+            .ok_or_else(|| LoadError::UnknownPort {
+                node: dst_node.to_string(),
+                port: p.to_string(),
+            }),
+        None if desc.outputs.len() == 1 => Ok(0),
+        None => Err(LoadError::AmbiguousWire {
+            node: dst_node.to_string(),
+            reference: reference.to_string(),
+        }),
+    }
+}
+
+fn out_port(desc: &Descriptor, r: &PortRef) -> Result<usize, LoadError> {
     desc.outputs
         .iter()
         .position(|p| p.name == r.port)
-        .map(|i| (i, desc.outputs[i].kind))
         .ok_or_else(|| LoadError::UnknownPort {
             node: r.node.clone(),
             port: r.port.clone(),
         })
 }
 
-fn in_port(desc: &Descriptor, r: &PortRef) -> Result<(usize, PortKind), LoadError> {
+fn in_port(desc: &Descriptor, node: &str, name: &str) -> Result<usize, LoadError> {
     desc.inputs
         .iter()
-        .position(|p| p.name == r.port)
-        .map(|i| (i, desc.inputs[i].kind))
+        .position(|p| p.name == name)
         .ok_or_else(|| LoadError::UnknownPort {
-            node: r.node.clone(),
-            port: r.port.clone(),
+            node: node.to_string(),
+            port: name.to_string(),
         })
 }
 
@@ -451,11 +649,8 @@ mod tests {
     {
       "instrument": "test",
       "nodes": [
-        { "type": "oscillator", "address": "/osc", "params": { "freq": 220.0 } },
-        { "type": "output", "address": "/out" }
-      ],
-      "connections": [
-        { "from": {"node":"/osc","port":"audio"}, "to": {"node":"/out","port":"audio"} }
+        { "type": "oscillator", "address": "/osc", "inputs": { "freq": 220.0 } },
+        { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/osc.audio" } } }
       ],
       "outputs": [ {"node":"/out","port":"audio"} ]
     }"#;
@@ -470,6 +665,34 @@ mod tests {
         assert_eq!(g.nodes.len(), 2);
         assert_eq!(g.connections.len(), 1);
         assert_eq!(g.outputs.len(), 1);
+    }
+
+    #[test]
+    fn sole_output_sugar_resolves() {
+        // `"/osc"` (no port) is the sole-output sugar — oscillator has one output, `audio`.
+        let json = r#"{"instrument":"t","nodes":[
+            {"type":"oscillator","address":"/osc"},
+            {"type":"output","address":"/out","inputs":{"audio":{"from":"/osc"}}}],
+            "outputs":[{"node":"/out","port":"audio"}]}"#;
+        let g = load(json, &reg()).expect("load");
+        assert_eq!(g.connections.len(), 1);
+    }
+
+    #[test]
+    fn voices_in_config_sizes_the_lane() {
+        let json = r#"{"instrument":"t","nodes":[
+            {"type":"voicer","address":"/v","config":{"voices":3}}]}"#;
+        let g = load(json, &reg()).expect("load");
+        let key = g.find("/v").unwrap();
+        let slot = g.nodes[key].descriptor.param_index("voices").unwrap();
+        assert_eq!(g.nodes[key].params[slot], 3.0);
+    }
+
+    #[test]
+    fn enum_symbol_input_loads() {
+        let json = r#"{"instrument":"t","nodes":[
+            {"type":"filter","address":"/f","inputs":{"mode":"Hp"}}]}"#;
+        assert!(load(json, &reg()).is_ok());
     }
 
     #[test]
@@ -495,8 +718,8 @@ mod tests {
     #[test]
     fn unknown_port_errors() {
         let json = r#"{"instrument":"t",
-            "nodes":[{"type":"output","address":"/a"},{"type":"output","address":"/b"}],
-            "connections":[{"from":{"node":"/a","port":"nope"},"to":{"node":"/b","port":"audio"}}]}"#;
+            "nodes":[{"type":"output","address":"/a"},
+                     {"type":"output","address":"/b","inputs":{"audio":{"from":"/a.nope"}}}]}"#;
         assert!(matches!(
             load(json, &reg()),
             Err(LoadError::UnknownPort { .. })
@@ -504,24 +727,54 @@ mod tests {
     }
 
     #[test]
-    fn unknown_param_errors() {
+    fn unknown_input_errors() {
         let json = r#"{"instrument":"t",
-            "nodes":[{"type":"filter","address":"/f","params":{"nope":1.0}}]}"#;
+            "nodes":[{"type":"filter","address":"/f","inputs":{"nope":1.0}}]}"#;
         assert!(matches!(
             load(json, &reg()),
-            Err(LoadError::UnknownParam { .. })
+            Err(LoadError::UnknownInput { .. })
         ));
     }
 
     #[test]
-    fn port_kind_mismatch_errors() {
-        // osc.audio is a Signal output; voicer.notes is a Message input.
+    fn shape_mismatch_errors() {
+        // osc.audio is a Float output; voicer.notes is a Note input.
         let json = r#"{"instrument":"t",
-            "nodes":[{"type":"oscillator","address":"/osc"},{"type":"voicer","address":"/v"}],
-            "connections":[{"from":{"node":"/osc","port":"audio"},"to":{"node":"/v","port":"notes"}}]}"#;
+            "nodes":[{"type":"oscillator","address":"/osc"},
+                     {"type":"voicer","address":"/v","inputs":{"notes":{"from":"/osc.audio"}}}]}"#;
         assert!(matches!(
             load(json, &reg()),
-            Err(LoadError::PortKindMismatch { .. })
+            Err(LoadError::ShapeMismatch { .. })
+        ));
+    }
+
+    #[test]
+    fn unknown_symbol_errors() {
+        let json = r#"{"instrument":"t","nodes":[
+            {"type":"filter","address":"/f","inputs":{"mode":"Nope"}}]}"#;
+        assert!(matches!(
+            load(json, &reg()),
+            Err(LoadError::BadInputValue { .. })
+        ));
+    }
+
+    #[test]
+    fn constant_in_inputs_errors() {
+        let json = r#"{"instrument":"t","nodes":[
+            {"type":"voicer","address":"/v","inputs":{"voices":4}}]}"#;
+        assert!(matches!(
+            load(json, &reg()),
+            Err(LoadError::ConstantInInputs { .. })
+        ));
+    }
+
+    #[test]
+    fn unknown_config_errors() {
+        let json = r#"{"instrument":"t","nodes":[
+            {"type":"filter","address":"/f","config":{"cutoff":1000}}]}"#;
+        assert!(matches!(
+            load(json, &reg()),
+            Err(LoadError::UnknownConfig { .. })
         ));
     }
 
@@ -558,5 +811,19 @@ mod tests {
         let saved2 = InstrumentDoc::from_graph(&g2, "test");
         assert_eq!(saved1, saved2);
         assert_eq!(saved1.nodes.len(), 2);
+    }
+
+    #[test]
+    fn from_graph_routes_voices_to_config() {
+        let json = r#"{"instrument":"t","nodes":[
+            {"type":"voicer","address":"/v","config":{"voices":5}}]}"#;
+        let g = load(json, &reg()).expect("load");
+        let saved = InstrumentDoc::from_graph(&g, "t");
+        let v = saved.nodes.iter().find(|n| n.address == "/v").unwrap();
+        assert!(matches!(
+            v.config.get("voices"),
+            Some(ConfigValue::Number(_))
+        ));
+        assert!(!v.inputs.contains_key("voices"));
     }
 }

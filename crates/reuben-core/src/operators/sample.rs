@@ -8,15 +8,24 @@
 //! reading the Voicer's per-Voice `freq`/`gate` Signals. Polyphony and steal-oldest come for
 //! free from the Voicer's Lane fan-out.
 //!
-//! - input 0: `freq` (Signal, optional) — pitch in Hz; the playback rate is `freq / hz(root)`
-//!   times the file/engine sample-rate ratio. Unconnected → plays at `root` pitch.
-//! - input 1: `gate` (Signal) — a **rising edge** fires the sample from `start`; one-shot
+//! Shape model (ADR-0028): `freq`/`gate` and the former params `root`/`gain`/`start`/`channel`
+//! are all **`Float` inputs**. `freq` and `gate` are bare wire-ins (no materialized default — the
+//! legacy signal carrier); the other four own their unwired defaults so `/sample/root 60` needs no
+//! upstream node. There is no longer a separate "signal port + same-named param" pair and no
+//! wired/unwired branch in `process` — `io.signal(port)` is always a buffer, the block-rate
+//! controls are read once via `io.value(port)`.
+//!
+//! - input 0: `freq` (`Float`, bare) — pitch in Hz; the playback rate is `freq / hz(root)` times
+//!   the file/engine sample-rate ratio. A non-positive `freq` (the unwired carrier materializes to
+//!   0) → plays at `root` pitch, preserving the old "freq unconnected → root" semantics.
+//! - input 1: `gate` (`Float`, bare) — a **rising edge** fires the sample from `start`; one-shot
 //!   plays to the buffer end ignoring release; each rising edge retriggers.
-//! - output 0: `audio` (Signal).
-//! - param 0: `root` (MIDI) — the pitch at which the sample plays at its natural rate.
-//! - param 1: `gain` (linear) — output scale.
-//! - param 2: `start` (normalized 0..1) — playback start offset into the buffer.
-//! - param 3: `channel` — `-1` downmixes (averages) all channels; `≥0` picks that channel.
+//! - input 2: `root` (`Float`, MIDI) — the pitch at which the sample plays at its natural rate.
+//! - input 3: `gain` (`Float`, linear) — output scale.
+//! - input 4: `start` (`Float`, normalized 0..1) — playback start offset into the buffer.
+//! - input 5: `channel` (`Float`) — `-1` downmixes (averages) all channels; `≥0` picks that
+//!   channel. A continuous/structural selector (rounded in `process`), not an `Enum`.
+//! - output 0: `audio` (`Float`).
 //!
 //! Pitch (the per-hit rate) is **latched at the trigger frame** and fixed for that hit; live
 //! pitch-tracking is a deferred param. The fractional playhead is a per-Lane `f64` cursor,
@@ -31,12 +40,13 @@ use crate::resources::{ResolvedRefs, ResourceStore, SampleId};
 // Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.
 crate::operator_contract!(SamplePlayer {
     type_name: "sample",
-    inputs:    { freq: signal, gate: signal },
-    outputs:   { audio: signal },
-    params:    { root:    { 0.0..=127.0, default 60.0, "MIDI", lin },
-                 gain:    { 0.0..=4.0,   default 1.0,  "",     lin },
-                 start:   { 0.0..=1.0,   default 0.0,  "",     lin },
-                 channel: { -1.0..=31.0, default -1.0, "",     lin } },
+    inputs:    { freq:    float,
+                 gate:    float,
+                 root:    float { 0.0..=127.0, default 60.0, "MIDI", lin },
+                 gain:    float { 0.0..=4.0,   default 1.0,  "",     lin },
+                 start:   float { 0.0..=1.0,   default 0.0,  "",     lin },
+                 channel: float { -1.0..=31.0, default -1.0, "",     lin } },
+    outputs:   { audio: float },
     resources: { sample },
 });
 
@@ -75,10 +85,11 @@ impl Operator for SamplePlayer {
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
         let engine_sr = io.sample_rate();
-        let root_hz = Self::midi_hz(io.param(P_ROOT));
-        let gain = io.param(P_GAIN);
-        let start_norm = io.param(P_START).clamp(0.0, 1.0);
-        let channel = io.param(P_CHANNEL);
+        // Block-rate controls: read once at the top (ADR-0028 `Float` inputs via `io.value`).
+        let root_hz = Self::midi_hz(io.value(IN_ROOT));
+        let gain = io.value(IN_GAIN);
+        let start_norm = io.value(IN_START).clamp(0.0, 1.0);
+        let channel = io.value(IN_CHANNEL);
 
         // Resolve the binding; unbound, missing, or empty → silence.
         let store = match &self.store {
@@ -100,29 +111,22 @@ impl Operator for SamplePlayer {
             0.0
         };
 
-        let gate_connected = io.input(IN_GATE).is_some();
-        let freq_connected = io.input(IN_FREQ).is_some();
-
         let mut prev = self.prev_gate;
         let mut playhead = self.playhead;
         let mut rate = self.rate;
         let mut playing = self.playing;
 
         for i in 0..n {
-            // Read inputs one sample at a time so each immutable borrow of `io` ends before
-            // the mutable output write (keeps `process` alloc-free, mirrors the oscillator).
-            let g = if gate_connected {
-                io.input(IN_GATE).map_or(0.0, |b| b[i])
-            } else {
-                0.0
-            };
+            // `gate`/`freq` are `Float` inputs — always a buffer (wired source or the materialized
+            // carrier). Read one sample at a time so each immutable borrow of `io` ends before the
+            // mutable output write (keeps `process` alloc-free, mirrors the oscillator).
+            let g = io.signal(IN_GATE).get(i).copied().unwrap_or(0.0);
             // Rising edge → (re)trigger: latch pitch and reset the playhead to `start`.
             if prev <= 0.0 && g > 0.0 {
-                let f = if freq_connected {
-                    io.input(IN_FREQ).map_or(root_hz, |b| b[i])
-                } else {
-                    root_hz
-                };
+                // A non-positive `freq` (the unwired carrier materializes to 0) → play at `root`,
+                // preserving the old "freq unconnected → root pitch" semantics.
+                let freq = io.signal(IN_FREQ).get(i).copied().unwrap_or(0.0);
+                let f = if freq > 0.0 { freq } else { root_hz };
                 rate = (f as f64 / root_hz as f64) * sr_fold;
                 playhead = start_norm as f64 * frames as f64;
                 playing = true;
@@ -228,7 +232,9 @@ mod tests {
         p
     }
 
-    /// Run one block; `params` = [root, gain, start, channel].
+    /// Run one block; `params` = [root, gain, start, channel] — now supplied as the constant
+    /// per-sample `Float`-input buffers the engine would materialize (ADR-0028). `freq` is the bare
+    /// wire-in carrier: `None` mimics the unwired carrier (materialized to 0 → play at root).
     fn run(
         p: &mut SamplePlayer,
         n: usize,
@@ -236,11 +242,23 @@ mod tests {
         freq: Option<&[f32]>,
         params: [f32; 4],
     ) -> Vec<f32> {
+        let root = vec![params[0]; n];
+        let gain = vec![params[1]; n];
+        let start = vec![params[2]; n];
+        let channel = vec![params[3]; n];
         let mut out = vec![0.0f32; n];
         {
             let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let inputs: Vec<Option<&[f32]>> = vec![freq, Some(gate)];
-            let mut io = Io::new(SR, n, inputs, outs, &params, &[]);
+            // Port order: freq, gate, root, gain, start, channel.
+            let inputs: Vec<Option<&[f32]>> = vec![
+                freq,
+                Some(gate),
+                Some(&root),
+                Some(&gain),
+                Some(&start),
+                Some(&channel),
+            ];
+            let mut io = Io::new(SR, n, inputs, outs, &[], &[]);
             p.process(&mut io);
         }
         out
@@ -358,9 +376,20 @@ mod tests {
         let mut out = vec![0.0f32; 4];
         {
             let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let inputs: Vec<Option<&[f32]>> = vec![None, Some(&[1.0f32, 1.0, 1.0, 1.0][..])];
-            let params = ROOT_A4;
-            let mut io = Io::new(SR, 4, inputs, outs, &params, &[]);
+            let root = vec![ROOT_A4[0]; 4];
+            let gain = vec![ROOT_A4[1]; 4];
+            let start = vec![ROOT_A4[2]; 4];
+            let channel = vec![ROOT_A4[3]; 4];
+            // Port order: freq, gate, root, gain, start, channel.
+            let inputs: Vec<Option<&[f32]>> = vec![
+                None,
+                Some(&[1.0f32, 1.0, 1.0, 1.0][..]),
+                Some(&root),
+                Some(&gain),
+                Some(&start),
+                Some(&channel),
+            ];
+            let mut io = Io::new(SR, 4, inputs, outs, &[], &[]);
             b.process(&mut io);
         }
         assert_eq!(out, vec![10.0, 20.0, 30.0, 40.0]);

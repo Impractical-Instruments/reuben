@@ -49,7 +49,6 @@ fn validate_rejects_unknown_operator_and_names_the_node() {
     let json = r#"{
       "instrument": "typo",
       "nodes": [ { "type": "oscilllator", "address": "/osc" } ],
-      "connections": [],
       "outputs": []
     }"#;
     let report = validate(json, &Registry::builtin(), &FsResolver::new("."));
@@ -75,12 +74,8 @@ fn validate_rejects_a_cycle_that_loads_cleanly() {
     let json = r#"{
       "instrument": "loop",
       "nodes": [
-        { "type": "map", "address": "/a" },
-        { "type": "map", "address": "/b" }
-      ],
-      "connections": [
-        { "from": {"node":"/a","port":"out"}, "to": {"node":"/b","port":"in"} },
-        { "from": {"node":"/b","port":"out"}, "to": {"node":"/a","port":"in"} }
+        { "type": "map", "address": "/a", "inputs": { "in": { "from": "/b" } } },
+        { "type": "map", "address": "/b", "inputs": { "in": { "from": "/a" } } }
       ],
       "outputs": []
     }"#;
@@ -102,14 +97,10 @@ fn validate_treats_a_missing_resource_as_advisory_not_invalid() {
       "instrument": "ghost",
       "resources": { "ghost": "samples/nope.wav" },
       "nodes": [
-        { "type": "voicer", "address": "/voicer", "params": { "voices": 1 } },
-        { "type": "sample", "address": "/s", "sample": "ghost" },
-        { "type": "output", "address": "/out" }
-      ],
-      "connections": [
-        { "from": {"node":"/voicer","port":"freq"}, "to": {"node":"/s","port":"freq"} },
-        { "from": {"node":"/voicer","port":"gate"}, "to": {"node":"/s","port":"gate"} },
-        { "from": {"node":"/s","port":"audio"}, "to": {"node":"/out","port":"audio"} }
+        { "type": "voicer", "address": "/voicer", "config": { "voices": 1 } },
+        { "type": "sample", "address": "/s", "sample": "ghost",
+          "inputs": { "freq": {"from":"/voicer.freq"}, "gate": {"from":"/voicer.gate"} } },
+        { "type": "output", "address": "/out", "inputs": { "audio": {"from":"/s"} } }
       ],
       "outputs": [ {"node":"/out","port":"audio"} ]
     }"#;
@@ -168,10 +159,14 @@ fn describe_one_operator_surfaces_its_ports_and_params() {
         .outputs
         .iter()
         .any(|p| p.name == "audio" && p.kind == "signal"));
-    assert!(
-        osc.params.iter().any(|p| p.name == "waveform"),
-        "waveform param"
-    );
+    // `waveform` is an Enum input now (ADR-0028) — surfaced among `enums`, not numeric `params`.
+    let waveform = osc
+        .enums
+        .iter()
+        .find(|e| e.name == "waveform")
+        .expect("waveform enum");
+    assert_eq!(waveform.variants, ["Sine", "Saw"]);
+    assert_eq!(waveform.default, "Sine");
 }
 
 #[test]

@@ -24,7 +24,7 @@
 //! combining two *streams* lives in the Signal domain today, which is where modulation
 //! naturally is.
 
-use crate::descriptor::{Curve, Descriptor, LaneRule, ParamMeta, Port};
+use crate::descriptor::{Curve, Descriptor, EnumMeta, LaneRule, ParamMeta, Port};
 use crate::message::Arg;
 use crate::operator::{Io, Operator};
 
@@ -93,8 +93,10 @@ macro_rules! signal_pointwise {
                 // side passes it through unchanged (base-plus-modulation; ADR-0017).
                 let id = $identity;
                 for i in 0..n {
-                    let a = io.input(IN_A).map_or(id, |s| s[i]);
-                    let b = io.input(IN_B).map_or(id, |s| s[i]);
+                    // `a`/`b` are `Float` inputs (ADR-0028). A bare unwired input is an empty slice,
+                    // so `unwrap_or(id)` supplies the op's identity — wiring one side passes it.
+                    let a = io.signal(IN_A).get(i).copied().unwrap_or(id);
+                    let b = io.signal(IN_B).get(i).copied().unwrap_or(id);
                     io.output(OUT_OUT)[i] = $apply(a, b);
                 }
             }
@@ -126,12 +128,18 @@ signal_pointwise!(
 
 // --- Message-domain affine map (the Good Button workhorse) ---
 
-pub const P_IN_MIN: usize = 0;
-pub const P_IN_MAX: usize = 1;
-pub const P_OUT_MIN: usize = 2;
-pub const P_OUT_MAX: usize = 3;
-pub const P_CURVE: usize = 4;
-pub const P_DEFAULT: usize = 5;
+/// `map`'s `in` Message input ordinal (value events via [`Io::events`]).
+pub const MAP_IN: usize = 0;
+/// `map`'s settable `Float`/`Enum` inputs (ADR-0028) — the former params, now read block-rate.
+pub const MAP_IN_MIN: usize = 1;
+pub const MAP_IN_MAX: usize = 2;
+pub const MAP_OUT_MIN: usize = 3;
+pub const MAP_OUT_MAX: usize = 4;
+pub const MAP_CURVE: usize = 5;
+pub const MAP_DEFAULT: usize = 6;
+
+/// `map`'s `curve` variant symbols (index-aligned: 0 = Linear, 1 = Exponential).
+const MAP_CURVES: &[&str] = &["Linear", "Exponential"];
 
 /// Affine (optionally exponential) remap of `v` from `[in_min, in_max]` onto
 /// `[out_min, out_max]`, clamped to the input range. Exponential is used only when both
@@ -153,11 +161,11 @@ fn remap(v: f32, in_min: f32, in_max: f32, out_min: f32, out_max: f32, exp: bool
 /// `map` — Message-domain affine remap. One value Message in → one remapped value out.
 ///
 /// - input 0: `in` (Message) — value events; the first numeric arg is remapped.
+/// - inputs 1–4, 6: `in_min`, `in_max`, `out_min`, `out_max`, `default` (`Float`, read block-rate).
+/// - input 5: `curve` (`Enum` {Linear, Exponential}).
 /// - output 0 (Message): `out` — the remapped value at the same frame.
-/// - params: `in_min`, `in_max`, `out_min`, `out_max`, `curve` (0 = linear, 1 = exponential),
-///   `default` (input-domain resting value, ADR-0018).
 ///
-/// Default params are the identity `[0,1] → [0,1]` linear, so an unconfigured `map` is a
+/// Default inputs are the identity `[0,1] → [0,1]` linear, so an unconfigured `map` is a
 /// transparent pass-through (the public face of a Good Button). Single-Lane (ADR-0014):
 /// emission is pre-fan-out.
 ///
@@ -179,80 +187,55 @@ impl Map {
 
 impl Operator for Map {
     fn descriptor() -> Descriptor {
+        // `in`/`out` stay Message ports (the affine remap is still 1:1 event-domain — the Float
+        // shaper reframe waits on the instrument migration); the former params are now `Float`
+        // inputs (settable + wire-able) and `curve` is an `Enum` (ADR-0028).
+        let range = |name: &'static str, default: f32| {
+            Port::float(ParamMeta {
+                name,
+                min: -1_000_000.0,
+                max: 1_000_000.0,
+                default,
+                unit: "",
+                curve: Curve::Linear,
+            })
+        };
         Descriptor {
             type_name: "map",
-            inputs: vec![Port::message("in")],
-            outputs: vec![Port::message("out")],
-            params: vec![
-                ParamMeta {
-                    name: "in_min",
-                    min: -1_000_000.0,
-                    max: 1_000_000.0,
-                    default: 0.0,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-                ParamMeta {
-                    name: "in_max",
-                    min: -1_000_000.0,
-                    max: 1_000_000.0,
-                    default: 1.0,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-                ParamMeta {
-                    name: "out_min",
-                    min: -1_000_000.0,
-                    max: 1_000_000.0,
-                    default: 0.0,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-                ParamMeta {
-                    name: "out_max",
-                    min: -1_000_000.0,
-                    max: 1_000_000.0,
-                    default: 1.0,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-                ParamMeta {
+            inputs: vec![
+                Port::message("in"),
+                range("in_min", 0.0),
+                range("in_max", 1.0),
+                range("out_min", 0.0),
+                range("out_max", 1.0),
+                Port::enumerated(EnumMeta {
                     name: "curve",
-                    min: 0.0,
-                    max: 1.0,
-                    default: 0.0,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
-                // Input-domain resting value (ADR-0018). The static default equals the default
-                // `in_min`; an instrument that customizes the input range should set `default`
-                // to taste so the resting position stays inside it.
-                ParamMeta {
-                    name: "default",
-                    min: -1_000_000.0,
-                    max: 1_000_000.0,
-                    default: 0.0,
-                    unit: "",
-                    curve: Curve::Linear,
-                },
+                    variants: MAP_CURVES,
+                    default: 0,
+                }),
+                // Input-domain resting value (ADR-0018), emitted on init so a Good Button's chain
+                // converges to the position its widget shows.
+                range("default", 0.0),
             ],
+            outputs: vec![Port::message("out")],
+            params: vec![],
             resources: vec![],
             lanes: LaneRule::Inherit,
         }
     }
 
     fn process(&mut self, io: &mut Io) {
-        let in_min = io.param(P_IN_MIN);
-        let in_max = io.param(P_IN_MAX);
-        let out_min = io.param(P_OUT_MIN);
-        let out_max = io.param(P_OUT_MAX);
-        let exp = io.param(P_CURVE) >= 0.5;
+        let in_min = io.value(MAP_IN_MIN);
+        let in_max = io.value(MAP_IN_MAX);
+        let out_min = io.value(MAP_OUT_MIN);
+        let out_max = io.value(MAP_OUT_MAX);
+        let exp = io.enum_index(MAP_CURVE) == 1; // 0 = Linear, 1 = Exponential
 
         // Emit the resting value once, before any message, so a Good Button's chain converges
         // to the position its widget shows (ADR-0018). A real event at frame 0 lands after this
         // and wins, so live input still overrides the resting default.
         if !self.seeded {
-            let out = remap(io.param(P_DEFAULT), in_min, in_max, out_min, out_max, exp);
+            let out = remap(io.value(MAP_DEFAULT), in_min, in_max, out_min, out_max, exp);
             io.emit(MSG_OUT, "out", [Arg::Float(out)], 0);
             self.seeded = true;
         }
@@ -460,6 +443,59 @@ mod tests {
         Message::new(addr, [Arg::Float(v)], frame)
     }
 
+    /// Run `map` over one block, supplying its `Float` inputs (in_min/in_max/out_min/out_max/
+    /// default) as constant buffers and `curve` as the held `Enum` index (0 linear / 1 exp) —
+    /// the way the engine materializes them (ADR-0028) — plus the value events on `in`.
+    #[allow(clippy::too_many_arguments)]
+    fn run_map(
+        m: &mut dyn Operator,
+        in_min: f32,
+        in_max: f32,
+        out_min: f32,
+        out_max: f32,
+        curve: usize,
+        default: f32,
+        values: &[Message],
+    ) -> Vec<Emit> {
+        let evs: Vec<Event> = values
+            .iter()
+            .map(|m| Event {
+                addr: &m.addr,
+                args: &m.args,
+                frame: m.frame,
+            })
+            .collect();
+        let n = 256;
+        // Buffers in port order for the Float inputs: in_min, in_max, out_min, out_max, default.
+        let bufs = [
+            vec![in_min; n],
+            vec![in_max; n],
+            vec![out_min; n],
+            vec![out_max; n],
+            vec![default; n],
+        ];
+        let enums = [0usize, 0, 0, 0, 0, curve, 0]; // held index at MAP_CURVE = 5
+        let mut emits: Vec<Emit> = Vec::new();
+        {
+            let outs: Vec<&mut [f32]> = vec![];
+            // Port order: in (Message), in_min, in_max, out_min, out_max, curve (Enum), default.
+            let inputs: Vec<Option<&[f32]>> = vec![
+                None,
+                Some(&bufs[0]),
+                Some(&bufs[1]),
+                Some(&bufs[2]),
+                Some(&bufs[3]),
+                None,
+                Some(&bufs[4]),
+            ];
+            let mut io = Io::new(SR, n, inputs, outs, &[], &evs)
+                .with_emit(&mut emits, 0)
+                .with_enums(&enums);
+            m.process(&mut io);
+        }
+        emits
+    }
+
     #[test]
     fn add_sums_two_buffers() {
         let a = [1.0, 2.0, 3.0];
@@ -493,9 +529,14 @@ mod tests {
 
     #[test]
     fn map_identity_passes_value_through() {
-        let emits = run_msg(
+        let emits = run_map(
             &mut Map::new(),
-            &[0.0, 1.0, 0.0, 1.0, 0.0, 0.0],
+            0.0,
+            1.0,
+            0.0,
+            1.0,
+            0,
+            0.0,
             &[val("in", 0.42, 7)],
         );
         // First block seeds the resting default (0.0) at frame 0 (ADR-0018), then the value.
@@ -511,10 +552,14 @@ mod tests {
     fn map_linear_remaps_range_and_clamps() {
         // [0,1] -> [800,10000] linear. 0.5 -> 5400; an over-range 2.0 clamps to 10000.
         // emits[0] is the resting seed (default 0.0 -> 800).
-        let params = [0.0, 1.0, 800.0, 10_000.0, 0.0, 0.0];
-        let emits = run_msg(
+        let emits = run_map(
             &mut Map::new(),
-            &params,
+            0.0,
+            1.0,
+            800.0,
+            10_000.0,
+            0,
+            0.0,
             &[val("in", 0.5, 0), val("in", 2.0, 1)],
         );
         approx::assert_relative_eq!(emits[0].args[0].as_f32().unwrap(), 800.0);
@@ -526,8 +571,16 @@ mod tests {
     fn map_exponential_curve_is_geometric_midpoint() {
         // [0,1] -> [100,10000] exponential: t=0.5 -> sqrt(100*10000)=1000.
         // emits[0] is the resting seed (default 0.0, t=0 -> out_min 100).
-        let params = [0.0, 1.0, 100.0, 10_000.0, 1.0, 0.0];
-        let emits = run_msg(&mut Map::new(), &params, &[val("in", 0.5, 0)]);
+        let emits = run_map(
+            &mut Map::new(),
+            0.0,
+            1.0,
+            100.0,
+            10_000.0,
+            1,
+            0.0,
+            &[val("in", 0.5, 0)],
+        );
         approx::assert_relative_eq!(emits[1].args[0].as_f32().unwrap(), 1000.0, epsilon = 1e-1);
     }
 
@@ -535,9 +588,26 @@ mod tests {
     fn map_consumes_events_regardless_of_address() {
         // External OSC to the node address arrives with an empty local address; chained
         // emits arrive as "out". Both must drive the map. emits[0] is the resting seed.
-        let p = [0.0, 1.0, 0.0, 10.0, 0.0, 0.0];
-        let from_external = run_msg(&mut Map::new(), &p, &[val("", 0.5, 0)]);
-        let from_chain = run_msg(&mut Map::new(), &p, &[val("out", 0.5, 0)]);
+        let from_external = run_map(
+            &mut Map::new(),
+            0.0,
+            1.0,
+            0.0,
+            10.0,
+            0,
+            0.0,
+            &[val("", 0.5, 0)],
+        );
+        let from_chain = run_map(
+            &mut Map::new(),
+            0.0,
+            1.0,
+            0.0,
+            10.0,
+            0,
+            0.0,
+            &[val("out", 0.5, 0)],
+        );
         approx::assert_relative_eq!(from_external[1].args[0].as_f32().unwrap(), 5.0);
         approx::assert_relative_eq!(from_chain[1].args[0].as_f32().unwrap(), 5.0);
     }
@@ -547,22 +617,20 @@ mod tests {
         // default=0.5 over [0,1]->[0,100]: first block emits 50 at frame 0 with no events;
         // a second block with no events emits nothing — the seed fires once per instance.
         let mut m = Map::new();
-        let params = [0.0, 1.0, 0.0, 100.0, 0.0, 0.5];
-        let first = run_msg(&mut m, &params, &[]);
+        let first = run_map(&mut m, 0.0, 1.0, 0.0, 100.0, 0, 0.5, &[]);
         assert_eq!(first.len(), 1);
         assert_eq!(first[0].frame, 0);
         approx::assert_relative_eq!(first[0].args[0].as_f32().unwrap(), 50.0);
-        let second = run_msg(&mut m, &params, &[]);
+        let second = run_map(&mut m, 0.0, 1.0, 0.0, 100.0, 0, 0.5, &[]);
         assert!(second.is_empty(), "resting seed fires once per instance");
     }
 
     #[test]
     fn spawned_map_re_seeds_resting_default() {
         let mut m = Map::new();
-        let params = [0.0, 1.0, 0.0, 100.0, 0.0, 0.5];
-        let _ = run_msg(&mut m, &params, &[]);
+        let _ = run_map(&mut m, 0.0, 1.0, 0.0, 100.0, 0, 0.5, &[]);
         let mut m2 = m.spawn();
-        let emits = run_msg(&mut *m2, &params, &[]);
+        let emits = run_map(&mut *m2, 0.0, 1.0, 0.0, 100.0, 0, 0.5, &[]);
         assert_eq!(emits.len(), 1, "spawn re-arms the resting seed");
         approx::assert_relative_eq!(emits[0].args[0].as_f32().unwrap(), 50.0);
     }

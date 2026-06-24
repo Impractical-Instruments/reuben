@@ -12,35 +12,36 @@
 //! an even musical sweep rather than bunching up at the top. One shared Cytomic SVF core
 //! produces both the low-pass and high-pass taps; `position`'s sign selects which one is heard.
 //!
-//! One-port-one-type (ADR-0017): `position` is a **Signal input** carrying an unwired default
-//! scalar — the `position` *param*. So a control surface can sweep the knob via messages to the
-//! param (block-sliced) *or* an LFO/envelope can wire the port for hands-free automation, with
-//! no change to the operator. The cutoff endpoints and resonance are plain params (the filter's
-//! voicing/character), constant for the block.
+//! Shape model (ADR-0028): every control is a **`Float` input**, each owning its unwired default.
+//! When nothing is wired the engine materializes the input from its latched default (so a control
+//! surface can sweep the knob via `/djfilter/position`, bit-identical to the old param behavior);
+//! when an LFO/envelope is wired the source buffer passes through and sweeps the port audio-rate.
+//! There is no longer a separate "signal port + same-named param" pair, and no wired/unwired branch
+//! in `process` — `io.signal(IN_POSITION)` is always a buffer. `position` stays a continuous
+//! bipolar `Float` in [-1, +1] (its sign selects low-pass vs high-pass), not an enum.
 //!
-//! - input 0: `audio` (Signal) — the signal to filter.
-//! - input 1: `position` (Signal) — knob in [-1, +1]; unwired → the `position` param.
-//! - output 0: `audio` (Signal) — filtered output.
-//! - param 0: `position` — the position Signal port's unwired default.
-//! - param 1: `resonance` (0..1) — filter resonance for both directions.
-//! - param 2: `lp_start` (Hz) — low-pass cutoff at North (open end of the CCW sweep).
-//! - param 3: `lp_end`   (Hz) — low-pass cutoff fully CCW (position -1).
-//! - param 4: `hp_start` (Hz) — high-pass cutoff at North (open end of the CW sweep).
-//! - param 5: `hp_end`   (Hz) — high-pass cutoff fully CW (position +1).
+//! - input 0: `audio` (`Float`) — the signal to filter.
+//! - input 1: `position` (`Float`) — knob in [-1, +1] (materialized default 0.0).
+//! - input 2: `resonance` (`Float`) — filter resonance 0..1 for both directions.
+//! - input 3: `lp_start` (`Float`, Hz) — low-pass cutoff at North (open end of the CCW sweep).
+//! - input 4: `lp_end`   (`Float`, Hz) — low-pass cutoff fully CCW (position -1).
+//! - input 5: `hp_start` (`Float`, Hz) — high-pass cutoff at North (open end of the CW sweep).
+//! - input 6: `hp_end`   (`Float`, Hz) — high-pass cutoff fully CW (position +1).
+//! - output 0: `audio` (`Float`) — filtered output.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.
+// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Djfilter {
-    inputs:  { audio: signal, position: signal },
-    outputs: { audio: signal },
-    params:  { position:  { -1.0..=1.0,     default 0.0,     "",   lin },
-               resonance: { 0.0..=1.0,      default 0.1,     "",   lin },
-               lp_start:  { 20.0..=20000.0, default 20000.0, "Hz", exp },
-               lp_end:    { 20.0..=20000.0, default 200.0,   "Hz", exp },
-               hp_start:  { 20.0..=20000.0, default 20.0,    "Hz", exp },
-               hp_end:    { 20.0..=20000.0, default 6000.0,  "Hz", exp } },
+    inputs:  { audio: float,
+               position:  float { -1.0..=1.0,     default 0.0,     "",   lin },
+               resonance: float { 0.0..=1.0,      default 0.1,     "",   lin },
+               lp_start:  float { 20.0..=20000.0, default 20000.0, "Hz", exp },
+               lp_end:    float { 20.0..=20000.0, default 200.0,   "Hz", exp },
+               hp_start:  float { 20.0..=20000.0, default 20.0,    "Hz", exp },
+               hp_end:    float { 20.0..=20000.0, default 6000.0,  "Hz", exp } },
+    outputs: { audio: float },
 });
 
 #[derive(Default)]
@@ -115,41 +116,24 @@ impl Operator for Djfilter {
         let n = io.frames();
         let sample_rate = io.sample_rate();
 
-        // Cutoff endpoints + resonance are the filter's voicing — params, constant for the
-        // (sub)block (block-sliced on change, ADR-0011).
-        let resonance = io.param(P_RESONANCE);
-        let lp_start = io.param(P_LP_START);
-        let lp_end = io.param(P_LP_END);
-        let hp_start = io.param(P_HP_START);
-        let hp_end = io.param(P_HP_END);
-        // The knob: its unwired default survives as the value the position port reads when
-        // nothing is wired (ADR-0017 one-port-one-type).
-        let position_default = io.param(P_POSITION);
-        let position_wired = io.input(IN_POSITION).is_some();
+        // Cutoff endpoints + resonance are the filter's voicing — `Float` inputs read once at
+        // block rate (the filter's character, constant for the (sub)block, block-sliced on change).
+        let resonance = io.value(IN_RESONANCE);
+        let lp_start = io.value(IN_LP_START);
+        let lp_end = io.value(IN_LP_END);
+        let hp_start = io.value(IN_HP_START);
+        let hp_end = io.value(IN_HP_END);
 
-        if !position_wired {
-            // Fast path: the knob is constant for this (sub)block, so mode + coefficients are
-            // computed once.
-            let (use_hp, cutoff) = target(position_default, lp_start, lp_end, hp_start, hp_end);
-            let (k, a1, a2, a3) = coeffs(cutoff, resonance, sample_rate);
-            for i in 0..n {
-                let x = io.input(IN_AUDIO).map(|s| s[i]).unwrap_or(0.0);
-                let (lp, hp) = self.svf_step(x, k, a1, a2, a3);
-                io.output(OUT_AUDIO)[i] = if use_hp { hp } else { lp };
-            }
-            return;
-        }
-
-        // Modulated path: the knob is a wired Signal (LFO / automation), read per sample. Mode +
-        // coefficients are recomputed only when `position` actually changes from the previous
-        // sample — `target`/`coeffs` are pure, so reusing the cache on an unchanged knob is
-        // bit-identical to recomputing it, and a settled or slow knob costs one compare per
-        // sample instead of a `tan()`/`powf()`.
+        // `position` is a `Float` input — always a buffer (wired source or materialized latch),
+        // one read path (ADR-0028). Mode + coefficients are recomputed only when `position`
+        // actually changes from the previous sample — `target`/`coeffs` are pure, so reusing the
+        // cache on an unchanged knob is bit-identical to recomputing it, and a settled or slow knob
+        // costs one compare per sample instead of a `tan()`/`powf()`.
         let mut last_pos = f32::NAN;
         let (mut use_hp, mut k, mut a1, mut a2, mut a3) = (false, 0.0, 0.0, 0.0, 0.0);
         for i in 0..n {
-            let x = io.input(IN_AUDIO).map(|s| s[i]).unwrap_or(0.0);
-            let pos = io.input(IN_POSITION).map_or(position_default, |s| s[i]);
+            let x = io.signal(IN_AUDIO).get(i).copied().unwrap_or(0.0);
+            let pos = io.signal(IN_POSITION).get(i).copied().unwrap_or(0.0);
             // NaN seed forces a compute on the first sample (NaN != anything).
             if pos != last_pos {
                 let (uh, cutoff) = target(pos, lp_start, lp_end, hp_start, hp_end);
@@ -176,43 +160,54 @@ mod tests {
 
     const SR: f32 = 48_000.0;
 
-    // Default param surface, in index order, so tests can tweak one field and keep the rest.
-    fn default_params() -> [f32; 6] {
-        [0.0, 0.1, 20_000.0, 200.0, 20.0, 6_000.0]
+    // Default voicing (resonance/lp_start/lp_end/hp_start/hp_end), in input-port order so tests can
+    // tweak one field and keep the rest. `position` is supplied separately (per-sample buffer).
+    fn default_voicing() -> [f32; 5] {
+        [0.1, 20_000.0, 200.0, 20.0, 6_000.0]
     }
 
-    /// Run `input` through a fresh Djfilter at the given params (knob via the unwired default)
-    /// and return the output buffer.
-    fn render(input: &[f32], params: [f32; 6]) -> Vec<f32> {
+    /// Render `input` through a fresh Djfilter with the given constant `position` and `voicing`
+    /// (resonance/lp_start/lp_end/hp_start/hp_end). Every control is a `Float` input now (ADR-0028),
+    /// so each is supplied as the constant per-sample buffer the engine would materialize.
+    fn render(input: &[f32], position: f32, voicing: [f32; 5]) -> Vec<f32> {
+        let n = input.len();
+        let pos_buf = vec![position; n];
+        render_buffers(input, &pos_buf, voicing)
+    }
+
+    /// Render `input` with an explicit per-sample `position` Float wired to port 1.
+    fn render_modulated(input: &[f32], position: &[f32], voicing: [f32; 5]) -> Vec<f32> {
+        render_buffers(input, position, voicing)
+    }
+
+    /// Render with an explicit per-sample `position` buffer and constant `voicing` controls — the
+    /// exact `Float`-input buffers the engine hands `process` (ADR-0028). Inputs are supplied in
+    /// port order: audio, position, resonance, lp_start, lp_end, hp_start, hp_end.
+    fn render_buffers(input: &[f32], position: &[f32], voicing: [f32; 5]) -> Vec<f32> {
         let n = input.len();
         let mut op = Djfilter::new();
         let mut out_buf = vec![0.0f32; n];
+        let res_buf = vec![voicing[0]; n];
+        let lp_start_buf = vec![voicing[1]; n];
+        let lp_end_buf = vec![voicing[2]; n];
+        let hp_start_buf = vec![voicing[3]; n];
+        let hp_end_buf = vec![voicing[4]; n];
+        let params: [f32; 0] = [];
         {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(input), None];
+            let inputs: Vec<Option<&[f32]>> = vec![
+                Some(input),
+                Some(position),
+                Some(&res_buf),
+                Some(&lp_start_buf),
+                Some(&lp_end_buf),
+                Some(&hp_start_buf),
+                Some(&hp_end_buf),
+            ];
             let outputs: Vec<&mut [f32]> = vec![out_buf.as_mut_slice()];
             let mut io = Io::new(SR, n, inputs, outputs, &params, &[]);
             op.process(&mut io);
         }
         out_buf
-    }
-
-    /// Run `input` with an explicit per-sample `position` Signal wired to port 1.
-    fn render_modulated(input: &[f32], position: &[f32], params: [f32; 6]) -> Vec<f32> {
-        let n = input.len();
-        let mut op = Djfilter::new();
-        let mut out_buf = vec![0.0f32; n];
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(input), Some(position)];
-            let outputs: Vec<&mut [f32]> = vec![out_buf.as_mut_slice()];
-            let mut io = Io::new(SR, n, inputs, outputs, &params, &[]);
-            op.process(&mut io);
-        }
-        out_buf
-    }
-
-    fn with_position(mut params: [f32; 6], position: f32) -> [f32; 6] {
-        params[P_POSITION] = position;
-        params
     }
 
     fn sine(f: f32, n: usize) -> Vec<f32> {
@@ -231,7 +226,7 @@ mod tests {
         let n = 8192;
         let warmup = 2048;
         let input = sine(1_000.0, n);
-        let out = render(&input, with_position(default_params(), 0.0));
+        let out = render(&input, 0.0, default_voicing());
 
         let in_rms = rms(&input[warmup..]);
         let out_rms = rms(&out[warmup..]);
@@ -246,10 +241,10 @@ mod tests {
         // Full CCW (position -1): cutoff = lp_end = 200 Hz. A low tone passes, a high tone dies.
         let n = 8192;
         let warmup = 2048;
-        let params = with_position(default_params(), -1.0);
+        let position = -1.0;
 
-        let low = render(&sine(100.0, n), params);
-        let high = render(&sine(8_000.0, n), params);
+        let low = render(&sine(100.0, n), position, default_voicing());
+        let high = render(&sine(8_000.0, n), position, default_voicing());
 
         let low_rms = rms(&low[warmup..]);
         let high_rms = rms(&high[warmup..]);
@@ -264,10 +259,10 @@ mod tests {
         // Full CW (position +1): cutoff = hp_end = 6 kHz. A high tone passes, a low tone dies.
         let n = 8192;
         let warmup = 2048;
-        let params = with_position(default_params(), 1.0);
+        let position = 1.0;
 
-        let low = render(&sine(100.0, n), params);
-        let high = render(&sine(12_000.0, n), params);
+        let low = render(&sine(100.0, n), position, default_voicing());
+        let high = render(&sine(12_000.0, n), position, default_voicing());
 
         let low_rms = rms(&low[warmup..]);
         let high_rms = rms(&high[warmup..]);
@@ -284,9 +279,9 @@ mod tests {
         let warmup = 2048;
         let input = sine(6_000.0, n);
 
-        let open = rms(&render(&input, with_position(default_params(), 0.0))[warmup..]);
-        let half = rms(&render(&input, with_position(default_params(), -0.5))[warmup..]);
-        let shut = rms(&render(&input, with_position(default_params(), -1.0))[warmup..]);
+        let open = rms(&render(&input, 0.0, default_voicing())[warmup..]);
+        let half = rms(&render(&input, -0.5, default_voicing())[warmup..]);
+        let shut = rms(&render(&input, -1.0, default_voicing())[warmup..]);
 
         assert!(
             open > half && half > shut,
@@ -295,22 +290,20 @@ mod tests {
     }
 
     #[test]
-    fn wired_position_matches_equivalent_param() {
-        // A constant position Signal must produce exactly the same output as the same value set
-        // as the param (the unwired default): the modulated path with a flat knob equals the
-        // fast path.
+    fn wired_position_matches_materialized_default() {
+        // A flat wired position Float must produce exactly the same output as the same value held
+        // as the input's materialized default — there is one read path now (ADR-0028), so a
+        // constant wired knob equals the held latch.
         let n = 4096;
         let input = sine(6_000.0, n);
-        // Param path holds position -0.6; the wired path sets a different default to prove the
-        // wired Signal — not the leftover default — is what's read.
-        let via_param = render(&input, with_position(default_params(), -0.6));
+        let via_default = render(&input, -0.6, default_voicing());
         let pos_buf = vec![-0.6f32; n];
-        let via_input = render_modulated(&input, &pos_buf, with_position(default_params(), 0.3));
+        let via_input = render_modulated(&input, &pos_buf, default_voicing());
         for i in 0..n {
             assert!(
-                (via_param[i] - via_input[i]).abs() < 1e-4,
-                "wired position should match param at {i}: {} vs {}",
-                via_param[i],
+                (via_default[i] - via_input[i]).abs() < 1e-4,
+                "wired position should match materialized default at {i}: {} vs {}",
+                via_default[i],
                 via_input[i]
             );
         }
@@ -325,7 +318,7 @@ mod tests {
         let high = sine(10_000.0, n);
         let input: Vec<f32> = low.iter().zip(&high).map(|(a, b)| a + b).collect();
         let position: Vec<f32> = (0..n).map(|i| -1.0 + 2.0 * i as f32 / n as f32).collect();
-        let out = render_modulated(&input, &position, default_params());
+        let out = render_modulated(&input, &position, default_voicing());
 
         // Compare the same band's energy via a reference single-tone render isn't needed; the
         // crossover itself is the oracle: early output tracks the low tone, late output the high.
@@ -349,10 +342,10 @@ mod tests {
     fn high_resonance_stays_bounded() {
         let n = 8192;
         // Drive near the resonant frequency at full CCW with maximum resonance.
-        let mut params = with_position(default_params(), -1.0);
-        params[P_RESONANCE] = 1.0;
+        let mut voicing = default_voicing();
+        voicing[0] = 1.0; // resonance
         let input = sine(200.0, n);
-        let out = render(&input, params);
+        let out = render(&input, -1.0, voicing);
         for (i, &s) in out.iter().enumerate() {
             assert!(s.is_finite(), "sample {i} not finite: {s}");
             assert!(s.abs() < 50.0, "sample {i} unbounded: {s}");
@@ -365,20 +358,44 @@ mod tests {
         // same instance (integrator state carries across the slice).
         let n = 512;
         let input = sine(440.0, n);
-        let params = with_position(default_params(), -0.7);
-        let whole = render(&input, params);
+        let voicing = default_voicing();
+        let position = -0.7;
+        let whole = render(&input, position, voicing);
 
         let mut op = Djfilter::new();
         let mut out_buf = vec![0.0f32; n];
+        let params: [f32; 0] = [];
+        let pos = vec![position; n];
+        let res = vec![voicing[0]; n];
+        let lp_start = vec![voicing[1]; n];
+        let lp_end = vec![voicing[2]; n];
+        let hp_start = vec![voicing[3]; n];
+        let hp_end = vec![voicing[4]; n];
         let half = n / 2;
         {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&input[..half]), None];
+            let inputs: Vec<Option<&[f32]>> = vec![
+                Some(&input[..half]),
+                Some(&pos[..half]),
+                Some(&res[..half]),
+                Some(&lp_start[..half]),
+                Some(&lp_end[..half]),
+                Some(&hp_start[..half]),
+                Some(&hp_end[..half]),
+            ];
             let outputs: Vec<&mut [f32]> = vec![&mut out_buf[..half]];
             let mut io = Io::new(SR, half, inputs, outputs, &params, &[]);
             op.process(&mut io);
         }
         {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&input[half..]), None];
+            let inputs: Vec<Option<&[f32]>> = vec![
+                Some(&input[half..]),
+                Some(&pos[half..]),
+                Some(&res[half..]),
+                Some(&lp_start[half..]),
+                Some(&lp_end[half..]),
+                Some(&hp_start[half..]),
+                Some(&hp_end[half..]),
+            ];
             let outputs: Vec<&mut [f32]> = vec![&mut out_buf[half..]];
             let mut io = Io::new(SR, n - half, inputs, outputs, &params, &[]);
             op.process(&mut io);
@@ -399,13 +416,29 @@ mod tests {
         // output equals a freshly-constructed instance fed the same input.
         let n = 256;
         let input = sine(440.0, n);
-        let params = with_position(default_params(), -0.8);
+        let voicing = default_voicing();
+        let position = -0.8;
+        let params: [f32; 0] = [];
+        let pos = vec![position; n];
+        let res = vec![voicing[0]; n];
+        let lp_start = vec![voicing[1]; n];
+        let lp_end = vec![voicing[2]; n];
+        let hp_start = vec![voicing[3]; n];
+        let hp_end = vec![voicing[4]; n];
 
         let mut warm = Djfilter::new();
-        let _ = render(&sine(1_000.0, 4_000), params); // unrelated warmup of a throwaway
+        let _ = render(&sine(1_000.0, 4_000), position, voicing); // unrelated warmup of a throwaway
         let mut warm_buf = vec![0.0f32; n];
         {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&input), None];
+            let inputs: Vec<Option<&[f32]>> = vec![
+                Some(&input),
+                Some(&pos),
+                Some(&res),
+                Some(&lp_start),
+                Some(&lp_end),
+                Some(&hp_start),
+                Some(&hp_end),
+            ];
             let outputs: Vec<&mut [f32]> = vec![warm_buf.as_mut_slice()];
             let mut io = Io::new(SR, n, inputs, outputs, &params, &[]);
             warm.process(&mut io);
@@ -414,13 +447,21 @@ mod tests {
         let mut child = warm.spawn();
         let mut child_buf = vec![0.0f32; n];
         {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&input), None];
+            let inputs: Vec<Option<&[f32]>> = vec![
+                Some(&input),
+                Some(&pos),
+                Some(&res),
+                Some(&lp_start),
+                Some(&lp_end),
+                Some(&hp_start),
+                Some(&hp_end),
+            ];
             let outputs: Vec<&mut [f32]> = vec![child_buf.as_mut_slice()];
             let mut io = Io::new(SR, n, inputs, outputs, &params, &[]);
             child.process(&mut io);
         }
 
-        let fresh = render(&input, params);
+        let fresh = render(&input, position, voicing);
         for i in 0..n {
             assert!(
                 (child_buf[i] - fresh[i]).abs() < 1e-6,

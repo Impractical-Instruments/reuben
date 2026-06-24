@@ -88,6 +88,24 @@ fn render_block_is_allocation_free_after_warmup() {
         "message-bearing render allocated {with_msgs} time(s)"
     );
 
+    // Enum control messages (ADR-0028) must also be allocation-free: routing `/filter/mode "Hp"`
+    // resolves the `Sym` arg to a variant index on the wire. The arg is borrowed, not cloned, so
+    // the resolve touches no allocator. (The `Sym` String allocates here, off the measured path.)
+    let mode_hp = [Message::new("/filter/mode", [Arg::Sym("Hp".into())], 0)];
+    let mode_lp = [Message::new("/filter/mode", [Arg::Sym("Lp".into())], 0)];
+    r.render_block(&mut plan, &mode_hp, &mut out); // warm the enum-route scratch
+    let before = ALLOCS.load(Ordering::Relaxed);
+    for i in 0..100 {
+        // Flip the mode each block so the enum route resolves a fresh symbol every time.
+        let msgs = if i % 2 == 0 { &mode_lp } else { &mode_hp };
+        r.render_block(&mut plan, msgs, &mut out);
+    }
+    let with_enum = ALLOCS.load(Ordering::Relaxed) - before;
+    assert_eq!(
+        with_enum, 0,
+        "enum-message render allocated {with_enum} time(s)"
+    );
+
     // Operator-emitted messages (ADR-0014) must also be allocation-free in steady state:
     // the sequence rig has a sequencer emitting `note` Messages into a Voicer every beat.
     let graph = load(SEQUENCE_JSON, &Registry::builtin()).expect("load sequence.json");

@@ -18,11 +18,15 @@ play with.
 
 | Control | OSC address the widget sends to | Range / unit / default |
 |---|---|---|
-| **Good Button** — a `map` whose message input has no incoming connection | the node address, e.g. `/brightness` | the map's `in_min`/`in_max` instance params; default = `map`'s `default` |
-| **Direct param** — a Message param on a node | `/<node>/<param>`, e.g. `/clock/tempo` | the param's schema metadata (min/max/unit/default) |
+| **Good Button** — a `map` whose input is not wired from another node | the node address, e.g. `/brightness` | the map's `in_min`/`in_max` instance inputs; default = `map`'s `default` |
+| **Direct input** — a settable `Float` input on a node | `/<node>/<input>`, e.g. `/clock/tempo` or `/filter/cutoff` | the input's schema metadata (min/max/unit/default) |
 
-Signal inputs (e.g. a filter's `cutoff`) are **not** directly controllable — drive them through
-a `map`/`m2s` front-end (a Good Button), exactly as `good-button.json` does.
+A `Float` input (e.g. a filter's `cutoff`) is now **directly controllable** over OSC at
+`/<node>/<input>` (ADR-0028) — no `map`/`m2s` front-end is required to reach it. A **Good Button**
+remains the right pattern for a *curated, ranged* player face (one knob fanned to several inputs
+over musical ranges), exactly as `good-button.json` does; a direct input is the raw,
+full-range alternative. `Enum` inputs (filter `mode`, osc `waveform`) are settable too but aren't
+emitted as faders yet — they need a selector/toggle widget (out of scope today).
 
 ## Workflow
 

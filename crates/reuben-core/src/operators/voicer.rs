@@ -15,8 +15,8 @@
 //!   change (ADR-0008 amendment, ADR-0015).
 //! - input 1: `ctx` (Context) — the tonal context degree notes resolve against. Unconnected
 //!   → the default (C major, 12-TET), so absolute-note rigs are unchanged.
-//! - output 0: `freq` (Signal) — resolved frequency in Hz of this Voice's note.
-//! - output 1: `gate` (Signal) — 1.0 while this Voice holds a note, else 0.0.
+//! - output 0: `freq` (Float) — resolved frequency in Hz of this Voice's note.
+//! - output 1: `gate` (Float) — 1.0 while this Voice holds a note, else 0.0.
 //! - param 0: `voices` — Voice-pool size (structural; read at Instantiate).
 //!
 //! Note event: local address `note` (arg 0 = float MIDI) or `degree` (arg 0 = scale degree),
@@ -32,7 +32,7 @@ use crate::pitch::Pitch;
 // Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.
 crate::operator_contract!(Voicer {
     inputs:  { notes: message, ctx: context },
-    outputs: { freq: signal, gate: signal },
+    outputs: { freq: float, gate: float },
     params:  { voices: { 1.0..=32.0, default 8.0, "", lin } },
     lanes: from_param(voices),
 });
@@ -129,7 +129,7 @@ impl Operator for Voicer {
         let me = io.lane().min(lanes - 1);
         // Current context (constant this segment; the engine slices at context changes, so a
         // held degree re-spells at the change frame). Default when unconnected.
-        let ctx = io.context(IN_CTX);
+        let ctx = io.harmony(IN_CTX);
 
         // Size the pool to the Lane count (identical across replicas).
         if self.voices.len() != lanes {

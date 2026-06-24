@@ -169,7 +169,12 @@ fn insert_line_sorted(
 fn signal_output_consts(spec: &OperatorSpec) -> Vec<String> {
     spec.outputs
         .iter()
-        .filter(|p| !matches!(p.kind.as_str(), "message" | "context"))
+        // A Float output (legacy `signal` kind, or the `float` shape) carries a buffer the stub
+        // zeroes; `message`/`context` carriers and held shapes do not.
+        .filter(|p| {
+            !matches!(p.kind.as_str(), "message" | "context")
+                && !matches!(p.shape.as_deref(), Some("enum"))
+        })
         .map(|p| format!("OUT_{}", screaming(&p.name)))
         .collect()
 }
@@ -269,13 +274,39 @@ fn render_contract_call(spec: &OperatorSpec) -> String {
     out
 }
 
-/// `name: kind, name: kind` — the macro's port-list body.
+/// The macro's port-list body. Each port renders in whichever surface the spec used (ADR-0028):
+/// a `shape` (`float` / `float { .. }` / `enum { .. }`) when set, else the legacy `kind` keyword
+/// (`signal` / `message` / `context`). Mirrors the `operator_contract!` grammar exactly.
 fn render_macro_ports(ports: &[PortSpec]) -> String {
     ports
         .iter()
-        .map(|p| format!("{}: {}", p.name, p.kind))
+        .map(render_macro_port)
         .collect::<Vec<_>>()
         .join(", ")
+}
+
+/// One port in the macro grammar — see [`render_macro_ports`].
+fn render_macro_port(p: &PortSpec) -> String {
+    match p.shape.as_deref() {
+        // ADR-0028 shape forms.
+        Some("float") => match &p.float {
+            None => format!("{}: float", p.name),
+            Some(m) => {
+                let curve = if m.curve == "exponential" {
+                    "exp"
+                } else {
+                    "lin"
+                };
+                format!(
+                    "{}: float {{ {:?}..={:?}, default {:?}, {:?}, {} }}",
+                    p.name, m.min, m.max, m.default, m.unit, curve
+                )
+            }
+        },
+        Some("enum") => format!("{}: enum {{ {} }}", p.name, p.variants.join(", ")),
+        // Legacy carrier keyword (`signal` / `message` / `context`); validated upstream.
+        _ => format!("{}: {}", p.name, p.kind),
+    }
 }
 
 /// `name: { MIN..=MAX, default D, "unit", curve },` — one param in the macro grammar.
@@ -314,7 +345,7 @@ fn render_process(spec: &OperatorSpec) -> String {
             "        for port in [{}] {{\n",
             sig_outs.join(", ")
         ));
-        out.push_str("            io.output(port)[..n].fill(0.0);\n        }\n");
+        out.push_str("            io.signal_mut(port)[..n].fill(0.0);\n        }\n");
     }
     out.push_str("    }\n");
     out
@@ -405,7 +436,30 @@ mod tests {
     fn process_stub_writes_silence_to_signal_outputs_only() {
         let src =
             render(r#"{ "type_name": "o", "outputs": [ {"name":"audio","kind":"signal"} ] }"#);
-        assert!(src.contains("io.output(port)[..n].fill(0.0)"), "{src}");
+        assert!(src.contains("io.signal_mut(port)[..n].fill(0.0)"), "{src}");
+        assert!(src.contains("for port in [OUT_AUDIO]"), "{src}");
+    }
+
+    #[test]
+    fn renders_adr0028_shape_ports() {
+        // The contract surface accepts shapes (ADR-0028): a bare `float`, a materialized
+        // `float { .. }` with a default, and an `enum { .. }` — each must render in macro grammar.
+        let src = render(
+            r#"{ "type_name": "f",
+                 "inputs": [ {"name":"audio","shape":"float"},
+                             {"name":"cutoff","shape":"float",
+                              "float":{"min":20.0,"max":20000.0,"default":1000.0,"unit":"Hz","curve":"exponential"}},
+                             {"name":"mode","shape":"enum","variants":["Lp","Hp","Bp"]} ],
+                 "outputs": [ {"name":"audio","shape":"float"} ] }"#,
+        );
+        assert!(
+            src.contains(
+                r#"inputs: { audio: float, cutoff: float { 20.0..=20000.0, default 1000.0, "Hz", exp }, mode: enum { Lp, Hp, Bp } }"#
+            ),
+            "{src}"
+        );
+        assert!(src.contains("outputs: { audio: float }"), "{src}");
+        // A `float` output still gets a silence-stub write (it carries a buffer).
         assert!(src.contains("for port in [OUT_AUDIO]"), "{src}");
     }
 

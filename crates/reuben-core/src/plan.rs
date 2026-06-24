@@ -13,7 +13,7 @@
 use slotmap::SecondaryMap;
 
 use crate::config::AudioConfig;
-use crate::descriptor::{Descriptor, LaneRule, PortKind};
+use crate::descriptor::{Descriptor, LaneRule, Shape};
 use crate::graph::{Graph, NodeKey};
 use crate::operator::Operator;
 
@@ -30,8 +30,36 @@ pub struct PlanNode {
     /// Lane (Voice) count at this node.
     pub lanes: usize,
     /// For each input port: the source's per-Lane arena buffer indices, or `None` if
-    /// unconnected. The inner length is the *source's* Lane count (1 broadcasts).
+    /// unconnected. The inner length is the *source's* Lane count (1 broadcasts). A new-style
+    /// materialized [`Shape::Float`](crate::descriptor::Shape) input that is **unwired** points
+    /// at a dedicated single-Lane **scratch** buffer (see `materialize`) the engine fills each
+    /// block, so the operator reads it through the same path as a wired source (ADR-0028).
     pub inputs: Vec<Option<Vec<usize>>>,
+    /// Materialized Float inputs (ADR-0028): `(input port, scratch arena buffer)` for each
+    /// **unwired** new-style Float input. The engine fills the buffer per block from
+    /// `input_latches[port]`, writing mid-block changes at their frame. Wired Float inputs are
+    /// absent — their dense source passes straight through.
+    pub materialize: Vec<(usize, usize)>,
+    /// Per `materialize` entry (same index): `true` once the scratch buffer holds the latch
+    /// uniformly across the block, so a held-unchanged Float input can skip its refill (ADR-0028
+    /// "cached, refilled only on change"). Carried across blocks. Render clears it the moment a
+    /// mid-block change writes a gradient, and re-sets it after the next constant block refloods.
+    /// Starts `false` (the freshly-allocated arena is zero, not the latch) so the first block fills.
+    pub materialize_clean: Vec<bool>,
+    /// Latched current scalar per input port (ADR-0028), carried across blocks. Meaningful only
+    /// for ports listed in `materialize`; other slots are unused. Seeded from each input's default.
+    pub input_latches: Vec<f32>,
+    /// Per-input `varying` hint (ADR-0028), in input-port order — preallocated here (length known
+    /// at instantiate) and reused every block so the audio thread never allocates it, even for an
+    /// operator with >8 inputs. Initialised all-`true`; Render rewrites only the materialized
+    /// ports each block (`false` ⇒ held unchanged this block). Legacy / wired ports stay `true`.
+    pub varying: Vec<bool>,
+    /// Held [`Shape::Enum`](crate::descriptor::Shape) value per input port (ADR-0028), as the
+    /// variant index. In input-port order (length = input count); `0` for non-enum ports. Seeded
+    /// from each enum input's default (or an author override) and carried across blocks; Render
+    /// block-slices at enum changes and updates the slot at each change frame. Read via
+    /// [`Io::enum_index`](crate::operator::Io::enum_index).
+    pub enum_latches: Vec<usize>,
     /// For each output port: this node's per-Lane arena buffer indices (length `lanes`).
     pub outputs: Vec<Vec<usize>>,
     /// Message-edge routing (ADR-0014): for each of this node's Message output ports (in
@@ -67,6 +95,10 @@ pub struct Plan {
     pub nodes: Vec<PlanNode>,
     /// Total number of edge buffers in the arena.
     pub num_buffers: usize,
+    /// Length `num_buffers`: `true` at each arena slot that is a materialize **scratch** buffer
+    /// (ADR-0028). Render skips these in its per-block "fresh edge buffers" clear, so a held Float
+    /// input's buffer persists and need not be re-written every block (see `materialize_clean`).
+    pub materialize_scratch_mask: Vec<bool>,
     /// Total number of context-arena slots (one per Context output port; ADR-0015).
     pub num_context_slots: usize,
     /// Master taps, summed into the per-channel master output (ADR-0026).
@@ -152,7 +184,7 @@ impl Plan {
         for (key, node) in &graph.nodes {
             let mut m = std::collections::BTreeMap::new();
             for (port, p) in node.descriptor.outputs.iter().enumerate() {
-                if p.kind == PortKind::Context {
+                if p.shape == Shape::Harmony {
                     m.insert(port, next_ctx_slot);
                     next_ctx_slot += 1;
                 }
@@ -168,35 +200,82 @@ impl Plan {
 
         // 3. Build PlanNodes in execution order, replicating operators per Lane.
         let mut nodes = Vec::with_capacity(order.len());
+        // Arena slots that are materialize scratch (ADR-0028); Render skips them in its per-block
+        // clear so held Float inputs persist. Collected as buffers are assigned below.
+        let mut scratch_buffers: Vec<usize> = Vec::new();
         for key in &order {
             let n_lanes = lanes[*key];
             let descriptor = &graph.nodes[*key].descriptor;
-            // Signal inputs wire to the source's arena buffers; Message inputs carry no
-            // Signal data (events arrive via routing, ADR-0014) so they take no buffer.
-            let inputs = descriptor
+            let overrides = &graph.nodes[*key].input_overrides;
+            let enum_overrides = &graph.nodes[*key].enum_overrides;
+            // Held enum value per input port (ADR-0028): an enum input's default (or an author
+            // override), `0` elsewhere. Carried across blocks; Render updates it at change frames.
+            let enum_latches: Vec<usize> = descriptor
                 .inputs
                 .iter()
                 .enumerate()
-                .map(|(port, p)| {
-                    // Only Signal inputs take an arena buffer; Message and Context inputs
-                    // carry no Signal data (events/context arrive via routing).
-                    if p.kind != PortKind::Signal {
-                        return None;
-                    }
-                    graph
-                        .connections
+                .map(|(port, p)| match &p.enum_meta {
+                    Some(e) => enum_overrides
                         .iter()
-                        .find(|c| c.dst == *key && c.dst_port == port)
-                        .map(|c| out_buffers[c.src][c.src_port].clone())
+                        .find(|(po, _)| *po == port)
+                        .map(|(_, i)| *i)
+                        .unwrap_or(e.default),
+                    None => 0,
                 })
                 .collect();
+            // Signal inputs wire to the source's arena buffers; Message inputs carry no
+            // Signal data (events arrive via routing, ADR-0014) so they take no buffer. A
+            // new-style materialized Float input that is unwired gets a dedicated scratch
+            // buffer the engine fills from a latch (ADR-0028 materialize).
+            let mut inputs: Vec<Option<Vec<usize>>> = Vec::with_capacity(descriptor.inputs.len());
+            let mut materialize: Vec<(usize, usize)> = Vec::new();
+            let mut input_latches: Vec<f32> = vec![0.0; descriptor.inputs.len()];
+            // Preallocated once; Render reuses it every block (no audio-thread alloc, ADR-0028).
+            let varying: Vec<bool> = vec![true; descriptor.inputs.len()];
+            for (port, p) in descriptor.inputs.iter().enumerate() {
+                // Only Float inputs take an arena buffer; Enum/Note/Harmony inputs carry no
+                // Signal data (events/enum changes/context arrive via routing).
+                if p.shape != Shape::Float {
+                    inputs.push(None);
+                    continue;
+                }
+                let wired = graph
+                    .connections
+                    .iter()
+                    .find(|c| c.dst == *key && c.dst_port == port)
+                    .map(|c| out_buffers[c.src][c.src_port].clone());
+                match wired {
+                    Some(bufs) => inputs.push(Some(bufs)),
+                    None => match &p.meta {
+                        // Materialized Float input, unwired: allocate a scratch buffer + seed the
+                        // latch from the input's default. The operator reads it like any source.
+                        Some(meta) => {
+                            let buf = next_buffer;
+                            next_buffer += 1;
+                            // Seed the latch from an author override (a literal for this input),
+                            // else the input's declared default (ADR-0028).
+                            input_latches[port] = overrides
+                                .iter()
+                                .find(|(p, _)| *p == port)
+                                .map(|(_, v)| *v)
+                                .unwrap_or(meta.default);
+                            materialize.push((port, buf));
+                            scratch_buffers.push(buf);
+                            inputs.push(Some(vec![buf]));
+                        }
+                        // Legacy signal input, unwired: the operator falls back to its
+                        // same-named param (one-port-one-type), so it takes no buffer.
+                        None => inputs.push(None),
+                    },
+                }
+            }
             let outputs = out_buffers[*key].clone();
             // Message-edge targets, one entry per Message output port (ordinal order).
             let msg_targets = descriptor
                 .outputs
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| p.kind == PortKind::Message)
+                .filter(|(_, p)| p.shape == Shape::Note)
                 .map(|(port, _)| {
                     graph
                         .connections
@@ -211,7 +290,7 @@ impl Plan {
                 .inputs
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| p.kind == PortKind::Context)
+                .filter(|(_, p)| p.shape == Shape::Harmony)
                 .map(|(port, _)| {
                     graph
                         .connections
@@ -224,14 +303,14 @@ impl Plan {
                 .outputs
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| p.kind == PortKind::Context)
+                .filter(|(_, p)| p.shape == Shape::Harmony)
                 .map(|(port, _)| ctx_slot[*key][&port])
                 .collect();
             let ctx_targets = descriptor
                 .outputs
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| p.kind == PortKind::Context)
+                .filter(|(_, p)| p.shape == Shape::Harmony)
                 .map(|(port, _)| {
                     graph
                         .connections
@@ -249,6 +328,7 @@ impl Plan {
                 ops.push(ops[0].spawn());
             }
 
+            let materialize_clean = vec![false; materialize.len()];
             nodes.push(PlanNode {
                 address: node.address,
                 ops,
@@ -256,6 +336,11 @@ impl Plan {
                 params: node.params,
                 lanes: n_lanes,
                 inputs,
+                materialize,
+                materialize_clean,
+                input_latches,
+                varying,
+                enum_latches,
                 outputs,
                 msg_targets,
                 context_inputs,
@@ -264,10 +349,16 @@ impl Plan {
             });
         }
 
+        let mut materialize_scratch_mask = vec![false; next_buffer];
+        for b in scratch_buffers {
+            materialize_scratch_mask[b] = true;
+        }
+
         Ok(Plan {
             config,
             nodes,
             num_buffers: next_buffer,
+            materialize_scratch_mask,
             num_context_slots: next_ctx_slot,
             output_taps,
         })

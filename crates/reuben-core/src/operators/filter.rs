@@ -1,56 +1,35 @@
 //! Filter — state-variable filter; lowpass / highpass / bandpass (V1.3 `mode`, ADR-0022).
 //!
-//! One-port-one-type (ADR-0017): `cutoff` and `resonance` are **Signal inputs**, the
-//! canonical audio-rate sweep targets. Each carries an **unwired default scalar** — the
-//! `cutoff`/`resonance` *params*, which survive only as the value the port reads when no
-//! Signal is wired. So a static filter (`/filter/cutoff 3000`) needs no upstream node and
-//! is bit-identical to the old param-only behavior, while a Good Button or LFO can sweep
-//! the same port by wiring a Signal (e.g. an `m2s` converter, ADR-0017). To drive cutoff
-//! from Messages, insert the `m2s` converter — the smoothing policy lives there, once.
+//! Shape model (ADR-0028): `cutoff` and `resonance` are **`Float` inputs**, each owning its
+//! unwired default. When nothing is wired the engine materializes the input from its latched
+//! default (so `/filter/cutoff 3000` needs no upstream node, bit-identical to the old param
+//! behavior); when an LFO or envelope is wired the source buffer passes through and sweeps the
+//! port audio-rate. There is no longer a separate "signal port + same-named param" pair, and no
+//! wired/unwired branch in `process` — `io.signal(IN_CUTOFF)` is always a buffer.
 //!
-//! The TPT / Cytomic SVF computes all three responses from the same integrator state, so a
-//! `mode` param selects the output tap (ADR-0022): `lp = v2`, `bp = v1`, `hp = x - k·bp - lp`.
-//! Mode 0 (lowpass) is the default and bit-identical to the prior lowpass-only filter — the
-//! hat voice highpasses noise (mode 1) and a tonal band can isolate a frequency (mode 2).
+//! `mode` is an **`Enum` input** {`Lp`, `Hp`, `Bp`}: a held, live-switchable choice read via
+//! `io.enum_index`. The TPT / Cytomic SVF computes all three responses from the same integrator
+//! state, so `mode` selects the output tap (ADR-0022): `lp = v2`, `bp = v1`, `hp = x - k·bp - lp`.
+//! `Lp` is the default and bit-identical to the prior lowpass-only filter.
 //!
-//! - input 0: `audio` (Signal) — the signal to filter.
-//! - input 1: `cutoff` (Signal) — per-sample cutoff in Hz; unwired → the `cutoff` param.
-//! - input 2: `resonance` (Signal) — per-sample resonance 0..1; unwired → the param.
-//! - output 0: `audio` (Signal) — the selected response (lowpass / highpass / bandpass).
-//! - param 0: `cutoff` (Hz) — the cutoff Signal port's unwired default.
-//! - param 1: `resonance` (0..1) — the resonance Signal port's unwired default.
-//! - param 2: `mode` — 0 = lowpass (default), 1 = highpass, 2 = bandpass.
+//! - input 0: `audio` (`Float`) — the signal to filter.
+//! - input 1: `cutoff` (`Float`) — per-sample cutoff in Hz (materialized default 1 kHz).
+//! - input 2: `resonance` (`Float`) — per-sample resonance 0..1 (materialized default 0.2).
+//! - input 3: `mode` (`Enum` {Lp, Hp, Bp}) — output tap; default `Lp`.
+//! - output 0: `audio` (`Float`) — the selected response (lowpass / highpass / bandpass).
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.
+// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts, the `Mode` enum
+// type, and the Descriptor; no drift.
 crate::operator_contract!(Filter {
-    inputs:  { audio: signal, cutoff: signal, resonance: signal },
-    outputs: { audio: signal },
-    params:  { cutoff:    { 20.0..=20_000.0, default 1_000.0, "Hz", exp },
-               resonance: { 0.0..=1.0,       default 0.2,     "",   lin },
-               mode:      { 0.0..=2.0,       default 0.0,     "",   lin } },
+    inputs:  { audio: float,
+               cutoff:    float { 20.0..=20_000.0, default 1_000.0, "Hz", exp },
+               resonance: float { 0.0..=1.0,       default 0.2,     "",   lin },
+               mode:      enum  { Lp, Hp, Bp } },
+    outputs: { audio: float },
 });
-
-/// Filter response selected by the `mode` param.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Mode {
-    Lowpass,
-    Highpass,
-    Bandpass,
-}
-
-impl Mode {
-    /// Map the `mode` param (rounded) to a response; out-of-range → lowpass (the safe default).
-    fn from_param(mode: f32) -> Self {
-        match mode.round() as i32 {
-            1 => Mode::Highpass,
-            2 => Mode::Bandpass,
-            _ => Mode::Lowpass,
-        }
-    }
-}
 
 #[derive(Default)]
 pub struct Filter {
@@ -89,9 +68,9 @@ impl Filter {
         self.ic1eq = 2.0 * v1 - self.ic1eq;
         self.ic2eq = 2.0 * v2 - self.ic2eq;
         match mode {
-            Mode::Lowpass => v2,
-            Mode::Bandpass => v1,
-            Mode::Highpass => x - k * v1 - v2,
+            Mode::Lp => v2,
+            Mode::Bp => v1,
+            Mode::Hp => x - k * v1 - v2,
         }
     }
 }
@@ -119,49 +98,38 @@ impl Operator for Filter {
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
         let sample_rate = io.sample_rate();
+        let mode = Mode::from_index(io.enum_index(IN_MODE)).unwrap_or_default();
 
-        // Unwired defaults: the cutoff/resonance params survive only as the value each
-        // Signal port reads when nothing is wired (ADR-0017 one-port-one-type).
-        let cutoff_default = io.param(P_CUTOFF);
-        let resonance_default = io.param(P_RESONANCE);
-        let mode = Mode::from_param(io.param(P_MODE));
-        let cutoff_wired = io.input(IN_CUTOFF).is_some();
-        let resonance_wired = io.input(IN_RESONANCE).is_some();
-
-        if !cutoff_wired && !resonance_wired {
-            // Fast path: both controls constant for the (sub)block, coefficients computed
-            // once. Lowpass uses `svf_step` and is bit-identical to the prior param-only
-            // filter; HP/BP tap the same SVF state via `svf_step_mode`.
-            let (a1, a2, a3, k) = coeffs(cutoff_default, resonance_default, sample_rate);
-            if mode == Mode::Lowpass {
-                for i in 0..n {
-                    let x = io.input(IN_AUDIO).map(|s| s[i]).unwrap_or(0.0);
-                    io.output(OUT_AUDIO)[i] = self.svf_step(x, a1, a2, a3);
-                }
-            } else {
-                for i in 0..n {
-                    let x = io.input(IN_AUDIO).map(|s| s[i]).unwrap_or(0.0);
-                    io.output(OUT_AUDIO)[i] = self.svf_step_mode(x, a1, a2, a3, k, mode);
-                }
+        // `cutoff`/`resonance` are `Float` inputs — always a buffer (wired source or materialized
+        // latch), one read path (ADR-0028). When neither changed this block (`varying` false,
+        // both held), compute coefficients once — the old fast path, and `Lp` via `svf_step` is
+        // bit-identical to the prior param-only filter.
+        if !io.varying(IN_CUTOFF) && !io.varying(IN_RESONANCE) {
+            let (a1, a2, a3, k) = coeffs(io.value(IN_CUTOFF), io.value(IN_RESONANCE), sample_rate);
+            for i in 0..n {
+                let x = io.signal(IN_AUDIO).get(i).copied().unwrap_or(0.0);
+                io.output(OUT_AUDIO)[i] = if mode == Mode::Lp {
+                    self.svf_step(x, a1, a2, a3)
+                } else {
+                    self.svf_step_mode(x, a1, a2, a3, k, mode)
+                };
             }
             return;
         }
 
-        // Modulated path: at least one of cutoff/resonance is a wired Signal. Read each per
-        // sample (audio-rate sweep), falling back to its param default when unwired.
-        // Coefficients are recomputed only when the (cutoff, resonance) pair actually changes
-        // from the previous sample, so a settled or slowly-moving control costs one compare
-        // per sample instead of a `tan()`. `coeffs` is pure, so reusing the cached triple on
-        // an unchanged input is bit-identical to recomputing it every sample. A genuinely
-        // audio-rate sweep still recomputes per sample; a coarser control-rate recompute for
-        // that case is tracked in #24.
+        // Modulated path: at least one control is dense/changing. Read each per sample (audio-rate
+        // sweep). Coefficients are recomputed only when the (cutoff, resonance) pair actually
+        // changes from the previous sample, so a settled or slowly-moving control costs one compare
+        // per sample instead of a `tan()`. `coeffs` is pure, so reusing the cached triple on an
+        // unchanged input is bit-identical to recomputing it every sample. A genuinely audio-rate
+        // sweep still recomputes per sample; a coarser control-rate recompute is tracked in #24.
         let mut last_cutoff = f32::NAN;
         let mut last_resonance = f32::NAN;
         let (mut a1, mut a2, mut a3, mut k) = (0.0, 0.0, 0.0, 0.0);
         for i in 0..n {
-            let x = io.input(IN_AUDIO).map(|s| s[i]).unwrap_or(0.0);
-            let cutoff = io.input(IN_CUTOFF).map_or(cutoff_default, |s| s[i]);
-            let resonance = io.input(IN_RESONANCE).map_or(resonance_default, |s| s[i]);
+            let x = io.signal(IN_AUDIO).get(i).copied().unwrap_or(0.0);
+            let cutoff = io.signal(IN_CUTOFF).get(i).copied().unwrap_or(0.0);
+            let resonance = io.signal(IN_RESONANCE).get(i).copied().unwrap_or(0.0);
             // NaN seed forces a compute on the first sample (NaN != anything).
             if cutoff != last_cutoff || resonance != last_resonance {
                 (a1, a2, a3, k) = coeffs(cutoff, resonance, sample_rate);
@@ -169,7 +137,7 @@ impl Operator for Filter {
                 last_resonance = resonance;
             }
             // Lowpass stays on `svf_step` for bit-identity with the pre-V1.3 modulated path.
-            io.output(OUT_AUDIO)[i] = if mode == Mode::Lowpass {
+            io.output(OUT_AUDIO)[i] = if mode == Mode::Lp {
                 self.svf_step(x, a1, a2, a3)
             } else {
                 self.svf_step_mode(x, a1, a2, a3, k, mode)
@@ -189,30 +157,51 @@ mod tests {
     use super::*;
     use crate::operator::Io;
 
-    /// Run `input` through a fresh Filter at the given cutoff/resonance (lowpass mode) and
-    /// return the output buffer.
+    const LP: usize = 0;
+    const HP: usize = 1;
+    const BP: usize = 2;
+
+    /// Run `input` through a fresh Filter at the given constant cutoff/resonance (lowpass) and
+    /// return the output buffer. `cutoff`/`resonance` are `Float` inputs now, so they are supplied
+    /// as the constant per-sample buffers the engine would materialize.
     fn render(input: &[f32], sample_rate: f32, cutoff: f32, resonance: f32) -> Vec<f32> {
-        render_mode(input, sample_rate, cutoff, resonance, 0.0)
+        render_mode(input, sample_rate, cutoff, resonance, LP)
     }
 
-    /// Like [`render`] but with an explicit `mode` (0 = LP, 1 = HP, 2 = BP).
+    /// Like [`render`] but with an explicit `mode` index (LP / HP / BP).
     fn render_mode(
         input: &[f32],
         sample_rate: f32,
         cutoff: f32,
         resonance: f32,
-        mode: f32,
+        mode: usize,
+    ) -> Vec<f32> {
+        let n = input.len();
+        let cutoff_buf = vec![cutoff; n];
+        let res_buf = vec![resonance; n];
+        render_buffers(input, sample_rate, &cutoff_buf, &res_buf, mode)
+    }
+
+    /// Render with explicit per-sample `cutoff`/`resonance` buffers and a held `mode` index — the
+    /// exact `Float`-input buffers + `Enum` latch the engine hands `process` (ADR-0028).
+    fn render_buffers(
+        input: &[f32],
+        sample_rate: f32,
+        cutoff: &[f32],
+        resonance: &[f32],
+        mode: usize,
     ) -> Vec<f32> {
         let n = input.len();
         let mut filter = Filter::new();
         let mut out_buf = vec![0.0f32; n];
-
-        let params = [cutoff, resonance, mode];
-        let messages = [];
+        let params: [f32; 0] = [];
+        // Held enum value per input port; IN_MODE = 3.
+        let enums = [0usize, 0, 0, mode];
         {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(input)];
+            let inputs: Vec<Option<&[f32]>> =
+                vec![Some(input), Some(cutoff), Some(resonance), None];
             let outputs: Vec<&mut [f32]> = vec![out_buf.as_mut_slice()];
-            let mut io = Io::new(sample_rate, n, inputs, outputs, &params, &messages);
+            let mut io = Io::new(sample_rate, n, inputs, outputs, &params, &[]).with_enums(&enums);
             filter.process(&mut io);
         }
         out_buf
@@ -280,45 +269,24 @@ mod tests {
         }
     }
 
-    /// Run `input` with explicit per-sample cutoff/resonance Signal inputs.
-    fn render_modulated(
-        input: &[f32],
-        sample_rate: f32,
-        cutoff: Option<&[f32]>,
-        resonance: Option<&[f32]>,
-        cutoff_default: f32,
-        resonance_default: f32,
-    ) -> Vec<f32> {
-        let n = input.len();
-        let mut filter = Filter::new();
-        let mut out_buf = vec![0.0f32; n];
-        let params = [cutoff_default, resonance_default, 0.0];
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(input), cutoff, resonance];
-            let outputs: Vec<&mut [f32]> = vec![out_buf.as_mut_slice()];
-            let mut io = Io::new(sample_rate, n, inputs, outputs, &params, &[]);
-            filter.process(&mut io);
-        }
-        out_buf
-    }
-
     #[test]
-    fn wired_cutoff_input_matches_equivalent_param() {
-        // A constant cutoff Signal must produce exactly the same output as the same value
-        // set as the param (the unwired default) — the modulated path with a flat control
-        // equals the fast path.
+    fn constant_cutoff_buffer_matches_held_default() {
+        // A constant cutoff buffer must produce exactly the same output as the same value held as
+        // the input's materialized default — there is one read path now (ADR-0028), so a flat
+        // wired control equals the held latch.
         let sr = 48_000.0;
         let n = 4096;
         let input = sine(8_000.0, sr, n);
-        let via_param = render(&input, sr, 1_000.0, 0.0);
+        let via_default = render(&input, sr, 1_000.0, 0.0);
         let cutoff_buf = vec![1_000.0f32; n];
-        let via_input = render_modulated(&input, sr, Some(&cutoff_buf), None, 3_000.0, 0.0);
+        let res_buf = vec![0.0f32; n];
+        let via_buffer = render_buffers(&input, sr, &cutoff_buf, &res_buf, LP);
         for i in 0..n {
             assert!(
-                (via_param[i] - via_input[i]).abs() < 1e-4,
-                "wired cutoff should match param at {i}: {} vs {}",
-                via_param[i],
-                via_input[i]
+                (via_default[i] - via_buffer[i]).abs() < 1e-4,
+                "wired cutoff should match held default at {i}: {} vs {}",
+                via_default[i],
+                via_buffer[i]
             );
         }
     }
@@ -333,7 +301,8 @@ mod tests {
         let cutoff: Vec<f32> = (0..n)
             .map(|i| 300.0 + (i as f32 / n as f32) * 11_700.0)
             .collect();
-        let out = render_modulated(&input, sr, Some(&cutoff), None, 1_000.0, 0.0);
+        let res_buf = vec![0.0f32; n];
+        let out = render_buffers(&input, sr, &cutoff, &res_buf, LP);
         let first = rms(&out[1024..n / 2]);
         let second = rms(&out[n / 2..]);
         assert!(
@@ -353,7 +322,8 @@ mod tests {
 
         // Constant control: every sample reuses the cache after the first.
         let constant = vec![2_500.0f32; n];
-        let out = render_modulated(&input, sr, Some(&constant), None, 1_000.0, 0.0);
+        let res_buf = vec![0.0f32; n];
+        let out = render_buffers(&input, sr, &constant, &res_buf, LP);
 
         // Reference: a fresh filter stepping the same once-computed coeffs every sample.
         let mut reference = Filter::new();
@@ -383,19 +353,31 @@ mod tests {
 
         let mut filter = Filter::new();
         let mut out_buf = vec![0.0f32; n];
-        let params = [1_000.0f32, 0.3, 0.0];
-        let messages = [];
+        let params: [f32; 0] = [];
+        let enums = [0usize, 0, 0, LP];
+        let cutoff = vec![1_000.0f32; n];
+        let resonance = vec![0.3f32; n];
         let half = n / 2;
         {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&input[..half])];
+            let inputs: Vec<Option<&[f32]>> = vec![
+                Some(&input[..half]),
+                Some(&cutoff[..half]),
+                Some(&resonance[..half]),
+                None,
+            ];
             let outputs: Vec<&mut [f32]> = vec![&mut out_buf[..half]];
-            let mut io = Io::new(sr, half, inputs, outputs, &params, &messages);
+            let mut io = Io::new(sr, half, inputs, outputs, &params, &[]).with_enums(&enums);
             filter.process(&mut io);
         }
         {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&input[half..])];
+            let inputs: Vec<Option<&[f32]>> = vec![
+                Some(&input[half..]),
+                Some(&cutoff[half..]),
+                Some(&resonance[half..]),
+                None,
+            ];
             let outputs: Vec<&mut [f32]> = vec![&mut out_buf[half..]];
-            let mut io = Io::new(sr, n - half, inputs, outputs, &params, &messages);
+            let mut io = Io::new(sr, n - half, inputs, outputs, &params, &[]).with_enums(&enums);
             filter.process(&mut io);
         }
 
@@ -421,7 +403,7 @@ mod tests {
         let input = sine(1_000.0, sr, n);
 
         // Reference: explicit lowpass via the fast path (`svf_step`).
-        let lp = render_mode(&input, sr, 1_200.0, 0.4, 0.0);
+        let lp = render_mode(&input, sr, 1_200.0, 0.4, LP);
 
         // The descriptor's defaults give cutoff 1000, resonance 0.2, mode 0. Render with the
         // *default* mode but a matching cutoff/resonance, against an explicit `svf_step` ref.
@@ -448,8 +430,8 @@ mod tests {
         let n = 8192;
         let warmup = 2048;
 
-        let low = render_mode(&sine(200.0, sr, n), sr, 1_000.0, 0.0, 1.0);
-        let high = render_mode(&sine(8_000.0, sr, n), sr, 1_000.0, 0.0, 1.0);
+        let low = render_mode(&sine(200.0, sr, n), sr, 1_000.0, 0.0, HP);
+        let high = render_mode(&sine(8_000.0, sr, n), sr, 1_000.0, 0.0, HP);
 
         let low_rms = rms(&low[warmup..]);
         let high_rms = rms(&high[warmup..]);
@@ -468,9 +450,9 @@ mod tests {
         let warmup = 2048;
         let res = 0.6; // a little resonance sharpens the peak
 
-        let center = render_mode(&sine(1_000.0, sr, n), sr, 1_000.0, res, 2.0);
-        let below = render_mode(&sine(100.0, sr, n), sr, 1_000.0, res, 2.0);
-        let above = render_mode(&sine(8_000.0, sr, n), sr, 1_000.0, res, 2.0);
+        let center = render_mode(&sine(1_000.0, sr, n), sr, 1_000.0, res, BP);
+        let below = render_mode(&sine(100.0, sr, n), sr, 1_000.0, res, BP);
+        let above = render_mode(&sine(8_000.0, sr, n), sr, 1_000.0, res, BP);
 
         let c = rms(&center[warmup..]);
         let b = rms(&below[warmup..]);
@@ -486,7 +468,7 @@ mod tests {
         // A highpass must reject DC: a constant input settles to ~0.
         let sr = 48_000.0;
         let n = 8192;
-        let out = render_mode(&vec![1.0f32; n], sr, 1_000.0, 0.0, 1.0);
+        let out = render_mode(&vec![1.0f32; n], sr, 1_000.0, 0.0, HP);
         let tail = &out[n - 256..];
         let avg = tail.iter().sum::<f32>() / tail.len() as f32;
         assert!(avg.abs() < 0.02, "highpass should block DC, got {avg}");

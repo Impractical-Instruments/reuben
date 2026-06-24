@@ -6,24 +6,24 @@
 //! block-slices and never drifts (phase held in f64 like the Clock). Designed to drive
 //! another operator's Signal input — e.g. an oscillator's `freq` — for a vibrato/siren drone.
 //!
-//! - inputs: none.
-//! - output 0: `out` (Signal) — `center + depth * sin(2π·phase)`.
-//! - param 0: `rate` (Hz) — modulation frequency.
-//! - param 1: `depth` — modulation amplitude (added to / subtracted from `center`).
-//! - param 2: `center` — bias / offset the modulation swings around.
+//! - input 0: `rate` (`Float`, Hz) — modulation frequency, read block-rate via `io.value`.
+//! - input 1: `depth` (`Float`) — modulation amplitude (added to / subtracted from `center`).
+//! - input 2: `center` (`Float`) — bias / offset the modulation swings around.
+//! - output 0: `out` (`Float`) — `center + depth * sin(2π·phase)`.
 //!
-//! `rate` is an ordinary param, so the engine block-slices on a rate change and the new rate
-//! takes effect at the exact sample of the change. The phase stays continuous across the cut.
+//! `rate`/`depth`/`center` are `Float` inputs (ADR-0028): read block-rate, so a `/lfo/rate`
+//! change takes effect at the exact sample of the change (the engine block-slices) and the
+//! phase stays continuous across the cut — and any of them can now be *wired* and modulated.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.
+// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Lfo {
-    outputs: { out: signal },
-    params:  { rate:   { 0.01..=20.0,        default 5.0,   "Hz", exp },
-               depth:  { 0.0..=1000.0,       default 10.0,  "",   lin },
-               center: { -1000.0..=20_000.0, default 440.0, "",   lin } },
+    inputs:  { rate:   float { 0.01..=20.0,        default 5.0,   "Hz", exp },
+               depth:  float { 0.0..=1000.0,       default 10.0,  "",   lin },
+               center: float { -1000.0..=20_000.0, default 440.0, "",   lin } },
+    outputs: { out: float },
 });
 
 #[derive(Default)]
@@ -51,12 +51,12 @@ impl Operator for Lfo {
 
         // Cycles advanced per sample. Rate is constant for this (sub)block (block-sliced).
         let dt: f64 = if sample_rate > 0.0 {
-            io.param(P_RATE).max(0.0) as f64 / sample_rate as f64
+            io.value(IN_RATE).max(0.0) as f64 / sample_rate as f64
         } else {
             0.0
         };
-        let depth = io.param(P_DEPTH);
-        let center = io.param(P_CENTER);
+        let depth = io.value(IN_DEPTH);
+        let center = io.value(IN_CENTER);
 
         let mut phase = self.phase;
         let out = io.output(OUT_OUT);
@@ -86,10 +86,19 @@ mod tests {
     /// Run `lfo` over one block of `n` frames at the given params, returning the out buffer.
     fn run(lfo: &mut Lfo, n: usize, rate: f32, depth: f32, center: f32) -> Vec<f32> {
         let mut out = vec![0.0f32; n];
+        // rate/depth/center are `Float` inputs now (ADR-0028) — supply the per-sample buffers the
+        // engine would materialize, in port order (rate, depth, center).
+        let rate_buf = vec![rate; n];
+        let depth_buf = vec![depth; n];
+        let center_buf = vec![center; n];
         {
             let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let inputs: Vec<Option<&[f32]>> = vec![];
-            let params = [rate, depth, center];
+            let inputs: Vec<Option<&[f32]>> = vec![
+                Some(&rate_buf[..]),
+                Some(&depth_buf[..]),
+                Some(&center_buf[..]),
+            ];
+            let params: [f32; 0] = [];
             let mut io = Io::new(SR, n, inputs, outs, &params, &[]);
             lfo.process(&mut io);
         }
@@ -174,8 +183,10 @@ mod tests {
         let mut out = [0.0f32; 1];
         {
             let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let inputs: Vec<Option<&[f32]>> = vec![];
-            let params = [5.0f32, 10.0, 440.0];
+            let (rate, depth, center) = ([5.0f32], [10.0f32], [440.0f32]);
+            let inputs: Vec<Option<&[f32]>> =
+                vec![Some(&rate[..]), Some(&depth[..]), Some(&center[..])];
+            let params: [f32; 0] = [];
             let mut io = Io::new(SR, 1, inputs, outs, &params, &[]);
             b.process(&mut io);
         }

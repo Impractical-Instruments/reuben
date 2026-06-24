@@ -16,43 +16,48 @@ import gen_surface as g
 # cloned from. The structural-match test below fails if our output drifts from this format.
 FIXTURE = Path(__file__).parent / "fixtures" / "REUBEN_REF.tosc"
 
-# A tiny schema in the committed shape: one map (the Good Button workhorse) + a clock param.
+# A tiny schema in the committed ADR-0028 shape: each input is a `oneOf` of a number form (the
+# settable Float) and a wire-ref. One map (the Good Button workhorse) + a clock + a sequencer.
+def _num(minimum, maximum, default, desc):
+    return {"oneOf": [
+        {"type": "number", "minimum": minimum, "maximum": maximum, "default": default, "description": desc},
+        {"type": "object", "properties": {"from": {"type": "string"}}},
+    ]}
+
 SCHEMA = {
     "$defs": {"node": {"allOf": [
         {"if": {"properties": {"type": {"const": "map"}}},
-         "then": {"properties": {"params": {"properties": {
-             "in_min": {"minimum": -1e6, "maximum": 1e6, "default": 0.0, "description": "unit: , curve: Linear"},
-             "in_max": {"minimum": -1e6, "maximum": 1e6, "default": 1.0, "description": "unit: , curve: Linear"},
-             "default": {"minimum": -1e6, "maximum": 1e6, "default": 0.0, "description": "unit: , curve: Linear"},
+         "then": {"properties": {"inputs": {"properties": {
+             "in_min": _num(-1e6, 1e6, 0.0, "unit: , curve: Linear"),
+             "in_max": _num(-1e6, 1e6, 1.0, "unit: , curve: Linear"),
+             "default": _num(-1e6, 1e6, 0.0, "unit: , curve: Linear"),
          }}}}},
         {"if": {"properties": {"type": {"const": "clock"}}},
-         "then": {"properties": {"params": {"properties": {
-             "tempo": {"minimum": 1.0, "maximum": 999.0, "default": 120.0, "description": "unit: BPM, curve: Linear"},
+         "then": {"properties": {"inputs": {"properties": {
+             "tempo": _num(1.0, 999.0, 120.0, "unit: BPM, curve: Linear"),
          }}}}},
         {"if": {"properties": {"type": {"const": "sequencer"}}},
-         "then": {"properties": {"params": {"properties": {
-             "step1": {"minimum": 0.0, "maximum": 1.0, "default": 0.0, "description": "unit: , curve: Linear"},
-             "step2": {"minimum": 0.0, "maximum": 1.0, "default": 0.0, "description": "unit: , curve: Linear"},
+         "then": {"properties": {"inputs": {"properties": {
+             "step1": _num(0.0, 1.0, 0.0, "unit: , curve: Linear"),
+             "step2": _num(0.0, 1.0, 0.0, "unit: , curve: Linear"),
          }}}}},
     ]}}
 }
 
 META = g.load_param_meta(SCHEMA)
 
-# A Good Button map (public, no incoming connection), a ranged map fed by it (plumbing), and
-# a clock with a tempo param.
+# A Good Button map (public, no wired input), a ranged map fed by it (plumbing, an `inputs`
+# wire-ref), and a clock with a tempo input.
 INSTRUMENT = {
     "instrument": "t",
     "nodes": [
         {"type": "map", "address": "/brightness",
-         "params": {"in_min": 0.0, "in_max": 100.0, "default": 50.0},
+         "inputs": {"in_min": 0.0, "in_max": 100.0, "default": 50.0},
          "control": {"label": "Brightness", "unit": "%"}},
-        {"type": "map", "address": "/map_cutoff", "params": {"out_min": 400, "out_max": 12000}},
+        {"type": "map", "address": "/map_cutoff",
+         "inputs": {"in": {"from": "/brightness"}, "out_min": 400, "out_max": 12000}},
         {"type": "clock", "address": "/clock",
          "control": [{"label": "Tempo", "param": "tempo"}]},
-    ],
-    "connections": [
-        {"from": {"node": "/brightness", "port": "out"}, "to": {"node": "/map_cutoff", "port": "in"}},
     ],
 }
 
@@ -134,7 +139,7 @@ class NoteToggleTest(unittest.TestCase):
 class ParamToggleTest(unittest.TestCase):
     # A gate-mode sequencer lane: stepN are boolean on/off (ADR-0022), each carrying a control.
     LANE = {"type": "sequencer", "address": "/kick",
-            "params": {"gate_mode": 1.0, "length": 16.0, "step1": 1.0, "step2": 0.0},
+            "inputs": {"gate_mode": 1.0, "length": 16.0, "step1": 1.0, "step2": 0.0},
             "control": [{"label": "K1", "param": "step1", "min": 0.0, "max": 1.0},
                         {"label": "K2", "param": "step2", "min": 0.0, "max": 1.0}]}
 
@@ -147,7 +152,7 @@ class ParamToggleTest(unittest.TestCase):
 
     def test_continuous_sequencer_step_stays_a_fader(self):
         # gate_mode=0 -> stepN is a continuous degree, not a boolean; must remain a fader.
-        node = dict(self.LANE, params={"gate_mode": 0.0})
+        node = dict(self.LANE, inputs={"gate_mode": 0.0})
         r = g.resolve_control(node, {"label": "K1", "param": "step1", "min": 0.0, "max": 1.0}, META)
         self.assertEqual(r["kind"], "fader")
 
@@ -167,7 +172,7 @@ class ParamToggleTest(unittest.TestCase):
     def test_lane_packs_into_one_full_width_row(self):
         # 16 steps + a trailing fader: the steps share one row of 16; the fader drops below.
         controls = [g.resolve_control(
-            {"type": "sequencer", "address": "/kick", "params": {"gate_mode": 1.0}},
+            {"type": "sequencer", "address": "/kick", "inputs": {"gate_mode": 1.0}},
             {"label": f"K{i}", "param": f"step{i}"}, META) for i in range(1, 17)]
         controls.append(g.resolve_control(INSTRUMENT["nodes"][2], {"label": "Tempo", "param": "tempo"}, META))
         rows = g.layout_rows(controls, cols=4)

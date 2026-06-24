@@ -200,8 +200,14 @@ impl<E: Executor> Renderer<E> {
         master: &mut [Vec<f32>],
         outbound: &mut Vec<Message>,
     ) {
-        // Fresh edge buffers each block (upstream writes before downstream reads).
-        for buf in &mut self.arena {
+        // Fresh edge buffers each block (upstream writes before downstream reads). Materialize
+        // scratch buffers are excluded (ADR-0028): they are fully written by the materialize step
+        // and persist a held Float input's value across blocks, so zeroing them would only force a
+        // needless refill. `process_node` keeps each one fully defined (see `materialize_clean`).
+        for (i, buf) in self.arena.iter_mut().enumerate() {
+            if plan.materialize_scratch_mask[i] {
+                continue;
+            }
             buf.iter_mut().for_each(|s| *s = 0.0);
         }
 
@@ -360,6 +366,16 @@ struct RoutedEvent {
 struct NodeRoute {
     /// (frame, param slot, value) — drive block-slicing.
     params: Vec<(usize, usize, f32)>,
+    /// (frame, input port, value) — a change to a materialized [`Shape::Float`] input
+    /// (ADR-0028). Unlike `params` these do **not** split the block; the engine writes them into
+    /// the input's materialized buffer at their frame, so a per-sample reader sees them
+    /// sample-accurately in one `process` call. Sorted by frame.
+    floats: Vec<(usize, usize, f32)>,
+    /// (frame, input port, variant index) — a change to an [`Shape::Enum`] input (ADR-0028). Like
+    /// `params` these **split** the block (a held discrete choice is constant per `process` call):
+    /// each interior frame becomes a segment boundary and updates the port's enum latch. Sorted
+    /// by frame.
+    enums: Vec<(usize, usize, usize)>,
     /// Routed events (by reference into the block's Messages) — for event operators.
     events: Vec<RoutedEvent>,
     /// (frame, context slot, pool index) — a context change a follower reads; each frame
@@ -377,6 +393,8 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
     }
     for r in routes.iter_mut() {
         r.params.clear();
+        r.floats.clear();
+        r.enums.clear();
         r.events.clear();
         r.context.clear();
     }
@@ -386,6 +404,22 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
             let Some(local) = local_address(&msg.addr, &node.address) else {
                 continue;
             };
+            // A new-style materialized Float input takes precedence: its value rides the
+            // materialize buffer (written at `frame`), not a block-slicing param (ADR-0028).
+            if let Some((port, meta)) = node.descriptor.materialized_input(local) {
+                if let Some(v) = msg.first_f32() {
+                    routes[i].floats.push((msg.frame, port, meta.clamp(v)));
+                }
+                break;
+            }
+            // An Enum input resolves its first arg as a wire token (symbol `"Hp"` or fallback
+            // index `"1"`) to a held variant index; like a param it splits the block (ADR-0028).
+            if let Some((port, e)) = node.descriptor.enum_input(local) {
+                if let Some(idx) = msg.args.first().and_then(|a| e.resolve_arg(a)) {
+                    routes[i].enums.push((msg.frame, port, idx));
+                }
+                break;
+            }
             match node.descriptor.param_index(local) {
                 Some(slot) => {
                     if let Some(v) = msg.first_f32() {
@@ -409,6 +443,8 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
     }
     for r in routes.iter_mut() {
         r.params.sort_by_key(|(f, _, _)| *f);
+        r.floats.sort_by_key(|(f, _, _)| *f);
+        r.enums.sort_by_key(|(f, _, _)| *f);
     }
 }
 
@@ -444,13 +480,71 @@ fn process_node(
 ) {
     let params = &route.params;
 
-    // Segment boundaries: 0, block_size, every interior param frame, every interior context
-    // change frame (ADR-0015 — so a chord/key change splits the block and the follower reads
-    // the right context per segment). Sort + dedup since param and context frames interleave.
+    // Materialize each unwired Float input into its scratch buffer (ADR-0028): fill from the
+    // latched scalar, overwrite with each mid-block change from its frame onward, persist the
+    // final value as the next block's latch, and flag `varying` (changed this block). Done before
+    // the output-swap — scratch buffers are inputs, disjoint from this node's outputs. Float
+    // changes do NOT split the block; sample-accuracy comes from writing them into the buffer at
+    // their frame.
+    //
+    // `node.varying` is preallocated at instantiate (length = input count) and reused — the audio
+    // thread never allocates it, even for an operator with >8 inputs. It is all-`true` to start;
+    // only materialized ports are rewritten here, so legacy / wired ports keep `true` (the same
+    // conservative default `Io::varying` reports for an unattached slice).
+    //
+    // Cached steady state (ADR-0028): a held-unchanged Float input is refilled only when it must
+    // be. Its scratch buffer is excluded from the per-block arena clear, so it persists; a constant
+    // block leaves it untouched (steady-state ~nil work). We refill only on a mid-block change, or
+    // the one block after a change/at startup that must re-flatten the buffer to the latch
+    // (`materialize_clean`). Output is identical to rewriting every block.
+    for k in 0..node.materialize.len() {
+        let (port, buf) = node.materialize[k];
+        let target = &mut arena[buf];
+        let changed = route.floats.iter().any(|&(_, p, _)| p == port);
+        if !changed {
+            // Held constant this block. Re-flatten to the latch only if the buffer is not already
+            // uniformly it (first block, or a prior block left a mid-block gradient); otherwise the
+            // persisted buffer is already correct and we touch nothing.
+            if !node.materialize_clean[k] {
+                target[..block_size].fill(node.input_latches[port]);
+                node.materialize_clean[k] = true;
+            }
+            node.varying[port] = false;
+            continue;
+        }
+        // Changed: fill from the latch, overwriting with each mid-block change from its frame
+        // onward; persist the final value as the next block's latch. The buffer now holds a
+        // gradient, so the next constant block must re-flatten it.
+        let mut v = node.input_latches[port];
+        let mut cursor = 0usize;
+        for &(f, p, val) in &route.floats {
+            if p != port {
+                continue;
+            }
+            let f = f.min(block_size);
+            target[cursor..f].fill(v);
+            cursor = f;
+            v = val;
+        }
+        target[cursor..block_size].fill(v);
+        node.input_latches[port] = v;
+        node.varying[port] = true;
+        node.materialize_clean[k] = false;
+    }
+
+    // Segment boundaries: 0, block_size, every interior param frame, every interior enum-change
+    // frame (ADR-0028 — a held discrete choice is constant per call), and every interior context
+    // change frame (ADR-0015 — so a chord/key change splits the block and the follower reads the
+    // right context per segment). Sort + dedup since these frames interleave.
     bounds.clear();
     bounds.push(0);
     bounds.push(block_size);
     for &(f, _, _) in params {
+        if f > 0 && f < block_size {
+            bounds.push(f);
+        }
+    }
+    for &(f, _, _) in &route.enums {
         if f > 0 && f < block_size {
             bounds.push(f);
         }
@@ -477,6 +571,14 @@ fn process_node(
         let (seg_start, seg_end) = (w[0], w[1]);
         if seg_start >= seg_end {
             continue;
+        }
+
+        // Apply enum updates landing at this segment's start: latch the held variant index, read
+        // by every Lane via `io.enum_index` (ADR-0028). Persists across blocks.
+        for &(f, port, idx) in &route.enums {
+            if f == seg_start {
+                node.enum_latches[port] = idx;
+            }
         }
 
         // Apply param updates landing at this segment's start (shared across Lanes).
@@ -563,7 +665,9 @@ fn process_node(
                 &seg_events,
             )
             .with_lane(lane, node.lanes)
-            .with_contexts(&seg_contexts);
+            .with_contexts(&seg_contexts)
+            .with_varying(&node.varying)
+            .with_enums(&node.enum_latches);
             // Lane 0 collects emissions and context publishes; their frames are stamped
             // block-absolute by adding this segment's start (ADR-0014, ADR-0015). Other Lanes
             // neither emit nor publish (single-Lane, pre-fan-out).
