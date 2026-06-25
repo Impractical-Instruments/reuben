@@ -4,16 +4,20 @@
 //! A) and is filled in test-first in Stage B. Port/param indices are part of the contract
 //! the rig builder wires against — see each module's descriptor.
 
+pub mod add;
 pub mod chord;
 pub mod clock;
 pub mod context;
 pub mod delay;
+pub mod differentiate;
 pub mod djfilter;
 pub mod envelope;
 pub mod filter;
+pub mod integrate;
 pub mod lfo;
 pub mod m2s;
-pub mod math;
+pub mod map;
+pub mod mul;
 pub mod noise;
 pub mod osc_out;
 pub mod oscillator;
@@ -27,16 +31,20 @@ pub mod snap;
 pub mod strum;
 pub mod voicer;
 
+pub use add::Add;
 pub use chord::Chord;
 pub use clock::Clock;
 pub use context::ContextOp;
 pub use delay::Delay;
+pub use differentiate::Differentiate;
 pub use djfilter::Djfilter;
 pub use envelope::Envelope;
 pub use filter::Filter;
+pub use integrate::Integrate;
 pub use lfo::Lfo;
 pub use m2s::M2s;
-pub use math::{Add, Differentiate, Integrate, Map, Mul};
+pub use map::Map;
+pub use mul::Mul;
 pub use noise::Noise;
 pub use osc_out::OscOut;
 pub use oscillator::Oscillator;

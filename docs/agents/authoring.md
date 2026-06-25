@@ -203,9 +203,12 @@ Other notes:
   `type_name: "sample"` when they diverge (e.g. `SamplePlayer`).
 - **Ports are referenced by name** in the JSON format, not by index — names are the stable
   contract the rig builder wires against. The macro computes the ordinals.
-- **Exceptions:** `math.rs` (five operators in one module) and `context.rs` / `sequencer.rs`
-  (param banks built by a loop) keep a hand-written `descriptor()` — the macro is for the
-  static-contract, one-operator-per-module common case.
+- **Exceptions:** a handful of operators hand-write `descriptor()` where the macro DSL can't
+  express their contract — `m2s` / `map` (Message `in`/`out` ports plus a non-first enum default),
+  `oscillator`, `output`. Everything else delegates to the macro via `Self::contract()`, including
+  the math family (`add`, `mul`, `power`, `differentiate`, `integrate`) — one operator per module
+  since [ADR-0029](../adr/0029-math-family-dense-float-one-file-per-op.md) deleted the old
+  `math.rs` multi-op module.
 - **`LaneRule`** — `Inherit` (Lane count = max of input Lane counts; the default) or
   `FromParam(slot)` (this operator *expands*, producing that many Lanes; the Voicer is the
   canonical expander, sized by the `voices` `Constant`). Read once at Instantiate — it's structural.

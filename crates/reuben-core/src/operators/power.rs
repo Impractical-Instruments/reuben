@@ -9,12 +9,15 @@
 //! no silence floor to fudge. Patch it between an `envelope` and a `mul`: `env.cv -> power.x`,
 //! `power.out -> mul`, audio -> the other `mul` input.
 //!
-//! Shape model (ADR-0028): `exponent` is a **`Float` input** owning its unwired default, always
-//! materialized to a buffer — read once block-rate via `io.value` (the curve shape is held for the
-//! call, not swept per sample). `x` is a bare `Float` wire-in (unwired reads as 0). No param slot.
+//! Shape model (ADR-0028/0029): both inputs are materialized **`Float`** inputs owning their
+//! unwired defaults. `exponent` is read once **block-rate** via `io.value` (the curve shape is held
+//! for the call, not swept per sample). `x` is read per-sample. Uniform with the rest of the math
+//! family — no bare ports, no param slot (ADR-0029). The curve-op precedent: future shapes
+//! (`logarithmic`, …) follow this exact shape (dense `Float`, a block-rate shaping operand, op-local
+//! guards).
 //!
 //! - input 0: `x` (`Float`) — the value to shape; treated as unipolar (negatives clamp to 0 so a
-//!   fractional exponent never yields NaN). Unwired reads as 0.
+//!   fractional exponent never yields NaN). Unwired default 0.
 //! - input 1: `exponent` (`Float`) — the power. Default 2 (a musical amplitude curve); 1 is a
 //!   pass-through.
 //! - output 0: `out` (`Float`) — `x^exponent`.
@@ -22,12 +25,21 @@
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor.
+// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor. Both
+// inputs are materialized `Float`s with declared defaults (ADR-0029); `x` defaults to 0.
 crate::operator_contract!(Power {
-    inputs:  { x: float,
-               exponent: float { 0.0..=8.0, default 2.0, "", lin } },
+    inputs:  { x:        float { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
+               exponent: float { 0.0..=8.0,                  default 2.0, "", lin } },
     outputs: { out: float },
 });
+
+/// The op's scalar math, written once (ADR-0029 pure-fn seam): a unipolar power curve. The
+/// `max(0.0)` is `power`'s **op-local** NaN guard (a fractional exponent over a negative base is
+/// NaN); it lives here, inherited by no other op.
+#[inline]
+fn shape(x: f32, exponent: f32) -> f32 {
+    x.max(0.0).powf(exponent)
+}
 
 #[derive(Default)]
 pub struct Power;
@@ -45,15 +57,14 @@ impl Operator for Power {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        // `exponent` is a `Float` input (always a buffer); read it once block-rate — the curve
-        // shape is held for the call, not swept per sample.
+        // `exponent` is a materialized `Float`; read it once block-rate — the curve shape is held
+        // for the call, not swept per sample (ADR-0029).
         let exponent = io.value(IN_EXPONENT);
         for i in 0..n {
-            // Unipolar: clamp the input to [0, ∞) so a fractional exponent can't produce NaN
-            // from a negative base. The envelope CV this is built for is already in [0, 1].
-            // `x` is a `Float` input — always a buffer; read into a local before the output write.
-            let x = io.signal(IN_X).get(i).copied().unwrap_or(0.0).max(0.0);
-            io.output(OUT_OUT)[i] = x.powf(exponent);
+            // `x` is a materialized `Float` (always a buffer in production); `unwrap_or(0.0)` is the
+            // declared default for the empty-slice (unwired) case. The clamp lives in `shape`.
+            let x = io.signal(IN_X).get(i).copied().unwrap_or(0.0);
+            io.output(OUT_OUT)[i] = shape(x, exponent);
         }
     }
 
@@ -131,6 +142,21 @@ mod tests {
     fn unwired_input_is_silent() {
         let out = run(None, 2.0);
         assert!(out.iter().all(|&s| s == 0.0));
+    }
+
+    #[test]
+    fn operand_defaults_are_data() {
+        // ADR-0029: both inputs are settable Floats; x defaults to 0, exponent to 2.
+        let d = Power::descriptor();
+        let default = |name: &str| {
+            d.settable_inputs()
+                .find(|(n, _)| *n == name)
+                .unwrap_or_else(|| panic!("{name} is a settable Float"))
+                .1
+                .default
+        };
+        assert_eq!(default("x"), 0.0);
+        assert_eq!(default("exponent"), 2.0);
     }
 
     #[test]
