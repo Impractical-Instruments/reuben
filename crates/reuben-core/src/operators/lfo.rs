@@ -6,24 +6,24 @@
 //! block-slices and never drifts (phase held in f64 like the Clock). Designed to drive
 //! another operator's Signal input — e.g. an oscillator's `freq` — for a vibrato/siren drone.
 //!
-//! - input 0: `rate` (`Float`, Hz) — modulation frequency, read block-rate via `io.value`.
+//! - input 0: `rate` (`Float`, Hz) — modulation frequency, read block-rate via `io.last`.
 //! - input 1: `depth` (`Float`) — modulation amplitude (added to / subtracted from `center`).
 //! - input 2: `center` (`Float`) — bias / offset the modulation swings around.
-//! - output 0: `out` (`Float`) — `center + depth * sin(2π·phase)`.
+//! - output 0: `out` (`Buffer`) — `center + depth * sin(2π·phase)`.
 //!
-//! `rate`/`depth`/`center` are `Float` inputs (ADR-0028): read block-rate, so a `/lfo/rate`
-//! change takes effect at the exact sample of the change (the engine block-slices) and the
-//! phase stays continuous across the cut — and any of them can now be *wired* and modulated.
+//! `rate`/`depth`/`center` are `Float` inputs (ADR-0030): read block-rate (held ZOH via
+//! `io.last`), so a `/lfo/rate` change takes effect at the exact sample of the change (the engine
+//! block-slices) and the phase stays continuous across the cut.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
+// Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Lfo {
     inputs:  { rate:   float { 0.01..=20.0,        default 5.0,   "Hz", exp },
                depth:  float { 0.0..=1000.0,       default 10.0,  "",   lin },
                center: float { -1000.0..=20_000.0, default 440.0, "",   lin } },
-    outputs: { out: float },
+    outputs: { out: buffer },
 });
 
 #[derive(Default)]
@@ -51,15 +51,15 @@ impl Operator for Lfo {
 
         // Cycles advanced per sample. Rate is constant for this (sub)block (block-sliced).
         let dt: f64 = if sample_rate > 0.0 {
-            io.value(IN_RATE).max(0.0) as f64 / sample_rate as f64
+            io.last::<f32>(IN_RATE).unwrap_or(0.0).max(0.0) as f64 / sample_rate as f64
         } else {
             0.0
         };
-        let depth = io.value(IN_DEPTH);
-        let center = io.value(IN_CENTER);
+        let depth = io.last::<f32>(IN_DEPTH).unwrap_or(0.0);
+        let center = io.last::<f32>(IN_CENTER).unwrap_or(0.0);
 
         let mut phase = self.phase;
-        let out = io.output(OUT_OUT);
+        let out = io.signal_mut(OUT_OUT);
         for s in out.iter_mut().take(n) {
             let s_val = (std::f64::consts::TAU * phase).sin() as f32;
             *s = center + depth * s_val;
@@ -79,6 +79,7 @@ crate::register_operator!(Lfo);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message::Arg;
     use crate::operator::Io;
 
     const SR: f32 = 48_000.0;
@@ -86,20 +87,13 @@ mod tests {
     /// Run `lfo` over one block of `n` frames at the given params, returning the out buffer.
     fn run(lfo: &mut Lfo, n: usize, rate: f32, depth: f32, center: f32) -> Vec<f32> {
         let mut out = vec![0.0f32; n];
-        // rate/depth/center are `Float` inputs now (ADR-0028) — supply the per-sample buffers the
-        // engine would materialize, in port order (rate, depth, center).
-        let rate_buf = vec![rate; n];
-        let depth_buf = vec![depth; n];
-        let center_buf = vec![center; n];
+        // rate/depth/center are `Float` inputs (ADR-0030) — held (ZOH) values read via `io.last`,
+        // supplied through the per-input latch in port order (rate, depth, center).
+        let latched = [Arg::F32(rate), Arg::F32(depth), Arg::F32(center)];
         {
             let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let inputs: Vec<Option<&[f32]>> = vec![
-                Some(&rate_buf[..]),
-                Some(&depth_buf[..]),
-                Some(&center_buf[..]),
-            ];
-            let params: [f32; 0] = [];
-            let mut io = Io::new(SR, n, inputs, outs, &params, &[]);
+            let inputs: Vec<Option<&[f32]>> = vec![None, None, None];
+            let mut io = Io::new(SR, n, inputs, outs).with_latched(&latched);
             lfo.process(&mut io);
         }
         out
@@ -183,11 +177,9 @@ mod tests {
         let mut out = [0.0f32; 1];
         {
             let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let (rate, depth, center) = ([5.0f32], [10.0f32], [440.0f32]);
-            let inputs: Vec<Option<&[f32]>> =
-                vec![Some(&rate[..]), Some(&depth[..]), Some(&center[..])];
-            let params: [f32; 0] = [];
-            let mut io = Io::new(SR, 1, inputs, outs, &params, &[]);
+            let latched = [Arg::F32(5.0), Arg::F32(10.0), Arg::F32(440.0)];
+            let inputs: Vec<Option<&[f32]>> = vec![None, None, None];
+            let mut io = Io::new(SR, 1, inputs, outs).with_latched(&latched);
             b.process(&mut io);
         }
         assert!(

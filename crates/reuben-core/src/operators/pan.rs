@@ -19,9 +19,9 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Pan {
-    inputs:  { audio: float,
+    inputs:  { audio: buffer,
                pan:   float { -1.0..=1.0, default 0.0, "", lin } },
-    outputs: { left: float, right: float },
+    outputs: { left: buffer, right: buffer },
 });
 
 #[derive(Default)]
@@ -52,8 +52,8 @@ impl Operator for Pan {
             let theta = (p.clamp(-1.0, 1.0) + 1.0) * (core::f32::consts::FRAC_PI_4);
             let l = a * theta.cos();
             let r = a * theta.sin();
-            io.output(OUT_LEFT)[i] = l;
-            io.output(OUT_RIGHT)[i] = r;
+            io.signal_mut(OUT_LEFT)[i] = l;
+            io.signal_mut(OUT_RIGHT)[i] = r;
         }
     }
 
@@ -82,8 +82,7 @@ mod tests {
         {
             let outs: Vec<&mut [f32]> = vec![&mut left[..], &mut right[..]];
             let inputs: Vec<Option<&[f32]>> = vec![Some(&audio[..]), Some(&pan_buf[..])];
-            let params: [f32; 0] = [];
-            let mut io = Io::new(SR, n, inputs, outs, &params, &[]);
+            let mut io = Io::new(SR, n, inputs, outs);
             Pan::new().process(&mut io);
         }
         (left, right)
@@ -140,8 +139,7 @@ mod tests {
         {
             let outs: Vec<&mut [f32]> = vec![&mut left[..], &mut right[..]];
             let inputs: Vec<Option<&[f32]>> = vec![Some(&audio[..]), Some(&pan_in[..])];
-            let params: [f32; 0] = [];
-            let mut io = Io::new(SR, n, inputs, outs, &params, &[]);
+            let mut io = Io::new(SR, n, inputs, outs);
             Pan::new().process(&mut io);
         }
         assert!(

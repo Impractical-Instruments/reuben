@@ -1,33 +1,24 @@
 //! Oscillator — audio-rate tone generator.
 //!
-//! First operator migrated to the ADR-0028 **shape** model (the Phase 0 proof). It is
-//! hand-written rather than declared via `operator_contract!` — the macro grows the new
-//! `inputs { name: float { .. } }` surface in Phase 1; this operator demonstrates the engine
-//! core (materialize + the single read path) underneath it.
-//!
 //! - input 0: `freq` (`Float`) — per-sample frequency in Hz. One declaration: when unwired the
 //!   engine materializes it from the latched default (440 Hz) and writes mid-block `/osc/freq`
-//!   changes at their frame; when wired (an LFO, a Voicer) the source buffer passes through. No
-//!   more "signal port + same-named unwired-default param" pair, and no wired/unwired branch in
-//!   `process` — `io.signal(IN_FREQ)` is always a buffer.
-//! - input 1: `waveform` (`Enum` {Sine, Saw}) — held, live-switchable choice read via
-//!   `io.enum_index` (the Phase 2 reclassification of the Phase 0 placeholder `Float`).
-//! - output 0: `audio` (`Float`).
+//!   changes at their frame; when wired (an LFO, a Voicer) the source buffer passes through, so
+//!   `io.signal(IN_FREQ)` is always a buffer.
+//! - input 1: `waveform` (`Enum` [`Waveform`] {Sine, Saw}) — held, live-switchable choice read
+//!   via `io.last::<Waveform>` (ADR-0030).
+//! - output 0: `audio` (`Buffer`).
 
-use crate::descriptor::{Curve, Descriptor, EnumMeta, LaneRule, ParamMeta, Port};
+use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
+use crate::vocab::Waveform;
 
-/// `freq` input (materialized `Float`).
-pub const IN_FREQ: usize = 0;
-/// `waveform` input (`Enum` {Sine, Saw}).
-pub const IN_WAVEFORM: usize = 1;
-/// `audio` output (`Float`).
-pub const OUT_AUDIO: usize = 0;
-
-/// `waveform` variant indices (the on-wire symbol table — index-aligned with [`WAVEFORMS`]).
-const WAVEFORMS: &[&str] = &["Sine", "Saw"];
-const WAVE_SINE: usize = 0;
-const WAVE_SAW: usize = 1;
+// Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts and the Descriptor.
+// `freq` is a materialized `Float` control; `waveform` references the shared `Waveform` vocab enum.
+crate::operator_contract!(Oscillator {
+    inputs:  { freq:     float { 20.0..=20_000.0, default 440.0, "Hz", exp },
+               waveform: enum(Waveform) },
+    outputs: { audio: buffer },
+});
 
 #[derive(Default)]
 pub struct Oscillator {
@@ -43,28 +34,7 @@ impl Oscillator {
 
 impl Operator for Oscillator {
     fn descriptor() -> Descriptor {
-        Descriptor {
-            type_name: "oscillator",
-            inputs: vec![
-                Port::float(ParamMeta {
-                    name: "freq",
-                    min: 20.0,
-                    max: 20_000.0,
-                    default: 440.0,
-                    unit: "Hz",
-                    curve: Curve::Exponential,
-                }),
-                Port::enumerated(EnumMeta {
-                    name: "waveform",
-                    variants: WAVEFORMS,
-                    default: WAVE_SINE,
-                }),
-            ],
-            outputs: vec![Port::signal("audio")],
-            params: vec![],
-            resources: vec![],
-            lanes: LaneRule::Inherit,
-        }
+        Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {
@@ -76,8 +46,8 @@ impl Operator for Oscillator {
             0.0
         };
 
-        // Waveform is a held `Enum` choice (ADR-0028) — one index read, constant for this call.
-        let is_saw = io.enum_index(IN_WAVEFORM) == WAVE_SAW;
+        // Waveform is a held `Enum` choice (ADR-0030) — one read, constant for this call.
+        let is_saw = io.last::<Waveform>(IN_WAVEFORM).unwrap_or_default() == Waveform::Saw;
 
         // Stage 1: copy the per-sample frequency into the output buffer. `freq` is a `Float`
         // input, so it is always a buffer (wired source or materialized latch) — one read path,
@@ -85,13 +55,13 @@ impl Operator for Oscillator {
         // mutable output write (keeps `process` alloc-free without holding two borrows of `io`).
         for i in 0..n {
             let freq = io.signal(IN_FREQ).get(i).copied().unwrap_or(0.0);
-            io.output(OUT_AUDIO)[i] = freq;
+            io.signal_mut(OUT_AUDIO)[i] = freq;
         }
 
         // Stage 2: in-place oscillator pass. `out[i]` currently holds the frequency for sample
         // `i`; overwrite it with the generated sample.
         let mut phase = self.phase;
-        let out = &mut io.output(OUT_AUDIO)[..n];
+        let out = &mut io.signal_mut(OUT_AUDIO)[..n];
         for slot in out.iter_mut() {
             let dt = *slot * inv_sr; // phase increment in turns
 
@@ -163,15 +133,20 @@ mod tests {
         let mut o0 = vec![0.0f32; n];
         {
             let outs: Vec<&mut [f32]> = vec![&mut o0[..]];
-            // `freq` is a `Float` input (buffer); `waveform` is an `Enum` input (held index, no buffer).
+            // `freq` is a `Float` input (buffer); `waveform` is an `Enum` input (held value, no buffer).
             let inputs: Vec<Option<&[f32]>> = vec![Some(&freq_buf[..]), None];
-            let params: Vec<f32> = vec![];
-            let enums = [0usize, waveform];
-            let mut io = Io::new(sample_rate, n, inputs, outs, &params, &[]).with_enums(&enums);
+            let latched = [
+                Arg::F32(0.0),
+                Arg::Waveform(Waveform::from_index(waveform).unwrap()),
+            ];
+            let mut io = Io::new(sample_rate, n, inputs, outs).with_latched(&latched);
             osc.process(&mut io);
         }
         o0
     }
+
+    const WAVE_SINE: usize = 0;
+    const WAVE_SAW: usize = 1;
 
     fn upward_crossings(buf: &[f32]) -> usize {
         let mut crossings = 0usize;
@@ -440,7 +415,7 @@ mod tests {
 
         // Block 2: switch to Saw by symbol at frame 0 — mostly rising (ramp).
         let mut saw = vec![0.0f32; block];
-        let switch = Message::new("/osc/waveform", [Arg::Sym("Saw".into())], 0);
+        let switch = Message::new("/osc/waveform", Arg::Str("Saw".into()), 0);
         r.render_block(&mut plan, std::slice::from_ref(&switch), &mut saw);
         assert!(
             rising_fraction(&saw) > 0.9,

@@ -156,8 +156,7 @@
       "address": "/vgain",
       "doc": "Per-voice headroom: constant equal-power gain (1/sqrt(12) ~ 0.289) held forever (no input). Single-lane -> broadcasts to every voice's /vmix. The 12 voice lanes sum straight into the master (no auto gain comp), so each voice is scaled here to keep a full 12-voice chord off the clip ceiling while staying loud at a typical 3-6 note chord.",
       "inputs": {
-        "default": 0.289,
-        "mode": "Snap"
+        "in": 0.289
       },
       "type": "m2s"
     },
@@ -192,7 +191,7 @@
       },
       "doc": "PUBLIC Good Button. Identity [0,1] pass-through, fanned to the ranged cutoff map. Send /brightness [0..1]. Rests at 0.5 (ADR-0018).",
       "inputs": {
-        "default": 0.5
+        "in": 0.5
       },
       "type": "map"
     },
@@ -213,7 +212,6 @@
       "address": "/cv_cutoff",
       "doc": "Smooth the mapped cutoff into a CV signal; default 1800 Hz before any knob move.",
       "inputs": {
-        "default": 1800.0,
         "in": {
           "from": "/map_cutoff"
         },

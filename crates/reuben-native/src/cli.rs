@@ -4,7 +4,7 @@
 //! These back the `reuben describe` / `reuben validate` subcommands but are pure functions
 //! over [`Registry`] + JSON so they test through real load/plan code paths, not a process.
 
-use reuben_core::descriptor::{Curve, Descriptor, Shape};
+use reuben_core::descriptor::{Curve, Descriptor, PortType};
 use reuben_core::format::LoadError;
 use reuben_core::plan::Plan;
 use reuben_core::resources::ResourceResolver;
@@ -38,8 +38,8 @@ pub struct EnumInfo {
 #[derive(Debug, Serialize)]
 pub struct PortInfo {
     pub name: String,
-    /// The port's [`Shape`] as a word: `"signal"` (Float), `"enum"`, `"message"` (Note), or
-    /// `"context"` (Harmony). The signal/message/context words are kept for the Patcher's wiring
+    /// The port's [`PortType`] as a word: `"signal"` (F32/Buffer), `"enum"`, `"message"` (Note),
+    /// or `"context"` (Harmony). The signal/message/context words are kept for the Patcher's wiring
     /// vocabulary; `enum` is surfaced honestly (its variants live in the operator's `enums`).
     pub kind: String,
 }
@@ -56,12 +56,19 @@ pub struct ParamInfo {
     pub curve: String,
 }
 
-fn port_kind(s: Shape) -> &'static str {
-    match s {
-        Shape::Float => "signal",
-        Shape::Enum => "enum",
-        Shape::Note => "message",
-        Shape::Harmony => "context",
+fn port_kind(ty: &PortType) -> &'static str {
+    match ty {
+        PortType::F32 | PortType::Buffer => "signal",
+        PortType::Vocab { name: "Note", .. } => "message",
+        PortType::Vocab {
+            name: "Harmony", ..
+        } => "context",
+        PortType::Vocab {
+            enum_meta: Some(_), ..
+        } => "enum",
+        PortType::Vocab { .. } => "vocab",
+        PortType::I32 => "int",
+        PortType::Str => "string",
     }
 }
 
@@ -78,7 +85,7 @@ impl OperatorInfo {
             ps.iter()
                 .map(|p| PortInfo {
                     name: p.name.to_string(),
-                    kind: port_kind(p.shape).to_string(),
+                    kind: port_kind(&p.ty).to_string(),
                 })
                 .collect()
         };

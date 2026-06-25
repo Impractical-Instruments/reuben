@@ -10,15 +10,15 @@
 //! The accumulator carries across blocks; `spawn` resets it to 0.
 //!
 //! - input 0: `in` (`Float`) — the signal to integrate. Unwired default 0.
-//! - output 0: `out` (`Float`) — the running sum including the current sample.
+//! - output 0: `out` (`Buffer`) — the running sum including the current sample.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025/0028/0029): `in` is a materialized `Float` (default 0).
+// Single-source contract (ADR-0025/0029/0030): `in` is a materialized `Float` (default 0).
 crate::operator_contract!(Integrate {
     inputs:  { in: float { -1_000_000.0..=1_000_000.0, default 0.0, "", lin } },
-    outputs: { out: float },
+    outputs: { out: buffer },
 });
 
 /// The op's scalar math, written once (ADR-0029 pure-fn seam): one accumulation step.
@@ -50,7 +50,7 @@ impl Operator for Integrate {
         for i in 0..n {
             let cur = io.signal(IN_IN).get(i).copied().unwrap_or(0.0);
             acc = accumulate(acc, cur);
-            io.output(OUT_OUT)[i] = acc;
+            io.signal_mut(OUT_OUT)[i] = acc;
         }
         self.acc = acc;
     }
@@ -74,7 +74,7 @@ mod tests {
         {
             let inputs: Vec<Option<&[f32]>> = vec![Some(input)];
             let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let mut io = Io::new(SR, n, inputs, outs, &[], &[]);
+            let mut io = Io::new(SR, n, inputs, outs);
             op.process(&mut io);
         }
         out

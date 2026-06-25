@@ -7,7 +7,7 @@
 use reuben_core::harmony::Harmony;
 use reuben_core::message::{Arg, Message};
 use reuben_core::operators::{ContextOp, Snap, Voicer};
-use reuben_core::pitch::Pitch;
+use reuben_core::pitch::{Note, Pitch};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
 use reuben_core::{load, AudioConfig, Graph, Registry};
@@ -45,14 +45,14 @@ fn degree_note_resolves_then_respells_across_blocks() {
     let mut buf = vec![0.0f32; CFG.block_size];
 
     // Block 1: play degree 2. In C major that is E (MIDI 64).
-    let note = Message::new("/voicer/degree", [Arg::Float(2.0), Arg::Float(1.0)], 0);
+    let note = Message::new("/voicer/notes", Note::new(Pitch::Degree(2), 1.0), 0);
     r.render_block(&mut plan, &[note], &mut buf);
     approx::assert_relative_eq!(buf[CFG.block_size - 1], hz(64.0), epsilon = 1e-2);
 
     // Block 2: move the root to D (62) with no new note. The held degree 2 re-spells to F♯
     // (66) — proof the latched context drives a live re-spell through the engine, not just
     // the operator.
-    let key = Message::new("/context/root", [Arg::Float(62.0)], 0);
+    let key = Message::new("/context/root", Arg::F32(62.0), 0);
     r.render_block(&mut plan, &[key], &mut buf);
     approx::assert_relative_eq!(buf[CFG.block_size - 1], hz(66.0), epsilon = 1e-2);
 }
@@ -67,8 +67,8 @@ fn context_change_mid_block_is_sample_accurate() {
     r.render_block(
         &mut plan,
         &[Message::new(
-            "/voicer/degree",
-            [Arg::Float(2.0), Arg::Float(1.0)],
+            "/voicer/notes",
+            Note::new(Pitch::Degree(2), 1.0),
             0,
         )],
         &mut buf,
@@ -77,7 +77,7 @@ fn context_change_mid_block_is_sample_accurate() {
     // In the next block, change the root to D at frame 128. The change slices the block: the
     // first half still resolves in C major (E), the second half in D major (F♯) — one
     // sample-accurate timeline, no block-quantization internally.
-    let key = Message::new("/context/root", [Arg::Float(62.0)], 128);
+    let key = Message::new("/context/root", Arg::F32(62.0), 128);
     r.render_block(&mut plan, &[key], &mut buf);
     approx::assert_relative_eq!(buf[100], hz(64.0), epsilon = 1e-2); // before 128 → E
     approx::assert_relative_eq!(buf[200], hz(66.0), epsilon = 1e-2); // after 128 → F♯
@@ -100,7 +100,7 @@ fn snap_quantizes_an_off_key_gesture() {
     let mut plan = Plan::instantiate(g, CFG).expect("instantiate");
     let mut r = Renderer::new(&plan);
     let mut buf = vec![0.0f32; CFG.block_size];
-    let note = Message::new("/snap/note", [Arg::Float(63.0), Arg::Float(1.0)], 0);
+    let note = Message::new("/snap/notes", Note::new(Pitch::Absolute(63.0), 1.0), 0);
     r.render_block(&mut plan, &[note], &mut buf);
     approx::assert_relative_eq!(buf[CFG.block_size - 1], hz(62.0), epsilon = 1e-2);
     // D
@@ -115,7 +115,7 @@ fn demo_instruments_load_and_play() {
         let mut r = Renderer::new(&plan);
         let mut buf = vec![0.0f32; CFG.block_size];
         // scale-demo self-plays; autotune needs input — drive both so each makes sound.
-        let note = Message::new("/snap/note", [Arg::Float(67.3), Arg::Float(1.0)], 0);
+        let note = Message::new("/snap/notes", Note::new(Pitch::Absolute(67.3), 1.0), 0);
         let mut peak = 0.0f32;
         for _ in 0..400 {
             r.render_block(&mut plan, std::slice::from_ref(&note), &mut buf);

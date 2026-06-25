@@ -7,9 +7,10 @@
 //! Run: `cargo run -p reuben-core --example first_sound` -> `first_sound.wav`.
 
 use reuben_core::graph::Graph;
-use reuben_core::message::{Arg, Message};
+use reuben_core::message::Message;
 use reuben_core::operators::{envelope, mul, oscillator, output, power, voicer};
 use reuben_core::operators::{Envelope, Filter, Mul, Oscillator, Output, Power, Voicer};
+use reuben_core::pitch::{Note, Pitch};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
 use reuben_core::AudioConfig;
@@ -56,8 +57,8 @@ fn main() {
         // Note-on (A4, velocity 1.0) at the very start; held for the rest.
         let msgs: Vec<Message> = if b == 0 {
             vec![Message::new(
-                "/voicer/note",
-                [Arg::Float(69.0), Arg::Float(1.0)],
+                "/voicer/notes",
+                Note::new(Pitch::Absolute(69.0), 1.0),
                 0,
             )]
         } else {

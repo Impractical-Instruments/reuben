@@ -169,12 +169,9 @@ fn insert_line_sorted(
 fn signal_output_consts(spec: &OperatorSpec) -> Vec<String> {
     spec.outputs
         .iter()
-        // A Float output (legacy `signal` kind, or the `float` shape) carries a buffer the stub
-        // zeroes; `message`/`context` carriers and held shapes do not.
-        .filter(|p| {
-            !matches!(p.kind.as_str(), "message" | "context")
-                && !matches!(p.shape.as_deref(), Some("enum"))
-        })
+        // Only a `buffer` output carries a per-sample buffer the silence stub zeroes (ADR-0030);
+        // `note`/`harmony`/`enum`/`float` outputs do not.
+        .filter(|p| p.ty == "buffer")
         .map(|p| format!("OUT_{}", screaming(&p.name)))
         .collect()
 }
@@ -274,9 +271,9 @@ fn render_contract_call(spec: &OperatorSpec) -> String {
     out
 }
 
-/// The macro's port-list body. Each port renders in whichever surface the spec used (ADR-0028):
-/// a `shape` (`float` / `float { .. }` / `enum { .. }`) when set, else the legacy `kind` keyword
-/// (`signal` / `message` / `context`). Mirrors the `operator_contract!` grammar exactly.
+/// The macro's port-list body. Each port renders by its [`Arg`] type (ADR-0030): `buffer`,
+/// `float { .. }`, `enum(VocabType)`, `note`, or `harmony`. Mirrors the `operator_contract!`
+/// grammar exactly.
 fn render_macro_ports(ports: &[PortSpec]) -> String {
     ports
         .iter()
@@ -287,9 +284,9 @@ fn render_macro_ports(ports: &[PortSpec]) -> String {
 
 /// One port in the macro grammar — see [`render_macro_ports`].
 fn render_macro_port(p: &PortSpec) -> String {
-    match p.shape.as_deref() {
-        // ADR-0028 shape forms.
-        Some("float") => match &p.float {
+    match p.ty.as_str() {
+        // A materialized scalar control carries its `{ .. }` meta.
+        "float" => match &p.float {
             None => format!("{}: float", p.name),
             Some(m) => {
                 let curve = if m.curve == "exponential" {
@@ -303,9 +300,14 @@ fn render_macro_port(p: &PortSpec) -> String {
                 )
             }
         },
-        Some("enum") => format!("{}: enum {{ {} }}", p.name, p.variants.join(", ")),
-        // Legacy carrier keyword (`signal` / `message` / `context`); validated upstream.
-        _ => format!("{}: {}", p.name, p.kind),
+        // A held vocab enum names its shared vocab type.
+        "enum" => format!(
+            "{}: enum({})",
+            p.name,
+            p.vocab.as_deref().unwrap_or_default()
+        ),
+        // `buffer` / `note` / `harmony` need no extra syntax.
+        ty => format!("{}: {}", p.name, ty),
     }
 }
 
@@ -403,19 +405,20 @@ mod tests {
     }
 
     #[test]
-    fn ports_are_declared_in_the_contract_call_by_kind() {
-        // Per-kind ordinals are now the macro's job; the scaffold just declares the ports by kind.
+    fn ports_are_declared_in_the_contract_call_by_type() {
+        // Ordinals are the macro's job; the scaffold just declares each port by its Arg type
+        // (ADR-0030): `note` / `harmony` / `buffer`.
         let src = render(
             r#"{ "type_name": "v",
-                 "inputs": [ {"name":"notes","kind":"message"}, {"name":"ctx","kind":"context"} ],
-                 "outputs": [ {"name":"freq","kind":"signal"}, {"name":"gate","kind":"signal"} ] }"#,
+                 "inputs": [ {"name":"notes","ty":"note"}, {"name":"ctx","ty":"harmony"} ],
+                 "outputs": [ {"name":"freq","ty":"buffer"}, {"name":"gate","ty":"buffer"} ] }"#,
         );
         assert!(
-            src.contains("inputs: { notes: message, ctx: context }"),
+            src.contains("inputs: { notes: note, ctx: harmony }"),
             "{src}"
         );
         assert!(
-            src.contains("outputs: { freq: signal, gate: signal }"),
+            src.contains("outputs: { freq: buffer, gate: buffer }"),
             "{src}"
         );
     }
@@ -434,32 +437,32 @@ mod tests {
 
     #[test]
     fn process_stub_writes_silence_to_signal_outputs_only() {
-        let src =
-            render(r#"{ "type_name": "o", "outputs": [ {"name":"audio","kind":"signal"} ] }"#);
+        let src = render(r#"{ "type_name": "o", "outputs": [ {"name":"audio","ty":"buffer"} ] }"#);
         assert!(src.contains("io.signal_mut(port)[..n].fill(0.0)"), "{src}");
         assert!(src.contains("for port in [OUT_AUDIO]"), "{src}");
     }
 
     #[test]
-    fn renders_adr0028_shape_ports() {
-        // The contract surface accepts shapes (ADR-0028): a bare `float`, a materialized
-        // `float { .. }` with a default, and an `enum { .. }` — each must render in macro grammar.
+    fn renders_typed_ports() {
+        // The contract surface declares each port by its Arg type (ADR-0030): a `buffer` wire, a
+        // materialized `float { .. }` with a default, and an `enum(VocabType)` naming a shared vocab
+        // — each must render in macro grammar.
         let src = render(
             r#"{ "type_name": "f",
-                 "inputs": [ {"name":"audio","shape":"float"},
-                             {"name":"cutoff","shape":"float",
+                 "inputs": [ {"name":"audio","ty":"buffer"},
+                             {"name":"cutoff","ty":"float",
                               "float":{"min":20.0,"max":20000.0,"default":1000.0,"unit":"Hz","curve":"exponential"}},
-                             {"name":"mode","shape":"enum","variants":["Lp","Hp","Bp"]} ],
-                 "outputs": [ {"name":"audio","shape":"float"} ] }"#,
+                             {"name":"mode","ty":"enum","vocab":"FilterMode"} ],
+                 "outputs": [ {"name":"audio","ty":"buffer"} ] }"#,
         );
         assert!(
             src.contains(
-                r#"inputs: { audio: float, cutoff: float { 20.0..=20000.0, default 1000.0, "Hz", exp }, mode: enum { Lp, Hp, Bp } }"#
+                r#"inputs: { audio: buffer, cutoff: float { 20.0..=20000.0, default 1000.0, "Hz", exp }, mode: enum(FilterMode) }"#
             ),
             "{src}"
         );
-        assert!(src.contains("outputs: { audio: float }"), "{src}");
-        // A `float` output still gets a silence-stub write (it carries a buffer).
+        assert!(src.contains("outputs: { audio: buffer }"), "{src}");
+        // A `buffer` output gets a silence-stub write.
         assert!(src.contains("for port in [OUT_AUDIO]"), "{src}");
     }
 
@@ -545,9 +548,9 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bad_port_kind_and_curve() {
-        let bad_kind = r#"{ "type_name": "x", "inputs": [ {"name":"a","kind":"audio"} ] }"#;
-        assert!(scaffold_err(bad_kind).contains("kind"));
+    fn rejects_bad_port_type_and_curve() {
+        let bad_type = r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"audio"} ] }"#;
+        assert!(scaffold_err(bad_type).contains("type"));
         let bad_curve = r#"{ "type_name": "x", "params": [ {"name":"a","min":0,"max":1,"default":0,"curve":"log"} ] }"#;
         assert!(scaffold_err(bad_curve).contains("curve"));
     }
@@ -563,7 +566,7 @@ mod tests {
 
     #[test]
     fn rejects_duplicate_names_and_dangling_lane_param() {
-        let dup = r#"{ "type_name": "x", "inputs": [ {"name":"a","kind":"signal"}, {"name":"a","kind":"signal"} ] }"#;
+        let dup = r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"buffer"}, {"name":"a","ty":"buffer"} ] }"#;
         assert!(scaffold_err(dup).contains("duplicate"));
         let dangling = r#"{ "type_name": "x", "lanes": { "from_param": "voices" } }"#;
         assert!(scaffold_err(dangling).contains("from_param"));

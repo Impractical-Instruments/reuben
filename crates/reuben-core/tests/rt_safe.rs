@@ -12,6 +12,7 @@ use std::sync::Arc;
 
 use reuben_core::message::{Arg, Message};
 use reuben_core::operators::{Output, SamplePlayer, Voicer};
+use reuben_core::pitch::{Note, Pitch};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
 use reuben_core::resources::{ResolvedRefs, ResourceStore, SampleBuffer};
@@ -56,8 +57,8 @@ fn render_block_is_allocation_free_after_warmup() {
     // Build the note-on message up front — its address String allocates here, off the
     // measured render path.
     let note_on = [Message::new(
-        "/voicer/note",
-        [Arg::Float(60.0), Arg::Float(1.0)],
+        "/voicer/notes",
+        Note::new(Pitch::Absolute(60.0), 1.0),
         0,
     )];
 
@@ -91,8 +92,8 @@ fn render_block_is_allocation_free_after_warmup() {
     // Enum control messages (ADR-0028) must also be allocation-free: routing `/filter/mode "Hp"`
     // resolves the `Sym` arg to a variant index on the wire. The arg is borrowed, not cloned, so
     // the resolve touches no allocator. (The `Sym` String allocates here, off the measured path.)
-    let mode_hp = [Message::new("/filter/mode", [Arg::Sym("Hp".into())], 0)];
-    let mode_lp = [Message::new("/filter/mode", [Arg::Sym("Lp".into())], 0)];
+    let mode_hp = [Message::new("/filter/mode", Arg::Str("Hp".into()), 0)];
+    let mode_lp = [Message::new("/filter/mode", Arg::Str("Lp".into()), 0)];
     r.render_block(&mut plan, &mode_hp, &mut out); // warm the enum-route scratch
     let before = ALLOCS.load(Ordering::Relaxed);
     for i in 0..100 {
@@ -135,8 +136,8 @@ fn render_block_is_allocation_free_after_warmup() {
     let mut r = Renderer::new(&plan);
 
     // Build the key-change messages up front (their address Strings allocate here).
-    let to_d = [Message::new("/context/root", [Arg::Float(62.0)], 0)];
-    let to_c = [Message::new("/context/root", [Arg::Float(60.0)], 0)];
+    let to_d = [Message::new("/context/root", Arg::F32(62.0), 0)];
+    let to_c = [Message::new("/context/root", Arg::F32(60.0), 0)];
 
     for _ in 0..200 {
         r.render_block(&mut plan, &[], &mut out);
@@ -177,10 +178,10 @@ fn render_block_is_allocation_free_after_warmup() {
     let mut r = Renderer::new(&plan);
 
     // Build the Good Button + note messages up front (their address Strings allocate here).
-    let bright = [Message::new("/brightness", [Arg::Float(1.0)], 0)];
+    let bright = [Message::new("/brightness/in", Arg::F32(1.0), 0)];
     let note = [Message::new(
-        "/voicer/note",
-        [Arg::Float(57.0), Arg::Float(1.0)],
+        "/voicer/notes",
+        Note::new(Pitch::Absolute(57.0), 1.0),
         0,
     )];
 

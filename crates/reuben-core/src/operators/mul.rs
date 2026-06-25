@@ -9,17 +9,17 @@
 //!
 //! - input 0: `a` (`Float`) — first operand. Unwired default `1`.
 //! - input 1: `b` (`Float`) — second operand. Unwired default `1`.
-//! - output 0: `out` (`Float`) — `a * b`.
+//! - output 0: `out` (`Buffer`) — `a * b`.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025/0028). Both operands are materialized `Float`s defaulting to the
+// Single-source contract (ADR-0025/0030). Both operands are materialized `Float`s defaulting to the
 // multiplicative identity `1` (ADR-0029).
 crate::operator_contract!(Mul {
     inputs:  { a: float { -1_000_000.0..=1_000_000.0, default 1.0, "", lin },
                b: float { -1_000_000.0..=1_000_000.0, default 1.0, "", lin } },
-    outputs: { out: float },
+    outputs: { out: buffer },
 });
 
 /// The op's scalar math, written once (ADR-0029 pure-fn seam).
@@ -49,7 +49,7 @@ impl Operator for Mul {
             // the empty-slice (unwired) case, matching the declared default.
             let a = io.signal(IN_A).get(i).copied().unwrap_or(1.0);
             let b = io.signal(IN_B).get(i).copied().unwrap_or(1.0);
-            io.output(OUT_OUT)[i] = mul(a, b);
+            io.signal_mut(OUT_OUT)[i] = mul(a, b);
         }
     }
 
@@ -72,7 +72,7 @@ mod tests {
         {
             let inputs: Vec<Option<&[f32]>> = vec![a, b];
             let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let mut io = Io::new(SR, n, inputs, outs, &[], &[]);
+            let mut io = Io::new(SR, n, inputs, outs);
             Mul::new().process(&mut io);
         }
         out

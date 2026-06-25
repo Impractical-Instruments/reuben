@@ -128,7 +128,7 @@
       },
       "doc": "PUBLIC DJ filter knob. Identity pass-through over [-1,1]; rests at North = 0 (emitted on init so the chain and any control surface agree at rest). Send /filter_knob [-1..1].",
       "inputs": {
-        "default": 0.0,
+        "in": 0.0,
         "in_max": 1.0,
         "in_min": -1.0,
         "out_max": 1.0,
@@ -140,7 +140,6 @@
       "address": "/cv_position",
       "doc": "Smooth the knob into a CV signal feeding the djfilter position; default 0 (North) before any knob move.",
       "inputs": {
-        "default": 0.0,
         "in": {
           "from": "/filter_knob"
         },

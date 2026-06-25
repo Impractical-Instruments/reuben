@@ -9,18 +9,18 @@
 //! Voice always starts from the same point — reproducible renders (ADR-0010).
 //!
 //! - inputs: none.
-//! - output 0: `out` (`Float`) — uniform white noise in ~[-1, 1], roughly zero-mean.
+//! - output 0: `out` (`Buffer`) — uniform white noise in ~[-1, 1], roughly zero-mean.
 //! - params: none.
 //!
-//! Already shape-clean under ADR-0028 — no inputs, no params, so no `io.input`/`io.param` to
-//! migrate; the sweep only renames the output shape to `float`.
+//! No inputs, no params, so no reads to migrate (ADR-0030); the sweep renames the output to
+//! `buffer` and the write to `io.signal_mut`.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
+// Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Noise {
-    outputs: { out: float },
+    outputs: { out: buffer },
 });
 
 /// Fixed deterministic seed a fresh / spawned Noise starts from. Non-zero (xorshift can't leave
@@ -73,7 +73,7 @@ impl Operator for Noise {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        let out = io.output(OUT_OUT);
+        let out = io.signal_mut(OUT_OUT);
         for s in out.iter_mut().take(n) {
             *s = self.next_sample();
         }
@@ -99,8 +99,7 @@ mod tests {
         {
             let outs: Vec<&mut [f32]> = vec![&mut out[..]];
             let inputs: Vec<Option<&[f32]>> = vec![];
-            let params: [f32; 0] = [];
-            let mut io = Io::new(SR, n, inputs, outs, &params, &[]);
+            let mut io = Io::new(SR, n, inputs, outs);
             noise.process(&mut io);
         }
         out
@@ -170,8 +169,7 @@ mod tests {
         {
             let outs: Vec<&mut [f32]> = vec![&mut spawned_out[..]];
             let inputs: Vec<Option<&[f32]>> = vec![];
-            let params: [f32; 0] = [];
-            let mut io = Io::new(SR, 1_000, inputs, outs, &params, &[]);
+            let mut io = Io::new(SR, 1_000, inputs, outs);
             b.process(&mut io);
         }
         for i in 0..1_000 {

@@ -5,6 +5,7 @@
 use reuben_core::graph::Graph;
 use reuben_core::message::{Arg, Message};
 use reuben_core::operators::{OscOut, Oscillator, Output};
+use reuben_core::pitch::{Note, Pitch};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
 use reuben_core::AudioConfig;
@@ -28,14 +29,15 @@ fn forwards_input_to_outbound_stamped_with_node_address() {
     let mut master = vec![vec![0.0f32; 256]; plan.config.channels];
     let mut outbound: Vec<Message> = Vec::new();
 
-    // An external value addressed at the sink's whole-node address routes in as an event; the
-    // sink forwards it out, and the loop stamps the node address `/fb`.
-    let msgs = [Message::new("/fb", [Arg::Float(0.7)], 0)];
+    // An external Note addressed to the sink's `in` port routes in as an event; the sink forwards
+    // it out, and the loop stamps the node address `/fb` (the input's local address is dropped).
+    let note = Note::new(Pitch::Degree(0), 1.0);
+    let msgs = [Message::new("/fb/in", note, 0)];
     r.render_block_multi(&mut plan, &msgs, &mut master, &mut outbound);
 
     assert_eq!(outbound.len(), 1, "the sink forwarded one Message");
-    assert_eq!(outbound[0].addr, "/fb", "stamped with the node address");
-    assert_eq!(outbound[0].args.as_slice(), &[Arg::Float(0.7)]);
+    assert_eq!(outbound[0].address, "/fb", "stamped with the node address");
+    assert_eq!(outbound[0].arg, Arg::Note(note));
 }
 
 #[test]
@@ -60,12 +62,14 @@ fn outbound_appends_across_blocks() {
     let mut master = vec![vec![0.0f32; 256]; plan.config.channels];
     let mut outbound: Vec<Message> = Vec::new();
 
-    let a = [Message::new("/fb", [Arg::Float(1.0)], 0)];
-    let b = [Message::new("/fb", [Arg::Float(2.0)], 0)];
+    let note_a = Note::new(Pitch::Degree(1), 1.0);
+    let note_b = Note::new(Pitch::Degree(2), 1.0);
+    let a = [Message::new("/fb/in", note_a, 0)];
+    let b = [Message::new("/fb/in", note_b, 0)];
     r.render_block_multi(&mut plan, &a, &mut master, &mut outbound);
     r.render_block_multi(&mut plan, &b, &mut master, &mut outbound);
 
     assert_eq!(outbound.len(), 2, "appended, not cleared");
-    assert_eq!(outbound[0].args.as_slice(), &[Arg::Float(1.0)]);
-    assert_eq!(outbound[1].args.as_slice(), &[Arg::Float(2.0)]);
+    assert_eq!(outbound[0].arg, Arg::Note(note_a));
+    assert_eq!(outbound[1].arg, Arg::Note(note_b));
 }

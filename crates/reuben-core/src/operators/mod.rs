@@ -29,6 +29,7 @@ pub mod sample;
 pub mod sequencer;
 pub mod snap;
 pub mod strum;
+pub mod transpose;
 pub mod voicer;
 
 pub use add::Add;
@@ -56,4 +57,5 @@ pub use sample::SamplePlayer;
 pub use sequencer::Sequencer;
 pub use snap::Snap;
 pub use strum::Strum;
+pub use transpose::Transpose;
 pub use voicer::Voicer;

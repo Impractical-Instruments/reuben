@@ -19,7 +19,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::descriptor::{Descriptor, Shape};
+use crate::descriptor::{Descriptor, PortType};
 use crate::graph::Graph;
 use crate::registry::Registry;
 use crate::resources::{ResolvedRefs, ResourceResolver, ResourceStore, SampleBuffer, SampleId};
@@ -155,13 +155,14 @@ pub enum LoadError {
     /// A wire-ref uses the sole-output sugar (`"/node"`) but the source has more than one output,
     /// so the intended port is ambiguous.
     AmbiguousWire { node: String, reference: String },
-    /// A wire joins two ports of different [`Shape`]s (e.g. `Float` → `Note`) — the one illegal
-    /// wiring (ADR-0028), replacing the old Signal-vs-Message `PortKind` check.
+    /// A wire joins two ports of incompatible [`PortType`]s (e.g. `Note` → `Buffer`) — the illegal
+    /// wiring (ADR-0030). Equal types are fine, and an `F32` source into a `Buffer` port is the one
+    /// implicit ZOH bridge; everything else is rejected here.
     ShapeMismatch {
         from: String,
-        from_shape: Shape,
+        from_shape: PortType,
         to: String,
-        to_shape: Shape,
+        to_shape: PortType,
     },
     /// A node carries a `sample` reference but its operator declares no such resource slot
     /// (ADR-0016) — a structural misuse, fatal like the other wiring errors.
@@ -444,14 +445,23 @@ impl InstrumentDoc {
                 let (src_key, src_desc) = lookup(&by_addr, src_addr)?;
                 let src_port = resolve_out_port(src_desc, &n.address, from, src_port_name)?;
 
-                let from_shape = src_desc.outputs[src_port].shape;
-                let to_shape = dst_desc.inputs[dst_port].shape;
-                if from_shape != to_shape {
+                let from_ty = &src_desc.outputs[src_port].ty;
+                let to_ty = &dst_desc.inputs[dst_port].ty;
+                // Equal types wire directly. `F32` and `Buffer` interconvert (ADR-0030): an `F32`
+                // source into a `Buffer` port ZOH-materializes, and a `Buffer` source into an `F32`
+                // control port is shared and read per-sample via `io.signal` (the
+                // `voicer.freq -> osc.freq` CV path). Anything else is illegal.
+                let compatible = from_ty == to_ty
+                    || matches!(
+                        (from_ty, to_ty),
+                        (PortType::F32, PortType::Buffer) | (PortType::Buffer, PortType::F32)
+                    );
+                if !compatible {
                     return Err(LoadError::ShapeMismatch {
                         from: format!("{}.{}", src_addr, src_desc.outputs[src_port].name),
-                        from_shape,
+                        from_shape: from_ty.clone(),
                         to: format!("{}.{}", n.address, name),
-                        to_shape,
+                        to_shape: to_ty.clone(),
                     });
                 }
                 graph.connect(src_key, src_port, dst_key, dst_port);
@@ -510,8 +520,7 @@ impl InstrumentDoc {
                 // `Enum` input overrides save as the variant **symbol** (the primary wire form).
                 for &(port, idx) in &node.enum_overrides {
                     let sym = d.inputs[port]
-                        .enum_meta
-                        .as_ref()
+                        .enum_meta()
                         .and_then(|e| e.variants.get(idx))
                         .copied()
                         .unwrap_or_default();

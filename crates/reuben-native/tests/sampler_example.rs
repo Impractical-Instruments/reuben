@@ -3,7 +3,8 @@
 
 use std::path::PathBuf;
 
-use reuben_core::message::{Arg, Message};
+use reuben_core::message::Message;
+use reuben_core::pitch::{Note, Pitch};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
 use reuben_core::{load_instrument, AudioConfig, Registry};
@@ -40,8 +41,8 @@ fn sampler_loads_resolves_wav_and_plays_a_note() {
     for b in 0..blocks {
         let msgs: Vec<Message> = if b == 0 {
             vec![Message::new(
-                "/voicer/note",
-                [Arg::Float(57.0), Arg::Float(1.0)],
+                "/voicer/notes",
+                Note::new(Pitch::Absolute(57.0), 1.0),
                 0,
             )]
         } else {
@@ -122,8 +123,8 @@ fn missing_sample_warns_but_still_loads() {
     r.render_block(
         &mut plan,
         &[Message::new(
-            "/voicer/note",
-            [Arg::Float(60.0), Arg::Float(1.0)],
+            "/voicer/notes",
+            Note::new(Pitch::Absolute(60.0), 1.0),
             0,
         )],
         &mut buf,

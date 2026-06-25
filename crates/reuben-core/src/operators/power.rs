@@ -9,8 +9,8 @@
 //! no silence floor to fudge. Patch it between an `envelope` and a `mul`: `env.cv -> power.x`,
 //! `power.out -> mul`, audio -> the other `mul` input.
 //!
-//! Shape model (ADR-0028/0029): both inputs are materialized **`Float`** inputs owning their
-//! unwired defaults. `exponent` is read once **block-rate** via `io.value` (the curve shape is held
+//! Shape model (ADR-0029/0030): both inputs are materialized **`Float`** inputs owning their
+//! unwired defaults. `exponent` is read once **block-rate** via `io.last` (the curve shape is held
 //! for the call, not swept per sample). `x` is read per-sample. Uniform with the rest of the math
 //! family — no bare ports, no param slot (ADR-0029). The curve-op precedent: future shapes
 //! (`logarithmic`, …) follow this exact shape (dense `Float`, a block-rate shaping operand, op-local
@@ -20,17 +20,17 @@
 //!   fractional exponent never yields NaN). Unwired default 0.
 //! - input 1: `exponent` (`Float`) — the power. Default 2 (a musical amplitude curve); 1 is a
 //!   pass-through.
-//! - output 0: `out` (`Float`) — `x^exponent`.
+//! - output 0: `out` (`Buffer`) — `x^exponent`.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor. Both
+// Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor. Both
 // inputs are materialized `Float`s with declared defaults (ADR-0029); `x` defaults to 0.
 crate::operator_contract!(Power {
     inputs:  { x:        float { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
                exponent: float { 0.0..=8.0,                  default 2.0, "", lin } },
-    outputs: { out: float },
+    outputs: { out: buffer },
 });
 
 /// The op's scalar math, written once (ADR-0029 pure-fn seam): a unipolar power curve. The
@@ -57,14 +57,14 @@ impl Operator for Power {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        // `exponent` is a materialized `Float`; read it once block-rate — the curve shape is held
-        // for the call, not swept per sample (ADR-0029).
-        let exponent = io.value(IN_EXPONENT);
+        // `exponent` is a materialized `Float`; read its held (ZOH) value once block-rate — the
+        // curve shape is held for the call, not swept per sample (ADR-0029/0030).
+        let exponent = io.last::<f32>(IN_EXPONENT).unwrap_or(2.0);
         for i in 0..n {
             // `x` is a materialized `Float` (always a buffer in production); `unwrap_or(0.0)` is the
             // declared default for the empty-slice (unwired) case. The clamp lives in `shape`.
             let x = io.signal(IN_X).get(i).copied().unwrap_or(0.0);
-            io.output(OUT_OUT)[i] = shape(x, exponent);
+            io.signal_mut(OUT_OUT)[i] = shape(x, exponent);
         }
     }
 
@@ -78,22 +78,22 @@ crate::register_operator!(Power);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message::Arg;
     use approx::assert_abs_diff_eq;
 
     const SR: f32 = 48_000.0;
 
-    /// Run `power` over one block with the given input and exponent; returns `out`. `x` and
-    /// `exponent` are `Float` inputs now (ADR-0028), supplied as the per-sample buffers the engine
-    /// would materialize (port order: x, exponent).
+    /// Run `power` over one block with the given input and exponent; returns `out`. `x` is a
+    /// per-sample `Float` buffer; `exponent` is read block-rate via `io.last`, so it is supplied as
+    /// the held (ZOH) latch (ADR-0030; port order: x, exponent).
     fn run(x: Option<&[f32]>, exponent: f32) -> Vec<f32> {
         let n = x.map_or(4, <[f32]>::len);
         let mut out = vec![0.0f32; n];
-        let exp_buf = vec![exponent; n];
-        let params: [f32; 0] = [];
+        let latched = [Arg::F32(0.0), Arg::F32(exponent)];
         {
-            let inputs: Vec<Option<&[f32]>> = vec![x, Some(&exp_buf[..])];
+            let inputs: Vec<Option<&[f32]>> = vec![x, None];
             let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let mut io = Io::new(SR, n, inputs, outs, &params, &[]);
+            let mut io = Io::new(SR, n, inputs, outs).with_latched(&latched);
             Power::new().process(&mut io);
         }
         out
@@ -164,12 +164,12 @@ mod tests {
         let x = [0.2, 0.6, 1.0];
         let direct = run(Some(&x), 3.0);
         let mut out = vec![0.0f32; x.len()];
-        let exp_buf = vec![3.0f32; x.len()];
+        let latched = [Arg::F32(0.0), Arg::F32(3.0)];
         {
             let spawned = Power::new().spawn();
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&x), Some(&exp_buf[..])];
+            let inputs: Vec<Option<&[f32]>> = vec![Some(&x), None];
             let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let mut io = Io::new(SR, x.len(), inputs, outs, &[], &[]);
+            let mut io = Io::new(SR, x.len(), inputs, outs).with_latched(&latched);
             let mut op = spawned;
             op.process(&mut io);
         }

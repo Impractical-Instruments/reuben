@@ -4,7 +4,8 @@
 
 use std::path::PathBuf;
 
-use reuben_core::{load, Arg, AudioConfig, Message, Plan};
+use reuben_core::pitch::{Note, Pitch};
+use reuben_core::{load, AudioConfig, Message, Plan};
 use reuben_native::Engine;
 
 fn instruments_dir() -> PathBuf {
@@ -22,8 +23,8 @@ fn stereo_autopan_plays_in_motion_across_two_channels() {
     let mut engine = Engine::new(plan);
     assert_eq!(engine.channels(), 2);
     engine.queue(Message::new(
-        "/voicer/note",
-        [Arg::Float(69.0), Arg::Float(1.0)],
+        "/voicer/notes",
+        Note::new(Pitch::Absolute(69.0), 1.0),
         0,
     ));
 

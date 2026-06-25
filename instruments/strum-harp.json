@@ -10,7 +10,7 @@
       },
       "doc": "PUBLIC strum bar. Identity [0,1] pass-through; its position streams to the strum op. Send /strum_bar [0..1] (the fader). Rests at 0.0 (bottom string) so no note fires at load.",
       "inputs": {
-        "default": 0.0
+        "in": 0.0
       },
       "type": "map"
     },
@@ -150,7 +150,7 @@
       },
       "doc": "PUBLIC Good Button. Identity [0,1]; fanned to the two ranged maps below. Send /brightness [0..1]. Rests at 0.6 so the plucks are bright at load.",
       "inputs": {
-        "default": 0.6
+        "in": 0.6
       },
       "type": "map"
     },
@@ -183,7 +183,6 @@
       "address": "/cv_cutoff",
       "doc": "Smooth the mapped cutoff into a CV signal; default 4000 Hz before any knob move.",
       "inputs": {
-        "default": 4000.0,
         "in": {
           "from": "/map_cutoff"
         },
@@ -196,7 +195,6 @@
       "address": "/cv_res",
       "doc": "Smooth the mapped resonance into a CV signal; default 0.3.",
       "inputs": {
-        "default": 0.3,
         "in": {
           "from": "/map_res"
         },

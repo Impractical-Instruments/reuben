@@ -9,19 +9,25 @@
 //! To intentionally re-bless after a deliberate descriptor change: `REUBEN_BLESS=1 cargo test -p
 //! reuben-core --test descriptor_golden`.
 
-use reuben_core::descriptor::{Curve, Descriptor, LaneRule, Shape};
+use reuben_core::descriptor::{Curve, Descriptor, LaneRule, PortType};
 use reuben_core::registry::Registry;
 
-/// The legacy carrier word for a bare port's [`Shape`] — kept stable so the golden snapshot
-/// stays byte-identical now that `PortKind` is retired (ADR-0028). Materialized Float and Enum
-/// inputs render via their own branches; this names the carrier-style ports (audio Float,
-/// Note, Harmony).
-fn kind(s: Shape) -> &'static str {
-    match s {
-        Shape::Float => "signal",
-        Shape::Enum => "enum",
-        Shape::Note => "message",
-        Shape::Harmony => "context",
+/// The carrier word for a bare port's [`PortType`] (ADR-0030). Materialized `float` and `enum`
+/// **inputs** render via their own branches (`meta` / `enum_meta`); this names the carrier-style
+/// ports: a `buffer` audio wire ("signal"), `Note` ("message"), `Harmony` ("context"), and an enum
+/// **output** ("enum", none today).
+fn kind(ty: &PortType) -> &'static str {
+    match ty {
+        PortType::Buffer => "signal",
+        PortType::Vocab { name: "Note", .. } => "message",
+        PortType::Vocab {
+            name: "Harmony", ..
+        } => "context",
+        PortType::Vocab {
+            enum_meta: Some(_), ..
+        } => "enum",
+        // A bare F32/I32/Str with no `meta` falls back to the signal word.
+        _ => "signal",
     }
 }
 
@@ -41,7 +47,7 @@ fn render(d: &Descriptor) -> String {
         // the snapshot captures the default/range that used to live on a same-named param. An
         // `Enum` input renders its ordered variants + default index. Legacy signal/message/context
         // inputs (no `meta`/`enum_meta`) render byte-identically to before.
-        match (&p.meta, &p.enum_meta) {
+        match (&p.meta, p.enum_meta()) {
             (Some(m), _) => s.push_str(&format!(
                 "  in[{i}] float {} min={:?} max={:?} default={:?} unit={:?} curve={}\n",
                 p.name,
@@ -55,11 +61,11 @@ fn render(d: &Descriptor) -> String {
                 "  in[{i}] enum {} variants={:?} default={}\n",
                 p.name, e.variants, e.default
             )),
-            (None, None) => s.push_str(&format!("  in[{i}] {} {}\n", kind(p.shape), p.name)),
+            (None, None) => s.push_str(&format!("  in[{i}] {} {}\n", kind(&p.ty), p.name)),
         }
     }
     for (i, p) in d.outputs.iter().enumerate() {
-        s.push_str(&format!("  out[{i}] {} {}\n", kind(p.shape), p.name));
+        s.push_str(&format!("  out[{i}] {} {}\n", kind(&p.ty), p.name));
     }
     for (i, p) in d.params.iter().enumerate() {
         s.push_str(&format!(
@@ -91,19 +97,16 @@ fn render_all() -> String {
         .collect()
 }
 
-/// The formatter renders an ADR-0028 `Enum` input (variants + default) — exercised here on a
-/// synthetic descriptor because no built-in operator declares an `Enum` until the Phase 2 sweep.
-/// This keeps the golden *machinery* ready before any real descriptor changes (and re-blesses).
+/// The formatter renders an `enum` input (variants + default) — exercised on a synthetic
+/// descriptor built off a shared vocab type's [`enum_meta`](reuben_core::vocab::FilterMode::enum_meta)
+/// (ADR-0030: enum metadata is single-sourced from the type, never hand-built).
 #[test]
 fn renders_enum_input_line() {
-    use reuben_core::descriptor::{Descriptor, EnumMeta, LaneRule, Port};
+    use reuben_core::descriptor::{Descriptor, LaneRule, Port};
+    use reuben_core::vocab::FilterMode;
     let d = Descriptor {
         type_name: "demo",
-        inputs: vec![Port::enumerated(EnumMeta {
-            name: "mode",
-            variants: &["Lp", "Hp", "Bp"],
-            default: 0,
-        })],
+        inputs: vec![Port::enumerated(FilterMode::enum_meta("mode"))],
         outputs: vec![],
         params: vec![],
         resources: vec![],

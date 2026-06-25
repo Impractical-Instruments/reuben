@@ -25,6 +25,7 @@ use std::thread;
 
 use clap::{Parser, Subcommand};
 
+use reuben_core::boundary;
 use reuben_core::message::Message;
 use reuben_core::plan::Plan;
 use reuben_core::{load_instrument, Registry};
@@ -248,11 +249,16 @@ fn play(path: Option<PathBuf>, osc_out_target: Option<String>) {
         println!("OSC-out sending to {target}");
         let (out_tx, out_rx) = mpsc::channel::<Message>();
         thread::spawn(move || {
+            // Each outbound Message carries one typed Arg; expand it to the flat OSC primitive form
+            // (ADR-0030 boundary) before encoding the datagram.
+            let mut flat = Vec::new();
             for m in out_rx {
-                match osc::encode(&m.addr, &m.args) {
+                flat.clear();
+                boundary::osc_out_args(&m.arg, &mut flat);
+                match osc::encode(&m.address, &flat) {
                     Ok(bytes) => {
                         if log_osc {
-                            println!("send {} {:?}", m.addr, m.args.as_slice());
+                            println!("send {} {:?}", m.address, flat);
                         }
                         let _ = socket.send(&bytes);
                     }
@@ -277,7 +283,7 @@ fn play(path: Option<PathBuf>, osc_out_target: Option<String>) {
                     Ok(msgs) => {
                         for m in msgs {
                             if log_osc {
-                                println!("recv {} {:?}", m.addr, m.args.as_slice());
+                                println!("recv {} {:?}", m.address, m.args.as_slice());
                             }
                             let _ = tx.send(m);
                         }

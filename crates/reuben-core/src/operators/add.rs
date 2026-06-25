@@ -10,17 +10,17 @@
 //!
 //! - input 0: `a` (`Float`) — first operand. Unwired default `0`.
 //! - input 1: `b` (`Float`) — second operand. Unwired default `0`.
-//! - output 0: `out` (`Float`) — `a + b`.
+//! - output 0: `out` (`Buffer`) — `a + b`.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor. Both
+// Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor. Both
 // operands are materialized `Float`s defaulting to the additive identity `0` (ADR-0029).
 crate::operator_contract!(Add {
     inputs:  { a: float { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
                b: float { -1_000_000.0..=1_000_000.0, default 0.0, "", lin } },
-    outputs: { out: float },
+    outputs: { out: buffer },
 });
 
 /// The op's scalar math, written once (ADR-0029 pure-fn seam). A future sparse/`Note`-field shell
@@ -52,7 +52,7 @@ impl Operator for Add {
             // is also the declared default — so the descriptor and the loop never disagree.
             let a = io.signal(IN_A).get(i).copied().unwrap_or(0.0);
             let b = io.signal(IN_B).get(i).copied().unwrap_or(0.0);
-            io.output(OUT_OUT)[i] = add(a, b);
+            io.signal_mut(OUT_OUT)[i] = add(a, b);
         }
     }
 
@@ -77,7 +77,7 @@ mod tests {
         {
             let inputs: Vec<Option<&[f32]>> = vec![a, b];
             let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let mut io = Io::new(SR, n, inputs, outs, &[], &[]);
+            let mut io = Io::new(SR, n, inputs, outs);
             Add::new().process(&mut io);
         }
         out

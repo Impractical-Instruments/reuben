@@ -1446,7 +1446,7 @@
               "inputs": {
                 "additionalProperties": false,
                 "properties": {
-                  "default": {
+                  "in": {
                     "oneOf": [
                       {
                         "default": 0.0,
@@ -1470,36 +1470,18 @@
                       }
                     ]
                   },
-                  "in": {
-                    "oneOf": [
-                      {
-                        "additionalProperties": false,
-                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
-                        "properties": {
-                          "from": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "from"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
                   "mode": {
                     "oneOf": [
                       {
                         "enum": [
-                          "Snap",
-                          "Slew",
                           "Smooth",
+                          "Slew",
                           "Glide"
                         ],
                         "type": "string"
                       },
                       {
-                        "maximum": 3,
+                        "maximum": 2,
                         "minimum": 0,
                         "type": "integer"
                       },
@@ -1622,7 +1604,7 @@
                       }
                     ]
                   },
-                  "default": {
+                  "in": {
                     "oneOf": [
                       {
                         "default": 0.0,
@@ -1631,23 +1613,6 @@
                         "minimum": -1000000.0,
                         "type": "number"
                       },
-                      {
-                        "additionalProperties": false,
-                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
-                        "properties": {
-                          "from": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "from"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  "in": {
-                    "oneOf": [
                       {
                         "additionalProperties": false,
                         "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
@@ -2013,13 +1978,6 @@
                 "properties": {
                   "audio": {
                     "oneOf": [
-                      {
-                        "default": 0.0,
-                        "description": "unit: , curve: Linear",
-                        "maximum": 1.0,
-                        "minimum": -1.0,
-                        "type": "number"
-                      },
                       {
                         "additionalProperties": false,
                         "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
@@ -3131,6 +3089,13 @@
                   "position": {
                     "oneOf": [
                       {
+                        "default": 0.0,
+                        "description": "unit: , curve: Linear",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
                         "additionalProperties": false,
                         "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
                         "properties": {
@@ -3178,6 +3143,74 @@
                         "minimum": 0.0,
                         "type": "number"
                       },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "transpose"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "inputs": {
+                "additionalProperties": false,
+                "properties": {
+                  "amount": {
+                    "oneOf": [
+                      {
+                        "default": 0.0,
+                        "description": "unit: steps, curve: Linear",
+                        "maximum": 48.0,
+                        "minimum": -48.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "notes": {
+                    "oneOf": [
                       {
                         "additionalProperties": false,
                         "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
@@ -3327,6 +3360,7 @@
             "sequencer",
             "snap",
             "strum",
+            "transpose",
             "voicer"
           ]
         }

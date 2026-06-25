@@ -423,7 +423,7 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
 
 /// Local address of `addr` relative to `node_addr`, if `addr` targets that node.
 /// `/osc/freq` under `/osc` -> `freq`; `/osc` under `/osc` -> `` (whole-node).
-fn local_address<'a>(addr: &'a str, node_addr: &str) -> Option<&'a str> {
+pub(crate) fn local_address<'a>(addr: &'a str, node_addr: &str) -> Option<&'a str> {
     if addr == node_addr {
         return Some("");
     }
@@ -485,6 +485,10 @@ fn process_node(
         }
         target[cursor..block_size].fill(v);
         node.input_latches[port] = v;
+        // Keep the Arg latch in sync so `io.last::<f32>` on this F32 control reflects the change
+        // (ADR-0030): the materialized buffer is the sample-accurate path, the latch the ZOH read.
+        // A Buffer port carries no meaningful `io.last`, so the (harmless) write is ignored there.
+        node.latch[port] = Arg::F32(v);
         node.varying[port] = true;
         node.materialize_clean[k] = false;
     }

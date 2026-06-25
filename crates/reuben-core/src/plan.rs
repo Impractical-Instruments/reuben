@@ -22,7 +22,7 @@ use crate::config::AudioConfig;
 use crate::descriptor::{Descriptor, LaneRule, Port, PortType};
 use crate::graph::{Graph, NodeKey};
 use crate::harmony::Harmony;
-use crate::message::Arg;
+use crate::message::{Arg, Message};
 use crate::operator::Operator;
 
 /// How the engine treats an input port (ADR-0030), derived from its [`PortType`]:
@@ -39,11 +39,13 @@ pub enum PortKind {
     Stream,
 }
 
-/// Classify an input/output port (ADR-0030). A `Buffer` is Dense; a `Note` (struct vocab that
-/// isn't `Harmony`) is a Stream event; everything else — scalars, enums, `Harmony` — is Held.
+/// Classify an input/output port (ADR-0030). A `Buffer` or `F32` (float control) is Dense — both
+/// present a per-sample buffer to `io.signal`, so a mid-block change writes into that buffer at its
+/// frame (the F32 latch read by `io.last` is kept in sync from the same fill). A `Note` (struct
+/// vocab that isn't `Harmony`) is a Stream event; everything else — enums, `Harmony` — is Held.
 pub fn port_kind(p: &Port) -> PortKind {
     match &p.ty {
-        PortType::Buffer => PortKind::Dense,
+        PortType::Buffer | PortType::F32 => PortKind::Dense,
         PortType::Vocab {
             enum_meta: None,
             name,
@@ -182,6 +184,31 @@ pub enum PlanError {
 }
 
 impl Plan {
+    /// Convert an inbound OSC datagram — an address plus a flat list of primitive `Arg`s — into the
+    /// single typed [`Message`] it routes to, driven by the **destination port's Arg type**
+    /// (ADR-0030, the boundary). Matches the address to a node by prefix and to an input port by
+    /// name (the same rule the render path uses), then calls [`crate::boundary::osc_in_arg`] with
+    /// that port's [`PortType`] to type the flat args. `None` if no node/port matches or the args
+    /// don't fit the port. External OSC carries no timestamp, so the Message is stamped frame 0
+    /// ("now").
+    pub fn osc_in_message(&self, address: &str, args: &[Arg]) -> Option<Message> {
+        for node in &self.nodes {
+            let Some(local) = crate::render::local_address(address, &node.address) else {
+                continue;
+            };
+            // The address targets this node; a message routes to at most one node, so this node
+            // decides the outcome whether or not a port matches.
+            let arg = node
+                .descriptor
+                .inputs
+                .iter()
+                .find(|p| p.name == local)
+                .and_then(|p| crate::boundary::osc_in_arg(&p.ty, args))?;
+            return Some(Message::new(address, arg, 0));
+        }
+        None
+    }
+
     /// Instantiate a Graph into an executable Plan (the construction sub-step of a Swap).
     pub fn instantiate(mut graph: Graph, mut config: AudioConfig) -> Result<Plan, PlanError> {
         let order = topo_order(&graph)?;
@@ -285,10 +312,18 @@ impl Plan {
             // scratch buffer (the one implicit ZOH bridge); Held / Stream inputs carry no buffer.
             let mut inputs: Vec<Option<Vec<usize>>> = Vec::with_capacity(n_inputs);
             let mut materialize: Vec<(usize, usize)> = Vec::new();
-            let mut input_latches: Vec<f32> = vec![0.0; n_inputs];
+            // The f32 materialize lane seeds from the same per-port latch (ADR-0030): a Float input's
+            // scratch buffer fills ZOH from its (override-or-default) value on the first block, not
+            // from 0.0. Non-F32 ports leave an unused 0.0 (they carry no materialize buffer).
+            let input_latches: Vec<f32> = latch.iter().map(|a| a.as_f32().unwrap_or(0.0)).collect();
             let varying: Vec<bool> = vec![true; n_inputs];
             for (port, p) in descriptor.inputs.iter().enumerate() {
-                if !matches!(p.ty, PortType::Buffer) {
+                // Buffer and F32 (float control) inputs both present a per-sample buffer to
+                // `io.signal` (ADR-0030): wired to a Buffer source they share it zero-copy;
+                // otherwise (unwired, or fed by a scalar) the engine materializes a scratch filled
+                // ZOH from the latch. Vocab inputs (enum / Note / Harmony) carry no buffer — they
+                // are read via `io.last` / `io.stream`.
+                if !matches!(p.ty, PortType::Buffer | PortType::F32) {
                     inputs.push(None);
                     continue;
                 }

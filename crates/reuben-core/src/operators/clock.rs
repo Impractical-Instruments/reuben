@@ -6,34 +6,35 @@
 //! OSC arrival times can't honestly give us. It provides *timing only* (tempo + beat grid +
 //! position); groove, swing, and meter are separate concerns (ADR-0006).
 //!
-//! - input 0: `sync` (Message) — control events by address routing, read via
-//!   [`crate::operator::Io::events`]; this port is documentary (no Signal edge). The
-//!   `reset` event re-zeroes the phase at its (sample-accurate) frame, locating position 1.
-//! - output 0: `phase` (Signal) — beat phasor, a [0, 1) sawtooth that wraps once per beat.
+//! - input 0: `sync` (`Note` event) — a trigger port (ADR-0030): **any** event re-zeroes the
+//!   phase at its (sample-accurate) frame, locating position 1. Read via `io.stream` — the port,
+//!   not the address, identifies it, so there is no address-filtering.
+//! - output 0: `phase` (`Buffer`) — beat phasor, a [0, 1) sawtooth that wraps once per beat.
 //!   **Unaffected by `division`** — it is always the once-per-beat phasor.
-//! - output 1: `gate` (Signal) — 1.0 for the first half of each **1/`division` sub-beat**, else
+//! - output 1: `gate` (`Buffer`) — 1.0 for the first half of each **1/`division` sub-beat**, else
 //!   0.0; its rising edge is a sample-accurate trigger. At the default `division` 1 this is the
 //!   original once-per-beat gate, high for the first half of the beat. At `division` N the gate
 //!   pulses N times per beat — a 16th-note grid is `division` 4 (ADR-0022, the thin slice of
 //!   ADR-0006's deferred subdivision).
-//! - input 1: `tempo` (`Float`, BPM) — read block-rate via `io.value`.
+//! - input 1: `tempo` (`Float`, BPM) — read block-rate via `io.last`.
 //! - input 2: `division` (`Float`) — gate subdivisions per beat (1 = once per beat, default;
-//!   4 = 16ths), read block-rate via `io.value`.
+//!   4 = 16ths), read block-rate via `io.last`.
 //!
-//! `tempo`/`division` are `Float` inputs (ADR-0028): read block-rate, so a change block-slices and
+//! `tempo`/`division` are `Float` inputs: read block-rate (held), so a change block-slices and
 //! takes effect at the exact sample of the change — and each can now be *wired* and modulated.
 
 use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
+use crate::pitch::Note;
 
-// Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.
+// Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Clock {
-    inputs:  { sync: message,
+    inputs:  { sync: note,
                tempo:    float { 1.0..=999.0, default 120.0, "BPM", lin },
                division: float { 1.0..=64.0,  default 1.0,   "",    lin } },
-    outputs: { phase: float, gate: float },
+    outputs: { phase: buffer, gate: buffer },
 });
 
 #[derive(Default)]
@@ -61,19 +62,20 @@ impl Operator for Clock {
 
         // Beats advanced per sample. Tempo is constant for this (sub)block (block-sliced).
         let dt: f64 = if sample_rate > 0.0 {
-            (io.value(IN_TEMPO).max(0.0) as f64 / 60.0) / sample_rate as f64
+            (io.last::<f32>(IN_TEMPO).unwrap_or(120.0).max(0.0) as f64 / 60.0) / sample_rate as f64
         } else {
             0.0
         };
         // Gate subdivisions per beat. division 1 = the original once-per-beat gate; N pulses N
         // times per beat. Rounded and floored at 1 so it never collapses the gate.
-        let division = (io.value(IN_DIVISION).round() as f64).max(1.0);
+        let division = (io.last::<f32>(IN_DIVISION).unwrap_or(1.0).round() as f64).max(1.0);
 
-        // Reset frames within this (sub)block, sorted. A `reset` event re-zeroes the phase
-        // at its exact sample — sample-accurate position locate.
+        // Reset frames within this (sub)block, sorted. Any `sync` event re-zeroes the phase at its
+        // exact sample (ADR-0030: the port identifies it, payload ignored) — a sample-accurate
+        // position locate.
         let mut resets: SmallVec<[usize; 4]> = SmallVec::new();
-        for ev in io.events() {
-            if ev.addr == "reset" && ev.frame < n {
+        for ev in io.stream::<Note>(IN_SYNC) {
+            if ev.frame < n {
                 resets.push(ev.frame);
             }
         }
@@ -86,7 +88,7 @@ impl Operator for Clock {
 
         let end;
         {
-            let out = io.output(OUT_PHASE);
+            let out = io.signal_mut(OUT_PHASE);
             let mut phase = start;
             let mut ri = 0;
             for (i, s) in out.iter_mut().enumerate().take(n) {
@@ -106,7 +108,7 @@ impl Operator for Clock {
             end = phase;
         }
         {
-            let out = io.output(OUT_GATE);
+            let out = io.signal_mut(OUT_GATE);
             let mut phase = start;
             let mut ri = 0;
             for (i, s) in out.iter_mut().enumerate().take(n) {
@@ -142,8 +144,14 @@ mod tests {
     use super::*;
     use crate::message::{Arg, Event, Message};
     use crate::operator::Io;
+    use crate::pitch::Pitch;
 
     const SR: f32 = 48_000.0;
+
+    /// A bare `sync` trigger event at `frame` — the payload is ignored, so any Note works.
+    fn sync(frame: usize) -> Message {
+        Message::new("sync", Note::new(Pitch::Degree(0), 1.0), frame)
+    }
 
     /// Run `clock` over one block of `n` frames at `tempo` (division 1), with optional reset
     /// events. Returns the (phase, gate) buffers.
@@ -164,22 +172,22 @@ mod tests {
         let evs: Vec<Event> = events
             .iter()
             .map(|m| Event {
-                addr: &m.addr,
-                args: &m.args,
+                address: &m.address,
+                arg: &m.arg,
                 frame: m.frame,
             })
             .collect();
-        // tempo/division are `Float` inputs now (ADR-0028) — supply the per-sample buffers the
-        // engine would materialize, in port order (sync, tempo, division). `sync` is a message
-        // input (no Signal buffer); events are delivered via the events arg.
-        let tempo_buf = vec![tempo; n];
-        let division_buf = vec![division; n];
+        // tempo/division are held `Float` inputs (ADR-0030) — supply via the per-input latch, in
+        // port order (sync, tempo, division). `sync` is a `Note` event input — its events ride the
+        // stream; tempo/division carry no buffer.
+        let latched = [Arg::F32(0.0), Arg::F32(tempo), Arg::F32(division)];
+        let streams: [&[Event]; 3] = [&evs[..], &[], &[]];
         {
             let outs: Vec<&mut [f32]> = vec![&mut phase[..], &mut gate[..]];
-            let inputs: Vec<Option<&[f32]>> =
-                vec![None, Some(&tempo_buf[..]), Some(&division_buf[..])];
-            let params: [f32; 0] = [];
-            let mut io = Io::new(SR, n, inputs, outs, &params, &evs);
+            let inputs: Vec<Option<&[f32]>> = vec![None, None, None];
+            let mut io = Io::new(SR, n, inputs, outs)
+                .with_latched(&latched)
+                .with_streams(&streams);
             clock.process(&mut io);
         }
         (phase, gate)
@@ -262,7 +270,7 @@ mod tests {
         let n = 16_000;
         let r = 15_000;
         let mut c = Clock::new();
-        let reset = vec![Message::new("reset", [Arg::Float(0.0)], r)];
+        let reset = vec![sync(r)];
         let (phase, gate) = run(&mut c, n, 120.0, &reset);
 
         assert!(
@@ -284,10 +292,9 @@ mod tests {
         let mut gate = [0.0f32; 1];
         {
             let outs: Vec<&mut [f32]> = vec![&mut phase[..], &mut gate[..]];
-            let (tempo, division) = ([120.0f32], [1.0f32]);
-            let inputs: Vec<Option<&[f32]>> = vec![None, Some(&tempo[..]), Some(&division[..])];
-            let params: [f32; 0] = [];
-            let mut io = Io::new(SR, 1, inputs, outs, &params, &[]);
+            let latched = [Arg::F32(0.0), Arg::F32(120.0), Arg::F32(1.0)];
+            let inputs: Vec<Option<&[f32]>> = vec![None, None, None];
+            let mut io = Io::new(SR, 1, inputs, outs).with_latched(&latched);
             b.process(&mut io);
         }
         assert_eq!(phase[0], 0.0, "spawned clock starts fresh at phase 0");
