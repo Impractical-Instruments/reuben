@@ -67,14 +67,14 @@ pub struct PlanNode {
     /// node indices (into [`Plan::nodes`]) that receive its emissions. Empty for a node
     /// with no Message outputs.
     pub msg_targets: Vec<Vec<usize>>,
-    /// Context-edge routing (ADR-0015): for each Context input port (Context-input ordinal
-    /// order — the index [`crate::operator::Io::context`] uses), the source's context-arena
-    /// slot, or `None` if unconnected (reads the default context). Followers read here.
+    /// Harmony-edge routing (ADR-0015): for each Harmony input port (Harmony-input ordinal
+    /// order — the index [`crate::operator::Io::harmony`] uses), the source's context-arena
+    /// slot, or `None` if unconnected (reads the default harmony). Followers read here.
     pub context_inputs: Vec<Option<usize>>,
-    /// For each Context output port (Context-output ordinal order — the index
-    /// [`crate::operator::Io::publish_context`] uses), this node's context-arena slot.
+    /// For each Harmony output port (Harmony-output ordinal order — the index
+    /// [`crate::operator::Io::publish_harmony`] uses), this node's context-arena slot.
     pub context_outputs: Vec<usize>,
-    /// For each Context output port, the node indices that read it — so a publish re-slices
+    /// For each Harmony output port, the node indices that read it — so a publish re-slices
     /// them (the third route lane). Sibling of `msg_targets`.
     pub ctx_targets: Vec<Vec<usize>>,
 }
@@ -99,7 +99,7 @@ pub struct Plan {
     /// (ADR-0028). Render skips these in its per-block "fresh edge buffers" clear, so a held Float
     /// input's buffer persists and need not be re-written every block (see `materialize_clean`).
     pub materialize_scratch_mask: Vec<bool>,
-    /// Total number of context-arena slots (one per Context output port; ADR-0015).
+    /// Total number of context-arena slots (one per Harmony output port; ADR-0015).
     pub num_context_slots: usize,
     /// Master taps, summed into the per-channel master output (ADR-0026).
     pub output_taps: Vec<OutputTap>,
@@ -175,7 +175,7 @@ impl Plan {
             })
             .collect();
 
-        // Assign a context-arena slot per (node, Context output port). Independent of Lanes
+        // Assign a context-arena slot per (node, Harmony output port). Independent of Lanes
         // (context is single-Lane, pre-fan-out; ADR-0015). `src_port` here is the full port
         // index, matching how connections reference ports.
         let mut next_ctx_slot = 0usize;
@@ -285,7 +285,7 @@ impl Plan {
                         .collect()
                 })
                 .collect();
-            // Context-edge wiring (ADR-0015), Context-ordinal order.
+            // Harmony-edge wiring (ADR-0015), Harmony-ordinal order.
             let context_inputs = descriptor
                 .inputs
                 .iter()

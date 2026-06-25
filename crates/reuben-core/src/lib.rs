@@ -21,10 +21,10 @@ extern crate self as reuben_core;
 pub mod bench_support;
 
 pub mod config;
-pub mod context;
 pub mod descriptor;
 pub mod format;
 pub mod graph;
+pub mod harmony;
 pub mod message;
 pub mod operator;
 pub mod operators;
@@ -38,10 +38,10 @@ pub mod signal;
 pub mod tuning;
 
 pub use config::AudioConfig;
-pub use context::{Chord, ChordTag, Context, ScaleField, SnapDir, SnapPolicy, SnapTarget};
 pub use descriptor::Descriptor;
 pub use format::{load, load_instrument, InstrumentDoc, LoadError, LoadWarning, Loaded};
 pub use graph::{Graph, NodeKey};
+pub use harmony::{Chord, ChordTag, Harmony, ScaleField, SnapDir, SnapPolicy, SnapTarget};
 pub use message::{Arg, Message};
 pub use operator::{Io, Operator};
 pub use plan::{Plan, PlanError};

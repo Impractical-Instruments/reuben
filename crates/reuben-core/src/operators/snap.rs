@@ -1,7 +1,8 @@
 //! Snap — quantizes absolute note gestures to the nearest in-scale degree (ADR-0013).
 //!
 //! The quantizer that sits *upstream* of resolution: an arbitrary float-MIDI gesture →
-//! nearest in-scale `Pitch{degree}`, against the tonal [`Context`] it reads. It is a note
+//! nearest in-scale `Pitch{degree}`, against the tonal [`Harmony`](crate::harmony::Harmony) it
+//! reads. It is a note
 //! transformer on the internal message graph — `note` Messages in, `degree` Messages out —
 //! so it composes between a note source (external play, a sequencer) and a Voicer: the
 //! "always in key" good-button. Policy (target + direction) is a caller param, not baked
@@ -20,8 +21,8 @@
 //!
 //! Single-Lane (ADR-0014): emission is pre-fan-out.
 
-use crate::context::{SnapDir, SnapPolicy, SnapTarget};
 use crate::descriptor::Descriptor;
+use crate::harmony::{SnapDir, SnapPolicy, SnapTarget};
 use crate::message::Arg;
 use crate::operator::{Io, Operator};
 
@@ -118,7 +119,7 @@ crate::register_operator!(Snap);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::Context;
+    use crate::harmony::Harmony;
     use crate::message::{Emit, Event, Message};
 
     const SR: f32 = 48_000.0;
@@ -126,7 +127,7 @@ mod tests {
     /// Run a fresh Snap against `ctx`. `target`/`direction` are held `Enum` inputs now (ADR-0028),
     /// supplied via `with_enums` in input-port order: notes/ctx are non-Float (slot 0), then
     /// IN_TARGET = 2 and IN_DIRECTION = 3 carry the held variant index.
-    fn run(ctx: Context, target: usize, direction: usize, notes: &[Message]) -> Vec<Emit> {
+    fn run(ctx: Harmony, target: usize, direction: usize, notes: &[Message]) -> Vec<Emit> {
         let evs: Vec<Event> = notes
             .iter()
             .map(|m| Event {
@@ -156,7 +157,7 @@ mod tests {
     fn snaps_gesture_to_nearest_scale_degree() {
         // C major; 64.8 → F(degree 3) at Nearest (worked example §5).
         let on = Message::new("note", [Arg::Float(64.8), Arg::Float(1.0)], 10);
-        let emits = run(Context::default(), 0, 0, &[on]); // Scale / Nearest
+        let emits = run(Harmony::default(), 0, 0, &[on]); // Scale / Nearest
         assert_eq!(emits.len(), 1);
         assert_eq!(emits[0].addr, "degree");
         assert_eq!(emits[0].frame, 10);
@@ -167,13 +168,13 @@ mod tests {
     #[test]
     fn already_in_scale_passes_as_its_degree() {
         let on = Message::new("note", [Arg::Float(67.0), Arg::Float(1.0)], 0); // G = degree 4
-        let emits = run(Context::default(), 0, 0, &[on]);
+        let emits = run(Harmony::default(), 0, 0, &[on]);
         approx::assert_relative_eq!(emits[0].args[0].as_f32().unwrap(), 4.0);
     }
 
     #[test]
     fn non_note_events_are_ignored() {
         let other = Message::new("chord", [Arg::Float(1.0)], 0);
-        assert!(run(Context::default(), 0, 0, &[other]).is_empty());
+        assert!(run(Harmony::default(), 0, 0, &[other]).is_empty());
     }
 }

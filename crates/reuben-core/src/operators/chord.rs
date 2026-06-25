@@ -6,7 +6,7 @@
 //! degrees `d, d+2, d+4` — as `degree` Messages; on the matching release it emits the note-offs
 //! for the same tones. `size` = 4 adds the seventh (`d+6`).
 //!
-//! Like the [`Sequencer`](crate::operators::Sequencer), it has **no Context input** and emits
+//! Like the [`Sequencer`](crate::operators::Sequencer), it has **no Harmony input** and emits
 //! plain `degree` Messages — the downstream [`Voicer`](crate::operators::Voicer) resolves each
 //! degree through the tonal context, so a held or tapped chord **re-spells live** on a key/scale
 //! change (the reason this Toy exists). The op only does degree arithmetic; harmony lives in the

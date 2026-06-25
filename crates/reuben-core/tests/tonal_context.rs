@@ -4,7 +4,7 @@
 //! operator unit tests can't: the context arena, the third route lane, and sample-accurate
 //! re-slicing on a context change.
 
-use reuben_core::context::Context;
+use reuben_core::harmony::Harmony;
 use reuben_core::message::{Arg, Message};
 use reuben_core::operators::{ContextOp, Snap, Voicer};
 use reuben_core::pitch::Pitch;
@@ -22,7 +22,7 @@ const CFG: AudioConfig = AudioConfig {
 };
 
 fn hz(midi: f32) -> f32 {
-    Context::default().hz(Pitch::from_midi(midi))
+    Harmony::default().hz(Pitch::from_midi(midi))
 }
 
 /// A minimal `context -> voicer(mono)` rig, tapping the Voicer's `freq` so a test can read

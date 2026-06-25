@@ -23,7 +23,7 @@ impl Pitch {
     }
 
     /// A pitch given as a scale degree, resolved against the active tonal context
-    /// ([`crate::context::Context`]). The MIDI coordinate is left at 0.0 — a degree pitch
+    /// ([`crate::harmony::Harmony`]). The MIDI coordinate is left at 0.0 — a degree pitch
     /// carries its identity in `degree` and resolves to Hz through the context, so the
     /// degree can re-spell live on a key/scale change (ADR-0013, ADR-0015).
     pub fn from_degree(degree: i32) -> Self {
