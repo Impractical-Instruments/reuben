@@ -29,3 +29,55 @@ pub enum GateMode {
     /// Emit a bare gate/trigger per active step.
     Gate,
 }
+
+/// The state-variable filter's output tap (the filter's `mode`, ADR-0022). A shared *vocab* enum
+/// (`Arg::FilterMode`): the TPT SVF computes all three responses from one integrator state, so the
+/// mode selects which is read. `Lp` is the default (bit-identical to the original lowpass).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, reuben_macros::ArgValue)]
+pub enum FilterMode {
+    /// Low-pass (`v2`).
+    #[default]
+    Lp,
+    /// High-pass (`x - k·bp - lp`).
+    Hp,
+    /// Band-pass (`v1`).
+    Bp,
+}
+
+/// An oscillator's waveform (the oscillator's `waveform`). A shared *vocab* enum
+/// (`Arg::Waveform`): the band-limited shape generated each sample. `Sine` is the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, reuben_macros::ArgValue)]
+pub enum Waveform {
+    /// Pure sine.
+    #[default]
+    Sine,
+    /// PolyBLEP sawtooth.
+    Saw,
+}
+
+/// How `m2s` fills the dense per-sample gaps between sparse messages (its `mode`, ADR-0017). A
+/// shared *vocab* enum (`Arg::M2sMode`). Plain step (zero-order hold) is no longer a mode — that
+/// is the wire's automatic materialize (ADR-0030); `m2s` exists only for the gap-filling policies:
+/// `Smooth` (one-pole), `Slew` (rate-limited), `Glide` (fixed-time ramp). `Smooth` is the default
+/// (the natural knob feel).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, reuben_macros::ArgValue)]
+pub enum M2sMode {
+    /// One-pole exponential approach (`time`).
+    #[default]
+    Smooth,
+    /// Rate-limited linear approach (`rate` units/s).
+    Slew,
+    /// Fixed-time linear ramp to the target (`time`); portamento.
+    Glide,
+}
+
+/// `map`'s response curve across its range (its `curve`). A shared *vocab* enum (`Arg::MapCurve`):
+/// `Linear` (affine) or `Exponential` (geometric, when both output bounds are positive).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, reuben_macros::ArgValue)]
+pub enum MapCurve {
+    /// Affine remap.
+    #[default]
+    Linear,
+    /// Geometric remap (positive output bounds only).
+    Exponential,
+}

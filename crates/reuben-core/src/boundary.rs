@@ -16,7 +16,7 @@ use crate::descriptor::PortType;
 use crate::harmony::{SnapDir, SnapTarget};
 use crate::message::{Arg, OscArg};
 use crate::pitch::Note;
-use crate::vocab::GateMode;
+use crate::vocab::{FilterMode, GateMode, M2sMode, MapCurve, Waveform};
 
 /// Convert a flat OSC arg list into the single [`Arg`] a destination port carries, driven by the
 /// **destination port type** (ADR-0030). `None` when the args don't fit the port (a wrong-typed
@@ -72,6 +72,10 @@ pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) {
         Arg::SnapTarget(v) => out.push(Arg::Str(SnapTarget::VARIANTS[v.to_index()].to_string())),
         Arg::SnapDir(v) => out.push(Arg::Str(SnapDir::VARIANTS[v.to_index()].to_string())),
         Arg::GateMode(v) => out.push(Arg::Str(GateMode::VARIANTS[v.to_index()].to_string())),
+        Arg::FilterMode(v) => out.push(Arg::Str(FilterMode::VARIANTS[v.to_index()].to_string())),
+        Arg::Waveform(v) => out.push(Arg::Str(Waveform::VARIANTS[v.to_index()].to_string())),
+        Arg::M2sMode(v) => out.push(Arg::Str(M2sMode::VARIANTS[v.to_index()].to_string())),
+        Arg::MapCurve(v) => out.push(Arg::Str(MapCurve::VARIANTS[v.to_index()].to_string())),
         // No external OSC form.
         Arg::Harmony(_) | Arg::Buffer(_) => {}
     }

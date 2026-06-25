@@ -1,4 +1,4 @@
-//! reuben-contract — the single source of an operator's port/param contract (ADR-0025).
+//! reuben-contract — the single source of an operator's port/param contract (ADR-0025, ADR-0030).
 //!
 //! Every operator declares its ports and params **once**. Two consumers turn that one
 //! declaration into code: the [`operator_contract!`](../reuben_macros) proc-macro (which emits
@@ -7,14 +7,19 @@
 //! must agree on what a *valid* contract is and how names map to consts, so that shared logic —
 //! the spec types, the naming rules, and [`validate`] — lives here, in a crate both depend on.
 //! Putting it anywhere else would re-create the very drift this layer exists to remove.
+//!
+//! A port carries an **[`Arg`](reuben_core::message::Arg) type** (ADR-0030), named by [`PortSpec::ty`]:
+//! `buffer` (a dense per-sample signal), `float` (a materialized scalar control with a
+//! `{ .. }` meta block), `enum` (a held vocab enum, naming its shared `vocab` type), `note`, or
+//! `harmony`. The retired `Shape`/legacy-`kind` two-surface world is gone.
 
 use serde::Deserialize;
 
 pub mod naming;
 
-/// The `{ min, max, default, unit, curve }` block on a `float`-shape port (ADR-0028): its unwired
-/// default, range, and display metadata. Mirrors [`ParamSpec`] without the name. `None` on a bare
-/// `float` (a pure wire-in or an output — no settable default).
+/// The `{ min, max, default, unit, curve }` block on a `float` port (ADR-0030): its unwired
+/// default, range, and display metadata. Mirrors [`ParamSpec`] without the name. Required on a
+/// `float` port (a bare per-sample wire is `buffer`, not `float`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct FloatMeta {
     pub min: f32,
@@ -26,29 +31,26 @@ pub struct FloatMeta {
     pub curve: String,
 }
 
-/// A port in the contract. Two surfaces coexist during the ADR-0028 migration:
-/// - **legacy carrier** — `kind` ∈ {`signal`,`message`,`context`}, `shape` `None` (an unmigrated
-///   operator declared `name: signal`);
-/// - **shape** (ADR-0028) — `shape` ∈ {`float`,`enum`}, `kind` empty; `float` carries the
-///   `float { .. }` meta and `variants` the `enum { .. }` choices.
+/// A port in the contract — carrying one [`Arg`](reuben_core::message::Arg) type (ADR-0030),
+/// named by [`ty`](Self::ty). `float` ports carry their `{ .. }` meta in [`float`](Self::float);
+/// `enum` ports name their shared `vocab` type in [`vocab`](Self::vocab). All other types
+/// (`buffer`, `note`, `harmony`) need neither.
 ///
 /// Kept as `String` fields (not enums) so the struct round-trips from the scaffold's JSON spec and
 /// from the proc-macro's parsed tokens with no conversion.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PortSpec {
     pub name: String,
-    /// Legacy carrier kind; empty when `shape` is set.
-    #[serde(default)]
-    pub kind: String,
-    /// ADR-0028 shape (`float` | `enum`); `None` for a legacy `kind`-declared port.
-    #[serde(default)]
-    pub shape: Option<String>,
-    /// `Some` for `float { .. }` — a materialized Float input's default/range.
+    /// The port's [`Arg`](reuben_core::message::Arg) type: `buffer` | `float` | `enum` | `note` |
+    /// `harmony`.
+    pub ty: String,
+    /// `Some` for a `float` port — its materialized default/range.
     #[serde(default)]
     pub float: Option<FloatMeta>,
-    /// The ordered choices of an `enum { .. }` port (empty otherwise).
+    /// `Some` for an `enum` port — the shared `vocab` enum type name (PascalCase, e.g.
+    /// `"FilterMode"`); the descriptor reads its `VARIANTS`/default from `Type::enum_meta(name)`.
     #[serde(default)]
-    pub variants: Vec<String>,
+    pub vocab: Option<String>,
 }
 
 /// One parameter's metadata, mirroring [`reuben_core::descriptor::ParamMeta`].
@@ -96,13 +98,9 @@ pub struct OperatorSpec {
     pub lanes: LaneSpec,
 }
 
-/// The three legal legacy port kinds. Centralised so both the scaffold and the macro reject the
-/// same set.
-pub const PORT_KINDS: [&str; 3] = ["signal", "message", "context"];
-
-/// The ADR-0028 port shapes the contract surface accepts today. `harmony`/`note` join in the
-/// Phase 2 sweep when an operator first declares them.
-pub const SHAPES: [&str; 2] = ["float", "enum"];
+/// The legal port [`Arg`](reuben_core::message::Arg) types (ADR-0030). Centralised so both the
+/// scaffold and the macro reject the same set.
+pub const PORT_TYPES: [&str; 5] = ["buffer", "float", "enum", "note", "harmony"];
 
 /// Where in the spec a validation error sits, so the proc-macro can attach a source span to the
 /// offending token. The scaffold ignores the locus and just formats the message.
@@ -149,100 +147,104 @@ fn is_snake_case(name: &str) -> bool {
             .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
-/// A non-empty Rust identifier: an ASCII letter then `[A-Za-z0-9_]`. The rule for `enum` variant
-/// symbols (`Lp`, `Sine`) — they are emitted both as enum variant idents and as `&str` wire
-/// symbols, so they must be valid identifiers (PascalCase is conventional but not enforced here).
+/// A non-empty Rust type identifier: an ASCII letter then `[A-Za-z0-9_]`. The rule for the `vocab`
+/// type an `enum` port names (`FilterMode`, `SnapDir`) — emitted as a path segment, so it must be a
+/// valid identifier (PascalCase is conventional but not enforced here).
 fn is_ident(name: &str) -> bool {
     let mut chars = name.chars();
     chars.next().is_some_and(|c| c.is_ascii_alphabetic())
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// Validate one ADR-0028 shape-declared port's internal consistency (`shape` legal; `float` meta
-/// only on `float`; `enum` variants present, identifier-shaped, and unique).
-fn validate_shaped_port(
-    at: Locus,
-    label: &str,
-    p: &PortSpec,
-    shape: &str,
-) -> Result<(), ContractError> {
-    if !SHAPES.contains(&shape) {
+/// Validate one port's internal consistency (ADR-0030): `ty` legal; `float` meta present and valid
+/// **iff** `float`; `vocab` type named and identifier-shaped **iff** `enum`.
+fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractError> {
+    if !PORT_TYPES.contains(&p.ty.as_str()) {
         return Err(ContractError::new(
             at,
             format!(
-                "{label} {:?}: shape {shape:?} must be one of {SHAPES:?}",
-                p.name
+                "{label} {:?}: type {:?} must be one of {PORT_TYPES:?}",
+                p.name, p.ty
             ),
         ));
     }
-    match shape {
-        "float" => {
-            if !p.variants.is_empty() {
-                return Err(ContractError::new(
-                    at,
-                    format!("{label} {:?}: a `float` port has no variants", p.name),
-                ));
-            }
-            if let Some(m) = &p.float {
-                if m.min > m.max {
-                    return Err(ContractError::new(
-                        at,
-                        format!("{label} {:?}: min {} > max {}", p.name, m.min, m.max),
-                    ));
-                }
-                if m.default < m.min || m.default > m.max {
-                    return Err(ContractError::new(
-                        at,
-                        format!(
-                            "{label} {:?}: default {} outside [{}, {}]",
-                            p.name, m.default, m.min, m.max
-                        ),
-                    ));
-                }
-                if !matches!(m.curve.as_str(), "linear" | "exponential") {
-                    return Err(ContractError::new(
-                        at,
-                        format!(
-                            "{label} {:?}: curve {:?} must be \"linear\" or \"exponential\"",
-                            p.name, m.curve
-                        ),
-                    ));
-                }
-            }
+    // `float` meta only on `float`, and required there.
+    match (p.ty.as_str(), &p.float) {
+        ("float", None) => {
+            return Err(ContractError::new(
+                at,
+                format!(
+                    "{label} {:?}: a `float` port needs a {{ .. }} meta block",
+                    p.name
+                ),
+            ));
         }
-        "enum" => {
-            if p.float.is_some() {
+        ("float", Some(m)) => {
+            if m.min > m.max {
                 return Err(ContractError::new(
                     at,
-                    format!("{label} {:?}: an `enum` port has no float meta", p.name),
+                    format!("{label} {:?}: min {} > max {}", p.name, m.min, m.max),
                 ));
             }
-            if p.variants.is_empty() {
+            if m.default < m.min || m.default > m.max {
                 return Err(ContractError::new(
                     at,
                     format!(
-                        "{label} {:?}: an `enum` port needs at least one variant",
+                        "{label} {:?}: default {} outside [{}, {}]",
+                        p.name, m.default, m.min, m.max
+                    ),
+                ));
+            }
+            if !matches!(m.curve.as_str(), "linear" | "exponential") {
+                return Err(ContractError::new(
+                    at,
+                    format!(
+                        "{label} {:?}: curve {:?} must be \"linear\" or \"exponential\"",
+                        p.name, m.curve
+                    ),
+                ));
+            }
+        }
+        (_, Some(_)) => {
+            return Err(ContractError::new(
+                at,
+                format!(
+                    "{label} {:?}: only a `float` port carries a {{ .. }} meta block",
+                    p.name
+                ),
+            ));
+        }
+        (_, None) => {}
+    }
+    // `vocab` type only on `enum`, and required there.
+    match (p.ty.as_str(), &p.vocab) {
+        ("enum", None) => {
+            return Err(ContractError::new(
+                at,
+                format!("{label} {:?}: an `enum` port must name its vocab type, e.g. `enum(FilterMode)`", p.name),
+            ));
+        }
+        ("enum", Some(v)) => {
+            if !is_ident(v) {
+                return Err(ContractError::new(
+                    at,
+                    format!(
+                        "{label} {:?}: vocab type {v:?} must be an identifier",
                         p.name
                     ),
                 ));
             }
-            let mut seen = std::collections::BTreeSet::new();
-            for v in &p.variants {
-                if !is_ident(v) {
-                    return Err(ContractError::new(
-                        at,
-                        format!("{label} {:?}: variant {v:?} must be an identifier", p.name),
-                    ));
-                }
-                if !seen.insert(v.as_str()) {
-                    return Err(ContractError::new(
-                        at,
-                        format!("{label} {:?}: duplicate variant {v:?}", p.name),
-                    ));
-                }
-            }
         }
-        _ => unreachable!("shape membership checked above"),
+        (_, Some(_)) => {
+            return Err(ContractError::new(
+                at,
+                format!(
+                    "{label} {:?}: only an `enum` port names a vocab type",
+                    p.name
+                ),
+            ));
+        }
+        (_, None) => {}
     }
     Ok(())
 }
@@ -331,21 +333,7 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
                     format!("duplicate {label} port name {:?}", p.name),
                 ));
             }
-            // A port is declared either by ADR-0028 `shape` or by the legacy `kind` carrier.
-            match &p.shape {
-                Some(shape) => validate_shaped_port(at, label, p, shape)?,
-                None => {
-                    if !PORT_KINDS.contains(&p.kind.as_str()) {
-                        return Err(ContractError::new(
-                            at,
-                            format!(
-                                "{label} {:?}: kind {:?} must be \"signal\", \"message\", or \"context\"",
-                                p.name, p.kind
-                            ),
-                        ));
-                    }
-                }
-            }
+            validate_port(at, label, p)?;
         }
     }
 
@@ -389,10 +377,10 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bad_port_kind_at_that_port() {
-        let e = err(r#"{ "type_name": "x", "inputs": [ {"name":"a","kind":"audio"} ] }"#);
+    fn rejects_bad_port_type_at_that_port() {
+        let e = err(r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"audio"} ] }"#);
         assert_eq!(e.locus, Locus::Input(0));
-        assert!(e.message.contains("kind"), "{}", e.message);
+        assert!(e.message.contains("type"), "{}", e.message);
     }
 
     #[test]
@@ -413,7 +401,7 @@ mod tests {
     fn rejects_non_snake_case_port_name_at_that_port() {
         for bad in ["in gain", "2x", "Freq"] {
             let json = format!(
-                r#"{{ "type_name": "x", "inputs": [ {{"name":{bad:?},"kind":"signal"}} ] }}"#
+                r#"{{ "type_name": "x", "inputs": [ {{"name":{bad:?},"ty":"buffer"}} ] }}"#
             );
             let e = err(&json);
             assert_eq!(e.locus, Locus::Input(0), "{}", e.message);
@@ -432,44 +420,50 @@ mod tests {
     }
 
     #[test]
-    fn accepts_shape_declared_ports() {
-        // A filter-shaped contract: bare float, float-with-meta, and an enum input.
+    fn accepts_the_full_port_vocabulary() {
+        // A filter-shaped contract plus the discrete carriers: buffer, float-with-meta, enum
+        // (naming its vocab type), note, harmony.
         assert!(validate(&spec(
             r#"{ "type_name": "filter",
                  "inputs": [
-                   {"name":"audio","shape":"float"},
-                   {"name":"cutoff","shape":"float","float":{"min":20,"max":20000,"default":1000,"unit":"Hz","curve":"exponential"}},
-                   {"name":"mode","shape":"enum","variants":["Lp","Hp","Bp"]} ],
-                 "outputs": [ {"name":"audio","shape":"float"} ] }"#
+                   {"name":"audio","ty":"buffer"},
+                   {"name":"cutoff","ty":"float","float":{"min":20,"max":20000,"default":1000,"unit":"Hz","curve":"exponential"}},
+                   {"name":"mode","ty":"enum","vocab":"FilterMode"},
+                   {"name":"notes","ty":"note"},
+                   {"name":"ctx","ty":"harmony"} ],
+                 "outputs": [ {"name":"audio","ty":"buffer"} ] }"#
         ))
         .is_ok());
     }
 
     #[test]
-    fn rejects_malformed_shaped_ports() {
-        let bad_shape =
-            err(r#"{ "type_name": "x", "inputs": [ {"name":"a","shape":"harmony"} ] }"#);
-        assert_eq!(bad_shape.locus, Locus::Input(0));
-        assert!(bad_shape.message.contains("shape"), "{}", bad_shape.message);
-
-        let no_variants = err(r#"{ "type_name": "x", "inputs": [ {"name":"a","shape":"enum"} ] }"#);
+    fn rejects_malformed_ports() {
+        // `float` needs a meta block.
+        let bare_float = err(r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"float"} ] }"#);
+        assert_eq!(bare_float.locus, Locus::Input(0));
         assert!(
-            no_variants.message.contains("variant"),
+            bare_float.message.contains("meta"),
             "{}",
-            no_variants.message
+            bare_float.message
         );
 
-        let dup_variant = err(
-            r#"{ "type_name": "x", "inputs": [ {"name":"a","shape":"enum","variants":["Lp","Lp"]} ] }"#,
+        // `enum` must name its vocab type.
+        let no_vocab = err(r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"enum"} ] }"#);
+        assert!(no_vocab.message.contains("vocab"), "{}", no_vocab.message);
+
+        // A non-`float` port can't carry float meta.
+        let stray_meta = err(
+            r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"buffer","float":{"min":0,"max":1,"default":0}} ] }"#,
         );
         assert!(
-            dup_variant.message.contains("duplicate"),
+            stray_meta.message.contains("float"),
             "{}",
-            dup_variant.message
+            stray_meta.message
         );
 
+        // Out-of-range float default.
         let oob = err(
-            r#"{ "type_name": "x", "inputs": [ {"name":"a","shape":"float","float":{"min":0,"max":1,"default":5}} ] }"#,
+            r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"float","float":{"min":0,"max":1,"default":5}} ] }"#,
         );
         assert!(oob.message.contains("outside"), "{}", oob.message);
     }
@@ -477,7 +471,7 @@ mod tests {
     #[test]
     fn rejects_duplicates_and_dangling_lane_param() {
         let dup = err(
-            r#"{ "type_name": "x", "inputs": [ {"name":"a","kind":"signal"}, {"name":"a","kind":"signal"} ] }"#,
+            r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"buffer"}, {"name":"a","ty":"buffer"} ] }"#,
         );
         assert_eq!(dup.locus, Locus::Input(1));
         let dangling = err(r#"{ "type_name": "x", "lanes": { "from_param": "voices" } }"#);

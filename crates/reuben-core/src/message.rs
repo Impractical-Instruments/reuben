@@ -17,7 +17,7 @@
 
 use crate::harmony::{Harmony, SnapDir, SnapTarget};
 use crate::pitch::Note;
-use crate::vocab::GateMode;
+use crate::vocab::{FilterMode, GateMode, M2sMode, MapCurve, Waveform};
 
 /// A contiguous sample buffer — the performant representation of a per-sample stream (a
 /// "Signal", ADR-0001, ADR-0030). `Signal<f32>` is the only element kind built today; the
@@ -85,6 +85,10 @@ pub enum Arg {
     SnapTarget(SnapTarget),
     SnapDir(SnapDir),
     GateMode(GateMode),
+    FilterMode(FilterMode),
+    Waveform(Waveform),
+    M2sMode(M2sMode),
+    MapCurve(MapCurve),
 
     // The optimized dense payload.
     Buffer(Signal<f32>),
