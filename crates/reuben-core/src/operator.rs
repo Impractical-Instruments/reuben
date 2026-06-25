@@ -1,93 +1,85 @@
-//! Operator — the authoring contract (ADR-0010).
+//! Operator — the authoring contract (ADR-0010, ADR-0030).
 //!
 //! An Operator is single-Lane: the author writes one mono, single-Voice stream a
 //! (sub)block at a time, and the engine fans it out across Lanes with per-Lane state.
-//! The process function is allocation-free and sees params held constant for the whole
-//! call (the engine block-slices at Message boundaries, ADR-0011), so the author simply
-//! reads "my current value". Event-oriented operators (the Voicer) instead read the
-//! routed [`Event`] list via [`Io::events`].
+//! The process function is allocation-free and sees held values constant for the whole call
+//! (the engine block-slices at Message boundaries, ADR-0011), so the author simply reads "my
+//! current value".
+//!
+//! Reads are **two typed verbs** over the one Message model (ADR-0030): [`Io::last`] — the
+//! held (zero-order-hold) value on a port — and [`Io::stream`] — the sparse, frame-stamped
+//! Messages on a port this (sub)block. Both are generic over the payload type `T` (a
+//! [`FromArg`] impl: an OSC primitive, a `&[f32]` buffer, or a *vocab* type). Writes are two
+//! verbs: [`Io::emit`] — append one Message to an output port — and [`Io::signal_mut`] — fill
+//! this node's own dense output buffer in place.
 
 use std::sync::Arc;
 
 use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
-use crate::harmony::Harmony;
-use crate::message::{Arg, Emit, Event, Outbound};
+use crate::message::{Arg, Emit, Event, FromArg};
 use crate::resources::{ResolvedRefs, ResourceStore};
 
-/// A [`Harmony`] snapshot an operator publishes during `process` onto a Harmony output
-/// port (ADR-0015), before the engine routes it to downstream readers' harmony slices.
-/// Sibling of [`Emit`]; `ctx` is `Copy`, so the engine snapshots it allocation-free.
+/// A typed, frame-stamped payload yielded by [`Io::stream`] — one decoded Message on a port
+/// (ADR-0030). `frame` is segment-relative; `payload` is the Message's [`Arg`] decoded to the
+/// requested `T` via [`FromArg`].
 #[derive(Debug, Clone, Copy)]
-pub struct CtxPublish {
-    /// Harmony-output ordinal (separate index space from Signal/Message outputs).
-    pub port: usize,
-    /// Sample offset within the block. Segment-relative when the operator calls
-    /// `publish_harmony`; the engine stamps it block-absolute.
+pub struct Stamped<T> {
+    /// Sample offset within the current (sub)block at which this Message applies.
     pub frame: usize,
-    pub ctx: Harmony,
+    /// The decoded payload.
+    pub payload: T,
 }
 
 /// The per-call I/O view handed to [`Operator::process`] for one (sub)block of one Lane.
 ///
-/// All slices are exactly [`Io::frames`] samples long. Params are constant for the call.
-/// The port reference lists are collected into inline [`SmallVec`]s, so building an `Io`
+/// All dense slices are exactly [`Io::frames`] samples long; held values are constant for the
+/// call. The port reference lists are collected into inline [`SmallVec`]s, so building an `Io`
 /// allocates nothing for the common low-port-count case. The inline input capacity is sized for
-/// the widest ADR-0028 operator once its former params became `Float`/`Enum` inputs — the
-/// sequencer is `clock` + `length` + 16 × `step` + `gate_mode` + `pitch` = 20 — because
-/// RT-safety (`rt_safe`) depends on not spilling here on the audio thread.
+/// the widest operator once its former params became inputs — the sequencer is `clock` + `length`
+/// + 16 × `step` + `gate_mode` + `pitch` = 20 — because RT-safety (`rt_safe`) depends on not
+/// spilling here on the audio thread.
 pub struct Io<'a> {
     sample_rate: f32,
     frames: usize,
+    /// Dense per-sample buffer per **input** port (a wired [`Buffer`](Arg::Buffer) source or a
+    /// materialized [`F32`](crate::descriptor::PortType::F32) control), or `None` for a port with
+    /// no buffer form. Read per-sample via [`Io::signal`].
     inputs: SmallVec<[Option<&'a [f32]>; 20]>,
     outputs: SmallVec<[&'a mut [f32]; 2]>,
-    params: &'a [f32],
-    events: &'a [Event<'a>],
+    /// The held (ZOH) [`Arg`] per **input** port — the unified per-port latch (ADR-0030),
+    /// collapsing the former Harmony / enum / param lanes. In input-port order; `Copy`-normalized
+    /// and constant for this (sub)block (the engine block-slices at held-value changes). Read via
+    /// [`Io::last`]; empty when unattached, so `last` then reports `None`.
+    latched: &'a [Arg],
+    /// The sparse [`Event`]s per **input** port this (sub)block, frames segment-relative
+    /// (ADR-0030). In input-port order; zero-copy views borrowed from the Render loop. Read via
+    /// [`Io::stream`]; empty when unattached.
+    streams: &'a [&'a [Event<'a>]],
     lane: usize,
     lanes: usize,
-    /// Sink for Messages this call emits (ADR-0014), or `None` when this Lane does not
-    /// collect emissions. Only Lane 0 collects — emission is single-Lane (pre-fan-out).
+    /// Sink for Messages this call emits (ADR-0014, ADR-0030), or `None` when this Lane does not
+    /// collect emissions. Only Lane 0 collects — emission is single-Lane (pre-fan-out). The former
+    /// harmony-publish and outbound sinks fold into this: a context/`osc_out` node simply emits to
+    /// the right output port, and routing (the wired edge) carries it.
     emit: Option<&'a mut Vec<Emit>>,
-    /// Resolved [`Harmony`] for each Harmony **input** port this segment (ADR-0015),
-    /// in harmony-input ordinal order. Constant for the call (the engine slices at harmony
-    /// changes). Empty for operators with no Harmony inputs; borrowed from the Render loop.
-    contexts: &'a [Harmony],
-    /// Sink for Harmony snapshots this call publishes (ADR-0015), or `None` when this Lane
-    /// does not publish. Like `emit`, single-Lane (the context node is pre-fan-out).
-    ctx_publish: Option<&'a mut Vec<CtxPublish>>,
-    /// Sink for boundary-bound Messages this call sends out (ADR-0026) — the outbound route, or
-    /// `None` when this Lane does not collect. Like `emit`, single-Lane (the sink is pre-fan-out);
-    /// an `osc_out` op forwards its input events here and the engine drains them past the boundary.
-    outbound: Option<&'a mut Vec<Outbound>>,
-    /// Block-absolute frame of this (sub)block's start, added to an emitted/published frame
-    /// so the operator can work in segment-relative time.
+    /// Block-absolute frame of this (sub)block's start, added to an emitted frame so the operator
+    /// can work in segment-relative time.
     frame_offset: usize,
-    /// Per-input `varying` hint (ADR-0028), in input-port order: `false` when a materialized
-    /// [`Shape::Float`](crate::descriptor::Shape) input held its value unchanged this block, so a
-    /// const-folding operator may reuse cached coefficients. Empty when unattached — `varying()`
-    /// then conservatively reports `true` (always recompute), which a naive operator ignores.
+    /// Per-input `varying` hint (ADR-0030), in input-port order: `false` when a materialized
+    /// input held its value unchanged this block, so a const-folding operator may reuse cached
+    /// coefficients. Empty when unattached — `varying()` then conservatively reports `true`.
     varying: &'a [bool],
-    /// Held [`Shape::Enum`](crate::descriptor::Shape) value per input port (ADR-0028), as the
-    /// variant **index**, constant for this (sub)block (the engine block-slices at enum changes).
-    /// In input-port order; `0` for non-enum / unconnected ports. Read via [`Io::enum_index`].
-    enums: &'a [usize],
 }
 
 impl<'a> Io<'a> {
     /// Internal constructor used by the Render loop. Defaults to a single Lane (lane 0 of
-    /// 1); the engine sets the real Lane via [`Io::with_lane`] when replicating.
+    /// 1); the engine attaches the latch, streams, lane, and emit sink via the builders.
     ///
     /// `inputs`/`outputs` are taken as iterators so the Render loop can wire ports straight
     /// from the arena without an intermediate heap allocation.
-    pub(crate) fn new<I, O>(
-        sample_rate: f32,
-        frames: usize,
-        inputs: I,
-        outputs: O,
-        params: &'a [f32],
-        events: &'a [Event<'a>],
-    ) -> Self
+    pub(crate) fn new<I, O>(sample_rate: f32, frames: usize, inputs: I, outputs: O) -> Self
     where
         I: IntoIterator<Item = Option<&'a [f32]>>,
         O: IntoIterator<Item = &'a mut [f32]>,
@@ -97,31 +89,34 @@ impl<'a> Io<'a> {
             frames,
             inputs: inputs.into_iter().collect(),
             outputs: outputs.into_iter().collect(),
-            params,
-            events,
+            latched: &[],
+            streams: &[],
             lane: 0,
             lanes: 1,
             emit: None,
-            contexts: &[],
-            ctx_publish: None,
-            outbound: None,
             frame_offset: 0,
             varying: &[],
-            enums: &[],
         }
     }
 
-    /// Attach the per-input `varying` hints for this segment (ADR-0028). In input-port order;
-    /// read by [`Io::varying`]. Unattached ⇒ `varying()` reports `true`.
-    pub(crate) fn with_varying(mut self, varying: &'a [bool]) -> Self {
-        self.varying = varying;
+    /// Attach the per-input held [`Arg`] latch for this segment (ADR-0030). In input-port order;
+    /// read by [`Io::last`]. Unattached ⇒ `last()` reports `None`.
+    pub(crate) fn with_latched(mut self, latched: &'a [Arg]) -> Self {
+        self.latched = latched;
         self
     }
 
-    /// Attach the held [`Shape::Enum`](crate::descriptor::Shape) values for this segment (ADR-0028),
-    /// in input-port order. Read by [`Io::enum_index`]. Unattached ⇒ `enum_index()` reports `0`.
-    pub(crate) fn with_enums(mut self, enums: &'a [usize]) -> Self {
-        self.enums = enums;
+    /// Attach the per-input [`Event`] streams for this (sub)block (ADR-0030). In input-port order;
+    /// read by [`Io::stream`]. Unattached ⇒ `stream()` is empty.
+    pub(crate) fn with_streams(mut self, streams: &'a [&'a [Event<'a>]]) -> Self {
+        self.streams = streams;
+        self
+    }
+
+    /// Attach the per-input `varying` hints for this segment (ADR-0030). In input-port order;
+    /// read by [`Io::varying`]. Unattached ⇒ `varying()` reports `true`.
+    pub(crate) fn with_varying(mut self, varying: &'a [bool]) -> Self {
+        self.varying = varying;
         self
     }
 
@@ -140,32 +135,6 @@ impl<'a> Io<'a> {
         self
     }
 
-    /// Set the resolved Harmony for each Harmony input port this segment (ADR-0015).
-    pub(crate) fn with_contexts(mut self, contexts: &'a [Harmony]) -> Self {
-        self.contexts = contexts;
-        self
-    }
-
-    /// Attach the harmony-publish sink and segment frame offset (Lane 0 only). Snapshots
-    /// passed to [`Io::publish_harmony`] are collected into `buf` with `frame_offset` added.
-    pub(crate) fn with_context_publish(
-        mut self,
-        buf: &'a mut Vec<CtxPublish>,
-        frame_offset: usize,
-    ) -> Self {
-        self.ctx_publish = Some(buf);
-        self.frame_offset = frame_offset;
-        self
-    }
-
-    /// Attach the outbound-route sink and segment frame offset (Lane 0 only). Messages passed to
-    /// [`Io::send_outbound`] are collected into `buf` with `frame_offset` added (ADR-0026).
-    pub(crate) fn with_outbound(mut self, buf: &'a mut Vec<Outbound>, frame_offset: usize) -> Self {
-        self.outbound = Some(buf);
-        self.frame_offset = frame_offset;
-        self
-    }
-
     /// Sample rate in Hz.
     pub fn sample_rate(&self) -> f32 {
         self.sample_rate
@@ -176,126 +145,66 @@ impl<'a> Io<'a> {
         self.frames
     }
 
-    /// Borrow an input Signal port, or `None` if unconnected.
-    pub fn input(&self, port: usize) -> Option<&[f32]> {
-        self.inputs.get(port).copied().flatten()
-    }
-
-    /// **Per-sample read view of a [`Shape::Float`](crate::descriptor::Shape) input** (ADR-0028).
-    /// Always a buffer `frames` long: the wired source when connected, else the engine's
-    /// materialized buffer filled from the input's latched default (with mid-block changes written
-    /// at their frame). The single read path that replaces the old
-    /// `io.input(..).map_or(io.param(..), ..)` two-step. Returns an empty slice only for a port
-    /// that has neither a wire nor materialization (a not-yet-migrated input); migrated operators
-    /// always get `frames` samples.
+    /// **Per-sample read of a buffer input** (ADR-0030): the dense block on `port`. A wired
+    /// [`Buffer`](Arg::Buffer) source, or the engine's materialized buffer for an
+    /// [`F32`](crate::descriptor::PortType::F32) control filled from its latched value (mid-block
+    /// changes written at their frame). Always `frames` long for a migrated port; an empty slice
+    /// for a port with neither a wire nor materialization.
     pub fn signal(&self, port: usize) -> &[f32] {
         self.inputs.get(port).copied().flatten().unwrap_or(&[])
     }
 
-    /// **Block-rate / scalar read view of a [`Shape::Float`](crate::descriptor::Shape) input**
-    /// (ADR-0028) — the latched current value at this segment's start, for operators that do not
-    /// process per-sample (a clock reading tempo, a sample-and-hold). Reads the head of the
-    /// materialized buffer without looping it.
-    pub fn value(&self, port: usize) -> f32 {
-        self.signal(port).first().copied().unwrap_or(0.0)
+    /// **The held (ZOH) value on `port`** (ADR-0030) — the most-recent Message's payload, decoded
+    /// to `T`, constant for this (sub)block (the engine block-slices at held-value changes). The
+    /// unifying read for scalars, enums, and the Harmony struct: `io.last::<f32>(CUTOFF)`,
+    /// `io.last::<SnapDir>(DIR)`, `io.last::<Harmony>(HARMONY)`. `Some(default)` on an input with a
+    /// latched default; `None` when nothing is latchable (unwired, no default) or the wire's type
+    /// is not a `T`.
+    pub fn last<T: FromArg<'a>>(&self, port: usize) -> Option<T> {
+        self.latched.get(port).and_then(|arg| T::from_arg(arg))
     }
 
-    /// The `varying` hint for a [`Shape::Float`](crate::descriptor::Shape) input (ADR-0028):
-    /// `false` when a materialized input held its value unchanged this block (so a const-folding
-    /// op may reuse cached state), `true` when it is dense or changed this block. Conservatively
-    /// `true` when unattached — a naive operator ignores it and reads `signal()[i]`.
+    /// **The sparse Messages on `port` this (sub)block** (ADR-0030), each decoded to `T` and
+    /// frame-stamped (segment-relative). The unifying read for events — a Voicer iterates
+    /// `io.stream::<Note>(NOTES)`. Zero-copy; messages whose payload is not a `T` are skipped.
+    pub fn stream<T: FromArg<'a>>(&self, port: usize) -> impl Iterator<Item = Stamped<T>> + 'a {
+        let events: &'a [Event<'a>] = self.streams.get(port).copied().unwrap_or(&[]);
+        events.iter().filter_map(|e| {
+            T::from_arg(e.arg).map(|payload| Stamped {
+                frame: e.frame,
+                payload,
+            })
+        })
+    }
+
+    /// The `varying` hint for an input (ADR-0030): `false` when a materialized input held its
+    /// value unchanged this block (so a const-folding op may reuse cached state), `true` when it
+    /// is dense or changed this block. Conservatively `true` when unattached.
     pub fn varying(&self, port: usize) -> bool {
         self.varying.get(port).copied().unwrap_or(true)
     }
 
-    /// Borrow an output Signal port for writing (length == `frames`).
-    pub fn output(&mut self, port: usize) -> &mut [f32] {
+    /// **Per-sample write view of a buffer output** (ADR-0030): fill this node's own output buffer
+    /// on `port` in place. Length == `frames`.
+    pub fn signal_mut(&mut self, port: usize) -> &mut [f32] {
         &mut self.outputs[port][..]
     }
 
-    /// **Per-sample write view of a [`Shape::Float`](crate::descriptor::Shape) output** (ADR-0028)
-    /// — the forward-looking name for [`Io::output`]. Length == `frames`.
-    pub fn signal_mut(&mut self, port: usize) -> &mut [f32] {
-        self.output(port)
-    }
-
-    /// Current value of a param slot (constant for this call).
-    pub fn param(&self, slot: usize) -> f32 {
-        self.params[slot]
-    }
-
-    /// **Held read view of an [`Shape::Enum`](crate::descriptor::Shape) input** (ADR-0028) — the
-    /// current variant **index**, constant for this (sub)block (the engine block-slices at enum
-    /// changes, so an operator sees one choice per call). The operator maps it to its generated
-    /// enum type, e.g. `Waveform::from_index(io.enum_index(IN_WAVEFORM)).unwrap_or_default()`.
-    /// Returns the input's latched default (or `0` when unattached / non-enum).
-    pub fn enum_index(&self, port: usize) -> usize {
-        self.enums.get(port).copied().unwrap_or(0)
-    }
-
-    /// Routed [`Event`]s for this (sub)block, frames relative to the segment start.
-    /// Used by event operators such as the Voicer. Zero-copy views (no allocation).
-    pub fn events(&self) -> &[Event<'_>] {
-        self.events
-    }
-
-    /// Emit a Message onto Message output `port` at segment-relative `frame` (ADR-0014).
-    /// `addr` is the node-local address the destination matches (e.g. `"note"`); it is
-    /// `&'static str`, so a wired-edge emit allocates nothing. The engine delivers it as an
-    /// [`Event`] to nodes downstream of this one in the same block. A no-op on Lanes that
-    /// do not collect emissions (every Lane but 0).
-    pub fn emit(
-        &mut self,
-        port: usize,
-        addr: &'static str,
-        args: impl IntoIterator<Item = Arg>,
-        frame: usize,
-    ) {
+    /// **Emit one Message** onto output `port` at segment-relative `frame` (ADR-0014, ADR-0030).
+    /// `addr` is the node-local address carried for OSC shape / debug (e.g. `"note"`); it is
+    /// `&'static str` and `payload` is one [`Arg`], so a wired-edge emit allocates nothing. The
+    /// engine delivers it as an [`Event`] to nodes downstream of this one in the same block — and,
+    /// for an output port wired to the boundary, drains it past the boundary. A no-op on Lanes that
+    /// do not collect emissions (every Lane but 0). Replaces the former `publish_harmony` /
+    /// `send_outbound`: publishing a Harmony or sending outbound is just an emit to the right port.
+    pub fn emit(&mut self, port: usize, addr: &'static str, payload: impl Into<Arg>, frame: usize) {
         let frame = self.frame_offset + frame;
         if let Some(buf) = self.emit.as_mut() {
             buf.push(Emit {
                 port,
-                addr,
-                args: args.into_iter().collect(),
+                address: addr,
+                arg: payload.into(),
                 frame,
-            });
-        }
-    }
-
-    /// Send a Message past the boundary on the outbound route (ADR-0026). The engine stamps it
-    /// block-absolute and with this node's address (the outbound OSC address), then drains it to
-    /// native's UDP sender. **Message-domain only**; carries no address (the sink is address-fixed,
-    /// so the wiring is the node). A no-op on Lanes that do not collect (every Lane but 0).
-    pub fn send_outbound(&mut self, args: impl IntoIterator<Item = Arg>, frame: usize) {
-        let frame = self.frame_offset + frame;
-        if let Some(buf) = self.outbound.as_mut() {
-            buf.push(Outbound {
-                args: args.into_iter().collect(),
-                frame,
-            });
-        }
-    }
-
-    /// The current [`Harmony`](crate::descriptor::Shape::Harmony) on a held-struct input `port`
-    /// (ADR-0015/0028) — the latched "what's the key/chord right now", constant for this
-    /// (sub)block. Returns the default (C major, 12-TET) when `port` is unconnected, so a degree
-    /// resolves identically to the prior 12-TET behavior in a rig with no context node.
-    pub fn harmony(&self, port: usize) -> Harmony {
-        self.contexts.get(port).copied().unwrap_or_default()
-    }
-
-    /// Publish a [`Harmony`](crate::descriptor::Shape::Harmony) snapshot onto a held-struct output
-    /// `port` at segment-relative `frame` (ADR-0015/0028). The engine latches it (shared,
-    /// persistent across blocks) and re-slices downstream readers at `frame`, so a chord/key
-    /// change is sample-accurate on the same timeline as notes. A no-op on Lanes that do not
-    /// publish (every Lane but 0).
-    pub fn publish_harmony(&mut self, port: usize, frame: usize, harmony: Harmony) {
-        let frame = self.frame_offset + frame;
-        if let Some(buf) = self.ctx_publish.as_mut() {
-            buf.push(CtxPublish {
-                port,
-                frame,
-                ctx: harmony,
             });
         }
     }

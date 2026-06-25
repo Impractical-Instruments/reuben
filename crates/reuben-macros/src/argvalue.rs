@@ -55,6 +55,12 @@ fn arg_conversions(name: &syn::Ident) -> TokenStream {
                 }
             }
         }
+
+        impl<'a> ::reuben_core::message::FromArg<'a> for #name {
+            fn from_arg(arg: &'a ::reuben_core::message::Arg) -> ::core::option::Option<Self> {
+                <Self as ::core::convert::TryFrom<&::reuben_core::message::Arg>>::try_from(arg).ok()
+            }
+        }
     }
 }
 
