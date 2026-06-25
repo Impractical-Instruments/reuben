@@ -8,7 +8,7 @@
 
 use reuben_core::graph::Graph;
 use reuben_core::message::{Arg, Message};
-use reuben_core::operators::{envelope, math, oscillator, output, power, voicer};
+use reuben_core::operators::{envelope, mul, oscillator, output, power, voicer};
 use reuben_core::operators::{Envelope, Filter, Mul, Oscillator, Output, Power, Voicer};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
@@ -29,11 +29,11 @@ fn main() {
     g.connect(v, voicer::OUT_FREQ, osc, oscillator::IN_FREQ);
     g.connect(osc, oscillator::OUT_AUDIO, filt, 0);
     // VCA: filtered audio * shaped envelope CV (env -> power -> mul).
-    g.connect(filt, 0, vca, math::IN_A);
+    g.connect(filt, 0, vca, mul::IN_A);
     g.connect(v, voicer::OUT_GATE, env, envelope::IN_GATE);
     g.connect(env, envelope::OUT_CV, curve, power::IN_X);
-    g.connect(curve, power::OUT_OUT, vca, math::IN_B);
-    g.connect(vca, math::OUT_OUT, out, output::IN_AUDIO);
+    g.connect(curve, power::OUT_OUT, vca, mul::IN_B);
+    g.connect(vca, mul::OUT_OUT, out, output::IN_AUDIO);
     g.tap_output(out, output::OUT_AUDIO);
 
     g.set_param(filt, "cutoff", 3_000.0);
