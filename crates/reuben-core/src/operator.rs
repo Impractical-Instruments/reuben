@@ -11,22 +11,22 @@ use std::sync::Arc;
 
 use smallvec::SmallVec;
 
-use crate::context::Context;
 use crate::descriptor::Descriptor;
+use crate::harmony::Harmony;
 use crate::message::{Arg, Emit, Event, Outbound};
 use crate::resources::{ResolvedRefs, ResourceStore};
 
-/// A tonal-[`Context`] snapshot an operator publishes during `process` onto a Context output
-/// port (ADR-0015), before the engine routes it to downstream readers' context slices.
+/// A [`Harmony`] snapshot an operator publishes during `process` onto a Harmony output
+/// port (ADR-0015), before the engine routes it to downstream readers' harmony slices.
 /// Sibling of [`Emit`]; `ctx` is `Copy`, so the engine snapshots it allocation-free.
 #[derive(Debug, Clone, Copy)]
 pub struct CtxPublish {
-    /// Context-output ordinal (separate index space from Signal/Message outputs).
+    /// Harmony-output ordinal (separate index space from Signal/Message outputs).
     pub port: usize,
     /// Sample offset within the block. Segment-relative when the operator calls
-    /// `publish_context`; the engine stamps it block-absolute.
+    /// `publish_harmony`; the engine stamps it block-absolute.
     pub frame: usize,
-    pub ctx: Context,
+    pub ctx: Harmony,
 }
 
 /// The per-call I/O view handed to [`Operator::process`] for one (sub)block of one Lane.
@@ -49,11 +49,11 @@ pub struct Io<'a> {
     /// Sink for Messages this call emits (ADR-0014), or `None` when this Lane does not
     /// collect emissions. Only Lane 0 collects — emission is single-Lane (pre-fan-out).
     emit: Option<&'a mut Vec<Emit>>,
-    /// Resolved tonal [`Context`] for each Context **input** port this segment (ADR-0015),
-    /// in context-input ordinal order. Constant for the call (the engine slices at context
-    /// changes). Empty for operators with no Context inputs; borrowed from the Render loop.
-    contexts: &'a [Context],
-    /// Sink for Context snapshots this call publishes (ADR-0015), or `None` when this Lane
+    /// Resolved [`Harmony`] for each Harmony **input** port this segment (ADR-0015),
+    /// in harmony-input ordinal order. Constant for the call (the engine slices at harmony
+    /// changes). Empty for operators with no Harmony inputs; borrowed from the Render loop.
+    contexts: &'a [Harmony],
+    /// Sink for Harmony snapshots this call publishes (ADR-0015), or `None` when this Lane
     /// does not publish. Like `emit`, single-Lane (the context node is pre-fan-out).
     ctx_publish: Option<&'a mut Vec<CtxPublish>>,
     /// Sink for boundary-bound Messages this call sends out (ADR-0026) — the outbound route, or
@@ -140,14 +140,14 @@ impl<'a> Io<'a> {
         self
     }
 
-    /// Set the resolved Context for each Context input port this segment (ADR-0015).
-    pub(crate) fn with_contexts(mut self, contexts: &'a [Context]) -> Self {
+    /// Set the resolved Harmony for each Harmony input port this segment (ADR-0015).
+    pub(crate) fn with_contexts(mut self, contexts: &'a [Harmony]) -> Self {
         self.contexts = contexts;
         self
     }
 
-    /// Attach the context-publish sink and segment frame offset (Lane 0 only). Snapshots
-    /// passed to [`Io::publish_context`] are collected into `buf` with `frame_offset` added.
+    /// Attach the harmony-publish sink and segment frame offset (Lane 0 only). Snapshots
+    /// passed to [`Io::publish_harmony`] are collected into `buf` with `frame_offset` added.
     pub(crate) fn with_context_publish(
         mut self,
         buf: &'a mut Vec<CtxPublish>,
@@ -276,37 +276,28 @@ impl<'a> Io<'a> {
         }
     }
 
-    /// The current tonal [`Context`] on Context input `port` (ADR-0015) — the latched
-    /// "what's the key/chord right now", constant for this (sub)block. Returns the default
-    /// (C major, 12-TET) when `port` is unconnected, so a degree resolves identically to the
-    /// prior 12-TET behavior in a rig with no context node.
-    pub fn context(&self, port: usize) -> Context {
+    /// The current [`Harmony`](crate::descriptor::Shape::Harmony) on a held-struct input `port`
+    /// (ADR-0015/0028) — the latched "what's the key/chord right now", constant for this
+    /// (sub)block. Returns the default (C major, 12-TET) when `port` is unconnected, so a degree
+    /// resolves identically to the prior 12-TET behavior in a rig with no context node.
+    pub fn harmony(&self, port: usize) -> Harmony {
         self.contexts.get(port).copied().unwrap_or_default()
     }
 
-    /// The current [`Harmony`](crate::descriptor::Shape::Harmony) on a held-struct input
-    /// (ADR-0028) — the forward-looking name for [`Io::context`]. Same latched read service; the
-    /// [`Context`] struct is renamed `Harmony` once the carrier vocabulary is retired.
-    pub fn harmony(&self, port: usize) -> Context {
-        self.context(port)
-    }
-
-    /// Publish a tonal [`Context`] snapshot onto Context output `port` at segment-relative
-    /// `frame` (ADR-0015). The engine latches it (shared, persistent across blocks) and
-    /// re-slices downstream readers at `frame`, so a chord/key change is sample-accurate on
-    /// the same timeline as notes. A no-op on Lanes that do not publish (every Lane but 0).
-    pub fn publish_context(&mut self, port: usize, frame: usize, ctx: Context) {
+    /// Publish a [`Harmony`](crate::descriptor::Shape::Harmony) snapshot onto a held-struct output
+    /// `port` at segment-relative `frame` (ADR-0015/0028). The engine latches it (shared,
+    /// persistent across blocks) and re-slices downstream readers at `frame`, so a chord/key
+    /// change is sample-accurate on the same timeline as notes. A no-op on Lanes that do not
+    /// publish (every Lane but 0).
+    pub fn publish_harmony(&mut self, port: usize, frame: usize, harmony: Harmony) {
         let frame = self.frame_offset + frame;
         if let Some(buf) = self.ctx_publish.as_mut() {
-            buf.push(CtxPublish { port, frame, ctx });
+            buf.push(CtxPublish {
+                port,
+                frame,
+                ctx: harmony,
+            });
         }
-    }
-
-    /// Publish a [`Harmony`](crate::descriptor::Shape::Harmony) snapshot onto a held-struct output
-    /// (ADR-0028) — the forward-looking name for [`Io::publish_context`]. Same latch+re-slice
-    /// service; the [`Context`] struct is renamed `Harmony` once the carrier vocabulary is retired.
-    pub fn publish_harmony(&mut self, port: usize, frame: usize, harmony: Context) {
-        self.publish_context(port, frame, harmony);
     }
 
     /// Which Lane (Voice) this call represents, in `0..lanes()`. Single-Lane operators can

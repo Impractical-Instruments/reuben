@@ -13,7 +13,7 @@
 //!   notes (`note [midi, vel]`) and **degree** notes (`degree [degree, vel]`); a degree is
 //!   resolved to Hz through the tonal context, so the line re-spells live on a key/scale
 //!   change (ADR-0008 amendment, ADR-0015).
-//! - input 1: `ctx` (Context) — the tonal context degree notes resolve against. Unconnected
+//! - input 1: `ctx` (Harmony) — the tonal context degree notes resolve against. Unconnected
 //!   → the default (C major, 12-TET), so absolute-note rigs are unchanged.
 //! - output 0: `freq` (Float) — resolved frequency in Hz of this Voice's note.
 //! - output 1: `gate` (Float) — 1.0 while this Voice holds a note, else 0.0.
@@ -218,7 +218,7 @@ crate::register_operator!(Voicer);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::Context;
+    use crate::harmony::Harmony;
     use crate::message::{Event, Message};
     use crate::operator::Io;
 
@@ -228,7 +228,7 @@ mod tests {
         n: usize,
         lanes: usize,
         lane: usize,
-        ctx: Context,
+        ctx: Harmony,
         events: &[Message],
     ) -> (Vec<f32>, Vec<f32>) {
         let mut f = vec![0.0f32; n];
@@ -261,7 +261,7 @@ mod tests {
         lane: usize,
         events: &[Message],
     ) -> (Vec<f32>, Vec<f32>) {
-        run_lane_ctx(v, n, lanes, lane, Context::default(), events)
+        run_lane_ctx(v, n, lanes, lane, Harmony::default(), events)
     }
 
     /// Mono convenience (single Voice).
@@ -270,7 +270,7 @@ mod tests {
     }
 
     fn hz(midi: f32) -> f32 {
-        Context::default().hz(Pitch::from_midi(midi))
+        Harmony::default().hz(Pitch::from_midi(midi))
     }
 
     // --- monophonic behavior (Lane count 1) ---
@@ -426,13 +426,13 @@ mod tests {
             [Arg::Float(2.0), Arg::Float(1.0)],
             0,
         )];
-        let c_major = Context::default();
+        let c_major = Harmony::default();
         let (f1, _) = run_lane_ctx(&mut v, n, 1, 0, c_major, &on);
         approx::assert_relative_eq!(f1[n - 1], hz(64.0), epsilon = 1e-2); // E
 
-        let c_minor = Context {
-            scale: crate::context::ScaleField::new(&[0, 2, 3, 5, 7, 8, 10]),
-            ..Context::default()
+        let c_minor = Harmony {
+            scale: crate::harmony::ScaleField::new(&[0, 2, 3, 5, 7, 8, 10]),
+            ..Harmony::default()
         };
         let (f2, gt2) = run_lane_ctx(&mut v, n, 1, 0, c_minor, &[]); // no new events
         approx::assert_relative_eq!(f2[n - 1], hz(63.0), epsilon = 1e-2); // E♭ — re-spelled

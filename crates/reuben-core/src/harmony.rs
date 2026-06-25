@@ -1,6 +1,6 @@
 //! Tonal context — the latched harmony value followers resolve against (ADR-0013, ADR-0015).
 //!
-//! A [`Context`] is the current key/scale/chord, a small **`Copy`** value so the engine can
+//! A [`Harmony`] is the current key/scale/chord, a small **`Copy`** value so the engine can
 //! snapshot it onto the Message wire allocation-free (ADR-0015): the slicing model *forces*
 //! the `Copy` shape. It owns the resolver — `hz` (degree → Hz), `snap` (arbitrary pitch →
 //! nearest in-scale degree), `chord_tone` — so the Scale∘Tuning composition lives in one
@@ -15,10 +15,10 @@
 
 use crate::pitch::Pitch;
 
-/// Max scale degrees in a `Context` (within a 12-TET period). The registry-side full tuning
+/// Max scale degrees in a `Harmony` (within a 12-TET period). The registry-side full tuning
 /// ladder (large MOS / Scala) is a separate, deferred axis (ADR-0015).
 pub const SCALE_CAP: usize = 12;
-/// Max chord tones in a `Context`.
+/// Max chord tones in a `Harmony`.
 pub const CHORD_CAP: usize = 8;
 
 /// Steps per period — 12-TET only for v1.1 (ADR-0013: Scale lives in step-space so a tuning
@@ -35,7 +35,7 @@ fn midi_to_hz(midi: f32) -> f32 {
 }
 
 /// An ordered set of within-period **step** offsets plus a length — the Scale field of a
-/// [`Context`]. Inline + `Copy` (no heap) so a context snapshot is a memcpy (ADR-0015).
+/// [`Harmony`]. Inline + `Copy` (no heap) so a context snapshot is a memcpy (ADR-0015).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScaleField {
     offsets: [i16; SCALE_CAP],
@@ -126,7 +126,7 @@ impl Chord {
     }
 }
 
-/// Which set [`Context::snap`] quantizes to (ADR-0013).
+/// Which set [`Harmony::snap`] quantizes to (ADR-0013).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum SnapTarget {
     /// Any scale tone survives.
@@ -159,14 +159,14 @@ pub struct SnapPolicy {
 /// The latched tonal context: tuning (12-TET for v1.1) + root + scale + chord. A small
 /// `Copy` value (ADR-0015) carrying the resolver.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Context {
+pub struct Harmony {
     /// Tonic **step** (absolute MIDI; spans octaves). Default 60 (C4).
     pub root: i32,
     pub scale: ScaleField,
     pub chord: Chord,
 }
 
-impl Default for Context {
+impl Default for Harmony {
     /// C major, 12-TET, no chord — so a rig with no context node resolves degrees exactly
     /// like the prior 12-TET default (existing rigs sound identical).
     fn default() -> Self {
@@ -178,7 +178,7 @@ impl Default for Context {
     }
 }
 
-/// Running-best candidate during a [`Context::snap`] search (allocation-free).
+/// Running-best candidate during a [`Harmony::snap`] search (allocation-free).
 #[derive(Clone, Copy)]
 struct Cand {
     dist: f32,
@@ -187,7 +187,7 @@ struct Cand {
     is_chord: bool,
 }
 
-impl Context {
+impl Harmony {
     /// Resolve a scale degree to an absolute **step** (MIDI). `degree d → root + scale[d mod
     /// len] + octave*period`; negative degrees wrap downward (Euclidean).
     pub fn degree_to_step(&self, degree: i32) -> i32 {
@@ -358,8 +358,8 @@ fn pick(a: Cand, b: Cand, target: SnapTarget) -> Cand {
 mod tests {
     use super::*;
 
-    fn c_major() -> Context {
-        Context::default()
+    fn c_major() -> Harmony {
+        Harmony::default()
     }
 
     fn approx(a: f32, b: f32) {
@@ -384,7 +384,7 @@ mod tests {
     #[test]
     fn absolute_pitch_ignores_scale() {
         // An absolute pitch resolves by MIDI regardless of root/scale.
-        let c = Context {
+        let c = Harmony {
             root: 62,
             scale: ScaleField::new(&[0, 2, 3, 5, 7, 8, 10]), // D minor-ish
             chord: Chord::empty(),
@@ -395,9 +395,9 @@ mod tests {
     // §3 — diatonic chord motion: shifting the degree set walks the chords.
     #[test]
     fn chord_tones_walk_diatonically() {
-        let c = Context {
+        let c = Harmony {
             chord: Chord::new(ChordTag::ScaleRelative, &[0, 2, 4]),
-            ..Context::default()
+            ..Harmony::default()
         };
         // I = C E G
         assert_eq!(c.chord_tone(0), Pitch::from_degree(0));
@@ -411,9 +411,9 @@ mod tests {
     // §4 — the re-spell footgun: scale-relative follows the key, absolute is frozen.
     #[test]
     fn scale_relative_respells_absolute_freezes() {
-        let major = Context {
+        let major = Harmony {
             chord: Chord::new(ChordTag::ScaleRelative, &[0, 2, 4]),
-            ..Context::default()
+            ..Harmony::default()
         };
         // Scale-relative {0,2,4} in C major → C E G.
         assert_eq!(
@@ -421,7 +421,7 @@ mod tests {
             64
         ); // E
 
-        let minor = Context {
+        let minor = Harmony {
             scale: ScaleField::new(&[0, 2, 3, 5, 7, 8, 10]), // C minor
             ..major
         };
@@ -432,7 +432,7 @@ mod tests {
         ); // E♭
 
         // Absolute [0,4,7] is frozen: still C E G under C minor.
-        let frozen = Context {
+        let frozen = Harmony {
             chord: Chord::new(ChordTag::Absolute, &[0, 4, 7]),
             ..minor
         };
@@ -465,9 +465,9 @@ mod tests {
     // §6 — snap target: Chord (strict) vs ChordThenScale (permissive).
     #[test]
     fn snap_chord_targets() {
-        let c = Context {
+        let c = Harmony {
             chord: Chord::new(ChordTag::ScaleRelative, &[0, 2, 4]), // C E G
-            ..Context::default()
+            ..Harmony::default()
         };
         let strict = SnapPolicy {
             target: SnapTarget::Chord,
@@ -504,8 +504,8 @@ mod tests {
     fn context_is_copy_and_small() {
         // The slicing model forces a `Copy`, heap-free struct (ADR-0015): assert it stays so.
         fn assert_copy<T: Copy>() {}
-        assert_copy::<Context>();
+        assert_copy::<Harmony>();
         // Guard against an accidental Box/Vec creeping in and ballooning the snapshot.
-        assert!(std::mem::size_of::<Context>() <= 64);
+        assert!(std::mem::size_of::<Harmony>() <= 64);
     }
 }

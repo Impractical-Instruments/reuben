@@ -1,8 +1,8 @@
-//! Context — the tonal-context node: broadcasts the current key/scale/chord (ADR-0013).
+//! Context — the tonal-context node: broadcasts the current [`Harmony`] (key/scale/chord) (ADR-0013).
 //!
-//! It owns the latched [`Context`] and publishes it onto a Context output port; followers
+//! It owns the latched [`Harmony`] and publishes it onto a Harmony output port; followers
 //! (the Voicer's degree resolution, a snap op) read "what's the key/chord right now" via
-//! `io.context()`. A single default instance in a Rig makes everything agree out of the box
+//! `io.harmony()`. A single default instance in a Rig makes everything agree out of the box
 //! — the same on-ramp as the default Clock — without baking *global* into the core
 //! (multiple context nodes = polytonality).
 //!
@@ -28,8 +28,8 @@
 
 use smallvec::SmallVec;
 
-use crate::context::{Chord, ChordTag, Context, ScaleField, CHORD_CAP, SCALE_CAP};
 use crate::descriptor::Descriptor;
+use crate::harmony::{Chord, ChordTag, Harmony, ScaleField, CHORD_CAP, SCALE_CAP};
 use crate::message::Arg;
 use crate::operator::{Io, Operator};
 
@@ -67,7 +67,7 @@ pub struct ContextOp {
     chord: Chord,
     /// Last value published, to publish only on change (ADR-0015). `None` until the first
     /// block, which always publishes (so the baseline picks up a non-default config).
-    last: Option<Context>,
+    last: Option<Harmony>,
     /// Reused scratch for the candidate publish frames, cleared each block and kept across
     /// blocks so steady state never reallocates (mirrors the render loop's reused `bounds`).
     /// A `Float` field wired to a per-sample source can push up to `block_size - 1` change
@@ -94,7 +94,7 @@ impl ContextOp {
     /// Build the current context from the `Float` inputs **at frame `f`** + the latched chord.
     /// The static fields are per-sample buffers now (ADR-0028), so reading them at the change
     /// frame is what keeps a mid-block `/context/root` sample-accurate (ADR-0015).
-    fn current_at(&self, io: &Io, f: usize) -> Context {
+    fn current_at(&self, io: &Io, f: usize) -> Harmony {
         let at = |port| {
             io.signal(port)
                 .get(f)
@@ -107,7 +107,7 @@ impl ContextOp {
         for (k, o) in offsets.iter_mut().enumerate().take(degrees) {
             *o = at(IN_STEP0 + k).round() as i16;
         }
-        Context {
+        Harmony {
             root,
             scale: ScaleField::new(&offsets[..degrees]),
             chord: self.chord,
@@ -213,7 +213,7 @@ crate::register_operator!(ContextOp);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::context::ChordTag;
+    use crate::harmony::ChordTag;
     use crate::message::{Event, Message};
     use crate::operator::CtxPublish;
 
@@ -268,7 +268,7 @@ mod tests {
         let first = run(&mut op, 128, &p, &[]);
         assert_eq!(first.len(), 1, "first block publishes the initial context");
         assert_eq!(first[0].frame, 0);
-        assert_eq!(first[0].ctx, Context::default());
+        assert_eq!(first[0].ctx, Harmony::default());
         // No change → no further publishes.
         let second = run(&mut op, 128, &p, &[]);
         assert!(second.is_empty(), "unchanged context does not re-publish");

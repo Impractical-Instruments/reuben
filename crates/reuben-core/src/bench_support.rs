@@ -21,8 +21,8 @@
 
 use std::sync::Arc;
 
-use crate::context::Context;
 use crate::descriptor::{Descriptor, LaneRule, Shape};
+use crate::harmony::Harmony;
 use crate::message::{Arg, Args, Emit, Event, Outbound};
 use crate::operator::{CtxPublish, Io, Operator};
 use crate::registry::Registry;
@@ -169,7 +169,7 @@ pub struct OpHarness {
     /// Held enum index per slot (full-order; empty for legacy operators, which have no enums).
     enums: Vec<usize>,
     /// Resolved context per slot (full-order for shaped, context-order for legacy).
-    contexts: Vec<Context>,
+    contexts: Vec<Harmony>,
     /// `varying` hint per slot, aligned with `in_bufs`.
     varying: Vec<bool>,
     /// One buffer per `Float` output port (declaration order).
@@ -333,7 +333,7 @@ impl OpHarness {
 struct WiredInputs {
     in_bufs: Vec<Option<Vec<f32>>>,
     enums: Vec<usize>,
-    contexts: Vec<Context>,
+    contexts: Vec<Harmony>,
     varying: Vec<bool>,
 }
 
@@ -358,7 +358,7 @@ fn build_inputs(desc: &Descriptor, shaped: bool) -> WiredInputs {
                 _ => in_bufs.push(None),
             }
             enums.push(p.enum_meta.as_ref().map_or(0, |e| e.default));
-            contexts.push(Context::default());
+            contexts.push(Harmony::default());
             varying.push(false);
         }
     } else {
@@ -371,7 +371,7 @@ fn build_inputs(desc: &Descriptor, shaped: bool) -> WiredInputs {
                     in_bufs.push(Some(vec![def; BLOCK_SIZE]));
                     varying.push(false);
                 }
-                Shape::Harmony => contexts.push(Context::default()),
+                Shape::Harmony => contexts.push(Harmony::default()),
                 _ => {}
             }
         }

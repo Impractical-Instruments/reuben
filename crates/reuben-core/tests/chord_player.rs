@@ -4,7 +4,7 @@
 //! tests can't: routing the chord op's emitted Messages to a real Voicer's voices, and a live chord
 //! re-spell on a key change driven through the full graph.
 
-use reuben_core::context::Context;
+use reuben_core::harmony::Harmony;
 use reuben_core::message::{Arg, Message};
 use reuben_core::operators::{Chord, ContextOp, Voicer};
 use reuben_core::pitch::Pitch;
@@ -21,7 +21,7 @@ const CFG: AudioConfig = AudioConfig {
 };
 
 fn hz(midi: f32) -> f32 {
-    Context::default().hz(Pitch::from_midi(midi))
+    Harmony::default().hz(Pitch::from_midi(midi))
 }
 
 /// A `context -> chord -> voicer(poly)` rig that taps a chosen Voicer output across all voices

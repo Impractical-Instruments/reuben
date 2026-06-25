@@ -21,7 +21,7 @@
 
 use smallvec::SmallVec;
 
-use crate::context::Context;
+use crate::harmony::Harmony;
 use crate::message::{Emit, Event, Message, Outbound};
 use crate::operator::{CtxPublish, Io};
 use crate::plan::{Plan, PlanNode};
@@ -71,11 +71,11 @@ pub struct Renderer<E: Executor = SerialExecutor> {
     /// One node's emissions for the current node, drained into `emitted` after it runs.
     emit_scratch: Vec<Emit>,
     /// Persistent latched context per slot (ADR-0015): the value a follower reads at frame 0,
-    /// carried across blocks. One per Context output port; init to the default context.
-    context_arena: Vec<Context>,
+    /// carried across blocks. One per Harmony output port; init to the default harmony.
+    context_arena: Vec<Harmony>,
     /// Block-lifetime pool of published context snapshots. Reader slices index it; grown
     /// once, cleared per block.
-    context_pool: Vec<Context>,
+    context_pool: Vec<Harmony>,
     /// One node's context publishes for the current node, drained after it runs.
     ctx_publish_scratch: Vec<CtxPublish>,
     /// One node's outbound-route sends for the current node (ADR-0026), drained into the caller's
@@ -135,7 +135,7 @@ impl<E: Executor> Renderer<E> {
             routes,
             emitted: Vec::with_capacity(EMIT_POOL_CAP),
             emit_scratch: Vec::with_capacity(EMIT_POOL_CAP),
-            context_arena: vec![Context::default(); plan.num_context_slots],
+            context_arena: vec![Harmony::default(); plan.num_context_slots],
             context_pool: Vec::with_capacity(EMIT_POOL_CAP),
             ctx_publish_scratch: Vec::with_capacity(EMIT_POOL_CAP),
             outbound_scratch: Vec::with_capacity(EMIT_POOL_CAP),
@@ -471,8 +471,8 @@ fn process_node(
     messages: &[Message],
     emitted: &[Emit],
     emit_scratch: &mut Vec<Emit>,
-    context_arena: &[Context],
-    context_pool: &[Context],
+    context_arena: &[Harmony],
+    context_pool: &[Harmony],
     ctx_publish_scratch: &mut Vec<CtxPublish>,
     outbound_scratch: &mut Vec<Outbound>,
     sample_rate: f32,
@@ -588,13 +588,13 @@ fn process_node(
             }
         }
 
-        // Resolve the Context for each Context input port at this segment's start (ADR-0015):
+        // Resolve the Harmony for each Harmony input port at this segment's start (ADR-0015):
         // the latest publish with frame ≤ seg_start (last-write-wins on equal frames), else
         // the persistent baseline. Constant across the segment and across Lanes.
-        let mut seg_contexts: SmallVec<[Context; 2]> = SmallVec::new();
+        let mut seg_contexts: SmallVec<[Harmony; 2]> = SmallVec::new();
         for &slot_opt in &node.context_inputs {
             let ctx = match slot_opt {
-                None => Context::default(),
+                None => Harmony::default(),
                 Some(slot) => {
                     let mut best: Option<(usize, usize)> = None; // (frame, pool_idx)
                     for &(f, s, pidx) in &route.context {

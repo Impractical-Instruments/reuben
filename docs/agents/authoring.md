@@ -131,8 +131,10 @@ pub trait Operator: Send {
   - `io.harmony(IN) -> Harmony` — read the latched tonal **`Harmony`** (key/scale/chord + resolver
     `hz`/`snap`/`chord_tone`), constant for the (sub)block, default C-major/12-TET when unwired. A
     `context` Operator writes the other side with `io.publish_harmony(OUT, frame, h)` (single-Lane).
-    The Voicer and `snap.rs` read it; `context.rs` publishes it. *(The struct is still named
-    `Context` in code; the `harmony`/`publish_harmony` accessors are the forward-facing names.)*
+    The Voicer and `snap.rs` read it; `context.rs` publishes it. *(The struct is named `Harmony`
+    in code (`harmony.rs`); `io.harmony`/`io.publish_harmony` are the only accessors — the legacy
+    `io.context`/`io.publish_context` aliases are gone. The publishing Operator's author-facing
+    type stays `"context"`.)*
   - `io.lane()` / `io.lanes()` — most operators ignore these; an *expander* like the Voicer uses
     them to emit one Voice's output per call.
 - **`spawn()`** — usually `Box::new(Self::new())`. Resets per-Lane state only. A resource-bearing

@@ -3,8 +3,9 @@
 > **Amended by [ADR-0028](0028-one-input-shape.md).** "Context" becomes the **`Harmony`** shape.
 > The latch + `Copy` resolver struct survive unchanged; the dedicated context arena/accessor folds
 > into shape delivery (a held-struct discipline). Read it with `io.harmony(IN)`, publish with
-> `io.publish_harmony(OUT, frame, h)` — the `io.context`/`io.publish_context` names persist as
-> aliases until the struct itself is renamed.
+> `io.publish_harmony(OUT, frame, h)`. The struct is now named `Harmony` (`harmony.rs`) and the
+> legacy `io.context`/`io.publish_context` aliases have been removed (#78); the publishing
+> Operator's author-facing type stays `"context"`.
 
 ## Context
 
