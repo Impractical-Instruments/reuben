@@ -9,7 +9,7 @@ The smallest composable unit of behavior. Does one simple thing; combined with o
 _Avoid_: node, object, module, block (block = an audio buffer chunk), ugen, plugin.
 
 **Instrument**:
-A named subgraph of Operators patched into one playable thing, exposing boundary ports (gestures/Messages in; music data and/or audio out). Because it exposes ports, an Instrument can be reused inside another Instrument or a [[rig]] as if it were an Operator (composition is recursive). The unit you actually play. Generators, effects, and meta-effects are all Instruments — in reuben you "play" an effect too.
+A named subgraph of Operators patched into one playable thing, exposing boundary ports (gestures/Messages in; music data and/or audio out). Because it exposes ports, an Instrument can be reused inside another Instrument or a [[rig]] as if it were an Operator (composition is recursive). The unit you actually play. Generators and effects are all Instruments — in reuben you "play" an effect too.
 _Avoid_: patch (noun — see Patch), device, rack, module.
 
 **Rig**:
@@ -25,7 +25,7 @@ A ready-made [[instrument]] (or [[rig]]) designed for instant play — e.g. groo
 _Avoid_: preset, template.
 
 **Address**:
-The OSC path that names an Operator, port, or param. Auto-derived from graph structure by default; an [[instrument]] may also expose stable curated addresses as its public control surface. Wildcards (`/drums/*/decay`) match many targets at once.
+The OSC path that names an Operator, [[input]], or output. Auto-derived from graph structure by default; an [[instrument]] may also expose stable curated addresses as its public control surface. Wildcards (`/drums/*/decay`) match many targets at once.
 _Avoid_: path, route, id (id = internal identity, not the address).
 
 **Coordinator**:
@@ -65,33 +65,46 @@ A symbolic value — primarily a scale degree within the active [[scale]], with 
 _Avoid_: note number (alone), frequency (frequency is the resolved result, not the Pitch).
 
 **Tuning**:
-The layer that resolves symbolic [[pitch]] to frequency in Hz. Imported from Scala `.scl`/`.kbm`; supports any non-Western or user-defined system. 12-TET is just the default Tuning. Rides the [[tonal-context]] bus, so it can change in real time while notes sound.
+The layer that resolves symbolic [[pitch]] to frequency in Hz. Imported from Scala `.scl`/`.kbm`; supports any non-Western or user-defined system. 12-TET is just the default Tuning. Rides the [[harmony]] bus, so it can change in real time while notes sound.
 _Avoid_: temperament, scale (scale = which degrees are in play; Tuning = their frequencies).
 
 **Scale**:
 The set of degrees currently in play and the active key/mode — the "which notes exist" layer that melodic Operators snap to. Distinct from [[tuning]] (which gives those degrees their Hz).
 _Avoid_: mode (a mode is one kind of Scale), key (key is part of the Scale).
 
-**Tonal context**:
-The broadcast Messages carrying the current key/[[scale]], current chord, and active [[tuning]], which Operators subscribe to and snap to. The good-button harmony engine — change the broadcast and every follower re-harmonizes.
-_Avoid_: harmony bus, key signature.
+**Harmony**:
+The current tonal frame — current key/[[scale]], current chord, and active [[tuning]] — broadcast on a bus that Operators subscribe to and snap to, and read on the operator side as a held, `Copy` struct (root/scale/chord + resolvers) carried by the `Harmony` [[shape]]. The good-button harmony engine — change the broadcast and every follower re-harmonizes.
+_Avoid_: tonal context, context, harmony bus, key signature.
 
 **Clock**:
 The source of base musical timing — tempo, meter, position. A global default Clock keeps everything in sync out of the box; Clocks are also Operators, so independent or polytempo timing can be patched. Provides timing only — groove, swing, and feel are separate Operators.
 _Avoid_: transport, master clock, conductor.
-
-**Meta-effect**:
-A control that targets many destinations at once via wildcard [[address]] matching — one gesture, many params. The mechanism behind "effect racks."
-_Avoid_: macro, rack (rack is a kind of meta-effect, not a separate mechanism).
 
 **Good Button**:
 Both a principle and an artifact. *As principle*: every control is hard to make sound bad — energy in produces juicy musical feedback out, easy defaults always provided. *As artifact*: a curated, often mapped control on an [[instrument]]'s surface (e.g. one "brightness" knob fanned to filter cutoff + resonance, each over its own range) — built from composition (`map` Operators + Message fan-out), not a special type. A Good Button (artifact) embodies the Good Button (principle).
 _Avoid_: meta param, meta-control, macro (all name the artifact — say Good Button).
 
 **Signal**:
-A continuous audio-rate float buffer flowing between Operators — one block of samples per channel. CV and audio are the same thing: both are Signals. Sub-audio-rate control is not a Signal; it is a Message.
-_Avoid_: CV, audio buffer / control buffer (as distinct types), wire.
+The per-sample buffer read-view of a `Float` [[input]]/output — one block of samples per [[channel]], flowing between Operators. Not a type of its own: audio, CV, and control are all the `Float` [[shape]]; `Signal` names only how a Float is read densely (the alternative is reading its current scalar value).
+_Avoid_: CV, audio buffer / control buffer (as distinct types), wire, carrier.
 
 **Message**:
-A discrete, OSC-shaped payload: an address path + typed args + a sample-accurate timetag. Carries notes, chords, triggers, gestures, parameter values, and all external I/O. The lingua franca, internal and external — an internal Message and an external OSC packet are the same shape.
+A discrete, OSC-shaped payload: an address path + typed args + a sample-accurate timetag. Carries notes, chords, triggers, gestures, parameter values, and all external I/O. The lingua franca, internal and external — an internal Message and an external OSC packet are the same shape. A note Message read inside an Operator is the `Note` [[shape]].
 _Avoid_: event, control, OSC packet (as a distinct internal type).
+
+**Input**:
+One functional value an Operator consumes, declared once with a [[shape]] and an unwired default. Fed by a literal or by a wire from another Operator's output — the same slot takes either. Replaces the old split of Signal port / param / connection / context port: one Input per function.
+_Avoid_: port, param, connection, slot, arg.
+
+**Shape**:
+The single axis describing one [[input]] or output — what kind of value it carries. Delivery (dense / held / sparse) and read-style follow from it; they are never declared separately. A closed, named set of four:
+- `Float` — a number (freq, cutoff, amp, a contour; audio, CV, and control are all this one shape); a per-sample stream the engine also exposes as a scalar.
+- `Enum` — a named discrete choice (filter mode, oscillator waveform); a held value, switchable live.
+- `Harmony` — the held tonal struct (see [[harmony]]).
+- `Note` — a pitch/velocity event (see [[message]]), delivered sparse and frame-stamped.
+Crossing from one shape to another is always an explicit converter Operator, never implicit coercion.
+_Avoid_: type, kind, PortKind, carrier, port.
+
+**Constant**:
+Instantiate-time configuration of an Operator instance that never changes on the data path. The line is exact: a value is a Constant iff changing it would rebuild the graph — e.g. `voices`, which sets [[lane]] count and topology. Lives in an Operator's `config` block, not its [[input]]s. [[shape]] alone does not make a Constant: a live-switchable `Enum` like filter mode is an [[input]], not a Constant.
+_Avoid_: param, setting, option, config value.
