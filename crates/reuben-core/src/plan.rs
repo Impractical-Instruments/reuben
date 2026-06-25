@@ -136,6 +136,18 @@ pub struct PlanNode {
     pub out_targets: Vec<Vec<(usize, usize)>>,
 }
 
+/// One outbound (OSC-out) sink (ADR-0026, ADR-0030): a node whose emitted Messages leave the
+/// graph past the boundary. The engine drains the node's emissions each block into the outbound
+/// list, stamping the node's `address` (one sink = one address) and the block-absolute frame;
+/// native encodes + UDP-sends them. The marker is the operator type (`osc_out`) — the one
+/// operator whose output is the external edge.
+pub struct OutboundTap {
+    /// The sink node's index in execution order.
+    pub node: usize,
+    /// The outbound OSC address — the node's address, stamped on every drained Message.
+    pub address: String,
+}
+
 /// One master tap: a tapped port's per-Lane arena buffers, summed into the master output.
 pub struct OutputTap {
     /// Logical master channel this tap feeds (ADR-0026), or `None` to broadcast to every
@@ -158,6 +170,8 @@ pub struct Plan {
     pub materialize_scratch_mask: Vec<bool>,
     /// Master taps, summed into the per-channel master output (ADR-0026).
     pub output_taps: Vec<OutputTap>,
+    /// Outbound (OSC-out) sinks, drained past the boundary each block (ADR-0026, ADR-0030).
+    pub outbound_taps: Vec<OutboundTap>,
 }
 
 /// Why Instantiate failed.
@@ -355,12 +369,25 @@ impl Plan {
             materialize_scratch_mask[b] = true;
         }
 
+        // Outbound sinks (ADR-0030): the `osc_out` operator is the one whose output is the external
+        // edge, so its emissions drain past the boundary stamped with the node's address.
+        let outbound_taps = nodes
+            .iter()
+            .enumerate()
+            .filter(|(_, n)| n.descriptor.type_name == "osc_out")
+            .map(|(i, n)| OutboundTap {
+                node: i,
+                address: n.address.clone(),
+            })
+            .collect();
+
         Ok(Plan {
             config,
             nodes,
             num_buffers: next_buffer,
             materialize_scratch_mask,
             output_taps,
+            outbound_taps,
         })
     }
 }

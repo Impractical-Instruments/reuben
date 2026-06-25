@@ -68,3 +68,30 @@ impl Note {
         self.velocity <= 0.0
     }
 }
+
+/// External OSC form: `/note <pitch> [velocity]` (ADR-0030). The pitch arg's **type** picks the
+/// [`Pitch`] case — an integer is a scale [`Degree`](Pitch::Degree), a float an
+/// [`Absolute`](Pitch::Absolute) MIDI coordinate (so a controller sending float MIDI notes lands
+/// as absolute, the historical decode convention). Velocity is the optional second arg, defaulting
+/// to 1.0 (a full-velocity note-on) when omitted.
+impl crate::message::OscArg for Note {
+    fn from_osc(args: &[crate::message::Arg]) -> Option<Self> {
+        use crate::message::Arg;
+        let pitch = match args.first()? {
+            Arg::I32(d) => Pitch::Degree(*d),
+            Arg::F32(m) => Pitch::Absolute(*m),
+            _ => return None,
+        };
+        let velocity = args.get(1).and_then(|a| a.as_f32()).unwrap_or(1.0);
+        Some(Note::new(pitch, velocity))
+    }
+
+    fn to_osc(&self, out: &mut Vec<crate::message::Arg>) {
+        use crate::message::Arg;
+        match self.pitch {
+            Pitch::Degree(d) => out.push(Arg::I32(d)),
+            Pitch::Absolute(m) => out.push(Arg::F32(m)),
+        }
+        out.push(Arg::F32(self.velocity));
+    }
+}

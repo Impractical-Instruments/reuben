@@ -173,6 +173,24 @@ impl<'a> FromArg<'a> for &'a [f32] {
     }
 }
 
+/// Pack/unpack a vocab type across the **flat multi-arg OSC form** at the boundary (ADR-0030).
+///
+/// Internally a Message carries exactly one [`Arg`], but external OSC is a flat list of
+/// primitive args — so a struct vocab type spans several (`Note ↔ /note pitch vel`). A type with
+/// an external OSC form implements this; **not** implementing it is the boundary opt-out (a
+/// [`Buffer`](Arg::Buffer) never crosses, so audio is kept off the wire by construction). The
+/// `args` read and `out` written are primitive `Arg`s (`F32`/`I32`/`Str`) — the OSC atoms.
+///
+/// Enums need no impl: a vocab enum is a single OSC arg (a symbol or index), handled by its
+/// [`EnumMeta`](crate::descriptor::EnumMeta) resolver. Only multi-arg struct types (`Note`) impl
+/// this. The dest-port-type-driven dispatch lives in [`crate::boundary`].
+pub trait OscArg: Sized {
+    /// Build the type from a flat OSC arg list, or `None` if the args don't fit.
+    fn from_osc(args: &[Arg]) -> Option<Self>;
+    /// Append this value's flat OSC args (primitive `Arg`s) to `out`.
+    fn to_osc(&self, out: &mut Vec<Arg>);
+}
+
 /// A discrete, addressed, sample-accurate payload — the boundary/owned form of the core's one
 /// carrier (ADR-0007, ADR-0030).
 #[derive(Debug, Clone, PartialEq)]

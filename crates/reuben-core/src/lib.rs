@@ -20,6 +20,7 @@ extern crate self as reuben_core;
 #[cfg(feature = "bench")]
 pub mod bench_support;
 
+pub mod boundary;
 pub mod config;
 pub mod descriptor;
 pub mod format;

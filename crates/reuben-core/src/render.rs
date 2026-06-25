@@ -159,9 +159,8 @@ impl<E: Executor> Renderer<E> {
     /// Render one block across **N logical master channels** (ADR-0026). `out` has one buffer
     /// per channel (`out.len() == plan.config.channels`), each `block_size` long. This is the
     /// stereo/multichannel path the engine drives. `outbound` receives any Messages an `osc_out`
-    /// sink sent this block (ADR-0026); it is **appended to, never cleared** — the caller drains
-    /// it. The boundary drain itself lands in phase 6; for now the parameter is preserved for the
-    /// stable public signature. Allocation-free in steady state.
+    /// sink sent this block (ADR-0026, ADR-0030); it is **appended to, never cleared** — the caller
+    /// drains it. Allocation-free in steady state.
     pub fn render_block_multi(
         &mut self,
         plan: &mut Plan,
@@ -180,7 +179,7 @@ impl<E: Executor> Renderer<E> {
         plan: &mut Plan,
         messages: &[Message],
         master: &mut [Vec<f32>],
-        _outbound: &mut Vec<Message>,
+        outbound: &mut Vec<Message>,
     ) {
         // Fresh edge buffers each block (upstream writes before downstream reads). Materialize
         // scratch buffers are excluded (ADR-0030): they are fully written by the materialize step
@@ -231,6 +230,22 @@ impl<E: Executor> Renderer<E> {
                 sample_rate,
                 block_size,
             );
+
+            // An `osc_out` sink: its emissions leave the graph (ADR-0026, ADR-0030). Drain each to
+            // the outbound list stamped with the node's (fixed) address and the already-block-
+            // absolute frame; native encodes + sends them. A sink has no downstream wiring, so this
+            // replaces — not supplements — the routing below.
+            if let Some(addr) = plan
+                .outbound_taps
+                .iter()
+                .find(|t| t.node == i)
+                .map(|t| t.address.as_str())
+            {
+                for e in emit_scratch.drain(..) {
+                    outbound.push(Message::new(addr, e.arg, e.frame));
+                }
+                continue;
+            }
 
             // Route this node's emissions (ADR-0014, ADR-0030): each goes into the block-lifetime
             // pool, and is delivered to every wired `(dst node, dst input port)` — which run later
