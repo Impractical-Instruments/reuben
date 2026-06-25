@@ -1,6 +1,6 @@
 //! Filter — state-variable filter; lowpass / highpass / bandpass (V1.3 `mode`, ADR-0022).
 //!
-//! Shape model (ADR-0028): `cutoff` and `resonance` are **`Float` inputs**, each owning its
+//! Port types (ADR-0030): `cutoff` and `resonance` are **`F32` inputs**, each owning its
 //! unwired default. When nothing is wired the engine materializes the input from its latched
 //! default (so `/filter/cutoff 3000` needs no upstream node, bit-identical to the old param
 //! behavior); when an LFO or envelope is wired the source buffer passes through and sweeps the

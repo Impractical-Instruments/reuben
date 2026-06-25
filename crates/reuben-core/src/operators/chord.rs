@@ -2,7 +2,7 @@
 //! ADR-0030).
 //!
 //! The gesture operator behind the V1.3 Chord-player Toy. Each button on the surface sends a `set`
-//! `Note` carrying a **scale-degree** chord root ([`Degree`](crate::pitch::Pitch::Degree)) and a
+//! `Note` carrying a **scale-degree** chord root ([`Degree`](crate::vocab::pitch::Pitch::Degree)) and a
 //! velocity (> 0 = press / 0 = release). On a press the op emits the triad of **scale-relative
 //! thirds** — degrees `d, d+2, d+4` — as degree [`Note`]s; on the matching release it emits the
 //! note-offs for the same tones. `size` = 4 adds the seventh (`d+6`).
@@ -29,7 +29,7 @@ use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
-use crate::pitch::{Note, Pitch};
+use crate::vocab::pitch::{Note, Pitch};
 
 // Single-source contract (ADR-0025/0030). `set` is a `Note` event port; `size` a held `Float`.
 crate::operator_contract!(Chord {

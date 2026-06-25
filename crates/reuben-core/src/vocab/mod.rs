@@ -10,14 +10,17 @@
 //!
 //! Adding a domain type = define it here (or beside its logic), derive `ArgValue`, and add one
 //! variant to [`Arg`](crate::message::Arg). The OSC flat-multi-arg boundary conversion for
-//! struct types lands in phase 6.
+//! struct types is derive-generated (`from_osc`/`to_osc`).
 //!
-//! Types live next to their behavior — [`Harmony`] and its resolver in
-//! [`crate::harmony`], [`Pitch`]/[`Note`] in [`crate::pitch`] — and are re-exported here so a
+//! Types live next to their behavior — [`Harmony`] and its resolver in the [`harmony`]
+//! submodule, [`Pitch`]/[`Note`] in [`pitch`] — and are re-exported here so a
 //! consumer reaches the whole vocabulary through one path (`crate::vocab::*`).
 
-pub use crate::harmony::{Chord, ChordTag, Harmony, ScaleField, SnapDir, SnapPolicy, SnapTarget};
-pub use crate::pitch::{Note, Pitch};
+pub mod harmony;
+pub mod pitch;
+
+pub use harmony::{Chord, ChordTag, Harmony, ScaleField, SnapDir, SnapPolicy, SnapTarget};
+pub use pitch::{Note, Pitch};
 
 /// How a sequencer step drives its output (the sequencer's `gate_mode`). A shared *vocab* enum
 /// (`Arg::GateMode`): emit a pitched **degree** per step, or a bare **gate** trigger.

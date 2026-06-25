@@ -13,7 +13,7 @@
 //! tunings ride the same step-space seam (the registry of ADR-0015) and land with the
 //! "Format & library" thread.
 
-use crate::pitch::Pitch;
+use crate::vocab::pitch::Pitch;
 
 /// Max scale degrees in a `Harmony` (within a 12-TET period). The registry-side full tuning
 /// ladder (large MOS / Scala) is a separate, deferred axis (ADR-0015).

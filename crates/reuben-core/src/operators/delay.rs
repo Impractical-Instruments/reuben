@@ -1,6 +1,6 @@
 //! Delay — feedback echo with a dry/wet mix.
 //!
-//! Shape model (ADR-0028): `time`, `feedback`, and `mix` are **`Float` inputs**, each owning its
+//! Port types (ADR-0030): `time`, `feedback`, and `mix` are **`F32` inputs**, each owning its
 //! unwired default. When nothing is wired the engine materializes the input from its latched
 //! default; when an LFO or envelope is wired the source buffer passes through. They are read
 //! block-rate via `io.last::<f32>` (the held ZOH value), and `io.signal(IN_AUDIO)` is always a

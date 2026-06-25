@@ -9,7 +9,7 @@
 //! it, so `dead_code` is expected.
 #![allow(dead_code)]
 
-use reuben_core::pitch::{Note, Pitch};
+use reuben_core::vocab::pitch::{Note, Pitch};
 use reuben_core::{load, AudioConfig, Message, Plan, Registry, Renderer, SerialExecutor};
 
 /// Real shipped sample rate.

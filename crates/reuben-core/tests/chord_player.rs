@@ -4,12 +4,12 @@
 //! tests can't: routing the chord op's emitted Messages to a real Voicer's voices, and a live chord
 //! re-spell on a key change driven through the full graph.
 
-use reuben_core::harmony::Harmony;
 use reuben_core::message::{Arg, Message};
 use reuben_core::operators::{Chord, ContextOp, Voicer};
-use reuben_core::pitch::{Note, Pitch};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
+use reuben_core::vocab::harmony::Harmony;
+use reuben_core::vocab::pitch::{Note, Pitch};
 use reuben_core::{load, AudioConfig, Graph, Registry};
 
 const CHORD_PLAYER: &str = include_str!("../../../instruments/chord-player.json");

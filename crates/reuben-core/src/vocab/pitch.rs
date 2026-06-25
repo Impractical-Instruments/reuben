@@ -1,7 +1,7 @@
 //! Pitch & Note — symbolic pitch and the note vocab type (ADR-0008, ADR-0030).
 //!
 //! [`Pitch`] is symbolic: **either** a scale degree (resolved to Hz through the active
-//! [`Harmony`](crate::harmony::Harmony), so it re-spells live) **or** an absolute float-MIDI
+//! [`Harmony`](crate::vocab::harmony::Harmony), so it re-spells live) **or** an absolute float-MIDI
 //! coordinate (60.0 = middle C, a 12-TET coordinate). Modelled as an enum so the two cannot
 //! both be set or both be absent — the old `{ degree: Option<i32>, midi: f32 }` struct had
 //! invalid states (ADR-0030). A [`Tuning`](crate::tuning::Tuning) resolves an absolute pitch to
@@ -14,7 +14,7 @@
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Pitch {
     /// A scale degree within the active Scale. Resolves to Hz through the
-    /// [`Harmony`](crate::harmony::Harmony), so it re-spells live on a key/scale change.
+    /// [`Harmony`](crate::vocab::harmony::Harmony), so it re-spells live on a key/scale change.
     Degree(i32),
     /// A float MIDI note (60.0 = middle C) — the always-available 12-TET coordinate.
     Absolute(f32),

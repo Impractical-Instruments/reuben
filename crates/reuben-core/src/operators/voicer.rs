@@ -6,8 +6,8 @@
 //! only its own Voice's signals — so all replicas stay in lock-step and the result is deterministic.
 //!
 //! - input 0: `notes` (`Note`) — note events, read via [`Io::stream`]. A
-//!   [`Degree`](crate::pitch::Pitch::Degree) note is resolved to Hz through the tonal context (so
-//!   the line re-spells live on a key/scale change); an [`Absolute`](crate::pitch::Pitch::Absolute)
+//!   [`Degree`](crate::vocab::pitch::Pitch::Degree) note is resolved to Hz through the tonal context (so
+//!   the line re-spells live on a key/scale change); an [`Absolute`](crate::vocab::pitch::Pitch::Absolute)
 //!   note plays its MIDI coordinate. Velocity 0 is a note-off (ADR-0030: the Pitch case, not an
 //!   address, carries degree-vs-absolute).
 //! - input 1: `ctx` (`Harmony`, held) — the tonal context degree notes resolve against. Unconnected
@@ -19,9 +19,9 @@
 use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
-use crate::harmony::Harmony;
 use crate::operator::{Io, Operator};
-use crate::pitch::{Note, Pitch};
+use crate::vocab::harmony::Harmony;
+use crate::vocab::pitch::{Note, Pitch};
 
 // Single-source contract (ADR-0025/0030): `notes` is a `Note` event port, `ctx` a held `Harmony`,
 // `freq`/`gate` per-sample buffers; the Lane count comes from the `voices` param.
@@ -194,8 +194,8 @@ crate::register_operator!(Voicer);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harmony::Harmony;
     use crate::message::{Arg, Event};
+    use crate::vocab::harmony::Harmony;
 
     /// An absolute-MIDI note event: `(frame, Note(Absolute(midi), vel))`.
     fn note(midi: f32, vel: f32, frame: usize) -> (usize, Note) {
@@ -385,7 +385,7 @@ mod tests {
         approx::assert_relative_eq!(f1[n - 1], hz(64.0), epsilon = 1e-2); // E
 
         let c_minor = Harmony {
-            scale: crate::harmony::ScaleField::new(&[0, 2, 3, 5, 7, 8, 10]),
+            scale: crate::vocab::harmony::ScaleField::new(&[0, 2, 3, 5, 7, 8, 10]),
             ..Harmony::default()
         };
         let (f2, gt2) = run_lane_ctx(&mut v, n, 1, 0, c_minor, &[]); // no new events

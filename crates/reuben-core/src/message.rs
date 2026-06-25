@@ -15,8 +15,8 @@
 //! Message stream read three ways: as a stream of events, as a held (zero-order-hold) value,
 //! or, for a [`Buffer`](Arg::Buffer) payload, as a dense per-sample block.
 
-use crate::harmony::{Harmony, SnapDir, SnapTarget};
-use crate::pitch::Note;
+use crate::vocab::harmony::{Harmony, SnapDir, SnapTarget};
+use crate::vocab::pitch::Note;
 use crate::vocab::{FilterMode, GateMode, M2sMode, MapCurve, Waveform};
 
 /// A contiguous sample buffer — the performant representation of a per-sample stream (a

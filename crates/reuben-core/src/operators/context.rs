@@ -25,8 +25,8 @@
 //! - output `ctx` (`harmony`) — the latched context followers read.
 
 use crate::descriptor::Descriptor;
-use crate::harmony::{Chord, Harmony, ScaleField, SCALE_CAP};
 use crate::operator::{Io, Operator};
+use crate::vocab::harmony::{Chord, Harmony, ScaleField, SCALE_CAP};
 
 /// Number of scale step-offset slots (max scale length within a 12-TET period).
 pub const NUM_STEPS: usize = SCALE_CAP;
@@ -169,8 +169,8 @@ crate::register_operator!(ContextOp);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harmony::{Chord as HChord, ChordTag};
     use crate::message::{Arg, Emit};
+    use crate::vocab::harmony::{Chord as HChord, ChordTag};
 
     const SR: f32 = 48_000.0;
 

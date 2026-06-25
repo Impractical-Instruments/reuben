@@ -158,11 +158,11 @@ pub enum LoadError {
     /// A wire joins two ports of incompatible [`PortType`]s (e.g. `Note` → `Buffer`) — the illegal
     /// wiring (ADR-0030). Equal types are fine, and an `F32` source into a `Buffer` port is the one
     /// implicit ZOH bridge; everything else is rejected here.
-    ShapeMismatch {
+    TypeMismatch {
         from: String,
-        from_shape: PortType,
+        from_type: PortType,
         to: String,
-        to_shape: PortType,
+        to_type: PortType,
     },
     /// A node carries a `sample` reference but its operator declares no such resource slot
     /// (ADR-0016) — a structural misuse, fatal like the other wiring errors.
@@ -199,14 +199,14 @@ impl fmt::Display for LoadError {
                 "node {node:?}: wire-ref {reference:?} is ambiguous (source has multiple outputs; \
                  name one as \"/node.port\")"
             ),
-            LoadError::ShapeMismatch {
+            LoadError::TypeMismatch {
                 from,
-                from_shape,
+                from_type,
                 to,
-                to_shape,
+                to_type,
             } => write!(
                 f,
-                "wire {from} ({from_shape:?}) -> {to} ({to_shape:?}) joins ports of different shapes"
+                "wire {from} ({from_type:?}) -> {to} ({to_type:?}) joins ports of different Arg types"
             ),
             LoadError::UnknownResource { node, slot } => {
                 write!(f, "node {node:?} has no resource slot {slot:?}")
@@ -345,7 +345,7 @@ impl InstrumentDoc {
     ///
     /// Two passes: pass 1 creates every node and applies its `config` constants and literal
     /// `inputs`; pass 2 resolves wire-refs (which may name a node declared later) into edges,
-    /// shape-checking each (ADR-0028).
+    /// type-checking each `Arg` type (ADR-0030).
     pub fn build(&self, registry: &Registry) -> Result<Graph, LoadError> {
         let mut graph = Graph::new();
         // address -> (key, descriptor) for resolving wire-refs and outputs.
@@ -433,7 +433,7 @@ impl InstrumentDoc {
             by_addr.insert(&n.address, (key, descriptor));
         }
 
-        // Pass 2: wire-refs -> edges (shape-checked).
+        // Pass 2: wire-refs -> edges (Arg-type-checked).
         for n in &self.nodes {
             let (dst_key, dst_desc) = lookup(&by_addr, &n.address)?;
             for (name, value) in &n.inputs {
@@ -457,11 +457,11 @@ impl InstrumentDoc {
                         (PortType::F32, PortType::Buffer) | (PortType::Buffer, PortType::F32)
                     );
                 if !compatible {
-                    return Err(LoadError::ShapeMismatch {
+                    return Err(LoadError::TypeMismatch {
                         from: format!("{}.{}", src_addr, src_desc.outputs[src_port].name),
-                        from_shape: from_ty.clone(),
+                        from_type: from_ty.clone(),
                         to: format!("{}.{}", n.address, name),
-                        to_shape: to_ty.clone(),
+                        to_type: to_ty.clone(),
                     });
                 }
                 graph.connect(src_key, src_port, dst_key, dst_port);
@@ -746,14 +746,14 @@ mod tests {
     }
 
     #[test]
-    fn shape_mismatch_errors() {
-        // osc.audio is a Float output; voicer.notes is a Note input.
+    fn type_mismatch_errors() {
+        // osc.audio is a Buffer output; voicer.notes is a Note input.
         let json = r#"{"instrument":"t",
             "nodes":[{"type":"oscillator","address":"/osc"},
                      {"type":"voicer","address":"/v","inputs":{"notes":{"from":"/osc.audio"}}}]}"#;
         assert!(matches!(
             load(json, &reg()),
-            Err(LoadError::ShapeMismatch { .. })
+            Err(LoadError::TypeMismatch { .. })
         ));
     }
 

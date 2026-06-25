@@ -2,9 +2,9 @@
 //! committed schema stays in sync with the operator descriptors.
 
 use reuben_core::message::{Arg, Message};
-use reuben_core::pitch::{Note, Pitch};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
+use reuben_core::vocab::pitch::{Note, Pitch};
 use reuben_core::{load, AudioConfig, Graph, InstrumentDoc, Registry};
 
 const DEFAULT_JSON: &str = include_str!("../../../instruments/default.json");

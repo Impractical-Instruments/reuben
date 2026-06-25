@@ -21,9 +21,9 @@ use slotmap::SecondaryMap;
 use crate::config::AudioConfig;
 use crate::descriptor::{Descriptor, LaneRule, Port, PortType};
 use crate::graph::{Graph, NodeKey};
-use crate::harmony::Harmony;
 use crate::message::{Arg, Message};
 use crate::operator::Operator;
+use crate::vocab::harmony::Harmony;
 
 /// How the engine treats an input port (ADR-0030), derived from its [`PortType`]:
 ///

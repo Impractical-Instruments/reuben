@@ -3,7 +3,7 @@
 //!
 //! Single-Lane (mono in, mono out).
 //!
-//! Shape model (ADR-0028): `room`/`damp`/`mix` are **`Float` inputs**, each owning its unwired
+//! Port types (ADR-0030): `room`/`damp`/`mix` are **`F32` inputs**, each owning its unwired
 //! default. When nothing is wired the engine materializes the input from its latched default;
 //! when a control is wired the source buffer passes through. There is no longer a separate
 //! "signal port + same-named param" pair — `io.last::<f32>(IN_ROOM)` reads the latched value.

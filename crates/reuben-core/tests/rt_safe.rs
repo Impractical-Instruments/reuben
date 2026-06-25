@@ -12,10 +12,10 @@ use std::sync::Arc;
 
 use reuben_core::message::{Arg, Message};
 use reuben_core::operators::{Output, SamplePlayer, Voicer};
-use reuben_core::pitch::{Note, Pitch};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
 use reuben_core::resources::{ResolvedRefs, ResourceStore, SampleBuffer};
+use reuben_core::vocab::pitch::{Note, Pitch};
 use reuben_core::{load, AudioConfig, Graph, Registry};
 
 const DEFAULT_JSON: &str = include_str!("../../../instruments/default.json");

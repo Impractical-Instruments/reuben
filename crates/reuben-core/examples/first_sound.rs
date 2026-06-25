@@ -10,9 +10,9 @@ use reuben_core::graph::Graph;
 use reuben_core::message::Message;
 use reuben_core::operators::{envelope, mul, oscillator, output, power, voicer};
 use reuben_core::operators::{Envelope, Filter, Mul, Oscillator, Output, Power, Voicer};
-use reuben_core::pitch::{Note, Pitch};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
+use reuben_core::vocab::pitch::{Note, Pitch};
 use reuben_core::AudioConfig;
 
 fn main() {

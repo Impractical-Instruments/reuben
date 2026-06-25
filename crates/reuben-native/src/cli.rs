@@ -176,7 +176,7 @@ impl Diag {
             | LoadError::ConstantInInputs { node, .. }
             | LoadError::AmbiguousWire { node, .. }
             | LoadError::UnknownResource { node, .. } => (Some(node.clone()), None),
-            LoadError::ShapeMismatch { .. } | LoadError::Json(_) => (None, None),
+            LoadError::TypeMismatch { .. } | LoadError::Json(_) => (None, None),
         };
         Diag {
             node,

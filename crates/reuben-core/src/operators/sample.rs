@@ -8,7 +8,7 @@
 //! reading the Voicer's per-Voice `freq`/`gate` Signals. Polyphony and steal-oldest come for
 //! free from the Voicer's Lane fan-out.
 //!
-//! Shape model (ADR-0030): `freq`/`gate` are `Buffer` wire-ins (read per sample via `io.signal`);
+//! Port types (ADR-0030): `freq`/`gate` are `Buffer` wire-ins (read per sample via `io.signal`);
 //! the former params `root`/`gain`/`start`/`channel` are `Float` inputs, each owning its unwired
 //! default so `/sample/root 60` needs no upstream node — read once per block as the held (ZOH)
 //! value via `io.last(port)`.

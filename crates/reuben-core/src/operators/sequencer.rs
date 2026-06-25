@@ -35,7 +35,7 @@
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
-use crate::pitch::{Note, Pitch};
+use crate::vocab::pitch::{Note, Pitch};
 use crate::vocab::GateMode;
 
 /// Number of step slots in the pattern (V1.3: expanded 8 → 16, ADR-0022).

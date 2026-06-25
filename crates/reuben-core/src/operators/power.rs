@@ -9,7 +9,7 @@
 //! no silence floor to fudge. Patch it between an `envelope` and a `mul`: `env.cv -> power.x`,
 //! `power.out -> mul`, audio -> the other `mul` input.
 //!
-//! Shape model (ADR-0029/0030): both inputs are materialized **`Float`** inputs owning their
+//! Port types (ADR-0029/0030): both inputs are materialized **`F32`** inputs owning their
 //! unwired defaults. `exponent` is read once **block-rate** via `io.last` (the curve shape is held
 //! for the call, not swept per sample). `x` is read per-sample. Uniform with the rest of the math
 //! family — no bare ports, no param slot (ADR-0029). The curve-op precedent: future shapes

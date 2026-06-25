@@ -27,7 +27,7 @@ use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
-use crate::pitch::Note;
+use crate::vocab::pitch::Note;
 
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Clock {
@@ -144,7 +144,7 @@ mod tests {
     use super::*;
     use crate::message::{Arg, Event, Message};
     use crate::operator::Io;
-    use crate::pitch::Pitch;
+    use crate::vocab::pitch::Pitch;
 
     const SR: f32 = 48_000.0;
 

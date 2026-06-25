@@ -135,7 +135,7 @@ mod tests {
     use crate::osc::OscIn;
     use crate::rigs::default_rig;
     use reuben_core::message::Arg;
-    use reuben_core::pitch::{Note, Pitch};
+    use reuben_core::vocab::pitch::{Note, Pitch};
     use reuben_core::AudioConfig;
 
     fn engine_with_note() -> Engine {

@@ -61,7 +61,7 @@ The Operator that assigns incoming note Messages to [[voice]]s from a pre-alloca
 _Avoid_: allocator, poly, note manager.
 
 **Pitch**:
-A symbolic value — primarily a scale degree within the active [[scale]], with float MIDI note (60.0 = middle C) available as a 12-TET coordinate. Symbolic only; a [[tuning]] resolves it to a frequency in Hz.
+A symbolic value, modeled as `enum { Degree(i32), Absolute(f32) }` (no invalid states) — primarily a scale `Degree` within the active [[scale]], with `Absolute` float MIDI note (60.0 = middle C) available as a 12-TET coordinate. Symbolic only; a [[tuning]] resolves it to a frequency in Hz. A **Note** is `{ pitch: Pitch, velocity: f32 }` (velocity 0 = note-off).
 _Avoid_: note number (alone), frequency (frequency is the resolved result, not the Pitch).
 
 **Tuning**:
@@ -73,7 +73,7 @@ The set of degrees currently in play and the active key/mode — the "which note
 _Avoid_: mode (a mode is one kind of Scale), key (key is part of the Scale).
 
 **Harmony**:
-The current tonal frame — current key/[[scale]], current chord, and active [[tuning]] — broadcast on a bus that Operators subscribe to and snap to, and read on the operator side as a held, `Copy` struct (root/scale/chord + resolvers) carried by the `Harmony` [[shape]]. The good-button harmony engine — change the broadcast and every follower re-harmonizes.
+The current tonal frame — current key/[[scale]], current chord, and active [[tuning]] — broadcast on a bus that Operators subscribe to and snap to, and read on the operator side as a held, `Copy` struct (root/scale/chord + resolvers) carried as the `Harmony` [[arg]]. The good-button harmony engine — change the broadcast and every follower re-harmonizes.
 _Avoid_: tonal context, context, harmony bus, key signature.
 
 **Clock**:
@@ -85,26 +85,33 @@ Both a principle and an artifact. *As principle*: every control is hard to make 
 _Avoid_: meta param, meta-control, macro (all name the artifact — say Good Button).
 
 **Signal**:
-The per-sample buffer read-view of a `Float` [[input]]/output — one block of samples per [[channel]], flowing between Operators. Not a type of its own: audio, CV, and control are all the `Float` [[shape]]; `Signal` names only how a Float is read densely (the alternative is reading its current scalar value).
-_Avoid_: CV, audio buffer / control buffer (as distinct types), wire, carrier.
+Shorthand for a [[message]] whose [[arg]] is a `Buffer` — one block of contiguous samples per [[channel]], flowing between Operators; the dense port type an Operator declares when it processes per-sample. Not a type of its own: `Signal<f32>` is the only element kind today, but the model is architected so other `Signal<T>` kinds can exist. Audio, CV, and control are all a `Buffer`.
+_Avoid_: CV, audio buffer / control buffer (as distinct types), wire, carrier, read-view of a Float.
+
+**Buffer**:
+The contiguous-memory payload of a [[signal]] — the most performant representation of a per-sample stream, and one of the [[arg]] kinds. It does not implement OSC conversion, so audio cannot cross the OSC boundary by construction.
+_Avoid_: arena, sample array, f32 slice (as the domain term).
 
 **Message**:
-A discrete, OSC-shaped payload: an address path + typed args + a sample-accurate timetag. Carries notes, chords, triggers, gestures, parameter values, and all external I/O. The lingua franca, internal and external — an internal Message and an external OSC packet are the same shape. A note Message read inside an Operator is the `Note` [[shape]].
-_Avoid_: event, control, OSC packet (as a distinct internal type).
+A discrete, OSC-shaped payload: an `address` path + a sample `frame` timestamp + exactly one [[arg]]. Carries notes, chords, triggers, gestures, parameter values, dense audio (as a `Buffer` Arg), and all external I/O. The lingua franca, internal and external — an internal Message and an external OSC packet are the same idea, reconciled by explicit boundary conversion (external OSC carries multiple args and no timestamp). The `address` serves OSC shape, boundary routing, and debug — never internal dispatch.
+_Avoid_: event, control, OSC packet (as a distinct internal type), typed args (plural — a Message holds exactly one Arg).
 
 **Input**:
-One functional value an Operator consumes, declared once with a [[shape]] and an unwired default. Fed by a literal or by a wire from another Operator's output — the same slot takes either. Replaces the old split of Signal port / param / connection / context port: one Input per function.
-_Avoid_: port, param, connection, slot, arg.
+One functional value an Operator consumes, declared once with an [[arg]] type and an unwired default. Fed by a literal or by a wire from another Operator's output — the same slot takes either. Replaces the old split of Signal port / param / connection / context port: one Input per function.
+_Avoid_: port, param, connection, slot (the slot is the Input; its payload is the [[arg]]).
 
-**Shape**:
-The single axis describing one [[input]] or output — what kind of value it carries. Delivery (dense / held / sparse) and read-style follow from it; they are never declared separately. A closed, named set of four:
-- `Float` — a number (freq, cutoff, amp, a contour; audio, CV, and control are all this one shape); a per-sample stream the engine also exposes as a scalar.
-- `Enum` — a named discrete choice (filter mode, oscillator waveform); a held value, switchable live.
-- `Harmony` — the held tonal struct (see [[harmony]]).
-- `Note` — a pitch/velocity event (see [[message]]), delivered sparse and frame-stamped.
-Crossing from one shape to another is always an explicit converter Operator, never implicit coercion.
-_Avoid_: type, kind, PortKind, carrier, port.
+**Arg**:
+The single typed payload of a [[message]], and the type an [[input]]/output declares — what replaced the old "shape" axis (delivery and read-style now follow from the Arg type plus the read verb, never declared separately). One closed, central enum: an OSC primitive (`F32`/`I32`/`Str`), a shared [[vocab]] concrete type (`Note`/`Harmony`/`FilterMode`/`Waveform`/…), or a `Buffer`. Concrete types exist *because* a Message holds exactly one Arg — two scalars (pitch+velocity) pack into one `Arg::Note`. Enums read as real Rust enums in operator code (`FilterMode::HighPass`), not bare indices. Crossing from one Arg type to another is an explicit converter Operator, never implicit coercion — the one exception being `F32`→`Buffer`, which ZOH-materializes automatically.
+_Avoid_: shape, kind, PortKind, value, blob, carrier, port.
+
+**vocab**:
+The shared module of concrete [[arg]] types — `Note`, `Harmony`, `Pitch`, `FilterMode`, `Waveform`, `M2sMode`, `MapCurve`, … — each defined once and reused everywhere (a `FilterMode` duplicated per-operator would be the code smell, and would force `Arg` open). Each `#[derive(ArgValue)]` generates its OSC `to/from` conversion, `Arg` integration, and metadata. New domain type = declare it in `vocab`, derive, add one line to `Arg`.
+_Avoid_: enum registry, type table, concrete-arg module.
+
+**Held value (ZOH latch)**:
+A port's current value: the last [[message]]'s [[arg]] on that port, held until it changes (zero-order-hold). One per-port latch — the single mechanism behind every "current" read, collapsing the former separate Harmony, enum, and param lanes into one. Stored `Copy`-normalized (a held enum holds its resolved value, never a `String`) to stay allocation-free on the audio thread.
+_Avoid_: context, param lane, enum latch (as separate mechanisms), state.
 
 **Constant**:
-Instantiate-time configuration of an Operator instance that never changes on the data path. The line is exact: a value is a Constant iff changing it would rebuild the graph — e.g. `voices`, which sets [[lane]] count and topology. Lives in an Operator's `config` block, not its [[input]]s. [[shape]] alone does not make a Constant: a live-switchable `Enum` like filter mode is an [[input]], not a Constant.
+Instantiate-time configuration of an Operator instance that never changes on the data path. The line is exact: a value is a Constant iff changing it would rebuild the graph — e.g. `voices`, which sets [[lane]] count and topology. Lives in an Operator's `config` block, not its [[input]]s. [[arg]] type alone does not make a Constant: a live-switchable enum like filter mode is an [[input]], not a Constant.
 _Avoid_: param, setting, option, config value.

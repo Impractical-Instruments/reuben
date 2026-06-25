@@ -4,7 +4,7 @@
 
 use std::path::PathBuf;
 
-use reuben_core::pitch::{Note, Pitch};
+use reuben_core::vocab::pitch::{Note, Pitch};
 use reuben_core::{load, AudioConfig, Message, Plan};
 use reuben_native::Engine;
 

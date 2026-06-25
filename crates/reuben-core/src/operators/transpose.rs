@@ -15,7 +15,7 @@ use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
-use crate::pitch::{Note, Pitch};
+use crate::vocab::pitch::{Note, Pitch};
 
 crate::operator_contract!(Transpose {
     inputs:  { notes:  note,

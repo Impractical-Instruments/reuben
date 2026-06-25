@@ -2,7 +2,7 @@
 //!
 //! Data model: [`signal`] (audio-rate) and [`message`] (discrete, OSC-shaped). Authoring:
 //! [`operator`] + [`descriptor`]. Composition: [`graph`] → [`plan`] (Instantiate) →
-//! [`render`] (per-block execution). Musical layer: [`pitch`] + [`tuning`]. The MVP
+//! [`render`] (per-block execution). Musical layer: [`vocab`] (`pitch`/`harmony`) + [`tuning`]. The MVP
 //! operator set is in [`operators`].
 //!
 //! This crate has no OS dependencies; audio I/O and protocol adapters live in the
@@ -25,11 +25,9 @@ pub mod config;
 pub mod descriptor;
 pub mod format;
 pub mod graph;
-pub mod harmony;
 pub mod message;
 pub mod operator;
 pub mod operators;
-pub mod pitch;
 pub mod plan;
 pub mod registry;
 pub mod render;
@@ -43,10 +41,10 @@ pub use config::AudioConfig;
 pub use descriptor::Descriptor;
 pub use format::{load, load_instrument, InstrumentDoc, LoadError, LoadWarning, Loaded};
 pub use graph::{Graph, NodeKey};
-pub use harmony::{Chord, ChordTag, Harmony, ScaleField, SnapDir, SnapPolicy, SnapTarget};
 pub use message::{Arg, Message};
 pub use operator::{Io, Operator};
 pub use plan::{Plan, PlanError};
+pub use vocab::{Chord, ChordTag, Harmony, ScaleField, SnapDir, SnapPolicy, SnapTarget};
 // The single-source operator contract macro (ADR-0025). Re-exported at the crate root so operator
 // modules can call `crate::operator_contract!(..)`, mirroring `register_operator!`.
 pub use registry::Registry;

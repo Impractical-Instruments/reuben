@@ -3,7 +3,7 @@
 //! 12-TET is just the default Tuning. Scala `.scl`/`.kbm` import and the tonal-context
 //! bus (live retuning while notes sound) land later; the trait is the seam.
 
-use crate::pitch::Pitch;
+use crate::vocab::pitch::Pitch;
 
 /// Resolves a symbolic Pitch to a concrete frequency.
 pub trait Tuning: Send {

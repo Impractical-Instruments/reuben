@@ -13,9 +13,9 @@
 //! the opt-out is by construction.
 
 use crate::descriptor::PortType;
-use crate::harmony::{SnapDir, SnapTarget};
 use crate::message::{Arg, OscArg};
-use crate::pitch::Note;
+use crate::vocab::harmony::{SnapDir, SnapTarget};
+use crate::vocab::pitch::Note;
 use crate::vocab::{FilterMode, GateMode, M2sMode, MapCurve, Waveform};
 
 /// Convert a flat OSC arg list into the single [`Arg`] a destination port carries, driven by the
@@ -85,7 +85,7 @@ pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) {
 mod tests {
     use super::*;
     use crate::descriptor::Port;
-    use crate::pitch::Pitch;
+    use crate::vocab::pitch::Pitch;
 
     #[test]
     fn f32_port_wraps_first_arg() {
@@ -155,7 +155,10 @@ mod tests {
     #[test]
     fn harmony_and_buffer_have_no_osc_form() {
         let mut flat = Vec::new();
-        osc_out_args(&Arg::Harmony(crate::harmony::Harmony::default()), &mut flat);
+        osc_out_args(
+            &Arg::Harmony(crate::vocab::harmony::Harmony::default()),
+            &mut flat,
+        );
         osc_out_args(&Arg::Buffer(crate::message::Signal::default()), &mut flat);
         assert!(flat.is_empty());
     }

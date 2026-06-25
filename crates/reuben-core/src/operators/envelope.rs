@@ -7,7 +7,7 @@
 //! exponential-style amplitude decay) and into a `mul` against the audio. Keeping the EG linear
 //! makes it the flexible primitive — linear *or* any curve is a choice of downstream op.
 //!
-//! Shape model (ADR-0030): the ADSR times (`attack`, `decay`, `sustain`, `release`) are
+//! Port types (ADR-0030): the ADSR times (`attack`, `decay`, `sustain`, `release`) are
 //! **`Float` inputs**, each owning its unwired default — read once per block as the held (ZOH)
 //! value via `io.last` (the ADSR shape is block-rate, exactly as the old params were). `gate` is a
 //! `Buffer` wire-in, read per sample via `io.signal` (an unwired gate reads empty → 0). There are

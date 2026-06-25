@@ -28,7 +28,7 @@ use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
-use crate::pitch::{Note, Pitch};
+use crate::vocab::pitch::{Note, Pitch};
 
 // Single-source contract (ADR-0025/0030). `position` is a materialized `Float` (read per-sample);
 // `strings`/`octaves`/`velocity` are held `Float`s.

@@ -12,7 +12,7 @@
 //! an even musical sweep rather than bunching up at the top. One shared Cytomic SVF core
 //! produces both the low-pass and high-pass taps; `position`'s sign selects which one is heard.
 //!
-//! Shape model (ADR-0028): every control is a **`Float` input**, each owning its unwired default.
+//! Port types (ADR-0030): every control is a **`F32` input**, each owning its unwired default.
 //! When nothing is wired the engine materializes the input from its latched default (so a control
 //! surface can sweep the knob via `/djfilter/position`, bit-identical to the old param behavior);
 //! when an LFO/envelope is wired the source buffer passes through and sweeps the port audio-rate.

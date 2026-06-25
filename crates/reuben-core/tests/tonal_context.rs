@@ -4,12 +4,12 @@
 //! operator unit tests can't: the context arena, the third route lane, and sample-accurate
 //! re-slicing on a context change.
 
-use reuben_core::harmony::Harmony;
 use reuben_core::message::{Arg, Message};
 use reuben_core::operators::{ContextOp, Snap, Voicer};
-use reuben_core::pitch::{Note, Pitch};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
+use reuben_core::vocab::harmony::Harmony;
+use reuben_core::vocab::pitch::{Note, Pitch};
 use reuben_core::{load, AudioConfig, Graph, Registry};
 
 const SCALE_DEMO: &str = include_str!("../../../instruments/scale-demo.json");

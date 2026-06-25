@@ -23,12 +23,12 @@ pub struct Node {
     pub descriptor: Descriptor,
     /// Initial param values, in descriptor slot order.
     pub params: Vec<f32>,
-    /// Initial value overrides for **materialized [`Shape::Float`](crate::descriptor::Shape)
-    /// inputs** (ADR-0028), as `(input port, value)` — the unwired-default a `/node/<input> v`
+    /// Initial value overrides for **materialized `F32` (`signal`)
+    /// inputs** (ADR-0030), as `(input port, value)` — the unwired-default a `/node/<input> v`
     /// literal sets, seeding the input's latch at Instantiate. Empty unless an author overrides
-    /// a Float input's default. The successor to a legacy "unwired-default param".
+    /// an `F32` input's default. The successor to a legacy "unwired-default param".
     pub input_overrides: Vec<(usize, f32)>,
-    /// Initial choice overrides for **[`Shape::Enum`](crate::descriptor::Shape) inputs** (ADR-0028),
+    /// Initial choice overrides for **enum (`vocab`) inputs** (ADR-0030),
     /// as `(input port, variant index)` — the unwired default a `/node/<input> "Hp"` literal sets,
     /// seeding the input's enum latch at Instantiate. Empty unless an author overrides an enum's
     /// default. Sibling of `input_overrides`, for the discrete (non-numeric) settable surface.
@@ -86,8 +86,8 @@ impl Graph {
     }
 
     /// Override a single value by name on a node (clamped to its range). Sets the param slot when
-    /// `name` is a param; otherwise, when `name` is a materialized [`Shape::Float`] input
-    /// (ADR-0028), records an input override that seeds that input's latch at Instantiate. Unknown
+    /// `name` is a param; otherwise, when `name` is a materialized `F32` input
+    /// (ADR-0030), records an input override that seeds that input's latch at Instantiate. Unknown
     /// names are ignored (the loader validates names up front).
     pub fn set_param(&mut self, node: NodeKey, name: &str, value: f32) {
         let n = &mut self.nodes[node];
@@ -99,13 +99,13 @@ impl Graph {
             self.set_input(node, name, value);
             return;
         }
-        // An [`Shape::Enum`] input set as a numeric literal: the value is the variant **index**
-        // fallback (ADR-0028). A string symbol (`"Hp"`) arrives via the loader's typed path; this
+        // An enum input set as a numeric literal: the value is the variant **index**
+        // fallback (ADR-0030). A string symbol (`"Hp"`) arrives via the loader's typed path; this
         // f32 surface carries the index. No-op if `name` is not an enum input.
         self.set_enum(node, name, &(value.round() as i64).to_string());
     }
 
-    /// Override a materialized [`Shape::Float`] input's unwired default by name (ADR-0028),
+    /// Override a materialized `F32` input's unwired default by name (ADR-0030),
     /// clamped to its range. No-op if `name` is not such an input. Upserts the `(port, value)`
     /// override consumed by [`Plan::instantiate`](crate::plan::Plan::instantiate).
     pub fn set_input(&mut self, node: NodeKey, name: &str, value: f32) {
@@ -123,7 +123,7 @@ impl Graph {
         }
     }
 
-    /// Override an [`Shape::Enum`] input's unwired default by name (ADR-0028), resolving a wire
+    /// Override an enum input's unwired default by name (ADR-0030), resolving a wire
     /// **token** (symbol `"Hp"` or fallback index `"1"`) against the input's variants. No-op if
     /// `name` is not an enum input or `token` resolves to no variant. Upserts the `(port, index)`
     /// override consumed by [`Plan::instantiate`](crate::plan::Plan::instantiate).
