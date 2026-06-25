@@ -33,3 +33,28 @@ impl Pitch {
         }
     }
 }
+
+/// A note — a symbolic [`Pitch`] plus a velocity (ADR-0030). The atomic vocab payload of an
+/// `Arg::Note`: pitch and velocity ride **one** Arg because a Message carries exactly one.
+/// Velocity 0 is a note-off.
+///
+/// Phase 2 moves `Note` (and `Pitch`, refactored to `enum { Degree(i32), Absolute(f32) }`)
+/// into the shared `vocab` module under the `ArgValue` derive; for now it lives beside `Pitch`
+/// and wraps the existing struct so the [`crate::message::Arg`] spine is real.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct Note {
+    pub pitch: Pitch,
+    pub velocity: f32,
+}
+
+impl Note {
+    /// A note from a pitch and velocity.
+    pub fn new(pitch: Pitch, velocity: f32) -> Self {
+        Self { pitch, velocity }
+    }
+
+    /// Whether this is a note-off (velocity 0 or below).
+    pub fn is_off(&self) -> bool {
+        self.velocity <= 0.0
+    }
+}
