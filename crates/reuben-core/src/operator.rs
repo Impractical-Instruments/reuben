@@ -37,8 +37,8 @@ pub struct Stamped<T> {
 /// All dense slices are exactly [`Io::frames`] samples long; held values are constant for the
 /// call. The port reference lists are collected into inline [`SmallVec`]s, so building an `Io`
 /// allocates nothing for the common low-port-count case. The inline input capacity is sized for
-/// the widest operator once its former params became inputs — the sequencer is `clock` + `length`
-/// + 16 × `step` + `gate_mode` + `pitch` = 20 — because RT-safety (`rt_safe`) depends on not
+/// the widest operator once its former params became inputs — the sequencer is `clock`, `length`,
+/// 16 × `step`, `gate_mode`, `pitch` = 20 — because RT-safety (`rt_safe`) depends on not
 /// spilling here on the audio thread.
 pub struct Io<'a> {
     sample_rate: f32,

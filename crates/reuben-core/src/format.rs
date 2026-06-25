@@ -160,9 +160,9 @@ pub enum LoadError {
     /// implicit ZOH bridge; everything else is rejected here.
     TypeMismatch {
         from: String,
-        from_type: PortType,
+        from_type: Box<PortType>,
         to: String,
-        to_type: PortType,
+        to_type: Box<PortType>,
     },
     /// A node carries a `sample` reference but its operator declares no such resource slot
     /// (ADR-0016) — a structural misuse, fatal like the other wiring errors.
@@ -459,9 +459,9 @@ impl InstrumentDoc {
                 if !compatible {
                     return Err(LoadError::TypeMismatch {
                         from: format!("{}.{}", src_addr, src_desc.outputs[src_port].name),
-                        from_type: from_ty.clone(),
+                        from_type: Box::new(from_ty.clone()),
                         to: format!("{}.{}", n.address, name),
-                        to_type: to_ty.clone(),
+                        to_type: Box::new(to_ty.clone()),
                     });
                 }
                 graph.connect(src_key, src_port, dst_key, dst_port);

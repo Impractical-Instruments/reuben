@@ -55,7 +55,7 @@ pub enum ConstantShape {
 /// `"Up"`, `"Sine"`). A variant's position is its on-wire integer **index** (the fallback form).
 /// See [`resolve`](Self::resolve) (cold, string) and [`resolve_arg`](Self::resolve_arg) (hot,
 /// alloc-free) for the symbol-primary / index-fallback binding.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone)]
 pub struct EnumMeta {
     /// The **port** name this metadata is attached to (`"dir"`).
     pub name: &'static str,
@@ -73,6 +73,19 @@ pub struct EnumMeta {
     /// resolve an enum control message without knowing the concrete `T`.
     pub resolve: fn(&crate::message::Arg) -> Option<crate::message::Arg>,
 }
+
+// `resolve` is a fn pointer — comparing it is meaningless (clippy
+// `unpredictable_function_pointer_comparisons`) and redundant: it is derive-generated from the
+// type, so equal `type_name`s already imply equal resolvers. Compare the data fields only.
+impl PartialEq for EnumMeta {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name
+            && self.type_name == other.type_name
+            && self.variants == other.variants
+            && self.default == other.default
+    }
+}
+impl Eq for EnumMeta {}
 
 impl EnumMeta {
     /// Resolve a wire **token** to a variant index — the cold, string form of the Enum-over-OSC
