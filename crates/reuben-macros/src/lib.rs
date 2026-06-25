@@ -21,6 +21,7 @@
 //! });
 //! ```
 
+mod argvalue;
 mod model;
 
 use proc_macro2::{Span, TokenStream};
@@ -38,6 +39,13 @@ use model::{build, ContractModel, LaneModel};
 #[proc_macro]
 pub fn operator_contract(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     expand(input.into()).into()
+}
+
+/// Integrate a shared *vocab* type with the central `Arg` enum (ADR-0030): `From`/`TryFrom`
+/// for every type, plus the Enum-over-OSC table for unit enums. See [`argvalue`].
+#[proc_macro_derive(ArgValue)]
+pub fn derive_arg_value(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    argvalue::expand(input.into()).into()
 }
 
 /// The proc-macro body, over `proc_macro2` so it is unit-testable without a proc-macro context.

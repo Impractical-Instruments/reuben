@@ -21,10 +21,10 @@ slotmap = "1"
 smallvec = "1"
 # Compile-time operator self-registration (ADR-0024). linkme is the no_std fallback.
 inventory = "0.3"
-# Compile-time operator contract codegen (ADR-0025): the operator_contract! proc-macro.
-# Parses its own grammar (not Rust items/exprs), so it needs only syn's parsing/printing
-# primitives — not the heavy `full` AST.
-syn = { version = "2", default-features = false, features = ["parsing", "printing", "proc-macro"] }
+# Compile-time codegen: the operator_contract! proc-macro parses its own grammar (not Rust
+# items/exprs); the ArgValue derive (ADR-0030) parses a type definition, which needs `derive`.
+# Neither needs the heavy `full` expression AST.
+syn = { version = "2", default-features = false, features = ["parsing", "printing", "proc-macro", "derive"] }
 quote = "1"
 proc-macro2 = "1"
 hound = "3"

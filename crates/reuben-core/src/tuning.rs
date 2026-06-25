@@ -28,6 +28,13 @@ impl Default for TwelveTet {
 
 impl Tuning for TwelveTet {
     fn hz(&self, pitch: Pitch) -> f32 {
-        self.ref_hz * 2.0_f32.powf((pitch.midi - self.ref_midi) / 12.0)
+        // The tuning-only layer resolves an absolute MIDI coordinate directly. A bare degree
+        // with no Harmony to resolve it falls back to a chromatic reading from middle C (60);
+        // real degree resolution goes through `Harmony::hz` (ADR-0008, ADR-0030).
+        let midi = match pitch {
+            Pitch::Absolute(m) => m,
+            Pitch::Degree(d) => 60.0 + d as f32,
+        };
+        self.ref_hz * 2.0_f32.powf((midi - self.ref_midi) / 12.0)
     }
 }

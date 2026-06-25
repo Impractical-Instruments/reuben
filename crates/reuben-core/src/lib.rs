@@ -36,6 +36,7 @@ pub mod resources;
 pub mod schema;
 pub mod signal;
 pub mod tuning;
+pub mod vocab;
 
 pub use config::AudioConfig;
 pub use descriptor::Descriptor;
@@ -49,6 +50,8 @@ pub use plan::{Plan, PlanError};
 // modules can call `crate::operator_contract!(..)`, mirroring `register_operator!`.
 pub use registry::Registry;
 pub use reuben_macros::operator_contract;
+// `#[derive(ArgValue)]` (ADR-0030): integrates a shared `vocab` type with the central `Arg`.
+pub use reuben_macros::ArgValue;
 // Re-export the self-registration macro at the crate root so operator modules can call
 // `crate::register_operator!(..)` regardless of module declaration order (ADR-0024).
 pub(crate) use registry::register_operator;

@@ -1,35 +1,49 @@
-//! Pitch — symbolic pitch (ADR-0008).
+//! Pitch & Note — symbolic pitch and the note vocab type (ADR-0008, ADR-0030).
 //!
-//! Pitch is symbolic: primarily a scale degree, with a float MIDI note (60.0 = middle C)
-//! always available as a 12-TET coordinate. It is resolved to a frequency in Hz by a
-//! [`crate::tuning::Tuning`]; Pitch never holds a frequency itself.
+//! [`Pitch`] is symbolic: **either** a scale degree (resolved to Hz through the active
+//! [`Harmony`](crate::harmony::Harmony), so it re-spells live) **or** an absolute float-MIDI
+//! coordinate (60.0 = middle C, a 12-TET coordinate). Modelled as an enum so the two cannot
+//! both be set or both be absent — the old `{ degree: Option<i32>, midi: f32 }` struct had
+//! invalid states (ADR-0030). A [`Tuning`](crate::tuning::Tuning) resolves an absolute pitch to
+//! Hz; Pitch never holds a frequency itself.
 //!
-//! The "first sound" run uses only the float-MIDI coordinate; the scale-degree layer and
-//! the tonal-context bus are filled in later.
+//! [`Note`] is the atomic vocab payload of an `Arg::Note`: a Pitch plus a velocity, riding
+//! **one** [`Arg`](crate::message::Arg) because a Message carries exactly one.
 
-/// A symbolic pitch.
+/// A symbolic pitch — exactly one of a scale degree or an absolute MIDI coordinate (ADR-0030).
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub struct Pitch {
-    /// Scale degree within the active Scale (`None` until the harmony layer lands).
-    pub degree: Option<i32>,
-    /// Float MIDI note, the always-available 12-TET coordinate (60.0 = middle C).
-    pub midi: f32,
+pub enum Pitch {
+    /// A scale degree within the active Scale. Resolves to Hz through the
+    /// [`Harmony`](crate::harmony::Harmony), so it re-spells live on a key/scale change.
+    Degree(i32),
+    /// A float MIDI note (60.0 = middle C) — the always-available 12-TET coordinate.
+    Absolute(f32),
 }
 
 impl Pitch {
     /// A pitch given directly as a float MIDI note.
     pub fn from_midi(midi: f32) -> Self {
-        Self { degree: None, midi }
+        Pitch::Absolute(midi)
     }
 
-    /// A pitch given as a scale degree, resolved against the active tonal context
-    /// ([`crate::harmony::Harmony`]). The MIDI coordinate is left at 0.0 — a degree pitch
-    /// carries its identity in `degree` and resolves to Hz through the context, so the
-    /// degree can re-spell live on a key/scale change (ADR-0013, ADR-0015).
+    /// A pitch given as a scale degree, resolved against the active tonal context.
     pub fn from_degree(degree: i32) -> Self {
-        Self {
-            degree: Some(degree),
-            midi: 0.0,
+        Pitch::Degree(degree)
+    }
+
+    /// The scale degree, if this is a [`Degree`](Pitch::Degree) pitch.
+    pub fn degree(self) -> Option<i32> {
+        match self {
+            Pitch::Degree(d) => Some(d),
+            Pitch::Absolute(_) => None,
+        }
+    }
+
+    /// The absolute MIDI coordinate, if this is an [`Absolute`](Pitch::Absolute) pitch.
+    pub fn midi(self) -> Option<f32> {
+        match self {
+            Pitch::Absolute(m) => Some(m),
+            Pitch::Degree(_) => None,
         }
     }
 }
@@ -37,11 +51,7 @@ impl Pitch {
 /// A note — a symbolic [`Pitch`] plus a velocity (ADR-0030). The atomic vocab payload of an
 /// `Arg::Note`: pitch and velocity ride **one** Arg because a Message carries exactly one.
 /// Velocity 0 is a note-off.
-///
-/// Phase 2 moves `Note` (and `Pitch`, refactored to `enum { Degree(i32), Absolute(f32) }`)
-/// into the shared `vocab` module under the `ArgValue` derive; for now it lives beside `Pitch`
-/// and wraps the existing struct so the [`crate::message::Arg`] spine is real.
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, reuben_macros::ArgValue)]
 pub struct Note {
     pub pitch: Pitch,
     pub velocity: f32,
