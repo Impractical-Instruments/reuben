@@ -133,11 +133,16 @@ fn expand_enum(ast: &DeriveInput, data: &syn::DataEnum) -> TokenStream {
 
             /// The descriptor [`EnumMeta`](::reuben_core::descriptor::EnumMeta) for an input of
             /// this enum named `name` — single-sourced with the type above so they cannot drift.
+            /// Its `resolve` is a non-capturing closure over [`resolve_arg`](Self::resolve_arg),
+            /// so routing can normalize an enum control message to this type's concrete `Arg`
+            /// without knowing `Self`.
             pub fn enum_meta(name: &'static str) -> ::reuben_core::descriptor::EnumMeta {
                 ::reuben_core::descriptor::EnumMeta {
                     name,
+                    type_name: ::core::stringify!(#name),
                     variants: Self::VARIANTS,
                     default: Self::DEFAULT_INDEX,
+                    resolve: |arg| Self::resolve_arg(arg).map(::reuben_core::message::Arg::from),
                 }
             }
 
