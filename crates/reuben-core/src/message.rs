@@ -250,20 +250,6 @@ pub struct Emit {
     pub frame: usize,
 }
 
-/// A boundary-bound Message an `osc_out` sink collects during `process` onto the outbound
-/// route (ADR-0026). The engine stamps it block-absolute and with the node's (fixed) outbound
-/// address, then drains it past the boundary for native to encode + send. Carries no address
-/// of its own: the sink is address-fixed, so the node *is* the routing. The single [`Arg`] is
-/// expanded to OSC's flat multi-arg form at the boundary (phase 6).
-#[derive(Debug, Clone)]
-pub struct Outbound {
-    /// The single typed payload to send out.
-    pub arg: Arg,
-    /// Sample offset within the Render block. Segment-relative when the operator calls
-    /// `send_outbound`; the engine stamps it block-absolute.
-    pub frame: usize,
-}
-
 /// A routed event handed to an operator for one (sub)block. A zero-copy view onto the
 /// originating block [`Message`]: the address *local* to the receiving node, a borrowed
 /// reference to the one [`Arg`], and a segment-relative frame. The Render loop builds these in
