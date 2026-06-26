@@ -107,31 +107,21 @@ crate::register_operator!(Delay);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::Arg;
-    use crate::operator::Io;
+    use crate::op_driver::OpDriver;
 
-    /// Run `input` through a fresh Delay at the given values and return the output buffer.
-    /// `time`/`feedback`/`mix` are `Float` inputs read via `io.last` (ADR-0030), so they are
-    /// supplied as the per-input held (ZOH) Args, in port order (audio, time, feedback, mix);
-    /// `audio` is a buffer input (placeholder latch).
+    /// Drive `input` through a fresh Delay at the given values through the real engine, returning the
+    /// output buffer. `time`/`feedback`/`mix` are held `Float` controls (`set` once, read via
+    /// `io.last`); `audio` is a time-varying Buffer input (`drive`d block by block). The state threads
+    /// across the real 128-frame blocks, so an echo lands at its true sample offset across them.
     fn render(input: &[f32], sample_rate: f32, time: f32, feedback: f32, mix: f32) -> Vec<f32> {
-        let n = input.len();
-        let mut delay = Delay::new();
-        let mut out_buf = vec![0.0f32; n];
-
-        let latched = [
-            Arg::F32(0.0),
-            Arg::F32(time),
-            Arg::F32(feedback),
-            Arg::F32(mix),
-        ];
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(input), None, None, None];
-            let outputs: Vec<&mut [f32]> = vec![out_buf.as_mut_slice()];
-            let mut io = Io::new(sample_rate, n, inputs, outputs).with_latched(&latched);
-            delay.process(&mut io);
-        }
-        out_buf
+        OpDriver::for_type(Delay::new(), sample_rate)
+            .set(IN_TIME, time)
+            .set(IN_FEEDBACK, feedback)
+            .set(IN_MIX, mix)
+            .drive(IN_AUDIO, input)
+            .render(input.len())
+            .output(OUT_AUDIO)
+            .to_vec()
     }
 
     /// Index of the largest-magnitude sample in `buf`.
@@ -232,44 +222,10 @@ mod tests {
         }
     }
 
-    #[test]
-    fn state_continuous_across_block_slices() {
-        // One call must equal two back-to-back calls sharing the same Delay instance.
-        let sr = 48_000.0;
-        let n = 4096;
-        let time = 0.02;
-        let fb = 0.6;
-        let mix = 0.5;
-        let input: Vec<f32> = (0..n)
-            .map(|i| (2.0 * std::f32::consts::PI * 330.0 * i as f32 / sr).sin())
-            .collect();
-
-        let whole = render(&input, sr, time, fb, mix);
-
-        let mut delay = Delay::new();
-        let mut out_buf = vec![0.0f32; n];
-        let latched = [Arg::F32(0.0), Arg::F32(time), Arg::F32(fb), Arg::F32(mix)];
-        let half = n / 2;
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&input[..half]), None, None, None];
-            let outputs: Vec<&mut [f32]> = vec![&mut out_buf[..half]];
-            let mut io = Io::new(sr, half, inputs, outputs).with_latched(&latched);
-            delay.process(&mut io);
-        }
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&input[half..]), None, None, None];
-            let outputs: Vec<&mut [f32]> = vec![&mut out_buf[half..]];
-            let mut io = Io::new(sr, n - half, inputs, outputs).with_latched(&latched);
-            delay.process(&mut io);
-        }
-
-        for i in 0..n {
-            assert!(
-                (whole[i] - out_buf[i]).abs() < 1e-5,
-                "slice mismatch at {i}: {} vs {}",
-                whole[i],
-                out_buf[i]
-            );
-        }
-    }
+    // The former `state_continuous_across_block_slices` (a hand-built two-`Io`-call split) is
+    // retired: `OpDriver::render` always steps the operator as real 128-frame blocks, so every test
+    // here crosses dozens of block boundaries. `impulse_produces_a_delayed_echo` (echo at frame
+    // 4800, ~37 blocks in) and `feedback_produces_multiple_decaying_echoes` already prove the ring
+    // buffer + head index thread continuously across them — there is no longer a "whole vs split"
+    // path to compare, the engine owns the slicing.
 }

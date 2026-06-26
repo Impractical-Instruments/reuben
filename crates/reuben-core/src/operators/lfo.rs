@@ -79,24 +79,21 @@ crate::register_operator!(Lfo);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::Arg;
-    use crate::operator::Io;
+    use crate::op_driver::OpDriver;
 
     const SR: f32 = 48_000.0;
 
-    /// Run `lfo` over one block of `n` frames at the given params, returning the out buffer.
-    fn run(lfo: &mut Lfo, n: usize, rate: f32, depth: f32, center: f32) -> Vec<f32> {
-        let mut out = vec![0.0f32; n];
-        // rate/depth/center are `Float` inputs (ADR-0030) — held (ZOH) values read via `io.last`,
-        // supplied through the per-input latch in port order (rate, depth, center).
-        let latched = [Arg::F32(rate), Arg::F32(depth), Arg::F32(center)];
-        {
-            let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let inputs: Vec<Option<&[f32]>> = vec![None, None, None];
-            let mut io = Io::new(SR, n, inputs, outs).with_latched(&latched);
-            lfo.process(&mut io);
-        }
-        out
+    /// Drive `lfo` for `n` frames at the given params through the real engine, returning the out
+    /// buffer. `rate`/`depth`/`center` are held `Float` controls — set once (sticky), read via
+    /// `io.last`; `out` is the operator's Buffer output, accumulated across the real 128-frame blocks.
+    fn run(n: usize, rate: f32, depth: f32, center: f32) -> Vec<f32> {
+        OpDriver::for_type(Lfo::new(), SR)
+            .set(IN_RATE, rate)
+            .set(IN_DEPTH, depth)
+            .set(IN_CENTER, center)
+            .render(n)
+            .output(OUT_OUT)
+            .to_vec()
     }
 
     #[test]
@@ -105,9 +102,8 @@ mod tests {
         // averages to center.
         let center = 440.0;
         let depth = 10.0;
-        let mut lfo = Lfo::new();
         // 48000 samples at 5 Hz = exactly 5 whole cycles, so the mean is exactly center.
-        let out = run(&mut lfo, 48_000, 5.0, depth, center);
+        let out = run(48_000, 5.0, depth, center);
 
         for (i, &s) in out.iter().enumerate() {
             assert!(s.is_finite(), "sample {i} not finite: {s}");
@@ -128,8 +124,7 @@ mod tests {
         // 5 Hz @ 48 kHz -> 9600 samples per cycle. Count rising crossings about `center`.
         let center = 440.0;
         let rate = 5.0;
-        let mut lfo = Lfo::new();
-        let out = run(&mut lfo, 48_000, rate, 10.0, center);
+        let out = run(48_000, rate, 10.0, center);
 
         let mut crossings = Vec::new();
         let mut prev = out[0];
@@ -153,14 +148,18 @@ mod tests {
 
     #[test]
     fn phase_is_continuous_across_calls() {
-        // One whole block must equal two back-to-back half-blocks sharing the instance.
+        // One render of 2n must equal two back-to-back renders of n sharing the driver's operator
+        // (the phase threads across the real 128-frame blocks and across separate `render` calls).
         let n = 1000;
-        let mut whole = Lfo::new();
-        let w = run(&mut whole, 2 * n, 5.0, 10.0, 440.0);
+        let w = run(2 * n, 5.0, 10.0, 440.0);
 
-        let mut split = Lfo::new();
-        let a = run(&mut split, n, 5.0, 10.0, 440.0);
-        let b = run(&mut split, n, 5.0, 10.0, 440.0);
+        let mut split = OpDriver::for_type(Lfo::new(), SR);
+        split
+            .set(IN_RATE, 5.0)
+            .set(IN_DEPTH, 10.0)
+            .set(IN_CENTER, 440.0);
+        let a = split.render(n).output(OUT_OUT).to_vec();
+        let b = split.render(n).output(OUT_OUT).to_vec();
 
         for i in 0..n {
             assert!((a[i] - w[i]).abs() < 1e-4, "block 1 differs at {i}");
@@ -170,18 +169,20 @@ mod tests {
 
     #[test]
     fn spawned_lfo_starts_fresh_at_phase_zero() {
-        let mut a = Lfo::new();
-        let _ = run(&mut a, 5_000, 5.0, 10.0, 440.0);
-        let mut b = a.spawn();
+        let mut a = OpDriver::for_type(Lfo::new(), SR);
+        a.set(IN_RATE, 5.0)
+            .set(IN_DEPTH, 10.0)
+            .set(IN_CENTER, 440.0);
+        a.render(5_000);
         // A fresh spawn starts at phase 0: sin(0) == 0, so the first sample is exactly center.
-        let mut out = [0.0f32; 1];
-        {
-            let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let latched = [Arg::F32(5.0), Arg::F32(10.0), Arg::F32(440.0)];
-            let inputs: Vec<Option<&[f32]>> = vec![None, None, None];
-            let mut io = Io::new(SR, 1, inputs, outs).with_latched(&latched);
-            b.process(&mut io);
-        }
+        let mut b = a.spawn();
+        let out = b
+            .set(IN_RATE, 5.0)
+            .set(IN_DEPTH, 10.0)
+            .set(IN_CENTER, 440.0)
+            .render(1)
+            .output(OUT_OUT)
+            .to_vec();
         assert!(
             (out[0] - 440.0).abs() < 1e-4,
             "spawned lfo should start fresh at phase 0 (== center), got {}",

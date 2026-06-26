@@ -85,47 +85,28 @@ crate::register_operator!(Snap);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::{Arg, Emit, Event};
+    use crate::message::{Arg, Emit};
+    use crate::op_driver::OpDriver;
 
     const SR: f32 = 48_000.0;
 
-    /// Run a fresh Snap against `ctx`. `target`/`direction` are held vocab enums; `ctx` a held
-    /// `Harmony`; `notes` arrives as a `Note` stream. Returns the emitted Messages.
+    /// Drive a fresh Snap against `ctx` through the real engine. `target`/`direction` are held vocab
+    /// enums and `ctx` a held `Harmony` (all `set` once); `notes` are pushed as `Note` events. Renders
+    /// one block and returns the emitted Messages.
     fn run(
         ctx: Harmony,
         target: SnapTarget,
         direction: SnapDir,
         notes: &[(usize, Note)],
     ) -> Vec<Emit> {
-        let args: Vec<Arg> = notes.iter().map(|(_, n)| Arg::Note(*n)).collect();
-        let evs: Vec<Event> = notes
-            .iter()
-            .zip(&args)
-            .map(|((frame, _), arg)| Event {
-                address: "notes",
-                arg,
-                frame: *frame,
-            })
-            .collect();
-        // Latch order: notes(0, placeholder — read as a stream), ctx, target, direction.
-        let latched = [
-            Arg::F32(0.0),
-            Arg::Harmony(ctx),
-            Arg::SnapTarget(target),
-            Arg::SnapDir(direction),
-        ];
-        let streams: [&[Event]; 4] = [&evs, &[], &[], &[]];
-        let mut emits: Vec<Emit> = Vec::new();
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![None, None, None, None];
-            let outs: Vec<&mut [f32]> = vec![];
-            let mut io = Io::new(SR, 128, inputs, outs)
-                .with_latched(&latched)
-                .with_streams(&streams)
-                .with_emit(&mut emits, 0);
-            Snap::new().process(&mut io);
+        let mut d = OpDriver::for_type(Snap::new(), SR);
+        d.set(IN_CTX, ctx)
+            .set(IN_TARGET, target)
+            .set(IN_DIRECTION, direction);
+        for (frame, note) in notes {
+            d.push(IN_NOTES, *frame, *note);
         }
-        emits
+        d.render(128).emits().to_vec()
     }
 
     fn degree(e: &Emit) -> i32 {

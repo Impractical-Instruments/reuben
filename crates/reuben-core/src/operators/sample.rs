@@ -215,50 +215,37 @@ fn interp(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::Arg;
+    use crate::op_driver::OpDriver;
 
     const SR: f32 = 48_000.0;
 
-    /// Bind a player to a one-resource store holding `buf`.
-    fn bound(buf: crate::resources::SampleBuffer) -> SamplePlayer {
-        let mut store = ResourceStore::new();
-        let id = store.insert("s", buf);
-        let store = Arc::new(store);
-        let mut p = SamplePlayer::new();
-        let mut refs = ResolvedRefs::new();
-        refs.set("sample", id);
-        p.bind_resources(&store, &refs);
-        p
+    /// A driver for a player bound (through the real loader path) to a one-resource store holding
+    /// `buf` — exercises [`OpDriver::bind`].
+    fn bound(buf: crate::resources::SampleBuffer) -> OpDriver {
+        let mut d = OpDriver::for_type(SamplePlayer::new(), SR);
+        d.bind("sample", buf);
+        d
     }
 
-    /// Run one block; `params` = [root, gain, start, channel] — the held (ZOH) `Float`-input values
-    /// supplied via the per-input latch (ADR-0030). `freq` is a `Buffer` wire-in: `None` mimics an
-    /// unwired buffer (reads 0 → play at root).
+    /// Drive `n` frames; `params` = [root, gain, start, channel] — held `Float` controls (`set`,
+    /// read via `io.last`). `gate` is a `Buffer` input (`drive`n); `freq` a `Buffer` wire-in (`None`
+    /// mimics an unwired buffer, which reads 0 → play at root).
     fn run(
-        p: &mut SamplePlayer,
+        d: &mut OpDriver,
         n: usize,
         gate: &[f32],
         freq: Option<&[f32]>,
         params: [f32; 4],
     ) -> Vec<f32> {
-        let mut out = vec![0.0f32; n];
-        // Latch in port order: freq/gate are buffers (placeholders), then root/gain/start/channel.
-        let latched = [
-            Arg::F32(0.0),
-            Arg::F32(0.0),
-            Arg::F32(params[0]),
-            Arg::F32(params[1]),
-            Arg::F32(params[2]),
-            Arg::F32(params[3]),
-        ];
-        {
-            let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            // Port order: freq, gate, root, gain, start, channel.
-            let inputs: Vec<Option<&[f32]>> = vec![freq, Some(gate), None, None, None, None];
-            let mut io = Io::new(SR, n, inputs, outs).with_latched(&latched);
-            p.process(&mut io);
+        d.set(IN_ROOT, params[0])
+            .set(IN_GAIN, params[1])
+            .set(IN_START, params[2])
+            .set(IN_CHANNEL, params[3]);
+        d.drive(IN_GATE, gate);
+        if let Some(f) = freq {
+            d.drive(IN_FREQ, f);
         }
-        out
+        d.render(n).output(OUT_AUDIO).to_vec()
     }
 
     fn mono(samples: &[f32]) -> crate::resources::SampleBuffer {
@@ -368,37 +355,16 @@ mod tests {
         let mut a = bound(mono(&[10.0, 20.0, 30.0, 40.0]));
         // Advance A partway so its playhead is non-zero.
         let _ = run(&mut a, 2, &[1.0, 1.0], None, ROOT_A4);
+        // B shares the store/sample (carried by the op's spawn) but is fresh: a trigger plays from
+        // the start.
         let mut b = a.spawn();
-        // B shares the store/sample but is fresh: a trigger plays from the start.
-        let mut out = vec![0.0f32; 4];
-        {
-            let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let latched = [
-                Arg::F32(0.0),
-                Arg::F32(0.0),
-                Arg::F32(ROOT_A4[0]),
-                Arg::F32(ROOT_A4[1]),
-                Arg::F32(ROOT_A4[2]),
-                Arg::F32(ROOT_A4[3]),
-            ];
-            // Port order: freq, gate, root, gain, start, channel.
-            let inputs: Vec<Option<&[f32]>> = vec![
-                None,
-                Some(&[1.0f32, 1.0, 1.0, 1.0][..]),
-                None,
-                None,
-                None,
-                None,
-            ];
-            let mut io = Io::new(SR, 4, inputs, outs).with_latched(&latched);
-            b.process(&mut io);
-        }
+        let out = run(&mut b, 4, &[1.0; 4], None, ROOT_A4);
         assert_eq!(out, vec![10.0, 20.0, 30.0, 40.0]);
     }
 
     #[test]
     fn unbound_player_is_silent() {
-        let mut p = SamplePlayer::new(); // never bound
+        let mut p = OpDriver::for_type(SamplePlayer::new(), SR); // never bound
         let out = run(&mut p, 4, &[1.0; 4], None, ROOT_A4);
         assert_eq!(out, vec![0.0; 4]);
     }

@@ -250,9 +250,23 @@ it never silently snaps to the default.
    ```
    Commit the updated `crates/reuben-core/schema/instrument.schema.json`. The
    `committed_schema_is_in_sync` test fails if it's stale.
-5. **Test** in the operator module, test-first. At minimum cover: output correctness,
-   phase/state continuity across back-to-back blocks (one whole block == two half-blocks
-   sharing the instance), and that a `spawn()`ed copy starts fresh. See `lfo.rs` tests.
+5. **Test** in the operator module, test-first, with
+   [`OpDriver`](../../crates/reuben-core/src/op_driver.rs) — it drives your operator through the
+   **real** engine (`Plan::instantiate` + `Renderer::step_node`), so a test can never drift from how
+   the engine actually seeds and steps a node. Address ports by the generated `IN_*` / `OUT_*` consts:
+   - `set(IN_X, v)` — a held control (scalar / enum / `Harmony`) or a constant audio-in (sticky/ZOH).
+   - `push(IN_X, frame, note)` — a transient `Note` event at a global frame.
+   - `drive(IN_X, &buf)` — a time-varying audio-in.
+   - `bind("slot", sample_buffer)` — a decoded resource.
+   - `render(n)` then `output(OUT_X)` / `emits()` — run `n` frames (as real 128-frame blocks,
+     threading state) and read a Buffer output / the emitted Messages. `spawn()` gives a driver over
+     a fresh `Operator::spawn` copy.
+
+   At minimum cover output correctness, state continuity across blocks (`render` a length that spans
+   several 128-frame blocks — the engine owns the slicing, so there is no manual "whole vs split" to
+   build), and that a `spawn()`ed copy starts fresh. The four shapes have exemplars: `lfo.rs` (held
+   `set` + buffer `output`), `snap.rs` (`push` + `emits`), `delay.rs` (`drive` + `output`), `sample.rs`
+   (`bind`).
 
 Embedders can add their own types without touching the core via `Registry::register` — the
 seam for the "agents author new Operators in Rust" goal ([ADR-0004](../adr/0004-ai-authorability-first-class.md)).
