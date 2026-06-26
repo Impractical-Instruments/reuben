@@ -5,34 +5,26 @@
 //! [`Operator::process`] directly, bypassing the graph, so a regression in one operator's
 //! per-sample loop is attributable to that operator.
 //!
-//! `process` is fed an [`Io`], whose constructor and `with_*` builders are `pub(crate)` — the
-//! "privacy bridge" ADR-0019 deferred. Rather than widen those to `pub` (a public-API leak), this
-//! module — itself inside the crate — reaches them and exposes only one typed surface,
-//! [`OpHarness`], gated behind the non-default `bench` feature (see [`crate`] docs). The external
-//! bench crate constructs an `OpHarness` by operator kind and never touches raw `Io`.
+//! The operator is driven through the **real engine** by [`OpDriver`](crate::op_driver): the harness
+//! applies its recipe with `set`/`push`/`drive`/`bind`, and [`OpHarness::render`] times
+//! `Renderer::step_node` over the fixed schedule. So this layer can never drift from how the engine
+//! actually seeds and steps a node — and the engine per-node overhead it now includes (edge clear,
+//! routing, materialize, `Io` build) is a *constant* per-operator offset, so regression detection
+//! survives the shift from "process cost" to "per-node cost" (the OpDriver reframe of ADR-0019).
+//! The external bench crate constructs an `OpHarness` by operator kind and never touches raw `Io`.
 //!
 //! The single source of truth for *which* operators are benched and *how* each is driven is
 //! [`WORKLOADS`]. The criterion layer iterates it at runtime; the iai layer references entries by
 //! kind. The [`tests::every_operator_has_a_micro_bench_workload`] forcing function asserts
 //! `WORKLOADS` covers every registered operator, so adding an operator without a workload reds CI.
 //!
-//! Faithful to the engine (ADR-0030): the harness wires the same per-input-port arrays the Render
-//! loop builds — a held [`Arg`] **latch** (read via `io.last`), the sparse [`Event`] **streams**
-//! (read via `io.stream`), the per-sample materialized **buffers** (read via `io.signal`), and the
-//! `varying` hints — all in input-port declaration order, plus the single Lane-0 **emit** sink that
-//! now subsumes the former harmony-publish / outbound sinks.
-//!
 //! Determinism (ADR-0001): every workload is a fixed function of constants — no clock, no entropy
 //! (the one RNG operator, `noise`, is seeded) — so iai instruction counts are byte-stable.
 
-use std::sync::Arc;
-
-use crate::descriptor::{Descriptor, LaneRule, Port, PortType};
-use crate::message::{Arg, Emit, Event};
-use crate::operator::{Io, Operator};
+use crate::descriptor::{Descriptor, PortType};
+use crate::op_driver::OpDriver;
 use crate::registry::Registry;
-use crate::resources::{ResolvedRefs, ResourceStore, SampleBuffer};
-use crate::vocab::harmony::Harmony;
+use crate::resources::SampleBuffer;
 use crate::vocab::pitch::{Note, Pitch};
 
 /// 48 kHz — the real shipped sample rate (matches the macro layer, ADR-0019).
@@ -167,216 +159,72 @@ pub fn workload(kind: &str) -> Workload {
 }
 
 /// A fully-prepared single-operator bench. Built by [`OpHarness::for_kind`] *outside* the measured
-/// region; only [`OpHarness::render`] is timed. Mirrors the macro layer's `BenchState`: state is
-/// rebuilt per criterion iteration so nothing carries over between timings.
+/// region; only [`OpHarness::render`] is timed. Rides on a real [`OpDriver`]: the recipe is applied
+/// through the driver, and `render` steps the operator through the engine's real per-node path, so
+/// the bench cannot drift from production stepping (the OpDriver reframe of ADR-0019).
 pub struct OpHarness {
-    op: Box<dyn Operator>,
-    lanes: usize,
-    /// Per-input buffer, `Some` for each `Float` (materialized) and `Buffer` (audio) input — the
-    /// dense block `io.signal` reads — and `None` for held / event ports. Input-port order, matching
-    /// the engine's per-Lane wiring.
-    in_bufs: Vec<Option<Vec<f32>>>,
-    /// The held (ZOH) [`Arg`] per input port — the unified latch (ADR-0030) `io.last` reads. In
-    /// input-port order; collapses the former Harmony / enum / param lanes.
-    latched: Vec<Arg>,
-    /// `varying` hint per input port, aligned with `latched` (false ⇒ a const-folding op may reuse
-    /// cached coefficients).
-    varying: Vec<bool>,
-    /// One buffer per `Buffer` output port (signal-output ordinal order — the index `io.signal_mut`
-    /// uses).
-    out_bufs: Vec<Vec<f32>>,
-    /// Events injected at block 0 only: `(input port, node-local address, payload)`. Borrowed into
-    /// per-port [`Event`] streams each block.
-    events: Vec<(usize, &'static str, Arg)>,
-    /// Lane-0 emit sink (ADR-0030): every operator gets one so emit/publish/outbound operators
-    /// exercise their sink path without per-recipe wiring. Cleared each block.
-    emit: Vec<Emit>,
-    /// Kept alive for the operator's lifetime — `bind_resources` clones the `Arc`.
-    _store: Option<Arc<ResourceStore>>,
+    driver: OpDriver,
+    /// Frames rendered per timed call — the fixed 1 s schedule (`BLOCKS * BLOCK_SIZE`).
+    frames: usize,
 }
 
 impl OpHarness {
-    /// Build the bench for an operator `kind`, applying its [`WORKLOADS`] recipe. Setup only —
-    /// allocation, resource decode, and event construction all happen here, never in [`render`].
+    /// Build the bench for an operator `kind`, applying its [`WORKLOADS`] recipe through a real
+    /// [`OpDriver`]. Setup only — plan instantiation, resource decode, and event/buffer construction
+    /// all happen here, never in [`render`](Self::render).
     pub fn for_kind(kind: &str) -> Self {
         let reg = Registry::builtin();
         let entry = reg
             .get(kind)
             .unwrap_or_else(|| panic!("unknown operator kind {kind:?}"));
         let desc = entry.descriptor.clone();
-        let mut op = (entry.make)();
-        let recipe = workload(kind).recipe;
-
-        // Per-input-port arrays, in declaration order — the layout the Render loop wires
-        // (ADR-0030): a dense buffer for materialized/audio ports, a held Arg latch for every port,
-        // a `varying` hint for every port.
-        let mut in_bufs: Vec<Option<Vec<f32>>> = desc.inputs.iter().map(input_buffer).collect();
-        let mut latched: Vec<Arg> = desc.inputs.iter().map(default_latch).collect();
-        let mut varying: Vec<bool> = vec![false; desc.inputs.len()];
-
-        let out_bufs: Vec<Vec<f32>> = desc
-            .outputs
-            .iter()
-            .filter(|p| matches!(p.ty, PortType::Buffer))
-            .map(|_| vec![0.0; BLOCK_SIZE])
-            .collect();
-
-        let lanes = match desc.lanes {
-            LaneRule::FromParam(slot) => (desc.params[slot].default.round() as usize).max(1),
-            LaneRule::Inherit => 1,
-        };
-
-        // Apply the recipe's input drives + events.
-        let mut events: Vec<(usize, &'static str, Arg)> = Vec::new();
-        let mut store = None;
-        match recipe {
-            Recipe::Default => {}
-            Recipe::Gate => set_const(&desc, &mut in_bufs, &mut latched, &mut varying, "gate", 1.0),
-            Recipe::Clocked => set_clock(&desc, &mut in_bufs, &mut varying, "clock"),
-            Recipe::Sample => {
-                set_const(&desc, &mut in_bufs, &mut latched, &mut varying, "gate", 1.0);
-                set_const(
-                    &desc,
-                    &mut in_bufs,
-                    &mut latched,
-                    &mut varying,
-                    "freq",
-                    440.0,
-                );
-                store = Some(bind_synthetic_sample(&desc, op.as_mut()));
-            }
-            Recipe::Notes => push_note(
-                &mut events,
-                &desc,
-                "notes",
-                Note::new(Pitch::Absolute(60.0), 1.0),
-            ),
-            Recipe::ChordSet => {
-                push_note(&mut events, &desc, "set", Note::new(Pitch::Degree(0), 1.0))
-            }
-            Recipe::Position => set_const(
-                &desc,
-                &mut in_bufs,
-                &mut latched,
-                &mut varying,
-                "position",
-                0.5,
-            ),
-            // `in` is a `Float` control on the dense transformers but a `Note` port on `osc_out`;
-            // drive each in its own type (ADR-0030 split the formerly-uniform value event).
-            Recipe::Value => {
-                let i = input_index(&desc, "in");
-                if matches!(desc.inputs[i].ty, PortType::F32) {
-                    set_const(&desc, &mut in_bufs, &mut latched, &mut varying, "in", 0.5);
-                } else {
-                    push_note(
-                        &mut events,
-                        &desc,
-                        "in",
-                        Note::new(Pitch::Absolute(60.0), 1.0),
-                    );
-                }
-            }
-        }
-
+        let mut driver = OpDriver::from_boxed((entry.make)(), desc.clone(), SAMPLE_RATE);
+        apply_recipe(&mut driver, &desc, workload(kind).recipe);
         Self {
-            op,
-            lanes,
-            in_bufs,
-            latched,
-            varying,
-            out_bufs,
-            events,
-            emit: Vec::new(),
-            _store: store,
+            driver,
+            frames: BLOCKS * BLOCK_SIZE,
         }
     }
 
-    /// Render the full fixed workload — [`BLOCKS`] blocks of one `process` call (lane 0). Events
-    /// fire at block 0 only (the macro layer's note-on-then-tail shape). Accumulates a value that
-    /// depends on every block's outputs + emit activity so the optimizer cannot elide the work; the
-    /// sum is the bench's return value (the caller `black_box`es it under iai).
-    pub fn render(self) -> f32 {
-        let Self {
-            mut op,
-            lanes,
-            in_bufs,
-            latched,
-            varying,
-            mut out_bufs,
-            events,
-            mut emit,
-            _store,
-        } = self;
-
-        let n_inputs = latched.len();
-
-        // Block-0 event streams, built once: one per-port [`Event`] vec borrowing the owned `events`
-        // payloads, plus an empty set for every other block — so the per-block loop allocates
-        // nothing for streams.
-        let mut ev_per_port: Vec<Vec<Event>> = (0..n_inputs).map(|_| Vec::new()).collect();
-        for (port, addr, arg) in &events {
-            ev_per_port[*port].push(Event {
-                address: addr,
-                arg,
-                frame: 0,
-            });
-        }
-        let block0_streams: Vec<&[Event]> = ev_per_port.iter().map(|v| v.as_slice()).collect();
-        let empty_streams: Vec<&[Event]> = vec![&[]; n_inputs];
-
+    /// Render the full fixed workload — [`BLOCKS`] real `step_node` blocks (lane 0), threading
+    /// operator state across them; events fire at block 0 only (the note-on-then-tail shape).
+    /// Accumulates a value depending on the outputs + emit activity so the optimizer cannot elide
+    /// the work; the sum is the bench's return value (the caller `black_box`es it under iai).
+    pub fn render(mut self) -> f32 {
+        self.driver.render(self.frames);
         let mut acc = 0.0f32;
-        for b in 0..BLOCKS {
-            emit.clear();
-            let streams = if b == 0 {
-                &block0_streams
-            } else {
-                &empty_streams
-            };
-
-            let inputs = in_bufs.iter().map(|o| o.as_deref());
-            let outputs = out_bufs.iter_mut().map(|v| v.as_mut_slice());
-
-            let mut io = Io::new(SAMPLE_RATE, BLOCK_SIZE, inputs, outputs)
-                .with_latched(&latched)
-                .with_streams(streams)
-                .with_varying(&varying)
-                .with_lane(0, lanes)
-                .with_emit(&mut emit, 0);
-            op.process(&mut io);
-            drop(io); // releases the borrows of out_bufs + the emit sink taken above
-
-            acc += out_bufs.first().map_or(0.0, |v| v[0]);
-            acc += emit.len() as f32;
+        for out in self.driver.outputs() {
+            acc += out.first().copied().unwrap_or(0.0);
         }
-        acc
+        acc + self.driver.emits().len() as f32
     }
 }
 
-/// The per-input dense buffer the engine would hand `process`: a `Float` control materialized to
-/// its default, a `Buffer` audio input as silence (a wired source the recipe may overwrite), or
-/// `None` for a held / event port (delivered through the latch / streams instead).
-fn input_buffer(p: &Port) -> Option<Vec<f32>> {
-    match p.ty {
-        PortType::F32 => Some(vec![p.meta.as_ref().map_or(0.0, |m| m.default); BLOCK_SIZE]),
-        PortType::Buffer => Some(vec![0.0; BLOCK_SIZE]),
-        _ => None,
-    }
-}
-
-/// The held (ZOH) [`Arg`] the engine would latch for a port at rest (ADR-0030): a scalar control's
-/// default, a vocab enum's default variant, the default `Harmony`. Buffer / event / non-default
-/// ports get a harmless `F32(0.0)` placeholder — `io.last` is never the read for those.
-fn default_latch(p: &Port) -> Arg {
-    match &p.ty {
-        PortType::F32 => Arg::F32(p.meta.as_ref().map_or(0.0, |m| m.default)),
-        PortType::Vocab {
-            enum_meta: Some(e), ..
-        } => e
-            .resolve_arg(&Arg::I32(e.default as i32))
-            .unwrap_or(Arg::I32(e.default as i32)),
-        PortType::Vocab { name, .. } if *name == "Harmony" => Arg::Harmony(Harmony::default()),
-        _ => Arg::F32(0.0),
+/// Apply a [`Recipe`]'s input drives + events to a freshly-built driver — the minimum each operator
+/// needs to exercise its real per-sample path rather than an early-out idle path (ADR-0030).
+fn apply_recipe(driver: &mut OpDriver, desc: &Descriptor, recipe: Recipe) {
+    match recipe {
+        Recipe::Default => {}
+        Recipe::Gate => set_const(driver, desc, "gate", 1.0),
+        Recipe::Clocked => drive_clock(driver, desc, "clock"),
+        Recipe::Sample => {
+            set_const(driver, desc, "gate", 1.0);
+            set_const(driver, desc, "freq", 440.0);
+            bind_synthetic_sample(driver, desc);
+        }
+        Recipe::Notes => push_note(driver, desc, "notes", Note::new(Pitch::Absolute(60.0), 1.0)),
+        Recipe::ChordSet => push_note(driver, desc, "set", Note::new(Pitch::Degree(0), 1.0)),
+        Recipe::Position => set_const(driver, desc, "position", 0.5),
+        // `in` is a `Float` control on the dense transformers but a `Note` port on `osc_out`; drive
+        // each in its own type (ADR-0030 split the formerly-uniform value event).
+        Recipe::Value => {
+            let i = input_index(desc, "in");
+            if matches!(desc.inputs[i].ty, PortType::F32) {
+                set_const(driver, desc, "in", 0.5);
+            } else {
+                push_note(driver, desc, "in", Note::new(Pitch::Absolute(60.0), 1.0));
+            }
+        }
     }
 }
 
@@ -389,81 +237,40 @@ fn input_index(desc: &Descriptor, name: &str) -> usize {
         .unwrap_or_else(|| panic!("{:?} has no input {name:?}", desc.type_name))
 }
 
-/// Drive a named `Float`/`Buffer` input with a constant value (overwrites the default-filled
-/// buffer), keep the latch in sync (for the const-fold / ZOH read path), and flag it `varying` so
-/// the operator takes its recompute path.
-fn set_const(
-    desc: &Descriptor,
-    in_bufs: &mut [Option<Vec<f32>>],
-    latched: &mut [Arg],
-    varying: &mut [bool],
-    name: &str,
-    value: f32,
-) {
-    let i = input_index(desc, name);
-    if let Some(buf) = in_bufs[i].as_mut() {
-        buf.fill(value);
-    }
-    if matches!(desc.inputs[i].ty, PortType::F32) {
-        latched[i] = Arg::F32(value);
-    }
-    varying[i] = true;
+/// Hold a named control (or constant audio-in) at `value` — the held (ZOH) `io.last` value for a
+/// `Float`/enum, a constant materialized buffer for an audio input. Sticky across blocks.
+fn set_const(driver: &mut OpDriver, desc: &Descriptor, name: &str, value: f32) {
+    driver.set(input_index(desc, name), value);
 }
 
-/// Drive a named clock input as a per-block square wave: high for the first half of the block, low
-/// for the second. The last sample of one block (low) → first of the next (high) gives a rising
-/// edge every block, with a falling edge mid-block.
-fn set_clock(
-    desc: &Descriptor,
-    in_bufs: &mut [Option<Vec<f32>>],
-    varying: &mut [bool],
-    name: &str,
-) {
-    let i = input_index(desc, name);
-    if let Some(buf) = in_bufs[i].as_mut() {
-        let half = BLOCK_SIZE / 2;
-        for (f, s) in buf.iter_mut().enumerate() {
-            *s = if f < half { 1.0 } else { 0.0 };
-        }
-    }
-    varying[i] = true;
+/// Queue a `Note` event for block 0 on the named event input (the engine routes it to `io.stream`).
+fn push_note(driver: &mut OpDriver, desc: &Descriptor, name: &str, note: Note) {
+    driver.push(input_index(desc, name), 0, note);
 }
 
-/// Queue a `Note` event for block 0 on the named event input. `addr` is the node-local address the
-/// engine carries (the port name); the payload rides a single [`Arg::Note`] (ADR-0030).
-fn push_note(
-    events: &mut Vec<(usize, &'static str, Arg)>,
-    desc: &Descriptor,
-    name: &str,
-    note: Note,
-) {
-    let i = input_index(desc, name);
-    events.push((i, desc.inputs[i].name, Arg::Note(note)));
+/// Drive a named clock input as a per-block square wave: high for the first half of every 128-frame
+/// block, low for the second. The last (low) sample of one block → first (high) of the next gives a
+/// rising edge every block, with a falling edge mid-block, so a sequencer walks its step table.
+fn drive_clock(driver: &mut OpDriver, desc: &Descriptor, name: &str) {
+    let half = BLOCK_SIZE / 2;
+    let samples: Vec<f32> = (0..BLOCKS * BLOCK_SIZE)
+        .map(|f| if f % BLOCK_SIZE < half { 1.0 } else { 0.0 })
+        .collect();
+    driver.drive(input_index(desc, name), &samples);
 }
 
 /// Build a synthetic decoded sample (a 1 s sine, longer than the workload so the read loop never
-/// runs dry) and bind it to the operator's first resource slot. Returns the store to keep alive.
-fn bind_synthetic_sample(desc: &Descriptor, op: &mut dyn Operator) -> Arc<ResourceStore> {
+/// runs dry) and bind it to the operator's first resource slot through the real loader path.
+fn bind_synthetic_sample(driver: &mut OpDriver, desc: &Descriptor) {
     let frames = BLOCKS * BLOCK_SIZE;
     let step = std::f32::consts::TAU * 220.0 / SAMPLE_RATE;
     let channel: Vec<f32> = (0..frames).map(|i| (i as f32 * step).sin()).collect();
-
-    let mut store = ResourceStore::new();
-    let id = store.insert(
-        "bench-synthetic",
-        SampleBuffer::new(vec![channel], SAMPLE_RATE),
-    );
-    let store = Arc::new(store);
-
     let slot = desc
         .resources
         .first()
         .expect("Sample recipe needs a resource slot")
         .name;
-    let mut refs = ResolvedRefs::new();
-    refs.set(slot, id);
-    op.bind_resources(&store, &refs);
-    store
+    driver.bind(slot, SampleBuffer::new(vec![channel], SAMPLE_RATE));
 }
 
 #[cfg(test)]
