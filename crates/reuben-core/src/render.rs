@@ -26,7 +26,7 @@ use smallvec::SmallVec;
 use crate::descriptor::{Port, PortType};
 use crate::message::{Arg, Emit, Event, Message};
 use crate::operator::Io;
-use crate::plan::{port_kind, Plan, PlanNode, PortKind};
+use crate::plan::{Plan, PlanNode, PortKind};
 
 /// Decides the order in which nodes are processed for a block.
 ///
@@ -256,14 +256,14 @@ impl<E: Executor> Renderer<E> {
                 let port = e.port;
                 let pool_idx = emitted.len();
                 for &(dst, dst_port) in &plan.nodes[i].out_targets[port] {
-                    let p = &plan.nodes[dst].descriptor.inputs[dst_port];
-                    match port_kind(p) {
+                    match plan.nodes[dst].input_kinds[dst_port] {
                         PortKind::Dense => {
                             if let Some(v) = e.arg.as_f32() {
                                 routes[dst].materialize_writes.push((e.frame, dst_port, v));
                             }
                         }
                         PortKind::Held => {
+                            let p = &plan.nodes[dst].descriptor.inputs[dst_port];
                             if let Some(a) = held_arg(p, &e.arg) {
                                 routes[dst].held.push((e.frame, dst_port, a));
                             }
@@ -460,7 +460,7 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
                 .enumerate()
                 .find(|(_, p)| p.name == local)
             {
-                match port_kind(p) {
+                match node.input_kinds[port] {
                     PortKind::Dense => {
                         if let Some(v) = msg.as_f32() {
                             routes[i].materialize_writes.push((msg.frame, port, v));
