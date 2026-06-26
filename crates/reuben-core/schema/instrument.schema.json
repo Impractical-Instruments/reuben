@@ -777,6 +777,122 @@
           "if": {
             "properties": {
               "type": {
+                "const": "euclid"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "inputs": {
+                "additionalProperties": false,
+                "properties": {
+                  "clock": {
+                    "oneOf": [
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "pulses": {
+                    "oneOf": [
+                      {
+                        "default": 4.0,
+                        "description": "unit: pulses, curve: Linear",
+                        "maximum": 16.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "rotation": {
+                    "oneOf": [
+                      {
+                        "default": 0.0,
+                        "description": "unit: steps, curve: Linear",
+                        "maximum": 15.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "steps": {
+                    "oneOf": [
+                      {
+                        "default": 16.0,
+                        "description": "unit: steps, curve: Linear",
+                        "maximum": 16.0,
+                        "minimum": 1.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
                 "const": "filter"
               }
             },
@@ -3342,6 +3458,7 @@
             "differentiate",
             "djfilter",
             "envelope",
+            "euclid",
             "filter",
             "harmony",
             "integrate",

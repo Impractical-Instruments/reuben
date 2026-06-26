@@ -44,6 +44,13 @@ operator envelope
   in[4] float release min=0.001 max=5.0 default=0.2 unit="s" curve=exponential
   out[0] signal cv
   lanes inherit
+operator euclid
+  in[0] signal clock
+  in[1] float steps min=1.0 max=16.0 default=16.0 unit="steps" curve=linear
+  in[2] float pulses min=0.0 max=16.0 default=4.0 unit="pulses" curve=linear
+  in[3] float rotation min=0.0 max=15.0 default=0.0 unit="steps" curve=linear
+  out[0] signal gate
+  lanes inherit
 operator filter
   in[0] signal audio
   in[1] float cutoff min=20.0 max=20000.0 default=1000.0 unit="Hz" curve=exponential
