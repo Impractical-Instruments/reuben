@@ -120,8 +120,23 @@ jobs:
         with:
           fetch-depth: 0 # need the baseline commit (PR base / previous push) in history
 
+      # Cache the valgrind .deb so the slow apt-get update + download are skipped
+      # on a hit, mirroring the iai-callgrind-runner cache below.
+      - name: Cache valgrind .deb
+        id: vg-cache
+        uses: actions/cache@v4
+        with:
+          path: ~/valgrind-debs
+          # Bump the trailing version to force a refresh of the cached package.
+          key: valgrind-deb-1-${{ runner.os }}
+      - name: Download valgrind .deb (cache miss)
+        if: steps.vg-cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update
+          mkdir -p ~/valgrind-debs
+          cd ~/valgrind-debs && apt-get download valgrind
       - name: Install valgrind (callgrind backend for iai-callgrind)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends valgrind
+        run: sudo apt-get install -y --no-install-recommends ~/valgrind-debs/*.deb
 
       # Same pinned toolchain as `check`, via the shared composite (ADR-0023).
       - name: Setup pinned Rust toolchain
