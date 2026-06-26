@@ -112,13 +112,15 @@ class ResolveTest(unittest.TestCase):
 
 
 class NoteToggleTest(unittest.TestCase):
+    # No explicit `port`, so this exercises the default — which must be the voicer's real
+    # `notes` input (routing matches the input port by name; `/voicer/note` would never land).
     NODE = {"type": "voicer", "address": "/voicer",
-            "control": {"label": "Play C", "widget": "note-toggle", "port": "note", "note": 60}}
+            "control": {"label": "Play C", "widget": "note-toggle", "note": 60}}
 
     def test_resolves_to_node_port_address_and_note(self):
         r = g.resolve_control(self.NODE, self.NODE["control"], META)
         self.assertEqual(r["kind"], "note-toggle")
-        self.assertEqual(r["osc_addr"], "/voicer/note")
+        self.assertEqual(r["osc_addr"], "/voicer/notes")
         self.assertEqual(r["note"], 60.0)
 
     def test_emits_a_toggle_button_with_constant_note_and_gate(self):
@@ -133,7 +135,7 @@ class NoteToggleTest(unittest.TestCase):
         self.assertEqual(args[0].find("value").text, "60")   # the fixed MIDI note
         self.assertEqual(args[1].find("type").text, "VALUE")
         self.assertEqual(args[1].find("value").text, "x")    # the gate
-        self.assertEqual(btn.find("./messages/osc/path/partial/value").text, "/voicer/note")
+        self.assertEqual(btn.find("./messages/osc/path/partial/value").text, "/voicer/notes")
 
 
 class ParamToggleTest(unittest.TestCase):

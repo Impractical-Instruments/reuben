@@ -27,7 +27,7 @@ use rosc::{OscMessage, OscPacket, OscType};
 /// port's type to produce the Message.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OscIn {
-    /// OSC address path, e.g. `/voicer/note`.
+    /// OSC address path, e.g. `/voicer/notes`.
     pub address: String,
     /// The OSC args as primitive `Arg`s (`F32`/`I32`/`Str`), in order.
     pub args: Vec<Arg>,
@@ -113,12 +113,12 @@ mod tests {
     #[test]
     fn decodes_a_note_message_to_flat_args() {
         let packet = OscPacket::Message(OscMessage {
-            addr: "/voicer/note".into(),
+            addr: "/voicer/notes".into(),
             args: vec![OscType::Float(69.0), OscType::Float(1.0)],
         });
         let msgs = decode(&encode_packet(&packet)).expect("decode");
         assert_eq!(msgs.len(), 1);
-        assert_eq!(msgs[0].address, "/voicer/note");
+        assert_eq!(msgs[0].address, "/voicer/notes");
         assert_eq!(msgs[0].args, vec![Arg::F32(69.0), Arg::F32(1.0)]);
     }
 

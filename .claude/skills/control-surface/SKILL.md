@@ -59,7 +59,7 @@ Run from the repo root. The script is `gen_surface.py` in this skill's directory
    Writes `control-surfaces/<name>.tosc` (the repo's versioned, shareable surface dir;
    override with `--out`). Faders send real values (0..1 scaled to range) and init to the
    resting default; the connection is one-way (surface → reuben). A `note-toggle` control emits
-   a toggle button that plays a fixed `note` through a message port, e.g. `/voicer/note`.
+   a toggle button that plays a fixed `note` through a message port, e.g. `/voicer/notes`.
 
 5. **Open + verify on device.** Have the user open `control-surfaces/<name>.tosc` in TouchOSC,
    set the OSC **connection host/port** to the machine running reuben, and play. The format is
