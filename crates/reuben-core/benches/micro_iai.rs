@@ -26,6 +26,7 @@ use std::hint::black_box;
 #[bench::differentiate(args = ("differentiate",), setup = OpHarness::for_kind)]
 #[bench::djfilter(args = ("djfilter",), setup = OpHarness::for_kind)]
 #[bench::envelope(args = ("envelope",), setup = OpHarness::for_kind)]
+#[bench::euclid(args = ("euclid",), setup = OpHarness::for_kind)]
 #[bench::filter(args = ("filter",), setup = OpHarness::for_kind)]
 #[bench::harmony(args = ("harmony",), setup = OpHarness::for_kind)]
 #[bench::integrate(args = ("integrate",), setup = OpHarness::for_kind)]
