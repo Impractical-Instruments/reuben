@@ -112,7 +112,9 @@ the OSC trait — `Buffer` does not, so audio cannot cross the boundary by const
   `enum_latches`, and `params` collapse into the latch; `msg_targets` / `ctx_targets` / outbound
   routing unify into the one message path. Block-slicing survives as the sample-accurate
   mechanism for held-Arg changes that cannot materialize into an f32 buffer (Harmony, enum,
-  Note); materialize survives for the `F32 → Buffer` bridge.
+  Note); materialize survives for the `F32 → Buffer` bridge. *(2026-06-26)* The `input_latches:
+  Vec<f32>` shadow lane — a perf duplicate of the latch, hand-synced in two places — is gone;
+  `latch: Vec<Arg>` is the sole ZOH store, and the materialize fill decodes it via `Arg::as_f32`.
 - **A new shared `vocab` module + `ArgValue` derive macro.** Defining a domain type = declare it
   in `vocab`, derive, add one line to `Arg`; the derive generates OSC `to/from`, `Arg`
   integration, and metadata. `Harmony` and `Pitch` move from `reuben-core` into `vocab`.

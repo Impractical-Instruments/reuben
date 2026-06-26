@@ -108,15 +108,13 @@ pub struct PlanNode {
     pub inputs: Vec<Option<Vec<usize>>>,
     /// Materialized inputs (ADR-0030): `(input port, scratch arena buffer)` for each Buffer input
     /// fed by a scalar source — the one implicit `F32`→`Buffer` ZOH bridge. The engine fills the
-    /// buffer per block from `input_latches[port]`, writing mid-block changes at their frame.
+    /// buffer per block from `latch[port]` (decoded via `Arg::as_f32`), writing mid-block changes at
+    /// their frame.
     pub materialize: Vec<(usize, usize)>,
     /// Per `materialize` entry (same index): `true` once the scratch buffer holds the latch
     /// uniformly across the block, so a held-unchanged input can skip its refill (ADR-0030).
     /// Carried across blocks. Starts `false` so the first block fills.
     pub materialize_clean: Vec<bool>,
-    /// Latched current scalar per input port (ADR-0030), carried across blocks — the `f32`
-    /// materialize lane. Meaningful only for ports listed in `materialize`; other slots unused.
-    pub input_latches: Vec<f32>,
     /// The held [`Arg`] latch per input port (ADR-0030) — the unified ZOH value `io.last` reads,
     /// collapsing the former Harmony / enum / param lanes into one. Length = input count; seeded
     /// from each input's default / author override, `Copy`-normalized, carried across blocks. Render
@@ -312,10 +310,6 @@ impl Plan {
             // scratch buffer (the one implicit ZOH bridge); Held / Stream inputs carry no buffer.
             let mut inputs: Vec<Option<Vec<usize>>> = Vec::with_capacity(n_inputs);
             let mut materialize: Vec<(usize, usize)> = Vec::new();
-            // The f32 materialize lane seeds from the same per-port latch (ADR-0030): a Float input's
-            // scratch buffer fills ZOH from its (override-or-default) value on the first block, not
-            // from 0.0. Non-F32 ports leave an unused 0.0 (they carry no materialize buffer).
-            let input_latches: Vec<f32> = latch.iter().map(|a| a.as_f32().unwrap_or(0.0)).collect();
             let varying: Vec<bool> = vec![true; n_inputs];
             for (port, p) in descriptor.inputs.iter().enumerate() {
                 // Buffer and F32 (float control) inputs both present a per-sample buffer to
@@ -391,7 +385,6 @@ impl Plan {
                 inputs,
                 materialize,
                 materialize_clean,
-                input_latches,
                 latch,
                 varying,
                 outputs,
