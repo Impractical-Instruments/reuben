@@ -146,9 +146,9 @@ def resolve_control(node: dict, spec: dict, meta: dict) -> dict:
     param = spec.get("param")
 
     if widget == "note-toggle":
-        # A play toggle: fires `<node>/<port> [note, gate]` (e.g. /voicer/note). The note is a
+        # A play toggle: fires `<node>/<port> [note, gate]` (e.g. /voicer/notes). The note is a
         # constant so note-off carries the same MIDI as note-on and matches the held voice.
-        port = spec.get("port", "note")
+        port = spec.get("port", "notes")
         return {
             "kind": "note-toggle", "label": label, "widget": widget,
             "osc_addr": f"{addr}/{port}", "note": float(spec.get("note", 60)),

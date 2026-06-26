@@ -191,7 +191,7 @@ impl<'a> Io<'a> {
     }
 
     /// **Emit one Message** onto output `port` at segment-relative `frame` (ADR-0014, ADR-0030).
-    /// `addr` is the node-local address carried for OSC shape / debug (e.g. `"note"`); it is
+    /// `addr` is the node-local address carried for OSC shape / debug (e.g. `"notes"`); it is
     /// `&'static str` and `payload` is one [`Arg`], so a wired-edge emit allocates nothing. The
     /// engine delivers it as an [`Event`] to nodes downstream of this one in the same block — and,
     /// for an output port wired to the boundary, drains it past the boundary. A no-op on Lanes that

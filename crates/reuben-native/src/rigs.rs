@@ -3,7 +3,7 @@
 //! The default rig is now defined as **data** (`instruments/default.json`), loaded through
 //! the core registry — not hand-built in Rust. This is the same Voicer -> Oscillator ->
 //! Filter -> Envelope -> Output chain that produced the "first sound"; notes arrive as OSC
-//! at `/voicer/note [midi, gate]`. Load a different instrument file to swap the whole rig.
+//! at `/voicer/notes [midi, gate]`. Load a different instrument file to swap the whole rig.
 
 use reuben_core::{load, Graph, Registry};
 

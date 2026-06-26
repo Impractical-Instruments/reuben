@@ -74,7 +74,7 @@ voicer ─freq→ oscillator ─audio→ filter ─audio→ envelope ─audio→
 voicer ─gate───────────────────────────────────→ envelope(gate)
 ```
 
-- `voicer` turns `/voicer/note [midi, gate]` into per-Voice `freq` + `gate` (`signal` outputs);
+- `voicer` turns `/voicer/notes [midi, gate]` into per-Voice `freq` + `gate` (`signal` outputs);
   wire them into the chain via `"freq": {"from":"/voicer.freq"}` etc.
 - `filter` `cutoff`/`resonance` are `signal` inputs — leave them at their literal defaults
   (`"cutoff": 1200`), wire a modulator (`"cutoff": {"from":"/lfo.audio"}`), or drive them live over
@@ -82,7 +82,7 @@ voicer ─gate──────────────────────
   nicety for a curated player control — `map`(public) → `map`(ranged) → filter input, optionally
   with an `m2s`/`slew` shaper for zipper-free smoothing — but it is no longer *required* to reach a
   `signal` input. See `good-button.json` for the worked fan-out.
-- Play it: `reuben play <file>` then send `/voicer/note [60, 1]` (note-on) / `[60, 0]` (off).
+- Play it: `reuben play <file>` then send `/voicer/notes [60, 1]` (note-on) / `[60, 0]` (off).
 
 **Self-playing** (no external notes): add a `clock` + `sequencer` feeding the voicer, as in
 `instruments/sampler-arp.json`.

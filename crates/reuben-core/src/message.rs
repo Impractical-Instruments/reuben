@@ -240,7 +240,7 @@ pub struct Emit {
     /// Which Message output port it went to, as an ordinal among the operator's Message
     /// outputs (a separate index space from Buffer/Signal outputs).
     pub port: usize,
-    /// Node-local address the engine carries for OSC shape / debug, e.g. `"note"`. Static —
+    /// Node-local address the engine carries for OSC shape / debug, e.g. `"notes"`. Static —
     /// the wired edge, not this string, is the routing.
     pub address: &'static str,
     /// The single typed payload.
@@ -273,7 +273,7 @@ pub struct Outbound {
 /// phase 4) decodes the borrowed `Arg` into the operator's requested payload type.
 #[derive(Debug, Clone, Copy)]
 pub struct Event<'a> {
-    /// Address local to the receiving node, e.g. `note` for `/voicer/note` under `/voicer`.
+    /// Address local to the receiving node, e.g. `notes` for `/voicer/notes` under `/voicer`.
     pub address: &'a str,
     /// The single typed payload, borrowed from the source Message.
     pub arg: &'a Arg,
