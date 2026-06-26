@@ -353,12 +353,14 @@ fn render_process(spec: &OperatorSpec) -> String {
     out
 }
 
-/// The `#[cfg(test)]` module — an `Io::new` harness plus one intentionally-failing placeholder so
-/// the author starts Stage B red (ADR-0021).
+/// The `#[cfg(test)]` module — an `OpDriver` harness plus one intentionally-failing placeholder so
+/// the author starts Stage B red (ADR-0021). `OpDriver` drives the operator through the *real*
+/// engine seeding + per-node step, so the test surface can't drift from production.
 fn render_test_module(spec: &OperatorSpec) -> String {
     let name = &spec.type_name;
+    let st = struct_name(name);
     format!(
-        "#[cfg(test)]\nmod tests {{\n    // These imports are unused until Stage B fills in the real test below.\n    #[allow(unused_imports)]\n    use super::*;\n    #[allow(unused_imports)]\n    use crate::operator::Io;\n\n    const SR: f32 = 48_000.0;\n\n    #[test]\n    #[allow(non_snake_case)]\n    fn TODO_{name}_meets_its_contract() {{\n        // Stage B (ADR-0021): replace this with the real behavioral oracle from the\n        // contract — drive `process` via `Io::new` (see `lfo.rs` for the pattern) and assert\n        // observable output. The scaffold ships this red on purpose.\n        let _sr = SR;\n        panic!(\"create-operator: implement the `{name}` behavior test-first (ADR-0021)\");\n    }}\n}}\n"
+        "#[cfg(test)]\nmod tests {{\n    // These imports are unused until Stage B fills in the real test below.\n    #[allow(unused_imports)]\n    use super::*;\n    #[allow(unused_imports)]\n    use crate::op_driver::OpDriver;\n\n    const SR: f32 = 48_000.0;\n\n    #[test]\n    #[allow(non_snake_case)]\n    fn TODO_{name}_meets_its_contract() {{\n        // Stage B (ADR-0021): replace this with the real behavioral oracle from the\n        // contract. Drive `{st}` through the real engine with `OpDriver` — by-const port\n        // addressing, looped production-size blocks (see `lfo.rs` for the canonical pattern):\n        //\n        //     let out = OpDriver::for_type({st}::new(), SR)\n        //         .set(IN_PORT, value) // held scalar or constant audio-in (sticky/ZOH)\n        //         .render(n)           // ceil(n/block) real per-node steps\n        //         .output(OUT_PORT)    // a signal output (use `.emits()` for events)\n        //         .to_vec();\n        //\n        // then assert on observable output. The scaffold ships this red on purpose.\n        let _sr = SR;\n        panic!(\"create-operator: implement the `{name}` behavior test-first (ADR-0021)\");\n    }}\n}}\n"
     )
 }
 
@@ -491,6 +493,17 @@ mod tests {
         assert!(
             src.contains("panic!(\"create-operator: implement the `my_op`"),
             "placeholder must start red:\n{src}"
+        );
+        // The test surface is the real engine via `OpDriver`, never a hand-rolled `Io::new`
+        // (the third-impl drift this whole effort retired).
+        assert!(
+            src.contains("use crate::op_driver::OpDriver;")
+                && src.contains("OpDriver::for_type(MyOp::new(), SR)"),
+            "placeholder must drive through OpDriver, not Io::new:\n{src}"
+        );
+        assert!(
+            !src.contains("Io::new"),
+            "scaffold must not emit a hand-rolled Io::new harness:\n{src}"
         );
     }
 
