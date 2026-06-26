@@ -141,43 +141,40 @@ crate::register_operator!(M2s);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::Arg;
+    use crate::op_driver::OpDriver;
 
     const SR: f32 = 48_000.0;
 
-    /// Run one block: `mode` is the held `M2sMode`, `rate`/`time`/`in` the held `Float` inputs the
-    /// engine latches; returns `out`. `target` is the held `in` value for the whole call (a mid-
-    /// block retarget would be a separate sliced call).
+    /// Render `n` frames on `d` through the real engine: `mode` is the held `M2sMode`, `rate`/
+    /// `time`/`in` the held `Float` controls (`set`, sticky across renders). `target` is the held
+    /// `in` value — `set` materializes it ZOH into `in`'s per-sample buffer, so a constant block is
+    /// a held target; a retarget is the next `run` on the same driver. Returns `out`.
     fn run(
         mode: M2sMode,
         rate: f32,
         time: f32,
         target: f32,
         n: usize,
-        state: &mut M2s,
+        d: &mut OpDriver,
     ) -> Vec<f32> {
-        let latched = [
-            Arg::F32(target),
-            Arg::M2sMode(mode),
-            Arg::F32(rate),
-            Arg::F32(time),
-        ];
-        // `in` is read per-sample from its buffer (ADR-0030); a constant block = a held target.
-        let in_buf = vec![target; n];
-        let mut out = vec![0.0f32; n];
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&in_buf[..]), None, None, None];
-            let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let mut io = Io::new(SR, n, inputs, outs).with_latched(&latched);
-            state.process(&mut io);
-        }
-        out
+        d.set(IN_IN, target)
+            .set(IN_MODE, mode)
+            .set(IN_RATE, rate)
+            .set(IN_TIME, time);
+        d.render(n).output(OUT_OUT).to_vec()
     }
 
     #[test]
     fn resting_value_held_before_movement() {
         // Smooth with target == start: the whole block sits at the resting value.
-        let out = run(M2sMode::Smooth, 1000.0, 0.05, 4000.0, 64, &mut M2s::new());
+        let out = run(
+            M2sMode::Smooth,
+            1000.0,
+            0.05,
+            4000.0,
+            64,
+            &mut OpDriver::for_type(M2s::new(), SR),
+        );
         assert!(out.iter().all(|&s| (s - 4000.0).abs() < 1e-3));
     }
 
@@ -185,7 +182,7 @@ mod tests {
     fn slew_is_rate_limited() {
         // rate = 48000 units/s @ 48k => 1.0 unit/sample. Seed resting at 0, then retarget to 10:
         // it slews 0 -> 10, reaching in 10 samples.
-        let mut m = M2s::new();
+        let mut m = OpDriver::for_type(M2s::new(), SR);
         let _ = run(M2sMode::Slew, 48_000.0, 0.05, 0.0, 1, &mut m); // seed resting value
         let out = run(M2sMode::Slew, 48_000.0, 0.05, 10.0, 64, &mut m);
         approx::assert_relative_eq!(out[0], 1.0, epsilon = 1e-4);
@@ -195,7 +192,14 @@ mod tests {
 
     #[test]
     fn smooth_approaches_monotonically_without_overshoot() {
-        let out = run(M2sMode::Smooth, 1000.0, 0.01, 1.0, 2048, &mut M2s::new());
+        let out = run(
+            M2sMode::Smooth,
+            1000.0,
+            0.01,
+            1.0,
+            2048,
+            &mut OpDriver::for_type(M2s::new(), SR),
+        );
         for w in out.windows(2) {
             assert!(w[1] >= w[0] - 1e-6, "smooth must not decrease");
             assert!(w[1] <= 1.0 + 1e-6, "smooth must not overshoot");
@@ -208,7 +212,7 @@ mod tests {
         // glide, time = 64/48000 s => exactly 64-sample ramp. Seed resting at 0, then retarget to
         // 64: it ramps 0 -> 64 over 64 samples.
         let time = 64.0 / SR;
-        let mut m = M2s::new();
+        let mut m = OpDriver::for_type(M2s::new(), SR);
         let _ = run(M2sMode::Glide, 1000.0, time, 0.0, 1, &mut m); // seed resting value
         let out = run(M2sMode::Glide, 1000.0, time, 64.0, 128, &mut m);
         approx::assert_relative_eq!(out[31], 32.0, epsilon = 1.5);
@@ -218,7 +222,7 @@ mod tests {
     #[test]
     fn value_carries_across_blocks() {
         // smooth: the partially-approached value at block end resumes next block.
-        let mut m = M2s::new();
+        let mut m = OpDriver::for_type(M2s::new(), SR);
         let _ = run(M2sMode::Smooth, 1000.0, 0.05, 0.0, 1, &mut m); // seed resting at 0
         let b1 = run(M2sMode::Smooth, 1000.0, 0.05, 1.0, 64, &mut m);
         let b2 = run(M2sMode::Smooth, 1000.0, 0.05, 1.0, 64, &mut m);
@@ -231,24 +235,11 @@ mod tests {
 
     #[test]
     fn spawned_converter_starts_uninitialized() {
-        let mut m = M2s::new();
+        let mut m = OpDriver::for_type(M2s::new(), SR);
         let _ = run(M2sMode::Slew, 1000.0, 0.05, 1.0, 64, &mut m);
         let mut m2 = m.spawn();
         // Fresh spawn re-seeds from its first target (7.0), not where `m` ended (1.0).
-        let latched = [
-            Arg::F32(7.0),
-            Arg::M2sMode(M2sMode::Slew),
-            Arg::F32(1000.0),
-            Arg::F32(0.05),
-        ];
-        let in_buf = [7.0f32; 8];
-        let mut out = [0.0f32; 8];
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&in_buf[..]), None, None, None];
-            let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let mut io = Io::new(SR, 8, inputs, outs).with_latched(&latched);
-            m2.process(&mut io);
-        }
+        let out = run(M2sMode::Slew, 1000.0, 0.05, 7.0, 8, &mut m2);
         assert!(out.iter().all(|&s| (s - 7.0).abs() < 1e-3));
     }
 }

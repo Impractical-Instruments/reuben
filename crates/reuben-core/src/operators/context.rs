@@ -170,50 +170,10 @@ crate::register_operator!(ContextOp);
 mod tests {
     use super::*;
     use crate::message::{Arg, Emit};
+    use crate::op_driver::OpDriver;
     use crate::vocab::harmony::{Chord as HChord, ChordTag};
 
     const SR: f32 = 48_000.0;
-
-    /// Number of Float inputs (root, degrees, s0..s11) — the `set` Harmony input excluded.
-    const NUM_VALUES: usize = NUM_STEPS + 2;
-
-    /// Default values for the Float inputs in port order (root, degrees, s0..s11), pulled from the
-    /// contract's per-input defaults.
-    fn default_values() -> Vec<f32> {
-        ContextOp::descriptor()
-            .inputs
-            .iter()
-            .filter_map(|p| p.meta.as_ref().map(|m| m.default))
-            .collect()
-    }
-
-    /// Run one block; return published Harmony emissions (block-absolute frames). `values` are the
-    /// Float inputs (root, degrees, s0..s11) in port order, each materialized into a constant
-    /// per-sample buffer. `set` carries the held chord-source Harmony, if any.
-    fn run(op: &mut ContextOp, n: usize, values: &[f32], set: Option<Harmony>) -> Vec<Emit> {
-        let bufs: Vec<Vec<f32>> = values.iter().map(|&v| vec![v; n]).collect();
-        let mut emits: Vec<Emit> = Vec::new();
-        {
-            let outs: Vec<&mut [f32]> = vec![];
-            // Port order: set (Harmony, no buffer), then root, degrees, s0..s11 (Float buffers).
-            let mut inputs: Vec<Option<&[f32]>> = Vec::with_capacity(NUM_VALUES + 1);
-            inputs.push(None);
-            inputs.extend(bufs.iter().map(|b| Some(&b[..])));
-            // Latch: set at index 0 (Harmony or a placeholder), then the float held defaults.
-            let mut latched: Vec<Arg> = vec![match set {
-                Some(h) => Arg::Harmony(h),
-                None => Arg::F32(0.0),
-            }];
-            for &v in values {
-                latched.push(Arg::F32(v));
-            }
-            let mut io = Io::new(SR, n, inputs, outs)
-                .with_latched(&latched)
-                .with_emit(&mut emits, 0);
-            op.process(&mut io);
-        }
-        emits
-    }
 
     fn ctx_of(e: &Emit) -> Harmony {
         match &e.arg {
@@ -224,27 +184,29 @@ mod tests {
 
     #[test]
     fn publishes_default_once_then_stays_quiet() {
-        let mut op = ContextOp::new();
-        let p = default_values();
-        let first = run(&mut op, 128, &p, None);
+        // A fresh driver seeds the materialized `root`/`degrees`/`s0..s11` Float inputs from the
+        // contract defaults (the same per-node seeding the engine builds), so the first block
+        // publishes the default context.
+        let mut d = OpDriver::for_type(ContextOp::new(), SR);
+        let first = d.render(128).emits().to_vec();
         assert_eq!(first.len(), 1, "first block publishes the initial context");
         assert_eq!(first[0].frame, 0);
         assert_eq!(ctx_of(&first[0]), Harmony::default());
         // No change → no further publishes.
-        let second = run(&mut op, 128, &p, None);
+        let second = d.render(128).emits().to_vec();
         assert!(second.is_empty(), "unchanged context does not re-publish");
     }
 
     #[test]
     fn chord_from_set_publishes() {
-        let mut op = ContextOp::new();
-        let p = default_values();
-        let _ = run(&mut op, 128, &p, None); // consume the initial publish
+        let mut d = OpDriver::for_type(ContextOp::new(), SR);
+        let _ = d.render(128); // consume the initial publish
         let with_chord = Harmony {
             chord: HChord::new(ChordTag::ScaleRelative, &[0, 2, 4]),
             ..Harmony::default()
         };
-        let pubs = run(&mut op, 128, &p, Some(with_chord));
+        d.set(IN_SET, with_chord);
+        let pubs = d.render(128).emits().to_vec();
         assert_eq!(pubs.len(), 1);
         assert_eq!(pubs[0].frame, 0);
         assert_eq!(ctx_of(&pubs[0]).chord.tag, ChordTag::ScaleRelative);
@@ -252,11 +214,10 @@ mod tests {
 
     #[test]
     fn root_change_publishes() {
-        let mut op = ContextOp::new();
-        let mut p = default_values();
-        let _ = run(&mut op, 128, &p, None);
-        p[IN_ROOT - 1] = 62.0; // move to D (`values` excludes the leading `set` input)
-        let pubs = run(&mut op, 128, &p, None);
+        let mut d = OpDriver::for_type(ContextOp::new(), SR);
+        let _ = d.render(128);
+        d.set(IN_ROOT, 62.0); // move to D (refills the materialized `root` buffer)
+        let pubs = d.render(128).emits().to_vec();
         assert_eq!(pubs.len(), 1);
         assert_eq!(ctx_of(&pubs[0]).root, 62);
     }

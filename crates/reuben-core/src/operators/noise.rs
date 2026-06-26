@@ -89,26 +89,23 @@ crate::register_operator!(Noise);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operator::Io;
+    use crate::op_driver::OpDriver;
 
     const SR: f32 = 48_000.0;
 
-    /// Run `noise` over one block of `n` frames, returning the out buffer.
-    fn run(noise: &mut Noise, n: usize) -> Vec<f32> {
-        let mut out = vec![0.0f32; n];
-        {
-            let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let inputs: Vec<Option<&[f32]>> = vec![];
-            let mut io = Io::new(SR, n, inputs, outs);
-            noise.process(&mut io);
-        }
-        out
+    /// Drive a fresh `Noise` for `n` frames through the real engine, returning the out buffer.
+    /// No inputs/params: the PRNG free-runs from `SEED` (Plan instantiation preserves the seed),
+    /// advancing one step per sample continuously across the real 128-frame blocks.
+    fn run(n: usize) -> Vec<f32> {
+        OpDriver::for_type(Noise::new(), SR)
+            .render(n)
+            .output(OUT_OUT)
+            .to_vec()
     }
 
     #[test]
     fn output_is_bounded_and_finite() {
-        let mut noise = Noise::new();
-        let out = run(&mut noise, 48_000);
+        let out = run(48_000);
         for (i, &s) in out.iter().enumerate() {
             assert!(s.is_finite(), "sample {i} not finite: {s}");
             assert!((-1.0..1.0).contains(&s), "sample {i} out of [-1,1): {s}");
@@ -118,8 +115,7 @@ mod tests {
     #[test]
     fn output_is_non_constant() {
         // White noise must vary — the buffer is not a single repeated value.
-        let mut noise = Noise::new();
-        let out = run(&mut noise, 1_000);
+        let out = run(1_000);
         let first = out[0];
         assert!(
             out.iter().any(|&s| s != first),
@@ -130,23 +126,22 @@ mod tests {
     #[test]
     fn output_is_roughly_zero_mean() {
         // Over a long buffer, uniform [-1,1) noise averages near 0.
-        let mut noise = Noise::new();
-        let out = run(&mut noise, 200_000);
+        let out = run(200_000);
         let mean = out.iter().sum::<f32>() / out.len() as f32;
         assert!(mean.abs() < 0.01, "mean {mean} should be near 0");
     }
 
     #[test]
     fn state_is_continuous_across_calls() {
-        // One whole block must equal two back-to-back half-blocks sharing the instance:
-        // the RNG state carries across the boundary (no seam).
+        // One render of 2n must equal two back-to-back renders of n sharing the driver's operator:
+        // the RNG state carries across the real block boundaries and across separate `render` calls
+        // (no seam).
         let n = 1000;
-        let mut whole = Noise::new();
-        let w = run(&mut whole, 2 * n);
+        let w = run(2 * n);
 
-        let mut split = Noise::new();
-        let a = run(&mut split, n);
-        let b = run(&mut split, n);
+        let mut split = OpDriver::for_type(Noise::new(), SR);
+        let a = split.render(n).output(OUT_OUT).to_vec();
+        let b = split.render(n).output(OUT_OUT).to_vec();
 
         for i in 0..n {
             assert_eq!(a[i].to_bits(), w[i].to_bits(), "block 1 differs at {i}");
@@ -158,20 +153,12 @@ mod tests {
     fn spawned_noise_resets_to_deterministic_seed() {
         // A spawn starts from the fixed seed regardless of how far the source advanced, so its
         // stream is bit-identical to a fresh instance's.
-        let mut a = Noise::new();
-        let _ = run(&mut a, 5_000);
-        let mut b = a.spawn();
+        let mut a = OpDriver::for_type(Noise::new(), SR);
+        a.render(5_000);
 
-        let mut fresh = Noise::new();
-        let fresh_out = run(&mut fresh, 1_000);
+        let fresh_out = run(1_000);
+        let spawned_out = a.spawn().render(1_000).output(OUT_OUT).to_vec();
 
-        let mut spawned_out = vec![0.0f32; 1_000];
-        {
-            let outs: Vec<&mut [f32]> = vec![&mut spawned_out[..]];
-            let inputs: Vec<Option<&[f32]>> = vec![];
-            let mut io = Io::new(SR, 1_000, inputs, outs);
-            b.process(&mut io);
-        }
         for i in 0..1_000 {
             assert_eq!(
                 spawned_out[i].to_bits(),
@@ -186,13 +173,10 @@ mod tests {
         // Advancing one instance past the other yields a different (decorrelated) stream — the
         // generator is stateful, not a pure function of frame index. (Drum Voices that need
         // distinct noise seed differently; the spawn reset is the deterministic default.)
-        let mut a = Noise::new();
-        let _ = run(&mut a, 7);
-        let b_out = {
-            let mut b = Noise::new();
-            run(&mut b, 1_000)
-        };
-        let a_out = run(&mut a, 1_000);
+        let mut a = OpDriver::for_type(Noise::new(), SR);
+        a.render(7); // offset this stream by 7 samples
+        let b_out = run(1_000);
+        let a_out = a.render(1_000).output(OUT_OUT).to_vec();
         assert!(
             a_out.iter().zip(&b_out).filter(|(x, y)| x != y).count() > 900,
             "an offset stream should differ from a fresh one at most frames"

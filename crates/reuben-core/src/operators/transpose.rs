@@ -71,35 +71,21 @@ crate::register_operator!(Transpose);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::{Arg, Emit, Event};
+    use crate::message::{Arg, Emit};
+    use crate::op_driver::OpDriver;
 
     const SR: f32 = 48_000.0;
 
-    /// Run `transpose` over one block: a held `amount` and a set of `Note` events on `notes`.
+    /// Drive a fresh Transpose through the real engine: a held `amount` (`set` once, read via
+    /// `io.last`) and a set of `Note` events pushed on `notes`. Renders one block, returns the
+    /// emitted Messages.
     fn run(amount: f32, notes: &[(usize, Note)]) -> Vec<Emit> {
-        let args: Vec<Arg> = notes.iter().map(|(_, n)| Arg::Note(*n)).collect();
-        let evs: Vec<Event> = notes
-            .iter()
-            .zip(&args)
-            .map(|((frame, _), arg)| Event {
-                address: "notes",
-                arg,
-                frame: *frame,
-            })
-            .collect();
-        let latched = [Arg::F32(0.0), Arg::F32(amount)];
-        let mut emits: Vec<Emit> = Vec::new();
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![None, None];
-            let outs: Vec<&mut [f32]> = vec![];
-            let streams: [&[Event]; 2] = [&evs, &[]];
-            let mut io = Io::new(SR, 64, inputs, outs)
-                .with_latched(&latched)
-                .with_streams(&streams)
-                .with_emit(&mut emits, 0);
-            Transpose::new().process(&mut io);
+        let mut d = OpDriver::for_type(Transpose::new(), SR);
+        d.set(IN_AMOUNT, amount);
+        for (frame, note) in notes {
+            d.push(IN_NOTES, *frame, *note);
         }
-        emits
+        d.render(64).emits().to_vec()
     }
 
     #[test]

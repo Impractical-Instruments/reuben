@@ -71,59 +71,64 @@ crate::register_operator!(Differentiate);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::op_driver::{OpDriver, BLOCK_SIZE};
 
     const SR: f32 = 48_000.0;
 
-    /// Run `differentiate` over one block; returns `out`. Reuses `op` across calls so block-boundary
-    /// state can be exercised.
-    fn run(op: &mut dyn Operator, input: &[f32]) -> Vec<f32> {
-        let n = input.len();
-        let mut out = vec![0.0f32; n];
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(input)];
-            let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let mut io = Io::new(SR, n, inputs, outs);
-            op.process(&mut io);
-        }
-        out
+    /// Differentiate `input` through the real engine (one driver, block-sliced). `in` is the
+    /// per-sample `Float` buffer (`drive`d); `out` is read back.
+    fn run(input: &[f32]) -> Vec<f32> {
+        OpDriver::for_type(Differentiate::new(), SR)
+            .drive(IN_IN, input)
+            .render(input.len())
+            .output(OUT_OUT)
+            .to_vec()
     }
 
     #[test]
     fn constant_input_has_zero_derivative() {
-        let out = run(&mut Differentiate::new(), &[3.0, 3.0, 3.0, 3.0]);
-        assert_eq!(out, vec![0.0, 0.0, 0.0, 0.0]);
+        assert_eq!(run(&[3.0, 3.0, 3.0, 3.0]), vec![0.0, 0.0, 0.0, 0.0]);
     }
 
     #[test]
     fn ramp_has_constant_unit_steps() {
         // A unit-per-sample ramp differentiates to a constant 1, after the seeded first sample (0).
-        let out = run(&mut Differentiate::new(), &[0.0, 1.0, 2.0, 3.0]);
-        assert_eq!(out, vec![0.0, 1.0, 1.0, 1.0]);
+        assert_eq!(run(&[0.0, 1.0, 2.0, 3.0]), vec![0.0, 1.0, 1.0, 1.0]);
     }
 
     #[test]
     fn first_sample_never_spikes() {
         // No predecessor for the first ever sample, whatever its value — seeded, emits 0.
-        let out = run(&mut Differentiate::new(), &[5.0, 6.0, 7.0]);
-        assert_eq!(out, vec![0.0, 1.0, 1.0]);
+        assert_eq!(run(&[5.0, 6.0, 7.0]), vec![0.0, 1.0, 1.0]);
     }
 
     #[test]
     fn predecessor_carries_across_blocks() {
-        // Block 2's first sample differences against block 1's last sample (2.0), not a re-seed.
-        let mut d = Differentiate::new();
-        let _ = run(&mut d, &[0.0, 1.0, 2.0]);
-        let out = run(&mut d, &[3.0, 4.0, 5.0]);
-        assert_eq!(out, vec![1.0, 1.0, 1.0]);
+        // A unit ramp spanning several real 128-frame blocks differentiates to a constant 1 after
+        // the seeded first sample. If the predecessor re-seeded at each block boundary, the first
+        // sample of blocks 2, 3, … would spike to 0 — so an all-ones tail proves it carries across
+        // the engine's block slicing.
+        let n = 3 * BLOCK_SIZE;
+        let input: Vec<f32> = (0..n).map(|i| i as f32).collect();
+        let out = run(&input);
+        assert_eq!(out[0], 0.0, "seeded first sample emits 0");
+        assert!(
+            out[1..].iter().all(|&s| s == 1.0),
+            "every later sample (across block boundaries) is a unit step"
+        );
     }
 
     #[test]
     fn spawned_copy_re_seeds() {
-        let mut d = Differentiate::new();
-        let _ = run(&mut d, &[0.0, 10.0, 20.0]);
-        let mut d2 = d.spawn();
+        let mut base = OpDriver::for_type(Differentiate::new(), SR);
+        base.drive(IN_IN, &[0.0, 10.0, 20.0]).render(3);
         // Fresh: first sample after spawn seeds (emits 0), exactly like a new op.
-        let out = run(&mut *d2, &[100.0, 101.0]);
+        let out = base
+            .spawn()
+            .drive(IN_IN, &[100.0, 101.0])
+            .render(2)
+            .output(OUT_OUT)
+            .to_vec();
         assert_eq!(out, vec![0.0, 1.0]);
     }
 }

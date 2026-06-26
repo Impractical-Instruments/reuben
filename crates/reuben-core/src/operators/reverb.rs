@@ -173,26 +173,21 @@ crate::register_operator!(Reverb);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::Arg;
-    use crate::operator::Io;
+    use crate::op_driver::OpDriver;
 
-    /// Run `input` through a fresh Reverb at the given room/damp/mix and return the output.
-    /// `room`/`damp`/`mix` are `Float` inputs read via `io.last` (ADR-0030), supplied as the
-    /// per-input held (ZOH) Args in port order (audio, room, damp, mix); `audio` is a buffer
-    /// input (placeholder latch).
+    /// Run `input` through a fresh Reverb at the given room/damp/mix through the real engine and
+    /// return the output. `room`/`damp`/`mix` are held `Float` controls (`set` once, read via
+    /// `io.last`); `audio` is a time-varying Buffer input (`drive`d block by block). The comb /
+    /// allpass state threads across the real 128-frame blocks, so the tail builds continuously.
     fn render(input: &[f32], sample_rate: f32, room: f32, damp: f32, mix: f32) -> Vec<f32> {
-        let n = input.len();
-        let mut reverb = Reverb::new();
-        let mut out_buf = vec![0.0f32; n];
-
-        let latched = [Arg::F32(0.0), Arg::F32(room), Arg::F32(damp), Arg::F32(mix)];
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(input), None, None, None];
-            let outputs: Vec<&mut [f32]> = vec![out_buf.as_mut_slice()];
-            let mut io = Io::new(sample_rate, n, inputs, outputs).with_latched(&latched);
-            reverb.process(&mut io);
-        }
-        out_buf
+        OpDriver::for_type(Reverb::new(), sample_rate)
+            .set(IN_ROOM, room)
+            .set(IN_DAMP, damp)
+            .set(IN_MIX, mix)
+            .drive(IN_AUDIO, input)
+            .render(input.len())
+            .output(OUT_AUDIO)
+            .to_vec()
     }
 
     fn rms(buf: &[f32]) -> f32 {
@@ -286,39 +281,40 @@ mod tests {
 
     #[test]
     fn state_continuous_across_block_slices() {
-        // Processing one buffer in one call must equal processing it in two calls that
-        // share the same Reverb instance.
+        // One render of `n` must equal two back-to-back renders of `n/2` sharing the driver's
+        // operator: the comb / allpass delay-line state threads across the real block boundaries
+        // and across the separate `render` calls.
         let sr = 48_000.0;
         let n = 1024;
         let input: Vec<f32> = (0..n)
             .map(|i| (2.0 * std::f32::consts::PI * 330.0 * i as f32 / sr).sin())
             .collect();
+        let half = n / 2;
 
         let whole = render(&input, sr, 0.6, 0.4, 0.5);
 
-        let mut reverb = Reverb::new();
-        let mut out_buf = vec![0.0f32; n];
-        let latched = [Arg::F32(0.0), Arg::F32(0.6), Arg::F32(0.4), Arg::F32(0.5)];
-        let half = n / 2;
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&input[..half]), None, None, None];
-            let outputs: Vec<&mut [f32]> = vec![&mut out_buf[..half]];
-            let mut io = Io::new(sr, half, inputs, outputs).with_latched(&latched);
-            reverb.process(&mut io);
-        }
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&input[half..]), None, None, None];
-            let outputs: Vec<&mut [f32]> = vec![&mut out_buf[half..]];
-            let mut io = Io::new(sr, n - half, inputs, outputs).with_latched(&latched);
-            reverb.process(&mut io);
-        }
+        let mut split = OpDriver::for_type(Reverb::new(), sr);
+        split
+            .set(IN_ROOM, 0.6)
+            .set(IN_DAMP, 0.4)
+            .set(IN_MIX, 0.5)
+            .drive(IN_AUDIO, &input[..half]);
+        let a = split.render(half).output(OUT_AUDIO).to_vec();
+        split.drive(IN_AUDIO, &input[half..]);
+        let b = split.render(n - half).output(OUT_AUDIO).to_vec();
 
-        for i in 0..n {
+        for i in 0..half {
             assert!(
-                (whole[i] - out_buf[i]).abs() < 1e-5,
-                "slice mismatch at {i}: {} vs {}",
+                (whole[i] - a[i]).abs() < 1e-5,
+                "slice mismatch (block 1) at {i}: {} vs {}",
                 whole[i],
-                out_buf[i]
+                a[i]
+            );
+            assert!(
+                (whole[half + i] - b[i]).abs() < 1e-5,
+                "slice mismatch (block 2) at {i}: {} vs {}",
+                whole[half + i],
+                b[i]
             );
         }
     }

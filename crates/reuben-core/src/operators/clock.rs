@@ -142,55 +142,28 @@ crate::register_operator!(Clock);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::{Arg, Event, Message};
-    use crate::operator::Io;
+    use crate::op_driver::OpDriver;
     use crate::vocab::pitch::Pitch;
 
     const SR: f32 = 48_000.0;
 
-    /// A bare `sync` trigger event at `frame` — the payload is ignored, so any Note works.
-    fn sync(frame: usize) -> Message {
-        Message::new("sync", Note::new(Pitch::Degree(0), 1.0), frame)
-    }
-
-    /// Run `clock` over one block of `n` frames at `tempo` (division 1), with optional reset
-    /// events. Returns the (phase, gate) buffers.
-    fn run(clock: &mut Clock, n: usize, tempo: f32, events: &[Message]) -> (Vec<f32>, Vec<f32>) {
-        run_div(clock, n, tempo, 1.0, events)
+    /// Drive a fresh Clock for `n` frames at `tempo` (division 1) through the real engine, with
+    /// optional `sync` resets at global frames. Returns the (phase, gate) buffers. `tempo`/
+    /// `division` are held `Float` controls (`set` once); each reset is a `sync` `Note` event
+    /// `push`ed at its global frame (the payload is ignored — the port identifies the trigger).
+    fn run(n: usize, tempo: f32, resets: &[usize]) -> (Vec<f32>, Vec<f32>) {
+        run_div(n, tempo, 1.0, resets)
     }
 
     /// Like [`run`] but with an explicit gate `division`.
-    fn run_div(
-        clock: &mut Clock,
-        n: usize,
-        tempo: f32,
-        division: f32,
-        events: &[Message],
-    ) -> (Vec<f32>, Vec<f32>) {
-        let mut phase = vec![0.0f32; n];
-        let mut gate = vec![0.0f32; n];
-        let evs: Vec<Event> = events
-            .iter()
-            .map(|m| Event {
-                address: &m.address,
-                arg: &m.arg,
-                frame: m.frame,
-            })
-            .collect();
-        // tempo/division are held `Float` inputs (ADR-0030) — supply via the per-input latch, in
-        // port order (sync, tempo, division). `sync` is a `Note` event input — its events ride the
-        // stream; tempo/division carry no buffer.
-        let latched = [Arg::F32(0.0), Arg::F32(tempo), Arg::F32(division)];
-        let streams: [&[Event]; 3] = [&evs[..], &[], &[]];
-        {
-            let outs: Vec<&mut [f32]> = vec![&mut phase[..], &mut gate[..]];
-            let inputs: Vec<Option<&[f32]>> = vec![None, None, None];
-            let mut io = Io::new(SR, n, inputs, outs)
-                .with_latched(&latched)
-                .with_streams(&streams);
-            clock.process(&mut io);
+    fn run_div(n: usize, tempo: f32, division: f32, resets: &[usize]) -> (Vec<f32>, Vec<f32>) {
+        let mut d = OpDriver::for_type(Clock::new(), SR);
+        d.set(IN_TEMPO, tempo).set(IN_DIVISION, division);
+        for &r in resets {
+            d.push(IN_SYNC, r, Note::new(Pitch::Degree(0), 1.0));
         }
-        (phase, gate)
+        d.render(n);
+        (d.output(OUT_PHASE).to_vec(), d.output(OUT_GATE).to_vec())
     }
 
     /// Indices where `gate` rises 0 -> 1.
@@ -210,8 +183,7 @@ mod tests {
     fn beat_grid_is_sample_accurate() {
         // 120 BPM @ 48 kHz -> 24000 samples per beat. Over 2 s (96000 frames) expect beats
         // at 0, 24000, 48000, 72000.
-        let mut c = Clock::new();
-        let (phase, gate) = run(&mut c, 96_000, 120.0, &[]);
+        let (phase, gate) = run(96_000, 120.0, &[]);
 
         assert_eq!(phase[0], 0.0, "phase starts at the downbeat");
         assert_eq!(gate[0], 1.0, "gate is high on the downbeat");
@@ -230,8 +202,7 @@ mod tests {
     #[test]
     fn tempo_scales_the_beat_period() {
         // Double the tempo -> half the period (12000 samples at 240 BPM).
-        let mut c = Clock::new();
-        let (_p, gate) = run(&mut c, 48_000, 240.0, &[]);
+        let (_p, gate) = run(48_000, 240.0, &[]);
         let edges = rising_edges(&gate);
         assert!(edges.len() >= 2);
         let period = edges[1] - edges[0];
@@ -243,14 +214,15 @@ mod tests {
 
     #[test]
     fn phase_is_continuous_across_calls() {
-        // The phase at the start of a second block equals where the first block left off.
+        // The phase at the start of a second render equals where the first render left off — the
+        // f64 phase threads across the real 128-frame blocks and across separate `render` calls.
         let n = 1000;
-        let mut whole = Clock::new();
-        let (p_whole, _) = run(&mut whole, 2 * n, 120.0, &[]);
+        let (p_whole, _) = run(2 * n, 120.0, &[]);
 
-        let mut split = Clock::new();
-        let (p1, _) = run(&mut split, n, 120.0, &[]);
-        let (p2, _) = run(&mut split, n, 120.0, &[]);
+        let mut split = OpDriver::for_type(Clock::new(), SR);
+        split.set(IN_TEMPO, 120.0).set(IN_DIVISION, 1.0);
+        let p1 = split.render(n).output(OUT_PHASE).to_vec();
+        let p2 = split.render(n).output(OUT_PHASE).to_vec();
 
         assert_eq!(p1[0], p_whole[0]);
         for i in 0..n {
@@ -269,9 +241,7 @@ mod tests {
         // gate retriggers (rising edge at 15000).
         let n = 16_000;
         let r = 15_000;
-        let mut c = Clock::new();
-        let reset = vec![sync(r)];
-        let (phase, gate) = run(&mut c, n, 120.0, &reset);
+        let (phase, gate) = run(n, 120.0, &[r]);
 
         assert!(
             phase[r - 1] > 0.5,
@@ -284,19 +254,17 @@ mod tests {
 
     #[test]
     fn spawned_clock_has_independent_state() {
-        let mut a = Clock::new();
-        let _ = run(&mut a, 5_000, 120.0, &[]);
-        let mut b = a.spawn();
+        let mut a = OpDriver::for_type(Clock::new(), SR);
+        a.set(IN_TEMPO, 120.0).set(IN_DIVISION, 1.0);
+        a.render(5_000);
         // The fresh spawn starts at the downbeat regardless of `a`'s advanced phase.
-        let mut phase = [0.0f32; 1];
-        let mut gate = [0.0f32; 1];
-        {
-            let outs: Vec<&mut [f32]> = vec![&mut phase[..], &mut gate[..]];
-            let latched = [Arg::F32(0.0), Arg::F32(120.0), Arg::F32(1.0)];
-            let inputs: Vec<Option<&[f32]>> = vec![None, None, None];
-            let mut io = Io::new(SR, 1, inputs, outs).with_latched(&latched);
-            b.process(&mut io);
-        }
+        let mut b = a.spawn();
+        let phase = b
+            .set(IN_TEMPO, 120.0)
+            .set(IN_DIVISION, 1.0)
+            .render(1)
+            .output(OUT_PHASE)
+            .to_vec();
         assert_eq!(phase[0], 0.0, "spawned clock starts fresh at phase 0");
     }
 
@@ -308,8 +276,7 @@ mod tests {
         // was `gate = if phase < 0.5 { 1 } else { 0 }` on the f64 beat phasor; replay that exact
         // accumulator here as the reference and compare bit-for-bit.
         let n = 96_000;
-        let mut c = Clock::new();
-        let (_phase, gate) = run_div(&mut c, n, 120.0, 1.0, &[]);
+        let (_phase, gate) = run_div(n, 120.0, 1.0, &[]);
 
         let dt = (120.0_f64 / 60.0) / SR as f64;
         let mut ref_phase = 0.0f64;
@@ -326,10 +293,8 @@ mod tests {
         // 120 BPM @ 48 kHz over 1 beat (24000 frames): division 1 fires 1 rising edge, division
         // 4 fires 4 (one per 16th note). The phase phasor is unchanged either way.
         let n = 24_000;
-        let mut c1 = Clock::new();
-        let (_p1, g1) = run_div(&mut c1, n, 120.0, 1.0, &[]);
-        let mut c4 = Clock::new();
-        let (p4, g4) = run_div(&mut c4, n, 120.0, 4.0, &[]);
+        let (_p1, g1) = run_div(n, 120.0, 1.0, &[]);
+        let (p4, g4) = run_div(n, 120.0, 4.0, &[]);
 
         assert_eq!(rising_edges(&g1).len(), 1, "division 1: one beat trigger");
         let edges4 = rising_edges(&g4);

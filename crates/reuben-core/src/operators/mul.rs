@@ -63,19 +63,21 @@ crate::register_operator!(Mul);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::op_driver::OpDriver;
 
     const SR: f32 = 48_000.0;
 
-    /// Run `mul` over one block; a `None` operand stands in for unwired (materialized to ones).
+    /// Drive `mul` through the real engine; a `None` operand stands in for unwired (the engine
+    /// materializes its multiplicative-identity default `1`), a `Some(buf)` drives a buffer.
     fn run(a: Option<&[f32]>, b: Option<&[f32]>, n: usize) -> Vec<f32> {
-        let mut out = vec![0.0f32; n];
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![a, b];
-            let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let mut io = Io::new(SR, n, inputs, outs);
-            Mul::new().process(&mut io);
+        let mut d = OpDriver::for_type(Mul::new(), SR);
+        if let Some(a) = a {
+            d.drive(IN_A, a);
         }
-        out
+        if let Some(b) = b {
+            d.drive(IN_B, b);
+        }
+        d.render(n).output(OUT_OUT).to_vec()
     }
 
     #[test]

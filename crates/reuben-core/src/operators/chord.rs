@@ -144,36 +144,20 @@ crate::register_operator!(Chord);
 mod tests {
     use super::*;
     use crate::message::{Arg, Emit, Event};
+    use crate::op_driver::OpDriver;
 
     const SR: f32 = 48_000.0;
 
-    /// Run `chord` over one block with the given `set` notes; returns the emitted Messages
-    /// (segment-relative frames).
-    fn run(chord: &mut Chord, n: usize, size: f32, events: &[(usize, Note)]) -> Vec<Emit> {
-        let args: Vec<Arg> = events.iter().map(|(_, nt)| Arg::Note(*nt)).collect();
-        let evs: Vec<Event> = events
-            .iter()
-            .zip(&args)
-            .map(|((frame, _), arg)| Event {
-                address: "set",
-                arg,
-                frame: *frame,
-            })
-            .collect();
-        // Latch order: set(0, placeholder — read as a stream), size.
-        let latched = [Arg::F32(0.0), Arg::F32(size)];
-        let streams: [&[Event]; 2] = [&evs, &[]];
-        let mut emits: Vec<Emit> = Vec::new();
-        {
-            let outs: Vec<&mut [f32]> = vec![];
-            let inputs: Vec<Option<&[f32]>> = vec![None, None];
-            let mut io = Io::new(SR, n, inputs, outs)
-                .with_latched(&latched)
-                .with_streams(&streams)
-                .with_emit(&mut emits, 0);
-            chord.process(&mut io);
+    /// Drive a fresh Chord through the real engine: `size` is a held `Float` (`set` once, read via
+    /// `io.last`); the `set` press/release notes are pushed as `Note` events at their global frames.
+    /// Renders `n` frames (as real 128-frame blocks) and returns the emitted Messages.
+    fn run(n: usize, size: f32, events: &[(usize, Note)]) -> Vec<Emit> {
+        let mut d = OpDriver::for_type(Chord::new(), SR);
+        d.set(IN_SIZE, size);
+        for (frame, note) in events {
+            d.push(IN_SET, *frame, *note);
         }
-        emits
+        d.render(n).emits().to_vec()
     }
 
     /// A `set` press/release as a degree note: `(frame, Note(Degree(root), gate))`.
@@ -197,8 +181,7 @@ mod tests {
     #[test]
     fn triad_press_emits_three_note_ons_stacked_thirds() {
         // Root degree 0, default size (triad): degrees 0, 2, 4, all note-on.
-        let mut c = Chord::new();
-        let emits = run(&mut c, 128, 3.0, &[set(0, 1.0, 0)]);
+        let emits = run(128, 3.0, &[set(0, 1.0, 0)]);
         assert_eq!(emits.len(), 3, "triad = 3 tones");
         for e in &emits {
             assert_eq!(e.address, "notes");
@@ -212,8 +195,7 @@ mod tests {
     #[test]
     fn triad_on_arbitrary_root_stacks_relative_thirds() {
         // Root degree 4 (the V chord) → degrees 4, 6, 8.
-        let mut c = Chord::new();
-        let emits = run(&mut c, 128, 3.0, &[set(4, 1.0, 0)]);
+        let emits = run(128, 3.0, &[set(4, 1.0, 0)]);
         let degs: Vec<i32> = emits.iter().map(deg).collect();
         assert_eq!(degs, vec![4, 6, 8]);
     }
@@ -221,8 +203,7 @@ mod tests {
     #[test]
     fn seventh_press_emits_four_note_ons() {
         // size = 4 (seventh): degrees d, d+2, d+4, d+6.
-        let mut c = Chord::new();
-        let emits = run(&mut c, 128, 4.0, &[set(1, 1.0, 0)]);
+        let emits = run(128, 4.0, &[set(1, 1.0, 0)]);
         assert_eq!(emits.len(), 4, "seventh = 4 tones");
         let degs: Vec<i32> = emits.iter().map(deg).collect();
         assert_eq!(degs, vec![1, 3, 5, 7]);
@@ -232,8 +213,7 @@ mod tests {
     fn release_emits_matching_note_offs() {
         // Press then release the same root in one block: 3 ons then 3 offs, same degrees, off at
         // the release frame.
-        let mut c = Chord::new();
-        let emits = run(&mut c, 128, 3.0, &[set(0, 1.0, 0), set(0, 0.0, 64)]);
+        let emits = run(128, 3.0, &[set(0, 1.0, 0), set(0, 0.0, 64)]);
         assert_eq!(emits.len(), 6);
         let ons: Vec<i32> = emits.iter().filter(|e| vel(e) > 0.5).map(deg).collect();
         let offs: Vec<(i32, usize)> = emits
@@ -248,93 +228,132 @@ mod tests {
     #[test]
     fn release_with_no_matching_root_is_silent() {
         // A note-off for a root that was never pressed emits nothing.
-        let mut c = Chord::new();
-        let emits = run(&mut c, 128, 3.0, &[set(2, 0.0, 0)]);
+        let emits = run(128, 3.0, &[set(2, 0.0, 0)]);
         assert!(emits.is_empty());
     }
 
     #[test]
     fn two_overlapping_held_roots_sound_and_release_independently() {
-        // Press root 0 (0,2,4) and root 1 (1,3,5); release only root 0 — its 3 tones go off,
-        // root 1's stay held.
-        let mut c = Chord::new();
+        // Press root 0 (0,2,4) and root 1 (1,3,5); release root 0 at frame 128 — only its 3 tones
+        // go off. Then release root 1 at frame 192: its tones (1,3,5) go off, proving it was held
+        // independently across the intervening block boundary (the behavioral stand-in for the old
+        // white-box `held` set inspection — `OpDriver` owns the operator).
         let emits = run(
-            &mut c,
             256,
             3.0,
-            &[set(0, 1.0, 0), set(1, 1.0, 32), set(0, 0.0, 128)],
+            &[
+                set(0, 1.0, 0),
+                set(1, 1.0, 32),
+                set(0, 0.0, 128),
+                set(1, 0.0, 192),
+            ],
         );
         let ons: Vec<i32> = emits.iter().filter(|e| vel(e) > 0.5).map(deg).collect();
         assert_eq!(ons, vec![0, 2, 4, 1, 3, 5]);
-        let offs: Vec<i32> = emits.iter().filter(|e| vel(e) < 0.5).map(deg).collect();
-        assert_eq!(offs, vec![0, 2, 4], "only root 0 releases");
-        assert_eq!(c.held.len(), 1);
-        assert_eq!(c.held[0].root, 1);
+        // Root 0's release (frame 128) sends only its own tones; root 1's release (frame 192) sends
+        // root 1's — independent hold/release.
+        let offs_at = |f: usize| -> Vec<i32> {
+            emits
+                .iter()
+                .filter(|e| vel(e) < 0.5 && e.frame == f)
+                .map(deg)
+                .collect()
+        };
+        assert_eq!(offs_at(128), vec![0, 2, 4], "only root 0 releases at 128");
+        assert_eq!(offs_at(192), vec![1, 3, 5], "root 1 was still held");
     }
 
     #[test]
     fn hold_persists_across_blocks_then_releases() {
-        // Press in block 1 (held carries forward); release in block 2 with no new press.
-        let mut c = Chord::new();
-        let on = run(&mut c, 128, 3.0, &[set(3, 1.0, 0)]);
-        assert_eq!(on.len(), 3);
-        assert_eq!(c.held.len(), 1);
-        let off = run(&mut c, 128, 3.0, &[set(3, 0.0, 0)]);
-        let degs: Vec<i32> = off.iter().map(deg).collect();
-        assert_eq!(degs, vec![3, 5, 7]);
-        assert!(off.iter().all(|e| vel(e) < 0.5));
-        assert!(c.held.is_empty(), "released root leaves state");
+        // Press in block 1 (held carries across the real 128-frame boundary); release in block 2.
+        // A second release at frame 192 emits nothing more — proof the release left no held state.
+        let emits = run(
+            256,
+            3.0,
+            &[set(3, 1.0, 0), set(3, 0.0, 128), set(3, 0.0, 192)],
+        );
+        let ons: Vec<&Emit> = emits.iter().filter(|e| vel(e) > 0.5).collect();
+        let offs: Vec<&Emit> = emits.iter().filter(|e| vel(e) < 0.5).collect();
+        assert_eq!(ons.len(), 3, "the press sounds across the block boundary");
+        let on_degs: Vec<i32> = ons.iter().map(|e| deg(e)).collect();
+        assert_eq!(on_degs, vec![3, 5, 7]);
+        let off_degs: Vec<i32> = offs.iter().map(|e| deg(e)).collect();
+        assert_eq!(off_degs, vec![3, 5, 7]);
+        assert!(
+            offs.iter().all(|e| e.frame == 128),
+            "exactly one release batch (the second release is a no-op — held state was cleared)"
+        );
     }
 
     #[test]
     fn release_matches_press_size_even_if_size_changed_mid_hold() {
         // Press as a seventh (4 tones), then release after `size` dropped to 3: the release must
         // still send 4 note-offs (the captured press set), or a voice would hang.
+        //
+        // NOT converted to `OpDriver`: this requires the held `size` to change *between* the press
+        // block and the release block with no intervening re-press. `OpDriver::set` can change a
+        // held control between `render` calls, but a pushed event re-fires on every `render` (each
+        // restarts at frame 0), so a second `render` would re-press the root at the new size and
+        // replace the captured tone set — defeating the test. Kept on the hand-rolled `Io` path
+        // (the only operator surface that can feed block 1 then block 2 with no re-press).
         let mut c = Chord::new();
-        let on = run(&mut c, 128, 4.0, &[set(0, 1.0, 0)]);
+        let on = run_io(&mut c, 128, 4.0, &[set(0, 1.0, 0)]);
         assert_eq!(on.len(), 4);
-        let off = run(&mut c, 128, 3.0, &[set(0, 0.0, 0)]);
+        let off = run_io(&mut c, 128, 3.0, &[set(0, 0.0, 0)]);
         assert_eq!(off.len(), 4, "release covers all originally-pressed tones");
         let degs: Vec<i32> = off.iter().map(deg).collect();
         assert_eq!(degs, vec![0, 2, 4, 6]);
     }
 
+    /// Hand-rolled single-block runner, retained only for
+    /// `release_matches_press_size_even_if_size_changed_mid_hold` (see its note): it threads the
+    /// same `Chord` instance across two calls with a held-`size` change and no re-press, which the
+    /// `OpDriver` push model can't express.
+    fn run_io(chord: &mut Chord, n: usize, size: f32, events: &[(usize, Note)]) -> Vec<Emit> {
+        let args: Vec<Arg> = events.iter().map(|(_, nt)| Arg::Note(*nt)).collect();
+        let evs: Vec<Event> = events
+            .iter()
+            .zip(&args)
+            .map(|((frame, _), arg)| Event {
+                address: "set",
+                arg,
+                frame: *frame,
+            })
+            .collect();
+        let latched = [Arg::F32(0.0), Arg::F32(size)];
+        let streams: [&[Event]; 2] = [&evs, &[]];
+        let mut emits: Vec<Emit> = Vec::new();
+        {
+            let outs: Vec<&mut [f32]> = vec![];
+            let inputs: Vec<Option<&[f32]>> = vec![None, None];
+            let mut io = Io::new(SR, n, inputs, outs)
+                .with_latched(&latched)
+                .with_streams(&streams)
+                .with_emit(&mut emits, 0);
+            chord.process(&mut io);
+        }
+        emits
+    }
+
     #[test]
     fn absolute_notes_are_ignored() {
         // A `set` carrying an absolute pitch has no chord-root degree → emits nothing.
-        let mut c = Chord::new();
         let other = (0, Note::new(Pitch::Absolute(60.0), 1.0));
-        assert!(run(&mut c, 128, 3.0, &[other]).is_empty());
+        assert!(run(128, 3.0, &[other]).is_empty());
     }
 
     #[test]
     fn spawned_chord_starts_with_no_held_roots() {
-        let mut a = Chord::new();
-        let _ = run(&mut a, 128, 3.0, &[set(0, 1.0, 0)]);
-        assert_eq!(a.held.len(), 1);
+        // Press a root on `a` (3 ons proves it has a held root), then spawn `b`: a fresh spawn
+        // carries no held state, so its first release emits nothing.
+        let mut a = OpDriver::for_type(Chord::new(), SR);
+        a.set(IN_SIZE, 3.0)
+            .push(IN_SET, 0, Note::new(Pitch::Degree(0), 1.0));
+        assert_eq!(a.render(128).emits().len(), 3, "`a` holds a root");
+
         let mut b = a.spawn();
-        // A fresh spawn carries no held state — its first release emits nothing.
-        let emits = {
-            let args = [Arg::Note(Note::new(Pitch::Degree(0), 0.0))];
-            let evs = [Event {
-                address: "set",
-                arg: &args[0],
-                frame: 0,
-            }];
-            let latched = [Arg::F32(0.0), Arg::F32(3.0)];
-            let streams: [&[Event]; 2] = [&evs, &[]];
-            let mut emits: Vec<Emit> = Vec::new();
-            {
-                let outs: Vec<&mut [f32]> = vec![];
-                let inputs: Vec<Option<&[f32]>> = vec![None, None];
-                let mut io = Io::new(SR, 128, inputs, outs)
-                    .with_latched(&latched)
-                    .with_streams(&streams)
-                    .with_emit(&mut emits, 0);
-                b.process(&mut io);
-            }
-            emits
-        };
-        assert!(emits.is_empty(), "spawn resets held roots");
+        b.set(IN_SIZE, 3.0)
+            .push(IN_SET, 0, Note::new(Pitch::Degree(0), 0.0));
+        assert!(b.render(128).emits().is_empty(), "spawn resets held roots");
     }
 }
