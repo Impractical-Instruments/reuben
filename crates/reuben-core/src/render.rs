@@ -535,15 +535,22 @@ fn process_node(
         let (port, buf) = node.materialize[k];
         let target = &mut arena[buf];
         let changed = route.materialize_writes.iter().any(|&(_, p, _)| p == port);
+        // The latch is the sole ZOH store (ADR-0030): a materialized port is always seeded/set
+        // `Arg::F32`, so this decode succeeds — assert it loudly in dev, hold the additive identity
+        // in release if a wrong-typed port ever reaches here.
+        debug_assert!(
+            node.latch[port].as_f32().is_some(),
+            "materialized port {port} must latch a numeric Arg"
+        );
         if !changed {
             if !node.materialize_clean[k] {
-                target[..block_size].fill(node.input_latches[port]);
+                target[..block_size].fill(node.latch[port].as_f32().unwrap_or(0.0));
                 node.materialize_clean[k] = true;
             }
             node.varying[port] = false;
             continue;
         }
-        let mut v = node.input_latches[port];
+        let mut v = node.latch[port].as_f32().unwrap_or(0.0);
         let mut cursor = 0usize;
         for &(f, p, val) in &route.materialize_writes {
             if p != port {
@@ -555,10 +562,9 @@ fn process_node(
             v = val;
         }
         target[cursor..block_size].fill(v);
-        node.input_latches[port] = v;
-        // Keep the Arg latch in sync so `io.last::<f32>` on this F32 control reflects the change
-        // (ADR-0030): the materialized buffer is the sample-accurate path, the latch the ZOH read.
-        // A Buffer port carries no meaningful `io.last`, so the (harmless) write is ignored there.
+        // Persist the end-of-block value as the next block's ZOH (ADR-0030): `latch` is the single
+        // source of truth — the materialized buffer is the sample-accurate path, the latch the
+        // `io.last` read. A Buffer port carries no meaningful `io.last`, so the write is ignored there.
         node.latch[port] = Arg::F32(v);
         node.varying[port] = true;
         node.materialize_clean[k] = false;

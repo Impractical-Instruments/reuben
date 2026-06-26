@@ -100,18 +100,12 @@ impl OpDriver {
     /// persists), so call it once. For a numeric value on a materialized port, seeds the
     /// materialize fill too, so `io.signal` and `io.last` agree.
     pub fn set(&mut self, port: usize, value: impl Into<Arg>) -> &mut Self {
-        let arg = value.into();
         let node = &mut self.plan.nodes[0];
-        if let Some(v) = arg.as_f32() {
-            if port < node.input_latches.len() {
-                node.input_latches[port] = v;
-            }
-            // Force the materialized scratch to refill from the new latch on the next block.
-            if let Some(k) = node.materialize.iter().position(|(p, _)| *p == port) {
-                node.materialize_clean[k] = false;
-            }
+        // Force the materialized scratch to refill from the new latch on the next block.
+        if let Some(k) = node.materialize.iter().position(|(p, _)| *p == port) {
+            node.materialize_clean[k] = false;
         }
-        node.latch[port] = arg;
+        node.latch[port] = value.into();
         self
     }
 
@@ -247,6 +241,54 @@ impl OpDriver {
 mod tests {
     use super::*;
     use crate::registry::Registry;
+
+    /// Block-boundary zero-order-hold on a materialized `Float` port (ADR-0030). A held value that
+    /// changes mid-block must (a) write sample-accurately from its frame within that block, and
+    /// (b) carry its end-of-block value into the *next* block's materialize fill **and** into the
+    /// `io.last` read — the single-source-of-truth contract the former `input_latches` f32 shadow
+    /// hand-synced against `latch`. Pinned so a future re-split of the two lanes is caught loudly.
+    #[test]
+    fn materialized_float_zoh_holds_across_the_block_boundary() {
+        let reg = Registry::builtin();
+        let entry = reg.get("add").expect("add is a builtin operator");
+        let mut d = OpDriver::from_boxed((entry.make)(), entry.descriptor.clone(), 48_000.0);
+        let port_a = entry
+            .descriptor
+            .inputs
+            .iter()
+            .position(|p| p.name == "a")
+            .expect("add has a Float input `a`");
+        let out = entry
+            .descriptor
+            .outputs
+            .iter()
+            .position(|p| p.name == "out")
+            .expect("add has an output `out`");
+
+        // Block 0: held at 1.0, changes to 7.0 at frame 64 (block size 128).
+        d.set(port_a, 1.0_f32);
+        d.push(port_a, 64, 7.0_f32);
+        d.render(2 * BLOCK_SIZE);
+
+        let signal = d.output(out);
+        // (a) sample-accurate within block 0: 1.0 before the change frame, 7.0 from it onward.
+        assert!(signal[..64].iter().all(|&s| s == 1.0), "pre-change segment");
+        assert!(
+            signal[64..BLOCK_SIZE].iter().all(|&s| s == 7.0),
+            "post-change segment"
+        );
+        // (b) ZOH across the boundary: block 1 holds 7.0 with no further change.
+        assert!(
+            signal[BLOCK_SIZE..].iter().all(|&s| s == 7.0),
+            "next block holds the carried value"
+        );
+        // ...and `io.last` (the `latch`) reflects the same end-of-block value: one source, no drift.
+        assert_eq!(
+            d.plan.nodes[0].latch[port_a].as_f32(),
+            Some(7.0),
+            "io.last reads the carried ZOH value"
+        );
+    }
 
     /// Every registered operator builds a driver and renders a few blocks without panicking — the
     /// fidelity smoke test (the harness wires each operator's real `Io` regardless of port shape).
