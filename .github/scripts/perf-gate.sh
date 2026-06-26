@@ -109,8 +109,8 @@ gate_one() {
     if cargo build -p "$PKG" --features "$FEATURES" --lib >/dev/null 2>&1; then
       git checkout HEAD -- "${SRC[@]}" $FIXTURES
       skipped=$((skipped + 1))
-      printf '::warning title=Perf layer skipped::%s HEAD bench harness does not build against the baseline API — no comparison for this layer\n' "$bench"
-      note "⚠️ \`$bench\`: baseline library builds, but the HEAD bench harness does not bind to it — its harness postdates the baseline (workload API moved). Layer skipped, non-blocking."
+      printf '::warning title=Perf layer skipped::%s HEAD bench harness does not build/run against the baseline — no comparison for this layer\n' "$bench"
+      note "⚠️ \`$bench\`: baseline library builds, but the HEAD bench harness does not build/run against it — its harness postdates the baseline (workload API or operator set moved). Layer skipped, non-blocking."
       note ""
       return 0
     fi
