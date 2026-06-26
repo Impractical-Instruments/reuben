@@ -313,6 +313,77 @@ impl<E: Executor> Renderer<E> {
     }
 }
 
+/// The single-node injection + observation seam (`OpDriver`, in-crate test/bench harness). Drives
+/// **one** node for `frames` frames through the *real* engine substrate — the same per-block edge
+/// clear, [`route_messages`], and [`process_node`] the render loop runs — so a harness over it can
+/// never drift from production seeding/stepping. `pub(crate)` and gated to test/bench builds: it is
+/// not part of the public render API, but [`crate::op_driver`] reaches it from inside the crate.
+#[cfg(any(test, feature = "bench"))]
+impl<E: Executor> Renderer<E> {
+    /// Step node `node_idx` for `frames` frames (≤ this renderer's `block_size`). Clears the edge
+    /// arena (preserving materialize scratch — which is where a driven audio-in buffer lives, so it
+    /// survives the clear), routes `messages` to input ports, and runs [`process_node`]. Read the
+    /// node's output buffers with [`Renderer::arena_buffer`] and its emissions with
+    /// [`Renderer::last_emits`] afterward.
+    pub(crate) fn step_node(
+        &mut self,
+        plan: &mut Plan,
+        node_idx: usize,
+        frames: usize,
+        messages: &[Message],
+    ) {
+        // Same per-block fresh-edge clear as `render_into` (materialize scratch excepted).
+        for (i, buf) in self.arena.iter_mut().enumerate() {
+            if plan.materialize_scratch_mask[i] {
+                continue;
+            }
+            buf.iter_mut().for_each(|s| *s = 0.0);
+        }
+        route_messages(&mut self.routes, plan, messages);
+        self.emitted.clear();
+        let sample_rate = plan.config.sample_rate;
+
+        let Self {
+            arena,
+            out_scratch,
+            routes,
+            emitted,
+            emit_scratch,
+            bounds,
+            ..
+        } = self;
+        emit_scratch.clear();
+        process_node(
+            arena,
+            out_scratch,
+            bounds,
+            &mut routes[node_idx],
+            &mut plan.nodes[node_idx],
+            messages,
+            emitted,
+            emit_scratch,
+            sample_rate,
+            frames,
+        );
+    }
+
+    /// Read edge-arena buffer `bi` (a node output, or a driven input's scratch). Length `block_size`.
+    pub(crate) fn arena_buffer(&self, bi: usize) -> &[f32] {
+        &self.arena[bi]
+    }
+
+    /// Mutable edge-arena buffer `bi`, for writing a driven (time-varying audio-in) buffer before a
+    /// [`Renderer::step_node`] call. The slot must be materialize scratch so the per-block clear skips it.
+    pub(crate) fn arena_buffer_mut(&mut self, bi: usize) -> &mut [f32] {
+        &mut self.arena[bi]
+    }
+
+    /// The emissions the last [`Renderer::step_node`] collected (segment-relative frames).
+    pub(crate) fn last_emits(&self) -> &[Emit] {
+        &self.emit_scratch
+    }
+}
+
 /// Normalize a routed [`Arg`] for a **Held** input port (ADR-0030): clamp an `F32` to the port's
 /// range, resolve an enum control message (symbol / index / variant) to the enum's concrete `Arg`,
 /// or take any other vocab value (`Harmony`) as-is. `None` if it cannot be a value of this port.

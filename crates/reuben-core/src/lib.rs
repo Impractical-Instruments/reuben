@@ -20,6 +20,13 @@ extern crate self as reuben_core;
 #[cfg(feature = "bench")]
 pub mod bench_support;
 
+/// In-crate harness that drives a single operator through the real engine (`Plan` + `Renderer`) for
+/// unit tests and benches — the one implementation of "descriptor → wired `Io`", so a test can't
+/// drift from production seeding/stepping. Gated to test/bench builds: it reaches `Renderer`'s
+/// `pub(crate)` `step_node` seam, kept out of the public render API.
+#[cfg(any(test, feature = "bench"))]
+pub mod op_driver;
+
 pub mod boundary;
 pub mod config;
 pub mod descriptor;
