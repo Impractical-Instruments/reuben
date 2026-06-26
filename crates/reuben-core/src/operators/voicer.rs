@@ -195,7 +195,10 @@ crate::register_operator!(Voicer);
 mod tests {
     use super::*;
     use crate::message::{Arg, Event};
+    use crate::op_driver::OpDriver;
     use crate::vocab::harmony::Harmony;
+
+    const SR: f32 = 48_000.0;
 
     /// An absolute-MIDI note event: `(frame, Note(Absolute(midi), vel))`.
     fn note(midi: f32, vel: f32, frame: usize) -> (usize, Note) {
@@ -205,6 +208,24 @@ mod tests {
     /// A scale-degree note event: `(frame, Note(Degree(d), vel))`.
     fn degree(d: i32, vel: f32, frame: usize) -> (usize, Note) {
         (frame, Note::new(Pitch::Degree(d), vel))
+    }
+
+    /// Drive a fresh Voicer through the real engine and read **lane 0 / Voice 0**: `ctx` is the held
+    /// `Harmony` (`set` once), `notes` are pushed `Note` events at their global frames. Returns Voice
+    /// 0's (freq, gate) buffers over `n` frames (rendered as real 128-frame blocks).
+    ///
+    /// `OpDriver` surfaces only lane 0, and instantiates the `voices` param at its default (8), so
+    /// this covers the monophonic / Voice-0 behaviors. Polyphonic Voice assignment (lanes > 0) and
+    /// Voice-stealing (which needs `voices = 1/2`) stay on the hand-rolled `Io` path below — they are
+    /// not expressible through `OpDriver`'s lane-0, default-param surface.
+    fn drive_mono(n: usize, ctx: Harmony, events: &[(usize, Note)]) -> (Vec<f32>, Vec<f32>) {
+        let mut d = OpDriver::for_type(Voicer::new(), SR);
+        d.set(IN_CTX, ctx);
+        for (frame, note) in events {
+            d.push(IN_NOTES, *frame, *note);
+        }
+        d.render(n);
+        (d.output(OUT_FREQ).to_vec(), d.output(OUT_GATE).to_vec())
     }
 
     /// Run one Voicer Lane over a block against `ctx`; returns its (freq, gate) buffers.
@@ -267,8 +288,7 @@ mod tests {
     #[test]
     fn note_on_at_frame_zero_sets_freq_and_gate() {
         let n = 128;
-        let mut v = Voicer::new();
-        let (f, gt) = run(&mut v, n, &[note(69.0, 1.0, 0)]);
+        let (f, gt) = drive_mono(n, Harmony::default(), &[note(69.0, 1.0, 0)]);
         for &s in &f {
             approx::assert_relative_eq!(s, 440.0, epsilon = 1e-3);
         }
@@ -278,8 +298,7 @@ mod tests {
     #[test]
     fn gate_edge_is_sample_accurate() {
         let n = 128;
-        let mut v = Voicer::new();
-        let (_f, gt) = run(&mut v, n, &[note(60.0, 1.0, 50)]);
+        let (_f, gt) = drive_mono(n, Harmony::default(), &[note(60.0, 1.0, 50)]);
         for (i, &g) in gt.iter().enumerate() {
             if i < 50 {
                 assert_eq!(g, 0.0, "sample {i} should be gate-off before the note-on");
@@ -295,12 +314,19 @@ mod tests {
     #[test]
     fn note_off_clears_gate() {
         let n = 128;
-        let mut v = Voicer::new();
-        let (_f, gt) = run(&mut v, n, &[note(60.0, 1.0, 0), note(60.0, 0.0, 64)]);
+        let (_f, gt) = drive_mono(
+            n,
+            Harmony::default(),
+            &[note(60.0, 1.0, 0), note(60.0, 0.0, 64)],
+        );
         assert!(gt[..64].iter().all(|&g| g == 1.0));
         assert!(gt[64..].iter().all(|&g| g == 0.0));
     }
 
+    // Stays on the hand-rolled `Io` path: stealing only happens when the pool is full, so it needs
+    // `voices = 1`. `OpDriver` instantiates the `voices` param at its default (8), where these two
+    // notes simply occupy two free Voices and Voice 0 never steals — there is no `OpDriver` surface
+    // to set a param.
     #[test]
     fn one_voice_steals_so_last_note_wins() {
         let n = 128;
@@ -313,18 +339,24 @@ mod tests {
 
     #[test]
     fn held_note_persists_across_calls() {
-        let n = 128;
-        let mut v = Voicer::new();
-        let (_f1, gt1) = run(&mut v, n, &[note(69.0, 1.0, 0)]);
-        assert!(gt1.iter().all(|&g| g == 1.0));
-        let (f2, gt2) = run(&mut v, n, &[]);
-        assert!(gt2.iter().all(|&g| g == 1.0));
-        for &s in &f2 {
+        // A single 256-frame render crosses the real 128-frame block boundary at frame 128; the
+        // note-on at frame 0 with no later events stays held across it (gate high, freq steady).
+        let (f, gt) = drive_mono(256, Harmony::default(), &[note(69.0, 1.0, 0)]);
+        assert!(
+            gt.iter().all(|&g| g == 1.0),
+            "held across the block boundary"
+        );
+        for &s in &f {
             approx::assert_relative_eq!(s, 440.0, epsilon = 1e-3);
         }
     }
 
     // --- polyphonic behavior (Lane count > 1) ---
+    //
+    // These stay on the hand-rolled `Io` path: they assert per-Voice outputs on lanes > 0 (and the
+    // steal cases need a small `voices` pool). `OpDriver` drives and reads only lane 0 (Voice 0) and
+    // instantiates `voices` at its default (8), so it cannot observe Voices 1.. or force a steal —
+    // there is no harness surface for either. (PR2 blocker; would need `OpDriver` lane/param access.)
 
     /// Drive `lanes` independent replicas with the same events; return per-Lane outputs.
     fn run_poly(lanes: usize, n: usize, events: &[(usize, Note)]) -> Vec<(Vec<f32>, Vec<f32>)> {
@@ -368,12 +400,15 @@ mod tests {
     fn degree_note_resolves_through_context() {
         // Degree 4 in C major → G (MIDI 67).
         let n = 64;
-        let mut v = Voicer::new();
-        let (f, gt) = run(&mut v, n, &[degree(4, 1.0, 0)]);
+        let (f, gt) = drive_mono(n, Harmony::default(), &[degree(4, 1.0, 0)]);
         approx::assert_relative_eq!(f[n - 1], hz(67.0), epsilon = 1e-2);
         assert!(gt.iter().all(|&g| g == 1.0));
     }
 
+    // Stays on the hand-rolled `Io` path: it changes the held `ctx` *between* the note-block and a
+    // later silent block with no new note. `OpDriver::set` changes a held control between `render`
+    // calls, but a pushed event re-fires on every `render` (each restarts at frame 0), so a second
+    // `render` would re-press degree 2 — there is no way to feed "ctx changes, no new note".
     #[test]
     fn held_degree_respells_when_context_changes() {
         // Hold degree 2. In C major it is E (64); switch the scale to C minor and the *same held

@@ -65,59 +65,72 @@ crate::register_operator!(Integrate);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::op_driver::{OpDriver, BLOCK_SIZE};
+    use crate::operators::differentiate::Differentiate;
 
     const SR: f32 = 48_000.0;
 
-    fn run(op: &mut dyn Operator, input: &[f32]) -> Vec<f32> {
-        let n = input.len();
-        let mut out = vec![0.0f32; n];
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(input)];
-            let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let mut io = Io::new(SR, n, inputs, outs);
-            op.process(&mut io);
-        }
-        out
+    /// Integrate `input` through the real engine (one driver, block-sliced). `in` is the per-sample
+    /// `Float` buffer (`drive`d); `out` is read back.
+    fn run(input: &[f32]) -> Vec<f32> {
+        OpDriver::for_type(Integrate::new(), SR)
+            .drive(IN_IN, input)
+            .render(input.len())
+            .output(OUT_OUT)
+            .to_vec()
     }
 
     #[test]
     fn constant_input_ramps_linearly() {
         // Integrating a constant 2 yields a linear ramp 2, 4, 6, 8 (the inverse of differentiate).
-        let out = run(&mut Integrate::new(), &[2.0, 2.0, 2.0, 2.0]);
-        assert_eq!(out, vec![2.0, 4.0, 6.0, 8.0]);
+        assert_eq!(run(&[2.0, 2.0, 2.0, 2.0]), vec![2.0, 4.0, 6.0, 8.0]);
     }
 
     #[test]
     fn zero_input_stays_zero() {
-        let out = run(&mut Integrate::new(), &[0.0, 0.0, 0.0]);
-        assert_eq!(out, vec![0.0, 0.0, 0.0]);
+        assert_eq!(run(&[0.0, 0.0, 0.0]), vec![0.0, 0.0, 0.0]);
     }
 
     #[test]
     fn accumulator_carries_across_blocks() {
-        let mut i = Integrate::new();
-        let _ = run(&mut i, &[1.0, 1.0, 1.0]); // ends at 3
-        let out = run(&mut i, &[1.0, 1.0, 1.0]);
-        assert_eq!(out, vec![4.0, 5.0, 6.0]);
+        // A constant 1 spanning several real 128-frame blocks integrates to the running ramp
+        // 1, 2, 3, …, n. If the accumulator reset at each block boundary the sum would drop back to
+        // 1 at frames 128, 256, … — the strictly-rising ramp proves it carries across them.
+        let n = 3 * BLOCK_SIZE;
+        let out = OpDriver::for_type(Integrate::new(), SR)
+            .set(IN_IN, 1.0)
+            .render(n)
+            .output(OUT_OUT)
+            .to_vec();
+        for (i, &s) in out.iter().enumerate() {
+            assert_eq!(s, (i + 1) as f32, "running sum at frame {i}");
+        }
     }
 
     #[test]
     fn round_trips_with_differentiate() {
         // differentiate(integrate(x)) recovers x after the first (seeded) sample. Here x is a ramp.
         let x = [1.0, 2.0, 3.0, 4.0];
-        let integ = run(&mut Integrate::new(), &x); // [1, 3, 6, 10]
-        let mut d = super::super::differentiate::Differentiate::new();
-        let back = run(&mut d, &integ);
+        let integ = run(&x); // [1, 3, 6, 10]
+        let back = OpDriver::for_type(Differentiate::new(), SR)
+            .drive(IN_IN, &integ)
+            .render(integ.len())
+            .output(OUT_OUT)
+            .to_vec();
         // First sample is the seeded 0; the rest recover x[1..].
         assert_eq!(back, vec![0.0, 2.0, 3.0, 4.0]);
     }
 
     #[test]
     fn spawned_copy_resets_accumulator() {
-        let mut i = Integrate::new();
-        let _ = run(&mut i, &[10.0, 10.0]); // ends at 20
-        let mut i2 = i.spawn();
-        let out = run(&mut *i2, &[1.0, 1.0]);
+        let mut base = OpDriver::for_type(Integrate::new(), SR);
+        base.drive(IN_IN, &[10.0, 10.0]).render(2); // ends at 20
+        let out = base
+            .spawn()
+            .drive(IN_IN, &[1.0, 1.0])
+            .render(2)
+            .output(OUT_OUT)
+            .to_vec();
         assert_eq!(out, vec![1.0, 2.0], "spawn starts the accumulator fresh");
     }
 }

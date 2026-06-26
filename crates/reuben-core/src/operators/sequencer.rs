@@ -178,42 +178,37 @@ crate::register_operator!(Sequencer);
 mod tests {
     use super::*;
     use crate::message::{Arg, Emit};
+    use crate::op_driver::OpDriver;
 
     const SR: f32 = 48_000.0;
 
-    /// Run `seq` over one block of `clock` samples; returns the emitted Messages (block-absolute
-    /// frames). `controls` carries the layout `[length, step1..step16, gate_mode, pitch]`; the
-    /// Float entries are latched held values and `gate_mode` (index `NUM_STEPS + 1`) the held enum.
-    fn run(seq: &mut Sequencer, clock: &[f32], controls: &[f32]) -> Vec<Emit> {
-        let n = clock.len();
-        let pitch = controls[NUM_STEPS + 2];
+    /// Apply the `[length, step1..step16, gate_mode, pitch]` control layout to `d` as held
+    /// controls: the Float entries via `set`, and `gate_mode` (index `NUM_STEPS + 1`) the held enum.
+    fn set_controls(d: &mut OpDriver, controls: &[f32]) {
+        d.set(IN_LENGTH, controls[0]);
+        for k in 0..NUM_STEPS {
+            d.set(in_step(k), controls[1 + k]);
+        }
         let gate = controls[NUM_STEPS + 1] as usize == 1; // Degree=0, Gate=1
-        let mut emits: Vec<Emit> = Vec::new();
-        // Latch order: clock(0, placeholder — read per-sample), length, step1..step16, gate_mode,
-        // pitch.
-        let mut latched: Vec<Arg> = Vec::with_capacity(20);
-        latched.push(Arg::F32(0.0)); // clock (buffer, not read via last)
-        for &c in &controls[0..=NUM_STEPS] {
-            latched.push(Arg::F32(c)); // length + 16 steps
-        }
-        latched.push(Arg::GateMode(if gate {
-            GateMode::Gate
-        } else {
-            GateMode::Degree
-        }));
-        latched.push(Arg::F32(pitch));
-        {
-            let outs: Vec<&mut [f32]> = vec![]; // `degrees` is a note port — no Signal buffer.
-            let mut inputs: Vec<Option<&[f32]>> = vec![Some(clock)];
-            for _ in 0..19 {
-                inputs.push(None);
-            }
-            let mut io = Io::new(SR, n, inputs, outs)
-                .with_latched(&latched)
-                .with_emit(&mut emits, 0);
-            seq.process(&mut io);
-        }
-        emits
+        d.set(
+            IN_GATE_MODE,
+            if gate {
+                GateMode::Gate
+            } else {
+                GateMode::Degree
+            },
+        );
+        d.set(IN_PITCH, controls[NUM_STEPS + 2]);
+    }
+
+    /// Drive a fresh Sequencer with `clock` (the Clock beat gate, a time-varying Buffer input) and
+    /// the `[length, step1..step16, gate_mode, pitch]` control layout, through the real engine.
+    /// Returns the emitted Messages (block-absolute frames).
+    fn run(clock: &[f32], controls: &[f32]) -> Vec<Emit> {
+        let mut d = OpDriver::for_type(Sequencer::new(), SR);
+        set_controls(&mut d, controls);
+        d.drive(IN_CLOCK, clock);
+        d.render(clock.len()).emits().to_vec()
     }
 
     /// A clock gate: high for the first half of each `period`-sample beat, repeated.
@@ -273,8 +268,7 @@ mod tests {
         let period = 100;
         let clock = beat_gate(period, 1);
         let degrees = pad8([0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
-        let mut seq = Sequencer::new();
-        let emits = run(&mut seq, &clock, &params(1.0, degrees));
+        let emits = run(&clock, &params(1.0, degrees));
 
         assert_eq!(emits.len(), 2, "one note-on + one note-off");
         assert_eq!(emits[0].address, "notes");
@@ -292,8 +286,7 @@ mod tests {
         let period = 100;
         let clock = beat_gate(period, 4);
         let degrees = pad8([0.0, 1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
-        let mut seq = Sequencer::new();
-        let emits = run(&mut seq, &clock, &params(3.0, degrees));
+        let emits = run(&clock, &params(3.0, degrees));
 
         let ons: Vec<f32> = emits.iter().filter(|e| vel(e) > 0.5).map(deg).collect();
         assert_eq!(ons.len(), 4);
@@ -309,8 +302,7 @@ mod tests {
         let period = 100;
         let clock = beat_gate(period, 2);
         let degrees = pad8([0.0, -1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
-        let mut seq = Sequencer::new();
-        let emits = run(&mut seq, &clock, &params(2.0, degrees));
+        let emits = run(&clock, &params(2.0, degrees));
 
         assert_eq!(emits.len(), 2);
         assert!(emits.iter().all(|e| e.frame < period));
@@ -325,14 +317,18 @@ mod tests {
         let p = params(4.0, degrees);
         let clock = beat_gate(period, 4);
 
-        let mut whole = Sequencer::new();
-        let ew = run(&mut whole, &clock, &p);
+        let ew = run(&clock, &p);
         let ons_whole: Vec<f32> = ew.iter().filter(|e| vel(e) > 0.5).map(deg).collect();
 
+        // Two back-to-back renders on one driver: the step machine, edge detection, and held
+        // clock level thread across the boundary exactly as within a render's 128-frame blocks.
         let mid = clock.len() / 2;
-        let mut split = Sequencer::new();
-        let e1 = run(&mut split, &clock[..mid], &p);
-        let e2 = run(&mut split, &clock[mid..], &p);
+        let mut split = OpDriver::for_type(Sequencer::new(), SR);
+        set_controls(&mut split, &p);
+        split.drive(IN_CLOCK, &clock[..mid]);
+        let e1 = split.render(mid).emits().to_vec();
+        split.drive(IN_CLOCK, &clock[mid..]);
+        let e2 = split.render(clock.len() - mid).emits().to_vec();
         let mut ons_split: Vec<f32> = e1.iter().filter(|e| vel(e) > 0.5).map(deg).collect();
         ons_split.extend(e2.iter().filter(|e| vel(e) > 0.5).map(deg));
 
@@ -341,34 +337,20 @@ mod tests {
 
     #[test]
     fn spawned_sequencer_starts_before_the_first_step() {
-        let mut a = Sequencer::new();
-        let clock = beat_gate(100, 3);
         let degrees = pad8([0.0, 1.0, 2.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
-        let _ = run(&mut a, &clock, &params(3.0, degrees));
-        let mut b = a.spawn();
-        // The spawn is fresh: its first beat plays step 0 (degree 0) again, not where `a` ended.
-        let one = beat_gate(100, 1);
         let p = params(3.0, degrees);
-        let n = one.len();
-        let mut latched: Vec<Arg> = Vec::with_capacity(20);
-        latched.push(Arg::F32(0.0)); // clock
-        for &c in &p[0..=NUM_STEPS] {
-            latched.push(Arg::F32(c));
-        }
-        latched.push(Arg::GateMode(GateMode::Degree));
-        latched.push(Arg::F32(p[NUM_STEPS + 2]));
-        let mut emits: Vec<Emit> = Vec::new();
-        {
-            let outs: Vec<&mut [f32]> = vec![];
-            let mut inputs: Vec<Option<&[f32]>> = vec![Some(&one[..])];
-            for _ in 0..19 {
-                inputs.push(None);
-            }
-            let mut io = Io::new(SR, n, inputs, outs)
-                .with_latched(&latched)
-                .with_emit(&mut emits, 0);
-            b.process(&mut io);
-        }
+        let mut a = OpDriver::for_type(Sequencer::new(), SR);
+        set_controls(&mut a, &p);
+        let clock = beat_gate(100, 3);
+        a.drive(IN_CLOCK, &clock);
+        a.render(clock.len());
+
+        // The spawn is fresh: its first beat plays step 0 (degree 0) again, not where `a` ended.
+        let mut b = a.spawn();
+        set_controls(&mut b, &p);
+        let one = beat_gate(100, 1);
+        b.drive(IN_CLOCK, &one);
+        let emits = b.render(one.len()).emits().to_vec();
         let first_on = emits.iter().find(|e| vel(e) > 0.5).expect("a note-on");
         approx::assert_relative_eq!(deg(first_on), 0.0);
     }
@@ -396,8 +378,7 @@ mod tests {
         defaults.push(desc.inputs[IN_PITCH].meta.as_ref().unwrap().default); // pitch
 
         let clock = beat_gate(100, 8);
-        let mut seq = Sequencer::new();
-        let emits = run(&mut seq, &clock, &defaults);
+        let emits = run(&clock, &defaults);
         let ons: Vec<f32> = emits.iter().filter(|e| vel(e) > 0.5).map(deg).collect();
         assert_eq!(ons, vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
     }
@@ -409,8 +390,7 @@ mod tests {
         let period = 100;
         let clock = beat_gate(period, 4);
         let steps = pad8([1.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
-        let mut seq = Sequencer::new();
-        let emits = run(&mut seq, &clock, &gate_params(4.0, steps, 5.0));
+        let emits = run(&clock, &gate_params(4.0, steps, 5.0));
 
         let ons: Vec<f32> = emits.iter().filter(|e| vel(e) > 0.5).map(deg).collect();
         assert_eq!(ons.len(), 2, "two hits (beats 0 and 2)");
@@ -424,8 +404,7 @@ mod tests {
         let period = 100;
         let clock = beat_gate(period, 2);
         let steps = pad8([1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]);
-        let mut seq = Sequencer::new();
-        let emits = run(&mut seq, &clock, &gate_params(2.0, steps, 0.0));
+        let emits = run(&clock, &gate_params(2.0, steps, 0.0));
         assert_eq!(emits.len(), 2, "on+off for the single hit only");
         assert!(emits.iter().all(|e| e.frame < period));
     }
@@ -436,8 +415,7 @@ mod tests {
         let period = 64;
         let clock = beat_gate(period, 16);
         let steps = [1.0f32; NUM_STEPS];
-        let mut seq = Sequencer::new();
-        let emits = run(&mut seq, &clock, &gate_params(16.0, steps, 3.0));
+        let emits = run(&clock, &gate_params(16.0, steps, 3.0));
         let ons = emits.iter().filter(|e| vel(e) > 0.5).count();
         assert_eq!(ons, 16, "all 16 steps hit");
         assert!(
@@ -455,8 +433,7 @@ mod tests {
         for (k, s) in steps.iter_mut().enumerate() {
             *s = k as f32; // step1→0, ..., step16→15
         }
-        let mut seq = Sequencer::new();
-        let emits = run(&mut seq, &clock, &params(16.0, steps));
+        let emits = run(&clock, &params(16.0, steps));
         let ons: Vec<f32> = emits.iter().filter(|e| vel(e) > 0.5).map(deg).collect();
         assert_eq!(ons.len(), 16);
         for (k, &d) in ons.iter().enumerate() {

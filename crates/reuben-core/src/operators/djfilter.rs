@@ -156,62 +156,46 @@ crate::register_operator!(Djfilter);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::Arg;
-    use crate::operator::Io;
+    use crate::op_driver::OpDriver;
 
     const SR: f32 = 48_000.0;
 
-    /// Held (ZOH) Args for the 5 voicing controls (resonance/lp_start/lp_end/hp_start/hp_end), in
-    /// input-port order with placeholders for the buffer-read `audio` (0) and `position` (1) ports.
-    fn voicing_latched(voicing: [f32; 5]) -> [Arg; 7] {
-        [
-            Arg::F32(0.0),
-            Arg::F32(0.0),
-            Arg::F32(voicing[0]),
-            Arg::F32(voicing[1]),
-            Arg::F32(voicing[2]),
-            Arg::F32(voicing[3]),
-            Arg::F32(voicing[4]),
-        ]
-    }
-
     // Default voicing (resonance/lp_start/lp_end/hp_start/hp_end), in input-port order so tests can
-    // tweak one field and keep the rest. `position` is supplied separately (per-sample buffer).
+    // tweak one field and keep the rest. `position` is supplied separately.
     fn default_voicing() -> [f32; 5] {
         [0.1, 20_000.0, 200.0, 20.0, 6_000.0]
     }
 
-    /// Render `input` through a fresh Djfilter with the given constant `position` and `voicing`
-    /// (resonance/lp_start/lp_end/hp_start/hp_end). Every control is a `Float` input now (ADR-0028),
-    /// so each is supplied as the constant per-sample buffer the engine would materialize.
+    /// Set the 5 held `Float` voicing controls (read block-rate via `io.last`) on a driver.
+    fn set_voicing(d: &mut OpDriver, voicing: [f32; 5]) -> &mut OpDriver {
+        d.set(IN_RESONANCE, voicing[0])
+            .set(IN_LP_START, voicing[1])
+            .set(IN_LP_END, voicing[2])
+            .set(IN_HP_START, voicing[3])
+            .set(IN_HP_END, voicing[4])
+    }
+
+    /// Render `input` through a fresh Djfilter with the given constant `position` (held `Float`,
+    /// `set` once) and `voicing`; `audio` is a time-varying Buffer input (`drive`d block by block).
     fn render(input: &[f32], position: f32, voicing: [f32; 5]) -> Vec<f32> {
-        let n = input.len();
-        let pos_buf = vec![position; n];
-        render_buffers(input, &pos_buf, voicing)
+        let mut d = OpDriver::for_type(Djfilter::new(), SR);
+        set_voicing(&mut d, voicing)
+            .set(IN_POSITION, position)
+            .drive(IN_AUDIO, input)
+            .render(input.len())
+            .output(OUT_AUDIO)
+            .to_vec()
     }
 
-    /// Render `input` with an explicit per-sample `position` Float wired to port 1.
+    /// Render `input` with an explicit time-varying per-sample `position` Float (`drive`d).
     fn render_modulated(input: &[f32], position: &[f32], voicing: [f32; 5]) -> Vec<f32> {
-        render_buffers(input, position, voicing)
-    }
-
-    /// Render with an explicit per-sample `position` buffer and constant `voicing` controls — the
-    /// exact `Float`-input buffers the engine hands `process` (ADR-0028). Inputs are supplied in
-    /// port order: audio, position, resonance, lp_start, lp_end, hp_start, hp_end.
-    fn render_buffers(input: &[f32], position: &[f32], voicing: [f32; 5]) -> Vec<f32> {
-        let n = input.len();
-        let mut op = Djfilter::new();
-        let mut out_buf = vec![0.0f32; n];
-        let latched = voicing_latched(voicing);
-        {
-            // audio + position are per-sample buffers; the voicing controls are held (latched).
-            let inputs: Vec<Option<&[f32]>> =
-                vec![Some(input), Some(position), None, None, None, None, None];
-            let outputs: Vec<&mut [f32]> = vec![out_buf.as_mut_slice()];
-            let mut io = Io::new(SR, n, inputs, outputs).with_latched(&latched);
-            op.process(&mut io);
-        }
-        out_buf
+        let mut d = OpDriver::for_type(Djfilter::new(), SR);
+        set_voicing(&mut d, voicing)
+            .drive(IN_POSITION, position)
+            .drive(IN_AUDIO, input)
+            .render(input.len())
+            .output(OUT_AUDIO)
+            .to_vec()
     }
 
     fn sine(f: f32, n: usize) -> Vec<f32> {
@@ -358,53 +342,36 @@ mod tests {
 
     #[test]
     fn state_continuous_across_block_slices() {
-        // One whole-block render must equal two back-to-back half-block renders that share the
-        // same instance (integrator state carries across the slice).
+        // One render of `n` must equal two back-to-back renders of `n/2` sharing the driver's
+        // operator: the SVF integrator state threads across the real block boundaries and across
+        // the separate `render` calls.
         let n = 512;
         let input = sine(440.0, n);
         let voicing = default_voicing();
         let position = -0.7;
+        let half = n / 2;
         let whole = render(&input, position, voicing);
 
-        let mut op = Djfilter::new();
-        let mut out_buf = vec![0.0f32; n];
-        let latched = voicing_latched(voicing);
-        let pos = vec![position; n];
-        let half = n / 2;
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![
-                Some(&input[..half]),
-                Some(&pos[..half]),
-                None,
-                None,
-                None,
-                None,
-                None,
-            ];
-            let outputs: Vec<&mut [f32]> = vec![&mut out_buf[..half]];
-            let mut io = Io::new(SR, half, inputs, outputs).with_latched(&latched);
-            op.process(&mut io);
-        }
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![
-                Some(&input[half..]),
-                Some(&pos[half..]),
-                None,
-                None,
-                None,
-                None,
-                None,
-            ];
-            let outputs: Vec<&mut [f32]> = vec![&mut out_buf[half..]];
-            let mut io = Io::new(SR, n - half, inputs, outputs).with_latched(&latched);
-            op.process(&mut io);
-        }
-        for i in 0..n {
+        let mut split = OpDriver::for_type(Djfilter::new(), SR);
+        set_voicing(&mut split, voicing)
+            .set(IN_POSITION, position)
+            .drive(IN_AUDIO, &input[..half]);
+        let a = split.render(half).output(OUT_AUDIO).to_vec();
+        split.drive(IN_AUDIO, &input[half..]);
+        let b = split.render(n - half).output(OUT_AUDIO).to_vec();
+
+        for i in 0..half {
             assert!(
-                (whole[i] - out_buf[i]).abs() < 1e-5,
-                "slice mismatch at {i}: {} vs {}",
+                (whole[i] - a[i]).abs() < 1e-5,
+                "slice mismatch (block 1) at {i}: {} vs {}",
                 whole[i],
-                out_buf[i]
+                a[i]
+            );
+            assert!(
+                (whole[half + i] - b[i]).abs() < 1e-5,
+                "slice mismatch (block 2) at {i}: {} vs {}",
+                whole[half + i],
+                b[i]
             );
         }
     }
@@ -417,36 +384,27 @@ mod tests {
         let input = sine(440.0, n);
         let voicing = default_voicing();
         let position = -0.8;
-        let latched = voicing_latched(voicing);
-        let pos = vec![position; n];
 
-        let mut warm = Djfilter::new();
-        let _ = render(&sine(1_000.0, 4_000), position, voicing); // unrelated warmup of a throwaway
-        let mut warm_buf = vec![0.0f32; n];
-        {
-            let inputs: Vec<Option<&[f32]>> =
-                vec![Some(&input), Some(&pos), None, None, None, None, None];
-            let outputs: Vec<&mut [f32]> = vec![warm_buf.as_mut_slice()];
-            let mut io = Io::new(SR, n, inputs, outputs).with_latched(&latched);
-            warm.process(&mut io);
-        }
+        let mut warm = OpDriver::for_type(Djfilter::new(), SR);
+        set_voicing(&mut warm, voicing)
+            .set(IN_POSITION, position)
+            .drive(IN_AUDIO, &input)
+            .render(n); // advance the integrator state
 
         let mut child = warm.spawn();
-        let mut child_buf = vec![0.0f32; n];
-        {
-            let inputs: Vec<Option<&[f32]>> =
-                vec![Some(&input), Some(&pos), None, None, None, None, None];
-            let outputs: Vec<&mut [f32]> = vec![child_buf.as_mut_slice()];
-            let mut io = Io::new(SR, n, inputs, outputs).with_latched(&latched);
-            child.process(&mut io);
-        }
+        let child_out = set_voicing(&mut child, voicing)
+            .set(IN_POSITION, position)
+            .drive(IN_AUDIO, &input)
+            .render(n)
+            .output(OUT_AUDIO)
+            .to_vec();
 
         let fresh = render(&input, position, voicing);
         for i in 0..n {
             assert!(
-                (child_buf[i] - fresh[i]).abs() < 1e-6,
+                (child_out[i] - fresh[i]).abs() < 1e-6,
                 "spawned op should start fresh at {i}: {} vs {}",
-                child_buf[i],
+                child_out[i],
                 fresh[i]
             );
         }

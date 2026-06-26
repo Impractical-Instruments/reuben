@@ -71,44 +71,28 @@ crate::register_operator!(OscOut);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::{Arg, Emit, Event, Message};
+    use crate::message::Arg;
+    use crate::op_driver::OpDriver;
     use crate::vocab::pitch::Pitch;
 
     const SR: f32 = 48_000.0;
 
-    /// Run one block; return the emissions the sink produced. In the unified model the engine's
-    /// outbound tap drains these past the boundary, so a unit test captures them via the emit sink.
-    fn run(op: &mut OscOut, n: usize, events: &[Message]) -> Vec<Emit> {
-        let evs: Vec<Event> = events
-            .iter()
-            .map(|m| Event {
-                address: &m.address,
-                arg: &m.arg,
-                frame: m.frame,
-            })
-            .collect();
-        let streams: [&[Event]; 1] = [&evs[..]];
-        let mut emits: Vec<Emit> = Vec::new();
-        {
-            let outs: Vec<&mut [f32]> = vec![];
-            let inputs: Vec<Option<&[f32]>> = vec![None];
-            let mut io = Io::new(SR, n, inputs, outs)
-                .with_streams(&streams)
-                .with_emit(&mut emits, 0);
-            op.process(&mut io);
-        }
-        emits
-    }
-
-    fn note(addr: &str, degree: i32, frame: usize) -> Message {
-        Message::new(addr, Note::new(Pitch::Degree(degree), 1.0), frame)
+    /// A degree-note `Note` event for the `in` port (the sink drops the incoming local address, so
+    /// only the payload + frame are observable downstream).
+    fn note(degree: i32, frame: usize) -> (usize, Note) {
+        (frame, Note::new(Pitch::Degree(degree), 1.0))
     }
 
     #[test]
     fn forwards_each_input_event_to_the_outbound_route() {
-        let mut op = OscOut::new();
-        let evs = [note("anything", 7, 10), note("ignored_local_addr", 12, 20)];
-        let out = run(&mut op, 128, &evs);
+        // In the unified model the engine's outbound tap drains the sink's emissions past the
+        // boundary, so a unit test captures them via `emits()`.
+        let mut d = OpDriver::for_type(OscOut::new(), SR);
+        for (frame, n) in [note(7, 10), note(12, 20)] {
+            d.push(IN_IN, frame, n);
+        }
+        d.render(128);
+        let out = d.emits();
         assert_eq!(out.len(), 2, "one emission per input event");
         // Payload forwarded verbatim; the event's local address is dropped (stamped later).
         assert_eq!(out[0].arg, Arg::Note(Note::new(Pitch::Degree(7), 1.0)));
@@ -119,7 +103,7 @@ mod tests {
 
     #[test]
     fn no_events_sends_nothing() {
-        let mut op = OscOut::new();
-        assert!(run(&mut op, 128, &[]).is_empty());
+        let mut d = OpDriver::for_type(OscOut::new(), SR);
+        assert!(d.render(128).emits().is_empty());
     }
 }

@@ -67,25 +67,17 @@ crate::register_operator!(Pan);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::operator::Io;
+    use crate::op_driver::OpDriver;
 
     const SR: f32 = 48_000.0;
 
-    /// Run pan over one block: `audio` constant 1.0, position from a constant `pan` buffer —
-    /// `pan` is a `Float` input now (ADR-0028), supplied as the per-sample buffer the engine
-    /// would materialize from the input's latched default.
+    /// Run pan over `n` frames through the real engine: `audio` is a constant 1.0 audio-in and
+    /// `pan` a held position (both `set`, ZOH-materialized to per-sample buffers). Returns the
+    /// (left, right) stereo outputs.
     fn run_param(pan: f32, n: usize) -> (Vec<f32>, Vec<f32>) {
-        let audio = vec![1.0f32; n];
-        let pan_buf = vec![pan; n];
-        let mut left = vec![0.0f32; n];
-        let mut right = vec![0.0f32; n];
-        {
-            let outs: Vec<&mut [f32]> = vec![&mut left[..], &mut right[..]];
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&audio[..]), Some(&pan_buf[..])];
-            let mut io = Io::new(SR, n, inputs, outs);
-            Pan::new().process(&mut io);
-        }
-        (left, right)
+        let mut d = OpDriver::for_type(Pan::new(), SR);
+        d.set(IN_AUDIO, 1.0).set(IN_PAN, pan).render(n);
+        (d.output(OUT_LEFT).to_vec(), d.output(OUT_RIGHT).to_vec())
     }
 
     #[test]
@@ -132,16 +124,11 @@ mod tests {
     fn pan_input_overrides_param() {
         // A wired `pan` buffer says hard-left — the single read path (ADR-0028) follows it.
         let n = 8;
-        let audio = vec![1.0f32; n];
         let pan_in = vec![-1.0f32; n];
-        let mut left = vec![0.0f32; n];
-        let mut right = vec![0.0f32; n];
-        {
-            let outs: Vec<&mut [f32]> = vec![&mut left[..], &mut right[..]];
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&audio[..]), Some(&pan_in[..])];
-            let mut io = Io::new(SR, n, inputs, outs);
-            Pan::new().process(&mut io);
-        }
+        let mut d = OpDriver::for_type(Pan::new(), SR);
+        d.set(IN_AUDIO, 1.0).drive(IN_PAN, &pan_in).render(n);
+        let left = d.output(OUT_LEFT);
+        let right = d.output(OUT_RIGHT);
         assert!(
             (left[0] - 1.0).abs() < 1e-5,
             "pan input should win (hard-left)"

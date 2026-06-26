@@ -86,12 +86,13 @@ crate::register_operator!(Map);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::Arg;
+    use crate::op_driver::OpDriver;
 
     const SR: f32 = 48_000.0;
 
-    /// Run dense `map` over one block: `in` is a per-sample buffer; in_min/in_max/out_min/out_max
-    /// are held `Float`s, `curve` the held `MapCurve` — the way the engine latches them.
+    /// Drive dense `map` through the real engine: `in` is a per-sample buffer (`drive`d);
+    /// in_min/in_max/out_min/out_max are held `Float`s and `curve` the held `MapCurve` (`set`,
+    /// read via `io.last`) — exactly the way the engine latches them.
     #[allow(clippy::too_many_arguments)]
     fn run_map(
         in_min: f32,
@@ -101,23 +102,16 @@ mod tests {
         curve: MapCurve,
         values: &[f32],
     ) -> Vec<f32> {
-        let n = values.len();
-        let latched = [
-            Arg::F32(0.0), // `in` is per-sample (buffer), not read via last
-            Arg::F32(in_min),
-            Arg::F32(in_max),
-            Arg::F32(out_min),
-            Arg::F32(out_max),
-            Arg::MapCurve(curve),
-        ];
-        let mut out = vec![0.0f32; n];
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![Some(values), None, None, None, None, None];
-            let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let mut io = Io::new(SR, n, inputs, outs).with_latched(&latched);
-            Map::new().process(&mut io);
-        }
-        out
+        OpDriver::for_type(Map::new(), SR)
+            .set(IN_IN_MIN, in_min)
+            .set(IN_IN_MAX, in_max)
+            .set(IN_OUT_MIN, out_min)
+            .set(IN_OUT_MAX, out_max)
+            .set(IN_CURVE, curve)
+            .drive(IN_IN, values)
+            .render(values.len())
+            .output(OUT_OUT)
+            .to_vec()
     }
 
     #[test]

@@ -166,62 +166,50 @@ crate::register_operator!(Filter);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::Arg;
-    use crate::operator::Io;
-
-    const LP: usize = 0;
-    const HP: usize = 1;
-    const BP: usize = 2;
+    use crate::op_driver::OpDriver;
 
     /// Run `input` through a fresh Filter at the given constant cutoff/resonance (lowpass) and
-    /// return the output buffer. `cutoff`/`resonance` are `Float` inputs now, so they are supplied
-    /// as the constant per-sample buffers the engine would materialize.
+    /// return the output buffer. `cutoff`/`resonance` are held `Float` controls (`set` once → the
+    /// const-fold path); `audio` is a time-varying Buffer input (`drive`d block by block).
     fn render(input: &[f32], sample_rate: f32, cutoff: f32, resonance: f32) -> Vec<f32> {
-        render_mode(input, sample_rate, cutoff, resonance, LP)
+        render_mode(input, sample_rate, cutoff, resonance, FilterMode::Lp)
     }
 
-    /// Like [`render`] but with an explicit `mode` index (LP / HP / BP).
+    /// Like [`render`] but with an explicit `mode` (LP / HP / BP), held via `set`.
     fn render_mode(
         input: &[f32],
         sample_rate: f32,
         cutoff: f32,
         resonance: f32,
-        mode: usize,
+        mode: FilterMode,
     ) -> Vec<f32> {
-        let n = input.len();
-        let cutoff_buf = vec![cutoff; n];
-        let res_buf = vec![resonance; n];
-        render_buffers(input, sample_rate, &cutoff_buf, &res_buf, mode)
+        OpDriver::for_type(Filter::new(), sample_rate)
+            .set(IN_CUTOFF, cutoff)
+            .set(IN_RESONANCE, resonance)
+            .set(IN_MODE, mode)
+            .drive(IN_AUDIO, input)
+            .render(input.len())
+            .output(OUT_AUDIO)
+            .to_vec()
     }
 
-    /// Render with explicit per-sample `cutoff`/`resonance` buffers and a held `mode` index — the
-    /// exact `Float`-input buffers + `Enum` latch the engine hands `process` (ADR-0028).
+    /// Render with time-varying per-sample `cutoff`/`resonance` buffers and a held `mode` — each
+    /// control `drive`n (marked varying → the operator's modulated path), `audio` `drive`n too.
     fn render_buffers(
         input: &[f32],
         sample_rate: f32,
         cutoff: &[f32],
         resonance: &[f32],
-        mode: usize,
+        mode: FilterMode,
     ) -> Vec<f32> {
-        let n = input.len();
-        let mut filter = Filter::new();
-        let mut out_buf = vec![0.0f32; n];
-        // Per-input held (ZOH) Arg: audio is a buffer (unused placeholder), cutoff/resonance their
-        // held scalars (for the const-fold path), mode the held FilterMode.
-        let latched = [
-            Arg::F32(0.0),
-            Arg::F32(cutoff.first().copied().unwrap_or(0.0)),
-            Arg::F32(resonance.first().copied().unwrap_or(0.0)),
-            Arg::FilterMode(FilterMode::from_index(mode).unwrap()),
-        ];
-        {
-            let inputs: Vec<Option<&[f32]>> =
-                vec![Some(input), Some(cutoff), Some(resonance), None];
-            let outputs: Vec<&mut [f32]> = vec![out_buf.as_mut_slice()];
-            let mut io = Io::new(sample_rate, n, inputs, outputs).with_latched(&latched);
-            filter.process(&mut io);
-        }
-        out_buf
+        OpDriver::for_type(Filter::new(), sample_rate)
+            .set(IN_MODE, mode)
+            .drive(IN_CUTOFF, cutoff)
+            .drive(IN_RESONANCE, resonance)
+            .drive(IN_AUDIO, input)
+            .render(input.len())
+            .output(OUT_AUDIO)
+            .to_vec()
     }
 
     /// Generate a pure sine of frequency `f` Hz for `n` samples.
@@ -297,7 +285,7 @@ mod tests {
         let via_default = render(&input, sr, 1_000.0, 0.0);
         let cutoff_buf = vec![1_000.0f32; n];
         let res_buf = vec![0.0f32; n];
-        let via_buffer = render_buffers(&input, sr, &cutoff_buf, &res_buf, LP);
+        let via_buffer = render_buffers(&input, sr, &cutoff_buf, &res_buf, FilterMode::Lp);
         for i in 0..n {
             assert!(
                 (via_default[i] - via_buffer[i]).abs() < 1e-4,
@@ -319,7 +307,7 @@ mod tests {
             .map(|i| 300.0 + (i as f32 / n as f32) * 11_700.0)
             .collect();
         let res_buf = vec![0.0f32; n];
-        let out = render_buffers(&input, sr, &cutoff, &res_buf, LP);
+        let out = render_buffers(&input, sr, &cutoff, &res_buf, FilterMode::Lp);
         let first = rms(&out[1024..n / 2]);
         let second = rms(&out[n / 2..]);
         assert!(
@@ -340,7 +328,7 @@ mod tests {
         // Constant control: every sample reuses the cache after the first.
         let constant = vec![2_500.0f32; n];
         let res_buf = vec![0.0f32; n];
-        let out = render_buffers(&input, sr, &constant, &res_buf, LP);
+        let out = render_buffers(&input, sr, &constant, &res_buf, FilterMode::Lp);
 
         // Reference: a fresh filter stepping the same once-computed coeffs every sample.
         let mut reference = Filter::new();
@@ -360,54 +348,38 @@ mod tests {
 
     #[test]
     fn filter_state_continuous_across_block_slices() {
-        // Processing one buffer in one call must equal processing it in two
-        // calls that share the same Filter instance.
+        // One render of `n` must equal two back-to-back renders of `n/2` sharing the driver's
+        // operator: the SVF integrator state threads across the real block boundaries and across
+        // the separate `render` calls.
         let sr = 48_000.0;
         let n = 512;
         let input = sine(440.0, sr, n);
+        let half = n / 2;
 
         let whole = render(&input, sr, 1_000.0, 0.3);
 
-        let mut filter = Filter::new();
-        let mut out_buf = vec![0.0f32; n];
-        let latched = [
-            Arg::F32(0.0),
-            Arg::F32(1_000.0),
-            Arg::F32(0.3),
-            Arg::FilterMode(FilterMode::from_index(LP).unwrap()),
-        ];
-        let cutoff = vec![1_000.0f32; n];
-        let resonance = vec![0.3f32; n];
-        let half = n / 2;
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![
-                Some(&input[..half]),
-                Some(&cutoff[..half]),
-                Some(&resonance[..half]),
-                None,
-            ];
-            let outputs: Vec<&mut [f32]> = vec![&mut out_buf[..half]];
-            let mut io = Io::new(sr, half, inputs, outputs).with_latched(&latched);
-            filter.process(&mut io);
-        }
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![
-                Some(&input[half..]),
-                Some(&cutoff[half..]),
-                Some(&resonance[half..]),
-                None,
-            ];
-            let outputs: Vec<&mut [f32]> = vec![&mut out_buf[half..]];
-            let mut io = Io::new(sr, n - half, inputs, outputs).with_latched(&latched);
-            filter.process(&mut io);
-        }
+        let mut split = OpDriver::for_type(Filter::new(), sr);
+        split
+            .set(IN_CUTOFF, 1_000.0)
+            .set(IN_RESONANCE, 0.3)
+            .set(IN_MODE, FilterMode::Lp)
+            .drive(IN_AUDIO, &input[..half]);
+        let a = split.render(half).output(OUT_AUDIO).to_vec();
+        split.drive(IN_AUDIO, &input[half..]);
+        let b = split.render(n - half).output(OUT_AUDIO).to_vec();
 
-        for i in 0..n {
+        for i in 0..half {
             assert!(
-                (whole[i] - out_buf[i]).abs() < 1e-5,
-                "slice mismatch at {i}: {} vs {}",
+                (whole[i] - a[i]).abs() < 1e-5,
+                "slice mismatch (block 1) at {i}: {} vs {}",
                 whole[i],
-                out_buf[i]
+                a[i]
+            );
+            assert!(
+                (whole[half + i] - b[i]).abs() < 1e-5,
+                "slice mismatch (block 2) at {i}: {} vs {}",
+                whole[half + i],
+                b[i]
             );
         }
     }
@@ -424,7 +396,7 @@ mod tests {
         let input = sine(1_000.0, sr, n);
 
         // Reference: explicit lowpass via the fast path (`svf_step`).
-        let lp = render_mode(&input, sr, 1_200.0, 0.4, LP);
+        let lp = render_mode(&input, sr, 1_200.0, 0.4, FilterMode::Lp);
 
         // The descriptor's defaults give cutoff 1000, resonance 0.2, mode 0. Render with the
         // *default* mode but a matching cutoff/resonance, against an explicit `svf_step` ref.
@@ -451,8 +423,8 @@ mod tests {
         let n = 8192;
         let warmup = 2048;
 
-        let low = render_mode(&sine(200.0, sr, n), sr, 1_000.0, 0.0, HP);
-        let high = render_mode(&sine(8_000.0, sr, n), sr, 1_000.0, 0.0, HP);
+        let low = render_mode(&sine(200.0, sr, n), sr, 1_000.0, 0.0, FilterMode::Hp);
+        let high = render_mode(&sine(8_000.0, sr, n), sr, 1_000.0, 0.0, FilterMode::Hp);
 
         let low_rms = rms(&low[warmup..]);
         let high_rms = rms(&high[warmup..]);
@@ -471,9 +443,9 @@ mod tests {
         let warmup = 2048;
         let res = 0.6; // a little resonance sharpens the peak
 
-        let center = render_mode(&sine(1_000.0, sr, n), sr, 1_000.0, res, BP);
-        let below = render_mode(&sine(100.0, sr, n), sr, 1_000.0, res, BP);
-        let above = render_mode(&sine(8_000.0, sr, n), sr, 1_000.0, res, BP);
+        let center = render_mode(&sine(1_000.0, sr, n), sr, 1_000.0, res, FilterMode::Bp);
+        let below = render_mode(&sine(100.0, sr, n), sr, 1_000.0, res, FilterMode::Bp);
+        let above = render_mode(&sine(8_000.0, sr, n), sr, 1_000.0, res, FilterMode::Bp);
 
         let c = rms(&center[warmup..]);
         let b = rms(&below[warmup..]);
@@ -489,7 +461,7 @@ mod tests {
         // A highpass must reject DC: a constant input settles to ~0.
         let sr = 48_000.0;
         let n = 8192;
-        let out = render_mode(&vec![1.0f32; n], sr, 1_000.0, 0.0, HP);
+        let out = render_mode(&vec![1.0f32; n], sr, 1_000.0, 0.0, FilterMode::Hp);
         let tail = &out[n - 256..];
         let avg = tail.iter().sum::<f32>() / tail.len() as f32;
         assert!(avg.abs() < 0.02, "highpass should block DC, got {avg}");

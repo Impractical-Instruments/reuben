@@ -66,21 +66,22 @@ crate::register_operator!(Add);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::op_driver::OpDriver;
 
     const SR: f32 = 48_000.0;
 
-    /// Run `add` over one block with the given a/b inputs; returns `out`. A `None` operand stands
-    /// in for the unwired case (the engine would materialize a zero buffer; the loop's `unwrap_or`
-    /// reproduces it).
+    /// Drive `add` through the real engine; returns `out`. Each operand is a materialized `Float`:
+    /// `Some(buf)` drives a time-varying buffer, `None` leaves the port unwired so the engine
+    /// materializes its additive-identity default (`0`).
     fn run(a: Option<&[f32]>, b: Option<&[f32]>, n: usize) -> Vec<f32> {
-        let mut out = vec![0.0f32; n];
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![a, b];
-            let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let mut io = Io::new(SR, n, inputs, outs);
-            Add::new().process(&mut io);
+        let mut d = OpDriver::for_type(Add::new(), SR);
+        if let Some(a) = a {
+            d.drive(IN_A, a);
         }
-        out
+        if let Some(b) = b {
+            d.drive(IN_B, b);
+        }
+        d.render(n).output(OUT_OUT).to_vec()
     }
 
     #[test]

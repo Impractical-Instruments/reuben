@@ -162,35 +162,23 @@ crate::register_operator!(Envelope);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::Arg;
-    use crate::operator::Io;
+    use crate::op_driver::OpDriver;
     use approx::assert_abs_diff_eq;
 
     const SR: f32 = 48_000.0;
 
-    /// Run `env` over a single block of `n` frames with the given gate input and ADSR
-    /// times, returning the emitted CV contour (the level per sample). The ADSR times are
-    /// `Float` inputs (ADR-0030), held (ZOH) values supplied via the per-input latch; `gate` is a
-    /// `Buffer` read per sample. `adsr` is `[attack, decay, sustain, release]`, in input-port order.
-    fn run(env: &mut Envelope, gate: &[f32], adsr: &[f32]) -> Vec<f32> {
-        let n = gate.len();
-        let mut out = vec![0.0f32; n];
-        // Latch: gate (input 0) is a buffer placeholder, then the four ADSR held values.
-        let latched = [
-            Arg::F32(0.0),
-            Arg::F32(adsr[0]),
-            Arg::F32(adsr[1]),
-            Arg::F32(adsr[2]),
-            Arg::F32(adsr[3]),
-        ];
-        {
-            let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            // Input port order: gate, attack, decay, sustain, release.
-            let inputs: Vec<Option<&[f32]>> = vec![Some(gate), None, None, None, None];
-            let mut io = Io::new(SR, n, inputs, outs).with_latched(&latched);
-            env.process(&mut io);
-        }
-        out
+    /// Drive `d`'s Envelope over `gate.len()` frames through the real engine, returning the emitted
+    /// CV contour (the level per sample). The ADSR times are held `Float` controls (`set`,
+    /// ZOH-read via `io.last`); `gate` is a time-varying `Buffer` input (`drive`d block by block, so
+    /// attack/decay/release thread continuously across the real 128-frame blocks). `adsr` is
+    /// `[attack, decay, sustain, release]`, in input-port order.
+    fn run(d: &mut OpDriver, gate: &[f32], adsr: &[f32]) -> Vec<f32> {
+        d.set(IN_ATTACK, adsr[0])
+            .set(IN_DECAY, adsr[1])
+            .set(IN_SUSTAIN, adsr[2])
+            .set(IN_RELEASE, adsr[3])
+            .drive(IN_GATE, gate);
+        d.render(gate.len()).output(OUT_CV).to_vec()
     }
 
     #[test]
@@ -205,8 +193,8 @@ mod tests {
         let n = ((attack + decay) * SR) as usize + 4_800;
         let gate = vec![1.0f32; n];
 
-        let mut env = Envelope::new();
-        let out = run(&mut env, &gate, &params);
+        let mut d = OpDriver::for_type(Envelope::new(), SR);
+        let out = run(&mut d, &gate, &params);
 
         // Peak (≈1.0) should occur right around the end of the attack stage.
         let attack_samples = (attack * SR) as usize;
@@ -229,8 +217,8 @@ mod tests {
         let n = (attack * SR) as usize;
         let gate = vec![1.0f32; n];
 
-        let mut env = Envelope::new();
-        let out = run(&mut env, &gate, &params);
+        let mut d = OpDriver::for_type(Envelope::new(), SR);
+        let out = run(&mut d, &gate, &params);
 
         assert_abs_diff_eq!(out[n / 2], 0.5, epsilon = 0.02);
     }
@@ -243,19 +231,20 @@ mod tests {
         let release = 0.02;
         let params = vec![attack, decay, sustain, release];
 
-        let mut env = Envelope::new();
+        let mut d = OpDriver::for_type(Envelope::new(), SR);
 
-        // First block: gate held long enough to reach sustain.
+        // First render: gate held long enough to reach sustain.
         let hold_n = 4_800;
         let gate_hold = vec![1.0f32; hold_n];
-        let held = run(&mut env, &gate_hold, &params);
+        let held = run(&mut d, &gate_hold, &params);
         assert_abs_diff_eq!(held[hold_n - 1], sustain, epsilon = 1e-4);
 
-        // Second block: gate drops; after `release` seconds the level is ~0.
+        // Second render: gate drops; after `release` seconds the level is ~0 (the release slope is
+        // locked at the note-off edge, state carried across the render boundary).
         let release_samples = (release * SR) as usize;
         let rel_n = release_samples + 1_000;
         let gate_rel = vec![0.0f32; rel_n];
-        let out = run(&mut env, &gate_rel, &params);
+        let out = run(&mut d, &gate_rel, &params);
 
         // Mid-release the level is still above zero (continuity across blocks).
         assert!(out[release_samples / 2] > 0.0);
@@ -277,8 +266,8 @@ mod tests {
         let n = (0.5 * SR) as usize;
         let gate = vec![1.0f32; n];
 
-        let mut env = Envelope::new();
-        let out = run(&mut env, &gate, &params);
+        let mut d = OpDriver::for_type(Envelope::new(), SR);
+        let out = run(&mut d, &gate, &params);
 
         // By the end of attack+decay the level has reached sustain (0.0)…
         let settle = ((attack + decay) * SR) as usize + 64;
@@ -298,22 +287,22 @@ mod tests {
         let release = 0.06;
         let params = vec![attack, decay, sustain, release];
 
-        let mut env = Envelope::new();
+        let mut d = OpDriver::for_type(Envelope::new(), SR);
 
-        // Block 1: gate high for ~62 ms — shorter than decay (90 ms), so it falls mid-decay.
+        // Render 1: gate high for ~62 ms — shorter than decay (90 ms), so it falls mid-decay.
         let gate_samples = (0.0625 * SR) as usize;
         let gate1 = vec![1.0f32; gate_samples];
-        let held = run(&mut env, &gate1, &params);
+        let held = run(&mut d, &gate1, &params);
         assert!(
             held[gate_samples - 1] > 0.05,
             "still decaying when the gate falls"
         );
 
-        // Block 2: gate low. After the release time the level is 0 and stays there.
+        // Render 2: gate low. After the release time the level is 0 and stays there.
         let release_samples = (release * SR) as usize;
         let rel_n = release_samples + 4_800;
         let gate2 = vec![0.0f32; rel_n];
-        let out = run(&mut env, &gate2, &params);
+        let out = run(&mut d, &gate2, &params);
 
         assert_abs_diff_eq!(out[rel_n - 1], 0.0, epsilon = 1e-6);
         // And nothing lingers past the release window (the "stays open" symptom).
@@ -329,24 +318,18 @@ mod tests {
         let n = 1_024;
         let gate = vec![0.0f32; n];
 
-        let mut env = Envelope::new();
-        let out = run(&mut env, &gate, &params);
+        let mut d = OpDriver::for_type(Envelope::new(), SR);
+        let out = run(&mut d, &gate, &params);
 
         assert!(out.iter().all(|&s| s == 0.0));
     }
 
     #[test]
     fn unconnected_gate_is_silent() {
-        let n = 256;
-        let mut out = vec![0.0f32; n];
-        {
-            let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            // Nothing wired: gate (and the ADSR inputs) read as empty/default. A gate that never
-            // goes high holds the envelope Idle at 0 regardless of the ADSR times.
-            let inputs: Vec<Option<&[f32]>> = vec![None, None, None, None, None];
-            let mut io = Io::new(SR, n, inputs, outs);
-            Envelope::new().process(&mut io);
-        }
+        // Nothing wired: gate (and the ADSR inputs) read as their unwired defaults. A gate that
+        // never goes high holds the envelope Idle at 0 regardless of the ADSR times.
+        let mut d = OpDriver::for_type(Envelope::new(), SR);
+        let out = d.render(256).output(OUT_CV).to_vec();
         assert!(out.iter().all(|&s| s == 0.0));
     }
 
@@ -358,8 +341,8 @@ mod tests {
         let n = 2_048;
         let gate = vec![1.0f32; n];
 
-        let mut env = Envelope::new();
-        let out = run(&mut env, &gate, &params);
+        let mut d = OpDriver::for_type(Envelope::new(), SR);
+        let out = run(&mut d, &gate, &params);
 
         assert_abs_diff_eq!(out[n - 1], 1.0, epsilon = 1e-4);
         assert!(out.iter().all(|&s| (0.0..=1.0 + 1e-6).contains(&s)));

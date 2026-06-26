@@ -154,6 +154,7 @@ crate::register_operator!(Strum);
 mod tests {
     use super::*;
     use crate::message::{Arg, Emit};
+    use crate::op_driver::OpDriver;
 
     const SR: f32 = 48_000.0;
 
@@ -173,36 +174,22 @@ mod tests {
         buf
     }
 
-    /// Run `strum` over a prebuilt per-sample `position` buffer; returns the emitted Messages.
-    fn run_buf(strum: &mut Strum, params: &[f32; 3], position: &[f32]) -> Vec<Emit> {
-        let n = position.len();
-        let latched = [
-            Arg::F32(0.0), // position (read per-sample, not via last)
-            Arg::F32(params[0]),
-            Arg::F32(params[1]),
-            Arg::F32(params[2]),
-        ];
-        let mut emits: Vec<Emit> = Vec::new();
-        {
-            let outs: Vec<&mut [f32]> = vec![]; // note port — no Signal buffer.
-            let inputs: Vec<Option<&[f32]>> = vec![Some(position), None, None, None];
-            let mut io = Io::new(SR, n, inputs, outs)
-                .with_latched(&latched)
-                .with_emit(&mut emits, 0);
-            strum.process(&mut io);
-        }
-        emits
+    /// Drive a fresh Strum through the real engine over a prebuilt per-sample `position` buffer
+    /// (`drive`n block by block, read per-sample via `io.signal`); `strings`/`octaves`/`velocity`
+    /// are held `Float` controls (`set` once). Returns the emitted Messages.
+    fn run_buf(params: &[f32; 3], position: &[f32]) -> Vec<Emit> {
+        let mut d = OpDriver::for_type(Strum::new(), SR);
+        d.set(IN_STRINGS, params[0])
+            .set(IN_OCTAVES, params[1])
+            .set(IN_VELOCITY, params[2])
+            .drive(IN_POSITION, position);
+        d.render(position.len()).emits().to_vec()
     }
 
     /// Convenience: run from discrete positions, materializing them to a ZOH buffer first.
-    fn run(
-        strum: &mut Strum,
-        n: usize,
-        params: &[f32; 3],
-        positions: &[(usize, f32)],
-    ) -> Vec<Emit> {
+    fn run(n: usize, params: &[f32; 3], positions: &[(usize, f32)]) -> Vec<Emit> {
         let buf = pos_buf(n, positions);
-        run_buf(strum, params, &buf)
+        run_buf(params, &buf)
     }
 
     fn params(strings: f32, octaves: f32, velocity: f32) -> [f32; 3] {
@@ -231,10 +218,9 @@ mod tests {
     fn sweep_up_plucks_ascending_strings_in_order() {
         // 8 strings, 1 octave: a slow sweep 0 -> 1 crosses all 8 bands. The first band is latched
         // on the opening sample, so the ascending plucks are strings 1..=7 -> degrees 1..7.
-        let mut strum = Strum::new();
         let positions: Vec<(usize, f32)> =
             (0..8).map(|k| (k * 10, (k as f32 + 0.5) / 8.0)).collect();
-        let emits = run(&mut strum, 200, &params(8.0, 1.0, 1.0), &positions);
+        let emits = run(200, &params(8.0, 1.0, 1.0), &positions);
 
         let ons = on_degrees(&emits);
         assert_eq!(ons, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
@@ -244,10 +230,9 @@ mod tests {
     #[test]
     fn sweep_down_plucks_descending_strings_in_order() {
         // Start at the top, sweep to the bottom: descending plucks 6,5,4,3,2,1,0.
-        let mut strum = Strum::new();
         let positions: Vec<(usize, f32)> =
             (0..8).map(|k| (k * 10, (7.5 - k as f32) / 8.0)).collect();
-        let emits = run(&mut strum, 200, &params(8.0, 1.0, 1.0), &positions);
+        let emits = run(200, &params(8.0, 1.0, 1.0), &positions);
 
         let ons = on_degrees(&emits);
         assert_eq!(ons, vec![6.0, 5.0, 4.0, 3.0, 2.0, 1.0, 0.0]);
@@ -256,9 +241,8 @@ mod tests {
     #[test]
     fn movement_within_one_band_emits_nothing() {
         // Two positions both inside band 3 (no boundary crossed) -> no notes.
-        let mut strum = Strum::new();
         let positions = [(0, 3.2 / 8.0), (50, 3.8 / 8.0)];
-        let emits = run(&mut strum, 100, &params(8.0, 1.0, 1.0), &positions);
+        let emits = run(100, &params(8.0, 1.0, 1.0), &positions);
         assert!(
             on_degrees(&emits).is_empty(),
             "no crossing -> no plucks, got {emits:?}"
@@ -269,19 +253,19 @@ mod tests {
     fn a_fast_drag_across_several_bands_plucks_each_in_between() {
         // First sample latches band 0; a single jump to band 4 plucks every string between:
         // degrees 1,2,3,4 (a glissando, not just the destination).
-        let mut strum = Strum::new();
         let positions = [(0, 0.01), (20, 4.5 / 8.0)];
-        let emits = run(&mut strum, 100, &params(8.0, 1.0, 1.0), &positions);
+        let emits = run(100, &params(8.0, 1.0, 1.0), &positions);
         assert_eq!(on_degrees(&emits), vec![1.0, 2.0, 3.0, 4.0]);
     }
 
     #[test]
     fn each_pluck_pairs_a_note_off_so_it_rings_then_releases() {
         // A single crossing emits a note-on now and a note-off PLUCK_SAMPLES later (same degree).
-        let mut strum = Strum::new();
+        // PLUCK_SAMPLES (1440) is > one 128-frame block, so the paired note-off is proof the
+        // pending queue threads across the real block boundaries.
         let n = (PLUCK_SAMPLES as usize) + 100;
         let positions = [(0, 0.01), (10, 1.5 / 8.0)]; // latch band 0, cross to band 1
-        let emits = run(&mut strum, n, &params(8.0, 1.0, 1.0), &positions);
+        let emits = run(n, &params(8.0, 1.0, 1.0), &positions);
 
         let ons: Vec<&Emit> = emits.iter().filter(|e| vel(e) > 0.5).collect();
         let offs: Vec<&Emit> = emits.iter().filter(|e| vel(e) < 0.5).collect();
@@ -298,10 +282,9 @@ mod tests {
     #[test]
     fn octaves_param_widens_the_string_span() {
         // 8 strings over 2 octaves: ascending plucks land on 2,4,6,8,10,12,14 (round(k * 14 / 7)).
-        let mut strum = Strum::new();
         let positions: Vec<(usize, f32)> =
             (0..8).map(|k| (k * 10, (k as f32 + 0.5) / 8.0)).collect();
-        let emits = run(&mut strum, 200, &params(8.0, 2.0, 1.0), &positions);
+        let emits = run(200, &params(8.0, 2.0, 1.0), &positions);
         assert_eq!(
             on_degrees(&emits),
             vec![2.0, 4.0, 6.0, 8.0, 10.0, 12.0, 14.0]
@@ -310,65 +293,50 @@ mod tests {
 
     #[test]
     fn velocity_param_sets_the_pluck_velocity() {
-        let mut strum = Strum::new();
         let positions = [(0, 0.01), (10, 1.5 / 8.0)];
-        let emits = run(&mut strum, 100, &params(8.0, 1.0, 0.7), &positions);
+        let emits = run(100, &params(8.0, 1.0, 0.7), &positions);
         let on = emits.iter().find(|e| vel(e) > 0.01).expect("a note-on");
         approx::assert_relative_eq!(vel(on), 0.7);
     }
 
     #[test]
     fn crossing_state_is_continuous_across_block_slices() {
-        // Splitting the position buffer across two blocks yields the same plucks as one whole
-        // block: the band machine carries across the boundary.
-        let p = params(8.0, 1.0, 1.0);
+        // `OpDriver::render` steps the operator as real 128-frame blocks, so a single render over a
+        // 200-sample buffer already crosses a block boundary at frame 128. The position jumps from
+        // band 5 (frame 90, block 0) to band 1 (frame 140, block 1): the descending gliss it plucks
+        // (4,3,2,1) spans the boundary, proving the band machine (`prev_string`) carries across it.
         let positions: Vec<(usize, f32)> = vec![
             (0, 0.01),
             (40, 2.5 / 8.0),
             (90, 5.5 / 8.0),
             (140, 1.5 / 8.0),
         ];
-        let n = 200;
-        let full = pos_buf(n, &positions);
-
-        let mut whole = Strum::new();
-        let ew = run_buf(&mut whole, &p, &full);
-        let ons_whole = on_degrees(&ew);
-
-        let mid = 100;
-        let mut split = Strum::new();
-        let e1 = run_buf(&mut split, &p, &full[..mid]);
-        let e2 = run_buf(&mut split, &p, &full[mid..]);
-        let mut ons_split = on_degrees(&e1);
-        ons_split.extend(on_degrees(&e2));
-
-        assert_eq!(ons_whole, ons_split);
+        let emits = run(200, &params(8.0, 1.0, 1.0), &positions);
+        // 0->2: plucks 1,2; 2->5: plucks 3,4,5; 5->1: plucks 4,3,2,1 (across the block boundary).
+        assert_eq!(
+            on_degrees(&emits),
+            vec![1.0, 2.0, 3.0, 4.0, 5.0, 4.0, 3.0, 2.0, 1.0]
+        );
     }
 
     #[test]
     fn spawned_strum_resets_to_no_band() {
         // Drive `a` to some band, spawn `b`: `b`'s first sample latches (no pluck) rather than
         // crossing from where `a` left off.
-        let mut a = Strum::new();
-        let _ = run(&mut a, 100, &params(8.0, 1.0, 1.0), &[(0, 0.9)]);
-        let mut b = a.spawn();
+        let mut a = OpDriver::for_type(Strum::new(), SR);
         let p = params(8.0, 1.0, 1.0);
-        let buf = pos_buf(50, &[(0, 0.05)]);
-        let latched = [
-            Arg::F32(0.0),
-            Arg::F32(p[0]),
-            Arg::F32(p[1]),
-            Arg::F32(p[2]),
-        ];
-        let mut emits: Vec<Emit> = Vec::new();
-        {
-            let outs: Vec<&mut [f32]> = vec![];
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&buf[..]), None, None, None];
-            let mut io = Io::new(SR, buf.len(), inputs, outs)
-                .with_latched(&latched)
-                .with_emit(&mut emits, 0);
-            b.process(&mut io);
-        }
+        a.set(IN_STRINGS, p[0])
+            .set(IN_OCTAVES, p[1])
+            .set(IN_VELOCITY, p[2])
+            .drive(IN_POSITION, &pos_buf(100, &[(0, 0.9)]));
+        a.render(100);
+
+        let mut b = a.spawn();
+        b.set(IN_STRINGS, p[0])
+            .set(IN_OCTAVES, p[1])
+            .set(IN_VELOCITY, p[2])
+            .drive(IN_POSITION, &pos_buf(50, &[(0, 0.05)]));
+        let emits = b.render(50).emits().to_vec();
         assert!(
             on_degrees(&emits).is_empty(),
             "fresh spawn latches its first position, no pluck: {emits:?}"

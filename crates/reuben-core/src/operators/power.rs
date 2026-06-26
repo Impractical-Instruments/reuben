@@ -78,25 +78,22 @@ crate::register_operator!(Power);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::Arg;
+    use crate::op_driver::OpDriver;
     use approx::assert_abs_diff_eq;
 
     const SR: f32 = 48_000.0;
 
-    /// Run `power` over one block with the given input and exponent; returns `out`. `x` is a
-    /// per-sample `Float` buffer; `exponent` is read block-rate via `io.last`, so it is supplied as
-    /// the held (ZOH) latch (ADR-0030; port order: x, exponent).
+    /// Drive `power` through the real engine; returns `out`. `x` is a per-sample `Float` buffer
+    /// (`Some` drives it, `None` leaves it unwired so the engine materializes its default `0`);
+    /// `exponent` is the held block-rate `Float` (read via `io.last`, so `set` once).
     fn run(x: Option<&[f32]>, exponent: f32) -> Vec<f32> {
         let n = x.map_or(4, <[f32]>::len);
-        let mut out = vec![0.0f32; n];
-        let latched = [Arg::F32(0.0), Arg::F32(exponent)];
-        {
-            let inputs: Vec<Option<&[f32]>> = vec![x, None];
-            let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let mut io = Io::new(SR, n, inputs, outs).with_latched(&latched);
-            Power::new().process(&mut io);
+        let mut d = OpDriver::for_type(Power::new(), SR);
+        d.set(IN_EXPONENT, exponent);
+        if let Some(x) = x {
+            d.drive(IN_X, x);
         }
-        out
+        d.render(n).output(OUT_OUT).to_vec()
     }
 
     #[test]
@@ -163,16 +160,15 @@ mod tests {
     fn spawned_copy_behaves_identically() {
         let x = [0.2, 0.6, 1.0];
         let direct = run(Some(&x), 3.0);
-        let mut out = vec![0.0f32; x.len()];
-        let latched = [Arg::F32(0.0), Arg::F32(3.0)];
-        {
-            let spawned = Power::new().spawn();
-            let inputs: Vec<Option<&[f32]>> = vec![Some(&x), None];
-            let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let mut io = Io::new(SR, x.len(), inputs, outs).with_latched(&latched);
-            let mut op = spawned;
-            op.process(&mut io);
-        }
+        // A fresh spawn (Power is stateless) reproduces the direct render exactly.
+        let base = OpDriver::for_type(Power::new(), SR);
+        let out = base
+            .spawn()
+            .set(IN_EXPONENT, 3.0)
+            .drive(IN_X, &x)
+            .render(x.len())
+            .output(OUT_OUT)
+            .to_vec();
         assert_eq!(out, direct);
     }
 }
