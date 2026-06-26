@@ -40,10 +40,12 @@ Run all `reuben`/`cargo` commands from the repo root.
    and rejects a malformed spec.
 
 3. **Implement `process` test-first** — lean on the `tdd` skill. The scaffold starts you **red**;
-   turn the contract's oracle into real tests (drive `process` via `Io::new`, assert observable
-   output), then write the DSP to pass. **Copy the structure of
-   [`lfo.rs`](../../crates/reuben-core/src/operators/lfo.rs)** — a clean stateful operator with a
-   `run` harness and continuity/spawn tests. Honour the **realtime authoring contract**:
+   turn the contract's oracle into real tests (drive the operator through the real engine with
+   [`OpDriver`](../../crates/reuben-core/src/op_driver.rs) — `for_type` / `set` / `push` / `drive` /
+   `bind` / `render` / `output` / `emits`, addressing ports by the generated `IN_*` / `OUT_*`
+   consts — and assert observable output), then write the DSP to pass. **Copy the structure of
+   [`lfo.rs`](../../crates/reuben-core/src/operators/lfo.rs)** — a clean stateful operator with
+   `OpDriver` continuity/spawn tests. Honour the **realtime authoring contract**:
    - `process` runs on the **hot** path — it must not allocate, lock, block, or panic. The
      canonical hot/cold boundary + RT rules live in
      [authoring.md#rt-safe-render](../../docs/agents/authoring.md#rt-safe-render) (single
