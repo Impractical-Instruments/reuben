@@ -1,5 +1,5 @@
 {
-  "doc": "The same self-playing sequence as sequence.json, but the Voicer resolves each step degree through a tonal context set to C natural minor — so the identical degree pattern (0..7) re-spells into the minor scale with no edit to the line. Change the key live with /context/root (MIDI), or reshape the scale with /context/s0../context/s6 (step offsets) and /context/degrees; both apply sample-accurately. Send a chord with /context/set [tag, d0, d1, ...] (tag 1 = scale-relative, 2 = absolute, 0 = clear).",
+  "doc": "The same self-playing sequence as sequence.json, but the Voicer resolves each step degree through a tonal context set to C natural minor — so the identical degree pattern (0..7) re-spells into the minor scale with no edit to the line. Change the key live with /harmony/root (MIDI), or reshape the scale with /harmony/s0../harmony/s6 (step offsets) and /harmony/degrees; both apply sample-accurately. Send a chord with /harmony/set [tag, d0, d1, ...] (tag 1 = scale-relative, 2 = absolute, 0 = clear).",
   "instrument": "scale-demo",
   "nodes": [
     {
@@ -20,7 +20,7 @@
       "type": "sequencer"
     },
     {
-      "address": "/context",
+      "address": "/harmony",
       "doc": "C natural minor, 12-TET.",
       "inputs": {
         "degrees": 7.0,
@@ -33,17 +33,17 @@
         "s5": 8.0,
         "s6": 10.0
       },
-      "type": "context"
+      "type": "harmony"
     },
     {
       "address": "/voicer",
       "config": {
         "voices": 4
       },
-      "doc": "Degrees -> Hz via the context.",
+      "doc": "Degrees -> Hz via the tonal context.",
       "inputs": {
-        "ctx": {
-          "from": "/context"
+        "harmony": {
+          "from": "/harmony"
         },
         "notes": {
           "from": "/sequencer"

@@ -128,7 +128,7 @@ fn render_block_is_allocation_free_after_warmup() {
         "emitting-sequencer render allocated {emitting} time(s)"
     );
 
-    // The tonal-context bus (ADR-0015) must be allocation-free too: a publisher → context →
+    // The tonal-context bus (ADR-0015) must be allocation-free too: a publisher → harmony →
     // resolving-Voicer rig, both in steady state and across live context changes (the `Copy`
     // snapshot is a memcpy; reader slices reuse the precapped context pool).
     let graph = load(SCALE_DEMO_JSON, &Registry::builtin()).expect("load scale-demo.json");
@@ -136,8 +136,8 @@ fn render_block_is_allocation_free_after_warmup() {
     let mut r = Renderer::new(&plan);
 
     // Build the key-change messages up front (their address Strings allocate here).
-    let to_d = [Message::new("/context/root", Arg::F32(62.0), 0)];
-    let to_c = [Message::new("/context/root", Arg::F32(60.0), 0)];
+    let to_d = [Message::new("/harmony/root", Arg::F32(62.0), 0)];
+    let to_c = [Message::new("/harmony/root", Arg::F32(60.0), 0)];
 
     for _ in 0..200 {
         r.render_block(&mut plan, &[], &mut out);
@@ -160,7 +160,7 @@ fn render_block_is_allocation_free_after_warmup() {
     }
     let before = ALLOCS.load(Ordering::Relaxed);
     for i in 0..200 {
-        // Alternate the key every block so the context node publishes a change each time.
+        // Alternate the key every block so the harmony node publishes a change each time.
         let msgs = if i % 2 == 0 { &to_d } else { &to_c };
         r.render_block(&mut plan, msgs, &mut out);
     }

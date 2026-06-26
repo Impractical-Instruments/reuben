@@ -39,7 +39,7 @@ struct Fixture {
 /// The benched instruments, each a real shipped JSON. Curated to span the heavy operator families
 /// with no redundancy: reverb (comb/allpass banks), echo (delay feedback), auto-filter (the
 /// lfo + m2s + math modulation stack), sampler-arp (sample + clock + sequencer, the non-oscillator
-/// path), and autotune — the tonal-context path (context → snap → voicer), which exercises the
+/// path), and autotune — the tonal-context path (harmony → snap → voicer), which exercises the
 /// `hz`/`snap`/`chord_tone` resolver and context-driven block-slicing nothing else here touches
 /// (#30, ADR-0013/0019).
 const FIXTURES: &[Fixture] = &[

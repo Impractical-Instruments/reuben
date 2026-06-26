@@ -10,7 +10,7 @@
 //!   the line re-spells live on a key/scale change); an [`Absolute`](crate::vocab::pitch::Pitch::Absolute)
 //!   note plays its MIDI coordinate. Velocity 0 is a note-off (ADR-0030: the Pitch case, not an
 //!   address, carries degree-vs-absolute).
-//! - input 1: `ctx` (`Harmony`, held) — the tonal context degree notes resolve against. Unconnected
+//! - input 1: `harmony` (`Harmony`, held) — the tonal context degree notes resolve against. Unconnected
 //!   → the default (C major, 12-TET), so absolute-note rigs are unchanged.
 //! - output 0: `freq` (`buffer`) — resolved frequency in Hz of this Voice's note.
 //! - output 1: `gate` (`buffer`) — 1.0 while this Voice holds a note, else 0.0.
@@ -23,10 +23,10 @@ use crate::operator::{Io, Operator};
 use crate::vocab::harmony::Harmony;
 use crate::vocab::pitch::{Note, Pitch};
 
-// Single-source contract (ADR-0025/0030): `notes` is a `Note` event port, `ctx` a held `Harmony`,
+// Single-source contract (ADR-0025/0030): `notes` is a `Note` event port, `harmony` a held `Harmony`,
 // `freq`/`gate` per-sample buffers; the Lane count comes from the `voices` param.
 crate::operator_contract!(Voicer {
-    inputs:  { notes: note, ctx: harmony },
+    inputs:  { notes: note, harmony: harmony },
     outputs: { freq: buffer, gate: buffer },
     params:  { voices: { 1.0..=32.0, default 8.0, "", lin } },
     lanes: from_param(voices),
@@ -122,7 +122,7 @@ impl Operator for Voicer {
         let me = io.lane().min(lanes - 1);
         // Current context (constant this segment; the engine slices at context changes, so a held
         // degree re-spells at the change frame). Default when unconnected.
-        let ctx = io.last::<Harmony>(IN_CTX).unwrap_or_default();
+        let harmony = io.last::<Harmony>(IN_HARMONY).unwrap_or_default();
 
         // Size the pool to the Lane count (identical across replicas).
         if self.voices.len() != lanes {
@@ -140,7 +140,7 @@ impl Operator for Voicer {
 
         // Run the global allocation, recording only THIS Lane's change-points. Frequency is resolved
         // through the context, so a re-spell shows up as the new frame-0 value.
-        let mut cur_freq = ctx.hz(self.voices[me].pitch);
+        let mut cur_freq = harmony.hz(self.voices[me].pitch);
         let mut cur_gate = self.voices[me].on;
         let mut changes: SmallVec<[(usize, f32, bool); 8]> = SmallVec::new();
         let (mut last_freq, mut last_gate) = (cur_freq, cur_gate);
@@ -151,7 +151,7 @@ impl Operator for Voicer {
                 self.release(pitch);
             }
             let v = self.voices[me];
-            let f = ctx.hz(v.pitch);
+            let f = harmony.hz(v.pitch);
             if f != last_freq || v.on != last_gate {
                 changes.push((frame, f, v.on));
                 last_freq = f;
@@ -210,7 +210,7 @@ mod tests {
         (frame, Note::new(Pitch::Degree(d), vel))
     }
 
-    /// Drive a fresh Voicer through the real engine and read **lane 0 / Voice 0**: `ctx` is the held
+    /// Drive a fresh Voicer through the real engine and read **lane 0 / Voice 0**: `harmony` is the held
     /// `Harmony` (`set` once), `notes` are pushed `Note` events at their global frames. Returns Voice
     /// 0's (freq, gate) buffers over `n` frames (rendered as real 128-frame blocks).
     ///
@@ -218,9 +218,9 @@ mod tests {
     /// this covers the monophonic / Voice-0 behaviors. Polyphonic Voice assignment (lanes > 0) and
     /// Voice-stealing (which needs `voices = 1/2`) stay on the hand-rolled `Io` path below — they are
     /// not expressible through `OpDriver`'s lane-0, default-param surface.
-    fn drive_mono(n: usize, ctx: Harmony, events: &[(usize, Note)]) -> (Vec<f32>, Vec<f32>) {
+    fn drive_mono(n: usize, harmony: Harmony, events: &[(usize, Note)]) -> (Vec<f32>, Vec<f32>) {
         let mut d = OpDriver::for_type(Voicer::new(), SR);
-        d.set(IN_CTX, ctx);
+        d.set(IN_HARMONY, harmony);
         for (frame, note) in events {
             d.push(IN_NOTES, *frame, *note);
         }
@@ -228,13 +228,13 @@ mod tests {
         (d.output(OUT_FREQ).to_vec(), d.output(OUT_GATE).to_vec())
     }
 
-    /// Run one Voicer Lane over a block against `ctx`; returns its (freq, gate) buffers.
+    /// Run one Voicer Lane over a block against `harmony`; returns its (freq, gate) buffers.
     fn run_lane_ctx(
         v: &mut Voicer,
         n: usize,
         lanes: usize,
         lane: usize,
-        ctx: Harmony,
+        harmony: Harmony,
         events: &[(usize, Note)],
     ) -> (Vec<f32>, Vec<f32>) {
         let mut f = vec![0.0f32; n];
@@ -249,8 +249,8 @@ mod tests {
                 frame: *frame,
             })
             .collect();
-        // Latch order: notes(0, placeholder — read as a stream), ctx.
-        let latched = [Arg::F32(0.0), Arg::Harmony(ctx)];
+        // Latch order: notes(0, placeholder — read as a stream), harmony.
+        let latched = [Arg::F32(0.0), Arg::Harmony(harmony)];
         let streams: [&[Event]; 2] = [&evs, &[]];
         {
             let outs: Vec<&mut [f32]> = vec![&mut f[..], &mut gt[..]];
@@ -405,10 +405,10 @@ mod tests {
         assert!(gt.iter().all(|&g| g == 1.0));
     }
 
-    // Stays on the hand-rolled `Io` path: it changes the held `ctx` *between* the note-block and a
+    // Stays on the hand-rolled `Io` path: it changes the held `harmony` *between* the note-block and a
     // later silent block with no new note. `OpDriver::set` changes a held control between `render`
     // calls, but a pushed event re-fires on every `render` (each restarts at frame 0), so a second
-    // `render` would re-press degree 2 — there is no way to feed "ctx changes, no new note".
+    // `render` would re-press degree 2 — there is no way to feed "harmony changes, no new note".
     #[test]
     fn held_degree_respells_when_context_changes() {
         // Hold degree 2. In C major it is E (64); switch the scale to C minor and the *same held

@@ -15,24 +15,6 @@ operator clock
   out[0] signal phase
   out[1] signal gate
   lanes inherit
-operator context
-  in[0] context set
-  in[1] float root min=0.0 max=127.0 default=60.0 unit="MIDI" curve=linear
-  in[2] float degrees min=1.0 max=12.0 default=7.0 unit="steps" curve=linear
-  in[3] float s0 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
-  in[4] float s1 min=-24.0 max=24.0 default=2.0 unit="steps" curve=linear
-  in[5] float s2 min=-24.0 max=24.0 default=4.0 unit="steps" curve=linear
-  in[6] float s3 min=-24.0 max=24.0 default=5.0 unit="steps" curve=linear
-  in[7] float s4 min=-24.0 max=24.0 default=7.0 unit="steps" curve=linear
-  in[8] float s5 min=-24.0 max=24.0 default=9.0 unit="steps" curve=linear
-  in[9] float s6 min=-24.0 max=24.0 default=11.0 unit="steps" curve=linear
-  in[10] float s7 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
-  in[11] float s8 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
-  in[12] float s9 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
-  in[13] float s10 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
-  in[14] float s11 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
-  out[0] context ctx
-  lanes inherit
 operator delay
   in[0] signal audio
   in[1] float time min=0.001 max=2.0 default=0.3 unit="s" curve=linear
@@ -68,6 +50,24 @@ operator filter
   in[2] float resonance min=0.0 max=1.0 default=0.2 unit="" curve=linear
   in[3] enum mode variants=["Lp", "Hp", "Bp"] default=0
   out[0] signal audio
+  lanes inherit
+operator harmony
+  in[0] harmony set
+  in[1] float root min=0.0 max=127.0 default=60.0 unit="MIDI" curve=linear
+  in[2] float degrees min=1.0 max=12.0 default=7.0 unit="steps" curve=linear
+  in[3] float s0 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
+  in[4] float s1 min=-24.0 max=24.0 default=2.0 unit="steps" curve=linear
+  in[5] float s2 min=-24.0 max=24.0 default=4.0 unit="steps" curve=linear
+  in[6] float s3 min=-24.0 max=24.0 default=5.0 unit="steps" curve=linear
+  in[7] float s4 min=-24.0 max=24.0 default=7.0 unit="steps" curve=linear
+  in[8] float s5 min=-24.0 max=24.0 default=9.0 unit="steps" curve=linear
+  in[9] float s6 min=-24.0 max=24.0 default=11.0 unit="steps" curve=linear
+  in[10] float s7 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
+  in[11] float s8 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
+  in[12] float s9 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
+  in[13] float s10 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
+  in[14] float s11 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
+  out[0] harmony harmony
   lanes inherit
 operator integrate
   in[0] float in min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
@@ -168,7 +168,7 @@ operator sequencer
   lanes inherit
 operator snap
   in[0] message notes
-  in[1] context ctx
+  in[1] harmony harmony
   in[2] enum target variants=["Scale", "Chord", "ChordThenScale"] default=0
   in[3] enum direction variants=["Nearest", "Up", "Down"] default=0
   out[0] message notes
@@ -187,7 +187,7 @@ operator transpose
   lanes inherit
 operator voicer
   in[0] message notes
-  in[1] context ctx
+  in[1] harmony harmony
   out[0] signal freq
   out[1] signal gate
   param[0] voices min=1.0 max=32.0 default=8.0 unit="" curve=linear

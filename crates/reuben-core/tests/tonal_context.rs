@@ -1,11 +1,11 @@
-//! Integration: the tonal-context bus end-to-end (ADR-0013, ADR-0015) — a context node
+//! Integration: the tonal-context bus end-to-end (ADR-0013, ADR-0015) — a harmony node
 //! publishes the latched key/scale, the engine routes and slices it onto downstream readers,
 //! and a Voicer resolves degree notes to Hz through it. Exercises the engine plumbing the
 //! operator unit tests can't: the context arena, the third route lane, and sample-accurate
 //! re-slicing on a context change.
 
 use reuben_core::message::{Arg, Message};
-use reuben_core::operators::{ContextOp, Snap, Voicer};
+use reuben_core::operators::{HarmonyOp, Snap, Voicer};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
 use reuben_core::vocab::harmony::Harmony;
@@ -25,12 +25,12 @@ fn hz(midi: f32) -> f32 {
     Harmony::default().hz(Pitch::from_midi(midi))
 }
 
-/// A minimal `context -> voicer(mono)` rig, tapping the Voicer's `freq` so a test can read
-/// the resolved pitch directly. Port indices: ContextOp `ctx` out = 0; Voicer `notes` in = 0,
-/// `ctx` in = 1, `freq` out = 0.
+/// A minimal `harmony -> voicer(mono)` rig, tapping the Voicer's `freq` so a test can read
+/// the resolved pitch directly. Port indices: HarmonyOp `harmony` out = 0; Voicer `notes` in = 0,
+/// `harmony` in = 1, `freq` out = 0.
 fn context_voicer() -> Graph {
     let mut g = Graph::new();
-    let c = g.add("/context", ContextOp::new());
+    let c = g.add("/harmony", HarmonyOp::new());
     let v = g.add("/voicer", Voicer::new());
     g.set_param(v, "voices", 1.0);
     g.connect(c, 0, v, 1);
@@ -52,7 +52,7 @@ fn degree_note_resolves_then_respells_across_blocks() {
     // Block 2: move the root to D (62) with no new note. The held degree 2 re-spells to F♯
     // (66) — proof the latched context drives a live re-spell through the engine, not just
     // the operator.
-    let key = Message::new("/context/root", Arg::F32(62.0), 0);
+    let key = Message::new("/harmony/root", Arg::F32(62.0), 0);
     r.render_block(&mut plan, &[key], &mut buf);
     approx::assert_relative_eq!(buf[CFG.block_size - 1], hz(66.0), epsilon = 1e-2);
 }
@@ -77,7 +77,7 @@ fn context_change_mid_block_is_sample_accurate() {
     // In the next block, change the root to D at frame 128. The change slices the block: the
     // first half still resolves in C major (E), the second half in D major (F♯) — one
     // sample-accurate timeline, no block-quantization internally.
-    let key = Message::new("/context/root", Arg::F32(62.0), 128);
+    let key = Message::new("/harmony/root", Arg::F32(62.0), 128);
     r.render_block(&mut plan, &[key], &mut buf);
     approx::assert_relative_eq!(buf[100], hz(64.0), epsilon = 1e-2); // before 128 → E
     approx::assert_relative_eq!(buf[200], hz(66.0), epsilon = 1e-2); // after 128 → F♯
@@ -85,15 +85,15 @@ fn context_change_mid_block_is_sample_accurate() {
 
 #[test]
 fn snap_quantizes_an_off_key_gesture() {
-    // context -> snap -> voicer. Play D♯ (63), an off-scale pitch; the snap pulls it to the
+    // harmony -> snap -> voicer. Play D♯ (63), an off-scale pitch; the snap pulls it to the
     // nearest C-major tone (D, 62, on the down tie-break) before the Voicer resolves it.
     let mut g = Graph::new();
-    let c = g.add("/context", ContextOp::new());
-    let s = g.add("/snap", Snap::new()); // inputs: notes=0, ctx=1; output degrees=0
+    let c = g.add("/harmony", HarmonyOp::new());
+    let s = g.add("/snap", Snap::new()); // inputs: notes=0, harmony=1; output degrees=0
     let v = g.add("/voicer", Voicer::new());
     g.set_param(v, "voices", 1.0);
-    g.connect(c, 0, s, 1); // context.ctx -> snap.ctx
-    g.connect(c, 0, v, 1); // context.ctx -> voicer.ctx
+    g.connect(c, 0, s, 1); // harmony.harmony -> snap.harmony
+    g.connect(c, 0, v, 1); // harmony.harmony -> voicer.harmony
     g.connect(s, 0, v, 0); // snap.degrees -> voicer.notes
     g.tap_output(v, 0);
 

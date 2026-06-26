@@ -14,7 +14,7 @@ use reuben_core::registry::Registry;
 
 /// The carrier word for a bare port's [`PortType`] (ADR-0030). Materialized `float` and `enum`
 /// **inputs** render via their own branches (`meta` / `enum_meta`); this names the carrier-style
-/// ports: a `buffer` audio wire ("signal"), `Note` ("message"), `Harmony` ("context"), and an enum
+/// ports: a `buffer` audio wire ("signal"), `Note` ("message"), `Harmony` ("harmony"), and an enum
 /// **output** ("enum", none today).
 fn kind(ty: &PortType) -> &'static str {
     match ty {
@@ -22,7 +22,7 @@ fn kind(ty: &PortType) -> &'static str {
         PortType::Vocab { name: "Note", .. } => "message",
         PortType::Vocab {
             name: "Harmony", ..
-        } => "context",
+        } => "harmony",
         PortType::Vocab {
             enum_meta: Some(_), ..
         } => "enum",
@@ -45,7 +45,7 @@ fn render(d: &Descriptor) -> String {
     for (i, p) in d.inputs.iter().enumerate() {
         // A new-style materialized Float input (ADR-0028) carries its own metadata; render it so
         // the snapshot captures the default/range that used to live on a same-named param. An
-        // `Enum` input renders its ordered variants + default index. Legacy signal/message/context
+        // `Enum` input renders its ordered variants + default index. Legacy signal/message/harmony
         // inputs (no `meta`/`enum_meta`) render byte-identically to before.
         match (&p.meta, p.enum_meta()) {
             (Some(m), _) => s.push_str(&format!(

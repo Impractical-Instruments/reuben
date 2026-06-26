@@ -282,386 +282,6 @@
           "if": {
             "properties": {
               "type": {
-                "const": "context"
-              }
-            },
-            "required": [
-              "type"
-            ]
-          },
-          "then": {
-            "properties": {
-              "config": {
-                "additionalProperties": false,
-                "properties": {},
-                "type": "object"
-              },
-              "inputs": {
-                "additionalProperties": false,
-                "properties": {
-                  "degrees": {
-                    "oneOf": [
-                      {
-                        "default": 7.0,
-                        "description": "unit: steps, curve: Linear",
-                        "maximum": 12.0,
-                        "minimum": 1.0,
-                        "type": "number"
-                      },
-                      {
-                        "additionalProperties": false,
-                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
-                        "properties": {
-                          "from": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "from"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  "root": {
-                    "oneOf": [
-                      {
-                        "default": 60.0,
-                        "description": "unit: MIDI, curve: Linear",
-                        "maximum": 127.0,
-                        "minimum": 0.0,
-                        "type": "number"
-                      },
-                      {
-                        "additionalProperties": false,
-                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
-                        "properties": {
-                          "from": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "from"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  "s0": {
-                    "oneOf": [
-                      {
-                        "default": 0.0,
-                        "description": "unit: steps, curve: Linear",
-                        "maximum": 24.0,
-                        "minimum": -24.0,
-                        "type": "number"
-                      },
-                      {
-                        "additionalProperties": false,
-                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
-                        "properties": {
-                          "from": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "from"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  "s1": {
-                    "oneOf": [
-                      {
-                        "default": 2.0,
-                        "description": "unit: steps, curve: Linear",
-                        "maximum": 24.0,
-                        "minimum": -24.0,
-                        "type": "number"
-                      },
-                      {
-                        "additionalProperties": false,
-                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
-                        "properties": {
-                          "from": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "from"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  "s10": {
-                    "oneOf": [
-                      {
-                        "default": 0.0,
-                        "description": "unit: steps, curve: Linear",
-                        "maximum": 24.0,
-                        "minimum": -24.0,
-                        "type": "number"
-                      },
-                      {
-                        "additionalProperties": false,
-                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
-                        "properties": {
-                          "from": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "from"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  "s11": {
-                    "oneOf": [
-                      {
-                        "default": 0.0,
-                        "description": "unit: steps, curve: Linear",
-                        "maximum": 24.0,
-                        "minimum": -24.0,
-                        "type": "number"
-                      },
-                      {
-                        "additionalProperties": false,
-                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
-                        "properties": {
-                          "from": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "from"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  "s2": {
-                    "oneOf": [
-                      {
-                        "default": 4.0,
-                        "description": "unit: steps, curve: Linear",
-                        "maximum": 24.0,
-                        "minimum": -24.0,
-                        "type": "number"
-                      },
-                      {
-                        "additionalProperties": false,
-                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
-                        "properties": {
-                          "from": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "from"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  "s3": {
-                    "oneOf": [
-                      {
-                        "default": 5.0,
-                        "description": "unit: steps, curve: Linear",
-                        "maximum": 24.0,
-                        "minimum": -24.0,
-                        "type": "number"
-                      },
-                      {
-                        "additionalProperties": false,
-                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
-                        "properties": {
-                          "from": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "from"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  "s4": {
-                    "oneOf": [
-                      {
-                        "default": 7.0,
-                        "description": "unit: steps, curve: Linear",
-                        "maximum": 24.0,
-                        "minimum": -24.0,
-                        "type": "number"
-                      },
-                      {
-                        "additionalProperties": false,
-                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
-                        "properties": {
-                          "from": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "from"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  "s5": {
-                    "oneOf": [
-                      {
-                        "default": 9.0,
-                        "description": "unit: steps, curve: Linear",
-                        "maximum": 24.0,
-                        "minimum": -24.0,
-                        "type": "number"
-                      },
-                      {
-                        "additionalProperties": false,
-                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
-                        "properties": {
-                          "from": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "from"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  "s6": {
-                    "oneOf": [
-                      {
-                        "default": 11.0,
-                        "description": "unit: steps, curve: Linear",
-                        "maximum": 24.0,
-                        "minimum": -24.0,
-                        "type": "number"
-                      },
-                      {
-                        "additionalProperties": false,
-                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
-                        "properties": {
-                          "from": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "from"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  "s7": {
-                    "oneOf": [
-                      {
-                        "default": 0.0,
-                        "description": "unit: steps, curve: Linear",
-                        "maximum": 24.0,
-                        "minimum": -24.0,
-                        "type": "number"
-                      },
-                      {
-                        "additionalProperties": false,
-                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
-                        "properties": {
-                          "from": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "from"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  "s8": {
-                    "oneOf": [
-                      {
-                        "default": 0.0,
-                        "description": "unit: steps, curve: Linear",
-                        "maximum": 24.0,
-                        "minimum": -24.0,
-                        "type": "number"
-                      },
-                      {
-                        "additionalProperties": false,
-                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
-                        "properties": {
-                          "from": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "from"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  "s9": {
-                    "oneOf": [
-                      {
-                        "default": 0.0,
-                        "description": "unit: steps, curve: Linear",
-                        "maximum": 24.0,
-                        "minimum": -24.0,
-                        "type": "number"
-                      },
-                      {
-                        "additionalProperties": false,
-                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
-                        "properties": {
-                          "from": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "from"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
-                  "set": {
-                    "oneOf": [
-                      {
-                        "additionalProperties": false,
-                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
-                        "properties": {
-                          "from": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "from"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  }
-                },
-                "type": "object"
-              }
-            }
-          }
-        },
-        {
-          "if": {
-            "properties": {
-              "type": {
                 "const": "delay"
               }
             },
@@ -1254,6 +874,386 @@
                         "minimum": 0.0,
                         "type": "number"
                       },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "harmony"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "inputs": {
+                "additionalProperties": false,
+                "properties": {
+                  "degrees": {
+                    "oneOf": [
+                      {
+                        "default": 7.0,
+                        "description": "unit: steps, curve: Linear",
+                        "maximum": 12.0,
+                        "minimum": 1.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "root": {
+                    "oneOf": [
+                      {
+                        "default": 60.0,
+                        "description": "unit: MIDI, curve: Linear",
+                        "maximum": 127.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "s0": {
+                    "oneOf": [
+                      {
+                        "default": 0.0,
+                        "description": "unit: steps, curve: Linear",
+                        "maximum": 24.0,
+                        "minimum": -24.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "s1": {
+                    "oneOf": [
+                      {
+                        "default": 2.0,
+                        "description": "unit: steps, curve: Linear",
+                        "maximum": 24.0,
+                        "minimum": -24.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "s10": {
+                    "oneOf": [
+                      {
+                        "default": 0.0,
+                        "description": "unit: steps, curve: Linear",
+                        "maximum": 24.0,
+                        "minimum": -24.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "s11": {
+                    "oneOf": [
+                      {
+                        "default": 0.0,
+                        "description": "unit: steps, curve: Linear",
+                        "maximum": 24.0,
+                        "minimum": -24.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "s2": {
+                    "oneOf": [
+                      {
+                        "default": 4.0,
+                        "description": "unit: steps, curve: Linear",
+                        "maximum": 24.0,
+                        "minimum": -24.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "s3": {
+                    "oneOf": [
+                      {
+                        "default": 5.0,
+                        "description": "unit: steps, curve: Linear",
+                        "maximum": 24.0,
+                        "minimum": -24.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "s4": {
+                    "oneOf": [
+                      {
+                        "default": 7.0,
+                        "description": "unit: steps, curve: Linear",
+                        "maximum": 24.0,
+                        "minimum": -24.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "s5": {
+                    "oneOf": [
+                      {
+                        "default": 9.0,
+                        "description": "unit: steps, curve: Linear",
+                        "maximum": 24.0,
+                        "minimum": -24.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "s6": {
+                    "oneOf": [
+                      {
+                        "default": 11.0,
+                        "description": "unit: steps, curve: Linear",
+                        "maximum": 24.0,
+                        "minimum": -24.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "s7": {
+                    "oneOf": [
+                      {
+                        "default": 0.0,
+                        "description": "unit: steps, curve: Linear",
+                        "maximum": 24.0,
+                        "minimum": -24.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "s8": {
+                    "oneOf": [
+                      {
+                        "default": 0.0,
+                        "description": "unit: steps, curve: Linear",
+                        "maximum": 24.0,
+                        "minimum": -24.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "s9": {
+                    "oneOf": [
+                      {
+                        "default": 0.0,
+                        "description": "unit: steps, curve: Linear",
+                        "maximum": 24.0,
+                        "minimum": -24.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "set": {
+                    "oneOf": [
                       {
                         "additionalProperties": false,
                         "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
@@ -2941,23 +2941,6 @@
               "inputs": {
                 "additionalProperties": false,
                 "properties": {
-                  "ctx": {
-                    "oneOf": [
-                      {
-                        "additionalProperties": false,
-                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
-                        "properties": {
-                          "from": {
-                            "type": "string"
-                          }
-                        },
-                        "required": [
-                          "from"
-                        ],
-                        "type": "object"
-                      }
-                    ]
-                  },
                   "direction": {
                     "oneOf": [
                       {
@@ -2973,6 +2956,23 @@
                         "minimum": 0,
                         "type": "integer"
                       },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "harmony": {
+                    "oneOf": [
                       {
                         "additionalProperties": false,
                         "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
@@ -3261,7 +3261,7 @@
               "inputs": {
                 "additionalProperties": false,
                 "properties": {
-                  "ctx": {
+                  "harmony": {
                     "oneOf": [
                       {
                         "additionalProperties": false,
@@ -3338,12 +3338,12 @@
             "add",
             "chord",
             "clock",
-            "context",
             "delay",
             "differentiate",
             "djfilter",
             "envelope",
             "filter",
+            "harmony",
             "integrate",
             "lfo",
             "m2s",
