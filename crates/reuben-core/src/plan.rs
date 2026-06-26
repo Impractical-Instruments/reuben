@@ -106,6 +106,11 @@ pub struct PlanNode {
     /// scalar source and so **materialized** (a dedicated single-Lane scratch buffer, see
     /// `materialize`). Held / Stream inputs carry no buffer (`None`).
     pub inputs: Vec<Option<Vec<usize>>>,
+    /// Per input port (full input-port order): its [`PortKind`], precomputed at Instantiate so the
+    /// hot message-routing path reads the bucket directly instead of re-deriving it from the port
+    /// descriptor (ADR-0030 — `port_kind` does a `Vocab` name comparison that the audio thread
+    /// should not repeat per routed message).
+    pub input_kinds: Vec<PortKind>,
     /// Materialized inputs (ADR-0030): `(input port, scratch arena buffer)` for each Buffer input
     /// fed by a scalar source — the one implicit `F32`→`Buffer` ZOH bridge. The engine fills the
     /// buffer per block from `latch[port]` (decoded via `Arg::as_f32`), writing mid-block changes at
@@ -311,13 +316,16 @@ impl Plan {
             let mut inputs: Vec<Option<Vec<usize>>> = Vec::with_capacity(n_inputs);
             let mut materialize: Vec<(usize, usize)> = Vec::new();
             let varying: Vec<bool> = vec![true; n_inputs];
-            for (port, p) in descriptor.inputs.iter().enumerate() {
+            // Classify every input port once (ADR-0030): the routing kind feeds both the buffer
+            // wiring below and the per-node `input_kinds` the hot router reads each block.
+            let input_kinds: Vec<PortKind> = descriptor.inputs.iter().map(port_kind).collect();
+            for (port, &kind) in input_kinds.iter().enumerate() {
                 // Buffer and F32 (float control) inputs both present a per-sample buffer to
                 // `io.signal` (ADR-0030): wired to a Buffer source they share it zero-copy;
                 // otherwise (unwired, or fed by a scalar) the engine materializes a scratch filled
                 // ZOH from the latch. Vocab inputs (enum / Note / Harmony) carry no buffer — they
                 // are read via `io.last` / `io.stream`.
-                if port_kind(p) != PortKind::Dense {
+                if kind != PortKind::Dense {
                     inputs.push(None);
                     continue;
                 }
@@ -383,6 +391,7 @@ impl Plan {
                 descriptor: node.descriptor,
                 lanes: n_lanes,
                 inputs,
+                input_kinds,
                 materialize,
                 materialize_clean,
                 latch,
