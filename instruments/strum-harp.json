@@ -71,12 +71,12 @@
     },
     {
       "address": "/osc",
-      "doc": "Triangle tone — a soft, harp-like pluck timbre.",
+      "doc": "Saw",
       "inputs": {
         "freq": {
           "from": "/voicer.freq"
         },
-        "waveform": "Sine"
+        "waveform": "Saw"
       },
       "type": "oscillator"
     },
