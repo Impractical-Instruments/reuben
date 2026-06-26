@@ -217,6 +217,13 @@ impl OpDriver {
         &self.emits
     }
 
+    /// All Buffer outputs (signal-output ordinal order), each `n` frames after the last
+    /// [`render`](OpDriver::render). For callers that want every output without naming each port
+    /// (the micro-bench accumulator).
+    pub fn outputs(&self) -> &[Vec<f32>] {
+        &self.outputs
+    }
+
     /// A driver over a fresh [`Operator::spawn`] of this one: carries resource bindings forward (the
     /// op's spawn clones them) while resetting per-Lane playback state. Configure it independently.
     pub fn spawn(&self) -> OpDriver {
