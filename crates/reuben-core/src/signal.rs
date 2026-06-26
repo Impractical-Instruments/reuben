@@ -9,8 +9,3 @@
 /// Backed by a `Vec<f32>` for the MVP. The Plan owns the pool of blocks used as edge
 /// buffers; operators receive borrowed (sub)slices during Render and never allocate.
 pub type Block = Vec<f32>;
-
-/// Allocate a zeroed block of the given length.
-pub fn zeroed_block(len: usize) -> Block {
-    vec![0.0; len]
-}

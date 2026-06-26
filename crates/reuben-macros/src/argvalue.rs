@@ -132,6 +132,10 @@ fn expand_enum(ast: &DeriveInput, data: &syn::DataEnum) -> TokenStream {
             pub fn to_index(self) -> usize {
                 match self { #(#to_index_arms),* }
             }
+            /// This variant's **symbol** — its on-wire string form (`VARIANTS[to_index()]`).
+            pub fn symbol(self) -> &'static str {
+                Self::VARIANTS[self.to_index()]
+            }
             /// The variant whose symbol is `s`, or `None`.
             pub fn from_symbol(s: &str) -> ::core::option::Option<Self> {
                 match s { #(#from_symbol_arms,)* _ => ::core::option::Option::None }

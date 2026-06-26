@@ -14,9 +14,7 @@
 
 use crate::descriptor::PortType;
 use crate::message::{Arg, OscArg};
-use crate::vocab::harmony::{SnapDir, SnapTarget};
 use crate::vocab::pitch::Note;
-use crate::vocab::{FilterMode, GateMode, M2sMode, MapCurve, Waveform};
 
 /// Convert a flat OSC arg list into the single [`Arg`] a destination port carries, driven by the
 /// **destination port type** (ADR-0030). `None` when the args don't fit the port (a wrong-typed
@@ -69,13 +67,13 @@ pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) {
     match arg {
         Arg::F32(_) | Arg::I32(_) | Arg::Str(_) => out.push(arg.clone()),
         Arg::Note(n) => n.to_osc(out),
-        Arg::SnapTarget(v) => out.push(Arg::Str(SnapTarget::VARIANTS[v.to_index()].to_string())),
-        Arg::SnapDir(v) => out.push(Arg::Str(SnapDir::VARIANTS[v.to_index()].to_string())),
-        Arg::GateMode(v) => out.push(Arg::Str(GateMode::VARIANTS[v.to_index()].to_string())),
-        Arg::FilterMode(v) => out.push(Arg::Str(FilterMode::VARIANTS[v.to_index()].to_string())),
-        Arg::Waveform(v) => out.push(Arg::Str(Waveform::VARIANTS[v.to_index()].to_string())),
-        Arg::M2sMode(v) => out.push(Arg::Str(M2sMode::VARIANTS[v.to_index()].to_string())),
-        Arg::MapCurve(v) => out.push(Arg::Str(MapCurve::VARIANTS[v.to_index()].to_string())),
+        Arg::SnapTarget(v) => out.push(Arg::Str(v.symbol().to_string())),
+        Arg::SnapDir(v) => out.push(Arg::Str(v.symbol().to_string())),
+        Arg::GateMode(v) => out.push(Arg::Str(v.symbol().to_string())),
+        Arg::FilterMode(v) => out.push(Arg::Str(v.symbol().to_string())),
+        Arg::Waveform(v) => out.push(Arg::Str(v.symbol().to_string())),
+        Arg::M2sMode(v) => out.push(Arg::Str(v.symbol().to_string())),
+        Arg::MapCurve(v) => out.push(Arg::Str(v.symbol().to_string())),
         // No external OSC form.
         Arg::Harmony(_) | Arg::Buffer(_) => {}
     }
@@ -85,6 +83,7 @@ pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) {
 mod tests {
     use super::*;
     use crate::descriptor::Port;
+    use crate::vocab::harmony::SnapDir;
     use crate::vocab::pitch::Pitch;
 
     #[test]

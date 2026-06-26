@@ -323,7 +323,7 @@ impl Plan {
                 // otherwise (unwired, or fed by a scalar) the engine materializes a scratch filled
                 // ZOH from the latch. Vocab inputs (enum / Note / Harmony) carry no buffer — they
                 // are read via `io.last` / `io.stream`.
-                if !matches!(p.ty, PortType::Buffer | PortType::F32) {
+                if port_kind(p) != PortKind::Dense {
                     inputs.push(None);
                     continue;
                 }
