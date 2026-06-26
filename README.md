@@ -47,12 +47,12 @@ The `reuben` binary is subcommand-driven: `play` (live audio), `describe` (list 
 `validate` (load-check an instrument), `scaffold-operator` (new-operator skeleton). Add
 `--help` to any of them. Everything after `--` is passed to the binary.
 
-Play a note by sending OSC `/voicer/note [midi, gate]` from any OSC source:
+Play a note by sending OSC `/voicer/notes [midi, gate]` from any OSC source:
 
 - `[69.0, 1.0]` — note-on, A4
 - `[69.0, 0.0]` — note-off
 
-Send several `/voicer/note` messages to play a chord.
+Send several `/voicer/notes` messages to play a chord.
 
 ## Run the examples
 
@@ -72,15 +72,19 @@ cargo run -p reuben-native --bin reuben -- play instruments/<name>.json
 | `reverb`     | needs OSC notes   | The synth with a mono Freeverb. Tweak `/reverb/{room,damp,mix}`.   |
 | `sequence`   | **yes**           | A clock-driven step melody; the sequencer walks an 8-step degree pattern into the synth. `/sequencer/step1`..`step8`, `/sequencer/length`, `/clock/tempo`. |
 | `scale-demo` | **yes**           | `sequence` resolved through a tonal context set to C minor — the same degree pattern re-spells live. Change key with `/context/root`, reshape with `/context/s0`..`s6`. |
-| `autotune`   | needs OSC notes   | Play any pitch at `/snap/note [midi, gate]`; it snaps to the nearest scale tone. Set the key on `/context`, snap mode on `/snap/{target,direction}`. |
+| `autotune`   | needs OSC notes   | Play any pitch at `/snap/notes [midi, gate]`; it snaps to the nearest scale tone. Set the key on `/context`, snap mode on `/snap/{target,direction}`. |
 | `sampler`    | needs OSC notes   | One-shot trigger sampler: a note fires `samples/blip.wav`; pitch shifts the playback rate. `/sample/{root,gain,start,channel}`. |
 | `sampler-arp` | **yes**          | A self-playing sample arpeggio: a clock-driven sequencer fires `samples/blip.wav` through a major arpeggio. `/clock/tempo`, `/sequencer/step1`..`step6`, `/sequencer/length`. |
 | `good-button` | needs OSC notes   | The synth with one **Good Button** (ADR-0017): sweep `/brightness [0..1]` — a single knob fanned to filter cutoff *and* resonance, each over its own range. Built from `map` + `m2s` operators, no format change. |
 | `auto-filter` | needs OSC notes   | The synth with a base-plus-LFO auto-wah: a Signal `add` sums a base cutoff CV with an LFO wobble into the filter. `/cutoff [Hz]`, `/lfo/{rate,depth}`. |
 | `djfilter-demo` | **yes**         | Self-playing saw arpeggio through a DJ-mixer filter knob. One bipolar control: `/filter_knob [-1..1]` — 0 = open, CCW sweeps a low-pass down, CW sweeps a high-pass up (zipper-free via an `m2s` smoother). `/clock/tempo`, `/djfilter/resonance`. |
+| `chord-player` | needs OSC       | The Chord player Toy (ADR-0022): tap-and-hold diatonic triad buttons (I–vii°) at `/chord/set [degree, gate]`. The `chord` op stacks scale thirds and the voicer resolves them through the tonal context, so held chords re-spell live when you change key (`/context/root`). A 12-voice pad. |
+| `groovebox`   | **yes**           | The Groovebox Toy (ADR-0022): a free-running 16-step drum machine — kick/snare/hat synthesized from operators (no samples) on a shared clock. Toggle steps `/kick/step1`..`step16` (also `/snare/*`, `/hat/*`), ride `/clock/tempo`; lane volumes and master tone are Good Buttons. |
+| `strum-harp`  | needs OSC         | The Strum harp Toy (ADR-0022): drag-to-strum. Stream `/strum_bar/in [0..1]` and the `strum` op plucks a note each time the bar crosses a string boundary. Strings are scale degrees through the tonal context, so it stays in key. `/strum/octaves` sets the span; `/context/root` the key. |
+| `stereo-autopan` | needs OSC notes | Stereo demo (ADR-0026): an 8-voice synth swept across the stereo field by an LFO driving a `pan` op, whose `left`/`right` feed the two master channels directly (no `output` node). Tweak `/autopan/{rate,depth}`, `/filter/cutoff`. |
 
-`metronome`, `vibrato`, `sequence`, `scale-demo`, `sampler-arp`, and `djfilter-demo` make sound
-immediately — good for a first run with no OSC sender. Every node's inputs are live over OSC at
+`metronome`, `vibrato`, `sequence`, `scale-demo`, `sampler-arp`, `groovebox`, and `djfilter-demo`
+make sound immediately — good for a first run with no OSC sender. Every node's inputs are live over OSC at
 its address (e.g. `/delay/time`).
 
 See **[docs/v1.2-playable-surface-testing.md](docs/v1.2-playable-surface-testing.md)** for a
@@ -112,7 +116,7 @@ from the code.
 | **Build / edit an instrument**        | "build a plucky bass" → **`patcher`**         | Edit JSON in `instruments/`, then `validate` it   |
 | **Make a TouchOSC control surface**   | "make a control surface for this" → **`control-surface`** | Add `control` blocks, hand-write the `.tosc` |
 | **Add a new DSP operator (Rust)**     | "add a wavefolder operator" → **`create-operator`** | `scaffold-operator`, then implement `process`     |
-| **Sync the docs after a change**      | "sync the docs" → **`sync-docs`**             | Edit ROADMAP/ARCHITECTURE/README by hand          |
+| **Sync the docs after a change**      | "sync the docs" → **`sync-docs`**             | Edit ARCHITECTURE/README by hand                  |
 
 A typical first session, by hand or by skill:
 
