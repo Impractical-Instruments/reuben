@@ -1,18 +1,18 @@
 {
-  "doc": "Play any pitch; hear the nearest scale tone. External absolute notes at /snap/notes [midi, vel] are quantized to the tonal context by a snap operator, which emits scale degrees into the Voicer (the 'always in key' good-button). Set the key/scale on /context/root, /context/s0../context/s6, /context/degrees; set snap behaviour with /snap/target (0 Scale, 1 Chord, 2 ChordThenScale) and /snap/direction (0 Nearest, 1 Up, 2 Down). Both the snap and the Voicer read the same context, so changing key re-tunes held notes live.",
+  "doc": "Play any pitch; hear the nearest scale tone. External absolute notes at /snap/notes [midi, vel] are quantized to the tonal context by a snap operator, which emits scale degrees into the Voicer (the 'always in key' good-button). Set the key/scale on /harmony/root, /harmony/s0../harmony/s6, /harmony/degrees; set snap behaviour with /snap/target (0 Scale, 1 Chord, 2 ChordThenScale) and /snap/direction (0 Nearest, 1 Up, 2 Down). Both the snap and the Voicer read the same context, so changing key re-tunes held notes live.",
   "instrument": "autotune",
   "nodes": [
     {
-      "address": "/context",
+      "address": "/harmony",
       "doc": "C major, 12-TET (default scale).",
-      "type": "context"
+      "type": "harmony"
     },
     {
       "address": "/snap",
       "doc": "Absolute note -> nearest in-scale degree.",
       "inputs": {
-        "ctx": {
-          "from": "/context"
+        "harmony": {
+          "from": "/harmony"
         }
       },
       "type": "snap"
@@ -22,10 +22,10 @@
       "config": {
         "voices": 6
       },
-      "doc": "Degrees -> Hz via the context.",
+      "doc": "Degrees -> Hz via the tonal context.",
       "inputs": {
-        "ctx": {
-          "from": "/context"
+        "harmony": {
+          "from": "/harmony"
         },
         "notes": {
           "from": "/snap"

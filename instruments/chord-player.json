@@ -1,5 +1,5 @@
 {
-  "doc": "V1.3 Toy 2 — the Chord player (ADR-0022). Seven buttons play the diatonic triads I–vii° of the current key: tap-and-hold sustains a chord, release stops it. Each button sends /chord/set [degree, gate] (a chord-root scale degree + gate); the `chord` op stacks scale-relative thirds and emits `degree` notes, which the voicer resolves through the tonal context — so held and tapped chords RE-SPELL LIVE when you change the key (send /context/root [48..72]). A pad voice (saw -> filter -> slow-attack envelope) and a 'brightness' Good Button (/brightness/in [0..1] -> filter cutoff) round it out. Polyphonic: 12 voices cover four held seventh chords. Built entirely from composition — no new instrument-format machinery.",
+  "doc": "V1.3 Toy 2 — the Chord player (ADR-0022). Seven buttons play the diatonic triads I–vii° of the current key: tap-and-hold sustains a chord, release stops it. Each button sends /chord/set [degree, gate] (a chord-root scale degree + gate); the `chord` op stacks scale-relative thirds and emits `degree` notes, which the voicer resolves through the tonal context — so held and tapped chords RE-SPELL LIVE when you change the key (send /harmony/root [48..72]). A pad voice (saw -> filter -> slow-attack envelope) and a 'brightness' Good Button (/brightness/in [0..1] -> filter cutoff) round it out. Polyphonic: 12 voices cover four held seventh chords. Built entirely from composition — no new instrument-format machinery.",
   "instrument": "chord-player",
   "nodes": [
     {
@@ -48,32 +48,32 @@
           "widget": "chord-button"
         }
       ],
-      "doc": "Tap-to-harmony: /chord/set [degree, gate] -> stacked-thirds `degree` notes. `size` 3 = triad (default), 4 = seventh. No context input — the voicer resolves degrees, so chords re-spell on key change. The 7 chord buttons each send a fixed root degree 0..6 (I–vii°) via the chord-button widget.",
+      "doc": "Tap-to-harmony: /chord/set [degree, gate] -> stacked-thirds `degree` notes. `size` 3 = triad (default), 4 = seventh. No harmony input — the voicer resolves degrees, so chords re-spell on key change. The 7 chord buttons each send a fixed root degree 0..6 (I–vii°) via the chord-button widget.",
       "inputs": {
         "size": 3.0
       },
       "type": "chord"
     },
     {
-      "address": "/context",
+      "address": "/harmony",
       "control": {
         "label": "Key",
         "max": 72.0,
         "min": 48.0,
         "param": "root"
       },
-      "doc": "The tonal context the voicer resolves degrees against. KEY SELECTOR: send /context/root [48..72] (MIDI tonic) to transpose; held & tapped chords re-spell live. Default C major.",
-      "type": "context"
+      "doc": "The tonal context the voicer resolves degrees against. KEY SELECTOR: send /harmony/root [48..72] (MIDI tonic) to transpose; held & tapped chords re-spell live. Default C major.",
+      "type": "harmony"
     },
     {
       "address": "/voicer",
       "config": {
         "voices": 12
       },
-      "doc": "Polyphonic note allocator. Degree notes from /chord re-spell through /context. 12 voices = four held seventh chords.",
+      "doc": "Polyphonic note allocator. Degree notes from /chord re-spell through /harmony. 12 voices = four held seventh chords.",
       "inputs": {
-        "ctx": {
-          "from": "/context"
+        "harmony": {
+          "from": "/harmony"
         },
         "notes": {
           "from": "/chord"

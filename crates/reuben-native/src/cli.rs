@@ -39,7 +39,7 @@ pub struct EnumInfo {
 pub struct PortInfo {
     pub name: String,
     /// The port's [`PortType`] as a word: `"signal"` (F32/Buffer), `"enum"`, `"message"` (Note),
-    /// or `"context"` (Harmony). The signal/message/context words are kept for the Patcher's wiring
+    /// or `"harmony"` (Harmony). The signal/message/harmony words are kept for the Patcher's wiring
     /// vocabulary; `enum` is surfaced honestly (its variants live in the operator's `enums`).
     pub kind: String,
 }
@@ -62,7 +62,7 @@ fn port_kind(ty: &PortType) -> &'static str {
         PortType::Vocab { name: "Note", .. } => "message",
         PortType::Vocab {
             name: "Harmony", ..
-        } => "context",
+        } => "harmony",
         PortType::Vocab {
             enum_meta: Some(_), ..
         } => "enum",

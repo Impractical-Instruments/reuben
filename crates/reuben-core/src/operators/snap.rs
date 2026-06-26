@@ -11,7 +11,7 @@
 //! - input 0: `notes` (`Note`) — incoming note events; an [`Absolute`](crate::vocab::pitch::Pitch::Absolute)
 //!   pitch is snapped, a [`Degree`](crate::vocab::pitch::Pitch::Degree) pitch is already in-scale and is
 //!   passed through (ADR-0030: the Pitch case, not an address, carries the distinction).
-//! - input 1: `ctx` (`Harmony`, held) — the tonal context to snap against.
+//! - input 1: `harmony` (`Harmony`, held) — the tonal context to snap against.
 //! - input 2: `target` (`enum` [`SnapTarget`]) — quantization target.
 //! - input 3: `direction` (`enum` [`SnapDir`]) — quantization direction.
 //! - output 0: `notes` (`Note`) — the snapped note (a [`Degree`](crate::vocab::pitch::Pitch::Degree)
@@ -28,10 +28,10 @@ use crate::vocab::harmony::{Harmony, SnapDir, SnapPolicy, SnapTarget};
 use crate::vocab::pitch::{Note, Pitch};
 
 // Single-source contract (ADR-0025/0030). `target`/`direction` reference the shared `SnapTarget`/
-// `SnapDir` vocab enums; `ctx` is the held `Harmony` carrier.
+// `SnapDir` vocab enums; `harmony` is the held `Harmony` carrier.
 crate::operator_contract!(Snap {
     inputs:  { notes:     note,
-               ctx:       harmony,
+               harmony:   harmony,
                target:    enum(SnapTarget),
                direction: enum(SnapDir) },
     outputs: { notes: note },
@@ -56,7 +56,7 @@ impl Operator for Snap {
             target: io.last::<SnapTarget>(IN_TARGET).unwrap_or_default(),
             direction: io.last::<SnapDir>(IN_DIRECTION).unwrap_or_default(),
         };
-        let ctx = io.last::<Harmony>(IN_CTX).unwrap_or_default();
+        let harmony = io.last::<Harmony>(IN_HARMONY).unwrap_or_default();
 
         // Snapshot incoming notes (its borrow of `io` ends here) so the emit loop can borrow `io`
         // mutably. `Note` is `Copy`, so this is alloc-free for the common low-event-count case.
@@ -68,7 +68,7 @@ impl Operator for Snap {
         for (frame, note) in notes {
             // Snap only operates on an absolute pitch; a degree is already in-scale, pass it through.
             let pitch = match note.pitch {
-                Pitch::Absolute(midi) => ctx.snap(midi, policy),
+                Pitch::Absolute(midi) => harmony.snap(midi, policy),
                 Pitch::Degree(_) => note.pitch,
             };
             io.emit(OUT_NOTES, "notes", Note::new(pitch, note.velocity), frame);
@@ -90,17 +90,17 @@ mod tests {
 
     const SR: f32 = 48_000.0;
 
-    /// Drive a fresh Snap against `ctx` through the real engine. `target`/`direction` are held vocab
-    /// enums and `ctx` a held `Harmony` (all `set` once); `notes` are pushed as `Note` events. Renders
+    /// Drive a fresh Snap against `harmony` through the real engine. `target`/`direction` are held vocab
+    /// enums and `harmony` a held `Harmony` (all `set` once); `notes` are pushed as `Note` events. Renders
     /// one block and returns the emitted Messages.
     fn run(
-        ctx: Harmony,
+        harmony: Harmony,
         target: SnapTarget,
         direction: SnapDir,
         notes: &[(usize, Note)],
     ) -> Vec<Emit> {
         let mut d = OpDriver::for_type(Snap::new(), SR);
-        d.set(IN_CTX, ctx)
+        d.set(IN_HARMONY, harmony)
             .set(IN_TARGET, target)
             .set(IN_DIRECTION, direction);
         for (frame, note) in notes {

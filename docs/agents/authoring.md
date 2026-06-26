@@ -30,7 +30,7 @@ same way. (The ADR-0028 **`shape`** axis is **retired** — the axis is now the 
 | **`Buffer`** (a *Signal*) | dense per-sample audio / CV / control — the one buffer payload | `io.signal(IN) -> &[f32]` (+ `io.varying(IN)`) · out: `io.signal_mut(OUT) -> &mut [f32]` |
 | **`F32` control** (macro `float`) | a number — freq, cutoff, amp, a contour; owns a default, ZOH-materialized into a buffer | per-sample `io.signal(IN)` (materialized) · held scalar `io.last::<f32>(IN) -> Option<f32>` · out: `io.signal_mut(OUT)` |
 | **enum** (a *vocab* type) | a named discrete choice — `FilterMode`, `Waveform` | `io.last::<FilterMode>(IN).unwrap_or_default()` — a real Rust enum, not an index |
-| **`Harmony`** (vocab struct) | the tonal-context struct: `root`/`scale`/`chord` + resolvers `hz()`/`snap()`/`chord_tone()` | `io.last::<Harmony>(IN) -> Option<Harmony>` · out: `io.emit(OUT, "ctx", h, frame)` |
+| **`Harmony`** (vocab struct) | the tonal-context struct: `root`/`scale`/`chord` + resolvers `hz()`/`snap()`/`chord_tone()` | `io.last::<Harmony>(IN) -> Option<Harmony>` · out: `io.emit(OUT, "harmony", h, frame)` |
 | **`Note`** (vocab struct) | a pitch/velocity event | `io.stream::<Note>(IN)` → `Stamped<Note>` (`.frame`, `.payload`) · out: `io.emit(OUT, "notes", Note::new(..), frame)` |
 
 There is **no separate "carrier"** and no temporality axis — the old `Signal`/`Message`/`Context`
@@ -137,12 +137,12 @@ pub trait Operator: Send {
     Emission is single-Lane (Lane 0 only). See `sequencer.rs` / `snap.rs`.
   - `io.last::<Harmony>(IN) -> Option<Harmony>` — read the latched tonal **`Harmony`** (key/scale/chord
     + resolver `hz`/`snap`/`chord_tone`), constant for the (sub)block, default C-major/12-TET when
-    unwired (`.unwrap_or_default()`). A `context` Operator writes the other side by **emitting** the
-    `Harmony` Arg — `io.emit(OUT_CTX, "ctx", h, frame)` (single-Lane) — since publishing a Harmony is
-    just a Message on a Harmony port now. The Voicer and `snap.rs` read it; `context.rs` emits it.
+    unwired (`.unwrap_or_default()`). A `harmony` Operator writes the other side by **emitting** the
+    `Harmony` Arg — `io.emit(OUT_HARMONY, "harmony", h, frame)` (single-Lane) — since publishing a Harmony is
+    just a Message on a Harmony port now. The Voicer and `snap.rs` read it; `harmony.rs` emits it.
     *(The struct is named `Harmony` in code (`vocab/harmony.rs`); the legacy `io.harmony`/`io.publish_harmony`
     accessors are gone, folded into `io.last`/`io.emit`. The publishing Operator's author-facing type
-    stays `"context"`.)*
+    is `"harmony"` (`operators/harmony.rs`).)*
   - `io.lane()` / `io.lanes()` — most operators ignore these; an *expander* like the Voicer uses
     them to emit one Voice's output per call.
 - **`spawn()`** — usually `Box::new(Self::new())`. Resets per-Lane state only. A resource-bearing

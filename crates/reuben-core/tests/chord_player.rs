@@ -5,7 +5,7 @@
 //! re-spell on a key change driven through the full graph.
 
 use reuben_core::message::{Arg, Message};
-use reuben_core::operators::{Chord, ContextOp, Voicer};
+use reuben_core::operators::{Chord, HarmonyOp, Voicer};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
 use reuben_core::vocab::harmony::Harmony;
@@ -24,17 +24,17 @@ fn hz(midi: f32) -> f32 {
     Harmony::default().hz(Pitch::from_midi(midi))
 }
 
-/// A `context -> chord -> voicer(poly)` rig that taps a chosen Voicer output across all voices
-/// (summed to the mono tap). Port indices: ContextOp `ctx` out = 0; Chord `set` in = 0,
-/// `degrees` out = 0; Voicer `notes` in = 0, `ctx` in = 1, `freq` out = 0, `gate` out = 1.
+/// A `harmony -> chord -> voicer(poly)` rig that taps a chosen Voicer output across all voices
+/// (summed to the mono tap). Port indices: HarmonyOp `harmony` out = 0; Chord `set` in = 0,
+/// `degrees` out = 0; Voicer `notes` in = 0, `harmony` in = 1, `freq` out = 0, `gate` out = 1.
 fn chord_rig_tapping(voices: f32, tap_port: usize) -> Graph {
     let mut g = Graph::new();
-    let c = g.add("/context", ContextOp::new());
+    let c = g.add("/harmony", HarmonyOp::new());
     let ch = g.add("/chord", Chord::new());
     let v = g.add("/voicer", Voicer::new());
     g.set_param(v, "voices", voices);
     g.connect(ch, 0, v, 0); // chord.degrees -> voicer.notes
-    g.connect(c, 0, v, 1); // context.ctx -> voicer.ctx
+    g.connect(c, 0, v, 1); // harmony.harmony -> voicer.harmony
     g.tap_output(v, tap_port);
     g
 }
@@ -122,7 +122,7 @@ fn held_chord_respells_live_on_a_key_change() {
     // Re-key to D (root 62), no new chord press.
     r.render_block(
         &mut plan,
-        &[Message::new("/context/root", Arg::F32(62.0), 0)],
+        &[Message::new("/harmony/root", Arg::F32(62.0), 0)],
         &mut buf,
     );
     approx::assert_relative_eq!(
