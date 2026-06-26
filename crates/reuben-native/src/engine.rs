@@ -74,6 +74,17 @@ impl Engine {
         self.pending.push(msg);
     }
 
+    /// Queue an inbound OSC datagram (ADR-0030): convert its flat primitive args into the single
+    /// typed [`Message`] the destination port carries (driven by the port's Arg type), then queue
+    /// it. Dropped silently if the address routes to no node/port or the args don't fit — an
+    /// authoring error the boundary already tolerates. The conversion needs the Plan, which the
+    /// engine owns, so it lives here rather than in the address-blind OSC decode layer.
+    pub fn queue_osc(&mut self, osc: &crate::osc::OscIn) {
+        if let Some(msg) = self.plan.osc_in_message(&osc.address, &osc.args) {
+            self.pending.push(msg);
+        }
+    }
+
     /// Drain the outbound Messages produced by the most recent [`Engine::fill`] (ADR-0026), in
     /// emission order. The caller (native's OSC-out path) encodes and UDP-sends them. Empty unless
     /// the instrument has an `osc_out` sink that fired; call right after `fill`, before the next.
@@ -121,19 +132,22 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::osc::OscIn;
     use crate::rigs::default_rig;
-    use reuben_core::message::{Arg, Message};
+    use reuben_core::message::Arg;
+    use reuben_core::vocab::pitch::{Note, Pitch};
     use reuben_core::AudioConfig;
 
     fn engine_with_note() -> Engine {
         let cfg = AudioConfig::new(48_000.0, 256);
         let plan = Plan::instantiate(default_rig(), cfg).expect("instantiate");
         let mut e = Engine::new(plan);
-        e.queue(Message::new(
-            "/voicer/note",
-            [Arg::Float(69.0), Arg::Float(1.0)],
-            0,
-        ));
+        // Drive a note in through the real inbound boundary: flat OSC args -> typed `Arg::Note`,
+        // driven by the voicer's note port type (ADR-0030).
+        e.queue_osc(&OscIn {
+            address: "/voicer/notes".into(),
+            args: vec![Arg::F32(69.0), Arg::F32(1.0)],
+        });
         e
     }
 
@@ -199,14 +213,21 @@ mod tests {
         // A value addressed to the sink's node routes in and comes back out on the outbound
         // route, stamped with the node address (ADR-0026).
         let mut e = Engine::new(osc_out_plan());
-        e.queue(Message::new("/fb", [Arg::Float(0.7)], 0));
+        // Inbound note to the sink's `in` port; the sink re-emits it onto the outbound route.
+        e.queue_osc(&OscIn {
+            address: "/fb/in".into(),
+            args: vec![Arg::F32(69.0), Arg::F32(1.0)],
+        });
         let mut out = vec![0.0f32; e.block_size() * e.channels()];
         e.fill(&mut out);
 
         let drained: Vec<_> = e.drain_outbound().collect();
         assert_eq!(drained.len(), 1);
-        assert_eq!(drained[0].addr, "/fb");
-        assert_eq!(drained[0].args.as_slice(), &[Arg::Float(0.7)]);
+        assert_eq!(drained[0].address, "/fb");
+        assert_eq!(
+            drained[0].arg,
+            Arg::Note(Note::new(Pitch::Absolute(69.0), 1.0))
+        );
         // Drained once: the next fill (no input) yields nothing.
         e.fill(&mut out);
         assert_eq!(e.drain_outbound().count(), 0);

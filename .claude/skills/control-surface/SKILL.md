@@ -19,13 +19,13 @@ play with.
 | Control | OSC address the widget sends to | Range / unit / default |
 |---|---|---|
 | **Good Button** — a `map` whose input is not wired from another node | the node address, e.g. `/brightness` | the map's `in_min`/`in_max` instance inputs; default = `map`'s `default` |
-| **Direct input** — a settable `Float` input on a node | `/<node>/<input>`, e.g. `/clock/tempo` or `/filter/cutoff` | the input's schema metadata (min/max/unit/default) |
+| **Direct input** — a settable numeric (`signal`) input on a node | `/<node>/<input>`, e.g. `/clock/tempo` or `/filter/cutoff` | the input's schema metadata (min/max/unit/default) |
 
-A `Float` input (e.g. a filter's `cutoff`) is now **directly controllable** over OSC at
-`/<node>/<input>` (ADR-0028) — no `map`/`m2s` front-end is required to reach it. A **Good Button**
+A numeric (`signal`) input (e.g. a filter's `cutoff`) is now **directly controllable** over OSC at
+`/<node>/<input>` (ADR-0030) — no `map`/`m2s` front-end is required to reach it. A **Good Button**
 remains the right pattern for a *curated, ranged* player face (one knob fanned to several inputs
 over musical ranges), exactly as `good-button.json` does; a direct input is the raw,
-full-range alternative. `Enum` inputs (filter `mode`, osc `waveform`) are settable too but aren't
+full-range alternative. `enum` inputs (filter `mode`, osc `waveform`) are settable too but aren't
 emitted as faders yet — they need a selector/toggle widget (out of scope today).
 
 ## Workflow
@@ -44,7 +44,7 @@ Run from the repo root. The script is `gen_surface.py` in this skill's directory
    **Good Buttons first**, then only the params that are genuinely musical to play (tempo,
    sequence steps, voice count); skip structural/internal params. Show the user the proposed
    labels + ranges, get confirmation, then **write `control` blocks into the instrument JSON
-   with Edit** (preserve the file's inline-node formatting). Shapes:
+   with Edit** (preserve the file's inline-node formatting). Forms:
    - Good Button: `"control": { "label": "Brightness", "unit": "%" }`
    - one param: `"control": { "label": "Tempo", "param": "tempo" }`
    - many params on one node: `"control": [ { "label": "Step 1", "param": "step1" }, ... ]`

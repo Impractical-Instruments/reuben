@@ -3,10 +3,10 @@
 //!
 //! Single-Lane (mono in, mono out).
 //!
-//! Shape model (ADR-0028): `room`/`damp`/`mix` are **`Float` inputs**, each owning its unwired
+//! Port types (ADR-0030): `room`/`damp`/`mix` are **`F32` inputs**, each owning its unwired
 //! default. When nothing is wired the engine materializes the input from its latched default;
 //! when a control is wired the source buffer passes through. There is no longer a separate
-//! "signal port + same-named param" pair — `io.value(IN_ROOM)` reads the latched current value.
+//! "signal port + same-named param" pair — `io.last::<f32>(IN_ROOM)` reads the latched value.
 //!
 //! - input 0: `audio` (`Float`)
 //! - input 1: `room` (`Float`) — room size / tail length (0..1).
@@ -19,11 +19,11 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Reverb {
-    inputs:  { audio: float,
+    inputs:  { audio: buffer,
                room: float { 0.0..=1.0, default 0.5, "", lin },
                damp: float { 0.0..=1.0, default 0.5, "", lin },
                mix:  float { 0.0..=1.0, default 0.3, "", lin } },
-    outputs: { audio: float },
+    outputs: { audio: buffer },
 });
 
 /// Standard Freeverb comb-filter delay lengths, in samples at 44100 Hz.
@@ -132,10 +132,10 @@ impl Operator for Reverb {
             self.sized_rate = sample_rate;
         }
 
-        // `room`/`damp`/`mix` are `Float` inputs — read the latched block-rate value (ADR-0028).
-        let room = io.value(IN_ROOM).clamp(0.0, 1.0);
-        let damp = io.value(IN_DAMP).clamp(0.0, 1.0);
-        let mix = io.value(IN_MIX).clamp(0.0, 1.0);
+        // `room`/`damp`/`mix` are `Float` inputs — read the latched block-rate value (ADR-0030).
+        let room = io.last::<f32>(IN_ROOM).unwrap_or(0.0).clamp(0.0, 1.0);
+        let damp = io.last::<f32>(IN_DAMP).unwrap_or(0.0).clamp(0.0, 1.0);
+        let mix = io.last::<f32>(IN_MIX).unwrap_or(0.0).clamp(0.0, 1.0);
 
         // Standard Freeverb parameter mappings.
         let roomsize = room * 0.28 + 0.7; // comb feedback
@@ -159,7 +159,7 @@ impl Operator for Reverb {
                 wet_sig = ap.process(wet_sig, allpass_feedback);
             }
 
-            io.output(OUT_AUDIO)[i] = dry_in * dry + wet_sig * wet;
+            io.signal_mut(OUT_AUDIO)[i] = dry_in * dry + wet_sig * wet;
         }
     }
 
@@ -173,30 +173,23 @@ crate::register_operator!(Reverb);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message::Arg;
     use crate::operator::Io;
 
     /// Run `input` through a fresh Reverb at the given room/damp/mix and return the output.
-    /// `room`/`damp`/`mix` are `Float` inputs now (ADR-0028), so they are supplied as the constant
-    /// per-sample buffers the engine would materialize, in port order (audio, room, damp, mix).
+    /// `room`/`damp`/`mix` are `Float` inputs read via `io.last` (ADR-0030), supplied as the
+    /// per-input held (ZOH) Args in port order (audio, room, damp, mix); `audio` is a buffer
+    /// input (placeholder latch).
     fn render(input: &[f32], sample_rate: f32, room: f32, damp: f32, mix: f32) -> Vec<f32> {
         let n = input.len();
         let mut reverb = Reverb::new();
         let mut out_buf = vec![0.0f32; n];
 
-        let room_buf = vec![room; n];
-        let damp_buf = vec![damp; n];
-        let mix_buf = vec![mix; n];
-        let params: [f32; 0] = [];
-        let messages = [];
+        let latched = [Arg::F32(0.0), Arg::F32(room), Arg::F32(damp), Arg::F32(mix)];
         {
-            let inputs: Vec<Option<&[f32]>> = vec![
-                Some(input),
-                Some(&room_buf),
-                Some(&damp_buf),
-                Some(&mix_buf),
-            ];
+            let inputs: Vec<Option<&[f32]>> = vec![Some(input), None, None, None];
             let outputs: Vec<&mut [f32]> = vec![out_buf.as_mut_slice()];
-            let mut io = Io::new(sample_rate, n, inputs, outputs, &params, &messages);
+            let mut io = Io::new(sample_rate, n, inputs, outputs).with_latched(&latched);
             reverb.process(&mut io);
         }
         out_buf
@@ -305,32 +298,18 @@ mod tests {
 
         let mut reverb = Reverb::new();
         let mut out_buf = vec![0.0f32; n];
-        let params: [f32; 0] = [];
-        let messages = [];
-        let room = vec![0.6f32; n];
-        let damp = vec![0.4f32; n];
-        let mix = vec![0.5f32; n];
+        let latched = [Arg::F32(0.0), Arg::F32(0.6), Arg::F32(0.4), Arg::F32(0.5)];
         let half = n / 2;
         {
-            let inputs: Vec<Option<&[f32]>> = vec![
-                Some(&input[..half]),
-                Some(&room[..half]),
-                Some(&damp[..half]),
-                Some(&mix[..half]),
-            ];
+            let inputs: Vec<Option<&[f32]>> = vec![Some(&input[..half]), None, None, None];
             let outputs: Vec<&mut [f32]> = vec![&mut out_buf[..half]];
-            let mut io = Io::new(sr, half, inputs, outputs, &params, &messages);
+            let mut io = Io::new(sr, half, inputs, outputs).with_latched(&latched);
             reverb.process(&mut io);
         }
         {
-            let inputs: Vec<Option<&[f32]>> = vec![
-                Some(&input[half..]),
-                Some(&room[half..]),
-                Some(&damp[half..]),
-                Some(&mix[half..]),
-            ];
+            let inputs: Vec<Option<&[f32]>> = vec![Some(&input[half..]), None, None, None];
             let outputs: Vec<&mut [f32]> = vec![&mut out_buf[half..]];
-            let mut io = Io::new(sr, n - half, inputs, outputs, &params, &messages);
+            let mut io = Io::new(sr, n - half, inputs, outputs).with_latched(&latched);
             reverb.process(&mut io);
         }
 

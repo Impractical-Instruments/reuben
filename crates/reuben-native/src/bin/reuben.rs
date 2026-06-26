@@ -5,8 +5,8 @@
 //!   it plays the built-in default rig. Send notes with:
 //!
 //!   ```text
-//!   /voicer/note  [69.0, 1.0]   # note-on  (MIDI 69 = A4, gate 1)
-//!   /voicer/note  [69.0, 0.0]   # note-off (gate 0)
+//!   /voicer/notes  [69.0, 1.0]   # note-on  (MIDI 69 = A4, gate 1)
+//!   /voicer/notes  [69.0, 0.0]   # note-off (gate 0)
 //!   ```
 //!
 //! - `reuben describe [op] [--json]` — print the operator set (or one operator's ports,
@@ -25,6 +25,7 @@ use std::thread;
 
 use clap::{Parser, Subcommand};
 
+use reuben_core::boundary;
 use reuben_core::message::Message;
 use reuben_core::plan::Plan;
 use reuben_core::{load_instrument, Registry};
@@ -248,11 +249,16 @@ fn play(path: Option<PathBuf>, osc_out_target: Option<String>) {
         println!("OSC-out sending to {target}");
         let (out_tx, out_rx) = mpsc::channel::<Message>();
         thread::spawn(move || {
+            // Each outbound Message carries one typed Arg; expand it to the flat OSC primitive form
+            // (ADR-0030 boundary) before encoding the datagram.
+            let mut flat = Vec::new();
             for m in out_rx {
-                match osc::encode(&m.addr, &m.args) {
+                flat.clear();
+                boundary::osc_out_args(&m.arg, &mut flat);
+                match osc::encode(&m.address, &flat) {
                     Ok(bytes) => {
                         if log_osc {
-                            println!("send {} {:?}", m.addr, m.args.as_slice());
+                            println!("send {} {:?}", m.address, flat);
                         }
                         let _ = socket.send(&bytes);
                     }
@@ -265,7 +271,7 @@ fn play(path: Option<PathBuf>, osc_out_target: Option<String>) {
 
     // OSC/UDP receiver thread: decode datagrams and forward Messages to the audio thread.
     let socket = UdpSocket::bind(OSC_BIND).expect("bind OSC socket");
-    println!("OSC-in listening on {OSC_BIND}  (send /voicer/note [midi, gate])");
+    println!("OSC-in listening on {OSC_BIND}  (send /voicer/notes [midi, gate])");
     if !log_osc {
         println!("  (set REUBEN_LOG_OSC=1 to log received OSC)");
     }
@@ -277,7 +283,7 @@ fn play(path: Option<PathBuf>, osc_out_target: Option<String>) {
                     Ok(msgs) => {
                         for m in msgs {
                             if log_osc {
-                                println!("recv {} {:?}", m.addr, m.args.as_slice());
+                                println!("recv {} {:?}", m.address, m.args.as_slice());
                             }
                             let _ = tx.send(m);
                         }

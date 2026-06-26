@@ -12,7 +12,7 @@
 //! an even musical sweep rather than bunching up at the top. One shared Cytomic SVF core
 //! produces both the low-pass and high-pass taps; `position`'s sign selects which one is heard.
 //!
-//! Shape model (ADR-0028): every control is a **`Float` input**, each owning its unwired default.
+//! Port types (ADR-0030): every control is a **`F32` input**, each owning its unwired default.
 //! When nothing is wired the engine materializes the input from its latched default (so a control
 //! surface can sweep the knob via `/djfilter/position`, bit-identical to the old param behavior);
 //! when an LFO/envelope is wired the source buffer passes through and sweeps the port audio-rate.
@@ -34,14 +34,14 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Djfilter {
-    inputs:  { audio: float,
+    inputs:  { audio: buffer,
                position:  float { -1.0..=1.0,     default 0.0,     "",   lin },
                resonance: float { 0.0..=1.0,      default 0.1,     "",   lin },
                lp_start:  float { 20.0..=20000.0, default 20000.0, "Hz", exp },
                lp_end:    float { 20.0..=20000.0, default 200.0,   "Hz", exp },
                hp_start:  float { 20.0..=20000.0, default 20.0,    "Hz", exp },
                hp_end:    float { 20.0..=20000.0, default 6000.0,  "Hz", exp } },
-    outputs: { audio: float },
+    outputs: { audio: buffer },
 });
 
 #[derive(Default)]
@@ -118,11 +118,11 @@ impl Operator for Djfilter {
 
         // Cutoff endpoints + resonance are the filter's voicing — `Float` inputs read once at
         // block rate (the filter's character, constant for the (sub)block, block-sliced on change).
-        let resonance = io.value(IN_RESONANCE);
-        let lp_start = io.value(IN_LP_START);
-        let lp_end = io.value(IN_LP_END);
-        let hp_start = io.value(IN_HP_START);
-        let hp_end = io.value(IN_HP_END);
+        let resonance = io.last::<f32>(IN_RESONANCE).unwrap_or(0.0);
+        let lp_start = io.last::<f32>(IN_LP_START).unwrap_or(0.0);
+        let lp_end = io.last::<f32>(IN_LP_END).unwrap_or(0.0);
+        let hp_start = io.last::<f32>(IN_HP_START).unwrap_or(0.0);
+        let hp_end = io.last::<f32>(IN_HP_END).unwrap_or(0.0);
 
         // `position` is a `Float` input — always a buffer (wired source or materialized latch),
         // one read path (ADR-0028). Mode + coefficients are recomputed only when `position`
@@ -142,7 +142,7 @@ impl Operator for Djfilter {
                 last_pos = pos;
             }
             let (lp, hp) = self.svf_step(x, k, a1, a2, a3);
-            io.output(OUT_AUDIO)[i] = if use_hp { hp } else { lp };
+            io.signal_mut(OUT_AUDIO)[i] = if use_hp { hp } else { lp };
         }
     }
 
@@ -156,9 +156,24 @@ crate::register_operator!(Djfilter);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message::Arg;
     use crate::operator::Io;
 
     const SR: f32 = 48_000.0;
+
+    /// Held (ZOH) Args for the 5 voicing controls (resonance/lp_start/lp_end/hp_start/hp_end), in
+    /// input-port order with placeholders for the buffer-read `audio` (0) and `position` (1) ports.
+    fn voicing_latched(voicing: [f32; 5]) -> [Arg; 7] {
+        [
+            Arg::F32(0.0),
+            Arg::F32(0.0),
+            Arg::F32(voicing[0]),
+            Arg::F32(voicing[1]),
+            Arg::F32(voicing[2]),
+            Arg::F32(voicing[3]),
+            Arg::F32(voicing[4]),
+        ]
+    }
 
     // Default voicing (resonance/lp_start/lp_end/hp_start/hp_end), in input-port order so tests can
     // tweak one field and keep the rest. `position` is supplied separately (per-sample buffer).
@@ -187,24 +202,13 @@ mod tests {
         let n = input.len();
         let mut op = Djfilter::new();
         let mut out_buf = vec![0.0f32; n];
-        let res_buf = vec![voicing[0]; n];
-        let lp_start_buf = vec![voicing[1]; n];
-        let lp_end_buf = vec![voicing[2]; n];
-        let hp_start_buf = vec![voicing[3]; n];
-        let hp_end_buf = vec![voicing[4]; n];
-        let params: [f32; 0] = [];
+        let latched = voicing_latched(voicing);
         {
-            let inputs: Vec<Option<&[f32]>> = vec![
-                Some(input),
-                Some(position),
-                Some(&res_buf),
-                Some(&lp_start_buf),
-                Some(&lp_end_buf),
-                Some(&hp_start_buf),
-                Some(&hp_end_buf),
-            ];
+            // audio + position are per-sample buffers; the voicing controls are held (latched).
+            let inputs: Vec<Option<&[f32]>> =
+                vec![Some(input), Some(position), None, None, None, None, None];
             let outputs: Vec<&mut [f32]> = vec![out_buf.as_mut_slice()];
-            let mut io = Io::new(SR, n, inputs, outputs, &params, &[]);
+            let mut io = Io::new(SR, n, inputs, outputs).with_latched(&latched);
             op.process(&mut io);
         }
         out_buf
@@ -364,40 +368,35 @@ mod tests {
 
         let mut op = Djfilter::new();
         let mut out_buf = vec![0.0f32; n];
-        let params: [f32; 0] = [];
+        let latched = voicing_latched(voicing);
         let pos = vec![position; n];
-        let res = vec![voicing[0]; n];
-        let lp_start = vec![voicing[1]; n];
-        let lp_end = vec![voicing[2]; n];
-        let hp_start = vec![voicing[3]; n];
-        let hp_end = vec![voicing[4]; n];
         let half = n / 2;
         {
             let inputs: Vec<Option<&[f32]>> = vec![
                 Some(&input[..half]),
                 Some(&pos[..half]),
-                Some(&res[..half]),
-                Some(&lp_start[..half]),
-                Some(&lp_end[..half]),
-                Some(&hp_start[..half]),
-                Some(&hp_end[..half]),
+                None,
+                None,
+                None,
+                None,
+                None,
             ];
             let outputs: Vec<&mut [f32]> = vec![&mut out_buf[..half]];
-            let mut io = Io::new(SR, half, inputs, outputs, &params, &[]);
+            let mut io = Io::new(SR, half, inputs, outputs).with_latched(&latched);
             op.process(&mut io);
         }
         {
             let inputs: Vec<Option<&[f32]>> = vec![
                 Some(&input[half..]),
                 Some(&pos[half..]),
-                Some(&res[half..]),
-                Some(&lp_start[half..]),
-                Some(&lp_end[half..]),
-                Some(&hp_start[half..]),
-                Some(&hp_end[half..]),
+                None,
+                None,
+                None,
+                None,
+                None,
             ];
             let outputs: Vec<&mut [f32]> = vec![&mut out_buf[half..]];
-            let mut io = Io::new(SR, n - half, inputs, outputs, &params, &[]);
+            let mut io = Io::new(SR, n - half, inputs, outputs).with_latched(&latched);
             op.process(&mut io);
         }
         for i in 0..n {
@@ -418,46 +417,27 @@ mod tests {
         let input = sine(440.0, n);
         let voicing = default_voicing();
         let position = -0.8;
-        let params: [f32; 0] = [];
+        let latched = voicing_latched(voicing);
         let pos = vec![position; n];
-        let res = vec![voicing[0]; n];
-        let lp_start = vec![voicing[1]; n];
-        let lp_end = vec![voicing[2]; n];
-        let hp_start = vec![voicing[3]; n];
-        let hp_end = vec![voicing[4]; n];
 
         let mut warm = Djfilter::new();
         let _ = render(&sine(1_000.0, 4_000), position, voicing); // unrelated warmup of a throwaway
         let mut warm_buf = vec![0.0f32; n];
         {
-            let inputs: Vec<Option<&[f32]>> = vec![
-                Some(&input),
-                Some(&pos),
-                Some(&res),
-                Some(&lp_start),
-                Some(&lp_end),
-                Some(&hp_start),
-                Some(&hp_end),
-            ];
+            let inputs: Vec<Option<&[f32]>> =
+                vec![Some(&input), Some(&pos), None, None, None, None, None];
             let outputs: Vec<&mut [f32]> = vec![warm_buf.as_mut_slice()];
-            let mut io = Io::new(SR, n, inputs, outputs, &params, &[]);
+            let mut io = Io::new(SR, n, inputs, outputs).with_latched(&latched);
             warm.process(&mut io);
         }
 
         let mut child = warm.spawn();
         let mut child_buf = vec![0.0f32; n];
         {
-            let inputs: Vec<Option<&[f32]>> = vec![
-                Some(&input),
-                Some(&pos),
-                Some(&res),
-                Some(&lp_start),
-                Some(&lp_end),
-                Some(&hp_start),
-                Some(&hp_end),
-            ];
+            let inputs: Vec<Option<&[f32]>> =
+                vec![Some(&input), Some(&pos), None, None, None, None, None];
             let outputs: Vec<&mut [f32]> = vec![child_buf.as_mut_slice()];
-            let mut io = Io::new(SR, n, inputs, outputs, &params, &[]);
+            let mut io = Io::new(SR, n, inputs, outputs).with_latched(&latched);
             child.process(&mut io);
         }
 

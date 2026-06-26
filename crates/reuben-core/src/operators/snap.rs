@@ -1,39 +1,40 @@
-//! Snap — quantizes absolute note gestures to the nearest in-scale degree (ADR-0013).
+//! Snap — quantizes absolute note gestures to the nearest in-scale degree (ADR-0013, ADR-0030).
 //!
-//! The quantizer that sits *upstream* of resolution: an arbitrary float-MIDI gesture →
-//! nearest in-scale `Pitch{degree}`, against the tonal [`Harmony`](crate::harmony::Harmony) it
-//! reads. It is a note
-//! transformer on the internal message graph — `note` Messages in, `degree` Messages out —
-//! so it composes between a note source (external play, a sequencer) and a Voicer: the
-//! "always in key" good-button. Policy (target + direction) is a caller param, not baked
-//! into the context, so the same context serves auto-tune (`Scale/Nearest`), an arp
-//! (`Chord`), or a melody (`ChordThenScale`).
+//! The quantizer that sits *upstream* of resolution: an arbitrary absolute (float-MIDI) note →
+//! nearest in-scale `Pitch::Degree`, against the tonal [`Harmony`](crate::vocab::harmony::Harmony) it
+//! reads. It is a note transformer on the internal message graph — `Note` events in, `Note`
+//! events out — so it composes between a note source (external play, a sequencer) and a Voicer:
+//! the "always in key" good-button. Policy (target + direction) is a held caller input, not baked
+//! into the context, so the same context serves auto-tune (`Scale`/`Nearest`), an arp (`Chord`),
+//! or a melody (`ChordThenScale`).
 //!
-//! - input 0: `notes` (Message) — absolute `note [midi, vel]` events.
-//! - input 1: `ctx` (Harmony) — the tonal context to snap against.
-//! - input 2: `target` (Enum {Scale, Chord, ChordThenScale}) — quantization target.
-//! - input 3: `direction` (Enum {Nearest, Up, Down}) — quantization direction.
-//! - output 0 (Message): `degrees` — `degree [degree, vel]` (or `note` when the target is an
-//!   absolute chord with no degree); wire to a Voicer.
-//!
-//! Shape model (ADR-0028): `target` and `direction` are held **`Enum` inputs**, read via
-//! `io.enum_index`; `ctx` is a **`Harmony` carrier** read via `io.harmony`.
+//! - input 0: `notes` (`Note`) — incoming note events; an [`Absolute`](crate::vocab::pitch::Pitch::Absolute)
+//!   pitch is snapped, a [`Degree`](crate::vocab::pitch::Pitch::Degree) pitch is already in-scale and is
+//!   passed through (ADR-0030: the Pitch case, not an address, carries the distinction).
+//! - input 1: `ctx` (`Harmony`, held) — the tonal context to snap against.
+//! - input 2: `target` (`enum` [`SnapTarget`]) — quantization target.
+//! - input 3: `direction` (`enum` [`SnapDir`]) — quantization direction.
+//! - output 0: `notes` (`Note`) — the snapped note (a [`Degree`](crate::vocab::pitch::Pitch::Degree)
+//!   where possible, an [`Absolute`](crate::vocab::pitch::Pitch::Absolute) when a frozen-chord target has
+//!   no degree); wire to a Voicer.
 //!
 //! Single-Lane (ADR-0014): emission is pre-fan-out.
 
-use crate::descriptor::Descriptor;
-use crate::harmony::{SnapDir, SnapPolicy, SnapTarget};
-use crate::message::Arg;
-use crate::operator::{Io, Operator};
+use smallvec::SmallVec;
 
-// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts, the `Target`/
-// `Direction` enum types, and the Descriptor; no drift.
+use crate::descriptor::Descriptor;
+use crate::operator::{Io, Operator};
+use crate::vocab::harmony::{Harmony, SnapDir, SnapPolicy, SnapTarget};
+use crate::vocab::pitch::{Note, Pitch};
+
+// Single-source contract (ADR-0025/0030). `target`/`direction` reference the shared `SnapTarget`/
+// `SnapDir` vocab enums; `ctx` is the held `Harmony` carrier.
 crate::operator_contract!(Snap {
-    inputs:  { notes: message,
-               ctx:       context,
-               target:    enum { Scale, Chord, ChordThenScale },
-               direction: enum { Nearest, Up, Down } },
-    outputs: { degrees: message },
+    inputs:  { notes:     note,
+               ctx:       harmony,
+               target:    enum(SnapTarget),
+               direction: enum(SnapDir) },
+    outputs: { notes: note },
 });
 
 #[derive(Default)]
@@ -45,67 +46,32 @@ impl Snap {
     }
 }
 
-fn target_of(t: Target) -> SnapTarget {
-    match t {
-        Target::Chord => SnapTarget::Chord,
-        Target::ChordThenScale => SnapTarget::ChordThenScale,
-        Target::Scale => SnapTarget::Scale,
-    }
-}
-
-fn direction_of(d: Direction) -> SnapDir {
-    match d {
-        Direction::Up => SnapDir::Up,
-        Direction::Down => SnapDir::Down,
-        Direction::Nearest => SnapDir::Nearest,
-    }
-}
-
 impl Operator for Snap {
     fn descriptor() -> Descriptor {
         Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {
-        let target = Target::from_index(io.enum_index(IN_TARGET)).unwrap_or_default();
-        let direction = Direction::from_index(io.enum_index(IN_DIRECTION)).unwrap_or_default();
         let policy = SnapPolicy {
-            target: target_of(target),
-            direction: direction_of(direction),
+            target: io.last::<SnapTarget>(IN_TARGET).unwrap_or_default(),
+            direction: io.last::<SnapDir>(IN_DIRECTION).unwrap_or_default(),
         };
-        let ctx = io.harmony(IN_CTX);
+        let ctx = io.last::<Harmony>(IN_CTX).unwrap_or_default();
 
-        // Snapshot note events (can't read events while emitting).
-        let mut notes: smallvec::SmallVec<[(usize, f32, f32); 8]> = smallvec::SmallVec::new();
-        for ev in io.events() {
-            if ev.addr != "note" {
-                continue;
-            }
-            let midi = match ev.args.first().and_then(Arg::as_f32) {
-                Some(v) => v,
-                None => continue,
-            };
-            let vel = ev.args.get(1).and_then(Arg::as_f32).unwrap_or(0.0);
-            notes.push((ev.frame.min(io.frames()), midi, vel));
+        // Snapshot incoming notes (its borrow of `io` ends here) so the emit loop can borrow `io`
+        // mutably. `Note` is `Copy`, so this is alloc-free for the common low-event-count case.
+        let mut notes: SmallVec<[(usize, Note); 8]> = SmallVec::new();
+        for s in io.stream::<Note>(IN_NOTES) {
+            notes.push((s.frame, s.payload));
         }
 
-        for (frame, midi, vel) in notes {
-            let pitch = ctx.snap(midi, policy);
-            match pitch.degree {
-                Some(d) => io.emit(
-                    OUT_DEGREES,
-                    "degree",
-                    [Arg::Float(d as f32), Arg::Float(vel)],
-                    frame,
-                ),
-                // An absolute (frozen-chord) target has no degree — pass the MIDI through.
-                None => io.emit(
-                    OUT_DEGREES,
-                    "note",
-                    [Arg::Float(pitch.midi), Arg::Float(vel)],
-                    frame,
-                ),
-            }
+        for (frame, note) in notes {
+            // Snap only operates on an absolute pitch; a degree is already in-scale, pass it through.
+            let pitch = match note.pitch {
+                Pitch::Absolute(midi) => ctx.snap(midi, policy),
+                Pitch::Degree(_) => note.pitch,
+            };
+            io.emit(OUT_NOTES, "notes", Note::new(pitch, note.velocity), frame);
         }
     }
 
@@ -119,62 +85,102 @@ crate::register_operator!(Snap);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::harmony::Harmony;
-    use crate::message::{Emit, Event, Message};
+    use crate::message::{Arg, Emit, Event};
 
     const SR: f32 = 48_000.0;
 
-    /// Run a fresh Snap against `ctx`. `target`/`direction` are held `Enum` inputs now (ADR-0028),
-    /// supplied via `with_enums` in input-port order: notes/ctx are non-Float (slot 0), then
-    /// IN_TARGET = 2 and IN_DIRECTION = 3 carry the held variant index.
-    fn run(ctx: Harmony, target: usize, direction: usize, notes: &[Message]) -> Vec<Emit> {
+    /// Run a fresh Snap against `ctx`. `target`/`direction` are held vocab enums; `ctx` a held
+    /// `Harmony`; `notes` arrives as a `Note` stream. Returns the emitted Messages.
+    fn run(
+        ctx: Harmony,
+        target: SnapTarget,
+        direction: SnapDir,
+        notes: &[(usize, Note)],
+    ) -> Vec<Emit> {
+        let args: Vec<Arg> = notes.iter().map(|(_, n)| Arg::Note(*n)).collect();
         let evs: Vec<Event> = notes
             .iter()
-            .map(|m| Event {
-                addr: &m.addr,
-                args: &m.args,
-                frame: m.frame,
+            .zip(&args)
+            .map(|((frame, _), arg)| Event {
+                address: "notes",
+                arg,
+                frame: *frame,
             })
             .collect();
-        let ctxs = [ctx];
-        let params: [f32; 0] = [];
-        let enums = [0usize, 0, target, direction];
+        // Latch order: notes(0, placeholder — read as a stream), ctx, target, direction.
+        let latched = [
+            Arg::F32(0.0),
+            Arg::Harmony(ctx),
+            Arg::SnapTarget(target),
+            Arg::SnapDir(direction),
+        ];
+        let streams: [&[Event]; 4] = [&evs, &[], &[], &[]];
         let mut emits: Vec<Emit> = Vec::new();
         {
+            let inputs: Vec<Option<&[f32]>> = vec![None, None, None, None];
             let outs: Vec<&mut [f32]> = vec![];
-            let inputs: Vec<Option<&[f32]>> = vec![None];
-            let mut io = Io::new(SR, 128, inputs, outs, &params, &evs)
-                .with_contexts(&ctxs)
-                .with_enums(&enums)
+            let mut io = Io::new(SR, 128, inputs, outs)
+                .with_latched(&latched)
+                .with_streams(&streams)
                 .with_emit(&mut emits, 0);
-            let mut snap = Snap::new();
-            snap.process(&mut io);
+            Snap::new().process(&mut io);
         }
         emits
     }
 
+    fn degree(e: &Emit) -> i32 {
+        match &e.arg {
+            Arg::Note(n) => n.pitch.degree().unwrap(),
+            other => panic!("expected a Note, got {other:?}"),
+        }
+    }
+    fn vel(e: &Emit) -> f32 {
+        match &e.arg {
+            Arg::Note(n) => n.velocity,
+            other => panic!("expected a Note, got {other:?}"),
+        }
+    }
+
     #[test]
     fn snaps_gesture_to_nearest_scale_degree() {
-        // C major; 64.8 → F(degree 3) at Nearest (worked example §5).
-        let on = Message::new("note", [Arg::Float(64.8), Arg::Float(1.0)], 10);
-        let emits = run(Harmony::default(), 0, 0, &[on]); // Scale / Nearest
+        // C major; 64.8 → F (degree 3) at Nearest (worked example §5).
+        let on = (10, Note::new(Pitch::Absolute(64.8), 1.0));
+        let emits = run(
+            Harmony::default(),
+            SnapTarget::Scale,
+            SnapDir::Nearest,
+            &[on],
+        );
         assert_eq!(emits.len(), 1);
-        assert_eq!(emits[0].addr, "degree");
         assert_eq!(emits[0].frame, 10);
-        approx::assert_relative_eq!(emits[0].args[0].as_f32().unwrap(), 3.0); // F = degree 3
-        approx::assert_relative_eq!(emits[0].args[1].as_f32().unwrap(), 1.0); // velocity passes
+        assert_eq!(degree(&emits[0]), 3); // F = degree 3
+        approx::assert_relative_eq!(vel(&emits[0]), 1.0); // velocity passes
     }
 
     #[test]
     fn already_in_scale_passes_as_its_degree() {
-        let on = Message::new("note", [Arg::Float(67.0), Arg::Float(1.0)], 0); // G = degree 4
-        let emits = run(Harmony::default(), 0, 0, &[on]);
-        approx::assert_relative_eq!(emits[0].args[0].as_f32().unwrap(), 4.0);
+        let on = (0, Note::new(Pitch::Absolute(67.0), 1.0)); // G = degree 4
+        let emits = run(
+            Harmony::default(),
+            SnapTarget::Scale,
+            SnapDir::Nearest,
+            &[on],
+        );
+        assert_eq!(degree(&emits[0]), 4);
     }
 
     #[test]
-    fn non_note_events_are_ignored() {
-        let other = Message::new("chord", [Arg::Float(1.0)], 0);
-        assert!(run(Harmony::default(), 0, 0, &[other]).is_empty());
+    fn degree_note_passes_through_unchanged() {
+        // A degree note is already in-scale: it passes through untouched (no snapping).
+        let on = (5, Note::new(Pitch::Degree(2), 0.9));
+        let emits = run(
+            Harmony::default(),
+            SnapTarget::Scale,
+            SnapDir::Nearest,
+            &[on],
+        );
+        assert_eq!(emits.len(), 1);
+        assert_eq!(degree(&emits[0]), 2);
+        approx::assert_relative_eq!(vel(&emits[0]), 0.9);
     }
 }

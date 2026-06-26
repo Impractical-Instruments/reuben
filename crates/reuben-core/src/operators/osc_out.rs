@@ -14,19 +14,22 @@
 //! two-way control-surface feedback works without new machinery. Sending a live Signal value out
 //! needs the deferred Signal→Message sampler (ADR-0017); v1 OSC-out does not.
 //!
-//! - input 0: `in` (Message) — values to send out (any address; args forwarded verbatim).
+//! - input 0: `in` (`Note` event) — values to send out. In the unified model (ADR-0030) the sink
+//!   simply **emits** each received Message; the engine's outbound tap (`Plan.outbound_taps`)
+//!   drains an `osc_out` node's emissions past the boundary, where the flat OSC form is encoded.
+//!   The incoming event's local address is dropped; the node's address is stamped on drain.
 
 use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
-use crate::message::Args;
 use crate::operator::{Io, Operator};
+use crate::vocab::pitch::Note;
 
-// Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.
+// Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 // `OscOut` -> type_name "osc_out" (snake_case, required by the contract validator — the wire name
 // is `osc_out`, not the ADR's prose `osc-out`; the *CLI flag* keeps the hyphen).
 crate::operator_contract!(OscOut {
-    inputs: { in: message },
+    inputs: { in: note },
 });
 
 #[derive(Default)]
@@ -44,15 +47,17 @@ impl Operator for OscOut {
     }
 
     fn process(&mut self, io: &mut Io) {
-        // Snapshot the inputs first: `io.events()` borrows immutably and `send_outbound` needs
-        // `&mut io`, so they can't overlap (the same constraint the context node works around).
-        // Inline storage — no heap for the common handful of events per block.
-        let mut pending: SmallVec<[(Args, usize); 4]> = SmallVec::new();
-        for ev in io.events() {
-            pending.push((ev.args.clone(), ev.frame));
+        // Snapshot first: `io.stream` borrows immutably and `io.emit` needs `&mut io`, so they
+        // can't overlap. Inline storage — no heap for the common handful of events per block.
+        // Each received Message is re-emitted; the engine's outbound tap drains these past the
+        // boundary (ADR-0030). The frame is segment-relative; `emit` does not add the offset here
+        // because the stream frames are already segment-relative and the tap stamps block-absolute.
+        let mut pending: SmallVec<[(Note, usize); 4]> = SmallVec::new();
+        for ev in io.stream::<Note>(IN_IN) {
+            pending.push((ev.payload, ev.frame));
         }
-        for (args, frame) in pending {
-            io.send_outbound(args, frame);
+        for (note, frame) in pending {
+            io.emit(0, "out", note, frame);
         }
     }
 
@@ -66,44 +71,49 @@ crate::register_operator!(OscOut);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::{Arg, Event, Message, Outbound};
+    use crate::message::{Arg, Emit, Event, Message};
+    use crate::vocab::pitch::Pitch;
 
     const SR: f32 = 48_000.0;
 
-    /// Run one block; return the outbound Messages the sink collected (block-absolute frames).
-    fn run(op: &mut OscOut, n: usize, events: &[Message]) -> Vec<Outbound> {
+    /// Run one block; return the emissions the sink produced. In the unified model the engine's
+    /// outbound tap drains these past the boundary, so a unit test captures them via the emit sink.
+    fn run(op: &mut OscOut, n: usize, events: &[Message]) -> Vec<Emit> {
         let evs: Vec<Event> = events
             .iter()
             .map(|m| Event {
-                addr: &m.addr,
-                args: &m.args,
+                address: &m.address,
+                arg: &m.arg,
                 frame: m.frame,
             })
             .collect();
-        let mut out: Vec<Outbound> = Vec::new();
+        let streams: [&[Event]; 1] = [&evs[..]];
+        let mut emits: Vec<Emit> = Vec::new();
         {
             let outs: Vec<&mut [f32]> = vec![];
             let inputs: Vec<Option<&[f32]>> = vec![None];
-            let params: Vec<f32> = vec![];
-            let mut io = Io::new(SR, n, inputs, outs, &params, &evs).with_outbound(&mut out, 0);
+            let mut io = Io::new(SR, n, inputs, outs)
+                .with_streams(&streams)
+                .with_emit(&mut emits, 0);
             op.process(&mut io);
         }
-        out
+        emits
+    }
+
+    fn note(addr: &str, degree: i32, frame: usize) -> Message {
+        Message::new(addr, Note::new(Pitch::Degree(degree), 1.0), frame)
     }
 
     #[test]
     fn forwards_each_input_event_to_the_outbound_route() {
         let mut op = OscOut::new();
-        let evs = [
-            Message::new("anything", [Arg::Float(0.7)], 10),
-            Message::new("ignored_local_addr", [Arg::Int(42), Arg::Bool(true)], 20),
-        ];
+        let evs = [note("anything", 7, 10), note("ignored_local_addr", 12, 20)];
         let out = run(&mut op, 128, &evs);
-        assert_eq!(out.len(), 2, "one outbound Message per input event");
-        // Args forwarded verbatim; the event's local address is dropped (stamped later).
-        assert_eq!(out[0].args.as_slice(), &[Arg::Float(0.7)]);
+        assert_eq!(out.len(), 2, "one emission per input event");
+        // Payload forwarded verbatim; the event's local address is dropped (stamped later).
+        assert_eq!(out[0].arg, Arg::Note(Note::new(Pitch::Degree(7), 1.0)));
         assert_eq!(out[0].frame, 10);
-        assert_eq!(out[1].args.as_slice(), &[Arg::Int(42), Arg::Bool(true)]);
+        assert_eq!(out[1].arg, Arg::Note(Note::new(Pitch::Degree(12), 1.0)));
         assert_eq!(out[1].frame, 20);
     }
 

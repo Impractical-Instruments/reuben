@@ -44,6 +44,7 @@ use std::hint::black_box;
 #[bench::sequencer(args = ("sequencer",), setup = OpHarness::for_kind)]
 #[bench::snap(args = ("snap",), setup = OpHarness::for_kind)]
 #[bench::strum(args = ("strum",), setup = OpHarness::for_kind)]
+#[bench::transpose(args = ("transpose",), setup = OpHarness::for_kind)]
 #[bench::voicer(args = ("voicer",), setup = OpHarness::for_kind)]
 fn process(harness: OpHarness) -> f32 {
     black_box(harness.render())

@@ -1,5 +1,5 @@
 {
-  "doc": "A free-running synthesized step-sequenced beatmaker (V1.3 Toy 1, ADR-0022). Three lanes — kick, snare, hat — each a 16-step boolean gate sequencer (gate_mode=1) driving a one-voice drum synth built entirely from operators (no samples). One shared clock at division=4 makes a 16th-note grid; the pattern loops forever, instant sound, no transport. Toggle steps with /kick/step1../kick/step16 (and /snare/*, /hat/*); each step is boolean on/off. Ride tempo with /clock/tempo, lane volumes with the /kick_vol /snare_vol /hat_vol Good Buttons, and the overall tone with the /cutoff master-filter Good Button. Drums: kick = sine with a fast pitch-drop env; snare = noise + a tonal osc, both enveloped; hat = noise -> highpass filter -> short env.",
+  "doc": "A free-running synthesized step-sequenced beatmaker (V1.3 Toy 1, ADR-0022). Three lanes — kick, snare, hat — each a 16-step boolean gate sequencer (gate_mode=1) driving a one-voice drum synth built entirely from operators (no samples). One shared clock at division=4 makes a 16th-note grid; the pattern loops forever, instant sound, no transport. Toggle steps with /kick/step1../kick/step16 (and /snare/*, /hat/*); each step is boolean on/off. Ride tempo with /clock/tempo, lane volumes with the /kick_vol/in /snare_vol/in /hat_vol/in Good Buttons, and the overall tone with the /cutoff/in master-filter Good Button. Drums: kick = sine with a fast pitch-drop env; snare = noise + a tonal osc, both enveloped; hat = noise -> highpass filter -> short env.",
   "instrument": "groovebox",
   "nodes": [
     {
@@ -439,8 +439,7 @@
       "address": "/kick_sweep_amt",
       "doc": "Constant pitch-sweep amount (Hz) for the kick pitch-drop.",
       "inputs": {
-        "default": 220.0,
-        "mode": "Snap"
+        "in": 220.0
       },
       "type": "m2s"
     },
@@ -475,8 +474,7 @@
       "address": "/kick_base",
       "doc": "Constant kick base frequency (Hz).",
       "inputs": {
-        "default": 48.0,
-        "mode": "Snap"
+        "in": 48.0
       },
       "type": "m2s"
     },
@@ -587,8 +585,7 @@
       "address": "/snare_tone_f",
       "doc": "Constant tonal frequency (Hz) for the snare's ring.",
       "inputs": {
-        "default": 185.0,
-        "mode": "Snap"
+        "in": 185.0
       },
       "type": "m2s"
     },
@@ -716,7 +713,7 @@
       },
       "doc": "Kick lane volume Good Button [0,1].",
       "inputs": {
-        "default": 0.7
+        "in": 0.7
       },
       "type": "map"
     },
@@ -724,7 +721,6 @@
       "address": "/kick_vol_cv",
       "doc": "Smooth kick volume into a constant CV.",
       "inputs": {
-        "default": 0.7,
         "in": {
           "from": "/kick_vol"
         },
@@ -754,7 +750,7 @@
       },
       "doc": "Snare lane volume Good Button [0,1].",
       "inputs": {
-        "default": 0.5
+        "in": 0.5
       },
       "type": "map"
     },
@@ -762,7 +758,6 @@
       "address": "/snare_vol_cv",
       "doc": "Smooth snare volume into a constant CV.",
       "inputs": {
-        "default": 0.5,
         "in": {
           "from": "/snare_vol"
         },
@@ -792,7 +787,7 @@
       },
       "doc": "Hat lane volume Good Button [0,1].",
       "inputs": {
-        "default": 0.35
+        "in": 0.35
       },
       "type": "map"
     },
@@ -800,7 +795,6 @@
       "address": "/hat_vol_cv",
       "doc": "Smooth hat volume into a constant CV.",
       "inputs": {
-        "default": 0.35,
         "in": {
           "from": "/hat_vol"
         },
@@ -865,8 +859,7 @@
       "address": "/trim_cv",
       "doc": "Constant master trim (headroom so overlapping hits don't clip).",
       "inputs": {
-        "default": 0.7,
-        "mode": "Snap"
+        "in": 0.7
       },
       "type": "m2s"
     },
@@ -901,7 +894,7 @@
       "doc": "PUBLIC master-filter Good Button: brightness [0,1] -> cutoff. Rests at 0.8.",
       "inputs": {
         "curve": "Exponential",
-        "default": 0.8,
+        "in": 0.8,
         "out_max": 16000.0,
         "out_min": 500.0
       },
@@ -911,7 +904,6 @@
       "address": "/cutoff_cv",
       "doc": "Smooth the master cutoff into a CV.",
       "inputs": {
-        "default": 13000.0,
         "in": {
           "from": "/cutoff"
         },

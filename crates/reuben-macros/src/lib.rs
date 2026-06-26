@@ -13,14 +13,14 @@
 //!
 //! ```ignore
 //! operator_contract!(Oscillator {
-//!     inputs:  { freq: signal },
-//!     outputs: { audio: signal },
-//!     params:  { freq:     { 20.0..=20_000.0, default 440.0, "Hz", exp },
-//!                waveform: { 0.0..=1.0,        default 0.0,   "",   lin } },
+//!     inputs:  { freq: float { 20.0..=20_000.0, default 440.0, "Hz", exp },
+//!                waveform: enum(Waveform) },
+//!     outputs: { audio: buffer },
 //!     lanes: inherit,
 //! });
 //! ```
 
+mod argvalue;
 mod model;
 
 use proc_macro2::{Span, TokenStream};
@@ -38,6 +38,13 @@ use model::{build, ContractModel, LaneModel};
 #[proc_macro]
 pub fn operator_contract(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     expand(input.into()).into()
+}
+
+/// Integrate a shared *vocab* type with the central `Arg` enum (ADR-0030): `From`/`TryFrom`
+/// for every type, plus the Enum-over-OSC table for unit enums. See [`argvalue`].
+#[proc_macro_derive(ArgValue)]
+pub fn derive_arg_value(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    argvalue::expand(input.into()).into()
 }
 
 /// The proc-macro body, over `proc_macro2` so it is unit-testable without a proc-macro context.
@@ -65,19 +72,23 @@ struct FloatMetaAst {
     curve: String,
 }
 
-/// How a port is declared — either the legacy carrier kind or an ADR-0028 shape.
-enum PortShapeAst {
-    /// `name: signal | message | context` (legacy carrier).
-    Legacy(Ident),
-    /// `name: float` (bare wire-in/output) or `name: float { .. }` (materialized default).
-    Float(Option<FloatMetaAst>),
-    /// `name: enum { A, B, .. }` (live-switchable named choice; default = first variant).
-    Enum(Vec<Ident>),
+/// How a port is declared — its [`Arg`] type (ADR-0030).
+enum PortTypeAst {
+    /// `name: buffer` — a dense per-sample signal (audio / control buffer).
+    Buffer,
+    /// `name: float { .. }` — a materialized scalar control with its default/range meta.
+    Float(FloatMetaAst),
+    /// `name: enum(VocabType)` — a held vocab enum, naming its shared `vocab` type.
+    Enum(Ident),
+    /// `name: note` — a `Note` event port.
+    Note,
+    /// `name: harmony` — a `Harmony` held port.
+    Harmony,
 }
 
 struct PortAst {
     name: Ident,
-    shape: PortShapeAst,
+    ty: PortTypeAst,
 }
 
 struct ParamAst {
@@ -116,33 +127,28 @@ impl ContractInput {
         let ports = |ps: &[PortAst]| {
             ps.iter()
                 .map(|p| {
-                    let (kind, shape, float, variants) = match &p.shape {
-                        PortShapeAst::Legacy(k) => (k.to_string(), None, None, Vec::new()),
-                        PortShapeAst::Float(m) => (
-                            String::new(),
-                            Some("float".to_string()),
-                            m.as_ref().map(|m| FloatMeta {
+                    let (ty, float, vocab) = match &p.ty {
+                        PortTypeAst::Buffer => ("buffer", None, None),
+                        PortTypeAst::Float(m) => (
+                            "float",
+                            Some(FloatMeta {
                                 min: m.min,
                                 max: m.max,
                                 default: m.default,
                                 unit: m.unit.clone(),
                                 curve: m.curve.clone(),
                             }),
-                            Vec::new(),
-                        ),
-                        PortShapeAst::Enum(vs) => (
-                            String::new(),
-                            Some("enum".to_string()),
                             None,
-                            vs.iter().map(Ident::to_string).collect(),
                         ),
+                        PortTypeAst::Enum(t) => ("enum", None, Some(t.to_string())),
+                        PortTypeAst::Note => ("note", None, None),
+                        PortTypeAst::Harmony => ("harmony", None, None),
                     };
                     PortSpec {
                         name: p.name.to_string(),
-                        kind,
-                        shape,
+                        ty: ty.to_string(),
                         float,
-                        variants,
+                        vocab,
                     }
                 })
                 .collect()
@@ -213,54 +219,45 @@ impl ContractInput {
                 .iter()
                 .map(|p| {
                     let name = &p.name;
-                    match p.shape.as_deref() {
-                        // Legacy carrier — `Port::signal/message/context`.
-                        None => {
-                            let ctor = match p.kind.as_str() {
-                                "message" => quote! { message },
-                                "context" => quote! { context },
-                                _ => quote! { signal },
+                    match p.ty.as_str() {
+                        // A dense per-sample signal — `Port::buffer`.
+                        "buffer" => quote! { ::reuben_core::descriptor::Port::buffer(#name) },
+                        // A `Note` event port — `Port::note`.
+                        "note" => quote! { ::reuben_core::descriptor::Port::note(#name) },
+                        // A `Harmony` held port — `Port::harmony`.
+                        "harmony" => quote! { ::reuben_core::descriptor::Port::harmony(#name) },
+                        // A materialized scalar control — `Port::float` with its meta.
+                        "float" => {
+                            let m = p.float.as_ref().expect("validate() guarantees float meta");
+                            let (min, max, default, unit) = (m.min, m.max, m.default, &m.unit);
+                            let curve = if m.curve == "exponential" {
+                                quote! { ::reuben_core::descriptor::Curve::Exponential }
+                            } else {
+                                quote! { ::reuben_core::descriptor::Curve::Linear }
                             };
-                            quote! { ::reuben_core::descriptor::Port::#ctor(#name) }
-                        }
-                        // Bare `float` is today's `signal` carrier (Float shape, no materialized
-                        // default); `float { .. }` is a materialized Float input.
-                        Some("float") => match &p.float {
-                            None => quote! { ::reuben_core::descriptor::Port::signal(#name) },
-                            Some(m) => {
-                                let (min, max, default, unit) = (m.min, m.max, m.default, &m.unit);
-                                let curve = if m.curve == "exponential" {
-                                    quote! { ::reuben_core::descriptor::Curve::Exponential }
-                                } else {
-                                    quote! { ::reuben_core::descriptor::Curve::Linear }
-                                };
-                                quote! {
-                                    ::reuben_core::descriptor::Port::float(
-                                        ::reuben_core::descriptor::ParamMeta {
-                                            name: #name, min: #min, max: #max,
-                                            default: #default, unit: #unit, curve: #curve,
-                                        }
-                                    )
-                                }
-                            }
-                        },
-                        // `enum { .. }` — reference the generated type's `VARIANTS`/`DEFAULT_INDEX`
-                        // so the descriptor and the type are single-sourced.
-                        Some("enum") => {
-                            let ty = Ident::new(&naming::struct_name(&p.name), Span::call_site());
                             quote! {
-                                ::reuben_core::descriptor::Port::enumerated(
-                                    ::reuben_core::descriptor::EnumMeta {
-                                        name: #name,
-                                        variants: #ty::VARIANTS,
-                                        default: #ty::DEFAULT_INDEX,
+                                ::reuben_core::descriptor::Port::float(
+                                    ::reuben_core::descriptor::ParamMeta {
+                                        name: #name, min: #min, max: #max,
+                                        default: #default, unit: #unit, curve: #curve,
                                     }
                                 )
                             }
                         }
-                        Some(other) => {
-                            // Unreachable: validate() restricts shapes to the SHAPES set.
-                            let msg = format!("unsupported port shape {other:?}");
+                        // A held vocab enum — `Port::enumerated` off the shared type's
+                        // `enum_meta`, so the descriptor and the type are single-sourced (ADR-0030).
+                        "enum" => {
+                            let vocab = p.vocab.as_ref().expect("validate() guarantees enum vocab");
+                            let ty = Ident::new(vocab, Span::call_site());
+                            quote! {
+                                ::reuben_core::descriptor::Port::enumerated(
+                                    ::reuben_core::vocab::#ty::enum_meta(#name)
+                                )
+                            }
+                        }
+                        other => {
+                            // Unreachable: validate() restricts ty to the PORT_TYPES set.
+                            let msg = format!("unsupported port type {other:?}");
                             quote! { compile_error!(#msg) }
                         }
                     }
@@ -269,15 +266,6 @@ impl ContractInput {
         };
         let inputs = port_toks(&model.inputs);
         let outputs = port_toks(&model.outputs);
-
-        // One generated `Enum` type per `enum { .. }` port (inputs/outputs), planted at module
-        // scope beside the index consts (ADR-0028). Carries `VARIANTS`/`DEFAULT`/`from_index` etc.
-        let enum_types = model
-            .inputs
-            .iter()
-            .chain(&model.outputs)
-            .filter(|p| p.shape.as_deref() == Some("enum"))
-            .map(enum_type_toks);
 
         let params = model.params.iter().map(|p| {
             let (name, min, max, default, unit) = (&p.name, p.min, p.max, p.default, &p.unit);
@@ -309,8 +297,6 @@ impl ContractInput {
         quote! {
             #(#consts)*
 
-            #(#enum_types)*
-
             impl #struct_ident {
                 /// The operator's [`Descriptor`](::reuben_core::descriptor::Descriptor),
                 /// single-sourced with the index consts above by `operator_contract!` (ADR-0025).
@@ -325,55 +311,6 @@ impl ContractInput {
                     }
                 }
             }
-        }
-    }
-}
-
-/// The `pub enum <Type> { .. }` + impl for one `enum { .. }` port (ADR-0028). The type name is the
-/// port name PascalCased (`waveform` → `Waveform`); variants are emitted verbatim. `VARIANTS` is
-/// index-aligned with the variants (the Enum-over-OSC symbol table), `DEFAULT` is the first.
-/// `validate()` guarantees a non-empty, identifier-shaped, unique variant set before we get here.
-fn enum_type_toks(port: &model::PortModel) -> TokenStream {
-    let ty = Ident::new(&naming::struct_name(&port.name), Span::call_site());
-    let variants: Vec<Ident> = port
-        .variants
-        .iter()
-        .map(|v| Ident::new(v, Span::call_site()))
-        .collect();
-    let symbols = &port.variants;
-    let first = &variants[0];
-    let from_arms = variants.iter().enumerate().map(|(i, v)| {
-        let idx = proc_macro2::Literal::usize_unsuffixed(i);
-        quote! { #idx => ::core::option::Option::Some(Self::#v) }
-    });
-    let to_arms = variants.iter().enumerate().map(|(i, v)| {
-        let idx = proc_macro2::Literal::usize_unsuffixed(i);
-        quote! { Self::#v => #idx }
-    });
-    quote! {
-        /// A generated `Enum`-shape choice (ADR-0028), single-sourced with its descriptor
-        /// `EnumMeta` by `operator_contract!`.
-        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-        pub enum #ty { #(#variants),* }
-
-        impl #ty {
-            /// The variant **symbols**, index-aligned with the enum — the Enum-over-OSC table.
-            pub const VARIANTS: &'static [&'static str] = &[ #(#symbols),* ];
-            /// Index of the unwired default variant (the first declared).
-            pub const DEFAULT_INDEX: usize = 0;
-            /// The unwired default variant (the first declared).
-            pub const DEFAULT: #ty = #ty::#first;
-
-            /// The variant at index `i`, or `None` if out of range.
-            pub fn from_index(i: usize) -> ::core::option::Option<Self> {
-                match i { #(#from_arms,)* _ => ::core::option::Option::None }
-            }
-            /// This variant's index — its on-wire integer form.
-            pub fn to_index(self) -> usize { match self { #(#to_arms),* } }
-        }
-
-        impl ::core::default::Default for #ty {
-            fn default() -> Self { Self::DEFAULT }
         }
     }
 }
@@ -426,9 +363,9 @@ impl Parse for ContractInput {
     }
 }
 
-/// A brace-wrapped, comma-separated port list. Each entry is `name: <decl>` where `<decl>` is a
-/// legacy carrier kind (`signal`/`message`/`context`), a `float`/`float { .. }` shape, or an
-/// `enum { A, B }` shape (ADR-0028).
+/// A brace-wrapped, comma-separated port list. Each entry is `name: <ty>` where `<ty>` is the
+/// port's [`Arg`] type (ADR-0030): `buffer`, `float { .. }`, `enum(VocabType)`, `note`, or
+/// `harmony`. `validate()` rejects an unknown type.
 fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
     let body;
     braced!(body in input);
@@ -437,33 +374,26 @@ fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
         // `parse_any` so a port may be named with a keyword, e.g. m2s's `in`.
         let name = Ident::parse_any(&body)?;
         body.parse::<Token![:]>()?;
-        // `parse_any` so the shape keyword may be a reserved word (`enum`).
+        // `parse_any` so the type keyword may be a reserved word (`enum`).
         let kw = Ident::parse_any(&body)?;
-        let shape = match kw.to_string().as_str() {
-            "float" => {
-                let meta = if body.peek(syn::token::Brace) {
-                    Some(parse_float_meta(&body)?)
-                } else {
-                    None
-                };
-                PortShapeAst::Float(meta)
-            }
+        let ty = match kw.to_string().as_str() {
+            "buffer" => PortTypeAst::Buffer,
+            "note" => PortTypeAst::Note,
+            "harmony" => PortTypeAst::Harmony,
+            "float" => PortTypeAst::Float(parse_float_meta(&body)?),
             "enum" => {
-                let vars;
-                braced!(vars in body);
-                let mut variants = Vec::new();
-                while !vars.is_empty() {
-                    variants.push(Ident::parse_any(&vars)?);
-                    if vars.peek(Token![,]) {
-                        vars.parse::<Token![,]>()?;
-                    }
-                }
-                PortShapeAst::Enum(variants)
+                let inner;
+                parenthesized!(inner in body);
+                PortTypeAst::Enum(inner.parse::<Ident>()?)
             }
-            // Anything else is a legacy carrier kind; `validate()` rejects an unknown one.
-            _ => PortShapeAst::Legacy(kw),
+            other => {
+                return Err(Error::new(
+                    kw.span(),
+                    format!("port type must be `buffer`, `float`, `enum(..)`, `note`, or `harmony`, got `{other}`"),
+                ))
+            }
         };
-        out.push(PortAst { name, shape });
+        out.push(PortAst { name, ty });
         if body.peek(Token![,]) {
             body.parse::<Token![,]>()?;
         }
@@ -642,8 +572,8 @@ mod tests {
     fn emits_consts_and_contract_fn() {
         let out = render(
             r#"Oscillator {
-                inputs:  { freq: signal },
-                outputs: { audio: signal },
+                inputs:  { freq: buffer },
+                outputs: { audio: buffer },
                 params:  { freq:     { 20.0..=20_000.0, default 440.0, "Hz", exp },
                            waveform: { 0.0..=1.0,        default 0.0,   "",   lin } },
                 lanes: inherit,
@@ -664,8 +594,8 @@ mod tests {
         let out = render(
             r#"SamplePlayer {
                 type_name: "sample",
-                inputs:  { freq: signal, gate: signal },
-                outputs: { audio: signal },
+                inputs:  { freq: buffer, gate: buffer },
+                outputs: { audio: buffer },
                 resources: { sample },
             }"#,
         );
@@ -674,27 +604,31 @@ mod tests {
         assert!(out.contains("pub const IN_GATE : usize = 1"), "{out}");
     }
 
+    // Ports number sequentially in declaration order (ADR-0030) — a note input and a harmony input
+    // are 0 and 1, not split per kind.
     #[test]
-    fn per_kind_ordinals_match_the_voicer_footgun() {
+    fn ports_number_sequentially_and_lane_resolves() {
         let out = render(
             r#"Voicer {
-                inputs:  { notes: message, ctx: context },
-                outputs: { freq: signal, gate: signal },
+                inputs:  { notes: note, ctx: harmony },
+                outputs: { freq: buffer, gate: buffer },
                 params:  { voices: { 1.0..=32.0, default 8.0, "", lin } },
                 lanes: from_param(voices),
             }"#,
         );
         assert!(out.contains("pub const IN_NOTES : usize = 0"), "{out}");
-        assert!(out.contains("pub const IN_CTX : usize = 0"), "{out}");
+        assert!(out.contains("pub const IN_CTX : usize = 1"), "{out}");
+        assert!(out.contains("Port :: note (\"notes\")"), "{out}");
+        assert!(out.contains("Port :: harmony (\"ctx\")"), "{out}");
         assert!(out.contains("LaneRule :: FromParam (P_VOICES)"), "{out}");
     }
 
-    // Tracer step 4: a malformed contract is rejected *with a span*, in-band as a compile_error.
+    // A malformed contract is rejected *with a span*, in-band as a compile_error.
     #[test]
     fn duplicate_port_is_a_spanned_compile_error() {
         let out = render(
             r#"Bad {
-                inputs: { a: signal, a: signal },
+                inputs: { a: buffer, a: buffer },
             }"#,
         );
         assert!(out.contains("compile_error !"), "{out}");
@@ -709,61 +643,61 @@ mod tests {
         assert!(out.contains("compile_error !"), "{out}");
     }
 
-    // ADR-0028 shape surface: the filter target contract — bare float, float-with-meta (full and
-    // unit/curve-omitted), an enum input, and sequential (not per-kind) input ordinals.
+    // The filter target contract (ADR-0030): a buffer audio in/out, float-with-meta controls, and
+    // an `enum(FilterMode)` naming its shared vocab type — sequential input ordinals.
     #[test]
-    fn emits_shape_based_filter_contract() {
+    fn emits_filter_contract() {
         let out = render(
             r#"Filter {
-                inputs:  { audio: float,
+                inputs:  { audio: buffer,
                            cutoff: float { 20.0..=20_000.0, default 1_000.0, "Hz", exp },
                            resonance: float { 0.0..=1.0, default 0.2 },
-                           mode: enum { Lp, Hp, Bp } },
-                outputs: { audio: float },
+                           mode: enum(FilterMode) },
+                outputs: { audio: buffer },
             }"#,
         );
-        // Inputs number in declaration order, regardless of shape.
         assert!(out.contains("pub const IN_AUDIO : usize = 0"), "{out}");
         assert!(out.contains("pub const IN_CUTOFF : usize = 1"), "{out}");
         assert!(out.contains("pub const IN_RESONANCE : usize = 2"), "{out}");
         assert!(out.contains("pub const IN_MODE : usize = 3"), "{out}");
         assert!(out.contains("pub const OUT_AUDIO : usize = 0"), "{out}");
-        // Bare `float` is the `signal` carrier; `float { .. }` is a materialized `Port::float`.
-        assert!(out.contains("Port :: signal (\"audio\")"), "{out}");
+        assert!(out.contains("Port :: buffer (\"audio\")"), "{out}");
         assert!(out.contains("Port :: float"), "{out}");
         assert!(out.contains("Curve :: Exponential"), "{out}");
-        // Enum: a generated type plus a `Port::enumerated` single-sourced off its `VARIANTS`.
-        assert!(out.contains("pub enum Mode"), "{out}");
-        assert!(out.contains("Lp , Hp , Bp"), "{out}");
+        // Enum: `Port::enumerated` single-sourced off the shared vocab type's `enum_meta`.
         assert!(out.contains("Port :: enumerated"), "{out}");
-        assert!(out.contains("variants : Mode :: VARIANTS"), "{out}");
-        assert!(out.contains("default : Mode :: DEFAULT_INDEX"), "{out}");
+        assert!(
+            out.contains("vocab :: FilterMode :: enum_meta (\"mode\")"),
+            "{out}"
+        );
+        // No locally-generated enum type any more — vocab types are shared (ADR-0030).
+        assert!(!out.contains("pub enum"), "{out}");
     }
 
-    // The oscillator target contract: a materialized `freq` and a live-switchable `waveform` enum.
+    // The oscillator target contract: a materialized `freq` and a `waveform` vocab enum.
     #[test]
-    fn emits_shape_based_oscillator_contract() {
+    fn emits_oscillator_contract() {
         let out = render(
             r#"Oscillator {
                 inputs:  { freq: float { 20.0..=20_000.0, default 440.0, "Hz", exp },
-                           waveform: enum { Sine, Saw } },
-                outputs: { audio: float },
+                           waveform: enum(Waveform) },
+                outputs: { audio: buffer },
             }"#,
         );
         assert!(out.contains("pub const IN_FREQ : usize = 0"), "{out}");
         assert!(out.contains("pub const IN_WAVEFORM : usize = 1"), "{out}");
-        assert!(out.contains("pub enum Waveform"), "{out}");
-        assert!(out.contains("Sine , Saw"), "{out}");
-        assert!(out.contains("Waveform :: VARIANTS"), "{out}");
+        assert!(
+            out.contains("vocab :: Waveform :: enum_meta (\"waveform\")"),
+            "{out}"
+        );
         assert!(out.contains("type_name : \"oscillator\""), "{out}");
     }
 
-    // A malformed shape is rejected with a span, as a compile_error (not silently emitted).
+    // An unknown port type is rejected with a span, as a compile_error.
     #[test]
-    fn empty_enum_is_a_spanned_compile_error() {
-        let out = render(r#"Bad { inputs: { mode: enum { } } }"#);
+    fn unknown_port_type_is_a_spanned_error() {
+        let out = render(r#"Bad { inputs: { mode: signal } }"#);
         assert!(out.contains("compile_error !"), "{out}");
-        assert!(out.contains("at least one variant"), "{out}");
-        assert!(!out.contains("pub enum Mode"), "{out}");
+        assert!(out.contains("port type must be"), "{out}");
     }
 }

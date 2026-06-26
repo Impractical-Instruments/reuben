@@ -1,5 +1,5 @@
 {
-  "doc": "A click on every beat. The Clock's beat gate retriggers an envelope on an 880 Hz tone — sample-accurate timing with no external input. Send /clock/reset to relocate beat 1; set tempo via /clock/tempo.",
+  "doc": "A click on every beat. The Clock's beat gate retriggers an envelope on an 880 Hz tone — sample-accurate timing with no external input. Send /clock/sync to relocate beat 1; set tempo via /clock/tempo.",
   "instrument": "metronome",
   "nodes": [
     {

@@ -1,5 +1,5 @@
 {
-  "doc": "A playable saw synth with one 'brightness' Good Button (ADR-0017). Send /voicer/note [midi, gate] to play, then sweep /brightness [0..1] — a single knob fanned to filter cutoff AND resonance, each over its own musical range, smoothed into the audio rate. Built entirely from composition: a public identity `map` fanned to two ranged `map`s, each through an `m2s` converter into the filter's Signal cutoff/resonance inputs. No new instrument-format machinery.",
+  "doc": "A playable saw synth with one 'brightness' Good Button (ADR-0017). Send /voicer/notes [midi, gate] to play, then sweep /brightness/in [0..1] — a single knob fanned to filter cutoff AND resonance, each over its own musical range, smoothed into the audio rate. Built entirely from composition: a public identity `map` fanned to two ranged `map`s, each through an `m2s` converter into the filter's Signal cutoff/resonance inputs. No new instrument-format machinery.",
   "instrument": "good-button",
   "nodes": [
     {
@@ -10,7 +10,7 @@
       "control": {
         "label": "Play C",
         "note": 60,
-        "port": "note",
+        "port": "notes",
         "widget": "note-toggle"
       },
       "doc": "Note -> per-Voice freq + gate.",
@@ -109,9 +109,9 @@
         "label": "Brightness",
         "widget": "fader"
       },
-      "doc": "PUBLIC Good Button. Identity [0,1] pass-through; its value is fanned to the two ranged maps below. Send /brightness [0..1]. Rests at 0.5 (ADR-0018), emitted on init so the chain and any generated control surface agree at rest.",
+      "doc": "PUBLIC Good Button. Identity [0,1] pass-through; its value is fanned to the two ranged maps below. Send /brightness/in [0..1]. Rests at 0.5 (ADR-0018), emitted on init so the chain and any generated control surface agree at rest.",
       "inputs": {
-        "default": 0.5
+        "in": 0.5
       },
       "type": "map"
     },
@@ -144,7 +144,6 @@
       "address": "/cv_cutoff",
       "doc": "Smooth the mapped cutoff into a CV signal; default 2500 Hz before any knob move.",
       "inputs": {
-        "default": 2500.0,
         "in": {
           "from": "/map_cutoff"
         },
@@ -157,7 +156,6 @@
       "address": "/cv_res",
       "doc": "Smooth the mapped resonance into a CV signal; default 0.3.",
       "inputs": {
-        "default": 0.3,
         "in": {
           "from": "/map_res"
         },

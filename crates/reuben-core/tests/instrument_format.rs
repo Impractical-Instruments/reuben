@@ -4,6 +4,7 @@
 use reuben_core::message::{Arg, Message};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
+use reuben_core::vocab::pitch::{Note, Pitch};
 use reuben_core::{load, AudioConfig, Graph, InstrumentDoc, Registry};
 
 const DEFAULT_JSON: &str = include_str!("../../../instruments/default.json");
@@ -23,8 +24,8 @@ fn render(graph: Graph, cfg: AudioConfig, seconds: f32) -> Vec<f32> {
     for b in 0..blocks {
         let msgs: Vec<Message> = if b == 0 {
             vec![Message::new(
-                "/voicer/note",
-                [Arg::Float(69.0), Arg::Float(1.0)],
+                "/voicer/notes",
+                Note::new(Pitch::Absolute(69.0), 1.0),
                 0,
             )]
         } else {
@@ -47,7 +48,7 @@ fn render_notes(graph: Graph, cfg: AudioConfig, seconds: f32, midis: &[f32]) -> 
         let msgs: Vec<Message> = if b == 0 {
             midis
                 .iter()
-                .map(|&m| Message::new("/voicer/note", [Arg::Float(m), Arg::Float(1.0)], 0))
+                .map(|&m| Message::new("/voicer/notes", Note::new(Pitch::Absolute(m), 1.0), 0))
                 .collect()
         } else {
             Vec::new()
@@ -151,7 +152,7 @@ fn render_with_control(graph: Graph, cfg: AudioConfig, seconds: f32, control: Me
     for b in 0..blocks {
         let msgs: Vec<Message> = if b == 0 {
             vec![
-                Message::new("/voicer/note", [Arg::Float(57.0), Arg::Float(1.0)], 0),
+                Message::new("/voicer/notes", Note::new(Pitch::Absolute(57.0), 1.0), 0),
                 control.clone(),
             ]
         } else {
@@ -175,13 +176,13 @@ fn good_button_brightness_opens_the_filter() {
         load(GOOD_BUTTON_JSON, &reg).expect("load good-button.json"),
         cfg,
         1.0,
-        Message::new("/brightness", [Arg::Float(0.0)], 0),
+        Message::new("/brightness/in", Arg::F32(0.0), 0),
     );
     let bright = render_with_control(
         load(GOOD_BUTTON_JSON, &reg).expect("load good-button.json"),
         cfg,
         1.0,
-        Message::new("/brightness", [Arg::Float(1.0)], 0),
+        Message::new("/brightness/in", Arg::F32(1.0), 0),
     );
 
     // Steady-state window past the attack and the converter's smoothing settle.
@@ -199,7 +200,7 @@ fn good_button_brightness_opens_the_filter() {
         load(GOOD_BUTTON_JSON, &reg).unwrap(),
         cfg,
         1.0,
-        Message::new("/brightness", [Arg::Float(1.0)], 0),
+        Message::new("/brightness/in", Arg::F32(1.0), 0),
     );
     for (i, (x, y)) in bright.iter().zip(&again).enumerate() {
         assert_eq!(x.to_bits(), y.to_bits(), "non-deterministic at sample {i}");
@@ -219,13 +220,13 @@ fn auto_filter_base_plus_lfo_modulation_sounds_and_wobbles() {
         load(AUTO_FILTER_JSON, &reg).expect("load auto-filter.json"),
         cfg,
         1.0,
-        Message::new("/lfo/depth", [Arg::Float(1500.0)], 0),
+        Message::new("/lfo/depth", Arg::F32(1500.0), 0),
     );
     let still = render_with_control(
         load(AUTO_FILTER_JSON, &reg).unwrap(),
         cfg,
         1.0,
-        Message::new("/lfo/depth", [Arg::Float(0.0)], 0),
+        Message::new("/lfo/depth", Arg::F32(0.0), 0),
     );
 
     let peak = wobble.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
@@ -251,7 +252,7 @@ fn auto_filter_base_plus_lfo_modulation_sounds_and_wobbles() {
         load(AUTO_FILTER_JSON, &reg).unwrap(),
         cfg,
         1.0,
-        Message::new("/lfo/depth", [Arg::Float(1500.0)], 0),
+        Message::new("/lfo/depth", Arg::F32(1500.0), 0),
     );
     for (i, (x, y)) in wobble.iter().zip(&again).enumerate() {
         assert_eq!(x.to_bits(), y.to_bits(), "non-deterministic at sample {i}");

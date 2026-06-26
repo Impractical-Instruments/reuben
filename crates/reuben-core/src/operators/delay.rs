@@ -1,10 +1,10 @@
 //! Delay — feedback echo with a dry/wet mix.
 //!
-//! Shape model (ADR-0028): `time`, `feedback`, and `mix` are **`Float` inputs**, each owning its
+//! Port types (ADR-0030): `time`, `feedback`, and `mix` are **`F32` inputs**, each owning its
 //! unwired default. When nothing is wired the engine materializes the input from its latched
 //! default; when an LFO or envelope is wired the source buffer passes through. They are read
-//! block-rate via `io.value` (same semantics as the old params), and `io.signal(IN_AUDIO)` is
-//! always a buffer (wired source or materialized latch).
+//! block-rate via `io.last::<f32>` (the held ZOH value), and `io.signal(IN_AUDIO)` is always a
+//! buffer (wired source or materialized latch).
 //!
 //! - input 0: `audio` (`Float`) — the signal to delay.
 //! - input 1: `time` (`Float`, s) — delay time (materialized default 0.3).
@@ -24,11 +24,11 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Delay {
-    inputs:  { audio: float,
+    inputs:  { audio: buffer,
                time:     float { 0.001..=2.0, default 0.3, "s", lin },
                feedback: float { 0.0..=0.95,  default 0.4, "",  lin },
                mix:      float { 0.0..=1.0,   default 0.5, "",  lin } },
-    outputs: { audio: float },
+    outputs: { audio: buffer },
 });
 
 /// Maximum delay time in seconds; sizes the ring buffer.
@@ -66,10 +66,13 @@ impl Operator for Delay {
             self.head = 0;
         }
 
-        let feedback = io.value(IN_FEEDBACK).clamp(0.0, 0.95);
-        let mix = io.value(IN_MIX).clamp(0.0, 1.0);
+        let feedback = io.last::<f32>(IN_FEEDBACK).unwrap_or(0.0).clamp(0.0, 0.95);
+        let mix = io.last::<f32>(IN_MIX).unwrap_or(0.0).clamp(0.0, 1.0);
         // Read offset in samples; clamp so the interpolated tap stays inside the buffer.
-        let time = io.value(IN_TIME).clamp(0.001, MAX_DELAY_SECS);
+        let time = io
+            .last::<f32>(IN_TIME)
+            .unwrap_or(0.0)
+            .clamp(0.001, MAX_DELAY_SECS);
         let delay_samples = (time * sample_rate).clamp(1.0, (cap - 1) as f32);
 
         let len = self.buf.len();
@@ -88,7 +91,7 @@ impl Operator for Delay {
             self.buf[self.head] = x + feedback * delayed;
 
             // Dry/wet mix.
-            io.output(OUT_AUDIO)[i] = (1.0 - mix) * x + mix * delayed;
+            io.signal_mut(OUT_AUDIO)[i] = (1.0 - mix) * x + mix * delayed;
 
             self.head = (self.head + 1) % len;
         }
@@ -104,31 +107,28 @@ crate::register_operator!(Delay);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message::Arg;
     use crate::operator::Io;
 
     /// Run `input` through a fresh Delay at the given values and return the output buffer.
-    /// `time`/`feedback`/`mix` are `Float` inputs now (ADR-0028), so they are supplied as the
-    /// constant per-sample buffers the engine would materialize, in port order
-    /// (audio, time, feedback, mix).
+    /// `time`/`feedback`/`mix` are `Float` inputs read via `io.last` (ADR-0030), so they are
+    /// supplied as the per-input held (ZOH) Args, in port order (audio, time, feedback, mix);
+    /// `audio` is a buffer input (placeholder latch).
     fn render(input: &[f32], sample_rate: f32, time: f32, feedback: f32, mix: f32) -> Vec<f32> {
         let n = input.len();
         let mut delay = Delay::new();
         let mut out_buf = vec![0.0f32; n];
 
-        let params: [f32; 0] = [];
-        let messages = [];
-        let time_buf = vec![time; n];
-        let feedback_buf = vec![feedback; n];
-        let mix_buf = vec![mix; n];
+        let latched = [
+            Arg::F32(0.0),
+            Arg::F32(time),
+            Arg::F32(feedback),
+            Arg::F32(mix),
+        ];
         {
-            let inputs: Vec<Option<&[f32]>> = vec![
-                Some(input),
-                Some(&time_buf),
-                Some(&feedback_buf),
-                Some(&mix_buf),
-            ];
+            let inputs: Vec<Option<&[f32]>> = vec![Some(input), None, None, None];
             let outputs: Vec<&mut [f32]> = vec![out_buf.as_mut_slice()];
-            let mut io = Io::new(sample_rate, n, inputs, outputs, &params, &messages);
+            let mut io = Io::new(sample_rate, n, inputs, outputs).with_latched(&latched);
             delay.process(&mut io);
         }
         out_buf
@@ -248,32 +248,18 @@ mod tests {
 
         let mut delay = Delay::new();
         let mut out_buf = vec![0.0f32; n];
-        let params: [f32; 0] = [];
-        let messages = [];
-        let time_buf = vec![time; n];
-        let feedback_buf = vec![fb; n];
-        let mix_buf = vec![mix; n];
+        let latched = [Arg::F32(0.0), Arg::F32(time), Arg::F32(fb), Arg::F32(mix)];
         let half = n / 2;
         {
-            let inputs: Vec<Option<&[f32]>> = vec![
-                Some(&input[..half]),
-                Some(&time_buf[..half]),
-                Some(&feedback_buf[..half]),
-                Some(&mix_buf[..half]),
-            ];
+            let inputs: Vec<Option<&[f32]>> = vec![Some(&input[..half]), None, None, None];
             let outputs: Vec<&mut [f32]> = vec![&mut out_buf[..half]];
-            let mut io = Io::new(sr, half, inputs, outputs, &params, &messages);
+            let mut io = Io::new(sr, half, inputs, outputs).with_latched(&latched);
             delay.process(&mut io);
         }
         {
-            let inputs: Vec<Option<&[f32]>> = vec![
-                Some(&input[half..]),
-                Some(&time_buf[half..]),
-                Some(&feedback_buf[half..]),
-                Some(&mix_buf[half..]),
-            ];
+            let inputs: Vec<Option<&[f32]>> = vec![Some(&input[half..]), None, None, None];
             let outputs: Vec<&mut [f32]> = vec![&mut out_buf[half..]];
-            let mut io = Io::new(sr, n - half, inputs, outputs, &params, &messages);
+            let mut io = Io::new(sr, n - half, inputs, outputs).with_latched(&latched);
             delay.process(&mut io);
         }
 

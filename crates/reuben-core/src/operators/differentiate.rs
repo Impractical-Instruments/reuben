@@ -13,15 +13,15 @@
 //! `0` — no startup spike. The predecessor carries across block boundaries; `spawn` resets it.
 //!
 //! - input 0: `in` (`Float`) — the signal to differentiate. Unwired default 0.
-//! - output 0: `out` (`Float`) — `in[i] - in[i-1]`.
+//! - output 0: `out` (`Buffer`) — `in[i] - in[i-1]`.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025/0028/0029): `in` is a materialized `Float` (default 0).
+// Single-source contract (ADR-0025/0029/0030): `in` is a materialized `Float` (default 0).
 crate::operator_contract!(Differentiate {
     inputs:  { in: float { -1_000_000.0..=1_000_000.0, default 0.0, "", lin } },
-    outputs: { out: float },
+    outputs: { out: buffer },
 });
 
 /// The op's scalar math, written once (ADR-0029 pure-fn seam): the one-sample difference.
@@ -55,7 +55,7 @@ impl Operator for Differentiate {
             let cur = io.signal(IN_IN).get(i).copied().unwrap_or(0.0);
             // First sample ever seeds `last = cur`, so it emits 0 (no predecessor ⇒ no change).
             let prev = last.unwrap_or(cur);
-            io.output(OUT_OUT)[i] = step(prev, cur);
+            io.signal_mut(OUT_OUT)[i] = step(prev, cur);
             last = Some(cur);
         }
         self.last = last;
@@ -82,7 +82,7 @@ mod tests {
         {
             let inputs: Vec<Option<&[f32]>> = vec![Some(input)];
             let outs: Vec<&mut [f32]> = vec![&mut out[..]];
-            let mut io = Io::new(SR, n, inputs, outs, &[], &[]);
+            let mut io = Io::new(SR, n, inputs, outs);
             op.process(&mut io);
         }
         out

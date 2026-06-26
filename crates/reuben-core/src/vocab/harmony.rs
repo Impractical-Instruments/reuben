@@ -13,7 +13,7 @@
 //! tunings ride the same step-space seam (the registry of ADR-0015) and land with the
 //! "Format & library" thread.
 
-use crate::pitch::Pitch;
+use crate::vocab::pitch::Pitch;
 
 /// Max scale degrees in a `Harmony` (within a 12-TET period). The registry-side full tuning
 /// ladder (large MOS / Scala) is a separate, deferred axis (ADR-0015).
@@ -126,8 +126,9 @@ impl Chord {
     }
 }
 
-/// Which set [`Harmony::snap`] quantizes to (ADR-0013).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+/// Which set [`Harmony::snap`] quantizes to (ADR-0013). A shared *vocab* enum (ADR-0030):
+/// rides the central `Arg` as `Arg::SnapTarget`, read by the `snap` operator as a held choice.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, reuben_macros::ArgValue)]
 pub enum SnapTarget {
     /// Any scale tone survives.
     #[default]
@@ -139,8 +140,8 @@ pub enum SnapTarget {
 }
 
 /// Snap direction (ADR-0013): `Nearest` with a deterministic **down** tie-break (ADR-0001
-/// forbids a coin-flip), or a forced `Up`/`Down`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
+/// forbids a coin-flip), or a forced `Up`/`Down`. A shared *vocab* enum (`Arg::SnapDir`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Default, reuben_macros::ArgValue)]
 pub enum SnapDir {
     #[default]
     Nearest,
@@ -157,8 +158,9 @@ pub struct SnapPolicy {
 }
 
 /// The latched tonal context: tuning (12-TET for v1.1) + root + scale + chord. A small
-/// `Copy` value (ADR-0015) carrying the resolver.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+/// `Copy` value (ADR-0015) carrying the resolver; a shared *vocab* type riding the central
+/// `Arg` as `Arg::Harmony` (ADR-0030).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, reuben_macros::ArgValue)]
 pub struct Harmony {
     /// Tonic **step** (absolute MIDI; spans octaves). Default 60 (C4).
     pub root: i32,
@@ -200,9 +202,9 @@ impl Harmony {
     /// Resolve a [`Pitch`] to Hz. A degree pitch resolves through scale + tuning (so it
     /// re-spells live); an absolute pitch uses its MIDI coordinate directly.
     pub fn hz(&self, pitch: Pitch) -> f32 {
-        match pitch.degree {
-            Some(d) => midi_to_hz(self.degree_to_step(d) as f32),
-            None => midi_to_hz(pitch.midi),
+        match pitch {
+            Pitch::Degree(d) => midi_to_hz(self.degree_to_step(d) as f32),
+            Pitch::Absolute(midi) => midi_to_hz(midi),
         }
     }
 
@@ -401,9 +403,9 @@ mod tests {
         };
         // I = C E G
         assert_eq!(c.chord_tone(0), Pitch::from_degree(0));
-        assert_eq!(c.degree_to_step(c.chord_tone(1).degree.unwrap()), 64); // E
-        assert_eq!(c.degree_to_step(c.chord_tone(2).degree.unwrap()), 67); // G
-                                                                           // Wrap: chord_tone(3) → degree 7 → C5 (octave up).
+        assert_eq!(c.degree_to_step(c.chord_tone(1).degree().unwrap()), 64); // E
+        assert_eq!(c.degree_to_step(c.chord_tone(2).degree().unwrap()), 67); // G
+                                                                             // Wrap: chord_tone(3) → degree 7 → C5 (octave up).
         assert_eq!(c.chord_tone(3), Pitch::from_degree(7));
         assert_eq!(c.degree_to_step(7), 72);
     }
@@ -417,7 +419,7 @@ mod tests {
         };
         // Scale-relative {0,2,4} in C major → C E G.
         assert_eq!(
-            major.degree_to_step(major.chord_tone(1).degree.unwrap()),
+            major.degree_to_step(major.chord_tone(1).degree().unwrap()),
             64
         ); // E
 
@@ -427,7 +429,7 @@ mod tests {
         };
         // Same scale-relative chord now → C E♭ G (the 3rd re-spells to 63).
         assert_eq!(
-            minor.degree_to_step(minor.chord_tone(1).degree.unwrap()),
+            minor.degree_to_step(minor.chord_tone(1).degree().unwrap()),
             63
         ); // E♭
 
@@ -453,7 +455,7 @@ mod tests {
             direction: SnapDir::Down,
             ..Default::default()
         };
-        let step = |p: Pitch| c.degree_to_step(p.degree.unwrap());
+        let step = |p: Pitch| c.degree_to_step(p.degree().unwrap());
         assert_eq!(step(c.snap(64.3, near)), 64); // E
         assert_eq!(step(c.snap(64.8, near)), 65); // F
         assert_eq!(step(c.snap(66.0, near)), 65); // F♯ midpoint → tie down → F
@@ -477,9 +479,9 @@ mod tests {
             target: SnapTarget::ChordThenScale,
             ..Default::default()
         };
-        let step = |p: Pitch| match p.degree {
+        let step = |p: Pitch| match p.degree() {
             Some(d) => c.degree_to_step(d),
-            None => p.midi as i32,
+            None => p.midi().unwrap() as i32,
         };
         assert_eq!(step(c.snap(62.0, strict)), 60); // D → tie C,E → down → C
         assert_eq!(step(c.snap(62.0, permissive)), 62); // D is a scale tone → kept
@@ -497,7 +499,7 @@ mod tests {
             ..Default::default()
         };
         let p = c.snap(63.4, strict);
-        approx(p.midi, 63.4);
+        approx(p.midi().unwrap(), 63.4);
     }
 
     #[test]

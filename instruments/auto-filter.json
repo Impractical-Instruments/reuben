@@ -1,5 +1,5 @@
 {
-  "doc": "A saw synth whose filter cutoff is a base value PLUS an LFO wobble — base-plus-modulation built explicitly with a Signal `add` operator (ADR-0017). Play with /voicer/note [midi, gate]. Move the base cutoff with /cutoff [20..12000]; change the wobble with /lfo/rate (Hz) and /lfo/depth (Hz of sweep). The LFO swings around 0 and `add` sums it onto the base CV, which feeds the filter's Signal cutoff input.",
+  "doc": "A saw synth whose filter cutoff is a base value PLUS an LFO wobble — base-plus-modulation built explicitly with a Signal `add` operator (ADR-0017). Play with /voicer/notes [midi, gate]. Move the base cutoff with /cutoff/in [20..12000]; change the wobble with /lfo/rate (Hz) and /lfo/depth (Hz of sweep). The LFO swings around 0 and `add` sums it onto the base CV, which feeds the filter's Signal cutoff input.",
   "instrument": "auto-filter",
   "nodes": [
     {
@@ -86,9 +86,9 @@
     },
     {
       "address": "/cutoff",
-      "doc": "Base cutoff as a smoothed CV; default 2000 Hz. Send /cutoff [Hz].",
+      "doc": "Base cutoff as a smoothed CV; default 2000 Hz. Send /cutoff/in [Hz].",
       "inputs": {
-        "default": 2000.0,
+        "in": 2000.0,
         "mode": "Smooth",
         "time": 0.05
       },

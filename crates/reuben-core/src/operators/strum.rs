@@ -1,66 +1,57 @@
-//! Strum — a drag-to-strum gesture op (V1.3 "The Toys", ADR-0022 §3).
+//! Strum — a drag-to-strum gesture op (V1.3 "The Toys", ADR-0022 §3; unified model, ADR-0030).
 //!
-//! The strum-harp's one big fader streams its position as a Message (0..1). This op turns
-//! that drag into a harp glissando: the 0..1 range is divided into `strings` equal bands,
-//! and **each time the position crosses a string boundary a note is plucked** — a `degree`
-//! Message, so the Voicer resolves it through the tonal context and the harp is always in key
-//! (mirrors how [`Sequencer`](crate::operators::Sequencer) emits degrees without reading the
-//! context itself). Both drag directions strum: dragging up plucks ascending strings, dragging
-//! down plucks descending ones, in order, one note per boundary crossed (a fast drag across
-//! several bands plucks each string between, like a thumb across a harp).
+//! The strum-harp's one big fader streams its position (0..1). This op turns that drag into a harp
+//! glissando: the 0..1 range is divided into `strings` equal bands, and **each time the position
+//! crosses a string boundary a note is plucked** — a degree [`Note`], so the Voicer resolves it
+//! through the tonal context and the harp is always in key (mirrors how
+//! [`Sequencer`](crate::operators::Sequencer) emits degrees without reading the context itself).
+//! Both drag directions strum: dragging up plucks ascending strings, dragging down plucks
+//! descending ones, in order, one note per boundary crossed (a fast drag across several bands
+//! plucks each string between, like a thumb across a harp).
 //!
-//! - input 0: `position` (Message) — the fader's position events in 0..1. The first numeric
-//!   arg is the position (matching how `m2s` reads a fader value; the address routes the edge,
-//!   so any address the fader sends works). Position is held across blocks so a crossing that
-//!   straddles a block boundary fires exactly once.
-//! - output 0 (Message): `degrees` — `degree` Messages, arg 0 = **scale degree**, arg 1 =
-//!   velocity (the `velocity` param on a pluck, 0 on the paired note-off). The Voicer resolves
-//!   the degree through the tonal context (ADR-0008 amendment), so the harp re-spells live on a
-//!   key/scale change.
-//! - input 1: `strings` (`Float`) — number of strings the 0..1 range is divided into (1..=32,
-//!   default 8 = one diatonic octave), read block-rate via `io.value`.
-//! - input 2: `octaves` (`Float`) — the degree span the strings cover (1..=4, default 1). String
-//!   `k` plucks degree `round(k * octaves * 7 / (strings-1))`, so the bottom string is degree 0 and
-//!   the top string is `octaves*7` (one full diatonic octave per `octaves`).
-//! - input 3: `velocity` (`Float`) — pluck velocity (0..1, default 1).
+//! - input 0: `position` (`Float`) — the fader's position in 0..1, read **per-sample** via
+//!   [`Io::signal`] (a materialized control), so a crossing is detected at its exact frame and a
+//!   crossing straddling a block boundary fires exactly once (the held value carries across).
+//! - input 1: `strings` (`Float`, held) — strings the 0..1 range is divided into (1..=32, default
+//!   8 = one diatonic octave).
+//! - input 2: `octaves` (`Float`, held) — the degree span the strings cover (1..=4, default 1).
+//!   String `k` plucks degree `round(k * octaves * 7 / (strings-1))`.
+//! - input 3: `velocity` (`Float`, held) — pluck velocity (0..1, default 1).
+//! - output 0: `degrees` (`Note`) — a degree note (velocity on the pluck, 0 on the paired off).
 //!
-//! **Plucks, not held notes** (ADR-0022 "no held gate"): each crossing emits a note-on
-//! immediately followed by a note-off `PLUCK_SAMPLES` later, so the downstream percussive
-//! envelope opens and then rings out on its own decay/release. The pending note-offs are held
-//! across blocks (a fixed-capacity queue, allocation-free) so a pluck near a block edge still
-//! releases. Single-Lane: emission is pre-fan-out (Lane 0 only), exactly like the Sequencer.
+//! **Plucks, not held notes** (ADR-0022 "no held gate"): each crossing emits a note-on immediately
+//! followed by a note-off `PLUCK_SAMPLES` later, so the downstream percussive envelope opens and
+//! then rings out on its own decay/release. The pending note-offs are held across blocks (a
+//! fixed-capacity queue, allocation-free). Single-Lane: emission is pre-fan-out (Lane 0 only).
 
 use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
-use crate::message::Arg;
 use crate::operator::{Io, Operator};
+use crate::vocab::pitch::{Note, Pitch};
 
-// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
+// Single-source contract (ADR-0025/0030). `position` is a materialized `Float` (read per-sample);
+// `strings`/`octaves`/`velocity` are held `Float`s.
 crate::operator_contract!(Strum {
-    inputs:  { position: message,
+    inputs:  { position: float { 0.0..=1.0,  default 0.0, "",        lin },
                strings:  float { 1.0..=32.0, default 8.0, "strings", lin },
                octaves:  float { 1.0..=4.0,  default 1.0, "oct",     lin },
                velocity: float { 0.0..=1.0,  default 1.0, "",        lin } },
-    outputs: { degrees: message },
+    outputs: { degrees: note },
 });
 
 /// Diatonic degrees spanned per octave (0..6 then the octave at 7).
 const DEGREES_PER_OCTAVE: f32 = 7.0;
 /// How long after a pluck's note-on the paired note-off fires, in samples (~30 ms @ 48 kHz).
-/// The percussive envelope's attack+decay ring within this window, then release takes over.
 const PLUCK_SAMPLES: i64 = 1440;
-/// Inline capacity for pending note-offs carried across blocks. A human drag emits at most a
-/// handful of crossings per block; beyond this it spills to the heap (never on the audio path
-/// for realistic input — the smallvec preallocates the inline slots).
+/// Inline capacity for pending note-offs carried across blocks.
 const PENDING_CAP: usize = 32;
 
 pub struct Strum {
-    /// String index the position last sat in, or -1 before the first position event. Continuous
+    /// String index the position last sat in, or -1 before the first position sample. Continuous
     /// across blocks; a crossing is `cur_string != prev_string`.
     prev_string: i64,
-    /// Pending note-offs: (degree, samples_until_off). Decremented each sample; at 0 the off
-    /// fires. Carried across blocks so a pluck near a block edge still rings out and releases.
+    /// Pending note-offs: (degree, samples_until_off). Decremented each sample; at 0 the off fires.
     pending: SmallVec<[(f32, i64); PENDING_CAP]>,
 }
 
@@ -95,6 +86,11 @@ impl Strum {
     }
 }
 
+/// A degree note from a (possibly fractional) degree value.
+fn degree_note(degree: f32, velocity: f32) -> Note {
+    Note::new(Pitch::Degree(degree.round() as i32), velocity)
+}
+
 impl Operator for Strum {
     fn descriptor() -> Descriptor {
         Self::contract()
@@ -102,23 +98,11 @@ impl Operator for Strum {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        let strings = (io.value(IN_STRINGS).round() as i64).clamp(1, 32);
-        let octaves = io.value(IN_OCTAVES).max(1.0);
-        let velocity = io.value(IN_VELOCITY).clamp(0.0, 1.0);
-
-        // Snapshot incoming position events (can't read events while emitting), sorted by frame.
-        // First numeric arg is the position. Multiple events in a block are walked in order, so
-        // a drag across several bands plucks each crossed string in sequence.
-        let mut events: SmallVec<[(usize, f32); 16]> = SmallVec::new();
-        for ev in io.events() {
-            if let Some(v) = ev.args.first().and_then(Arg::as_f32) {
-                events.push((ev.frame.min(n.saturating_sub(1)), v));
-            }
-        }
-        events.sort_by_key(|(f, _)| *f);
+        let strings = (io.last::<f32>(IN_STRINGS).unwrap_or(8.0).round() as i64).clamp(1, 32);
+        let octaves = io.last::<f32>(IN_OCTAVES).unwrap_or(1.0).max(1.0);
+        let velocity = io.last::<f32>(IN_VELOCITY).unwrap_or(1.0).clamp(0.0, 1.0);
 
         let mut prev_string = self.prev_string;
-        let mut ei = 0usize;
 
         for i in 0..n {
             // Fire any pending note-offs due at this sample, then count down the rest.
@@ -126,7 +110,7 @@ impl Operator for Strum {
             while k < self.pending.len() {
                 if self.pending[k].1 <= 0 {
                     let deg = self.pending[k].0;
-                    io.emit(OUT_DEGREES, "degree", [Arg::Float(deg), Arg::Float(0.0)], i);
+                    io.emit(OUT_DEGREES, "notes", degree_note(deg, 0.0), i);
                     self.pending.swap_remove(k);
                 } else {
                     self.pending[k].1 -= 1;
@@ -134,32 +118,25 @@ impl Operator for Strum {
                 }
             }
 
-            // Apply every position event landing at this sample, in order. Each band crossed
-            // emits a pluck (note-on now + a scheduled note-off).
-            while ei < events.len() && events[ei].0 == i {
-                let cur_string = Self::string_at(events[ei].1, strings);
-                if prev_string < 0 {
-                    // First position seen: latch the band, no pluck (no crossing yet).
-                    prev_string = cur_string;
-                } else if cur_string != prev_string {
-                    let step = if cur_string > prev_string { 1 } else { -1 };
-                    let mut s = prev_string;
-                    while s != cur_string {
-                        s += step;
-                        let deg = Self::degree_of(s, strings, octaves);
-                        io.emit(
-                            OUT_DEGREES,
-                            "degree",
-                            [Arg::Float(deg), Arg::Float(velocity)],
-                            i,
-                        );
-                        if self.pending.len() < self.pending.capacity() {
-                            self.pending.push((deg, PLUCK_SAMPLES));
-                        }
+            // Read this sample's position (the immutable borrow ends with this `let`, so `io.emit`
+            // can borrow mutably below). Each band crossed emits a pluck + a scheduled note-off.
+            let pos = io.signal(IN_POSITION).get(i).copied().unwrap_or(0.0);
+            let cur_string = Self::string_at(pos, strings);
+            if prev_string < 0 {
+                // First position seen: latch the band, no pluck (no crossing yet).
+                prev_string = cur_string;
+            } else if cur_string != prev_string {
+                let step = if cur_string > prev_string { 1 } else { -1 };
+                let mut s = prev_string;
+                while s != cur_string {
+                    s += step;
+                    let deg = Self::degree_of(s, strings, octaves);
+                    io.emit(OUT_DEGREES, "notes", degree_note(deg, velocity), i);
+                    if self.pending.len() < self.pending.capacity() {
+                        self.pending.push((deg, PLUCK_SAMPLES));
                     }
-                    prev_string = cur_string;
                 }
-                ei += 1;
+                prev_string = cur_string;
             }
         }
 
@@ -176,54 +153,56 @@ crate::register_operator!(Strum);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::{Emit, Event};
-    use crate::operator::Io;
+    use crate::message::{Arg, Emit};
 
     const SR: f32 = 48_000.0;
 
-    /// Run `strum` over one block with the given position events; returns the emitted Messages
-    /// (block-absolute frames). Positions are `(frame, value)`. `params` is `[strings, octaves,
-    /// velocity]`, supplied as the `Float` input buffers (ADR-0028) in port order after `position`.
+    /// Build a zero-order-held position buffer of `n` samples from discrete `(frame, value)`
+    /// positions — the way the engine materializes a sparse control into a per-sample buffer.
+    fn pos_buf(n: usize, positions: &[(usize, f32)]) -> Vec<f32> {
+        let mut buf = vec![0.0f32; n];
+        let mut cur = 0.0;
+        let mut pi = 0;
+        for (i, slot) in buf.iter_mut().enumerate() {
+            while pi < positions.len() && positions[pi].0 == i {
+                cur = positions[pi].1;
+                pi += 1;
+            }
+            *slot = cur;
+        }
+        buf
+    }
+
+    /// Run `strum` over a prebuilt per-sample `position` buffer; returns the emitted Messages.
+    fn run_buf(strum: &mut Strum, params: &[f32; 3], position: &[f32]) -> Vec<Emit> {
+        let n = position.len();
+        let latched = [
+            Arg::F32(0.0), // position (read per-sample, not via last)
+            Arg::F32(params[0]),
+            Arg::F32(params[1]),
+            Arg::F32(params[2]),
+        ];
+        let mut emits: Vec<Emit> = Vec::new();
+        {
+            let outs: Vec<&mut [f32]> = vec![]; // note port — no Signal buffer.
+            let inputs: Vec<Option<&[f32]>> = vec![Some(position), None, None, None];
+            let mut io = Io::new(SR, n, inputs, outs)
+                .with_latched(&latched)
+                .with_emit(&mut emits, 0);
+            strum.process(&mut io);
+        }
+        emits
+    }
+
+    /// Convenience: run from discrete positions, materializing them to a ZOH buffer first.
     fn run(
         strum: &mut Strum,
         n: usize,
         params: &[f32; 3],
         positions: &[(usize, f32)],
     ) -> Vec<Emit> {
-        let args: Vec<crate::message::Args> = positions
-            .iter()
-            .map(|(_, v)| {
-                let mut a = crate::message::Args::new();
-                a.push(Arg::Float(*v));
-                a
-            })
-            .collect();
-        let evs: Vec<Event> = positions
-            .iter()
-            .zip(&args)
-            .map(|((frame, _), a)| Event {
-                addr: "position",
-                args: a,
-                frame: *frame,
-            })
-            .collect();
-        let strings_buf = vec![params[0]; n];
-        let octaves_buf = vec![params[1]; n];
-        let velocity_buf = vec![params[2]; n];
-        let mut emits: Vec<Emit> = Vec::new();
-        {
-            let outs: Vec<&mut [f32]> = vec![]; // Message port — no Signal buffer.
-                                                // Port order: position (message, no buffer), strings, octaves, velocity (Float buffers).
-            let inputs: Vec<Option<&[f32]>> = vec![
-                None,
-                Some(&strings_buf[..]),
-                Some(&octaves_buf[..]),
-                Some(&velocity_buf[..]),
-            ];
-            let mut io = Io::new(SR, n, inputs, outs, &[], &evs).with_emit(&mut emits, 0);
-            strum.process(&mut io);
-        }
-        emits
+        let buf = pos_buf(n, positions);
+        run_buf(strum, params, &buf)
     }
 
     fn params(strings: f32, octaves: f32, velocity: f32) -> [f32; 3] {
@@ -231,10 +210,16 @@ mod tests {
     }
 
     fn deg(e: &Emit) -> f32 {
-        e.args[0].as_f32().unwrap()
+        match &e.arg {
+            Arg::Note(n) => n.pitch.degree().unwrap() as f32,
+            other => panic!("expected a Note, got {other:?}"),
+        }
     }
     fn vel(e: &Emit) -> f32 {
-        e.args[1].as_f32().unwrap()
+        match &e.arg {
+            Arg::Note(n) => n.velocity,
+            other => panic!("expected a Note, got {other:?}"),
+        }
     }
 
     /// Note-on degrees, in emission order.
@@ -244,18 +229,16 @@ mod tests {
 
     #[test]
     fn sweep_up_plucks_ascending_strings_in_order() {
-        // 8 strings, 1 octave: a slow sweep 0 -> 1 crosses all 8 bands, plucking degrees 1..=7
-        // plus the top (octave, degree 7). The first band (string 0) is latched on the opening
-        // event, so the ascending plucks are strings 1..=7 -> degrees 1,2,3,4,5,6,7.
+        // 8 strings, 1 octave: a slow sweep 0 -> 1 crosses all 8 bands. The first band is latched
+        // on the opening sample, so the ascending plucks are strings 1..=7 -> degrees 1..7.
         let mut strum = Strum::new();
-        // One event per band centre, ascending.
         let positions: Vec<(usize, f32)> =
             (0..8).map(|k| (k * 10, (k as f32 + 0.5) / 8.0)).collect();
         let emits = run(&mut strum, 200, &params(8.0, 1.0, 1.0), &positions);
 
         let ons = on_degrees(&emits);
         assert_eq!(ons, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
-        assert!(emits.iter().all(|e| e.addr == "degree"));
+        assert!(emits.iter().all(|e| e.address == "notes"));
     }
 
     #[test]
@@ -284,7 +267,7 @@ mod tests {
 
     #[test]
     fn a_fast_drag_across_several_bands_plucks_each_in_between() {
-        // First event latches band 0; a single jump to band 4 plucks every string between:
+        // First sample latches band 0; a single jump to band 4 plucks every string between:
         // degrees 1,2,3,4 (a glissando, not just the destination).
         let mut strum = Strum::new();
         let positions = [(0, 0.01), (20, 4.5 / 8.0)];
@@ -314,8 +297,7 @@ mod tests {
 
     #[test]
     fn octaves_param_widens_the_string_span() {
-        // 8 strings over 2 octaves: top string is degree 14, bottom is 0. Ascending plucks land
-        // on 2,4,6,8,10,12,14 (round(k * 14 / 7)).
+        // 8 strings over 2 octaves: ascending plucks land on 2,4,6,8,10,12,14 (round(k * 14 / 7)).
         let mut strum = Strum::new();
         let positions: Vec<(usize, f32)> =
             (0..8).map(|k| (k * 10, (k as f32 + 0.5) / 8.0)).collect();
@@ -337,10 +319,9 @@ mod tests {
 
     #[test]
     fn crossing_state_is_continuous_across_block_slices() {
-        // Splitting the position stream across two blocks yields the same plucks as one whole
-        // block: the band machine carries across the boundary (no spurious or missed crossing).
+        // Splitting the position buffer across two blocks yields the same plucks as one whole
+        // block: the band machine carries across the boundary.
         let p = params(8.0, 1.0, 1.0);
-        // Ascend then descend, crossing the mid-block boundary.
         let positions: Vec<(usize, f32)> = vec![
             (0, 0.01),
             (40, 2.5 / 8.0),
@@ -348,25 +329,16 @@ mod tests {
             (140, 1.5 / 8.0),
         ];
         let n = 200;
+        let full = pos_buf(n, &positions);
 
         let mut whole = Strum::new();
-        let ew = run(&mut whole, n, &p, &positions);
+        let ew = run_buf(&mut whole, &p, &full);
         let ons_whole = on_degrees(&ew);
 
         let mid = 100;
         let mut split = Strum::new();
-        let first: Vec<(usize, f32)> = positions
-            .iter()
-            .filter(|(f, _)| *f < mid)
-            .copied()
-            .collect();
-        let second: Vec<(usize, f32)> = positions
-            .iter()
-            .filter(|(f, _)| *f >= mid)
-            .map(|(f, v)| (f - mid, *v))
-            .collect();
-        let e1 = run(&mut split, mid, &p, &first);
-        let e2 = run(&mut split, n - mid, &p, &second);
+        let e1 = run_buf(&mut split, &p, &full[..mid]);
+        let e2 = run_buf(&mut split, &p, &full[mid..]);
         let mut ons_split = on_degrees(&e1);
         ons_split.extend(on_degrees(&e2));
 
@@ -375,34 +347,26 @@ mod tests {
 
     #[test]
     fn spawned_strum_resets_to_no_band() {
-        // Drive `a` to some band, spawn `b`: `b`'s first event latches (no pluck) rather than
+        // Drive `a` to some band, spawn `b`: `b`'s first sample latches (no pluck) rather than
         // crossing from where `a` left off.
         let mut a = Strum::new();
         let _ = run(&mut a, 100, &params(8.0, 1.0, 1.0), &[(0, 0.9)]);
         let mut b = a.spawn();
-        // b's first position is band 0; with a fresh -1 prev_string it latches and emits nothing.
+        let p = params(8.0, 1.0, 1.0);
+        let buf = pos_buf(50, &[(0, 0.05)]);
+        let latched = [
+            Arg::F32(0.0),
+            Arg::F32(p[0]),
+            Arg::F32(p[1]),
+            Arg::F32(p[2]),
+        ];
         let mut emits: Vec<Emit> = Vec::new();
-        let mut a0 = crate::message::Args::new();
-        a0.push(Arg::Float(0.05));
-        let evs = [Event {
-            addr: "position",
-            args: &a0,
-            frame: 0,
-        }];
         {
-            let n = 50;
-            let p = params(8.0, 1.0, 1.0);
-            let strings_buf = vec![p[0]; n];
-            let octaves_buf = vec![p[1]; n];
-            let velocity_buf = vec![p[2]; n];
             let outs: Vec<&mut [f32]> = vec![];
-            let inputs: Vec<Option<&[f32]>> = vec![
-                None,
-                Some(&strings_buf[..]),
-                Some(&octaves_buf[..]),
-                Some(&velocity_buf[..]),
-            ];
-            let mut io = Io::new(SR, n, inputs, outs, &[], &evs).with_emit(&mut emits, 0);
+            let inputs: Vec<Option<&[f32]>> = vec![Some(&buf[..]), None, None, None];
+            let mut io = Io::new(SR, buf.len(), inputs, outs)
+                .with_latched(&latched)
+                .with_emit(&mut emits, 0);
             b.process(&mut io);
         }
         assert!(

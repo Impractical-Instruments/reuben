@@ -4,12 +4,12 @@
 //! tests can't: routing the chord op's emitted Messages to a real Voicer's voices, and a live chord
 //! re-spell on a key change driven through the full graph.
 
-use reuben_core::harmony::Harmony;
 use reuben_core::message::{Arg, Message};
 use reuben_core::operators::{Chord, ContextOp, Voicer};
-use reuben_core::pitch::Pitch;
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
+use reuben_core::vocab::harmony::Harmony;
+use reuben_core::vocab::pitch::{Note, Pitch};
 use reuben_core::{load, AudioConfig, Graph, Registry};
 
 const CHORD_PLAYER: &str = include_str!("../../../instruments/chord-player.json");
@@ -54,7 +54,7 @@ fn tapping_a_triad_sounds_three_chord_tones() {
     let mut r = Renderer::new(&plan);
     let mut buf = vec![0.0f32; CFG.block_size];
 
-    let press = Message::new("/chord/set", [Arg::Float(0.0), Arg::Float(1.0)], 0);
+    let press = Message::new("/chord/set", Note::new(Pitch::Degree(0), 1.0), 0);
     r.render_block(&mut plan, &[press], &mut buf);
 
     let sum = buf[CFG.block_size - 1];
@@ -75,7 +75,7 @@ fn releasing_the_root_stops_all_chord_tones() {
         &mut plan,
         &[Message::new(
             "/chord/set",
-            [Arg::Float(0.0), Arg::Float(1.0)],
+            Note::new(Pitch::Degree(0), 1.0),
             0,
         )],
         &mut buf,
@@ -86,7 +86,7 @@ fn releasing_the_root_stops_all_chord_tones() {
         &mut plan,
         &[Message::new(
             "/chord/set",
-            [Arg::Float(0.0), Arg::Float(0.0)],
+            Note::new(Pitch::Degree(0), 0.0),
             0,
         )],
         &mut buf,
@@ -108,7 +108,7 @@ fn held_chord_respells_live_on_a_key_change() {
         &mut plan,
         &[Message::new(
             "/chord/set",
-            [Arg::Float(0.0), Arg::Float(1.0)],
+            Note::new(Pitch::Degree(0), 1.0),
             0,
         )],
         &mut buf,
@@ -122,7 +122,7 @@ fn held_chord_respells_live_on_a_key_change() {
     // Re-key to D (root 62), no new chord press.
     r.render_block(
         &mut plan,
-        &[Message::new("/context/root", [Arg::Float(62.0)], 0)],
+        &[Message::new("/context/root", Arg::F32(62.0), 0)],
         &mut buf,
     );
     approx::assert_relative_eq!(
@@ -144,8 +144,8 @@ fn two_overlapping_chords_release_independently() {
     r.render_block(
         &mut plan,
         &[
-            Message::new("/chord/set", [Arg::Float(0.0), Arg::Float(1.0)], 0),
-            Message::new("/chord/set", [Arg::Float(3.0), Arg::Float(1.0)], 0),
+            Message::new("/chord/set", Note::new(Pitch::Degree(0), 1.0), 0),
+            Message::new("/chord/set", Note::new(Pitch::Degree(3), 1.0), 0),
         ],
         &mut buf,
     );
@@ -156,7 +156,7 @@ fn two_overlapping_chords_release_independently() {
         &mut plan,
         &[Message::new(
             "/chord/set",
-            [Arg::Float(0.0), Arg::Float(0.0)],
+            Note::new(Pitch::Degree(0), 0.0),
             0,
         )],
         &mut buf,
@@ -175,7 +175,7 @@ fn chord_player_instrument_loads_and_makes_sound() {
     let mut r = Renderer::new(&plan);
     let mut buf = vec![0.0f32; CFG.block_size];
 
-    let press = Message::new("/chord/set", [Arg::Float(0.0), Arg::Float(1.0)], 0);
+    let press = Message::new("/chord/set", Note::new(Pitch::Degree(0), 1.0), 0);
     let mut peak = 0.0f32;
     // ~2 s at 48k/256 — long enough for the 0.6 s attack to ramp.
     for _ in 0..400 {

@@ -1,8 +1,9 @@
 //! Live audio out via cpal.
 //!
 //! Opens the default output device, builds an [`Engine`] matched to the device sample
-//! rate, and renders inside the audio callback. Incoming Messages are pulled from an
-//! [`std::sync::mpsc::Receiver`] (fed by the OSC/UDP thread) at the top of each callback.
+//! rate, and renders inside the audio callback. Incoming decoded OSC ([`OscIn`]) is pulled from an
+//! [`std::sync::mpsc::Receiver`] (fed by the OSC/UDP thread) at the top of each callback and typed
+//! to a Message against the Plan (ADR-0030).
 //!
 //! This module owns the **logical→device channel map** (ADR-0026): the engine renders the
 //! instrument's *logical* master channels (left/right/…), and [`map_frame`] places them onto
@@ -21,6 +22,7 @@ use reuben_core::message::Message;
 use reuben_core::AudioConfig;
 
 use crate::engine::Engine;
+use crate::osc::OscIn;
 
 /// Things that can go wrong opening the audio stream.
 #[derive(Debug)]
@@ -62,7 +64,7 @@ impl std::error::Error for AudioError {}
 /// drained and dropped, with one warning the first time a rig actually sends. Returns the live
 /// [`Stream`] — keep it alive.
 pub fn start<F>(
-    rx: Receiver<Message>,
+    rx: Receiver<OscIn>,
     block_size: usize,
     osc_out: Option<Sender<Message>>,
     make_engine: F,
@@ -96,7 +98,9 @@ where
             &config,
             move |data: &mut [f32], _: &cpal::OutputCallbackInfo| {
                 while let Ok(m) = rx.try_recv() {
-                    engine.queue(m);
+                    // Convert flat OSC -> typed Message at the engine, where the Plan (and so each
+                    // dest port's Arg type) is known (ADR-0030).
+                    engine.queue_osc(&m);
                 }
                 let frames = data.len() / channels;
                 if buf.len() < frames * logical {

@@ -1,5 +1,5 @@
 {
-  "doc": "Default polyphonic playable rig (8 voices). Send /voicer/note [midi, gate] to play (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off); send several to play a chord.",
+  "doc": "Default polyphonic playable rig (8 voices). Send /voicer/notes [midi, gate] to play (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off); send several to play a chord.",
   "instrument": "default",
   "nodes": [
     {

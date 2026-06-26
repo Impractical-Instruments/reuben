@@ -1,4 +1,4 @@
-//! Per-operator micro-benchmark bridge (#30, follow-up to #19 / ADR-0019).
+//! Per-operator micro-benchmark bridge (#30, follow-up to #19 / ADR-0019; unified model, ADR-0030).
 //!
 //! The macro layer ([`benches/macro_*`](../../benches)) benches end-to-end `render_block` of a
 //! real instrument. This module is the deferred *micro* layer: it drives a single operator's
@@ -16,17 +16,24 @@
 //! kind. The [`tests::every_operator_has_a_micro_bench_workload`] forcing function asserts
 //! `WORKLOADS` covers every registered operator, so adding an operator without a workload reds CI.
 //!
+//! Faithful to the engine (ADR-0030): the harness wires the same per-input-port arrays the Render
+//! loop builds — a held [`Arg`] **latch** (read via `io.last`), the sparse [`Event`] **streams**
+//! (read via `io.stream`), the per-sample materialized **buffers** (read via `io.signal`), and the
+//! `varying` hints — all in input-port declaration order, plus the single Lane-0 **emit** sink that
+//! now subsumes the former harmony-publish / outbound sinks.
+//!
 //! Determinism (ADR-0001): every workload is a fixed function of constants — no clock, no entropy
 //! (the one RNG operator, `noise`, is seeded) — so iai instruction counts are byte-stable.
 
 use std::sync::Arc;
 
-use crate::descriptor::{Descriptor, LaneRule, Shape};
-use crate::harmony::Harmony;
-use crate::message::{Arg, Args, Emit, Event, Outbound};
-use crate::operator::{CtxPublish, Io, Operator};
+use crate::descriptor::{Descriptor, LaneRule, Port, PortType};
+use crate::message::{Arg, Emit, Event};
+use crate::operator::{Io, Operator};
 use crate::registry::Registry;
 use crate::resources::{ResolvedRefs, ResourceStore, SampleBuffer};
+use crate::vocab::harmony::Harmony;
+use crate::vocab::pitch::{Note, Pitch};
 
 /// 48 kHz — the real shipped sample rate (matches the macro layer, ADR-0019).
 pub const SAMPLE_RATE: f32 = 48_000.0;
@@ -57,12 +64,14 @@ pub enum Recipe {
     /// `Default`, plus a `note [60, 1]` event at block 0 — drives note-oriented operators (the
     /// voicer's voice allocation + render, the snap quantizer's resolve+emit).
     Notes,
-    /// `Default`, plus a `set [0, 4, 7]` chord event at block 0 — drives the chord expander.
+    /// `Default`, plus a `set` degree-`Note` event at block 0 — drives the chord expander.
     ChordSet,
-    /// `Default`, plus a `position [60, 1]` event at block 0 — drives the strummer.
+    /// `Default`, plus the `position` control held at a non-default value — its first sample crosses
+    /// a string boundary (the strummer seeds `prev_string` at -1), so the strummer plucks.
     Position,
-    /// `Default`, plus an `in [0.5]` value event at block 0 — drives the message→signal /
-    /// message→message transformers (m2s, map, integrate, differentiate, osc_out).
+    /// `Default`, plus driving the `in` port — a held `0.5` for the dense message→signal
+    /// transformers (m2s, map, integrate, differentiate), or a `Note` event for the message sink
+    /// (osc_out, whose `in` is a `Note` port).
     Value,
 }
 
@@ -108,6 +117,7 @@ pub const WORKLOADS: &[Workload] = &[
     w("sequencer", Recipe::Clocked),
     w("snap", Recipe::Notes),
     w("strum", Recipe::Position),
+    w("transpose", Recipe::Notes),
     w("voicer", Recipe::Notes),
 ];
 
@@ -143,6 +153,7 @@ pub const MICRO_IAI_KINDS: &[&str] = &[
     "sequencer",
     "snap",
     "strum",
+    "transpose",
     "voicer",
 ];
 
@@ -161,40 +172,27 @@ pub fn workload(kind: &str) -> Workload {
 pub struct OpHarness {
     op: Box<dyn Operator>,
     lanes: usize,
-    params: Vec<f32>,
-    /// Per-slot input buffers, `Some` for each `Float` port. Indexed full-order for shaped
-    /// operators (ADR-0028) and signal-order for legacy ones — matching the engine's own wiring
-    /// (see [`build_inputs`]).
+    /// Per-input buffer, `Some` for each `Float` (materialized) and `Buffer` (audio) input — the
+    /// dense block `io.signal` reads — and `None` for held / event ports. Input-port order, matching
+    /// the engine's per-Lane wiring.
     in_bufs: Vec<Option<Vec<f32>>>,
-    /// Held enum index per slot (full-order; empty for legacy operators, which have no enums).
-    enums: Vec<usize>,
-    /// Resolved context per slot (full-order for shaped, context-order for legacy).
-    contexts: Vec<Harmony>,
-    /// `varying` hint per slot, aligned with `in_bufs`.
+    /// The held (ZOH) [`Arg`] per input port — the unified latch (ADR-0030) `io.last` reads. In
+    /// input-port order; collapses the former Harmony / enum / param lanes.
+    latched: Vec<Arg>,
+    /// `varying` hint per input port, aligned with `latched` (false ⇒ a const-folding op may reuse
+    /// cached coefficients).
     varying: Vec<bool>,
-    /// One buffer per `Float` output port (declaration order).
+    /// One buffer per `Buffer` output port (signal-output ordinal order — the index `io.signal_mut`
+    /// uses).
     out_bufs: Vec<Vec<f32>>,
-    /// Events injected at block 0 only (owned; borrowed into `Event`s each block).
-    ev_addr: Vec<&'static str>,
-    ev_args: Vec<Args>,
-    /// Lane-0 sinks, mirroring the engine: every operator gets all three so emit/publish/outbound
-    /// operators exercise their sink path without per-recipe wiring. Cleared each block.
+    /// Events injected at block 0 only: `(input port, node-local address, payload)`. Borrowed into
+    /// per-port [`Event`] streams each block.
+    events: Vec<(usize, &'static str, Arg)>,
+    /// Lane-0 emit sink (ADR-0030): every operator gets one so emit/publish/outbound operators
+    /// exercise their sink path without per-recipe wiring. Cleared each block.
     emit: Vec<Emit>,
-    ctx_pub: Vec<CtxPublish>,
-    outbound: Vec<Outbound>,
     /// Kept alive for the operator's lifetime — `bind_resources` clones the `Arc`.
     _store: Option<Arc<ResourceStore>>,
-}
-
-/// Whether an operator's ports are numbered sequentially (ADR-0028, the modern world) vs per-kind
-/// (the legacy carrier numbering). Mirrors the macro's rule in `reuben-macros`: a port list is
-/// "shaped" iff any input is a materialized `Float` or an `Enum`. The engine wires `Io`'s context /
-/// enum / input slices full-order for shaped operators and per-kind for legacy ones, so the harness
-/// must match or `io.harmony`/`io.signal` would read the wrong slot.
-fn is_shaped(desc: &Descriptor) -> bool {
-    desc.inputs
-        .iter()
-        .any(|p| p.shape == Shape::Enum || (p.shape == Shape::Float && p.meta.is_some()))
 }
 
 impl OpHarness {
@@ -208,18 +206,18 @@ impl OpHarness {
         let desc = entry.descriptor.clone();
         let mut op = (entry.make)();
         let recipe = workload(kind).recipe;
-        let shaped = is_shaped(&desc);
 
-        let WiredInputs {
-            mut in_bufs,
-            enums,
-            contexts,
-            mut varying,
-        } = build_inputs(&desc, shaped);
+        // Per-input-port arrays, in declaration order — the layout the Render loop wires
+        // (ADR-0030): a dense buffer for materialized/audio ports, a held Arg latch for every port,
+        // a `varying` hint for every port.
+        let mut in_bufs: Vec<Option<Vec<f32>>> = desc.inputs.iter().map(input_buffer).collect();
+        let mut latched: Vec<Arg> = desc.inputs.iter().map(default_latch).collect();
+        let mut varying: Vec<bool> = vec![false; desc.inputs.len()];
+
         let out_bufs: Vec<Vec<f32>> = desc
             .outputs
             .iter()
-            .filter(|p| p.shape == Shape::Float)
+            .filter(|p| matches!(p.ty, PortType::Buffer))
             .map(|_| vec![0.0; BLOCK_SIZE])
             .collect();
 
@@ -228,159 +226,157 @@ impl OpHarness {
             LaneRule::Inherit => 1,
         };
 
-        // Apply the recipe's input drives + events. `set_float`/`enums` index full-order, which is
-        // why every recipe-driven operator (envelope/sequencer/sample) is shaped.
-        let mut ev_addr: Vec<&'static str> = Vec::new();
-        let mut ev_args: Vec<Args> = Vec::new();
+        // Apply the recipe's input drives + events.
+        let mut events: Vec<(usize, &'static str, Arg)> = Vec::new();
         let mut store = None;
         match recipe {
             Recipe::Default => {}
-            Recipe::Gate => set_high(&desc, &mut in_bufs, &mut varying, "gate"),
+            Recipe::Gate => set_const(&desc, &mut in_bufs, &mut latched, &mut varying, "gate", 1.0),
             Recipe::Clocked => set_clock(&desc, &mut in_bufs, &mut varying, "clock"),
             Recipe::Sample => {
-                set_high(&desc, &mut in_bufs, &mut varying, "gate");
-                set_const(&desc, &mut in_bufs, &mut varying, "freq", 440.0);
+                set_const(&desc, &mut in_bufs, &mut latched, &mut varying, "gate", 1.0);
+                set_const(
+                    &desc,
+                    &mut in_bufs,
+                    &mut latched,
+                    &mut varying,
+                    "freq",
+                    440.0,
+                );
                 store = Some(bind_synthetic_sample(&desc, op.as_mut()));
             }
-            Recipe::Notes => push_event(&mut ev_addr, &mut ev_args, "note", &[60.0, 1.0]),
-            Recipe::ChordSet => push_event(&mut ev_addr, &mut ev_args, "set", &[0.0, 4.0, 7.0]),
-            Recipe::Position => push_event(&mut ev_addr, &mut ev_args, "position", &[60.0, 1.0]),
-            Recipe::Value => push_event(&mut ev_addr, &mut ev_args, "in", &[0.5]),
+            Recipe::Notes => push_note(
+                &mut events,
+                &desc,
+                "notes",
+                Note::new(Pitch::Absolute(60.0), 1.0),
+            ),
+            Recipe::ChordSet => {
+                push_note(&mut events, &desc, "set", Note::new(Pitch::Degree(0), 1.0))
+            }
+            Recipe::Position => set_const(
+                &desc,
+                &mut in_bufs,
+                &mut latched,
+                &mut varying,
+                "position",
+                0.5,
+            ),
+            // `in` is a `Float` control on the dense transformers but a `Note` port on `osc_out`;
+            // drive each in its own type (ADR-0030 split the formerly-uniform value event).
+            Recipe::Value => {
+                let i = input_index(&desc, "in");
+                if matches!(desc.inputs[i].ty, PortType::F32) {
+                    set_const(&desc, &mut in_bufs, &mut latched, &mut varying, "in", 0.5);
+                } else {
+                    push_note(
+                        &mut events,
+                        &desc,
+                        "in",
+                        Note::new(Pitch::Absolute(60.0), 1.0),
+                    );
+                }
+            }
         }
 
         Self {
             op,
             lanes,
-            params: desc.default_params(),
             in_bufs,
-            enums,
-            contexts,
+            latched,
             varying,
             out_bufs,
-            ev_addr,
-            ev_args,
+            events,
             emit: Vec::new(),
-            ctx_pub: Vec::new(),
-            outbound: Vec::new(),
             _store: store,
         }
     }
 
     /// Render the full fixed workload — [`BLOCKS`] blocks of one `process` call (lane 0). Events
     /// fire at block 0 only (the macro layer's note-on-then-tail shape). Accumulates a value that
-    /// depends on every block's outputs + sink activity so the optimizer cannot elide the work; the
+    /// depends on every block's outputs + emit activity so the optimizer cannot elide the work; the
     /// sum is the bench's return value (the caller `black_box`es it under iai).
     pub fn render(self) -> f32 {
         let Self {
             mut op,
             lanes,
-            params,
             in_bufs,
-            enums,
-            contexts,
+            latched,
             varying,
             mut out_bufs,
-            ev_addr,
-            ev_args,
+            events,
             mut emit,
-            mut ctx_pub,
-            mut outbound,
             _store,
         } = self;
+
+        let n_inputs = latched.len();
+
+        // Block-0 event streams, built once: one per-port [`Event`] vec borrowing the owned `events`
+        // payloads, plus an empty set for every other block — so the per-block loop allocates
+        // nothing for streams.
+        let mut ev_per_port: Vec<Vec<Event>> = (0..n_inputs).map(|_| Vec::new()).collect();
+        for (port, addr, arg) in &events {
+            ev_per_port[*port].push(Event {
+                address: addr,
+                arg,
+                frame: 0,
+            });
+        }
+        let block0_streams: Vec<&[Event]> = ev_per_port.iter().map(|v| v.as_slice()).collect();
+        let empty_streams: Vec<&[Event]> = vec![&[]; n_inputs];
 
         let mut acc = 0.0f32;
         for b in 0..BLOCKS {
             emit.clear();
-            ctx_pub.clear();
-            outbound.clear();
-
-            let events: Vec<Event> = if b == 0 {
-                ev_addr
-                    .iter()
-                    .zip(&ev_args)
-                    .map(|(addr, args)| Event {
-                        addr,
-                        args,
-                        frame: 0,
-                    })
-                    .collect()
+            let streams = if b == 0 {
+                &block0_streams
             } else {
-                Vec::new()
+                &empty_streams
             };
 
             let inputs = in_bufs.iter().map(|o| o.as_deref());
             let outputs = out_bufs.iter_mut().map(|v| v.as_mut_slice());
 
-            let mut io = Io::new(SAMPLE_RATE, BLOCK_SIZE, inputs, outputs, &params, &events)
-                .with_lane(0, lanes)
-                .with_contexts(&contexts)
+            let mut io = Io::new(SAMPLE_RATE, BLOCK_SIZE, inputs, outputs)
+                .with_latched(&latched)
+                .with_streams(streams)
                 .with_varying(&varying)
-                .with_enums(&enums)
-                .with_emit(&mut emit, 0)
-                .with_context_publish(&mut ctx_pub, 0)
-                .with_outbound(&mut outbound, 0);
+                .with_lane(0, lanes)
+                .with_emit(&mut emit, 0);
             op.process(&mut io);
-            drop(io); // releases the borrows of out_bufs + the three sinks taken above
+            drop(io); // releases the borrows of out_bufs + the emit sink taken above
 
             acc += out_bufs.first().map_or(0.0, |v| v[0]);
-            acc += (emit.len() + ctx_pub.len() + outbound.len()) as f32;
+            acc += emit.len() as f32;
         }
         acc
     }
 }
 
-/// The per-slot `Io` input slices for one operator, in the layout its `process` expects.
-struct WiredInputs {
-    in_bufs: Vec<Option<Vec<f32>>>,
-    enums: Vec<usize>,
-    contexts: Vec<Harmony>,
-    varying: Vec<bool>,
+/// The per-input dense buffer the engine would hand `process`: a `Float` control materialized to
+/// its default, a `Buffer` audio input as silence (a wired source the recipe may overwrite), or
+/// `None` for a held / event port (delivered through the latch / streams instead).
+fn input_buffer(p: &Port) -> Option<Vec<f32>> {
+    match p.ty {
+        PortType::F32 => Some(vec![p.meta.as_ref().map_or(0.0, |m| m.default); BLOCK_SIZE]),
+        PortType::Buffer => Some(vec![0.0; BLOCK_SIZE]),
+        _ => None,
+    }
 }
 
-/// Build the per-slot `Io` input slices for an operator, matching the engine's numbering: full
-/// (declaration) order for shaped operators, per-kind order for legacy ones. Each `Float` input
-/// gets a buffer filled with its descriptor default (or `0.0` for a bare signal input with no
-/// default); other shapes get `None` (events/context/enum are delivered through their own slices).
-fn build_inputs(desc: &Descriptor, shaped: bool) -> WiredInputs {
-    let mut in_bufs = Vec::new();
-    let mut enums = Vec::new();
-    let mut contexts = Vec::new();
-    let mut varying = Vec::new();
-
-    if shaped {
-        // One aligned slot per input, in declaration order.
-        for p in &desc.inputs {
-            match p.shape {
-                Shape::Float => {
-                    let def = p.meta.as_ref().map_or(0.0, |m| m.default);
-                    in_bufs.push(Some(vec![def; BLOCK_SIZE]));
-                }
-                _ => in_bufs.push(None),
-            }
-            enums.push(p.enum_meta.as_ref().map_or(0, |e| e.default));
-            contexts.push(Harmony::default());
-            varying.push(false);
-        }
-    } else {
-        // Legacy per-kind numbering: signal inputs only in `in_bufs`/`varying`, context inputs only
-        // in `contexts`, no enums. Message inputs contribute nothing (events arrive separately).
-        for p in &desc.inputs {
-            match p.shape {
-                Shape::Float => {
-                    let def = p.meta.as_ref().map_or(0.0, |m| m.default);
-                    in_bufs.push(Some(vec![def; BLOCK_SIZE]));
-                    varying.push(false);
-                }
-                Shape::Harmony => contexts.push(Harmony::default()),
-                _ => {}
-            }
-        }
-    }
-    WiredInputs {
-        in_bufs,
-        enums,
-        contexts,
-        varying,
+/// The held (ZOH) [`Arg`] the engine would latch for a port at rest (ADR-0030): a scalar control's
+/// default, a vocab enum's default variant, the default `Harmony`. Buffer / event / non-default
+/// ports get a harmless `F32(0.0)` placeholder — `io.last` is never the read for those.
+fn default_latch(p: &Port) -> Arg {
+    match &p.ty {
+        PortType::F32 => Arg::F32(p.meta.as_ref().map_or(0.0, |m| m.default)),
+        PortType::Vocab {
+            enum_meta: Some(e), ..
+        } => e
+            .resolve_arg(&Arg::I32(e.default as i32))
+            .unwrap_or(Arg::I32(e.default as i32)),
+        PortType::Vocab { name, .. } if *name == "Harmony" => Arg::Harmony(Harmony::default()),
+        _ => Arg::F32(0.0),
     }
 }
 
@@ -393,11 +389,13 @@ fn input_index(desc: &Descriptor, name: &str) -> usize {
         .unwrap_or_else(|| panic!("{:?} has no input {name:?}", desc.type_name))
 }
 
-/// Drive a named `Float` input with a constant value (overwrites the default-filled buffer) and
-/// flag it `varying` so the operator takes its recompute path.
+/// Drive a named `Float`/`Buffer` input with a constant value (overwrites the default-filled
+/// buffer), keep the latch in sync (for the const-fold / ZOH read path), and flag it `varying` so
+/// the operator takes its recompute path.
 fn set_const(
     desc: &Descriptor,
     in_bufs: &mut [Option<Vec<f32>>],
+    latched: &mut [Arg],
     varying: &mut [bool],
     name: &str,
     value: f32,
@@ -406,12 +404,10 @@ fn set_const(
     if let Some(buf) = in_bufs[i].as_mut() {
         buf.fill(value);
     }
+    if matches!(desc.inputs[i].ty, PortType::F32) {
+        latched[i] = Arg::F32(value);
+    }
     varying[i] = true;
-}
-
-/// Hold a named gate-like input high (1.0) — a rising edge at block 0.
-fn set_high(desc: &Descriptor, in_bufs: &mut [Option<Vec<f32>>], varying: &mut [bool], name: &str) {
-    set_const(desc, in_bufs, varying, name, 1.0);
 }
 
 /// Drive a named clock input as a per-block square wave: high for the first half of the block, low
@@ -433,15 +429,16 @@ fn set_clock(
     varying[i] = true;
 }
 
-/// Queue an event for block 0. `addr` is the node-local address the operator matches.
-fn push_event(
-    ev_addr: &mut Vec<&'static str>,
-    ev_args: &mut Vec<Args>,
-    addr: &'static str,
-    args: &[f32],
+/// Queue a `Note` event for block 0 on the named event input. `addr` is the node-local address the
+/// engine carries (the port name); the payload rides a single [`Arg::Note`] (ADR-0030).
+fn push_note(
+    events: &mut Vec<(usize, &'static str, Arg)>,
+    desc: &Descriptor,
+    name: &str,
+    note: Note,
 ) {
-    ev_addr.push(addr);
-    ev_args.push(args.iter().map(|&v| Arg::Float(v)).collect());
+    let i = input_index(desc, name);
+    events.push((i, desc.inputs[i].name, Arg::Note(note)));
 }
 
 /// Build a synthetic decoded sample (a 1 s sine, longer than the workload so the read loop never
@@ -506,7 +503,7 @@ mod tests {
 
     /// Every workload builds and renders a full block schedule without panicking — a cheap smoke
     /// test that the harness wires each operator's `Io` correctly (right slice lengths, resource
-    /// bound, sinks attached) regardless of its shape/legacy numbering.
+    /// bound, latch/streams attached) regardless of its port shape.
     #[test]
     fn every_workload_renders() {
         for w in WORKLOADS {

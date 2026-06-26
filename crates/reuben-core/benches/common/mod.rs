@@ -9,7 +9,8 @@
 //! it, so `dead_code` is expected.
 #![allow(dead_code)]
 
-use reuben_core::{load, Arg, AudioConfig, Message, Plan, Registry, Renderer, SerialExecutor};
+use reuben_core::vocab::pitch::{Note, Pitch};
+use reuben_core::{load, AudioConfig, Message, Plan, Registry, Renderer, SerialExecutor};
 
 /// Real shipped sample rate.
 pub const SAMPLE_RATE: f32 = 48_000.0;
@@ -27,7 +28,7 @@ const NOTE_OFF_SAMPLE: usize = SAMPLE_RATE as usize / 2;
 
 /// A benched instrument: its name, its shipped JSON, and the OSC address external note-on/off
 /// Messages enter on. The address differs per graph — most take notes straight at the Voicer
-/// (`/voicer/note`), but the tonal `autotune` graph feeds its quantizer first (`/snap/note`),
+/// (`/voicer/notes`), but the tonal `autotune` graph feeds its quantizer first (`/snap/notes`),
 /// which resolves and forwards degrees to the Voicer.
 struct Fixture {
     name: &'static str,
@@ -45,27 +46,27 @@ const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "reverb",
         json: include_str!("../../../../instruments/reverb.json"),
-        note_addr: "/voicer/note",
+        note_addr: "/voicer/notes",
     },
     Fixture {
         name: "echo",
         json: include_str!("../../../../instruments/echo.json"),
-        note_addr: "/voicer/note",
+        note_addr: "/voicer/notes",
     },
     Fixture {
         name: "auto-filter",
         json: include_str!("../../../../instruments/auto-filter.json"),
-        note_addr: "/voicer/note",
+        note_addr: "/voicer/notes",
     },
     Fixture {
         name: "sampler-arp",
         json: include_str!("../../../../instruments/sampler-arp.json"),
-        note_addr: "/voicer/note",
+        note_addr: "/voicer/notes",
     },
     Fixture {
         name: "autotune",
         json: include_str!("../../../../instruments/autotune.json"),
-        note_addr: "/snap/note",
+        note_addr: "/snap/notes",
     },
 ];
 
@@ -81,13 +82,17 @@ fn fixture(name: &str) -> &'static Fixture {
 
 /// The fixed messages for block `b`, with frames *relative to the block start*
 /// (the contract `render_block` expects). Note-on at frame 0; note-off at 0.5 s.
-/// `note_addr` is the fixture's note entry point (e.g. `/voicer/note`, or `/snap/note` for the
+/// `note_addr` is the fixture's note entry point (e.g. `/voicer/notes`, or `/snap/notes` for the
 /// tonal graph), so the same chord schedule drives every graph at its own front door.
 fn block_messages(b: usize, note_addr: &str) -> Vec<Message> {
     let mut msgs = Vec::new();
     if b == 0 {
         for &m in &CHORD {
-            msgs.push(Message::new(note_addr, [Arg::Float(m), Arg::Float(1.0)], 0));
+            msgs.push(Message::new(
+                note_addr,
+                Note::new(Pitch::Absolute(m), 1.0),
+                0,
+            ));
         }
     }
     let off_block = NOTE_OFF_SAMPLE / BLOCK_SIZE;
@@ -96,7 +101,7 @@ fn block_messages(b: usize, note_addr: &str) -> Vec<Message> {
         for &m in &CHORD {
             msgs.push(Message::new(
                 note_addr,
-                [Arg::Float(m), Arg::Float(0.0)],
+                Note::new(Pitch::Absolute(m), 0.0),
                 off_frame,
             ));
         }

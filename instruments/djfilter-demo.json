@@ -1,5 +1,5 @@
 {
-  "doc": "A self-playing saw arpeggio through the DJ-mixer `djfilter` knob. The Clock's beat gate drives a sequencer (a major arpeggio) into a 4-voice Voicer; each voice fires a saw oscillator through `/djfilter` and an ADSR into the output. The star is the one bipolar filter knob: a public identity `map` (`/filter_knob`, rests at North = 0) smoothed through an `m2s` into the djfilter's Signal `position` input — so turning it is zipper-free. Send /filter_knob [-1..1]: 0 = open/no filter, negative (CCW) sweeps a low-pass down, positive (CW) sweeps a high-pass up. Set tempo via /clock/tempo; edit the line via /sequencer/step1../sequencer/step8.",
+  "doc": "A self-playing saw arpeggio through the DJ-mixer `djfilter` knob. The Clock's beat gate drives a sequencer (a major arpeggio) into a 4-voice Voicer; each voice fires a saw oscillator through `/djfilter` and an ADSR into the output. The star is the one bipolar filter knob: a public identity `map` (`/filter_knob`, rests at North = 0) smoothed through an `m2s` into the djfilter's Signal `position` input — so turning it is zipper-free. Send /filter_knob/in [-1..1]: 0 = open/no filter, negative (CCW) sweeps a low-pass down, positive (CW) sweeps a high-pass up. Set tempo via /clock/tempo; edit the line via /sequencer/step1../sequencer/step8.",
   "instrument": "djfilter-demo",
   "nodes": [
     {
@@ -126,9 +126,9 @@
       "control": {
         "label": "Filter"
       },
-      "doc": "PUBLIC DJ filter knob. Identity pass-through over [-1,1]; rests at North = 0 (emitted on init so the chain and any control surface agree at rest). Send /filter_knob [-1..1].",
+      "doc": "PUBLIC DJ filter knob. Identity pass-through over [-1,1]; rests at North = 0 (emitted on init so the chain and any control surface agree at rest). Send /filter_knob/in [-1..1].",
       "inputs": {
-        "default": 0.0,
+        "in": 0.0,
         "in_max": 1.0,
         "in_min": -1.0,
         "out_max": 1.0,
@@ -140,7 +140,6 @@
       "address": "/cv_position",
       "doc": "Smooth the knob into a CV signal feeding the djfilter position; default 0 (North) before any knob move.",
       "inputs": {
-        "default": 0.0,
         "in": {
           "from": "/filter_knob"
         },

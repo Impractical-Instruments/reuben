@@ -1,10 +1,12 @@
-//! Render — executing a [`Plan`] per block (ADR-0009, ADR-0010, ADR-0011).
+//! Render — executing a [`Plan`] per block (ADR-0009, ADR-0010, ADR-0011, ADR-0030).
 //!
 //! The serial executor walks the topologically-ordered nodes. For each node, incoming
-//! Messages are routed: those whose local address names a param drive **block-slicing**
-//! (the block is split at their frames so [`Operator::process`] always sees a constant
-//! param value); everything else is delivered as zero-copy [`Event`]s via [`Io::events`]
-//! for event operators (the Voicer) to time themselves.
+//! Messages are routed to its input ports by the port's [`PortKind`](crate::plan::PortKind):
+//! a **Held** control (scalar / enum / `Harmony`) drives **block-slicing** (the block is split
+//! at its change frames so [`Operator::process`] always sees a constant held value, read via
+//! `io.last`); a **Stream** event (`Note`) is delivered as a zero-copy [`Event`] on its port
+//! (read via `io.stream`); a **Dense** [`Buffer`] input fed by a scalar is **materialized** ZOH
+//! into its arena buffer (read via `io.signal`).
 //!
 //! Each node is processed once **per Lane (Voice)**: the engine runs `node.ops[lane]`
 //! with that Lane's input/output buffers and `io.lane()` set, so single-Lane operators
@@ -21,10 +23,10 @@
 
 use smallvec::SmallVec;
 
-use crate::harmony::Harmony;
-use crate::message::{Emit, Event, Message, Outbound};
-use crate::operator::{CtxPublish, Io};
-use crate::plan::{Plan, PlanNode};
+use crate::descriptor::{Port, PortType};
+use crate::message::{Arg, Emit, Event, Message};
+use crate::operator::Io;
+use crate::plan::{port_kind, Plan, PlanNode, PortKind};
 
 /// Decides the order in which nodes are processed for a block.
 ///
@@ -70,24 +72,9 @@ pub struct Renderer<E: Executor = SerialExecutor> {
     emitted: Vec<Emit>,
     /// One node's emissions for the current node, drained into `emitted` after it runs.
     emit_scratch: Vec<Emit>,
-    /// Persistent latched context per slot (ADR-0015): the value a follower reads at frame 0,
-    /// carried across blocks. One per Harmony output port; init to the default harmony.
-    context_arena: Vec<Harmony>,
-    /// Block-lifetime pool of published context snapshots. Reader slices index it; grown
-    /// once, cleared per block.
-    context_pool: Vec<Harmony>,
-    /// One node's context publishes for the current node, drained after it runs.
-    ctx_publish_scratch: Vec<CtxPublish>,
-    /// One node's outbound-route sends for the current node (ADR-0026), drained into the caller's
-    /// outbound `Vec<Message>` (stamped with the node address) after it runs.
-    outbound_scratch: Vec<Outbound>,
     /// Throwaway outbound sink for the mono [`Renderer::render_block`] convenience, which has no
     /// outbound out-parameter. Preallocated and cleared per call so render_block stays alloc-free.
     outbound_sink: Vec<Message>,
-    /// Deferred per-slot baseline update: the `context_pool` index of this block's last
-    /// publish to each slot, applied to `context_arena` at block end so pre-change segments
-    /// still read the prior value. `usize::MAX` = no publish this block.
-    ctx_pending: Vec<usize>,
     /// Per-node block-slice boundaries scratch. Cleared per node — capacity retained.
     bounds: Vec<usize>,
     /// Execution order for the block, refilled by the executor into reused capacity.
@@ -135,12 +122,7 @@ impl<E: Executor> Renderer<E> {
             routes,
             emitted: Vec::with_capacity(EMIT_POOL_CAP),
             emit_scratch: Vec::with_capacity(EMIT_POOL_CAP),
-            context_arena: vec![Harmony::default(); plan.num_context_slots],
-            context_pool: Vec::with_capacity(EMIT_POOL_CAP),
-            ctx_publish_scratch: Vec::with_capacity(EMIT_POOL_CAP),
-            outbound_scratch: Vec::with_capacity(EMIT_POOL_CAP),
             outbound_sink: Vec::with_capacity(EMIT_POOL_CAP),
-            ctx_pending: vec![usize::MAX; plan.num_context_slots],
             bounds,
             order,
             master: (0..plan.config.channels)
@@ -177,9 +159,8 @@ impl<E: Executor> Renderer<E> {
     /// Render one block across **N logical master channels** (ADR-0026). `out` has one buffer
     /// per channel (`out.len() == plan.config.channels`), each `block_size` long. This is the
     /// stereo/multichannel path the engine drives. `outbound` receives any Messages an `osc_out`
-    /// sink sent this block (ADR-0026), each stamped with its node's address; it is **appended to,
-    /// never cleared** — the caller drains it (so an Engine can accumulate across several blocks of
-    /// one callback). Allocation-free in steady state (a String per outbound Message when one flows).
+    /// sink sent this block (ADR-0026, ADR-0030); it is **appended to, never cleared** — the caller
+    /// drains it. Allocation-free in steady state.
     pub fn render_block_multi(
         &mut self,
         plan: &mut Plan,
@@ -201,8 +182,8 @@ impl<E: Executor> Renderer<E> {
         outbound: &mut Vec<Message>,
     ) {
         // Fresh edge buffers each block (upstream writes before downstream reads). Materialize
-        // scratch buffers are excluded (ADR-0028): they are fully written by the materialize step
-        // and persist a held Float input's value across blocks, so zeroing them would only force a
+        // scratch buffers are excluded (ADR-0030): they are fully written by the materialize step
+        // and persist a held input's value across blocks, so zeroing them would only force a
         // needless refill. `process_node` keeps each one fully defined (see `materialize_clean`).
         for (i, buf) in self.arena.iter_mut().enumerate() {
             if plan.materialize_scratch_mask[i] {
@@ -211,11 +192,10 @@ impl<E: Executor> Renderer<E> {
             buf.iter_mut().for_each(|s| *s = 0.0);
         }
 
-        // Route external messages to nodes, split into param updates vs raw events. Reuses
-        // scratch. Operator-emitted messages are routed later, interleaved with execution.
+        // Route external messages to node input ports, classified by port kind. Reuses scratch.
+        // Operator-emitted messages are routed later, interleaved with execution.
         route_messages(&mut self.routes, plan, messages);
         self.emitted.clear();
-        self.context_pool.clear();
 
         // Executor decides node order for the block (into reused capacity).
         self.executor.order(plan, &mut self.order);
@@ -231,11 +211,6 @@ impl<E: Executor> Renderer<E> {
             routes,
             emitted,
             emit_scratch,
-            context_arena,
-            context_pool,
-            ctx_publish_scratch,
-            outbound_scratch,
-            ctx_pending,
             bounds,
             order,
             ..
@@ -243,70 +218,65 @@ impl<E: Executor> Renderer<E> {
 
         for &i in order.iter() {
             emit_scratch.clear();
-            ctx_publish_scratch.clear();
-            outbound_scratch.clear();
             process_node(
                 arena,
                 out_scratch,
                 bounds,
-                &routes[i],
+                &mut routes[i],
                 &mut plan.nodes[i],
                 messages,
                 emitted,
                 emit_scratch,
-                context_arena,
-                context_pool,
-                ctx_publish_scratch,
-                outbound_scratch,
                 sample_rate,
                 block_size,
             );
 
-            // Drain this node's outbound sends (ADR-0026): stamp each with the node's address (the
-            // outbound OSC address) and push past the boundary, appending to the caller's buffer.
-            for o in outbound_scratch.drain(..) {
-                outbound.push(Message {
-                    addr: plan.nodes[i].address.clone(),
-                    args: o.args,
-                    frame: o.frame,
-                });
+            // An `osc_out` sink: its emissions leave the graph (ADR-0026, ADR-0030). Drain each to
+            // the outbound list stamped with the node's (fixed) address and the already-block-
+            // absolute frame; native encodes + sends them. A sink has no downstream wiring, so this
+            // replaces — not supplements — the routing below.
+            if let Some(addr) = plan
+                .outbound_taps
+                .iter()
+                .find(|t| t.node == i)
+                .map(|t| t.address.as_str())
+            {
+                for e in emit_scratch.drain(..) {
+                    outbound.push(Message::new(addr, e.arg, e.frame));
+                }
+                continue;
             }
 
-            // Route this node's emissions (ADR-0014): each goes into the block-lifetime
-            // pool, and a zero-copy event reference is delivered to every downstream target
-            // of its Message output port — which run later in topo order, so they see it.
+            // Route this node's emissions (ADR-0014, ADR-0030): each goes into the block-lifetime
+            // pool, and is delivered to every wired `(dst node, dst input port)` — which run later
+            // in topo order, so they see it. The dst input port's [`PortKind`] decides how it
+            // lands: a Held input latches + re-slices (the former context publish unifies here), a
+            // Stream input gets a zero-copy event, a Dense input materializes ZOH.
             for e in emit_scratch.drain(..) {
                 let port = e.port;
                 let pool_idx = emitted.len();
-                for &dst in &plan.nodes[i].msg_targets[port] {
-                    routes[dst].events.push(RoutedEvent {
-                        src: EventSrc::Emitted(pool_idx),
-                    });
+                for &(dst, dst_port) in &plan.nodes[i].out_targets[port] {
+                    let p = &plan.nodes[dst].descriptor.inputs[dst_port];
+                    match port_kind(p) {
+                        PortKind::Dense => {
+                            if let Some(v) = e.arg.as_f32() {
+                                routes[dst].materialize_writes.push((e.frame, dst_port, v));
+                            }
+                        }
+                        PortKind::Held => {
+                            if let Some(a) = held_arg(p, &e.arg) {
+                                routes[dst].held.push((e.frame, dst_port, a));
+                            }
+                        }
+                        PortKind::Stream => {
+                            routes[dst].events.push(RoutedEvent {
+                                dst_port,
+                                src: EventSrc::Emitted(pool_idx),
+                            });
+                        }
+                    }
                 }
                 emitted.push(e);
-            }
-
-            // Route this node's context publishes (ADR-0015): snapshot into the block pool,
-            // record a (frame, slot, pool_idx) reader-slice for every downstream reader, and
-            // remember the last publish per slot for the deferred baseline update.
-            for cp in ctx_publish_scratch.drain(..) {
-                let slot = plan.nodes[i].context_outputs[cp.port];
-                let pool_idx = context_pool.len();
-                context_pool.push(cp.ctx);
-                for &dst in &plan.nodes[i].ctx_targets[cp.port] {
-                    routes[dst].context.push((cp.frame, slot, pool_idx));
-                }
-                ctx_pending[slot] = pool_idx;
-            }
-        }
-
-        // Deferred baseline: a slot's persistent value becomes this block's last publish, so
-        // next block's frame-0 readers see it — while this block's pre-change segments still
-        // read the prior value (they consult the pool, not the baseline, past a publish).
-        for (slot, p) in ctx_pending.iter_mut().enumerate() {
-            if *p != usize::MAX {
-                context_arena[slot] = context_pool[*p];
-                *p = usize::MAX;
             }
         }
 
@@ -343,6 +313,21 @@ impl<E: Executor> Renderer<E> {
     }
 }
 
+/// Normalize a routed [`Arg`] for a **Held** input port (ADR-0030): clamp an `F32` to the port's
+/// range, resolve an enum control message (symbol / index / variant) to the enum's concrete `Arg`,
+/// or take any other vocab value (`Harmony`) as-is. `None` if it cannot be a value of this port.
+fn held_arg(p: &Port, arg: &Arg) -> Option<Arg> {
+    match &p.ty {
+        PortType::F32 => arg
+            .as_f32()
+            .map(|v| Arg::F32(p.meta.as_ref().map(|m| m.clamp(v)).unwrap_or(v))),
+        PortType::Vocab {
+            enum_meta: Some(e), ..
+        } => e.resolve_arg(arg),
+        _ => Some(arg.clone()),
+    }
+}
+
 /// Where a routed event's payload lives: an external block-input Message, or a Message an
 /// upstream operator emitted this block (ADR-0014). Either way delivery is zero-copy — the
 /// [`Event`] borrows the source.
@@ -355,102 +340,90 @@ enum EventSrc {
     Emitted(usize),
 }
 
-/// One routed event: where its payload lives. Turning it into an [`Event`] at delivery
-/// allocates nothing.
+/// One routed Stream event: which dst input port it lands on, and where its payload lives.
+/// Turning it into an [`Event`] at delivery allocates nothing.
 struct RoutedEvent {
+    dst_port: usize,
     src: EventSrc,
 }
 
-/// Per-node routed messages for one block.
+/// Per-node routed messages for one block (ADR-0030), one bucket per [`PortKind`].
 #[derive(Default)]
 struct NodeRoute {
-    /// (frame, param slot, value) — drive block-slicing.
-    params: Vec<(usize, usize, f32)>,
-    /// (frame, input port, value) — a change to a materialized [`Shape::Float`] input
-    /// (ADR-0028). Unlike `params` these do **not** split the block; the engine writes them into
-    /// the input's materialized buffer at their frame, so a per-sample reader sees them
-    /// sample-accurately in one `process` call. Sorted by frame.
-    floats: Vec<(usize, usize, f32)>,
-    /// (frame, input port, variant index) — a change to an [`Shape::Enum`] input (ADR-0028). Like
-    /// `params` these **split** the block (a held discrete choice is constant per `process` call):
-    /// each interior frame becomes a segment boundary and updates the port's enum latch. Sorted
-    /// by frame.
-    enums: Vec<(usize, usize, usize)>,
-    /// Routed events (by reference into the block's Messages) — for event operators.
+    /// (frame, input port, value) — a scalar feeding a materialized [`Buffer`](PortType::Buffer)
+    /// input. The engine writes it into the input's scratch buffer at its frame (ZOH); does **not**
+    /// split the block. Sorted by frame before materialize.
+    materialize_writes: Vec<(usize, usize, f32)>,
+    /// (frame, input port, value) — a change to a **Held** input (ADR-0030): scalar / enum /
+    /// `Harmony`. Splits the block (a held value is constant per `process` call); each interior
+    /// frame becomes a segment boundary and updates the port's latch.
+    held: Vec<(usize, usize, Arg)>,
+    /// Routed **Stream** events (by reference), one per delivered Message — for event operators.
     events: Vec<RoutedEvent>,
-    /// (frame, context slot, pool index) — a context change a follower reads; each frame
-    /// also becomes a slice boundary (ADR-0015). Filled by the publish drain, not by
-    /// `route_messages`.
-    context: Vec<(usize, usize, usize)>,
 }
 
-/// Match each message to a node by address prefix, then classify param vs event.
-/// Reuses `routes` (one entry per node); clears the inner Vecs and refills them.
+/// Match each message to a node by address prefix, then to an input port by name, then classify
+/// by the port's [`PortKind`]. Reuses `routes` (one entry per node); clears and refills.
 fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]) {
     // Steady-state no-op: the Renderer presizes `routes` to the node count.
     if routes.len() != plan.nodes.len() {
         routes.resize_with(plan.nodes.len(), NodeRoute::default);
     }
     for r in routes.iter_mut() {
-        r.params.clear();
-        r.floats.clear();
-        r.enums.clear();
+        r.materialize_writes.clear();
+        r.held.clear();
         r.events.clear();
-        r.context.clear();
     }
 
     for (mi, msg) in messages.iter().enumerate() {
         for (i, node) in plan.nodes.iter().enumerate() {
-            let Some(local) = local_address(&msg.addr, &node.address) else {
+            let Some(local) = local_address(&msg.address, &node.address) else {
                 continue;
             };
-            // A new-style materialized Float input takes precedence: its value rides the
-            // materialize buffer (written at `frame`), not a block-slicing param (ADR-0028).
-            if let Some((port, meta)) = node.descriptor.materialized_input(local) {
-                if let Some(v) = msg.first_f32() {
-                    routes[i].floats.push((msg.frame, port, meta.clamp(v)));
-                }
-                break;
-            }
-            // An Enum input resolves its first arg as a wire token (symbol `"Hp"` or fallback
-            // index `"1"`) to a held variant index; like a param it splits the block (ADR-0028).
-            if let Some((port, e)) = node.descriptor.enum_input(local) {
-                if let Some(idx) = msg.args.first().and_then(|a| e.resolve_arg(a)) {
-                    routes[i].enums.push((msg.frame, port, idx));
-                }
-                break;
-            }
-            match node.descriptor.param_index(local) {
-                Some(slot) => {
-                    if let Some(v) = msg.first_f32() {
-                        let v = node.descriptor.params[slot].clamp(v);
-                        routes[i].params.push((msg.frame, slot, v));
+            // Match the local address to an input port by name; deliver per the port's kind
+            // (ADR-0030, Q11a — routing is by port, not by operator address-filtering).
+            if let Some((port, p)) = node
+                .descriptor
+                .inputs
+                .iter()
+                .enumerate()
+                .find(|(_, p)| p.name == local)
+            {
+                match port_kind(p) {
+                    PortKind::Dense => {
+                        if let Some(v) = msg.as_f32() {
+                            routes[i].materialize_writes.push((msg.frame, port, v));
+                        }
                     }
-                }
-                None => {
-                    // `local` is a suffix of `msg.addr`; record where it starts.
-                    let local_start = msg.addr.len() - local.len();
-                    routes[i].events.push(RoutedEvent {
-                        src: EventSrc::External {
-                            msg: mi,
-                            local_start,
-                        },
-                    });
+                    PortKind::Held => {
+                        if let Some(a) = held_arg(p, &msg.arg) {
+                            routes[i].held.push((msg.frame, port, a));
+                        }
+                    }
+                    PortKind::Stream => {
+                        let local_start = msg.address.len() - local.len();
+                        routes[i].events.push(RoutedEvent {
+                            dst_port: port,
+                            src: EventSrc::External {
+                                msg: mi,
+                                local_start,
+                            },
+                        });
+                    }
                 }
             }
             break; // a message targets at most one node
         }
     }
+
     for r in routes.iter_mut() {
-        r.params.sort_by_key(|(f, _, _)| *f);
-        r.floats.sort_by_key(|(f, _, _)| *f);
-        r.enums.sort_by_key(|(f, _, _)| *f);
+        r.materialize_writes.sort_by_key(|(f, _, _)| *f);
     }
 }
 
 /// Local address of `addr` relative to `node_addr`, if `addr` targets that node.
 /// `/osc/freq` under `/osc` -> `freq`; `/osc` under `/osc` -> `` (whole-node).
-fn local_address<'a>(addr: &'a str, node_addr: &str) -> Option<&'a str> {
+pub(crate) fn local_address<'a>(addr: &'a str, node_addr: &str) -> Option<&'a str> {
     if addr == node_addr {
         return Some("");
     }
@@ -458,53 +431,40 @@ fn local_address<'a>(addr: &'a str, node_addr: &str) -> Option<&'a str> {
     rest.strip_prefix('/')
 }
 
-/// Process one node for the block: block-slice at param frames, and within each segment
-/// run every Lane (Voice). Allocation-free: per-Lane buffer wiring uses stack SmallVecs,
-/// output buffers are swapped through the reusable `out_scratch`, and events are zero-copy.
+/// Process one node for the block: materialize scalar-fed Buffer inputs, block-slice at Held
+/// change frames, and within each segment run every Lane (Voice). Allocation-free in steady state:
+/// per-Lane buffer wiring uses stack SmallVecs, output buffers are swapped through the reusable
+/// `out_scratch`, and events are zero-copy.
 #[allow(clippy::too_many_arguments)]
 fn process_node(
     arena: &mut [Vec<f32>],
     out_scratch: &mut Vec<Vec<f32>>,
     bounds: &mut Vec<usize>,
-    route: &NodeRoute,
+    route: &mut NodeRoute,
     node: &mut PlanNode,
     messages: &[Message],
     emitted: &[Emit],
     emit_scratch: &mut Vec<Emit>,
-    context_arena: &[Harmony],
-    context_pool: &[Harmony],
-    ctx_publish_scratch: &mut Vec<CtxPublish>,
-    outbound_scratch: &mut Vec<Outbound>,
     sample_rate: f32,
     block_size: usize,
 ) {
-    let params = &route.params;
+    // Emitted materialize writes are appended unsorted during execution; the ZOH fill needs them
+    // in frame order.
+    route.materialize_writes.sort_by_key(|(f, _, _)| *f);
 
-    // Materialize each unwired Float input into its scratch buffer (ADR-0028): fill from the
-    // latched scalar, overwrite with each mid-block change from its frame onward, persist the
-    // final value as the next block's latch, and flag `varying` (changed this block). Done before
-    // the output-swap — scratch buffers are inputs, disjoint from this node's outputs. Float
-    // changes do NOT split the block; sample-accuracy comes from writing them into the buffer at
-    // their frame.
+    // Materialize each Buffer-from-scalar input into its scratch buffer (ADR-0030): fill from the
+    // latched scalar, overwrite with each mid-block change from its frame onward, persist the final
+    // value as the next block's latch, and flag `varying`. Done before the output-swap — scratch
+    // buffers are inputs, disjoint from this node's outputs. These writes do NOT split the block;
+    // sample-accuracy comes from writing them into the buffer at their frame.
     //
-    // `node.varying` is preallocated at instantiate (length = input count) and reused — the audio
-    // thread never allocates it, even for an operator with >8 inputs. It is all-`true` to start;
-    // only materialized ports are rewritten here, so legacy / wired ports keep `true` (the same
-    // conservative default `Io::varying` reports for an unattached slice).
-    //
-    // Cached steady state (ADR-0028): a held-unchanged Float input is refilled only when it must
-    // be. Its scratch buffer is excluded from the per-block arena clear, so it persists; a constant
-    // block leaves it untouched (steady-state ~nil work). We refill only on a mid-block change, or
-    // the one block after a change/at startup that must re-flatten the buffer to the latch
-    // (`materialize_clean`). Output is identical to rewriting every block.
+    // Cached steady state: a held-unchanged input is refilled only when it must be. Its scratch is
+    // excluded from the per-block arena clear, so it persists; a constant block leaves it untouched.
     for k in 0..node.materialize.len() {
         let (port, buf) = node.materialize[k];
         let target = &mut arena[buf];
-        let changed = route.floats.iter().any(|&(_, p, _)| p == port);
+        let changed = route.materialize_writes.iter().any(|&(_, p, _)| p == port);
         if !changed {
-            // Held constant this block. Re-flatten to the latch only if the buffer is not already
-            // uniformly it (first block, or a prior block left a mid-block gradient); otherwise the
-            // persisted buffer is already correct and we touch nothing.
             if !node.materialize_clean[k] {
                 target[..block_size].fill(node.input_latches[port]);
                 node.materialize_clean[k] = true;
@@ -512,12 +472,9 @@ fn process_node(
             node.varying[port] = false;
             continue;
         }
-        // Changed: fill from the latch, overwriting with each mid-block change from its frame
-        // onward; persist the final value as the next block's latch. The buffer now holds a
-        // gradient, so the next constant block must re-flatten it.
         let mut v = node.input_latches[port];
         let mut cursor = 0usize;
-        for &(f, p, val) in &route.floats {
+        for &(f, p, val) in &route.materialize_writes {
             if p != port {
                 continue;
             }
@@ -528,28 +485,20 @@ fn process_node(
         }
         target[cursor..block_size].fill(v);
         node.input_latches[port] = v;
+        // Keep the Arg latch in sync so `io.last::<f32>` on this F32 control reflects the change
+        // (ADR-0030): the materialized buffer is the sample-accurate path, the latch the ZOH read.
+        // A Buffer port carries no meaningful `io.last`, so the (harmless) write is ignored there.
+        node.latch[port] = Arg::F32(v);
         node.varying[port] = true;
         node.materialize_clean[k] = false;
     }
 
-    // Segment boundaries: 0, block_size, every interior param frame, every interior enum-change
-    // frame (ADR-0028 — a held discrete choice is constant per call), and every interior context
-    // change frame (ADR-0015 — so a chord/key change splits the block and the follower reads the
-    // right context per segment). Sort + dedup since these frames interleave.
+    // Segment boundaries: 0, block_size, every interior Held-change frame (a held value is constant
+    // per `process` call, ADR-0030). Sort + dedup since change frames interleave.
     bounds.clear();
     bounds.push(0);
     bounds.push(block_size);
-    for &(f, _, _) in params {
-        if f > 0 && f < block_size {
-            bounds.push(f);
-        }
-    }
-    for &(f, _, _) in &route.enums {
-        if f > 0 && f < block_size {
-            bounds.push(f);
-        }
-    }
-    for &(f, _, _) in &route.context {
+    for &(f, _, _) in &route.held {
         if f > 0 && f < block_size {
             bounds.push(f);
         }
@@ -557,7 +506,7 @@ fn process_node(
     bounds.sort_unstable();
     bounds.dedup();
 
-    // Swap this node's output buffers out of the arena into `out_scratch` (disjoint from
+    // Swap this node's signal-output buffers out of the arena into `out_scratch` (disjoint from
     // inputs — no self-loops; cycles error). Flat layout: index `port * lanes + lane`.
     out_scratch.clear();
     for port in &node.outputs {
@@ -566,6 +515,7 @@ fn process_node(
         }
     }
     let lanes = node.lanes;
+    let n_inputs = node.descriptor.inputs.len();
 
     for w in bounds.windows(2) {
         let (seg_start, seg_end) = (w[0], w[1]);
@@ -573,71 +523,39 @@ fn process_node(
             continue;
         }
 
-        // Apply enum updates landing at this segment's start: latch the held variant index, read
-        // by every Lane via `io.enum_index` (ADR-0028). Persists across blocks.
-        for &(f, port, idx) in &route.enums {
-            if f == seg_start {
-                node.enum_latches[port] = idx;
+        // Apply Held changes landing at this segment's start: update the per-port latch, read by
+        // every Lane via `io.last` (ADR-0030). Persists across blocks (the latch is next block's
+        // frame-0 baseline). Last-write-wins on equal frames.
+        for (f, port, arg) in route.held.iter() {
+            if *f == seg_start {
+                node.latch[*port] = arg.clone();
             }
         }
 
-        // Apply param updates landing at this segment's start (shared across Lanes).
-        for &(f, slot, v) in params {
-            if f == seg_start {
-                node.params[slot] = v;
-            }
-        }
-
-        // Resolve the Harmony for each Harmony input port at this segment's start (ADR-0015):
-        // the latest publish with frame ≤ seg_start (last-write-wins on equal frames), else
-        // the persistent baseline. Constant across the segment and across Lanes.
-        let mut seg_contexts: SmallVec<[Harmony; 2]> = SmallVec::new();
-        for &slot_opt in &node.context_inputs {
-            let ctx = match slot_opt {
-                None => Harmony::default(),
-                Some(slot) => {
-                    let mut best: Option<(usize, usize)> = None; // (frame, pool_idx)
-                    for &(f, s, pidx) in &route.context {
-                        if s == slot && f <= seg_start {
-                            let take =
-                                best.is_none_or(|(bf, bi)| f > bf || (f == bf && pidx >= bi));
-                            if take {
-                                best = Some((f, pidx));
-                            }
-                        }
-                    }
-                    match best {
-                        Some((_, pidx)) => context_pool[pidx],
-                        None => context_arena[slot],
-                    }
-                }
-            };
-            seg_contexts.push(ctx);
-        }
-
-        // Events whose frame falls in this segment, as zero-copy views with
-        // segment-relative frames. Inline storage — no heap for the common small case.
-        // The payload is an external block Message or an upstream-emitted one (ADR-0014).
-        let mut seg_events: SmallVec<[Event; 8]> = SmallVec::new();
-        for re in &route.events {
-            let (addr, args, frame): (&str, &crate::message::Args, usize) = match re.src {
+        // Per-input-port Stream events whose frame falls in this segment, as zero-copy views with
+        // segment-relative frames (ADR-0030). Inline storage sized to the widest operator.
+        let mut per_port: SmallVec<[SmallVec<[Event; 4]>; 24]> =
+            (0..n_inputs).map(|_| SmallVec::new()).collect();
+        for re in route.events.iter() {
+            let (addr, arg, frame): (&str, &Arg, usize) = match re.src {
                 EventSrc::External { msg, local_start } => {
                     let m = &messages[msg];
-                    (&m.addr[local_start..], &m.args, m.frame)
+                    (&m.address[local_start..], &m.arg, m.frame)
                 }
                 EventSrc::Emitted(idx) => {
                     let e = &emitted[idx];
-                    (e.addr, &e.args, e.frame)
+                    (e.address, &e.arg, e.frame)
                 }
             };
             if frame >= seg_start && frame < seg_end {
-                seg_events.push(Event {
-                    addr,
-                    args,
+                per_port[re.dst_port].push(Event {
+                    address: addr,
+                    arg,
                     frame: frame - seg_start,
                 });
             }
         }
+        let stream_refs: SmallVec<[&[Event]; 24]> = per_port.iter().map(|v| v.as_slice()).collect();
 
         for lane in 0..lanes {
             // Input slices for this Lane; a single-Lane source broadcasts.
@@ -656,25 +574,15 @@ fn process_node(
                 .filter(|(idx, _)| idx % lanes == lane)
                 .map(|(_, buf)| &mut buf[seg_start..seg_end]);
 
-            let io = Io::new(
-                sample_rate,
-                seg_end - seg_start,
-                inputs,
-                outputs,
-                &node.params,
-                &seg_events,
-            )
-            .with_lane(lane, node.lanes)
-            .with_contexts(&seg_contexts)
-            .with_varying(&node.varying)
-            .with_enums(&node.enum_latches);
-            // Lane 0 collects emissions and context publishes; their frames are stamped
-            // block-absolute by adding this segment's start (ADR-0014, ADR-0015). Other Lanes
-            // neither emit nor publish (single-Lane, pre-fan-out).
+            let io = Io::new(sample_rate, seg_end - seg_start, inputs, outputs)
+                .with_latched(&node.latch)
+                .with_streams(&stream_refs)
+                .with_varying(&node.varying)
+                .with_lane(lane, node.lanes);
+            // Lane 0 collects emissions; their frames are stamped block-absolute by adding this
+            // segment's start (ADR-0014). Other Lanes do not emit (single-Lane, pre-fan-out).
             let mut io = if lane == 0 {
                 io.with_emit(&mut *emit_scratch, seg_start)
-                    .with_context_publish(&mut *ctx_publish_scratch, seg_start)
-                    .with_outbound(&mut *outbound_scratch, seg_start)
             } else {
                 io
             };
@@ -682,7 +590,7 @@ fn process_node(
         }
     }
 
-    // Return the output buffers to the arena, same flat order they were taken.
+    // Return the signal-output buffers to the arena, same flat order they were taken.
     let mut k = 0;
     for port in &node.outputs {
         for &bi in port {

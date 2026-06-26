@@ -40,7 +40,7 @@ pub fn generate(registry: &Registry) -> Value {
         let mut in_props = Map::new();
         for port in &d.inputs {
             let mut forms: Vec<Value> = Vec::new();
-            if let Some(e) = &port.enum_meta {
+            if let Some(e) = port.enum_meta() {
                 forms.push(json!({ "type": "string", "enum": e.variants }));
                 forms.push(
                     json!({ "type": "integer", "minimum": 0, "maximum": e.variants.len() - 1 }),
