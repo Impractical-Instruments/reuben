@@ -104,7 +104,8 @@ impl Operator for Euclid {
         let total =
             (io.last::<f32>(IN_STEPS).unwrap_or(16.0).round() as i64).clamp(1, NUM_STEPS as i64);
         let pulses = (io.last::<f32>(IN_PULSES).unwrap_or(4.0).round() as i64).clamp(0, total);
-        let rotation = (io.last::<f32>(IN_ROTATION).unwrap_or(0.0).round() as i64).rem_euclid(total);
+        let rotation =
+            (io.last::<f32>(IN_ROTATION).unwrap_or(0.0).round() as i64).rem_euclid(total);
 
         let mut step = self.step;
         let mut prev = self.prev_clock;
@@ -321,13 +322,17 @@ mod tests {
         // A fresh spawn replays from step 0, not where the parent left off.
         let period = 64;
         let mut a = OpDriver::for_type(Euclid::new(), SR);
-        a.set(IN_STEPS, 8.0).set(IN_PULSES, 3.0).set(IN_ROTATION, 0.0);
+        a.set(IN_STEPS, 8.0)
+            .set(IN_PULSES, 3.0)
+            .set(IN_ROTATION, 0.0);
         let clock = beat_gate(period, 8);
         a.drive(IN_CLOCK, &clock);
         a.render(clock.len());
 
         let mut b = a.spawn();
-        b.set(IN_STEPS, 8.0).set(IN_PULSES, 3.0).set(IN_ROTATION, 0.0);
+        b.set(IN_STEPS, 8.0)
+            .set(IN_PULSES, 3.0)
+            .set(IN_ROTATION, 0.0);
         let one = beat_gate(period, 1);
         b.drive(IN_CLOCK, &one);
         let emits = b.render(one.len()).emits().to_vec();
