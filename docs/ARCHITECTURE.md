@@ -95,7 +95,7 @@ The core speaks only OSC-shaped Messages. MIDI, Ableton Link, OSC tempo sync, an
 
 ## MVP and beyond
 
-The MVP is a headless "it makes a sound" spine: the portable-core / native-crate split, Signal + Message, the Plan + Instantiate→Render loop, single-Lane fan-out, determinism, a serial executor behind the real interface, the core Operators (oscillator, envelope, filter, Voicer, output, Clock), OSC-in from TouchOSC/Max, default 12-TET. Get past the prototype graveyard fast, then build the UX. V1.1 has since added music Operators (delay, reverb, LFO, sequencer, sample player), the internal message graph (operators emit Messages), the tonal-context bus (a `context` Operator + degree resolution + a `snap` Operator), and the resource store (decoded sample data as a shared, bank-ready read service). For the code-level operator contract and how to add one, see [docs/agents/authoring.md](agents/authoring.md).
+The MVP is a headless "it makes a sound" spine: the portable-core / native-crate split, Signal + Message, the Plan + Instantiate→Render loop, single-Lane fan-out, determinism, a serial executor behind the real interface, the core Operators (oscillator, envelope, filter, Voicer, output, Clock), OSC-in from TouchOSC/Max, default 12-TET. Get past the prototype graveyard fast, then build the UX. V1.1 has since added music Operators (delay, reverb, LFO, sequencer, sample player), the internal message graph (operators emit Messages), the tonal-context bus (a `context` Operator + degree resolution + a `snap` Operator), and the resource store (decoded sample data as a shared, bank-ready read service). V1.2–V1.5 built out the playable surface: the math/curve operator family and Good Buttons from composition ([ADR-0017](adr/0017-playable-surface-and-control-domain.md), [ADR-0029](adr/0029-math-family-dense-float-one-file-per-op.md)), generated TouchOSC control surfaces ([ADR-0018](adr/0018-control-surface-generation.md)), the V1.3 launch Toys (chord-player, groovebox, strum-harp; [ADR-0022](adr/0022-the-toys.md)), the envelope as a linear-CV source shaped by curve ops ([ADR-0027](adr/0027-envelope-emits-cv-and-curve-ops.md)), and the v1 finish line — an `osc_out` node and stereo via a `pan` op ([ADR-0026](adr/0026-v1-finish-line-osc-out-and-stereo.md)). Under all of it, the data model has collapsed to a single `Message`/`Arg` type ([ADR-0030](adr/0030-osc-as-all-data-one-message-type.md)). For the code-level operator contract and how to add one, see [docs/agents/authoring.md](agents/authoring.md).
 
 ## Decision index (ADRs)
 
@@ -115,5 +115,17 @@ The MVP is a headless "it makes a sound" spine: the portable-core / native-crate
 - [0014 — Internal message graph: Operators emit Messages on wired edges](adr/0014-internal-message-graph.md)
 - [0015 — Latched context read: a struct-valued read service over the Message wire](adr/0015-latched-context-read.md)
 - [0016 — Sample player and the resource store: decoded audio as a shared, bank-ready read service](adr/0016-sample-player-and-resource-store.md)
+- [0017 — The playable surface: Message-first control, one-port-one-type, Good Buttons from composition](adr/0017-playable-surface-and-control-domain.md)
+- [0018 — Generated control surfaces: the `control` block, a `map` resting default, and a TouchOSC skill](adr/0018-control-surface-generation.md)
+- [0019 — Performance benchmarking: two layers, a deterministic CI gate, compare-against-base](adr/0019-performance-benchmarking.md)
+- [0020 — Introspection API and the Patcher skill: `describe` + `validate`, built on the loader](adr/0020-introspection-and-patcher-skill.md)
+- [0021 — Scaffolding a new Operator: the `scaffold-operator` subcommand and the `create-operator` skill](adr/0021-scaffold-operator-and-create-operator-skill.md)
+- [0022 — The launch Toys (V1.3): three beginner instruments built from Operators](adr/0022-the-toys.md)
+- [0023 — Pinned toolchain, lockstep MSRV, and shared git hooks](adr/0023-toolchain-pin-and-git-hooks.md)
+- [0024 — Compile-time operator self-registration via `inventory`](adr/0024-compile-time-operator-registration.md)
+- [0025 — Single-source the operator port/param contract via `operator_contract!`](adr/0025-single-source-operator-contract.md)
+- [0026 — The v1 finish line: OSC-out, stereo, and a release workflow](adr/0026-v1-finish-line-osc-out-and-stereo.md)
+- [0027 — Envelope emits linear CV; curve ops shape it; VCA is a `mul`](adr/0027-envelope-emits-cv-and-curve-ops.md)
 - [0028 — One `Input`, one axis: `shape` (Float/Enum/Harmony/Note); density and delivery follow from it](adr/0028-one-input-shape.md)
+- [0029 — Math is a family of dense `Float` ops, one file per op; the `Number` core is retired](adr/0029-math-family-dense-float-one-file-per-op.md)
 - [0030 — OSC-as-all-data: one `Message` type, an `Arg` payload, `Signal` as a Buffer-arg (supersedes 0028)](adr/0030-osc-as-all-data-one-message-type.md)
