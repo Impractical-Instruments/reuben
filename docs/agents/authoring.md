@@ -316,10 +316,11 @@ control-surface generator and patcher care about survives as **optional tooling 
 ## Addressing
 
 Every node has an OSC **address**, derived from graph structure by default. A Message targets a
-node by address prefix; the local remainder becomes the `Event` address (e.g. `/voicer/note` under
-node `/voicer` arrives as event `note`). An `F32` control input takes a scalar set at
-`/<node>/<input>` (e.g. `/filt/cutoff 1500`); an enum input takes a symbol (`/filt/mode "Hp"`). Full wildcard
-dispatch (`/drums/*/decay`) is designed but not built — today a Message targets at most one node
+node by address prefix and an **input port by name** — always addressed explicitly as
+`/<node>/<input>` (ADR-0030 routes by port name; there is no whole-node sugar). An `F32` control
+input takes a scalar (`/filt/cutoff 1500`), an enum input a symbol (`/filt/mode "Hp"`), a `Note`
+input its args (`/voicer/notes [69.0, 1.0]`). Full wildcard dispatch (`/drums/*/decay`) is designed
+but not built — today a Message targets at most one node
 ([ADR-0005](../adr/0005-osc-namespace-and-wildcards.md)).
 
 ## Invariants you must not break

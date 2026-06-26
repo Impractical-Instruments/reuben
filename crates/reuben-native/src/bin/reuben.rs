@@ -5,8 +5,8 @@
 //!   it plays the built-in default rig. Send notes with:
 //!
 //!   ```text
-//!   /voicer/note  [69.0, 1.0]   # note-on  (MIDI 69 = A4, gate 1)
-//!   /voicer/note  [69.0, 0.0]   # note-off (gate 0)
+//!   /voicer/notes  [69.0, 1.0]   # note-on  (MIDI 69 = A4, gate 1)
+//!   /voicer/notes  [69.0, 0.0]   # note-off (gate 0)
 //!   ```
 //!
 //! - `reuben describe [op] [--json]` — print the operator set (or one operator's ports,
@@ -271,7 +271,7 @@ fn play(path: Option<PathBuf>, osc_out_target: Option<String>) {
 
     // OSC/UDP receiver thread: decode datagrams and forward Messages to the audio thread.
     let socket = UdpSocket::bind(OSC_BIND).expect("bind OSC socket");
-    println!("OSC-in listening on {OSC_BIND}  (send /voicer/note [midi, gate])");
+    println!("OSC-in listening on {OSC_BIND}  (send /voicer/notes [midi, gate])");
     if !log_osc {
         println!("  (set REUBEN_LOG_OSC=1 to log received OSC)");
     }

@@ -1,5 +1,5 @@
 {
-  "doc": "Monophonic playable rig with a mono Freeverb in the master path. Send /voicer/note [midi, gate] to play (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off). Shape the space live over OSC: /reverb/room (tail length 0..1), /reverb/damp (high-frequency damping 0..1), /reverb/mix (dry/wet 0..1).",
+  "doc": "Monophonic playable rig with a mono Freeverb in the master path. Send /voicer/notes [midi, gate] to play (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off). Shape the space live over OSC: /reverb/room (tail length 0..1), /reverb/damp (high-frequency damping 0..1), /reverb/mix (dry/wet 0..1).",
   "instrument": "reverb",
   "nodes": [
     {

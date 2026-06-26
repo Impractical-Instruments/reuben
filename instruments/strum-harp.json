@@ -1,5 +1,5 @@
 {
-  "doc": "Toy 3 of 3 (V1.3 'The Toys', ADR-0022 §3): a drag-to-strum harp. One big fader is the strum bar — stream /strum_bar [0..1] and the `strum` op plucks a note each time the position crosses a string boundary (both directions strum). Strings are scale degrees resolved through the tonal context, so an open full-diatonic scale reads as a harp glissando and stays in key. Change the key live with /context/root (MIDI) or reshape the scale with /context/s0../context/s6. Sweep /brightness [0..1] to open the plucked tone (a Good Button on filter cutoff + resonance). Set the string span with /strum/octaves [1..4].",
+  "doc": "Toy 3 of 3 (V1.3 'The Toys', ADR-0022 §3): a drag-to-strum harp. One big fader is the strum bar — stream /strum_bar/in [0..1] and the `strum` op plucks a note each time the position crosses a string boundary (both directions strum). Strings are scale degrees resolved through the tonal context, so an open full-diatonic scale reads as a harp glissando and stays in key. Change the key live with /context/root (MIDI) or reshape the scale with /context/s0../context/s6. Sweep /brightness/in [0..1] to open the plucked tone (a Good Button on filter cutoff + resonance). Set the string span with /strum/octaves [1..4].",
   "instrument": "strum-harp",
   "nodes": [
     {
@@ -8,7 +8,7 @@
         "label": "Strum",
         "widget": "fader"
       },
-      "doc": "PUBLIC strum bar. Identity [0,1] pass-through; its position streams to the strum op. Send /strum_bar [0..1] (the fader). Rests at 0.0 (bottom string) so no note fires at load.",
+      "doc": "PUBLIC strum bar. Identity [0,1] pass-through; its position streams to the strum op. Send /strum_bar/in [0..1] (the fader). Rests at 0.0 (bottom string) so no note fires at load.",
       "inputs": {
         "in": 0.0
       },
@@ -148,7 +148,7 @@
         "label": "Brightness",
         "widget": "fader"
       },
-      "doc": "PUBLIC Good Button. Identity [0,1]; fanned to the two ranged maps below. Send /brightness [0..1]. Rests at 0.6 so the plucks are bright at load.",
+      "doc": "PUBLIC Good Button. Identity [0,1]; fanned to the two ranged maps below. Send /brightness/in [0..1]. Rests at 0.6 so the plucks are bright at load.",
       "inputs": {
         "in": 0.6
       },

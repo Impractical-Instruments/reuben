@@ -1,5 +1,5 @@
 {
-  "doc": "V1.3 Toy 2 — the Chord player (ADR-0022). Seven buttons play the diatonic triads I–vii° of the current key: tap-and-hold sustains a chord, release stops it. Each button sends /chord/set [degree, gate] (a chord-root scale degree + gate); the `chord` op stacks scale-relative thirds and emits `degree` notes, which the voicer resolves through the tonal context — so held and tapped chords RE-SPELL LIVE when you change the key (send /context/root [48..72]). A pad voice (saw -> filter -> slow-attack envelope) and a 'brightness' Good Button (/brightness [0..1] -> filter cutoff) round it out. Polyphonic: 12 voices cover four held seventh chords. Built entirely from composition — no new instrument-format machinery.",
+  "doc": "V1.3 Toy 2 — the Chord player (ADR-0022). Seven buttons play the diatonic triads I–vii° of the current key: tap-and-hold sustains a chord, release stops it. Each button sends /chord/set [degree, gate] (a chord-root scale degree + gate); the `chord` op stacks scale-relative thirds and emits `degree` notes, which the voicer resolves through the tonal context — so held and tapped chords RE-SPELL LIVE when you change the key (send /context/root [48..72]). A pad voice (saw -> filter -> slow-attack envelope) and a 'brightness' Good Button (/brightness/in [0..1] -> filter cutoff) round it out. Polyphonic: 12 voices cover four held seventh chords. Built entirely from composition — no new instrument-format machinery.",
   "instrument": "chord-player",
   "nodes": [
     {
@@ -189,7 +189,7 @@
         "unit": "%",
         "widget": "fader"
       },
-      "doc": "PUBLIC Good Button. Identity [0,1] pass-through, fanned to the ranged cutoff map. Send /brightness [0..1]. Rests at 0.5 (ADR-0018).",
+      "doc": "PUBLIC Good Button. Identity [0,1] pass-through, fanned to the ranged cutoff map. Send /brightness/in [0..1]. Rests at 0.5 (ADR-0018).",
       "inputs": {
         "in": 0.5
       },

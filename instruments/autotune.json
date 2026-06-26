@@ -1,5 +1,5 @@
 {
-  "doc": "Play any pitch; hear the nearest scale tone. External absolute notes at /snap/note [midi, vel] are quantized to the tonal context by a snap operator, which emits scale degrees into the Voicer (the 'always in key' good-button). Set the key/scale on /context (root, s0..s6, degrees); set snap behaviour with /snap/target (0 Scale, 1 Chord, 2 ChordThenScale) and /snap/direction (0 Nearest, 1 Up, 2 Down). Both the snap and the Voicer read the same context, so changing key re-tunes held notes live.",
+  "doc": "Play any pitch; hear the nearest scale tone. External absolute notes at /snap/notes [midi, vel] are quantized to the tonal context by a snap operator, which emits scale degrees into the Voicer (the 'always in key' good-button). Set the key/scale on /context/root, /context/s0../context/s6, /context/degrees; set snap behaviour with /snap/target (0 Scale, 1 Chord, 2 ChordThenScale) and /snap/direction (0 Nearest, 1 Up, 2 Down). Both the snap and the Voicer read the same context, so changing key re-tunes held notes live.",
   "instrument": "autotune",
   "nodes": [
     {
