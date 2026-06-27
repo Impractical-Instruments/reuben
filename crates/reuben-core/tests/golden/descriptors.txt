@@ -3,6 +3,11 @@ operator add_f32_signal
   in[1] f32_buffer b min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   out[0] f32_buffer out
   lanes inherit
+operator add_f32_value
+  in[0] f32 a min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[1] f32 b min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  out[0] f32 out
+  lanes inherit
 operator chord
   in[0] message set
   in[1] f32 size min=3.0 max=4.0 default=3.0 unit="tones" curve=linear
@@ -108,6 +113,11 @@ operator mul_f32_signal
   in[1] f32_buffer b min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
   out[0] f32_buffer out
   lanes inherit
+operator mul_f32_value
+  in[0] f32 a min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
+  in[1] f32 b min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
+  out[0] f32 out
+  lanes inherit
 operator noise
   out[0] f32_buffer out
   lanes inherit
@@ -133,6 +143,11 @@ operator power_f32_signal
   in[0] f32_buffer x min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   in[1] f32 exponent min=0.0 max=8.0 default=2.0 unit="" curve=linear
   out[0] f32_buffer out
+  lanes inherit
+operator power_f32_value
+  in[0] f32 x min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[1] f32 exponent min=0.0 max=8.0 default=2.0 unit="" curve=linear
+  out[0] f32 out
   lanes inherit
 operator reverb
   in[0] f32_buffer audio

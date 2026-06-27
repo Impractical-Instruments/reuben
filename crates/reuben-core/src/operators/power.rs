@@ -75,6 +75,114 @@ impl Operator for PowerF32Signal {
 
 crate::register_operator!(PowerF32Signal);
 
+/// Value-carrier form of `power` (ADR-0031): both `x` and `exponent` are **held** `f32`, one held
+/// output. Reads both once and emits `x^exponent` as a single deduped `MsgWriter` change. Reuses the
+/// shared scalar [`shape`] (issue #83 seam, incl. its op-local unipolar NaN guard) — the value shell
+/// calls it once where the signal shell loops it. Block-slicing re-runs `process` at every operand
+/// change (post-flip, when the ports are Value), so the output is sample-accurate with no buffer. A
+/// forced submodule: the contract macro emits its `IN_`/`OUT_` consts at module scope.
+pub mod value {
+    use super::shape;
+    use crate::descriptor::Descriptor;
+    use crate::operator::{Io, Operator};
+
+    // Same operands/defaults as the signal form (`x` 0, `exponent` 2) — but `x` is `f32` (held),
+    // not a buffer. `exponent` was already block-rate `f32` in the signal form.
+    crate::operator_contract!(PowerF32Value {
+        inputs:  { x:        f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
+                   exponent: f32 { 0.0..=8.0,                  default 2.0, "", lin } },
+        outputs: { out: f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin } },
+    });
+
+    #[derive(Default)]
+    pub struct PowerF32Value;
+
+    impl PowerF32Value {
+        pub fn new() -> Self {
+            Self
+        }
+    }
+
+    impl Operator for PowerF32Value {
+        fn descriptor() -> Descriptor {
+            Self::contract()
+        }
+
+        fn process(&mut self, io: &mut Io) {
+            // Both operands held; read once. `unwrap_or` supplies the declared defaults.
+            let x = io.input::<f32>(IN_X).unwrap_or(0.0);
+            let exponent = io.input::<f32>(IN_EXPONENT).unwrap_or(2.0);
+            io.output::<f32>(OUT_OUT).set(0, shape(x, exponent));
+        }
+
+        fn spawn(&self) -> Box<dyn Operator> {
+            Box::new(Self::new())
+        }
+    }
+
+    crate::register_operator!(PowerF32Value);
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::message::{Arg, Emit};
+        use crate::op_driver::OpDriver;
+        use approx::assert_abs_diff_eq;
+
+        const SR: f32 = 48_000.0;
+
+        /// The F32 value carried by an emit (panics on any other Arg — the contract is F32).
+        fn val(e: &Emit) -> f32 {
+            match &e.arg {
+                Arg::F32(v) => *v,
+                other => panic!("expected an F32 result, got {other:?}"),
+            }
+        }
+
+        /// Drive `x`/`exponent` as block-rate held constants; returns the emitted shaped value(s).
+        fn run(x: f32, exponent: f32) -> Vec<f32> {
+            let mut d = OpDriver::for_type(PowerF32Value::new(), SR);
+            d.set(IN_X, x).set(IN_EXPONENT, exponent);
+            d.render(64).emits().iter().map(val).collect()
+        }
+
+        #[test]
+        fn squares_the_input_by_default() {
+            let out = run(0.5, 2.0);
+            assert_eq!(out.len(), 1);
+            assert_abs_diff_eq!(out[0], 0.25, epsilon = 1e-6);
+        }
+
+        #[test]
+        fn exponent_one_is_passthrough() {
+            let out = run(0.7, 1.0);
+            assert_abs_diff_eq!(out[0], 0.7, epsilon = 1e-6);
+        }
+
+        #[test]
+        fn negative_input_clamps_to_zero_no_nan() {
+            // The shared `shape`'s unipolar clamp prevents a NaN from a fractional exponent.
+            let out = run(-0.5, 0.5);
+            assert!(out[0].is_finite());
+            assert_abs_diff_eq!(out[0], 0.0, epsilon = 1e-6);
+        }
+
+        #[test]
+        fn operand_defaults_are_data() {
+            let d = PowerF32Value::descriptor();
+            let default = |name: &str| {
+                d.settable_inputs()
+                    .find(|(n, _)| *n == name)
+                    .unwrap_or_else(|| panic!("{name} is a settable Float"))
+                    .1
+                    .default
+            };
+            assert_eq!(default("x"), 0.0);
+            assert_eq!(default("exponent"), 2.0);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -63,6 +63,107 @@ impl Operator for AddF32Signal {
 
 crate::register_operator!(AddF32Signal);
 
+/// Value-carrier form of `add` (ADR-0031): all-`f32` **held** operands, one held output. Reads each
+/// operand's held (ZOH) value once and emits the sum as a single deduped `MsgWriter` change. Reuses
+/// the shared scalar [`add`] (issue #83 seam) — the value shell calls it once where the signal shell
+/// loops it. Block-slicing re-runs `process` at every operand change (post-flip, when the ports are
+/// Value), so the sparse output is sample-accurate with no buffer. A forced submodule: the contract
+/// macro emits its `IN_`/`OUT_` consts at module scope, so the two forms can't share one scope.
+pub mod value {
+    use super::add;
+    use crate::descriptor::Descriptor;
+    use crate::operator::{Io, Operator};
+
+    // Same operands as the signal form, additive identity `0` — but `f32` (held Value), not buffers.
+    crate::operator_contract!(AddF32Value {
+        inputs:  { a: f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
+                   b: f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin } },
+        outputs: { out: f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin } },
+    });
+
+    #[derive(Default)]
+    pub struct AddF32Value;
+
+    impl AddF32Value {
+        pub fn new() -> Self {
+            Self
+        }
+    }
+
+    impl Operator for AddF32Value {
+        fn descriptor() -> Descriptor {
+            Self::contract()
+        }
+
+        fn process(&mut self, io: &mut Io) {
+            // Held operands, read once (block-slicing handles sample-accuracy post-flip). The
+            // `unwrap_or` supplies the additive identity for the unwired case, matching the default.
+            let a = io.input::<f32>(IN_A).unwrap_or(0.0);
+            let b = io.input::<f32>(IN_B).unwrap_or(0.0);
+            io.output::<f32>(OUT_OUT).set(0, add(a, b));
+        }
+
+        fn spawn(&self) -> Box<dyn Operator> {
+            Box::new(Self::new())
+        }
+    }
+
+    crate::register_operator!(AddF32Value);
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+        use crate::message::{Arg, Emit};
+        use crate::op_driver::OpDriver;
+
+        const SR: f32 = 48_000.0;
+
+        /// The F32 value carried by an emit (panics on any other Arg — the contract is F32).
+        fn val(e: &Emit) -> f32 {
+            match &e.arg {
+                Arg::F32(v) => *v,
+                other => panic!("expected an F32 sum, got {other:?}"),
+            }
+        }
+
+        /// Drive the held operands as block-rate constants through the real engine; returns the
+        /// emitted sum value(s). A `None` operand is left unwired (engine seeds its default `0`).
+        fn run(a: Option<f32>, b: Option<f32>) -> Vec<f32> {
+            let mut d = OpDriver::for_type(AddF32Value::new(), SR);
+            if let Some(a) = a {
+                d.set(IN_A, a);
+            }
+            if let Some(b) = b {
+                d.set(IN_B, b);
+            }
+            d.render(64).emits().iter().map(val).collect()
+        }
+
+        #[test]
+        fn sums_held_operands() {
+            assert_eq!(run(Some(3.0), Some(4.0)), vec![7.0]);
+        }
+
+        #[test]
+        fn unwired_b_passes_a_through() {
+            // Additive identity 0: wiring only `a` emits it unchanged.
+            assert_eq!(run(Some(5.0), None), vec![5.0]);
+        }
+
+        #[test]
+        fn operand_defaults_are_the_additive_identity() {
+            let d = AddF32Value::descriptor();
+            for name in ["a", "b"] {
+                let (_, meta) = d
+                    .settable_inputs()
+                    .find(|(n, _)| *n == name)
+                    .expect("operand is a settable Float");
+                assert_eq!(meta.default, 0.0, "{name} default");
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
