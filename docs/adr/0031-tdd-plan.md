@@ -34,7 +34,7 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | 5 Phase B infra — re-entrant `render_plan` free fn + `RenderScratch` (ADR-0032 §4) | ✅ done | `a49884e` |
 | 5 Phase B infra — `interface` block format + schema + loader | ⬜ pending | — |
 | 5 Phase B infra — instrument-resource kind (resource pipeline) | ⬜ pending | — |
-| 5 Phase B infra — `envelope` grows `active` output (f32/MsgWriter) | ⬜ pending | — |
+| 5 Phase B infra — `envelope` grows `active` output (f32/MsgWriter); closes mixed signal+msg output gap | ✅ done | `6f485e1` |
 | 5 Phase B — gate/CV mono migration + value-math (pre-flip) | ⬜ pending | — |
 | 5 Phase B — flip `port_kind` `F32 ⇒ Value` (atomic barrier) | ⬜ pending | — |
 | 5 Phase B — ADR-0032 Voicer rewrite (restores polyphony, in the barrier) | ⬜ pending | — |
@@ -63,8 +63,10 @@ This is faithful to the plan's own stated rationale ("order the sweep so the ato
    format parse + schema + loader bind/typecheck. Additive.
 3. ⬜ **instrument-resource kind** — resource pipeline (ADR-0016) resolves a path → built sub-`Graph`.
    Additive.
-4. ⬜ **`envelope.active` output** — `f32`/`MsgWriter` (like `euclid.gate`, green today), the canonical
-   voice-liveness source. Additive.
+4. ✅ **`envelope.active` output** — `6f485e1`. `f32`/`MsgWriter`, the canonical voice-liveness source.
+   Surfaced + closed the **mixed signal+message output gap** ("voicer footgun"): `out_targets` now
+   indexed by all-outputs port index (empty for signal ports); signal-output indexing relies on the
+   signal-before-message declaration invariant. Bare `/<env>` wires re-authored to `/<env>.cv`.
 
 Then the barrier (atomic, transient-red on-branch until Voicer rewrite restores polyphony, then merge).
 
