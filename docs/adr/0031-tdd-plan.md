@@ -41,7 +41,9 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | 5 Phase B — ADR-0032 Voicer rewrite (restores polyphony, in the barrier) | ✅ **done (session 9)** | — |
 | 5 Phase B — re-bless goldens + fix integration tests → green → **commit** | ✅ **green workspace-wide; committed** (`afbf404`) | — |
 | ADR-0032 follow-up (C) — Lane model deletion + explicit `constant:` keyword (session 10) | ✅ **done** | `07a5187` |
-| ADR-0032 follow-up (D) — re-author 15 voicer instruments; un-ignore 24 tests | ⬜ **next** | — |
+| ADR-0032 follow-up (D, easy 6) — re-author FX-wrapper voicer instruments (session 10) | ✅ **done** (355/19) | `c678b60` |
+| ADR-0032 follow-up (D, hard 8) — sampler·sampler-arp·good-button·auto-filter·chord-player·djfilter-demo·groovebox·strum-harp | ⬜ **next** | — |
+| ADR-0032 follow-up — 3 tonal_context pitch-resolution tests need a non-freq-tap strategy | ⬜ pending | — |
 | ADR-0032 follow-up (E) — `active`-based liveness/stealing; skip idle voices | ⬜ pending | — |
 | ADR-0032 follow-up — `voice` resource round-trip through `from_graph` | ⬜ pending | — |
 | 6–8 (ADR-0031 tail: coercion msgs · boundary/addresses · docs) | ⬜ pending | — |
@@ -281,12 +283,25 @@ Built the whole barrier test-first; `cargo test --workspace` (350 pass) + `cargo
   resource round-trip gap); goldens re-blessed (`descriptors.txt` + `instrument.schema.json`).
 
 **Deferred to follow-up(s) — 24 tests `#[ignore]`'d with `ADR-0032 follow-up` reason (9 files):**
-1. **Re-author the other 15 `voicer` instruments** (sampler, sampler-arp, stereo-autopan, echo, reverb,
-   auto-filter, good-button, scale-demo, autotune, chord-player, sequence, groovebox, djfilter-demo,
-   vibrato, strum-harp …) to host voice sub-patches; un-ignore their tests (chord_player, echo_example,
-   reverb_example, groovebox_snare_gate, tonal_context, instrument_format's 3, cli's 3, sampler_example,
-   stereo_example). Several need a **proc-macro `ResourceKind`** or constant-decoupling so non-default
-   `voices` config + nested-sample voice patches work.
+1. **Re-author the `voicer` instruments** to host voice sub-patches; un-ignore their tests.
+   - ✅ **Easy 6 done (session 10, `c678b60`):** reverb, echo, stereo-autopan, sequence, scale-demo,
+     autotune — per-voice core == default-voice, so each got a faithful per-instrument voice patch
+     (`voices/<name>-voice.json`) + master FX/note-source at top level. Un-ignored: reverb_example,
+     echo_example, stereo_example, tonal_context::demo_instruments_load_and_play,
+     instrument_format::sequencer_emits_notes_through_a_voicer. (Constant-decoupling from C means
+     non-default `voices` config now works — no proc-macro `ResourceKind` needed for these.)
+   - ⬜ **Hard 8 remaining:** **sampler·sampler-arp** (nested `sample` resource *inside* the voice
+     patch); **good-button·auto-filter·chord-player·strum-harp** (per-voice filter cutoff/res driven by
+     a *shared* knob — Voicer only drives freq/gate, so the voice patch needs extra interface inputs the
+     host can't currently drive, OR the control moves inside each voice, OR the filter moves to master
+     post-mix — a real design fork, grill it); **djfilter-demo** (per-voice djfilter w/ position CV);
+     **groovebox** (3 voicers, per-voice drum synthesis). Un-ignores: sampler_example(3), cli(3),
+     chord_player(5), groovebox_snare_gate(2), instrument_format's good_button+auto_filter(2). Some may
+     still want a **proc-macro `ResourceKind`** for the sampler nested-sample case.
+   - ⬜ **3 tonal_context pitch-resolution tests** (`degree_note_resolves`, `context_change_mid_block`,
+     `snap_quantizes`): asserted resolved Hz via the **removed `voicer.freq` output tap**. Not a
+     re-authoring — need a new strategy (read osc freq inside a voice sub-plan, or a Voicer-brain
+     `OpDriver` unit test on the pitch allocator).
 2. ~~**Lane fan-out deletion** (Fork C)~~ ✅ **DONE `07a5187`** (session 10, 2026-06-27). Ripped out
    the whole Lane model — not just `FromParam`. Grill ruling: the one thing the dormant `lanes:` line
    implicitly carried was the `voices` **Constant** (`constant_param()` derived it from
