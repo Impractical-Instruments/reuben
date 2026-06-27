@@ -1,0 +1,144 @@
+# ADR-0031 Parallel /tdd Plan
+
+Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
+[0031-impl-prep.md](0031-impl-prep.md). Decided in a grilling session:
+
+- **Fixtures** = thin `Graph` test-helper (wire nodes via `Graph::add`/`connect` →
+  `Plan::instantiate` → `Result<Plan, PlanError>`). Not OpDriver, not JSON. Surfaces plan errors
+  directly (G/H/I need that).
+- **Step 5** = wave-gated worktree fan-out, **1 agent per op**. Wave 0 is a barrier.
+- **Spine (0–4)** = **vertical** tracer bullets, one fixture/behavior at a time. No horizontal
+  "all tests then all code".
+- This turn = **written plan only**. No code until approved.
+
+---
+
+## Shape
+
+```
+SEQUENTIAL SPINE (one driver, vertical TDD, hard chain)
+  0 oracle infra ─ 1 wire-checker ─ 2 rename ─ 3 Io API ─ 4 declare forms
+                                                              │
+PARALLEL BURST (step 5) ───────────────────────────────────┘
+  Wave 0 (barrier) ─→ Waves 1·2·3·4  [1 agent/op, worktree-per-op]
+                                                              │
+SEQUENTIAL TAIL ──────────────────────────────────────────┘
+  6 coercion msgs ─ 7 boundary/addresses ─ 8 docs+schema sweep
+```
+
+Each spine step: green + full test suite passing before next. Each op agent: green in its
+worktree before merge.
+
+---
+
+## Step 0 — Oracle infra (precedes everything; build test-first)
+
+Behaviors → tests (vertical, one at a time):
+
+1. `graph_helper` wires 2 nodes, instantiates → `Ok(Plan)`. *(tracer bullet — proves substrate)*
+2. `port_form(plan, node, port) -> PortKind` reads a declared input form.
+3. `signal_buffer_count(plan) -> usize` = declared-Signal ports + materialized V→S edges.
+4. helper returns `Result`, not panic (so error fixtures can assert `Err`).
+
+Deliverable: test-only `graph_helper` + two probe fns over `PlanNode.input_kinds` /
+`Plan.num_buffers` / `materialize`. No production behavior change yet.
+
+## Step 1 — `PortKind{Signal,Value,Event}` + per-wire checker (vertical, fixture by fixture)
+
+Add `PlanError::FormMismatch { src, dst, reason }`. Build the checker one fixture at a time —
+each red test drives the next slice, NOT all 9 red up front:
+
+| Order | Fixture | Red asserts | Drives |
+|---|---|---|---|
+| 1 | A const→`filter.cutoff` | materialize, 1 buf | V→S materialize path |
+| 2 | B lfo→`filter.cutoff` | direct, 1 buf | S→S plain wire |
+| 3 | C tempo→`clock.tempo` | direct, **0 buf** | held knob never materializes |
+| 4 | D `voicer.freq`→`osc.freq` | materialize, 1 buf | canonical sparse→dense bridge |
+| 5 | E `euclid.gate`→`env.gate` | direct, 0 buf | sparse spine stays sparse |
+| 6 | F `clock.gate`→`euclid.clock` | direct, 0 buf | gate-as-message via slicing |
+| 7 | G `env.cv`→`env.gate` | **`Err(FormMismatch)`** | **S→V hard error** (headline) |
+| 8 | H `osc.out`→`filter.mode` | `Err` | S→Value-only-type illegal |
+| 9 | I `seq.degrees`→`filter.cutoff` | `Err` | Event→Signal illegal |
+
+Checker rules: V→S materialize · S→V error · Event mismatch error · like→like direct · alloc
+`f32_buffer` only for declared-Signal or materialized edge · Value gets latch slot · block-slice
+at Value-input change frames. **No** topological solver / denseness tags / feedback back-edge.
+Keep old `Io` verbs working over new allocation. Bless descriptor snapshot.
+
+**G's error message must name the missing converter** (envelope follower / quantizer) — user will
+try this wire. Assert the message text in the fixture.
+
+## Step 2 — `Buffer → f32_buffer` rename (mechanical, repo-wide)
+
+`Arg::Buffer→Arg::F32Buffer`, `PortType::Buffer→F32Buffer`, contract-macro keyword
+`buffer→f32_buffer`, retire `float`→`f32`. Re-bless schema. Tests: snapshot + existing suite green.
+
+## Step 3 — New `Io` API (additive; old verbs stay)
+
+Test-first per accessor: `in_value::<T>` · `in_signal` · `in_event::<T>` · `out_value::<T>`
+(→`MsgWriter`) · `out_signal`. `MsgWriter::set(frame,v)` = **deduped** (no-op change emits
+nothing) + **last-write-wins** + addressless. No `F32In`/`F32Out`, no `match`, no `varying`.
+Keep old verbs temporarily.
+
+## Step 4 — Declare port forms in the contract (pure authoring)
+
+Apply the locked gate/CV table: each numeric port → `f32` or `f32_buffer`. Engine does no
+resolution. Tests: descriptor snapshot re-bless + fixtures C/E/F now pass against real ports.
+
+**End of spine — checkpoint for review before fan-out.**
+
+---
+
+## Step 5 — Operator sweep (PARALLEL, wave-gated, 1 agent/op, worktree-per-op)
+
+Each agent: migrate one op to direct accessors + its declared forms, test-first against `OpDriver`,
+green in its own worktree → merge → next. Worktree names by op (e.g. `op-filter`), not auto-hash.
+
+**Wave 0 — barrier (land before any other wave).** Math foundation:
+- author net-new `add_value` `mul_value` `power_value` (+ `differentiate_value`/`integrate_value`
+  as needed), all `f32`, test-first.
+- rename existing `add`/`mul`/`power`/`differentiate`/`integrate` → `*_signal` (all `f32_buffer`).
+  Re-bless instruments referencing bare names.
+
+Then fan out (waves independent of each other; ops within a wave fully parallel):
+- **Wave 1** signal gens: `oscillator` `lfo` `noise` *(osc.freq = V→S materialize sink)*
+- **Wave 2** audio procs: `filter`(flagship) `delay` `djfilter` `reverb` `pan` `output`*(manual descriptor, hand-migrate)*
+- **Wave 3** gate/CV spine: `clock` `euclid` `voicer` `envelope`*(msg→sig boundary)* `sample` `sequencer`
+- **Wave 4** event/context: `chord` `snap` `strum` `transpose` `osc_out` `harmony`
+
+Skip `map` (Float reframe deferred). Per-op acceptance: own tests green + no old-verb refs.
+**Delete old `Io` verbs once sweep complete** (final step-5 agent / spine driver).
+
+---
+
+## Step 6 — Coercion enforcement messages (sequential)
+
+Harden step-1 errors: legal V→S materialize; clear S→V message naming the converter op; Event
+mismatch message. Re-assert fixtures G/H/I message text.
+
+## Step 7 — Boundary + addresses (sequential)
+
+Drop `address` from internal `Emit`/hot path; keep it only in boundary ops (`osc_out`, `output`).
+Tests: internal wires route by connection; OSC boundary round-trips address↔port.
+
+## Step 8 — Docs + schema sweep (sequential)
+
+`/sync-docs`: ARCHITECTURE, README, `docs/agents/authoring.md`, `CONTEXT.md`, create-operator
+skill. Teach: declare `f32`/`f32_buffer` by what the port is; direct accessors; value-math vs
+signal-math; the one legal coercion (V→S) + hard error on reverse. Re-bless golden snapshots.
+
+---
+
+## Merge order / gates
+
+- Spine 0→1→2→3→4 strictly serial, suite green at each.
+- **Gate before step 5:** spine merged to branch.
+- **Barrier inside step 5:** Wave 0 merged before waves 1-4 launch.
+- Waves 1-4 parallel; per-op merge as each agent goes green.
+- **Gate before step 6:** all ops migrated, old verbs deleted.
+- 6→7→8 serial.
+
+## Out of scope
+
+Feedback cycles (`PlanError::Cycle` stays, Kahn sort). `map` Float reframe. sig→val converter ops
+(the deliberate gap G documents).
