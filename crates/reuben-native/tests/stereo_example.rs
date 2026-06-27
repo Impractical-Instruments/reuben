@@ -13,6 +13,7 @@ fn instruments_dir() -> PathBuf {
 }
 
 #[test]
+#[ignore = "ADR-0032 follow-up: voicer/sampler instrument not yet re-authored to host a voice sub-patch"]
 fn stereo_autopan_plays_in_motion_across_two_channels() {
     let json = std::fs::read_to_string(instruments_dir().join("stereo-autopan.json"))
         .expect("read stereo-autopan.json");

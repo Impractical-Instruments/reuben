@@ -43,7 +43,7 @@ pub const NUM_STEPS: usize = 16;
 
 // Single-source contract (ADR-0025/0030). `gate_mode` references the shared `GateMode` vocab enum.
 crate::operator_contract!(Sequencer {
-    inputs:  { clock:  f32_buffer,
+    inputs:  { clock:  f32 { 0.0..=1.0, default 0.0, "", lin },
                length: f32 { 1.0..=16.0, default 8.0, "steps", lin },
                step1:  f32 { -1.0..=24.0, default 0.0, "degree", lin },
                step2:  f32 { -1.0..=24.0, default 1.0, "degree", lin },
@@ -112,7 +112,6 @@ impl Operator for Sequencer {
     }
 
     fn process(&mut self, io: &mut Io) {
-        let n = io.frames();
         let length =
             (io.input::<f32>(IN_LENGTH).unwrap_or(8.0).round() as i64).clamp(1, NUM_STEPS as i64);
         let gate_mode = io.input::<GateMode>(IN_GATE_MODE).unwrap_or_default() == GateMode::Gate;
@@ -139,31 +138,32 @@ impl Operator for Sequencer {
             }
         };
 
+        // `clock` is a held Value (ADR-0031): the engine block-slices at every clock change, so this
+        // call sees one constant level. Compare it to the level held across the previous slice for
+        // the edge; the slice's frame 0 *is* the change frame (block-absolute), so emitting there is
+        // sample-accurate. The held latch carries `prev` across blocks/slices.
+        let g = io.input::<f32>(IN_CLOCK).unwrap_or(0.0);
+        let prev = self.prev_clock;
         let mut step = self.step;
-        let mut prev = self.prev_clock;
         let mut held = self.held;
-        for i in 0..n {
-            let g = io.input::<&[f32]>(IN_CLOCK).get(i).copied().unwrap_or(0.0);
-            if prev < 0.5 && g >= 0.5 {
-                // Rising edge: end any held note, advance, and play the new step.
-                if let Some(m) = held.take() {
-                    io.output::<Note>(MSG_NOTES).emit(i, degree_note(m, 0.0));
-                }
-                step = (step + 1).rem_euclid(length);
-                if let Some(m) = note_at(step) {
-                    io.output::<Note>(MSG_NOTES).emit(i, degree_note(m, 1.0));
-                    held = Some(m);
-                }
-            } else if prev >= 0.5 && g < 0.5 {
-                // Falling edge: release the step's note (the per-beat pluck).
-                if let Some(m) = held.take() {
-                    io.output::<Note>(MSG_NOTES).emit(i, degree_note(m, 0.0));
-                }
+        if prev < 0.5 && g >= 0.5 {
+            // Rising edge: end any held note, advance, and play the new step.
+            if let Some(m) = held.take() {
+                io.output::<Note>(MSG_NOTES).emit(0, degree_note(m, 0.0));
             }
-            prev = g;
+            step = (step + 1).rem_euclid(length);
+            if let Some(m) = note_at(step) {
+                io.output::<Note>(MSG_NOTES).emit(0, degree_note(m, 1.0));
+                held = Some(m);
+            }
+        } else if prev >= 0.5 && g < 0.5 {
+            // Falling edge: release the step's note (the per-beat pluck).
+            if let Some(m) = held.take() {
+                io.output::<Note>(MSG_NOTES).emit(0, degree_note(m, 0.0));
+            }
         }
         self.step = step;
-        self.prev_clock = prev;
+        self.prev_clock = g;
         self.held = held;
     }
 
@@ -207,8 +207,21 @@ mod tests {
     fn run(clock: &[f32], controls: &[f32]) -> Vec<Emit> {
         let mut d = OpDriver::for_type(Sequencer::new(), SR);
         set_controls(&mut d, controls);
-        d.drive(IN_CLOCK, clock);
+        push_clock(&mut d, clock, 0.0);
         d.render(clock.len()).emits().to_vec()
+    }
+
+    /// Drive the now-held-Value `clock` from a dense gate buffer (ADR-0031): push a held-level
+    /// change at each frame the buffer crosses the 0.5 threshold — the clock is fed by edges, not a
+    /// per-sample buffer. `prev` threads the level across split renders; returns the trailing level.
+    fn push_clock(d: &mut OpDriver, clock: &[f32], mut prev: f32) -> f32 {
+        for (i, &g) in clock.iter().enumerate() {
+            if (prev < 0.5) != (g < 0.5) {
+                d.push(IN_CLOCK, i, g);
+                prev = g;
+            }
+        }
+        prev
     }
 
     /// A clock gate: high for the first half of each `period`-sample beat, repeated.
@@ -324,9 +337,9 @@ mod tests {
         let mid = clock.len() / 2;
         let mut split = OpDriver::for_type(Sequencer::new(), SR);
         set_controls(&mut split, &p);
-        split.drive(IN_CLOCK, &clock[..mid]);
+        let prev = push_clock(&mut split, &clock[..mid], 0.0);
         let e1 = split.render(mid).emits().to_vec();
-        split.drive(IN_CLOCK, &clock[mid..]);
+        push_clock(&mut split, &clock[mid..], prev);
         let e2 = split.render(clock.len() - mid).emits().to_vec();
         let mut ons_split: Vec<f32> = e1.iter().filter(|e| vel(e) > 0.5).map(deg).collect();
         ons_split.extend(e2.iter().filter(|e| vel(e) > 0.5).map(deg));
@@ -341,14 +354,14 @@ mod tests {
         let mut a = OpDriver::for_type(Sequencer::new(), SR);
         set_controls(&mut a, &p);
         let clock = beat_gate(100, 3);
-        a.drive(IN_CLOCK, &clock);
+        push_clock(&mut a, &clock, 0.0);
         a.render(clock.len());
 
         // The spawn is fresh: its first beat plays step 0 (degree 0) again, not where `a` ended.
         let mut b = a.spawn();
         set_controls(&mut b, &p);
         let one = beat_gate(100, 1);
-        b.drive(IN_CLOCK, &one);
+        push_clock(&mut b, &one, 0.0);
         let emits = b.render(one.len()).emits().to_vec();
         let first_on = emits.iter().find(|e| vel(e) > 0.5).expect("a note-on");
         approx::assert_relative_eq!(deg(first_on), 0.0);

@@ -18,7 +18,7 @@ operator clock
   in[1] f32 tempo min=1.0 max=999.0 default=120.0 unit="BPM" curve=linear
   in[2] f32 division min=1.0 max=64.0 default=1.0 unit="" curve=linear
   out[0] f32_buffer phase
-  out[1] f32_buffer gate
+  out[1] f32 gate
   lanes inherit
 operator delay
   in[0] f32_buffer audio
@@ -42,7 +42,7 @@ operator djfilter
   out[0] f32_buffer audio
   lanes inherit
 operator envelope
-  in[0] f32_buffer gate
+  in[0] f32 gate min=0.0 max=1.0 default=0.0 unit="" curve=linear
   in[1] f32 attack min=0.001 max=5.0 default=0.01 unit="s" curve=exponential
   in[2] f32 decay min=0.001 max=5.0 default=0.1 unit="s" curve=exponential
   in[3] f32 sustain min=0.0 max=1.0 default=0.7 unit="" curve=linear
@@ -51,7 +51,7 @@ operator envelope
   out[1] f32 active
   lanes inherit
 operator euclid
-  in[0] f32_buffer clock
+  in[0] f32 clock min=0.0 max=1.0 default=0.0 unit="" curve=linear
   in[1] f32 steps min=1.0 max=16.0 default=16.0 unit="steps" curve=linear
   in[2] f32 pulses min=0.0 max=16.0 default=4.0 unit="pulses" curve=linear
   in[3] f32 rotation min=0.0 max=15.0 default=0.0 unit="steps" curve=linear
@@ -157,8 +157,8 @@ operator reverb
   out[0] f32_buffer audio
   lanes inherit
 operator sample
-  in[0] f32_buffer freq
-  in[1] f32_buffer gate
+  in[0] f32 freq min=0.0 max=20000.0 default=0.0 unit="Hz" curve=linear
+  in[1] f32 gate min=0.0 max=1.0 default=0.0 unit="" curve=linear
   in[2] f32 root min=0.0 max=127.0 default=60.0 unit="MIDI" curve=linear
   in[3] f32 gain min=0.0 max=4.0 default=1.0 unit="" curve=linear
   in[4] f32 start min=0.0 max=1.0 default=0.0 unit="" curve=linear
@@ -167,7 +167,7 @@ operator sample
   resource[0] sample
   lanes inherit
 operator sequencer
-  in[0] f32_buffer clock
+  in[0] f32 clock min=0.0 max=1.0 default=0.0 unit="" curve=linear
   in[1] f32 length min=1.0 max=16.0 default=8.0 unit="steps" curve=linear
   in[2] f32 step1 min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
   in[3] f32 step2 min=-1.0 max=24.0 default=1.0 unit="degree" curve=linear
@@ -211,7 +211,7 @@ operator transpose
 operator voicer
   in[0] message notes
   in[1] harmony harmony
-  out[0] f32_buffer freq
-  out[1] f32_buffer gate
+  out[0] f32_buffer audio
   param[0] voices min=1.0 max=32.0 default=8.0 unit="" curve=linear
+  resource[0] voice
   lanes from_param(0)

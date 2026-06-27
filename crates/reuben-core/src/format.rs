@@ -91,6 +91,13 @@ pub struct NodeDoc {
     /// sample player); rejected elsewhere as a structural [`LoadError::UnknownResource`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sample: Option<String>,
+    /// Instrument-resource reference (ADR-0032 §2): a logical id into the document's `resources`
+    /// table whose source is a **voice patch** (a standalone instrument JSON). Only valid on an
+    /// operator declaring a `voice` resource slot (the Voicer); rejected elsewhere as a structural
+    /// [`LoadError::UnknownResource`]. The loader builds the patch `voices` times and binds the
+    /// graphs via [`Operator::bind_voices`](crate::operator::Operator::bind_voices).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub voice: Option<String>,
     /// Public-control metadata for a generated control surface (ADR-0018): marks this node as
     /// player-facing and carries display hints (`label`, optional `unit`/`widget`/range). The
     /// engine never reads it — it is passed through opaquely so it survives load → round-trip →
@@ -347,7 +354,63 @@ pub fn load_instrument(
         }
     }
 
+    // Instrument-resource pass (ADR-0032 §2): a node with a `voice` ref hosts N copies of a voice
+    // patch. Build the patch `voices` times (each an independent Graph — `Graph` is not `Clone`, and
+    // `Plan::instantiate` consumes one Graph per voice) and bind them; the Voicer turns them into
+    // per-voice sub-plans at `on_instantiate`. Structural errors in the patch are fatal; a missing id
+    // or resolve failure degrades to silence (empty graphs) with a warning, like a sample.
+    for n in &doc.nodes {
+        let Some(id) = &n.voice else { continue };
+        let Some(key) = graph.find(&n.address) else {
+            continue;
+        };
+        let n_voices = voice_count(n, &graph.nodes[key].descriptor);
+        let mut voices: Vec<Graph> = Vec::with_capacity(n_voices);
+        match doc.resources.get(id) {
+            None => {
+                warnings.push(LoadWarning::MissingResource {
+                    node: n.address.clone(),
+                    id: id.clone(),
+                });
+                for _ in 0..n_voices {
+                    voices.push(Graph::new());
+                }
+            }
+            Some(source) => {
+                for i in 0..n_voices {
+                    let loaded = resolve_instrument(source, registry, resolver)?;
+                    // One copy's warnings suffice — the N builds are identical.
+                    if i == 0 {
+                        warnings.extend(loaded.warnings);
+                    }
+                    voices.push(loaded.graph);
+                }
+            }
+        }
+        graph.nodes[key].op.bind_voices(voices);
+    }
+
     Ok(Loaded { graph, warnings })
+}
+
+/// The voice-pool size for a Voicer node (ADR-0032): its `voices` config constant, else the
+/// descriptor's `voices` param default, floored to 1.
+fn voice_count(n: &NodeDoc, descriptor: &Descriptor) -> usize {
+    n.config
+        .get("voices")
+        .and_then(|v| match v {
+            ConfigValue::Number(x) => Some(*x),
+            ConfigValue::Symbol(_) => None,
+        })
+        .or_else(|| {
+            descriptor
+                .params
+                .iter()
+                .find(|p| p.name == "voices")
+                .map(|p| p.default as f64)
+        })
+        .map(|x| (x.round() as i64).max(1) as usize)
+        .unwrap_or(1)
 }
 
 /// Resolve an **instrument-kind resource** (ADR-0032 §2): a patch `source` (a path) is read to its
@@ -413,6 +476,13 @@ impl InstrumentDoc {
                 return Err(LoadError::UnknownResource {
                     node: n.address.clone(),
                     slot: "sample".to_string(),
+                });
+            }
+            // A `voice` instrument-resource ref likewise requires the `voice` slot (ADR-0032 §2).
+            if n.voice.is_some() && !descriptor.has_resource("voice") {
+                return Err(LoadError::UnknownResource {
+                    node: n.address.clone(),
+                    slot: "voice".to_string(),
                 });
             }
             let key = graph.add_boxed(&n.address, (entry.make)(), descriptor.clone());
@@ -626,8 +696,9 @@ impl InstrumentDoc {
                     inputs,
                     // A built Graph does not retain the logical resource id (consumed into the
                     // ResourceStore at load), so save does not round-trip a sample ref — acceptable
-                    // until the library thread lands (ADR-0016).
+                    // until the library thread lands (ADR-0016). Same for a `voice` instrument-ref.
                     sample: None,
+                    voice: None,
                     // Control metadata (ADR-0018) lives on the document, not the built Graph, so the
                     // save-from-graph path does not reconstruct it; document-level round-trip
                     // (load → re-serialize) preserves it via serde.

@@ -43,7 +43,7 @@ pub const NUM_STEPS: usize = 16;
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Euclid {
     type_name: "euclid",
-    inputs:  { clock:    f32_buffer,
+    inputs:  { clock:    f32 { 0.0..=1.0, default 0.0, "", lin },
                steps:    f32 { 1.0..=16.0, default 16.0, "steps",  lin },
                pulses:   f32 { 0.0..=16.0, default 4.0,  "pulses", lin },
                rotation: f32 { 0.0..=15.0, default 0.0,  "steps",  lin } },
@@ -99,7 +99,6 @@ impl Operator for Euclid {
     }
 
     fn process(&mut self, io: &mut Io) {
-        let n = io.frames();
         // Held controls, constant for this (sub)block (the engine block-slices at changes).
         let total =
             (io.input::<f32>(IN_STEPS).unwrap_or(16.0).round() as i64).clamp(1, NUM_STEPS as i64);
@@ -107,36 +106,31 @@ impl Operator for Euclid {
         let rotation =
             (io.input::<f32>(IN_ROTATION).unwrap_or(0.0).round() as i64).rem_euclid(total);
 
-        let mut step = self.step;
-        let mut prev = self.prev_clock;
-        let mut high = self.high;
-        for i in 0..n {
-            // The immutable `io.input` borrow ends at this `let`, so `io.output` (which needs
-            // `&mut io`) is free to run below — same pattern as the sequencer.
-            let g = io.input::<&[f32]>(IN_CLOCK).get(i).copied().unwrap_or(0.0);
-            if prev < 0.5 && g >= 0.5 {
-                // Rising edge: close any open gate, advance, and open a gate on a pulse step.
-                if high {
-                    io.output::<f32>(OUT_GATE).set(i, 0.0f32);
-                    high = false;
-                }
-                step = (step + 1).rem_euclid(total);
-                if is_pulse(step, total, pulses, rotation) {
-                    io.output::<f32>(OUT_GATE).set(i, 1.0f32);
-                    high = true;
-                }
-            } else if prev >= 0.5 && g < 0.5 {
-                // Falling edge: close the gate so its width tracks the clock pulse.
-                if high {
-                    io.output::<f32>(OUT_GATE).set(i, 0.0f32);
-                    high = false;
-                }
+        // `clock` is a held Value (ADR-0031): the engine block-slices at every clock change, so this
+        // call sees one constant level. Compare it to the level held across the previous slice to
+        // detect the edge; the slice's frame 0 *is* the change frame (block-absolute), so emitting
+        // there is sample-accurate. The held latch carries `prev` across blocks/slices.
+        let g = io.input::<f32>(IN_CLOCK).unwrap_or(0.0);
+        let prev = self.prev_clock;
+        if prev < 0.5 && g >= 0.5 {
+            // Rising edge: close any open gate, advance, and open a gate on a pulse step.
+            if self.high {
+                io.output::<f32>(OUT_GATE).set(0, 0.0f32);
+                self.high = false;
             }
-            prev = g;
+            self.step = (self.step + 1).rem_euclid(total);
+            if is_pulse(self.step, total, pulses, rotation) {
+                io.output::<f32>(OUT_GATE).set(0, 1.0f32);
+                self.high = true;
+            }
+        } else if prev >= 0.5 && g < 0.5 {
+            // Falling edge: close the gate so its width tracks the clock pulse.
+            if self.high {
+                io.output::<f32>(OUT_GATE).set(0, 0.0f32);
+                self.high = false;
+            }
         }
-        self.step = step;
-        self.prev_clock = prev;
-        self.high = high;
+        self.prev_clock = g;
     }
 
     fn spawn(&self) -> Box<dyn Operator> {
@@ -161,8 +155,21 @@ mod tests {
         d.set(IN_STEPS, steps)
             .set(IN_PULSES, pulses)
             .set(IN_ROTATION, rotation);
-        d.drive(IN_CLOCK, clock);
+        push_clock(&mut d, clock, 0.0);
         d.render(clock.len()).emits().to_vec()
+    }
+
+    /// Drive the now-held-Value `clock` from a dense gate buffer (ADR-0031): push a held-level
+    /// change at each frame the buffer crosses the 0.5 threshold — the clock is fed by edges, not a
+    /// per-sample buffer. `prev` threads the level across split renders; returns the trailing level.
+    fn push_clock(d: &mut OpDriver, clock: &[f32], mut prev: f32) -> f32 {
+        for (i, &g) in clock.iter().enumerate() {
+            if (prev < 0.5) != (g < 0.5) {
+                d.push(IN_CLOCK, i, g);
+                prev = g;
+            }
+        }
+        prev
     }
 
     /// A clock gate: high for the first half of each `period`-sample beat, repeated `beats` times.
@@ -305,9 +312,9 @@ mod tests {
             .set(IN_STEPS, 16.0)
             .set(IN_PULSES, 5.0)
             .set(IN_ROTATION, 1.0);
-        split.drive(IN_CLOCK, &clock[..mid]);
+        let prev = push_clock(&mut split, &clock[..mid], 0.0);
         let e1 = split.render(mid).emits().to_vec();
-        split.drive(IN_CLOCK, &clock[mid..]);
+        push_clock(&mut split, &clock[mid..], prev);
         let e2 = split.render(clock.len() - mid).emits().to_vec();
 
         // Re-base the second block's on-steps onto the whole-clock timeline before comparing.
@@ -325,7 +332,7 @@ mod tests {
             .set(IN_PULSES, 3.0)
             .set(IN_ROTATION, 0.0);
         let clock = beat_gate(period, 8);
-        a.drive(IN_CLOCK, &clock);
+        push_clock(&mut a, &clock, 0.0);
         a.render(clock.len());
 
         let mut b = a.spawn();
@@ -333,7 +340,7 @@ mod tests {
             .set(IN_PULSES, 3.0)
             .set(IN_ROTATION, 0.0);
         let one = beat_gate(period, 1);
-        b.drive(IN_CLOCK, &one);
+        push_clock(&mut b, &one, 0.0);
         let emits = b.render(one.len()).emits().to_vec();
         // The spawn's first beat is step 0, a pulse in E(3,8): gate-on at frame 0.
         let first_on = emits.iter().find(|e| gate(e) >= 0.5).expect("a gate-on");

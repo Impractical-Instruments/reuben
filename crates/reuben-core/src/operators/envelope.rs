@@ -30,7 +30,7 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Envelope {
-    inputs:  { gate:    f32_buffer,
+    inputs:  { gate:    f32 { 0.0..=1.0, default 0.0, "", lin },
                attack:  f32 { 0.001..=5.0, default 0.01, "s", exp },
                decay:   f32 { 0.001..=5.0, default 0.1,  "s", exp },
                sustain: f32 { 0.0..=1.0,   default 0.7,  "",  lin },
@@ -110,24 +110,25 @@ impl Operator for Envelope {
         // release lasts `release` seconds from wherever the level is — never frozen at sustain=0.
         let release_rate = per_sample_step(io.input::<f32>(IN_RELEASE).unwrap_or(0.2), sample_rate);
 
-        // `gate` is a `Float` input — always a buffer (wired source or materialized latch). Read
-        // each sample with a short-lived borrow that ends before the output write, so `process`
-        // stays allocation-free. An unwired gate materializes to 0 (gate-off).
+        // `gate` is a held Value (ADR-0031): the engine block-slices at every gate change, so this
+        // call sees one constant level — read it once and detect the edge against the flag held
+        // across the previous slice. The slice's frame 0 *is* the change frame (block-absolute), so
+        // the A/R trigger is sample-accurate. An unwired gate reads 0 (gate-off).
+        let gate_on = io.input::<f32>(IN_GATE).unwrap_or(0.0) > 0.5;
+        if gate_on && !self.held {
+            self.stage = Stage::Attack;
+        } else if !gate_on && self.held {
+            self.stage = Stage::Release;
+            // Lock the release slope to the current level: fall to 0 over `release` seconds
+            // from here. For a note held to sustain this equals the old sustain-scaled rate;
+            // for sustain=0 or a release mid-decay it still terminates instead of sticking.
+            self.release_step = self.level * release_rate;
+        }
+        self.held = gate_on;
+
+        // The CV contour itself is a continuous Signal (`cv` stays `f32_buffer`): advance it
+        // per-sample across the whole (sub)block.
         for i in 0..n {
-            let gate_on = io.input::<&[f32]>(IN_GATE).get(i).copied().unwrap_or(0.0) > 0.5;
-
-            // Edge detection against the previous sample's held flag.
-            if gate_on && !self.held {
-                self.stage = Stage::Attack;
-            } else if !gate_on && self.held {
-                self.stage = Stage::Release;
-                // Lock the release slope to the current level: fall to 0 over `release` seconds
-                // from here. For a note held to sustain this equals the old sustain-scaled rate;
-                // for sustain=0 or a release mid-decay it still terminates instead of sticking.
-                self.release_step = self.level * release_rate;
-            }
-            self.held = gate_on;
-
             match self.stage {
                 Stage::Idle => {
                     self.level = 0.0;
@@ -196,9 +197,25 @@ mod tests {
         d.set(IN_ATTACK, adsr[0])
             .set(IN_DECAY, adsr[1])
             .set(IN_SUSTAIN, adsr[2])
-            .set(IN_RELEASE, adsr[3])
-            .drive(IN_GATE, gate);
+            .set(IN_RELEASE, adsr[3]);
+        push_gate(d, gate);
         d.render(gate.len()).output(OUT_CV).to_vec()
+    }
+
+    /// Drive the now-held-Value `gate` from a dense gate buffer (ADR-0031): the gate is fed by edges,
+    /// not a per-sample buffer. Push the first frame's level unconditionally (so a continuous render
+    /// drops the latch the previous render left set; an unchanged value dedups), then a change at
+    /// each frame the buffer crosses the 0.5 threshold.
+    fn push_gate(d: &mut OpDriver, gate: &[f32]) {
+        let Some(&first) = gate.first() else { return };
+        d.push(IN_GATE, 0, first);
+        let mut prev = first;
+        for (i, &g) in gate.iter().enumerate().skip(1) {
+            if (prev < 0.5) != (g < 0.5) {
+                d.push(IN_GATE, i, g);
+                prev = g;
+            }
+        }
     }
 
     #[test]
@@ -357,7 +374,7 @@ mod tests {
 
         // Note-on held to sustain: exactly one active=1.0 at the downbeat.
         let hold_n = 4_800;
-        d.drive(IN_GATE, &vec![1.0f32; hold_n]);
+        push_gate(&mut d, &vec![1.0f32; hold_n]);
         let on = d.render(hold_n).emits().to_vec();
         assert_eq!(on.len(), 1, "one transition: idle -> active");
         assert_eq!(on[0].frame, 0);
@@ -366,7 +383,7 @@ mod tests {
         // Gate drops: still active through the release tail, then exactly one active=0.0 once idle.
         let release_samples = (release * SR) as usize;
         let rel_n = release_samples + 2_400;
-        d.drive(IN_GATE, &vec![0.0f32; rel_n]);
+        push_gate(&mut d, &vec![0.0f32; rel_n]);
         let off = d.render(rel_n).emits().to_vec();
         assert_eq!(off.len(), 1, "one transition: active -> idle");
         assert_abs_diff_eq!(active_val(&off[0]), 0.0);

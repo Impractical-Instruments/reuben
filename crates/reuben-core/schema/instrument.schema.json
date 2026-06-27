@@ -780,6 +780,13 @@
                   "gate": {
                     "oneOf": [
                       {
+                        "default": 0.0,
+                        "description": "unit: , curve: Linear",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
                         "additionalProperties": false,
                         "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
                         "properties": {
@@ -871,6 +878,13 @@
                 "properties": {
                   "clock": {
                     "oneOf": [
+                      {
+                        "default": 0.0,
+                        "description": "unit: , curve: Linear",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
                       {
                         "additionalProperties": false,
                         "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
@@ -2647,6 +2661,13 @@
                   "freq": {
                     "oneOf": [
                       {
+                        "default": 0.0,
+                        "description": "unit: Hz, curve: Linear",
+                        "maximum": 20000.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
                         "additionalProperties": false,
                         "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
                         "properties": {
@@ -2687,6 +2708,13 @@
                   },
                   "gate": {
                     "oneOf": [
+                      {
+                        "default": 0.0,
+                        "description": "unit: , curve: Linear",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
                       {
                         "additionalProperties": false,
                         "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
@@ -2779,6 +2807,13 @@
                 "properties": {
                   "clock": {
                     "oneOf": [
+                      {
+                        "default": 0.0,
+                        "description": "unit: , curve: Linear",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
                       {
                         "additionalProperties": false,
                         "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",

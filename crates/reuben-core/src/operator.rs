@@ -17,8 +17,11 @@ use std::sync::Arc;
 
 use smallvec::SmallVec;
 
+use crate::config::AudioConfig;
 use crate::descriptor::Descriptor;
+use crate::graph::Graph;
 use crate::message::{Arg, Emit, Event, FromArg};
+use crate::plan::PlanError;
 use crate::resources::{ResolvedRefs, ResourceStore};
 
 /// A typed, frame-stamped payload yielded by an [`Io::input`] event stream — one decoded Message on a port
@@ -417,6 +420,25 @@ pub trait Operator: Send {
     /// [`ResolvedRefs`] (resolved handles by slot name). Default no-op — the two-phase
     /// init pattern for a type-erased registry, so operators with no resources ignore it.
     fn bind_resources(&mut self, _store: &Arc<ResourceStore>, _refs: &ResolvedRefs) {}
+
+    /// Receive the resolved **instrument-resource** sub-graphs for this node (ADR-0032 §2). The
+    /// loader calls this on a node whose descriptor declares an instrument-resource slot (the
+    /// Voicer), handing the voice patch built `voices` times — one independent [`Graph`] per voice,
+    /// each with its own state and resolved `interface` boundary. Building happens at **load** (where
+    /// the registry + resolver live, so nested `sample` resources resolve); the operator stashes the
+    /// graphs and turns them into per-voice sub-plans later, at [`Operator::on_instantiate`] (which
+    /// has the [`AudioConfig`]). Default no-op — only the Voicer hosts sub-patches.
+    fn bind_voices(&mut self, _voices: Vec<Graph>) {}
+
+    /// Construct any config-dependent runtime state, after the engine fixes the [`AudioConfig`]
+    /// (ADR-0032 §3). Called once per node from [`Plan::instantiate`](crate::plan::Plan::instantiate)
+    /// — the one place with the resolved config — **before** the node enters the execution image, so
+    /// every allocation here is off the hot path (RT-safe by construction, ADR-0012). The Voicer
+    /// instantiates each bound voice [`Graph`] into a sub-`Plan` + pre-allocated arena here. May fail
+    /// (a voice sub-plan can be malformed); the error aborts the whole instantiate. Default `Ok(())`.
+    fn on_instantiate(&mut self, _config: &AudioConfig) -> Result<(), PlanError> {
+        Ok(())
+    }
 }
 
 #[cfg(test)]

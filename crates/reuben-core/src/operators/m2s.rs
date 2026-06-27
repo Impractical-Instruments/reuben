@@ -83,26 +83,27 @@ impl Operator for M2s {
         let mut glide_left = self.glide_left;
         let mut initialized = self.initialized;
 
+        // `in` is a held Value (ADR-0031): the engine block-slices at every change, so this call sees
+        // one constant target — read it once. A mid-block retarget arrives as the next slice's frame
+        // 0 (the change frame), so the move stays sample-accurate. The smoothing itself runs
+        // per-sample below toward that held target. This read ends before the per-sample output write.
+        let t = io.input::<f32>(IN_IN).unwrap_or(0.0);
+        if !initialized {
+            cur = t;
+            target = t;
+            initialized = true;
+        }
+        // A retarget. Glide re-arms its fixed-time ramp from the current value toward the new
+        // target (a stepped source fires this only at its change frame).
+        if t != target {
+            target = t;
+            if mode == M2sMode::Glide {
+                glide_inc = (target - cur) / glide_total;
+                glide_left = glide_total as u32;
+            }
+        }
+
         for i in 0..n {
-            // `in` is an F32 control, so it always presents a buffer (ADR-0030): the materialized
-            // ZOH of a held/sparse target, or a wired CV source. Read it per-sample so a continuous
-            // source is tracked and a stepped (sparse-message) source retargets exactly at its
-            // change frame. The immutable read is copied out before the mutable output write below.
-            let t = io.input::<&[f32]>(IN_IN).get(i).copied().unwrap_or(0.0);
-            if !initialized {
-                cur = t;
-                target = t;
-                initialized = true;
-            }
-            // A retarget. Glide re-arms its fixed-time ramp from the current value toward the new
-            // target (a stepped source fires this only at its change frame).
-            if t != target {
-                target = t;
-                if mode == M2sMode::Glide {
-                    glide_inc = (target - cur) / glide_total;
-                    glide_left = glide_total as u32;
-                }
-            }
             match mode {
                 M2sMode::Slew => {
                     if cur < target {

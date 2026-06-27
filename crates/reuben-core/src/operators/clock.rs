@@ -34,7 +34,7 @@ crate::operator_contract!(Clock {
     inputs:  { sync: note,
                tempo:    f32 { 1.0..=999.0, default 120.0, "BPM", lin },
                division: f32 { 1.0..=64.0,  default 1.0,   "",    lin } },
-    outputs: { phase: f32_buffer, gate: f32_buffer },
+    outputs: { phase: f32_buffer, gate: f32 { 0.0..=1.0, default 0.0, "gate", lin } },
 });
 
 #[derive(Default)]
@@ -43,6 +43,10 @@ pub struct Clock {
     /// Held in f64 so the beat grid doesn't drift off the sample timeline over a long
     /// session (f32 accumulation slips audibly within seconds).
     phase: f64,
+    /// Last `gate` level emitted (ADR-0031): `gate` is now a sparse held Value (`MsgWriter`), so it
+    /// emits one change per rising/falling edge instead of filling a dense buffer. Persists across
+    /// blocks so the first frame of a block only re-emits if the level actually changed.
+    gate_high: bool,
 }
 
 impl Clock {
@@ -108,10 +112,15 @@ impl Operator for Clock {
             end = phase;
         }
         {
-            let out = io.output::<&mut [f32]>(OUT_GATE);
+            // `gate` is now a sparse held Value (ADR-0031): replay the same accumulator, but emit a
+            // `MsgWriter` change only at each rising/falling edge instead of writing every sample.
+            // The held level carries across blocks (`self.gate_high`), so frame 0 only re-emits on a
+            // genuine change. A downstream Value/materialize bridge ZOH-reconstructs the dense gate.
+            let mut out = io.output::<f32>(OUT_GATE);
             let mut phase = start;
             let mut ri = 0;
-            for (i, s) in out.iter_mut().enumerate().take(n) {
+            let mut high = self.gate_high;
+            for i in 0..n {
                 while ri < resets.len() && resets[ri] == i {
                     phase = 0.0;
                     ri += 1;
@@ -119,7 +128,11 @@ impl Operator for Clock {
                 // Sub-beat phasor: phase·division wrapped to [0,1); gate high for its first
                 // half. division 1 reduces to `phase < 0.5` exactly (bit-identical default).
                 let sub = (phase * division).fract();
-                *s = if sub < 0.5 { 1.0 } else { 0.0 };
+                let now_high = sub < 0.5;
+                if now_high != high {
+                    out.set(i, if now_high { 1.0 } else { 0.0 });
+                    high = now_high;
+                }
                 phase += dt;
                 // Wrap to [0,1). `dt` is beats/sample (≤ 999/60/sr ≪ 1), so after one increment
                 // `phase < 2` and a single conditional subtraction is exactly `phase.floor()` here
@@ -128,6 +141,7 @@ impl Operator for Clock {
                     phase -= 1.0;
                 }
             }
+            self.gate_high = high;
         }
         self.phase = end;
     }
@@ -163,7 +177,29 @@ mod tests {
             d.push(IN_SYNC, r, Note::new(Pitch::Degree(0), 1.0));
         }
         d.render(n);
-        (d.output(OUT_PHASE).to_vec(), d.output(OUT_GATE).to_vec())
+        // `gate` is now a sparse held Value (ADR-0031): ZOH-reconstruct the dense gate from its
+        // edge emits so the edge/bit-identity assertions below read it exactly as before.
+        let gate = gate_buffer(d.emits(), n);
+        (d.output(OUT_PHASE).to_vec(), gate)
+    }
+
+    /// Reconstruct the dense gate from the `gate` port's sparse edge emits (ZOH): each emit sets the
+    /// held level at its frame; the level holds until the next edge. Equals the old dense gate buffer.
+    fn gate_buffer(emits: &[crate::message::Emit], n: usize) -> Vec<f32> {
+        use crate::message::Arg;
+        let mut buf = vec![0.0f32; n];
+        let mut level = 0.0f32;
+        let mut ei = 0;
+        for (i, s) in buf.iter_mut().enumerate() {
+            while ei < emits.len() && emits[ei].frame == i {
+                if let Arg::F32(v) = emits[ei].arg {
+                    level = v;
+                }
+                ei += 1;
+            }
+            *s = level;
+        }
+        buf
     }
 
     /// Indices where `gate` rises 0 -> 1.

@@ -47,15 +47,15 @@ pub enum PortKind {
     Event,
 }
 
-/// Classify an input/output port into its declared [`PortKind`] form (ADR-0031). A `Buffer` is a
-/// Signal; a `Note` (struct vocab that isn't `Harmony`) is an Event; everything latched — enums,
-/// `Harmony`, `I32`, `Str` — is a Value. `F32` classifies **Signal** for now (the pre-sweep
-/// always-materialize behaviour), and re-declares to Value/Signal port-by-port during the step-4/5
-/// sweep (decision A: form declaration is fused with each operator's migration so the suite stays
-/// green).
+/// Classify an input/output port into its declared [`PortKind`] form (ADR-0031). An `F32Buffer` is a
+/// Signal (a dense per-sample carrier); a `Note` (struct vocab that isn't `Harmony`) is an Event;
+/// everything latched — a bare `F32`, enums, `Harmony`, `I32`, `Str` — is a Value. The Phase-B flip
+/// (ADR-0031): `F32 ⇒ Value`. A port that must carry a continuous signal with a scalar default
+/// (`oscillator.freq`, `filter.cutoff`, `envelope.cv`) is declared `f32_buffer`-with-meta, so it
+/// stays Signal and materializes from its default; every remaining bare `f32` is a held Value.
 pub fn port_kind(p: &Port) -> PortKind {
     match &p.ty {
-        PortType::F32Buffer | PortType::F32 => PortKind::Signal,
+        PortType::F32Buffer => PortKind::Signal,
         PortType::Vocab {
             enum_meta: None,
             name,
@@ -413,7 +413,12 @@ impl Plan {
             let n_lanes = lanes[*key];
             let node = graph.nodes.remove(*key).expect("key from topo order");
             let mut ops: Vec<Box<dyn Operator>> = Vec::with_capacity(n_lanes);
-            ops.push(node.op);
+            // Config-dependent runtime state (ADR-0032 §3): the Voicer instantiates its bound voice
+            // graphs into per-voice sub-plans here, where `config` is fixed and we are off the hot
+            // path. Done on the original instance before Lane spawns (single-Lane for the Voicer).
+            let mut op = node.op;
+            op.on_instantiate(&config)?;
+            ops.push(op);
             for _ in 1..n_lanes {
                 ops.push(ops[0].spawn());
             }

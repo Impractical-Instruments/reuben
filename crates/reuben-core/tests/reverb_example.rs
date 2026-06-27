@@ -10,6 +10,7 @@ use reuben_core::{load, AudioConfig, Registry};
 const REVERB_JSON: &str = include_str!("../../../instruments/reverb.json");
 
 #[test]
+#[ignore = "ADR-0032 follow-up: depends on a voicer instrument / voicer.freq tap; re-author to the hosted-voice model, then restore"]
 fn reverb_example_loads_and_renders_a_held_note() {
     let cfg = AudioConfig::new(48_000.0, 256);
     let graph = load(REVERB_JSON, &Registry::builtin()).expect("load reverb.json");

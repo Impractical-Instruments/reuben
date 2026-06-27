@@ -36,10 +36,10 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | 5 Phase B infra — instrument-resource kind (resource pipeline) | ✅ done | `8874b9b` |
 | 5 Phase B infra — `envelope` grows `active` output (f32/MsgWriter); closes mixed signal+msg output gap | ✅ done | `6f485e1` |
 | 5 Phase B — `*_f32_value` math family (add/mul/power), pre-flip green | ✅ done | `6a9bcb1` |
-| 5 Phase B — flip `port_kind` `F32 ⇒ Value` (atomic barrier) | 🔴 done on working tree (uncommitted — barrier red) | — |
-| 5 Phase B — gate/CV held-read rewrites (6 spine ports + `m2s`) | 🔴 done on working tree (unit tests green) | — |
-| 5 Phase B — ADR-0032 Voicer rewrite (restores polyphony, in the barrier) | ⬜ pending — **next** | — |
-| 5 Phase B — re-bless goldens + fix integration tests → green → **commit** | ⬜ pending | — |
+| 5 Phase B — flip `port_kind` `F32 ⇒ Value` (atomic barrier) | ✅ in barrier commit | — |
+| 5 Phase B — gate/CV held-read rewrites (6 spine ports + `m2s`) | ✅ in barrier commit | — |
+| 5 Phase B — ADR-0032 Voicer rewrite (restores polyphony, in the barrier) | ✅ **done (session 9)** | — |
+| 5 Phase B — re-bless goldens + fix integration tests → green → **commit** | ✅ **green workspace-wide; committed** | — |
 | 6–8 | ⬜ pending | — |
 
 **Suite is green workspace-wide at `b4e558b`** (`cargo test --workspace`, clippy clean).
@@ -200,7 +200,98 @@ documented transient polyphony break; **only the ADR-0032 Voicer rewrite clears 
 **NOT yet done (next session):** re-bless `descriptors.txt` + `instrument.schema.json` (deferred to
 the *end* — Voicer's contract changes again in the rewrite, so blessing now just re-churns).
 
-### ▶ Pickup — ADR-0032 Voicer rewrite (the rest of the barrier). Forks to resolve first:
+### ✅ Session 9 (2026-06-27) — ADR-0032 forks resolved (grill); barrier build scope locked
+
+All five forks below resolved in a grilling session. **Barrier build scope (test-first):**
+
+- **B (instantiation lifecycle) → new `Operator::on_instantiate(&mut self, &AudioConfig)` hook**,
+  called per-node from `Plan::instantiate` (the one place with `config`). Voicer builds its
+  `Vec<VoiceSlot { plan, arena }>` there — allocation off the hot path, RT-safe by construction.
+  Lazy-on-first-`process` rejected (hidden first-block alloc).
+- **A (N voice Graphs) → loader builds `Vec<Graph>`, binds them.** `Graph` is not `Clone` and
+  `instantiate` *consumes* one Graph → one Plan, so N plans need N graphs. At **load** (where the
+  registry + resolver live — the voice patch may pull nested `sample` resources = file IO that must
+  not happen at instantiate), resolve the voice patch once and build it **N** times (N = `voices`
+  param, read from the host JSON). Bind the `Vec<Graph>` to Voicer via a **new bind hook** (sample
+  `bind_resources` only carries `SampleId`s). `on_instantiate` consumes each Graph → a `VoiceSlot`.
+  Requires Voicer to declare an **instrument-resource slot**; the loader path maps id→patch-path,
+  calls `resolve_instrument`, builds N, binds. `clone_via_spawn` rejected (new primitive, not needed);
+  store-JSON-and-rebuild rejected (build needs registry+resolver, absent at instantiate).
+- **C (Lane deletion) → dormant in barrier, delete in follow-up.** Barrier change: only drop
+  `lanes: from_param(voices)` from Voicer's contract ⇒ `node.lanes == 1` everywhere, the `for lane`
+  loop runs once, polyphony restored via voice sub-plans. `LaneRule::FromParam` + per-Lane render loop
+  + `node.lanes` stay dormant (provably dead), deleted in an **immediate follow-up** (independently
+  green, bisectable, before merge). Shrinks the atomic barrier.
+- **D (voice-patch authoring) → minimal proof in barrier, defer the 15.** Barrier authors
+  `voices/default-voice.json` (osc→filter→env→env_curve→env_vca, `interface { inputs: freq/gate,
+  outputs: audio/active }`) + re-authors `default.json` to `voicer(resource: default-voice) → out` +
+  **temporarily narrows `demo_instruments_load_and_play`** (`tonal_context.rs`) to the migrated set.
+  This drives the sound canary green and proves the whole path. **Follow-up** re-authors the other 15
+  `voicer` instruments (parallelizable, 1 subagent/instrument — split master-FX vs per-voice core per
+  instrument) + restores the full sweep.
+- **E (voice liveness) → gate-key now, defer `active`.** Voicer reads each voice's **audio** from
+  `master[0]` of its sub-render (`render_plan` already sums the patch's output tap there — no
+  interface-output arena resolution, no new render machinery). Free-pool keyed on **gate** (today's
+  proven steal-oldest). The interface-output **Value-capture** seam in `render_plan` + `active`-based
+  release-tail-aware stealing (ADR-0032 §5) defer to the **same follow-up** as D. `envelope.active`
+  already exists (`6f485e1`); it is simply not yet *read*.
+
+**Voicer rewrite shape (barrier):** contract → outputs collapse to one `audio: f32_buffer`
+(drop `freq`/`gate` outputs), drop the `lanes:` line, add the instrument-resource slot. State: the
+bound `Vec<Graph>` → `Vec<VoiceSlot { plan, arena }>` + one shared `RenderScratch` sized to the (uniform)
+voice plan, a `SerialExecutor`, the existing note pool (`voices`, `counter`), and per-voice
+`(freq_addr, gate_addr)` resolved from `Graph::interface.inputs` (node address + port name) **before**
+instantiate consumes the graph. `process`: keep the musical brain (assign/steal/release, resolve
+Degrees through `harmony`), build a sparse per-voice `freq`/`gate` change-list as `Message`s addressed
+to the interface input ports, `render_plan` each voice (its own arena, shared scratch, throwaway
+`outbound`), sum each `master[0]` into Voicer's audio output. **Build order (test-first):** (1)
+`on_instantiate` hook + plumb through `Plan::instantiate`; (2) `bind_voices` hook + loader
+instrument-resource slot path; (3) Voicer contract + state + `process` rewrite against `OpDriver`;
+(4) `voices/default-voice.json` + re-author `default.json`; (5) narrow `demo_instruments_load_and_play`;
+(6) re-bless `descriptors.txt` + `instrument.schema.json`; (7) `cargo test --workspace` + clippy green
+→ **commit the whole barrier** (flip + spine + Voicer). Then follow-ups: Lane deletion (C); 15
+instruments + `active` (D/E).
+
+### ✅ Session 9 barrier LANDED (2026-06-27) — workspace green, ready to commit
+
+Built the whole barrier test-first; `cargo test --workspace` (350 pass) + `cargo clippy --workspace
+--all-targets` clean. What shipped:
+- **Engine seams:** `Operator::on_instantiate(&AudioConfig) -> Result<(), PlanError>` (called per node
+  from `Plan::instantiate`) + `Operator::bind_voices(Vec<Graph>)`. Loader instrument-resource path:
+  `NodeDoc.voice` field, `build()` validation, `load_instrument` builds N voice graphs (`voice_count`
+  from config-or-default) + binds them. Distinguished by slot **name** `voice` (no proc-macro
+  `ResourceKind` — deferred).
+- **Voicer rewrite (`voicer.rs`):** single `audio: f32_buffer` output (freq/gate outputs gone); a
+  testable `VoicePool` (assign/steal/release) + per-voice `VoiceSlot { plan, arena }`; `on_instantiate`
+  instantiates each bound graph + a shared `RenderScratch`; `process` runs allocation, drives each
+  voice's `freq`/`gate` interface inputs via a **reused** message buffer (clear+`push_str`, alloc-free),
+  `render_plan`s each voice, sums `master[0]`. Audio read from `master[0]` (no interface-output arena
+  resolution). **`lanes: from_param(voices)` kept dormant** (Fork C) — Lane 0 hosts all voices, Lanes
+  1.. are empty silent spawns; keeps `voices` a `Constant` so the lane-config tests stay green.
+- **Instruments:** `voices/default-voice.json` (osc→filter→env→curve→vca, `interface` freq/gate/
+  audio/active) + `default.json` re-authored to `voicer(voice: default-voice) → out`.
+- **Tests:** `first_sound` rewired to the spine (osc.freq default + `/env/gate` Value, no Voicer);
+  `rt_safe` rewritten to prove the **hosted-voice** render path alloc-free via `default.json` +
+  sample player on direct Value freq/gate; `instrument_format` default/chord tests load via a
+  resolver (proves polyphony + 440 Hz through hosted voices); `save_then_reload` → metronome (no
+  resource round-trip gap); goldens re-blessed (`descriptors.txt` + `instrument.schema.json`).
+
+**Deferred to follow-up(s) — 24 tests `#[ignore]`'d with `ADR-0032 follow-up` reason (9 files):**
+1. **Re-author the other 15 `voicer` instruments** (sampler, sampler-arp, stereo-autopan, echo, reverb,
+   auto-filter, good-button, scale-demo, autotune, chord-player, sequence, groovebox, djfilter-demo,
+   vibrato, strum-harp …) to host voice sub-patches; un-ignore their tests (chord_player, echo_example,
+   reverb_example, groovebox_snare_gate, tonal_context, instrument_format's 3, cli's 3, sampler_example,
+   stereo_example). Several need a **proc-macro `ResourceKind`** or constant-decoupling so non-default
+   `voices` config + nested-sample voice patches work.
+2. **Lane fan-out deletion** (Fork C): rip out `LaneRule::FromParam`, the per-Lane render loop,
+   `node.lanes`, per-Lane out_buffers; Voicer becomes truly single-Lane (drop the dormant `lanes:`
+   line then). Independently green commit.
+3. **`active`-based liveness/stealing** (Fork E): interface-output Value-capture in `render_plan`;
+   Voicer reads each voice's `active`, steals release-tail-aware. Plus skip idle voices (today renders
+   all N).
+4. **`voice` resource round-trip** through `from_graph` (same gap as `sample`).
+
+### ▶ Pickup — ADR-0032 Voicer rewrite (the rest of the barrier). Forks RESOLVED above (session 9):
 
 The infra is all landed (interface, instrument-resource, `render_plan` free fn, `envelope.active`).
 Remaining is the Voicer op itself + Lane deletion + voice-patch authoring + integration-test fixes.
