@@ -28,8 +28,11 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | 5 Phase B — forks resolved (grill session 2) | 🔍 scoped | — |
 | 5 Phase B pre-commit — forced f32→f32_buffer (math operands + swept controls) | ✅ done | `cb437c0` |
 | 5 Phase B — forks re-resolved (grill session 3): `is_materialized` + per-Voice | 🔍 re-scoped | issues `#99`·`#100`·`#101` |
-| 5 Phase B — per-Voice re-ruled (grill session 4): **flip them too, stub Voicer silent** | 🔍 **re-scoped** | issue `#99` (expanded) |
-| 5 Phase B — atomic barrier (flip + spine rewrites + value-math) | ⬜ pending | — |
+| 5 Phase B — per-Voice re-ruled (grill session 4): ~~flip them too, stub Voicer silent~~ | ⚠️ **WITHDRAWN** (session 5) | — |
+| 5 Phase B — Voicer rewrite as sub-patch host (grill session 5) | 🔍 **scoped → [ADR-0032](0032-voicer-hosts-voice-subpatches.md)** | — |
+| 5 Phase B — gate/CV mono migration + value-math (pre-flip) | ⬜ pending | — |
+| 5 Phase B — flip `port_kind` `F32 ⇒ Value` (barrier) | ⬜ pending | — |
+| 5 Phase B — ADR-0032 Voicer rewrite (restores polyphony, post-flip pre-merge) | ⬜ pending | — |
 | 6–8 | ⬜ pending | — |
 
 **Suite is green workspace-wide at `b4e558b`** (`cargo test --workspace`, clippy clean).
@@ -49,18 +52,22 @@ The atomic green barrier (Decision B). In one sequence, on this branch:
    where `meta.is_some()` stays correct for both `f32` Value and `f32_buffer` Signal numeric controls.
    The planned `matches!(F32Buffer) && meta.is_some()` would silently drop JSON/OSC numeric overrides
    on every bare-`f32` Value control. `contract_shapes.rs` passes unchanged. See session 3 below.
-3. **Gate/CV-spine reads/writes → held-Value** — **WIDENED by grill session 4 (reverses session 3's
-   Fork 2): flip the FULL gate/CV spine, including the per-Voice ports.**
-   - **Inputs → `f32` held** (read held + block-sliced edge-detect; tests switch `drive(buffer)` →
-     `push(port, frame, v)`): `euclid.clock`, `sequencer.clock`, **`sample.gate`/`freq`**, **`envelope.gate`**.
-   - **Outputs → `f32` / `MsgWriter`**: `clock.gate`, **`voicer.freq`/`gate`** (`euclid.gate` already done).
-   - **Stay `f32_buffer`**: `envelope.cv` (a true continuous Signal) and `oscillator.freq` (the V→S
-     materialize sink — `voicer.freq` Value → `osc.freq` Signal is a legal materialize edge).
-   - `sample`/`envelope` are **fully migrated** and stay correct in **mono**; only **polyphony** breaks,
-     because Voicer is the fan-out and per-Lane Value routing doesn't exist yet (emission is Lane-0-only;
-     the Value latch is node-global/broadcast). So **Voicer is stubbed silent** (no-op `process`, emits
-     nothing → unset `f32` latches read `0.0` → downstream silent) and its tests are deleted, along with
-     the voicer-driven integration tests (see session 4). Voicer rewrite + polyphony restore → issue `#99`.
+3. **Gate/CV-spine reads/writes → held-Value** — full flip, **no per-Voice exception**, resolved by
+   [**ADR-0032**](0032-voicer-hosts-voice-subpatches.md) (grill session 5). Session 4's "flip the
+   per-Voice ports + stub Voicer silent" is **WITHDRAWN**: the blast radius (delete/neuter Voicer +
+   chord_player + tonal_context + first_sound tests) was wider than the fix. ADR-0032 instead rewrites
+   Voicer to **host N single-Lane voice sub-patches** (a voice = a standalone instrument referenced by
+   path; freq/gate Value in, audio + `active` out; re-entrant `render(plan, arena)` per voice; Lane
+   fan-out deleted), so the per-Lane Value-routing problem never arises and the flip is uniform.
+   On-branch sequence: **(a)** gate/CV **mono** migration + value-math (below) → **(b)** flip
+   `port_kind` (barrier; polyphony transiently broken on-branch) → **(c)** ADR-0032 Voicer rewrite
+   restores polyphony → **(d)** merge. `main` never ships a stub or broken polyphony.
+   - **Inputs → `f32` held** (block-sliced edge-detect; tests `drive(buffer)` → `push(port, frame, v)`):
+     `euclid.clock`, `sequencer.clock`, `sample.gate`/`freq`, `envelope.gate`. Mono-correct as-is.
+   - **Outputs → `f32` / `MsgWriter`**: `clock.gate` (`euclid.gate` already done). `voicer.freq`/`gate`
+     **go away** — they move *inside* each voice sub-patch (ADR-0032), so no port to flip.
+   - **Stay `f32_buffer`**: `envelope.cv` (continuous CV) and `oscillator.freq` (V→S materialize sink).
+   - **`envelope` grows an `active` output** (the canonical voice-liveness source for ADR-0032).
 4. **Author the net-new `*_f32_value` math family** beside the `*_f32_signal` structs in the same
    family file (`add.rs`, …) — value shell calls the shared scalar `fn` once; signal shell loops it.
 5. Re-bless any op descriptor snapshots that change; keep `cargo test --workspace` + clippy green
@@ -71,7 +78,19 @@ The atomic green barrier (Decision B). In one sequence, on this branch:
 Note `cargo doc -D warnings` is **not** a CI gate (reuben-contract + some reuben-core links were
 already broken pre-Phase-A); don't be alarmed by it.
 
-### ✅ Resolved (grilling session 4, 2026-06-27) — reverse Fork 2: flip the per-Voice ports, break Voicer
+### ⚠️ WITHDRAWN (grilling session 5, 2026-06-27) — session 4's "stub Voicer silent" reversed
+
+**The entire session-4 ruling below is withdrawn.** Stubbing Voicer silent + deleting/neutering its whole
+test neighbourhood (chord_player, tonal_context resolution tests, first_sound audio asserts) was a wider
+blast radius than the actual fix. Session 5 instead **rewrites Voicer** so the per-Lane Value-routing
+problem it created never arises: a "voice" becomes a standalone instrument patch referenced by path;
+Voicer instantiates N of them, allocates notes across them, and outputs the summed audio Signal. With
+per-Voice data living *inside* single-Lane sub-patches, the gate/CV spine flips cleanly to `f32` Value
+with no `f32_buffer`-everywhere compromise and no silent stub. **Design resolved in
+[ADR-0032](0032-voicer-hosts-voice-subpatches.md)** (grill session 5, 2026-06-27). The text below is
+retained only for the record.
+
+<details><summary>Session 4 ruling (WITHDRAWN — retained for the record)</summary>
 
 Session 3's Fork 2 kept `voicer.freq`/`gate`, `sample.freq`/`gate`, `envelope.gate` as `f32_buffer` to
 preserve polyphony. **User ruling (this session): reverse it.** Carry a uniform "all gate/trigger ports
@@ -118,6 +137,8 @@ touch `is_materialized` (Fork 1 stands); rewrite held edge-detect for `euclid.cl
 (Voicer's is the silent no-op); rewrite `m2s.in` (held read + smooth, stays `f32`); author
 `add_f32_value`/`mul_f32_value`/`power_f32_value`; stub Voicer silent + remove/neuter/rewire the tests in (4);
 re-bless descriptor + schema goldens (`descriptors.txt` voicer/sample/envelope rows; `instrument.schema.json`).
+
+</details>
 
 ### ✅ Resolved (grilling session 3, 2026-06-27) — two Phase-B forks found mid-execution
 
