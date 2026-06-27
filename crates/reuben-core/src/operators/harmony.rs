@@ -151,7 +151,7 @@ impl Operator for HarmonyOp {
         for &f in &frames {
             let cur = self.current_at(io, f);
             if self.last != Some(cur) {
-                io.emit(OUT_HARMONY, "harmony", cur, f);
+                io.output::<Harmony>(OUT_HARMONY).set(f, cur);
                 self.last = Some(cur);
             }
         }

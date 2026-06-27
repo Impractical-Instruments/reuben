@@ -110,7 +110,8 @@ impl Operator for Strum {
             while k < self.pending.len() {
                 if self.pending[k].1 <= 0 {
                     let deg = self.pending[k].0;
-                    io.emit(OUT_DEGREES, "notes", degree_note(deg, 0.0), i);
+                    io.output::<Note>(OUT_DEGREES)
+                        .emit(i, degree_note(deg, 0.0));
                     self.pending.swap_remove(k);
                 } else {
                     self.pending[k].1 -= 1;
@@ -118,7 +119,7 @@ impl Operator for Strum {
                 }
             }
 
-            // Read this sample's position (the immutable borrow ends with this `let`, so `io.emit`
+            // Read this sample's position (the immutable borrow ends with this `let`, so `io.output`
             // can borrow mutably below). Each band crossed emits a pluck + a scheduled note-off.
             let pos = io
                 .input::<&[f32]>(IN_POSITION)
@@ -135,7 +136,8 @@ impl Operator for Strum {
                 while s != cur_string {
                     s += step;
                     let deg = Self::degree_of(s, strings, octaves);
-                    io.emit(OUT_DEGREES, "notes", degree_note(deg, velocity), i);
+                    io.output::<Note>(OUT_DEGREES)
+                        .emit(i, degree_note(deg, velocity));
                     if self.pending.len() < self.pending.capacity() {
                         self.pending.push((deg, PLUCK_SAMPLES));
                     }
@@ -228,7 +230,6 @@ mod tests {
 
         let ons = on_degrees(&emits);
         assert_eq!(ons, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
-        assert!(emits.iter().all(|e| e.address == "notes"));
     }
 
     #[test]

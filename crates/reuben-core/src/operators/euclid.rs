@@ -111,24 +111,24 @@ impl Operator for Euclid {
         let mut prev = self.prev_clock;
         let mut high = self.high;
         for i in 0..n {
-            // The immutable `io.signal` borrow ends at this `let`, so `io.emit` (which needs
+            // The immutable `io.input` borrow ends at this `let`, so `io.output` (which needs
             // `&mut io`) is free to run below — same pattern as the sequencer.
             let g = io.input::<&[f32]>(IN_CLOCK).get(i).copied().unwrap_or(0.0);
             if prev < 0.5 && g >= 0.5 {
                 // Rising edge: close any open gate, advance, and open a gate on a pulse step.
                 if high {
-                    io.emit(OUT_GATE, "gate", 0.0f32, i);
+                    io.output::<f32>(OUT_GATE).set(i, 0.0f32);
                     high = false;
                 }
                 step = (step + 1).rem_euclid(total);
                 if is_pulse(step, total, pulses, rotation) {
-                    io.emit(OUT_GATE, "gate", 1.0f32, i);
+                    io.output::<f32>(OUT_GATE).set(i, 1.0f32);
                     high = true;
                 }
             } else if prev >= 0.5 && g < 0.5 {
                 // Falling edge: close the gate so its width tracks the clock pulse.
                 if high {
-                    io.emit(OUT_GATE, "gate", 0.0f32, i);
+                    io.output::<f32>(OUT_GATE).set(i, 0.0f32);
                     high = false;
                 }
             }
@@ -266,7 +266,6 @@ mod tests {
         let clock = beat_gate(period, 1);
         let emits = run(&clock, 1.0, 1.0, 0.0);
         assert_eq!(emits.len(), 2, "one gate-on + one gate-off");
-        assert_eq!(emits[0].address, "gate");
         assert_eq!(emits[0].frame, 0);
         approx::assert_relative_eq!(gate(&emits[0]), 1.0);
         assert_eq!(emits[1].frame, period / 2);

@@ -57,7 +57,8 @@ impl Operator for Transpose {
             evs.push((s.frame, s.payload));
         }
         for (frame, note) in evs {
-            io.emit(OUT_NOTES, "notes", transpose_note(note, amount), frame);
+            io.output::<Note>(OUT_NOTES)
+                .emit(frame, transpose_note(note, amount));
         }
     }
 

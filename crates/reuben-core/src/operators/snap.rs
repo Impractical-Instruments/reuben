@@ -71,7 +71,8 @@ impl Operator for Snap {
                 Pitch::Absolute(midi) => harmony.snap(midi, policy),
                 Pitch::Degree(_) => note.pitch,
             };
-            io.emit(OUT_NOTES, "notes", Note::new(pitch, note.velocity), frame);
+            io.output::<Note>(OUT_NOTES)
+                .emit(frame, Note::new(pitch, note.velocity));
         }
     }
 

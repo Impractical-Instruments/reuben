@@ -147,17 +147,17 @@ impl Operator for Sequencer {
             if prev < 0.5 && g >= 0.5 {
                 // Rising edge: end any held note, advance, and play the new step.
                 if let Some(m) = held.take() {
-                    io.emit(MSG_NOTES, "notes", degree_note(m, 0.0), i);
+                    io.output::<Note>(MSG_NOTES).emit(i, degree_note(m, 0.0));
                 }
                 step = (step + 1).rem_euclid(length);
                 if let Some(m) = note_at(step) {
-                    io.emit(MSG_NOTES, "notes", degree_note(m, 1.0), i);
+                    io.output::<Note>(MSG_NOTES).emit(i, degree_note(m, 1.0));
                     held = Some(m);
                 }
             } else if prev >= 0.5 && g < 0.5 {
                 // Falling edge: release the step's note (the per-beat pluck).
                 if let Some(m) = held.take() {
-                    io.emit(MSG_NOTES, "notes", degree_note(m, 0.0), i);
+                    io.output::<Note>(MSG_NOTES).emit(i, degree_note(m, 0.0));
                 }
             }
             prev = g;
@@ -271,7 +271,6 @@ mod tests {
         let emits = run(&clock, &params(1.0, degrees));
 
         assert_eq!(emits.len(), 2, "one note-on + one note-off");
-        assert_eq!(emits[0].address, "notes");
         assert_eq!(emits[0].frame, 0);
         approx::assert_relative_eq!(deg(&emits[0]), 0.0);
         approx::assert_relative_eq!(vel(&emits[0]), 1.0);
