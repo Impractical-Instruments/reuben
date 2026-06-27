@@ -123,6 +123,15 @@ pub fn generate(registry: &Registry) -> Value {
                 "description": "Logical resource id -> source (a file path today). Referenced by a node's `sample` field (ADR-0016).",
                 "additionalProperties": { "type": "string" }
             },
+            "interface": {
+                "type": "object",
+                "additionalProperties": false,
+                "description": "Engine-honored I/O boundary (ADR-0032): external name -> internal \"/node.port\" wire-ref. `inputs` names map to internal input ports, `outputs` names to output ports (sole-output sugar \"/node\" allowed). A voice patch declares this so its host voicer binds and type-checks it. Distinct from a node's `control` (ADR-0018), which is engine-ignored.",
+                "properties": {
+                    "inputs": { "type": "object", "additionalProperties": { "type": "string" } },
+                    "outputs": { "type": "object", "additionalProperties": { "type": "string" } }
+                }
+            },
             "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
             "outputs": { "type": "array", "items": { "$ref": "#/$defs/portRef" } }
         },

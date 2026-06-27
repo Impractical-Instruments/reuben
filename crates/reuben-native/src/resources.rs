@@ -42,6 +42,14 @@ impl ResourceResolver for FsResolver {
         let path = self.base_dir.join(source);
         decode_wav(&path)
     }
+
+    /// Read a patch path (an instrument-kind resource, ADR-0032 §2) to its JSON text, relative to
+    /// the base dir like a sample. Core then builds it into a sub-`Graph`.
+    fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
+        let path = self.base_dir.join(source);
+        std::fs::read_to_string(&path)
+            .map_err(|e| ResolveError::NotFound(format!("{}: {e}", path.display())))
+    }
 }
 
 /// Decode a WAV file into a planar [`SampleBuffer`] at its native sample rate. Integer PCM
@@ -124,5 +132,33 @@ mod tests {
             resolver.resolve("does_not_exist_xyz.wav"),
             Err(ResolveError::NotFound(_))
         ));
+    }
+
+    #[test]
+    fn resolve_text_reads_a_patch_file_and_builds_a_subgraph() {
+        // The instrument-kind resource seam (ADR-0032 §2): write a voice patch, resolve its path to
+        // text via FsResolver, and build it into a sub-Graph through core's `resolve_instrument`.
+        let dir = std::env::temp_dir();
+        let path = dir.join("reuben_test_voice.json");
+        std::fs::write(
+            &path,
+            r#"{"instrument":"voice",
+                "interface":{"inputs":{"freq":"/osc.freq"},"outputs":{"audio":"/osc.audio"}},
+                "nodes":[{"type":"oscillator","address":"/osc"}]}"#,
+        )
+        .unwrap();
+
+        let resolver = FsResolver::new(&dir);
+        let loaded = reuben_core::resolve_instrument(
+            "reuben_test_voice.json",
+            &reuben_core::Registry::builtin(),
+            &resolver,
+        )
+        .expect("resolve patch");
+        assert!(loaded.warnings.is_empty());
+        assert_eq!(loaded.graph.nodes.len(), 1);
+        assert!(loaded.graph.interface.inputs.contains_key("freq"));
+
+        let _ = std::fs::remove_file(&path);
     }
 }

@@ -20,7 +20,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::descriptor::{Descriptor, PortType};
-use crate::graph::Graph;
+use crate::graph::{Graph, Interface};
 use crate::registry::Registry;
 use crate::resources::{ResolvedRefs, ResourceResolver, ResourceStore, SampleBuffer, SampleId};
 
@@ -39,9 +39,29 @@ pub struct InstrumentDoc {
     /// ignored.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub resources: BTreeMap<String, String>,
+    /// Engine-honored I/O boundary (ADR-0032 §1): external names → internal `node.port` refs the
+    /// engine binds and type-checks. A voice patch declares this so its host Voicer can drive its
+    /// `freq`/`gate` and tap its `audio`/`active`. `None` (the common case) for a top-level rig.
+    /// Distinct from a node's `control` (ADR-0018), which is opaque, engine-ignored UI metadata.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub interface: Option<InterfaceDoc>,
     pub nodes: Vec<NodeDoc>,
     #[serde(default)]
     pub outputs: Vec<PortRef>,
+}
+
+/// A document's `interface` block (ADR-0032 §1): the named I/O boundary, as external name → internal
+/// `node.port` wire-ref (the same `/node.port` form `inputs` wire-refs use; the sole-output sugar
+/// `/node` is allowed for an `outputs` ref). `inputs` names map to internal **input** ports;
+/// `outputs` names to internal **output** ports. Resolved + direction-checked at
+/// [`build`](InstrumentDoc::build) into [`Interface`].
+#[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InterfaceDoc {
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub inputs: BTreeMap<String, String>,
+    #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
+    pub outputs: BTreeMap<String, String>,
 }
 
 /// One operator instance.
@@ -330,6 +350,31 @@ pub fn load_instrument(
     Ok(Loaded { graph, warnings })
 }
 
+/// Resolve an **instrument-kind resource** (ADR-0032 §2): a patch `source` (a path) is read to its
+/// JSON via [`ResourceResolver::resolve_text`], then built into a sub-[`Graph`] through the full
+/// [`load_instrument`] path — so the sub-patch's own `sample` resources resolve recursively and its
+/// `interface` boundary is resolved for the host to bind. Structural/wiring problems in the patch
+/// are fatal ([`LoadError`]); a `resolve_text` failure is **non-fatal** (ADR-0016): it yields an
+/// empty graph plus a [`LoadWarning::ResolveFailed`], so one missing voice patch never crashes the
+/// host. This is the net-new piece ADR-0032 needs — "a resource that is a Graph, not bytes."
+pub fn resolve_instrument(
+    source: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> Result<Loaded, LoadError> {
+    match resolver.resolve_text(source) {
+        Ok(text) => load_instrument(&text, registry, resolver),
+        Err(e) => Ok(Loaded {
+            graph: Graph::new(),
+            warnings: vec![LoadWarning::ResolveFailed {
+                id: source.to_string(),
+                source: source.to_string(),
+                reason: e.to_string(),
+            }],
+        }),
+    }
+}
+
 impl InstrumentDoc {
     /// Parse a document from JSON (no operator resolution yet).
     pub fn from_json(json: &str) -> Result<Self, LoadError> {
@@ -478,6 +523,32 @@ impl InstrumentDoc {
             }
         }
 
+        // `interface`: the engine-honored I/O boundary (ADR-0032). Each external name resolves to
+        // one internal `(node, port)`, direction-checked — an `inputs` name to an input port, an
+        // `outputs` name to an output port (sole-output sugar allowed). Stored on the Graph for the
+        // host Voicer to bind; no Arg-type check here (the host's contract decides port types).
+        if let Some(iface) = &self.interface {
+            let mut interface = Interface::default();
+            for (name, reference) in &iface.inputs {
+                let (src_addr, port) = parse_wire(reference);
+                let (key, desc) = lookup(&by_addr, src_addr)?;
+                // An input ref must name its port explicitly — there is no sole-input sugar.
+                let port_name = port.ok_or_else(|| LoadError::UnknownPort {
+                    node: src_addr.to_string(),
+                    port: reference.clone(),
+                })?;
+                let idx = in_port(desc, src_addr, port_name)?;
+                interface.inputs.insert(name.clone(), (key, idx));
+            }
+            for (name, reference) in &iface.outputs {
+                let (src_addr, port) = parse_wire(reference);
+                let (key, desc) = lookup(&by_addr, src_addr)?;
+                let idx = resolve_out_port(desc, src_addr, reference, port)?;
+                interface.outputs.insert(name.clone(), (key, idx));
+            }
+            graph.interface = interface;
+        }
+
         Ok(graph)
     }
 
@@ -576,10 +647,41 @@ impl InstrumentDoc {
             })
             .collect();
 
+        // Reconstruct the `interface` boundary (ADR-0032) from its resolved `(node, port)` pairs,
+        // emitting the canonical explicit `/node.port` form (never the sole-output sugar) so a
+        // load → save → reload round-trip is stable. `None` when no boundary is declared.
+        let iface = &graph.interface;
+        let port_ref = |(key, port): &(crate::graph::NodeKey, usize), out: bool| {
+            let n = &graph.nodes[*key];
+            let pname = if out {
+                n.descriptor.outputs[*port].name
+            } else {
+                n.descriptor.inputs[*port].name
+            };
+            format!("{}.{}", n.address, pname)
+        };
+        let interface = if iface.inputs.is_empty() && iface.outputs.is_empty() {
+            None
+        } else {
+            Some(InterfaceDoc {
+                inputs: iface
+                    .inputs
+                    .iter()
+                    .map(|(name, np)| (name.clone(), port_ref(np, false)))
+                    .collect(),
+                outputs: iface
+                    .outputs
+                    .iter()
+                    .map(|(name, np)| (name.clone(), port_ref(np, true)))
+                    .collect(),
+            })
+        };
+
         Self {
             instrument: instrument.into(),
             doc: None,
             resources: BTreeMap::new(),
+            interface,
             nodes,
             outputs,
         }
@@ -820,6 +922,183 @@ mod tests {
         let saved2 = InstrumentDoc::from_graph(&g2, "test");
         assert_eq!(saved1, saved2);
         assert_eq!(saved1.nodes.len(), 2);
+    }
+
+    // ADR-0032 §1 — the `interface` block. A voice-shaped patch: osc.freq / env.gate in,
+    // osc.audio / env.active out. `/env` has two outputs so a sole-output ref would be ambiguous;
+    // the explicit `/env.active` resolves it.
+    const VOICE_IFACE: &str = r#"{
+        "instrument": "voice",
+        "interface": {
+            "inputs":  { "freq": "/osc.freq", "gate": "/env.gate" },
+            "outputs": { "audio": "/osc.audio", "active": "/env.active" }
+        },
+        "nodes": [
+            { "type": "oscillator", "address": "/osc" },
+            { "type": "envelope", "address": "/env" }
+        ]
+    }"#;
+
+    #[test]
+    fn interface_block_resolves_to_internal_ports() {
+        let g = load(VOICE_IFACE, &reg()).expect("load");
+        let osc = g.find("/osc").unwrap();
+        let env = g.find("/env").unwrap();
+        let osc_d = &g.nodes[osc].descriptor;
+        let env_d = &g.nodes[env].descriptor;
+
+        // inputs resolve to the right node + input port index, direction-checked.
+        assert_eq!(
+            g.interface.inputs["freq"],
+            (
+                osc,
+                osc_d.inputs.iter().position(|p| p.name == "freq").unwrap()
+            )
+        );
+        assert_eq!(
+            g.interface.inputs["gate"],
+            (
+                env,
+                env_d.inputs.iter().position(|p| p.name == "gate").unwrap()
+            )
+        );
+        // outputs resolve to the right node + output port index (explicit `/env.active`).
+        assert_eq!(
+            g.interface.outputs["audio"],
+            (
+                osc,
+                osc_d
+                    .outputs
+                    .iter()
+                    .position(|p| p.name == "audio")
+                    .unwrap()
+            )
+        );
+        assert_eq!(
+            g.interface.outputs["active"],
+            (
+                env,
+                env_d
+                    .outputs
+                    .iter()
+                    .position(|p| p.name == "active")
+                    .unwrap()
+            )
+        );
+    }
+
+    #[test]
+    fn interface_unknown_node_errors() {
+        let json = r#"{"instrument":"t","interface":{"inputs":{"freq":"/nope.freq"}},
+            "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
+        assert!(matches!(load(json, &reg()), Err(LoadError::UnknownNode(_))));
+    }
+
+    #[test]
+    fn interface_unknown_port_errors() {
+        // `/osc` has no input named `gate` — a direction-correct but absent port.
+        let json = r#"{"instrument":"t","interface":{"inputs":{"gate":"/osc.gate"}},
+            "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
+        assert!(matches!(
+            load(json, &reg()),
+            Err(LoadError::UnknownPort { .. })
+        ));
+    }
+
+    #[test]
+    fn interface_input_requires_explicit_port() {
+        // No sole-input sugar: an `inputs` ref must name its port.
+        let json = r#"{"instrument":"t","interface":{"inputs":{"freq":"/osc"}},
+            "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
+        assert!(matches!(
+            load(json, &reg()),
+            Err(LoadError::UnknownPort { .. })
+        ));
+    }
+
+    #[test]
+    fn interface_round_trips_through_doc_and_graph() {
+        // Document round-trip (serde) preserves the block...
+        let doc = InstrumentDoc::from_json(VOICE_IFACE).expect("parse");
+        let reparsed = InstrumentDoc::from_json(&doc.to_json_pretty()).expect("reparse");
+        assert_eq!(doc, reparsed);
+        // ...and from_graph reconstructs an equivalent, stable interface (canonical `/node.port`).
+        let g = load(VOICE_IFACE, &reg()).expect("load");
+        let saved = InstrumentDoc::from_graph(&g, "voice");
+        let iface = saved.interface.as_ref().expect("interface reconstructed");
+        assert_eq!(iface.inputs["freq"], "/osc.freq");
+        assert_eq!(iface.outputs["active"], "/env.active");
+        // Rebuild and compare by (address, port) — raw NodeKeys are build-specific (the slotmap
+        // assigns them fresh, and from_graph re-sorts nodes), so resolve keys to addresses first.
+        let g2 = saved.build(&reg()).expect("rebuild");
+        let addr =
+            |g: &Graph, (k, p): (crate::graph::NodeKey, usize)| (g.nodes[k].address.clone(), p);
+        for name in ["freq", "gate"] {
+            assert_eq!(
+                addr(&g, g.interface.inputs[name]),
+                addr(&g2, g2.interface.inputs[name]),
+                "input {name} drifted"
+            );
+        }
+        for name in ["audio", "active"] {
+            assert_eq!(
+                addr(&g, g.interface.outputs[name]),
+                addr(&g2, g2.interface.outputs[name]),
+                "output {name} drifted"
+            );
+        }
+    }
+
+    // ADR-0032 §2 — the instrument-kind resource. A resolver whose `resolve_text` returns a voice
+    // patch's JSON; `resolve_instrument` builds it into a sub-Graph (with its interface resolved).
+    struct PatchResolver(&'static str);
+    impl ResourceResolver for PatchResolver {
+        fn resolve(&self, source: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
+            Err(crate::resources::ResolveError::NotFound(source.to_string()))
+        }
+        fn resolve_text(&self, _: &str) -> Result<String, crate::resources::ResolveError> {
+            Ok(self.0.to_string())
+        }
+    }
+
+    #[test]
+    fn instrument_resource_resolves_path_to_subgraph() {
+        let loaded = resolve_instrument("voices/lead.json", &reg(), &PatchResolver(VOICE_IFACE))
+            .expect("resolve");
+        assert!(loaded.warnings.is_empty());
+        assert_eq!(loaded.graph.nodes.len(), 2);
+        // The sub-Graph carries its resolved interface, ready for a host to bind.
+        assert!(loaded.graph.interface.inputs.contains_key("freq"));
+        assert!(loaded.graph.interface.outputs.contains_key("audio"));
+    }
+
+    #[test]
+    fn instrument_resource_resolve_failure_is_a_warning_not_fatal() {
+        // A resolver that can't produce the text (the default `resolve_text`): non-fatal per
+        // ADR-0016 — an empty graph plus a ResolveFailed warning, never a hard error.
+        struct Failing;
+        impl ResourceResolver for Failing {
+            fn resolve(&self, s: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
+                Err(crate::resources::ResolveError::NotFound(s.to_string()))
+            }
+        }
+        let loaded = resolve_instrument("missing.json", &reg(), &Failing).expect("non-fatal");
+        assert_eq!(loaded.graph.nodes.len(), 0);
+        assert!(matches!(
+            loaded.warnings.as_slice(),
+            [LoadWarning::ResolveFailed { .. }]
+        ));
+    }
+
+    #[test]
+    fn instrument_resource_structural_error_is_fatal() {
+        // A sub-patch that resolves but is structurally broken (unknown operator type) is fatal,
+        // matching ADR-0016: availability problems warn, wiring problems error.
+        const BROKEN: &str = r#"{"instrument":"v","nodes":[{"type":"nope","address":"/x"}]}"#;
+        assert!(matches!(
+            resolve_instrument("v.json", &reg(), &PatchResolver(BROKEN)),
+            Err(LoadError::UnknownType { .. })
+        ));
     }
 
     #[test]

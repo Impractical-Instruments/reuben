@@ -5,6 +5,8 @@
 //! ([`crate::plan::Plan::instantiate`]). Node identity is a stable slotmap key, so a
 //! future Swap can match surviving operators across re-Instantiate.
 
+use std::collections::BTreeMap;
+
 use slotmap::{new_key_type, SlotMap};
 
 use crate::descriptor::Descriptor;
@@ -44,6 +46,20 @@ pub struct Connection {
     pub dst_port: usize,
 }
 
+/// A patch's engine-honored I/O boundary (ADR-0032 §1) — the resolved form of a document's
+/// `interface` block. Each external name maps to one internal `(node, port)`: an **input** name to
+/// a node's input port (the boundary feeds it), an **output** name to a node's output port (the
+/// boundary reads it). Empty unless the document declares an `interface`. Distinct from `control`
+/// (ADR-0018), which is engine-ignored: this is real wiring the engine binds and type-checks (the
+/// Voicer reads it to drive each voice sub-patch's `freq`/`gate` and tap its `audio`/`active`).
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct Interface {
+    /// External input name → the internal `(node, input port)` it drives.
+    pub inputs: BTreeMap<String, (NodeKey, usize)>,
+    /// External output name → the internal `(node, output port)` it exposes.
+    pub outputs: BTreeMap<String, (NodeKey, usize)>,
+}
+
 /// A patch under construction.
 #[derive(Default)]
 pub struct Graph {
@@ -53,6 +69,9 @@ pub struct Graph {
     /// channel index this tap feeds (ADR-0026); `None` broadcasts to every channel (the
     /// historical mono fan). Summed into the rendered output.
     pub outputs: Vec<(NodeKey, usize, Option<usize>)>,
+    /// The resolved `interface` boundary (ADR-0032), empty unless declared. Set by the loader's
+    /// [`build`](crate::format::InstrumentDoc::build) after nodes/wires resolve.
+    pub interface: Interface,
 }
 
 impl Graph {

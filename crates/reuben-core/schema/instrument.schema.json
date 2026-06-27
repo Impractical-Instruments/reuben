@@ -3520,6 +3520,25 @@
     "instrument": {
       "type": "string"
     },
+    "interface": {
+      "additionalProperties": false,
+      "description": "Engine-honored I/O boundary (ADR-0032): external name -> internal \"/node.port\" wire-ref. `inputs` names map to internal input ports, `outputs` names to output ports (sole-output sugar \"/node\" allowed). A voice patch declares this so its host voicer binds and type-checks it. Distinct from a node's `control` (ADR-0018), which is engine-ignored.",
+      "properties": {
+        "inputs": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "outputs": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
+    },
     "nodes": {
       "items": {
         "$ref": "#/$defs/node"

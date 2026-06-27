@@ -46,8 +46,11 @@ pub mod vocab;
 
 pub use config::AudioConfig;
 pub use descriptor::Descriptor;
-pub use format::{load, load_instrument, InstrumentDoc, LoadError, LoadWarning, Loaded};
-pub use graph::{Graph, NodeKey};
+pub use format::{
+    load, load_instrument, resolve_instrument, InstrumentDoc, InterfaceDoc, LoadError, LoadWarning,
+    Loaded,
+};
+pub use graph::{Graph, Interface, NodeKey};
 pub use message::{Arg, Message};
 pub use operator::{Io, Operator};
 pub use plan::{Plan, PlanError};

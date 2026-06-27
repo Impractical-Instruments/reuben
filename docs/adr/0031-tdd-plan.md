@@ -32,8 +32,8 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | 5 Phase B — Voicer rewrite as sub-patch host (grill session 5) | 🔍 **scoped → [ADR-0032](0032-voicer-hosts-voice-subpatches.md)** | — |
 | 5 Phase B — **reorder: infra-first** (session 6) — land flip-independent ADR-0032 infra green before the barrier | 🔁 in progress | — |
 | 5 Phase B infra — re-entrant `render_plan` free fn + `RenderScratch` (ADR-0032 §4) | ✅ done | `a49884e` |
-| 5 Phase B infra — `interface` block format + schema + loader | ⬜ pending | — |
-| 5 Phase B infra — instrument-resource kind (resource pipeline) | ⬜ pending | — |
+| 5 Phase B infra — `interface` block format + schema + loader | ✅ done | this commit |
+| 5 Phase B infra — instrument-resource kind (resource pipeline) | ✅ done | this commit |
 | 5 Phase B infra — `envelope` grows `active` output (f32/MsgWriter); closes mixed signal+msg output gap | ✅ done | `6f485e1` |
 | 5 Phase B — gate/CV mono migration + value-math (pre-flip) | ⬜ pending | — |
 | 5 Phase B — flip `port_kind` `F32 ⇒ Value` (atomic barrier) | ⬜ pending | — |
@@ -59,10 +59,19 @@ This is faithful to the plan's own stated rationale ("order the sweep so the ato
 **Flip-independent infra to land green first** (each its own commit):
 1. ✅ **re-entrant `render_plan` free fn + `RenderScratch`** (ADR-0032 §4) — `a49884e`. Pure refactor;
    render is now a pure fn of `(plan, arena, scratch)`, callable per sub-plan with its own arena.
-2. ⬜ **`interface` block** — engine-honored I/O boundary (`inputs`/`outputs` name → `node/port`);
-   format parse + schema + loader bind/typecheck. Additive.
-3. ⬜ **instrument-resource kind** — resource pipeline (ADR-0016) resolves a path → built sub-`Graph`.
-   Additive.
+2. ✅ **`interface` block** — engine-honored I/O boundary. `InterfaceDoc` (optional top-level
+   `interface { inputs, outputs }`), resolved at `build()` into `Graph::interface` (external name →
+   `(NodeKey, port)`, direction-checked; reuses the `/node.port` wire-ref form — the ADR's `node/port`
+   example is illustrative). Schema + `from_graph` round-trip + loader typecheck. Additive. **No
+   Arg-type check** here (the host Voicer's contract decides port types). Wiring Voicer to read it is
+   barrier-time.
+3. ✅ **instrument-resource kind** — `ResourceResolver::resolve_text` (default-erroring) seam +
+   `resolve_instrument(source, registry, resolver) → Loaded`: reads patch JSON, builds a sub-`Graph`
+   via `load_instrument` (nested `sample` resources resolve recursively; structural errors fatal,
+   resolve failure a non-fatal `ResolveFailed` warning per ADR-0016). Native `FsResolver::resolve_text`
+   reads the file. Returns the sub-`Graph` (with its resolved `interface`); **storing it + N-instantiation
+   is Voicer-wiring (barrier-time)** since `Plan::instantiate` *consumes* the graph, so one built
+   sub-Graph can't seed N voices — the host rebuilds. Additive.
 4. ✅ **`envelope.active` output** — `6f485e1`. `f32`/`MsgWriter`, the canonical voice-liveness source.
    Surfaced + closed the **mixed signal+message output gap** ("voicer footgun"): `out_targets` now
    indexed by all-outputs port index (empty for signal ports); signal-output indexing relies on the
