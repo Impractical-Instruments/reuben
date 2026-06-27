@@ -30,10 +30,10 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | 5 Phase B — forks re-resolved (grill session 3): `is_materialized` + per-Voice | 🔍 re-scoped | issues `#99`·`#100`·`#101` |
 | 5 Phase B — per-Voice re-ruled (grill session 4): ~~flip them too, stub Voicer silent~~ | ⚠️ **WITHDRAWN** (session 5) | — |
 | 5 Phase B — Voicer rewrite as sub-patch host (grill session 5) | 🔍 **scoped → [ADR-0032](0032-voicer-hosts-voice-subpatches.md)** | — |
-| 5 Phase B — **reorder: infra-first** (session 6) — land flip-independent ADR-0032 infra green before the barrier | 🔁 in progress | — |
+| 5 Phase B — **reorder: infra-first** (session 6) — land flip-independent ADR-0032 infra green before the barrier | ✅ **all 4 done** | — |
 | 5 Phase B infra — re-entrant `render_plan` free fn + `RenderScratch` (ADR-0032 §4) | ✅ done | `a49884e` |
-| 5 Phase B infra — `interface` block format + schema + loader | ✅ done | this commit |
-| 5 Phase B infra — instrument-resource kind (resource pipeline) | ✅ done | this commit |
+| 5 Phase B infra — `interface` block format + schema + loader | ✅ done | `8874b9b` |
+| 5 Phase B infra — instrument-resource kind (resource pipeline) | ✅ done | `8874b9b` |
 | 5 Phase B infra — `envelope` grows `active` output (f32/MsgWriter); closes mixed signal+msg output gap | ✅ done | `6f485e1` |
 | 5 Phase B — gate/CV mono migration + value-math (pre-flip) | ⬜ pending | — |
 | 5 Phase B — flip `port_kind` `F32 ⇒ Value` (atomic barrier) | ⬜ pending | — |
@@ -112,6 +112,53 @@ The atomic green barrier (Decision B). In one sequence, on this branch:
 5. Re-bless any op descriptor snapshots that change; keep `cargo test --workspace` + clippy green
    across the sequence (it is one barrier, so expect a transient-red working tree until the flip
    sequence is complete — do not commit mid-flip).
+
+### 🗺️ Session 7 (2026-06-27) — barrier substrate map + per-port coupling finding (NOT YET STARTED)
+
+Infra-first is **complete** (all 4 green: `a49884e`, `6f485e1`, `8874b9b`). Read the substrate cold
+to scope the barrier; **no barrier code written yet.** Captured so the next session doesn't re-derive:
+
+**Io read/write dispatch** (`operator.rs`): held read `io.input::<f32>(p)` decodes `node.latch[p]`
+→ `Option<f32>`; Signal read `io.input::<&[f32]>(p)` reads the materialized buffer. Held arm already
+covers `f32` + all vocab types. Value output = `io.output::<f32>(p)` → `MsgWriter` (deduped,
+last-write-wins, addressless).
+
+**Render block-slicing** (`render.rs`): the block is split at change frames **only for Value (Held)
+inputs** (`route.held` → `bounds` windows; latch updated at each `seg_start`, sample-accurate). A
+Signal/`F32` input instead **materializes** ZOH into its scratch buffer at the change frame, and
+`node.latch[port]` is set **only to the end-of-block value** (`render.rs:614`). A Value port gets
+**no buffer** (`plan.rs:355` `kind != Signal ⇒ inputs.push(None)`), so its operator *must* read held.
+
+**⚠ Per-port coupling finding (corrects the "(a) mono migration landable green pre-flip" framing):**
+the held-read operator rewrites and the `port_kind` flip are **per-port coupled, not separable into
+two green commits**. Pre-flip an `f32` port is still Signal, so a held read returns the *end-of-block*
+latch (not sample-accurate, not even block-start); post-flip the same port is Value (no buffer), so
+the operator *must* read held. So changing a gate op to read held **only works once its port is
+Value** — `(a)` and `(b)` are the same atomic barrier per port. **Only the `*_f32_value` math family
+is independently green-landable** (additive new structs; do that first as its own commit).
+
+**Affected ports — current declared type → target** (verified by grep this session):
+| port | dir | now | target | note |
+|---|---|---|---|---|
+| `clock.gate` | out | `f32_buffer` | `f32` (MsgWriter) | emit sparse gate edges (1.0 at beat, 0.0 at half-beat) instead of filling a dense buffer — real `process` rewrite. `clock.phase` stays `f32_buffer`. |
+| `euclid.clock` | in | `f32_buffer` | `f32` held | edge-detect across segments (`prev_clock` field). `euclid.gate` out already `f32` ✅ |
+| `sequencer.clock` | in | `f32_buffer` | `f32` held | same edge-detect shape |
+| `sample.gate` | in | `f32_buffer` | `f32` held | rising-edge retrigger; `prev_gate` field |
+| `sample.freq` | in | `f32_buffer` | `f32` held | latched at trigger frame |
+| `envelope.gate` | in | `f32_buffer` | `f32` held | A/R edge. `envelope.cv` stays `f32_buffer`; `envelope.active` already `f32` ✅ |
+| `oscillator.freq` | in | `f32_buffer` | **stays** `f32_buffer` | V→S materialize sink for `voice.freq`→`osc.freq` |
+
+After the flip, edges are all V→V direct (`clock.gate`Value→`euclid`/`sequencer.clock`Value) or the
+one V→S materialize (`*.freq`Value→`osc.freq`Signal). `voicer.freq`/`gate` outputs **go away** (move
+inside each voice sub-patch, ADR-0032). `Plan::instantiate` **consumes** the graph
+(`graph.nodes.remove`), so one built sub-Graph can't seed N voices — Voicer rebuilds N (barrier-time).
+
+**Recommended next-session order:** (1) `*_f32_value` math family → commit green. (2) The atomic
+barrier in one red-to-green sweep: flip `port_kind`, rewrite the 5 gate ops to held + `clock.gate` to
+MsgWriter, fix their tests (`drive(buffer)` → `push(port, frame, v)`), re-bless descriptor goldens.
+Polyphony is transiently broken here (Lane fan-out + Value = broadcast). (3) ADR-0032 Voicer rewrite
+restores polyphony (wire `interface` + instrument-resource infra, per-voice arenas via `render_plan`,
+note allocation, delete Lane fan-out, re-author instruments). (4) Merge.
 
 `Emit.address` field still exists (writers set `""`); its removal + boundary rework is **step 7**.
 Note `cargo doc -D warnings` is **not** a CI gate (reuben-contract + some reuben-core links were
