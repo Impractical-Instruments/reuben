@@ -23,25 +23,42 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | 3 — new `Io` API | ✅ done | `fadd3ed` |
 | 5 Phase A — accessor migration | ✅ done | `e411a7a` |
 | 5 Phase A — math `*_f32_signal` rename | ✅ done | `3821aa2` |
-| 5 Phase A — osc.freq/filter.cutoff → f32_buffer | ⬜ **next** | — |
-| 5 Phase A — delete old Io verbs | ⬜ pending | — |
+| 5 Phase A — osc.freq/filter.cutoff → f32_buffer | ✅ done | `f1e8fdc` |
+| 5 Phase A — delete old Io verbs | ⬜ **next** | — |
 | 5 Phase B — flip `F32⇒Value` + gate/CV spine + `*_f32_value` family | ⬜ pending | — |
 | 6–8 | ⬜ pending | — |
 
 **Suite is green workspace-wide at `3821aa2`** (`cargo test --workspace`, clippy clean).
 One commit per step.
 
-### ⚠ Open question — resolve before the next step (osc.freq/filter.cutoff → f32_buffer)
+### ✅ Resolved (grilling session) — osc.freq/filter.cutoff → f32_buffer
+
+The fork below was resolved **(a)**: an `f32_buffer` input may carry an **optional `meta` block**
+(`f32_buffer { 20..=20k, default 440, "Hz", exp }`). It classifies Signal (so an LFO/envelope
+wires straight in — no S→V converter), yet unwired/knob-set it still materializes a buffer ZOH from
+`meta.default`, exactly like today's `f32`. The rename is then a behaviour-preserving tag-swap whose
+only purpose is to opt these two ports **out** of the Phase-B `F32⇒Value` flip. `seed_latch` seeds
+an f32_buffer-with-meta from override-or-default; a bare `f32_buffer` (audio) stays a placeholder.
+
+Keyword stays **`f32_buffer`** (not `f32_signal`): it names the *representation* (a buffer) — a
+distinct axis from the *kind* (`port_kind` → Signal) and from the math op *form* suffix
+(`add_f32_signal`). With (a), an f32_buffer-with-meta is **not a pure signal** (it holds a default),
+so `f32_buffer` is the honest label. Done @ `f1e8fdc`.
+
+**⚠ Phase-B obligation this creates:** `is_materialized()` is still `meta.is_some()` (correct under
+F32⇒Signal). Once Phase B flips `F32⇒Value`, an `f32` (Value, held, no buffer) still has `meta`, so
+`is_materialized` must then key on **type/kind**, not just `meta`.
+
+<details><summary>Original fork (for the record)</summary>
 
 Today `filter.cutoff` / `oscillator.freq` are `f32` scalar controls: their unwired/knob-set
 **default** lives in the port's `meta` and rides the latch, which the engine materializes into a
 buffer. Once re-declared `f32_buffer` (Signal), an `f32_buffer` input carries **no `meta` and no
 latch** — so an *unwired* port (or one set by a bare param/knob, not a wire) has no source and would
-get an empty buffer. **How does a constant/knob-set value reach a now-`f32_buffer` control input?**
-Options to weigh next session: (a) let `f32_buffer` inputs carry optional `meta`+latch and materialize
+get an empty buffer. Options: (a) let `f32_buffer` inputs carry optional `meta`+latch and materialize
 from it when unwired (mirrors today's path); (b) require a constant to be wired as an explicit Value
 source (the fixture-A V→S materialize path) and drop the bare-knob affordance; (c) something else.
-This is a real fork — **/grill-me, don't assume.**
+</details>
 
 Step 3 notes (API-shape decision — the ADR was stale): the read/write surface is **two
 return-type-dispatched verbs**, not five named ones. `io.input::<T>(port)` (`&[f32]`⇒Signal slice ·
