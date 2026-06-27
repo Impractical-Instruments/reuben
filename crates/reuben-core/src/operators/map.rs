@@ -21,7 +21,7 @@ use crate::vocab::MapCurve;
 
 // Single-source contract (ADR-0025/0030). `curve` references the shared `MapCurve` vocab enum.
 crate::operator_contract!(Map {
-    inputs:  { in:      f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
+    inputs:  { in:      f32_buffer { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
                in_min:  f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
                in_max:  f32 { -1_000_000.0..=1_000_000.0, default 1.0, "", lin },
                out_min: f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },

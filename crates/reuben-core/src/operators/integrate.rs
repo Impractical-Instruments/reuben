@@ -17,7 +17,7 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0029/0030): `in` is a materialized `Float` (default 0).
 crate::operator_contract!(IntegrateF32Signal {
-    inputs:  { in: f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin } },
+    inputs:  { in: f32_buffer { -1_000_000.0..=1_000_000.0, default 0.0, "", lin } },
     outputs: { out: f32_buffer },
 });
 
