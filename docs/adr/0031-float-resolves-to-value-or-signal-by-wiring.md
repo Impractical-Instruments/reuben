@@ -157,14 +157,18 @@ sweep rather than discovered by the engine.
 Because a port's form is fixed at declaration, the operator reads it with the **matching direct
 accessor** — there is no runtime `match` on form:
 
-```rust
-let cutoff = io.in_signal(IN_CUTOFF);          // f32_buffer  -> &[f32]   (a Value source was materialized upstream)
-let steps  = io.in_value::<f32>(IN_STEPS);     // f32         -> f32      (held, block-sliced)
-let mode   = io.in_value::<FilterMode>(IN_MODE);
-for ev in io.in_event::<Note>(IN_NOTES) { ... } // note       -> Event iterator
+The whole read/write surface is **two return-type-dispatched verbs** — `io.input::<T>(port)` and
+`io.output::<T>(port)` — where the payload type `T` *is* the form (`&[f32]` ⇒ Signal, a scalar/enum/
+`Harmony` ⇒ Value held, `Note` ⇒ Event). (`in`/`out` are reserved-word-adjacent, so `input`/`output`.)
 
-io.out_value::<f32>(OUT_GATE).set(frame, 1.0);  // f32 output -> MsgWriter (deduped, last-wins, addressless)
-let buf = io.out_signal(OUT_AUDIO);             // f32_buffer output -> &mut [f32]
+```rust
+let cutoff = io.input::<&[f32]>(IN_CUTOFF);     // f32_buffer  -> &[f32]   (a Value source was materialized upstream)
+let steps  = io.input::<f32>(IN_STEPS);         // f32         -> Option<f32>  (held, block-sliced)
+let mode   = io.input::<FilterMode>(IN_MODE);
+for ev in io.input::<Note>(IN_NOTES) { ... }    // note        -> Event iterator
+
+io.output::<f32>(OUT_GATE).set(frame, 1.0);     // f32 output  -> MsgWriter (deduped, last-wins, addressless)
+let buf = io.output::<&mut [f32]>(OUT_AUDIO);   // f32_buffer output -> &mut [f32]
 ```
 
 - **`MsgWriter::set(frame, value)`** is the single Value-write primitive (lowers to today's
@@ -234,8 +238,8 @@ The discriminator throughout: **does the value vary per-sample in a musically re
 - **Breaking, engine-wide.** `PortKind { Dense, Held, Stream } → { Signal, Value, Event }`;
   `port_kind()` and the materialize-always path in `plan.rs`/`render.rs` are replaced by a
   **per-wire form checker** (materialize Value→Signal; hard-error Signal→Value and Event mismatches)
-  — *not* a topological solver. `Io` exposes `in_value`/`in_signal`/`in_event`/`out_value`/
-  `out_signal` in place of `signal`/`last`/`stream`/`varying`/`signal_mut`/`emit`. `varying()` is
+  — *not* a topological solver. `Io` exposes two return-type-dispatched verbs `input::<T>`/`output::<T>`
+  in place of `signal`/`last`/`stream`/`varying`/`signal_mut`/`emit`. `varying()` is
   gone. No `F32In`/`F32Out`. The golden descriptor snapshot and generated instrument schema are
   re-blessed.
 - **Buffers are allocated only for declared-Signal ports and materialized Value→Signal edges.** A
@@ -266,7 +270,7 @@ The discriminator throughout: **does the value vary per-sample in a musically re
   per [ADR-0029](0029-math-family-dense-float-one-file-per-op.md)); it is untouched here.
 - **Authoring contract:** `docs/agents/authoring.md`, `ARCHITECTURE`, `CONTEXT.md`, and the
   create-operator skill are swept to teach: **declare each port `f32` (Value) or `f32_buffer`
-  (Signal)** by what it is; the direct accessors (`in_value`/`in_signal`/`out_value`/`out_signal`);
+  (Signal)** by what it is; the two return-type-dispatched accessors (`input::<T>`/`output::<T>`);
   value-math vs signal-math nodes; the one legal implicit coercion (Value→Signal) and the hard
   error on its reverse.
 
@@ -284,7 +288,7 @@ detailed per-step oracle, fixtures, and operator waves live in
    the old `Io` verbs working over the new allocation. Bless the descriptor snapshot.
 2. **`Arg::Buffer → Arg::f32_buffer`** rename + `PortType` rename + contract-macro keyword change
    (`buffer → f32_buffer`, drop `float` in favour of `f32`). Mechanical, repo-wide; re-bless schema.
-3. **New `Io` API.** Add `in_value`/`in_signal`/`in_event`/`out_value`/`out_signal` + `MsgWriter`
+3. **New `Io` API.** Add the two return-type-dispatched verbs `input::<T>`/`output::<T>` + `MsgWriter`
    (deduped, frame-addressed, addressless). **No** `F32In`/`F32Out`, no `match`. Keep old verbs
    temporarily.
 4. **Declare port forms in the contract** per the [locked table](#locked-port-form-decisions-gatecv-scrub):

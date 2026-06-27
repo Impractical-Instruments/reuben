@@ -20,11 +20,21 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | 0 — oracle infra | ✅ done | `0ed6ba6` |
 | 1 — `PortKind` + wire checker | ✅ done | `b9b451c` |
 | 2 — `f32_buffer` rename | ✅ done | `64498fe` |
-| 3 — new `Io` API | ⬜ next | — |
+| 3 — new `Io` API | ✅ done | (this commit) |
 | 4–8 | ⬜ pending | — |
 
-**Suite is green workspace-wide at `64498fe`** (`cargo test --workspace`, clippy clean).
+**Suite is green workspace-wide at step 3** (`cargo test --workspace`, clippy clean).
 One commit per step.
+
+Step 3 notes (API-shape decision — the ADR was stale): the read/write surface is **two
+return-type-dispatched verbs**, not five named ones. `io.input::<T>(port)` (`&[f32]`⇒Signal slice ·
+scalar/enum/`Harmony`⇒held `Option<T>` · `Note`⇒`EventStream` iterator) and `io.output::<T>(port)`
+(`f32`⇒`MsgWriter` · `&mut [f32]`⇒`&mut [f32]`). `in`/`out` are reserved → `input`/`output`. Trait
+machinery: `IoInput`/`IoOutput` (the latter a GAT for the per-call borrow), a no-alloc named
+`EventStream`, and `MsgWriter` (writer-local dedup, last-write-wins per frame, addressless `Emit`).
+The five-verb spelling was stale ADR text from before the grilling resolved it; ADR-0031 §Read/write
+API + Consequences + impl-step-3 were corrected to match. Old verbs (`signal`/`last`/`stream`/
+`signal_mut`/`emit`/`varying`) kept intact — additive, nothing migrated yet.
 
 Step 2 notes (full-sweep + align-display decisions): retired the `buffer`/`float`
 keywords *and* their internal plumbing (`FloatMeta`→`F32Meta`, `PortSpec.float`→`f32`,
@@ -118,9 +128,13 @@ try this wire. Assert the message text in the fixture.
 
 ## Step 3 — New `Io` API (additive; old verbs stay)
 
-Test-first per accessor: `in_value::<T>` · `in_signal` · `in_event::<T>` · `out_value::<T>`
-(→`MsgWriter`) · `out_signal`. `MsgWriter::set(frame,v)` = **deduped** (no-op change emits
-nothing) + **last-write-wins** + addressless. No `F32In`/`F32Out`, no `match`, no `varying`.
+Two return-type-dispatched verbs only: **`input::<T>(port)`** (`&[f32]`⇒Signal · scalar/enum/
+`Harmony`⇒Value held `Option<T>` · `Note`⇒Event iterator) and **`output::<T>(port)`** (`f32`⇒
+`MsgWriter` · `&mut [f32]`⇒`&mut [f32]`). (`in`/`out` are reserved-word-adjacent → `input`/`output`.)
+Test-first per `T`-arm. `MsgWriter::set(frame,v)` = **deduped** (no-op change emits nothing) +
+**last-write-wins per frame** + addressless. Step-3 dedup is **writer-local** (running value seeded
+empty each call; cross-block held-latch baseline rides in with the first Value-emitting op in step 5).
+No `F32In`/`F32Out`, no `match`, no `varying`. Event-**write** stays the old `emit` verb for now.
 Keep old verbs temporarily.
 
 ## Step 4 — Declare port forms in the contract (**fused into step 5 per-op — Decision A**)
