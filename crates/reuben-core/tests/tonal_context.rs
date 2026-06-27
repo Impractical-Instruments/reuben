@@ -8,12 +8,25 @@ use reuben_core::message::{Arg, Message};
 use reuben_core::operators::{HarmonyOp, Snap, Voicer};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
+use reuben_core::resources::{ResolveError, ResourceResolver, SampleBuffer};
 use reuben_core::vocab::harmony::Harmony;
 use reuben_core::vocab::pitch::{Note, Pitch};
-use reuben_core::{load, AudioConfig, Graph, Registry};
+use reuben_core::{load_instrument, AudioConfig, Graph, Registry};
 
 const SCALE_DEMO: &str = include_str!("../../../instruments/scale-demo.json");
 const AUTOTUNE: &str = include_str!("../../../instruments/autotune.json");
+
+/// Resolves each rig's `voice` instrument-resource (ADR-0032) from the repo `instruments/` dir.
+struct InstrumentsDir;
+impl ResourceResolver for InstrumentsDir {
+    fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        Err(ResolveError::NotFound(source.to_string()))
+    }
+    fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
+        let path = format!("{}/../../instruments/{source}", env!("CARGO_MANIFEST_DIR"));
+        std::fs::read_to_string(&path).map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))
+    }
+}
 
 const CFG: AudioConfig = AudioConfig {
     sample_rate: 48_000.0,
@@ -39,7 +52,7 @@ fn context_voicer() -> Graph {
 }
 
 #[test]
-#[ignore = "ADR-0032 follow-up: depends on a voicer instrument / voicer.freq tap; re-author to the hosted-voice model, then restore"]
+#[ignore = "ADR-0032 follow-up: asserts resolved pitch via the removed voicer.freq output tap; needs a new pitch-resolution test strategy (read osc freq inside a voice, or Voicer-brain unit test) — not a re-authoring"]
 fn degree_note_resolves_then_respells_across_blocks() {
     let mut plan = Plan::instantiate(context_voicer(), CFG).expect("instantiate");
     let mut r = Renderer::new(&plan);
@@ -59,7 +72,7 @@ fn degree_note_resolves_then_respells_across_blocks() {
 }
 
 #[test]
-#[ignore = "ADR-0032 follow-up: depends on a voicer instrument / voicer.freq tap; re-author to the hosted-voice model, then restore"]
+#[ignore = "ADR-0032 follow-up: asserts resolved pitch via the removed voicer.freq output tap; needs a new pitch-resolution test strategy (read osc freq inside a voice, or Voicer-brain unit test) — not a re-authoring"]
 fn context_change_mid_block_is_sample_accurate() {
     let mut plan = Plan::instantiate(context_voicer(), CFG).expect("instantiate");
     let mut r = Renderer::new(&plan);
@@ -86,7 +99,7 @@ fn context_change_mid_block_is_sample_accurate() {
 }
 
 #[test]
-#[ignore = "ADR-0032 follow-up: depends on a voicer instrument / voicer.freq tap; re-author to the hosted-voice model, then restore"]
+#[ignore = "ADR-0032 follow-up: asserts resolved pitch via the removed voicer.freq output tap; needs a new pitch-resolution test strategy (read osc freq inside a voice, or Voicer-brain unit test) — not a re-authoring"]
 fn snap_quantizes_an_off_key_gesture() {
     // harmony -> snap -> voicer. Play D♯ (63), an off-scale pitch; the snap pulls it to the
     // nearest C-major tone (D, 62, on the down tie-break) before the Voicer resolves it.
@@ -110,11 +123,12 @@ fn snap_quantizes_an_off_key_gesture() {
 }
 
 #[test]
-#[ignore = "ADR-0032 follow-up: depends on a voicer instrument / voicer.freq tap; re-author to the hosted-voice model, then restore"]
 fn demo_instruments_load_and_play() {
     let reg = Registry::builtin();
     for json in [SCALE_DEMO, AUTOTUNE] {
-        let graph = load(json, &reg).expect("load demo instrument");
+        let graph = load_instrument(json, &reg, &InstrumentsDir)
+            .expect("load demo instrument")
+            .graph;
         let mut plan = Plan::instantiate(graph, CFG).expect("instantiate");
         let mut r = Renderer::new(&plan);
         let mut buf = vec![0.0f32; CFG.block_size];

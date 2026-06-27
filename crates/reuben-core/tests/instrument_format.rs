@@ -349,17 +349,18 @@ fn clock_makes_a_sample_accurate_metronome() {
 }
 
 #[test]
-#[ignore = "ADR-0032 follow-up: re-author this voicer instrument to host a voice sub-patch, then restore"]
 fn sequencer_emits_notes_through_a_voicer() {
-    // The sequence rig (Clock beat-gate -> sequencer -> Voicer -> osc + envelope) plays
-    // itself with no external input: the sequencer emits note Messages on the internal
-    // message graph (ADR-0014), the Voicer turns them into freq + gate, and each beat
-    // sounds with a changing pitch. Deterministic, like the metronome.
+    // The sequence rig (Clock beat-gate -> sequencer -> Voicer hosting sequence-voice sub-patches)
+    // plays itself with no external input: the sequencer emits note Messages on the internal
+    // message graph (ADR-0014), the Voicer drives a hosted voice per note, and each beat sounds
+    // with a changing pitch. Deterministic, like the metronome.
     let cfg = AudioConfig::new(48_000.0, 256);
     let reg = Registry::builtin();
 
     let render_seq = |seconds: f32| -> Vec<f32> {
-        let graph = load(SEQUENCE_JSON, &reg).expect("load sequence.json");
+        let graph = load_instrument(SEQUENCE_JSON, &reg, &InstrumentsDir)
+            .expect("load sequence.json")
+            .graph;
         let mut plan = Plan::instantiate(graph, cfg).expect("instantiate");
         let mut r = Renderer::new(&plan);
         let blocks = (cfg.sample_rate * seconds) as usize / cfg.block_size;

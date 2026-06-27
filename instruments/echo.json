@@ -1,5 +1,5 @@
 {
-  "doc": "Default monophonic rig with a feedback delay between the envelope and the output. Send /voicer/notes [midi, gate] to play (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off). Tweak the echo live over OSC: /delay/time (seconds), /delay/feedback (0..0.95), /delay/mix (dry/wet 0..1).",
+  "doc": "Polyphonic playable rig (8 voices) with a feedback delay in the master path. Each voice is a hosted `echo-voice` sub-patch; the voicer sums them and the delay echoes the mix. Send /voicer/notes [midi, gate] to play (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off; several = a chord). Tweak the echo live over OSC: /delay/time (seconds), /delay/feedback (0..0.95), /delay/mix (dry/wet 0..1).",
   "instrument": "echo",
   "nodes": [
     {
@@ -7,68 +7,16 @@
       "config": {
         "voices": 8
       },
-      "doc": "Note -> per-Voice freq + gate CV.",
-      "type": "voicer"
-    },
-    {
-      "address": "/osc",
-      "inputs": {
-        "freq": {
-          "from": "/voicer.freq"
-        }
-      },
-      "type": "oscillator"
-    },
-    {
-      "address": "/filter",
-      "doc": "Gentle lowpass.",
-      "inputs": {
-        "audio": {
-          "from": "/osc"
-        },
-        "cutoff": 3000.0
-      },
-      "type": "filter"
-    },
-    {
-      "address": "/env",
-      "doc": "ADSR envelope (linear CV), gated by the voicer.",
-      "inputs": {
-        "gate": {
-          "from": "/voicer.gate"
-        }
-      },
-      "type": "envelope"
-    },
-    {
-      "address": "/env_curve",
-      "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
-      "inputs": {
-        "x": {
-          "from": "/env.cv"
-        }
-      },
-      "type": "power_f32_signal"
-    },
-    {
-      "address": "/env_vca",
-      "doc": "VCA: audio * shaped envelope CV.",
-      "inputs": {
-        "a": {
-          "from": "/filter"
-        },
-        "b": {
-          "from": "/env_curve"
-        }
-      },
-      "type": "mul_f32_signal"
+      "doc": "Hosts 8 echo-voice sub-patches; allocates notes across them and sums their audio.",
+      "type": "voicer",
+      "voice": "echo-voice"
     },
     {
       "address": "/delay",
-      "doc": "Feedback echo on the voice.",
+      "doc": "Feedback echo on the master mix.",
       "inputs": {
         "audio": {
-          "from": "/env_vca"
+          "from": "/voicer.audio"
         },
         "feedback": 0.4,
         "mix": 0.5,
@@ -91,5 +39,8 @@
       "node": "/out",
       "port": "audio"
     }
-  ]
+  ],
+  "resources": {
+    "echo-voice": "voices/echo-voice.json"
+  }
 }
