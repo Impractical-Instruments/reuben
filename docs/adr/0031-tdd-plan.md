@@ -25,7 +25,10 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | 5 Phase A — math `*_f32_signal` rename | ✅ done | `3821aa2` |
 | 5 Phase A — osc.freq/filter.cutoff → f32_buffer | ✅ done | `f1e8fdc` |
 | 5 Phase A — output migration (`emit`→`EventWriter`/`MsgWriter`) + delete old verbs | ✅ done | `a43c9c1`·`6775aa1`·`b4e558b` |
-| 5 Phase B — forks resolved (grill session 2), execution not started | 🔍 **scoped** | — |
+| 5 Phase B — forks resolved (grill session 2) | 🔍 scoped | — |
+| 5 Phase B pre-commit — forced f32→f32_buffer (math operands + swept controls) | ✅ done | `cb437c0` |
+| 5 Phase B — forks re-resolved (grill session 3): `is_materialized` + per-Voice | 🔍 **re-scoped** | issues `#99`·`#100`·`#101` |
+| 5 Phase B — atomic barrier (flip + spine rewrites + value-math) | ⬜ pending | — |
 | 6–8 | ⬜ pending | — |
 
 **Suite is green workspace-wide at `b4e558b`** (`cargo test --workspace`, clippy clean).
@@ -39,15 +42,17 @@ The atomic green barrier (Decision B). In one sequence, on this branch:
 
 1. **Flip `port_kind`** (`plan.rs:56`): `F32 ⇒ Value` (currently `F32 | F32Buffer ⇒ Signal`).
    `F32Buffer` stays Signal. After this, every still-`f32` port is a held Value.
-2. **Fix `is_materialized`** (`descriptor.rs:223`): today it is `meta.is_some()`, correct only under
-   `F32 ⇒ Signal`. Post-flip an `f32` (Value, held, no buffer) still has `meta`, so it must key on
-   **type/kind** (an `f32_buffer`-with-meta materializes; a bare `f32` does not). See the ⚠ note under
-   the osc.freq/filter.cutoff resolution below.
-3. **Gate/CV-spine reads/writes → held-Value** for ports whose edge/trigger values are runtime
-   messages (per ADR §"Locked port-form decisions"): `euclid.clock`, `envelope.gate`,
-   `sample.gate`/`freq`, and the Value *outputs* `clock.gate`/`euclid.gate`/`voicer.freq`/`gate`.
-   Block-rate knobs already read via `io.input::<f32>` need no flip-day change (latch seeded under both
-   classifications). `envelope.cv` declared `f32_buffer`.
+2. ~~**Fix `is_materialized`**~~ — **SUPERSEDED by grill session 3: do NOT change it; keep
+   `meta.is_some()`.** `is_materialized` does *not* drive buffer allocation (that is `port_kind` at
+   `plan.rs:351`); its only role is backing `materialized_input` (the settable-numeric-input lookup),
+   where `meta.is_some()` stays correct for both `f32` Value and `f32_buffer` Signal numeric controls.
+   The planned `matches!(F32Buffer) && meta.is_some()` would silently drop JSON/OSC numeric overrides
+   on every bare-`f32` Value control. `contract_shapes.rs` passes unchanged. See session 3 below.
+3. **Gate/CV-spine reads/writes → held-Value** — **NARROWED by grill session 3 to the single-Lane,
+   pre-fan-out trigger spine only:** inputs `euclid.clock`, `sequencer.clock`; output `clock.gate`
+   (`euclid.gate` already done). **`voicer.freq`/`gate`, `sample.freq`/`gate`, `envelope.gate` stay
+   `f32_buffer`** — per-Voice data cannot be Value/message (emission is Lane-0-only; the Value latch is
+   node-global/broadcast). `envelope.cv` stays `f32_buffer`. Voicer rewrite deferred → issue `#99`.
 4. **Author the net-new `*_f32_value` math family** beside the `*_f32_signal` structs in the same
    family file (`add.rs`, …) — value shell calls the shared scalar `fn` once; signal shell loops it.
 5. Re-bless any op descriptor snapshots that change; keep `cargo test --workspace` + clippy green
@@ -57,6 +62,44 @@ The atomic green barrier (Decision B). In one sequence, on this branch:
 `Emit.address` field still exists (writers set `""`); its removal + boundary rework is **step 7**.
 Note `cargo doc -D warnings` is **not** a CI gate (reuben-contract + some reuben-core links were
 already broken pre-Phase-A); don't be alarmed by it.
+
+### ✅ Resolved (grilling session 3, 2026-06-27) — two Phase-B forks found mid-execution
+
+Two contradictions surfaced while scoping the barrier against the live engine; both confirmed in a
+grill and ruled by the user. They **supersede** the matching session-2 bullets.
+
+**Fork 1 — `is_materialized` must NOT change (keep `meta.is_some()`).** Session 2 said flip it to
+`matches!(F32Buffer) && meta.is_some()` because a post-flip bare-`f32` no longer materializes a buffer.
+But `is_materialized` is **never consulted for buffer allocation** — that decision is purely
+`port_kind == Signal` (`plan.rs:351`). Its only callers are `materialized_input` (`graph.rs:98/115`,
+`format.rs:402`, `schema.rs:220`), the lookup that resolves an author-set **numeric input override** by
+name. The planned change would make `materialized_input("attack")` (and every other bare-`f32` Value
+control: `clock.tempo`, `euclid.steps`, `sample.root`, `m2s.rate`, …) return `None`, so `set_param`
+falls through to `set_enum` (no-op) and the override is **silently dropped**. Resolution: leave the
+predicate `meta.is_some()` — correct for both Value and Signal numeric controls. `contract_shapes.rs:55-56`
+passes unchanged. The session-2 "⚠ obligation" (under the osc.freq/cutoff resolution) is **void**.
+
+**Fork 2 — per-Voice ports cannot become Value; flip is spine-only.** Session 2 listed
+`voicer.freq`/`gate`, `sample.freq`/`gate`, `envelope.gate` among the Value conversions. Two engine
+facts block this for **post-fan-out** (per-Voice) data:
+- **Emission is Lane-0 only** (`render.rs:~661`: `if lane == 0 { io.with_emit(...) } else { io }`) — a
+  `MsgWriter` write from Voice>0 has no sink (silent loss).
+- **Value inputs read a node-global latch** (`render.rs:~606`, one `node.latch[port]`, not per-Lane) —
+  a Value `freq`/`gate` broadcasts one Voice's value to all Voices, collapsing polyphony.
+
+Voicer is the fan-out (`lanes: from_param(voices)`; downstream `Inherit`s N Lanes), so its `freq`/`gate`
+are per-Voice **buffers**; `sample.*` and per-Voice `envelope.gate` consume them. Flipping any of these
+would also make `voicer(buffer) → sample(Value)` an S→V hard-error. Resolution (user ruling): **leave
+them `f32_buffer` — they already are, so no rewrite.** The Value flip applies to the single-Lane,
+pre-fan-out trigger spine only: `clock.gate` (output→`MsgWriter`), `euclid.clock` + `sequencer.clock`
+(inputs→held edge-detect); `euclid.gate` already done. Voicer full rewrite (per-Lane message routing)
+deferred → **issue `#99`**. Block-rate knobs still flip fine (broadcast is correct for shared settings).
+
+**Net barrier scope after session 3:** flip `port_kind` `F32 ⇒ Value`; **don't** touch `is_materialized`;
+redeclare + rewrite `euclid.clock`/`sequencer.clock` (held edge-detect) and `clock.gate` (`MsgWriter`);
+rewrite `m2s.in` (held read + smooth, stays `f32`); author `add_f32_value`/`mul_f32_value`/`power_f32_value`;
+re-bless snapshots. **Pre-commit (`cb437c0`) already shipped** the forced f32→f32_buffer set. Deferred
+issues filed: `#99` (Voicer), `#100` (strum.position retrofit), `#101` (map `_value`/`_signal`).
 
 ### ✅ Resolved (grilling session 2, 2026-06-27) — Phase B fork rulings + execution shape
 
@@ -159,9 +202,9 @@ distinct axis from the *kind* (`port_kind` → Signal) and from the math op *for
 (`add_f32_signal`). With (a), an f32_buffer-with-meta is **not a pure signal** (it holds a default),
 so `f32_buffer` is the honest label. Done @ `f1e8fdc`.
 
-**⚠ Phase-B obligation this creates:** `is_materialized()` is still `meta.is_some()` (correct under
-F32⇒Signal). Once Phase B flips `F32⇒Value`, an `f32` (Value, held, no buffer) still has `meta`, so
-`is_materialized` must then key on **type/kind**, not just `meta`.
+**⚠ Phase-B obligation this creates:** ~~`is_materialized` must key on type/kind post-flip.~~
+**VOID — see grill session 3, Fork 1.** `is_materialized` doesn't drive buffer allocation (`port_kind`
+does); keeping it `meta.is_some()` is correct for its sole role (the settable-numeric-input lookup).
 
 <details><summary>Original fork (for the record)</summary>
 
