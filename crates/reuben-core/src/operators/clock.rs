@@ -62,19 +62,19 @@ impl Operator for Clock {
 
         // Beats advanced per sample. Tempo is constant for this (sub)block (block-sliced).
         let dt: f64 = if sample_rate > 0.0 {
-            (io.last::<f32>(IN_TEMPO).unwrap_or(120.0).max(0.0) as f64 / 60.0) / sample_rate as f64
+            (io.input::<f32>(IN_TEMPO).unwrap_or(120.0).max(0.0) as f64 / 60.0) / sample_rate as f64
         } else {
             0.0
         };
         // Gate subdivisions per beat. division 1 = the original once-per-beat gate; N pulses N
         // times per beat. Rounded and floored at 1 so it never collapses the gate.
-        let division = (io.last::<f32>(IN_DIVISION).unwrap_or(1.0).round() as f64).max(1.0);
+        let division = (io.input::<f32>(IN_DIVISION).unwrap_or(1.0).round() as f64).max(1.0);
 
         // Reset frames within this (sub)block, sorted. Any `sync` event re-zeroes the phase at its
         // exact sample (ADR-0030: the port identifies it, payload ignored) — a sample-accurate
         // position locate.
         let mut resets: SmallVec<[usize; 4]> = SmallVec::new();
-        for ev in io.stream::<Note>(IN_SYNC) {
+        for ev in io.input::<Note>(IN_SYNC) {
             if ev.frame < n {
                 resets.push(ev.frame);
             }
@@ -88,7 +88,7 @@ impl Operator for Clock {
 
         let end;
         {
-            let out = io.signal_mut(OUT_PHASE);
+            let out = io.output::<&mut [f32]>(OUT_PHASE);
             let mut phase = start;
             let mut ri = 0;
             for (i, s) in out.iter_mut().enumerate().take(n) {
@@ -108,7 +108,7 @@ impl Operator for Clock {
             end = phase;
         }
         {
-            let out = io.signal_mut(OUT_GATE);
+            let out = io.output::<&mut [f32]>(OUT_GATE);
             let mut phase = start;
             let mut ri = 0;
             for (i, s) in out.iter_mut().enumerate().take(n) {

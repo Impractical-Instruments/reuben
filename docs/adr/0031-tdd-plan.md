@@ -20,8 +20,10 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | 0 — oracle infra | ✅ done | `0ed6ba6` |
 | 1 — `PortKind` + wire checker | ✅ done | `b9b451c` |
 | 2 — `f32_buffer` rename | ✅ done | `64498fe` |
-| 3 — new `Io` API | ✅ done | (this commit) |
-| 4–8 | ⬜ pending | — |
+| 3 — new `Io` API | ✅ done | `fadd3ed` |
+| 5 Phase A — accessor migration + `*_signal` rename + osc/filter→f32_buffer (Decision B) | 🔄 in progress | — |
+| 5 Phase B — flip `F32⇒Value` + gate/CV spine + `*_value` family | ⬜ pending | — |
+| 6–8 | ⬜ pending | — |
 
 **Suite is green workspace-wide at step 3** (`cargo test --workspace`, clippy clean).
 One commit per step.
@@ -63,6 +65,39 @@ buffers → `f32` inputs) become `Signal→Value` and hard-error the moment form
   form each port gets — it's just applied op-by-op, not in one global pass.
 
 So below, treat **"step 4"** as the first half of each op's **step-5** migration, not a separate phase.
+
+### Decision B (resolves *how* the per-op flip stays green — Decision A left this implicit)
+
+Grilling surfaced that Decision A's "the `f32`→Value flip rides along per-op" is **not directly
+implementable**: `port_kind` keys on the *type* (`plan.rs:56`, `F32|F32Buffer ⇒ Signal`), the
+contract macro has **no per-port form override**, and 20 ops read `f32` inputs per-sample via the
+buffer. So there is no edit that makes *one* op's `f32` ports Value without making *every* op's
+`f32` ports Value in the same stroke. The flip is atomic in effect.
+
+**Resolution (chosen): order the sweep so the atomic flip is a late *green* barrier — no red
+window, sequential on one branch (the parallel worktree model can't host a global flip: a worktree
+that flips `port_kind` breaks its other 19 ops → never green → never merges).**
+
+- **Phase A (green, per-op).** Pure **accessor migration**: replace the old verbs (`signal`/`last`/
+  `stream`/`signal_mut`/`emit`) with the step-3 verbs (`io.input::<T>` / `io.output::<T>`), **port
+  types unchanged**. Green because under `F32 ⇒ Signal` the new verbs are behaviourally identical
+  to the old ones for every current declaration (`io.input::<&[f32]>` and `io.signal` read the same
+  buffer; `io.input::<f32>` and `io.last` read the same latch). Also: rename dense math
+  `add`/`mul`/… → `*_signal` (+ re-bless instruments), and re-declare the two Signal-intended
+  *control* inputs `oscillator.freq` / `filter.cutoff` `f32 → f32_buffer` (so the flip never touches
+  them — a constant feeds them via the V→S materialize path; unwired default handled at
+  re-declaration). Old verbs deleted at the end of Phase A.
+- **Phase B (one green barrier commit/sequence).** Now the only remaining `f32` ports are the
+  genuinely-Value ones. Flip `port_kind: F32 ⇒ Value`; the gate/CV-spine ops whose **edge/trigger**
+  ports actually take runtime Value messages and must block-slice (`euclid.clock`, `envelope.gate`,
+  `sample.gate`/`freq`, and the Value *outputs* `clock.gate`/`euclid.gate`/`voicer.freq`/`gate`)
+  swap their reads/writes to held-Value (`io.input::<f32>` / `MsgWriter`); `envelope.cv` declared
+  `f32_buffer`; author the net-new `*_value` math family. Green because every `f32` port left is now
+  correctly Value. (Block-rate knobs read via `io.last`/`io.input::<f32>` already work under both
+  classifications — the latch is seeded regardless — so they need no flip-day change beyond the
+  accessor swap done in Phase A.)
+
+So Wave 0's "author `_value` ops" moves into **Phase B**; Wave 0 keeps only the `*_signal` rename.
 
 ---
 

@@ -48,9 +48,9 @@ impl Operator for Integrate {
         let n = io.frames();
         let mut acc = self.acc;
         for i in 0..n {
-            let cur = io.signal(IN_IN).get(i).copied().unwrap_or(0.0);
+            let cur = io.input::<&[f32]>(IN_IN).get(i).copied().unwrap_or(0.0);
             acc = accumulate(acc, cur);
-            io.signal_mut(OUT_OUT)[i] = acc;
+            io.output::<&mut [f32]>(OUT_OUT)[i] = acc;
         }
         self.acc = acc;
     }

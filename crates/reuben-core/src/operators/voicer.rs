@@ -122,7 +122,7 @@ impl Operator for Voicer {
         let me = io.lane().min(lanes - 1);
         // Current context (constant this segment; the engine slices at context changes, so a held
         // degree re-spells at the change frame). Default when unconnected.
-        let harmony = io.last::<Harmony>(IN_HARMONY).unwrap_or_default();
+        let harmony = io.input::<Harmony>(IN_HARMONY).unwrap_or_default();
 
         // Size the pool to the Lane count (identical across replicas).
         if self.voices.len() != lanes {
@@ -132,7 +132,7 @@ impl Operator for Voicer {
         // Snapshot note events for this (sub)block, sorted by frame. (Can't read the stream while an
         // output borrow is live, so snapshot first.) The `Note`'s Pitch carries degree-vs-absolute.
         let mut events: SmallVec<[(usize, bool, Pitch); 8]> = SmallVec::new();
-        for s in io.stream::<Note>(IN_NOTES) {
+        for s in io.input::<Note>(IN_NOTES) {
             let frame = s.frame.min(n);
             events.push((frame, s.payload.velocity > 0.0, s.payload.pitch));
         }
@@ -161,7 +161,7 @@ impl Operator for Voicer {
 
         // Fill freq, then gate (separate passes: can't hold two output borrows).
         {
-            let out = io.signal_mut(OUT_FREQ);
+            let out = io.output::<&mut [f32]>(OUT_FREQ);
             let mut ci = 0;
             for (i, s) in out[..n].iter_mut().enumerate() {
                 while ci < changes.len() && changes[ci].0 == i {
@@ -172,7 +172,7 @@ impl Operator for Voicer {
             }
         }
         {
-            let out = io.signal_mut(OUT_GATE);
+            let out = io.output::<&mut [f32]>(OUT_GATE);
             let mut ci = 0;
             for (i, s) in out[..n].iter_mut().enumerate() {
                 while ci < changes.len() && changes[ci].0 == i {

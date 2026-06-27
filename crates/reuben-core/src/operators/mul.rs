@@ -47,9 +47,9 @@ impl Operator for Mul {
         for i in 0..n {
             // Materialized `Float` operands; `unwrap_or` supplies the multiplicative identity for
             // the empty-slice (unwired) case, matching the declared default.
-            let a = io.signal(IN_A).get(i).copied().unwrap_or(1.0);
-            let b = io.signal(IN_B).get(i).copied().unwrap_or(1.0);
-            io.signal_mut(OUT_OUT)[i] = mul(a, b);
+            let a = io.input::<&[f32]>(IN_A).get(i).copied().unwrap_or(1.0);
+            let b = io.input::<&[f32]>(IN_B).get(i).copied().unwrap_or(1.0);
+            io.output::<&mut [f32]>(OUT_OUT)[i] = mul(a, b);
         }
     }
 

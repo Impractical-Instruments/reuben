@@ -102,10 +102,10 @@ impl Operator for Euclid {
         let n = io.frames();
         // Held controls, constant for this (sub)block (the engine block-slices at changes).
         let total =
-            (io.last::<f32>(IN_STEPS).unwrap_or(16.0).round() as i64).clamp(1, NUM_STEPS as i64);
-        let pulses = (io.last::<f32>(IN_PULSES).unwrap_or(4.0).round() as i64).clamp(0, total);
+            (io.input::<f32>(IN_STEPS).unwrap_or(16.0).round() as i64).clamp(1, NUM_STEPS as i64);
+        let pulses = (io.input::<f32>(IN_PULSES).unwrap_or(4.0).round() as i64).clamp(0, total);
         let rotation =
-            (io.last::<f32>(IN_ROTATION).unwrap_or(0.0).round() as i64).rem_euclid(total);
+            (io.input::<f32>(IN_ROTATION).unwrap_or(0.0).round() as i64).rem_euclid(total);
 
         let mut step = self.step;
         let mut prev = self.prev_clock;
@@ -113,7 +113,7 @@ impl Operator for Euclid {
         for i in 0..n {
             // The immutable `io.signal` borrow ends at this `let`, so `io.emit` (which needs
             // `&mut io`) is free to run below — same pattern as the sequencer.
-            let g = io.signal(IN_CLOCK).get(i).copied().unwrap_or(0.0);
+            let g = io.input::<&[f32]>(IN_CLOCK).get(i).copied().unwrap_or(0.0);
             if prev < 0.5 && g >= 0.5 {
                 // Rising edge: close any open gate, advance, and open a gate on a pulse step.
                 if high {

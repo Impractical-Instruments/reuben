@@ -53,7 +53,7 @@ impl Operator for OscOut {
         // boundary (ADR-0030). The frame is segment-relative; `emit` does not add the offset here
         // because the stream frames are already segment-relative and the tap stamps block-absolute.
         let mut pending: SmallVec<[(Note, usize); 4]> = SmallVec::new();
-        for ev in io.stream::<Note>(IN_IN) {
+        for ev in io.input::<Note>(IN_IN) {
             pending.push((ev.payload, ev.frame));
         }
         for (note, frame) in pending {

@@ -3,9 +3,9 @@
 //! - input 0: `freq` (`Float`) — per-sample frequency in Hz. One declaration: when unwired the
 //!   engine materializes it from the latched default (440 Hz) and writes mid-block `/osc/freq`
 //!   changes at their frame; when wired (an LFO, a Voicer) the source buffer passes through, so
-//!   `io.signal(IN_FREQ)` is always a buffer.
+//!   `io.input::<&[f32]>(IN_FREQ)` is always a buffer.
 //! - input 1: `waveform` (`Enum` [`Waveform`] {Sine, Saw}) — held, live-switchable choice read
-//!   via `io.last::<Waveform>` (ADR-0030).
+//!   via `io.input::<Waveform>` (ADR-0030).
 //! - output 0: `audio` (`Buffer`).
 
 use crate::descriptor::Descriptor;
@@ -47,21 +47,21 @@ impl Operator for Oscillator {
         };
 
         // Waveform is a held `Enum` choice (ADR-0030) — one read, constant for this call.
-        let is_saw = io.last::<Waveform>(IN_WAVEFORM).unwrap_or_default() == Waveform::Saw;
+        let is_saw = io.input::<Waveform>(IN_WAVEFORM).unwrap_or_default() == Waveform::Saw;
 
         // Stage 1: copy the per-sample frequency into the output buffer. `freq` is a `Float`
         // input, so it is always a buffer (wired source or materialized latch) — one read path,
         // no wired/unwired branch. Read per sample so the immutable input borrow ends before each
         // mutable output write (keeps `process` alloc-free without holding two borrows of `io`).
         for i in 0..n {
-            let freq = io.signal(IN_FREQ).get(i).copied().unwrap_or(0.0);
-            io.signal_mut(OUT_AUDIO)[i] = freq;
+            let freq = io.input::<&[f32]>(IN_FREQ).get(i).copied().unwrap_or(0.0);
+            io.output::<&mut [f32]>(OUT_AUDIO)[i] = freq;
         }
 
         // Stage 2: in-place oscillator pass. `out[i]` currently holds the frequency for sample
         // `i`; overwrite it with the generated sample.
         let mut phase = self.phase;
-        let out = &mut io.signal_mut(OUT_AUDIO)[..n];
+        let out = &mut io.output::<&mut [f32]>(OUT_AUDIO)[..n];
         for slot in out.iter_mut() {
             let dt = *slot * inv_sr; // phase increment in turns
 

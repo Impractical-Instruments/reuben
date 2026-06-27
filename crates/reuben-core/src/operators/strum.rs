@@ -98,9 +98,9 @@ impl Operator for Strum {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        let strings = (io.last::<f32>(IN_STRINGS).unwrap_or(8.0).round() as i64).clamp(1, 32);
-        let octaves = io.last::<f32>(IN_OCTAVES).unwrap_or(1.0).max(1.0);
-        let velocity = io.last::<f32>(IN_VELOCITY).unwrap_or(1.0).clamp(0.0, 1.0);
+        let strings = (io.input::<f32>(IN_STRINGS).unwrap_or(8.0).round() as i64).clamp(1, 32);
+        let octaves = io.input::<f32>(IN_OCTAVES).unwrap_or(1.0).max(1.0);
+        let velocity = io.input::<f32>(IN_VELOCITY).unwrap_or(1.0).clamp(0.0, 1.0);
 
         let mut prev_string = self.prev_string;
 
@@ -120,7 +120,11 @@ impl Operator for Strum {
 
             // Read this sample's position (the immutable borrow ends with this `let`, so `io.emit`
             // can borrow mutably below). Each band crossed emits a pluck + a scheduled note-off.
-            let pos = io.signal(IN_POSITION).get(i).copied().unwrap_or(0.0);
+            let pos = io
+                .input::<&[f32]>(IN_POSITION)
+                .get(i)
+                .copied()
+                .unwrap_or(0.0);
             let cur_string = Self::string_at(pos, strings);
             if prev_string < 0 {
                 // First position seen: latch the band, no pluck (no crossing yet).

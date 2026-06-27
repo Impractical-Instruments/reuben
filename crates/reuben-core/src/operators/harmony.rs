@@ -89,10 +89,10 @@ impl HarmonyOp {
     /// when it has no materialized buffer.
     fn current_at(&self, io: &Io, f: usize) -> Harmony {
         let at = |port| {
-            io.signal(port)
+            io.input::<&[f32]>(port)
                 .get(f)
                 .copied()
-                .unwrap_or_else(|| io.last::<f32>(port).unwrap_or(0.0))
+                .unwrap_or_else(|| io.input::<f32>(port).unwrap_or(0.0))
         };
         let root = at(IN_ROOT).round() as i32;
         let degrees = (at(IN_DEGREES).round() as usize).clamp(1, NUM_STEPS);
@@ -118,7 +118,7 @@ impl Operator for HarmonyOp {
     fn process(&mut self, io: &mut Io) {
         // Adopt the chord from the held `set` Harmony, if wired (the engine block-slices a change to
         // the segment boundary, so it is frame-accurate at frame 0).
-        if let Some(h) = io.last::<Harmony>(IN_SET) {
+        if let Some(h) = io.input::<Harmony>(IN_SET) {
             self.chord = h.chord;
         }
 
@@ -135,7 +135,7 @@ impl Operator for HarmonyOp {
             .chain(IN_STEP0..IN_STEP0 + NUM_STEPS)
         {
             if io.varying(port) {
-                let buf = io.signal(port);
+                let buf = io.input::<&[f32]>(port);
                 for i in 1..buf.len().min(n) {
                     if buf[i] != buf[i - 1] {
                         frames.push(i);

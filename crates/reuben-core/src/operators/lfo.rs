@@ -51,15 +51,15 @@ impl Operator for Lfo {
 
         // Cycles advanced per sample. Rate is constant for this (sub)block (block-sliced).
         let dt: f64 = if sample_rate > 0.0 {
-            io.last::<f32>(IN_RATE).unwrap_or(0.0).max(0.0) as f64 / sample_rate as f64
+            io.input::<f32>(IN_RATE).unwrap_or(0.0).max(0.0) as f64 / sample_rate as f64
         } else {
             0.0
         };
-        let depth = io.last::<f32>(IN_DEPTH).unwrap_or(0.0);
-        let center = io.last::<f32>(IN_CENTER).unwrap_or(0.0);
+        let depth = io.input::<f32>(IN_DEPTH).unwrap_or(0.0);
+        let center = io.input::<f32>(IN_CENTER).unwrap_or(0.0);
 
         let mut phase = self.phase;
-        let out = io.signal_mut(OUT_OUT);
+        let out = io.output::<&mut [f32]>(OUT_OUT);
         for s in out.iter_mut().take(n) {
             let s_val = (std::f64::consts::TAU * phase).sin() as f32;
             *s = center + depth * s_val;

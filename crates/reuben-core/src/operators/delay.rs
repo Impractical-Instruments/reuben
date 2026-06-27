@@ -3,7 +3,7 @@
 //! Port types (ADR-0030): `time`, `feedback`, and `mix` are **`F32` inputs**, each owning its
 //! unwired default. When nothing is wired the engine materializes the input from its latched
 //! default; when an LFO or envelope is wired the source buffer passes through. They are read
-//! block-rate via `io.last::<f32>` (the held ZOH value), and `io.signal(IN_AUDIO)` is always a
+//! block-rate via `io.input::<f32>` (the held ZOH value), and `io.input::<&[f32]>(IN_AUDIO)` is always a
 //! buffer (wired source or materialized latch).
 //!
 //! - input 0: `audio` (`Float`) — the signal to delay.
@@ -66,8 +66,8 @@ impl Operator for Delay {
             self.head = 0;
         }
 
-        let feedback = io.last::<f32>(IN_FEEDBACK).unwrap_or(0.0).clamp(0.0, 0.95);
-        let mix = io.last::<f32>(IN_MIX).unwrap_or(0.0).clamp(0.0, 1.0);
+        let feedback = io.input::<f32>(IN_FEEDBACK).unwrap_or(0.0).clamp(0.0, 0.95);
+        let mix = io.input::<f32>(IN_MIX).unwrap_or(0.0).clamp(0.0, 1.0);
         // Read offset in samples; clamp so the interpolated tap stays inside the buffer.
         let time = io
             .last::<f32>(IN_TIME)
@@ -77,7 +77,7 @@ impl Operator for Delay {
 
         let len = self.buf.len();
         for i in 0..n {
-            let x = io.signal(IN_AUDIO).get(i).copied().unwrap_or(0.0);
+            let x = io.input::<&[f32]>(IN_AUDIO).get(i).copied().unwrap_or(0.0);
 
             // Fractional read position `delay_samples` behind the write head.
             let read_pos = self.head as f32 + len as f32 - delay_samples;
@@ -91,7 +91,7 @@ impl Operator for Delay {
             self.buf[self.head] = x + feedback * delayed;
 
             // Dry/wet mix.
-            io.signal_mut(OUT_AUDIO)[i] = (1.0 - mix) * x + mix * delayed;
+            io.output::<&mut [f32]>(OUT_AUDIO)[i] = (1.0 - mix) * x + mix * delayed;
 
             self.head = (self.head + 1) % len;
         }

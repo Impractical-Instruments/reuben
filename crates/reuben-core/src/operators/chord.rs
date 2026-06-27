@@ -83,12 +83,12 @@ impl Operator for Chord {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        let size = (io.last::<f32>(IN_SIZE).unwrap_or(3.0).round() as usize).clamp(3, MAX_TONES);
+        let size = (io.input::<f32>(IN_SIZE).unwrap_or(3.0).round() as usize).clamp(3, MAX_TONES);
 
         // Snapshot the set events for this (sub)block, sorted by frame — can't read the stream
         // while emitting. Each: (frame, root degree, on?). A non-degree note has no root → skip.
         let mut events: SmallVec<[(usize, i32, bool); 8]> = SmallVec::new();
-        for s in io.stream::<Note>(IN_SET) {
+        for s in io.input::<Note>(IN_SET) {
             let root = match s.payload.pitch.degree() {
                 Some(d) => d,
                 None => continue,

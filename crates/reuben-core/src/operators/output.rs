@@ -42,8 +42,8 @@ impl Operator for Output {
         // output write — passthrough with no allocation (realtime-safe). `audio` is a `Buffer`
         // input (the wired master bus).
         for i in 0..n {
-            let v = io.signal(IN_AUDIO).get(i).copied().unwrap_or(0.0);
-            io.signal_mut(OUT_AUDIO)[i] = v;
+            let v = io.input::<&[f32]>(IN_AUDIO).get(i).copied().unwrap_or(0.0);
+            io.output::<&mut [f32]>(OUT_AUDIO)[i] = v;
         }
     }
 

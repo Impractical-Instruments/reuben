@@ -59,12 +59,12 @@ impl Operator for Power {
         let n = io.frames();
         // `exponent` is a materialized `Float`; read its held (ZOH) value once block-rate — the
         // curve shape is held for the call, not swept per sample (ADR-0029/0030).
-        let exponent = io.last::<f32>(IN_EXPONENT).unwrap_or(2.0);
+        let exponent = io.input::<f32>(IN_EXPONENT).unwrap_or(2.0);
         for i in 0..n {
             // `x` is a materialized `Float` (always a buffer in production); `unwrap_or(0.0)` is the
             // declared default for the empty-slice (unwired) case. The clamp lives in `shape`.
-            let x = io.signal(IN_X).get(i).copied().unwrap_or(0.0);
-            io.signal_mut(OUT_OUT)[i] = shape(x, exponent);
+            let x = io.input::<&[f32]>(IN_X).get(i).copied().unwrap_or(0.0);
+            io.output::<&mut [f32]>(OUT_OUT)[i] = shape(x, exponent);
         }
     }
 

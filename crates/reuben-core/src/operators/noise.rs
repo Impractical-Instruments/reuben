@@ -73,7 +73,7 @@ impl Operator for Noise {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        let out = io.signal_mut(OUT_OUT);
+        let out = io.output::<&mut [f32]>(OUT_OUT);
         for s in out.iter_mut().take(n) {
             *s = self.next_sample();
         }

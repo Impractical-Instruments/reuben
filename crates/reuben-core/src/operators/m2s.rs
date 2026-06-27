@@ -67,9 +67,9 @@ impl Operator for M2s {
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
         let sr = io.sample_rate();
-        let mode = io.last::<M2sMode>(IN_MODE).unwrap_or_default();
-        let rate = io.last::<f32>(IN_RATE).unwrap_or(0.0).max(0.0);
-        let time = io.last::<f32>(IN_TIME).unwrap_or(0.0).max(0.0);
+        let mode = io.input::<M2sMode>(IN_MODE).unwrap_or_default();
+        let rate = io.input::<f32>(IN_RATE).unwrap_or(0.0).max(0.0);
+        let time = io.input::<f32>(IN_TIME).unwrap_or(0.0).max(0.0);
 
         // Per-sample smoothing coefficients.
         let tau_samples = (time * sr).max(1e-6);
@@ -88,7 +88,7 @@ impl Operator for M2s {
             // ZOH of a held/sparse target, or a wired CV source. Read it per-sample so a continuous
             // source is tracked and a stepped (sparse-message) source retargets exactly at its
             // change frame. The immutable read is copied out before the mutable output write below.
-            let t = io.signal(IN_IN).get(i).copied().unwrap_or(0.0);
+            let t = io.input::<&[f32]>(IN_IN).get(i).copied().unwrap_or(0.0);
             if !initialized {
                 cur = t;
                 target = t;
@@ -121,7 +121,7 @@ impl Operator for M2s {
                     }
                 }
             }
-            io.signal_mut(OUT_OUT)[i] = cur;
+            io.output::<&mut [f32]>(OUT_OUT)[i] = cur;
         }
 
         self.cur = cur;

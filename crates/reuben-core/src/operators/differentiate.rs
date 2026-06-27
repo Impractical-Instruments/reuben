@@ -52,10 +52,10 @@ impl Operator for Differentiate {
         let n = io.frames();
         let mut last = self.last;
         for i in 0..n {
-            let cur = io.signal(IN_IN).get(i).copied().unwrap_or(0.0);
+            let cur = io.input::<&[f32]>(IN_IN).get(i).copied().unwrap_or(0.0);
             // First sample ever seeds `last = cur`, so it emits 0 (no predecessor ⇒ no change).
             let prev = last.unwrap_or(cur);
-            io.signal_mut(OUT_OUT)[i] = step(prev, cur);
+            io.output::<&mut [f32]>(OUT_OUT)[i] = step(prev, cur);
             last = Some(cur);
         }
         self.last = last;

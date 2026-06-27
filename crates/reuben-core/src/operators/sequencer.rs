@@ -114,14 +114,14 @@ impl Operator for Sequencer {
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
         let length =
-            (io.last::<f32>(IN_LENGTH).unwrap_or(8.0).round() as i64).clamp(1, NUM_STEPS as i64);
-        let gate_mode = io.last::<GateMode>(IN_GATE_MODE).unwrap_or_default() == GateMode::Gate;
-        let pitch = io.last::<f32>(IN_PITCH).unwrap_or(0.0);
+            (io.input::<f32>(IN_LENGTH).unwrap_or(8.0).round() as i64).clamp(1, NUM_STEPS as i64);
+        let gate_mode = io.input::<GateMode>(IN_GATE_MODE).unwrap_or_default() == GateMode::Gate;
+        let pitch = io.input::<f32>(IN_PITCH).unwrap_or(0.0);
 
         // Snapshot the held step values: constant for this (sub)block.
         let mut steps = [0.0f32; NUM_STEPS];
         for (k, p) in steps.iter_mut().enumerate() {
-            *p = io.last::<f32>(in_step(k)).unwrap_or(0.0);
+            *p = io.input::<f32>(in_step(k)).unwrap_or(0.0);
         }
         // The degree to emit for a given step, or None for a rest / off-step.
         // - degree mode: the step value IS the degree; below 0 is a rest.
@@ -143,7 +143,7 @@ impl Operator for Sequencer {
         let mut prev = self.prev_clock;
         let mut held = self.held;
         for i in 0..n {
-            let g = io.signal(IN_CLOCK).get(i).copied().unwrap_or(0.0);
+            let g = io.input::<&[f32]>(IN_CLOCK).get(i).copied().unwrap_or(0.0);
             if prev < 0.5 && g >= 0.5 {
                 // Rising edge: end any held note, advance, and play the new step.
                 if let Some(m) = held.take() {

@@ -345,7 +345,17 @@ macro_rules! impl_input_held {
     )*};
 }
 
-impl_input_held!(f32, crate::vocab::FilterMode);
+impl_input_held!(
+    f32,
+    crate::vocab::FilterMode,
+    crate::vocab::Waveform,
+    crate::vocab::GateMode,
+    crate::vocab::M2sMode,
+    crate::vocab::MapCurve,
+    crate::vocab::SnapDir,
+    crate::vocab::SnapTarget,
+    crate::vocab::Harmony,
+);
 
 /// The Event-stream arm of [`IoInput`], returned by `io.input::<Note>(port)`: a no-alloc iterator
 /// over a port's sparse [`Event`]s, each decoded to `T` and frame-stamped ([`Stamped`]). A *named*

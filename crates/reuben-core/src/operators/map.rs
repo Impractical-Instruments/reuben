@@ -64,15 +64,15 @@ impl Operator for Map {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        let in_min = io.last::<f32>(IN_IN_MIN).unwrap_or(0.0);
-        let in_max = io.last::<f32>(IN_IN_MAX).unwrap_or(1.0);
-        let out_min = io.last::<f32>(IN_OUT_MIN).unwrap_or(0.0);
-        let out_max = io.last::<f32>(IN_OUT_MAX).unwrap_or(1.0);
-        let exp = io.last::<MapCurve>(IN_CURVE).unwrap_or_default() == MapCurve::Exponential;
+        let in_min = io.input::<f32>(IN_IN_MIN).unwrap_or(0.0);
+        let in_max = io.input::<f32>(IN_IN_MAX).unwrap_or(1.0);
+        let out_min = io.input::<f32>(IN_OUT_MIN).unwrap_or(0.0);
+        let out_max = io.input::<f32>(IN_OUT_MAX).unwrap_or(1.0);
+        let exp = io.input::<MapCurve>(IN_CURVE).unwrap_or_default() == MapCurve::Exponential;
 
         for i in 0..n {
-            let v = io.signal(IN_IN).get(i).copied().unwrap_or(0.0);
-            io.signal_mut(OUT_OUT)[i] = remap(v, in_min, in_max, out_min, out_max, exp);
+            let v = io.input::<&[f32]>(IN_IN).get(i).copied().unwrap_or(0.0);
+            io.output::<&mut [f32]>(OUT_OUT)[i] = remap(v, in_min, in_max, out_min, out_max, exp);
         }
     }
 

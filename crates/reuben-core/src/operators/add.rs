@@ -50,9 +50,9 @@ impl Operator for Add {
             // Each operand is a materialized `Float` (always a buffer in production); the
             // `unwrap_or` supplies the additive identity for the empty-slice (unwired) case, which
             // is also the declared default — so the descriptor and the loop never disagree.
-            let a = io.signal(IN_A).get(i).copied().unwrap_or(0.0);
-            let b = io.signal(IN_B).get(i).copied().unwrap_or(0.0);
-            io.signal_mut(OUT_OUT)[i] = add(a, b);
+            let a = io.input::<&[f32]>(IN_A).get(i).copied().unwrap_or(0.0);
+            let b = io.input::<&[f32]>(IN_B).get(i).copied().unwrap_or(0.0);
+            io.output::<&mut [f32]>(OUT_OUT)[i] = add(a, b);
         }
     }
 

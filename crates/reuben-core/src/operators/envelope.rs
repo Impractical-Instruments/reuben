@@ -91,20 +91,20 @@ impl Operator for Envelope {
 
         // ADSR times are `Float` inputs, read once at block rate as the held (ZOH) value via
         // `io.last` — the shape is block-rate, exactly as the old params were (ADR-0030).
-        let sustain = io.last::<f32>(IN_SUSTAIN).unwrap_or(0.7).clamp(0.0, 1.0);
-        let attack_step = per_sample_step(io.last::<f32>(IN_ATTACK).unwrap_or(0.01), sample_rate);
-        let decay_step =
-            per_sample_step(io.last::<f32>(IN_DECAY).unwrap_or(0.1), sample_rate) * (1.0 - sustain);
+        let sustain = io.input::<f32>(IN_SUSTAIN).unwrap_or(0.7).clamp(0.0, 1.0);
+        let attack_step = per_sample_step(io.input::<f32>(IN_ATTACK).unwrap_or(0.01), sample_rate);
+        let decay_step = per_sample_step(io.input::<f32>(IN_DECAY).unwrap_or(0.1), sample_rate)
+            * (1.0 - sustain);
         // Base per-sample rate that would span the full [0,1] range in `release` seconds. The
         // actual Release decrement is this scaled by the level at the note-off edge (below), so
         // release lasts `release` seconds from wherever the level is — never frozen at sustain=0.
-        let release_rate = per_sample_step(io.last::<f32>(IN_RELEASE).unwrap_or(0.2), sample_rate);
+        let release_rate = per_sample_step(io.input::<f32>(IN_RELEASE).unwrap_or(0.2), sample_rate);
 
         // `gate` is a `Float` input — always a buffer (wired source or materialized latch). Read
         // each sample with a short-lived borrow that ends before the output write, so `process`
         // stays allocation-free. An unwired gate materializes to 0 (gate-off).
         for i in 0..n {
-            let gate_on = io.signal(IN_GATE).get(i).copied().unwrap_or(0.0) > 0.5;
+            let gate_on = io.input::<&[f32]>(IN_GATE).get(i).copied().unwrap_or(0.0) > 0.5;
 
             // Edge detection against the previous sample's held flag.
             if gate_on && !self.held {
@@ -148,7 +148,7 @@ impl Operator for Envelope {
                 }
             }
 
-            io.signal_mut(OUT_CV)[i] = self.level;
+            io.output::<&mut [f32]>(OUT_CV)[i] = self.level;
         }
     }
 
