@@ -19,10 +19,19 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 |---|---|---|
 | 0 — oracle infra | ✅ done | `0ed6ba6` |
 | 1 — `PortKind` + wire checker | ✅ done | `b9b451c` |
-| 2 — `f32_buffer` rename | ⬜ next | — |
-| 3–8 | ⬜ pending | — |
+| 2 — `f32_buffer` rename | ✅ done | `64498fe` |
+| 3 — new `Io` API | ⬜ next | — |
+| 4–8 | ⬜ pending | — |
 
-**Suite is green workspace-wide at `b9b451c`** (`cargo test --workspace`). One commit per step.
+**Suite is green workspace-wide at `64498fe`** (`cargo test --workspace`, clippy clean).
+One commit per step.
+
+Step 2 notes (full-sweep + align-display decisions): retired the `buffer`/`float`
+keywords *and* their internal plumbing (`FloatMeta`→`F32Meta`, `PortSpec.float`→`f32`,
+`PortTypeAst`, codegen string tags, scaffold emission). Golden `kind()` display now
+prints `f32_buffer`/`f32`; `descriptors.txt` re-blessed. The JSON schema is derived
+from param ranges, **not** the keyword, so it needed no re-bless (the plan's
+"re-bless schema" was a no-op).
 
 ### Decision A (resolves a green-at-each-step conflict the original plan underspecified)
 
