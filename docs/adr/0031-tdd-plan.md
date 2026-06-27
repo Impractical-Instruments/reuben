@@ -24,12 +24,39 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | 5 Phase A — accessor migration | ✅ done | `e411a7a` |
 | 5 Phase A — math `*_f32_signal` rename | ✅ done | `3821aa2` |
 | 5 Phase A — osc.freq/filter.cutoff → f32_buffer | ✅ done | `f1e8fdc` |
-| 5 Phase A — output migration (`emit`→`EventWriter`/`MsgWriter`) + delete old verbs | ✅ done | (3 sub-commits) |
-| 5 Phase B — flip `F32⇒Value` + gate/CV spine + `*_f32_value` family | ⬜ pending | — |
+| 5 Phase A — output migration (`emit`→`EventWriter`/`MsgWriter`) + delete old verbs | ✅ done | `a43c9c1`·`6775aa1`·`b4e558b` |
+| 5 Phase B — flip `F32⇒Value` + gate/CV spine + `*_f32_value` family | ⬜ **next** | — |
 | 6–8 | ⬜ pending | — |
 
-**Suite is green workspace-wide at `3821aa2`** (`cargo test --workspace`, clippy clean).
-One commit per step.
+**Suite is green workspace-wide at `b4e558b`** (`cargo test --workspace`, clippy clean).
+**Phase A is fully done** — the only `Io` read/write verbs are now `input::<T>` / `output::<T>`
+(plus `varying`); `EventWriter`/`MsgWriter` are the two output writers. One commit per step
+(Phase A's last step took 3 green sub-commits: add arms → migrate call sites → delete).
+
+### ▶ Pickup for Phase B (next session)
+
+The atomic green barrier (Decision B). In one sequence, on this branch:
+
+1. **Flip `port_kind`** (`plan.rs:56`): `F32 ⇒ Value` (currently `F32 | F32Buffer ⇒ Signal`).
+   `F32Buffer` stays Signal. After this, every still-`f32` port is a held Value.
+2. **Fix `is_materialized`** (`descriptor.rs:223`): today it is `meta.is_some()`, correct only under
+   `F32 ⇒ Signal`. Post-flip an `f32` (Value, held, no buffer) still has `meta`, so it must key on
+   **type/kind** (an `f32_buffer`-with-meta materializes; a bare `f32` does not). See the ⚠ note under
+   the osc.freq/filter.cutoff resolution below.
+3. **Gate/CV-spine reads/writes → held-Value** for ports whose edge/trigger values are runtime
+   messages (per ADR §"Locked port-form decisions"): `euclid.clock`, `envelope.gate`,
+   `sample.gate`/`freq`, and the Value *outputs* `clock.gate`/`euclid.gate`/`voicer.freq`/`gate`.
+   Block-rate knobs already read via `io.input::<f32>` need no flip-day change (latch seeded under both
+   classifications). `envelope.cv` declared `f32_buffer`.
+4. **Author the net-new `*_f32_value` math family** beside the `*_f32_signal` structs in the same
+   family file (`add.rs`, …) — value shell calls the shared scalar `fn` once; signal shell loops it.
+5. Re-bless any op descriptor snapshots that change; keep `cargo test --workspace` + clippy green
+   across the sequence (it is one barrier, so expect a transient-red working tree until the flip
+   sequence is complete — do not commit mid-flip).
+
+`Emit.address` field still exists (writers set `""`); its removal + boundary rework is **step 7**.
+Note `cargo doc -D warnings` is **not** a CI gate (reuben-contract + some reuben-core links were
+already broken pre-Phase-A); don't be alarmed by it.
 
 ### ✅ Resolved (grilling session) — "delete old Io verbs" is really *finish output migration, then delete*
 
