@@ -39,8 +39,12 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | 5 Phase B — flip `port_kind` `F32 ⇒ Value` (atomic barrier) | ✅ in barrier commit | — |
 | 5 Phase B — gate/CV held-read rewrites (6 spine ports + `m2s`) | ✅ in barrier commit | — |
 | 5 Phase B — ADR-0032 Voicer rewrite (restores polyphony, in the barrier) | ✅ **done (session 9)** | — |
-| 5 Phase B — re-bless goldens + fix integration tests → green → **commit** | ✅ **green workspace-wide; committed** | — |
-| 6–8 | ⬜ pending | — |
+| 5 Phase B — re-bless goldens + fix integration tests → green → **commit** | ✅ **green workspace-wide; committed** (`afbf404`) | — |
+| ADR-0032 follow-up (C) — Lane model deletion + explicit `constant:` keyword (session 10) | ✅ **done** | `07a5187` |
+| ADR-0032 follow-up (D) — re-author 15 voicer instruments; un-ignore 24 tests | ⬜ **next** | — |
+| ADR-0032 follow-up (E) — `active`-based liveness/stealing; skip idle voices | ⬜ pending | — |
+| ADR-0032 follow-up — `voice` resource round-trip through `from_graph` | ⬜ pending | — |
+| 6–8 (ADR-0031 tail: coercion msgs · boundary/addresses · docs) | ⬜ pending | — |
 
 **Suite is green workspace-wide at `b4e558b`** (`cargo test --workspace`, clippy clean).
 **Phase A is fully done** — the only `Io` read/write verbs are now `input::<T>` / `output::<T>`
@@ -283,9 +287,17 @@ Built the whole barrier test-first; `cargo test --workspace` (350 pass) + `cargo
    reverb_example, groovebox_snare_gate, tonal_context, instrument_format's 3, cli's 3, sampler_example,
    stereo_example). Several need a **proc-macro `ResourceKind`** or constant-decoupling so non-default
    `voices` config + nested-sample voice patches work.
-2. **Lane fan-out deletion** (Fork C): rip out `LaneRule::FromParam`, the per-Lane render loop,
-   `node.lanes`, per-Lane out_buffers; Voicer becomes truly single-Lane (drop the dormant `lanes:`
-   line then). Independently green commit.
+2. ~~**Lane fan-out deletion** (Fork C)~~ ✅ **DONE `07a5187`** (session 10, 2026-06-27). Ripped out
+   the whole Lane model — not just `FromParam`. Grill ruling: the one thing the dormant `lanes:` line
+   implicitly carried was the `voices` **Constant** (`constant_param()` derived it from
+   `LaneRule::FromParam`), so deleting lanes required **decoupling Constant-ness**. Resolution: new
+   explicit contract keyword **`constant: <param>`** → `Descriptor.constant_param: Option<usize>`,
+   replacing the implicit lane-derivation. Then deleted `LaneRule`/`LaneSpec`/`LaneModel`/`LaneAst`,
+   `Descriptor.lanes`, the plan lane-count pass + per-Lane operator replication + per-Lane out_buffers
+   dimension, the render `for lane` loop + `port*lanes+lane` striding/broadcast, and
+   `Io::lane/lanes/with_lane`. Voicer: `constant: voices`. Buffer-container `Vec` shapes kept
+   (degenerate len-1; the empty-Vec message-port marker is load-bearing) — re-typing them is pure
+   churn through render's hot path for no behaviour gain. Workspace green (350/24), clippy clean.
 3. **`active`-based liveness/stealing** (Fork E): interface-output Value-capture in `render_plan`;
    Voicer reads each voice's `active`, steals release-tail-aware. Plus skip idle voices (today renders
    all N).
