@@ -1,4 +1,4 @@
-//! Power — a unipolar curve shaper, `out = x^exponent`, per sample (ADR-0027).
+//! PowerF32Signal — a unipolar curve shaper, `out = x^exponent`, per sample (ADR-0027).
 //!
 //! The first member of the curve-op family (issue #40): named for the precise math curve it
 //! applies (a *power* curve), not a generic "curve" knob — future shapes get their own ops
@@ -27,7 +27,7 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor. Both
 // inputs are materialized `Float`s with declared defaults (ADR-0029); `x` defaults to 0.
-crate::operator_contract!(Power {
+crate::operator_contract!(PowerF32Signal {
     inputs:  { x:        f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
                exponent: f32 { 0.0..=8.0,                  default 2.0, "", lin } },
     outputs: { out: f32_buffer },
@@ -42,15 +42,15 @@ fn shape(x: f32, exponent: f32) -> f32 {
 }
 
 #[derive(Default)]
-pub struct Power;
+pub struct PowerF32Signal;
 
-impl Power {
+impl PowerF32Signal {
     pub fn new() -> Self {
         Self
     }
 }
 
-impl Operator for Power {
+impl Operator for PowerF32Signal {
     fn descriptor() -> Descriptor {
         Self::contract()
     }
@@ -73,7 +73,7 @@ impl Operator for Power {
     }
 }
 
-crate::register_operator!(Power);
+crate::register_operator!(PowerF32Signal);
 
 #[cfg(test)]
 mod tests {
@@ -88,7 +88,7 @@ mod tests {
     /// `exponent` is the held block-rate `Float` (read via `io.last`, so `set` once).
     fn run(x: Option<&[f32]>, exponent: f32) -> Vec<f32> {
         let n = x.map_or(4, <[f32]>::len);
-        let mut d = OpDriver::for_type(Power::new(), SR);
+        let mut d = OpDriver::for_type(PowerF32Signal::new(), SR);
         d.set(IN_EXPONENT, exponent);
         if let Some(x) = x {
             d.drive(IN_X, x);
@@ -144,7 +144,7 @@ mod tests {
     #[test]
     fn operand_defaults_are_data() {
         // ADR-0029: both inputs are settable Floats; x defaults to 0, exponent to 2.
-        let d = Power::descriptor();
+        let d = PowerF32Signal::descriptor();
         let default = |name: &str| {
             d.settable_inputs()
                 .find(|(n, _)| *n == name)
@@ -160,8 +160,8 @@ mod tests {
     fn spawned_copy_behaves_identically() {
         let x = [0.2, 0.6, 1.0];
         let direct = run(Some(&x), 3.0);
-        // A fresh spawn (Power is stateless) reproduces the direct render exactly.
-        let base = OpDriver::for_type(Power::new(), SR);
+        // A fresh spawn (PowerF32Signal is stateless) reproduces the direct render exactly.
+        let base = OpDriver::for_type(PowerF32Signal::new(), SR);
         let out = base
             .spawn()
             .set(IN_EXPONENT, 3.0)

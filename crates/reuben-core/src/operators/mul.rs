@@ -16,7 +16,7 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0030). Both operands are materialized `Float`s defaulting to the
 // multiplicative identity `1` (ADR-0029).
-crate::operator_contract!(Mul {
+crate::operator_contract!(MulF32Signal {
     inputs:  { a: f32 { -1_000_000.0..=1_000_000.0, default 1.0, "", lin },
                b: f32 { -1_000_000.0..=1_000_000.0, default 1.0, "", lin } },
     outputs: { out: f32_buffer },
@@ -29,15 +29,15 @@ fn mul(a: f32, b: f32) -> f32 {
 }
 
 #[derive(Default)]
-pub struct Mul;
+pub struct MulF32Signal;
 
-impl Mul {
+impl MulF32Signal {
     pub fn new() -> Self {
         Self
     }
 }
 
-impl Operator for Mul {
+impl Operator for MulF32Signal {
     fn descriptor() -> Descriptor {
         Self::contract()
     }
@@ -58,7 +58,7 @@ impl Operator for Mul {
     }
 }
 
-crate::register_operator!(Mul);
+crate::register_operator!(MulF32Signal);
 
 #[cfg(test)]
 mod tests {
@@ -70,7 +70,7 @@ mod tests {
     /// Drive `mul` through the real engine; a `None` operand stands in for unwired (the engine
     /// materializes its multiplicative-identity default `1`), a `Some(buf)` drives a buffer.
     fn run(a: Option<&[f32]>, b: Option<&[f32]>, n: usize) -> Vec<f32> {
-        let mut d = OpDriver::for_type(Mul::new(), SR);
+        let mut d = OpDriver::for_type(MulF32Signal::new(), SR);
         if let Some(a) = a {
             d.drive(IN_A, a);
         }
@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn operand_defaults_are_the_multiplicative_identity() {
-        let d = Mul::descriptor();
+        let d = MulF32Signal::descriptor();
         for name in ["a", "b"] {
             let (_, meta) = d
                 .settable_inputs()

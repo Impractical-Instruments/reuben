@@ -47,7 +47,7 @@
           "if": {
             "properties": {
               "type": {
-                "const": "add"
+                "const": "add_f32_signal"
               }
             },
             "required": [
@@ -398,7 +398,7 @@
           "if": {
             "properties": {
               "type": {
-                "const": "differentiate"
+                "const": "differentiate_f32_signal"
               }
             },
             "required": [
@@ -1395,7 +1395,7 @@
           "if": {
             "properties": {
               "type": {
-                "const": "integrate"
+                "const": "integrate_f32_signal"
               }
             },
             "required": [
@@ -1850,7 +1850,7 @@
           "if": {
             "properties": {
               "type": {
-                "const": "mul"
+                "const": "mul_f32_signal"
               }
             },
             "required": [
@@ -2187,7 +2187,7 @@
           "if": {
             "properties": {
               "type": {
-                "const": "power"
+                "const": "power_f32_signal"
               }
             },
             "required": [
@@ -3451,27 +3451,27 @@
         },
         "type": {
           "enum": [
-            "add",
+            "add_f32_signal",
             "chord",
             "clock",
             "delay",
-            "differentiate",
+            "differentiate_f32_signal",
             "djfilter",
             "envelope",
             "euclid",
             "filter",
             "harmony",
-            "integrate",
+            "integrate_f32_signal",
             "lfo",
             "m2s",
             "map",
-            "mul",
+            "mul_f32_signal",
             "noise",
             "osc_out",
             "oscillator",
             "output",
             "pan",
-            "power",
+            "power_f32_signal",
             "reverb",
             "sample",
             "sequencer",

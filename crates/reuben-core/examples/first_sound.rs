@@ -1,7 +1,7 @@
 //! first_sound — render the MVP rig to a WAV file so you can hear it.
 //!
 //! Rig: Voicer -> Oscillator -> Filter -> VCA(mul) -> Output, with the VCA gain driven by
-//! an Envelope -> Power (exponential-style volume curve, ADR-0027). A single held note
+//! an Envelope -> PowerF32Signal (exponential-style volume curve, ADR-0027). A single held note
 //! (A4) is sent at frame 0.
 //!
 //! Run: `cargo run -p reuben-core --example first_sound` -> `first_sound.wav`.
@@ -9,7 +9,9 @@
 use reuben_core::graph::Graph;
 use reuben_core::message::Message;
 use reuben_core::operators::{envelope, mul, oscillator, output, power, voicer};
-use reuben_core::operators::{Envelope, Filter, Mul, Oscillator, Output, Power, Voicer};
+use reuben_core::operators::{
+    Envelope, Filter, MulF32Signal, Oscillator, Output, PowerF32Signal, Voicer,
+};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
 use reuben_core::vocab::pitch::{Note, Pitch};
@@ -23,8 +25,8 @@ fn main() {
     let osc = g.add("/osc", Oscillator::new());
     let filt = g.add("/filter", Filter::new());
     let env = g.add("/env", Envelope::new());
-    let curve = g.add("/env_curve", Power::new());
-    let vca = g.add("/env_vca", Mul::new());
+    let curve = g.add("/env_curve", PowerF32Signal::new());
+    let vca = g.add("/env_vca", MulF32Signal::new());
     let out = g.add("/out", Output::new());
 
     g.connect(v, voicer::OUT_FREQ, osc, oscillator::IN_FREQ);

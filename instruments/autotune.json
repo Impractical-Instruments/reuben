@@ -73,7 +73,7 @@
           "from": "/env"
         }
       },
-      "type": "power"
+      "type": "power_f32_signal"
     },
     {
       "address": "/env_vca",
@@ -86,7 +86,7 @@
           "from": "/env_curve"
         }
       },
-      "type": "mul"
+      "type": "mul_f32_signal"
     },
     {
       "address": "/out",

@@ -250,7 +250,9 @@ mod tests {
     #[test]
     fn materialized_float_zoh_holds_across_the_block_boundary() {
         let reg = Registry::builtin();
-        let entry = reg.get("add").expect("add is a builtin operator");
+        let entry = reg
+            .get("add_f32_signal")
+            .expect("add_f32_signal is a builtin operator");
         let mut d = OpDriver::from_boxed((entry.make)(), entry.descriptor.clone(), 48_000.0);
         let port_a = entry
             .descriptor

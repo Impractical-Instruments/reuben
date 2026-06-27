@@ -17,7 +17,7 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor. Both
 // operands are materialized `Float`s defaulting to the additive identity `0` (ADR-0029).
-crate::operator_contract!(Add {
+crate::operator_contract!(AddF32Signal {
     inputs:  { a: f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
                b: f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin } },
     outputs: { out: f32_buffer },
@@ -31,15 +31,15 @@ fn add(a: f32, b: f32) -> f32 {
 }
 
 #[derive(Default)]
-pub struct Add;
+pub struct AddF32Signal;
 
-impl Add {
+impl AddF32Signal {
     pub fn new() -> Self {
         Self
     }
 }
 
-impl Operator for Add {
+impl Operator for AddF32Signal {
     fn descriptor() -> Descriptor {
         Self::contract()
     }
@@ -61,7 +61,7 @@ impl Operator for Add {
     }
 }
 
-crate::register_operator!(Add);
+crate::register_operator!(AddF32Signal);
 
 #[cfg(test)]
 mod tests {
@@ -74,7 +74,7 @@ mod tests {
     /// `Some(buf)` drives a time-varying buffer, `None` leaves the port unwired so the engine
     /// materializes its additive-identity default (`0`).
     fn run(a: Option<&[f32]>, b: Option<&[f32]>, n: usize) -> Vec<f32> {
-        let mut d = OpDriver::for_type(Add::new(), SR);
+        let mut d = OpDriver::for_type(AddF32Signal::new(), SR);
         if let Some(a) = a {
             d.drive(IN_A, a);
         }
@@ -102,7 +102,7 @@ mod tests {
     fn operand_defaults_are_the_additive_identity() {
         // The unwired default of both operands is 0 (data, not code) — the property that makes
         // "wire one side ⇒ passthrough" fall out of materialize (ADR-0029).
-        let d = Add::descriptor();
+        let d = AddF32Signal::descriptor();
         for name in ["a", "b"] {
             let (_, meta) = d
                 .settable_inputs()

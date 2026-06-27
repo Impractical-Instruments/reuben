@@ -16,7 +16,7 @@ use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0029/0030): `in` is a materialized `Float` (default 0).
-crate::operator_contract!(Integrate {
+crate::operator_contract!(IntegrateF32Signal {
     inputs:  { in: f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin } },
     outputs: { out: f32_buffer },
 });
@@ -28,18 +28,18 @@ fn accumulate(acc: f32, cur: f32) -> f32 {
 }
 
 #[derive(Default)]
-pub struct Integrate {
+pub struct IntegrateF32Signal {
     /// Running total, carried across block boundaries. Reset to 0 on `spawn`.
     acc: f32,
 }
 
-impl Integrate {
+impl IntegrateF32Signal {
     pub fn new() -> Self {
         Self::default()
     }
 }
 
-impl Operator for Integrate {
+impl Operator for IntegrateF32Signal {
     fn descriptor() -> Descriptor {
         Self::contract()
     }
@@ -60,20 +60,20 @@ impl Operator for Integrate {
     }
 }
 
-crate::register_operator!(Integrate);
+crate::register_operator!(IntegrateF32Signal);
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::op_driver::{OpDriver, BLOCK_SIZE};
-    use crate::operators::differentiate::Differentiate;
+    use crate::operators::differentiate::DifferentiateF32Signal;
 
     const SR: f32 = 48_000.0;
 
-    /// Integrate `input` through the real engine (one driver, block-sliced). `in` is the per-sample
+    /// IntegrateF32Signal `input` through the real engine (one driver, block-sliced). `in` is the per-sample
     /// `Float` buffer (`drive`d); `out` is read back.
     fn run(input: &[f32]) -> Vec<f32> {
-        OpDriver::for_type(Integrate::new(), SR)
+        OpDriver::for_type(IntegrateF32Signal::new(), SR)
             .drive(IN_IN, input)
             .render(input.len())
             .output(OUT_OUT)
@@ -97,7 +97,7 @@ mod tests {
         // 1, 2, 3, …, n. If the accumulator reset at each block boundary the sum would drop back to
         // 1 at frames 128, 256, … — the strictly-rising ramp proves it carries across them.
         let n = 3 * BLOCK_SIZE;
-        let out = OpDriver::for_type(Integrate::new(), SR)
+        let out = OpDriver::for_type(IntegrateF32Signal::new(), SR)
             .set(IN_IN, 1.0)
             .render(n)
             .output(OUT_OUT)
@@ -112,7 +112,7 @@ mod tests {
         // differentiate(integrate(x)) recovers x after the first (seeded) sample. Here x is a ramp.
         let x = [1.0, 2.0, 3.0, 4.0];
         let integ = run(&x); // [1, 3, 6, 10]
-        let back = OpDriver::for_type(Differentiate::new(), SR)
+        let back = OpDriver::for_type(DifferentiateF32Signal::new(), SR)
             .drive(IN_IN, &integ)
             .render(integ.len())
             .output(OUT_OUT)
@@ -123,7 +123,7 @@ mod tests {
 
     #[test]
     fn spawned_copy_resets_accumulator() {
-        let mut base = OpDriver::for_type(Integrate::new(), SR);
+        let mut base = OpDriver::for_type(IntegrateF32Signal::new(), SR);
         base.drive(IN_IN, &[10.0, 10.0]).render(2); // ends at 20
         let out = base
             .spawn()
