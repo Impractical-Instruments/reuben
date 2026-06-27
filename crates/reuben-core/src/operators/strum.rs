@@ -10,7 +10,7 @@
 //! plucks each string between, like a thumb across a harp).
 //!
 //! - input 0: `position` (`Float`) — the fader's position in 0..1, read **per-sample** via
-//!   [`Io::signal`] (a materialized control), so a crossing is detected at its exact frame and a
+//!   [`Io::input`] (a materialized control), so a crossing is detected at its exact frame and a
 //!   crossing straddling a block boundary fires exactly once (the held value carries across).
 //! - input 1: `strings` (`Float`, held) — strings the 0..1 range is divided into (1..=32, default
 //!   8 = one diatonic octave).

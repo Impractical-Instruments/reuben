@@ -17,8 +17,8 @@
 //! `s + r`. E(4,16) is four-on-the-floor (steps 0,4,8,12); E(3,8) is the tresillo (0,3,6).
 //!
 //! Unified model (ADR-0030): `steps`, `pulses`, and `rotation` are **held `Float` inputs**, each
-//! owning its unwired default — read block-rate via [`Io::last`] (rounded to an integer, then
-//! clamped/wrapped). `clock` is a **`buffer`** input read per-sample via [`Io::signal`] for edge
+//! owning its unwired default — read block-rate via [`Io::input`] (rounded to an integer, then
+//! clamped/wrapped). `clock` is a **`buffer`** input read per-sample via [`Io::input`] for edge
 //! detection. Edge behaviour is forgiving for live knob-twiddling and modulation: `pulses` clamps
 //! to `0..=steps` (0 = silence, `steps` = every step hits) and `rotation` wraps modulo `steps`.
 //!

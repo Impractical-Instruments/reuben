@@ -24,7 +24,7 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | 5 Phase A — accessor migration | ✅ done | `e411a7a` |
 | 5 Phase A — math `*_f32_signal` rename | ✅ done | `3821aa2` |
 | 5 Phase A — osc.freq/filter.cutoff → f32_buffer | ✅ done | `f1e8fdc` |
-| 5 Phase A — output migration (`emit`→`EventWriter`/`MsgWriter`) + delete old verbs | ⬜ **in progress** | — |
+| 5 Phase A — output migration (`emit`→`EventWriter`/`MsgWriter`) + delete old verbs | ✅ done | (3 sub-commits) |
 | 5 Phase B — flip `F32⇒Value` + gate/CV spine + `*_f32_value` family | ⬜ pending | — |
 | 6–8 | ⬜ pending | — |
 

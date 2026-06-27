@@ -347,7 +347,7 @@ fn render_process(spec: &OperatorSpec) -> String {
             "        for port in [{}] {{\n",
             sig_outs.join(", ")
         ));
-        out.push_str("            io.signal_mut(port)[..n].fill(0.0);\n        }\n");
+        out.push_str("            io.output::<&mut [f32]>(port)[..n].fill(0.0);\n        }\n");
     }
     out.push_str("    }\n");
     out
@@ -441,7 +441,10 @@ mod tests {
     fn process_stub_writes_silence_to_signal_outputs_only() {
         let src =
             render(r#"{ "type_name": "o", "outputs": [ {"name":"audio","ty":"f32_buffer"} ] }"#);
-        assert!(src.contains("io.signal_mut(port)[..n].fill(0.0)"), "{src}");
+        assert!(
+            src.contains("io.output::<&mut [f32]>(port)[..n].fill(0.0)"),
+            "{src}"
+        );
         assert!(src.contains("for port in [OUT_AUDIO]"), "{src}");
     }
 

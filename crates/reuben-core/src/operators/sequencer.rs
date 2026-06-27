@@ -9,9 +9,9 @@
 //! polyphony-, transpose-, and snap-composable, exactly like notes arriving from outside.
 //!
 //! Unified model (ADR-0030): `length`, `step1`..`step16`, and `pitch` are **held `Float` inputs**,
-//! each owning its unwired default — read via [`Io::last`]. `gate_mode` is a held **`enum`** input
+//! each owning its unwired default — read via [`Io::input`]. `gate_mode` is a held **`enum`** input
 //! [`GateMode`] {`Degree`, `Gate`}. `clock` is a **`buffer`** input read per-sample via
-//! [`Io::signal`] for edge detection.
+//! [`Io::input`] for edge detection.
 //!
 //! Two step interpretations, selected by `gate_mode` (ADR-0022):
 //! - **degree mode** (`Degree`, default): each `stepN` *is* the scale degree to play that beat; a
@@ -66,7 +66,7 @@ crate::operator_contract!(Sequencer {
     outputs: { degrees: note },
 });
 
-/// Message output ordinal of the `degrees` port (the index [`Io::emit`] uses).
+/// Message output ordinal of the `degrees` port (the index [`Io::output`] uses).
 pub const MSG_NOTES: usize = OUT_DEGREES;
 
 /// Per-sample value of step `k` (0-based): input `IN_STEP1 + k`.

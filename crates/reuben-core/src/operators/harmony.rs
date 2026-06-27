@@ -3,7 +3,7 @@
 //!
 //! It owns the latched [`Harmony`] and publishes it onto a `harmony` output port; followers (the
 //! Voicer's degree resolution, a snap op) read "what's the key/chord right now" via
-//! [`Io::last::<Harmony>`]. A single default instance in a Rig makes everything agree out of the box
+//! [`Io::input`]. A single default instance in a Rig makes everything agree out of the box
 //! — the same on-ramp as the default Clock — without baking *global* into the core (multiple harmony
 //! nodes = polytonality).
 //!

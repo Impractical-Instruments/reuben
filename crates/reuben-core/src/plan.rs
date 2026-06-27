@@ -144,11 +144,11 @@ pub struct PlanNode {
     /// (`false` ⇒ held unchanged this block).
     pub varying: Vec<bool>,
     /// For each **signal (Buffer) output** port — in signal-output ordinal order, the index
-    /// [`crate::operator::Io::signal_mut`] uses — this node's per-Lane arena buffer indices
-    /// (length `lanes`).
+    /// [`crate::operator::Io::output`] (`<&mut [f32]>`) uses — this node's per-Lane arena buffer
+    /// indices (length `lanes`).
     pub outputs: Vec<Vec<usize>>,
     /// Message-edge routing (ADR-0014, ADR-0030): for each **message output** port — in
-    /// message-output ordinal order, the index [`crate::operator::Io::emit`] uses — the
+    /// message-output ordinal order, the index [`crate::operator::Io::output`] uses — the
     /// `(dst node, dst input port)` pairs its emissions are delivered to. Unifies the former
     /// `msg_targets` (Note edges) and `ctx_targets` (Harmony edges): a published Harmony is just a
     /// Message to a Held input. The dst input port's [`PortKind`] decides how it lands.

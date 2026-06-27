@@ -5,7 +5,7 @@
 //! global voice allocation (fixed-pool, steal-oldest) over the identical note stream, and emits
 //! only its own Voice's signals — so all replicas stay in lock-step and the result is deterministic.
 //!
-//! - input 0: `notes` (`Note`) — note events, read via [`Io::stream`]. A
+//! - input 0: `notes` (`Note`) — note events, read via [`Io::input`]. A
 //!   [`Degree`](crate::vocab::pitch::Pitch::Degree) note is resolved to Hz through the tonal context (so
 //!   the line re-spells live on a key/scale change); an [`Absolute`](crate::vocab::pitch::Pitch::Absolute)
 //!   note plays its MIDI coordinate. Velocity 0 is a note-off (ADR-0030: the Pitch case, not an

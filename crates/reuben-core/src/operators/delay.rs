@@ -70,7 +70,7 @@ impl Operator for Delay {
         let mix = io.input::<f32>(IN_MIX).unwrap_or(0.0).clamp(0.0, 1.0);
         // Read offset in samples; clamp so the interpolated tap stays inside the buffer.
         let time = io
-            .last::<f32>(IN_TIME)
+            .input::<f32>(IN_TIME)
             .unwrap_or(0.0)
             .clamp(0.001, MAX_DELAY_SECS);
         let delay_samples = (time * sample_rate).clamp(1.0, (cap - 1) as f32);
