@@ -5,6 +5,17 @@ narrative in [ARCHITECTURE.md](../ARCHITECTURE.md). Capitalized terms (Operator,
 Plan…) are defined in [CONTEXT.md](../../CONTEXT.md). The ADRs are the source of truth;
 this doc tells you where the contract lives in code and how to extend it.
 
+> **⚠ STALE — API drift pending the Step-8 sync-docs sweep (ADR-0031/0032).** The code examples
+> below predate several landed refactors and will not compile as written. Specifically: the IO
+> accessors are now the two type-dispatched verbs `io.input::<T>(p)` / `io.output::<T>(p)` (not
+> `io.signal`/`io.last`/`io.stream`/`io.emit`); the contract keywords are `f32_buffer` / `f32`
+> (not `buffer` / `float`); and the **Lane model is gone** (ADR-0032) — there is no `lanes:` /
+> `from_param` / `LaneRule` / `io.lane()` / `io.lanes()`. An instantiate-time `Constant` is now
+> declared with the contract keyword **`constant: <param>`** (the Voicer's `voices`). Polyphony is
+> hosted *inside* the Voicer (N voice sub-patches summed), not fanned out across engine Lanes.
+> **Trust the live code and `reuben scaffold-operator` (both current) over the prose here until the
+> sweep lands.**
+
 ## The recursive model
 
 One concept at every scale ([ADR-0003](../adr/0003-recursive-composition.md)): a graph of
