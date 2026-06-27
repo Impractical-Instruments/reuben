@@ -19,11 +19,11 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Reverb {
-    inputs:  { audio: buffer,
-               room: float { 0.0..=1.0, default 0.5, "", lin },
-               damp: float { 0.0..=1.0, default 0.5, "", lin },
-               mix:  float { 0.0..=1.0, default 0.3, "", lin } },
-    outputs: { audio: buffer },
+    inputs:  { audio: f32_buffer,
+               room: f32 { 0.0..=1.0, default 0.5, "", lin },
+               damp: f32 { 0.0..=1.0, default 0.5, "", lin },
+               mix:  f32 { 0.0..=1.0, default 0.3, "", lin } },
+    outputs: { audio: f32_buffer },
 });
 
 /// Standard Freeverb comb-filter delay lengths, in samples at 44100 Hz.

@@ -20,8 +20,8 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0029/0030): `in` is a materialized `Float` (default 0).
 crate::operator_contract!(Differentiate {
-    inputs:  { in: float { -1_000_000.0..=1_000_000.0, default 0.0, "", lin } },
-    outputs: { out: buffer },
+    inputs:  { in: f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin } },
+    outputs: { out: f32_buffer },
 });
 
 /// The op's scalar math, written once (ADR-0029 pure-fn seam): the one-sample difference.

@@ -25,12 +25,12 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Envelope {
-    inputs:  { gate:    buffer,
-               attack:  float { 0.001..=5.0, default 0.01, "s", exp },
-               decay:   float { 0.001..=5.0, default 0.1,  "s", exp },
-               sustain: float { 0.0..=1.0,   default 0.7,  "",  lin },
-               release: float { 0.001..=5.0, default 0.2,  "s", exp } },
-    outputs: { cv: buffer },
+    inputs:  { gate:    f32_buffer,
+               attack:  f32 { 0.001..=5.0, default 0.01, "s", exp },
+               decay:   f32 { 0.001..=5.0, default 0.1,  "s", exp },
+               sustain: f32 { 0.0..=1.0,   default 0.7,  "",  lin },
+               release: f32 { 0.001..=5.0, default 0.2,  "s", exp } },
+    outputs: { cv: f32_buffer },
 });
 
 /// Which segment of the ADSR contour the envelope is currently traversing.

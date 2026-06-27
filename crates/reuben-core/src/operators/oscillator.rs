@@ -15,9 +15,9 @@ use crate::vocab::Waveform;
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts and the Descriptor.
 // `freq` is a materialized `Float` control; `waveform` references the shared `Waveform` vocab enum.
 crate::operator_contract!(Oscillator {
-    inputs:  { freq:     float { 20.0..=20_000.0, default 440.0, "Hz", exp },
+    inputs:  { freq:     f32 { 20.0..=20_000.0, default 440.0, "Hz", exp },
                waveform: enum(Waveform) },
-    outputs: { audio: buffer },
+    outputs: { audio: f32_buffer },
 });
 
 #[derive(Default)]

@@ -28,9 +28,9 @@ use crate::operator::{Io, Operator};
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor. Both
 // inputs are materialized `Float`s with declared defaults (ADR-0029); `x` defaults to 0.
 crate::operator_contract!(Power {
-    inputs:  { x:        float { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
-               exponent: float { 0.0..=8.0,                  default 2.0, "", lin } },
-    outputs: { out: buffer },
+    inputs:  { x:        f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
+               exponent: f32 { 0.0..=8.0,                  default 2.0, "", lin } },
+    outputs: { out: f32_buffer },
 });
 
 /// The op's scalar math, written once (ADR-0029 pure-fn seam): a unipolar power curve. The

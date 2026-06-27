@@ -43,11 +43,11 @@ pub const NUM_STEPS: usize = 16;
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Euclid {
     type_name: "euclid",
-    inputs:  { clock:    buffer,
-               steps:    float { 1.0..=16.0, default 16.0, "steps",  lin },
-               pulses:   float { 0.0..=16.0, default 4.0,  "pulses", lin },
-               rotation: float { 0.0..=15.0, default 0.0,  "steps",  lin } },
-    outputs: { gate: float { 0.0..=1.0, default 0.0, "gate", lin } },
+    inputs:  { clock:    f32_buffer,
+               steps:    f32 { 1.0..=16.0, default 16.0, "steps",  lin },
+               pulses:   f32 { 0.0..=16.0, default 4.0,  "pulses", lin },
+               rotation: f32 { 0.0..=15.0, default 0.0,  "steps",  lin } },
+    outputs: { gate: f32 { 0.0..=1.0, default 0.0, "gate", lin } },
     lanes: inherit,
 });
 

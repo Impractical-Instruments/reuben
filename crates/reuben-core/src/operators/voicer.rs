@@ -27,7 +27,7 @@ use crate::vocab::pitch::{Note, Pitch};
 // `freq`/`gate` per-sample buffers; the Lane count comes from the `voices` param.
 crate::operator_contract!(Voicer {
     inputs:  { notes: note, harmony: harmony },
-    outputs: { freq: buffer, gate: buffer },
+    outputs: { freq: f32_buffer, gate: f32_buffer },
     params:  { voices: { 1.0..=32.0, default 8.0, "", lin } },
     lanes: from_param(voices),
 });

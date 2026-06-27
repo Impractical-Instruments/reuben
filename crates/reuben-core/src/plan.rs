@@ -28,7 +28,7 @@ use crate::vocab::harmony::Harmony;
 /// The **form** a wire carries (ADR-0031), *declared* by the port's [`PortType`] — not inferred
 /// from the graph:
 ///
-/// - **Signal** — a dense per-sample buffer ([`Buffer`](PortType::Buffer) audio), read via
+/// - **Signal** — a dense per-sample buffer ([`Buffer`](PortType::F32Buffer) audio), read via
 ///   `io.signal`. (Until the step-4 form sweep, an `F32` control also classifies Signal so the
 ///   former always-materialize `io.signal` reads keep working; the locked table re-declares each
 ///   numeric port `f32` (Value) or `f32_buffer` (Signal) as its operator migrates.)
@@ -55,7 +55,7 @@ pub enum PortKind {
 /// green).
 pub fn port_kind(p: &Port) -> PortKind {
     match &p.ty {
-        PortType::Buffer | PortType::F32 => PortKind::Signal,
+        PortType::F32Buffer | PortType::F32 => PortKind::Signal,
         PortType::Vocab {
             enum_meta: None,
             name,
@@ -111,7 +111,7 @@ pub struct PlanNode {
     /// Lane (Voice) count at this node.
     pub lanes: usize,
     /// For each input port (full input-port order): the source's per-Lane arena buffer indices,
-    /// or `None`. `Some` only for a [`Buffer`](PortType::Buffer) input — either wired to a Buffer
+    /// or `None`. `Some` only for a [`Buffer`](PortType::F32Buffer) input — either wired to a Buffer
     /// source (zero-copy share; inner length = the source's Lane count, 1 broadcasts) or fed by a
     /// scalar source and so **materialized** (a dedicated single-Lane scratch buffer, see
     /// `materialize`). Held / Stream inputs carry no buffer (`None`).
@@ -278,7 +278,7 @@ impl Plan {
                 .outputs
                 .iter()
                 .map(|p| {
-                    if matches!(p.ty, PortType::Buffer) {
+                    if matches!(p.ty, PortType::F32Buffer) {
                         (0..n_lanes)
                             .map(|_| {
                                 let i = next_buffer;
@@ -374,7 +374,7 @@ impl Plan {
                 .outputs
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| matches!(p.ty, PortType::Buffer))
+                .filter(|(_, p)| matches!(p.ty, PortType::F32Buffer))
                 .map(|(port, _)| out_buffers[*key][port].clone())
                 .collect();
 
@@ -384,7 +384,7 @@ impl Plan {
                 .outputs
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| !matches!(p.ty, PortType::Buffer))
+                .filter(|(_, p)| !matches!(p.ty, PortType::F32Buffer))
                 .map(|(port, _)| {
                     graph
                         .connections

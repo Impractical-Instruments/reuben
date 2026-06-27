@@ -20,10 +20,10 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Lfo {
-    inputs:  { rate:   float { 0.01..=20.0,        default 5.0,   "Hz", exp },
-               depth:  float { 0.0..=1000.0,       default 10.0,  "",   lin },
-               center: float { -1000.0..=20_000.0, default 440.0, "",   lin } },
-    outputs: { out: buffer },
+    inputs:  { rate:   f32 { 0.01..=20.0,        default 5.0,   "Hz", exp },
+               depth:  f32 { 0.0..=1000.0,       default 10.0,  "",   lin },
+               center: f32 { -1000.0..=20_000.0, default 440.0, "",   lin } },
+    outputs: { out: f32_buffer },
 });
 
 #[derive(Default)]

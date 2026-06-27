@@ -38,13 +38,13 @@ use crate::resources::{ResolvedRefs, ResourceStore, SampleId};
 // Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.
 crate::operator_contract!(SamplePlayer {
     type_name: "sample",
-    inputs:    { freq:    buffer,
-                 gate:    buffer,
-                 root:    float { 0.0..=127.0, default 60.0, "MIDI", lin },
-                 gain:    float { 0.0..=4.0,   default 1.0,  "",     lin },
-                 start:   float { 0.0..=1.0,   default 0.0,  "",     lin },
-                 channel: float { -1.0..=31.0, default -1.0, "",     lin } },
-    outputs:   { audio: buffer },
+    inputs:    { freq:    f32_buffer,
+                 gate:    f32_buffer,
+                 root:    f32 { 0.0..=127.0, default 60.0, "MIDI", lin },
+                 gain:    f32 { 0.0..=4.0,   default 1.0,  "",     lin },
+                 start:   f32 { 0.0..=1.0,   default 0.0,  "",     lin },
+                 channel: f32 { -1.0..=31.0, default -1.0, "",     lin } },
+    outputs:   { audio: f32_buffer },
     resources: { sample },
 });
 

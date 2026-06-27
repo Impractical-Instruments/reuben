@@ -19,7 +19,7 @@ use crate::vocab::pitch::{Note, Pitch};
 
 crate::operator_contract!(Transpose {
     inputs:  { notes:  note,
-               amount: float { -48.0..=48.0, default 0.0, "steps", lin } },
+               amount: f32 { -48.0..=48.0, default 0.0, "steps", lin } },
     outputs: { notes: note },
 });
 

@@ -25,11 +25,11 @@ use crate::vocab::FilterMode;
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts and the Descriptor;
 // `mode` references the shared `FilterMode` vocab enum (no per-op type), so no drift.
 crate::operator_contract!(Filter {
-    inputs:  { audio: buffer,
-               cutoff:    float { 20.0..=20_000.0, default 1_000.0, "Hz", exp },
-               resonance: float { 0.0..=1.0,       default 0.2,     "",   lin },
+    inputs:  { audio: f32_buffer,
+               cutoff:    f32 { 20.0..=20_000.0, default 1_000.0, "Hz", exp },
+               resonance: f32 { 0.0..=1.0,       default 0.2,     "",   lin },
                mode:      enum(FilterMode) },
-    outputs: { audio: buffer },
+    outputs: { audio: f32_buffer },
 });
 
 #[derive(Default)]

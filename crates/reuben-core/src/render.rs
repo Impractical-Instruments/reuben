@@ -421,7 +421,7 @@ struct RoutedEvent {
 /// Per-node routed messages for one block (ADR-0030), one bucket per [`PortKind`].
 #[derive(Default)]
 struct NodeRoute {
-    /// (frame, input port, value) — a scalar feeding a materialized [`Buffer`](PortType::Buffer)
+    /// (frame, input port, value) — a scalar feeding a materialized [`Buffer`](PortType::F32Buffer)
     /// input. The engine writes it into the input's scratch buffer at its frame (ZOH); does **not**
     /// split the block. Sorted by frame before materialize.
     materialize_writes: Vec<(usize, usize, f32)>,

@@ -18,9 +18,9 @@ use crate::operator::{Io, Operator};
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor. Both
 // operands are materialized `Float`s defaulting to the additive identity `0` (ADR-0029).
 crate::operator_contract!(Add {
-    inputs:  { a: float { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
-               b: float { -1_000_000.0..=1_000_000.0, default 0.0, "", lin } },
-    outputs: { out: buffer },
+    inputs:  { a: f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
+               b: f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin } },
+    outputs: { out: f32_buffer },
 });
 
 /// The op's scalar math, written once (ADR-0029 pure-fn seam). A future sparse/`Note`-field shell

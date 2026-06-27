@@ -43,7 +43,7 @@ pub struct Stamped<T> {
 pub struct Io<'a> {
     sample_rate: f32,
     frames: usize,
-    /// Dense per-sample buffer per **input** port (a wired [`Buffer`](Arg::Buffer) source or a
+    /// Dense per-sample buffer per **input** port (a wired [`Buffer`](Arg::F32Buffer) source or a
     /// materialized [`F32`](crate::descriptor::PortType::F32) control), or `None` for a port with
     /// no buffer form. Read per-sample via [`Io::signal`].
     inputs: SmallVec<[Option<&'a [f32]>; 20]>,
@@ -146,7 +146,7 @@ impl<'a> Io<'a> {
     }
 
     /// **Per-sample read of a buffer input** (ADR-0030): the dense block on `port`. A wired
-    /// [`Buffer`](Arg::Buffer) source, or the engine's materialized buffer for an
+    /// [`Buffer`](Arg::F32Buffer) source, or the engine's materialized buffer for an
     /// [`F32`](crate::descriptor::PortType::F32) control filled from its latched value (mid-block
     /// changes written at their frame). Always `frames` long for a migrated port; an empty slice
     /// for a port with neither a wire nor materialization.

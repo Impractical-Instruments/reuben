@@ -48,7 +48,7 @@ fn desc(type_name: &'static str, inputs: Vec<Port>, outputs: Vec<Port>) -> Descr
 
 /// A Signal port — a dense per-sample buffer (`f32_buffer` audio: an LFO out, `filter.cutoff`).
 fn signal(name: &'static str) -> Port {
-    Port::buffer(name)
+    Port::f32_buffer(name)
 }
 
 /// A Value port — a latched single value. Modelled with `I32` so it classifies Value *now*; until
@@ -103,22 +103,23 @@ fn wire(src: Port, dst: Port) -> Result<Plan, PlanError> {
 #[test]
 fn graph_helper_wires_two_nodes_and_instantiates() {
     // Tracer bullet: the thin Graph helper builds a real Plan from two wired nodes.
-    let plan = wire(Port::buffer("o"), Port::buffer("i")).expect("a valid wire instantiates");
+    let plan =
+        wire(Port::f32_buffer("o"), Port::f32_buffer("i")).expect("a valid wire instantiates");
     assert_eq!(plan.nodes.len(), 2);
 }
 
 #[test]
 fn port_form_reads_a_declared_input_form() {
-    let plan = wire(Port::buffer("o"), Port::buffer("i")).expect("instantiate");
+    let plan = wire(Port::f32_buffer("o"), Port::f32_buffer("i")).expect("instantiate");
     // The sink node (index varies with topo order); find it by address.
     let dst = plan.nodes.iter().position(|n| n.address == "/dst").unwrap();
-    assert_eq!(port_form(&plan, dst, 0), port_kind(&Port::buffer("i")));
+    assert_eq!(port_form(&plan, dst, 0), port_kind(&Port::f32_buffer("i")));
 }
 
 #[test]
 fn signal_buffer_count_counts_the_signal_edge() {
     // One Signal source feeding a Signal sink: a single shared edge buffer.
-    let plan = wire(Port::buffer("o"), Port::buffer("i")).expect("instantiate");
+    let plan = wire(Port::f32_buffer("o"), Port::f32_buffer("i")).expect("instantiate");
     assert_eq!(signal_buffer_count(&plan), 1);
 }
 

@@ -33,11 +33,11 @@ use crate::vocab::M2sMode;
 // Single-source contract (ADR-0025/0030). `mode` references the shared `M2sMode` vocab enum, whose
 // `#[default]` is `Smooth` — the natural knob feel and the prior default.
 crate::operator_contract!(M2s {
-    inputs:  { in:   float { -1_000_000.0..=1_000_000.0, default 0.0,     "",   lin },
+    inputs:  { in:   f32 { -1_000_000.0..=1_000_000.0, default 0.0,     "",   lin },
                mode: enum(M2sMode),
-               rate: float { 0.0..=1_000_000.0,          default 1_000.0, "/s", exp },
-               time: float { 0.0..=10.0,                 default 0.05,    "s",  exp } },
-    outputs: { out: buffer },
+               rate: f32 { 0.0..=1_000_000.0,          default 1_000.0, "/s", exp },
+               time: f32 { 0.0..=10.0,                 default 0.05,    "s",  exp } },
+    outputs: { out: f32_buffer },
 });
 
 #[derive(Default)]

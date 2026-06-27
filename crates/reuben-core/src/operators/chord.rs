@@ -34,7 +34,7 @@ use crate::vocab::pitch::{Note, Pitch};
 // Single-source contract (ADR-0025/0030). `set` is a `Note` event port; `size` a held `Float`.
 crate::operator_contract!(Chord {
     inputs:  { set:  note,
-               size: float { 3.0..=4.0, default 3.0, "tones", lin } },
+               size: f32 { 3.0..=4.0, default 3.0, "tones", lin } },
     outputs: { degrees: note },
 });
 

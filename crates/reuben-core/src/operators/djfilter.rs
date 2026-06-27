@@ -34,14 +34,14 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Djfilter {
-    inputs:  { audio: buffer,
-               position:  float { -1.0..=1.0,     default 0.0,     "",   lin },
-               resonance: float { 0.0..=1.0,      default 0.1,     "",   lin },
-               lp_start:  float { 20.0..=20000.0, default 20000.0, "Hz", exp },
-               lp_end:    float { 20.0..=20000.0, default 200.0,   "Hz", exp },
-               hp_start:  float { 20.0..=20000.0, default 20.0,    "Hz", exp },
-               hp_end:    float { 20.0..=20000.0, default 6000.0,  "Hz", exp } },
-    outputs: { audio: buffer },
+    inputs:  { audio: f32_buffer,
+               position:  f32 { -1.0..=1.0,     default 0.0,     "",   lin },
+               resonance: f32 { 0.0..=1.0,      default 0.1,     "",   lin },
+               lp_start:  f32 { 20.0..=20000.0, default 20000.0, "Hz", exp },
+               lp_end:    f32 { 20.0..=20000.0, default 200.0,   "Hz", exp },
+               hp_start:  f32 { 20.0..=20000.0, default 20.0,    "Hz", exp },
+               hp_end:    f32 { 20.0..=20000.0, default 6000.0,  "Hz", exp } },
+    outputs: { audio: f32_buffer },
 });
 
 #[derive(Default)]

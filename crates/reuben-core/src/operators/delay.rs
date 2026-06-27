@@ -24,11 +24,11 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Delay {
-    inputs:  { audio: buffer,
-               time:     float { 0.001..=2.0, default 0.3, "s", lin },
-               feedback: float { 0.0..=0.95,  default 0.4, "",  lin },
-               mix:      float { 0.0..=1.0,   default 0.5, "",  lin } },
-    outputs: { audio: buffer },
+    inputs:  { audio: f32_buffer,
+               time:     f32 { 0.001..=2.0, default 0.3, "s", lin },
+               feedback: f32 { 0.0..=0.95,  default 0.4, "",  lin },
+               mix:      f32 { 0.0..=1.0,   default 0.5, "",  lin } },
+    outputs: { audio: f32_buffer },
 });
 
 /// Maximum delay time in seconds; sizes the ring buffer.

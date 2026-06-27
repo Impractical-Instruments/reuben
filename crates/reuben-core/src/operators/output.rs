@@ -28,8 +28,8 @@ impl Operator for Output {
     fn descriptor() -> Descriptor {
         Descriptor {
             type_name: "output",
-            inputs: vec![Port::buffer("audio")],
-            outputs: vec![Port::buffer("audio")],
+            inputs: vec![Port::f32_buffer("audio")],
+            outputs: vec![Port::f32_buffer("audio")],
             params: vec![],
             resources: vec![],
             lanes: LaneRule::Inherit,

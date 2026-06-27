@@ -19,9 +19,9 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Pan {
-    inputs:  { audio: buffer,
-               pan:   float { -1.0..=1.0, default 0.0, "", lin } },
-    outputs: { left: buffer, right: buffer },
+    inputs:  { audio: f32_buffer,
+               pan:   f32 { -1.0..=1.0, default 0.0, "", lin } },
+    outputs: { left: f32_buffer, right: f32_buffer },
 });
 
 #[derive(Default)]

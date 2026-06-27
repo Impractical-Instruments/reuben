@@ -33,10 +33,10 @@ use crate::vocab::pitch::{Note, Pitch};
 // Single-source contract (ADR-0025/0030). `position` is a materialized `Float` (read per-sample);
 // `strings`/`octaves`/`velocity` are held `Float`s.
 crate::operator_contract!(Strum {
-    inputs:  { position: float { 0.0..=1.0,  default 0.0, "",        lin },
-               strings:  float { 1.0..=32.0, default 8.0, "strings", lin },
-               octaves:  float { 1.0..=4.0,  default 1.0, "oct",     lin },
-               velocity: float { 0.0..=1.0,  default 1.0, "",        lin } },
+    inputs:  { position: f32 { 0.0..=1.0,  default 0.0, "",        lin },
+               strings:  f32 { 1.0..=32.0, default 8.0, "strings", lin },
+               octaves:  f32 { 1.0..=4.0,  default 1.0, "oct",     lin },
+               velocity: f32 { 0.0..=1.0,  default 1.0, "",        lin } },
     outputs: { degrees: note },
 });
 

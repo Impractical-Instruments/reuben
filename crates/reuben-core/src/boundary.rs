@@ -9,7 +9,7 @@
 //! **port's declared [`PortType`]** drives [`osc_in_arg`] — there is no separate registry to drift
 //! from the descriptor. A primitive port wraps the single arg; a vocab enum resolves it via its
 //! [`EnumMeta`](crate::descriptor::EnumMeta); a struct vocab type unpacks the flat form via
-//! [`OscArg::from_osc`]. A [`Buffer`](Arg::Buffer) port has no OSC form, so audio cannot cross —
+//! [`OscArg::from_osc`]. A [`Buffer`](Arg::F32Buffer) port has no OSC form, so audio cannot cross —
 //! the opt-out is by construction.
 
 use crate::descriptor::PortType;
@@ -18,7 +18,7 @@ use crate::vocab::pitch::Note;
 
 /// Convert a flat OSC arg list into the single [`Arg`] a destination port carries, driven by the
 /// **destination port type** (ADR-0030). `None` when the args don't fit the port (a wrong-typed
-/// wire — dropped) or the port has no OSC form ([`Buffer`](Arg::Buffer): audio never crosses).
+/// wire — dropped) or the port has no OSC form ([`Buffer`](Arg::F32Buffer): audio never crosses).
 ///
 /// - **F32 / I32 / Str** — wrap the first arg (numeric coercion as for any `Arg`).
 /// - **Vocab enum** — resolve the first arg (symbol or index) via the port's resolver.
@@ -40,7 +40,7 @@ pub fn osc_in_arg(ty: &PortType, args: &[Arg]) -> Option<Arg> {
             _ => None,
         }),
         // Audio is not boundary-crossable (ADR-0030): a Buffer port has no OSC form.
-        PortType::Buffer => None,
+        PortType::F32Buffer => None,
         PortType::Vocab {
             enum_meta: Some(e), ..
         } => args.first().and_then(|a| e.resolve_arg(a)),
@@ -62,7 +62,7 @@ pub fn osc_in_arg(ty: &PortType, args: &[Arg]) -> Option<Arg> {
 /// appending primitive `Arg`s to `out`. The inverse of [`osc_in_arg`], dispatched on the `Arg`
 /// variant (the closed central enum). A primitive forwards verbatim; an enum sends its **symbol**;
 /// a struct vocab type packs via [`OscArg::to_osc`]. [`Harmony`](Arg::Harmony) and
-/// [`Buffer`](Arg::Buffer) have no external form and contribute nothing.
+/// [`Buffer`](Arg::F32Buffer) have no external form and contribute nothing.
 pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) {
     match arg {
         Arg::F32(_) | Arg::I32(_) | Arg::Str(_) => out.push(arg.clone()),
@@ -75,7 +75,7 @@ pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) {
         Arg::M2sMode(v) => out.push(Arg::Str(v.symbol().to_string())),
         Arg::MapCurve(v) => out.push(Arg::Str(v.symbol().to_string())),
         // No external OSC form.
-        Arg::Harmony(_) | Arg::Buffer(_) => {}
+        Arg::Harmony(_) | Arg::F32Buffer(_) => {}
     }
 }
 
@@ -96,7 +96,7 @@ mod tests {
 
     #[test]
     fn buffer_port_never_crosses() {
-        assert_eq!(osc_in_arg(&PortType::Buffer, &[Arg::F32(1.0)]), None);
+        assert_eq!(osc_in_arg(&PortType::F32Buffer, &[Arg::F32(1.0)]), None);
     }
 
     #[test]
@@ -158,7 +158,10 @@ mod tests {
             &Arg::Harmony(crate::vocab::harmony::Harmony::default()),
             &mut flat,
         );
-        osc_out_args(&Arg::Buffer(crate::message::Signal::default()), &mut flat);
+        osc_out_args(
+            &Arg::F32Buffer(crate::message::Signal::default()),
+            &mut flat,
+        );
         assert!(flat.is_empty());
     }
 }

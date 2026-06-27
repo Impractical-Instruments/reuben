@@ -12,13 +12,13 @@
 use reuben_core::descriptor::{Curve, Descriptor, LaneRule, PortType};
 use reuben_core::registry::Registry;
 
-/// The carrier word for a bare port's [`PortType`] (ADR-0030). Materialized `float` and `enum`
+/// The carrier word for a bare port's [`PortType`] (ADR-0030/0031). Materialized `f32` and `enum`
 /// **inputs** render via their own branches (`meta` / `enum_meta`); this names the carrier-style
-/// ports: a `buffer` audio wire ("signal"), `Note` ("message"), `Harmony` ("harmony"), and an enum
-/// **output** ("enum", none today).
+/// ports: an `f32_buffer` audio wire ("f32_buffer"), `Note` ("message"), `Harmony` ("harmony"), and
+/// an enum **output** ("enum", none today).
 fn kind(ty: &PortType) -> &'static str {
     match ty {
-        PortType::Buffer => "signal",
+        PortType::F32Buffer => "f32_buffer",
         PortType::Vocab { name: "Note", .. } => "message",
         PortType::Vocab {
             name: "Harmony", ..
@@ -26,8 +26,8 @@ fn kind(ty: &PortType) -> &'static str {
         PortType::Vocab {
             enum_meta: Some(_), ..
         } => "enum",
-        // A bare F32/I32/Str with no `meta` falls back to the signal word.
-        _ => "signal",
+        // A bare F32/I32/Str with no `meta` falls back to the f32_buffer word.
+        _ => "f32_buffer",
     }
 }
 
@@ -43,13 +43,13 @@ fn curve(c: Curve) -> &'static str {
 fn render(d: &Descriptor) -> String {
     let mut s = format!("operator {}\n", d.type_name);
     for (i, p) in d.inputs.iter().enumerate() {
-        // A new-style materialized Float input (ADR-0028) carries its own metadata; render it so
+        // A new-style materialized F32 input (ADR-0028) carries its own metadata; render it so
         // the snapshot captures the default/range that used to live on a same-named param. An
-        // `Enum` input renders its ordered variants + default index. Legacy signal/message/harmony
-        // inputs (no `meta`/`enum_meta`) render byte-identically to before.
+        // `Enum` input renders its ordered variants + default index. Carrier f32_buffer/message/
+        // harmony inputs (no `meta`/`enum_meta`) render via `kind`.
         match (&p.meta, p.enum_meta()) {
             (Some(m), _) => s.push_str(&format!(
-                "  in[{i}] float {} min={:?} max={:?} default={:?} unit={:?} curve={}\n",
+                "  in[{i}] f32 {} min={:?} max={:?} default={:?} unit={:?} curve={}\n",
                 p.name,
                 m.min,
                 m.max,

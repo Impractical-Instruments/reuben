@@ -454,7 +454,7 @@ impl InstrumentDoc {
                 let compatible = from_ty == to_ty
                     || matches!(
                         (from_ty, to_ty),
-                        (PortType::F32, PortType::Buffer) | (PortType::Buffer, PortType::F32)
+                        (PortType::F32, PortType::F32Buffer) | (PortType::F32Buffer, PortType::F32)
                     );
                 if !compatible {
                     return Err(LoadError::TypeMismatch {

@@ -169,9 +169,9 @@ fn insert_line_sorted(
 fn signal_output_consts(spec: &OperatorSpec) -> Vec<String> {
     spec.outputs
         .iter()
-        // Only a `buffer` output carries a per-sample buffer the silence stub zeroes (ADR-0030);
-        // `note`/`harmony`/`enum`/`float` outputs do not.
-        .filter(|p| p.ty == "buffer")
+        // Only a `f32_buffer` output carries a per-sample buffer the silence stub zeroes (ADR-0030);
+        // `note`/`harmony`/`enum`/`f32` outputs do not.
+        .filter(|p| p.ty == "f32_buffer")
         .map(|p| format!("OUT_{}", screaming(&p.name)))
         .collect()
 }
@@ -271,8 +271,8 @@ fn render_contract_call(spec: &OperatorSpec) -> String {
     out
 }
 
-/// The macro's port-list body. Each port renders by its [`Arg`] type (ADR-0030): `buffer`,
-/// `float { .. }`, `enum(VocabType)`, `note`, or `harmony`. Mirrors the `operator_contract!`
+/// The macro's port-list body. Each port renders by its [`Arg`] type (ADR-0030): `f32_buffer`,
+/// `f32 { .. }`, `enum(VocabType)`, `note`, or `harmony`. Mirrors the `operator_contract!`
 /// grammar exactly.
 fn render_macro_ports(ports: &[PortSpec]) -> String {
     ports
@@ -286,8 +286,8 @@ fn render_macro_ports(ports: &[PortSpec]) -> String {
 fn render_macro_port(p: &PortSpec) -> String {
     match p.ty.as_str() {
         // A materialized scalar control carries its `{ .. }` meta.
-        "float" => match &p.float {
-            None => format!("{}: float", p.name),
+        "f32" => match &p.f32 {
+            None => format!("{}: f32", p.name),
             Some(m) => {
                 let curve = if m.curve == "exponential" {
                     "exp"
@@ -295,7 +295,7 @@ fn render_macro_port(p: &PortSpec) -> String {
                     "lin"
                 };
                 format!(
-                    "{}: float {{ {:?}..={:?}, default {:?}, {:?}, {} }}",
+                    "{}: f32 {{ {:?}..={:?}, default {:?}, {:?}, {} }}",
                     p.name, m.min, m.max, m.default, m.unit, curve
                 )
             }
@@ -306,7 +306,7 @@ fn render_macro_port(p: &PortSpec) -> String {
             p.name,
             p.vocab.as_deref().unwrap_or_default()
         ),
-        // `buffer` / `note` / `harmony` need no extra syntax.
+        // `f32_buffer` / `note` / `harmony` need no extra syntax.
         ty => format!("{}: {}", p.name, ty),
     }
 }
@@ -409,18 +409,18 @@ mod tests {
     #[test]
     fn ports_are_declared_in_the_contract_call_by_type() {
         // Ordinals are the macro's job; the scaffold just declares each port by its Arg type
-        // (ADR-0030): `note` / `harmony` / `buffer`.
+        // (ADR-0030): `note` / `harmony` / `f32_buffer`.
         let src = render(
             r#"{ "type_name": "v",
                  "inputs": [ {"name":"notes","ty":"note"}, {"name":"ctx","ty":"harmony"} ],
-                 "outputs": [ {"name":"freq","ty":"buffer"}, {"name":"gate","ty":"buffer"} ] }"#,
+                 "outputs": [ {"name":"freq","ty":"f32_buffer"}, {"name":"gate","ty":"f32_buffer"} ] }"#,
         );
         assert!(
             src.contains("inputs: { notes: note, ctx: harmony }"),
             "{src}"
         );
         assert!(
-            src.contains("outputs: { freq: buffer, gate: buffer }"),
+            src.contains("outputs: { freq: f32_buffer, gate: f32_buffer }"),
             "{src}"
         );
     }
@@ -439,32 +439,33 @@ mod tests {
 
     #[test]
     fn process_stub_writes_silence_to_signal_outputs_only() {
-        let src = render(r#"{ "type_name": "o", "outputs": [ {"name":"audio","ty":"buffer"} ] }"#);
+        let src =
+            render(r#"{ "type_name": "o", "outputs": [ {"name":"audio","ty":"f32_buffer"} ] }"#);
         assert!(src.contains("io.signal_mut(port)[..n].fill(0.0)"), "{src}");
         assert!(src.contains("for port in [OUT_AUDIO]"), "{src}");
     }
 
     #[test]
     fn renders_typed_ports() {
-        // The contract surface declares each port by its Arg type (ADR-0030): a `buffer` wire, a
-        // materialized `float { .. }` with a default, and an `enum(VocabType)` naming a shared vocab
+        // The contract surface declares each port by its Arg type (ADR-0030): a `f32_buffer` wire, a
+        // materialized `f32 { .. }` with a default, and an `enum(VocabType)` naming a shared vocab
         // — each must render in macro grammar.
         let src = render(
             r#"{ "type_name": "f",
-                 "inputs": [ {"name":"audio","ty":"buffer"},
-                             {"name":"cutoff","ty":"float",
-                              "float":{"min":20.0,"max":20000.0,"default":1000.0,"unit":"Hz","curve":"exponential"}},
+                 "inputs": [ {"name":"audio","ty":"f32_buffer"},
+                             {"name":"cutoff","ty":"f32",
+                              "f32":{"min":20.0,"max":20000.0,"default":1000.0,"unit":"Hz","curve":"exponential"}},
                              {"name":"mode","ty":"enum","vocab":"FilterMode"} ],
-                 "outputs": [ {"name":"audio","ty":"buffer"} ] }"#,
+                 "outputs": [ {"name":"audio","ty":"f32_buffer"} ] }"#,
         );
         assert!(
             src.contains(
-                r#"inputs: { audio: buffer, cutoff: float { 20.0..=20000.0, default 1000.0, "Hz", exp }, mode: enum(FilterMode) }"#
+                r#"inputs: { audio: f32_buffer, cutoff: f32 { 20.0..=20000.0, default 1000.0, "Hz", exp }, mode: enum(FilterMode) }"#
             ),
             "{src}"
         );
-        assert!(src.contains("outputs: { audio: buffer }"), "{src}");
-        // A `buffer` output gets a silence-stub write.
+        assert!(src.contains("outputs: { audio: f32_buffer }"), "{src}");
+        // A `f32_buffer` output gets a silence-stub write.
         assert!(src.contains("for port in [OUT_AUDIO]"), "{src}");
     }
 
@@ -579,7 +580,7 @@ mod tests {
 
     #[test]
     fn rejects_duplicate_names_and_dangling_lane_param() {
-        let dup = r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"buffer"}, {"name":"a","ty":"buffer"} ] }"#;
+        let dup = r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"f32_buffer"}, {"name":"a","ty":"f32_buffer"} ] }"#;
         assert!(scaffold_err(dup).contains("duplicate"));
         let dangling = r#"{ "type_name": "x", "lanes": { "from_param": "voices" } }"#;
         assert!(scaffold_err(dangling).contains("from_param"));

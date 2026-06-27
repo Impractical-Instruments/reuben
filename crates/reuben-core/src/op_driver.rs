@@ -232,7 +232,7 @@ impl OpDriver {
     fn signal_ordinal(&self, port: usize) -> usize {
         self.descriptor.outputs[..port]
             .iter()
-            .filter(|p| matches!(p.ty, PortType::Buffer))
+            .filter(|p| matches!(p.ty, PortType::F32Buffer))
             .count()
     }
 }

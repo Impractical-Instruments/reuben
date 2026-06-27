@@ -20,7 +20,7 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Noise {
-    outputs: { out: buffer },
+    outputs: { out: f32_buffer },
 });
 
 /// Fixed deterministic seed a fresh / spawned Noise starts from. Non-zero (xorshift can't leave

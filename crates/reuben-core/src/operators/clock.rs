@@ -32,9 +32,9 @@ use crate::vocab::pitch::Note;
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Clock {
     inputs:  { sync: note,
-               tempo:    float { 1.0..=999.0, default 120.0, "BPM", lin },
-               division: float { 1.0..=64.0,  default 1.0,   "",    lin } },
-    outputs: { phase: buffer, gate: buffer },
+               tempo:    f32 { 1.0..=999.0, default 120.0, "BPM", lin },
+               division: f32 { 1.0..=64.0,  default 1.0,   "",    lin } },
+    outputs: { phase: f32_buffer, gate: f32_buffer },
 });
 
 #[derive(Default)]

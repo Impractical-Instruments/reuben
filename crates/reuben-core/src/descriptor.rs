@@ -16,7 +16,7 @@ pub enum PortType {
     /// its good-button range / curve / unwired default. An `F32`-source wired into a [`Buffer`]
     /// port ZOH-materializes (ADR-0030, the one implicit bridge).
     ///
-    /// [`Buffer`]: PortType::Buffer
+    /// [`Buffer`]: PortType::F32Buffer
     F32,
     /// A discrete integer.
     I32,
@@ -25,7 +25,7 @@ pub enum PortType {
     /// A dense per-sample signal (audio): the **only** Arg with a buffer form. A `Buffer`-source
     /// wired into a scalar port is illegal — it needs an explicit sampler op (ADR-0030). Not
     /// boundary-crossable (no OSC form), which is how audio is kept off the wire by construction.
-    Buffer,
+    F32Buffer,
     /// A shared *vocab* concrete type, named by its [`Arg`](crate::message::Arg) variant
     /// (`"Note"`, `"Harmony"`, `"SnapTarget"`). `enum_meta` is `Some` for a vocab **enum** — its
     /// variants + default + resolver, single-sourced from the type's `#[derive(ArgValue)]`
@@ -122,7 +122,7 @@ impl EnumMeta {
 /// `ty` is the sole axis (ADR-0030): the port's [`Arg`](crate::message::Arg) type says what it
 /// carries; delivery and read-style follow from that plus the read verb. `meta` is `Some` only for
 /// a scalar [`F32`](PortType::F32) control input that owns its unwired default and is materialized
-/// from a latched scalar (ADR-0030). A [`Buffer`](PortType::Buffer) audio input and vocab ports
+/// from a latched scalar (ADR-0030). A [`Buffer`](PortType::F32Buffer) audio input and vocab ports
 /// leave `meta` `None`. A vocab **enum** carries its [`EnumMeta`] inside its
 /// [`PortType::Vocab`] (reach it via [`enum_meta`](Self::enum_meta)).
 #[derive(Debug, Clone)]
@@ -133,13 +133,13 @@ pub struct Port {
 }
 
 impl Port {
-    /// A dense per-sample signal port (audio) — [`PortType::Buffer`]. The audio-passthrough input
+    /// A dense per-sample signal port (audio) — [`PortType::F32Buffer`]. The audio-passthrough input
     /// (no owned default) and the per-sample output an operator fills with `io.signal_mut`.
     /// Replaces the legacy bare `signal` carrier.
-    pub const fn buffer(name: &'static str) -> Self {
+    pub const fn f32_buffer(name: &'static str) -> Self {
         Self {
             name,
-            ty: PortType::Buffer,
+            ty: PortType::F32Buffer,
             meta: None,
         }
     }
@@ -172,7 +172,7 @@ impl Port {
     /// buffer from the latched default (writing mid-block changes at their frame); when wired into
     /// a buffer-consuming op the source materializes likewise. Replaces the legacy "signal port +
     /// a same-named param" pair with a single declaration.
-    pub fn float(meta: ParamMeta) -> Self {
+    pub fn f32(meta: ParamMeta) -> Self {
         Self {
             name: meta.name,
             ty: PortType::F32,

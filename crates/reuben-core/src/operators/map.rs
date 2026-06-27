@@ -21,13 +21,13 @@ use crate::vocab::MapCurve;
 
 // Single-source contract (ADR-0025/0030). `curve` references the shared `MapCurve` vocab enum.
 crate::operator_contract!(Map {
-    inputs:  { in:      float { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
-               in_min:  float { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
-               in_max:  float { -1_000_000.0..=1_000_000.0, default 1.0, "", lin },
-               out_min: float { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
-               out_max: float { -1_000_000.0..=1_000_000.0, default 1.0, "", lin },
+    inputs:  { in:      f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
+               in_min:  f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
+               in_max:  f32 { -1_000_000.0..=1_000_000.0, default 1.0, "", lin },
+               out_min: f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
+               out_max: f32 { -1_000_000.0..=1_000_000.0, default 1.0, "", lin },
                curve:   enum(MapCurve) },
-    outputs: { out: buffer },
+    outputs: { out: f32_buffer },
 });
 
 /// Affine (optionally exponential) remap of `v` from `[in_min, in_max]` onto `[out_min, out_max]`,
