@@ -10,10 +10,11 @@
 //! materialized Value→Signal edges. Real operators carry their forms after the step-4 sweep; until
 //! then these probes are the oracle.
 
-use reuben_core::descriptor::{Descriptor, LaneRule, ParamMeta, Port, PortType};
+use reuben_core::descriptor::{Descriptor, LaneRule, Port, PortType};
 use reuben_core::graph::Graph;
 use reuben_core::operator::{Io, Operator};
 use reuben_core::plan::{port_kind, Plan, PlanError, PortKind};
+use reuben_core::vocab::FilterMode;
 use reuben_core::AudioConfig;
 
 // ----------------------------------------------------------------------------------------------
@@ -45,25 +46,30 @@ fn desc(type_name: &'static str, inputs: Vec<Port>, outputs: Vec<Port>) -> Descr
     }
 }
 
-/// A Value (`f32`) control port — declared with meta, the materialized-scalar form.
-fn value_port(name: &'static str) -> Port {
-    Port::float(ParamMeta {
-        name,
-        min: -1_000_000.0,
-        max: 1_000_000.0,
-        default: 0.0,
-        unit: "",
-        curve: reuben_core::descriptor::Curve::Linear,
-    })
+/// A Signal port — a dense per-sample buffer (`f32_buffer` audio: an LFO out, `filter.cutoff`).
+fn signal(name: &'static str) -> Port {
+    Port::buffer(name)
 }
 
-/// A bare scalar **output** port (`f32`, no meta) — a Value source like `voicer.freq` / `clock.gate`.
-fn value_out(name: &'static str) -> Port {
+/// A Value port — a latched single value. Modelled with `I32` so it classifies Value *now*; until
+/// the step-4 sweep `F32` still classifies Signal (decision A), so a genuine numeric Value source
+/// is `I32` here. The real `f32`-Value fixtures (C/E/F: `tempo`, gate spine) arrive at step 4.
+fn value(name: &'static str) -> Port {
     Port {
         name,
-        ty: PortType::F32,
+        ty: PortType::I32,
         meta: None,
     }
+}
+
+/// A Value port carrying an enum (`filter.mode`) — a Value-only type with no buffer form.
+fn value_enum(name: &'static str) -> Port {
+    Port::enumerated(FilterMode::enum_meta(name))
+}
+
+/// An Event port — a sparse frame-stamped stream (`Note`: a sequencer's `degrees` out).
+fn event(name: &'static str) -> Port {
+    Port::note(name)
 }
 
 // ----------------------------------------------------------------------------------------------
@@ -124,12 +130,12 @@ fn helper_surfaces_plan_errors_as_err_not_panic() {
     let a = g.add_boxed(
         "/a",
         Box::new(Probe),
-        desc("a", vec![value_port("i")], vec![value_out("o")]),
+        desc("a", vec![value("i")], vec![value("o")]),
     );
     let b = g.add_boxed(
         "/b",
         Box::new(Probe),
-        desc("b", vec![value_port("i")], vec![value_out("o")]),
+        desc("b", vec![value("i")], vec![value("o")]),
     );
     g.connect(a, 0, b, 0);
     g.connect(b, 0, a, 0);
@@ -137,4 +143,84 @@ fn helper_surfaces_plan_errors_as_err_not_panic() {
         Err(e) => assert_eq!(e, PlanError::Cycle),
         Ok(_) => panic!("a cycle must not instantiate"),
     }
+}
+
+// ----------------------------------------------------------------------------------------------
+// Step 1 — per-wire form checker (impl-prep §2). Synthetic ports isolate each form crossing; the
+// real-port versions (C/E/F numeric Value spine) light up at step 4 as operators migrate.
+// ----------------------------------------------------------------------------------------------
+
+fn dst_idx(plan: &Plan) -> usize {
+    plan.nodes.iter().position(|n| n.address == "/dst").unwrap()
+}
+
+/// A — Value→Signal is the one implicit coercion: the Value source materializes a (constant)
+/// buffer at the Signal input. One buffer, the materialized edge.
+#[test]
+fn value_into_signal_input_materializes_one_buffer() {
+    let plan = wire(value("o"), signal("i")).expect("Value→Signal is legal");
+    let dst = dst_idx(&plan);
+    assert_eq!(port_form(&plan, dst, 0), PortKind::Signal);
+    assert!(
+        !plan.nodes[dst].materialize.is_empty(),
+        "the Signal input is fed by a Value source, so it materializes"
+    );
+    assert_eq!(signal_buffer_count(&plan), 1);
+}
+
+/// B — Signal→Signal is a plain wire: the sink shares the source's edge buffer, no coercion.
+#[test]
+fn signal_into_signal_input_is_a_direct_shared_edge() {
+    let plan = wire(signal("o"), signal("i")).expect("Signal→Signal is legal");
+    let dst = dst_idx(&plan);
+    assert_eq!(port_form(&plan, dst, 0), PortKind::Signal);
+    assert!(
+        plan.nodes[dst].materialize.is_empty(),
+        "a Signal source shares its buffer; nothing materializes"
+    );
+    assert_eq!(signal_buffer_count(&plan), 1);
+}
+
+/// C — Value→Value is direct and costs no buffer: a held knob never materializes.
+#[test]
+fn value_into_value_input_is_direct_and_bufferless() {
+    let plan = wire(value("o"), value("i")).expect("Value→Value is legal");
+    let dst = dst_idx(&plan);
+    assert_eq!(port_form(&plan, dst, 0), PortKind::Value);
+    assert_eq!(signal_buffer_count(&plan), 0);
+}
+
+/// G — Signal→Value is the headline hard error: there is no implicit sample-and-hold, and the
+/// message must name the missing converter (a user *will* try this wire). Deliberate gap.
+#[test]
+fn signal_into_value_input_is_a_hard_error_naming_the_converter() {
+    match wire(signal("o"), value("i")).err() {
+        Some(PlanError::FormMismatch { src, dst, reason }) => {
+            assert_eq!(src, "/src.o");
+            assert_eq!(dst, "/dst.i");
+            assert!(
+                reason.contains("envelope follower") || reason.contains("quantizer"),
+                "Signal→Value error must name the converter op: {reason}"
+            );
+        }
+        other => panic!("expected FormMismatch, got {other:?}"),
+    }
+}
+
+/// H — Signal into a Value-only type (an enum) is equally illegal.
+#[test]
+fn signal_into_enum_value_input_is_a_hard_error() {
+    assert!(matches!(
+        wire(signal("o"), value_enum("mode")),
+        Err(PlanError::FormMismatch { .. })
+    ));
+}
+
+/// I — Event→Signal is illegal: a note stream cannot feed a per-sample input without an explicit op.
+#[test]
+fn event_into_signal_input_is_a_hard_error() {
+    assert!(matches!(
+        wire(event("o"), signal("i")),
+        Err(PlanError::FormMismatch { .. })
+    ));
 }

@@ -231,5 +231,14 @@ pub fn validate(
             }],
             warnings,
         },
+        Err(reuben_core::plan::PlanError::FormMismatch { src, dst, reason }) => ValidateReport {
+            ok: false,
+            errors: vec![Diag {
+                node: None,
+                port: None,
+                message: format!("wire {src} → {dst}: {reason}"),
+            }],
+            warnings,
+        },
     }
 }

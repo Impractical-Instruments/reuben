@@ -25,32 +25,42 @@ use crate::message::{Arg, Message};
 use crate::operator::Operator;
 use crate::vocab::harmony::Harmony;
 
-/// How the engine treats an input port (ADR-0030), derived from its [`PortType`]:
+/// The **form** a wire carries (ADR-0031), *declared* by the port's [`PortType`] — not inferred
+/// from the graph:
 ///
-/// - **Dense** — a [`Buffer`](PortType::Buffer) audio input, read per-sample via `io.signal`.
-/// - **Held** — a scalar / enum / `Harmony` control whose last value is latched (ZOH) and read via
-///   `io.last`; a mid-block change block-slices so the value is constant per `process` call.
-/// - **Stream** — an event vocab (`Note`), delivered frame-stamped via `io.stream` and *not*
-///   sliced.
+/// - **Signal** — a dense per-sample buffer ([`Buffer`](PortType::Buffer) audio), read via
+///   `io.signal`. (Until the step-4 form sweep, an `F32` control also classifies Signal so the
+///   former always-materialize `io.signal` reads keep working; the locked table re-declares each
+///   numeric port `f32` (Value) or `f32_buffer` (Signal) as its operator migrates.)
+/// - **Value** — a latched single value (scalar / enum / `Harmony`): its last value is held (ZOH)
+///   and read via `io.last`; a mid-block change block-slices so it is constant per `process` call.
+/// - **Event** — an unlatched multi-valued stream (`Note`), delivered frame-stamped via `io.stream`
+///   and *not* sliced.
+///
+/// The two sparse forms fall out of two axes — *latched?* and *single-valued?*: Value is latched ∧
+/// single, Event is unlatched ∧ multi. The other two combinations are nonsense, so the set is
+/// closed at three.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PortKind {
-    Dense,
-    Held,
-    Stream,
+    Signal,
+    Value,
+    Event,
 }
 
-/// Classify an input/output port (ADR-0030). A `Buffer` or `F32` (float control) is Dense — both
-/// present a per-sample buffer to `io.signal`, so a mid-block change writes into that buffer at its
-/// frame (the F32 latch read by `io.last` is kept in sync from the same fill). A `Note` (struct
-/// vocab that isn't `Harmony`) is a Stream event; everything else — enums, `Harmony` — is Held.
+/// Classify an input/output port into its declared [`PortKind`] form (ADR-0031). A `Buffer` is a
+/// Signal; a `Note` (struct vocab that isn't `Harmony`) is an Event; everything latched — enums,
+/// `Harmony`, `I32`, `Str` — is a Value. `F32` classifies **Signal** for now (the pre-sweep
+/// always-materialize behaviour), and re-declares to Value/Signal port-by-port during the step-4/5
+/// sweep (decision A: form declaration is fused with each operator's migration so the suite stays
+/// green).
 pub fn port_kind(p: &Port) -> PortKind {
     match &p.ty {
-        PortType::Buffer | PortType::F32 => PortKind::Dense,
+        PortType::Buffer | PortType::F32 => PortKind::Signal,
         PortType::Vocab {
             enum_meta: None,
             name,
-        } if *name != "Harmony" => PortKind::Stream,
-        _ => PortKind::Held,
+        } if *name != "Harmony" => PortKind::Event,
+        _ => PortKind::Value,
     }
 }
 
@@ -184,6 +194,14 @@ pub struct Plan {
 pub enum PlanError {
     /// The graph has a cycle (feedback needs an explicit unit-delay; deferred).
     Cycle,
+    /// A wire's two declared forms (ADR-0031) cannot connect: a Signal feeding a Value input (no
+    /// implicit sample-and-hold), or an Event mismatched against a Signal/Value. `src`/`dst` name
+    /// the offending `node.port`; `reason` says what is missing (e.g. the explicit converter op).
+    FormMismatch {
+        src: String,
+        dst: String,
+        reason: String,
+    },
 }
 
 impl Plan {
@@ -215,6 +233,7 @@ impl Plan {
     /// Instantiate a Graph into an executable Plan (the construction sub-step of a Swap).
     pub fn instantiate(mut graph: Graph, mut config: AudioConfig) -> Result<Plan, PlanError> {
         let order = topo_order(&graph)?;
+        check_wire_forms(&graph)?;
 
         // Logical master width is derived from the instrument, not the device (ADR-0026):
         // the highest referenced channel index + 1, floored to stereo so a mono patch still
@@ -325,7 +344,7 @@ impl Plan {
                 // otherwise (unwired, or fed by a scalar) the engine materializes a scratch filled
                 // ZOH from the latch. Vocab inputs (enum / Note / Harmony) carry no buffer — they
                 // are read via `io.last` / `io.stream`.
-                if kind != PortKind::Dense {
+                if kind != PortKind::Signal {
                     inputs.push(None);
                     continue;
                 }
@@ -427,6 +446,46 @@ impl Plan {
             outbound_taps,
         })
     }
+}
+
+/// The planner's only form job (ADR-0031): a **local per-wire check**. For each connection, compare
+/// the source output's declared form against the destination input's and reject the illegal
+/// crossings — there is no topological solver, no propagation. The legal combinations are
+/// like→like (`Signal→Signal`, `Value→Value`, `Event→Event`) and the one implicit coercion
+/// `Value→Signal` (materialized downstream). Everything else is a hard error: `Signal→Value` needs
+/// an explicit sig→val converter, and any `Event` mismatch needs an explicit latch / change-detect.
+fn check_wire_forms(graph: &Graph) -> Result<(), PlanError> {
+    use PortKind::{Event, Signal, Value};
+    for c in &graph.connections {
+        let src_node = &graph.nodes[c.src];
+        let dst_node = &graph.nodes[c.dst];
+        let Some(src) = src_node.descriptor.outputs.get(c.src_port) else {
+            continue;
+        };
+        let Some(dst) = dst_node.descriptor.inputs.get(c.dst_port) else {
+            continue;
+        };
+        let reason = match (port_kind(src), port_kind(dst)) {
+            // like→like, and the one implicit coercion Value→Signal (materialized at the sink).
+            (Signal, Signal) | (Value, Value) | (Event, Event) | (Value, Signal) => continue,
+            (Signal, Value) => "Signal→Value: no implicit sample-and-hold; wire an explicit \
+                sig→val converter (envelope follower / quantizer)"
+                .to_string(),
+            (Event, Signal) | (Event, Value) => {
+                "Event→Signal/Value: needs an explicit latch / change-detect / converter op"
+                    .to_string()
+            }
+            (Signal, Event) | (Value, Event) => {
+                "Signal/Value→Event: illegal; an Event port takes only an Event source".to_string()
+            }
+        };
+        return Err(PlanError::FormMismatch {
+            src: format!("{}.{}", src_node.address, src.name),
+            dst: format!("{}.{}", dst_node.address, dst.name),
+            reason,
+        });
+    }
+    Ok(())
 }
 
 /// Kahn topological sort; deterministic given graph key order. Errors on cycle.

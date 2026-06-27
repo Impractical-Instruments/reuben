@@ -2,10 +2,10 @@
 //!
 //! The serial executor walks the topologically-ordered nodes. For each node, incoming
 //! Messages are routed to its input ports by the port's [`PortKind`](crate::plan::PortKind):
-//! a **Held** control (scalar / enum / `Harmony`) drives **block-slicing** (the block is split
+//! a **Value** control (scalar / enum / `Harmony`) drives **block-slicing** (the block is split
 //! at its change frames so [`Operator::process`] always sees a constant held value, read via
-//! `io.last`); a **Stream** event (`Note`) is delivered as a zero-copy [`Event`] on its port
-//! (read via `io.stream`); a **Dense** [`Buffer`] input fed by a scalar is **materialized** ZOH
+//! `io.last`); an **Event** (`Note`) is delivered as a zero-copy [`Event`] on its port
+//! (read via `io.stream`); a **Signal** [`Buffer`] input fed by a scalar is **materialized** ZOH
 //! into its arena buffer (read via `io.signal`).
 //!
 //! Each node is processed once **per Lane (Voice)**: the engine runs `node.ops[lane]`
@@ -250,25 +250,25 @@ impl<E: Executor> Renderer<E> {
             // Route this node's emissions (ADR-0014, ADR-0030): each goes into the block-lifetime
             // pool, and is delivered to every wired `(dst node, dst input port)` — which run later
             // in topo order, so they see it. The dst input port's [`PortKind`] decides how it
-            // lands: a Held input latches + re-slices (the former context publish unifies here), a
-            // Stream input gets a zero-copy event, a Dense input materializes ZOH.
+            // lands: a Value input latches + re-slices (the former context publish unifies here), a
+            // Event input gets a zero-copy event, a Signal input materializes ZOH.
             for e in emit_scratch.drain(..) {
                 let port = e.port;
                 let pool_idx = emitted.len();
                 for &(dst, dst_port) in &plan.nodes[i].out_targets[port] {
                     match plan.nodes[dst].input_kinds[dst_port] {
-                        PortKind::Dense => {
+                        PortKind::Signal => {
                             if let Some(v) = e.arg.as_f32() {
                                 routes[dst].materialize_writes.push((e.frame, dst_port, v));
                             }
                         }
-                        PortKind::Held => {
+                        PortKind::Value => {
                             let p = &plan.nodes[dst].descriptor.inputs[dst_port];
                             if let Some(a) = held_arg(p, &e.arg) {
                                 routes[dst].held.push((e.frame, dst_port, a));
                             }
                         }
-                        PortKind::Stream => {
+                        PortKind::Event => {
                             routes[dst].events.push(RoutedEvent {
                                 dst_port,
                                 src: EventSrc::Emitted(pool_idx),
@@ -461,17 +461,17 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
                 .find(|(_, p)| p.name == local)
             {
                 match node.input_kinds[port] {
-                    PortKind::Dense => {
+                    PortKind::Signal => {
                         if let Some(v) = msg.as_f32() {
                             routes[i].materialize_writes.push((msg.frame, port, v));
                         }
                     }
-                    PortKind::Held => {
+                    PortKind::Value => {
                         if let Some(a) = held_arg(p, &msg.arg) {
                             routes[i].held.push((msg.frame, port, a));
                         }
                     }
-                    PortKind::Stream => {
+                    PortKind::Event => {
                         let local_start = msg.address.len() - local.len();
                         routes[i].events.push(RoutedEvent {
                             dst_port: port,
