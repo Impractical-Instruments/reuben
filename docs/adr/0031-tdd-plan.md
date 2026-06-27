@@ -13,16 +13,50 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 
 ---
 
+## Progress / pickup (resume here)
+
+| Step | State | Commit |
+|---|---|---|
+| 0 — oracle infra | ✅ done | `0ed6ba6` |
+| 1 — `PortKind` + wire checker | ✅ done | `b9b451c` |
+| 2 — `f32_buffer` rename | ⬜ next | — |
+| 3–8 | ⬜ pending | — |
+
+**Suite is green workspace-wide at `b9b451c`** (`cargo test --workspace`). One commit per step.
+
+### Decision A (resolves a green-at-each-step conflict the original plan underspecified)
+
+The original spine separated **declare forms (step 4)** from **operator sweep (step 5)**. That can't
+stay green: today `PortType::F32` is classified `Dense` and *always materialized into a buffer*, and
+~15 operators read `f32` inputs **per-sample via `io.signal`** (incl. `euclid.clock`, `sample.gate`/
+`freq`, `envelope.gate` — ports the ADR re-declares as Value). The instant a port flips `f32`→Value
+(no buffer) those `io.signal` reads break; and several real wires (`voicer.OUT_FREQ`/`clock.OUT_GATE`
+buffers → `f32` inputs) become `Signal→Value` and hard-error the moment forms are declared.
+
+**Resolution (chosen):**
+- **Steps 1–3 stay pure substrate.** `port_kind` keeps `F32 ⇒ Signal` (status-quo always-materialize),
+  so old `io.signal` keeps working and the suite stays green. The new checker is exercised against
+  **synthetic** Signal/Value/Event probe ports (`tests/wire_forms.rs`), not real ones.
+- **Steps 4 + 5 fuse per operator.** Each operator's **form declaration and accessor migration land
+  together** in one green commit during the wave fan-out. The `f32`→Value mapping flip rides along
+  per-op (re-declare the port's `PortType`, migrate the op's reads, re-wire its now-Value outputs, in
+  the same change). The locked gate/CV table (ADR §"Locked port-form decisions") still governs *which*
+  form each port gets — it's just applied op-by-op, not in one global pass.
+
+So below, treat **"step 4"** as the first half of each op's **step-5** migration, not a separate phase.
+
+---
+
 ## Shape
 
 ```
-SEQUENTIAL SPINE (one driver, vertical TDD, hard chain)
-  0 oracle infra ─ 1 wire-checker ─ 2 rename ─ 3 Io API ─ 4 declare forms
-                                                              │
-PARALLEL BURST (step 5) ───────────────────────────────────┘
+SEQUENTIAL SPINE (one driver, vertical TDD, hard chain) — F32⇒Signal throughout
+  0 oracle infra ─ 1 wire-checker ─ 2 rename ─ 3 Io API
+                                                  │
+PARALLEL BURST (step 5, declare-forms fused in per-op — Decision A) ──┘
   Wave 0 (barrier) ─→ Waves 1·2·3·4  [1 agent/op, worktree-per-op]
-                                                              │
-SEQUENTIAL TAIL ──────────────────────────────────────────┘
+                                                  │
+SEQUENTIAL TAIL ────────────────────────────────┘
   6 coercion msgs ─ 7 boundary/addresses ─ 8 docs+schema sweep
 ```
 
@@ -80,12 +114,16 @@ Test-first per accessor: `in_value::<T>` · `in_signal` · `in_event::<T>` · `o
 nothing) + **last-write-wins** + addressless. No `F32In`/`F32Out`, no `match`, no `varying`.
 Keep old verbs temporarily.
 
-## Step 4 — Declare port forms in the contract (pure authoring)
+## Step 4 — Declare port forms in the contract (**fused into step 5 per-op — Decision A**)
 
 Apply the locked gate/CV table: each numeric port → `f32` or `f32_buffer`. Engine does no
-resolution. Tests: descriptor snapshot re-bless + fixtures C/E/F now pass against real ports.
+resolution. **Not a separate global phase:** declaring a port's form flips `F32⇒Value` and so must
+land *with* its operator's accessor migration (step 5) to keep the suite green. So per migrating op:
+re-declare its ports, migrate its reads, re-wire its now-Value outputs, re-bless that op's descriptor
+snapshot. Fixtures C/E/F gain their real-port versions as the relevant ops (`clock`, `euclid`,
+`envelope`) migrate.
 
-**End of spine — checkpoint for review before fan-out.**
+**End of substrate spine (0–3) — checkpoint for review before fan-out.**
 
 ---
 
