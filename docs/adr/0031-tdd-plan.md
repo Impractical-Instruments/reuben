@@ -35,7 +35,8 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | 5 Phase B infra — `interface` block format + schema + loader | ✅ done | `8874b9b` |
 | 5 Phase B infra — instrument-resource kind (resource pipeline) | ✅ done | `8874b9b` |
 | 5 Phase B infra — `envelope` grows `active` output (f32/MsgWriter); closes mixed signal+msg output gap | ✅ done | `6f485e1` |
-| 5 Phase B — gate/CV mono migration + value-math (pre-flip) | ⬜ pending | — |
+| 5 Phase B — `*_f32_value` math family (add/mul/power), pre-flip green | ✅ done | `6a9bcb1` |
+| 5 Phase B — gate/CV held-read rewrites (coupled to flip — barrier) | ⬜ pending | — |
 | 5 Phase B — flip `port_kind` `F32 ⇒ Value` (atomic barrier) | ⬜ pending | — |
 | 5 Phase B — ADR-0032 Voicer rewrite (restores polyphony, in the barrier) | ⬜ pending | — |
 | 6–8 | ⬜ pending | — |
@@ -153,7 +154,12 @@ one V→S materialize (`*.freq`Value→`osc.freq`Signal). `voicer.freq`/`gate` o
 inside each voice sub-patch, ADR-0032). `Plan::instantiate` **consumes** the graph
 (`graph.nodes.remove`), so one built sub-Graph can't seed N voices — Voicer rebuilds N (barrier-time).
 
-**Recommended next-session order:** (1) `*_f32_value` math family → commit green. (2) The atomic
+**Recommended next-session order:** (1) ✅ **DONE** `6a9bcb1` — `*_f32_value` math family
+(`add`/`mul`/`power`) committed green. Forced layout: each value form lives in an inline `mod value`
+submodule beside its signal struct (the contract macro emits `IN_`/`OUT_` consts at *module* scope, so
+two contracts can't share one module); shared scalar `fn` stays at file root, `mod value` does
+`use super::{add|mul|shape}`. Tests assert the single emit on constant operands (sample-accurate
+mid-block re-emit is post-flip). (2) The atomic
 barrier in one red-to-green sweep: flip `port_kind`, rewrite the 5 gate ops to held + `clock.gate` to
 MsgWriter, fix their tests (`drive(buffer)` → `push(port, frame, v)`), re-bless descriptor goldens.
 Polyphony is transiently broken here (Lane fan-out + Value = broadcast). (3) ADR-0032 Voicer rewrite
