@@ -9,7 +9,7 @@
 //! To intentionally re-bless after a deliberate descriptor change: `REUBEN_BLESS=1 cargo test -p
 //! reuben-core --test descriptor_golden`.
 
-use reuben_core::descriptor::{Curve, Descriptor, LaneRule, PortType};
+use reuben_core::descriptor::{Curve, Descriptor, PortType};
 use reuben_core::registry::Registry;
 
 /// The carrier word for a bare port's [`PortType`] (ADR-0030/0031). Materialized `f32` and `enum`
@@ -84,11 +84,9 @@ fn render(d: &Descriptor) -> String {
     for (i, r) in d.resources.iter().enumerate() {
         s.push_str(&format!("  resource[{i}] {}\n", r.name));
     }
-    let lanes = match d.lanes {
-        LaneRule::Inherit => "inherit".to_string(),
-        LaneRule::FromParam(p) => format!("from_param({p})"),
-    };
-    s.push_str(&format!("  lanes {lanes}\n"));
+    if let Some(p) = d.constant_param() {
+        s.push_str(&format!("  constant {}\n", p.name));
+    }
     s
 }
 
@@ -105,7 +103,7 @@ fn render_all() -> String {
 /// (ADR-0030: enum metadata is single-sourced from the type, never hand-built).
 #[test]
 fn renders_enum_input_line() {
-    use reuben_core::descriptor::{Descriptor, LaneRule, Port};
+    use reuben_core::descriptor::{Descriptor, Port};
     use reuben_core::vocab::FilterMode;
     let d = Descriptor {
         type_name: "demo",
@@ -113,7 +111,7 @@ fn renders_enum_input_line() {
         outputs: vec![],
         params: vec![],
         resources: vec![],
-        lanes: LaneRule::Inherit,
+        constant_param: None,
     };
     assert!(
         render(&d).contains(r#"  in[0] enum mode variants=["Lp", "Hp", "Bp"] default=0"#),

@@ -2,35 +2,29 @@ operator add_f32_signal
   in[0] f32_buffer a min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   in[1] f32_buffer b min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   out[0] f32_buffer out
-  lanes inherit
 operator add_f32_value
   in[0] f32 a min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   in[1] f32 b min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   out[0] f32 out
-  lanes inherit
 operator chord
   in[0] message set
   in[1] f32 size min=3.0 max=4.0 default=3.0 unit="tones" curve=linear
   out[0] message degrees
-  lanes inherit
 operator clock
   in[0] message sync
   in[1] f32 tempo min=1.0 max=999.0 default=120.0 unit="BPM" curve=linear
   in[2] f32 division min=1.0 max=64.0 default=1.0 unit="" curve=linear
   out[0] f32_buffer phase
   out[1] f32 gate
-  lanes inherit
 operator delay
   in[0] f32_buffer audio
   in[1] f32 time min=0.001 max=2.0 default=0.3 unit="s" curve=linear
   in[2] f32 feedback min=0.0 max=0.95 default=0.4 unit="" curve=linear
   in[3] f32 mix min=0.0 max=1.0 default=0.5 unit="" curve=linear
   out[0] f32_buffer audio
-  lanes inherit
 operator differentiate_f32_signal
   in[0] f32_buffer in min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   out[0] f32_buffer out
-  lanes inherit
 operator djfilter
   in[0] f32_buffer audio
   in[1] f32_buffer position min=-1.0 max=1.0 default=0.0 unit="" curve=linear
@@ -40,7 +34,6 @@ operator djfilter
   in[5] f32 hp_start min=20.0 max=20000.0 default=20.0 unit="Hz" curve=exponential
   in[6] f32 hp_end min=20.0 max=20000.0 default=6000.0 unit="Hz" curve=exponential
   out[0] f32_buffer audio
-  lanes inherit
 operator envelope
   in[0] f32 gate min=0.0 max=1.0 default=0.0 unit="" curve=linear
   in[1] f32 attack min=0.001 max=5.0 default=0.01 unit="s" curve=exponential
@@ -49,21 +42,18 @@ operator envelope
   in[4] f32 release min=0.001 max=5.0 default=0.2 unit="s" curve=exponential
   out[0] f32_buffer cv
   out[1] f32 active
-  lanes inherit
 operator euclid
   in[0] f32 clock min=0.0 max=1.0 default=0.0 unit="" curve=linear
   in[1] f32 steps min=1.0 max=16.0 default=16.0 unit="steps" curve=linear
   in[2] f32 pulses min=0.0 max=16.0 default=4.0 unit="pulses" curve=linear
   in[3] f32 rotation min=0.0 max=15.0 default=0.0 unit="steps" curve=linear
   out[0] f32 gate
-  lanes inherit
 operator filter
   in[0] f32_buffer audio
   in[1] f32_buffer cutoff min=20.0 max=20000.0 default=1000.0 unit="Hz" curve=exponential
   in[2] f32_buffer resonance min=0.0 max=1.0 default=0.2 unit="" curve=linear
   in[3] enum mode variants=["Lp", "Hp", "Bp"] default=0
   out[0] f32_buffer audio
-  lanes inherit
 operator harmony
   in[0] harmony set
   in[1] f32 root min=0.0 max=127.0 default=60.0 unit="MIDI" curve=linear
@@ -81,24 +71,20 @@ operator harmony
   in[13] f32 s10 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
   in[14] f32 s11 min=-24.0 max=24.0 default=0.0 unit="steps" curve=linear
   out[0] harmony harmony
-  lanes inherit
 operator integrate_f32_signal
   in[0] f32_buffer in min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   out[0] f32_buffer out
-  lanes inherit
 operator lfo
   in[0] f32 rate min=0.01 max=20.0 default=5.0 unit="Hz" curve=exponential
   in[1] f32 depth min=0.0 max=1000.0 default=10.0 unit="" curve=linear
   in[2] f32 center min=-1000.0 max=20000.0 default=440.0 unit="" curve=linear
   out[0] f32_buffer out
-  lanes inherit
 operator m2s
   in[0] f32 in min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   in[1] enum mode variants=["Smooth", "Slew", "Glide"] default=0
   in[2] f32 rate min=0.0 max=1000000.0 default=1000.0 unit="/s" curve=exponential
   in[3] f32 time min=0.0 max=10.0 default=0.05 unit="s" curve=exponential
   out[0] f32_buffer out
-  lanes inherit
 operator map
   in[0] f32_buffer in min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   in[1] f32 in_min min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
@@ -107,55 +93,44 @@ operator map
   in[4] f32 out_max min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
   in[5] enum curve variants=["Linear", "Exponential"] default=0
   out[0] f32_buffer out
-  lanes inherit
 operator mul_f32_signal
   in[0] f32_buffer a min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
   in[1] f32_buffer b min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
   out[0] f32_buffer out
-  lanes inherit
 operator mul_f32_value
   in[0] f32 a min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
   in[1] f32 b min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
   out[0] f32 out
-  lanes inherit
 operator noise
   out[0] f32_buffer out
-  lanes inherit
 operator osc_out
   in[0] message in
-  lanes inherit
 operator oscillator
   in[0] f32_buffer freq min=20.0 max=20000.0 default=440.0 unit="Hz" curve=exponential
   in[1] enum waveform variants=["Sine", "Saw"] default=0
   out[0] f32_buffer audio
-  lanes inherit
 operator output
   in[0] f32_buffer audio
   out[0] f32_buffer audio
-  lanes inherit
 operator pan
   in[0] f32_buffer audio
   in[1] f32_buffer pan min=-1.0 max=1.0 default=0.0 unit="" curve=linear
   out[0] f32_buffer left
   out[1] f32_buffer right
-  lanes inherit
 operator power_f32_signal
   in[0] f32_buffer x min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   in[1] f32 exponent min=0.0 max=8.0 default=2.0 unit="" curve=linear
   out[0] f32_buffer out
-  lanes inherit
 operator power_f32_value
   in[0] f32 x min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   in[1] f32 exponent min=0.0 max=8.0 default=2.0 unit="" curve=linear
   out[0] f32 out
-  lanes inherit
 operator reverb
   in[0] f32_buffer audio
   in[1] f32 room min=0.0 max=1.0 default=0.5 unit="" curve=linear
   in[2] f32 damp min=0.0 max=1.0 default=0.5 unit="" curve=linear
   in[3] f32 mix min=0.0 max=1.0 default=0.3 unit="" curve=linear
   out[0] f32_buffer audio
-  lanes inherit
 operator sample
   in[0] f32 freq min=0.0 max=20000.0 default=0.0 unit="Hz" curve=linear
   in[1] f32 gate min=0.0 max=1.0 default=0.0 unit="" curve=linear
@@ -165,7 +140,6 @@ operator sample
   in[5] f32 channel min=-1.0 max=31.0 default=-1.0 unit="" curve=linear
   out[0] f32_buffer audio
   resource[0] sample
-  lanes inherit
 operator sequencer
   in[0] f32 clock min=0.0 max=1.0 default=0.0 unit="" curve=linear
   in[1] f32 length min=1.0 max=16.0 default=8.0 unit="steps" curve=linear
@@ -188,30 +162,26 @@ operator sequencer
   in[18] enum gate_mode variants=["Degree", "Gate"] default=0
   in[19] f32 pitch min=-1.0 max=24.0 default=0.0 unit="degree" curve=linear
   out[0] message degrees
-  lanes inherit
 operator snap
   in[0] message notes
   in[1] harmony harmony
   in[2] enum target variants=["Scale", "Chord", "ChordThenScale"] default=0
   in[3] enum direction variants=["Nearest", "Up", "Down"] default=0
   out[0] message notes
-  lanes inherit
 operator strum
   in[0] f32_buffer position min=0.0 max=1.0 default=0.0 unit="" curve=linear
   in[1] f32 strings min=1.0 max=32.0 default=8.0 unit="strings" curve=linear
   in[2] f32 octaves min=1.0 max=4.0 default=1.0 unit="oct" curve=linear
   in[3] f32 velocity min=0.0 max=1.0 default=1.0 unit="" curve=linear
   out[0] message degrees
-  lanes inherit
 operator transpose
   in[0] message notes
   in[1] f32 amount min=-48.0 max=48.0 default=0.0 unit="steps" curve=linear
   out[0] message notes
-  lanes inherit
 operator voicer
   in[0] message notes
   in[1] harmony harmony
   out[0] f32_buffer audio
   param[0] voices min=1.0 max=32.0 default=8.0 unit="" curve=linear
   resource[0] voice
-  lanes from_param(0)
+  constant voices

@@ -48,7 +48,6 @@ crate::operator_contract!(Euclid {
                pulses:   f32 { 0.0..=16.0, default 4.0,  "pulses", lin },
                rotation: f32 { 0.0..=15.0, default 0.0,  "steps",  lin } },
     outputs: { gate: f32 { 0.0..=1.0, default 0.0, "gate", lin } },
-    lanes: inherit,
 });
 
 /// Whether step `step` (0-based, already in `0..total`) is a Euclidean pulse for the

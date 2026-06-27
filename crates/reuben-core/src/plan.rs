@@ -1,14 +1,10 @@
 //! Plan — the static execution image produced by Instantiate (ADR-0009, ADR-0010, ADR-0030).
 //!
-//! Instantiate consumes a [`Graph`], topologically orders its nodes, computes each node's
-//! **Lane (Voice) count**, replicates Lane-expanded operators per Voice with independent
-//! state, and assigns every Buffer (output port, Lane) a slot in the edge-buffer arena. The
-//! result is immutable and is what [`crate::render`] executes per block.
-//!
-//! Lane counts: a node whose descriptor declares [`LaneRule::FromParam`] (the Voicer)
-//! expands to that param's value; every other node inherits the max Lane count of its
-//! inputs (1 if it has none). Because all fan-out shapes are fixed here, Render pays
-//! nothing for them (ADR-0010).
+//! Instantiate consumes a [`Graph`], topologically orders its nodes, instantiates each operator
+//! (config-fixed, off the hot path), and assigns every Buffer output port a slot in the edge-buffer
+//! arena. The result is immutable and is what [`crate::render`] executes per block. Polyphony is
+//! hosted inside the Voicer (N voice sub-plans summed), not fanned out across engine Lanes — the
+//! Lane model is gone (ADR-0032).
 //!
 //! The seven former carriers collapse to one model (ADR-0030): every input port has a held
 //! [`Arg`] **latch** (the ZOH value `io.last` reads), Buffer inputs additionally carry a dense
@@ -19,7 +15,7 @@
 use slotmap::SecondaryMap;
 
 use crate::config::AudioConfig;
-use crate::descriptor::{Descriptor, LaneRule, Port, PortType};
+use crate::descriptor::{Descriptor, Port, PortType};
 use crate::graph::{Graph, NodeKey};
 use crate::message::{Arg, Message};
 use crate::operator::Operator;
@@ -105,20 +101,16 @@ fn seed_latch(
     }
 }
 
-/// A node in execution order, with its Lane fan-out and arena buffer wiring resolved.
+/// A node in execution order, with its arena buffer wiring resolved.
 pub struct PlanNode {
     pub address: String,
-    /// One operator instance per Lane (Voice); `ops.len() == lanes`. Lane 0 is the
-    /// graph's original instance; the rest are fresh-state [`Operator::spawn`] copies.
+    /// The operator instance (single-element `Vec`; the per-Lane fan-out is gone — ADR-0032).
     pub ops: Vec<Box<dyn Operator>>,
     pub descriptor: Descriptor,
-    /// Lane (Voice) count at this node.
-    pub lanes: usize,
-    /// For each input port (full input-port order): the source's per-Lane arena buffer indices,
-    /// or `None`. `Some` only for a [`Buffer`](PortType::F32Buffer) input — either wired to a Buffer
-    /// source (zero-copy share; inner length = the source's Lane count, 1 broadcasts) or fed by a
-    /// scalar source and so **materialized** (a dedicated single-Lane scratch buffer, see
-    /// `materialize`). Held / Stream inputs carry no buffer (`None`).
+    /// For each input port (full input-port order): the source's arena buffer index (a one-element
+    /// `Vec`), or `None`. `Some` only for a [`Buffer`](PortType::F32Buffer) input — either wired to a
+    /// Buffer source (zero-copy share) or fed by a scalar source and so **materialized** (a dedicated
+    /// scratch buffer, see `materialize`). Held / Stream inputs carry no buffer (`None`).
     pub inputs: Vec<Option<Vec<usize>>>,
     /// Per input port (full input-port order): its [`PortKind`], precomputed at Instantiate so the
     /// hot message-routing path reads the bucket directly instead of re-deriving it from the port
@@ -254,46 +246,23 @@ impl Plan {
             .unwrap_or(0)
             .max(AudioConfig::MIN_CHANNELS);
 
-        // 1. Lane count per node, in topo order (sources resolved before dependents).
-        let mut lanes: SecondaryMap<NodeKey, usize> = SecondaryMap::new();
-        for key in &order {
-            let node = &graph.nodes[*key];
-            let count = match node.descriptor.lanes {
-                LaneRule::FromParam(slot) => {
-                    (node.params.get(slot).copied().unwrap_or(1.0).round() as usize).max(1)
-                }
-                LaneRule::Inherit => graph
-                    .connections
-                    .iter()
-                    .filter(|c| c.dst == *key)
-                    .map(|c| lanes.get(c.src).copied().unwrap_or(1))
-                    .max()
-                    .unwrap_or(1),
-            };
-            lanes.insert(*key, count);
-        }
-
-        // 2. Assign every (node, Buffer output port, Lane) a unique arena buffer index. A message
-        // output (Note / Harmony / scalar control out) carries no Signal data — events arrive via
-        // routing (ADR-0014) — so it gets an empty buffer list (its emptiness is the marker that an
-        // edge into it must materialize rather than share).
+        // 1. Assign every (node, Buffer output port) a unique arena buffer index. A message output
+        // (Note / Harmony / scalar control out) carries no Signal data — events arrive via routing
+        // (ADR-0014) — so it gets an empty buffer list (its emptiness is the marker that an edge into
+        // it must materialize rather than share). The inner `Vec` is a single buffer per signal port
+        // (the per-Lane dimension is gone — polyphony is hosted inside the Voicer, ADR-0032).
         let mut next_buffer = 0usize;
         let mut out_buffers: SecondaryMap<NodeKey, Vec<Vec<usize>>> = SecondaryMap::new();
         for (key, node) in &graph.nodes {
-            let n_lanes = lanes[key];
             let ports = node
                 .descriptor
                 .outputs
                 .iter()
                 .map(|p| {
                     if matches!(p.ty, PortType::F32Buffer) {
-                        (0..n_lanes)
-                            .map(|_| {
-                                let i = next_buffer;
-                                next_buffer += 1;
-                                i
-                            })
-                            .collect()
+                        let i = next_buffer;
+                        next_buffer += 1;
+                        vec![i]
                     } else {
                         Vec::new()
                     }
@@ -317,7 +286,7 @@ impl Plan {
             index_of.insert(*key, i);
         }
 
-        // 3. Build PlanNodes in execution order, replicating operators per Lane.
+        // 2. Build PlanNodes in execution order.
         let mut nodes = Vec::with_capacity(order.len());
         // Arena slots that are materialize scratch (ADR-0030); Render skips them in its per-block
         // clear so held inputs persist. Collected as buffers are assigned below.
@@ -410,25 +379,19 @@ impl Plan {
                 })
                 .collect();
 
-            let n_lanes = lanes[*key];
             let node = graph.nodes.remove(*key).expect("key from topo order");
-            let mut ops: Vec<Box<dyn Operator>> = Vec::with_capacity(n_lanes);
             // Config-dependent runtime state (ADR-0032 §3): the Voicer instantiates its bound voice
             // graphs into per-voice sub-plans here, where `config` is fixed and we are off the hot
-            // path. Done on the original instance before Lane spawns (single-Lane for the Voicer).
+            // path.
             let mut op = node.op;
             op.on_instantiate(&config)?;
-            ops.push(op);
-            for _ in 1..n_lanes {
-                ops.push(ops[0].spawn());
-            }
+            let ops = vec![op];
 
             let materialize_clean = vec![false; materialize.len()];
             nodes.push(PlanNode {
                 address: node.address,
                 ops,
                 descriptor: node.descriptor,
-                lanes: n_lanes,
                 inputs,
                 input_kinds,
                 materialize,

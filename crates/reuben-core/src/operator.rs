@@ -60,10 +60,7 @@ pub struct Io<'a> {
     /// (ADR-0030). In input-port order; zero-copy views borrowed from the Render loop. Read via
     /// [`Io::input`]; empty when unattached.
     streams: &'a [&'a [Event<'a>]],
-    lane: usize,
-    lanes: usize,
-    /// Sink for Messages this call emits (ADR-0014, ADR-0030), or `None` when this Lane does not
-    /// collect emissions. Only Lane 0 collects — emission is single-Lane (pre-fan-out). The former
+    /// Sink for Messages this call emits (ADR-0014, ADR-0030), or `None` when unattached. The former
     /// harmony-publish and outbound sinks fold into this: a context/`osc_out` node simply emits to
     /// the right output port, and routing (the wired edge) carries it.
     emit: Option<&'a mut Vec<Emit>>,
@@ -77,8 +74,8 @@ pub struct Io<'a> {
 }
 
 impl<'a> Io<'a> {
-    /// Internal constructor used by the Render loop. Defaults to a single Lane (lane 0 of
-    /// 1); the engine attaches the latch, streams, lane, and emit sink via the builders.
+    /// Internal constructor used by the Render loop; the engine attaches the latch, streams,
+    /// varying hints, and emit sink via the builders.
     ///
     /// `inputs`/`outputs` are taken as iterators so the Render loop can wire ports straight
     /// from the arena without an intermediate heap allocation.
@@ -94,8 +91,6 @@ impl<'a> Io<'a> {
             outputs: outputs.into_iter().collect(),
             latched: &[],
             streams: &[],
-            lane: 0,
-            lanes: 1,
             emit: None,
             frame_offset: 0,
             varying: &[],
@@ -123,14 +118,7 @@ impl<'a> Io<'a> {
         self
     }
 
-    /// Set which Lane (Voice) of how many this call is, for replicated operators.
-    pub(crate) fn with_lane(mut self, lane: usize, lanes: usize) -> Self {
-        self.lane = lane;
-        self.lanes = lanes;
-        self
-    }
-
-    /// Attach the emit sink and segment frame offset (Lane 0 only). Messages written via
+    /// Attach the emit sink and segment frame offset. Messages written via
     /// [`Io::output`] are collected into `buf` with `frame_offset` added.
     pub(crate) fn with_emit(mut self, buf: &'a mut Vec<Emit>, frame_offset: usize) -> Self {
         self.emit = Some(buf);
@@ -153,17 +141,6 @@ impl<'a> Io<'a> {
     /// is dense or changed this block. Conservatively `true` when unattached.
     pub fn varying(&self, port: usize) -> bool {
         self.varying.get(port).copied().unwrap_or(true)
-    }
-
-    /// Which Lane (Voice) this call represents, in `0..lanes()`. Single-Lane operators can
-    /// ignore it; an expander like the Voicer uses it to emit just this Voice's output.
-    pub fn lane(&self) -> usize {
-        self.lane
-    }
-
-    /// Total Lane (Voice) count at this point in the graph.
-    pub fn lanes(&self) -> usize {
-        self.lanes
     }
 
     /// **Read an input port, dispatched by the payload type `T`** (ADR-0031). `T` *is* the port's

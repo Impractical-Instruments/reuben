@@ -16,7 +16,6 @@
 //!     inputs:  { freq: f32 { 20.0..=20_000.0, default 440.0, "Hz", exp },
 //!                waveform: enum(Waveform) },
 //!     outputs: { audio: f32_buffer },
-//!     lanes: inherit,
 //! });
 //! ```
 
@@ -25,14 +24,12 @@ mod model;
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use reuben_contract::{
-    naming, ContractError, F32Meta, LaneSpec, Locus, OperatorSpec, ParamSpec, PortSpec,
-};
+use reuben_contract::{naming, ContractError, F32Meta, Locus, OperatorSpec, ParamSpec, PortSpec};
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::{braced, parenthesized, Error, Ident, Lit, LitStr, Token};
 
-use model::{build, ContractModel, LaneModel};
+use model::{build, ContractModel};
 
 /// Emit an operator's index consts + `fn contract()` from its one declaration. See the crate docs.
 #[proc_macro]
@@ -103,11 +100,6 @@ struct ParamAst {
     curve: String,
 }
 
-enum LaneAst {
-    Inherit,
-    FromParam(Ident),
-}
-
 struct ContractInput {
     struct_ident: Ident,
     type_name: Option<LitStr>,
@@ -115,8 +107,10 @@ struct ContractInput {
     outputs: Vec<PortAst>,
     params: Vec<ParamAst>,
     resources: Vec<Ident>,
-    lanes: LaneAst,
-    lanes_span: Span,
+    /// The optional instantiate-time `Constant` param name, with its source span for error
+    /// attribution (`constant: voices`).
+    constant: Option<Ident>,
+    constant_span: Span,
 }
 
 impl ContractInput {
@@ -170,10 +164,7 @@ impl ContractInput {
                 })
                 .collect(),
             resources: self.resources.iter().map(Ident::to_string).collect(),
-            lanes: match &self.lanes {
-                LaneAst::Inherit => LaneSpec::Inherit,
-                LaneAst::FromParam(p) => LaneSpec::FromParam(p.to_string()),
-            },
+            constant: self.constant.as_ref().map(Ident::to_string),
         }
     }
 
@@ -188,7 +179,7 @@ impl ContractInput {
             Locus::Input(i) => self.inputs[i].name.span(),
             Locus::Output(i) => self.outputs[i].name.span(),
             Locus::Param(i) => self.params[i].name.span(),
-            Locus::Lanes => self.lanes_span,
+            Locus::Constant => self.constant_span,
         };
         Error::new(span, &err.message)
     }
@@ -304,11 +295,11 @@ impl ContractInput {
             quote! { ::reuben_core::descriptor::ResourceSlot::new(#r) }
         });
 
-        let lanes = match &model.lanes {
-            LaneModel::Inherit => quote! { ::reuben_core::descriptor::LaneRule::Inherit },
-            LaneModel::FromParam(const_name) => {
+        let constant = match &model.constant {
+            None => quote! { ::std::option::Option::None },
+            Some(const_name) => {
                 let ident = Ident::new(const_name, Span::call_site());
-                quote! { ::reuben_core::descriptor::LaneRule::FromParam(#ident) }
+                quote! { ::std::option::Option::Some(#ident) }
             }
         };
 
@@ -326,7 +317,7 @@ impl ContractInput {
                         outputs: ::std::vec![ #(#outputs),* ],
                         params: ::std::vec![ #(#params),* ],
                         resources: ::std::vec![ #(#resources),* ],
-                        lanes: #lanes,
+                        constant_param: #constant,
                     }
                 }
             }
@@ -349,8 +340,8 @@ impl Parse for ContractInput {
             outputs: Vec::new(),
             params: Vec::new(),
             resources: Vec::new(),
-            lanes: LaneAst::Inherit,
-            lanes_span: struct_ident.span(),
+            constant: None,
+            constant_span: struct_ident.span(),
         };
 
         while !body.is_empty() {
@@ -362,15 +353,15 @@ impl Parse for ContractInput {
                 "outputs" => ci.outputs = parse_ports(&body)?,
                 "params" => ci.params = parse_params(&body)?,
                 "resources" => ci.resources = parse_resources(&body)?,
-                "lanes" => {
-                    let (lanes, span) = parse_lanes(&body)?;
-                    ci.lanes = lanes;
-                    ci.lanes_span = span;
+                "constant" => {
+                    let param = Ident::parse_any(&body)?;
+                    ci.constant_span = param.span();
+                    ci.constant = Some(param);
                 }
                 other => {
                     return Err(Error::new(
                         key.span(),
-                        format!("unknown contract field `{other}` (expected inputs/outputs/params/resources/lanes/type_name)"),
+                        format!("unknown contract field `{other}` (expected inputs/outputs/params/resources/constant/type_name)"),
                     ))
                 }
             }
@@ -553,25 +544,6 @@ fn parse_resources(input: ParseStream) -> syn::Result<Vec<Ident>> {
     Ok(out)
 }
 
-/// `inherit` | `from_param(<param>)`.
-fn parse_lanes(input: ParseStream) -> syn::Result<(LaneAst, Span)> {
-    let kw: Ident = input.parse()?;
-    let span = kw.span();
-    match kw.to_string().as_str() {
-        "inherit" => Ok((LaneAst::Inherit, span)),
-        "from_param" => {
-            let arg;
-            parenthesized!(arg in input);
-            let param: Ident = arg.parse()?;
-            Ok((LaneAst::FromParam(param), span))
-        }
-        other => Err(Error::new(
-            span,
-            format!("lanes must be `inherit` or `from_param(<param>)`, got `{other}`"),
-        )),
-    }
-}
-
 /// A numeric literal with an optional leading `-` (param bounds and defaults can be negative).
 fn parse_signed_float(input: ParseStream) -> syn::Result<f32> {
     let neg = input.peek(Token![-]);
@@ -604,7 +576,6 @@ mod tests {
                 outputs: { audio: f32_buffer },
                 params:  { freq:     { 20.0..=20_000.0, default 440.0, "Hz", exp },
                            waveform: { 0.0..=1.0,        default 0.0,   "",   lin } },
-                lanes: inherit,
             }"#,
         );
         assert!(out.contains("pub const IN_FREQ : usize = 0"), "{out}");
@@ -633,22 +604,25 @@ mod tests {
     }
 
     // Ports number sequentially in declaration order (ADR-0030) — a note input and a harmony input
-    // are 0 and 1, not split per kind.
+    // are 0 and 1, not split per kind. `constant: voices` resolves to the param's index const.
     #[test]
-    fn ports_number_sequentially_and_lane_resolves() {
+    fn ports_number_sequentially_and_constant_resolves() {
         let out = render(
             r#"Voicer {
                 inputs:  { notes: note, ctx: harmony },
-                outputs: { freq: f32_buffer, gate: f32_buffer },
+                outputs: { audio: f32_buffer },
                 params:  { voices: { 1.0..=32.0, default 8.0, "", lin } },
-                lanes: from_param(voices),
+                constant: voices,
             }"#,
         );
         assert!(out.contains("pub const IN_NOTES : usize = 0"), "{out}");
         assert!(out.contains("pub const IN_CTX : usize = 1"), "{out}");
         assert!(out.contains("Port :: note (\"notes\")"), "{out}");
         assert!(out.contains("Port :: harmony (\"ctx\")"), "{out}");
-        assert!(out.contains("LaneRule :: FromParam (P_VOICES)"), "{out}");
+        assert!(
+            out.contains("constant_param : :: std :: option :: Option :: Some (P_VOICES)"),
+            "{out}"
+        );
     }
 
     // A malformed contract is rejected *with a span*, in-band as a compile_error.

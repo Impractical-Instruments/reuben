@@ -3,7 +3,7 @@
 //! no spans, just data, so the index arithmetic (the old `scaffold::port_consts` hand-logic) is
 //! computed **once** here and unit-tested directly.
 
-use reuben_contract::{naming, LaneSpec, OperatorSpec, PortSpec};
+use reuben_contract::{naming, OperatorSpec, PortSpec};
 
 /// The resolved `f32 { .. }` meta on a `f32` port (ADR-0030), curve normalised to
 /// `"linear"`/`"exponential"`. Mirrors [`ParamModel`] minus the const/index.
@@ -47,14 +47,6 @@ pub struct ParamModel {
     pub curve: String,
 }
 
-/// The resolved Lane rule. `FromParam` carries the **param const name** (`P_VOICES`) it expands
-/// against, so the emitted `LaneRule::FromParam(P_VOICES)` references the const the macro plants.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LaneModel {
-    Inherit,
-    FromParam(String),
-}
-
 /// A fully-resolved operator contract, ready to render to tokens.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContractModel {
@@ -63,7 +55,10 @@ pub struct ContractModel {
     pub outputs: Vec<PortModel>,
     pub params: Vec<ParamModel>,
     pub resources: Vec<String>,
-    pub lanes: LaneModel,
+    /// The instantiate-time **`Constant`** param's index **const name** (`P_VOICES`), so the emitted
+    /// `constant_param: Some(P_VOICES)` references the const the macro plants. `None` for the common
+    /// operator.
+    pub constant: Option<String>,
 }
 
 /// Number a set of ports sequentially in declaration order (ADR-0030): inputs are indexed `0..`,
@@ -108,17 +103,17 @@ pub fn build(spec: &OperatorSpec) -> ContractModel {
             curve: p.curve.clone(),
         })
         .collect();
-    let lanes = match &spec.lanes {
-        LaneSpec::Inherit => LaneModel::Inherit,
-        LaneSpec::FromParam(name) => LaneModel::FromParam(format!("P_{}", naming::screaming(name))),
-    };
+    let constant = spec
+        .constant
+        .as_ref()
+        .map(|name| format!("P_{}", naming::screaming(name)));
     ContractModel {
         type_name: spec.type_name.clone(),
         inputs: port_models(&spec.inputs, "IN"),
         outputs: port_models(&spec.outputs, "OUT"),
         params,
         resources: spec.resources.clone(),
-        lanes,
+        constant,
     }
 }
 
@@ -167,17 +162,17 @@ mod tests {
         );
     }
 
-    // Params index sequentially and keep their metadata; FromParam resolves to the param's const.
+    // Params index sequentially and keep their metadata; `constant` resolves to the param's const.
     #[test]
-    fn params_index_sequentially_and_lane_resolves_to_const() {
+    fn params_index_sequentially_and_constant_resolves_to_const() {
         let m = build(&spec(
             r#"{ "type_name": "voicer",
                  "params": [ {"name":"voices","min":1,"max":32,"default":8,"curve":"linear"} ],
-                 "lanes": { "from_param": "voices" } }"#,
+                 "constant": "voices" }"#,
         ));
         assert_eq!(m.params[0].const_name, "P_VOICES");
         assert_eq!(m.params[0].index, 0);
-        assert_eq!(m.lanes, LaneModel::FromParam("P_VOICES".to_string()));
+        assert_eq!(m.constant.as_deref(), Some("P_VOICES"));
     }
 
     // The full filter port vocabulary: f32_buffer, f32-with-meta, enum naming its vocab type.

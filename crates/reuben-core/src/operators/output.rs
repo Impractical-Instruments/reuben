@@ -7,7 +7,7 @@
 //! - input 0: `audio` (`Buffer`) — per-sample audio in (the wired master bus).
 //! - output 0: `audio` (`Buffer`) — copy of the input, tapped as master.
 
-use crate::descriptor::{Descriptor, LaneRule, Port};
+use crate::descriptor::{Descriptor, Port};
 use crate::operator::{Io, Operator};
 
 /// `audio` input (`Buffer`).
@@ -32,7 +32,7 @@ impl Operator for Output {
             outputs: vec![Port::f32_buffer("audio")],
             params: vec![],
             resources: vec![],
-            lanes: LaneRule::Inherit,
+            constant_param: None,
         }
     }
 

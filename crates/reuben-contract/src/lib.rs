@@ -70,19 +70,10 @@ fn default_curve() -> String {
     "linear".to_string()
 }
 
-/// How the operator sets its output Lane count (mirrors [`reuben_core::descriptor::LaneRule`]).
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum LaneSpec {
-    #[default]
-    Inherit,
-    /// Expand to as many Lanes as the named param's value (the Voicer pattern).
-    FromParam(String),
-}
-
-/// The contract for an Operator — one declaration of its ports, params, resources, and Lane rule.
-/// The scaffold hand-authors / deserializes it; the proc-macro parses it from `operator_contract!`
-/// syntax. Mirrors a [`reuben_core::descriptor::Descriptor`].
+/// The contract for an Operator — one declaration of its ports, params, resources, and the optional
+/// instantiate-time [`Constant`](reuben_core::descriptor::Descriptor::constant_param). The scaffold
+/// hand-authors / deserializes it; the proc-macro parses it from `operator_contract!` syntax.
+/// Mirrors a [`reuben_core::descriptor::Descriptor`].
 #[derive(Debug, Clone, Deserialize)]
 pub struct OperatorSpec {
     pub type_name: String,
@@ -94,8 +85,10 @@ pub struct OperatorSpec {
     pub params: Vec<ParamSpec>,
     #[serde(default)]
     pub resources: Vec<String>,
+    /// The one param (by name) that is an instantiate-time **`Constant`** (ADR-0028) — config that,
+    /// if changed, rebuilds the graph (e.g. a voicer's `voices`). `None` for the common operator.
     #[serde(default)]
-    pub lanes: LaneSpec,
+    pub constant: Option<String>,
 }
 
 /// The legal port [`Arg`](reuben_core::message::Arg) types (ADR-0030). Centralised so both the
@@ -110,7 +103,7 @@ pub enum Locus {
     Input(usize),
     Output(usize),
     Param(usize),
-    Lanes,
+    Constant,
 }
 
 /// A rejected contract: a human-readable reason plus where it lives.
@@ -339,11 +332,11 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
         }
     }
 
-    if let LaneSpec::FromParam(param) = &spec.lanes {
+    if let Some(param) = &spec.constant {
         if !spec.params.iter().any(|p| &p.name == param) {
             return Err(ContractError::new(
-                Locus::Lanes,
-                format!("lanes.from_param {param:?} names no declared param"),
+                Locus::Constant,
+                format!("constant {param:?} names no declared param"),
             ));
         }
     }
@@ -484,7 +477,7 @@ mod tests {
             r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"f32_buffer"}, {"name":"a","ty":"f32_buffer"} ] }"#,
         );
         assert_eq!(dup.locus, Locus::Input(1));
-        let dangling = err(r#"{ "type_name": "x", "lanes": { "from_param": "voices" } }"#);
-        assert_eq!(dangling.locus, Locus::Lanes);
+        let dangling = err(r#"{ "type_name": "x", "constant": "voices" }"#);
+        assert_eq!(dangling.locus, Locus::Constant);
     }
 }

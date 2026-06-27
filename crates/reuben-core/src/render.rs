@@ -8,15 +8,14 @@
 //! (read via `io.stream`); a **Signal** [`Buffer`] input fed by a scalar is **materialized** ZOH
 //! into its arena buffer (read via `io.signal`).
 //!
-//! Each node is processed once **per Lane (Voice)**: the engine runs `node.ops[lane]`
-//! with that Lane's input/output buffers and `io.lane()` set, so single-Lane operators
-//! are transparently replicated (ADR-0010). A single-Lane source feeding a multi-Lane
-//! node broadcasts. Master taps sum every Lane of the tapped port, in fixed order, so
-//! output is deterministic (ADR-0001).
+//! Each node is processed once for the block, slicing at its Held-input change frames so
+//! [`Operator::process`] always sees a constant held value. Polyphony is hosted inside the Voicer
+//! (N voice sub-plans summed), not fanned out across engine Lanes — the Lane model is gone
+//! (ADR-0032).
 //!
 //! **Realtime-safe.** A [`Renderer`] preallocates its edge-buffer arena and every piece
 //! of per-block scratch at construction, and reuses them; steady-state [`Renderer::render_block`]
-//! performs no heap allocation (verified by `tests/rt_safe.rs`). Per-Lane buffer wiring
+//! performs no heap allocation (verified by `tests/rt_safe.rs`). Per-port buffer wiring
 //! uses stack [`SmallVec`]s; routed events are zero-copy views onto the caller's Messages.
 //!
 //! The [`Executor`] trait is the pluggable-executor seam (ADR-0001).
@@ -60,9 +59,9 @@ const EMIT_POOL_CAP: usize = 256;
 /// re-entrant free function — a hosting operator (`Voicer`) renders each sub-plan with that
 /// sub-plan's own arena while reusing one shared `RenderScratch`.
 pub struct RenderScratch {
-    /// Per-node scratch: the current node's output buffers, swapped out of `arena` so
-    /// inputs (still in `arena`) and outputs are disjointly borrowable. Flat layout,
-    /// index `port * lanes + lane`. Cleared and refilled per node — capacity retained.
+    /// Per-node scratch: the current node's signal-output buffers, swapped out of `arena` so
+    /// inputs (still in `arena`) and outputs are disjointly borrowable. In signal-output port
+    /// order. Cleared and refilled per node — capacity retained.
     out_scratch: Vec<Vec<f32>>,
     /// Per-block message routing, one entry per node. Reused; inner Vecs cleared per block.
     routes: Vec<NodeRoute>,
@@ -630,14 +629,13 @@ fn process_node(
     bounds.dedup();
 
     // Swap this node's signal-output buffers out of the arena into `out_scratch` (disjoint from
-    // inputs — no self-loops; cycles error). Flat layout: index `port * lanes + lane`.
+    // inputs — no self-loops; cycles error), in signal-output port order.
     out_scratch.clear();
     for port in &node.outputs {
         for &bi in port {
             out_scratch.push(std::mem::take(&mut arena[bi]));
         }
     }
-    let lanes = node.lanes;
     let n_inputs = node.descriptor.inputs.len();
 
     for w in bounds.windows(2) {
@@ -646,9 +644,9 @@ fn process_node(
             continue;
         }
 
-        // Apply Held changes landing at this segment's start: update the per-port latch, read by
-        // every Lane via `io.last` (ADR-0030). Persists across blocks (the latch is next block's
-        // frame-0 baseline). Last-write-wins on equal frames.
+        // Apply Held changes landing at this segment's start: update the per-port latch, read via
+        // `io.last` (ADR-0030). Persists across blocks (the latch is next block's frame-0 baseline).
+        // Last-write-wins on equal frames.
         for (f, port, arg) in route.held.iter() {
             if *f == seg_start {
                 node.latch[*port] = arg.clone();
@@ -680,37 +678,24 @@ fn process_node(
         }
         let stream_refs: SmallVec<[&[Event]; 24]> = per_port.iter().map(|v| v.as_slice()).collect();
 
-        for lane in 0..lanes {
-            // Input slices for this Lane; a single-Lane source broadcasts.
-            let inputs = node.inputs.iter().map(|src| {
-                src.as_ref().map(|bufs| {
-                    let bi = if bufs.len() == 1 { bufs[0] } else { bufs[lane] };
-                    &arena[bi][seg_start..seg_end]
-                })
-            });
+        // Input slices for this segment.
+        let inputs = node
+            .inputs
+            .iter()
+            .map(|src| src.as_ref().map(|bufs| &arena[bufs[0]][seg_start..seg_end]));
 
-            // Output slices for this Lane: the strided entries of `out_scratch` whose
-            // flat index has this lane (`port * lanes + lane`), in port order.
-            let outputs = out_scratch
-                .iter_mut()
-                .enumerate()
-                .filter(|(idx, _)| idx % lanes == lane)
-                .map(|(_, buf)| &mut buf[seg_start..seg_end]);
+        // Output slices for this segment, in signal-output port order.
+        let outputs = out_scratch
+            .iter_mut()
+            .map(|buf| &mut buf[seg_start..seg_end]);
 
-            let io = Io::new(sample_rate, seg_end - seg_start, inputs, outputs)
-                .with_latched(&node.latch)
-                .with_streams(&stream_refs)
-                .with_varying(&node.varying)
-                .with_lane(lane, node.lanes);
-            // Lane 0 collects emissions; their frames are stamped block-absolute by adding this
-            // segment's start (ADR-0014). Other Lanes do not emit (single-Lane, pre-fan-out).
-            let mut io = if lane == 0 {
-                io.with_emit(&mut *emit_scratch, seg_start)
-            } else {
-                io
-            };
-            node.ops[lane].process(&mut io);
-        }
+        // Emitted frames are stamped block-absolute by adding this segment's start (ADR-0014).
+        let mut io = Io::new(sample_rate, seg_end - seg_start, inputs, outputs)
+            .with_latched(&node.latch)
+            .with_streams(&stream_refs)
+            .with_varying(&node.varying)
+            .with_emit(&mut *emit_scratch, seg_start);
+        node.ops[0].process(&mut io);
     }
 
     // Return the signal-output buffers to the arena, same flat order they were taken.

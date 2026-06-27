@@ -10,7 +10,7 @@
 //! materialized Value→Signal edges. Real operators carry their forms after the step-4 sweep; until
 //! then these probes are the oracle.
 
-use reuben_core::descriptor::{Descriptor, LaneRule, Port, PortType};
+use reuben_core::descriptor::{Descriptor, Port, PortType};
 use reuben_core::graph::Graph;
 use reuben_core::operator::{Io, Operator};
 use reuben_core::plan::{port_kind, Plan, PlanError, PortKind};
@@ -42,7 +42,7 @@ fn desc(type_name: &'static str, inputs: Vec<Port>, outputs: Vec<Port>) -> Descr
         outputs,
         params: vec![],
         resources: vec![],
-        lanes: LaneRule::Inherit,
+        constant_param: None,
     }
 }
 

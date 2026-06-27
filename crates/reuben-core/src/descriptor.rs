@@ -268,19 +268,6 @@ impl ParamMeta {
     }
 }
 
-/// How an operator sets the Lane (Voice) count of its outputs (ADR-0010).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LaneRule {
-    /// Lane count = the max of the operator's input Lane counts (1 if it has none).
-    /// The default: ordinary single-Lane operators are replicated to match their inputs.
-    #[default]
-    Inherit,
-    /// This operator *expands* the Lane count: it produces as many Lanes as the value of
-    /// the named param slot (rounded, min 1). The Voicer is the canonical expander —
-    /// `voices` Lanes out, regardless of input. Read once at Instantiate (structural).
-    FromParam(usize),
-}
-
 /// An Operator's full self-description.
 #[derive(Debug, Clone)]
 pub struct Descriptor {
@@ -293,8 +280,10 @@ pub struct Descriptor {
     /// Empty for every operator that is a pure function of params + edges (all but the
     /// sample player today).
     pub resources: Vec<ResourceSlot>,
-    /// How this operator determines its output Lane count. Defaults to [`LaneRule::Inherit`].
-    pub lanes: LaneRule,
+    /// The slot of the one param that is an instantiate-time **`Constant`** (ADR-0028) — config
+    /// that, if changed, rebuilds the graph (e.g. the voicer's `voices` pool size). Declared
+    /// directly via the contract's `constant:` keyword. `None` for the common operator.
+    pub constant_param: Option<usize>,
 }
 
 impl Descriptor {
@@ -304,15 +293,10 @@ impl Descriptor {
     }
 
     /// The one param that is a **`Constant`** (ADR-0028): instantiate-time config that, if changed,
-    /// would rebuild the graph. Derived — not separately declared — from [`LaneRule::FromParam`]:
-    /// the lane-count param (`voices`) is the canonical and, today, only such value ("a value is a
-    /// Constant iff changing it would rebuild the graph"). `None` for an [`LaneRule::Inherit`]
-    /// operator. The loader routes it to the patch's `config` block, not `inputs`.
+    /// would rebuild the graph (e.g. the voicer's `voices` pool size). Declared via the contract's
+    /// `constant:` keyword. The loader routes it to the patch's `config` block, not `inputs`.
     pub fn constant_param(&self) -> Option<&ParamMeta> {
-        match self.lanes {
-            LaneRule::FromParam(slot) => self.params.get(slot),
-            LaneRule::Inherit => None,
-        }
+        self.constant_param.and_then(|slot| self.params.get(slot))
     }
 
     /// Whether `name` is this operator's [`Constant`](Self::constant_param) param.

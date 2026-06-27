@@ -861,7 +861,7 @@ mod tests {
     }
 
     #[test]
-    fn voices_in_config_sizes_the_lane() {
+    fn voices_in_config_sizes_the_voice_pool() {
         let json = r#"{"instrument":"t","nodes":[
             {"type":"voicer","address":"/v","config":{"voices":3}}]}"#;
         let g = load(json, &reg()).expect("load");

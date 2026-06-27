@@ -17,7 +17,7 @@ use std::path::Path;
 use std::process::Command;
 
 use reuben_contract::naming::{screaming, struct_name};
-use reuben_contract::{validate, LaneSpec, OperatorSpec, ParamSpec, PortSpec};
+use reuben_contract::{validate, OperatorSpec, ParamSpec, PortSpec};
 use serde::Serialize;
 
 /// The current contents of the registration file the scaffold must edit (`operators/mod.rs`).
@@ -266,7 +266,9 @@ fn render_contract_call(spec: &OperatorSpec) -> String {
         let rs: Vec<&str> = spec.resources.iter().map(String::as_str).collect();
         out.push_str(&format!("    resources: {{ {} }},\n", rs.join(", ")));
     }
-    out.push_str(&format!("    lanes: {},\n", render_macro_lanes(spec)));
+    if let Some(name) = &spec.constant {
+        out.push_str(&format!("    constant: {name},\n"));
+    }
     out.push_str("});\n");
     out
 }
@@ -322,14 +324,6 @@ fn render_macro_param(p: &ParamSpec) -> String {
         "{}: {{ {:?}..={:?}, default {:?}, {:?}, {} }},",
         p.name, p.min, p.max, p.default, p.unit, curve
     )
-}
-
-/// `inherit` or `from_param(<param>)`.
-fn render_macro_lanes(spec: &OperatorSpec) -> String {
-    match &spec.lanes {
-        LaneSpec::Inherit => "inherit".to_string(),
-        LaneSpec::FromParam(name) => format!("from_param({name})"),
-    }
 }
 
 /// The `process` stub — fills every signal output with silence (a valid, silent operator).
@@ -473,13 +467,13 @@ mod tests {
     }
 
     #[test]
-    fn lane_expander_renders_from_param() {
+    fn constant_param_renders_in_the_contract() {
         let src = render(
             r#"{ "type_name": "vox",
                  "params": [ {"name":"voices","min":1.0,"max":16.0,"default":4.0} ],
-                 "lanes": { "from_param": "voices" } }"#,
+                 "constant": "voices" }"#,
         );
-        assert!(src.contains("lanes: from_param(voices),"), "{src}");
+        assert!(src.contains("constant: voices,"), "{src}");
     }
 
     #[test]
@@ -582,11 +576,11 @@ mod tests {
     }
 
     #[test]
-    fn rejects_duplicate_names_and_dangling_lane_param() {
+    fn rejects_duplicate_names_and_dangling_constant_param() {
         let dup = r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"f32_buffer"}, {"name":"a","ty":"f32_buffer"} ] }"#;
         assert!(scaffold_err(dup).contains("duplicate"));
-        let dangling = r#"{ "type_name": "x", "lanes": { "from_param": "voices" } }"#;
-        assert!(scaffold_err(dangling).contains("from_param"));
+        let dangling = r#"{ "type_name": "x", "constant": "voices" }"#;
+        assert!(scaffold_err(dangling).contains("constant"));
     }
 
     #[test]

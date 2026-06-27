@@ -36,17 +36,16 @@ use crate::vocab::pitch::{Note, Pitch};
 
 // Single-source contract (ADR-0025/0030/0032): `notes` is a `Note` event port, `harmony` a held
 // `Harmony`; the one output `audio` is the summed voice mix. `voices` sizes the hosted voice pool —
-// the loader reads it to decide how many sub-patches to build. `lanes: from_param(voices)` is
-// retained **dormant** (ADR-0032 deletes the Lane model in a follow-up): it keeps `voices` an
-// instantiate-time `Constant` (ADR-0028) and the engine still expands the Voicer node to N Lanes,
-// but only Lane 0 is bound with the voice sub-patches (the spawned Lanes 1.. get no graphs and
-// output silence) — the real polyphony is hosted internally on Lane 0, not fanned out across Lanes.
+// the loader reads it to decide how many voice sub-patches to build, so it is the operator's
+// instantiate-time `Constant` (ADR-0028), declared via `constant: voices`. Polyphony is hosted
+// internally (N voice sub-plans summed into `audio`), not fanned out across engine Lanes — the Lane
+// model is gone (ADR-0032).
 crate::operator_contract!(Voicer {
     inputs:  { notes: note, harmony: harmony },
     outputs: { audio: f32_buffer },
     params:  { voices: { 1.0..=32.0, default 8.0, "", lin } },
     resources: { voice },
-    lanes: from_param(voices),
+    constant: voices,
 });
 
 /// Do two pitches denote the same note for note-off matching? Degrees match by degree; absolute
