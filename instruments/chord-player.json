@@ -134,7 +134,7 @@
       "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
       "inputs": {
         "x": {
-          "from": "/env"
+          "from": "/env.cv"
         }
       },
       "type": "power_f32_signal"

@@ -43,6 +43,7 @@ operator envelope
   in[3] f32 sustain min=0.0 max=1.0 default=0.7 unit="" curve=linear
   in[4] f32 release min=0.001 max=5.0 default=0.2 unit="s" curve=exponential
   out[0] f32_buffer cv
+  out[1] f32 active
   lanes inherit
 operator euclid
   in[0] f32_buffer clock

@@ -465,7 +465,7 @@
           "from": "/kick_sweep_amt"
         },
         "b": {
-          "from": "/kick_penv"
+          "from": "/kick_penv.cv"
         }
       },
       "type": "mul_f32_signal"
@@ -521,7 +521,7 @@
       "doc": "Exponential-style volume curve (x^2) on the kick amp CV.",
       "inputs": {
         "x": {
-          "from": "/kick_aenv"
+          "from": "/kick_aenv.cv"
         }
       },
       "type": "power_f32_signal"
@@ -563,7 +563,7 @@
       "doc": "Exponential-style volume curve (x^2) on the snare-noise CV.",
       "inputs": {
         "x": {
-          "from": "/snare_nenv"
+          "from": "/snare_nenv.cv"
         }
       },
       "type": "power_f32_signal"
@@ -619,7 +619,7 @@
       "doc": "Exponential-style volume curve (x^2) on the snare-tone CV.",
       "inputs": {
         "x": {
-          "from": "/snare_tenv"
+          "from": "/snare_tenv.cv"
         }
       },
       "type": "power_f32_signal"
@@ -687,7 +687,7 @@
       "doc": "Exponential-style volume curve (x^2) on the hat CV.",
       "inputs": {
         "x": {
-          "from": "/hat_env"
+          "from": "/hat_env.cv"
         }
       },
       "type": "power_f32_signal"

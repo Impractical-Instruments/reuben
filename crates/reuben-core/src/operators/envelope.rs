@@ -19,6 +19,11 @@
 //! - input 3: `sustain` (`Float`) — sustain level 0..1.
 //! - input 4: `release` (`Float`) — release time in seconds.
 //! - output 0: `cv` (`Buffer`) — the ADSR level contour, linear `[0, 1]`.
+//! - output 1: `active` (`Float`) — a held gate: `1.0` from the note-on through the whole release
+//!   tail, `0.0` once the level reaches zero and the envelope is fully idle. This is the canonical
+//!   **voice-liveness** source ADR-0032's Voicer reads to know a voice is truly finished (not merely
+//!   gate-off), so a voice in its release tail is never stolen while an idle one exists. Emitted as a
+//!   sparse `MsgWriter` change (one event per true↔false transition), like `euclid.gate`.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -30,7 +35,8 @@ crate::operator_contract!(Envelope {
                decay:   f32 { 0.001..=5.0, default 0.1,  "s", exp },
                sustain: f32 { 0.0..=1.0,   default 0.7,  "",  lin },
                release: f32 { 0.001..=5.0, default 0.2,  "s", exp } },
-    outputs: { cv: f32_buffer },
+    outputs: { cv:     f32_buffer,
+               active: f32 { 0.0..=1.0, default 0.0, "active", lin } },
 });
 
 /// Which segment of the ADSR contour the envelope is currently traversing.
@@ -61,6 +67,10 @@ pub struct Envelope {
     /// level *at that instant* so the level always falls to 0 in `release` seconds — regardless
     /// of `sustain`, and correct when the gate falls mid-decay. Persists across blocks.
     release_step: f32,
+    /// Last value emitted on the `active` output (ADR-0032 voice-liveness): `true` from note-on
+    /// through the release tail, `false` once Idle. Persists across blocks so the held `MsgWriter`
+    /// value only changes on a true↔false transition (deduped, sparse).
+    active: bool,
 }
 
 impl Envelope {
@@ -149,6 +159,16 @@ impl Operator for Envelope {
             }
 
             io.output::<&mut [f32]>(OUT_CV)[i] = self.level;
+
+            // Voice-liveness (ADR-0032): active for the whole contour incl. the release tail, idle
+            // only at Stage::Idle (level == 0). Emit a sparse held change on each transition; the
+            // MsgWriter dedups, so an unchanging block emits nothing and the latch holds.
+            let now_active = self.stage != Stage::Idle;
+            if now_active != self.active {
+                io.output::<f32>(OUT_ACTIVE)
+                    .set(i, if now_active { 1.0 } else { 0.0 });
+                self.active = now_active;
+            }
         }
     }
 
@@ -310,6 +330,48 @@ mod tests {
             out[release_samples + 2_400] == 0.0,
             "level still open after release — envelope stayed open"
         );
+    }
+
+    /// The F32 value carried by an `active` emit (panics on any other Arg — the contract is F32).
+    fn active_val(e: &crate::message::Emit) -> f32 {
+        match &e.arg {
+            crate::message::Arg::F32(v) => *v,
+            other => panic!("expected an F32 active flag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn active_tracks_liveness_through_the_release_tail() {
+        // ADR-0032 voice-liveness: `active` goes 1.0 at note-on and stays high through the whole
+        // release tail, dropping to 0.0 only once the level reaches zero (fully idle). Sparse: one
+        // emit per transition.
+        let attack = 0.005;
+        let decay = 0.005;
+        let sustain = 0.6;
+        let release = 0.02;
+        let mut d = OpDriver::for_type(Envelope::new(), SR);
+        d.set(IN_ATTACK, attack)
+            .set(IN_DECAY, decay)
+            .set(IN_SUSTAIN, sustain)
+            .set(IN_RELEASE, release);
+
+        // Note-on held to sustain: exactly one active=1.0 at the downbeat.
+        let hold_n = 4_800;
+        d.drive(IN_GATE, &vec![1.0f32; hold_n]);
+        let on = d.render(hold_n).emits().to_vec();
+        assert_eq!(on.len(), 1, "one transition: idle -> active");
+        assert_eq!(on[0].frame, 0);
+        assert_abs_diff_eq!(active_val(&on[0]), 1.0);
+
+        // Gate drops: still active through the release tail, then exactly one active=0.0 once idle.
+        let release_samples = (release * SR) as usize;
+        let rel_n = release_samples + 2_400;
+        d.drive(IN_GATE, &vec![0.0f32; rel_n]);
+        let off = d.render(rel_n).emits().to_vec();
+        assert_eq!(off.len(), 1, "one transition: active -> idle");
+        assert_abs_diff_eq!(active_val(&off[0]), 0.0);
+        // The idle transition lands inside the release window, not at frame 0 (the tail is alive).
+        assert!(off[0].frame > 0 && off[0].frame <= release_samples + 64);
     }
 
     #[test]

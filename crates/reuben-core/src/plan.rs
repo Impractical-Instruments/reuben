@@ -143,15 +143,19 @@ pub struct PlanNode {
     /// block (no audio-thread alloc). All-`true`; Render rewrites only materialized ports each block
     /// (`false` ⇒ held unchanged this block).
     pub varying: Vec<bool>,
-    /// For each **signal (Buffer) output** port — in signal-output ordinal order, the index
-    /// [`crate::operator::Io::output`] (`<&mut [f32]>`) uses — this node's per-Lane arena buffer
-    /// indices (length `lanes`).
+    /// For each **signal (Buffer) output** port — in signal-output ordinal order — this node's
+    /// per-Lane arena buffer indices (length `lanes`). [`crate::operator::Io::output`] (`<&mut
+    /// [f32]>`) indexes this by the all-outputs port index the contract macro emits, which equals
+    /// the signal ordinal **only when signal outputs precede message outputs in the declaration**
+    /// (the invariant every operator holds; e.g. `envelope` declares `cv` before `active`).
     pub outputs: Vec<Vec<usize>>,
-    /// Message-edge routing (ADR-0014, ADR-0030): for each **message output** port — in
-    /// message-output ordinal order, the index [`crate::operator::Io::output`] uses — the
-    /// `(dst node, dst input port)` pairs its emissions are delivered to. Unifies the former
-    /// `msg_targets` (Note edges) and `ctx_targets` (Harmony edges): a published Harmony is just a
-    /// Message to a Held input. The dst input port's [`PortKind`] decides how it lands.
+    /// Message-edge routing (ADR-0014, ADR-0030, ADR-0032): indexed by **all-outputs port index**
+    /// (the index [`crate::operator::Io::output`] passes; `emit.port` is that index). A signal output
+    /// has an empty slot; a message output carries the `(dst node, dst input port)` pairs its
+    /// emissions are delivered to. Full-index (not compacted to message ordinals) so an operator can
+    /// interleave a signal output and a message output (`envelope.cv` + `envelope.active`). Unifies
+    /// the former `msg_targets` (Note edges) and `ctx_targets` (Harmony edges): a published Harmony
+    /// is just a Message to a Held input. The dst input port's [`PortKind`] decides how it lands.
     pub out_targets: Vec<Vec<(usize, usize)>>,
 }
 
@@ -382,14 +386,21 @@ impl Plan {
                 .map(|(port, _)| out_buffers[*key][port].clone())
                 .collect();
 
-            // Message-edge targets, one entry per message output port (message-output ordinal
-            // order — the index `io.emit` uses): the `(dst node, dst input port)` pairs wired to it.
+            // Message-edge targets, indexed by **all-outputs port index** — the index
+            // [`crate::operator::Io::output`] passes (the contract macro numbers outputs sequentially
+            // across kinds, ADR-0030; `emit.port` is that index). A signal (`F32Buffer`) output never
+            // emits Messages, so its slot is empty; a message output carries the `(dst node, dst input
+            // port)` pairs wired to it. Indexing by the full output index (not a compacted
+            // message-ordinal) is what lets an operator interleave a signal output and a message
+            // output — e.g. `envelope` (`cv` signal + `active` message) for ADR-0032 voice-liveness.
             let out_targets: Vec<Vec<(usize, usize)>> = descriptor
                 .outputs
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| !matches!(p.ty, PortType::F32Buffer))
-                .map(|(port, _)| {
+                .map(|(port, p)| {
+                    if matches!(p.ty, PortType::F32Buffer) {
+                        return Vec::new();
+                    }
                     graph
                         .connections
                         .iter()
