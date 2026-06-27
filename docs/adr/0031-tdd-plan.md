@@ -30,15 +30,43 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | 5 Phase B — forks re-resolved (grill session 3): `is_materialized` + per-Voice | 🔍 re-scoped | issues `#99`·`#100`·`#101` |
 | 5 Phase B — per-Voice re-ruled (grill session 4): ~~flip them too, stub Voicer silent~~ | ⚠️ **WITHDRAWN** (session 5) | — |
 | 5 Phase B — Voicer rewrite as sub-patch host (grill session 5) | 🔍 **scoped → [ADR-0032](0032-voicer-hosts-voice-subpatches.md)** | — |
+| 5 Phase B — **reorder: infra-first** (session 6) — land flip-independent ADR-0032 infra green before the barrier | 🔁 in progress | — |
+| 5 Phase B infra — re-entrant `render_plan` free fn + `RenderScratch` (ADR-0032 §4) | ✅ done | `a49884e` |
+| 5 Phase B infra — `interface` block format + schema + loader | ⬜ pending | — |
+| 5 Phase B infra — instrument-resource kind (resource pipeline) | ⬜ pending | — |
+| 5 Phase B infra — `envelope` grows `active` output (f32/MsgWriter) | ⬜ pending | — |
 | 5 Phase B — gate/CV mono migration + value-math (pre-flip) | ⬜ pending | — |
-| 5 Phase B — flip `port_kind` `F32 ⇒ Value` (barrier) | ⬜ pending | — |
-| 5 Phase B — ADR-0032 Voicer rewrite (restores polyphony, post-flip pre-merge) | ⬜ pending | — |
+| 5 Phase B — flip `port_kind` `F32 ⇒ Value` (atomic barrier) | ⬜ pending | — |
+| 5 Phase B — ADR-0032 Voicer rewrite (restores polyphony, in the barrier) | ⬜ pending | — |
 | 6–8 | ⬜ pending | — |
 
 **Suite is green workspace-wide at `b4e558b`** (`cargo test --workspace`, clippy clean).
 **Phase A is fully done** — the only `Io` read/write verbs are now `input::<T>` / `output::<T>`
 (plus `varying`); `EventWriter`/`MsgWriter` are the two output writers. One commit per step
 (Phase A's last step took 3 green sub-commits: add arms → migrate call sites → delete).
+
+### 🔁 Session 6 ruling (2026-06-27) — reorder Phase B *infra-first* to shrink the red window
+
+Scoping the barrier against ADR-0032 surfaced that the flip→Voicer-rewrite span has **no green
+checkpoint** (ADR-0032 rejected neutering the polyphony tests — that was the withdrawn session-4
+path), so the literal doc order (flip → whole rewrite) is one enormous uncommittable red lump. **User
+ruling: reorder.** Land every **flip-independent** piece of ADR-0032 as its own green, committed step
+*first*; the irreducible atomic barrier then shrinks to: flip `port_kind` + gate-op held-read
+rewrites + `*_f32_value` math family + wire Voicer onto the pre-built infra + re-author instruments.
+This is faithful to the plan's own stated rationale ("order the sweep so the atomic flip is a late
+*green* barrier — no red window").
+
+**Flip-independent infra to land green first** (each its own commit):
+1. ✅ **re-entrant `render_plan` free fn + `RenderScratch`** (ADR-0032 §4) — `a49884e`. Pure refactor;
+   render is now a pure fn of `(plan, arena, scratch)`, callable per sub-plan with its own arena.
+2. ⬜ **`interface` block** — engine-honored I/O boundary (`inputs`/`outputs` name → `node/port`);
+   format parse + schema + loader bind/typecheck. Additive.
+3. ⬜ **instrument-resource kind** — resource pipeline (ADR-0016) resolves a path → built sub-`Graph`.
+   Additive.
+4. ⬜ **`envelope.active` output** — `f32`/`MsgWriter` (like `euclid.gate`, green today), the canonical
+   voice-liveness source. Additive.
+
+Then the barrier (atomic, transient-red on-branch until Voicer rewrite restores polyphony, then merge).
 
 ### ▶ Pickup for Phase B (next session)
 
