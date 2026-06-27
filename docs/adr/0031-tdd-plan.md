@@ -83,10 +83,17 @@ that flips `port_kind` breaks its other 19 ops → never green → never merges)
   types unchanged**. Green because under `F32 ⇒ Signal` the new verbs are behaviourally identical
   to the old ones for every current declaration (`io.input::<&[f32]>` and `io.signal` read the same
   buffer; `io.input::<f32>` and `io.last` read the same latch). Also: rename dense math
-  `add`/`mul`/… → `*_signal` (+ re-bless instruments), and re-declare the two Signal-intended
-  *control* inputs `oscillator.freq` / `filter.cutoff` `f32 → f32_buffer` (so the flip never touches
-  them — a constant feeds them via the V→S materialize path; unwired default handled at
-  re-declaration). Old verbs deleted at the end of Phase A.
+  `add`/`mul`/… → `*_f32_signal` (+ re-bless instruments/golden/schema), and re-declare the two
+  Signal-intended *control* inputs `oscillator.freq` / `filter.cutoff` `f32 → f32_buffer` (so the
+  flip never touches them — a constant feeds them via the V→S materialize path; unwired default
+  handled at re-declaration). Old verbs deleted at the end of Phase A.
+
+  **Math naming + file rule (decided in grilling, was getting lost):** math variants are
+  per-**type** *and* per-**form** — `add_f32_signal`, `add_f32_value`, room later for
+  `add_i64_value`, … — and the rename is **in-place (struct only), no file moves**. One file per
+  math *family* (`add.rs`) holds the shared scalar `fn add` (issue-#83 pure-fn seam) plus every
+  form/type struct; the signal shell loops the fn per-sample, the value shell calls it once.
+  `AddF32Value` etc. land beside `AddF32Signal` in the *same* file in Phase B. (Rename done @ `3821aa2`.)
 - **Phase B (one green barrier commit/sequence).** Now the only remaining `f32` ports are the
   genuinely-Value ones. Flip `port_kind: F32 ⇒ Value`; the gate/CV-spine ops whose **edge/trigger**
   ports actually take runtime Value messages and must block-slice (`euclid.clock`, `envelope.gate`,
