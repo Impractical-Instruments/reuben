@@ -74,7 +74,11 @@ fn seed_latch(
     enum_overrides: &[(usize, usize)],
 ) -> Arg {
     match &p.ty {
-        PortType::F32 => {
+        // F32 (Value-bound scalar control) and an F32Buffer *carrying meta* (ADR-0031 decision (a):
+        // a signal port with a scalar default, e.g. `oscillator.freq`) both seed from their
+        // override-or-default. A bare F32Buffer (no meta — audio) has no held value and falls to the
+        // placeholder arm below.
+        PortType::F32 | PortType::F32Buffer if p.meta.is_some() => {
             let v = input_overrides
                 .iter()
                 .find(|(po, _)| *po == port)

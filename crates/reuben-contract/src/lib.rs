@@ -168,7 +168,9 @@ fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractErr
             ),
         ));
     }
-    // `f32` meta only on `f32`, and required there.
+    // A `{ .. }` meta block is **required** on `f32` (it's a scalar control) and **optional** on
+    // `f32_buffer` (ADR-0031 decision (a): a signal port with a scalar default + knob, e.g.
+    // `oscillator.freq`). No other port type may carry one.
     match (p.ty.as_str(), &p.f32) {
         ("f32", None) => {
             return Err(ContractError::new(
@@ -179,7 +181,7 @@ fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractErr
                 ),
             ));
         }
-        ("f32", Some(m)) => {
+        ("f32" | "f32_buffer", Some(m)) => {
             if m.min > m.max {
                 return Err(ContractError::new(
                     at,
@@ -209,7 +211,7 @@ fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractErr
             return Err(ContractError::new(
                 at,
                 format!(
-                    "{label} {:?}: only a `f32` port carries a {{ .. }} meta block",
+                    "{label} {:?}: only a `f32` or `f32_buffer` port carries a {{ .. }} meta block",
                     p.name
                 ),
             ));
@@ -451,11 +453,23 @@ mod tests {
         let no_vocab = err(r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"enum"} ] }"#);
         assert!(no_vocab.message.contains("vocab"), "{}", no_vocab.message);
 
-        // A non-`f32` port can't carry f32 meta.
+        // A port that is neither `f32` nor `f32_buffer` can't carry f32 meta (ADR-0031 decision (a)
+        // extended the optional meta block to `f32_buffer`).
         let stray_meta = err(
-            r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"f32_buffer","f32":{"min":0,"max":1,"default":0}} ] }"#,
+            r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"note","f32":{"min":0,"max":1,"default":0}} ] }"#,
         );
         assert!(stray_meta.message.contains("f32"), "{}", stray_meta.message);
+
+        // ...but an `f32_buffer` *may* carry one (a signal control with a scalar default), and a
+        // bad range in it is still validated.
+        assert!(validate(&spec(
+            r#"{ "type_name": "x", "inputs": [ {"name":"freq","ty":"f32_buffer","f32":{"min":20,"max":20000,"default":440,"unit":"Hz","curve":"exponential"}} ] }"#,
+        ))
+        .is_ok());
+        let buf_oob = err(
+            r#"{ "type_name": "x", "inputs": [ {"name":"freq","ty":"f32_buffer","f32":{"min":0,"max":1,"default":5}} ] }"#,
+        );
+        assert!(buf_oob.message.contains("outside"), "{}", buf_oob.message);
 
         // Out-of-range f32 default.
         let oob = err(

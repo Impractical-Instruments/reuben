@@ -13,9 +13,11 @@ use crate::operator::{Io, Operator};
 use crate::vocab::Waveform;
 
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts and the Descriptor.
-// `freq` is a materialized `Float` control; `waveform` references the shared `Waveform` vocab enum.
+// `freq` is a signal control with a scalar default (ADR-0031 decision (a)): knob-set or unwired it
+// materializes from 440 Hz, yet an LFO/envelope Signal wires straight in. `waveform` references the
+// shared `Waveform` vocab enum.
 crate::operator_contract!(Oscillator {
-    inputs:  { freq:     f32 { 20.0..=20_000.0, default 440.0, "Hz", exp },
+    inputs:  { freq:     f32_buffer { 20.0..=20_000.0, default 440.0, "Hz", exp },
                waveform: enum(Waveform) },
     outputs: { audio: f32_buffer },
 });
@@ -158,6 +160,25 @@ mod tests {
         assert!(
             (0.98..=1.02).contains(&peak),
             "expected sine peak ~1.0, got {peak}"
+        );
+    }
+
+    /// (1b) ADR-0031 decision (a): `freq` is now a signal port (`f32_buffer`) *carrying* a scalar
+    /// default. With **no** override wired or knob-set, the engine must still materialize the buffer
+    /// from that default (440 Hz) — not an empty/zero buffer. Drive it without `set(IN_FREQ, ..)` and
+    /// assert the same ~440 tone.
+    #[test]
+    fn unwired_freq_materializes_its_440_default() {
+        let n = SR as usize; // ~1 second
+        let out = OpDriver::for_type(Oscillator::new(), SR)
+            .set(IN_WAVEFORM, Waveform::Sine)
+            .render(n)
+            .output(OUT_AUDIO)
+            .to_vec();
+        let crossings = upward_crossings(&out);
+        assert!(
+            (435..=445).contains(&crossings),
+            "unwired freq should default to ~440 Hz, got {crossings} crossings"
         );
     }
 

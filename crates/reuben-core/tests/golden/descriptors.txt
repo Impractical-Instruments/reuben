@@ -49,11 +49,11 @@ operator euclid
   in[1] f32 steps min=1.0 max=16.0 default=16.0 unit="steps" curve=linear
   in[2] f32 pulses min=0.0 max=16.0 default=4.0 unit="pulses" curve=linear
   in[3] f32 rotation min=0.0 max=15.0 default=0.0 unit="steps" curve=linear
-  out[0] f32_buffer gate
+  out[0] f32 gate
   lanes inherit
 operator filter
   in[0] f32_buffer audio
-  in[1] f32 cutoff min=20.0 max=20000.0 default=1000.0 unit="Hz" curve=exponential
+  in[1] f32_buffer cutoff min=20.0 max=20000.0 default=1000.0 unit="Hz" curve=exponential
   in[2] f32 resonance min=0.0 max=1.0 default=0.2 unit="" curve=linear
   in[3] enum mode variants=["Lp", "Hp", "Bp"] default=0
   out[0] f32_buffer audio
@@ -114,7 +114,7 @@ operator osc_out
   in[0] message in
   lanes inherit
 operator oscillator
-  in[0] f32 freq min=20.0 max=20000.0 default=440.0 unit="Hz" curve=exponential
+  in[0] f32_buffer freq min=20.0 max=20000.0 default=440.0 unit="Hz" curve=exponential
   in[1] enum waveform variants=["Sine", "Saw"] default=0
   out[0] f32_buffer audio
   lanes inherit

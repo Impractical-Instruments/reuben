@@ -74,8 +74,11 @@ struct F32MetaAst {
 
 /// How a port is declared — its [`Arg`] type (ADR-0030).
 enum PortTypeAst {
-    /// `name: f32_buffer` — a dense per-sample signal (audio / control buffer).
-    F32Buffer,
+    /// `name: f32_buffer` — a dense per-sample signal (audio / control buffer). An optional
+    /// `{ .. }` meta block (ADR-0031 decision (a)) gives a Signal port a scalar default + knob
+    /// range (`oscillator.freq`, `filter.cutoff`): unwired/knob-set it materializes from the
+    /// default, yet a Signal source still wires straight in.
+    F32Buffer(Option<F32MetaAst>),
     /// `name: f32 { .. }` — a materialized scalar control with its default/range meta.
     F32(F32MetaAst),
     /// `name: enum(VocabType)` — a held vocab enum, naming its shared `vocab` type.
@@ -127,19 +130,16 @@ impl ContractInput {
         let ports = |ps: &[PortAst]| {
             ps.iter()
                 .map(|p| {
+                    let f32_meta = |m: &F32MetaAst| F32Meta {
+                        min: m.min,
+                        max: m.max,
+                        default: m.default,
+                        unit: m.unit.clone(),
+                        curve: m.curve.clone(),
+                    };
                     let (ty, f32, vocab) = match &p.ty {
-                        PortTypeAst::F32Buffer => ("f32_buffer", None, None),
-                        PortTypeAst::F32(m) => (
-                            "f32",
-                            Some(F32Meta {
-                                min: m.min,
-                                max: m.max,
-                                default: m.default,
-                                unit: m.unit.clone(),
-                                curve: m.curve.clone(),
-                            }),
-                            None,
-                        ),
+                        PortTypeAst::F32Buffer(m) => ("f32_buffer", m.as_ref().map(f32_meta), None),
+                        PortTypeAst::F32(m) => ("f32", Some(f32_meta(m)), None),
                         PortTypeAst::Enum(t) => ("enum", None, Some(t.to_string())),
                         PortTypeAst::Note => ("note", None, None),
                         PortTypeAst::Harmony => ("harmony", None, None),
@@ -220,10 +220,27 @@ impl ContractInput {
                 .map(|p| {
                     let name = &p.name;
                     match p.ty.as_str() {
-                        // A dense per-sample signal — `Port::f32_buffer`.
-                        "f32_buffer" => {
-                            quote! { ::reuben_core::descriptor::Port::f32_buffer(#name) }
-                        }
+                        // A dense per-sample signal — `Port::f32_buffer`, or `f32_buffer_meta`
+                        // when it carries a scalar default + knob (ADR-0031 decision (a)).
+                        "f32_buffer" => match p.f32.as_ref() {
+                            None => quote! { ::reuben_core::descriptor::Port::f32_buffer(#name) },
+                            Some(m) => {
+                                let (min, max, default, unit) = (m.min, m.max, m.default, &m.unit);
+                                let curve = if m.curve == "exponential" {
+                                    quote! { ::reuben_core::descriptor::Curve::Exponential }
+                                } else {
+                                    quote! { ::reuben_core::descriptor::Curve::Linear }
+                                };
+                                quote! {
+                                    ::reuben_core::descriptor::Port::f32_buffer_meta(
+                                        ::reuben_core::descriptor::ParamMeta {
+                                            name: #name, min: #min, max: #max,
+                                            default: #default, unit: #unit, curve: #curve,
+                                        }
+                                    )
+                                }
+                            }
+                        },
                         // A `Note` event port — `Port::note`.
                         "note" => quote! { ::reuben_core::descriptor::Port::note(#name) },
                         // A `Harmony` held port — `Port::harmony`.
@@ -379,7 +396,16 @@ fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
         // `parse_any` so the type keyword may be a reserved word (`enum`).
         let kw = Ident::parse_any(&body)?;
         let ty = match kw.to_string().as_str() {
-            "f32_buffer" => PortTypeAst::F32Buffer,
+            // A bare `f32_buffer` is a pure signal; an optional `{ .. }` meta block gives it a
+            // scalar default + knob range (ADR-0031 decision (a)).
+            "f32_buffer" => {
+                let meta = if body.peek(syn::token::Brace) {
+                    Some(parse_f32_meta(&body)?)
+                } else {
+                    None
+                };
+                PortTypeAst::F32Buffer(meta)
+            }
             "note" => PortTypeAst::Note,
             "harmony" => PortTypeAst::Harmony,
             "f32" => PortTypeAst::F32(parse_f32_meta(&body)?),
@@ -693,6 +719,34 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("type_name : \"oscillator\""), "{out}");
+    }
+
+    // A signal control with a scalar default (ADR-0031 decision (a)): `f32_buffer { .. }` carries
+    // its meta yet stays a buffer port, so it emits `Port::f32_buffer_meta` — distinct from the
+    // bare `Port::f32_buffer` and from a Value `Port::f32`.
+    #[test]
+    fn f32_buffer_with_meta_emits_f32_buffer_meta() {
+        let out = render(
+            r#"Osc {
+                inputs:  { freq: f32_buffer { 20.0..=20_000.0, default 440.0, "Hz", exp } },
+                outputs: { audio: f32_buffer },
+            }"#,
+        );
+        assert!(out.contains("Port :: f32_buffer_meta"), "{out}");
+        assert!(out.contains("default : 440"), "{out}");
+        assert!(out.contains("Curve :: Exponential"), "{out}");
+        // Not the bare-buffer ctor and not the Value `f32` ctor.
+        assert!(!out.contains("Port :: f32_buffer (\"freq\")"), "{out}");
+        assert!(!out.contains("Port :: f32 ("), "{out}");
+    }
+
+    // A bare `f32_buffer` (no meta) still emits the plain ctor — the meta block is optional.
+    #[test]
+    fn bare_f32_buffer_emits_plain_ctor() {
+        let out =
+            render(r#"Sig { inputs: { audio: f32_buffer }, outputs: { audio: f32_buffer } }"#);
+        assert!(out.contains("Port :: f32_buffer (\"audio\")"), "{out}");
+        assert!(!out.contains("f32_buffer_meta"), "{out}");
     }
 
     // An unknown port type is rejected with a span, as a compile_error.

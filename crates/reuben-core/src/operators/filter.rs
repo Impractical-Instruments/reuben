@@ -26,7 +26,9 @@ use crate::vocab::FilterMode;
 // `mode` references the shared `FilterMode` vocab enum (no per-op type), so no drift.
 crate::operator_contract!(Filter {
     inputs:  { audio: f32_buffer,
-               cutoff:    f32 { 20.0..=20_000.0, default 1_000.0, "Hz", exp },
+               // signal control with a scalar default (ADR-0031 decision (a)): knob-set/unwired it
+               // materializes from 1 kHz, yet an LFO/envelope Signal wires straight in.
+               cutoff:    f32_buffer { 20.0..=20_000.0, default 1_000.0, "Hz", exp },
                resonance: f32 { 0.0..=1.0,       default 0.2,     "",   lin },
                mode:      enum(FilterMode) },
     outputs: { audio: f32_buffer },

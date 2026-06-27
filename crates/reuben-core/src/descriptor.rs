@@ -144,6 +144,20 @@ impl Port {
         }
     }
 
+    /// A signal port that *also* carries a scalar default + knob range (ADR-0031, decision (a)).
+    /// Classifies [`Signal`](crate::plan::PortKind::Signal) — so a Signal source (LFO / envelope)
+    /// wires straight in with no converter — yet when unwired or knob-set it still materializes a
+    /// per-sample buffer ZOH from `meta.default`, exactly like [`f32`](Self::f32). The form a
+    /// signal-modulatable control (`oscillator.freq`, `filter.cutoff`) takes so it can accept
+    /// modulation without flipping to Value (where an LFO wire would be a hard S→V mismatch).
+    pub fn f32_buffer_meta(meta: ParamMeta) -> Self {
+        Self {
+            name: meta.name,
+            ty: PortType::F32Buffer,
+            meta: Some(meta),
+        }
+    }
+
     /// A struct vocab port — [`PortType::Vocab`] with no enum metadata. `type_name` is the type's
     /// `Arg` variant name (`"Note"`, `"Harmony"`). The `note`/`harmony` helpers wrap this.
     pub const fn vocab(name: &'static str, type_name: &'static str) -> Self {

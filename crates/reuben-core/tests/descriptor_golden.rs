@@ -19,6 +19,7 @@ use reuben_core::registry::Registry;
 fn kind(ty: &PortType) -> &'static str {
     match ty {
         PortType::F32Buffer => "f32_buffer",
+        PortType::F32 => "f32",
         PortType::Vocab { name: "Note", .. } => "message",
         PortType::Vocab {
             name: "Harmony", ..
@@ -43,13 +44,15 @@ fn curve(c: Curve) -> &'static str {
 fn render(d: &Descriptor) -> String {
     let mut s = format!("operator {}\n", d.type_name);
     for (i, p) in d.inputs.iter().enumerate() {
-        // A new-style materialized F32 input (ADR-0028) carries its own metadata; render it so
-        // the snapshot captures the default/range that used to live on a same-named param. An
-        // `Enum` input renders its ordered variants + default index. Carrier f32_buffer/message/
-        // harmony inputs (no `meta`/`enum_meta`) render via `kind`.
+        // A meta-carrying input renders its own default/range. The type word comes from `kind`,
+        // not a hardcoded `f32`: a materialized scalar control is `f32`, but a *signal* control
+        // with a scalar default (ADR-0031 decision (a), e.g. `oscillator.freq`) is `f32_buffer`.
+        // An `Enum` input renders its ordered variants + default index. Bare carrier
+        // f32_buffer/message/harmony inputs (no `meta`/`enum_meta`) render via `kind`.
         match (&p.meta, p.enum_meta()) {
             (Some(m), _) => s.push_str(&format!(
-                "  in[{i}] f32 {} min={:?} max={:?} default={:?} unit={:?} curve={}\n",
+                "  in[{i}] {} {} min={:?} max={:?} default={:?} unit={:?} curve={}\n",
+                kind(&p.ty),
                 p.name,
                 m.min,
                 m.max,
