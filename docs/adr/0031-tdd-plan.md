@@ -21,12 +21,27 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | 1 — `PortKind` + wire checker | ✅ done | `b9b451c` |
 | 2 — `f32_buffer` rename | ✅ done | `64498fe` |
 | 3 — new `Io` API | ✅ done | `fadd3ed` |
-| 5 Phase A — accessor migration + `*_signal` rename + osc/filter→f32_buffer (Decision B) | 🔄 in progress | — |
-| 5 Phase B — flip `F32⇒Value` + gate/CV spine + `*_value` family | ⬜ pending | — |
+| 5 Phase A — accessor migration | ✅ done | `e411a7a` |
+| 5 Phase A — math `*_f32_signal` rename | ✅ done | `3821aa2` |
+| 5 Phase A — osc.freq/filter.cutoff → f32_buffer | ⬜ **next** | — |
+| 5 Phase A — delete old Io verbs | ⬜ pending | — |
+| 5 Phase B — flip `F32⇒Value` + gate/CV spine + `*_f32_value` family | ⬜ pending | — |
 | 6–8 | ⬜ pending | — |
 
-**Suite is green workspace-wide at step 3** (`cargo test --workspace`, clippy clean).
+**Suite is green workspace-wide at `3821aa2`** (`cargo test --workspace`, clippy clean).
 One commit per step.
+
+### ⚠ Open question — resolve before the next step (osc.freq/filter.cutoff → f32_buffer)
+
+Today `filter.cutoff` / `oscillator.freq` are `f32` scalar controls: their unwired/knob-set
+**default** lives in the port's `meta` and rides the latch, which the engine materializes into a
+buffer. Once re-declared `f32_buffer` (Signal), an `f32_buffer` input carries **no `meta` and no
+latch** — so an *unwired* port (or one set by a bare param/knob, not a wire) has no source and would
+get an empty buffer. **How does a constant/knob-set value reach a now-`f32_buffer` control input?**
+Options to weigh next session: (a) let `f32_buffer` inputs carry optional `meta`+latch and materialize
+from it when unwired (mirrors today's path); (b) require a constant to be wired as an explicit Value
+source (the fixture-A V→S materialize path) and drop the bare-knob affordance; (c) something else.
+This is a real fork — **/grill-me, don't assume.**
 
 Step 3 notes (API-shape decision — the ADR was stale): the read/write surface is **two
 return-type-dispatched verbs**, not five named ones. `io.input::<T>(port)` (`&[f32]`⇒Signal slice ·
