@@ -273,6 +273,38 @@ impl<'a> IoOutput<'a> for f32 {
     }
 }
 
+impl<'a> IoOutput<'a> for crate::vocab::Harmony {
+    // A held `Harmony` is a single Value, so it reuses [`MsgWriter`] — dedup + last-write-wins are
+    // the right semantics (publishing the same Harmony twice changes nothing downstream).
+    type Out<'io>
+        = MsgWriter<'io>
+    where
+        'a: 'io;
+    fn write<'io>(io: &'io mut Io<'a>, port: usize) -> MsgWriter<'io> {
+        MsgWriter {
+            sink: io.emit.as_deref_mut(),
+            port,
+            frame_offset: io.frame_offset,
+            last: None,
+        }
+    }
+}
+
+impl<'a> IoOutput<'a> for crate::vocab::pitch::Note {
+    // An Event output is append-only — [`EventWriter`], not [`MsgWriter`].
+    type Out<'io>
+        = EventWriter<'io>
+    where
+        'a: 'io;
+    fn write<'io>(io: &'io mut Io<'a>, port: usize) -> EventWriter<'io> {
+        EventWriter {
+            sink: io.emit.as_deref_mut(),
+            port,
+            frame_offset: io.frame_offset,
+        }
+    }
+}
+
 /// A handle for **sparse Value writes** on one output port, returned by `io.output::<f32>(port)`
 /// (ADR-0031). Lowers to today's `Emit → Event → latch`. [`set`](MsgWriter::set) is **deduped** (a
 /// no-op change emits nothing, so the wire stays genuinely sparse), **last-write-wins per frame**,
@@ -310,6 +342,33 @@ impl MsgWriter<'_> {
             });
         }
         self.last = Some(arg);
+    }
+}
+
+/// A handle for **Event writes** on one output port, returned by `io.output::<Note>(port)`
+/// (ADR-0031). Unlike [`MsgWriter`], it is **append-only**: every [`emit`](EventWriter::emit) pushes
+/// a distinct Message — no dedup, no last-write-wins — so a chord's many notes at a single frame all
+/// survive and a re-press of the same note is a real second event. Addressless (internal wires route
+/// by connection); lowers to today's `Emit → Event`. Replaces the old `emit` verb for events.
+pub struct EventWriter<'io> {
+    /// The node's emit sink, or `None` on a Lane that does not collect (every Lane but 0).
+    sink: Option<&'io mut Vec<Emit>>,
+    port: usize,
+    frame_offset: usize,
+}
+
+impl EventWriter<'_> {
+    /// Push one Event `payload` on this port at segment-relative `frame`. Always appends.
+    pub fn emit(&mut self, frame: usize, payload: impl Into<Arg>) {
+        let frame = self.frame_offset + frame;
+        if let Some(sink) = self.sink.as_mut() {
+            sink.push(Emit {
+                port: self.port,
+                address: "",
+                arg: payload.into(),
+                frame,
+            });
+        }
     }
 }
 
@@ -579,5 +638,72 @@ mod new_io_api {
         let mut sink = Vec::new();
         emitting_io(&mut sink, 100).output::<f32>(0).set(2, 1.0);
         assert_eq!(sink[0].frame, 102);
+    }
+
+    /// `output::<Note>(port).emit(frame, note)` pushes one Event Message on that port — addressless
+    /// (internal wires route by connection; ADR-0031), the new spelling of `emit` for events.
+    #[test]
+    fn output_event_emit_pushes_one_addressless_message() {
+        use crate::vocab::pitch::{Note, Pitch};
+        let mut sink = Vec::new();
+        emitting_io(&mut sink, 0)
+            .output::<Note>(0)
+            .emit(2, Note::new(Pitch::from_midi(60.0), 1.0));
+        assert_eq!(sink.len(), 1);
+        assert_eq!(sink[0].port, 0);
+        assert_eq!(sink[0].frame, 2);
+        assert_eq!(
+            sink[0].arg,
+            Arg::Note(Note::new(Pitch::from_midi(60.0), 1.0))
+        );
+        assert_eq!(
+            sink[0].address, "",
+            "internal event write carries no address"
+        );
+    }
+
+    /// An Event writer is **append-only** — unlike `MsgWriter`, repeated equal payloads are NOT
+    /// deduped and same-frame writes are NOT collapsed (a chord lands many notes at one frame).
+    #[test]
+    fn output_event_emit_appends_without_dedup_or_last_write_wins() {
+        use crate::vocab::pitch::{Note, Pitch};
+        let mut sink = Vec::new();
+        {
+            let mut io = emitting_io(&mut sink, 0);
+            let mut w = io.output::<Note>(0);
+            // Two chord tones at the SAME frame — both must survive (no last-write-wins).
+            w.emit(0, Note::new(Pitch::Degree(0), 1.0));
+            w.emit(0, Note::new(Pitch::Degree(2), 1.0));
+            // The same payload again — must NOT dedup (re-press is a real second event).
+            w.emit(4, Note::new(Pitch::Degree(0), 1.0));
+            w.emit(4, Note::new(Pitch::Degree(0), 1.0));
+        }
+        assert_eq!(sink.len(), 4);
+    }
+
+    /// The Event writer adds the segment frame offset, exactly like the old `emit` and `MsgWriter`.
+    #[test]
+    fn output_event_emit_adds_the_segment_frame_offset() {
+        use crate::vocab::pitch::{Note, Pitch};
+        let mut sink = Vec::new();
+        emitting_io(&mut sink, 100)
+            .output::<Note>(0)
+            .emit(2, Note::new(Pitch::from_midi(60.0), 1.0));
+        assert_eq!(sink[0].frame, 102);
+    }
+
+    /// A held `Harmony` output reuses `MsgWriter` (`output::<Harmony>(port).set(...)`): dedup +
+    /// last-write-wins are the right semantics for a single held Value.
+    #[test]
+    fn output_harmony_uses_msgwriter_dedup() {
+        use crate::vocab::Harmony;
+        let mut sink = Vec::new();
+        {
+            let mut io = emitting_io(&mut sink, 0);
+            let mut w = io.output::<Harmony>(0);
+            w.set(0, Harmony::default()); // emits
+            w.set(4, Harmony::default()); // unchanged → deduped
+        }
+        assert_eq!(sink.len(), 1);
     }
 }

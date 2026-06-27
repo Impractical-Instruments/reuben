@@ -24,12 +24,42 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | 5 Phase A — accessor migration | ✅ done | `e411a7a` |
 | 5 Phase A — math `*_f32_signal` rename | ✅ done | `3821aa2` |
 | 5 Phase A — osc.freq/filter.cutoff → f32_buffer | ✅ done | `f1e8fdc` |
-| 5 Phase A — delete old Io verbs | ⬜ **next** | — |
+| 5 Phase A — output migration (`emit`→`EventWriter`/`MsgWriter`) + delete old verbs | ⬜ **in progress** | — |
 | 5 Phase B — flip `F32⇒Value` + gate/CV spine + `*_f32_value` family | ⬜ pending | — |
 | 6–8 | ⬜ pending | — |
 
 **Suite is green workspace-wide at `3821aa2`** (`cargo test --workspace`, clippy clean).
 One commit per step.
+
+### ✅ Resolved (grilling session) — "delete old Io verbs" is really *finish output migration, then delete*
+
+The progress table's earlier "accessor migration ✅ done" covered **inputs only**; `emit` (the
+output/event side) was never migrated. So this step = migrate every `emit` call site to the step-3
+`output::<T>` verb, *then* delete the five value-access verbs. Resolved scope:
+
+- **Delete set = the 5 value-access verbs:** `signal` / `last` / `stream` / `signal_mut` / `emit`.
+  (Decision B's Phase-A bullet listing `emit` for plain "deletion" was misleading — `emit` must be
+  *migrated*, not merely dropped, since 14 live call sites carry events/held-values.)
+- **`varying` is OUT of scope — kept.** It is an engine-fed optimization *hint* (computed in
+  `render.rs` post-block from latch deltas, fed via `with_varying`), not a value carrier. Filter's
+  flagship const-fold path and `harmony`'s change-scan depend on it; no replacement is designed.
+- **Event-write API:** add a new **`EventWriter`** returned by `output::<Note>(port)` —
+  `.emit(frame, note)`, **append-only, no dedup, no last-write-wins** (chord tones land many-per-frame),
+  addressless, mirrors old `emit`'s `frame_offset` add. `output::<Harmony>(port)` **reuses `MsgWriter`**
+  (held Value, dedup+LWW is correct). euclid's gate (`f32` 0/1) uses the existing `output::<f32>`
+  `MsgWriter`. (`io.input::<&[f32]>` returns an **arena-lifetime** slice, not a `&io` borrow, so euclid
+  can hold the gate writer across its per-sample loop — no borrow conflict.)
+- **`Emit.address` stays for now (writers set `""`).** The OSC boundary already routes by
+  `plan.outbound_taps[].address` (the node address), **not** `Emit.address` (`render.rs:238`), so the
+  field is already dead for routing. Tests asserting `e.address == "notes"/"gate"` get their address
+  assertion dropped. Removing the field itself remains **step 7**.
+- **Stays Phase-A green** (`F32 ⇒ Signal` untouched): Note=Event / Harmony=Value port kinds are
+  unaffected by the future flip, and the euclid `f32` gate still materializes downstream exactly as the
+  old `emit` did.
+- **Commits: 3 green sub-commits** — (1) additive `EventWriter` + `Note`/`Harmony` output arms + unit
+  tests (old verbs still present); (2) migrate `emit` call sites op-by-op (chord, snap, transpose,
+  strum, sequencer, euclid, harmony, osc_out) + update address-asserting tests; (3) delete the 5 verbs
+  + fix the `scaffold.rs` `signal_mut` template & its test.
 
 ### ✅ Resolved (grilling session) — osc.freq/filter.cutoff → f32_buffer
 
