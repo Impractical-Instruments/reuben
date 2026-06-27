@@ -25,7 +25,7 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | 5 Phase A — math `*_f32_signal` rename | ✅ done | `3821aa2` |
 | 5 Phase A — osc.freq/filter.cutoff → f32_buffer | ✅ done | `f1e8fdc` |
 | 5 Phase A — output migration (`emit`→`EventWriter`/`MsgWriter`) + delete old verbs | ✅ done | `a43c9c1`·`6775aa1`·`b4e558b` |
-| 5 Phase B — flip `F32⇒Value` + gate/CV spine + `*_f32_value` family | ⬜ **next** | — |
+| 5 Phase B — forks resolved (grill session 2), execution not started | 🔍 **scoped** | — |
 | 6–8 | ⬜ pending | — |
 
 **Suite is green workspace-wide at `b4e558b`** (`cargo test --workspace`, clippy clean).
@@ -57,6 +57,63 @@ The atomic green barrier (Decision B). In one sequence, on this branch:
 `Emit.address` field still exists (writers set `""`); its removal + boundary rework is **step 7**.
 Note `cargo doc -D warnings` is **not** a CI gate (reuben-contract + some reuben-core links were
 already broken pre-Phase-A); don't be alarmed by it.
+
+### ✅ Resolved (grilling session 2, 2026-06-27) — Phase B fork rulings + execution shape
+
+A full audit of every `io.input::<&[f32]>` / `io.input::<f32>` site against its port declaration
+surfaced ports the plan above underspecified. Rulings (all confirmed in a grill):
+
+**Forced f32→f32_buffer (read per-sample as a slice today; the flip would break that read).**
+- **Signal-math operands** — `add`/`mul` (`a`,`b`), `power` (`x` only; `exponent` stays `f32`
+  Value, read held), `differentiate`/`integrate` (`in`): declared `f32_buffer` **with meta** so the
+  identity/default still materializes (`add` default 0, `mul` default 1 — decision (a) path). The
+  Phase-A "rename to `*_f32_signal`" was struct-only and left the ports `f32`; this is where they
+  become buffers.
+- **Swept controls** — `filter.resonance`, `pan.pan`, `djfilter.position`, `strum.position`,
+  `map.in`: all `f32_buffer` (behaviour-preserving — they're read per-sample, a constant
+  materializes, modulation preserved, no read-logic rewrite). *Issues to file:* (1) retrofit
+  `strum.position` back to `f32` Value; (2) give `map` `_value`/`_signal` variants like the math
+  nodes (its Float reframe stays deferred).
+
+**Gate/CV spine — full flip to `f32` Value (the chosen, ADR-faithful path; rewrite per-sample
+buffer edge-detection into held-value reads driven by block-slicing).**
+- **Inputs** `f32_buffer → f32`: `euclid.clock`, **`sequencer.clock`** (plan's step-3 list omitted
+  it — ruled an oversight; flipped for consistency so audio→clock hard-errors everywhere),
+  `envelope.gate`, `sample.gate`, `sample.freq`. Each reads `io.input::<f32>` once per block-slice
+  and compares to held state for the edge; tests switch from `drive(buffer)` to `push(port, frame,
+  v)` message injection (`OpDriver::push` already supports it).
+- **Outputs** `f32_buffer → f32` (buffer write → `MsgWriter`): `clock.gate` (continuous square wave
+  → sparse rising/falling `set()` emits inside the phasor loop; `clock.phase` stays `f32_buffer`),
+  `voicer.freq`/`voicer.gate` (the op already builds a sparse change-list). `euclid.gate` is already
+  `f32`+`MsgWriter` (Phase A) — no change. `envelope.cv` stays `f32_buffer`.
+- **m2s.in** stays `f32` Value (it is THE V→S converter — its input is conceptually a Value); rewrite
+  its loop to read the held target once per block-slice and smooth toward it within each constant
+  segment (state threads across). *Not* redeclared `f32_buffer`.
+
+**Net-new `*_f32_value` math family — `add`/`mul`/`power` only.** All-`f32` ports, Value form; the
+value shell reads its held operands via `io.input::<f32>`, calls the **same** shared scalar `fn`
+once, and emits the result via `io.output::<f32>(OUT).set(0, v)` (`MsgWriter`, deduped). Block-slicing
+re-runs `process` at every operand change, so the output is sample-accurate. `differentiate_f32_value`
+/`integrate_f32_value` are **skipped** (inherently temporal; dubious as Value) — *issue to file* if
+wanted later.
+
+**`is_materialized` fix:** key on `matches!(ty, F32Buffer) && meta.is_some()` (an `f32_buffer`-with-
+meta materializes; a bare `f32` Value does not). Update `contract_shapes.rs` (the `filter_demo`
+fixture's `f32` cutoff stops being "materialized"; redeclare it `f32_buffer` or move the assertion).
+
+**Execution shape — carve a green pre-commit, then the irreducible barrier:**
+1. **Pre-commit (stays green under `F32 ⇒ Signal`):** all the *forced f32→f32_buffer* edits above
+   (signal-math operands + swept controls). `f32_buffer`-with-meta is Signal under the current
+   classification too and materializes from its default, so the slice reads keep working. Re-bless
+   the descriptor golden (+ schema/instrument goldens if they move). Commit.
+2. **Atomic barrier (one commit/sequence — transient-red until done, do not commit mid-flip):**
+   flip `port_kind` `F32 ⇒ Value`; fix `is_materialized`; the gate/CV input rewrites; the gate/CV
+   output rewrites; `m2s` loop rewrite; author the three `_value` math ops; re-bless all snapshots;
+   file the issues.
+
+Rationale for the split: the gate/CV held-read rewrites are only *correct* after the flip (a
+materialized Signal port's `io.input::<f32>` reads the end-of-block latch, not a block-sliced held
+value), so they cannot be green pre-flip — but the f32→f32_buffer edits can, shrinking the red window.
 
 ### ✅ Resolved (grilling session) — "delete old Io verbs" is really *finish output migration, then delete*
 
