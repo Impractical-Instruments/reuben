@@ -36,9 +36,10 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | 5 Phase B infra — instrument-resource kind (resource pipeline) | ✅ done | `8874b9b` |
 | 5 Phase B infra — `envelope` grows `active` output (f32/MsgWriter); closes mixed signal+msg output gap | ✅ done | `6f485e1` |
 | 5 Phase B — `*_f32_value` math family (add/mul/power), pre-flip green | ✅ done | `6a9bcb1` |
-| 5 Phase B — gate/CV held-read rewrites (coupled to flip — barrier) | ⬜ pending | — |
-| 5 Phase B — flip `port_kind` `F32 ⇒ Value` (atomic barrier) | ⬜ pending | — |
-| 5 Phase B — ADR-0032 Voicer rewrite (restores polyphony, in the barrier) | ⬜ pending | — |
+| 5 Phase B — flip `port_kind` `F32 ⇒ Value` (atomic barrier) | 🔴 done on working tree (uncommitted — barrier red) | — |
+| 5 Phase B — gate/CV held-read rewrites (6 spine ports + `m2s`) | 🔴 done on working tree (unit tests green) | — |
+| 5 Phase B — ADR-0032 Voicer rewrite (restores polyphony, in the barrier) | ⬜ pending — **next** | — |
+| 5 Phase B — re-bless goldens + fix integration tests → green → **commit** | ⬜ pending | — |
 | 6–8 | ⬜ pending | — |
 
 **Suite is green workspace-wide at `b4e558b`** (`cargo test --workspace`, clippy clean).
@@ -169,6 +170,60 @@ note allocation, delete Lane fan-out, re-author instruments). (4) Merge.
 `Emit.address` field still exists (writers set `""`); its removal + boundary rework is **step 7**.
 Note `cargo doc -D warnings` is **not** a CI gate (reuben-contract + some reuben-core links were
 already broken pre-Phase-A); don't be alarmed by it.
+
+### 🚧 Session 8 (2026-06-27) — barrier first half landed on the working tree (UNCOMMITTED, red)
+
+Executed the flip + the whole gate/CV held-read sweep. **The working tree is intentionally red**
+(do-not-commit-mid-flip): all per-op **unit** tests pass (257 lib + every op suite), but ~30
+**integration** tests fail with one root cause — `FormMismatch Signal→Value` from `voicer.freq`/`gate`
+(still `f32_buffer` Signal) wiring into the now-Value `sample`/`envelope` inputs. This is the
+documented transient polyphony break; **only the ADR-0032 Voicer rewrite clears it.**
+
+**Done (working tree):**
+- `port_kind`: `F32 ⇒ Value` (`plan.rs` `port_kind`); `F32Buffer` stays Signal.
+- 6 spine ports `f32_buffer → f32` + held edge-detect rewrites: `euclid.clock`, `sequencer.clock`,
+  `sample.gate`/`freq`, `envelope.gate` (held read once/sub-block, edge vs `prev` at frame 0 — the
+  slice's frame 0 *is* the change frame, so sample-accurate). `clock.gate` → sparse `f32` `MsgWriter`
+  edges (new `gate_high` state carries across blocks). `oscillator.freq`/`envelope.cv` stayed
+  `f32_buffer` ✓.
+- `m2s.in` loop rewritten: held target read once, smooth per-sample (the per-sample buffer read broke
+  on the flip — it's the V→S converter, `in` stays `f32` Value).
+- **Macro note:** `operator_contract!` requires `f32 { .. }` meta (no bare `f32`). Each Value gate got
+  a `{ 0.0..=1.0, default 0.0 }` meta — seeds the latch to 0 (gate-off) and decodes via
+  `io.input::<f32>`, exactly what a wire-driven gate needs. No macro change. (Settable-numeric side
+  effect is harmless.)
+- Unit tests migrated `drive(buffer)` → `push(port, frame, v)` edge injection (a local
+  `push_clock`/`push_gate` helper per op: push frame-0 level unconditionally so a continuous render
+  drops the stale latch, then a change per 0.5-threshold crossing). Clock tests ZOH-reconstruct the
+  dense gate from its edge emits (`gate_buffer` helper) so the bit-identical assertion still holds.
+
+**NOT yet done (next session):** re-bless `descriptors.txt` + `instrument.schema.json` (deferred to
+the *end* — Voicer's contract changes again in the rewrite, so blessing now just re-churns).
+
+### ▶ Pickup — ADR-0032 Voicer rewrite (the rest of the barrier). Forks to resolve first:
+
+The infra is all landed (interface, instrument-resource, `render_plan` free fn, `envelope.active`).
+Remaining is the Voicer op itself + Lane deletion + voice-patch authoring + integration-test fixes.
+ADR-0032 is sketch-level at the code seam; **grill these forks before building:**
+
+- **A — N voice Graphs.** `Plan::instantiate` *consumes* the Graph and `Graph` is **not** `Clone`
+  (holds `Box<dyn Operator>`). Options: Voicer stores the patch JSON source + registry/resolver and
+  **rebuilds** N graphs; or the loader builds `Vec<Graph>` eagerly and hands them over; or add a
+  `Graph::clone_via_spawn` (per-op `spawn` + copy wiring).
+- **B — instantiation lifecycle.** Sub-plans + per-voice arenas need `AudioConfig`, but
+  `bind_resources` runs at load with **no** config. Add an operator hook called from
+  `Plan::instantiate` (has config) — *recommended* — vs lazy-instantiate on first `process`
+  (allocates on the first block; `rt_safe` only checks *after* warmup, so it'd pass, but it's ugly).
+- **C — Lane fan-out deletion.** Delete `LaneRule::FromParam` + per-Lane replication + per-Lane render
+  loop now (ADR-0032 Consequence) vs leave it dormant (`LaneRule::Inherit` ⇒ single-Lane everywhere)
+  and clean up in a follow-up. Only Voicer ever used Lanes (confirmed by the session-7 substrate map).
+- **D — voice-patch authoring.** Write the voice patch(es) (single-Lane synth chain with an
+  `interface { inputs: freq/gate, outputs: audio/active }`) and re-author every polyphonic instrument
+  (`default.json`, `sampler.json`, `chord-player.json`, …) to reference a voice patch as an
+  instrument-resource instead of wiring `voicer → osc.freq / env.gate / sample.*` directly.
+
+After the rewrite: re-bless both goldens, get `cargo test --workspace` + clippy green, **then commit
+the whole barrier as one commit** (flip + spine + Voicer), then merge.
 
 ### ⚠️ WITHDRAWN (grilling session 5, 2026-06-27) — session 4's "stub Voicer silent" reversed
 
