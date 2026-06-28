@@ -5,18 +5,24 @@
 //! called once per sample by the signal shell and once per change by the value shell (issue #83).
 //!
 //! Unlike add/mul there is no finite identity, so `b`'s unwired default is the **range maximum**
-//! (`+1e6`): `min(a, +1e6) == a` for any in-range signal, so wiring only `a` passes it through. Uses
-//! [`f32::min`] (NaN-ignoring), hence `min` lists `numbers: [f32]`.
+//! (`+1e6`): `min(a, +1e6) == a` for any in-range signal, so wiring only `a` passes it through. The
+//! comparison needs only `PartialOrd`, so [`min_fn`] is generic over the number type (ADR-0029
+//! pure-fn seam).
 //!
 //! - input 0: `a` (`Float`) — first operand. Unwired default `0`.
 //! - input 1: `b` (`Float`) — second operand. Unwired default `+1e6` (the range max — a no-op).
 //! - output 0: `out` — `min(a, b)`.
 
-/// The op's scalar math, written once (ADR-0029 pure-fn seam): [`f32::min`], which ignores `NaN`
-/// operands. `f32`-specific, hence `min` is `f32`-only.
+/// The op's scalar math, written once (ADR-0029 pure-fn seam) and generic over any `PartialOrd`
+/// number: the lesser of the two operands (ties return `a`). Hand-written rather than [`Ord::min`] so
+/// it covers `f32`, which is only `PartialOrd`.
 #[inline]
-fn min_fn(a: f32, b: f32) -> f32 {
-    a.min(b)
+fn min_fn<T: PartialOrd>(a: T, b: T) -> T {
+    if b < a {
+        b
+    } else {
+        a
+    }
 }
 
 // One declaration -> MinF32Value + MinF32Signal (ADR-0033). `b` defaults to the range maximum so an

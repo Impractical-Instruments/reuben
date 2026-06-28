@@ -6,22 +6,30 @@
 //! by the value shell (issue #83). The bounds `lo`/`hi` follow the carrier like any number operand,
 //! so they can be modulated per sample.
 //!
-//! **Non-panicking.** [`f32::clamp`] panics when `min > max`; since `lo`/`hi` are live inputs that
-//! could momentarily cross, [`clamp_fn`] instead composes `max(lo).min(hi)` — an inverted range
-//! collapses to `hi` rather than panicking on the hot path. That `f32`-specific choice is why `clamp`
-//! lists `numbers: [f32]`.
+//! **Non-panicking.** [`Ord::clamp`] (and [`f32::clamp`]) panics when `min > max`; since `lo`/`hi`
+//! are live inputs that could momentarily cross, [`clamp_fn`] instead composes `max(lo)` then
+//! `min(hi)` by hand — an inverted range collapses to `hi` rather than panicking on the hot path. It
+//! needs only `PartialOrd`, so it is generic over the number type (ADR-0029 pure-fn seam).
 //!
 //! - input 0: `x` (`Float`) — the value to bound. Unwired default `0`.
 //! - input 1: `lo` (`Float`) — the lower bound. Unwired default `-1`.
 //! - input 2: `hi` (`Float`) — the upper bound. Unwired default `1`.
 //! - output 0: `out` — `x` bounded to `[lo, hi]`.
 
-/// The op's scalar math, written once (ADR-0029 pure-fn seam). Composed as `max(lo).min(hi)` rather
-/// than [`f32::clamp`] so a transiently inverted `lo > hi` collapses to `hi` instead of **panicking**
-/// on the render thread (the hot-path-safety choice). `f32`-specific, hence `clamp` is `f32`-only.
+/// The op's scalar math, written once (ADR-0029 pure-fn seam) and generic over any `PartialOrd`
+/// number. Composed as `max(lo)` then `min(hi)` by hand rather than [`Ord::clamp`] so a transiently
+/// inverted `lo > hi` collapses to `hi` instead of **panicking** on the render thread (the
+/// hot-path-safety choice). Only `PartialOrd` is required, so it works for any ordered number type.
 #[inline]
-fn clamp_fn(x: f32, lo: f32, hi: f32) -> f32 {
-    x.max(lo).min(hi)
+fn clamp_fn<T: PartialOrd>(x: T, lo: T, hi: T) -> T {
+    // max(lo): the larger of x and lo.
+    let lower = if lo > x { lo } else { x };
+    // min(hi): the smaller of that and hi.
+    if hi < lower {
+        hi
+    } else {
+        lower
+    }
 }
 
 // One declaration -> ClampF32Value + ClampF32Signal (ADR-0033). The default range is the bipolar

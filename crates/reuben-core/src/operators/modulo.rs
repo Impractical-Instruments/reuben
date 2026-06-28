@@ -2,29 +2,34 @@
 //!
 //! The sanctioned way to **wrap a stream into a range**: fold a rising ramp into `[0, b)`, derive a
 //! repeating pattern, keep an accumulator bounded. A dense `Float`→`Float` op whose arithmetic is the
-//! f32 [`mod_fn`], called once per sample by the signal shell and once per change by the value shell
-//! (issue #83).
+//! generic [`mod_fn`], called once per sample by the signal shell and once per change by the value
+//! shell (issue #83).
 //!
-//! **Euclidean, not the `%` remainder.** [`f32::rem_euclid`] always returns a value in `[0, b)` for a
-//! positive modulus `b`, so a negative dividend wraps cleanly (`-1 mod 3 == 2`) — exactly what
-//! wrapping phase/CV into a range wants, where the sign-following `%` would emit a negative. A zero
-//! modulus would yield `NaN`, so [`mod_fn`] carries an **op-local guard**: `b == 0` produces `0`.
-//! Both are `f32`-specific, hence `modulo` lists `numbers: [f32]`.
+//! **Euclidean, not the `%` remainder.** [`Euclid::rem_euclid`](num_traits::Euclid::rem_euclid)
+//! always returns a value in `[0, b)` for a positive modulus `b`, so a negative dividend wraps
+//! cleanly (`-1 mod 3 == 2`) — exactly what wrapping phase/CV into a range wants, where the
+//! sign-following `%` would emit a negative. A zero modulus would yield `NaN` (or panic, for
+//! integers), so [`mod_fn`] carries an **op-local guard**: `b == 0` produces `0`. The arithmetic is
+//! generic over the number type (`Euclid` is implemented for floats and integers alike), so the
+//! macro can instantiate it per `numbers` entry (`f32` today).
+//!
+//! The file is `modulo.rs` (not `mod.rs`, the operators module file); the base ident is `Modulo`, so
+//! the registered type names are `modulo_f32_signal` / `modulo_f32_value`.
 //!
 //! - input 0: `a` (`Float`) — the dividend. Unwired default `0`.
 //! - input 1: `b` (`Float`) — the modulus. Unwired default `1`; a `0` modulus yields `0`.
 //! - output 0: `out` — `a.rem_euclid(b)`, in `[0, b)` for `b > 0`.
 
-/// The op's scalar math, written once (ADR-0029 pure-fn seam): a Euclidean modulo. The `b == 0`
-/// check is `modulo`'s **op-local** guard against a `NaN` poisoning the graph; it lives here.
-/// Euclidean (vs `%`) so the result is always non-negative for a positive modulus. `f32`-specific,
-/// hence `modulo` is `f32`-only.
+/// The op's scalar math, written once (ADR-0029 pure-fn seam) and generic over the number type: a
+/// Euclidean modulo. The `b == 0` check is `modulo`'s **op-local** guard against a `NaN` (or integer
+/// remainder panic) poisoning the graph; it lives here. Euclidean (vs `%`) so the result is always
+/// non-negative for a positive modulus. `Zero` supplies the guard, `Euclid` the wrap.
 #[inline]
-fn mod_fn(a: f32, b: f32) -> f32 {
-    if b == 0.0 {
-        0.0
+fn mod_fn<T: num_traits::Zero + num_traits::Euclid>(a: T, b: T) -> T {
+    if b.is_zero() {
+        T::zero()
     } else {
-        a.rem_euclid(b)
+        a.rem_euclid(&b)
     }
 }
 

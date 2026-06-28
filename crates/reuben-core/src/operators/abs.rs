@@ -2,16 +2,17 @@
 //!
 //! The sanctioned way to **rectify a stream**: full-wave rectification of audio, taking the
 //! magnitude of a bipolar CV, folding a signal into the positive half-plane. A dense `Float`→`Float`
-//! unary op whose arithmetic is the f32 [`abs_fn`], called once per sample by the signal shell and
-//! once per change by the value shell (issue #83). Uses [`f32::abs`], hence `numbers: [f32]`.
+//! unary op whose arithmetic is the generic [`abs_fn`], called once per sample by the signal shell
+//! and once per change by the value shell (issue #83). Needs only [`Signed`](num_traits::Signed), so
+//! it is generic over any signed number type.
 //!
 //! - input 0: `x` (`Float`) — the value to rectify. Unwired default `0`.
 //! - output 0: `out` — `|x|`.
 
-/// The op's scalar math, written once (ADR-0029 pure-fn seam): [`f32::abs`]. `f32`-specific, hence
-/// `abs` is `f32`-only.
+/// The op's scalar math, written once (ADR-0029 pure-fn seam) and generic over any signed number:
+/// [`Signed::abs`](num_traits::Signed::abs), which delegates to `f32::abs` for the `f32` instance.
 #[inline]
-fn abs_fn(x: f32) -> f32 {
+fn abs_fn<T: num_traits::Signed>(x: T) -> T {
     x.abs()
 }
 
