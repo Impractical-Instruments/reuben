@@ -62,6 +62,7 @@ pub fn osc_in_arg(p: &Port, args: &[Arg]) -> Option<Arg> {
         PortType::Vocab {
             enum_meta: None,
             name,
+            ..
         } => match *name {
             "Note" => Note::from_osc(args).map(Arg::Note),
             _ => None,
@@ -160,6 +161,7 @@ mod tests {
     fn note_port_unpacks_flat_form() {
         let p = port(PortType::Vocab {
             name: "Note",
+            is_event: true,
             enum_meta: None,
         });
         // Float pitch → absolute MIDI; second arg is velocity.
@@ -178,6 +180,7 @@ mod tests {
         assert_eq!(flat, vec![Arg::F32(60.0), Arg::F32(0.5)]);
         let p = port(PortType::Vocab {
             name: "Note",
+            is_event: true,
             enum_meta: None,
         });
         assert_eq!(osc_in_arg(&p, &flat), Some(Arg::Note(n)));

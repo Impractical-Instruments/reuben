@@ -31,8 +31,15 @@ pub enum PortType {
     /// variants + default + resolver, single-sourced from the type's `#[derive(ArgValue)]`
     /// (`T::enum_meta(name)`) so the descriptor and the type cannot drift — and `None` for a
     /// struct vocab type (`Note`, `Harmony`).
+    ///
+    /// `is_event` makes [event-ness](crate::plan::PortKind::Event) explicit on the type rather than
+    /// inferred from `name`: `true` for an unlatched stream (`Note`), `false` for a latched
+    /// [`Value`](crate::plan::PortKind::Value) (`Harmony`, and every enum). Carrying the flag here
+    /// keeps [`port_kind`](crate::plan::port_kind) data-driven, so a second held struct vocab is not
+    /// silently classified as an Event by a name check.
     Vocab {
         name: &'static str,
+        is_event: bool,
         enum_meta: Option<EnumMeta>,
     },
 }
@@ -159,12 +166,14 @@ impl Port {
     }
 
     /// A struct vocab port — [`PortType::Vocab`] with no enum metadata. `type_name` is the type's
-    /// `Arg` variant name (`"Note"`, `"Harmony"`). The `note`/`harmony` helpers wrap this.
-    pub const fn vocab(name: &'static str, type_name: &'static str) -> Self {
+    /// `Arg` variant name (`"Note"`, `"Harmony"`). `is_event` marks an unlatched stream (`Note`)
+    /// versus a latched Value (`Harmony`). The `note`/`harmony` helpers wrap this.
+    pub const fn vocab(name: &'static str, type_name: &'static str, is_event: bool) -> Self {
         Self {
             name,
             ty: PortType::Vocab {
                 name: type_name,
+                is_event,
                 enum_meta: None,
             },
             meta: None,
@@ -173,12 +182,12 @@ impl Port {
 
     /// A `Note`-event port (replaces the legacy `message` carrier).
     pub const fn note(name: &'static str) -> Self {
-        Self::vocab(name, "Note")
+        Self::vocab(name, "Note", true)
     }
 
     /// A `Harmony` port (replaces the legacy `context` carrier).
     pub const fn harmony(name: &'static str) -> Self {
-        Self::vocab(name, "Harmony")
+        Self::vocab(name, "Harmony", false)
     }
 
     /// A scalar [`F32`](PortType::F32) control input (ADR-0030): one input declared once, carrying
@@ -202,6 +211,8 @@ impl Port {
             name: meta.name,
             ty: PortType::Vocab {
                 name: meta.type_name,
+                // An enum is a latched Value, never an event stream.
+                is_event: false,
                 enum_meta: Some(meta),
             },
             meta: None,
