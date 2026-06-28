@@ -35,6 +35,7 @@
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
+use crate::operators::edge::{Edge, EdgeDetector};
 use crate::vocab::pitch::{Note, Pitch};
 use crate::vocab::GateMode;
 
@@ -78,9 +79,9 @@ pub struct Sequencer {
     /// Index of the current step, or -1 before the first beat edge. Continuous across
     /// blocks. Advanced (and wrapped at `length`) on each rising edge of the clock input.
     step: i64,
-    /// Clock input level at the previous sample, so a rising/falling edge is detected across
-    /// the block boundary (and a clock that starts already-high fires its first edge at 0).
-    prev_clock: f32,
+    /// Detects the rising/falling edge of the clock input across the block boundary (and a clock
+    /// that starts already-high fires its first edge at 0). See [`EdgeDetector`].
+    clock: EdgeDetector,
     /// Scale degree currently sounding (emitted note-on, not yet note-off), for release.
     held: Option<f32>,
 }
@@ -89,7 +90,7 @@ impl Default for Sequencer {
     fn default() -> Self {
         Self {
             step: -1,
-            prev_clock: 0.0,
+            clock: EdgeDetector::new(),
             held: None,
         }
     }
@@ -143,27 +144,29 @@ impl Operator for Sequencer {
         // the edge; the slice's frame 0 *is* the change frame (block-absolute), so emitting there is
         // sample-accurate. The held latch carries `prev` across blocks/slices.
         let g = io.input::<f32>(IN_CLOCK).unwrap_or(0.0);
-        let prev = self.prev_clock;
         let mut step = self.step;
         let mut held = self.held;
-        if prev < 0.5 && g >= 0.5 {
-            // Rising edge: end any held note, advance, and play the new step.
-            if let Some(m) = held.take() {
-                io.output::<Note>(MSG_NOTES).emit(0, degree_note(m, 0.0));
+        match self.clock.detect(g) {
+            Edge::Rising => {
+                // End any held note, advance, and play the new step.
+                if let Some(m) = held.take() {
+                    io.output::<Note>(MSG_NOTES).emit(0, degree_note(m, 0.0));
+                }
+                step = (step + 1).rem_euclid(length);
+                if let Some(m) = note_at(step) {
+                    io.output::<Note>(MSG_NOTES).emit(0, degree_note(m, 1.0));
+                    held = Some(m);
+                }
             }
-            step = (step + 1).rem_euclid(length);
-            if let Some(m) = note_at(step) {
-                io.output::<Note>(MSG_NOTES).emit(0, degree_note(m, 1.0));
-                held = Some(m);
+            Edge::Falling => {
+                // Release the step's note (the per-beat pluck).
+                if let Some(m) = held.take() {
+                    io.output::<Note>(MSG_NOTES).emit(0, degree_note(m, 0.0));
+                }
             }
-        } else if prev >= 0.5 && g < 0.5 {
-            // Falling edge: release the step's note (the per-beat pluck).
-            if let Some(m) = held.take() {
-                io.output::<Note>(MSG_NOTES).emit(0, degree_note(m, 0.0));
-            }
+            Edge::None => {}
         }
         self.step = step;
-        self.prev_clock = g;
         self.held = held;
     }
 

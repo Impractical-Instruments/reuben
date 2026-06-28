@@ -36,6 +36,7 @@
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
+use crate::operators::edge::{Edge, EdgeDetector};
 
 /// Maximum number of steps in the pattern — the `steps` input clamps to this.
 pub const NUM_STEPS: usize = 16;
@@ -69,9 +70,9 @@ pub struct Euclid {
     /// Index of the current step, or -1 before the first beat edge. Continuous across blocks.
     /// Advanced (and wrapped at `steps`) on each rising edge of the clock input.
     step: i64,
-    /// Clock input level at the previous sample, so a rising/falling edge is detected across the
-    /// block boundary (and a clock that starts already-high fires its first edge at 0).
-    prev_clock: f32,
+    /// Detects the rising/falling edge of the clock input across the block boundary (and a clock
+    /// that starts already-high fires its first edge at 0). See [`EdgeDetector`].
+    clock: EdgeDetector,
     /// Whether a gate-on has been emitted and not yet closed by a gate-off (the per-step pulse).
     high: bool,
 }
@@ -80,7 +81,7 @@ impl Default for Euclid {
     fn default() -> Self {
         Self {
             step: -1,
-            prev_clock: 0.0,
+            clock: EdgeDetector::new(),
             high: false,
         }
     }
@@ -110,26 +111,28 @@ impl Operator for Euclid {
         // detect the edge; the slice's frame 0 *is* the change frame (block-absolute), so emitting
         // there is sample-accurate. The held latch carries `prev` across blocks/slices.
         let g = io.input::<f32>(IN_CLOCK).unwrap_or(0.0);
-        let prev = self.prev_clock;
-        if prev < 0.5 && g >= 0.5 {
-            // Rising edge: close any open gate, advance, and open a gate on a pulse step.
-            if self.high {
-                io.output::<f32>(OUT_GATE).set(0, 0.0f32);
-                self.high = false;
+        match self.clock.detect(g) {
+            Edge::Rising => {
+                // Close any open gate, advance, and open a gate on a pulse step.
+                if self.high {
+                    io.output::<f32>(OUT_GATE).set(0, 0.0f32);
+                    self.high = false;
+                }
+                self.step = (self.step + 1).rem_euclid(total);
+                if is_pulse(self.step, total, pulses, rotation) {
+                    io.output::<f32>(OUT_GATE).set(0, 1.0f32);
+                    self.high = true;
+                }
             }
-            self.step = (self.step + 1).rem_euclid(total);
-            if is_pulse(self.step, total, pulses, rotation) {
-                io.output::<f32>(OUT_GATE).set(0, 1.0f32);
-                self.high = true;
+            Edge::Falling => {
+                // Close the gate so its width tracks the clock pulse.
+                if self.high {
+                    io.output::<f32>(OUT_GATE).set(0, 0.0f32);
+                    self.high = false;
+                }
             }
-        } else if prev >= 0.5 && g < 0.5 {
-            // Falling edge: close the gate so its width tracks the clock pulse.
-            if self.high {
-                io.output::<f32>(OUT_GATE).set(0, 0.0f32);
-                self.high = false;
-            }
+            Edge::None => {}
         }
-        self.prev_clock = g;
     }
 
     fn spawn(&self) -> Box<dyn Operator> {
