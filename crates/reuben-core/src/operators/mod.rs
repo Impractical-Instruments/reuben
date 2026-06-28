@@ -19,6 +19,9 @@ pub mod integrate;
 pub mod lfo;
 pub mod m2s;
 pub mod map;
+/// Shared test helpers for the generated number operators (issue #104, ADR-0033).
+#[cfg(test)]
+pub mod math_test;
 pub mod mul;
 pub mod noise;
 pub mod osc_out;
@@ -33,10 +36,6 @@ pub mod snap;
 pub mod strum;
 pub mod transpose;
 pub mod voicer;
-
-/// Shared test helpers for the generated number operators (issue #104, ADR-0033).
-#[cfg(test)]
-pub mod math_test;
 
 pub use add::{AddF32Signal, AddF32Value};
 pub use chord::Chord;
