@@ -119,7 +119,7 @@ operator pan
   out[1] f32_buffer right
 operator power_f32_signal
   in[0] f32_buffer x min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
-  in[1] f32 exponent min=0.0 max=8.0 default=2.0 unit="" curve=linear
+  in[1] f32_buffer exponent min=0.0 max=8.0 default=2.0 unit="" curve=linear
   out[0] f32_buffer out
 operator power_f32_value
   in[0] f32 x min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
