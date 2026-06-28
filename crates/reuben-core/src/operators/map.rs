@@ -21,13 +21,13 @@ use crate::vocab::MapCurve;
 
 // Single-source contract (ADR-0025/0030). `curve` references the shared `MapCurve` vocab enum.
 crate::operator_contract!(Map {
-    inputs:  { in:      float { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
-               in_min:  float { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
-               in_max:  float { -1_000_000.0..=1_000_000.0, default 1.0, "", lin },
-               out_min: float { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
-               out_max: float { -1_000_000.0..=1_000_000.0, default 1.0, "", lin },
+    inputs:  { in:      f32_buffer { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
+               in_min:  f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
+               in_max:  f32 { -1_000_000.0..=1_000_000.0, default 1.0, "", lin },
+               out_min: f32 { -1_000_000.0..=1_000_000.0, default 0.0, "", lin },
+               out_max: f32 { -1_000_000.0..=1_000_000.0, default 1.0, "", lin },
                curve:   enum(MapCurve) },
-    outputs: { out: buffer },
+    outputs: { out: f32_buffer },
 });
 
 /// Affine (optionally exponential) remap of `v` from `[in_min, in_max]` onto `[out_min, out_max]`,
@@ -64,15 +64,15 @@ impl Operator for Map {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        let in_min = io.last::<f32>(IN_IN_MIN).unwrap_or(0.0);
-        let in_max = io.last::<f32>(IN_IN_MAX).unwrap_or(1.0);
-        let out_min = io.last::<f32>(IN_OUT_MIN).unwrap_or(0.0);
-        let out_max = io.last::<f32>(IN_OUT_MAX).unwrap_or(1.0);
-        let exp = io.last::<MapCurve>(IN_CURVE).unwrap_or_default() == MapCurve::Exponential;
+        let in_min = io.input::<f32>(IN_IN_MIN).unwrap_or(0.0);
+        let in_max = io.input::<f32>(IN_IN_MAX).unwrap_or(1.0);
+        let out_min = io.input::<f32>(IN_OUT_MIN).unwrap_or(0.0);
+        let out_max = io.input::<f32>(IN_OUT_MAX).unwrap_or(1.0);
+        let exp = io.input::<MapCurve>(IN_CURVE).unwrap_or_default() == MapCurve::Exponential;
 
         for i in 0..n {
-            let v = io.signal(IN_IN).get(i).copied().unwrap_or(0.0);
-            io.signal_mut(OUT_OUT)[i] = remap(v, in_min, in_max, out_min, out_max, exp);
+            let v = io.input::<&[f32]>(IN_IN).get(i).copied().unwrap_or(0.0);
+            io.output::<&mut [f32]>(OUT_OUT)[i] = remap(v, in_min, in_max, out_min, out_max, exp);
         }
     }
 

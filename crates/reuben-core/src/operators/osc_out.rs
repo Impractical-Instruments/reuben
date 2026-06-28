@@ -47,17 +47,17 @@ impl Operator for OscOut {
     }
 
     fn process(&mut self, io: &mut Io) {
-        // Snapshot first: `io.stream` borrows immutably and `io.emit` needs `&mut io`, so they
+        // Snapshot first: `io.input` borrows immutably and `io.output` needs `&mut io`, so they
         // can't overlap. Inline storage — no heap for the common handful of events per block.
-        // Each received Message is re-emitted; the engine's outbound tap drains these past the
-        // boundary (ADR-0030). The frame is segment-relative; `emit` does not add the offset here
-        // because the stream frames are already segment-relative and the tap stamps block-absolute.
+        // Each received Message is re-emitted addressless; the engine's outbound tap stamps the
+        // node's OSC address and drains these past the boundary (ADR-0030, ADR-0031). `frame` is
+        // segment-relative; the writer adds the segment offset so the tap sees block-absolute frames.
         let mut pending: SmallVec<[(Note, usize); 4]> = SmallVec::new();
-        for ev in io.stream::<Note>(IN_IN) {
+        for ev in io.input::<Note>(IN_IN) {
             pending.push((ev.payload, ev.frame));
         }
         for (note, frame) in pending {
-            io.emit(0, "out", note, frame);
+            io.output::<Note>(0).emit(frame, note);
         }
     }
 

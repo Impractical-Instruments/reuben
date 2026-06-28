@@ -1,36 +1,35 @@
-//! Integration: the MVP rig makes a verifiable, deterministic sound.
+//! Integration: the MVP audio spine makes a verifiable, deterministic sound.
 //!
-//! Rig: Voicer -> Oscillator -> Filter -> VCA(mul) -> Output, with the VCA gain driven by
-//! an Envelope -> Power (exponential-style volume curve, ADR-0027); a single held note (A4)
-//! is sent at frame 0. This exercises the whole spine end-to-end: message routing, the
-//! per-block topo schedule, Signal edges (incl. freq/gate CV), block-slicing and the master tap.
+//! Rig: Oscillator -> Filter -> VCA(mul) -> Output, with the VCA gain driven by an
+//! Envelope -> PowerF32Signal (exponential-style volume curve, ADR-0027). `osc.freq` defaults to
+//! 440 Hz (an `f32_buffer` materialized from its meta) and `env.gate` is a held **Value** raised to
+//! `1.0` at frame 0 via a routed message. This is the spine the ADR-0031 Value/Signal flip churns —
+//! message routing, the per-block topo schedule, Signal edges, held-value block-slicing, the master
+//! tap. (Polyphonic note allocation through a hosted `voicer` is covered by `voicer_host.rs`.)
 
-use reuben_core::graph::{Graph, NodeKey};
+use reuben_core::graph::Graph;
 use reuben_core::message::Message;
-use reuben_core::operators::{envelope, mul, oscillator, output, power, voicer};
-use reuben_core::operators::{Envelope, Filter, Mul, Oscillator, Output, Power, Voicer};
+use reuben_core::operators::{envelope, mul, oscillator, output, power};
+use reuben_core::operators::{Envelope, Filter, MulF32Signal, Oscillator, Output, PowerF32Signal};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
-use reuben_core::vocab::pitch::{Note, Pitch};
 use reuben_core::AudioConfig;
 
-/// Build the standard first-sound rig. Returns the graph and the voicer key (so the
-/// caller knows the note address is "/voicer").
+/// Build the first-sound audio spine (one voice's worth of synth chain): a 440 Hz oscillator through
+/// a lowpass, amplitude-shaped by an envelope whose `gate` a caller raises via a routed message.
 fn build_rig() -> Graph {
     let mut g = Graph::new();
-    let v: NodeKey = g.add("/voicer", Voicer::new());
     let osc = g.add("/osc", Oscillator::new());
     let filt = g.add("/filter", Filter::new());
     let env = g.add("/env", Envelope::new());
-    let curve = g.add("/env_curve", Power::new());
-    let vca = g.add("/env_vca", Mul::new());
+    let curve = g.add("/env_curve", PowerF32Signal::new());
+    let vca = g.add("/env_vca", MulF32Signal::new());
     let out = g.add("/out", Output::new());
 
-    g.connect(v, voicer::OUT_FREQ, osc, oscillator::IN_FREQ);
+    // `osc.freq` is left unwired — it materializes 440 Hz from its meta default.
     g.connect(osc, oscillator::OUT_AUDIO, filt, 0);
     // VCA: filtered audio * shaped envelope CV (env -> power -> mul).
     g.connect(filt, 0, vca, mul::IN_A);
-    g.connect(v, voicer::OUT_GATE, env, envelope::IN_GATE);
     g.connect(env, envelope::OUT_CV, curve, power::IN_X);
     g.connect(curve, power::OUT_OUT, vca, mul::IN_B);
     g.connect(vca, mul::OUT_OUT, out, output::IN_AUDIO);
@@ -40,8 +39,8 @@ fn build_rig() -> Graph {
     g
 }
 
-/// Render `seconds` of the rig, holding note A4 (MIDI 69) from frame 0. Returns the full
-/// interleaved (mono) output buffer.
+/// Render `seconds` of the rig, holding the envelope gate open (Value `1.0`) from frame 0. Returns
+/// the full (mono) output buffer.
 fn render_rig(cfg: AudioConfig, seconds: f32) -> Vec<f32> {
     let mut plan = Plan::instantiate(build_rig(), cfg).expect("instantiate");
     let mut r = Renderer::new(&plan);
@@ -49,12 +48,9 @@ fn render_rig(cfg: AudioConfig, seconds: f32) -> Vec<f32> {
     let mut buf = vec![0.0f32; cfg.block_size];
     let mut all = Vec::with_capacity(blocks * cfg.block_size);
     for b in 0..blocks {
+        // The gate is a held Value: raise it once at frame 0; the latch holds it across blocks.
         let msgs: Vec<Message> = if b == 0 {
-            vec![Message::new(
-                "/voicer/notes",
-                Note::new(Pitch::Absolute(69.0), 1.0),
-                0,
-            )]
+            vec![Message::float("/env/gate", 1.0, 0)]
         } else {
             Vec::new()
         };

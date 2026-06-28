@@ -33,11 +33,11 @@ use crate::vocab::M2sMode;
 // Single-source contract (ADR-0025/0030). `mode` references the shared `M2sMode` vocab enum, whose
 // `#[default]` is `Smooth` — the natural knob feel and the prior default.
 crate::operator_contract!(M2s {
-    inputs:  { in:   float { -1_000_000.0..=1_000_000.0, default 0.0,     "",   lin },
+    inputs:  { in:   f32 { -1_000_000.0..=1_000_000.0, default 0.0,     "",   lin },
                mode: enum(M2sMode),
-               rate: float { 0.0..=1_000_000.0,          default 1_000.0, "/s", exp },
-               time: float { 0.0..=10.0,                 default 0.05,    "s",  exp } },
-    outputs: { out: buffer },
+               rate: f32 { 0.0..=1_000_000.0,          default 1_000.0, "/s", exp },
+               time: f32 { 0.0..=10.0,                 default 0.05,    "s",  exp } },
+    outputs: { out: f32_buffer },
 });
 
 #[derive(Default)]
@@ -67,9 +67,9 @@ impl Operator for M2s {
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
         let sr = io.sample_rate();
-        let mode = io.last::<M2sMode>(IN_MODE).unwrap_or_default();
-        let rate = io.last::<f32>(IN_RATE).unwrap_or(0.0).max(0.0);
-        let time = io.last::<f32>(IN_TIME).unwrap_or(0.0).max(0.0);
+        let mode = io.input::<M2sMode>(IN_MODE).unwrap_or_default();
+        let rate = io.input::<f32>(IN_RATE).unwrap_or(0.0).max(0.0);
+        let time = io.input::<f32>(IN_TIME).unwrap_or(0.0).max(0.0);
 
         // Per-sample smoothing coefficients.
         let tau_samples = (time * sr).max(1e-6);
@@ -83,26 +83,27 @@ impl Operator for M2s {
         let mut glide_left = self.glide_left;
         let mut initialized = self.initialized;
 
+        // `in` is a held Value (ADR-0031): the engine block-slices at every change, so this call sees
+        // one constant target — read it once. A mid-block retarget arrives as the next slice's frame
+        // 0 (the change frame), so the move stays sample-accurate. The smoothing itself runs
+        // per-sample below toward that held target. This read ends before the per-sample output write.
+        let t = io.input::<f32>(IN_IN).unwrap_or(0.0);
+        if !initialized {
+            cur = t;
+            target = t;
+            initialized = true;
+        }
+        // A retarget. Glide re-arms its fixed-time ramp from the current value toward the new
+        // target (a stepped source fires this only at its change frame).
+        if t != target {
+            target = t;
+            if mode == M2sMode::Glide {
+                glide_inc = (target - cur) / glide_total;
+                glide_left = glide_total as u32;
+            }
+        }
+
         for i in 0..n {
-            // `in` is an F32 control, so it always presents a buffer (ADR-0030): the materialized
-            // ZOH of a held/sparse target, or a wired CV source. Read it per-sample so a continuous
-            // source is tracked and a stepped (sparse-message) source retargets exactly at its
-            // change frame. The immutable read is copied out before the mutable output write below.
-            let t = io.signal(IN_IN).get(i).copied().unwrap_or(0.0);
-            if !initialized {
-                cur = t;
-                target = t;
-                initialized = true;
-            }
-            // A retarget. Glide re-arms its fixed-time ramp from the current value toward the new
-            // target (a stepped source fires this only at its change frame).
-            if t != target {
-                target = t;
-                if mode == M2sMode::Glide {
-                    glide_inc = (target - cur) / glide_total;
-                    glide_left = glide_total as u32;
-                }
-            }
             match mode {
                 M2sMode::Slew => {
                     if cur < target {
@@ -121,7 +122,7 @@ impl Operator for M2s {
                     }
                 }
             }
-            io.signal_mut(OUT_OUT)[i] = cur;
+            io.output::<&mut [f32]>(OUT_OUT)[i] = cur;
         }
 
         self.cur = cur;

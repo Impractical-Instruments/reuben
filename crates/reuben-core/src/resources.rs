@@ -196,6 +196,15 @@ impl std::error::Error for ResolveError {}
 pub trait ResourceResolver {
     /// Decode `source` (e.g. a path from the instrument's `resources` table) to a buffer.
     fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError>;
+
+    /// Read `source` as **text** — the seam for the instrument-kind resource (ADR-0032 §2): a voice
+    /// patch path resolves to its JSON, which the core then builds into a sub-`Graph`
+    /// ([`load_instrument`](crate::format::load_instrument) recursively, so nested `sample`
+    /// resources resolve too). Defaults to [`ResolveError::NotFound`] so a sample-only resolver need
+    /// not implement it; the filesystem resolver overrides it to read the file.
+    fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
+        Err(ResolveError::NotFound(source.to_string()))
+    }
 }
 
 #[cfg(test)]

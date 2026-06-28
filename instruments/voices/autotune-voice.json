@@ -1,0 +1,80 @@
+{
+  "doc": "Voice patch for autotune.json (ADR-0032). One monophonic synth voice: a held freq drives the oscillator, a held gate the envelope; gentle static lowpass. Hosted N times by the rig's `voicer`. interface: freq/gate in, audio/active out.",
+  "instrument": "autotune-voice",
+  "interface": {
+    "inputs": {
+      "freq": "/osc.freq",
+      "gate": "/env.gate"
+    },
+    "outputs": {
+      "audio": "/out.audio",
+      "active": "/env.active"
+    }
+  },
+  "nodes": [
+    {
+      "address": "/osc",
+      "doc": "Oscillator; freq driven by the voice's interface freq input.",
+      "type": "oscillator"
+    },
+    {
+      "address": "/filter",
+      "doc": "Gentle lowpass.",
+      "inputs": {
+        "audio": {
+          "from": "/osc"
+        },
+        "cutoff": 3000.0
+      },
+      "type": "filter"
+    },
+    {
+      "address": "/env",
+      "inputs": {
+        "attack": 0.01,
+        "decay": 0.2,
+        "release": 0.2,
+        "sustain": 0.6
+      },
+      "type": "envelope"
+    },
+    {
+      "address": "/env_curve",
+      "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
+      "inputs": {
+        "x": {
+          "from": "/env.cv"
+        }
+      },
+      "type": "power_f32_signal"
+    },
+    {
+      "address": "/env_vca",
+      "doc": "VCA: audio * shaped envelope CV.",
+      "inputs": {
+        "a": {
+          "from": "/filter"
+        },
+        "b": {
+          "from": "/env_curve"
+        }
+      },
+      "type": "mul_f32_signal"
+    },
+    {
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/env_vca"
+        }
+      },
+      "type": "output"
+    }
+  ],
+  "outputs": [
+    {
+      "node": "/out",
+      "port": "audio"
+    }
+  ]
+}

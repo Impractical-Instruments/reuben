@@ -19,18 +19,24 @@
 //! - input 3: `sustain` (`Float`) — sustain level 0..1.
 //! - input 4: `release` (`Float`) — release time in seconds.
 //! - output 0: `cv` (`Buffer`) — the ADSR level contour, linear `[0, 1]`.
+//! - output 1: `active` (`Float`) — a held gate: `1.0` from the note-on through the whole release
+//!   tail, `0.0` once the level reaches zero and the envelope is fully idle. This is the canonical
+//!   **voice-liveness** source ADR-0032's Voicer reads to know a voice is truly finished (not merely
+//!   gate-off), so a voice in its release tail is never stolen while an idle one exists. Emitted as a
+//!   sparse `MsgWriter` change (one event per true↔false transition), like `euclid.gate`.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Envelope {
-    inputs:  { gate:    buffer,
-               attack:  float { 0.001..=5.0, default 0.01, "s", exp },
-               decay:   float { 0.001..=5.0, default 0.1,  "s", exp },
-               sustain: float { 0.0..=1.0,   default 0.7,  "",  lin },
-               release: float { 0.001..=5.0, default 0.2,  "s", exp } },
-    outputs: { cv: buffer },
+    inputs:  { gate:    f32 { 0.0..=1.0, default 0.0, "", lin },
+               attack:  f32 { 0.001..=5.0, default 0.01, "s", exp },
+               decay:   f32 { 0.001..=5.0, default 0.1,  "s", exp },
+               sustain: f32 { 0.0..=1.0,   default 0.7,  "",  lin },
+               release: f32 { 0.001..=5.0, default 0.2,  "s", exp } },
+    outputs: { cv:     f32_buffer,
+               active: f32 { 0.0..=1.0, default 0.0, "active", lin } },
 });
 
 /// Which segment of the ADSR contour the envelope is currently traversing.
@@ -61,6 +67,10 @@ pub struct Envelope {
     /// level *at that instant* so the level always falls to 0 in `release` seconds — regardless
     /// of `sustain`, and correct when the gate falls mid-decay. Persists across blocks.
     release_step: f32,
+    /// Last value emitted on the `active` output (ADR-0032 voice-liveness): `true` from note-on
+    /// through the release tail, `false` once Idle. Persists across blocks so the held `MsgWriter`
+    /// value only changes on a true↔false transition (deduped, sparse).
+    active: bool,
 }
 
 impl Envelope {
@@ -91,33 +101,34 @@ impl Operator for Envelope {
 
         // ADSR times are `Float` inputs, read once at block rate as the held (ZOH) value via
         // `io.last` — the shape is block-rate, exactly as the old params were (ADR-0030).
-        let sustain = io.last::<f32>(IN_SUSTAIN).unwrap_or(0.7).clamp(0.0, 1.0);
-        let attack_step = per_sample_step(io.last::<f32>(IN_ATTACK).unwrap_or(0.01), sample_rate);
-        let decay_step =
-            per_sample_step(io.last::<f32>(IN_DECAY).unwrap_or(0.1), sample_rate) * (1.0 - sustain);
+        let sustain = io.input::<f32>(IN_SUSTAIN).unwrap_or(0.7).clamp(0.0, 1.0);
+        let attack_step = per_sample_step(io.input::<f32>(IN_ATTACK).unwrap_or(0.01), sample_rate);
+        let decay_step = per_sample_step(io.input::<f32>(IN_DECAY).unwrap_or(0.1), sample_rate)
+            * (1.0 - sustain);
         // Base per-sample rate that would span the full [0,1] range in `release` seconds. The
         // actual Release decrement is this scaled by the level at the note-off edge (below), so
         // release lasts `release` seconds from wherever the level is — never frozen at sustain=0.
-        let release_rate = per_sample_step(io.last::<f32>(IN_RELEASE).unwrap_or(0.2), sample_rate);
+        let release_rate = per_sample_step(io.input::<f32>(IN_RELEASE).unwrap_or(0.2), sample_rate);
 
-        // `gate` is a `Float` input — always a buffer (wired source or materialized latch). Read
-        // each sample with a short-lived borrow that ends before the output write, so `process`
-        // stays allocation-free. An unwired gate materializes to 0 (gate-off).
+        // `gate` is a held Value (ADR-0031): the engine block-slices at every gate change, so this
+        // call sees one constant level — read it once and detect the edge against the flag held
+        // across the previous slice. The slice's frame 0 *is* the change frame (block-absolute), so
+        // the A/R trigger is sample-accurate. An unwired gate reads 0 (gate-off).
+        let gate_on = io.input::<f32>(IN_GATE).unwrap_or(0.0) > 0.5;
+        if gate_on && !self.held {
+            self.stage = Stage::Attack;
+        } else if !gate_on && self.held {
+            self.stage = Stage::Release;
+            // Lock the release slope to the current level: fall to 0 over `release` seconds
+            // from here. For a note held to sustain this equals the old sustain-scaled rate;
+            // for sustain=0 or a release mid-decay it still terminates instead of sticking.
+            self.release_step = self.level * release_rate;
+        }
+        self.held = gate_on;
+
+        // The CV contour itself is a continuous Signal (`cv` stays `f32_buffer`): advance it
+        // per-sample across the whole (sub)block.
         for i in 0..n {
-            let gate_on = io.signal(IN_GATE).get(i).copied().unwrap_or(0.0) > 0.5;
-
-            // Edge detection against the previous sample's held flag.
-            if gate_on && !self.held {
-                self.stage = Stage::Attack;
-            } else if !gate_on && self.held {
-                self.stage = Stage::Release;
-                // Lock the release slope to the current level: fall to 0 over `release` seconds
-                // from here. For a note held to sustain this equals the old sustain-scaled rate;
-                // for sustain=0 or a release mid-decay it still terminates instead of sticking.
-                self.release_step = self.level * release_rate;
-            }
-            self.held = gate_on;
-
             match self.stage {
                 Stage::Idle => {
                     self.level = 0.0;
@@ -148,7 +159,17 @@ impl Operator for Envelope {
                 }
             }
 
-            io.signal_mut(OUT_CV)[i] = self.level;
+            io.output::<&mut [f32]>(OUT_CV)[i] = self.level;
+
+            // Voice-liveness (ADR-0032): active for the whole contour incl. the release tail, idle
+            // only at Stage::Idle (level == 0). Emit a sparse held change on each transition; the
+            // MsgWriter dedups, so an unchanging block emits nothing and the latch holds.
+            let now_active = self.stage != Stage::Idle;
+            if now_active != self.active {
+                io.output::<f32>(OUT_ACTIVE)
+                    .set(i, if now_active { 1.0 } else { 0.0 });
+                self.active = now_active;
+            }
         }
     }
 
@@ -176,9 +197,25 @@ mod tests {
         d.set(IN_ATTACK, adsr[0])
             .set(IN_DECAY, adsr[1])
             .set(IN_SUSTAIN, adsr[2])
-            .set(IN_RELEASE, adsr[3])
-            .drive(IN_GATE, gate);
+            .set(IN_RELEASE, adsr[3]);
+        push_gate(d, gate);
         d.render(gate.len()).output(OUT_CV).to_vec()
+    }
+
+    /// Drive the now-held-Value `gate` from a dense gate buffer (ADR-0031): the gate is fed by edges,
+    /// not a per-sample buffer. Push the first frame's level unconditionally (so a continuous render
+    /// drops the latch the previous render left set; an unchanged value dedups), then a change at
+    /// each frame the buffer crosses the 0.5 threshold.
+    fn push_gate(d: &mut OpDriver, gate: &[f32]) {
+        let Some(&first) = gate.first() else { return };
+        d.push(IN_GATE, 0, first);
+        let mut prev = first;
+        for (i, &g) in gate.iter().enumerate().skip(1) {
+            if (prev < 0.5) != (g < 0.5) {
+                d.push(IN_GATE, i, g);
+                prev = g;
+            }
+        }
     }
 
     #[test]
@@ -310,6 +347,48 @@ mod tests {
             out[release_samples + 2_400] == 0.0,
             "level still open after release — envelope stayed open"
         );
+    }
+
+    /// The F32 value carried by an `active` emit (panics on any other Arg — the contract is F32).
+    fn active_val(e: &crate::message::Emit) -> f32 {
+        match &e.arg {
+            crate::message::Arg::F32(v) => *v,
+            other => panic!("expected an F32 active flag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn active_tracks_liveness_through_the_release_tail() {
+        // ADR-0032 voice-liveness: `active` goes 1.0 at note-on and stays high through the whole
+        // release tail, dropping to 0.0 only once the level reaches zero (fully idle). Sparse: one
+        // emit per transition.
+        let attack = 0.005;
+        let decay = 0.005;
+        let sustain = 0.6;
+        let release = 0.02;
+        let mut d = OpDriver::for_type(Envelope::new(), SR);
+        d.set(IN_ATTACK, attack)
+            .set(IN_DECAY, decay)
+            .set(IN_SUSTAIN, sustain)
+            .set(IN_RELEASE, release);
+
+        // Note-on held to sustain: exactly one active=1.0 at the downbeat.
+        let hold_n = 4_800;
+        push_gate(&mut d, &vec![1.0f32; hold_n]);
+        let on = d.render(hold_n).emits().to_vec();
+        assert_eq!(on.len(), 1, "one transition: idle -> active");
+        assert_eq!(on[0].frame, 0);
+        assert_abs_diff_eq!(active_val(&on[0]), 1.0);
+
+        // Gate drops: still active through the release tail, then exactly one active=0.0 once idle.
+        let release_samples = (release * SR) as usize;
+        let rel_n = release_samples + 2_400;
+        push_gate(&mut d, &vec![0.0f32; rel_n]);
+        let off = d.render(rel_n).emits().to_vec();
+        assert_eq!(off.len(), 1, "one transition: active -> idle");
+        assert_abs_diff_eq!(active_val(&off[0]), 0.0);
+        // The idle transition lands inside the release window, not at frame 0 (the tail is alive).
+        assert!(off[0].frame > 0 && off[0].frame <= release_samples + 64);
     }
 
     #[test]

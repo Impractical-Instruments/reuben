@@ -1,0 +1,75 @@
+{
+  "doc": "Default subtractive voice patch (ADR-0032). One monophonic synth voice: a held freq drives the oscillator, a held gate the envelope. Hosted N times by a `voicer`; also loads + plays standalone for testing. interface: freq/gate in, audio/active out.",
+  "instrument": "default-voice",
+  "interface": {
+    "inputs": {
+      "freq": "/osc.freq",
+      "gate": "/env.gate"
+    },
+    "outputs": {
+      "audio": "/out.audio",
+      "active": "/env.active"
+    }
+  },
+  "nodes": [
+    {
+      "address": "/osc",
+      "doc": "Oscillator; freq driven by the voice's interface freq input.",
+      "type": "oscillator"
+    },
+    {
+      "address": "/filter",
+      "doc": "Gentle lowpass.",
+      "inputs": {
+        "audio": {
+          "from": "/osc"
+        },
+        "cutoff": 3000.0
+      },
+      "type": "filter"
+    },
+    {
+      "address": "/env",
+      "doc": "ADSR contour generator; gate driven by the voice's interface gate input.",
+      "type": "envelope"
+    },
+    {
+      "address": "/env_curve",
+      "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
+      "inputs": {
+        "x": {
+          "from": "/env.cv"
+        }
+      },
+      "type": "power_f32_signal"
+    },
+    {
+      "address": "/env_vca",
+      "doc": "VCA: audio * shaped envelope CV.",
+      "inputs": {
+        "a": {
+          "from": "/filter"
+        },
+        "b": {
+          "from": "/env_curve"
+        }
+      },
+      "type": "mul_f32_signal"
+    },
+    {
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/env_vca"
+        }
+      },
+      "type": "output"
+    }
+  ],
+  "outputs": [
+    {
+      "node": "/out",
+      "port": "audio"
+    }
+  ]
+}

@@ -5,15 +5,27 @@
 //! re-slicing on a context change.
 
 use reuben_core::message::{Arg, Message};
-use reuben_core::operators::{HarmonyOp, Snap, Voicer};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
+use reuben_core::resources::{ResolveError, ResourceResolver, SampleBuffer};
 use reuben_core::vocab::harmony::Harmony;
 use reuben_core::vocab::pitch::{Note, Pitch};
-use reuben_core::{load, AudioConfig, Graph, Registry};
+use reuben_core::{load_instrument, AudioConfig, Registry};
 
 const SCALE_DEMO: &str = include_str!("../../../instruments/scale-demo.json");
 const AUTOTUNE: &str = include_str!("../../../instruments/autotune.json");
+
+/// Resolves each rig's `voice` instrument-resource (ADR-0032) from the repo `instruments/` dir.
+struct InstrumentsDir;
+impl ResourceResolver for InstrumentsDir {
+    fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        Err(ResolveError::NotFound(source.to_string()))
+    }
+    fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
+        let path = format!("{}/../../instruments/{source}", env!("CARGO_MANIFEST_DIR"));
+        std::fs::read_to_string(&path).map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))
+    }
+}
 
 const CFG: AudioConfig = AudioConfig {
     sample_rate: 48_000.0,
@@ -25,22 +37,57 @@ fn hz(midi: f32) -> f32 {
     Harmony::default().hz(Pitch::from_midi(midi))
 }
 
-/// A minimal `harmony -> voicer(mono)` rig, tapping the Voicer's `freq` so a test can read
-/// the resolved pitch directly. Port indices: HarmonyOp `harmony` out = 0; Voicer `notes` in = 0,
-/// `harmony` in = 1, `freq` out = 0.
-fn context_voicer() -> Graph {
-    let mut g = Graph::new();
-    let c = g.add("/harmony", HarmonyOp::new());
-    let v = g.add("/voicer", Voicer::new());
-    g.set_param(v, "voices", 1.0);
-    g.connect(c, 0, v, 1);
-    g.tap_output(v, 0);
-    g
+/// Test-only **freq-probe voice** (ADR-0032 session 11): a single `mul_f32_signal` whose `a`
+/// operand is the voice's `freq` interface input (f32_buffer-with-meta, message-settable, ZOH-
+/// materialized) and whose `b` defaults to 1.0 — so the voice's audio is `freq * 1 == freq`. Hosting
+/// it under a Voicer makes `voicer.audio` equal the resolved pitch, recreating the removed
+/// `voicer.freq` output tap so the pitch-resolution assertions stay byte-identical.
+const FREQ_PROBE_VOICE: &str = r#"{
+  "instrument": "freq-probe-voice",
+  "interface": { "inputs": { "freq": "/mul.a" }, "outputs": { "audio": "/mul.out" } },
+  "nodes": [ { "type": "mul_f32_signal", "address": "/mul" } ],
+  "outputs": [ { "node": "/mul", "port": "out" } ]
+}"#;
+
+/// Serves the test-only probe voice (and nothing else) as an instrument-resource.
+struct ProbeResolver;
+impl ResourceResolver for ProbeResolver {
+    fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        Err(ResolveError::NotFound(source.to_string()))
+    }
+    fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
+        match source {
+            "freq-probe-voice" => Ok(FREQ_PROBE_VOICE.to_string()),
+            other => Err(ResolveError::NotFound(other.to_string())),
+        }
+    }
 }
+
+/// Load a host instrument JSON that references the `freq-probe-voice`, and instantiate it.
+fn load_probe(host: &str) -> Plan {
+    let graph = load_instrument(host, &Registry::builtin(), &ProbeResolver)
+        .expect("load probe host")
+        .graph;
+    Plan::instantiate(graph, CFG).expect("instantiate")
+}
+
+/// A minimal `harmony -> voicer(mono, freq-probe-voice)` host, tapping `voicer.audio` (== the
+/// resolved pitch) so a test can read it directly.
+const CONTEXT_VOICER: &str = r#"{
+  "instrument": "context-voicer",
+  "nodes": [
+    { "type": "harmony", "address": "/harmony" },
+    { "type": "voicer", "address": "/voicer", "voice": "v", "config": { "voices": 1 },
+      "inputs": { "harmony": { "from": "/harmony" } } },
+    { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/voicer.audio" } } }
+  ],
+  "outputs": [ { "node": "/out", "port": "audio" } ],
+  "resources": { "v": "freq-probe-voice" }
+}"#;
 
 #[test]
 fn degree_note_resolves_then_respells_across_blocks() {
-    let mut plan = Plan::instantiate(context_voicer(), CFG).expect("instantiate");
+    let mut plan = load_probe(CONTEXT_VOICER);
     let mut r = Renderer::new(&plan);
     let mut buf = vec![0.0f32; CFG.block_size];
 
@@ -59,7 +106,7 @@ fn degree_note_resolves_then_respells_across_blocks() {
 
 #[test]
 fn context_change_mid_block_is_sample_accurate() {
-    let mut plan = Plan::instantiate(context_voicer(), CFG).expect("instantiate");
+    let mut plan = load_probe(CONTEXT_VOICER);
     let mut r = Renderer::new(&plan);
     let mut buf = vec![0.0f32; CFG.block_size];
 
@@ -83,21 +130,25 @@ fn context_change_mid_block_is_sample_accurate() {
     approx::assert_relative_eq!(buf[200], hz(66.0), epsilon = 1e-2); // after 128 → F♯
 }
 
+/// `harmony -> snap -> voicer(mono, freq-probe-voice)`, tapping `voicer.audio`.
+const SNAP_VOICER: &str = r#"{
+  "instrument": "snap-voicer",
+  "nodes": [
+    { "type": "harmony", "address": "/harmony" },
+    { "type": "snap", "address": "/snap", "inputs": { "harmony": { "from": "/harmony" } } },
+    { "type": "voicer", "address": "/voicer", "voice": "v", "config": { "voices": 1 },
+      "inputs": { "notes": { "from": "/snap" }, "harmony": { "from": "/harmony" } } },
+    { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/voicer.audio" } } }
+  ],
+  "outputs": [ { "node": "/out", "port": "audio" } ],
+  "resources": { "v": "freq-probe-voice" }
+}"#;
+
 #[test]
 fn snap_quantizes_an_off_key_gesture() {
     // harmony -> snap -> voicer. Play D♯ (63), an off-scale pitch; the snap pulls it to the
     // nearest C-major tone (D, 62, on the down tie-break) before the Voicer resolves it.
-    let mut g = Graph::new();
-    let c = g.add("/harmony", HarmonyOp::new());
-    let s = g.add("/snap", Snap::new()); // inputs: notes=0, harmony=1; output degrees=0
-    let v = g.add("/voicer", Voicer::new());
-    g.set_param(v, "voices", 1.0);
-    g.connect(c, 0, s, 1); // harmony.harmony -> snap.harmony
-    g.connect(c, 0, v, 1); // harmony.harmony -> voicer.harmony
-    g.connect(s, 0, v, 0); // snap.degrees -> voicer.notes
-    g.tap_output(v, 0);
-
-    let mut plan = Plan::instantiate(g, CFG).expect("instantiate");
+    let mut plan = load_probe(SNAP_VOICER);
     let mut r = Renderer::new(&plan);
     let mut buf = vec![0.0f32; CFG.block_size];
     let note = Message::new("/snap/notes", Note::new(Pitch::Absolute(63.0), 1.0), 0);
@@ -110,7 +161,9 @@ fn snap_quantizes_an_off_key_gesture() {
 fn demo_instruments_load_and_play() {
     let reg = Registry::builtin();
     for json in [SCALE_DEMO, AUTOTUNE] {
-        let graph = load(json, &reg).expect("load demo instrument");
+        let graph = load_instrument(json, &reg, &InstrumentsDir)
+            .expect("load demo instrument")
+            .graph;
         let mut plan = Plan::instantiate(graph, CFG).expect("instantiate");
         let mut r = Renderer::new(&plan);
         let mut buf = vec![0.0f32; CFG.block_size];

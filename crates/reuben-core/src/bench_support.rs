@@ -84,27 +84,30 @@ const fn w(kind: &'static str, recipe: Recipe) -> Workload {
 /// with [`Registry::builtin`] — the forcing-function test fails CI if an operator is missing here.
 /// Keep alphabetical for easy diffing against the registry's stable (type-name) order.
 pub const WORKLOADS: &[Workload] = &[
-    w("add", Recipe::Default),
+    w("add_f32_signal", Recipe::Default),
+    w("add_f32_value", Recipe::Default),
     w("chord", Recipe::ChordSet),
     w("clock", Recipe::Default),
     w("delay", Recipe::Default),
-    w("differentiate", Recipe::Value),
+    w("differentiate_f32_signal", Recipe::Value),
     w("djfilter", Recipe::Default),
     w("envelope", Recipe::Gate),
     w("euclid", Recipe::Clocked),
     w("filter", Recipe::Default),
     w("harmony", Recipe::Default),
-    w("integrate", Recipe::Value),
+    w("integrate_f32_signal", Recipe::Value),
     w("lfo", Recipe::Default),
     w("m2s", Recipe::Value),
     w("map", Recipe::Value),
-    w("mul", Recipe::Default),
+    w("mul_f32_signal", Recipe::Default),
+    w("mul_f32_value", Recipe::Default),
     w("noise", Recipe::Default),
     w("osc_out", Recipe::Value),
     w("oscillator", Recipe::Default),
     w("output", Recipe::Default),
     w("pan", Recipe::Default),
-    w("power", Recipe::Default),
+    w("power_f32_signal", Recipe::Default),
+    w("power_f32_value", Recipe::Default),
     w("reverb", Recipe::Default),
     w("sample", Recipe::Sample),
     w("sequencer", Recipe::Clocked),
@@ -121,27 +124,30 @@ pub const WORKLOADS: &[Workload] = &[
 /// [`WORKLOADS`]. Adding an operator therefore reds `check` until both this list and the matching
 /// `#[bench::<kind>]` attribute beside it are added. Keep both in sync (and alphabetical).
 pub const MICRO_IAI_KINDS: &[&str] = &[
-    "add",
+    "add_f32_signal",
+    "add_f32_value",
     "chord",
     "clock",
     "delay",
-    "differentiate",
+    "differentiate_f32_signal",
     "djfilter",
     "envelope",
     "euclid",
     "filter",
     "harmony",
-    "integrate",
+    "integrate_f32_signal",
     "lfo",
     "m2s",
     "map",
-    "mul",
+    "mul_f32_signal",
+    "mul_f32_value",
     "noise",
     "osc_out",
     "oscillator",
     "output",
     "pan",
-    "power",
+    "power_f32_signal",
+    "power_f32_value",
     "reverb",
     "sample",
     "sequencer",
@@ -251,14 +257,20 @@ fn push_note(driver: &mut OpDriver, desc: &Descriptor, name: &str, note: Note) {
 }
 
 /// Drive a named clock input as a per-block square wave: high for the first half of every 128-frame
-/// block, low for the second. The last (low) sample of one block → first (high) of the next gives a
-/// rising edge every block, with a falling edge mid-block, so a sequencer walks its step table.
+/// block, low for the second. The clock is a held **Value** (ADR-0031), fed by edges rather than a
+/// per-sample buffer, so push a level change at each 0.5-threshold crossing — a rising edge every
+/// block (last-low → first-high) with a falling edge mid-block, so a sequencer walks its step table.
 fn drive_clock(driver: &mut OpDriver, desc: &Descriptor, name: &str) {
     let half = BLOCK_SIZE / 2;
-    let samples: Vec<f32> = (0..BLOCKS * BLOCK_SIZE)
-        .map(|f| if f % BLOCK_SIZE < half { 1.0 } else { 0.0 })
-        .collect();
-    driver.drive(input_index(desc, name), &samples);
+    let port = input_index(desc, name);
+    let mut prev = 0.0f32;
+    for f in 0..BLOCKS * BLOCK_SIZE {
+        let level = if f % BLOCK_SIZE < half { 1.0 } else { 0.0 };
+        if (prev < 0.5) != (level < 0.5) {
+            driver.push(port, f, level);
+            prev = level;
+        }
+    }
 }
 
 /// Build a synthetic decoded sample (a 1 s sine, longer than the workload so the read loop never

@@ -97,22 +97,53 @@ fn sampler_arp_self_plays_a_sequenced_arpeggio() {
     );
 }
 
+/// Wraps an [`FsResolver`] but serves one inline voice patch — a `sampler-voice` whose nested
+/// `sample` resource points at a nonexistent file — so the test can exercise the recursive
+/// degrade-to-silence path (a missing sample *inside* a hosted voice, ADR-0016/0032) without
+/// committing a deliberately-broken fixture. Sample bytes still resolve through the real FS.
+struct GhostVoiceResolver(FsResolver);
+impl reuben_core::resources::ResourceResolver for GhostVoiceResolver {
+    fn resolve(
+        &self,
+        source: &str,
+    ) -> Result<reuben_core::resources::SampleBuffer, reuben_core::resources::ResolveError> {
+        self.0.resolve(source)
+    }
+    fn resolve_text(&self, source: &str) -> Result<String, reuben_core::resources::ResolveError> {
+        if source == "ghost-voice" {
+            Ok(r#"{
+              "instrument": "ghost-voice",
+              "interface": { "inputs": { "freq": "/s.freq", "gate": "/s.gate" },
+                             "outputs": { "audio": "/out.audio" } },
+              "resources": { "ghost": "samples/does_not_exist.wav" },
+              "nodes": [
+                { "type": "sample", "address": "/s", "sample": "ghost", "inputs": { "root": 57.0 } },
+                { "type": "output", "address": "/out", "inputs": { "audio": {"from":"/s"} } }
+              ],
+              "outputs": [ {"node":"/out","port":"audio"} ]
+            }"#
+            .to_string())
+        } else {
+            self.0.resolve_text(source)
+        }
+    }
+}
+
 #[test]
 fn missing_sample_warns_but_still_loads() {
-    // A resources table pointing at a nonexistent file: load succeeds with a warning, and
-    // the node plays silence rather than crashing (ADR-0016 degrade-to-silence).
+    // A hosted voice whose nested `sample` resource points at a nonexistent file: load succeeds
+    // with a warning, and the voice plays silence rather than crashing (ADR-0016 degrade-to-silence,
+    // resolved recursively through the voice sub-patch, ADR-0032).
     let json = r#"{
       "instrument": "broken",
-      "resources": { "ghost": "samples/does_not_exist.wav" },
+      "resources": { "ghost-voice": "ghost-voice" },
       "nodes": [
-        { "type": "voicer", "address": "/voicer", "config": { "voices": 1 } },
-        { "type": "sample", "address": "/s", "sample": "ghost",
-          "inputs": { "freq": {"from":"/voicer.freq"}, "gate": {"from":"/voicer.gate"} } },
-        { "type": "output", "address": "/out", "inputs": { "audio": {"from":"/s"} } }
+        { "type": "voicer", "address": "/voicer", "voice": "ghost-voice", "config": { "voices": 1 } },
+        { "type": "output", "address": "/out", "inputs": { "audio": {"from":"/voicer.audio"} } }
       ],
       "outputs": [ {"node":"/out","port":"audio"} ]
     }"#;
-    let resolver = FsResolver::new(instruments_dir());
+    let resolver = GhostVoiceResolver(FsResolver::new(instruments_dir()));
     let loaded = load_instrument(json, &Registry::builtin(), &resolver).expect("loads anyway");
     assert_eq!(loaded.warnings.len(), 1, "expected one resolve warning");
 

@@ -38,13 +38,13 @@ use crate::resources::{ResolvedRefs, ResourceStore, SampleId};
 // Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.
 crate::operator_contract!(SamplePlayer {
     type_name: "sample",
-    inputs:    { freq:    buffer,
-                 gate:    buffer,
-                 root:    float { 0.0..=127.0, default 60.0, "MIDI", lin },
-                 gain:    float { 0.0..=4.0,   default 1.0,  "",     lin },
-                 start:   float { 0.0..=1.0,   default 0.0,  "",     lin },
-                 channel: float { -1.0..=31.0, default -1.0, "",     lin } },
-    outputs:   { audio: buffer },
+    inputs:    { freq:    f32 { 0.0..=20000.0, default 0.0, "Hz", lin },
+                 gate:    f32 { 0.0..=1.0,     default 0.0, "",   lin },
+                 root:    f32 { 0.0..=127.0, default 60.0, "MIDI", lin },
+                 gain:    f32 { 0.0..=4.0,   default 1.0,  "",     lin },
+                 start:   f32 { 0.0..=1.0,   default 0.0,  "",     lin },
+                 channel: f32 { -1.0..=31.0, default -1.0, "",     lin } },
+    outputs:   { audio: f32_buffer },
     resources: { sample },
 });
 
@@ -84,10 +84,10 @@ impl Operator for SamplePlayer {
         let n = io.frames();
         let engine_sr = io.sample_rate();
         // Block-rate controls: read once at the top (ADR-0030 `Float` inputs, held via `io.last`).
-        let root_hz = Self::midi_hz(io.last::<f32>(IN_ROOT).unwrap_or(60.0));
-        let gain = io.last::<f32>(IN_GAIN).unwrap_or(1.0);
-        let start_norm = io.last::<f32>(IN_START).unwrap_or(0.0).clamp(0.0, 1.0);
-        let channel = io.last::<f32>(IN_CHANNEL).unwrap_or(-1.0);
+        let root_hz = Self::midi_hz(io.input::<f32>(IN_ROOT).unwrap_or(60.0));
+        let gain = io.input::<f32>(IN_GAIN).unwrap_or(1.0);
+        let start_norm = io.input::<f32>(IN_START).unwrap_or(0.0).clamp(0.0, 1.0);
+        let channel = io.input::<f32>(IN_CHANNEL).unwrap_or(-1.0);
 
         // Resolve the binding; unbound, missing, or empty → silence.
         let store = match &self.store {
@@ -109,28 +109,28 @@ impl Operator for SamplePlayer {
             0.0
         };
 
-        let mut prev = self.prev_gate;
         let mut playhead = self.playhead;
         let mut rate = self.rate;
         let mut playing = self.playing;
 
-        for i in 0..n {
-            // `gate`/`freq` are `Float` inputs — always a buffer (wired source or the materialized
-            // carrier). Read one sample at a time so each immutable borrow of `io` ends before the
-            // mutable output write (keeps `process` alloc-free, mirrors the oscillator).
-            let g = io.signal(IN_GATE).get(i).copied().unwrap_or(0.0);
-            // Rising edge → (re)trigger: latch pitch and reset the playhead to `start`.
-            if prev <= 0.0 && g > 0.0 {
-                // A non-positive `freq` (the unwired carrier materializes to 0) → play at `root`,
-                // preserving the old "freq unconnected → root pitch" semantics.
-                let freq = io.signal(IN_FREQ).get(i).copied().unwrap_or(0.0);
-                let f = if freq > 0.0 { freq } else { root_hz };
-                rate = (f as f64 / root_hz as f64) * sr_fold;
-                playhead = start_norm as f64 * frames as f64;
-                playing = true;
-            }
-            prev = g;
+        // `gate`/`freq` are held Values (ADR-0031): the engine block-slices at every change, so this
+        // call sees one constant gate level. Detect the rising edge once at frame 0 (the slice's
+        // frame 0 *is* the change frame, so the retrigger stays sample-accurate); `prev_gate` carries
+        // the level across slices/blocks. Reading the held values here ends the immutable borrow
+        // before the per-sample output writes below (keeps `process` alloc-free).
+        let g = io.input::<f32>(IN_GATE).unwrap_or(0.0);
+        if self.prev_gate <= 0.0 && g > 0.0 {
+            // A non-positive `freq` (the unwired Value reads its default 0) → play at `root`,
+            // preserving the old "freq unconnected → root pitch" semantics.
+            let freq = io.input::<f32>(IN_FREQ).unwrap_or(0.0);
+            let f = if freq > 0.0 { freq } else { root_hz };
+            rate = (f as f64 / root_hz as f64) * sr_fold;
+            playhead = start_norm as f64 * frames as f64;
+            playing = true;
+        }
+        self.prev_gate = g;
 
+        for i in 0..n {
             let s = if playing {
                 let base = playhead.floor();
                 let idx = base as usize;
@@ -146,10 +146,9 @@ impl Operator for SamplePlayer {
             } else {
                 0.0
             };
-            io.signal_mut(OUT_AUDIO)[i] = s;
+            io.output::<&mut [f32]>(OUT_AUDIO)[i] = s;
         }
 
-        self.prev_gate = prev;
         self.playhead = playhead;
         self.rate = rate;
         self.playing = playing;
@@ -175,7 +174,7 @@ crate::register_operator!(SamplePlayer);
 
 /// Write `n` frames of silence to the audio output.
 fn silence(io: &mut Io, n: usize) {
-    for s in io.signal_mut(OUT_AUDIO)[..n].iter_mut() {
+    for s in io.output::<&mut [f32]>(OUT_AUDIO)[..n].iter_mut() {
         *s = 0.0;
     }
 }
@@ -241,11 +240,39 @@ mod tests {
             .set(IN_GAIN, params[1])
             .set(IN_START, params[2])
             .set(IN_CHANNEL, params[3]);
-        d.drive(IN_GATE, gate);
+        push_gate(d, gate);
         if let Some(f) = freq {
-            d.drive(IN_FREQ, f);
+            push_freq(d, f);
         }
         d.render(n).output(OUT_AUDIO).to_vec()
+    }
+
+    /// Drive the now-held-Value `gate` from a dense gate buffer (ADR-0031): the gate is fed by edges,
+    /// not a per-sample buffer. Push the first frame unconditionally (a continuous render drops the
+    /// latch the prior render left set; an unchanged value dedups), then a change at each 0.5
+    /// threshold crossing.
+    fn push_gate(d: &mut OpDriver, gate: &[f32]) {
+        let Some(&first) = gate.first() else { return };
+        d.push(IN_GATE, 0, first);
+        let mut prev = first;
+        for (i, &g) in gate.iter().enumerate().skip(1) {
+            if (prev < 0.5) != (g < 0.5) {
+                d.push(IN_GATE, i, g);
+                prev = g;
+            }
+        }
+    }
+
+    /// Drive the now-held-Value `freq` from a dense buffer: push a held change at each value change
+    /// (and at frame 0), so the latch holds the right pitch at the trigger frame.
+    fn push_freq(d: &mut OpDriver, freq: &[f32]) {
+        let mut prev = f32::NAN;
+        for (i, &f) in freq.iter().enumerate() {
+            if f != prev {
+                d.push(IN_FREQ, i, f);
+                prev = f;
+            }
+        }
     }
 
     fn mono(samples: &[f32]) -> crate::resources::SampleBuffer {

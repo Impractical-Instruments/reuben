@@ -1,5 +1,5 @@
 {
-  "doc": "A self-playing step melody. The Clock's beat gate drives a sequencer that emits degree Messages — one per beat through an 8-step pattern (an ascending scale, degrees 0..7) — into a Voicer, which resolves each degree to Hz through the tonal context (default C-major/12-TET, so this sounds identical to the old MIDI default). Set tempo via /clock/tempo; edit the line via /sequencer/step1../sequencer/step8 (scale degree, below 0 = rest) and /sequencer/length; send /clock/sync to relocate beat 1. To make it re-spell in another key, see scale-demo.json.",
+  "doc": "A self-playing step melody (ADR-0032). The Clock's beat gate drives a sequencer that emits degree Messages — one per beat through an 8-step pattern (an ascending scale, degrees 0..7) — into a Voicer, which resolves each degree to Hz through the tonal context (default C-major/12-TET) and plays it on a hosted `sequence-voice` sub-patch. Set tempo via /clock/tempo; edit the line via /sequencer/step1../sequencer/step8 (scale degree, below 0 = rest) and /sequencer/length; send /clock/sync to relocate beat 1. To make it re-spell in another key, see scale-demo.json.",
   "instrument": "sequence",
   "nodes": [
     {
@@ -25,76 +25,20 @@
       "config": {
         "voices": 4
       },
-      "doc": "Note -> per-Voice freq + gate CV.",
+      "doc": "Hosts 4 sequence-voice sub-patches; allocates each step's note across them and sums their audio.",
       "inputs": {
         "notes": {
           "from": "/sequencer"
         }
       },
-      "type": "voicer"
-    },
-    {
-      "address": "/osc",
-      "inputs": {
-        "freq": {
-          "from": "/voicer.freq"
-        }
-      },
-      "type": "oscillator"
-    },
-    {
-      "address": "/filter",
-      "doc": "Gentle lowpass.",
-      "inputs": {
-        "audio": {
-          "from": "/osc"
-        },
-        "cutoff": 3000.0
-      },
-      "type": "filter"
-    },
-    {
-      "address": "/env",
-      "doc": "Plucked note, gated per step.",
-      "inputs": {
-        "attack": 0.005,
-        "decay": 0.12,
-        "gate": {
-          "from": "/voicer.gate"
-        },
-        "release": 0.1,
-        "sustain": 0.3
-      },
-      "type": "envelope"
-    },
-    {
-      "address": "/env_curve",
-      "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
-      "inputs": {
-        "x": {
-          "from": "/env"
-        }
-      },
-      "type": "power"
-    },
-    {
-      "address": "/env_vca",
-      "doc": "VCA: audio * shaped envelope CV.",
-      "inputs": {
-        "a": {
-          "from": "/filter"
-        },
-        "b": {
-          "from": "/env_curve"
-        }
-      },
-      "type": "mul"
+      "type": "voicer",
+      "voice": "sequence-voice"
     },
     {
       "address": "/out",
       "inputs": {
         "audio": {
-          "from": "/env_vca"
+          "from": "/voicer.audio"
         }
       },
       "type": "output"
@@ -105,5 +49,8 @@
       "node": "/out",
       "port": "audio"
     }
-  ]
+  ],
+  "resources": {
+    "sequence-voice": "voices/sequence-voice.json"
+  }
 }

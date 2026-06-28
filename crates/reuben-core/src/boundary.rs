@@ -9,23 +9,26 @@
 //! **port's declared [`PortType`]** drives [`osc_in_arg`] — there is no separate registry to drift
 //! from the descriptor. A primitive port wraps the single arg; a vocab enum resolves it via its
 //! [`EnumMeta`](crate::descriptor::EnumMeta); a struct vocab type unpacks the flat form via
-//! [`OscArg::from_osc`]. A [`Buffer`](Arg::Buffer) port has no OSC form, so audio cannot cross —
+//! [`OscArg::from_osc`]. A [`Buffer`](Arg::F32Buffer) port has no OSC form, so audio cannot cross —
 //! the opt-out is by construction.
 
-use crate::descriptor::PortType;
+use crate::descriptor::{Port, PortType};
 use crate::message::{Arg, OscArg};
 use crate::vocab::pitch::Note;
 
 /// Convert a flat OSC arg list into the single [`Arg`] a destination port carries, driven by the
-/// **destination port type** (ADR-0030). `None` when the args don't fit the port (a wrong-typed
-/// wire — dropped) or the port has no OSC form ([`Buffer`](Arg::Buffer): audio never crosses).
+/// **destination port** (ADR-0030). `None` when the args don't fit the port (a wrong-typed wire —
+/// dropped) or the port has no OSC form (a *bare* [`Buffer`](Arg::F32Buffer): audio never crosses).
 ///
 /// - **F32 / I32 / Str** — wrap the first arg (numeric coercion as for any `Arg`).
+/// - **F32Buffer with meta** — a signal control carrying a scalar default (`f32_buffer` + meta,
+///   e.g. `djfilter.position`): crosses as a clamped `F32`, materialized ZOH downstream — a control
+///   surface can sweep it (ADR-0030/0031). The port's `meta` is what distinguishes it from audio.
 /// - **Vocab enum** — resolve the first arg (symbol or index) via the port's resolver.
 /// - **Vocab struct** — unpack the flat form via the type's [`OscArg::from_osc`].
-/// - **Buffer** — `None` (opt-out).
-pub fn osc_in_arg(ty: &PortType, args: &[Arg]) -> Option<Arg> {
-    match ty {
+/// - **bare F32Buffer** (no meta — audio) — `None` (opt-out).
+pub fn osc_in_arg(p: &Port, args: &[Arg]) -> Option<Arg> {
+    match &p.ty {
         PortType::F32 => args.first().and_then(Arg::as_f32).map(Arg::F32),
         PortType::I32 => args
             .first()
@@ -39,8 +42,16 @@ pub fn osc_in_arg(ty: &PortType, args: &[Arg]) -> Option<Arg> {
             Arg::Str(s) => Some(Arg::Str(s.clone())),
             _ => None,
         }),
-        // Audio is not boundary-crossable (ADR-0030): a Buffer port has no OSC form.
-        PortType::Buffer => None,
+        // A signal control with a scalar default (`f32_buffer` + meta, e.g. `djfilter.position`):
+        // accept a numeric arg like an `F32` control and cross as `F32` — the ZOH bridge
+        // materializes it downstream. Clamp to the port's range here, since the Signal materialize
+        // path (unlike a Value's `held_arg`) does no later clamp. `meta` is the audio/control split.
+        PortType::F32Buffer if p.meta.is_some() => args
+            .first()
+            .and_then(Arg::as_f32)
+            .map(|v| Arg::F32(p.meta.as_ref().map(|m| m.clamp(v)).unwrap_or(v))),
+        // A *bare* Buffer (audio) is not boundary-crossable (ADR-0030): no OSC form.
+        PortType::F32Buffer => None,
         PortType::Vocab {
             enum_meta: Some(e), ..
         } => args.first().and_then(|a| e.resolve_arg(a)),
@@ -62,7 +73,7 @@ pub fn osc_in_arg(ty: &PortType, args: &[Arg]) -> Option<Arg> {
 /// appending primitive `Arg`s to `out`. The inverse of [`osc_in_arg`], dispatched on the `Arg`
 /// variant (the closed central enum). A primitive forwards verbatim; an enum sends its **symbol**;
 /// a struct vocab type packs via [`OscArg::to_osc`]. [`Harmony`](Arg::Harmony) and
-/// [`Buffer`](Arg::Buffer) have no external form and contribute nothing.
+/// [`Buffer`](Arg::F32Buffer) have no external form and contribute nothing.
 pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) {
     match arg {
         Arg::F32(_) | Arg::I32(_) | Arg::Str(_) => out.push(arg.clone()),
@@ -75,28 +86,59 @@ pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) {
         Arg::M2sMode(v) => out.push(Arg::Str(v.symbol().to_string())),
         Arg::MapCurve(v) => out.push(Arg::Str(v.symbol().to_string())),
         // No external OSC form.
-        Arg::Harmony(_) | Arg::Buffer(_) => {}
+        Arg::Harmony(_) | Arg::F32Buffer(_) => {}
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::descriptor::Port;
+    use crate::descriptor::{Curve, ParamMeta, Port};
     use crate::vocab::harmony::SnapDir;
     use crate::vocab::pitch::Pitch;
 
-    #[test]
-    fn f32_port_wraps_first_arg() {
-        let ty = PortType::F32;
-        assert_eq!(osc_in_arg(&ty, &[Arg::F32(0.5)]), Some(Arg::F32(0.5)));
-        // Int coerces to the numeric port.
-        assert_eq!(osc_in_arg(&ty, &[Arg::I32(3)]), Some(Arg::F32(3.0)));
+    /// A bare port of the given type (no meta) — the fixture for the type-driven arms.
+    fn port(ty: PortType) -> Port {
+        Port {
+            name: "p",
+            ty,
+            meta: None,
+        }
     }
 
     #[test]
-    fn buffer_port_never_crosses() {
-        assert_eq!(osc_in_arg(&PortType::Buffer, &[Arg::F32(1.0)]), None);
+    fn f32_port_wraps_first_arg() {
+        let p = port(PortType::F32);
+        assert_eq!(osc_in_arg(&p, &[Arg::F32(0.5)]), Some(Arg::F32(0.5)));
+        // Int coerces to the numeric port.
+        assert_eq!(osc_in_arg(&p, &[Arg::I32(3)]), Some(Arg::F32(3.0)));
+    }
+
+    #[test]
+    fn bare_buffer_port_never_crosses() {
+        // A *bare* `f32_buffer` (audio, no meta) has no OSC form.
+        assert_eq!(
+            osc_in_arg(&Port::f32_buffer("audio"), &[Arg::F32(1.0)]),
+            None
+        );
+    }
+
+    #[test]
+    fn signal_control_buffer_crosses_and_clamps() {
+        // A signal control carrying a scalar default (`f32_buffer` + meta, e.g. `djfilter.position`)
+        // DOES cross — a control surface can sweep it — and clamps to the port's range.
+        let pos = Port::f32_buffer_meta(ParamMeta {
+            name: "position",
+            min: -1.0,
+            max: 1.0,
+            default: 0.0,
+            unit: "",
+            curve: Curve::Linear,
+        });
+        assert_eq!(osc_in_arg(&pos, &[Arg::F32(0.5)]), Some(Arg::F32(0.5)));
+        // Out-of-range clamps to the knob's bounds.
+        assert_eq!(osc_in_arg(&pos, &[Arg::F32(9.0)]), Some(Arg::F32(1.0)));
+        assert_eq!(osc_in_arg(&pos, &[Arg::F32(-9.0)]), Some(Arg::F32(-1.0)));
     }
 
     #[test]
@@ -104,27 +146,27 @@ mod tests {
         let p = Port::enumerated(SnapDir::enum_meta("dir"));
         let up = SnapDir::from_symbol("Up").unwrap();
         assert_eq!(
-            osc_in_arg(&p.ty, &[Arg::Str("Up".into())]),
+            osc_in_arg(&p, &[Arg::Str("Up".into())]),
             Some(Arg::SnapDir(up))
         );
         // Index fallback.
         assert_eq!(
-            osc_in_arg(&p.ty, &[Arg::I32(up.to_index() as i32)]),
+            osc_in_arg(&p, &[Arg::I32(up.to_index() as i32)]),
             Some(Arg::SnapDir(up))
         );
     }
 
     #[test]
     fn note_port_unpacks_flat_form() {
-        let ty = PortType::Vocab {
+        let p = port(PortType::Vocab {
             name: "Note",
             enum_meta: None,
-        };
+        });
         // Float pitch → absolute MIDI; second arg is velocity.
-        let got = osc_in_arg(&ty, &[Arg::F32(69.0), Arg::F32(0.8)]);
+        let got = osc_in_arg(&p, &[Arg::F32(69.0), Arg::F32(0.8)]);
         assert_eq!(got, Some(Arg::Note(Note::new(Pitch::Absolute(69.0), 0.8))));
         // Int pitch → scale degree; missing velocity defaults to 1.0.
-        let got = osc_in_arg(&ty, &[Arg::I32(2)]);
+        let got = osc_in_arg(&p, &[Arg::I32(2)]);
         assert_eq!(got, Some(Arg::Note(Note::new(Pitch::Degree(2), 1.0))));
     }
 
@@ -134,11 +176,11 @@ mod tests {
         let mut flat = Vec::new();
         osc_out_args(&Arg::Note(n), &mut flat);
         assert_eq!(flat, vec![Arg::F32(60.0), Arg::F32(0.5)]);
-        let ty = PortType::Vocab {
+        let p = port(PortType::Vocab {
             name: "Note",
             enum_meta: None,
-        };
-        assert_eq!(osc_in_arg(&ty, &flat), Some(Arg::Note(n)));
+        });
+        assert_eq!(osc_in_arg(&p, &flat), Some(Arg::Note(n)));
     }
 
     #[test]
@@ -158,7 +200,10 @@ mod tests {
             &Arg::Harmony(crate::vocab::harmony::Harmony::default()),
             &mut flat,
         );
-        osc_out_args(&Arg::Buffer(crate::message::Signal::default()), &mut flat);
+        osc_out_args(
+            &Arg::F32Buffer(crate::message::Signal::default()),
+            &mut flat,
+        );
         assert!(flat.is_empty());
     }
 }

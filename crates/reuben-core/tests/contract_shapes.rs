@@ -1,5 +1,5 @@
 //! Compile-level proof of the ADR-0030 port-type surface: `operator_contract!` expands the
-//! `inputs { name: buffer/float { .. }/enum(VocabType) }` grammar into a valid `Descriptor` whose
+//! `inputs { name: f32_buffer/f32 { .. }/enum(VocabType) }` grammar into a valid `Descriptor` whose
 //! ports carry the right [`PortType`], single-sourced off the **shared vocab** enums (no per-op
 //! enum generation any more — ADR-0030 phase 7a). The macro's own unit tests assert the emitted
 //! **tokens**; this test compiles them and inspects the runtime values, for the filter + oscillator
@@ -12,18 +12,18 @@
 use reuben_core::descriptor::{Curve, PortType};
 use reuben_core::vocab::{FilterMode, Waveform};
 
-/// The ADR-0030 filter example: a `buffer` wire-in, two materialized floats (one with full meta,
+/// The ADR-0030 filter example: a `f32_buffer` wire-in, two materialized floats (one with full meta,
 /// one with unit/curve omitted), a live-switchable `enum` mode naming the shared `FilterMode`
-/// vocab, and a `buffer` output.
+/// vocab, and a `f32_buffer` output.
 mod filter_demo {
     pub struct FilterDemo;
     reuben_core::operator_contract!(FilterDemo {
         type_name: "filter_demo",
-        inputs:  { audio: buffer,
-                   cutoff: float { 20.0..=20_000.0, default 1_000.0, "Hz", exp },
-                   resonance: float { 0.0..=1.0, default 0.2 },
+        inputs:  { audio: f32_buffer,
+                   cutoff: f32 { 20.0..=20_000.0, default 1_000.0, "Hz", exp },
+                   resonance: f32 { 0.0..=1.0, default 0.2 },
                    mode: enum(FilterMode) },
-        outputs: { audio: buffer },
+        outputs: { audio: f32_buffer },
     });
 }
 
@@ -33,9 +33,9 @@ mod osc_demo {
     pub struct OscDemo;
     reuben_core::operator_contract!(OscDemo {
         type_name: "osc_demo",
-        inputs:  { freq: float { 20.0..=20_000.0, default 440.0, "Hz", exp },
+        inputs:  { freq: f32 { 20.0..=20_000.0, default 440.0, "Hz", exp },
                    waveform: enum(Waveform) },
-        outputs: { audio: buffer },
+        outputs: { audio: f32_buffer },
     });
 }
 
@@ -49,9 +49,9 @@ fn filter_demo_descriptor_has_the_right_port_types() {
     assert_eq!((IN_AUDIO, IN_CUTOFF, IN_RESONANCE, IN_MODE), (0, 1, 2, 3));
     assert_eq!(OUT_AUDIO, 0);
 
-    // The port's Arg type follows the declaration; a `buffer` is the dense per-sample wire and
-    // carries no materialized default, a `float { .. }` is a materialized scalar control.
-    assert!(matches!(d.inputs[IN_AUDIO].ty, PortType::Buffer));
+    // The port's Arg type follows the declaration; a `f32_buffer` is the dense per-sample wire and
+    // carries no materialized default, a `f32 { .. }` is a materialized scalar control.
+    assert!(matches!(d.inputs[IN_AUDIO].ty, PortType::F32Buffer));
     assert!(!d.inputs[IN_AUDIO].is_materialized());
     assert!(d.inputs[IN_CUTOFF].is_materialized());
     assert!(matches!(
@@ -61,7 +61,7 @@ fn filter_demo_descriptor_has_the_right_port_types() {
             ..
         }
     ));
-    assert!(matches!(d.outputs[OUT_AUDIO].ty, PortType::Buffer));
+    assert!(matches!(d.outputs[OUT_AUDIO].ty, PortType::F32Buffer));
     assert!(d.params.is_empty()); // the floats are inputs, not params
 
     // The materialized `cutoff` carries its meta, single-sourced from the contract.

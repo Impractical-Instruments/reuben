@@ -4,15 +4,46 @@
 use reuben_core::message::{Arg, Message};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
+use reuben_core::resources::{ResolveError, ResourceResolver, SampleBuffer};
 use reuben_core::vocab::pitch::{Note, Pitch};
-use reuben_core::{load, AudioConfig, Graph, InstrumentDoc, Registry};
+use reuben_core::{load, load_instrument, AudioConfig, Graph, InstrumentDoc, Registry};
 
 const DEFAULT_JSON: &str = include_str!("../../../instruments/default.json");
+const SAMPLER_VOICE_JSON: &str = include_str!("../../../instruments/voices/sampler-voice.json");
 const METRONOME_JSON: &str = include_str!("../../../instruments/metronome.json");
 const SEQUENCE_JSON: &str = include_str!("../../../instruments/sequence.json");
 const GOOD_BUTTON_JSON: &str = include_str!("../../../instruments/good-button.json");
 const AUTO_FILTER_JSON: &str = include_str!("../../../instruments/auto-filter.json");
 const COMMITTED_SCHEMA: &str = include_str!("../schema/instrument.schema.json");
+
+/// A filesystem resolver rooted at the repo `instruments/` dir, so an instrument-resource (`voice`)
+/// reference (ADR-0032) resolves to its on-disk voice patch. Samples aren't needed by the patches
+/// these tests load, so `resolve` is a stub.
+struct InstrumentsDir;
+
+impl ResourceResolver for InstrumentsDir {
+    fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        Err(ResolveError::NotFound(source.to_string()))
+    }
+    fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
+        let path = format!("{}/../../instruments/{source}", env!("CARGO_MANIFEST_DIR"));
+        std::fs::read_to_string(&path).map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))
+    }
+}
+
+/// Load `default.json` through the full resource pipeline (ADR-0032): the `voicer` node's `voice`
+/// instrument-resource resolves + builds its sub-patches from disk.
+fn load_default() -> Graph {
+    load_res(DEFAULT_JSON)
+}
+
+/// Load any instrument JSON through the full resource pipeline (ADR-0032), resolving its `voice`
+/// sub-patches from the repo `instruments/` dir.
+fn load_res(json: &str) -> Graph {
+    load_instrument(json, &Registry::builtin(), &InstrumentsDir)
+        .expect("load instrument")
+        .graph
+}
 
 /// Render `seconds` of `graph`, holding note A4 (MIDI 69) from frame 0.
 fn render(graph: Graph, cfg: AudioConfig, seconds: f32) -> Vec<f32> {
@@ -66,8 +97,7 @@ fn rms(buf: &[f32]) -> f32 {
 #[test]
 fn default_instrument_loads_and_makes_a_440hz_tone() {
     let cfg = AudioConfig::new(48_000.0, 256);
-    let graph = load(DEFAULT_JSON, &Registry::builtin()).expect("load default.json");
-    let out = render(graph, cfg, 1.0);
+    let out = render(load_default(), cfg, 1.0);
 
     let peak = out.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
     assert!(
@@ -94,12 +124,16 @@ fn default_instrument_loads_and_makes_a_440hz_tone() {
 
 #[test]
 fn save_then_reload_renders_identically() {
-    // load -> save (from_graph) -> reload must render bit-identical output.
+    // load -> save (from_graph) -> reload must render bit-identical output. Uses the resource-free,
+    // self-playing metronome so the reload needs no resolver: `from_graph` now round-trips a resource
+    // *id* (see `from_graph_round_trips_resource_ids`), but the decoded bytes do not — a
+    // resource-bearing instrument reloaded via plain `load` (no resolver) would render silent. This
+    // test pins render-identity, not the id round-trip.
     let cfg = AudioConfig::new(48_000.0, 256);
     let reg = Registry::builtin();
 
-    let g1 = load(DEFAULT_JSON, &reg).expect("load");
-    let saved = InstrumentDoc::from_graph(&g1, "default");
+    let g1 = load(METRONOME_JSON, &reg).expect("load metronome");
+    let saved = InstrumentDoc::from_graph(&g1, "metronome");
     let g2 = saved.build(&reg).expect("rebuild from saved doc");
 
     let a = render(g1, cfg, 0.5);
@@ -111,16 +145,43 @@ fn save_then_reload_renders_identically() {
 }
 
 #[test]
+fn from_graph_round_trips_resource_ids() {
+    // `from_graph` must re-emit a node's logical resource id — an ADR-0016 `sample` and an ADR-0032
+    // `voice` — so save -> reload preserves the reference. The id is stashed at build, independent of
+    // resource resolution (the decoded bytes still don't round-trip; only the id does, by design).
+    let reg = Registry::builtin();
+
+    // A `voice` instrument-resource ref (the voicer in default.json).
+    let g = load(DEFAULT_JSON, &reg).expect("load default");
+    let doc = InstrumentDoc::from_graph(&g, "default");
+    let voicer = doc
+        .nodes
+        .iter()
+        .find(|n| n.type_name == "voicer")
+        .expect("voicer node");
+    assert_eq!(voicer.voice.as_deref(), Some("default-voice"));
+
+    // A `sample` resource ref (the sample player in the sampler voice patch).
+    let g = load(SAMPLER_VOICE_JSON, &reg).expect("load sampler-voice");
+    let doc = InstrumentDoc::from_graph(&g, "sampler-voice");
+    let player = doc
+        .nodes
+        .iter()
+        .find(|n| n.type_name == "sample")
+        .expect("sample node");
+    assert_eq!(player.sample.as_deref(), Some("blip"));
+}
+
+#[test]
 fn plays_a_chord_polyphonically() {
     // A C-major triad: three notes sounding at once exercises per-Voice fan-out and the
     // Lane-summing master tap. A single note uses one Voice; the triad uses three, so it
     // carries clearly more energy, and it must stay deterministic.
     let cfg = AudioConfig::new(48_000.0, 256);
-    let reg = Registry::builtin();
     let chord = [60.0, 64.0, 67.0];
 
-    let single = render_notes(load(DEFAULT_JSON, &reg).unwrap(), cfg, 0.5, &chord[..1]);
-    let triad = render_notes(load(DEFAULT_JSON, &reg).unwrap(), cfg, 0.5, &chord);
+    let single = render_notes(load_default(), cfg, 0.5, &chord[..1]);
+    let triad = render_notes(load_default(), cfg, 0.5, &chord);
 
     // Past the attack, three voices sum to more energy than one.
     let win =
@@ -134,7 +195,7 @@ fn plays_a_chord_polyphonically() {
     );
 
     // Determinism holds with polyphony.
-    let again = render_notes(load(DEFAULT_JSON, &reg).unwrap(), cfg, 0.5, &chord);
+    let again = render_notes(load_default(), cfg, 0.5, &chord);
     assert_eq!(triad.len(), again.len());
     for (i, (x, y)) in triad.iter().zip(&again).enumerate() {
         assert_eq!(x.to_bits(), y.to_bits(), "non-deterministic at sample {i}");
@@ -170,16 +231,15 @@ fn good_button_brightness_opens_the_filter() {
     // two m2s converters) into the filter's Signal cutoff + resonance. Brightness 1.0 opens
     // the filter far wider than 0.0, so the held saw carries clearly more energy.
     let cfg = AudioConfig::new(48_000.0, 256);
-    let reg = Registry::builtin();
 
     let dark = render_with_control(
-        load(GOOD_BUTTON_JSON, &reg).expect("load good-button.json"),
+        load_res(GOOD_BUTTON_JSON),
         cfg,
         1.0,
         Message::new("/brightness/in", Arg::F32(0.0), 0),
     );
     let bright = render_with_control(
-        load(GOOD_BUTTON_JSON, &reg).expect("load good-button.json"),
+        load_res(GOOD_BUTTON_JSON),
         cfg,
         1.0,
         Message::new("/brightness/in", Arg::F32(1.0), 0),
@@ -197,7 +257,7 @@ fn good_button_brightness_opens_the_filter() {
 
     // Determinism: the same Good Button value renders bit-identically.
     let again = render_with_control(
-        load(GOOD_BUTTON_JSON, &reg).unwrap(),
+        load_res(GOOD_BUTTON_JSON),
         cfg,
         1.0,
         Message::new("/brightness/in", Arg::F32(1.0), 0),
@@ -214,16 +274,15 @@ fn auto_filter_base_plus_lfo_modulation_sounds_and_wobbles() {
     // depth to 0 (a static cutoff) must change the output — which proves the LFO -> add ->
     // filter.cutoff modulation path is actually live, not bypassed.
     let cfg = AudioConfig::new(48_000.0, 256);
-    let reg = Registry::builtin();
 
     let wobble = render_with_control(
-        load(AUTO_FILTER_JSON, &reg).expect("load auto-filter.json"),
+        load_res(AUTO_FILTER_JSON),
         cfg,
         1.0,
         Message::new("/lfo/depth", Arg::F32(1500.0), 0),
     );
     let still = render_with_control(
-        load(AUTO_FILTER_JSON, &reg).unwrap(),
+        load_res(AUTO_FILTER_JSON),
         cfg,
         1.0,
         Message::new("/lfo/depth", Arg::F32(0.0), 0),
@@ -249,7 +308,7 @@ fn auto_filter_base_plus_lfo_modulation_sounds_and_wobbles() {
 
     // Determinism: the wobble render is bit-identical on a re-run.
     let again = render_with_control(
-        load(AUTO_FILTER_JSON, &reg).unwrap(),
+        load_res(AUTO_FILTER_JSON),
         cfg,
         1.0,
         Message::new("/lfo/depth", Arg::F32(1500.0), 0),
@@ -323,15 +382,17 @@ fn clock_makes_a_sample_accurate_metronome() {
 
 #[test]
 fn sequencer_emits_notes_through_a_voicer() {
-    // The sequence rig (Clock beat-gate -> sequencer -> Voicer -> osc + envelope) plays
-    // itself with no external input: the sequencer emits note Messages on the internal
-    // message graph (ADR-0014), the Voicer turns them into freq + gate, and each beat
-    // sounds with a changing pitch. Deterministic, like the metronome.
+    // The sequence rig (Clock beat-gate -> sequencer -> Voicer hosting sequence-voice sub-patches)
+    // plays itself with no external input: the sequencer emits note Messages on the internal
+    // message graph (ADR-0014), the Voicer drives a hosted voice per note, and each beat sounds
+    // with a changing pitch. Deterministic, like the metronome.
     let cfg = AudioConfig::new(48_000.0, 256);
     let reg = Registry::builtin();
 
     let render_seq = |seconds: f32| -> Vec<f32> {
-        let graph = load(SEQUENCE_JSON, &reg).expect("load sequence.json");
+        let graph = load_instrument(SEQUENCE_JSON, &reg, &InstrumentsDir)
+            .expect("load sequence.json")
+            .graph;
         let mut plan = Plan::instantiate(graph, cfg).expect("instantiate");
         let mut r = Renderer::new(&plan);
         let blocks = (cfg.sample_rate * seconds) as usize / cfg.block_size;

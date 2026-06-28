@@ -1,0 +1,117 @@
+{
+  "doc": "Kick drum voice (ADR-0032). A gate fires one envelope whose CV both drops the pitch (sine body, base + decaying sweep) and shapes the amplitude — the classic synth 'thump'. Pitch is internal (no freq interface input); the host's lane voicer only drives the gate. interface: gate in, audio/active out.",
+  "instrument": "kick-voice",
+  "interface": {
+    "inputs": {
+      "gate": "/env.gate"
+    },
+    "outputs": {
+      "audio": "/out.audio",
+      "active": "/env.active"
+    }
+  },
+  "nodes": [
+    {
+      "address": "/env",
+      "doc": "One amplitude+pitch envelope -> linear CV, fast decay. Drives both the pitch drop and the amp.",
+      "inputs": {
+        "attack": 0.001,
+        "decay": 0.1,
+        "release": 0.08,
+        "sustain": 0.0
+      },
+      "type": "envelope"
+    },
+    {
+      "address": "/sweep_amt",
+      "doc": "Constant pitch-sweep amount (Hz).",
+      "inputs": {
+        "in": 220.0
+      },
+      "type": "m2s"
+    },
+    {
+      "address": "/penv",
+      "doc": "Scale the sweep amount by the (linear) envelope CV -> the decaying pitch drop.",
+      "inputs": {
+        "a": {
+          "from": "/sweep_amt"
+        },
+        "b": {
+          "from": "/env.cv"
+        }
+      },
+      "type": "mul_f32_signal"
+    },
+    {
+      "address": "/base",
+      "doc": "Constant kick base frequency (Hz).",
+      "inputs": {
+        "in": 48.0
+      },
+      "type": "m2s"
+    },
+    {
+      "address": "/freq",
+      "doc": "kick freq = base (a) + decaying sweep (b).",
+      "inputs": {
+        "a": {
+          "from": "/base"
+        },
+        "b": {
+          "from": "/penv"
+        }
+      },
+      "type": "add_f32_signal"
+    },
+    {
+      "address": "/osc",
+      "doc": "Sine body, frequency driven by the pitch-drop.",
+      "inputs": {
+        "freq": {
+          "from": "/freq"
+        },
+        "waveform": "Sine"
+      },
+      "type": "oscillator"
+    },
+    {
+      "address": "/curve",
+      "doc": "Exponential-style volume curve (x^2) on the amp CV.",
+      "inputs": {
+        "x": {
+          "from": "/env.cv"
+        }
+      },
+      "type": "power_f32_signal"
+    },
+    {
+      "address": "/vca",
+      "doc": "VCA: kick body * shaped amp CV.",
+      "inputs": {
+        "a": {
+          "from": "/osc"
+        },
+        "b": {
+          "from": "/curve"
+        }
+      },
+      "type": "mul_f32_signal"
+    },
+    {
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/vca"
+        }
+      },
+      "type": "output"
+    }
+  ],
+  "outputs": [
+    {
+      "node": "/out",
+      "port": "audio"
+    }
+  ]
+}

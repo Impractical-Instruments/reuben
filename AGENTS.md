@@ -29,6 +29,16 @@ core · single-writer Coordinator. Details + enforcing tests:
 Use the project's exact terms (Operator, Instrument, Rig, Plan, Swap, Lane, Voice…).
 [CONTEXT.md](CONTEXT.md) is the glossary — don't drift to synonyms it says to avoid.
 
+## Code navigation
+Prefer LSP over Grep/Glob for code navigation:
+- goToDefinition / goToImplementation to locate source
+- findReferences before any rename or signature change — enumerate all call sites first
+- workspaceSymbol / documentSymbol to find definitions
+- hover for type info without reading the file
+- check diagnostics after every edit; fix type errors before moving on
+  Use Grep only for non-code text: comments, string literals, config values.
+  Never use Grep to find a function or type definition.
+
 ## Guides
 
 - **[Authoring](docs/agents/authoring.md)** — operator trait, descriptor macro, adding an operator, JSON format.

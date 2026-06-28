@@ -1,0 +1,73 @@
+{
+  "doc": "Voice patch for chord-player.json (ADR-0032). One monophonic saw PAD voice: a held freq drives the oscillator, a held gate the slow-attack ADSR. NO filter here — the brightness Good Button drives a single master filter on the summed mix (host post-mix). The pad ADSR (slow attack/release) is baked at the values the host's /env controls used to set (per-voice params aren't host-addressable in the hosted-voice model). interface: freq/gate in, audio/active out.",
+  "instrument": "chord-player-voice",
+  "interface": {
+    "inputs": {
+      "freq": "/osc.freq",
+      "gate": "/env.gate"
+    },
+    "outputs": {
+      "audio": "/out.audio",
+      "active": "/env.active"
+    }
+  },
+  "nodes": [
+    {
+      "address": "/osc",
+      "doc": "Saw pad tone (harmonics for the master filter to shape).",
+      "inputs": {
+        "waveform": "Saw"
+      },
+      "type": "oscillator"
+    },
+    {
+      "address": "/env",
+      "doc": "Slow-attack pad envelope (linear CV), gated by the voicer.",
+      "inputs": {
+        "attack": 0.6,
+        "decay": 0.3,
+        "release": 0.8,
+        "sustain": 0.8
+      },
+      "type": "envelope"
+    },
+    {
+      "address": "/env_curve",
+      "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
+      "inputs": {
+        "x": {
+          "from": "/env.cv"
+        }
+      },
+      "type": "power_f32_signal"
+    },
+    {
+      "address": "/env_vca",
+      "doc": "VCA: saw * shaped envelope CV.",
+      "inputs": {
+        "a": {
+          "from": "/osc"
+        },
+        "b": {
+          "from": "/env_curve"
+        }
+      },
+      "type": "mul_f32_signal"
+    },
+    {
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/env_vca"
+        }
+      },
+      "type": "output"
+    }
+  ],
+  "outputs": [
+    {
+      "node": "/out",
+      "port": "audio"
+    }
+  ]
+}

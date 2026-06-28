@@ -53,15 +53,15 @@ impl Operator for Snap {
 
     fn process(&mut self, io: &mut Io) {
         let policy = SnapPolicy {
-            target: io.last::<SnapTarget>(IN_TARGET).unwrap_or_default(),
-            direction: io.last::<SnapDir>(IN_DIRECTION).unwrap_or_default(),
+            target: io.input::<SnapTarget>(IN_TARGET).unwrap_or_default(),
+            direction: io.input::<SnapDir>(IN_DIRECTION).unwrap_or_default(),
         };
-        let harmony = io.last::<Harmony>(IN_HARMONY).unwrap_or_default();
+        let harmony = io.input::<Harmony>(IN_HARMONY).unwrap_or_default();
 
         // Snapshot incoming notes (its borrow of `io` ends here) so the emit loop can borrow `io`
         // mutably. `Note` is `Copy`, so this is alloc-free for the common low-event-count case.
         let mut notes: SmallVec<[(usize, Note); 8]> = SmallVec::new();
-        for s in io.stream::<Note>(IN_NOTES) {
+        for s in io.input::<Note>(IN_NOTES) {
             notes.push((s.frame, s.payload));
         }
 
@@ -71,7 +71,8 @@ impl Operator for Snap {
                 Pitch::Absolute(midi) => harmony.snap(midi, policy),
                 Pitch::Degree(_) => note.pitch,
             };
-            io.emit(OUT_NOTES, "notes", Note::new(pitch, note.velocity), frame);
+            io.output::<Note>(OUT_NOTES)
+                .emit(frame, Note::new(pitch, note.velocity));
         }
     }
 

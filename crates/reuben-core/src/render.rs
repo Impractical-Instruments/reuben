@@ -2,21 +2,20 @@
 //!
 //! The serial executor walks the topologically-ordered nodes. For each node, incoming
 //! Messages are routed to its input ports by the port's [`PortKind`](crate::plan::PortKind):
-//! a **Held** control (scalar / enum / `Harmony`) drives **block-slicing** (the block is split
+//! a **Value** control (scalar / enum / `Harmony`) drives **block-slicing** (the block is split
 //! at its change frames so [`Operator::process`] always sees a constant held value, read via
-//! `io.last`); a **Stream** event (`Note`) is delivered as a zero-copy [`Event`] on its port
-//! (read via `io.stream`); a **Dense** [`Buffer`] input fed by a scalar is **materialized** ZOH
+//! `io.last`); an **Event** (`Note`) is delivered as a zero-copy [`Event`] on its port
+//! (read via `io.stream`); a **Signal** [`Buffer`] input fed by a scalar is **materialized** ZOH
 //! into its arena buffer (read via `io.signal`).
 //!
-//! Each node is processed once **per Lane (Voice)**: the engine runs `node.ops[lane]`
-//! with that Lane's input/output buffers and `io.lane()` set, so single-Lane operators
-//! are transparently replicated (ADR-0010). A single-Lane source feeding a multi-Lane
-//! node broadcasts. Master taps sum every Lane of the tapped port, in fixed order, so
-//! output is deterministic (ADR-0001).
+//! Each node is processed once for the block, slicing at its Held-input change frames so
+//! [`Operator::process`] always sees a constant held value. Polyphony is hosted inside the Voicer
+//! (N voice sub-plans summed), not fanned out across engine Lanes — the Lane model is gone
+//! (ADR-0032).
 //!
 //! **Realtime-safe.** A [`Renderer`] preallocates its edge-buffer arena and every piece
 //! of per-block scratch at construction, and reuses them; steady-state [`Renderer::render_block`]
-//! performs no heap allocation (verified by `tests/rt_safe.rs`). Per-Lane buffer wiring
+//! performs no heap allocation (verified by `tests/rt_safe.rs`). Per-port buffer wiring
 //! uses stack [`SmallVec`]s; routed events are zero-copy views onto the caller's Messages.
 //!
 //! The [`Executor`] trait is the pluggable-executor seam (ADR-0001).
@@ -26,7 +25,7 @@ use smallvec::SmallVec;
 use crate::descriptor::{Port, PortType};
 use crate::message::{Arg, Emit, Event, Message};
 use crate::operator::Io;
-use crate::plan::{Plan, PlanNode, PortKind};
+use crate::plan::{InterfaceOutput, Plan, PlanNode, PortKind};
 
 /// Decides the order in which nodes are processed for a block.
 ///
@@ -54,16 +53,15 @@ impl Executor for SerialExecutor {
 /// grows the Vec once (allocation), which steady-state graphs do not reach.
 const EMIT_POOL_CAP: usize = 256;
 
-/// Owns the edge-buffer arena and drives Render for a single Plan.
-///
-/// All buffers and per-block scratch are allocated once here and reused, so
-/// [`Renderer::render_block`] is allocation-free in steady state.
-pub struct Renderer<E: Executor = SerialExecutor> {
-    /// Edge buffers, indexed by arena slot; one block long each.
-    arena: Vec<Vec<f32>>,
-    /// Per-node scratch: the current node's output buffers, swapped out of `arena` so
-    /// inputs (still in `arena`) and outputs are disjointly borrowable. Flat layout,
-    /// index `port * lanes + lane`. Cleared and refilled per node — capacity retained.
+/// Reusable per-block render scratch (ADR-0030, ADR-0032 §4): everything the render path needs
+/// *besides* the edge-buffer arena. Preallocated once (sized to a plan) and reused, so the render
+/// path is allocation-free in steady state. Kept separate from the arena so [`render_plan`] is a
+/// re-entrant free function — a hosting operator (`Voicer`) renders each sub-plan with that
+/// sub-plan's own arena while reusing one shared `RenderScratch`.
+pub struct RenderScratch {
+    /// Per-node scratch: the current node's signal-output buffers, swapped out of `arena` so
+    /// inputs (still in `arena`) and outputs are disjointly borrowable. In signal-output port
+    /// order. Cleared and refilled per node — capacity retained.
     out_scratch: Vec<Vec<f32>>,
     /// Per-block message routing, one entry per node. Reused; inner Vecs cleared per block.
     routes: Vec<NodeRoute>,
@@ -72,13 +70,47 @@ pub struct Renderer<E: Executor = SerialExecutor> {
     emitted: Vec<Emit>,
     /// One node's emissions for the current node, drained into `emitted` after it runs.
     emit_scratch: Vec<Emit>,
-    /// Throwaway outbound sink for the mono [`Renderer::render_block`] convenience, which has no
-    /// outbound out-parameter. Preallocated and cleared per call so render_block stays alloc-free.
-    outbound_sink: Vec<Message>,
     /// Per-node block-slice boundaries scratch. Cleared per node — capacity retained.
     bounds: Vec<usize>,
     /// Execution order for the block, refilled by the executor into reused capacity.
     order: Vec<usize>,
+}
+
+impl RenderScratch {
+    /// Preallocate scratch sized to `plan` so the steady-state render path never grows it.
+    pub fn new(plan: &Plan) -> Self {
+        let routes = (0..plan.nodes.len())
+            .map(|_| NodeRoute::default())
+            .collect();
+        let max_out_bufs = plan
+            .nodes
+            .iter()
+            .map(|n| n.outputs.iter().map(|p| p.len()).sum::<usize>())
+            .max()
+            .unwrap_or(0);
+        Self {
+            out_scratch: Vec::with_capacity(max_out_bufs),
+            routes,
+            emitted: Vec::with_capacity(EMIT_POOL_CAP),
+            emit_scratch: Vec::with_capacity(EMIT_POOL_CAP),
+            bounds: Vec::with_capacity(8),
+            order: Vec::with_capacity(plan.nodes.len()),
+        }
+    }
+}
+
+/// Owns the edge-buffer arena and drives Render for a single Plan.
+///
+/// All buffers and per-block scratch are allocated once here and reused, so
+/// [`Renderer::render_block`] is allocation-free in steady state.
+pub struct Renderer<E: Executor = SerialExecutor> {
+    /// Edge buffers, indexed by arena slot; one block long each.
+    arena: Vec<Vec<f32>>,
+    /// Reusable per-block scratch (everything but the arena), shared across re-entrant renders.
+    scratch: RenderScratch,
+    /// Throwaway outbound sink for the mono [`Renderer::render_block`] convenience, which has no
+    /// outbound out-parameter. Preallocated and cleared per call so render_block stays alloc-free.
+    outbound_sink: Vec<Message>,
     /// Per-channel master scratch (ADR-0026), one buffer per logical channel, each
     /// `block_size` long. Used by the mono [`Renderer::render_block`] convenience so it can
     /// compute the full N-channel master and hand back channel 0; preallocated and reused.
@@ -102,29 +134,10 @@ impl<E: Executor> Renderer<E> {
             .map(|_| vec![0.0; block_size])
             .collect();
 
-        // Preallocate scratch sized to the plan so the steady-state render path never grows it.
-        let routes = (0..plan.nodes.len())
-            .map(|_| NodeRoute::default())
-            .collect();
-        let max_out_bufs = plan
-            .nodes
-            .iter()
-            .map(|n| n.outputs.iter().map(|p| p.len()).sum::<usize>())
-            .max()
-            .unwrap_or(0);
-        let out_scratch = Vec::with_capacity(max_out_bufs);
-        let bounds = Vec::with_capacity(8);
-        let order = Vec::with_capacity(plan.nodes.len());
-
         Self {
             arena,
-            out_scratch,
-            routes,
-            emitted: Vec::with_capacity(EMIT_POOL_CAP),
-            emit_scratch: Vec::with_capacity(EMIT_POOL_CAP),
+            scratch: RenderScratch::new(plan),
             outbound_sink: Vec::with_capacity(EMIT_POOL_CAP),
-            bounds,
-            order,
             master: (0..plan.config.channels)
                 .map(|_| vec![0.0; block_size])
                 .collect(),
@@ -173,7 +186,8 @@ impl<E: Executor> Renderer<E> {
 
     /// The shared render path: execute every node for the block and sum the master taps into
     /// `master` (one buffer per logical channel). `master.len()` should equal
-    /// `plan.config.channels`; a tap addressing a channel beyond `master` is dropped.
+    /// `plan.config.channels`; a tap addressing a channel beyond `master` is dropped. Delegates to
+    /// the re-entrant [`render_plan`] over this renderer's owned arena + scratch.
     fn render_into(
         &mut self,
         plan: &mut Plan,
@@ -181,130 +195,177 @@ impl<E: Executor> Renderer<E> {
         master: &mut [Vec<f32>],
         outbound: &mut Vec<Message>,
     ) {
-        // Fresh edge buffers each block (upstream writes before downstream reads). Materialize
-        // scratch buffers are excluded (ADR-0030): they are fully written by the materialize step
-        // and persist a held input's value across blocks, so zeroing them would only force a
-        // needless refill. `process_node` keeps each one fully defined (see `materialize_clean`).
-        for (i, buf) in self.arena.iter_mut().enumerate() {
-            if plan.materialize_scratch_mask[i] {
-                continue;
-            }
-            buf.iter_mut().for_each(|s| *s = 0.0);
+        render_plan(
+            plan,
+            &mut self.arena,
+            &mut self.scratch,
+            &self.executor,
+            messages,
+            self.block_size,
+            master,
+            outbound,
+        );
+    }
+}
+
+/// Re-entrant block render over an explicit `(plan, arena, scratch)` (ADR-0032 §4): execute every
+/// node for `frames` frames and sum the master taps into `master` (one buffer per logical channel,
+/// `master.len()` should equal `plan.config.channels`; a tap beyond `master` is dropped). `outbound`
+/// is **appended to** (ADR-0026) — the caller drains it.
+///
+/// This is the primitive that makes render re-entrant: render is a pure function of
+/// `(plan, arena, scratch)`, not nested mutable renderer state. The top-level [`Renderer`] calls it
+/// with the rig's arena; a hosting operator (`Voicer`, ADR-0032) calls the *same* function per
+/// active voice with that voice's own arena, reusing one shared `RenderScratch`. Allocation-free in
+/// steady state when `scratch` was [`RenderScratch::new`]-sized to `plan`.
+/// The [`Plan::captured`] slot a Value `interface` output `(node, port)` writes to, or `None` if the
+/// emitting port is not a captured Value boundary output. Linear scan over the (tiny) interface list.
+fn capture_slot(outs: &[InterfaceOutput], node: usize, port: usize) -> Option<usize> {
+    outs.iter()
+        .find(|o| o.node == node && o.port == port)
+        .and_then(|o| o.captured_slot)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn render_plan<E: Executor>(
+    plan: &mut Plan,
+    arena: &mut [Vec<f32>],
+    scratch: &mut RenderScratch,
+    executor: &E,
+    messages: &[Message],
+    frames: usize,
+    master: &mut [Vec<f32>],
+    outbound: &mut Vec<Message>,
+) {
+    // Fresh edge buffers each block (upstream writes before downstream reads). Materialize
+    // scratch buffers are excluded (ADR-0030): they are fully written by the materialize step
+    // and persist a held input's value across blocks, so zeroing them would only force a
+    // needless refill. `process_node` keeps each one fully defined (see `materialize_clean`).
+    for (i, buf) in arena.iter_mut().enumerate() {
+        if plan.materialize_scratch_mask[i] {
+            continue;
         }
+        buf.iter_mut().for_each(|s| *s = 0.0);
+    }
 
-        // Route external messages to node input ports, classified by port kind. Reuses scratch.
-        // Operator-emitted messages are routed later, interleaved with execution.
-        route_messages(&mut self.routes, plan, messages);
-        self.emitted.clear();
+    // Route external messages to node input ports, classified by port kind. Reuses scratch.
+    // Operator-emitted messages are routed later, interleaved with execution.
+    route_messages(&mut scratch.routes, plan, messages);
+    scratch.emitted.clear();
 
-        // Executor decides node order for the block (into reused capacity).
-        self.executor.order(plan, &mut self.order);
+    // Executor decides node order for the block (into reused capacity).
+    executor.order(plan, &mut scratch.order);
 
-        let sample_rate = plan.config.sample_rate;
-        let block_size = self.block_size;
+    let sample_rate = plan.config.sample_rate;
+    let block_size = frames;
 
-        // Disjoint field borrows so `process_node` can hold `arena` (inputs) and
-        // `out_scratch` (outputs) at once while reading `routes`/`order`.
-        let Self {
+    // Disjoint field borrows so `process_node` can hold `arena` (inputs) and
+    // `out_scratch` (outputs) at once while reading `routes`/`order`.
+    let RenderScratch {
+        out_scratch,
+        routes,
+        emitted,
+        emit_scratch,
+        bounds,
+        order,
+    } = scratch;
+
+    for &i in order.iter() {
+        emit_scratch.clear();
+        process_node(
             arena,
             out_scratch,
-            routes,
+            bounds,
+            &mut routes[i],
+            &mut plan.nodes[i],
+            messages,
             emitted,
             emit_scratch,
-            bounds,
-            order,
-            ..
-        } = self;
+            sample_rate,
+            block_size,
+        );
 
-        for &i in order.iter() {
-            emit_scratch.clear();
-            process_node(
-                arena,
-                out_scratch,
-                bounds,
-                &mut routes[i],
-                &mut plan.nodes[i],
-                messages,
-                emitted,
-                emit_scratch,
-                sample_rate,
-                block_size,
-            );
-
-            // An `osc_out` sink: its emissions leave the graph (ADR-0026, ADR-0030). Drain each to
-            // the outbound list stamped with the node's (fixed) address and the already-block-
-            // absolute frame; native encodes + sends them. A sink has no downstream wiring, so this
-            // replaces — not supplements — the routing below.
-            if let Some(addr) = plan
-                .outbound_taps
-                .iter()
-                .find(|t| t.node == i)
-                .map(|t| t.address.as_str())
-            {
-                for e in emit_scratch.drain(..) {
-                    outbound.push(Message::new(addr, e.arg, e.frame));
-                }
-                continue;
-            }
-
-            // Route this node's emissions (ADR-0014, ADR-0030): each goes into the block-lifetime
-            // pool, and is delivered to every wired `(dst node, dst input port)` — which run later
-            // in topo order, so they see it. The dst input port's [`PortKind`] decides how it
-            // lands: a Held input latches + re-slices (the former context publish unifies here), a
-            // Stream input gets a zero-copy event, a Dense input materializes ZOH.
+        // An `osc_out` sink: its emissions leave the graph (ADR-0026, ADR-0030). Drain each to
+        // the outbound list stamped with the node's (fixed) address and the already-block-
+        // absolute frame; native encodes + sends them. A sink has no downstream wiring, so this
+        // replaces — not supplements — the routing below.
+        if let Some(addr) = plan
+            .outbound_taps
+            .iter()
+            .find(|t| t.node == i)
+            .map(|t| t.address.as_str())
+        {
             for e in emit_scratch.drain(..) {
-                let port = e.port;
-                let pool_idx = emitted.len();
-                for &(dst, dst_port) in &plan.nodes[i].out_targets[port] {
-                    match plan.nodes[dst].input_kinds[dst_port] {
-                        PortKind::Dense => {
-                            if let Some(v) = e.arg.as_f32() {
-                                routes[dst].materialize_writes.push((e.frame, dst_port, v));
-                            }
-                        }
-                        PortKind::Held => {
-                            let p = &plan.nodes[dst].descriptor.inputs[dst_port];
-                            if let Some(a) = held_arg(p, &e.arg) {
-                                routes[dst].held.push((e.frame, dst_port, a));
-                            }
-                        }
-                        PortKind::Stream => {
-                            routes[dst].events.push(RoutedEvent {
-                                dst_port,
-                                src: EventSrc::Emitted(pool_idx),
-                            });
-                        }
-                    }
-                }
-                emitted.push(e);
+                outbound.push(Message::new(addr, e.arg, e.frame));
             }
+            continue;
         }
 
-        // Sum master taps into the per-channel master (ADR-0026): every Lane of every tapped
-        // port, in fixed order, so output stays deterministic (ADR-0001). A broadcast tap
-        // (`channel: None`) adds to every channel — the historical mono fan, so channel 0 of a
-        // fully-broadcast instrument is bit-identical to the pre-stereo single buffer. A
-        // channel-pinned tap adds to that one channel only.
-        for chan in master.iter_mut() {
-            chan.iter_mut().for_each(|s| *s = 0.0);
+        // Route this node's emissions (ADR-0014, ADR-0030): each goes into the block-lifetime
+        // pool, and is delivered to every wired `(dst node, dst input port)` — which run later
+        // in topo order, so they see it. The dst input port's [`PortKind`] decides how it
+        // lands: a Value input latches + re-slices (the former context publish unifies here), a
+        // Event input gets a zero-copy event, a Signal input materializes ZOH.
+        for e in emit_scratch.drain(..) {
+            let port = e.port;
+            let pool_idx = emitted.len();
+            // Capture a Value `interface` output (ADR-0032 §4): its last-emitted scalar is held for
+            // the host to read post-render. The port may also be wired downstream — capture is
+            // additive (a tap), not a replacement for routing below.
+            if let Some(slot) = capture_slot(&plan.interface_outputs, i, port) {
+                if let Some(v) = e.arg.as_f32() {
+                    plan.captured[slot] = v;
+                }
+            }
+            for &(dst, dst_port) in &plan.nodes[i].out_targets[port] {
+                match plan.nodes[dst].input_kinds[dst_port] {
+                    PortKind::Signal => {
+                        if let Some(v) = e.arg.as_f32() {
+                            routes[dst].materialize_writes.push((e.frame, dst_port, v));
+                        }
+                    }
+                    PortKind::Value => {
+                        let p = &plan.nodes[dst].descriptor.inputs[dst_port];
+                        if let Some(a) = held_arg(p, &e.arg) {
+                            routes[dst].held.push((e.frame, dst_port, a));
+                        }
+                    }
+                    PortKind::Event => {
+                        routes[dst].events.push(RoutedEvent {
+                            dst_port,
+                            src: EventSrc::Emitted(pool_idx),
+                        });
+                    }
+                }
+            }
+            emitted.push(e);
         }
-        for tap in &plan.output_taps {
-            match tap.channel {
-                None => {
-                    for &buf in &tap.buffers {
-                        for chan in master.iter_mut() {
-                            for (o, s) in chan.iter_mut().zip(arena[buf].iter()) {
-                                *o += *s;
-                            }
+    }
+
+    // Sum master taps into the per-channel master (ADR-0026): every Lane of every tapped
+    // port, in fixed order, so output stays deterministic (ADR-0001). A broadcast tap
+    // (`channel: None`) adds to every channel — the historical mono fan, so channel 0 of a
+    // fully-broadcast instrument is bit-identical to the pre-stereo single buffer. A
+    // channel-pinned tap adds to that one channel only.
+    for chan in master.iter_mut() {
+        chan.iter_mut().for_each(|s| *s = 0.0);
+    }
+    for tap in &plan.output_taps {
+        match tap.channel {
+            None => {
+                for &buf in &tap.buffers {
+                    for chan in master.iter_mut() {
+                        for (o, s) in chan.iter_mut().zip(arena[buf].iter()) {
+                            *o += *s;
                         }
                     }
                 }
-                Some(c) => {
-                    if let Some(chan) = master.get_mut(c) {
-                        for &buf in &tap.buffers {
-                            for (o, s) in chan.iter_mut().zip(arena[buf].iter()) {
-                                *o += *s;
-                            }
+            }
+            Some(c) => {
+                if let Some(chan) = master.get_mut(c) {
+                    for &buf in &tap.buffers {
+                        for (o, s) in chan.iter_mut().zip(arena[buf].iter()) {
+                            *o += *s;
                         }
                     }
                 }
@@ -332,26 +393,26 @@ impl<E: Executor> Renderer<E> {
         frames: usize,
         messages: &[Message],
     ) {
-        // Same per-block fresh-edge clear as `render_into` (materialize scratch excepted).
+        // Same per-block fresh-edge clear as `render_plan` (materialize scratch excepted).
         for (i, buf) in self.arena.iter_mut().enumerate() {
             if plan.materialize_scratch_mask[i] {
                 continue;
             }
             buf.iter_mut().for_each(|s| *s = 0.0);
         }
-        route_messages(&mut self.routes, plan, messages);
-        self.emitted.clear();
+        route_messages(&mut self.scratch.routes, plan, messages);
+        self.scratch.emitted.clear();
         let sample_rate = plan.config.sample_rate;
 
-        let Self {
-            arena,
+        let arena = &mut self.arena;
+        let RenderScratch {
             out_scratch,
             routes,
             emitted,
             emit_scratch,
             bounds,
             ..
-        } = self;
+        } = &mut self.scratch;
         emit_scratch.clear();
         process_node(
             arena,
@@ -380,7 +441,7 @@ impl<E: Executor> Renderer<E> {
 
     /// The emissions the last [`Renderer::step_node`] collected (segment-relative frames).
     pub(crate) fn last_emits(&self) -> &[Emit] {
-        &self.emit_scratch
+        &self.scratch.emit_scratch
     }
 }
 
@@ -404,10 +465,10 @@ fn held_arg(p: &Port, arg: &Arg) -> Option<Arg> {
 /// [`Event`] borrows the source.
 #[derive(Clone, Copy)]
 enum EventSrc {
-    /// Index into the block `messages` slice, plus the byte offset where the node-local
-    /// address begins (the external address is a full OSC path).
-    External { msg: usize, local_start: usize },
-    /// Index into the per-block emit pool. Its address is already node-local.
+    /// Index into the block `messages` slice. The event delivers by the wired input port, so only
+    /// the payload (and frame) are carried forward — the external address is not (ADR-0031 step 7).
+    External { msg: usize },
+    /// Index into the per-block emit pool.
     Emitted(usize),
 }
 
@@ -421,7 +482,7 @@ struct RoutedEvent {
 /// Per-node routed messages for one block (ADR-0030), one bucket per [`PortKind`].
 #[derive(Default)]
 struct NodeRoute {
-    /// (frame, input port, value) — a scalar feeding a materialized [`Buffer`](PortType::Buffer)
+    /// (frame, input port, value) — a scalar feeding a materialized [`Buffer`](PortType::F32Buffer)
     /// input. The engine writes it into the input's scratch buffer at its frame (ZOH); does **not**
     /// split the block. Sorted by frame before materialize.
     materialize_writes: Vec<(usize, usize, f32)>,
@@ -461,24 +522,20 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
                 .find(|(_, p)| p.name == local)
             {
                 match node.input_kinds[port] {
-                    PortKind::Dense => {
+                    PortKind::Signal => {
                         if let Some(v) = msg.as_f32() {
                             routes[i].materialize_writes.push((msg.frame, port, v));
                         }
                     }
-                    PortKind::Held => {
+                    PortKind::Value => {
                         if let Some(a) = held_arg(p, &msg.arg) {
                             routes[i].held.push((msg.frame, port, a));
                         }
                     }
-                    PortKind::Stream => {
-                        let local_start = msg.address.len() - local.len();
+                    PortKind::Event => {
                         routes[i].events.push(RoutedEvent {
                             dst_port: port,
-                            src: EventSrc::External {
-                                msg: mi,
-                                local_start,
-                            },
+                            src: EventSrc::External { msg: mi },
                         });
                     }
                 }
@@ -584,14 +641,13 @@ fn process_node(
     bounds.dedup();
 
     // Swap this node's signal-output buffers out of the arena into `out_scratch` (disjoint from
-    // inputs — no self-loops; cycles error). Flat layout: index `port * lanes + lane`.
+    // inputs — no self-loops; cycles error), in signal-output port order.
     out_scratch.clear();
     for port in &node.outputs {
         for &bi in port {
             out_scratch.push(std::mem::take(&mut arena[bi]));
         }
     }
-    let lanes = node.lanes;
     let n_inputs = node.descriptor.inputs.len();
 
     for w in bounds.windows(2) {
@@ -600,9 +656,9 @@ fn process_node(
             continue;
         }
 
-        // Apply Held changes landing at this segment's start: update the per-port latch, read by
-        // every Lane via `io.last` (ADR-0030). Persists across blocks (the latch is next block's
-        // frame-0 baseline). Last-write-wins on equal frames.
+        // Apply Held changes landing at this segment's start: update the per-port latch, read via
+        // `io.last` (ADR-0030). Persists across blocks (the latch is next block's frame-0 baseline).
+        // Last-write-wins on equal frames.
         for (f, port, arg) in route.held.iter() {
             if *f == seg_start {
                 node.latch[*port] = arg.clone();
@@ -614,19 +670,18 @@ fn process_node(
         let mut per_port: SmallVec<[SmallVec<[Event; 4]>; 24]> =
             (0..n_inputs).map(|_| SmallVec::new()).collect();
         for re in route.events.iter() {
-            let (addr, arg, frame): (&str, &Arg, usize) = match re.src {
-                EventSrc::External { msg, local_start } => {
+            let (arg, frame): (&Arg, usize) = match re.src {
+                EventSrc::External { msg } => {
                     let m = &messages[msg];
-                    (&m.address[local_start..], &m.arg, m.frame)
+                    (&m.arg, m.frame)
                 }
                 EventSrc::Emitted(idx) => {
                     let e = &emitted[idx];
-                    (e.address, &e.arg, e.frame)
+                    (&e.arg, e.frame)
                 }
             };
             if frame >= seg_start && frame < seg_end {
                 per_port[re.dst_port].push(Event {
-                    address: addr,
                     arg,
                     frame: frame - seg_start,
                 });
@@ -634,37 +689,24 @@ fn process_node(
         }
         let stream_refs: SmallVec<[&[Event]; 24]> = per_port.iter().map(|v| v.as_slice()).collect();
 
-        for lane in 0..lanes {
-            // Input slices for this Lane; a single-Lane source broadcasts.
-            let inputs = node.inputs.iter().map(|src| {
-                src.as_ref().map(|bufs| {
-                    let bi = if bufs.len() == 1 { bufs[0] } else { bufs[lane] };
-                    &arena[bi][seg_start..seg_end]
-                })
-            });
+        // Input slices for this segment.
+        let inputs = node
+            .inputs
+            .iter()
+            .map(|src| src.as_ref().map(|bufs| &arena[bufs[0]][seg_start..seg_end]));
 
-            // Output slices for this Lane: the strided entries of `out_scratch` whose
-            // flat index has this lane (`port * lanes + lane`), in port order.
-            let outputs = out_scratch
-                .iter_mut()
-                .enumerate()
-                .filter(|(idx, _)| idx % lanes == lane)
-                .map(|(_, buf)| &mut buf[seg_start..seg_end]);
+        // Output slices for this segment, in signal-output port order.
+        let outputs = out_scratch
+            .iter_mut()
+            .map(|buf| &mut buf[seg_start..seg_end]);
 
-            let io = Io::new(sample_rate, seg_end - seg_start, inputs, outputs)
-                .with_latched(&node.latch)
-                .with_streams(&stream_refs)
-                .with_varying(&node.varying)
-                .with_lane(lane, node.lanes);
-            // Lane 0 collects emissions; their frames are stamped block-absolute by adding this
-            // segment's start (ADR-0014). Other Lanes do not emit (single-Lane, pre-fan-out).
-            let mut io = if lane == 0 {
-                io.with_emit(&mut *emit_scratch, seg_start)
-            } else {
-                io
-            };
-            node.ops[lane].process(&mut io);
-        }
+        // Emitted frames are stamped block-absolute by adding this segment's start (ADR-0014).
+        let mut io = Io::new(sample_rate, seg_end - seg_start, inputs, outputs)
+            .with_latched(&node.latch)
+            .with_streams(&stream_refs)
+            .with_varying(&node.varying)
+            .with_emit(&mut *emit_scratch, seg_start);
+        node.ops[0].process(&mut io);
     }
 
     // Return the signal-output buffers to the arena, same flat order they were taken.

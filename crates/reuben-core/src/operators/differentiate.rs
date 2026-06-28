@@ -19,9 +19,9 @@ use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0029/0030): `in` is a materialized `Float` (default 0).
-crate::operator_contract!(Differentiate {
-    inputs:  { in: float { -1_000_000.0..=1_000_000.0, default 0.0, "", lin } },
-    outputs: { out: buffer },
+crate::operator_contract!(DifferentiateF32Signal {
+    inputs:  { in: f32_buffer { -1_000_000.0..=1_000_000.0, default 0.0, "", lin } },
+    outputs: { out: f32_buffer },
 });
 
 /// The op's scalar math, written once (ADR-0029 pure-fn seam): the one-sample difference.
@@ -31,19 +31,19 @@ fn step(prev: f32, cur: f32) -> f32 {
 }
 
 #[derive(Default)]
-pub struct Differentiate {
+pub struct DifferentiateF32Signal {
     /// Previous sample, carried across block boundaries. `None` until the first sample ever, which
     /// seeds it (so that sample emits 0 — no startup spike).
     last: Option<f32>,
 }
 
-impl Differentiate {
+impl DifferentiateF32Signal {
     pub fn new() -> Self {
         Self::default()
     }
 }
 
-impl Operator for Differentiate {
+impl Operator for DifferentiateF32Signal {
     fn descriptor() -> Descriptor {
         Self::contract()
     }
@@ -52,10 +52,10 @@ impl Operator for Differentiate {
         let n = io.frames();
         let mut last = self.last;
         for i in 0..n {
-            let cur = io.signal(IN_IN).get(i).copied().unwrap_or(0.0);
+            let cur = io.input::<&[f32]>(IN_IN).get(i).copied().unwrap_or(0.0);
             // First sample ever seeds `last = cur`, so it emits 0 (no predecessor ⇒ no change).
             let prev = last.unwrap_or(cur);
-            io.signal_mut(OUT_OUT)[i] = step(prev, cur);
+            io.output::<&mut [f32]>(OUT_OUT)[i] = step(prev, cur);
             last = Some(cur);
         }
         self.last = last;
@@ -66,7 +66,7 @@ impl Operator for Differentiate {
     }
 }
 
-crate::register_operator!(Differentiate);
+crate::register_operator!(DifferentiateF32Signal);
 
 #[cfg(test)]
 mod tests {
@@ -75,10 +75,10 @@ mod tests {
 
     const SR: f32 = 48_000.0;
 
-    /// Differentiate `input` through the real engine (one driver, block-sliced). `in` is the
+    /// DifferentiateF32Signal `input` through the real engine (one driver, block-sliced). `in` is the
     /// per-sample `Float` buffer (`drive`d); `out` is read back.
     fn run(input: &[f32]) -> Vec<f32> {
-        OpDriver::for_type(Differentiate::new(), SR)
+        OpDriver::for_type(DifferentiateF32Signal::new(), SR)
             .drive(IN_IN, input)
             .render(input.len())
             .output(OUT_OUT)
@@ -120,7 +120,7 @@ mod tests {
 
     #[test]
     fn spawned_copy_re_seeds() {
-        let mut base = OpDriver::for_type(Differentiate::new(), SR);
+        let mut base = OpDriver::for_type(DifferentiateF32Signal::new(), SR);
         base.drive(IN_IN, &[0.0, 10.0, 20.0]).render(3);
         // Fresh: first sample after spawn seeds (emits 0), exactly like a new op.
         let out = base

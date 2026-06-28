@@ -1,5 +1,5 @@
 {
-  "doc": "Monophonic playable rig with a mono Freeverb in the master path. Send /voicer/notes [midi, gate] to play (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off). Shape the space live over OSC: /reverb/room (tail length 0..1), /reverb/damp (high-frequency damping 0..1), /reverb/mix (dry/wet 0..1).",
+  "doc": "Polyphonic playable rig (8 voices) with a mono Freeverb in the master path. Each voice is a hosted `reverb-voice` sub-patch; the voicer sums them and the reverb processes the mix. Send /voicer/notes [midi, gate] to play (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off; several = a chord). Shape the space live over OSC: /reverb/room (tail length 0..1), /reverb/damp (high-frequency damping 0..1), /reverb/mix (dry/wet 0..1).",
   "instrument": "reverb",
   "nodes": [
     {
@@ -7,68 +7,16 @@
       "config": {
         "voices": 8
       },
-      "doc": "Note -> per-Voice freq + gate CV.",
-      "type": "voicer"
-    },
-    {
-      "address": "/osc",
-      "inputs": {
-        "freq": {
-          "from": "/voicer.freq"
-        }
-      },
-      "type": "oscillator"
-    },
-    {
-      "address": "/filter",
-      "doc": "Gentle lowpass.",
-      "inputs": {
-        "audio": {
-          "from": "/osc"
-        },
-        "cutoff": 3000.0
-      },
-      "type": "filter"
-    },
-    {
-      "address": "/env",
-      "doc": "ADSR envelope (linear CV), gated by the voicer.",
-      "inputs": {
-        "gate": {
-          "from": "/voicer.gate"
-        }
-      },
-      "type": "envelope"
-    },
-    {
-      "address": "/env_curve",
-      "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
-      "inputs": {
-        "x": {
-          "from": "/env"
-        }
-      },
-      "type": "power"
-    },
-    {
-      "address": "/env_vca",
-      "doc": "VCA: audio * shaped envelope CV.",
-      "inputs": {
-        "a": {
-          "from": "/filter"
-        },
-        "b": {
-          "from": "/env_curve"
-        }
-      },
-      "type": "mul"
+      "doc": "Hosts 8 reverb-voice sub-patches; allocates notes across them and sums their audio.",
+      "type": "voicer",
+      "voice": "reverb-voice"
     },
     {
       "address": "/reverb",
       "doc": "Mono Freeverb on the master bus.",
       "inputs": {
         "audio": {
-          "from": "/env_vca"
+          "from": "/voicer.audio"
         },
         "damp": 0.5,
         "mix": 0.3,
@@ -91,5 +39,8 @@
       "node": "/out",
       "port": "audio"
     }
-  ]
+  ],
+  "resources": {
+    "reverb-voice": "voices/reverb-voice.json"
+  }
 }

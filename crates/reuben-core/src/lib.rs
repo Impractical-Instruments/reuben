@@ -46,8 +46,11 @@ pub mod vocab;
 
 pub use config::AudioConfig;
 pub use descriptor::Descriptor;
-pub use format::{load, load_instrument, InstrumentDoc, LoadError, LoadWarning, Loaded};
-pub use graph::{Graph, NodeKey};
+pub use format::{
+    load, load_instrument, resolve_instrument, InstrumentDoc, InterfaceDoc, LoadError, LoadWarning,
+    Loaded,
+};
+pub use graph::{Graph, Interface, NodeKey};
 pub use message::{Arg, Message};
 pub use operator::{Io, Operator};
 pub use plan::{Plan, PlanError};
@@ -61,7 +64,7 @@ pub use reuben_macros::ArgValue;
 // Re-export the self-registration macro at the crate root so operator modules can call
 // `crate::register_operator!(..)` regardless of module declaration order (ADR-0024).
 pub(crate) use registry::register_operator;
-pub use render::{Renderer, SerialExecutor};
+pub use render::{render_plan, RenderScratch, Renderer, SerialExecutor};
 pub use resources::{
     ResolveError, ResolvedRefs, ResourceResolver, ResourceStore, SampleBuffer, SampleId,
 };

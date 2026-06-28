@@ -20,7 +20,7 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Noise {
-    outputs: { out: buffer },
+    outputs: { out: f32_buffer },
 });
 
 /// Fixed deterministic seed a fresh / spawned Noise starts from. Non-zero (xorshift can't leave
@@ -73,7 +73,7 @@ impl Operator for Noise {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        let out = io.signal_mut(OUT_OUT);
+        let out = io.output::<&mut [f32]>(OUT_OUT);
         for s in out.iter_mut().take(n) {
             *s = self.next_sample();
         }

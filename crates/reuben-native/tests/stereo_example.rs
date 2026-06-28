@@ -5,7 +5,8 @@
 use std::path::PathBuf;
 
 use reuben_core::vocab::pitch::{Note, Pitch};
-use reuben_core::{load, AudioConfig, Message, Plan};
+use reuben_core::{load_instrument, AudioConfig, Message, Plan};
+use reuben_native::resources::FsResolver;
 use reuben_native::Engine;
 
 fn instruments_dir() -> PathBuf {
@@ -16,7 +17,13 @@ fn instruments_dir() -> PathBuf {
 fn stereo_autopan_plays_in_motion_across_two_channels() {
     let json = std::fs::read_to_string(instruments_dir().join("stereo-autopan.json"))
         .expect("read stereo-autopan.json");
-    let graph = load(&json, &reuben_core::Registry::builtin()).expect("load");
+    let graph = load_instrument(
+        &json,
+        &reuben_core::Registry::builtin(),
+        &FsResolver::new(instruments_dir()),
+    )
+    .expect("load")
+    .graph;
     let plan = Plan::instantiate(graph, AudioConfig::new(48_000.0, 256)).expect("instantiate");
     assert_eq!(plan.config.channels, 2, "left+right taps -> stereo master");
 

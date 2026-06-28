@@ -3,7 +3,7 @@
 //!
 //! It owns the latched [`Harmony`] and publishes it onto a `harmony` output port; followers (the
 //! Voicer's degree resolution, a snap op) read "what's the key/chord right now" via
-//! [`Io::last::<Harmony>`]. A single default instance in a Rig makes everything agree out of the box
+//! [`Io::input`]. A single default instance in a Rig makes everything agree out of the box
 //! — the same on-ramp as the default Clock — without baking *global* into the core (multiple harmony
 //! nodes = polytonality).
 //!
@@ -36,20 +36,20 @@ pub const NUM_STEPS: usize = SCALE_CAP;
 crate::operator_contract!(HarmonyOp {
     type_name: "harmony",
     inputs:  { set:     harmony,
-               root:    float { 0.0..=127.0,      default 60.0,  "MIDI",  lin },
-               degrees: float { 1.0..=12.0,       default 7.0,   "steps", lin },
-               s0:      float { -24.0..=24.0,     default 0.0,   "steps", lin },
-               s1:      float { -24.0..=24.0,     default 2.0,   "steps", lin },
-               s2:      float { -24.0..=24.0,     default 4.0,   "steps", lin },
-               s3:      float { -24.0..=24.0,     default 5.0,   "steps", lin },
-               s4:      float { -24.0..=24.0,     default 7.0,   "steps", lin },
-               s5:      float { -24.0..=24.0,     default 9.0,   "steps", lin },
-               s6:      float { -24.0..=24.0,     default 11.0,  "steps", lin },
-               s7:      float { -24.0..=24.0,     default 0.0,   "steps", lin },
-               s8:      float { -24.0..=24.0,     default 0.0,   "steps", lin },
-               s9:      float { -24.0..=24.0,     default 0.0,   "steps", lin },
-               s10:     float { -24.0..=24.0,     default 0.0,   "steps", lin },
-               s11:     float { -24.0..=24.0,     default 0.0,   "steps", lin } },
+               root:    f32 { 0.0..=127.0,      default 60.0,  "MIDI",  lin },
+               degrees: f32 { 1.0..=12.0,       default 7.0,   "steps", lin },
+               s0:      f32 { -24.0..=24.0,     default 0.0,   "steps", lin },
+               s1:      f32 { -24.0..=24.0,     default 2.0,   "steps", lin },
+               s2:      f32 { -24.0..=24.0,     default 4.0,   "steps", lin },
+               s3:      f32 { -24.0..=24.0,     default 5.0,   "steps", lin },
+               s4:      f32 { -24.0..=24.0,     default 7.0,   "steps", lin },
+               s5:      f32 { -24.0..=24.0,     default 9.0,   "steps", lin },
+               s6:      f32 { -24.0..=24.0,     default 11.0,  "steps", lin },
+               s7:      f32 { -24.0..=24.0,     default 0.0,   "steps", lin },
+               s8:      f32 { -24.0..=24.0,     default 0.0,   "steps", lin },
+               s9:      f32 { -24.0..=24.0,     default 0.0,   "steps", lin },
+               s10:     f32 { -24.0..=24.0,     default 0.0,   "steps", lin },
+               s11:     f32 { -24.0..=24.0,     default 0.0,   "steps", lin } },
     outputs: { harmony: harmony },
 });
 
@@ -89,10 +89,10 @@ impl HarmonyOp {
     /// when it has no materialized buffer.
     fn current_at(&self, io: &Io, f: usize) -> Harmony {
         let at = |port| {
-            io.signal(port)
+            io.input::<&[f32]>(port)
                 .get(f)
                 .copied()
-                .unwrap_or_else(|| io.last::<f32>(port).unwrap_or(0.0))
+                .unwrap_or_else(|| io.input::<f32>(port).unwrap_or(0.0))
         };
         let root = at(IN_ROOT).round() as i32;
         let degrees = (at(IN_DEGREES).round() as usize).clamp(1, NUM_STEPS);
@@ -118,7 +118,7 @@ impl Operator for HarmonyOp {
     fn process(&mut self, io: &mut Io) {
         // Adopt the chord from the held `set` Harmony, if wired (the engine block-slices a change to
         // the segment boundary, so it is frame-accurate at frame 0).
-        if let Some(h) = io.last::<Harmony>(IN_SET) {
+        if let Some(h) = io.input::<Harmony>(IN_SET) {
             self.chord = h.chord;
         }
 
@@ -135,7 +135,7 @@ impl Operator for HarmonyOp {
             .chain(IN_STEP0..IN_STEP0 + NUM_STEPS)
         {
             if io.varying(port) {
-                let buf = io.signal(port);
+                let buf = io.input::<&[f32]>(port);
                 for i in 1..buf.len().min(n) {
                     if buf[i] != buf[i - 1] {
                         frames.push(i);
@@ -151,7 +151,7 @@ impl Operator for HarmonyOp {
         for &f in &frames {
             let cur = self.current_at(io, f);
             if self.last != Some(cur) {
-                io.emit(OUT_HARMONY, "harmony", cur, f);
+                io.output::<Harmony>(OUT_HARMONY).set(f, cur);
                 self.last = Some(cur);
             }
         }

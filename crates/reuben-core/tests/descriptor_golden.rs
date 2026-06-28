@@ -9,16 +9,17 @@
 //! To intentionally re-bless after a deliberate descriptor change: `REUBEN_BLESS=1 cargo test -p
 //! reuben-core --test descriptor_golden`.
 
-use reuben_core::descriptor::{Curve, Descriptor, LaneRule, PortType};
+use reuben_core::descriptor::{Curve, Descriptor, PortType};
 use reuben_core::registry::Registry;
 
-/// The carrier word for a bare port's [`PortType`] (ADR-0030). Materialized `float` and `enum`
+/// The carrier word for a bare port's [`PortType`] (ADR-0030/0031). Materialized `f32` and `enum`
 /// **inputs** render via their own branches (`meta` / `enum_meta`); this names the carrier-style
-/// ports: a `buffer` audio wire ("signal"), `Note` ("message"), `Harmony` ("harmony"), and an enum
-/// **output** ("enum", none today).
+/// ports: an `f32_buffer` audio wire ("f32_buffer"), `Note` ("message"), `Harmony` ("harmony"), and
+/// an enum **output** ("enum", none today).
 fn kind(ty: &PortType) -> &'static str {
     match ty {
-        PortType::Buffer => "signal",
+        PortType::F32Buffer => "f32_buffer",
+        PortType::F32 => "f32",
         PortType::Vocab { name: "Note", .. } => "message",
         PortType::Vocab {
             name: "Harmony", ..
@@ -26,8 +27,8 @@ fn kind(ty: &PortType) -> &'static str {
         PortType::Vocab {
             enum_meta: Some(_), ..
         } => "enum",
-        // A bare F32/I32/Str with no `meta` falls back to the signal word.
-        _ => "signal",
+        // A bare F32/I32/Str with no `meta` falls back to the f32_buffer word.
+        _ => "f32_buffer",
     }
 }
 
@@ -43,13 +44,15 @@ fn curve(c: Curve) -> &'static str {
 fn render(d: &Descriptor) -> String {
     let mut s = format!("operator {}\n", d.type_name);
     for (i, p) in d.inputs.iter().enumerate() {
-        // A new-style materialized Float input (ADR-0028) carries its own metadata; render it so
-        // the snapshot captures the default/range that used to live on a same-named param. An
-        // `Enum` input renders its ordered variants + default index. Legacy signal/message/harmony
-        // inputs (no `meta`/`enum_meta`) render byte-identically to before.
+        // A meta-carrying input renders its own default/range. The type word comes from `kind`,
+        // not a hardcoded `f32`: a materialized scalar control is `f32`, but a *signal* control
+        // with a scalar default (ADR-0031 decision (a), e.g. `oscillator.freq`) is `f32_buffer`.
+        // An `Enum` input renders its ordered variants + default index. Bare carrier
+        // f32_buffer/message/harmony inputs (no `meta`/`enum_meta`) render via `kind`.
         match (&p.meta, p.enum_meta()) {
             (Some(m), _) => s.push_str(&format!(
-                "  in[{i}] float {} min={:?} max={:?} default={:?} unit={:?} curve={}\n",
+                "  in[{i}] {} {} min={:?} max={:?} default={:?} unit={:?} curve={}\n",
+                kind(&p.ty),
                 p.name,
                 m.min,
                 m.max,
@@ -81,11 +84,9 @@ fn render(d: &Descriptor) -> String {
     for (i, r) in d.resources.iter().enumerate() {
         s.push_str(&format!("  resource[{i}] {}\n", r.name));
     }
-    let lanes = match d.lanes {
-        LaneRule::Inherit => "inherit".to_string(),
-        LaneRule::FromParam(p) => format!("from_param({p})"),
-    };
-    s.push_str(&format!("  lanes {lanes}\n"));
+    if let Some(p) = d.constant_param() {
+        s.push_str(&format!("  constant {}\n", p.name));
+    }
     s
 }
 
@@ -102,7 +103,7 @@ fn render_all() -> String {
 /// (ADR-0030: enum metadata is single-sourced from the type, never hand-built).
 #[test]
 fn renders_enum_input_line() {
-    use reuben_core::descriptor::{Descriptor, LaneRule, Port};
+    use reuben_core::descriptor::{Descriptor, Port};
     use reuben_core::vocab::FilterMode;
     let d = Descriptor {
         type_name: "demo",
@@ -110,7 +111,7 @@ fn renders_enum_input_line() {
         outputs: vec![],
         params: vec![],
         resources: vec![],
-        lanes: LaneRule::Inherit,
+        constant_param: None,
     };
     assert!(
         render(&d).contains(r#"  in[0] enum mode variants=["Lp", "Hp", "Bp"] default=0"#),

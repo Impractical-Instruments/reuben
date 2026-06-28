@@ -58,7 +58,7 @@ pub struct ParamInfo {
 
 fn port_kind(ty: &PortType) -> &'static str {
     match ty {
-        PortType::F32 | PortType::Buffer => "signal",
+        PortType::F32 | PortType::F32Buffer => "signal",
         PortType::Vocab { name: "Note", .. } => "message",
         PortType::Vocab {
             name: "Harmony", ..
@@ -228,6 +228,15 @@ pub fn validate(
                 node: None,
                 port: None,
                 message: "graph has a cycle (no valid execution order)".to_string(),
+            }],
+            warnings,
+        },
+        Err(reuben_core::plan::PlanError::FormMismatch { src, dst, reason }) => ValidateReport {
+            ok: false,
+            errors: vec![Diag {
+                node: None,
+                port: None,
+                message: format!("wire {src} → {dst}: {reason}"),
             }],
             warnings,
         },

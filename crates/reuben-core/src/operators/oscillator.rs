@@ -3,9 +3,9 @@
 //! - input 0: `freq` (`Float`) — per-sample frequency in Hz. One declaration: when unwired the
 //!   engine materializes it from the latched default (440 Hz) and writes mid-block `/osc/freq`
 //!   changes at their frame; when wired (an LFO, a Voicer) the source buffer passes through, so
-//!   `io.signal(IN_FREQ)` is always a buffer.
+//!   `io.input::<&[f32]>(IN_FREQ)` is always a buffer.
 //! - input 1: `waveform` (`Enum` [`Waveform`] {Sine, Saw}) — held, live-switchable choice read
-//!   via `io.last::<Waveform>` (ADR-0030).
+//!   via `io.input::<Waveform>` (ADR-0030).
 //! - output 0: `audio` (`Buffer`).
 
 use crate::descriptor::Descriptor;
@@ -13,11 +13,13 @@ use crate::operator::{Io, Operator};
 use crate::vocab::Waveform;
 
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts and the Descriptor.
-// `freq` is a materialized `Float` control; `waveform` references the shared `Waveform` vocab enum.
+// `freq` is a signal control with a scalar default (ADR-0031 decision (a)): knob-set or unwired it
+// materializes from 440 Hz, yet an LFO/envelope Signal wires straight in. `waveform` references the
+// shared `Waveform` vocab enum.
 crate::operator_contract!(Oscillator {
-    inputs:  { freq:     float { 20.0..=20_000.0, default 440.0, "Hz", exp },
+    inputs:  { freq:     f32_buffer { 20.0..=20_000.0, default 440.0, "Hz", exp },
                waveform: enum(Waveform) },
-    outputs: { audio: buffer },
+    outputs: { audio: f32_buffer },
 });
 
 #[derive(Default)]
@@ -47,21 +49,21 @@ impl Operator for Oscillator {
         };
 
         // Waveform is a held `Enum` choice (ADR-0030) — one read, constant for this call.
-        let is_saw = io.last::<Waveform>(IN_WAVEFORM).unwrap_or_default() == Waveform::Saw;
+        let is_saw = io.input::<Waveform>(IN_WAVEFORM).unwrap_or_default() == Waveform::Saw;
 
         // Stage 1: copy the per-sample frequency into the output buffer. `freq` is a `Float`
         // input, so it is always a buffer (wired source or materialized latch) — one read path,
         // no wired/unwired branch. Read per sample so the immutable input borrow ends before each
         // mutable output write (keeps `process` alloc-free without holding two borrows of `io`).
         for i in 0..n {
-            let freq = io.signal(IN_FREQ).get(i).copied().unwrap_or(0.0);
-            io.signal_mut(OUT_AUDIO)[i] = freq;
+            let freq = io.input::<&[f32]>(IN_FREQ).get(i).copied().unwrap_or(0.0);
+            io.output::<&mut [f32]>(OUT_AUDIO)[i] = freq;
         }
 
         // Stage 2: in-place oscillator pass. `out[i]` currently holds the frequency for sample
         // `i`; overwrite it with the generated sample.
         let mut phase = self.phase;
-        let out = &mut io.signal_mut(OUT_AUDIO)[..n];
+        let out = &mut io.output::<&mut [f32]>(OUT_AUDIO)[..n];
         for slot in out.iter_mut() {
             let dt = *slot * inv_sr; // phase increment in turns
 
@@ -158,6 +160,25 @@ mod tests {
         assert!(
             (0.98..=1.02).contains(&peak),
             "expected sine peak ~1.0, got {peak}"
+        );
+    }
+
+    /// (1b) ADR-0031 decision (a): `freq` is now a signal port (`f32_buffer`) *carrying* a scalar
+    /// default. With **no** override wired or knob-set, the engine must still materialize the buffer
+    /// from that default (440 Hz) — not an empty/zero buffer. Drive it without `set(IN_FREQ, ..)` and
+    /// assert the same ~440 tone.
+    #[test]
+    fn unwired_freq_materializes_its_440_default() {
+        let n = SR as usize; // ~1 second
+        let out = OpDriver::for_type(Oscillator::new(), SR)
+            .set(IN_WAVEFORM, Waveform::Sine)
+            .render(n)
+            .output(OUT_AUDIO)
+            .to_vec();
+        let crossings = upward_crossings(&out);
+        assert!(
+            (435..=445).contains(&crossings),
+            "unwired freq should default to ~440 Hz, got {crossings} crossings"
         );
     }
 

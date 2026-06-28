@@ -6,7 +6,7 @@
 //! Port types (ADR-0030): `room`/`damp`/`mix` are **`F32` inputs**, each owning its unwired
 //! default. When nothing is wired the engine materializes the input from its latched default;
 //! when a control is wired the source buffer passes through. There is no longer a separate
-//! "signal port + same-named param" pair — `io.last::<f32>(IN_ROOM)` reads the latched value.
+//! "signal port + same-named param" pair — `io.input::<f32>(IN_ROOM)` reads the latched value.
 //!
 //! - input 0: `audio` (`Float`)
 //! - input 1: `room` (`Float`) — room size / tail length (0..1).
@@ -19,11 +19,11 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Reverb {
-    inputs:  { audio: buffer,
-               room: float { 0.0..=1.0, default 0.5, "", lin },
-               damp: float { 0.0..=1.0, default 0.5, "", lin },
-               mix:  float { 0.0..=1.0, default 0.3, "", lin } },
-    outputs: { audio: buffer },
+    inputs:  { audio: f32_buffer,
+               room: f32 { 0.0..=1.0, default 0.5, "", lin },
+               damp: f32 { 0.0..=1.0, default 0.5, "", lin },
+               mix:  f32 { 0.0..=1.0, default 0.3, "", lin } },
+    outputs: { audio: f32_buffer },
 });
 
 /// Standard Freeverb comb-filter delay lengths, in samples at 44100 Hz.
@@ -133,9 +133,9 @@ impl Operator for Reverb {
         }
 
         // `room`/`damp`/`mix` are `Float` inputs — read the latched block-rate value (ADR-0030).
-        let room = io.last::<f32>(IN_ROOM).unwrap_or(0.0).clamp(0.0, 1.0);
-        let damp = io.last::<f32>(IN_DAMP).unwrap_or(0.0).clamp(0.0, 1.0);
-        let mix = io.last::<f32>(IN_MIX).unwrap_or(0.0).clamp(0.0, 1.0);
+        let room = io.input::<f32>(IN_ROOM).unwrap_or(0.0).clamp(0.0, 1.0);
+        let damp = io.input::<f32>(IN_DAMP).unwrap_or(0.0).clamp(0.0, 1.0);
+        let mix = io.input::<f32>(IN_MIX).unwrap_or(0.0).clamp(0.0, 1.0);
 
         // Standard Freeverb parameter mappings.
         let roomsize = room * 0.28 + 0.7; // comb feedback
@@ -145,7 +145,7 @@ impl Operator for Reverb {
         let dry = 1.0 - mix;
 
         for i in 0..n {
-            let dry_in = io.signal(IN_AUDIO).get(i).copied().unwrap_or(0.0);
+            let dry_in = io.input::<&[f32]>(IN_AUDIO).get(i).copied().unwrap_or(0.0);
             let input = dry_in * FIXED_GAIN;
 
             // 8 parallel comb filters summed.
@@ -159,7 +159,7 @@ impl Operator for Reverb {
                 wet_sig = ap.process(wet_sig, allpass_feedback);
             }
 
-            io.signal_mut(OUT_AUDIO)[i] = dry_in * dry + wet_sig * wet;
+            io.output::<&mut [f32]>(OUT_AUDIO)[i] = dry_in * dry + wet_sig * wet;
         }
     }
 

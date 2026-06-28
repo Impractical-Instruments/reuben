@@ -79,7 +79,7 @@ cargo run -p reuben-native --bin reuben -- play instruments/<name>.json
 | `auto-filter` | needs OSC notes   | The synth with a base-plus-LFO auto-wah: a Signal `add` sums a base cutoff CV with an LFO wobble into the filter. `/cutoff [Hz]`, `/lfo/{rate,depth}`. |
 | `djfilter-demo` | **yes**         | Self-playing saw arpeggio through a DJ-mixer filter knob. One bipolar control: `/filter_knob [-1..1]` — 0 = open, CCW sweeps a low-pass down, CW sweeps a high-pass up (zipper-free via an `m2s` smoother). `/clock/tempo`, `/djfilter/resonance`. |
 | `chord-player` | needs OSC       | The Chord player Toy (ADR-0022): tap-and-hold diatonic triad buttons (I–vii°) at `/chord/set [degree, gate]`. The `chord` op stacks scale thirds and the voicer resolves them through the tonal context, so held chords re-spell live when you change key (`/harmony/root`). A 12-voice pad. |
-| `groovebox`   | **yes**           | The Groovebox Toy (ADR-0022): a free-running 16-step drum machine — kick/snare/hat synthesized from operators (no samples) on a shared clock. Toggle steps `/kick/step1`..`step16` (also `/snare/*`, `/hat/*`), ride `/clock/tempo`; lane volumes and master tone are Good Buttons. |
+| `groovebox`   | **yes**           | The Groovebox Toy (ADR-0022): a free-running 16-step drum machine — kick/snare/hat synthesized from operators (no samples), each a sequencer driving its own voicer voice on a shared clock. Toggle steps `/kick/step1`..`step16` (also `/snare/*`, `/hat/*`), ride `/clock/tempo`; per-drum volumes and master tone are Good Buttons. |
 | `strum-harp`  | needs OSC         | The Strum harp Toy (ADR-0022): drag-to-strum. Stream `/strum_bar/in [0..1]` and the `strum` op plucks a note each time the bar crosses a string boundary. Strings are scale degrees through the tonal context, so it stays in key. `/strum/octaves` sets the span; `/harmony/root` the key. |
 | `stereo-autopan` | needs OSC notes | Stereo demo (ADR-0026): an 8-voice synth swept across the stereo field by an LFO driving a `pan` op, whose `left`/`right` feed the two master channels directly (no `output` node). Tweak `/autopan/{rate,depth}`, `/filter/cutoff`. |
 
@@ -148,6 +148,11 @@ Need behavior no operator provides? That's a new **Operator** in Rust — `scaff
 ## Status
 
 **MVP complete; v1 in progress.** The headless "it makes a sound" spine works end to end.
+The signal/value port-form refactor ([ADR-0031](docs/adr/0031-float-resolves-to-value-or-signal-by-wiring.md))
+and Voicer-hosts-voice-sub-patches rewrite ([ADR-0032](docs/adr/0032-voicer-hosts-voice-subpatches.md))
+have landed: a port is a held **Value** (`f32`) or a **Signal** buffer (`f32_buffer`), read/written
+through `io.input::<T>` / `io.output::<T>`, and polyphony comes from the Voicer hosting voice
+sub-patches (`instruments/voices/*.json`) rather than the now-removed Lane model.
 
 ## Going deeper
 
