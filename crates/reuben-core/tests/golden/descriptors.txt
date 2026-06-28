@@ -1,3 +1,9 @@
+operator abs_f32_signal
+  in[0] f32_buffer x min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  out[0] f32_buffer out
+operator abs_f32_value
+  in[0] f32 x min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  out[0] f32 out
 operator add_f32_signal
   in[0] f32_buffer a min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   in[1] f32_buffer b min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
@@ -10,6 +16,16 @@ operator chord
   in[0] message set
   in[1] f32 size min=3.0 max=4.0 default=3.0 unit="tones" curve=linear
   out[0] message degrees
+operator clamp_f32_signal
+  in[0] f32_buffer x min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[1] f32_buffer lo min=-1000000.0 max=1000000.0 default=-1.0 unit="" curve=linear
+  in[2] f32_buffer hi min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
+  out[0] f32_buffer out
+operator clamp_f32_value
+  in[0] f32 x min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[1] f32 lo min=-1000000.0 max=1000000.0 default=-1.0 unit="" curve=linear
+  in[2] f32 hi min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
+  out[0] f32 out
 operator clock
   in[0] message sync
   in[1] f32 tempo min=1.0 max=999.0 default=120.0 unit="BPM" curve=linear
@@ -25,6 +41,14 @@ operator delay
 operator differentiate_f32_signal
   in[0] f32_buffer in min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   out[0] f32_buffer out
+operator div_f32_signal
+  in[0] f32_buffer a min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[1] f32_buffer b min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
+  out[0] f32_buffer out
+operator div_f32_value
+  in[0] f32 a min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[1] f32 b min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
+  out[0] f32 out
 operator djfilter
   in[0] f32_buffer audio
   in[1] f32_buffer position min=-1.0 max=1.0 default=0.0 unit="" curve=linear
@@ -101,6 +125,30 @@ operator map_f32_value
   in[4] f32 out_max min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
   in[5] enum curve variants=["Linear", "Exponential"] default=0
   out[0] f32 out
+operator max_f32_signal
+  in[0] f32_buffer a min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[1] f32_buffer b min=-1000000.0 max=1000000.0 default=-1000000.0 unit="" curve=linear
+  out[0] f32_buffer out
+operator max_f32_value
+  in[0] f32 a min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[1] f32 b min=-1000000.0 max=1000000.0 default=-1000000.0 unit="" curve=linear
+  out[0] f32 out
+operator min_f32_signal
+  in[0] f32_buffer a min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[1] f32_buffer b min=-1000000.0 max=1000000.0 default=1000000.0 unit="" curve=linear
+  out[0] f32_buffer out
+operator min_f32_value
+  in[0] f32 a min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[1] f32 b min=-1000000.0 max=1000000.0 default=1000000.0 unit="" curve=linear
+  out[0] f32 out
+operator modulo_f32_signal
+  in[0] f32_buffer a min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[1] f32_buffer b min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
+  out[0] f32_buffer out
+operator modulo_f32_value
+  in[0] f32 a min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[1] f32 b min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
+  out[0] f32 out
 operator mul_f32_signal
   in[0] f32_buffer a min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
   in[1] f32_buffer b min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
@@ -108,6 +156,12 @@ operator mul_f32_signal
 operator mul_f32_value
   in[0] f32 a min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
   in[1] f32 b min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
+  out[0] f32 out
+operator negate_f32_signal
+  in[0] f32_buffer x min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  out[0] f32_buffer out
+operator negate_f32_value
+  in[0] f32 x min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   out[0] f32 out
 operator noise
   out[0] f32_buffer out
@@ -132,6 +186,12 @@ operator power_f32_signal
 operator power_f32_value
   in[0] f32 x min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   in[1] f32 exponent min=0.0 max=8.0 default=2.0 unit="" curve=linear
+  out[0] f32 out
+operator reciprocal_f32_signal
+  in[0] f32_buffer x min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
+  out[0] f32_buffer out
+operator reciprocal_f32_value
+  in[0] f32 x min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
   out[0] f32 out
 operator reverb
   in[0] f32_buffer audio
@@ -182,6 +242,14 @@ operator strum
   in[2] f32 octaves min=1.0 max=4.0 default=1.0 unit="oct" curve=linear
   in[3] f32 velocity min=0.0 max=1.0 default=1.0 unit="" curve=linear
   out[0] message degrees
+operator sub_f32_signal
+  in[0] f32_buffer a min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[1] f32_buffer b min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  out[0] f32_buffer out
+operator sub_f32_value
+  in[0] f32 a min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[1] f32 b min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  out[0] f32 out
 operator transpose
   in[0] message notes
   in[1] f32 amount min=-48.0 max=48.0 default=0.0 unit="steps" curve=linear
