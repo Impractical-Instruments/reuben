@@ -1,5 +1,5 @@
 {
-  "doc": "V1.3 Toy 2 — the Chord player (ADR-0022). Seven buttons play the diatonic triads I–vii° of the current key: tap-and-hold sustains a chord, release stops it. Each button sends /chord/set [degree, gate] (a chord-root scale degree + gate); the `chord` op stacks scale-relative thirds and emits `degree` notes, which the voicer resolves through the tonal context — so held and tapped chords RE-SPELL LIVE when you change the key (send /harmony/root [48..72]). A pad voice (saw -> filter -> slow-attack envelope) and a 'brightness' Good Button (/brightness/in [0..1] -> filter cutoff) round it out. Polyphonic: 12 voices cover four held seventh chords. Built entirely from composition — no new instrument-format machinery.",
+  "doc": "V1.3 Toy 2 — the Chord player (ADR-0022/0032). Seven buttons play the diatonic triads I–vii° of the current key: tap-and-hold sustains a chord, release stops it. Each button sends /chord/set [degree, gate] (a chord-root scale degree + gate); the `chord` op stacks scale-relative thirds and emits `degree` notes, which the voicer resolves through the tonal context — so held and tapped chords RE-SPELL LIVE when you change the key (send /harmony/root [48..72]). Each of the 12 voices is a hosted `chord-player-voice` sub-patch (saw -> slow-attack ADSR VCA); the voicer sums them and a 'brightness' Good Button (/brightness/in [0..1]) tones the mix through a master filter. Polyphonic: 12 voices cover four held seventh chords.",
   "instrument": "chord-player",
   "nodes": [
     {
@@ -70,7 +70,7 @@
       "config": {
         "voices": 12
       },
-      "doc": "Polyphonic note allocator. Degree notes from /chord re-spell through /harmony. 12 voices = four held seventh chords.",
+      "doc": "Hosts 12 chord-player-voice sub-patches. Degree notes from /chord re-spell through /harmony; the voicer resolves + allocates them across the voices and sums their audio. 12 voices = four held seventh chords.",
       "inputs": {
         "harmony": {
           "from": "/harmony"
@@ -79,96 +79,39 @@
           "from": "/chord"
         }
       },
-      "type": "voicer"
-    },
-    {
-      "address": "/osc",
-      "doc": "Saw pad tone (harmonics for the filter to shape).",
-      "inputs": {
-        "freq": {
-          "from": "/voicer.freq"
-        },
-        "waveform": "Saw"
-      },
-      "type": "oscillator"
+      "type": "voicer",
+      "voice": "chord-player-voice"
     },
     {
       "address": "/filter",
-      "doc": "Lowpass; cutoff is a Signal input driven by the brightness Good Button.",
+      "doc": "Master lowpass on the summed mix; cutoff is a Signal input driven by the brightness Good Button.",
       "inputs": {
         "audio": {
-          "from": "/osc"
+          "from": "/voicer.audio"
         },
         "cutoff": {
-          "from": "/cv_cutoff"
+          "from": "/map_cutoff"
         }
       },
       "type": "filter"
     },
     {
-      "address": "/env",
-      "control": [
-        {
-          "label": "Attack",
-          "param": "attack"
-        },
-        {
-          "label": "Release",
-          "param": "release"
-        }
-      ],
-      "doc": "Slow-attack pad envelope (linear CV), gated by the voicer.",
-      "inputs": {
-        "attack": 0.6,
-        "decay": 0.3,
-        "gate": {
-          "from": "/voicer.gate"
-        },
-        "release": 0.8,
-        "sustain": 0.8
-      },
-      "type": "envelope"
-    },
-    {
-      "address": "/env_curve",
-      "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
-      "inputs": {
-        "x": {
-          "from": "/env.cv"
-        }
-      },
-      "type": "power_f32_signal"
-    },
-    {
-      "address": "/env_vca",
-      "doc": "VCA: audio * shaped envelope CV.",
-      "inputs": {
-        "a": {
-          "from": "/filter"
-        },
-        "b": {
-          "from": "/env_curve"
-        }
-      },
-      "type": "mul_f32_signal"
-    },
-    {
-      "address": "/vgain",
-      "doc": "Per-voice headroom: constant equal-power gain (1/sqrt(12) ~ 0.289) held forever (no input). Single-lane -> broadcasts to every voice's /vmix. The 12 voice lanes sum straight into the master (no auto gain comp), so each voice is scaled here to keep a full 12-voice chord off the clip ceiling while staying loud at a typical 3-6 note chord.",
+      "address": "/vtrim",
+      "doc": "Master headroom: a constant equal-power trim (~1/sqrt(12)) smoothed into a CV, so a full 12-voice chord stays off the clip ceiling while a typical 3–6 note chord stays loud.",
       "inputs": {
         "in": 0.289
       },
       "type": "m2s"
     },
     {
-      "address": "/vmix",
-      "doc": "Per-voice gain stage: env audio (a) * /vgain scalar (b). Replicated per voice (inherits the 12 lanes from env); the constant gain broadcasts in on b.",
+      "address": "/trim",
+      "doc": "master filtered mix (a) * trim CV (b).",
       "inputs": {
         "a": {
-          "from": "/env_vca"
+          "from": "/filter"
         },
         "b": {
-          "from": "/vgain"
+          "from": "/vtrim"
         }
       },
       "type": "mul_f32_signal"
@@ -177,7 +120,7 @@
       "address": "/out",
       "inputs": {
         "audio": {
-          "from": "/vmix"
+          "from": "/trim"
         }
       },
       "type": "output"
@@ -189,11 +132,13 @@
         "unit": "%",
         "widget": "fader"
       },
-      "doc": "PUBLIC Good Button. Identity [0,1] pass-through, fanned to the ranged cutoff map. Send /brightness/in [0..1]. Rests at 0.5 (ADR-0018).",
+      "doc": "PUBLIC Good Button. The held knob value [0,1] smoothed into a CV Signal (an `m2s` is the value->signal converter), then ranged into the master filter cutoff. Send /brightness/in [0..1]. Rests at 0.5 (ADR-0018).",
       "inputs": {
-        "in": 0.5
+        "in": 0.5,
+        "mode": "Smooth",
+        "time": 0.03
       },
-      "type": "map"
+      "type": "m2s"
     },
     {
       "address": "/map_cutoff",
@@ -207,18 +152,6 @@
         "out_min": 300.0
       },
       "type": "map"
-    },
-    {
-      "address": "/cv_cutoff",
-      "doc": "Smooth the mapped cutoff into a CV signal; default 1800 Hz before any knob move.",
-      "inputs": {
-        "in": {
-          "from": "/map_cutoff"
-        },
-        "mode": "Smooth",
-        "time": 0.03
-      },
-      "type": "m2s"
     }
   ],
   "outputs": [
@@ -226,5 +159,8 @@
       "node": "/out",
       "port": "audio"
     }
-  ]
+  ],
+  "resources": {
+    "chord-player-voice": "voices/chord-player-voice.json"
+  }
 }

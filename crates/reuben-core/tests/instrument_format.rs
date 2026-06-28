@@ -33,8 +33,14 @@ impl ResourceResolver for InstrumentsDir {
 /// Load `default.json` through the full resource pipeline (ADR-0032): the `voicer` node's `voice`
 /// instrument-resource resolves + builds its sub-patches from disk.
 fn load_default() -> Graph {
-    load_instrument(DEFAULT_JSON, &Registry::builtin(), &InstrumentsDir)
-        .expect("load default.json")
+    load_res(DEFAULT_JSON)
+}
+
+/// Load any instrument JSON through the full resource pipeline (ADR-0032), resolving its `voice`
+/// sub-patches from the repo `instruments/` dir.
+fn load_res(json: &str) -> Graph {
+    load_instrument(json, &Registry::builtin(), &InstrumentsDir)
+        .expect("load instrument")
         .graph
 }
 
@@ -190,22 +196,20 @@ fn render_with_control(graph: Graph, cfg: AudioConfig, seconds: f32, control: Me
 }
 
 #[test]
-#[ignore = "ADR-0032 follow-up: re-author this voicer instrument to host a voice sub-patch, then restore"]
 fn good_button_brightness_opens_the_filter() {
     // ADR-0017 Good Button: one /brightness knob fanned (identity map -> two ranged maps ->
     // two m2s converters) into the filter's Signal cutoff + resonance. Brightness 1.0 opens
     // the filter far wider than 0.0, so the held saw carries clearly more energy.
     let cfg = AudioConfig::new(48_000.0, 256);
-    let reg = Registry::builtin();
 
     let dark = render_with_control(
-        load(GOOD_BUTTON_JSON, &reg).expect("load good-button.json"),
+        load_res(GOOD_BUTTON_JSON),
         cfg,
         1.0,
         Message::new("/brightness/in", Arg::F32(0.0), 0),
     );
     let bright = render_with_control(
-        load(GOOD_BUTTON_JSON, &reg).expect("load good-button.json"),
+        load_res(GOOD_BUTTON_JSON),
         cfg,
         1.0,
         Message::new("/brightness/in", Arg::F32(1.0), 0),
@@ -223,7 +227,7 @@ fn good_button_brightness_opens_the_filter() {
 
     // Determinism: the same Good Button value renders bit-identically.
     let again = render_with_control(
-        load(GOOD_BUTTON_JSON, &reg).unwrap(),
+        load_res(GOOD_BUTTON_JSON),
         cfg,
         1.0,
         Message::new("/brightness/in", Arg::F32(1.0), 0),
@@ -234,23 +238,21 @@ fn good_button_brightness_opens_the_filter() {
 }
 
 #[test]
-#[ignore = "ADR-0032 follow-up: re-author this voicer instrument to host a voice sub-patch, then restore"]
 fn auto_filter_base_plus_lfo_modulation_sounds_and_wobbles() {
     // ADR-0017 base-plus-modulation: a Signal `add` sums a base-cutoff CV (m2s) and an LFO
     // wobble, feeding the filter's Signal cutoff. The rig must sound; and turning the LFO
     // depth to 0 (a static cutoff) must change the output — which proves the LFO -> add ->
     // filter.cutoff modulation path is actually live, not bypassed.
     let cfg = AudioConfig::new(48_000.0, 256);
-    let reg = Registry::builtin();
 
     let wobble = render_with_control(
-        load(AUTO_FILTER_JSON, &reg).expect("load auto-filter.json"),
+        load_res(AUTO_FILTER_JSON),
         cfg,
         1.0,
         Message::new("/lfo/depth", Arg::F32(1500.0), 0),
     );
     let still = render_with_control(
-        load(AUTO_FILTER_JSON, &reg).unwrap(),
+        load_res(AUTO_FILTER_JSON),
         cfg,
         1.0,
         Message::new("/lfo/depth", Arg::F32(0.0), 0),
@@ -276,7 +278,7 @@ fn auto_filter_base_plus_lfo_modulation_sounds_and_wobbles() {
 
     // Determinism: the wobble render is bit-identical on a re-run.
     let again = render_with_control(
-        load(AUTO_FILTER_JSON, &reg).unwrap(),
+        load_res(AUTO_FILTER_JSON),
         cfg,
         1.0,
         Message::new("/lfo/depth", Arg::F32(1500.0), 0),

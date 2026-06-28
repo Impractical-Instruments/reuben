@@ -1,5 +1,5 @@
 {
-  "doc": "One-shot trigger sampler (ADR-0016). A note's gate fires the 'blip' sample; its pitch shifts the playback rate around root MIDI 57 (the sample's recorded pitch, ~220 Hz). Send /voicer/notes [midi, gate] to play (e.g. [57.0, 1.0] plays at natural pitch; [69.0, 1.0] an octave up). 4 voices.",
+  "doc": "One-shot trigger sampler (ADR-0016/0032). Send /voicer/notes [midi, gate] to play (e.g. [57.0, 1.0] plays at natural pitch; [69.0, 1.0] an octave up). Each of the 4 voices is a hosted `sampler-voice` sub-patch: a note's gate fires the 'blip' sample (recorded pitch MIDI 57, ~220 Hz) and its pitch shifts the playback rate. The voicer allocates notes across the voices and sums their audio.",
   "instrument": "sampler",
   "nodes": [
     {
@@ -7,29 +7,15 @@
       "config": {
         "voices": 4
       },
-      "doc": "Note -> per-Voice freq + gate CV.",
-      "type": "voicer"
-    },
-    {
-      "address": "/sample",
-      "doc": "Gate edge fires the sample; freq sets the playback rate.",
-      "inputs": {
-        "freq": {
-          "from": "/voicer.freq"
-        },
-        "gate": {
-          "from": "/voicer.gate"
-        },
-        "root": 57.0
-      },
-      "sample": "blip",
-      "type": "sample"
+      "doc": "Hosts 4 sampler-voice sub-patches; allocates notes across them and sums their audio.",
+      "type": "voicer",
+      "voice": "sampler-voice"
     },
     {
       "address": "/out",
       "inputs": {
         "audio": {
-          "from": "/sample"
+          "from": "/voicer.audio"
         }
       },
       "type": "output"
@@ -42,6 +28,6 @@
     }
   ],
   "resources": {
-    "blip": "samples/blip.wav"
+    "sampler-voice": "voices/sampler-voice.json"
   }
 }

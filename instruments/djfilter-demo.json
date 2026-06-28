@@ -1,5 +1,5 @@
 {
-  "doc": "A self-playing saw arpeggio through the DJ-mixer `djfilter` knob. The Clock's beat gate drives a sequencer (a major arpeggio) into a 4-voice Voicer; each voice fires a saw oscillator through `/djfilter` and an ADSR into the output. The star is the one bipolar filter knob: a public identity `map` (`/filter_knob`, rests at North = 0) smoothed through an `m2s` into the djfilter's Signal `position` input — so turning it is zipper-free. Send /filter_knob/in [-1..1]: 0 = open/no filter, negative (CCW) sweeps a low-pass down, positive (CW) sweeps a high-pass up. Set tempo via /clock/tempo; edit the line via /sequencer/step1../sequencer/step8.",
+  "doc": "A self-playing saw arpeggio through the DJ-mixer `djfilter` knob (ADR-0032). The Clock's beat gate drives a sequencer (a major arpeggio) into a 4-voice Voicer; each of the 4 voices is a hosted `djfilter-demo-voice` sub-patch (saw -> plucky ADSR VCA). The voicer sums them and the star — one bipolar filter knob — sweeps the master djfilter. The knob `/filter_knob` is an `m2s` (the value->signal converter; rests at North = 0, smoothed so turning it is zipper-free) wired straight into the master djfilter's Signal `position`. Send /filter_knob/in [-1..1]: 0 = open/no filter, negative (CCW) sweeps a low-pass down, positive (CW) sweeps a high-pass up. Set tempo via /clock/tempo; edit the line via /sequencer/step1../sequencer/step8.",
   "instrument": "djfilter-demo",
   "nodes": [
     {
@@ -38,24 +38,14 @@
       "config": {
         "voices": 4
       },
-      "doc": "Degree -> per-Voice freq + gate CV.",
+      "doc": "Hosts 4 djfilter-demo-voice sub-patches; resolves each degree to Hz and allocates it across the voices, summing their audio.",
       "inputs": {
         "notes": {
           "from": "/sequencer"
         }
       },
-      "type": "voicer"
-    },
-    {
-      "address": "/osc",
-      "doc": "Saw tone (rich harmonics for the filter to chew).",
-      "inputs": {
-        "freq": {
-          "from": "/voicer.freq"
-        },
-        "waveform": "Saw"
-      },
-      "type": "oscillator"
+      "type": "voicer",
+      "voice": "djfilter-demo-voice"
     },
     {
       "address": "/djfilter",
@@ -63,60 +53,23 @@
         "label": "Resonance",
         "param": "resonance"
       },
-      "doc": "The DJ filter. position is driven by the smoothed knob; resonance set to sing on sweeps.",
+      "doc": "The master DJ filter on the summed mix. position is driven by the smoothed knob; resonance set to sing on sweeps.",
       "inputs": {
         "audio": {
-          "from": "/osc"
+          "from": "/voicer.audio"
         },
         "position": {
-          "from": "/cv_position"
+          "from": "/filter_knob"
         },
         "resonance": 0.35
       },
       "type": "djfilter"
     },
     {
-      "address": "/env",
-      "doc": "Plucky ADSR envelope (linear CV), gated per step.",
-      "inputs": {
-        "attack": 0.01,
-        "decay": 0.15,
-        "gate": {
-          "from": "/voicer.gate"
-        },
-        "release": 0.2,
-        "sustain": 0.5
-      },
-      "type": "envelope"
-    },
-    {
-      "address": "/env_curve",
-      "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
-      "inputs": {
-        "x": {
-          "from": "/env.cv"
-        }
-      },
-      "type": "power_f32_signal"
-    },
-    {
-      "address": "/env_vca",
-      "doc": "VCA: audio * shaped envelope CV.",
-      "inputs": {
-        "a": {
-          "from": "/djfilter"
-        },
-        "b": {
-          "from": "/env_curve"
-        }
-      },
-      "type": "mul_f32_signal"
-    },
-    {
       "address": "/out",
       "inputs": {
         "audio": {
-          "from": "/env_vca"
+          "from": "/djfilter"
         }
       },
       "type": "output"
@@ -126,23 +79,9 @@
       "control": {
         "label": "Filter"
       },
-      "doc": "PUBLIC DJ filter knob. Identity pass-through over [-1,1]; rests at North = 0 (emitted on init so the chain and any control surface agree at rest). Send /filter_knob/in [-1..1].",
+      "doc": "PUBLIC DJ filter knob. The held knob value [-1,1] smoothed into a CV Signal (an `m2s` is the value->signal converter) feeding the master djfilter position; rests at North = 0. Send /filter_knob/in [-1..1].",
       "inputs": {
         "in": 0.0,
-        "in_max": 1.0,
-        "in_min": -1.0,
-        "out_max": 1.0,
-        "out_min": -1.0
-      },
-      "type": "map"
-    },
-    {
-      "address": "/cv_position",
-      "doc": "Smooth the knob into a CV signal feeding the djfilter position; default 0 (North) before any knob move.",
-      "inputs": {
-        "in": {
-          "from": "/filter_knob"
-        },
         "mode": "Smooth",
         "time": 0.05
       },
@@ -154,5 +93,8 @@
       "node": "/out",
       "port": "audio"
     }
-  ]
+  ],
+  "resources": {
+    "djfilter-demo-voice": "voices/djfilter-demo-voice.json"
+  }
 }

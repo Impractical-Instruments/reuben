@@ -1,5 +1,5 @@
 {
-  "doc": "A free-running synthesized step-sequenced beatmaker (V1.3 Toy 1, ADR-0022). Three lanes — kick, snare, hat — each a 16-step boolean gate sequencer (gate_mode=1) driving a one-voice drum synth built entirely from operators (no samples). One shared clock at division=4 makes a 16th-note grid; the pattern loops forever, instant sound, no transport. Toggle steps with /kick/step1../kick/step16 (and /snare/*, /hat/*); each step is boolean on/off. Ride tempo with /clock/tempo, lane volumes with the /kick_vol/in /snare_vol/in /hat_vol/in Good Buttons, and the overall tone with the /cutoff/in master-filter Good Button. Drums: kick = sine with a fast pitch-drop env; snare = noise + a tonal osc, both enveloped; hat = noise -> highpass filter -> short env.",
+  "doc": "A free-running synthesized step-sequenced beatmaker (V1.3 Toy 1, ADR-0022/0032). Three lanes — kick, snare, hat — each a 16-step boolean gate sequencer (gate_mode=Gate) feeding a one-voice Voicer that hosts the lane's drum-synth voice patch (kick-voice / snare-voice / hat-voice, built entirely from operators, no samples). One shared clock at division=4 makes a 16th-note grid; the pattern loops forever, instant sound, no transport. Toggle steps with /kick/step1../kick/step16 (and /snare/*, /hat/*); each step is boolean on/off. Ride tempo with /clock/tempo, lane volumes with the /kick_vol/in /snare_vol/in /hat_vol/in knobs, and the overall tone with the /tone/in master-filter knob. Drums: kick = sine with a fast pitch-drop env; snare = noise + a tonal osc; hat = highpassed noise tick.",
   "instrument": "groovebox",
   "nodes": [
     {
@@ -18,905 +18,225 @@
     {
       "address": "/kick",
       "control": [
-        {
-          "label": "K1",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step1"
-        },
-        {
-          "label": "K2",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step2"
-        },
-        {
-          "label": "K3",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step3"
-        },
-        {
-          "label": "K4",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step4"
-        },
-        {
-          "label": "K5",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step5"
-        },
-        {
-          "label": "K6",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step6"
-        },
-        {
-          "label": "K7",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step7"
-        },
-        {
-          "label": "K8",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step8"
-        },
-        {
-          "label": "K9",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step9"
-        },
-        {
-          "label": "K10",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step10"
-        },
-        {
-          "label": "K11",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step11"
-        },
-        {
-          "label": "K12",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step12"
-        },
-        {
-          "label": "K13",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step13"
-        },
-        {
-          "label": "K14",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step14"
-        },
-        {
-          "label": "K15",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step15"
-        },
-        {
-          "label": "K16",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step16"
-        }
+        { "label": "K1", "max": 1.0, "min": 0.0, "param": "step1" },
+        { "label": "K2", "max": 1.0, "min": 0.0, "param": "step2" },
+        { "label": "K3", "max": 1.0, "min": 0.0, "param": "step3" },
+        { "label": "K4", "max": 1.0, "min": 0.0, "param": "step4" },
+        { "label": "K5", "max": 1.0, "min": 0.0, "param": "step5" },
+        { "label": "K6", "max": 1.0, "min": 0.0, "param": "step6" },
+        { "label": "K7", "max": 1.0, "min": 0.0, "param": "step7" },
+        { "label": "K8", "max": 1.0, "min": 0.0, "param": "step8" },
+        { "label": "K9", "max": 1.0, "min": 0.0, "param": "step9" },
+        { "label": "K10", "max": 1.0, "min": 0.0, "param": "step10" },
+        { "label": "K11", "max": 1.0, "min": 0.0, "param": "step11" },
+        { "label": "K12", "max": 1.0, "min": 0.0, "param": "step12" },
+        { "label": "K13", "max": 1.0, "min": 0.0, "param": "step13" },
+        { "label": "K14", "max": 1.0, "min": 0.0, "param": "step14" },
+        { "label": "K15", "max": 1.0, "min": 0.0, "param": "step15" },
+        { "label": "K16", "max": 1.0, "min": 0.0, "param": "step16" }
       ],
       "doc": "Kick lane: 16 boolean steps, every hit plays pitch degree 0.",
       "inputs": {
-        "clock": {
-          "from": "/clock.gate"
-        },
+        "clock": { "from": "/clock.gate" },
         "gate_mode": "Gate",
         "length": 16.0,
         "pitch": 0.0,
-        "step1": 1.0,
-        "step10": 0.0,
-        "step11": 0.0,
-        "step12": 0.0,
-        "step13": 1.0,
-        "step14": 0.0,
-        "step15": 0.0,
-        "step16": 0.0,
-        "step2": 0.0,
-        "step3": 0.0,
-        "step4": 0.0,
-        "step5": 1.0,
-        "step6": 0.0,
-        "step7": 0.0,
-        "step8": 0.0,
-        "step9": 1.0
+        "step1": 1.0, "step2": 0.0, "step3": 0.0, "step4": 0.0,
+        "step5": 1.0, "step6": 0.0, "step7": 0.0, "step8": 0.0,
+        "step9": 1.0, "step10": 0.0, "step11": 0.0, "step12": 0.0,
+        "step13": 1.0, "step14": 0.0, "step15": 0.0, "step16": 0.0
       },
       "type": "sequencer"
     },
     {
       "address": "/snare",
       "control": [
-        {
-          "label": "S1",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step1"
-        },
-        {
-          "label": "S2",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step2"
-        },
-        {
-          "label": "S3",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step3"
-        },
-        {
-          "label": "S4",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step4"
-        },
-        {
-          "label": "S5",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step5"
-        },
-        {
-          "label": "S6",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step6"
-        },
-        {
-          "label": "S7",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step7"
-        },
-        {
-          "label": "S8",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step8"
-        },
-        {
-          "label": "S9",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step9"
-        },
-        {
-          "label": "S10",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step10"
-        },
-        {
-          "label": "S11",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step11"
-        },
-        {
-          "label": "S12",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step12"
-        },
-        {
-          "label": "S13",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step13"
-        },
-        {
-          "label": "S14",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step14"
-        },
-        {
-          "label": "S15",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step15"
-        },
-        {
-          "label": "S16",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step16"
-        }
+        { "label": "S1", "max": 1.0, "min": 0.0, "param": "step1" },
+        { "label": "S2", "max": 1.0, "min": 0.0, "param": "step2" },
+        { "label": "S3", "max": 1.0, "min": 0.0, "param": "step3" },
+        { "label": "S4", "max": 1.0, "min": 0.0, "param": "step4" },
+        { "label": "S5", "max": 1.0, "min": 0.0, "param": "step5" },
+        { "label": "S6", "max": 1.0, "min": 0.0, "param": "step6" },
+        { "label": "S7", "max": 1.0, "min": 0.0, "param": "step7" },
+        { "label": "S8", "max": 1.0, "min": 0.0, "param": "step8" },
+        { "label": "S9", "max": 1.0, "min": 0.0, "param": "step9" },
+        { "label": "S10", "max": 1.0, "min": 0.0, "param": "step10" },
+        { "label": "S11", "max": 1.0, "min": 0.0, "param": "step11" },
+        { "label": "S12", "max": 1.0, "min": 0.0, "param": "step12" },
+        { "label": "S13", "max": 1.0, "min": 0.0, "param": "step13" },
+        { "label": "S14", "max": 1.0, "min": 0.0, "param": "step14" },
+        { "label": "S15", "max": 1.0, "min": 0.0, "param": "step15" },
+        { "label": "S16", "max": 1.0, "min": 0.0, "param": "step16" }
       ],
       "doc": "Snare lane: 16 boolean steps; backbeat on steps 5 and 13.",
       "inputs": {
-        "clock": {
-          "from": "/clock.gate"
-        },
+        "clock": { "from": "/clock.gate" },
         "gate_mode": "Gate",
         "length": 16.0,
         "pitch": 0.0,
-        "step1": 0.0,
-        "step10": 0.0,
-        "step11": 0.0,
-        "step12": 0.0,
-        "step13": 1.0,
-        "step14": 0.0,
-        "step15": 0.0,
-        "step16": 0.0,
-        "step2": 0.0,
-        "step3": 0.0,
-        "step4": 0.0,
-        "step5": 1.0,
-        "step6": 0.0,
-        "step7": 0.0,
-        "step8": 0.0,
-        "step9": 0.0
+        "step1": 0.0, "step2": 0.0, "step3": 0.0, "step4": 0.0,
+        "step5": 1.0, "step6": 0.0, "step7": 0.0, "step8": 0.0,
+        "step9": 0.0, "step10": 0.0, "step11": 0.0, "step12": 0.0,
+        "step13": 1.0, "step14": 0.0, "step15": 0.0, "step16": 0.0
       },
       "type": "sequencer"
     },
     {
       "address": "/hat",
       "control": [
-        {
-          "label": "H1",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step1"
-        },
-        {
-          "label": "H2",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step2"
-        },
-        {
-          "label": "H3",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step3"
-        },
-        {
-          "label": "H4",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step4"
-        },
-        {
-          "label": "H5",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step5"
-        },
-        {
-          "label": "H6",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step6"
-        },
-        {
-          "label": "H7",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step7"
-        },
-        {
-          "label": "H8",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step8"
-        },
-        {
-          "label": "H9",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step9"
-        },
-        {
-          "label": "H10",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step10"
-        },
-        {
-          "label": "H11",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step11"
-        },
-        {
-          "label": "H12",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step12"
-        },
-        {
-          "label": "H13",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step13"
-        },
-        {
-          "label": "H14",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step14"
-        },
-        {
-          "label": "H15",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step15"
-        },
-        {
-          "label": "H16",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step16"
-        }
+        { "label": "H1", "max": 1.0, "min": 0.0, "param": "step1" },
+        { "label": "H2", "max": 1.0, "min": 0.0, "param": "step2" },
+        { "label": "H3", "max": 1.0, "min": 0.0, "param": "step3" },
+        { "label": "H4", "max": 1.0, "min": 0.0, "param": "step4" },
+        { "label": "H5", "max": 1.0, "min": 0.0, "param": "step5" },
+        { "label": "H6", "max": 1.0, "min": 0.0, "param": "step6" },
+        { "label": "H7", "max": 1.0, "min": 0.0, "param": "step7" },
+        { "label": "H8", "max": 1.0, "min": 0.0, "param": "step8" },
+        { "label": "H9", "max": 1.0, "min": 0.0, "param": "step9" },
+        { "label": "H10", "max": 1.0, "min": 0.0, "param": "step10" },
+        { "label": "H11", "max": 1.0, "min": 0.0, "param": "step11" },
+        { "label": "H12", "max": 1.0, "min": 0.0, "param": "step12" },
+        { "label": "H13", "max": 1.0, "min": 0.0, "param": "step13" },
+        { "label": "H14", "max": 1.0, "min": 0.0, "param": "step14" },
+        { "label": "H15", "max": 1.0, "min": 0.0, "param": "step15" },
+        { "label": "H16", "max": 1.0, "min": 0.0, "param": "step16" }
       ],
       "doc": "Hat lane: 16 boolean steps; offbeat 8ths.",
       "inputs": {
-        "clock": {
-          "from": "/clock.gate"
-        },
+        "clock": { "from": "/clock.gate" },
         "gate_mode": "Gate",
         "length": 16.0,
         "pitch": 0.0,
-        "step1": 1.0,
-        "step10": 0.0,
-        "step11": 1.0,
-        "step12": 0.0,
-        "step13": 1.0,
-        "step14": 0.0,
-        "step15": 1.0,
-        "step16": 0.0,
-        "step2": 0.0,
-        "step3": 1.0,
-        "step4": 0.0,
-        "step5": 1.0,
-        "step6": 0.0,
-        "step7": 1.0,
-        "step8": 0.0,
-        "step9": 1.0
+        "step1": 1.0, "step2": 0.0, "step3": 1.0, "step4": 0.0,
+        "step5": 1.0, "step6": 0.0, "step7": 1.0, "step8": 0.0,
+        "step9": 1.0, "step10": 0.0, "step11": 1.0, "step12": 0.0,
+        "step13": 1.0, "step14": 0.0, "step15": 1.0, "step16": 0.0
       },
       "type": "sequencer"
     },
     {
       "address": "/kick_v",
-      "config": {
-        "voices": 1
-      },
-      "doc": "One-voice gate source for the kick.",
-      "inputs": {
-        "notes": {
-          "from": "/kick"
-        }
-      },
-      "type": "voicer"
+      "config": { "voices": 1 },
+      "doc": "Hosts the kick-voice; the lane's gate fires it.",
+      "inputs": { "notes": { "from": "/kick" } },
+      "type": "voicer",
+      "voice": "kick-voice"
     },
     {
       "address": "/snare_v",
-      "config": {
-        "voices": 1
-      },
-      "doc": "One-voice gate source for the snare.",
-      "inputs": {
-        "notes": {
-          "from": "/snare"
-        }
-      },
-      "type": "voicer"
+      "config": { "voices": 1 },
+      "doc": "Hosts the snare-voice; the lane's gate fires it.",
+      "inputs": { "notes": { "from": "/snare" } },
+      "type": "voicer",
+      "voice": "snare-voice"
     },
     {
       "address": "/hat_v",
-      "config": {
-        "voices": 1
-      },
-      "doc": "One-voice gate source for the hat.",
-      "inputs": {
-        "notes": {
-          "from": "/hat"
-        }
-      },
-      "type": "voicer"
-    },
-    {
-      "address": "/kick_sweep_amt",
-      "doc": "Constant pitch-sweep amount (Hz) for the kick pitch-drop.",
-      "inputs": {
-        "in": 220.0
-      },
-      "type": "m2s"
-    },
-    {
-      "address": "/kick_penv",
-      "doc": "Pitch-drop envelope generator -> linear CV, very fast decay -> the kick 'thump'.",
-      "inputs": {
-        "attack": 0.001,
-        "decay": 0.06,
-        "gate": {
-          "from": "/kick_v.gate"
-        },
-        "release": 0.06,
-        "sustain": 0.0
-      },
-      "type": "envelope"
-    },
-    {
-      "address": "/kick_penv_vca",
-      "doc": "Scale the sweep amount by the (linear) pitch envelope CV.",
-      "inputs": {
-        "a": {
-          "from": "/kick_sweep_amt"
-        },
-        "b": {
-          "from": "/kick_penv.cv"
-        }
-      },
-      "type": "mul_f32_signal"
-    },
-    {
-      "address": "/kick_base",
-      "doc": "Constant kick base frequency (Hz).",
-      "inputs": {
-        "in": 48.0
-      },
-      "type": "m2s"
-    },
-    {
-      "address": "/kick_freq",
-      "doc": "kick freq = base (a) + decaying sweep (b).",
-      "inputs": {
-        "a": {
-          "from": "/kick_base"
-        },
-        "b": {
-          "from": "/kick_penv_vca"
-        }
-      },
-      "type": "add_f32_signal"
-    },
-    {
-      "address": "/kick_osc",
-      "doc": "Sine body, frequency driven by the pitch-drop.",
-      "inputs": {
-        "freq": {
-          "from": "/kick_freq"
-        },
-        "waveform": "Sine"
-      },
-      "type": "oscillator"
-    },
-    {
-      "address": "/kick_aenv",
-      "doc": "Amplitude envelope generator -> linear CV, fast decay.",
-      "inputs": {
-        "attack": 0.001,
-        "decay": 0.12,
-        "gate": {
-          "from": "/kick_v.gate"
-        },
-        "release": 0.08,
-        "sustain": 0.0
-      },
-      "type": "envelope"
-    },
-    {
-      "address": "/kick_aenv_curve",
-      "doc": "Exponential-style volume curve (x^2) on the kick amp CV.",
-      "inputs": {
-        "x": {
-          "from": "/kick_aenv.cv"
-        }
-      },
-      "type": "power_f32_signal"
-    },
-    {
-      "address": "/kick_aenv_vca",
-      "doc": "VCA: kick body * shaped amp CV.",
-      "inputs": {
-        "a": {
-          "from": "/kick_osc"
-        },
-        "b": {
-          "from": "/kick_aenv_curve"
-        }
-      },
-      "type": "mul_f32_signal"
-    },
-    {
-      "address": "/snare_noise",
-      "doc": "Snare noise body.",
-      "type": "noise"
-    },
-    {
-      "address": "/snare_nenv",
-      "doc": "Noise amplitude envelope generator -> linear CV, short snap.",
-      "inputs": {
-        "attack": 0.001,
-        "decay": 0.09,
-        "gate": {
-          "from": "/snare_v.gate"
-        },
-        "release": 0.06,
-        "sustain": 0.0
-      },
-      "type": "envelope"
-    },
-    {
-      "address": "/snare_nenv_curve",
-      "doc": "Exponential-style volume curve (x^2) on the snare-noise CV.",
-      "inputs": {
-        "x": {
-          "from": "/snare_nenv.cv"
-        }
-      },
-      "type": "power_f32_signal"
-    },
-    {
-      "address": "/snare_nenv_vca",
-      "doc": "VCA: snare noise * shaped amp CV.",
-      "inputs": {
-        "a": {
-          "from": "/snare_noise"
-        },
-        "b": {
-          "from": "/snare_nenv_curve"
-        }
-      },
-      "type": "mul_f32_signal"
-    },
-    {
-      "address": "/snare_tone_f",
-      "doc": "Constant tonal frequency (Hz) for the snare's ring.",
-      "inputs": {
-        "in": 185.0
-      },
-      "type": "m2s"
-    },
-    {
-      "address": "/snare_osc",
-      "doc": "Tonal component (sine) under the noise.",
-      "inputs": {
-        "freq": {
-          "from": "/snare_tone_f"
-        },
-        "waveform": "Sine"
-      },
-      "type": "oscillator"
-    },
-    {
-      "address": "/snare_tenv",
-      "doc": "Tonal amplitude envelope generator -> linear CV, very short.",
-      "inputs": {
-        "attack": 0.001,
-        "decay": 0.05,
-        "gate": {
-          "from": "/snare_v.gate"
-        },
-        "release": 0.04,
-        "sustain": 0.0
-      },
-      "type": "envelope"
-    },
-    {
-      "address": "/snare_tenv_curve",
-      "doc": "Exponential-style volume curve (x^2) on the snare-tone CV.",
-      "inputs": {
-        "x": {
-          "from": "/snare_tenv.cv"
-        }
-      },
-      "type": "power_f32_signal"
-    },
-    {
-      "address": "/snare_tenv_vca",
-      "doc": "VCA: snare tone * shaped amp CV.",
-      "inputs": {
-        "a": {
-          "from": "/snare_osc"
-        },
-        "b": {
-          "from": "/snare_tenv_curve"
-        }
-      },
-      "type": "mul_f32_signal"
-    },
-    {
-      "address": "/snare_mix",
-      "doc": "snare = noise body (a) + tonal ring (b).",
-      "inputs": {
-        "a": {
-          "from": "/snare_nenv_vca"
-        },
-        "b": {
-          "from": "/snare_tenv_vca"
-        }
-      },
-      "type": "add_f32_signal"
-    },
-    {
-      "address": "/hat_noise",
-      "doc": "Hat noise source.",
-      "type": "noise"
-    },
-    {
-      "address": "/hat_hp",
-      "doc": "Highpass (mode=1) to thin the noise into a metallic hat.",
-      "inputs": {
-        "audio": {
-          "from": "/hat_noise"
-        },
-        "cutoff": 7000.0,
-        "mode": "Hp",
-        "resonance": 0.1
-      },
-      "type": "filter"
-    },
-    {
-      "address": "/hat_env",
-      "doc": "Very short amplitude envelope generator -> linear CV -> tick.",
-      "inputs": {
-        "attack": 0.001,
-        "decay": 0.04,
-        "gate": {
-          "from": "/hat_v.gate"
-        },
-        "release": 0.03,
-        "sustain": 0.0
-      },
-      "type": "envelope"
-    },
-    {
-      "address": "/hat_env_curve",
-      "doc": "Exponential-style volume curve (x^2) on the hat CV.",
-      "inputs": {
-        "x": {
-          "from": "/hat_env.cv"
-        }
-      },
-      "type": "power_f32_signal"
-    },
-    {
-      "address": "/hat_env_vca",
-      "doc": "VCA: hat noise * shaped amp CV.",
-      "inputs": {
-        "a": {
-          "from": "/hat_hp"
-        },
-        "b": {
-          "from": "/hat_env_curve"
-        }
-      },
-      "type": "mul_f32_signal"
+      "config": { "voices": 1 },
+      "doc": "Hosts the hat-voice; the lane's gate fires it.",
+      "inputs": { "notes": { "from": "/hat" } },
+      "type": "voicer",
+      "voice": "hat-voice"
     },
     {
       "address": "/kick_vol",
-      "control": {
-        "label": "Kick Vol",
-        "widget": "fader"
-      },
-      "doc": "Kick lane volume Good Button [0,1].",
-      "inputs": {
-        "in": 0.7
-      },
-      "type": "map"
-    },
-    {
-      "address": "/kick_vol_cv",
-      "doc": "Smooth kick volume into a constant CV.",
-      "inputs": {
-        "in": {
-          "from": "/kick_vol"
-        },
-        "mode": "Smooth",
-        "time": 0.02
-      },
+      "control": { "label": "Kick Vol", "widget": "fader" },
+      "doc": "Kick lane volume knob [0,1], smoothed into a CV (m2s = value->signal).",
+      "inputs": { "in": 0.7, "mode": "Smooth", "time": 0.02 },
       "type": "m2s"
     },
     {
       "address": "/kick_amp",
       "doc": "kick audio * volume CV.",
-      "inputs": {
-        "a": {
-          "from": "/kick_aenv_vca"
-        },
-        "b": {
-          "from": "/kick_vol_cv"
-        }
-      },
+      "inputs": { "a": { "from": "/kick_v.audio" }, "b": { "from": "/kick_vol" } },
       "type": "mul_f32_signal"
     },
     {
       "address": "/snare_vol",
-      "control": {
-        "label": "Snare Vol",
-        "widget": "fader"
-      },
-      "doc": "Snare lane volume Good Button [0,1].",
-      "inputs": {
-        "in": 0.5
-      },
-      "type": "map"
-    },
-    {
-      "address": "/snare_vol_cv",
-      "doc": "Smooth snare volume into a constant CV.",
-      "inputs": {
-        "in": {
-          "from": "/snare_vol"
-        },
-        "mode": "Smooth",
-        "time": 0.02
-      },
+      "control": { "label": "Snare Vol", "widget": "fader" },
+      "doc": "Snare lane volume knob [0,1], smoothed into a CV.",
+      "inputs": { "in": 0.5, "mode": "Smooth", "time": 0.02 },
       "type": "m2s"
     },
     {
       "address": "/snare_amp",
       "doc": "snare audio * volume CV.",
-      "inputs": {
-        "a": {
-          "from": "/snare_mix"
-        },
-        "b": {
-          "from": "/snare_vol_cv"
-        }
-      },
+      "inputs": { "a": { "from": "/snare_v.audio" }, "b": { "from": "/snare_vol" } },
       "type": "mul_f32_signal"
     },
     {
       "address": "/hat_vol",
-      "control": {
-        "label": "Hat Vol",
-        "widget": "fader"
-      },
-      "doc": "Hat lane volume Good Button [0,1].",
-      "inputs": {
-        "in": 0.35
-      },
-      "type": "map"
-    },
-    {
-      "address": "/hat_vol_cv",
-      "doc": "Smooth hat volume into a constant CV.",
-      "inputs": {
-        "in": {
-          "from": "/hat_vol"
-        },
-        "mode": "Smooth",
-        "time": 0.02
-      },
+      "control": { "label": "Hat Vol", "widget": "fader" },
+      "doc": "Hat lane volume knob [0,1], smoothed into a CV.",
+      "inputs": { "in": 0.35, "mode": "Smooth", "time": 0.02 },
       "type": "m2s"
     },
     {
       "address": "/hat_amp",
       "doc": "hat audio * volume CV.",
-      "inputs": {
-        "a": {
-          "from": "/hat_env_vca"
-        },
-        "b": {
-          "from": "/hat_vol_cv"
-        }
-      },
+      "inputs": { "a": { "from": "/hat_v.audio" }, "b": { "from": "/hat_vol" } },
       "type": "mul_f32_signal"
     },
     {
       "address": "/mix_a",
       "doc": "kick (a) + snare (b).",
-      "inputs": {
-        "a": {
-          "from": "/kick_amp"
-        },
-        "b": {
-          "from": "/snare_amp"
-        }
-      },
+      "inputs": { "a": { "from": "/kick_amp" }, "b": { "from": "/snare_amp" } },
       "type": "add_f32_signal"
     },
     {
       "address": "/mix",
       "doc": "(kick+snare) (a) + hat (b) -> full drum mix.",
-      "inputs": {
-        "a": {
-          "from": "/mix_a"
-        },
-        "b": {
-          "from": "/hat_amp"
-        }
-      },
+      "inputs": { "a": { "from": "/mix_a" }, "b": { "from": "/hat_amp" } },
       "type": "add_f32_signal"
     },
     {
-      "address": "/master",
-      "doc": "Master lowpass (mode=0); cutoff is a Good Button to tone the whole kit.",
-      "inputs": {
-        "audio": {
-          "from": "/mix"
-        },
-        "cutoff": {
-          "from": "/cutoff_cv"
-        }
-      },
-      "type": "filter"
-    },
-    {
-      "address": "/trim_cv",
-      "doc": "Constant master trim (headroom so overlapping hits don't clip).",
-      "inputs": {
-        "in": 0.7
-      },
+      "address": "/tone",
+      "control": { "label": "Tone", "widget": "fader" },
+      "doc": "PUBLIC master-tone knob [0,1], smoothed into a CV (m2s = value->signal), then ranged into the master filter cutoff. Rests at 0.8.",
+      "inputs": { "in": 0.8, "mode": "Smooth", "time": 0.03 },
       "type": "m2s"
     },
     {
-      "address": "/trim",
-      "doc": "master audio * trim CV -> headroom.",
-      "inputs": {
-        "a": {
-          "from": "/master"
-        },
-        "b": {
-          "from": "/trim_cv"
-        }
-      },
-      "type": "mul_f32_signal"
-    },
-    {
-      "address": "/out",
-      "inputs": {
-        "audio": {
-          "from": "/trim"
-        }
-      },
-      "type": "output"
-    },
-    {
-      "address": "/cutoff",
-      "control": {
-        "label": "Tone",
-        "widget": "fader"
-      },
-      "doc": "PUBLIC master-filter Good Button: brightness [0,1] -> cutoff. Rests at 0.8.",
+      "address": "/cutoff_map",
+      "doc": "tone [0,1] -> cutoff [500,16000] Hz, exponential.",
       "inputs": {
         "curve": "Exponential",
-        "in": 0.8,
+        "in": { "from": "/tone" },
         "out_max": 16000.0,
         "out_min": 500.0
       },
       "type": "map"
     },
     {
-      "address": "/cutoff_cv",
-      "doc": "Smooth the master cutoff into a CV.",
-      "inputs": {
-        "in": {
-          "from": "/cutoff"
-        },
-        "mode": "Smooth",
-        "time": 0.03
-      },
+      "address": "/master",
+      "doc": "Master lowpass to tone the whole kit; cutoff driven by the Tone knob.",
+      "inputs": { "audio": { "from": "/mix" }, "cutoff": { "from": "/cutoff_map" } },
+      "type": "filter"
+    },
+    {
+      "address": "/trim_cv",
+      "doc": "Constant master trim (headroom so overlapping hits don't clip).",
+      "inputs": { "in": 0.7 },
       "type": "m2s"
+    },
+    {
+      "address": "/trim",
+      "doc": "master audio * trim CV -> headroom.",
+      "inputs": { "a": { "from": "/master" }, "b": { "from": "/trim_cv" } },
+      "type": "mul_f32_signal"
+    },
+    {
+      "address": "/out",
+      "inputs": { "audio": { "from": "/trim" } },
+      "type": "output"
     }
   ],
   "outputs": [
-    {
-      "node": "/out",
-      "port": "audio"
-    }
-  ]
+    { "node": "/out", "port": "audio" }
+  ],
+  "resources": {
+    "kick-voice": "voices/kick-voice.json",
+    "snare-voice": "voices/snare-voice.json",
+    "hat-voice": "voices/hat-voice.json"
+  }
 }

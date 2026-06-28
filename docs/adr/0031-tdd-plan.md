@@ -42,8 +42,8 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | 5 Phase B — re-bless goldens + fix integration tests → green → **commit** | ✅ **green workspace-wide; committed** (`afbf404`) | — |
 | ADR-0032 follow-up (C) — Lane model deletion + explicit `constant:` keyword (session 10) | ✅ **done** | `07a5187` |
 | ADR-0032 follow-up (D, easy 6) — re-author FX-wrapper voicer instruments (session 10) | ✅ **done** (355/19) | `c678b60` |
-| ADR-0032 follow-up (D, hard 8) — sampler·sampler-arp·good-button·auto-filter·chord-player·djfilter-demo·groovebox·strum-harp | ⬜ **next** | — |
-| ADR-0032 follow-up — 3 tonal_context pitch-resolution tests need a non-freq-tap strategy | ⬜ pending | — |
+| ADR-0032 follow-up (D, hard 8) — sampler·sampler-arp·good-button·auto-filter·chord-player·djfilter-demo·groovebox·strum-harp | ✅ **done (session 11)** | — |
+| ADR-0032 follow-up — freq/gate-tap tests (tonal_context 3 + chord_player 4 rig) → probe-voice strategy | ✅ **done (session 11)** | — |
 | ADR-0032 follow-up (E) — `active`-based liveness/stealing; skip idle voices | ⬜ pending | — |
 | ADR-0032 follow-up — `voice` resource round-trip through `from_graph` | ⬜ pending | — |
 | 6–8 (ADR-0031 tail: coercion msgs · boundary/addresses · docs) | ⬜ pending | — |
@@ -317,6 +317,85 @@ Built the whole barrier test-first; `cargo test --workspace` (350 pass) + `cargo
    Voicer reads each voice's `active`, steals release-tail-aware. Plus skip idle voices (today renders
    all N).
 4. **`voice` resource round-trip** through `from_graph` (same gap as `sample`).
+
+### ✅ Session 11 (2026-06-27) — hard-8 forks resolved (grill); building serially this session
+
+Scoped the "hard 8" re-authoring (line 45) against the live engine + ignored tests. A scout mapped the
+voice/interface contract (all four interface ports **optional**; voicer tolerates missing freq/gate via
+`unwrap_or_default`→skip; `active` **not read**, Fork E; audio summed from each voice's `master[0]`, not
+`interface.outputs.audio`; nested `sample` resources resolve **recursively**, no depth limit; an interface
+input may map to any existing `node.port`, unused-downstream is legal). Six forks grilled + ruled:
+
+1. **Filter placement (good-button·auto-filter·chord-player·strum-harp·djfilter-demo)** → **master post-mix.**
+   The shared cutoff/res/position knob can't reach inside hosted voices (voicer only drives freq/gate, by
+   design). So the filter/djfilter moves to the top level *after* the voicer sums the dry voices — the same
+   pattern as the easy-6 reverb/echo master FX. Voice = `osc → env_vca` (no filter); host = `voicer → filter
+   (cutoff ← brightness map → m2s) → out`. Sonic change (filter post-VCA-sum vs per-voice pre-VCA) is musically
+   ~equivalent for a *shared* lowpass and preserves the good_button/auto_filter test intent (knob opens filter /
+   LFO wobbles output — both observe top-level audio energy, not per-voice structure). Per-voice + broadcast
+   machinery rejected (out of ADR-0032 scope).
+2. **Scope** → **everything in one push**: re-author all 8 instruments **and** un-ignore/rewrite all 24
+   ignored tests (no deferral).
+3. **freq/gate-tap tests (tonal_context 3 + chord_player 4 rig)** → **probe-voice integration.** The removed
+   `voicer.freq`/`gate` output taps are recreated via a test-only probe voice: a single `mul_f32_signal`
+   (`a` ← the freq/gate interface input — f32_buffer-with-meta default 1.0, message-settable, materializes ZOH;
+   `b` unwired → 1.0) so `voicer.audio == a×1 ==` the resolved freq (or summed gate level). Assertions stay
+   **byte-identical** (same expected Hz); `tap voicer.freq` becomes `host a probe-voice + tap voicer.audio`.
+   Two fixtures (freq-probe, gate-probe), served test-only via an in-test map resolver (not shipped). Keeps
+   them as true integration tests through the harmony-context bus + sample-accurate slicing (their purpose).
+   NB: idle voices push a freq baseline (`harmony.hz(A4)=440`) every block — fine because the freq tests
+   always have all voices on; the gate tests use the gate-probe (idle → 0).
+4. **groovebox 2 internal-probe tests** (`/snare_v gate` gone; `/snare_nenv_vca` moves inside the voice) →
+   **delete** both (one-off diagnostics for a fixed bug) + add a groovebox **load + render + non-silent smoke
+   test**. Drum *synths* move inside per-lane voice patches; the *sequencers* + volume/tone/tempo controls stay
+   at top level (still reachable).
+5. **good-button (4) + chord-player (2) per-voice envelope ADSR controls** → **bake defaults inside the voice
+   patch, drop the dead `/env` control widgets.** Top-level OSC can't reach voice-internal params (same reason
+   as the filter); no test asserts these. Broadcast machinery rejected (consistent with #1).
+6. **Execution** → **serial, this session**, on `refactor/sig-val`. No goldens change (no new operators), so the
+   descriptor/schema re-bless step is a no-op. Build order: (a) probe fixtures + rewrite tonal_context 3 +
+   chord_player 4 rig tests; (b) per instrument — voice patch(es) + host re-author + un-ignore its load tests;
+   (c) groovebox delete-probes + smoke; (d) `cargo test --workspace` + clippy green → commit.
+
+### ✅ Session 11 LANDED (2026-06-27) — hard-8 + all freq/gate-tap tests green
+
+All 8 instruments re-authored to host voice sub-patches; **every** `#[ignore]` removed (24 follow-up
+tests un-ignored/rewritten). `cargo test --workspace` green; `cargo clippy --workspace --all-targets`
+clean. What shipped:
+
+- **Probe voices (test-only):** `freq-probe-voice` / `gate-probe-voice` = one `mul_f32_signal`
+  (`a` ← freq/gate interface input, `b` default 1.0 → audio = a). Rewrote the 7 freq/gate-tap tests
+  (`tonal_context` 3 + `chord_player` 4 rig) to host a probe voice and tap `voicer.audio`; assertions
+  byte-identical. Served via in-test resolvers (`chord_player`'s falls back to disk for the real voice).
+- **sampler / sampler-arp:** `voices/sampler-voice.json` (nested `sample` resource, gate/freq interface,
+  no `active` — gate-keyed liveness). `missing_sample` + cli `missing_resource` tests rewritten to the
+  nested-voice / missing-voice degrade path.
+- **5 master-post-mix instruments** (good-button, auto-filter, chord-player, strum-harp, djfilter-demo):
+  voice = `osc → env_vca` (ADSR baked, `/env` widgets dropped — Fork 5); host = `voicer → master
+  filter/djfilter (knob CV) → out`.
+- **groovebox:** 3 drum voices (`kick/snare/hat-voice`, gate-only interface — pitch internal). Each drum
+  collapsed to **one** envelope whose `env.cv` Signal fans to amp + pitch, because the voicer drives a
+  **single** gate per voice (interface maps one name → one port). Deleted `groovebox_snare_gate.rs`
+  (2 probes); added `groovebox.rs` self-plays-non-silent smoke test.
+
+**⚠ Mid-execution contradiction found + resolved (the `map→m2s` Good-Button chain).** Un-ignoring the
+Good-Button instruments surfaced a `FormMismatch Signal→Value`: `map` is f32_buffer Signal→Signal but
+`m2s.in` is Value, so the old `map → m2s` chain is now an illegal S→V edge (the documented gap G, no
+sig→val converter). **Fix:** make the **knob itself the `m2s`** (Value → smoothed Signal), then the
+ranged `map`s read that Signal (Signal→Signal) into the filter. One smoother, fanned, zipper-free
+preserved. Applied to good-button/chord-player/strum-harp/djfilter-demo + groovebox volume/tone knobs.
+(strum-harp's `/strum_bar → /strum.position` stays a plain `map` — already Signal→Signal.)
+
+**⚠ Known pre-existing caveat (NOT fixed here, out of gate scope):** the iai/criterion **benches**
+(`benches/common/mod.rs`) load voicer fixtures (reverb, echo, auto-filter, sampler-arp, autotune) via
+plain `load()` — which doesn't bind voices — so they render a degraded (empty-voicer) workload. This has
+been true since session 10 (reverb/echo/autotune host voices); session 11 extends it to auto-filter +
+sampler-arp. `cargo test --workspace` doesn't run benches and clippy only compiles them, so the gate is
+green. **Follow-up:** switch `build_state` to `load_instrument` + a disk resolver and re-bless the iai
+baselines.
+
+Remaining ADR-0032 deferred items (unchanged): `active`-based liveness/stealing (Fork E); `voice`
+resource round-trip through `from_graph`; the 6–8 ADR-0031 tail (coercion msgs · boundary/addresses · docs).
 
 ### ▶ Pickup — ADR-0032 Voicer rewrite (the rest of the barrier). Forks RESOLVED above (session 9):
 
