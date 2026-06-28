@@ -233,11 +233,17 @@ Other notes:
   contract the rig builder wires against. The macro computes the ordinals.
 - **Exceptions:** `output` is the lone operator that still hand-writes `descriptor()`, where the
   macro DSL can't express its contract. Everything else delegates to the macro via
-  `Self::contract()` — including `m2s` / `map` / `oscillator` (now macro-expressible: a shared-vocab
-  enum default falls out of the type's `#[default]`) and the math family (`add`, `mul`, `power`,
-  `differentiate`, `integrate`) — one operator per module since
-  [ADR-0029](../adr/0029-math-family-dense-float-one-file-per-op.md) deleted the old `math.rs`
-  multi-op module.
+  `Self::contract()` — including `m2s` / `oscillator` (now macro-expressible: a shared-vocab enum
+  default falls out of the type's `#[default]`). One operator per module since
+  [ADR-0029](../adr/0029-math-family-dense-float-one-file-per-op.md) deleted the old `math.rs`.
+- **Pointwise number ops use a higher-level macro.** `add`, `mul`, `power`, `map` are each a single
+  `crate::number_operator_contract!(..)` call over one scalar fn, which generates **both carriers**
+  (`*F32Value` + `*F32Signal`) — their contracts, `Operator` impls, registration, and a
+  defaults-are-data test ([ADR-0033](../adr/0033-number-operator-contract-macro.md)). The criterion:
+  an op is macro-eligible iff it is **stateless pointwise** (output sample = fn of this sample's
+  inputs only) **and** every operand is a number or held enum mode. `differentiate`/`integrate` are
+  **stateful** (they carry state across blocks), so they stay hand-written `operator_contract!` ops
+  and are **signal-only** (a value form would shatter their continuous one-sample-`dt` stream).
 - **Polyphony** is not a per-operator concern (ADR-0032): there is no Lane fan-out. The **Voicer** is
   a single-Voice operator that hosts N voice sub-patches — a voice is a standalone Instrument
   (instrument-resource, declared `resources: { voice }`) with an `interface { inputs, outputs }`
