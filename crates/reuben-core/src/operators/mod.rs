@@ -34,8 +34,11 @@ pub mod strum;
 pub mod transpose;
 pub mod voicer;
 
-pub use add::value::AddF32Value;
-pub use add::AddF32Signal;
+/// Shared test helpers for the generated number operators (issue #104, ADR-0033).
+#[cfg(test)]
+pub mod math_test;
+
+pub use add::{AddF32Signal, AddF32Value};
 pub use chord::Chord;
 pub use clock::Clock;
 pub use delay::Delay;
