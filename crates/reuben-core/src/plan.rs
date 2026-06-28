@@ -530,6 +530,13 @@ fn check_wire_forms(graph: &Graph) -> Result<(), PlanError> {
         let reason = match (port_kind(src), port_kind(dst)) {
             // like→like, and the one implicit coercion Value→Signal (materialized at the sink).
             (Signal, Signal) | (Value, Value) | (Event, Event) | (Value, Signal) => continue,
+            // An enum (Value-only) sink has no numeric converter — say so, rather than dangle the
+            // envelope-follower/quantizer hint that only fits a numeric Value target.
+            (Signal, Value) if dst.enum_meta().is_some() => format!(
+                "Signal→enum '{}': an enum input takes a discrete choice, not a per-sample \
+                signal — no converter exists",
+                dst.name
+            ),
             (Signal, Value) => "Signal→Value: no implicit sample-and-hold; wire an explicit \
                 sig→val converter (envelope follower / quantizer)"
                 .to_string(),

@@ -46,7 +46,8 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | ADR-0032 follow-up — freq/gate-tap tests (tonal_context 3 + chord_player 4 rig) → probe-voice strategy | ✅ **done (session 11)** | — |
 | ADR-0032 follow-up (E) — `active`-based liveness/stealing; skip idle voices | ✅ **done (session 12)** | — |
 | ADR-0032 follow-up — `voice` (+`sample`) resource id round-trip through `from_graph` (session 13) | ✅ **done** | — |
-| 6–8 (ADR-0031 tail: coercion msgs · boundary/addresses · docs) | ⬜ pending | — |
+| 6 — coercion enforcement messages (enum-specific S→V; assert G/H/I text) (session 13) | ✅ **done** | — |
+| 7–8 (ADR-0031 tail: boundary/addresses · docs) | ⬜ pending | — |
 
 **Suite is green workspace-wide at `b4e558b`** (`cargo test --workspace`, clippy clean).
 **Phase A is fully done** — the only `Io` read/write verbs are now `input::<T>` / `output::<T>`
@@ -448,8 +449,28 @@ gains `sample_id`/`voice_id`, stashed at `build()` right after `add_boxed`; `fro
 it pins render-identity, a separate concern). `cargo test --workspace` green, clippy clean.
 
 Remaining ADR-0032 deferred items: the iai/criterion bench voicer-fixture degradation (loads via plain
-`load()`, unbound voices — pre-existing, out of gate scope); the 6–8 ADR-0031 tail (coercion msgs ·
-boundary/addresses · docs).
+`load()`, unbound voices — pre-existing, out of gate scope).
+
+### ✅ Step 6 (2026-06-27, session 13) — coercion enforcement messages
+
+Mostly front-loaded into step 1 (the converter-naming messages already shipped in `check_wire_forms`).
+Remaining genuine work: the `(Signal, Value)` arm gave the **same** numeric-converter hint for an
+**enum** sink, where no envelope-follower/quantizer applies. Grilled → **split enum-specific**: a
+`(Signal, Value) if dst.enum_meta().is_some()` arm now emits `"Signal→enum '<port>': an enum input
+takes a discrete choice, not a per-sample signal — no converter exists"`; numeric Value keeps the
+sig→val-converter hint. Tightened fixtures **H** (asserts enum text, *not* the dangling converter hint)
+and **I** (asserts the latch / change-detect naming) to assert message text, joining **G**. Synthetic
+probe ports stay the oracle (no real-port integration fixture needed — the checker is form-only).
+`cargo test --workspace` green, clippy clean.
+
+### ▶ Pickup — steps 7–8 (ADR-0031 tail)
+
+- **Step 7 — boundary + addresses:** drop `address` from the internal `Emit`/hot path; keep it only in
+  boundary ops (`osc_out`, `output`). Internal wires route by connection; OSC boundary round-trips
+  address↔port. (`Emit.address` currently exists, writers set `""` — already dead for routing per
+  session 7's note: OSC routes by `plan.outbound_taps[].address`, not `Emit.address`.)
+- **Step 8 — docs + schema sweep:** `/sync-docs` over ARCHITECTURE, README, `docs/agents/authoring.md`,
+  `CONTEXT.md`, create-operator skill; re-bless goldens.
 
 ### ▶ Pickup — ADR-0032 Voicer rewrite (the rest of the barrier). Forks RESOLVED above (session 9):
 

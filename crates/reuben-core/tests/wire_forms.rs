@@ -208,20 +208,36 @@ fn signal_into_value_input_is_a_hard_error_naming_the_converter() {
     }
 }
 
-/// H — Signal into a Value-only type (an enum) is equally illegal.
+/// H — Signal into a Value-only type (an enum) is equally illegal, and the message must explain the
+/// enum case (a discrete choice, not a per-sample signal) — *not* dangle the numeric-Value converter
+/// hint, since no envelope-follower/quantizer produces an enum.
 #[test]
-fn signal_into_enum_value_input_is_a_hard_error() {
-    assert!(matches!(
-        wire(signal("o"), value_enum("mode")),
-        Err(PlanError::FormMismatch { .. })
-    ));
+fn signal_into_enum_value_input_is_a_hard_error_explaining_the_enum() {
+    match wire(signal("o"), value_enum("mode")).err() {
+        Some(PlanError::FormMismatch { dst, reason, .. }) => {
+            assert_eq!(dst, "/dst.mode");
+            assert!(
+                reason.contains("enum") && reason.contains("discrete choice"),
+                "Signal→enum error must explain the enum target: {reason}"
+            );
+            assert!(
+                !reason.contains("envelope follower"),
+                "must not dangle the numeric converter hint for an enum: {reason}"
+            );
+        }
+        other => panic!("expected FormMismatch, got {other:?}"),
+    }
 }
 
-/// I — Event→Signal is illegal: a note stream cannot feed a per-sample input without an explicit op.
+/// I — Event→Signal is illegal: a note stream cannot feed a per-sample input without an explicit op,
+/// and the message must name the missing latch / change-detect.
 #[test]
-fn event_into_signal_input_is_a_hard_error() {
-    assert!(matches!(
-        wire(event("o"), signal("i")),
-        Err(PlanError::FormMismatch { .. })
-    ));
+fn event_into_signal_input_is_a_hard_error_naming_the_latch() {
+    match wire(event("o"), signal("i")).err() {
+        Some(PlanError::FormMismatch { reason, .. }) => assert!(
+            reason.contains("latch") || reason.contains("change-detect"),
+            "Event→Signal error must name the latch / change-detect op: {reason}"
+        ),
+        other => panic!("expected FormMismatch, got {other:?}"),
+    }
 }
