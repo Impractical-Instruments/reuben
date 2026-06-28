@@ -232,17 +232,15 @@ impl Message {
 
 /// A Message an operator emits during `process` onto a Message output port (ADR-0014),
 /// before the engine stamps it block-absolute and routes it to downstream nodes. Distinct
-/// from the boundary [`Message`]: its address is a `&'static str` and its payload is the one
-/// inline [`Arg`], so emitting on the wired hot path touches no allocator (sparse `Arg::Str`
-/// aside, which only appears on cold paths).
+/// from the boundary [`Message`]: its payload is the one inline [`Arg`], so emitting on the wired
+/// hot path touches no allocator (sparse `Arg::Str` aside, which only appears on cold paths).
+/// Carries **no address** (ADR-0031 step 7): internal wires route by connection, and the OSC
+/// boundary stamps the node address from [`Plan::outbound_taps`](crate::plan::Plan), not from here.
 #[derive(Debug, Clone)]
 pub struct Emit {
     /// Which Message output port it went to, as an ordinal among the operator's Message
     /// outputs (a separate index space from Buffer/Signal outputs).
     pub port: usize,
-    /// Node-local address the engine carries for OSC shape / debug, e.g. `"notes"`. Static —
-    /// the wired edge, not this string, is the routing.
-    pub address: &'static str,
     /// The single typed payload.
     pub arg: Arg,
     /// Sample offset within the Render block. Segment-relative when the operator calls `emit`;
@@ -255,12 +253,11 @@ pub struct Emit {
 /// reference to the one [`Arg`], and a segment-relative frame. The Render loop builds these in
 /// place (no allocation), keeping Render realtime-safe while delivering events.
 ///
-/// This is the raw delivered form; the typed read API (`io.stream::<T>` / `io.last::<T>`,
-/// phase 4) decodes the borrowed `Arg` into the operator's requested payload type.
+/// This is the raw delivered form; the typed read API (`io.input::<Note>`) decodes the borrowed
+/// `Arg` into the operator's requested payload type. Carries **no address** (ADR-0031 step 7): a
+/// delivered event is identified by the input port it lands on (the wired connection), not a name.
 #[derive(Debug, Clone, Copy)]
 pub struct Event<'a> {
-    /// Address local to the receiving node, e.g. `notes` for `/voicer/notes` under `/voicer`.
-    pub address: &'a str,
     /// The single typed payload, borrowed from the source Message.
     pub arg: &'a Arg,
     /// Sample offset within the current (sub)block at which this event applies.

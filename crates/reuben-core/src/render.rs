@@ -465,10 +465,10 @@ fn held_arg(p: &Port, arg: &Arg) -> Option<Arg> {
 /// [`Event`] borrows the source.
 #[derive(Clone, Copy)]
 enum EventSrc {
-    /// Index into the block `messages` slice, plus the byte offset where the node-local
-    /// address begins (the external address is a full OSC path).
-    External { msg: usize, local_start: usize },
-    /// Index into the per-block emit pool. Its address is already node-local.
+    /// Index into the block `messages` slice. The event delivers by the wired input port, so only
+    /// the payload (and frame) are carried forward — the external address is not (ADR-0031 step 7).
+    External { msg: usize },
+    /// Index into the per-block emit pool.
     Emitted(usize),
 }
 
@@ -533,13 +533,9 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
                         }
                     }
                     PortKind::Event => {
-                        let local_start = msg.address.len() - local.len();
                         routes[i].events.push(RoutedEvent {
                             dst_port: port,
-                            src: EventSrc::External {
-                                msg: mi,
-                                local_start,
-                            },
+                            src: EventSrc::External { msg: mi },
                         });
                     }
                 }
@@ -674,19 +670,18 @@ fn process_node(
         let mut per_port: SmallVec<[SmallVec<[Event; 4]>; 24]> =
             (0..n_inputs).map(|_| SmallVec::new()).collect();
         for re in route.events.iter() {
-            let (addr, arg, frame): (&str, &Arg, usize) = match re.src {
-                EventSrc::External { msg, local_start } => {
+            let (arg, frame): (&Arg, usize) = match re.src {
+                EventSrc::External { msg } => {
                     let m = &messages[msg];
-                    (&m.address[local_start..], &m.arg, m.frame)
+                    (&m.arg, m.frame)
                 }
                 EventSrc::Emitted(idx) => {
                     let e = &emitted[idx];
-                    (e.address, &e.arg, e.frame)
+                    (&e.arg, e.frame)
                 }
             };
             if frame >= seg_start && frame < seg_end {
                 per_port[re.dst_port].push(Event {
-                    address: addr,
                     arg,
                     frame: frame - seg_start,
                 });

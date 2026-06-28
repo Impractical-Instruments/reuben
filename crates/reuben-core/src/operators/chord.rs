@@ -305,11 +305,7 @@ mod tests {
         let evs: Vec<Event> = events
             .iter()
             .zip(&args)
-            .map(|((frame, _), arg)| Event {
-                address: "set",
-                arg,
-                frame: *frame,
-            })
+            .map(|((frame, _), arg)| Event { arg, frame: *frame })
             .collect();
         let latched = [Arg::F32(0.0), Arg::F32(size)];
         let streams: [&[Event]; 2] = [&evs, &[]];

@@ -259,7 +259,6 @@ impl MsgWriter<'_> {
             sink.retain(|e| !(e.port == port && e.frame == frame));
             sink.push(Emit {
                 port,
-                address: "",
                 arg: arg.clone(),
                 frame,
             });
@@ -287,7 +286,6 @@ impl EventWriter<'_> {
         if let Some(sink) = self.sink.as_mut() {
             sink.push(Emit {
                 port: self.port,
-                address: "",
                 arg: payload.into(),
                 frame,
             });
@@ -471,13 +469,8 @@ mod new_io_api {
         let n0 = Arg::Note(Note::new(Pitch::from_midi(60.0), 1.0));
         let n1 = Arg::Note(Note::new(Pitch::from_midi(64.0), 0.5));
         let events = [
+            Event { arg: &n0, frame: 0 },
             Event {
-                address: "notes",
-                arg: &n0,
-                frame: 0,
-            },
-            Event {
-                address: "notes",
                 arg: &n1,
                 frame: 32,
             },
@@ -532,10 +525,7 @@ mod new_io_api {
         assert_eq!(sink[0].port, 0);
         assert_eq!(sink[0].frame, 2);
         assert_eq!(sink[0].arg, Arg::F32(1.0));
-        assert_eq!(
-            sink[0].address, "",
-            "internal Value write carries no address"
-        );
+        // Addresslessness is now type-enforced — `Emit` has no address field (ADR-0031 step 7).
     }
 
     /// Dedup: a `set` whose value equals the last one this handle wrote emits nothing — the held
@@ -598,10 +588,7 @@ mod new_io_api {
             sink[0].arg,
             Arg::Note(Note::new(Pitch::from_midi(60.0), 1.0))
         );
-        assert_eq!(
-            sink[0].address, "",
-            "internal event write carries no address"
-        );
+        // Addresslessness is now type-enforced — `Emit` has no address field (ADR-0031 step 7).
     }
 
     /// An Event writer is **append-only** — unlike `MsgWriter`, repeated equal payloads are NOT

@@ -47,7 +47,8 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | ADR-0032 follow-up (E) — `active`-based liveness/stealing; skip idle voices | ✅ **done (session 12)** | — |
 | ADR-0032 follow-up — `voice` (+`sample`) resource id round-trip through `from_graph` (session 13) | ✅ **done** | — |
 | 6 — coercion enforcement messages (enum-specific S→V; assert G/H/I text) (session 13) | ✅ **done** | — |
-| 7–8 (ADR-0031 tail: boundary/addresses · docs) | ⬜ pending | — |
+| 7 — boundary/addresses: drop `Emit.address`/`Event.address` from the hot path (session 13) | ✅ **done** | — |
+| 8 (ADR-0031 tail: docs + schema sweep) | ⬜ pending | — |
 
 **Suite is green workspace-wide at `b4e558b`** (`cargo test --workspace`, clippy clean).
 **Phase A is fully done** — the only `Io` read/write verbs are now `input::<T>` / `output::<T>`
@@ -463,14 +464,25 @@ and **I** (asserts the latch / change-detect naming) to assert message text, joi
 probe ports stay the oracle (no real-port integration fixture needed — the checker is form-only).
 `cargo test --workspace` green, clippy clean.
 
-### ▶ Pickup — steps 7–8 (ADR-0031 tail)
+### ✅ Step 7 (2026-06-27, session 13) — boundary + addresses
 
-- **Step 7 — boundary + addresses:** drop `address` from the internal `Emit`/hot path; keep it only in
-  boundary ops (`osc_out`, `output`). Internal wires route by connection; OSC boundary round-trips
-  address↔port. (`Emit.address` currently exists, writers set `""` — already dead for routing per
-  session 7's note: OSC routes by `plan.outbound_taps[].address`, not `Emit.address`.)
+`Emit.address`/`Event.address` were already dead for routing (session-7 finding: OSC routes by
+`plan.outbound_taps[].address` = the node address; `osc_out` explicitly drops the incoming local
+address). Audited every reader: **no operator** reads `Event.address` — `EventStream::next` decodes
+`arg`+`frame` only; the only readers were render's `Emit→Event` copy and two unit tests asserting `""`.
+So removed **both** fields (leaving `Event.address` dead-and-unpopulatable would be strictly worse) plus
+`EventSrc::External.local_start` (existed only to slice the now-gone address). Addresslessness is now
+**type-enforced** (the structs have no address field) rather than convention (`set("")`). Touched:
+`message.rs` (both structs), `operator.rs` (`MsgWriter`/`EventWriter` emit + 2 tests → drop the `""`
+assertion, now type-enforced), `render.rs` (`EventSrc`, the Event-route push, the delivery match),
+`chord.rs` + `op_driver.rs` test constructors. Boundary unchanged: `osc_out` round-trip test
+(`outbound[0].address == "/fb"`, the stamped node address) stays green — the address↔port round-trip
+lives entirely at the boundary now. `cargo test --workspace` green (27 suites), clippy clean.
+
+### ▶ Pickup — step 8 (ADR-0031 tail)
+
 - **Step 8 — docs + schema sweep:** `/sync-docs` over ARCHITECTURE, README, `docs/agents/authoring.md`,
-  `CONTEXT.md`, create-operator skill; re-bless goldens.
+  `CONTEXT.md`, create-operator skill; re-bless goldens. This is the **final ADR-0031 step**.
 
 ### ▶ Pickup — ADR-0032 Voicer rewrite (the rest of the barrier). Forks RESOLVED above (session 9):
 
