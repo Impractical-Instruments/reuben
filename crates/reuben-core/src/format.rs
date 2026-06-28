@@ -107,6 +107,17 @@ pub struct NodeDoc {
     pub control: Option<serde_json::Value>,
 }
 
+impl NodeDoc {
+    /// This node's resource references paired with the slot each targets (ADR-0016/0032): the
+    /// typed `sample`/`voice` fields surfaced as one `(slot, ref)` list. The single place the
+    /// format maps its fields to descriptor [`ResourceSlot`](crate::descriptor::ResourceSlot)
+    /// names, so generic resource validation iterates this rather than enumerating known slots arm
+    /// by arm — a new slot extends this list and nothing downstream.
+    fn resource_refs(&self) -> [(&'static str, &Option<String>); 2] {
+        [("sample", &self.sample), ("voice", &self.voice)]
+    }
+}
+
 /// One [`NodeDoc::inputs`] value (ADR-0028): a wire-ref, an `Enum` symbol, or a numeric literal.
 ///
 /// Untagged: a JSON object `{ "from": ... }` is a [`Wire`](Self::Wire); a JSON string is a
@@ -393,24 +404,24 @@ pub fn load_instrument(
     Ok(Loaded { graph, warnings })
 }
 
-/// The voice-pool size for a Voicer node (ADR-0032): its `voices` config constant, else the
-/// descriptor's `voices` param default, floored to 1.
+/// The voice-pool size for a Voicer node (ADR-0032): the node's value for the operator's
+/// instantiate-time [`Constant`](Descriptor::constant_param) (the voicer's `voices` pool size),
+/// else that Constant's descriptor default, floored to 1. Reads the generic Constant slot rather
+/// than a hardcoded `"voices"` name, so the same machinery serves any future pool-sized operator.
+/// An operator with no Constant has a pool of one.
 fn voice_count(n: &NodeDoc, descriptor: &Descriptor) -> usize {
-    n.config
-        .get("voices")
+    let Some(constant) = descriptor.constant_param() else {
+        return 1;
+    };
+    let raw = n
+        .config
+        .get(constant.name)
         .and_then(|v| match v {
             ConfigValue::Number(x) => Some(*x),
             ConfigValue::Symbol(_) => None,
         })
-        .or_else(|| {
-            descriptor
-                .params
-                .iter()
-                .find(|p| p.name == "voices")
-                .map(|p| p.default as f64)
-        })
-        .map(|x| (x.round() as i64).max(1) as usize)
-        .unwrap_or(1)
+        .unwrap_or(constant.default as f64);
+    (raw.round() as i64).max(1) as usize
 }
 
 /// Resolve an **instrument-kind resource** (ADR-0032 §2): a patch `source` (a path) is read to its
@@ -471,19 +482,16 @@ impl InstrumentDoc {
                 return Err(LoadError::DuplicateAddress(n.address.clone()));
             }
             let descriptor = entry.descriptor.clone();
-            // A `sample` ref is only valid on an operator that declares the slot (ADR-0016).
-            if n.sample.is_some() && !descriptor.has_resource("sample") {
-                return Err(LoadError::UnknownResource {
-                    node: n.address.clone(),
-                    slot: "sample".to_string(),
-                });
-            }
-            // A `voice` instrument-resource ref likewise requires the `voice` slot (ADR-0032 §2).
-            if n.voice.is_some() && !descriptor.has_resource("voice") {
-                return Err(LoadError::UnknownResource {
-                    node: n.address.clone(),
-                    slot: "voice".to_string(),
-                });
+            // A resource ref is only valid on an operator that declares that slot (ADR-0016: a
+            // `sample` on the sample player, a `voice` on the Voicer per ADR-0032 §2). Validate
+            // data-driven against the node's refs, so a new slot needs no hand-written arm here.
+            for (slot, provided) in n.resource_refs() {
+                if provided.is_some() && !descriptor.has_resource(slot) {
+                    return Err(LoadError::UnknownResource {
+                        node: n.address.clone(),
+                        slot: slot.to_string(),
+                    });
+                }
             }
             let key = graph.add_boxed(&n.address, (entry.make)(), descriptor.clone());
             // Retain the logical resource ids so `from_graph` round-trips the reference on save

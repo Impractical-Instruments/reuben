@@ -44,18 +44,18 @@ pub enum PortKind {
 }
 
 /// Classify an input/output port into its declared [`PortKind`] form (ADR-0031). An `F32Buffer` is a
-/// Signal (a dense per-sample carrier); a `Note` (struct vocab that isn't `Harmony`) is an Event;
+/// Signal (a dense per-sample carrier); a vocab declared `is_event` (a `Note` stream) is an Event;
 /// everything latched — a bare `F32`, enums, `Harmony`, `I32`, `Str` — is a Value. The Phase-B flip
 /// (ADR-0031): `F32 ⇒ Value`. A port that must carry a continuous signal with a scalar default
 /// (`oscillator.freq`, `filter.cutoff`, `envelope.cv`) is declared `f32_buffer`-with-meta, so it
 /// stays Signal and materializes from its default; every remaining bare `f32` is a held Value.
+///
+/// Event-ness reads the type's [`is_event`](PortType::Vocab) flag rather than the vocab name, so a
+/// second held struct vocab is classified by its declaration, not silently treated as an Event.
 pub fn port_kind(p: &Port) -> PortKind {
     match &p.ty {
         PortType::F32Buffer => PortKind::Signal,
-        PortType::Vocab {
-            enum_meta: None,
-            name,
-        } if *name != "Harmony" => PortKind::Event,
+        PortType::Vocab { is_event: true, .. } => PortKind::Event,
         _ => PortKind::Value,
     }
 }
@@ -585,4 +585,30 @@ fn topo_order(graph: &Graph) -> Result<Vec<NodeKey>, PlanError> {
         return Err(PlanError::Cycle);
     }
     Ok(order)
+}
+
+#[cfg(test)]
+mod port_kind_tests {
+    use super::{port_kind, PortKind};
+    use crate::descriptor::Port;
+    use crate::vocab::SnapDir;
+
+    // The fix for #107: event-ness is read from the type's `is_event` flag, not a `name == "Harmony"`
+    // check. A held struct vocab is a Value; only a declared-event vocab (`Note`) is an Event — so a
+    // second held struct vocab would be classified by its declaration, never silently as an Event.
+    #[test]
+    fn struct_vocab_event_ness_follows_the_flag_not_the_name() {
+        assert_eq!(port_kind(&Port::note("in")), PortKind::Event);
+        assert_eq!(port_kind(&Port::harmony("in")), PortKind::Value);
+        // A hypothetical second held struct vocab (declared not-an-event) is a Value, not an Event.
+        assert_eq!(
+            port_kind(&Port::vocab("ctx", "SomeHeldVocab", false)),
+            PortKind::Value
+        );
+        // An enum vocab is always a latched Value.
+        assert_eq!(
+            port_kind(&Port::enumerated(SnapDir::enum_meta("dir"))),
+            PortKind::Value
+        );
+    }
 }
