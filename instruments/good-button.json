@@ -67,7 +67,7 @@
         "out_max": 12000.0,
         "out_min": 400.0
       },
-      "type": "map"
+      "type": "map_f32_signal"
     },
     {
       "address": "/map_res",
@@ -79,7 +79,7 @@
         "out_max": 0.85,
         "out_min": 0.1
       },
-      "type": "map"
+      "type": "map_f32_signal"
     }
   ],
   "outputs": [
