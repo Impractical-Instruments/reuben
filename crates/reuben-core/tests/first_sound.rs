@@ -29,10 +29,10 @@ fn build_rig() -> Graph {
     // `osc.freq` is left unwired — it materializes 440 Hz from its meta default.
     g.connect(osc, oscillator::OUT_AUDIO, filt, 0);
     // VCA: filtered audio * shaped envelope CV (env -> power -> mul).
-    g.connect(filt, 0, vca, mul::IN_A);
+    g.connect(filt, 0, vca, mul::mul_f32_signal::IN_A);
     g.connect(env, envelope::OUT_CV, curve, power::IN_X);
-    g.connect(curve, power::OUT_OUT, vca, mul::IN_B);
-    g.connect(vca, mul::OUT_OUT, out, output::IN_AUDIO);
+    g.connect(curve, power::OUT_OUT, vca, mul::mul_f32_signal::IN_B);
+    g.connect(vca, mul::mul_f32_signal::OUT_OUT, out, output::IN_AUDIO);
     g.tap_output(out, output::OUT_AUDIO);
 
     g.set_param(filt, "cutoff", 3_000.0);
