@@ -219,7 +219,12 @@ def collect_controls(instrument: dict, meta: dict) -> list:
     out = []
     for node in instrument["nodes"]:
         for spec in specs_of(node):
-            out.append(resolve_control(node, spec, meta))
+            c = resolve_control(node, spec, meta)
+            # `group` is a layout hint, not a binding: consecutive controls sharing it pack onto
+            # one row (see layout_rows). Carried straight through from the spec.
+            if spec.get("group") is not None:
+                c["group"] = spec["group"]
+            out.append(c)
     return out
 
 
@@ -360,6 +365,22 @@ def _fader_props(name, frame) -> str:
     ])
 
 
+def _radial_props(name, frame) -> str:
+    x, y, w, h = frame
+    # RADIAL = a rotary fader (same single `x` value model as FADER, ADR-0018). Property keys +
+    # order are cloned from the reference export's RADIAL: it drops the fader's bar/cursor keys and
+    # adds `centered`/`inverted`; shape 2 renders the knob. Keep this key set + order in lockstep
+    # with fixtures/REUBEN_REF.tosc (FixtureMatchTest asserts it).
+    return "".join([
+        _pb("background", True), _pb("centered", False), _pc("color", 1, 0, 0, 1),
+        _pf("cornerRadius", 1), _pr("frame", x, y, w, h), _pb("grabFocus", True), _pb("grid", True),
+        _pc("gridColor", 0, 0, 0, 0.25), _pi("gridSteps", 13), _pb("interactive", True),
+        _pb("inverted", False), _pb("locked", False), _ps("name", name), _pi("orientation", 0),
+        _pb("outline", True), _pi("outlineStyle", 1), _pi("pointerPriority", 0), _pi("response", 0),
+        _pi("responseFactor", 100), _pi("shape", 2), _pb("visible", True),
+    ])
+
+
 def _button_props(name, frame) -> str:
     x, y, w, h = frame
     # buttonType 2 = Toggle Press (from the reference export).
@@ -394,16 +415,25 @@ def _node(cid: str, ctype: str, props: str, values: str = "", messages: str = ""
 
 
 def layout_rows(controls: list, cols: int) -> list:
-    """Pack controls into rows of varying width. A run of consecutive `param-toggle` controls
-    sharing one node (a sequencer lane) becomes its own full-width row, wrapping at STEP_COLS;
-    everything else flows into uniform rows of `cols`. Declaration order is preserved, so a lane's
-    16 steps line up as one row and the misc controls (tempo, volumes, tone) grid up below."""
+    """Pack controls into rows of varying width, preserving declaration order. Three cases:
+      - a run of consecutive `param-toggle` controls sharing one node (a sequencer lane) becomes
+        its own row, wrapping at STEP_COLS;
+      - a run of consecutive controls sharing a `group` hint becomes its own row (e.g. a drum
+        channel's knobs), wrapping at STEP_COLS — this is how a caller lays one logical group per
+        row regardless of the default column count;
+      - everything else flows into uniform rows of `cols`.
+    So a lane's 16 steps line up as one row, each `group` gets its own row, and the misc controls
+    (tempo, volumes, tone) grid up in between."""
     rows, grid = [], []
 
     def flush_grid():
         for k in range(0, len(grid), cols):
             rows.append(grid[k:k + cols])
         grid.clear()
+
+    def emit_run(run):
+        for k in range(0, len(run), STEP_COLS):
+            rows.append(run[k:k + STEP_COLS])
 
     i, n = 0, len(controls)
     while i < n:
@@ -413,9 +443,14 @@ def layout_rows(controls: list, cols: int) -> list:
             node, j = c["node"], i
             while j < n and controls[j]["kind"] == "param-toggle" and controls[j]["node"] == node:
                 j += 1
-            lane = controls[i:j]
-            for k in range(0, len(lane), STEP_COLS):
-                rows.append(lane[k:k + STEP_COLS])
+            emit_run(controls[i:j])
+            i = j
+        elif c.get("group") is not None:
+            flush_grid()
+            grp, j = c["group"], i
+            while j < n and controls[j].get("group") == grp and controls[j]["kind"] != "param-toggle":
+                j += 1
+            emit_run(controls[i:j])
             i = j
         else:
             grid.append(c)
@@ -446,8 +481,13 @@ def _widget_node(name: str, c: dict, wframe) -> tuple:
     rng = f"{c['min']:g}–{c['max']:g}{(' ' + c['unit']) if c['unit'] else ''}"
     span = c["max"] - c["min"]
     default_x = 0.0 if span == 0 else max(0.0, min(1.0, (c["default"] - c["min"]) / span))
-    return f"{c['label']} ({rng})", _node(_id(name, c["osc_addr"], "widget"), "FADER",
-                                          _fader_props(c["label"], wframe),
+    # `radial` renders the same value as a rotary knob; everything else (default, OSC scaling) is
+    # identical to a fader, so only the node type + property block differ.
+    if c.get("widget") == "radial":
+        ctype, props = "RADIAL", _radial_props(c["label"], wframe)
+    else:
+        ctype, props = "FADER", _fader_props(c["label"], wframe)
+    return f"{c['label']} ({rng})", _node(_id(name, c["osc_addr"], "widget"), ctype, props,
                                           values=_value("x", _num(default_x)) + _value("touch", "false"),
                                           messages=_osc_fader(c["osc_addr"], c["min"], c["max"]))
 
@@ -467,7 +507,16 @@ def build_tosc(instrument: dict, controls: list, cols: int) -> bytes:
         for col, c in enumerate(row):
             x = PAD + col * (cell_w + PAD)
             lframe = (int(x), int(y), int(cell_w), LABEL_H)
-            wframe = (int(x), int(y + LABEL_H), int(cell_w), int(cell_h - LABEL_H))
+            wx, wy, ww, wh = x, y + LABEL_H, cell_w, cell_h - LABEL_H
+            if c.get("widget") == "radial":
+                # A RADIAL renders a circle sized to its frame's bounding box — give it the full
+                # (wide, short) fader cell and the knob overflows into the neighbouring rows. Box it
+                # into the largest centred square that fits the cell so each knob stays put.
+                side = min(ww, wh)
+                wx += (ww - side) / 2
+                wy += (wh - side) / 2
+                ww = wh = side
+            wframe = (int(wx), int(wy), int(ww), int(wh))
             caption, widget = _widget_node(name, c, wframe)
             # A label above the widget so the surface reads its name (text lives in <values>).
             lvals = _value("text", caption, locked_default_current=1) + _value("touch", "false")
