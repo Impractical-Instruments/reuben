@@ -83,6 +83,27 @@ CI stays `contents: read`).
   `iai-callgrind-runner`, and benches only `reuben-core` (no ALSA/native).
 - `check`'s clippy now also lints the bench code (`--all-targets`).
 
+### Persisted trend on an orphan branch
+
+The gate compares HEAD to its parent and discards the numbers — they survive only in the job's step
+summary, which ages out, so there was no way to see a trend across commits without log archaeology.
+Layer 1 of the trend plan persists them: [`perf-gate.sh`](../../.github/scripts/perf-gate.sh)
+harvests HEAD's absolute `Ir` per benched case (parsed from the human-readable iai output, which —
+unlike `--save-summary` JSON — still carries a value for cases that breached the gate), and a
+dedicated `bench-history` CI job appends it to the **`bench-history` orphan branch** as JSONL. The
+whole series is then one command away:
+
+```sh
+git show bench-history:bench-history.jsonl
+```
+
+That job is the **only** `contents: write` grant in CI — the gate itself stays `contents: read`. The
+branch is orphaned (not `main`) so `main`'s tree never churns and recording never re-triggers CI. It
+runs on direct pushes to `main` only, even when the gate redded (the `Ir` is still valid history),
+and no-ops when the harness didn't compile against its baseline — an honest gap, not a fabricated
+point. Harvesting is best-effort and never affects the gate verdict. (Visualization — a dashboard
+over this JSONL — is a deferred layer 2; the data now exists to build it.)
+
 ## Deferred
 
 - **Micro per-operator benches** — ✅ landed in #30. The crate-private access bridge is a

@@ -31,3 +31,15 @@ cargo bench -p reuben-core --bench macro_iai
 In CI the [`bench` job](../../../.github/workflows/ci.yml) compares the PR against its base
 ref via [`perf-gate.sh`](../../../.github/scripts/perf-gate.sh): **warn > 3%, fail > 10%** on
 `Ir` (instructions). See ADR-0019 for the why.
+
+## Trend history
+
+Every push to `main` also records each case's absolute `Ir` to the `bench-history` orphan branch
+(ADR-0019, layer 1). Read the whole cross-commit series with:
+
+```sh
+git show bench-history:bench-history.jsonl
+```
+
+Each line is `{sha, commit_sha, date, run_id, layer, case, ir}` — e.g. filter the macro `reverb`
+trend with `git show bench-history:bench-history.jsonl | jq -c 'select(.layer=="macro" and .case=="reverb")'`.
