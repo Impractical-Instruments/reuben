@@ -19,7 +19,7 @@ use reuben_core::AudioConfig;
 
 // ----------------------------------------------------------------------------------------------
 // Synthetic single-port operators. `add_boxed` takes the descriptor explicitly, so one no-op
-// `Probe` body backs every shape — the descriptor is what carries the declared form under test.
+// `Probe` body backs every form — the descriptor is what carries the declared form under test.
 // ----------------------------------------------------------------------------------------------
 
 struct Probe;

@@ -338,7 +338,7 @@ mod tests {
         rising as f32 / (buf.len() - 1) as f32
     }
 
-    /// (9) Enum delivery, end-to-end (ADR-0028). The default `waveform` is `Sine`; a live
+    /// (9) Enum delivery, end-to-end (ADR-0030). The default `waveform` is `Sine`; a live
     /// `/osc/waveform "Saw"` message (resolved by symbol through the engine's enum route + latch)
     /// switches the shape to a near-monotonic ramp, and the latch persists into the next block.
     #[test]

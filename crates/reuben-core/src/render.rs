@@ -4,14 +4,12 @@
 //! Messages are routed to its input ports by the port's [`PortKind`](crate::plan::PortKind):
 //! a **Value** control (scalar / enum / `Harmony`) drives **block-slicing** (the block is split
 //! at its change frames so [`Operator::process`] always sees a constant held value, read via
-//! `io.last`); an **Event** (`Note`) is delivered as a zero-copy [`Event`] on its port
-//! (read via `io.stream`); a **Signal** [`Buffer`] input fed by a scalar is **materialized** ZOH
-//! into its arena buffer (read via `io.signal`).
+//! `io.input::<T>`); an **Event** (`Note`) is delivered as a zero-copy [`Event`] on its port
+//! (read via `io.input::<Note>`); a **Signal** [`Buffer`] input fed by a scalar is **materialized** ZOH
+//! into its arena buffer (read via `io.input::<&[f32]>`).
 //!
-//! Each node is processed once for the block, slicing at its Held-input change frames so
-//! [`Operator::process`] always sees a constant held value. Polyphony is hosted inside the Voicer
-//! (N voice sub-plans summed), not fanned out across engine Lanes — the Lane model is gone
-//! (ADR-0032).
+//! Polyphony is hosted inside the Voicer (N voice sub-plans summed), not fanned out across the
+//! engine — the retired Lane model (ADR-0032).
 //!
 //! **Realtime-safe.** A [`Renderer`] preallocates its edge-buffer arena and every piece
 //! of per-block scratch at construction, and reuses them; steady-state [`Renderer::render_block`]
@@ -342,7 +340,7 @@ pub fn render_plan<E: Executor>(
         }
     }
 
-    // Sum master taps into the per-channel master (ADR-0026): every Lane of every tapped
+    // Sum master taps into the per-channel master (ADR-0026): every buffer of every tapped
     // port, in fixed order, so output stays deterministic (ADR-0001). A broadcast tap
     // (`channel: None`) adds to every channel — the historical mono fan, so channel 0 of a
     // fully-broadcast instrument is bit-identical to the pre-stereo single buffer. A
@@ -560,8 +558,8 @@ pub(crate) fn local_address<'a>(addr: &'a str, node_addr: &str) -> Option<&'a st
 }
 
 /// Process one node for the block: materialize scalar-fed Buffer inputs, block-slice at Held
-/// change frames, and within each segment run every Lane (Voice). Allocation-free in steady state:
-/// per-Lane buffer wiring uses stack SmallVecs, output buffers are swapped through the reusable
+/// change frames, and run the operator on each segment. Allocation-free in steady state:
+/// per-port buffer wiring uses stack SmallVecs, output buffers are swapped through the reusable
 /// `out_scratch`, and events are zero-copy.
 #[allow(clippy::too_many_arguments)]
 fn process_node(
@@ -621,7 +619,7 @@ fn process_node(
         target[cursor..block_size].fill(v);
         // Persist the end-of-block value as the next block's ZOH (ADR-0030): `latch` is the single
         // source of truth — the materialized buffer is the sample-accurate path, the latch the
-        // `io.last` read. A Buffer port carries no meaningful `io.last`, so the write is ignored there.
+        // `io.input::<T>` read. A Buffer port carries no meaningful held value, so the write is ignored there.
         node.latch[port] = Arg::F32(v);
         node.varying[port] = true;
         node.materialize_clean[k] = false;
@@ -657,7 +655,7 @@ fn process_node(
         }
 
         // Apply Held changes landing at this segment's start: update the per-port latch, read via
-        // `io.last` (ADR-0030). Persists across blocks (the latch is next block's frame-0 baseline).
+        // `io.input::<T>` (ADR-0030). Persists across blocks (the latch is next block's frame-0 baseline).
         // Last-write-wins on equal frames.
         for (f, port, arg) in route.held.iter() {
             if *f == seg_start {

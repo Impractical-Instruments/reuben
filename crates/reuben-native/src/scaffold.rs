@@ -208,10 +208,10 @@ fn render_operator(spec: &OperatorSpec) -> String {
     out.push_str(&render_contract_call(spec));
     out.push('\n');
 
-    // State struct — empty by default; Stage B adds per-Lane fields (reset in `spawn`).
+    // State struct — empty by default; Stage B adds per-voice state fields (reset in `spawn`).
     out.push_str("#[derive(Default)]\n");
     out.push_str(&format!(
-        "pub struct {st} {{\n    // TODO Stage B: add per-Lane state fields here (reset on `spawn`).\n}}\n\n"
+        "pub struct {st} {{\n    // TODO Stage B: add per-voice state fields here (reset on `spawn`).\n}}\n\n"
     ));
     out.push_str(&format!(
         "impl {st} {{\n    pub fn new() -> Self {{\n        Self::default()\n    }}\n}}\n\n"

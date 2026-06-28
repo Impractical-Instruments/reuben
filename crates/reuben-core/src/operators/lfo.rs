@@ -6,14 +6,14 @@
 //! block-slices and never drifts (phase held in f64 like the Clock). Designed to drive
 //! another operator's Signal input — e.g. an oscillator's `freq` — for a vibrato/siren drone.
 //!
-//! - input 0: `rate` (`Float`, Hz) — modulation frequency, read block-rate via `io.last`.
-//! - input 1: `depth` (`Float`) — modulation amplitude (added to / subtracted from `center`).
-//! - input 2: `center` (`Float`) — bias / offset the modulation swings around.
-//! - output 0: `out` (`Buffer`) — `center + depth * sin(2π·phase)`.
+//! `rate`/`depth`/`center` are Value inputs (ADR-0031): read held (block-sliced at changes), so a
+//! `/lfo/rate` change takes effect at the exact sample of the change and the phase stays continuous
+//! across the cut.
 //!
-//! `rate`/`depth`/`center` are `Float` inputs (ADR-0030): read block-rate (held ZOH via
-//! `io.last`), so a `/lfo/rate` change takes effect at the exact sample of the change (the engine
-//! block-slices) and the phase stays continuous across the cut.
+//! - input 0: `rate` (Hz) — modulation frequency.
+//! - input 1: `depth` — modulation amplitude (added to / subtracted from `center`).
+//! - input 2: `center` — bias / offset the modulation swings around.
+//! - output 0: `out` (`Buffer`) — `center + depth * sin(2π·phase)`.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -85,7 +85,7 @@ mod tests {
 
     /// Drive `lfo` for `n` frames at the given params through the real engine, returning the out
     /// buffer. `rate`/`depth`/`center` are held `Float` controls — set once (sticky), read via
-    /// `io.last`; `out` is the operator's Buffer output, accumulated across the real 128-frame blocks.
+    /// `io.input::<f32>`; `out` is the operator's Buffer output, accumulated across the real 128-frame blocks.
     fn run(n: usize, rate: f32, depth: f32, center: f32) -> Vec<f32> {
         OpDriver::for_type(Lfo::new(), SR)
             .set(IN_RATE, rate)

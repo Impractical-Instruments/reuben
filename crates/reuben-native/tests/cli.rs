@@ -164,7 +164,7 @@ fn describe_one_operator_surfaces_its_ports_and_params() {
         .outputs
         .iter()
         .any(|p| p.name == "audio" && p.kind == "signal"));
-    // `waveform` is an Enum input now (ADR-0028) — surfaced among `enums`, not numeric `params`.
+    // `waveform` is an Enum input now (ADR-0030) — surfaced among `enums`, not numeric `params`.
     let waveform = osc
         .enums
         .iter()

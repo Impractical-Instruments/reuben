@@ -174,8 +174,8 @@ fn from_graph_round_trips_resource_ids() {
 
 #[test]
 fn plays_a_chord_polyphonically() {
-    // A C-major triad: three notes sounding at once exercises per-Voice fan-out and the
-    // Lane-summing master tap. A single note uses one Voice; the triad uses three, so it
+    // A C-major triad: three notes sounding at once exercises per-voice fan-out and the
+    // summing master tap. A single note uses one voice; the triad uses three, so it
     // carries clearly more energy, and it must stay deterministic.
     let cfg = AudioConfig::new(48_000.0, 256);
     let chord = [60.0, 64.0, 67.0];

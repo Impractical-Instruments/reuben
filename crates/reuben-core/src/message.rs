@@ -65,10 +65,9 @@ impl<T> Signal<T> {
 /// - **OSC primitives** — [`F32`](Arg::F32) / [`I32`](Arg::I32) / [`Str`](Arg::Str);
 /// - **shared *vocab* concrete types** — defined once and reused everywhere (a `FilterMode`
 ///   duplicated per-operator would be the smell), which is what lets a *closed* enum
-///   enumerate them. [`Note`](Arg::Note) and [`Harmony`](Arg::Harmony) are here today; phase 2
-///   adds the `vocab` module + `ArgValue` derive that folds in the operator enums
-///   (`FilterMode`, `Waveform`, `SnapMode`, `MapCurve`, `M2sMode`, …), each generating its own
-///   OSC conversion + metadata;
+///   enumerate them. The [`vocab`](crate::vocab) module's `#[derive(ArgValue)]` folds each in
+///   ([`Note`](Arg::Note), [`Harmony`](Arg::Harmony), `FilterMode`, `Waveform`, `MapCurve`,
+///   `M2sMode`, …), generating its OSC conversion + metadata;
 /// - the optimized dense payload — [`Buffer`](Arg::F32Buffer), a [`Signal`]'s samples.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Arg {
@@ -130,7 +129,7 @@ impl From<i32> for Arg {
 // `#[derive(ArgValue)]` on each vocab type (ADR-0030); they are not written here.
 
 /// Decode a borrowed [`Arg`] into an operator's requested payload type — the read side of the
-/// typed I/O API (`io.stream::<T>` / `io.last::<T>`, ADR-0030). One trait spans every payload an
+/// typed I/O API (`io.input::<T>`, ADR-0030). One trait spans every payload an
 /// operator reads: the OSC primitives (`f32`/`i32`/`&str`), the dense [`Buffer`](Arg::F32Buffer) as a
 /// borrowed `&[f32]`, and the shared *vocab* concrete types (whose impl `#[derive(ArgValue)]`
 /// generates, delegating to their `TryFrom<&Arg>`).

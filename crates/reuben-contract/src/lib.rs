@@ -245,8 +245,8 @@ fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractErr
 }
 
 /// Reject a malformed contract before any code is generated. A bad spec would otherwise emit
-/// source that fails to compile (duplicate consts, dangling lane param) far from its cause. This
-/// is the **one** validator: the macro runs it at expansion time (turning each error into a
+/// source that fails to compile (duplicate consts, dangling constant param) far from its cause.
+/// This is the **one** validator: the macro runs it at expansion time (turning each error into a
 /// spanned `compile_error!`), the scaffold runs it before writing a file.
 pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
     let name = &spec.type_name;

@@ -11,9 +11,6 @@
 //! - inputs: none.
 //! - output 0: `out` (`Buffer`) — uniform white noise in ~[-1, 1], roughly zero-mean.
 //! - params: none.
-//!
-//! No inputs, no params, so no reads to migrate (ADR-0030); the sweep renames the output to
-//! `buffer` and the write to `io.signal_mut`.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};

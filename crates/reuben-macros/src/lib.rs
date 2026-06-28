@@ -67,7 +67,7 @@ fn expand(input: TokenStream) -> TokenStream {
 
 // --- Parsed AST (spans retained so validation errors point at the offending token) ---
 
-/// The `f32 { LO..=HI, default D, "unit", curve }` block (ADR-0028). `unit`/`curve` are
+/// The `f32 { LO..=HI, default D, "unit", curve }` block (ADR-0030). `unit`/`curve` are
 /// optional; an omitted curve defaults to `linear`.
 struct F32MetaAst {
     min: f32,

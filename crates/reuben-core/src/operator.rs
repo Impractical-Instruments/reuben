@@ -1,7 +1,7 @@
 //! Operator — the authoring contract (ADR-0010, ADR-0030).
 //!
-//! An Operator is single-Lane: the author writes one mono, single-Voice stream a
-//! (sub)block at a time, and the engine fans it out across Lanes with per-Lane state.
+//! An Operator is mono and single-voice: the author writes one stream a (sub)block at a time;
+//! polyphony comes from the Voicer hosting voice sub-patches (ADR-0032), not from the operator.
 //! The process function is allocation-free and sees held values constant for the whole call
 //! (the engine block-slices at Message boundaries, ADR-0011), so the author simply reads "my
 //! current value".
@@ -35,7 +35,7 @@ pub struct Stamped<T> {
     pub payload: T,
 }
 
-/// The per-call I/O view handed to [`Operator::process`] for one (sub)block of one Lane.
+/// The per-call I/O view handed to [`Operator::process`] for one (sub)block.
 ///
 /// All dense slices are exactly [`Io::frames`] samples long; held values are constant for the
 /// call. The port reference lists are collected into inline [`SmallVec`]s, so building an `Io`
@@ -235,7 +235,7 @@ impl<'a> IoOutput<'a> for crate::vocab::pitch::Note {
 /// now — a fresh handle starts with no prior value, so the first `set` of a block always emits; the
 /// cross-block held-latch baseline rides in with the operator sweep (ADR-0031 step 5).
 pub struct MsgWriter<'io> {
-    /// The node's emit sink, or `None` on a Lane that does not collect (every Lane but 0).
+    /// The node's emit sink, or `None` when no sink is attached.
     sink: Option<&'io mut Vec<Emit>>,
     port: usize,
     frame_offset: usize,
@@ -273,7 +273,7 @@ impl MsgWriter<'_> {
 /// survive and a re-press of the same note is a real second event. Addressless (internal wires route
 /// by connection); lowers to today's `Emit → Event`. Replaces the old `emit` verb for events.
 pub struct EventWriter<'io> {
-    /// The node's emit sink, or `None` on a Lane that does not collect (every Lane but 0).
+    /// The node's emit sink, or `None` when no sink is attached.
     sink: Option<&'io mut Vec<Emit>>,
     port: usize,
     frame_offset: usize,
@@ -371,7 +371,7 @@ impl<'a> IoInput<'a> for crate::vocab::pitch::Note {
     }
 }
 
-/// A unit of behavior. Authored single-Lane; replicated across Lanes by the engine.
+/// A unit of behavior. Authored mono and single-voice; polyphony is hosted by the Voicer (ADR-0032).
 pub trait Operator: Send {
     /// Static self-description (ports + param metadata). Drives serialization,
     /// connection checking, good-button controls, and AI grounding.
@@ -379,17 +379,17 @@ pub trait Operator: Send {
     where
         Self: Sized;
 
-    /// Process exactly one (sub)block for one Lane. Must not allocate.
+    /// Process exactly one (sub)block. Must not allocate.
     fn process(&mut self, io: &mut Io);
 
-    /// Make a fresh-state instance of the same operator type, for the engine to use as
-    /// another Voice's Lane. Params are applied by the engine separately, so this only
-    /// needs to reset per-Lane state (typically `Box::new(Self::new())`). An operator that
-    /// holds a resource binding (see [`Operator::bind_resources`]) must carry it forward
-    /// here while resetting playback state, so every Voice shares the decoded data.
+    /// Make a fresh-state copy of the same operator type. Params are applied by the engine
+    /// separately, so this only needs to reset per-instance state (typically
+    /// `Box::new(Self::new())`). An operator that holds a resource binding (see
+    /// [`Operator::bind_resources`]) must carry it forward here while resetting playback state,
+    /// so every copy shares the decoded data.
     fn spawn(&self) -> Box<dyn Operator>;
 
-    /// Receive decoded resources after construction, before Plan fan-out (ADR-0016). The
+    /// Receive decoded resources after construction, before instantiate (ADR-0016). The
     /// loader calls this on every node that declares a resource slot in its descriptor,
     /// handing the shared [`ResourceStore`] (clone the `Arc` to hold it) and the node's
     /// [`ResolvedRefs`] (resolved handles by slot name). Default no-op — the two-phase

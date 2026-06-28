@@ -3,8 +3,8 @@
 //! Every built-in operator's `descriptor()` output is serialised to a canonical, human-readable
 //! form and pinned in `tests/golden/descriptors.txt`. The snapshot was taken **before** any
 //! operator moved to the macro; migrating an operator must leave its descriptor byte-identical, so
-//! this test is what proves the macro reproduces — exactly — what was hand-written (per-kind
-//! ordinals, param order, curves, units, Lane rule). It is the test that can't lie.
+//! this test proves the macro reproduces — exactly — what was hand-written (port ordinals, param
+//! order, curves, units). It is the test that can't lie.
 //!
 //! To intentionally re-bless after a deliberate descriptor change: `REUBEN_BLESS=1 cargo test -p
 //! reuben-core --test descriptor_golden`.

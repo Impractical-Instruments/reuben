@@ -7,7 +7,7 @@
 //! position); groove, swing, and meter are separate concerns (ADR-0006).
 //!
 //! - input 0: `sync` (`Note` event) — a trigger port (ADR-0030): **any** event re-zeroes the
-//!   phase at its (sample-accurate) frame, locating position 1. Read via `io.stream` — the port,
+//!   phase at its (sample-accurate) frame, locating position 1. Read via `io.input::<Note>` — the port,
 //!   not the address, identifies it, so there is no address-filtering.
 //! - output 0: `phase` (`Buffer`) — beat phasor, a [0, 1) sawtooth that wraps once per beat.
 //!   **Unaffected by `division`** — it is always the once-per-beat phasor.
@@ -16,12 +16,11 @@
 //!   original once-per-beat gate, high for the first half of the beat. At `division` N the gate
 //!   pulses N times per beat — a 16th-note grid is `division` 4 (ADR-0022, the thin slice of
 //!   ADR-0006's deferred subdivision).
-//! - input 1: `tempo` (`Float`, BPM) — read block-rate via `io.last`.
-//! - input 2: `division` (`Float`) — gate subdivisions per beat (1 = once per beat, default;
-//!   4 = 16ths), read block-rate via `io.last`.
+//! - input 1: `tempo` (BPM).
+//! - input 2: `division` — gate subdivisions per beat (1 = once per beat, default; 4 = 16ths).
 //!
-//! `tempo`/`division` are `Float` inputs: read block-rate (held), so a change block-slices and
-//! takes effect at the exact sample of the change — and each can now be *wired* and modulated.
+//! `tempo`/`division` are Value inputs: read held, so a change block-slices and takes effect at the
+//! exact sample of the change — and each can be *wired* and modulated.
 
 use smallvec::SmallVec;
 

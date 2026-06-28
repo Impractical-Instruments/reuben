@@ -1,5 +1,5 @@
 //! Integration: the groovebox beatmaker (V1.3 Toy 1, ADR-0022/0032) loads through the full
-//! resource pipeline — three lane Voicers each host a drum-synth voice patch — and self-plays a
+//! resource pipeline — three track Voicers each host a drum-synth voice patch — and self-plays a
 //! non-silent beat with no external input.
 //!
 //! (Supersedes the old `groovebox_snare_gate.rs` probes, which tapped the now-removed `voicer.gate`
@@ -27,7 +27,7 @@ impl ResourceResolver for InstrumentsDir {
 
 #[test]
 fn groovebox_self_plays_a_non_silent_beat() {
-    // The clock-driven rig needs no external notes: the three step sequencers fire their lane
+    // The clock-driven rig needs no external notes: the three step sequencers fire their track
     // Voicers, each hosting a drum-synth voice. Render ~2 s (default 120 BPM, several bars) and
     // listen for sound.
     let graph = load_instrument(GROOVEBOX, &Registry::builtin(), &InstrumentsDir)

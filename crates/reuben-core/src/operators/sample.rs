@@ -4,29 +4,28 @@
 //! load time and bound through [`Operator::bind_resources`], read on the RT path through the
 //! pure `(id, channel, frame)` accessor (bank-streaming-safe; see [`crate::resources`]).
 //!
-//! It slots into the **same seam as the oscillator** (ADR-0010): downstream of a Voicer,
-//! reading the Voicer's per-Voice `freq`/`gate` Signals. Polyphony and steal-oldest come for
-//! free from the Voicer's Lane fan-out.
+//! It slots into the **same seam as the oscillator**: it lives inside a voice sub-patch, reading
+//! the voice's `freq`/`gate` Signals. Polyphony and steal-oldest come for free from the Voicer
+//! hosting one sub-patch per voice (ADR-0032).
 //!
-//! Port types (ADR-0030): `freq`/`gate` are `Buffer` wire-ins (read per sample via `io.signal`);
-//! the former params `root`/`gain`/`start`/`channel` are `Float` inputs, each owning its unwired
-//! default so `/sample/root 60` needs no upstream node — read once per block as the held (ZOH)
-//! value via `io.last(port)`.
+//! All inputs are Value ports (ADR-0031), each owning its unwired default so `/sample/root 60` needs
+//! no upstream node; each is read held (the engine block-slices at changes), with `gate` edge-detected
+//! at the change frame.
 //!
-//! - input 0: `freq` (`Buffer`) — pitch in Hz; the playback rate is `freq / hz(root)` times
-//!   the file/engine sample-rate ratio. A non-positive `freq` (an unwired buffer reads 0)
-//!   → plays at `root` pitch, preserving the old "freq unconnected → root" semantics.
-//! - input 1: `gate` (`Buffer`) — a **rising edge** fires the sample from `start`; one-shot
-//!   plays to the buffer end ignoring release; each rising edge retriggers.
-//! - input 2: `root` (`Float`, MIDI) — the pitch at which the sample plays at its natural rate.
-//! - input 3: `gain` (`Float`, linear) — output scale.
-//! - input 4: `start` (`Float`, normalized 0..1) — playback start offset into the buffer.
-//! - input 5: `channel` (`Float`) — `-1` downmixes (averages) all channels; `≥0` picks that
-//!   channel. A continuous/structural selector (rounded in `process`), not an `Enum`.
+//! - input 0: `freq` — pitch in Hz; the playback rate is `freq / hz(root)` times the file/engine
+//!   sample-rate ratio. A non-positive `freq` (the unwired default 0) → plays at `root` pitch,
+//!   preserving the old "freq unconnected → root" semantics.
+//! - input 1: `gate` — a **rising edge** fires the sample from `start`; one-shot plays to the buffer
+//!   end ignoring release; each rising edge retriggers.
+//! - input 2: `root` (MIDI) — the pitch at which the sample plays at its natural rate.
+//! - input 3: `gain` (linear) — output scale.
+//! - input 4: `start` (normalized 0..1) — playback start offset into the buffer.
+//! - input 5: `channel` — `-1` downmixes (averages) all channels; `≥0` picks that channel. A
+//!   continuous/structural selector (rounded in `process`), not an `Enum`.
 //! - output 0: `audio` (`Buffer`).
 //!
 //! Pitch (the per-hit rate) is **latched at the trigger frame** and fixed for that hit; live
-//! pitch-tracking is a deferred param. The fractional playhead is a per-Lane `f64` cursor,
+//! pitch-tracking is a deferred param. The fractional playhead is a per-voice `f64` cursor,
 //! persistent across blocks (like the oscillator's phase) and reset by [`Operator::spawn`].
 
 use std::sync::Arc;
@@ -54,7 +53,7 @@ pub struct SamplePlayer {
     store: Option<Arc<ResourceStore>>,
     /// Resolved handle into `store`. `None` until bound.
     sample: Option<SampleId>,
-    /// Fractional playhead, in source frames. Per-Lane; persists across blocks.
+    /// Fractional playhead, in source frames. Per-voice; persists across blocks.
     playhead: f64,
     /// Frames advanced per output sample, latched at the trigger (pitch × SR fold).
     rate: f64,
@@ -83,7 +82,7 @@ impl Operator for SamplePlayer {
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
         let engine_sr = io.sample_rate();
-        // Block-rate controls: read once at the top (ADR-0030 `Float` inputs, held via `io.last`).
+        // Block-rate controls: read once at the top (ADR-0030 `Float` inputs, held via `io.input::<f32>`).
         let root_hz = Self::midi_hz(io.input::<f32>(IN_ROOT).unwrap_or(60.0));
         let gain = io.input::<f32>(IN_GAIN).unwrap_or(1.0);
         let start_norm = io.input::<f32>(IN_START).unwrap_or(0.0).clamp(0.0, 1.0);
@@ -155,8 +154,8 @@ impl Operator for SamplePlayer {
     }
 
     fn spawn(&self) -> Box<dyn Operator> {
-        // Carry the shared resource binding forward; reset per-Lane playback state so each
-        // Voice triggers independently (ADR-0016).
+        // Carry the shared resource binding forward; reset per-voice playback state so each
+        // voice triggers independently (ADR-0016).
         Box::new(Self {
             store: self.store.clone(),
             sample: self.sample,
@@ -226,9 +225,9 @@ mod tests {
         d
     }
 
-    /// Drive `n` frames; `params` = [root, gain, start, channel] — held `Float` controls (`set`,
-    /// read via `io.last`). `gate` is a `Buffer` input (`drive`n); `freq` a `Buffer` wire-in (`None`
-    /// mimics an unwired buffer, which reads 0 → play at root).
+    /// Drive `n` frames; `params` = [root, gain, start, channel] — held controls (`set`). `gate` and
+    /// `freq` are held Values fed as edges/changes via `push_gate`/`push_freq` (`None` freq leaves it
+    /// at the unwired default 0 → play at root).
     fn run(
         d: &mut OpDriver,
         n: usize,

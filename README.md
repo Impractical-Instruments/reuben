@@ -23,9 +23,9 @@ franca**, in and out.
 
 ## Prebuilt binaries
 
-Building from source (below) is the primary path — trivial with Rust installed. As a
-convenience, each tagged release also ships a prebuilt `reuben` binary for Linux and
-Windows on the [Releases page](https://github.com/Impractical-Instruments/reuben/releases):
+Building from source (below) is the primary path. Each tagged release also ships a prebuilt
+`reuben` binary for Linux and Windows on the
+[Releases page](https://github.com/Impractical-Instruments/reuben/releases):
 
 - Download the archive for your platform (`…-x86_64-unknown-linux-gnu.tar.gz` /
   `…-x86_64-pc-windows-msvc.zip`) and extract it. Each archive bundles the `reuben` binary
@@ -83,9 +83,8 @@ cargo run -p reuben-native --bin reuben -- play instruments/<name>.json
 | `strum-harp`  | needs OSC         | The Strum harp Toy (ADR-0022): drag-to-strum. Stream `/strum/position [0..1]` and the `strum` op plucks a note each time the bar crosses a string boundary. Strings are scale degrees through the tonal context, so it stays in key. `/strum/octaves` sets the span; `/harmony/root` the key. |
 | `stereo-autopan` | needs OSC notes | Stereo demo (ADR-0026): an 8-voice synth swept across the stereo field by an LFO driving a `pan` op, whose `left`/`right` feed the two master channels directly (no `output` node). Tweak `/autopan/{rate,depth}`, `/filter/cutoff`. |
 
-`metronome`, `vibrato`, `sequence`, `scale-demo`, `sampler-arp`, `groovebox`, and `djfilter-demo`
-make sound immediately — good for a first run with no OSC sender. Every node's inputs are live over OSC at
-its address (e.g. `/delay/time`).
+The rows marked **yes** make sound immediately — good for a first run with no OSC sender. Every
+node's inputs are live over OSC at its address (e.g. `/delay/time`).
 
 See **[docs/v1.2-playable-surface-testing.md](docs/v1.2-playable-surface-testing.md)** for a
 step-by-step OSC walkthrough of the V1.2 control surface (Good Buttons, the math operators,

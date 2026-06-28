@@ -70,7 +70,7 @@ fn expand_struct(ast: &DeriveInput) -> TokenStream {
 }
 
 /// A unit-enum vocab type (`SnapTarget`, `GateMode`): `Arg` integration plus the
-/// Enum-over-OSC table (symbol primary, index fallback — ADR-0028's binding, now derive-generated).
+/// Enum-over-OSC table (symbol primary, index fallback — ADR-0030's binding, derive-generated).
 fn expand_enum(ast: &DeriveInput, data: &syn::DataEnum) -> TokenStream {
     let name = &ast.ident;
 
@@ -156,7 +156,7 @@ fn expand_enum(ast: &DeriveInput, data: &syn::DataEnum) -> TokenStream {
                 }
             }
 
-            /// Resolve an [`Arg`](::reuben_core::message::Arg) to this enum (ADR-0028 binding):
+            /// Resolve an [`Arg`](::reuben_core::message::Arg) to this enum (ADR-0030 binding):
             /// the concrete variant first, then a **symbol** (`Str`), then an **index** fallback
             /// (`I32`/`F32`, in range). Allocation-free — the boundary/latch path.
             pub fn resolve_arg(arg: &::reuben_core::message::Arg) -> ::core::option::Option<Self> {

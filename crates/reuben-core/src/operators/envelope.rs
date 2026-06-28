@@ -7,17 +7,15 @@
 //! exponential-style amplitude decay) and into a `mul` against the audio. Keeping the EG linear
 //! makes it the flexible primitive — linear *or* any curve is a choice of downstream op.
 //!
-//! Port types (ADR-0030): the ADSR times (`attack`, `decay`, `sustain`, `release`) are
-//! **`Float` inputs**, each owning its unwired default — read once per block as the held (ZOH)
-//! value via `io.last` (the ADSR shape is block-rate, exactly as the old params were). `gate` is a
-//! `Buffer` wire-in, read per sample via `io.signal` (an unwired gate reads empty → 0). There are
-//! no params left.
+//! All inputs are Value ports (ADR-0031), each owning its unwired default and read held (the engine
+//! block-slices at each change). `gate` is edge-detected at the slice's frame 0 (the change frame),
+//! so the A/R trigger stays sample-accurate; an unwired gate reads 0.
 //!
-//! - input 0: `gate` (`Buffer`) — > 0.5 means held; the rising/falling edge triggers A/R.
-//! - input 1: `attack` (`Float`) — attack time in seconds.
-//! - input 2: `decay` (`Float`) — decay time in seconds.
-//! - input 3: `sustain` (`Float`) — sustain level 0..1.
-//! - input 4: `release` (`Float`) — release time in seconds.
+//! - input 0: `gate` — > 0.5 means held; the rising/falling edge triggers A/R.
+//! - input 1: `attack` — attack time in seconds.
+//! - input 2: `decay` — decay time in seconds.
+//! - input 3: `sustain` — sustain level 0..1.
+//! - input 4: `release` — release time in seconds.
 //! - output 0: `cv` (`Buffer`) — the ADSR level contour, linear `[0, 1]`.
 //! - output 1: `active` (`Float`) — a held gate: `1.0` from the note-on through the whole release
 //!   tail, `0.0` once the level reaches zero and the envelope is fully idle. This is the canonical
@@ -100,7 +98,7 @@ impl Operator for Envelope {
         let sample_rate = io.sample_rate();
 
         // ADSR times are `Float` inputs, read once at block rate as the held (ZOH) value via
-        // `io.last` — the shape is block-rate, exactly as the old params were (ADR-0030).
+        // `io.input::<f32>` — the shape is block-rate, exactly as the old params were (ADR-0030).
         let sustain = io.input::<f32>(IN_SUSTAIN).unwrap_or(0.7).clamp(0.0, 1.0);
         let attack_step = per_sample_step(io.input::<f32>(IN_ATTACK).unwrap_or(0.01), sample_rate);
         let decay_step = per_sample_step(io.input::<f32>(IN_DECAY).unwrap_or(0.1), sample_rate)
@@ -189,10 +187,9 @@ mod tests {
     const SR: f32 = 48_000.0;
 
     /// Drive `d`'s Envelope over `gate.len()` frames through the real engine, returning the emitted
-    /// CV contour (the level per sample). The ADSR times are held `Float` controls (`set`,
-    /// ZOH-read via `io.last`); `gate` is a time-varying `Buffer` input (`drive`d block by block, so
-    /// attack/decay/release thread continuously across the real 128-frame blocks). `adsr` is
-    /// `[attack, decay, sustain, release]`, in input-port order.
+    /// CV contour (the level per sample). The ADSR times are held controls (`set`); `gate` is a held
+    /// Value fed as edges via `push_gate`, so attack/decay/release thread continuously across the
+    /// real 128-frame blocks. `adsr` is `[attack, decay, sustain, release]`, in input-port order.
     fn run(d: &mut OpDriver, gate: &[f32], adsr: &[f32]) -> Vec<f32> {
         d.set(IN_ATTACK, adsr[0])
             .set(IN_DECAY, adsr[1])

@@ -111,8 +111,8 @@ impl Operator for Filter {
         let sample_rate = io.sample_rate();
         let mode = io.input::<FilterMode>(IN_MODE).unwrap_or_default();
 
-        // `cutoff`/`resonance` are `Float` inputs — always a buffer (wired source or materialized
-        // latch), one read path (ADR-0028). When neither changed this block (`varying` false,
+        // `cutoff`/`resonance` are Signal inputs — always a buffer (wired source or materialized
+        // default), one read path (ADR-0031). When neither changed this block (`varying` false,
         // both held), compute coefficients once — the old fast path, and `Lp` via `svf_step` is
         // bit-identical to the prior param-only filter.
         if !io.varying(IN_CUTOFF) && !io.varying(IN_RESONANCE) {
@@ -283,7 +283,7 @@ mod tests {
     #[test]
     fn constant_cutoff_buffer_matches_held_default() {
         // A constant cutoff buffer must produce exactly the same output as the same value held as
-        // the input's materialized default — there is one read path now (ADR-0028), so a flat
+        // the input's materialized default — there is one read path now (ADR-0031), so a flat
         // wired control equals the held latch.
         let sr = 48_000.0;
         let n = 4096;

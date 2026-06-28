@@ -95,10 +95,10 @@ impl OpDriver {
         }
     }
 
-    /// Set a held control (read via `io.last`) — scalar, enum, or `Harmony` — **or** a constant
+    /// Set a held control (read via `io.input::<T>`) — scalar, enum, or `Harmony` — **or** a constant
     /// audio-in (the materialized buffer ZOH-fills from it). Sticky across blocks (the latch
     /// persists), so call it once. For a numeric value on a materialized port, seeds the
-    /// materialize fill too, so `io.signal` and `io.last` agree.
+    /// materialize fill too, so `io.input::<&[f32]>` and `io.input::<f32>` agree.
     pub fn set(&mut self, port: usize, value: impl Into<Arg>) -> &mut Self {
         let node = &mut self.plan.nodes[0];
         // Force the materialized scratch to refill from the new latch on the next block.
@@ -111,7 +111,7 @@ impl OpDriver {
 
     /// Queue a transient event (a `Note`) on a Stream input at a **global** frame. Delivered via the
     /// real message router (built into a `"<addr>/<port>"` Message), so it lands as a zero-copy
-    /// `io.stream` event in the block that contains `frame`.
+    /// `io.input::<Note>` event in the block that contains `frame`.
     pub fn push(&mut self, port: usize, frame: usize, payload: impl Into<Arg>) -> &mut Self {
         self.pushes.push((frame, port, payload.into()));
         self
@@ -183,7 +183,7 @@ impl OpDriver {
 
             self.renderer.step_node(&mut self.plan, 0, frames, &msgs);
 
-            // Capture this block's output buffers (lane 0) and emissions.
+            // Capture this block's output buffers and emissions.
             for (ord, bufs) in self.plan.nodes[0].outputs.iter().enumerate() {
                 let src = self.renderer.arena_buffer(bufs[0]);
                 self.outputs[ord][start..start + frames].copy_from_slice(&src[..frames]);
@@ -219,7 +219,7 @@ impl OpDriver {
     }
 
     /// A driver over a fresh [`Operator::spawn`] of this one: carries resource bindings forward (the
-    /// op's spawn clones them) while resetting per-Lane playback state. Configure it independently.
+    /// op's spawn clones them) while resetting playback state. Configure it independently.
     pub fn spawn(&self) -> OpDriver {
         let op = self.plan.nodes[0].ops[0].spawn();
         let mut d = OpDriver::from_boxed(op, self.descriptor.clone(), self.sample_rate);
@@ -320,7 +320,7 @@ mod tests {
     /// Block-boundary zero-order-hold on a materialized `Float` port (ADR-0030). A held value that
     /// changes mid-block must (a) write sample-accurately from its frame within that block, and
     /// (b) carry its end-of-block value into the *next* block's materialize fill **and** into the
-    /// `io.last` read — the single-source-of-truth contract the former `input_latches` f32 shadow
+    /// `io.input::<T>` read — the single-source-of-truth contract the former `input_latches` f32 shadow
     /// hand-synced against `latch`. Pinned so a future re-split of the two lanes is caught loudly.
     #[test]
     fn materialized_float_zoh_holds_across_the_block_boundary() {
@@ -359,11 +359,11 @@ mod tests {
             signal[BLOCK_SIZE..].iter().all(|&s| s == 7.0),
             "next block holds the carried value"
         );
-        // ...and `io.last` (the `latch`) reflects the same end-of-block value: one source, no drift.
+        // ...and `io.input::<T>` (the `latch`) reflects the same end-of-block value: one source, no drift.
         assert_eq!(
             d.plan.nodes[0].latch[port_a].as_f32(),
             Some(7.0),
-            "io.last reads the carried ZOH value"
+            "io.input::<f32> reads the carried ZOH value"
         );
     }
 
