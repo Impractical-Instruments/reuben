@@ -1,0 +1,380 @@
+{
+  "doc": "A self-playing 4-channel Euclidean rhythm machine (kick, snare, tom, hat). One shared clock (division=4 -> a 16th-note grid) drives four `euclid` generators; each spreads its `pulses` hits evenly across `steps` (with `rotation` to shift the phase) and emits a gate that fires that channel's drum voice. Every voice is synthesized from operators (no samples), gated straight off the euclid gate like the metronome -- kick = sine body + decaying pitch-drop, snare = noise + tonal ring, tom = a boomier higher kick, hat = highpassed noise tick. Per channel you get: Euclidean controls (steps/pulses/rotation), a DECAY knob (the amp envelope's decay -- on kick/tom it stretches both the tail and the pitch sweep), a bipolar DJ FILTER knob (-1 lowpass down .. 0 open .. +1 highpass up), and a LEVEL knob. The four channels sum through a master trim to the output. Ride tempo via /clock/tempo; reshape patterns via /<chan>_eu/pulses, /<chan>_eu/steps, /<chan>_eu/rotation; sweep tone via /<chan>_filter/in [-1..1]; set loudness via /<chan>_level/in [0..1]; set tail via /<chan>_env/decay.",
+  "instrument": "euclidean-drums",
+  "nodes": [
+    {
+      "address": "/clock",
+      "control": { "label": "Tempo", "param": "tempo" },
+      "doc": "Shared timing. division=4 -> the gate pulses 4x per beat (a 16th-note grid) that clocks every euclid.",
+      "inputs": { "tempo": 120.0, "division": 4.0 },
+      "type": "clock"
+    },
+
+    {
+      "address": "/kick_eu",
+      "control": [
+        { "label": "Kick Pulses", "param": "pulses" },
+        { "label": "Kick Steps", "param": "steps" },
+        { "label": "Kick Rotation", "param": "rotation" }
+      ],
+      "doc": "Kick Euclidean generator. E(16,4,0) = four-on-the-floor (a pulse every 4 steps).",
+      "inputs": { "clock": { "from": "/clock.gate" }, "steps": 16.0, "pulses": 4.0, "rotation": 0.0 },
+      "type": "euclid"
+    },
+    {
+      "address": "/kick_env",
+      "control": { "label": "Kick Decay", "param": "decay" },
+      "doc": "Kick amp+pitch envelope, gated by the euclid pulse. `decay` is the DECAY control: longer = boomier tail AND longer pitch drop.",
+      "inputs": { "gate": { "from": "/kick_eu.gate" }, "attack": 0.001, "decay": 0.1, "sustain": 0.0, "release": 0.08 },
+      "type": "envelope"
+    },
+    {
+      "address": "/kick_sweep_amt",
+      "doc": "Constant pitch-sweep amount (Hz).",
+      "inputs": { "in": 220.0 },
+      "type": "m2s"
+    },
+    {
+      "address": "/kick_penv",
+      "doc": "Sweep amount * envelope CV -> the decaying pitch drop.",
+      "inputs": { "a": { "from": "/kick_sweep_amt" }, "b": { "from": "/kick_env.cv" } },
+      "type": "mul_f32_signal"
+    },
+    {
+      "address": "/kick_base",
+      "doc": "Constant kick base frequency (Hz).",
+      "inputs": { "in": 48.0 },
+      "type": "m2s"
+    },
+    {
+      "address": "/kick_freq",
+      "doc": "kick freq = base + decaying sweep.",
+      "inputs": { "a": { "from": "/kick_base" }, "b": { "from": "/kick_penv" } },
+      "type": "add_f32_signal"
+    },
+    {
+      "address": "/kick_osc",
+      "doc": "Sine body, frequency driven by the pitch-drop.",
+      "inputs": { "freq": { "from": "/kick_freq" }, "waveform": "Sine" },
+      "type": "oscillator"
+    },
+    {
+      "address": "/kick_curve",
+      "doc": "Exponential-style volume curve (x^2) on the amp CV.",
+      "inputs": { "x": { "from": "/kick_env.cv" } },
+      "type": "power_f32_signal"
+    },
+    {
+      "address": "/kick_vca",
+      "doc": "VCA: kick body * shaped amp CV.",
+      "inputs": { "a": { "from": "/kick_osc" }, "b": { "from": "/kick_curve" } },
+      "type": "mul_f32_signal"
+    },
+    {
+      "address": "/kick_filter",
+      "control": { "label": "Kick DJ Filter", "param": "in", "min": -1.0, "max": 1.0, "default": 0.0 },
+      "doc": "Kick DJ-filter position knob [-1..1], smoothed (zipper-free).",
+      "inputs": { "in": 0.0, "mode": "Smooth", "time": 0.1 },
+      "type": "m2s"
+    },
+    {
+      "address": "/kick_dj",
+      "doc": "Per-channel DJ filter on the kick. position driven by the smoothed knob.",
+      "inputs": { "audio": { "from": "/kick_vca" }, "position": { "from": "/kick_filter" }, "resonance": 0.25 },
+      "type": "djfilter"
+    },
+    {
+      "address": "/kick_level",
+      "control": { "label": "Kick Level", "param": "in", "min": 0.0, "max": 1.0, "default": 0.85 },
+      "doc": "Kick LEVEL knob [0..1], smoothed into a CV.",
+      "inputs": { "in": 0.85, "mode": "Smooth", "time": 0.02 },
+      "type": "m2s"
+    },
+    {
+      "address": "/kick_amp",
+      "doc": "kick audio * level CV.",
+      "inputs": { "a": { "from": "/kick_dj" }, "b": { "from": "/kick_level" } },
+      "type": "mul_f32_signal"
+    },
+
+    {
+      "address": "/snare_eu",
+      "control": [
+        { "label": "Snare Pulses", "param": "pulses" },
+        { "label": "Snare Steps", "param": "steps" },
+        { "label": "Snare Rotation", "param": "rotation" }
+      ],
+      "doc": "Snare Euclidean generator. E(16,2,4) = the backbeat (steps 5 and 13).",
+      "inputs": { "clock": { "from": "/clock.gate" }, "steps": 16.0, "pulses": 2.0, "rotation": 4.0 },
+      "type": "euclid"
+    },
+    {
+      "address": "/snare_env",
+      "control": { "label": "Snare Decay", "param": "decay" },
+      "doc": "Snare amp envelope, gated by the euclid pulse. `decay` is the DECAY control (snap length).",
+      "inputs": { "gate": { "from": "/snare_eu.gate" }, "attack": 0.001, "decay": 0.08, "sustain": 0.0, "release": 0.06 },
+      "type": "envelope"
+    },
+    {
+      "address": "/snare_curve",
+      "doc": "Exponential-style volume curve (x^2) on the amp CV.",
+      "inputs": { "x": { "from": "/snare_env.cv" } },
+      "type": "power_f32_signal"
+    },
+    {
+      "address": "/snare_noise",
+      "doc": "Snare noise body.",
+      "type": "noise"
+    },
+    {
+      "address": "/snare_noise_vca",
+      "doc": "VCA: noise * shaped amp CV.",
+      "inputs": { "a": { "from": "/snare_noise" }, "b": { "from": "/snare_curve" } },
+      "type": "mul_f32_signal"
+    },
+    {
+      "address": "/snare_tone_f",
+      "doc": "Constant tonal frequency (Hz) for the snare's ring.",
+      "inputs": { "in": 185.0 },
+      "type": "m2s"
+    },
+    {
+      "address": "/snare_osc",
+      "doc": "Tonal component (sine) under the noise.",
+      "inputs": { "freq": { "from": "/snare_tone_f" }, "waveform": "Sine" },
+      "type": "oscillator"
+    },
+    {
+      "address": "/snare_tone_vca",
+      "doc": "VCA: tone * shaped amp CV.",
+      "inputs": { "a": { "from": "/snare_osc" }, "b": { "from": "/snare_curve" } },
+      "type": "mul_f32_signal"
+    },
+    {
+      "address": "/snare_mix",
+      "doc": "snare = noise body + tonal ring.",
+      "inputs": { "a": { "from": "/snare_noise_vca" }, "b": { "from": "/snare_tone_vca" } },
+      "type": "add_f32_signal"
+    },
+    {
+      "address": "/snare_filter",
+      "control": { "label": "Snare DJ Filter", "param": "in", "min": -1.0, "max": 1.0, "default": 0.0 },
+      "doc": "Snare DJ-filter position knob [-1..1], smoothed.",
+      "inputs": { "in": 0.0, "mode": "Smooth", "time": 0.1 },
+      "type": "m2s"
+    },
+    {
+      "address": "/snare_dj",
+      "doc": "Per-channel DJ filter on the snare.",
+      "inputs": { "audio": { "from": "/snare_mix" }, "position": { "from": "/snare_filter" }, "resonance": 0.25 },
+      "type": "djfilter"
+    },
+    {
+      "address": "/snare_level",
+      "control": { "label": "Snare Level", "param": "in", "min": 0.0, "max": 1.0, "default": 0.6 },
+      "doc": "Snare LEVEL knob [0..1], smoothed into a CV.",
+      "inputs": { "in": 0.6, "mode": "Smooth", "time": 0.02 },
+      "type": "m2s"
+    },
+    {
+      "address": "/snare_amp",
+      "doc": "snare audio * level CV.",
+      "inputs": { "a": { "from": "/snare_dj" }, "b": { "from": "/snare_level" } },
+      "type": "mul_f32_signal"
+    },
+
+    {
+      "address": "/tom_eu",
+      "control": [
+        { "label": "Tom Pulses", "param": "pulses" },
+        { "label": "Tom Steps", "param": "steps" },
+        { "label": "Tom Rotation", "param": "rotation" }
+      ],
+      "doc": "Tom Euclidean generator. E(16,3,2) = three hits spread across the bar, shifted for a fill feel.",
+      "inputs": { "clock": { "from": "/clock.gate" }, "steps": 16.0, "pulses": 3.0, "rotation": 2.0 },
+      "type": "euclid"
+    },
+    {
+      "address": "/tom_env",
+      "control": { "label": "Tom Decay", "param": "decay" },
+      "doc": "Tom amp+pitch envelope, gated by the euclid pulse. `decay` is the DECAY control: longer = boomier tail AND longer pitch drop.",
+      "inputs": { "gate": { "from": "/tom_eu.gate" }, "attack": 0.001, "decay": 0.18, "sustain": 0.0, "release": 0.12 },
+      "type": "envelope"
+    },
+    {
+      "address": "/tom_sweep_amt",
+      "doc": "Constant pitch-sweep amount (Hz) -- gentler than the kick.",
+      "inputs": { "in": 120.0 },
+      "type": "m2s"
+    },
+    {
+      "address": "/tom_penv",
+      "doc": "Sweep amount * envelope CV -> the tom's decaying pitch drop.",
+      "inputs": { "a": { "from": "/tom_sweep_amt" }, "b": { "from": "/tom_env.cv" } },
+      "type": "mul_f32_signal"
+    },
+    {
+      "address": "/tom_base",
+      "doc": "Constant tom base frequency (Hz) -- higher than the kick.",
+      "inputs": { "in": 130.0 },
+      "type": "m2s"
+    },
+    {
+      "address": "/tom_freq",
+      "doc": "tom freq = base + decaying sweep.",
+      "inputs": { "a": { "from": "/tom_base" }, "b": { "from": "/tom_penv" } },
+      "type": "add_f32_signal"
+    },
+    {
+      "address": "/tom_osc",
+      "doc": "Sine body, frequency driven by the pitch-drop.",
+      "inputs": { "freq": { "from": "/tom_freq" }, "waveform": "Sine" },
+      "type": "oscillator"
+    },
+    {
+      "address": "/tom_curve",
+      "doc": "Exponential-style volume curve (x^2) on the amp CV.",
+      "inputs": { "x": { "from": "/tom_env.cv" } },
+      "type": "power_f32_signal"
+    },
+    {
+      "address": "/tom_vca",
+      "doc": "VCA: tom body * shaped amp CV.",
+      "inputs": { "a": { "from": "/tom_osc" }, "b": { "from": "/tom_curve" } },
+      "type": "mul_f32_signal"
+    },
+    {
+      "address": "/tom_filter",
+      "control": { "label": "Tom DJ Filter", "param": "in", "min": -1.0, "max": 1.0, "default": 0.0 },
+      "doc": "Tom DJ-filter position knob [-1..1], smoothed.",
+      "inputs": { "in": 0.0, "mode": "Smooth", "time": 0.1 },
+      "type": "m2s"
+    },
+    {
+      "address": "/tom_dj",
+      "doc": "Per-channel DJ filter on the tom.",
+      "inputs": { "audio": { "from": "/tom_vca" }, "position": { "from": "/tom_filter" }, "resonance": 0.25 },
+      "type": "djfilter"
+    },
+    {
+      "address": "/tom_level",
+      "control": { "label": "Tom Level", "param": "in", "min": 0.0, "max": 1.0, "default": 0.6 },
+      "doc": "Tom LEVEL knob [0..1], smoothed into a CV.",
+      "inputs": { "in": 0.6, "mode": "Smooth", "time": 0.02 },
+      "type": "m2s"
+    },
+    {
+      "address": "/tom_amp",
+      "doc": "tom audio * level CV.",
+      "inputs": { "a": { "from": "/tom_dj" }, "b": { "from": "/tom_level" } },
+      "type": "mul_f32_signal"
+    },
+
+    {
+      "address": "/hat_eu",
+      "control": [
+        { "label": "Hat Pulses", "param": "pulses" },
+        { "label": "Hat Steps", "param": "steps" },
+        { "label": "Hat Rotation", "param": "rotation" }
+      ],
+      "doc": "Hat Euclidean generator. E(16,8,0) = straight offbeat 8ths (every other step).",
+      "inputs": { "clock": { "from": "/clock.gate" }, "steps": 16.0, "pulses": 8.0, "rotation": 0.0 },
+      "type": "euclid"
+    },
+    {
+      "address": "/hat_noise",
+      "doc": "Hat noise source.",
+      "type": "noise"
+    },
+    {
+      "address": "/hat_hp",
+      "doc": "Highpass to thin the noise into a metallic hat.",
+      "inputs": { "audio": { "from": "/hat_noise" }, "cutoff": 7000.0, "mode": "Hp", "resonance": 0.1 },
+      "type": "filter"
+    },
+    {
+      "address": "/hat_env",
+      "control": { "label": "Hat Decay", "param": "decay" },
+      "doc": "Very short hat amp envelope, gated by the euclid pulse. `decay` is the DECAY control: short tick .. open hat.",
+      "inputs": { "gate": { "from": "/hat_eu.gate" }, "attack": 0.001, "decay": 0.04, "sustain": 0.0, "release": 0.03 },
+      "type": "envelope"
+    },
+    {
+      "address": "/hat_curve",
+      "doc": "Exponential-style volume curve (x^2) on the hat CV.",
+      "inputs": { "x": { "from": "/hat_env.cv" } },
+      "type": "power_f32_signal"
+    },
+    {
+      "address": "/hat_vca",
+      "doc": "VCA: hat noise * shaped amp CV.",
+      "inputs": { "a": { "from": "/hat_hp" }, "b": { "from": "/hat_curve" } },
+      "type": "mul_f32_signal"
+    },
+    {
+      "address": "/hat_filter",
+      "control": { "label": "Hat DJ Filter", "param": "in", "min": -1.0, "max": 1.0, "default": 0.0 },
+      "doc": "Hat DJ-filter position knob [-1..1], smoothed.",
+      "inputs": { "in": 0.0, "mode": "Smooth", "time": 0.1 },
+      "type": "m2s"
+    },
+    {
+      "address": "/hat_dj",
+      "doc": "Per-channel DJ filter on the hat.",
+      "inputs": { "audio": { "from": "/hat_vca" }, "position": { "from": "/hat_filter" }, "resonance": 0.25 },
+      "type": "djfilter"
+    },
+    {
+      "address": "/hat_level",
+      "control": { "label": "Hat Level", "param": "in", "min": 0.0, "max": 1.0, "default": 0.5 },
+      "doc": "Hat LEVEL knob [0..1], smoothed into a CV.",
+      "inputs": { "in": 0.5, "mode": "Smooth", "time": 0.02 },
+      "type": "m2s"
+    },
+    {
+      "address": "/hat_amp",
+      "doc": "hat audio * level CV.",
+      "inputs": { "a": { "from": "/hat_dj" }, "b": { "from": "/hat_level" } },
+      "type": "mul_f32_signal"
+    },
+
+    {
+      "address": "/mix_a",
+      "doc": "kick + snare.",
+      "inputs": { "a": { "from": "/kick_amp" }, "b": { "from": "/snare_amp" } },
+      "type": "add_f32_signal"
+    },
+    {
+      "address": "/mix_b",
+      "doc": "tom + hat.",
+      "inputs": { "a": { "from": "/tom_amp" }, "b": { "from": "/hat_amp" } },
+      "type": "add_f32_signal"
+    },
+    {
+      "address": "/mix",
+      "doc": "(kick+snare) + (tom+hat) -> full kit mix.",
+      "inputs": { "a": { "from": "/mix_a" }, "b": { "from": "/mix_b" } },
+      "type": "add_f32_signal"
+    },
+    {
+      "address": "/trim_cv",
+      "doc": "Constant master trim (headroom so overlapping hits don't clip).",
+      "inputs": { "in": 0.7 },
+      "type": "m2s"
+    },
+    {
+      "address": "/trim",
+      "doc": "master audio * trim CV -> headroom.",
+      "inputs": { "a": { "from": "/mix" }, "b": { "from": "/trim_cv" } },
+      "type": "mul_f32_signal"
+    },
+    {
+      "address": "/out",
+      "inputs": { "audio": { "from": "/trim" } },
+      "type": "output"
+    }
+  ],
+  "outputs": [
+    { "node": "/out", "port": "audio" }
+  ]
+}
