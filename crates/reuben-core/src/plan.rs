@@ -163,6 +163,27 @@ pub struct OutboundTap {
     pub address: String,
 }
 
+/// One resolved `interface` **output** (ADR-0032 §4): a voice patch's named boundary output, so a
+/// host (`Voicer`) reads it by name + kind exactly as an operator reads a port — a Signal output
+/// from its arena buffer, a Value output from a captured scalar. Resolved at instantiate from
+/// [`Graph::interface`](crate::graph::Graph::interface); empty for a plan with no `interface`.
+pub struct InterfaceOutput {
+    /// External boundary name (e.g. `audio`, `active`).
+    pub name: String,
+    /// Producing node's index in execution order.
+    pub node: usize,
+    /// Producing output port (all-outputs index).
+    pub port: usize,
+    /// The port's form: `Signal` (read via `signal_buf`) or `Value` (read via `captured_slot`).
+    /// `Event` interface outputs are not supported (nothing consumes them).
+    pub kind: PortKind,
+    /// `Some(arena buffer index)` for a Signal output — the host reads the rendered buffer there.
+    pub signal_buf: Option<usize>,
+    /// `Some(index into [`Plan::captured`])` for a Value output — `render_plan` writes the port's
+    /// last-emitted scalar there each block (held ZOH across blocks).
+    pub captured_slot: Option<usize>,
+}
+
 /// One master tap: a tapped port's per-Lane arena buffers, summed into the master output.
 pub struct OutputTap {
     /// Logical master channel this tap feeds (ADR-0026), or `None` to broadcast to every
@@ -187,6 +208,13 @@ pub struct Plan {
     pub output_taps: Vec<OutputTap>,
     /// Outbound (OSC-out) sinks, drained past the boundary each block (ADR-0026, ADR-0030).
     pub outbound_taps: Vec<OutboundTap>,
+    /// Resolved `interface` outputs (ADR-0032 §4), for a host operator to read this plan's boundary
+    /// outputs by name + kind. Empty unless the document declared an `interface`.
+    pub interface_outputs: Vec<InterfaceOutput>,
+    /// One slot per Value `interface` output (parallel to the `captured_slot` indices in
+    /// `interface_outputs`): the port's last-emitted scalar, held ZOH across blocks (seeded `0.0`).
+    /// `render_plan` updates it when the port emits; the host reads it post-render.
+    pub captured: Vec<f32>,
 }
 
 /// Why Instantiate failed.
@@ -420,6 +448,36 @@ impl Plan {
             })
             .collect();
 
+        // Resolve the `interface` outputs (ADR-0032 §4) so a host reads this plan's boundary by name
+        // + kind: a Signal output from its arena buffer, a Value output from a captured scalar slot.
+        // `graph.interface` survives the `graph.nodes.remove` drain above (separate field).
+        let mut captured_len = 0usize;
+        let interface_outputs: Vec<InterfaceOutput> = graph
+            .interface
+            .outputs
+            .iter()
+            .map(|(name, &(key, port))| {
+                let node = index_of[key];
+                let is_signal =
+                    matches!(nodes[node].descriptor.outputs[port].ty, PortType::F32Buffer);
+                let (kind, signal_buf, captured_slot) = if is_signal {
+                    (PortKind::Signal, Some(out_buffers[key][port][0]), None)
+                } else {
+                    let slot = captured_len;
+                    captured_len += 1;
+                    (PortKind::Value, None, Some(slot))
+                };
+                InterfaceOutput {
+                    name: name.clone(),
+                    node,
+                    port,
+                    kind,
+                    signal_buf,
+                    captured_slot,
+                }
+            })
+            .collect();
+
         Ok(Plan {
             config,
             nodes,
@@ -427,7 +485,28 @@ impl Plan {
             materialize_scratch_mask,
             output_taps,
             outbound_taps,
+            interface_outputs,
+            captured: vec![0.0; captured_len],
         })
+    }
+
+    /// The arena buffer index of a Signal `interface` output (ADR-0032 §4), or `None` if there is no
+    /// such named output or it is not a Signal. A host reads the rendered buffer at this index.
+    pub fn interface_signal_buf(&self, name: &str) -> Option<usize> {
+        self.interface_outputs
+            .iter()
+            .find(|o| o.name == name)
+            .and_then(|o| o.signal_buf)
+    }
+
+    /// The [`captured`](Plan::captured) slot index of a Value `interface` output (ADR-0032 §4), or
+    /// `None` if there is no such named output or it is not a Value. A host reads `captured[slot]`
+    /// post-render for the port's held value.
+    pub fn interface_value_slot(&self, name: &str) -> Option<usize> {
+        self.interface_outputs
+            .iter()
+            .find(|o| o.name == name)
+            .and_then(|o| o.captured_slot)
     }
 }
 

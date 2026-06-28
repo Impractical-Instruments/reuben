@@ -25,7 +25,7 @@ use smallvec::SmallVec;
 use crate::descriptor::{Port, PortType};
 use crate::message::{Arg, Emit, Event, Message};
 use crate::operator::Io;
-use crate::plan::{Plan, PlanNode, PortKind};
+use crate::plan::{InterfaceOutput, Plan, PlanNode, PortKind};
 
 /// Decides the order in which nodes are processed for a block.
 ///
@@ -218,6 +218,14 @@ impl<E: Executor> Renderer<E> {
 /// with the rig's arena; a hosting operator (`Voicer`, ADR-0032) calls the *same* function per
 /// active voice with that voice's own arena, reusing one shared `RenderScratch`. Allocation-free in
 /// steady state when `scratch` was [`RenderScratch::new`]-sized to `plan`.
+/// The [`Plan::captured`] slot a Value `interface` output `(node, port)` writes to, or `None` if the
+/// emitting port is not a captured Value boundary output. Linear scan over the (tiny) interface list.
+fn capture_slot(outs: &[InterfaceOutput], node: usize, port: usize) -> Option<usize> {
+    outs.iter()
+        .find(|o| o.node == node && o.port == port)
+        .and_then(|o| o.captured_slot)
+}
+
 #[allow(clippy::too_many_arguments)]
 pub fn render_plan<E: Executor>(
     plan: &mut Plan,
@@ -301,6 +309,14 @@ pub fn render_plan<E: Executor>(
         for e in emit_scratch.drain(..) {
             let port = e.port;
             let pool_idx = emitted.len();
+            // Capture a Value `interface` output (ADR-0032 §4): its last-emitted scalar is held for
+            // the host to read post-render. The port may also be wired downstream — capture is
+            // additive (a tap), not a replacement for routing below.
+            if let Some(slot) = capture_slot(&plan.interface_outputs, i, port) {
+                if let Some(v) = e.arg.as_f32() {
+                    plan.captured[slot] = v;
+                }
+            }
             for &(dst, dst_port) in &plan.nodes[i].out_targets[port] {
                 match plan.nodes[dst].input_kinds[dst_port] {
                     PortKind::Signal => {

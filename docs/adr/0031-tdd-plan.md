@@ -44,7 +44,7 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | ADR-0032 follow-up (D, easy 6) — re-author FX-wrapper voicer instruments (session 10) | ✅ **done** (355/19) | `c678b60` |
 | ADR-0032 follow-up (D, hard 8) — sampler·sampler-arp·good-button·auto-filter·chord-player·djfilter-demo·groovebox·strum-harp | ✅ **done (session 11)** | — |
 | ADR-0032 follow-up — freq/gate-tap tests (tonal_context 3 + chord_player 4 rig) → probe-voice strategy | ✅ **done (session 11)** | — |
-| ADR-0032 follow-up (E) — `active`-based liveness/stealing; skip idle voices | ⬜ pending | — |
+| ADR-0032 follow-up (E) — `active`-based liveness/stealing; skip idle voices | ✅ **done (session 12)** | — |
 | ADR-0032 follow-up — `voice` resource round-trip through `from_graph` | ⬜ pending | — |
 | 6–8 (ADR-0031 tail: coercion msgs · boundary/addresses · docs) | ⬜ pending | — |
 
@@ -396,6 +396,43 @@ baselines.
 
 Remaining ADR-0032 deferred items (unchanged): `active`-based liveness/stealing (Fork E); `voice`
 resource round-trip through `from_graph`; the 6–8 ADR-0031 tail (coercion msgs · boundary/addresses · docs).
+
+### ✅ Session 12 (2026-06-27) — Fork E: `active`-based liveness + skip idle voices (grill); green, ready to commit
+
+Grilled Fork E; the central decision was **how to read a voice's `active` out of `render_plan`**.
+`active` is a Value/MsgWriter **output** with no downstream sink inside the voice patch, so nothing
+held it post-render. Ruled: **unify the voice-output boundary on `interface.outputs`, dispatched by
+port kind**, mirroring the operator `io.output::<T>` API (user steer) — *not* a third bespoke path
+beside the `master[0]` audio read. So:
+- **`Plan` resolution seam:** `Plan` grows `interface_outputs: Vec<InterfaceOutput>` (name, node, port,
+  kind, `signal_buf`/`captured_slot`) + `captured: Vec<f32>`, resolved at `instantiate` from
+  `graph.interface.outputs` (survives the `graph.nodes.remove` drain — separate field). A **Signal**
+  output → arena buffer index; a **Value** output → a `captured` slot. Helpers `interface_signal_buf`
+  / `interface_value_slot`. **No JSON re-authoring** — `output` already declares a passthrough `audio`
+  **F32Buffer output**, so every voice patch's `interface.outputs.audio` (`/out.audio`) already
+  resolved to a real Signal buffer; it was simply never *read* before (session 9 took the `master[0]`
+  shortcut). The audio interface read replaces that shortcut.
+- **`render_plan` capture:** during the existing emit-drain, a Value `interface` output's last-emitted
+  scalar is written into `plan.captured[slot]` (held ZOH across blocks — envelope `active` emits only
+  on transition, so the held value persists). Free fn `capture_slot`; no signature change (writes
+  through `&mut plan`); empty `interface_outputs` ⇒ no-op for the top-level rig.
+- **Voicer:** resolves `audio` buffer idx + `active` captured-slot once at `on_instantiate` (plans are
+  identical copies → stable indices). Per block: sums each rendered voice's audio from its **interface
+  arena buffer** (fallback `master[0]` if absent — e.g. driven bare); reads `active` captured → sets
+  `pool.voices[i].active`. Pool free predicate **`!on && !active`** (Q2) — a gate-off-but-tailing voice
+  is no longer stolen while a truly-idle one exists; steal stays oldest-by-age. **Skip-idle** (Q3):
+  a voice renders iff `on || active || touched_this_block`; idle voices are skipped (no sub-render).
+  Gated behind `active_cap.is_some()` — a patch without an `active` output (only `sampler-voice`) keeps
+  the pre-`active` gate-keyed, render-all behaviour, so no release-tail is ever cut.
+- **Tests:** 3 new `VoicePool` unit tests (tailing voice not stolen; steal-oldest when all sounding;
+  freed voice reused first) + `tests/voice_liveness.rs` (interface outputs resolve to a Signal buffer +
+  a captured Value; `active` captured high while gated, returns to 0 after the release tail, on shipped
+  `default-voice`). `cargo test --workspace` 377 pass / 0 fail; `cargo clippy --workspace --all-targets`
+  clean. RT-safe: no new hot-path allocs (`touched`/`msg_buf` preallocated; arena/captured reads only).
+
+Remaining ADR-0032 deferred items: `voice` resource round-trip through `from_graph`; the iai/criterion
+bench voicer-fixture degradation (loads via plain `load()`, unbound voices — pre-existing, out of gate
+scope); the 6–8 ADR-0031 tail (coercion msgs · boundary/addresses · docs).
 
 ### ▶ Pickup — ADR-0032 Voicer rewrite (the rest of the barrier). Forks RESOLVED above (session 9):
 

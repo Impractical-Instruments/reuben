@@ -68,6 +68,10 @@ struct Voice {
     pitch: Pitch,
     /// Whether the voice is currently holding a note (gate high).
     on: bool,
+    /// Whether the voice is still producing sound (ADR-0032 §5): `true` through the release tail,
+    /// `false` once fully idle. Fed back post-render from the voice's `active` interface output (or,
+    /// for a patch without one, falls back to `on`). Keeps a tailing voice out of the free pool.
+    active: bool,
     /// Assignment stamp; higher = more recently assigned (for steal-oldest).
     age: u64,
 }
@@ -78,15 +82,17 @@ impl Default for Voice {
         Self {
             pitch: Pitch::from_midi(69.0),
             on: false,
+            active: false,
             age: 0,
         }
     }
 }
 
-/// The fixed-size note-allocation pool (ADR-0032 §5, gate-keyed for now): assign prefers a free
-/// (gate-off) voice and otherwise steals the oldest; release clears the oldest voice holding the
-/// note. The musical brain, carried over from the Lane-fan-out Voicer but now indexable so the host
-/// can drive a sub-plan per voice.
+/// The fixed-size note-allocation pool (ADR-0032 §5): assign prefers a **truly free** voice
+/// (gate-off *and* its release tail finished — `!on && !active`) and otherwise steals the oldest;
+/// release clears the oldest voice holding the note. Keying free-ness on `active` (not just gate)
+/// stops a still-ringing voice being stolen while a silent one exists. The musical brain, carried
+/// over from the Lane-fan-out Voicer but now indexable so the host can drive a sub-plan per voice.
 #[derive(Default)]
 struct VoicePool {
     voices: Vec<Voice>,
@@ -105,18 +111,26 @@ impl VoicePool {
     /// Assign `pitch` to a voice — a free one (lowest index), else steal the oldest — and return its
     /// index.
     fn assign(&mut self, pitch: Pitch) -> usize {
-        let idx = self.voices.iter().position(|v| !v.on).unwrap_or_else(|| {
-            self.voices
-                .iter()
-                .enumerate()
-                .min_by_key(|(_, v)| v.age)
-                .map(|(i, _)| i)
-                .unwrap_or(0)
-        });
+        let idx = self
+            .voices
+            .iter()
+            .position(|v| !v.on && !v.active)
+            .unwrap_or_else(|| {
+                self.voices
+                    .iter()
+                    .enumerate()
+                    .min_by_key(|(_, v)| v.age)
+                    .map(|(i, _)| i)
+                    .unwrap_or(0)
+            });
         self.counter += 1;
+        // A freshly assigned voice is sounding immediately (gate rising this block); `active` is
+        // refreshed from its render below, but seed it `true` so a same-block second note doesn't
+        // treat it as free before its first render.
         self.voices[idx] = Voice {
             pitch,
             on: true,
+            active: true,
             age: self.counter,
         };
         idx
@@ -167,6 +181,16 @@ pub struct Voicer {
     changes: Vec<(usize, usize, f32, bool)>,
     /// Reusable note-event snapshot `(frame, on, pitch)`. Cleared per block.
     events: Vec<(usize, bool, Pitch)>,
+    /// Per-voice "got an event this block" flag (parallel to `pool.voices`), so a voice toggled
+    /// on→off within one block still renders its blip even though it ends idle. Cleared per block.
+    touched: Vec<bool>,
+    /// Arena buffer index of each voice plan's `audio` interface output (ADR-0032 §4), resolved
+    /// once (all voice plans are identical copies). `None` ⇒ no such output; fall back to `master[0]`.
+    audio_buf: Option<usize>,
+    /// [`Plan::captured`](crate::plan::Plan::captured) slot of each voice plan's `active` interface
+    /// output. `None` ⇒ the patch declares no `active`; liveness then falls back to gate (`on`), and
+    /// idle-voice skipping is disabled (we cannot know the release tail).
+    active_cap: Option<usize>,
     /// Resolved interface message addresses for the voice patch's `freq`/`gate` inputs
     /// (`/<node>/<port>`), empty if the patch declares no such interface input.
     freq_addr: String,
@@ -236,6 +260,10 @@ impl Operator for Voicer {
         self.msg_buf = Vec::with_capacity(slots.len() * 4);
         self.changes = Vec::with_capacity(slots.len() * 4);
         self.events = Vec::with_capacity(16);
+        self.touched = vec![false; slots.len()];
+        // All voice plans are copies of one patch — resolve the output boundary indices once.
+        self.audio_buf = slots[0].plan.interface_signal_buf("audio");
+        self.active_cap = slots[0].plan.interface_value_slot("active");
         self.pool = VoicePool::new(slots.len());
         self.slots = slots;
         Ok(())
@@ -266,6 +294,7 @@ impl Operator for Voicer {
         // Per-voice change-list: a frame-0 baseline (current held freq/gate, so a re-spell or a
         // cross-block hold lands) plus each allocation change at its event frame.
         self.changes.clear();
+        self.touched.iter_mut().for_each(|t| *t = false);
         for (i, v) in self.pool.voices.iter().enumerate() {
             self.changes.push((i, 0, harmony.hz(v.pitch), v.on));
         }
@@ -279,6 +308,7 @@ impl Operator for Voicer {
                     None => continue,
                 }
             };
+            self.touched[idx] = true;
             let v = self.pool.voices[idx];
             self.changes.push((idx, frame, harmony.hz(v.pitch), v.on));
         }
@@ -287,7 +317,7 @@ impl Operator for Voicer {
         let out = io.output::<&mut [f32]>(OUT_AUDIO);
         out[..n].iter_mut().for_each(|s| *s = 0.0);
         let Voicer {
-            pool: _,
+            pool,
             slots,
             scratch,
             master,
@@ -295,14 +325,25 @@ impl Operator for Voicer {
             executor,
             msg_buf,
             changes,
+            touched,
             freq_addr,
             gate_addr,
+            audio_buf,
+            active_cap,
             ..
         } = self;
         let Some(scratch) = scratch.as_mut() else {
             return;
         };
+        // Skip rendering a fully-idle voice (ADR-0032 §5): gate-off, release tail done, untouched
+        // this block. Only when `active` is observable — without it we can't know the tail, so we
+        // render every voice (today's behaviour) to avoid cutting a release.
+        let can_skip = active_cap.is_some();
         for (i, slot) in slots.iter_mut().enumerate() {
+            let v = pool.voices[i];
+            if can_skip && !v.on && !v.active && !touched[i] {
+                continue;
+            }
             let mut count = 0usize;
             for &(vi, frame, freq, gate) in changes.iter() {
                 if vi != i {
@@ -332,11 +373,23 @@ impl Operator for Voicer {
                 master,
                 outbound,
             );
-            if let Some(ch0) = master.first() {
+            // Read this voice's audio from its `audio` interface output buffer (ADR-0032 §4),
+            // falling back to the master tap for a patch without one (e.g. driven bare).
+            let audio = match *audio_buf {
+                Some(b) => slot.arena.get(b),
+                None => master.first(),
+            };
+            if let Some(ch0) = audio {
                 for (o, s) in out[..n].iter_mut().zip(ch0[..n].iter()) {
                     *o += *s;
                 }
             }
+            // Refresh liveness from the voice's `active` interface output (held Value, ADR-0032 §5);
+            // a patch without one keys liveness on the gate, the pre-`active` behaviour.
+            pool.voices[i].active = match *active_cap {
+                Some(c) => slot.plan.captured.get(c).copied().unwrap_or(0.0) > 0.5,
+                None => pool.voices[i].on,
+            };
         }
     }
 
@@ -388,6 +441,43 @@ mod tests {
         assert_eq!(idx, 0);
         assert!(same_note(p.voices[0].pitch, abs(67.0)));
         assert!(same_note(p.voices[1].pitch, abs(64.0)));
+    }
+
+    #[test]
+    fn assign_skips_a_tailing_voice_for_a_truly_free_one() {
+        // v0 played + released but still ringing (active true through its tail); v1 never played.
+        let mut p = VoicePool::new(2);
+        p.assign(abs(60.0));
+        p.release(abs(60.0)); // on=false, active stays true (tail not yet finished)
+        assert!(!p.voices[0].on && p.voices[0].active);
+        // A new note must take the free v1, not steal the ringing v0.
+        assert_eq!(p.assign(abs(67.0)), 1);
+        assert!(p.voices[0].active, "tailing voice left untouched");
+    }
+
+    #[test]
+    fn steals_oldest_when_every_voice_is_still_sounding() {
+        // Both voices released but still tailing (active) — no truly-free voice — so steal oldest.
+        let mut p = VoicePool::new(2);
+        p.assign(abs(60.0)); // age 1
+        p.assign(abs(64.0)); // age 2
+        p.release(abs(60.0));
+        p.release(abs(64.0));
+        assert!(p.voices.iter().all(|v| !v.on && v.active));
+        assert_eq!(p.assign(abs(67.0)), 0); // oldest
+    }
+
+    #[test]
+    fn an_idle_voice_clears_of_active_is_reused_first() {
+        // Once a voice's tail finishes (active cleared, mimicking the render feedback), it becomes
+        // free again and is preferred over a tailing one.
+        let mut p = VoicePool::new(2);
+        p.assign(abs(60.0)); // v0
+        p.assign(abs(64.0)); // v1
+        p.release(abs(60.0));
+        p.voices[0].active = false; // v0 tail finished
+                                    // v1 still held (on). v0 free. New note -> v0.
+        assert_eq!(p.assign(abs(67.0)), 0);
     }
 
     #[test]
