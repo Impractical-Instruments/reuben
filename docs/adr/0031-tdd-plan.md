@@ -45,7 +45,7 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | ADR-0032 follow-up (D, hard 8) — sampler·sampler-arp·good-button·auto-filter·chord-player·djfilter-demo·groovebox·strum-harp | ✅ **done (session 11)** | — |
 | ADR-0032 follow-up — freq/gate-tap tests (tonal_context 3 + chord_player 4 rig) → probe-voice strategy | ✅ **done (session 11)** | — |
 | ADR-0032 follow-up (E) — `active`-based liveness/stealing; skip idle voices | ✅ **done (session 12)** | — |
-| ADR-0032 follow-up — `voice` resource round-trip through `from_graph` | ⬜ pending | — |
+| ADR-0032 follow-up — `voice` (+`sample`) resource id round-trip through `from_graph` (session 13) | ✅ **done** | — |
 | 6–8 (ADR-0031 tail: coercion msgs · boundary/addresses · docs) | ⬜ pending | — |
 
 **Suite is green workspace-wide at `b4e558b`** (`cargo test --workspace`, clippy clean).
@@ -316,7 +316,7 @@ Built the whole barrier test-first; `cargo test --workspace` (350 pass) + `cargo
 3. **`active`-based liveness/stealing** (Fork E): interface-output Value-capture in `render_plan`;
    Voicer reads each voice's `active`, steals release-tail-aware. Plus skip idle voices (today renders
    all N).
-4. **`voice` resource round-trip** through `from_graph` (same gap as `sample`).
+4. ~~**`voice` resource round-trip** through `from_graph` (same gap as `sample`).~~ ✅ **DONE (session 13)** — id-only round-trip for both `sample` + `voice`.
 
 ### ✅ Session 11 (2026-06-27) — hard-8 forks resolved (grill); building serially this session
 
@@ -433,6 +433,23 @@ beside the `master[0]` audio read. So:
 Remaining ADR-0032 deferred items: `voice` resource round-trip through `from_graph`; the iai/criterion
 bench voicer-fixture degradation (loads via plain `load()`, unbound voices — pre-existing, out of gate
 scope); the 6–8 ADR-0031 tail (coercion msgs · boundary/addresses · docs).
+
+### ✅ Session 13 (2026-06-27) — resource id round-trip through `from_graph` (grill); green
+
+Closed the `from_graph` resource-ref gap (was deferred-as-acceptable in a code comment; plan listed it
+pending — grilled the contradiction, ruled **do it now, id only**). The built `Graph` dropped a node's
+logical `sample`/`voice` id (consumed into the ResourceStore / bound voices at load), so `from_graph`
+hardcoded `sample:None, voice:None` and save→reload lost the reference. Forks ruled: **id only** (decoded
+bytes still don't round-trip — reload re-resolves from the id); **both `sample` + `voice`** (same gap,
+zero marginal cost); **two explicit `Option<String>` on `Node`** (`sample_id`/`voice_id`, mirrors NodeDoc
+1:1, no generic slot map); **focused round-trip assert test** (no resolver/render). Shipped: `Node`
+gains `sample_id`/`voice_id`, stashed at `build()` right after `add_boxed`; `from_graph` emits them;
+`from_graph_round_trips_resource_ids` pins both; `save_then_reload` comment de-staled (still metronome —
+it pins render-identity, a separate concern). `cargo test --workspace` green, clippy clean.
+
+Remaining ADR-0032 deferred items: the iai/criterion bench voicer-fixture degradation (loads via plain
+`load()`, unbound voices — pre-existing, out of gate scope); the 6–8 ADR-0031 tail (coercion msgs ·
+boundary/addresses · docs).
 
 ### ▶ Pickup — ADR-0032 Voicer rewrite (the rest of the barrier). Forks RESOLVED above (session 9):
 

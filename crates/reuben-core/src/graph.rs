@@ -35,6 +35,15 @@ pub struct Node {
     /// seeding the input's enum latch at Instantiate. Empty unless an author overrides an enum's
     /// default. Sibling of `input_overrides`, for the discrete (non-numeric) settable surface.
     pub enum_overrides: Vec<(usize, usize)>,
+    /// The logical `sample` resource id (ADR-0016) this node referenced in its document, retained so
+    /// [`InstrumentDoc::from_graph`](crate::format::InstrumentDoc::from_graph) can round-trip it on
+    /// save. `None` unless the node declared a `sample` slot and named an id. The *decoded bytes* are
+    /// bound out-of-band and do not round-trip; only this id does.
+    pub sample_id: Option<String>,
+    /// The logical `voice` instrument-resource id (ADR-0032) this node referenced, retained for the
+    /// same save round-trip as [`sample_id`](Self::sample_id). `None` unless the node declared a
+    /// `voice` slot and named an id.
+    pub voice_id: Option<String>,
 }
 
 /// A directed connection from one node's output port to another's input port.
@@ -101,6 +110,8 @@ impl Graph {
             params,
             input_overrides: Vec::new(),
             enum_overrides: Vec::new(),
+            sample_id: None,
+            voice_id: None,
         })
     }
 

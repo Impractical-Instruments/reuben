@@ -486,6 +486,10 @@ impl InstrumentDoc {
                 });
             }
             let key = graph.add_boxed(&n.address, (entry.make)(), descriptor.clone());
+            // Retain the logical resource ids so `from_graph` round-trips the reference on save
+            // (the resolved bytes/sub-graphs are bound out-of-band and do not survive the build).
+            graph.nodes[key].sample_id = n.sample.clone();
+            graph.nodes[key].voice_id = n.voice.clone();
 
             // `config`: every name must be a declared Constant; apply it at the param slot the
             // lane rule reads (ADR-0028).
@@ -694,11 +698,11 @@ impl InstrumentDoc {
                     doc: None,
                     config,
                     inputs,
-                    // A built Graph does not retain the logical resource id (consumed into the
-                    // ResourceStore at load), so save does not round-trip a sample ref — acceptable
-                    // until the library thread lands (ADR-0016). Same for a `voice` instrument-ref.
-                    sample: None,
-                    voice: None,
+                    // Logical resource ids round-trip from the ids stashed at build (ADR-0016
+                    // `sample`, ADR-0032 `voice`). The decoded bytes/sub-graphs are bound
+                    // out-of-band and are *not* reconstructed here — reload re-resolves from the id.
+                    sample: node.sample_id.clone(),
+                    voice: node.voice_id.clone(),
                     // Control metadata (ADR-0018) lives on the document, not the built Graph, so the
                     // save-from-graph path does not reconstruct it; document-level round-trip
                     // (load → re-serialize) preserves it via serde.

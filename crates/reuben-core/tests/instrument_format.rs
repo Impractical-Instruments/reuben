@@ -9,6 +9,7 @@ use reuben_core::vocab::pitch::{Note, Pitch};
 use reuben_core::{load, load_instrument, AudioConfig, Graph, InstrumentDoc, Registry};
 
 const DEFAULT_JSON: &str = include_str!("../../../instruments/default.json");
+const SAMPLER_VOICE_JSON: &str = include_str!("../../../instruments/voices/sampler-voice.json");
 const METRONOME_JSON: &str = include_str!("../../../instruments/metronome.json");
 const SEQUENCE_JSON: &str = include_str!("../../../instruments/sequence.json");
 const GOOD_BUTTON_JSON: &str = include_str!("../../../instruments/good-button.json");
@@ -124,9 +125,10 @@ fn default_instrument_loads_and_makes_a_440hz_tone() {
 #[test]
 fn save_then_reload_renders_identically() {
     // load -> save (from_graph) -> reload must render bit-identical output. Uses the resource-free,
-    // self-playing metronome: `from_graph` does not round-trip external resource refs (a `sample` or
-    // an ADR-0032 `voice` id is consumed into the build), so a resource-bearing instrument would
-    // reload silent — that round-trip gap is tracked separately, not what this test pins.
+    // self-playing metronome so the reload needs no resolver: `from_graph` now round-trips a resource
+    // *id* (see `from_graph_round_trips_resource_ids`), but the decoded bytes do not — a
+    // resource-bearing instrument reloaded via plain `load` (no resolver) would render silent. This
+    // test pins render-identity, not the id round-trip.
     let cfg = AudioConfig::new(48_000.0, 256);
     let reg = Registry::builtin();
 
@@ -140,6 +142,34 @@ fn save_then_reload_renders_identically() {
     for (i, (x, y)) in a.iter().zip(&b).enumerate() {
         assert_eq!(x.to_bits(), y.to_bits(), "differ at sample {i}");
     }
+}
+
+#[test]
+fn from_graph_round_trips_resource_ids() {
+    // `from_graph` must re-emit a node's logical resource id — an ADR-0016 `sample` and an ADR-0032
+    // `voice` — so save -> reload preserves the reference. The id is stashed at build, independent of
+    // resource resolution (the decoded bytes still don't round-trip; only the id does, by design).
+    let reg = Registry::builtin();
+
+    // A `voice` instrument-resource ref (the voicer in default.json).
+    let g = load(DEFAULT_JSON, &reg).expect("load default");
+    let doc = InstrumentDoc::from_graph(&g, "default");
+    let voicer = doc
+        .nodes
+        .iter()
+        .find(|n| n.type_name == "voicer")
+        .expect("voicer node");
+    assert_eq!(voicer.voice.as_deref(), Some("default-voice"));
+
+    // A `sample` resource ref (the sample player in the sampler voice patch).
+    let g = load(SAMPLER_VOICE_JSON, &reg).expect("load sampler-voice");
+    let doc = InstrumentDoc::from_graph(&g, "sampler-voice");
+    let player = doc
+        .nodes
+        .iter()
+        .find(|n| n.type_name == "sample")
+        .expect("sample node");
+    assert_eq!(player.sample.as_deref(), Some("blip"));
 }
 
 #[test]
