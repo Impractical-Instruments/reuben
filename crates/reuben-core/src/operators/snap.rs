@@ -18,7 +18,7 @@
 //!   where possible, an [`Absolute`](crate::vocab::pitch::Pitch::Absolute) when a frozen-chord target has
 //!   no degree); wire to a Voicer.
 //!
-//! Single-Lane (ADR-0014): emission is pre-fan-out.
+//! Emits one note stream, upstream of the Voicer that fans it out to voices (ADR-0032).
 
 use smallvec::SmallVec;
 

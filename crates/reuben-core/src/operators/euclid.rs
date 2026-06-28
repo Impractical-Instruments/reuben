@@ -32,7 +32,7 @@
 //! - output 0: `gate` (`Float`) — a sparse gate: F32 `1.0` on a pulse step's rising clock edge,
 //!   F32 `0.0` on the following falling edge.
 //!
-//! Single-Lane by design: the gate is emitted pre-fan-out, a mono trigger line (Lane 0 only).
+//! Emits a single mono trigger line, upstream of any Voicer that fans it out to voices.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};

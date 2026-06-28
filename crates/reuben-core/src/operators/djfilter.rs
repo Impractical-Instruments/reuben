@@ -32,7 +32,7 @@
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
+// Single-source contract (ADR-0025): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Djfilter {
     inputs:  { audio: f32_buffer,
                position:  f32_buffer { -1.0..=1.0,     default 0.0,     "",   lin },
@@ -124,8 +124,8 @@ impl Operator for Djfilter {
         let hp_start = io.input::<f32>(IN_HP_START).unwrap_or(0.0);
         let hp_end = io.input::<f32>(IN_HP_END).unwrap_or(0.0);
 
-        // `position` is a `Float` input — always a buffer (wired source or materialized latch),
-        // one read path (ADR-0028). Mode + coefficients are recomputed only when `position`
+        // `position` is a Signal input — always a buffer (wired source or materialized default),
+        // one read path (ADR-0031). Mode + coefficients are recomputed only when `position`
         // actually changes from the previous sample — `target`/`coeffs` are pure, so reusing the
         // cache on an unchanged knob is bit-identical to recomputing it, and a settled or slow knob
         // costs one compare per sample instead of a `tan()`/`powf()`. The cache lives in this call,
@@ -174,7 +174,7 @@ mod tests {
         [0.1, 20_000.0, 200.0, 20.0, 6_000.0]
     }
 
-    /// Set the 5 held `Float` voicing controls (read block-rate via `io.last`) on a driver.
+    /// Set the 5 held `Float` voicing controls (read block-rate via `io.input::<f32>`) on a driver.
     fn set_voicing(d: &mut OpDriver, voicing: [f32; 5]) -> &mut OpDriver {
         d.set(IN_RESONANCE, voicing[0])
             .set(IN_LP_START, voicing[1])
@@ -288,7 +288,7 @@ mod tests {
     #[test]
     fn wired_position_matches_materialized_default() {
         // A flat wired position Float must produce exactly the same output as the same value held
-        // as the input's materialized default — there is one read path now (ADR-0028), so a
+        // as the input's materialized default — there is one read path now (ADR-0031), so a
         // constant wired knob equals the held latch.
         let n = 4096;
         let input = sine(6_000.0, n);

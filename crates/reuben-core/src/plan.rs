@@ -7,7 +7,7 @@
 //! Lane model is gone (ADR-0032).
 //!
 //! The seven former carriers collapse to one model (ADR-0030): every input port has a held
-//! [`Arg`] **latch** (the ZOH value `io.last` reads), Buffer inputs additionally carry a dense
+//! [`Arg`] **latch** (the ZOH value `io.input::<T>` reads), Buffer inputs additionally carry a dense
 //! arena buffer, and every output port either owns arena buffers (a Buffer/signal output) or
 //! routes emitted Messages to downstream input ports (a message output). The old context-arena /
 //! enum-latch / param lanes and the separate `msg_targets` / `ctx_targets` routing are unified.
@@ -25,12 +25,10 @@ use crate::vocab::harmony::Harmony;
 /// from the graph:
 ///
 /// - **Signal** — a dense per-sample buffer ([`Buffer`](PortType::F32Buffer) audio), read via
-///   `io.signal`. (Until the step-4 form sweep, an `F32` control also classifies Signal so the
-///   former always-materialize `io.signal` reads keep working; the locked table re-declares each
-///   numeric port `f32` (Value) or `f32_buffer` (Signal) as its operator migrates.)
+///   `io.input::<&[f32]>`.
 /// - **Value** — a latched single value (scalar / enum / `Harmony`): its last value is held (ZOH)
-///   and read via `io.last`; a mid-block change block-slices so it is constant per `process` call.
-/// - **Event** — an unlatched multi-valued stream (`Note`), delivered frame-stamped via `io.stream`
+///   and read via `io.input::<T>`; a mid-block change block-slices so it is constant per `process` call.
+/// - **Event** — an unlatched multi-valued stream (`Note`), delivered frame-stamped via `io.input::<Note>`
 ///   and *not* sliced.
 ///
 /// The two sparse forms fall out of two axes — *latched?* and *single-valued?*: Value is latched ∧
@@ -96,7 +94,7 @@ fn seed_latch(
         PortType::Vocab { name, .. } if *name == "Harmony" => Arg::Harmony(Harmony::default()),
         PortType::I32 => Arg::I32(0),
         PortType::Str => Arg::Str(String::new()),
-        // Note (stream) / Buffer (dense): no held value — a placeholder `io.last` never decodes.
+        // Note (stream) / Buffer (dense): no held value — a placeholder `io.input::<T>` never decodes.
         _ => Arg::F32(0.0),
     }
 }
@@ -126,7 +124,7 @@ pub struct PlanNode {
     /// uniformly across the block, so a held-unchanged input can skip its refill (ADR-0030).
     /// Carried across blocks. Starts `false` so the first block fills.
     pub materialize_clean: Vec<bool>,
-    /// The held [`Arg`] latch per input port (ADR-0030) — the unified ZOH value `io.last` reads,
+    /// The held [`Arg`] latch per input port (ADR-0030) — the unified ZOH value `io.input::<T>` reads,
     /// collapsing the former Harmony / enum / param lanes into one. Length = input count; seeded
     /// from each input's default / author override, `Copy`-normalized, carried across blocks. Render
     /// block-slices Held ports at change frames and updates the slot there.
@@ -135,11 +133,11 @@ pub struct PlanNode {
     /// block (no audio-thread alloc). All-`true`; Render rewrites only materialized ports each block
     /// (`false` ⇒ held unchanged this block).
     pub varying: Vec<bool>,
-    /// For each **signal (Buffer) output** port — in signal-output ordinal order — this node's
-    /// per-Lane arena buffer indices (length `lanes`). [`crate::operator::Io::output`] (`<&mut
-    /// [f32]>`) indexes this by the all-outputs port index the contract macro emits, which equals
-    /// the signal ordinal **only when signal outputs precede message outputs in the declaration**
-    /// (the invariant every operator holds; e.g. `envelope` declares `cv` before `active`).
+    /// For each **signal (Buffer) output** port — in signal-output ordinal order — its arena
+    /// buffer index (a one-element `Vec`). [`crate::operator::Io::output`] (`<&mut [f32]>`) indexes
+    /// this by the all-outputs port index the contract macro emits, which equals the signal ordinal
+    /// **only when signal outputs precede message outputs in the declaration** (the invariant every
+    /// operator holds; e.g. `envelope` declares `cv` before `active`).
     pub outputs: Vec<Vec<usize>>,
     /// Message-edge routing (ADR-0014, ADR-0030, ADR-0032): indexed by **all-outputs port index**
     /// (the index [`crate::operator::Io::output`] passes; `emit.port` is that index). A signal output
@@ -184,12 +182,12 @@ pub struct InterfaceOutput {
     pub captured_slot: Option<usize>,
 }
 
-/// One master tap: a tapped port's per-Lane arena buffers, summed into the master output.
+/// One master tap: a tapped port's arena buffers, summed into the master output.
 pub struct OutputTap {
     /// Logical master channel this tap feeds (ADR-0026), or `None` to broadcast to every
     /// channel (the historical mono fan).
     pub channel: Option<usize>,
-    /// Per-Lane arena buffer indices of the tapped port; all summed.
+    /// Arena buffer indices of the tapped port; all summed.
     pub buffers: Vec<usize>,
 }
 
@@ -346,10 +344,10 @@ impl Plan {
             let input_kinds: Vec<PortKind> = descriptor.inputs.iter().map(port_kind).collect();
             for (port, &kind) in input_kinds.iter().enumerate() {
                 // Buffer and F32 (float control) inputs both present a per-sample buffer to
-                // `io.signal` (ADR-0030): wired to a Buffer source they share it zero-copy;
+                // `io.input::<&[f32]>` (ADR-0030): wired to a Buffer source they share it zero-copy;
                 // otherwise (unwired, or fed by a scalar) the engine materializes a scratch filled
                 // ZOH from the latch. Vocab inputs (enum / Note / Harmony) carry no buffer — they
-                // are read via `io.last` / `io.stream`.
+                // are read via `io.input::<T>` / `io.input::<Note>`.
                 if kind != PortKind::Signal {
                     inputs.push(None);
                     continue;
@@ -374,7 +372,7 @@ impl Plan {
                 }
             }
 
-            // Signal (Buffer) outputs, in signal-output ordinal order — the index `io.signal_mut`
+            // Signal (Buffer) outputs, in signal-output ordinal order — the index `io.output::<&mut [f32]>`
             // uses.
             let outputs: Vec<Vec<usize>> = descriptor
                 .outputs

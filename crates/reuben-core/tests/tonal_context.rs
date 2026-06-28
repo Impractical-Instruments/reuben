@@ -1,8 +1,8 @@
 //! Integration: the tonal-context bus end-to-end (ADR-0013, ADR-0015) — a harmony node
 //! publishes the latched key/scale, the engine routes and slices it onto downstream readers,
 //! and a Voicer resolves degree notes to Hz through it. Exercises the engine plumbing the
-//! operator unit tests can't: the context arena, the third route lane, and sample-accurate
-//! re-slicing on a context change.
+//! operator unit tests can't: the context arena, context routing onto downstream readers, and
+//! sample-accurate re-slicing on a context change.
 
 use reuben_core::message::{Arg, Message};
 use reuben_core::plan::Plan;

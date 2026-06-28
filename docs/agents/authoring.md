@@ -38,37 +38,34 @@ return shape — there is no separate `signal`/`last`/`stream` family.
 | **`Harmony`** (vocab struct, a Value) | the tonal-context struct: `root`/`scale`/`chord` + resolvers `hz()`/`snap()`/`chord_tone()` | `io.input::<Harmony>(IN) -> Option<Harmony>` · out: `io.output::<Harmony>(OUT) -> MsgWriter` (`.set(frame, h)`) |
 | **`Note`** (vocab struct, an Event) | a pitch/velocity event | `io.input::<Note>(IN)` → `EventStream<Note>` of `Stamped<Note>` (`.frame`, `.payload`) · out: `io.output::<Note>(OUT) -> EventWriter` (`.emit(frame, note)`) |
 
-A port's **form** is one of three — **Signal** (`f32_buffer`, dense per-sample), **Value**
-(`f32`/enum/`Harmony`, a held latch read once per slice), **Event** (`Note`, a sparse frame-stamped
-stream) — and follows directly from the declared `Arg` type (`PortKind` in `plan.rs`). The old
-ADR-0028 temporality carrier (`Signal`/`Message`/`Context`) and the `shape` axis are both gone.
-Mapping for anyone reading older code: **Signal** = `f32_buffer`; **param** = an `f32` Value or a
-held enum; **Context** = `Harmony`; **Message events** = `Note`. A runtime integer is a rounded `f32`
-(a modulatable step/divisor) or an enum (a bounded set); `I32` exists as an OSC-primitive `Arg`, but
-no operator declares an `Int` port.
+A port's **form** is one of three — **Signal** (`f32_buffer`), **Value** (`f32`/enum/`Harmony`, a
+held latch read once per slice), **Event** (`Note`, a sparse frame-stamped stream) — and follows from
+the declared `Arg` type (`PortKind` in `plan.rs`). Reading older code: **Signal** = `f32_buffer`;
+**param** = an `f32` Value or held enum; **Context** = `Harmony`; **Message events** = `Note` (the
+ADR-0028 `shape`/temporality axis is gone). A runtime integer is a rounded `f32` or an enum; `I32` is
+an OSC primitive `Arg`, but no operator declares an `Int` port.
 
 ### Form is declared, not inferred: `f32` is a held Value, `f32_buffer` is a Signal
 
-The author chooses a numeric port's form up front by which keyword it declares
+The author picks a numeric port's form by which keyword it declares
 ([ADR-0031](../adr/0031-float-resolves-to-value-or-signal-by-wiring.md)):
 
-- **`f32` → a held Value.** A latched scalar read once per block-slice with `io.input::<f32>(IN)`.
-  The engine block-slices at each change frame, so the read is sample-accurate without a buffer. An
-  `f32` with a `meta` block (`f32 { range, default, .. }`) seeds its latch from override-or-default;
-  unwired it reads that default. No buffer is allocated for a Value input.
-- **`f32_buffer` → a Signal.** A dense per-sample buffer read with `io.input::<&[f32]>(IN)`. Used for
-  audio, CV, and any *swept* control (a filter cutoff an LFO modulates). An `f32_buffer` may carry an
-  optional `meta` default so an unwired/knob-set port still materializes a constant buffer — so a
-  per-sample control reads a real buffer whether wired to an LFO or left at its default.
+- **`f32` → a held Value.** A latched scalar read once per block-slice with `io.input::<f32>(IN)`. The
+  engine block-slices at each change frame, so the read is sample-accurate without a buffer. With a
+  `meta` block (`f32 { range, default, .. }`) it seeds its latch from override-or-default; unwired it
+  reads the default. No buffer allocated.
+- **`f32_buffer` → a Signal.** A dense per-sample buffer read with `io.input::<&[f32]>(IN)` — audio, CV,
+  or any *swept* control (a filter cutoff an LFO modulates). An optional `meta` default lets an
+  unwired/knob-set port materialize a constant buffer, so the read is a real buffer either way.
 
 A cheap **`varying: bool`** rides alongside a Signal read (`io.varying(IN)`): `false` when a
-materialized input held its value unchanged this block, `true` when dense or changed. A const-folding
-op (a filter recomputing biquad coefficients only when `cutoff` moves) opts into it; a naive op
-ignores it and reads `io.input::<&[f32]>(IN)[i]` — always correct.
+materialized input held unchanged this block, `true` when dense or changed. A const-folding op (a
+filter recomputing biquad coefficients only when `cutoff` moves) opts in; a naive op ignores it and
+reads `io.input::<&[f32]>(IN)[i]` — always correct.
 
-So the form follows the processing model: per-sample DSP (osc, filter, `mul_f32_signal`, the
-envelope's `cv`) declares `f32_buffer` and reads a slice; block-rate controls (a clock's `tempo`, a
-sequencer's `length`, a gate edge) declare `f32` and read the held value.
+So form follows the processing model: per-sample DSP (osc, filter, `mul_f32_signal`, the envelope's
+`cv`) declares `f32_buffer` and reads a slice; block-rate controls (a clock's `tempo`, a sequencer's
+`length`, a gate edge) declare `f32` and read the held value.
 
 ### Wiring across forms: one legal coercion, the rest hard errors
 

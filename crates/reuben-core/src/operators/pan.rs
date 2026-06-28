@@ -5,19 +5,19 @@
 //! two outputs are meant to be tapped directly as `channel: 0` / `channel: 1` of the logical
 //! master bus — the `output` op is vestigial for a stereo patch.
 //!
-//! Pan amount follows the one-port-one-type rule (ADR-0017): it is a **Signal input** with a
-//! param as its unwired default, so an LFO can auto-pan, or a static knob can park it.
+//! Pan amount is a **Signal input** with a default as its unwired value (ADR-0031), so an LFO can
+//! auto-pan or a static knob can park it.
 //!
 //! - input 0: `audio` (Signal) — the mono source.
-//! - input 1: `pan` (Signal, optional) — position in [-1, 1]; overrides the param.
+//! - input 1: `pan` (Signal) — position in [-1, 1]; −1 hard-left, 0 center, +1 hard-right.
+//!   Unwired default 0 (center).
 //! - output 0: `left` (Signal) — `audio · cos(θ)`.
 //! - output 1: `right` (Signal) — `audio · sin(θ)`, where `θ = (pan + 1)·π/4`.
-//! - param 0: `pan` — used when the `pan` input is unconnected. −1 hard-left, 0 center, +1 hard-right.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
+// Single-source contract (ADR-0025): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Pan {
     inputs:  { audio: f32_buffer,
                pan:   f32_buffer { -1.0..=1.0, default 0.0, "", lin } },
@@ -42,8 +42,8 @@ impl Operator for Pan {
         let n = io.frames();
 
         for i in 0..n {
-            // `audio`/`pan` are `Float` inputs — always a buffer (wired source or materialized
-            // latch), one read path (ADR-0028). Read both into locals first so each immutable
+            // `audio`/`pan` are Signal inputs — always a buffer (wired source or materialized
+            // default), one read path (ADR-0031). Read both into locals first so each immutable
             // borrow of `io` ends before the two output writes — keeps `process` allocation-free.
             let a = io.input::<&[f32]>(IN_AUDIO).get(i).copied().unwrap_or(0.0);
             let p = io.input::<&[f32]>(IN_PAN).get(i).copied().unwrap_or(0.0);
@@ -122,7 +122,7 @@ mod tests {
 
     #[test]
     fn pan_input_overrides_param() {
-        // A wired `pan` buffer says hard-left — the single read path (ADR-0028) follows it.
+        // A wired `pan` buffer says hard-left — the single read path (ADR-0031) follows it.
         let n = 8;
         let pan_in = vec![-1.0f32; n];
         let mut d = OpDriver::for_type(Pan::new(), SR);

@@ -25,7 +25,7 @@ pub struct OperatorInfo {
     pub resources: Vec<String>,
 }
 
-/// One settable `Enum` input (ADR-0028): a held, live-switchable named choice, surfaced for an
+/// One settable `Enum` input (ADR-0030): a held, live-switchable named choice, surfaced for an
 /// author alongside the numeric `params` (it is a separate, non-numeric settable surface).
 #[derive(Debug, Serialize)]
 pub struct EnumInfo {
@@ -101,7 +101,7 @@ impl OperatorInfo {
                 curve: curve(p.curve).to_string(),
             })
             .collect();
-        // Materialized Float inputs (ADR-0028) are settable literals — the old "signal port +
+        // Materialized Float inputs (ADR-0030) are settable literals — the old "signal port +
         // same-named unwired-default param" is now one input, addressed by the same name. Surface
         // their range/default alongside params so `describe` still shows what an author can set.
         for (name, m) in d.settable_inputs() {
@@ -114,7 +114,7 @@ impl OperatorInfo {
                 curve: curve(m.curve).to_string(),
             });
         }
-        // Enum inputs (ADR-0028) are a non-numeric settable surface — list their variants + default
+        // Enum inputs (ADR-0030) are a non-numeric settable surface — list their variants + default
         // so an author can set e.g. `mode`/`waveform` by name.
         let enums = d
             .enum_inputs()

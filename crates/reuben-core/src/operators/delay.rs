@@ -22,7 +22,7 @@
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
+// Single-source contract (ADR-0025): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Delay {
     inputs:  { audio: f32_buffer,
                time:     f32 { 0.001..=2.0, default 0.3, "s", lin },
@@ -111,7 +111,7 @@ mod tests {
 
     /// Drive `input` through a fresh Delay at the given values through the real engine, returning the
     /// output buffer. `time`/`feedback`/`mix` are held `Float` controls (`set` once, read via
-    /// `io.last`); `audio` is a time-varying Buffer input (`drive`d block by block). The state threads
+    /// `io.input::<f32>`); `audio` is a time-varying Buffer input (`drive`d block by block). The state threads
     /// across the real 128-frame blocks, so an echo lands at its true sample offset across them.
     fn render(input: &[f32], sample_rate: f32, time: f32, feedback: f32, mix: f32) -> Vec<f32> {
         OpDriver::for_type(Delay::new(), sample_rate)

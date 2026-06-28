@@ -7,7 +7,7 @@
 
 /// What a port carries — **the port's [`Arg`](crate::message::Arg) type** (ADR-0030). Replaces
 /// the retired `Shape`: delivery and read-style are no longer a declared axis, they follow from
-/// the Arg type plus the read verb (`io.stream` / `io.last`). One variant per `Arg` *family*; a
+/// the Arg type plus the read verb (`io.input::<Note>` / `io.input::<T>`). One variant per `Arg` *family*; a
 /// vocab type names itself by its Arg variant (`Vocab { name: "Note", .. }` ↔ `Arg::Note`), which
 /// keeps this enum from re-enumerating every vocab type as the central `Arg` already does.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -141,7 +141,7 @@ pub struct Port {
 
 impl Port {
     /// A dense per-sample signal port (audio) — [`PortType::F32Buffer`]. The audio-passthrough input
-    /// (no owned default) and the per-sample output an operator fills with `io.signal_mut`.
+    /// (no owned default) and the per-sample output an operator fills with `io.output::<&mut [f32]>`.
     /// Replaces the legacy bare `signal` carrier.
     pub const fn f32_buffer(name: &'static str) -> Self {
         Self {

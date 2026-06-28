@@ -1,12 +1,10 @@
 //! Reverb — mono Freeverb (Schroeder/Moorer): 8 parallel lowpass-feedback comb
 //! filters summed, then 4 series allpass filters.
 //!
-//! Single-Lane (mono in, mono out).
+//! Mono in, mono out.
 //!
-//! Port types (ADR-0030): `room`/`damp`/`mix` are **`F32` inputs**, each owning its unwired
-//! default. When nothing is wired the engine materializes the input from its latched default;
-//! when a control is wired the source buffer passes through. There is no longer a separate
-//! "signal port + same-named param" pair — `io.input::<f32>(IN_ROOM)` reads the latched value.
+//! `room`/`damp`/`mix` are Value inputs (ADR-0031), each owning its unwired default;
+//! `io.input::<f32>(IN_ROOM)` reads the latched value.
 //!
 //! - input 0: `audio` (`Float`)
 //! - input 1: `room` (`Float`) — room size / tail length (0..1).
@@ -17,7 +15,7 @@
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
+// Single-source contract (ADR-0025): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Reverb {
     inputs:  { audio: f32_buffer,
                room: f32 { 0.0..=1.0, default 0.5, "", lin },
@@ -177,7 +175,7 @@ mod tests {
 
     /// Run `input` through a fresh Reverb at the given room/damp/mix through the real engine and
     /// return the output. `room`/`damp`/`mix` are held `Float` controls (`set` once, read via
-    /// `io.last`); `audio` is a time-varying Buffer input (`drive`d block by block). The comb /
+    /// `io.input::<f32>`); `audio` is a time-varying Buffer input (`drive`d block by block). The comb /
     /// allpass state threads across the real 128-frame blocks, so the tail builds continuously.
     fn render(input: &[f32], sample_rate: f32, room: f32, damp: f32, mix: f32) -> Vec<f32> {
         OpDriver::for_type(Reverb::new(), sample_rate)

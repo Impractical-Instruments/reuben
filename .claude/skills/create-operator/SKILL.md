@@ -5,8 +5,8 @@ description: Author a new reuben Operator in Rust — the unit of DSP behind eve
 
 # create-operator
 
-An Operator is one unit of DSP — authored **single-Lane** (one mono voice; the engine fans it out
-per-Voice, ADR-0010) as a Rust file in [`crates/reuben-core/src/operators/`](../../crates/reuben-core/src/operators):
+An Operator is one unit of DSP — authored **single-Voice** (one mono stream; polyphony comes from the
+Voicer hosting voice sub-patches, ADR-0010/0032) as a Rust file in [`crates/reuben-core/src/operators/`](../../crates/reuben-core/src/operators):
 index consts, a state struct, and `impl Operator` (`descriptor` / `process` / `spawn`), declared in
 `operators/mod.rs` and self-registered by its own `register_operator!` line (no central list to
 edit, ADR-0024). This skill authors that end-to-end (ADR-0021).
@@ -25,11 +25,11 @@ Run all `reuben`/`cargo` commands from the repo root.
 1. **Align on the contract.** The descriptor is frozen at scaffold time and the rig builder wires
    against its port/param **indices** — getting it wrong is expensive. If the operator is at all
    underspecified, **invoke the `grilling` skill** to pin: each input/output by its **`Arg` type**
-   (ADR-0030) — `buffer` (a dense per-sample signal), `float` (a number; add
+   (ADR-0030) — `f32_buffer` (a dense per-sample Signal), `f32` (a held Value number; add
    `{ min..max, default, unit, lin|exp }` for its materialized default), `enum(VocabType)` (a
    live-switchable choice naming a shared *vocab* enum), or `note`/`harmony` for a `Note`/`Harmony`
-   port — plus any **`Constant`** (instantiate-time `config`, e.g. `voices`), the lane rule, and —
-   critically — **the DSP behavior and its test oracle: "how will we know it's right?"** Use
+   port — plus any **`Constant`** (instantiate-time `config`, e.g. `voices`), and — critically —
+   **the DSP behavior and its test oracle: "how will we know it's right?"** Use
    `domain-modeling` for naming. Skip the interview only when the user hands a precise contract.
 
 2. **Scaffold.** Write the contract to a JSON file (format below) and run:
@@ -50,22 +50,23 @@ Run all `reuben`/`cargo` commands from the repo root.
      canonical hot/cold boundary + RT rules live in
      [authoring.md#rt-safe-render](../../docs/agents/authoring.md#rt-safe-render) (single
      source); the operator-specific contract follows.
-   - **Single-Lane**: write one mono stream; ignore `io.lane()` unless you're an *expander*
-     (`LaneRule::FromParam`, the Voicer pattern).
-   - **Read each input by its `Arg` type** (ADR-0030) — the read view is a *static* choice, never
-     conditional on what's wired:
-     - **`Buffer` / `F32` control** → `io.signal(IN) -> &[f32]` (per-sample DSP — a `buffer` input
-       or the materialized buffer of a `float` control), or `io.last::<f32>(IN) -> Option<f32>` for
-       a `float` control's held scalar (block-rate). The buffer is always `io.frames()` long.
+   - **Single-Voice**: write one mono stream. Polyphony is not your concern — the Voicer hosts N
+     voice sub-patches and sums them (ADR-0032).
+   - **Read each input by its `Arg` type** (ADR-0031) — the payload `T` selects the read view; it's a
+     *static* choice, never conditional on what's wired:
+     - **Signal (`f32_buffer`)** → `io.input::<&[f32]>(IN) -> &[f32]` — per-sample DSP, also the
+       materialized buffer of a Value wired into a Signal input. Always `io.frames()` long;
        `io.varying(IN)` lets a const-folding op skip recompute on a held block.
-     - **enum** → `io.last::<MyVocabEnum>(IN).unwrap_or_default()` — a real Rust enum, not an index.
-     - **`Harmony`** → `io.last::<Harmony>(IN)`; **`Note`** → `io.stream::<Note>(IN)` (an iterator of
+     - **held Value (`f32`)** → `io.input::<f32>(IN) -> Option<f32>` — a block-rate scalar.
+     - **enum** → `io.input::<MyVocabEnum>(IN).unwrap_or_default()` — a real Rust enum, not an index.
+     - **`Harmony`** → `io.input::<Harmony>(IN)`; **`Note`** → `io.input::<Note>(IN)` (an iterator of
        `Stamped<Note>` — `.frame`, `.payload`).
-   - **Write outputs by `Arg` type** — `Buffer` → `io.signal_mut(OUT)`; emit a `Note` or publish a
-     `Harmony` with `io.emit(OUT, addr, payload, frame)` where `payload` is one `Arg` (**Lane 0 only**).
+   - **Write outputs by `Arg` type** — Signal → `io.output::<&mut [f32]>(OUT)`; a `Note` via
+     `io.output::<Note>(OUT)` (`.emit(frame, note)`, append-only), a held `f32`/`Harmony` via
+     `io.output::<f32>`/`io.output::<Harmony>` (`.set(frame, v)`, dedup + last-write-wins).
    - **Persistent state carries across blocks** — keep phase/filter state in the struct; use `f64`
      for a phase accumulator so it doesn't drift (lfo/clock).
-   - **`spawn`** resets per-Lane state but **carries any resource binding forward** (ADR-0016).
+   - **`spawn`** resets per-voice state but **carries any resource binding forward** (ADR-0016).
    - The **index consts are the contract** downstream nodes reference — don't renumber casually.
 
 4. **Close the gate** — `validate` can't prove DSP is correct, so the gate is richer than the
@@ -104,20 +105,18 @@ Run all `reuben`/`cargo` commands from the repo root.
 ```json
 {
   "type_name": "tremolo",
-  "inputs":  [ { "name": "in",   "ty": "buffer" },
-               { "name": "rate", "ty": "float",
-                 "float": { "min": 0.1, "max": 20.0, "default": 5.0, "unit": "Hz", "curve": "exponential" } },
+  "inputs":  [ { "name": "in",   "ty": "f32_buffer" },
+               { "name": "rate", "ty": "f32",
+                 "f32": { "min": 0.1, "max": 20.0, "default": 5.0, "unit": "Hz", "curve": "exponential" } },
                { "name": "wave", "ty": "enum", "vocab": "Waveform" } ],
-  "outputs": [ { "name": "out",  "ty": "buffer" } ],
-  "resources": [],
-  "lanes": "inherit"
+  "outputs": [ { "name": "out",  "ty": "f32_buffer" } ],
+  "resources": []
 }
 ```
 
-- **`ty`** (ADR-0030) ∈ `buffer` | `float` | `enum` | `note` | `harmony` — the port's `Arg` type. A
-  `buffer` port is a dense audio/CV signal (no settable default). A `float` port adds
-  `"float": { min, max, default, unit, curve }` for a materialized `F32` control that owns a settable
-  default (the old "signal port + same-named param", now one declaration); `curve` ∈ `linear` |
+- **`ty`** (ADR-0030) ∈ `f32_buffer` | `f32` | `enum` | `note` | `harmony` — the port's `Arg` type. A
+  `f32_buffer` port is a dense audio/CV Signal (no settable default). A `f32` port is a held Value and
+  adds `"f32": { min, max, default, unit, curve }` for its materialized default; `curve` ∈ `linear` |
   `exponential` (default linear), `unit` defaults `""`.
 - An **`enum` port** names its shared *vocab* enum in `"vocab": "Waveform"` (PascalCase) — the
   descriptor reads its variants and `#[default]` from `Waveform::enum_meta`. The vocab type must
@@ -125,10 +124,11 @@ Run all `reuben`/`cargo` commands from the repo root.
   and add one variant to `Arg` **first** (ADR-0030), then reference it here. `note`/`harmony` ports
   need no extra fields.
 - The generated `IN_*`/`OUT_*`/`P_*` index consts follow declaration order — the scaffold renders
-  the contract in `operator_contract!` grammar, so a `buffer`/`float { .. }`/`enum(VocabType)` spec
+  the contract in `operator_contract!` grammar, so a `f32_buffer`/`f32 { .. }`/`enum(VocabType)` spec
   lands as the real port declaration, no Stage-B retyping.
-- A **`Constant`** is declared as a `param` plus an expander lane rule: `"lanes": { "from_param":
-  "voices" }` names the param that sizes lanes (the loader routes it to the patch's `config` block).
+- A **`Constant`** is declared by listing the param in `params` and naming it in `"constant":
+  "voices"` — the instantiate-time value that sizes the voice pool (the loader routes it to the
+  patch's `config` block, ADR-0032).
 - `resources: ["wave"]` adds a `ResourceSlot` and a `bind_resources` stub (ADR-0016).
 
 ## Scope

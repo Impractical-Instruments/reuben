@@ -354,7 +354,7 @@ pub fn load_instrument(
 
     let store = Arc::new(store);
 
-    // Bind each resource-bearing node's Lane-0 op (spawn carries it to the other Voices).
+    // Bind each resource-bearing node's op (spawn carries the binding to any voice copies).
     for n in &doc.nodes {
         let Some(id) = &n.sample else { continue };
         let handle = handles[id];
@@ -499,8 +499,7 @@ impl InstrumentDoc {
             graph.nodes[key].sample_id = n.sample.clone();
             graph.nodes[key].voice_id = n.voice.clone();
 
-            // `config`: every name must be a declared Constant; apply it at the param slot the
-            // lane rule reads (ADR-0028).
+            // `config`: every name must be a declared Constant; apply it at its param slot (ADR-0028).
             for (name, value) in &n.config {
                 if !descriptor.is_constant_param(name) {
                     return Err(LoadError::UnknownConfig {
@@ -576,7 +575,7 @@ impl InstrumentDoc {
                 let to_ty = &dst_desc.inputs[dst_port].ty;
                 // Equal types wire directly. `F32` and `Buffer` interconvert (ADR-0030): an `F32`
                 // source into a `Buffer` port ZOH-materializes, and a `Buffer` source into an `F32`
-                // control port is shared and read per-sample via `io.signal` (the
+                // control port is shared and read per-sample via `io.input::<&[f32]>` (the
                 // `voicer.freq -> osc.freq` CV path). Anything else is illegal.
                 let compatible = from_ty == to_ty
                     || matches!(

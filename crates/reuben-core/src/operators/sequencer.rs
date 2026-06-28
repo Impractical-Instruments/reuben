@@ -17,7 +17,7 @@
 //! - **degree mode** (`Degree`, default): each `stepN` *is* the scale degree to play that beat; a
 //!   value below 0 is a rest.
 //! - **gate mode** (`Gate`): each `stepN` reads as a **boolean on/off** (≥ 0.5 = hit) and every
-//!   hit emits the single per-lane `pitch` degree. This is the groove-box step grid (ADR-0022).
+//!   hit emits the single `pitch` degree. This is the groove-box step grid (ADR-0022).
 //!
 //! - input 0: `clock` (`buffer`) — the Clock's beat gate. A rising edge (crossing 0.5 upward)
 //!   advances the step and emits a note-on; the following falling edge emits the note-off. The
@@ -30,8 +30,7 @@
 //! - output 0: `degrees` (`Note`) — a degree note (velocity 1 = on, 0 = off). The Voicer resolves
 //!   the degree through the tonal context.
 //!
-//! Single-Lane by design (ADR-0014): emission happens pre-fan-out, a mono note line; the
-//! downstream Voicer expands it to Voices.
+//! Emits one mono note line, upstream of the downstream Voicer that fans it out to voices (ADR-0032).
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -125,7 +124,7 @@ impl Operator for Sequencer {
         }
         // The degree to emit for a given step, or None for a rest / off-step.
         // - degree mode: the step value IS the degree; below 0 is a rest.
-        // - gate mode: the step is a boolean hit (≥ 0.5); a hit emits the per-lane `pitch`,
+        // - gate mode: the step is a boolean hit (≥ 0.5); a hit emits the `pitch` degree,
         //   itself a rest if `pitch` < 0.
         let note_at = |step: i64| -> Option<f32> {
             if step < 0 {

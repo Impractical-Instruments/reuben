@@ -15,8 +15,8 @@
 //! 3. renders every voice with the re-entrant [`render_plan`] over that voice's own arena;
 //! 4. sums the voices' `audio` into its single audio output, in fixed voice-index order.
 //!
-//! There is no Lane fan-out: the Voicer is an ordinary single-Lane operator whose polyphony lives in
-//! the hosted sub-plans (ADR-0032 supersedes the per-Lane replication model).
+//! There is no Lane fan-out: the Voicer is an ordinary operator whose polyphony lives in the hosted
+//! sub-plans (ADR-0032 supersedes the retired per-Lane replication model).
 //!
 //! - input 0: `notes` (`Note`) — note events. Velocity 0 is a note-off (ADR-0030).
 //! - input 1: `harmony` (`Harmony`, held) — the tonal context degree notes resolve against.

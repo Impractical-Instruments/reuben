@@ -15,7 +15,7 @@
 //!
 //! It tracks the **set of held roots** so overlapping chords sound and release independently, and
 //! captures each root's tone count at press time, so a mid-hold `size` change can't orphan a
-//! note-off. Single-Lane (ADR-0014): emission is pre-fan-out; the Voicer expands to Voices.
+//! note-off. Emits one note stream, upstream of the Voicer that fans it out to voices (ADR-0032).
 //!
 //! - input 0: `set` (`Note`) — a degree note; velocity > 0 = note-on, else note-off. The degree
 //!   is the chord root.
@@ -141,7 +141,7 @@ mod tests {
     const SR: f32 = 48_000.0;
 
     /// Drive a fresh Chord through the real engine: `size` is a held `Float` (`set` once, read via
-    /// `io.last`); the `set` press/release notes are pushed as `Note` events at their global frames.
+    /// `io.input::<f32>`); the `set` press/release notes are pushed as `Note` events at their global frames.
     /// Renders `n` frames (as real 128-frame blocks) and returns the emitted Messages.
     fn run(n: usize, size: f32, events: &[(usize, Note)]) -> Vec<Emit> {
         let mut d = OpDriver::for_type(Chord::new(), SR);

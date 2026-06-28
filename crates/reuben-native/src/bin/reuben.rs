@@ -74,7 +74,7 @@ enum Command {
     },
     /// Generate a new Operator's Rust skeleton from a contract spec and wire its registration.
     ScaffoldOperator {
-        /// Contract JSON (type_name, inputs, outputs, params, resources, lanes).
+        /// Contract JSON (type_name, inputs, outputs, params, resources, constant).
         #[arg(long)]
         spec: PathBuf,
         /// reuben-core source root holding `operators/` and `registry.rs`.
