@@ -21,6 +21,7 @@
 
 mod argvalue;
 mod model;
+mod number_op;
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
@@ -35,6 +36,13 @@ use model::{build, ContractModel};
 #[proc_macro]
 pub fn operator_contract(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     expand(input.into()).into()
+}
+
+/// Generate a family of stateless pointwise number operators from one scalar fn (ADR-0033). See
+/// the [`number_op`] module docs for the grammar and what each `numbers × carriers` variant emits.
+#[proc_macro]
+pub fn number_operator_contract(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    number_op::expand(input.into()).into()
 }
 
 /// Integrate a shared *vocab* type with the central `Arg` enum (ADR-0030): `From`/`TryFrom`
@@ -186,8 +194,15 @@ impl ContractInput {
 
     /// Render the resolved model to the const block + inherent `fn contract()`.
     fn render(&self, model: &ContractModel) -> TokenStream {
-        let struct_ident = &self.struct_ident;
+        render_contract(&self.struct_ident, model)
+    }
+}
 
+/// Render a resolved [`ContractModel`] to the `IN_`/`OUT_`/`P_` const block + the inherent
+/// `impl T { fn contract() }` (ADR-0025). Free function so both `operator_contract!` and the
+/// derived `number_operator_contract!` variants emit the identical contract from the same code.
+pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> TokenStream {
+    {
         let consts = model
             .inputs
             .iter()
