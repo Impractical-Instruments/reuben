@@ -1011,6 +1011,7 @@ dependencies = [
  "hound",
  "iai-callgrind",
  "inventory",
+ "num-traits",
  "reuben-macros",
  "serde",
  "serde_json",

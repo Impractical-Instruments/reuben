@@ -19,6 +19,9 @@ repository = "https://github.com/Impractical-Instruments/reuben"
 [workspace.dependencies]
 slotmap = "1"
 smallvec = "1"
+# Generic numeric traits (Zero/One/Signed/Euclid) so the pointwise math operators are written once
+# over any number type, not pinned to f32 (ADR-0033).
+num-traits = "0.2"
 # Compile-time operator self-registration (ADR-0024). linkme is the no_std fallback.
 inventory = "0.3"
 # Compile-time codegen: the operator_contract! proc-macro parses its own grammar (not Rust
