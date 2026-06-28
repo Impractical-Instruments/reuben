@@ -976,7 +976,7 @@ mod tests {
         // ADR-0018: `control` is opaque passthrough — the engine ignores it, but it must
         // survive load -> re-serialize so a surface generator can read what it wrote.
         let json = r#"{"instrument":"t",
-            "nodes":[{"type":"map","address":"/brightness",
+            "nodes":[{"type":"map_f32_signal","address":"/brightness",
                       "control":{"label":"Brightness","widget":"fader","unit":"%"}}]}"#;
         let doc = InstrumentDoc::from_json(json).expect("parse");
         let ctl = doc.nodes[0]

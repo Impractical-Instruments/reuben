@@ -151,7 +151,7 @@
         "out_max": 9000.0,
         "out_min": 300.0
       },
-      "type": "map"
+      "type": "map_f32_signal"
     }
   ],
   "outputs": [

@@ -74,8 +74,8 @@ fn validate_rejects_a_cycle_that_loads_cleanly() {
     let json = r#"{
       "instrument": "loop",
       "nodes": [
-        { "type": "map", "address": "/a", "inputs": { "in": { "from": "/b" } } },
-        { "type": "map", "address": "/b", "inputs": { "in": { "from": "/a" } } }
+        { "type": "map_f32_signal", "address": "/a", "inputs": { "in": { "from": "/b" } } },
+        { "type": "map_f32_signal", "address": "/b", "inputs": { "in": { "from": "/a" } } }
       ],
       "outputs": []
     }"#;
@@ -131,7 +131,14 @@ fn describe_lists_every_registered_operator() {
     let ops = describe(&reg, None).expect("describe all");
 
     let names: Vec<&str> = ops.iter().map(|o| o.type_name.as_str()).collect();
-    for expected in ["oscillator", "filter", "voicer", "output", "map", "m2s"] {
+    for expected in [
+        "oscillator",
+        "filter",
+        "voicer",
+        "output",
+        "map_f32_signal",
+        "m2s",
+    ] {
         assert!(names.contains(&expected), "missing {expected} in {names:?}");
     }
     assert_eq!(

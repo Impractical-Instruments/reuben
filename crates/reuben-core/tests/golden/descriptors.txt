@@ -85,14 +85,22 @@ operator m2s
   in[2] f32 rate min=0.0 max=1000000.0 default=1000.0 unit="/s" curve=exponential
   in[3] f32 time min=0.0 max=10.0 default=0.05 unit="s" curve=exponential
   out[0] f32_buffer out
-operator map
+operator map_f32_signal
   in[0] f32_buffer in min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[1] f32_buffer in_min min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[2] f32_buffer in_max min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
+  in[3] f32_buffer out_min min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
+  in[4] f32_buffer out_max min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
+  in[5] enum curve variants=["Linear", "Exponential"] default=0
+  out[0] f32_buffer out
+operator map_f32_value
+  in[0] f32 in min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   in[1] f32 in_min min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   in[2] f32 in_max min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
   in[3] f32 out_min min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   in[4] f32 out_max min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
   in[5] enum curve variants=["Linear", "Exponential"] default=0
-  out[0] f32_buffer out
+  out[0] f32 out
 operator mul_f32_signal
   in[0] f32_buffer a min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
   in[1] f32_buffer b min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear

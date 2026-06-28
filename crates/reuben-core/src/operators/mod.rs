@@ -51,7 +51,7 @@ pub use harmony::HarmonyOp;
 pub use integrate::IntegrateF32Signal;
 pub use lfo::Lfo;
 pub use m2s::M2s;
-pub use map::Map;
+pub use map::{MapF32Signal, MapF32Value};
 pub use mul::{MulF32Signal, MulF32Value};
 pub use noise::Noise;
 pub use osc_out::OscOut;

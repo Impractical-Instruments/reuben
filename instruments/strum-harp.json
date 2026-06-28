@@ -12,7 +12,7 @@
       "inputs": {
         "in": 0.0
       },
-      "type": "map"
+      "type": "map_f32_signal"
     },
     {
       "address": "/strum",
@@ -120,7 +120,7 @@
         "out_max": 11000.0,
         "out_min": 600.0
       },
-      "type": "map"
+      "type": "map_f32_signal"
     },
     {
       "address": "/map_res",
@@ -132,7 +132,7 @@
         "out_max": 0.7,
         "out_min": 0.1
       },
-      "type": "map"
+      "type": "map_f32_signal"
     }
   ],
   "outputs": [
