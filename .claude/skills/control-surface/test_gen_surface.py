@@ -183,6 +183,26 @@ class ParamToggleTest(unittest.TestCase):
         self.assertEqual([c["label"] for c in rows[-1]], ["Tempo"], "non-toggle controls grid below")
 
 
+class GroupLayoutTest(unittest.TestCase):
+    """A `group` hint packs consecutive controls onto one row regardless of `cols` — e.g. one
+    drum channel per row, with an ungrouped control (tempo) flowing into the grid on its own."""
+
+    def test_groups_become_their_own_rows(self):
+        nodes = [
+            {"type": "clock", "address": "/clock", "control": {"label": "Tempo", "param": "tempo"}},
+            {"type": "clock", "address": "/k1", "control": {"label": "A", "param": "tempo", "group": "kick"}},
+            {"type": "clock", "address": "/k2", "control": {"label": "B", "param": "tempo", "group": "kick"}},
+            {"type": "clock", "address": "/k3", "control": {"label": "C", "param": "tempo", "group": "kick"}},
+            {"type": "clock", "address": "/s1", "control": {"label": "D", "param": "tempo", "group": "snare"}},
+            {"type": "clock", "address": "/s2", "control": {"label": "E", "param": "tempo", "group": "snare"}},
+        ]
+        controls = g.collect_controls({"instrument": "t", "nodes": nodes}, META)
+        rows = g.layout_rows(controls, cols=4)
+        labels = [[c["label"] for c in row] for row in rows]
+        # Ungrouped tempo grids on its own row; each group is one full row, in declaration order.
+        self.assertEqual(labels, [["Tempo"], ["A", "B", "C"], ["D", "E"]])
+
+
 class ChordButtonTest(unittest.TestCase):
     """The V1.3 chord buttons (ADR-0022): a toggle whose payload is a custom `[degree, gate]`,
     sent to the `chord` op's address. Same 2-arg button mechanism as note-toggle, but the
@@ -233,6 +253,37 @@ class ChordButtonTest(unittest.TestCase):
         self.assertEqual(degrees, ["0", "1", "2", "3", "4", "5", "6"])
 
 
+class RadialTest(unittest.TestCase):
+    """A `radial` widget is a rotary fader: same value/OSC model, a RADIAL node instead of FADER."""
+
+    def test_radial_widget_emits_radial_node_with_fader_scaling(self):
+        node = INSTRUMENT["nodes"][2]  # the clock, with a tempo param
+        c = g.resolve_control(node, {"label": "Tempo", "param": "tempo", "widget": "radial"}, META)
+        self.assertEqual(c["kind"], "fader")          # still resolves through the fader path
+        self.assertEqual(c["widget"], "radial")
+        doc = ET.fromstring(zlib.decompress(g.build_tosc({"instrument": "t"}, [c], 1)))
+        self.assertIsNone(doc.find(".//node[@type='FADER']"), "radial must not emit a FADER")
+        rad = doc.find(".//node[@type='RADIAL']")
+        self.assertIsNotNone(rad, "radial widget must emit a RADIAL node")
+        # Same OSC send + range scaling as a fader: x[0,1] -> [1,999].
+        arg = rad.find("./messages/osc/arguments/partial")
+        self.assertEqual((arg.find("scaleMin").text, arg.find("scaleMax").text), ("1", "999"))
+
+    def test_radial_frames_are_square(self):
+        # A RADIAL draws a circle sized to its frame, so non-square frames overflow into
+        # neighbouring cells. Every radial must get a square (w == h) frame, even in a wide row
+        # or the lone control of a short last row (which a fader would stretch full-width).
+        nodes = [{"type": "clock", "address": f"/c{i}",
+                  "control": {"label": f"K{i}", "param": "tempo", "widget": "radial"}}
+                 for i in range(5)]  # 5 in a 4-col grid -> a full row of 4 + a lone 5th
+        controls = g.collect_controls({"instrument": "t", "nodes": nodes}, META)
+        doc = ET.fromstring(zlib.decompress(g.build_tosc({"instrument": "t"}, controls, 4)))
+        for rad in doc.findall(".//node[@type='RADIAL']"):
+            f = [p for p in rad.findall("./properties/property") if p.find("key").text == "frame"][0]
+            w, h = int(f.find("value/w").text), int(f.find("value/h").text)
+            self.assertEqual(w, h, "radial frame must be square so the knob doesn't overflow")
+
+
 class EmitTest(unittest.TestCase):
     def setUp(self):
         controls = g.collect_controls(INSTRUMENT, META)
@@ -281,9 +332,11 @@ class FixtureMatchTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.ref = ET.fromstring(zlib.decompress(FIXTURE.read_bytes()))
-        # An instrument exercising all three control kinds: fader, note-toggle (button), label.
+        # An instrument exercising every control kind: fader, radial, note-toggle (button), label.
         inst = {"instrument": "fix", "nodes": [
             {"type": "clock", "address": "/clock", "control": {"label": "Tempo", "param": "tempo"}},
+            {"type": "clock", "address": "/clock2",
+             "control": {"label": "Tempo2", "param": "tempo", "widget": "radial"}},
             {"type": "voicer", "address": "/voicer",
              "control": {"label": "Play", "widget": "note-toggle", "note": 60}},
         ]}
@@ -298,7 +351,7 @@ class FixtureMatchTest(unittest.TestCase):
         self.assertEqual(self.mine.get("version"), self.ref.get("version"))
 
     def test_property_keys_match_reference(self):
-        for ctype in ("FADER", "BUTTON", "LABEL"):
+        for ctype in ("FADER", "RADIAL", "BUTTON", "LABEL"):
             self.assertEqual(self._keys(self.mine, ctype), self._keys(self.ref, ctype),
                              f"{ctype} property keys drifted from the reference export")
 

@@ -43,22 +43,29 @@ Run from the repo root. The script is `gen_surface.py` in this skill's directory
 3. **Curate and annotate.** If the instrument has no `control` blocks yet, propose a tight set —
    **Good Buttons first**, then only the params that are genuinely musical to play (tempo,
    sequence steps, voice count); skip structural/internal params. Show the user the proposed
-   labels + ranges, get confirmation, then **write `control` blocks into the instrument JSON
-   with Edit** (preserve the file's inline-node formatting). Forms:
+   labels + ranges. **Also ask how the user wants the continuous (float) controls rendered —
+   linear `fader`s (default) or rotary `radial` knobs** (the choice applies to every fader-kind
+   control; toggles/buttons are unaffected). Get confirmation, then **write `control` blocks into
+   the instrument JSON with Edit** (preserve the file's inline-node formatting). Forms:
    - Good Button: `"control": { "label": "Brightness", "unit": "%" }`
    - one param: `"control": { "label": "Tempo", "param": "tempo" }`
    - many params on one node: `"control": [ { "label": "Step 1", "param": "step1" }, ... ]`
+   - radial knob: `"control": { "label": "Decay", "widget": "radial", "param": "decay" }`
    - play toggle: `"control": { "label": "Play C", "widget": "note-toggle", "port": "note", "note": 60 }`
-   `label` is required; `unit`/`widget`/`min`/`max`/`default` are optional overrides (otherwise
-   inferred). `widget` ∈ `fader` (default), `note-toggle`. A `note-toggle` plays `<node>/<port>
-   [note, gate]` with a constant `note` so note-off matches (TouchOSC can't share a value
-   between two controls without scripting, so a separate slider + gate isn't possible natively).
+   `label` is required; `unit`/`widget`/`min`/`max`/`default`/`group` are optional (otherwise
+   inferred). `group` is a layout hint (any string): consecutive controls sharing it pack onto one
+   row — e.g. tag each drum channel's knobs `"group": "kick"` / `"snare"` / … to get one channel
+   per row (see *Layout notes*). `widget` ∈ `fader` (default), `radial`, `note-toggle`. A `radial` is a rotary knob —
+   identical value/OSC model to a `fader` (one `x` scaled to the control's range), just rendered
+   as a dial; use it for any continuous param when the user prefers knobs. A `note-toggle` plays
+   `<node>/<port> [note, gate]` with a constant `note` so note-off matches (TouchOSC can't share a
+   value between two controls without scripting, so a separate slider + gate isn't possible natively).
 
 4. **Emit the surface:**
    `python3 <skilldir>/gen_surface.py emit instruments/<name>.json --host <host>`
    Writes `control-surfaces/<name>.tosc` (the repo's versioned, shareable surface dir;
-   override with `--out`). Faders send real values (0..1 scaled to range) and init to the
-   resting default; the connection is one-way (surface → reuben). A `note-toggle` control emits
+   override with `--out`). Faders and radials send real values (0..1 scaled to range) and init to
+   the resting default; the connection is one-way (surface → reuben). A `note-toggle` control emits
    a toggle button that plays a fixed `note` through a message port, e.g. `/voicer/notes`.
 
 5. **Open + verify on device.** Have the user open `control-surfaces/<name>.tosc` in TouchOSC,
@@ -69,11 +76,38 @@ Run from the repo root. The script is `gen_surface.py` in this skill's directory
 ## Format notes
 
 The emitter hand-builds the format (no external dep, `zlib`-compressed `lexml version="6"`),
-**cloned from a known-good editor export**: `fixtures/REUBEN_REF.tosc`. The test
+**cloned from a known-good editor export**: `fixtures/REUBEN_REF.tosc` (which carries one of each
+control kind the editor offers — FADER, RADIAL, BUTTON, LABEL, plus unused types). The test
 `FixtureMatchTest` asserts our per-control property keys still match that fixture, so format
 drift fails CI. If a future TouchOSC version changes the format, or you add a new widget type:
 rebuild the fixture in the editor (one of each control, distinctive values), replace
-`fixtures/REUBEN_REF.tosc`, and diff to update the property sets in `gen_surface.py`.
+`fixtures/REUBEN_REF.tosc`, add the type to `FixtureMatchTest`, and diff to update the property
+sets in `gen_surface.py` (note property key **order** must match the fixture — the test compares
+ordered lists).
+
+## Layout notes (widget sizing)
+
+The grid is sized for **faders**: each control fills its full cell — a tall/wide rectangle. A
+**RADIAL renders a circle sized to its frame's bounding box**, so handing it the same wide, short
+fader cell makes the knob overflow into the neighbouring rows (and the lone control of a short
+last row, which a fader stretches full-width, becomes a giant circle). The emitter therefore boxes
+every radial into the largest **centred square** that fits its cell (`build_tosc`); `RadialTest`
+locks `w == h`. Keep this rule for any future circular/2-D control (XY pad, radar) — frame it
+square, don't let it fill a fader cell.
+
+Because the square is capped by the cell's *height*, a radial-heavy surface with many rows yields
+small knobs (the vertical budget is split across all rows). Knobs are square and there's usually
+spare horizontal room, so **more columns = fewer rows = bigger knobs**: pass `--cols N` to `emit`
+to trade width for knob size (e.g. 25 knobs at `--cols 4` are 68px; at `--cols 7` they grow to
+~130px). Tune `--cols` to the channel/group structure when the params group naturally.
+
+**Grouping params onto rows.** For a channel-structured instrument, a uniform `--cols` grid splits
+a channel awkwardly across rows. Instead tag each logical group with a `group` string on its
+control specs (in declaration order): consecutive same-`group` controls become one full row
+(wrapping past `STEP_COLS`=16), and ungrouped controls flow into the `--cols` grid in between. The
+euclidean-drums surface uses this — tempo (ungrouped) on row 1, then the kick/snare/tom/hat knobs
+each `"group"`-tagged onto their own row, giving 5 even rows of square knobs. Group rows size to
+their own width, so a 6-knob channel row and a 1-knob tempo row still share the same knob size.
 
 ## Run the tests
 

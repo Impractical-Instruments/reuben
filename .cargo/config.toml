@@ -5,3 +5,5 @@
 # `cargo bench` still runs the macro layer; the micro targets declare `required-features = ["bench"]`
 # so they're skipped (not errored) without this flag. Use this alias to get everything in one word.
 reuben-core-bench = "bench -p reuben-core --features bench"
+# Shortcut to play an instrument patch
+reuben-play = "run -p reuben-native --bin reuben -- play"
