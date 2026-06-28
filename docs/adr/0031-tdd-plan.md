@@ -497,11 +497,13 @@ Edits:
   `LaneRule`/`from_param`; added `on_instantiate`/`bind_voices` hooks, the `voice` instrument-resource +
   `interface` block, `EventWriter`/`MsgWriter`; killed every `io.signal`/`io.last`/`io.stream`/
   `io.emit`/`io.lane` and `buffer`/`float` keyword.
-- **CONTEXT.md: FLAGGED, not edited** (glossary is grilled, not auto-written — `/domain-modeling`).
-  Stale/contradicted: **Lane** (deleted mechanism still defined live), **Signal** (now one of three
-  forms, not *the* dense type), **Arg**'s "`F32`→`Buffer` auto-materializes" line (that auto-materialize
-  is exactly what ADR-0031 removed), **Constant**'s "sets Lane count" example. New terms wanting entries:
-  **Value**/**Event** port forms, **voice sub-patch**, **interface** block, **`constant:`**.
+- **CONTEXT.md: reconciled via `/domain-modeling`** (glossary, so a grilled pass of its own, not the
+  auto-sweep). **Lane** → retired tombstone (points to [[voice]]/[[voice sub-patch]]; survives only in
+  frozen ADRs). **Signal** redefined as one of three port **forms**; added **Value** + **Event**
+  siblings. Fixed **Arg**'s implicit-coercion line (now V→S materialize / S→V hard error — the
+  `F32→Buffer` auto-materialize is gone), **Buffer**→`f32_buffer` spelling, **Held value**'s
+  "param lanes"→"latches", **Constant**'s "sets Lane count"→"voice-pool size" + `constant:` keyword.
+  New entries: **Voice sub-patch**, **Interface**. (`Buffer` Arg ref in **Message** updated too.)
 
 **ADR-0031 is fully landed** (steps 0–8). Remaining ADR-0032 deferred item: the iai/criterion bench
 voicer-fixture degradation (loads via plain `load()`, unbound voices — pre-existing, out of gate scope).
