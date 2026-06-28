@@ -10,6 +10,7 @@ pub mod clock;
 pub mod delay;
 pub mod differentiate;
 pub mod djfilter;
+pub mod edge;
 pub mod envelope;
 pub mod euclid;
 pub mod filter;
