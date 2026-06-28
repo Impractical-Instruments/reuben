@@ -100,10 +100,18 @@ declare -a SUM_ROWS=()
 # gate (printed as "Performance has regressed: Instructions (base -> head)" with no normal line).
 # A case header ends in `("<workload>")`; the workload id is the clean case name (e.g. add_f32_signal
 # vs add_f32_value). Summary-section headers end in `:` and are ignored, so each case records once.
+#
+# The compare run is captured with CARGO_TERM_COLOR=always (the job log is colored for humans), so the
+# captured text carries ANSI SGR escapes — `\e[0m` trails the case header (breaking the `("...")$`
+# anchor) and `\e[1m` sits between `Instructions:` and the digits (breaking the count pattern). Both
+# silently defeated every match, so harvesting produced an empty record and nothing was ever appended.
+# The first rule strips SGR sequences from every line before the parsers see it; `[[:cntrl:]]` matches
+# the ESC byte portably (mawk on the runner has no `\e`/`\x1b` regex escape).
 harvest_history() {
   local bench="$1" log="$2" layer="${1%_iai}"
   awk -v layer="$layer" -v sha="$H_SHA" -v full="$H_FULL" -v date="$H_DATE" -v run="${GITHUB_RUN_ID:-}" '
     function emit(ir){ printf "{\"sha\":\"%s\",\"commit_sha\":\"%s\",\"date\":\"%s\",\"run_id\":\"%s\",\"layer\":\"%s\",\"case\":\"%s\",\"ir\":%s}\n", sha, full, date, run, layer, cur, ir }
+    { gsub(/[[:cntrl:]]\[[0-9;]*m/, "") }
     /\("[^"]+"\)[[:space:]]*$/ { h=$0; sub(/.*\("/,"",h); sub(/"\)[[:space:]]*$/,"",h); cur=h; have=0; next }
     (cur!="" && !have && /Instructions:[[:space:]]*[0-9]+\|/) { v=$0; sub(/.*Instructions:[[:space:]]*/,"",v); sub(/\|.*/,"",v); emit(v); have=1; next }
     (cur!="" && !have && /Performance has regressed: Instructions \([0-9]+ -> [0-9]+\)/) { v=$0; sub(/.*-> /,"",v); sub(/\).*/,"",v); emit(v); have=1; next }
