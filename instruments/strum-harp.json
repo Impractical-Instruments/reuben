@@ -1,31 +1,24 @@
 {
-  "doc": "Toy 3 of 3 (V1.3 'The Toys', ADR-0022 §3 / ADR-0032): a drag-to-strum harp. One big fader is the strum bar — stream /strum_bar/in [0..1] and the `strum` op plucks a note each time the position crosses a string boundary (both directions strum). Strings are scale degrees resolved through the tonal context, so an open full-diatonic scale reads as a harp glissando and stays in key. Each of the 8 voices is a hosted `strum-harp-voice` sub-patch (plucked saw -> percussive ADSR VCA); the voicer sums them and a brightness Good Button tones the mix through a master filter. Change the key live with /harmony/root (MIDI) or reshape the scale with /harmony/s0../harmony/s6. Sweep /brightness/in [0..1] to open the plucked tone (master filter cutoff + resonance). Set the string span with /strum/octaves [1..4].",
+  "doc": "Toy 3 of 3 (V1.3 'The Toys', ADR-0022 §3 / ADR-0032): a drag-to-strum harp. One big fader is the strum bar — stream /strum/position [0..1] and the `strum` op plucks a note each time the position crosses a string boundary (both directions strum). Strings are scale degrees resolved through the tonal context, so an open full-diatonic scale reads as a harp glissando and stays in key. Each of the 8 voices is a hosted `strum-harp-voice` sub-patch (plucked saw -> percussive ADSR VCA); the voicer sums them and a brightness Good Button tones the mix through a master filter. Change the key live with /harmony/root (MIDI) or reshape the scale with /harmony/s0../harmony/s6. Sweep /brightness/in [0..1] to open the plucked tone (master filter cutoff + resonance). Set the string span with /strum/octaves [1..4].",
   "instrument": "strum-harp",
   "nodes": [
     {
-      "address": "/strum_bar",
-      "control": {
-        "label": "Strum",
-        "widget": "fader"
-      },
-      "doc": "PUBLIC strum bar. Identity [0,1] pass-through; its position streams to the strum op (Signal->Signal). Send /strum_bar/in [0..1] (the fader). Rests at 0.0 (bottom string) so no note fires at load.",
-      "inputs": {
-        "in": 0.0
-      },
-      "type": "map_f32_signal"
-    },
-    {
       "address": "/strum",
-      "control": {
-        "label": "Range",
-        "param": "octaves"
-      },
-      "doc": "Position crossings -> degree plucks. 8 strings over 1 octave by default; /strum/octaves widens the span.",
+      "control": [
+        {
+          "label": "Strum",
+          "param": "position",
+          "widget": "fader"
+        },
+        {
+          "label": "Range",
+          "param": "octaves"
+        }
+      ],
+      "doc": "PUBLIC strum bar. The fader's position (`position`, a held Value — ADR-0031) is the strum bar itself: send /strum/position [0..1] and each band crossing plucks a degree. Rests at 0.0 (bottom string) so no note fires at load. 8 strings over 1 octave by default; /strum/octaves widens the span.",
       "inputs": {
         "octaves": 1.0,
-        "position": {
-          "from": "/strum_bar"
-        },
+        "position": 0.0,
         "strings": 8.0,
         "velocity": 1.0
       },
