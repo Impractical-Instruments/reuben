@@ -69,8 +69,37 @@ SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 FAIL_PCT=10
 WARN_PCT=3
 
+# Persisted trend (ADR-0019, layer 1). The gate only ever compares HEAD to its parent and then
+# discards the numbers (they survive only in this job's step summary). We additionally harvest
+# HEAD's absolute instruction count per benched case into a JSONL record; a downstream job
+# (push-to-main only) appends it to the `bench-history` branch so a cross-commit trend can be read
+# with a single `git show`. Harvesting is best-effort and never affects the gate verdict.
+RECORD="${GITHUB_WORKSPACE:-$PWD}/bench-history-record.jsonl"
+: >"$RECORD"
+# HEAD identity is stable across the src/ swaps gate_one performs (only the worktree moves, never
+# the commit), so resolve it once. Committer date is deterministic — a sortable trend key.
+H_SHA="$(git rev-parse --short HEAD 2>/dev/null || echo unknown)"
+H_FULL="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
+H_DATE="$(git show -s --format=%cI HEAD 2>/dev/null || echo unknown)"
+
 note() { printf '%s\n' "$*" >>"$SUMMARY"; }
 run_bench() { local bench="$1"; shift; cargo bench -p "$PKG" --features "$FEATURES" --bench "$bench" -- "$@"; }
+
+# Harvest HEAD's absolute Ir per case from a captured compare-run log into $RECORD (one JSON object
+# per case). Parses the human-readable iai output, not --save-summary JSON: the text format is
+# stable across the 0.16.x line and, unlike the summary, carries a value for cases that breached the
+# gate (printed as "Performance has regressed: Instructions (base -> head)" with no normal line).
+# A case header ends in `("<workload>")`; the workload id is the clean case name (e.g. add_f32_signal
+# vs add_f32_value). Summary-section headers end in `:` and are ignored, so each case records once.
+harvest_history() {
+  local bench="$1" log="$2" layer="${1%_iai}"
+  awk -v layer="$layer" -v sha="$H_SHA" -v full="$H_FULL" -v date="$H_DATE" -v run="${GITHUB_RUN_ID:-}" '
+    function emit(ir){ printf "{\"sha\":\"%s\",\"commit_sha\":\"%s\",\"date\":\"%s\",\"run_id\":\"%s\",\"layer\":\"%s\",\"case\":\"%s\",\"ir\":%s}\n", sha, full, date, run, layer, cur, ir }
+    /\("[^"]+"\)[[:space:]]*$/ { h=$0; sub(/.*\("/,"",h); sub(/"\)[[:space:]]*$/,"",h); cur=h; have=0; next }
+    (cur!="" && !have && /Instructions:[[:space:]]*[0-9]+\|/) { v=$0; sub(/.*Instructions:[[:space:]]*/,"",v); sub(/\|.*/,"",v); emit(v); have=1; next }
+    (cur!="" && !have && /Performance has regressed: Instructions \([0-9]+ -> [0-9]+\)/) { v=$0; sub(/.*-> /,"",v); sub(/\).*/,"",v); emit(v); have=1; next }
+  ' "$log" >>"$RECORD" || true
+}
 
 note "## Perf gate — instruction counts (macro \`render_block\` + per-operator \`process\`)"
 note ""
@@ -158,10 +187,16 @@ gate_one() {
   fi
 
   # 2) Restore PR engine + fixtures, compare vs "base". callgrind enforces the hard limit and
-  #    exits non-zero if any case breaches it; that exit code is this layer's verdict.
+  #    exits non-zero if any case breaches it; that exit code is this layer's verdict. We `tee` the
+  #    run so harvest_history can read HEAD's absolute Ir per case; PIPESTATUS[0] keeps the bench's
+  #    own exit code as the verdict (tee always exits 0).
   git checkout HEAD -- "${SRC[@]}" $FIXTURES
-  run_bench "$bench" --baseline=base --save-summary=json --callgrind-limits="ir=${FAIL_PCT}%"
-  local gate_rc=$?
+  local complog
+  complog="$(mktemp)"
+  run_bench "$bench" --baseline=base --save-summary=json --callgrind-limits="ir=${FAIL_PCT}%" 2>&1 | tee "$complog"
+  local gate_rc=${PIPESTATUS[0]}
+  harvest_history "$bench" "$complog"
+  rm -f "$complog"
 
   # Best-effort per-case table from this bench's saved summaries (path-scoped to the bench).
   # diff_pct is serialized as a string (callgrind event "Ir" = instructions). The jq walk is

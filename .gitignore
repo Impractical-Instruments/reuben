@@ -7,6 +7,9 @@
 # ...but committed sample fixtures (worked-example instruments) are kept.
 !instruments/samples/*.wav
 
+# Perf-gate harvest record (regenerated each run by perf-gate.sh; lives on the bench-history branch)
+/bench-history-record.jsonl
+
 # Editor / OS
 *.swp
 *.bak
