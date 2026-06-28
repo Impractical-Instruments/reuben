@@ -128,23 +128,27 @@ impl Operator for Djfilter {
         // one read path (ADR-0028). Mode + coefficients are recomputed only when `position`
         // actually changes from the previous sample — `target`/`coeffs` are pure, so reusing the
         // cache on an unchanged knob is bit-identical to recomputing it, and a settled or slow knob
-        // costs one compare per sample instead of a `tan()`/`powf()`.
+        // costs one compare per sample instead of a `tan()`/`powf()`. The cache lives in this call,
+        // not the struct: voicing (resonance/cutoffs) is read once per block, so a coeff cache that
+        // survived across `process` calls would go stale on any voicing change at an unchanged knob.
+        // The `NaN` seed (≠ anything) forces a compute on the first sample of every block.
         let mut last_pos = f32::NAN;
         let (mut use_hp, mut k, mut a1, mut a2, mut a3) = (false, 0.0, 0.0, 0.0, 0.0);
         for i in 0..n {
-            let x = io.input::<&[f32]>(IN_AUDIO).get(i).copied().unwrap_or(0.0);
             let pos = io
                 .input::<&[f32]>(IN_POSITION)
                 .get(i)
                 .copied()
                 .unwrap_or(0.0);
-            // NaN seed forces a compute on the first sample (NaN != anything).
+
             if pos != last_pos {
                 let (uh, cutoff) = target(pos, lp_start, lp_end, hp_start, hp_end);
                 (k, a1, a2, a3) = coeffs(cutoff, resonance, sample_rate);
                 use_hp = uh;
                 last_pos = pos;
             }
+
+            let x = io.input::<&[f32]>(IN_AUDIO).get(i).copied().unwrap_or(0.0);
             let (lp, hp) = self.svf_step(x, k, a1, a2, a3);
             io.output::<&mut [f32]>(OUT_AUDIO)[i] = if use_hp { hp } else { lp };
         }

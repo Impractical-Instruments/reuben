@@ -237,9 +237,10 @@ impl Plan {
     /// single typed [`Message`] it routes to, driven by the **destination port's Arg type**
     /// (ADR-0030, the boundary). Matches the address to a node by prefix and to an input port by
     /// name (the same rule the render path uses), then calls [`crate::boundary::osc_in_arg`] with
-    /// that port's [`PortType`] to type the flat args. `None` if no node/port matches or the args
-    /// don't fit the port. External OSC carries no timestamp, so the Message is stamped frame 0
-    /// ("now").
+    /// that [`Port`] to type the flat args (the port's `meta` is what lets a scalar-defaulted
+    /// `f32_buffer` control like `djfilter.position` cross, while bare audio does not). `None` if no
+    /// node/port matches or the args don't fit the port. External OSC carries no timestamp, so the
+    /// Message is stamped frame 0 ("now").
     pub fn osc_in_message(&self, address: &str, args: &[Arg]) -> Option<Message> {
         for node in &self.nodes {
             let Some(local) = crate::render::local_address(address, &node.address) else {
@@ -252,7 +253,7 @@ impl Plan {
                 .inputs
                 .iter()
                 .find(|p| p.name == local)
-                .and_then(|p| crate::boundary::osc_in_arg(&p.ty, args))?;
+                .and_then(|p| crate::boundary::osc_in_arg(p, args))?;
             return Some(Message::new(address, arg, 0));
         }
         None

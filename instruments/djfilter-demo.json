@@ -48,18 +48,35 @@
       "voice": "djfilter-demo-voice"
     },
     {
-      "address": "/djfilter",
-      "control": {
-        "label": "Resonance",
-        "param": "resonance"
+      "address": "/filterpos",
+      "control": [
+        {
+          "label": "Filter",
+          "param": "in"
+        }
+      ],
+      "inputs": {
+        "in": 0.0,
+        "mode": "Smooth",
+        "time": 0.1
       },
+      "type": "m2s"
+    },
+    {
+      "address": "/djfilter",
+      "control": [
+        {
+          "label": "Resonance",
+          "param": "resonance"
+        }
+      ],
       "doc": "The master DJ filter on the summed mix. position is driven by the smoothed knob; resonance set to sing on sweeps.",
       "inputs": {
         "audio": {
           "from": "/voicer.audio"
         },
         "position": {
-          "from": "/filter_knob"
+          "from": "/filterpos.out"
         },
         "resonance": 0.35
       },
@@ -73,19 +90,6 @@
         }
       },
       "type": "output"
-    },
-    {
-      "address": "/filter_knob",
-      "control": {
-        "label": "Filter"
-      },
-      "doc": "PUBLIC DJ filter knob. The held knob value [-1,1] smoothed into a CV Signal (an `m2s` is the value->signal converter) feeding the master djfilter position; rests at North = 0. Send /filter_knob/in [-1..1].",
-      "inputs": {
-        "in": 0.0,
-        "mode": "Smooth",
-        "time": 0.05
-      },
-      "type": "m2s"
     }
   ],
   "outputs": [
