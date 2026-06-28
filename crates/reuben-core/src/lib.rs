@@ -59,6 +59,9 @@ pub use vocab::{Chord, ChordTag, Harmony, ScaleField, SnapDir, SnapPolicy, SnapT
 // modules can call `crate::operator_contract!(..)`, mirroring `register_operator!`.
 pub use registry::Registry;
 pub use reuben_macros::operator_contract;
+// The pointwise-number-operator family macro (ADR-0033): one scalar fn -> value+signal variants
+// across number types. Re-exported here so operator modules call `crate::number_operator_contract!`.
+pub use reuben_macros::number_operator_contract;
 // `#[derive(ArgValue)]` (ADR-0030): integrates a shared `vocab` type with the central `Arg`.
 pub use reuben_macros::ArgValue;
 // Re-export the self-registration macro at the crate root so operator modules can call
