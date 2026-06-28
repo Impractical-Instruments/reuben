@@ -240,7 +240,82 @@ impl OpDriver {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::format::load;
+    use crate::operators::{oscillator, Oscillator};
     use crate::registry::Registry;
+
+    /// **Behavioral / end-to-end fidelity pin** (issue #89), the output-equivalence complement to the
+    /// *structural* wire-form pin in `tests/wire_forms.rs`.
+    ///
+    /// The structural pin proves `OpDriver`'s wiring arrays (`latched` / `varying` / input-buffer
+    /// presence) match a one-node `Plan`'s `PlanNode` — it pins the *wiring* drift surface but does
+    /// **not** prove `process` produces identical *samples* through the driver's `step_node` seam vs.
+    /// the production `render_block` → `render_plan` → `process_node` stepping path. This test closes
+    /// that gap: it drives the same operator both ways and asserts sample-exact output equivalence.
+    ///
+    /// Representative operator: `oscillator` — a deterministic, no-event, no-resource signal generator
+    /// (a non-trivial varying waveform, so block-threaded phase state would expose any drift).
+    ///
+    /// Master-bus confound (the issue's open question): the rendered buffer is the master-tap *sum*,
+    /// not the node's raw output. For a single broadcast tap into a mono master, that sum is an exact
+    /// copy, and `output` is a verified sample-exact unity passthrough (`operators/output.rs`) — so a
+    /// one-node `oscillator → output` instrument's master buffer *is* the operator's raw output, with
+    /// no gain stage to confound it. We render the real side through the full public `load` →
+    /// `Plan::instantiate` → `render_block` path (JSON instrument included), matching `OpDriver`'s
+    /// 48 kHz / 128-frame block geometry so the comparison is sample-for-sample.
+    #[test]
+    fn op_driver_output_matches_the_real_render_path_sample_exact() {
+        const SR: f32 = 48_000.0;
+        const FREQ: f32 = 440.0;
+        const BLOCKS: usize = 4;
+        const N: usize = BLOCKS * BLOCK_SIZE;
+
+        // --- Driver side: oscillator through OpDriver's `step_node` seam. ---
+        let mut d = OpDriver::for_type(Oscillator::new(), SR);
+        d.set(oscillator::IN_FREQ, FREQ);
+        d.render(N);
+        let driver_out = d.output(oscillator::OUT_AUDIO).to_vec();
+
+        // --- Real side: the same oscillator as a one-node unity-passthrough instrument, driven
+        // through the production `load` → `instantiate` → `render_block` path. `/out` is `output`,
+        // a sample-exact unity passthrough, so the master tap equals the oscillator's raw output. ---
+        let json = r#"{
+            "instrument": "behavioral_pin_osc",
+            "nodes": [
+                { "type": "oscillator", "address": "/osc", "inputs": { "freq": 440.0 } },
+                { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/osc" } } }
+            ],
+            "outputs": [ { "node": "/out", "port": "audio" } ]
+        }"#;
+        let graph = load(json, &Registry::builtin()).expect("instrument loads");
+        let config = AudioConfig::new(SR, BLOCK_SIZE);
+        let mut plan = Plan::instantiate(graph, config).expect("instrument instantiates");
+        let mut renderer = Renderer::new(&plan);
+        let mut block = vec![0.0f32; BLOCK_SIZE];
+        let mut real_out = Vec::with_capacity(N);
+        for _ in 0..BLOCKS {
+            // No messages: `freq` is a held Value, materialized identically on both paths.
+            renderer.render_block(&mut plan, &[], &mut block);
+            real_out.extend_from_slice(&block);
+        }
+
+        assert_eq!(driver_out.len(), N);
+        assert_eq!(real_out.len(), N);
+        // Bit-exact: both paths run identical DSP on identical per-node seeding at the same block
+        // geometry. Any divergence between the driver's `step_node` and production `process_node`
+        // stepping — the drift this pin guards — shows up as a sample mismatch.
+        assert_eq!(
+            driver_out, real_out,
+            "OpDriver output diverged from the real render path"
+        );
+        // Guard against the degenerate pass where both sides are silent (e.g. a future change that
+        // zeroes the oscillator): a 440 Hz tone must actually be present.
+        let peak = real_out.iter().fold(0.0f32, |m, &s| m.max(s.abs()));
+        assert!(
+            peak > 0.05,
+            "expected an audible tone, got near-silence (peak {peak})"
+        );
+    }
 
     /// Block-boundary zero-order-hold on a materialized `Float` port (ADR-0030). A held value that
     /// changes mid-block must (a) write sample-accurately from its frame within that block, and
