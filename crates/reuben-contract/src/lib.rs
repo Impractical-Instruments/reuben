@@ -9,7 +9,7 @@
 //! Putting it anywhere else would re-create the very drift this layer exists to remove.
 //!
 //! A port carries an **[`Arg`](reuben_core::message::Arg) type** (ADR-0030), named by [`PortSpec::ty`]:
-//! `buffer` (a dense per-sample signal), `float` (a materialized scalar control with a
+//! `f32_buffer` (a dense per-sample signal), `f32` (a materialized scalar control with a
 //! `{ .. }` meta block), `enum` (a held vocab enum, naming its shared `vocab` type), `note`, or
 //! `harmony`. The retired `Shape`/legacy-`kind` two-surface world is gone.
 
@@ -17,11 +17,11 @@ use serde::Deserialize;
 
 pub mod naming;
 
-/// The `{ min, max, default, unit, curve }` block on a `float` port (ADR-0030): its unwired
+/// The `{ min, max, default, unit, curve }` block on a `f32` port (ADR-0030): its unwired
 /// default, range, and display metadata. Mirrors [`ParamSpec`] without the name. Required on a
-/// `float` port (a bare per-sample wire is `buffer`, not `float`).
+/// `f32` port (a bare per-sample wire is `f32_buffer`, not `f32`).
 #[derive(Debug, Clone, Deserialize)]
-pub struct FloatMeta {
+pub struct F32Meta {
     pub min: f32,
     pub max: f32,
     pub default: f32,
@@ -32,21 +32,21 @@ pub struct FloatMeta {
 }
 
 /// A port in the contract — carrying one [`Arg`](reuben_core::message::Arg) type (ADR-0030),
-/// named by [`ty`](Self::ty). `float` ports carry their `{ .. }` meta in [`float`](Self::float);
+/// named by [`ty`](Self::ty). `f32` ports carry their `{ .. }` meta in [`f32`](Self::f32);
 /// `enum` ports name their shared `vocab` type in [`vocab`](Self::vocab). All other types
-/// (`buffer`, `note`, `harmony`) need neither.
+/// (`f32_buffer`, `note`, `harmony`) need neither.
 ///
 /// Kept as `String` fields (not enums) so the struct round-trips from the scaffold's JSON spec and
 /// from the proc-macro's parsed tokens with no conversion.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PortSpec {
     pub name: String,
-    /// The port's [`Arg`](reuben_core::message::Arg) type: `buffer` | `float` | `enum` | `note` |
+    /// The port's [`Arg`](reuben_core::message::Arg) type: `f32_buffer` | `f32` | `enum` | `note` |
     /// `harmony`.
     pub ty: String,
-    /// `Some` for a `float` port — its materialized default/range.
+    /// `Some` for a `f32` port — its materialized default/range.
     #[serde(default)]
-    pub float: Option<FloatMeta>,
+    pub f32: Option<F32Meta>,
     /// `Some` for an `enum` port — the shared `vocab` enum type name (PascalCase, e.g.
     /// `"FilterMode"`); the descriptor reads its `VARIANTS`/default from `Type::enum_meta(name)`.
     #[serde(default)]
@@ -70,19 +70,10 @@ fn default_curve() -> String {
     "linear".to_string()
 }
 
-/// How the operator sets its output Lane count (mirrors [`reuben_core::descriptor::LaneRule`]).
-#[derive(Debug, Clone, Deserialize, Default)]
-#[serde(rename_all = "snake_case")]
-pub enum LaneSpec {
-    #[default]
-    Inherit,
-    /// Expand to as many Lanes as the named param's value (the Voicer pattern).
-    FromParam(String),
-}
-
-/// The contract for an Operator — one declaration of its ports, params, resources, and Lane rule.
-/// The scaffold hand-authors / deserializes it; the proc-macro parses it from `operator_contract!`
-/// syntax. Mirrors a [`reuben_core::descriptor::Descriptor`].
+/// The contract for an Operator — one declaration of its ports, params, resources, and the optional
+/// instantiate-time [`Constant`](reuben_core::descriptor::Descriptor::constant_param). The scaffold
+/// hand-authors / deserializes it; the proc-macro parses it from `operator_contract!` syntax.
+/// Mirrors a [`reuben_core::descriptor::Descriptor`].
 #[derive(Debug, Clone, Deserialize)]
 pub struct OperatorSpec {
     pub type_name: String,
@@ -94,13 +85,15 @@ pub struct OperatorSpec {
     pub params: Vec<ParamSpec>,
     #[serde(default)]
     pub resources: Vec<String>,
+    /// The one param (by name) that is an instantiate-time **`Constant`** (ADR-0028) — config that,
+    /// if changed, rebuilds the graph (e.g. a voicer's `voices`). `None` for the common operator.
     #[serde(default)]
-    pub lanes: LaneSpec,
+    pub constant: Option<String>,
 }
 
 /// The legal port [`Arg`](reuben_core::message::Arg) types (ADR-0030). Centralised so both the
 /// scaffold and the macro reject the same set.
-pub const PORT_TYPES: [&str; 5] = ["buffer", "float", "enum", "note", "harmony"];
+pub const PORT_TYPES: [&str; 5] = ["f32_buffer", "f32", "enum", "note", "harmony"];
 
 /// Where in the spec a validation error sits, so the proc-macro can attach a source span to the
 /// offending token. The scaffold ignores the locus and just formats the message.
@@ -110,7 +103,7 @@ pub enum Locus {
     Input(usize),
     Output(usize),
     Param(usize),
-    Lanes,
+    Constant,
 }
 
 /// A rejected contract: a human-readable reason plus where it lives.
@@ -156,8 +149,8 @@ fn is_ident(name: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// Validate one port's internal consistency (ADR-0030): `ty` legal; `float` meta present and valid
-/// **iff** `float`; `vocab` type named and identifier-shaped **iff** `enum`.
+/// Validate one port's internal consistency (ADR-0030): `ty` legal; `f32` meta present and valid
+/// **iff** `f32`; `vocab` type named and identifier-shaped **iff** `enum`.
 fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractError> {
     if !PORT_TYPES.contains(&p.ty.as_str()) {
         return Err(ContractError::new(
@@ -168,18 +161,20 @@ fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractErr
             ),
         ));
     }
-    // `float` meta only on `float`, and required there.
-    match (p.ty.as_str(), &p.float) {
-        ("float", None) => {
+    // A `{ .. }` meta block is **required** on `f32` (it's a scalar control) and **optional** on
+    // `f32_buffer` (ADR-0031 decision (a): a signal port with a scalar default + knob, e.g.
+    // `oscillator.freq`). No other port type may carry one.
+    match (p.ty.as_str(), &p.f32) {
+        ("f32", None) => {
             return Err(ContractError::new(
                 at,
                 format!(
-                    "{label} {:?}: a `float` port needs a {{ .. }} meta block",
+                    "{label} {:?}: a `f32` port needs a {{ .. }} meta block",
                     p.name
                 ),
             ));
         }
-        ("float", Some(m)) => {
+        ("f32" | "f32_buffer", Some(m)) => {
             if m.min > m.max {
                 return Err(ContractError::new(
                     at,
@@ -209,7 +204,7 @@ fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractErr
             return Err(ContractError::new(
                 at,
                 format!(
-                    "{label} {:?}: only a `float` port carries a {{ .. }} meta block",
+                    "{label} {:?}: only a `f32` or `f32_buffer` port carries a {{ .. }} meta block",
                     p.name
                 ),
             ));
@@ -337,11 +332,11 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
         }
     }
 
-    if let LaneSpec::FromParam(param) = &spec.lanes {
+    if let Some(param) = &spec.constant {
         if !spec.params.iter().any(|p| &p.name == param) {
             return Err(ContractError::new(
-                Locus::Lanes,
-                format!("lanes.from_param {param:?} names no declared param"),
+                Locus::Constant,
+                format!("constant {param:?} names no declared param"),
             ));
         }
     }
@@ -401,7 +396,7 @@ mod tests {
     fn rejects_non_snake_case_port_name_at_that_port() {
         for bad in ["in gain", "2x", "Freq"] {
             let json = format!(
-                r#"{{ "type_name": "x", "inputs": [ {{"name":{bad:?},"ty":"buffer"}} ] }}"#
+                r#"{{ "type_name": "x", "inputs": [ {{"name":{bad:?},"ty":"f32_buffer"}} ] }}"#
             );
             let e = err(&json);
             assert_eq!(e.locus, Locus::Input(0), "{}", e.message);
@@ -421,25 +416,25 @@ mod tests {
 
     #[test]
     fn accepts_the_full_port_vocabulary() {
-        // A filter-shaped contract plus the discrete carriers: buffer, float-with-meta, enum
+        // A filter-shaped contract plus the discrete carriers: f32_buffer, f32-with-meta, enum
         // (naming its vocab type), note, harmony.
         assert!(validate(&spec(
             r#"{ "type_name": "filter",
                  "inputs": [
-                   {"name":"audio","ty":"buffer"},
-                   {"name":"cutoff","ty":"float","float":{"min":20,"max":20000,"default":1000,"unit":"Hz","curve":"exponential"}},
+                   {"name":"audio","ty":"f32_buffer"},
+                   {"name":"cutoff","ty":"f32","f32":{"min":20,"max":20000,"default":1000,"unit":"Hz","curve":"exponential"}},
                    {"name":"mode","ty":"enum","vocab":"FilterMode"},
                    {"name":"notes","ty":"note"},
                    {"name":"ctx","ty":"harmony"} ],
-                 "outputs": [ {"name":"audio","ty":"buffer"} ] }"#
+                 "outputs": [ {"name":"audio","ty":"f32_buffer"} ] }"#
         ))
         .is_ok());
     }
 
     #[test]
     fn rejects_malformed_ports() {
-        // `float` needs a meta block.
-        let bare_float = err(r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"float"} ] }"#);
+        // `f32` needs a meta block.
+        let bare_float = err(r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"f32"} ] }"#);
         assert_eq!(bare_float.locus, Locus::Input(0));
         assert!(
             bare_float.message.contains("meta"),
@@ -451,19 +446,27 @@ mod tests {
         let no_vocab = err(r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"enum"} ] }"#);
         assert!(no_vocab.message.contains("vocab"), "{}", no_vocab.message);
 
-        // A non-`float` port can't carry float meta.
+        // A port that is neither `f32` nor `f32_buffer` can't carry f32 meta (ADR-0031 decision (a)
+        // extended the optional meta block to `f32_buffer`).
         let stray_meta = err(
-            r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"buffer","float":{"min":0,"max":1,"default":0}} ] }"#,
+            r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"note","f32":{"min":0,"max":1,"default":0}} ] }"#,
         );
-        assert!(
-            stray_meta.message.contains("float"),
-            "{}",
-            stray_meta.message
-        );
+        assert!(stray_meta.message.contains("f32"), "{}", stray_meta.message);
 
-        // Out-of-range float default.
+        // ...but an `f32_buffer` *may* carry one (a signal control with a scalar default), and a
+        // bad range in it is still validated.
+        assert!(validate(&spec(
+            r#"{ "type_name": "x", "inputs": [ {"name":"freq","ty":"f32_buffer","f32":{"min":20,"max":20000,"default":440,"unit":"Hz","curve":"exponential"}} ] }"#,
+        ))
+        .is_ok());
+        let buf_oob = err(
+            r#"{ "type_name": "x", "inputs": [ {"name":"freq","ty":"f32_buffer","f32":{"min":0,"max":1,"default":5}} ] }"#,
+        );
+        assert!(buf_oob.message.contains("outside"), "{}", buf_oob.message);
+
+        // Out-of-range f32 default.
         let oob = err(
-            r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"float","float":{"min":0,"max":1,"default":5}} ] }"#,
+            r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"f32","f32":{"min":0,"max":1,"default":5}} ] }"#,
         );
         assert!(oob.message.contains("outside"), "{}", oob.message);
     }
@@ -471,10 +474,10 @@ mod tests {
     #[test]
     fn rejects_duplicates_and_dangling_lane_param() {
         let dup = err(
-            r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"buffer"}, {"name":"a","ty":"buffer"} ] }"#,
+            r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"f32_buffer"}, {"name":"a","ty":"f32_buffer"} ] }"#,
         );
         assert_eq!(dup.locus, Locus::Input(1));
-        let dangling = err(r#"{ "type_name": "x", "lanes": { "from_param": "voices" } }"#);
-        assert_eq!(dangling.locus, Locus::Lanes);
+        let dangling = err(r#"{ "type_name": "x", "constant": "voices" }"#);
+        assert_eq!(dangling.locus, Locus::Constant);
     }
 }

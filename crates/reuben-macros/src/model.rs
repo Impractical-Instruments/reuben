@@ -3,12 +3,12 @@
 //! no spans, just data, so the index arithmetic (the old `scaffold::port_consts` hand-logic) is
 //! computed **once** here and unit-tested directly.
 
-use reuben_contract::{naming, LaneSpec, OperatorSpec, PortSpec};
+use reuben_contract::{naming, OperatorSpec, PortSpec};
 
-/// The resolved `float { .. }` meta on a `float` port (ADR-0030), curve normalised to
+/// The resolved `f32 { .. }` meta on a `f32` port (ADR-0030), curve normalised to
 /// `"linear"`/`"exponential"`. Mirrors [`ParamModel`] minus the const/index.
 #[derive(Debug, Clone, PartialEq)]
-pub struct FloatModel {
+pub struct F32Model {
     pub min: f32,
     pub max: f32,
     pub default: f32,
@@ -18,17 +18,17 @@ pub struct FloatModel {
 
 /// One resolved port: its index const (`IN_FREQ`), ordinal, source name, and its
 /// [`Arg`](reuben_core::message::Arg) type (ADR-0030). Ports number **sequentially** within
-/// inputs/outputs (declaration order). `float` carries its [`FloatModel`]; `enum` carries the
+/// inputs/outputs (declaration order). `f32` carries its [`F32Model`]; `enum` carries the
 /// shared `vocab` type name.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PortModel {
     pub const_name: String,
     pub ordinal: usize,
     pub name: String,
-    /// The port [`Arg`](reuben_core::message::Arg) type: `buffer` | `float` | `enum` | `note` |
+    /// The port [`Arg`](reuben_core::message::Arg) type: `f32_buffer` | `f32` | `enum` | `note` |
     /// `harmony`.
     pub ty: String,
-    pub float: Option<FloatModel>,
+    pub f32: Option<F32Model>,
     /// The shared `vocab` enum type name, for `enum` ports.
     pub vocab: Option<String>,
 }
@@ -47,14 +47,6 @@ pub struct ParamModel {
     pub curve: String,
 }
 
-/// The resolved Lane rule. `FromParam` carries the **param const name** (`P_VOICES`) it expands
-/// against, so the emitted `LaneRule::FromParam(P_VOICES)` references the const the macro plants.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum LaneModel {
-    Inherit,
-    FromParam(String),
-}
-
 /// A fully-resolved operator contract, ready to render to tokens.
 #[derive(Debug, Clone, PartialEq)]
 pub struct ContractModel {
@@ -63,7 +55,10 @@ pub struct ContractModel {
     pub outputs: Vec<PortModel>,
     pub params: Vec<ParamModel>,
     pub resources: Vec<String>,
-    pub lanes: LaneModel,
+    /// The instantiate-time **`Constant`** param's index **const name** (`P_VOICES`), so the emitted
+    /// `constant_param: Some(P_VOICES)` references the const the macro plants. `None` for the common
+    /// operator.
+    pub constant: Option<String>,
 }
 
 /// Number a set of ports sequentially in declaration order (ADR-0030): inputs are indexed `0..`,
@@ -78,7 +73,7 @@ fn port_models(ports: &[PortSpec], prefix: &str) -> Vec<PortModel> {
             ordinal: idx,
             name: p.name.clone(),
             ty: p.ty.clone(),
-            float: p.float.as_ref().map(|m| FloatModel {
+            f32: p.f32.as_ref().map(|m| F32Model {
                 min: m.min,
                 max: m.max,
                 default: m.default,
@@ -108,17 +103,17 @@ pub fn build(spec: &OperatorSpec) -> ContractModel {
             curve: p.curve.clone(),
         })
         .collect();
-    let lanes = match &spec.lanes {
-        LaneSpec::Inherit => LaneModel::Inherit,
-        LaneSpec::FromParam(name) => LaneModel::FromParam(format!("P_{}", naming::screaming(name))),
-    };
+    let constant = spec
+        .constant
+        .as_ref()
+        .map(|name| format!("P_{}", naming::screaming(name)));
     ContractModel {
         type_name: spec.type_name.clone(),
         inputs: port_models(&spec.inputs, "IN"),
         outputs: port_models(&spec.outputs, "OUT"),
         params,
         resources: spec.resources.clone(),
-        lanes,
+        constant,
     }
 }
 
@@ -130,11 +125,11 @@ mod tests {
         serde_json::from_str(json).expect("valid spec")
     }
 
-    // One buffer input -> IN_AUDIO at ordinal 0.
+    // One f32_buffer input -> IN_AUDIO at ordinal 0.
     #[test]
     fn single_buffer_input_is_ordinal_zero() {
         let m = build(&spec(
-            r#"{ "type_name": "oscillator", "inputs": [ {"name":"audio","ty":"buffer"} ] }"#,
+            r#"{ "type_name": "oscillator", "inputs": [ {"name":"audio","ty":"f32_buffer"} ] }"#,
         ));
         assert_eq!(m.inputs[0].const_name, "IN_AUDIO");
         assert_eq!(m.inputs[0].ordinal, 0);
@@ -147,7 +142,7 @@ mod tests {
         let m = build(&spec(
             r#"{ "type_name": "voicer",
                  "inputs": [ {"name":"notes","ty":"note"}, {"name":"ctx","ty":"harmony"} ],
-                 "outputs": [ {"name":"freq","ty":"buffer"}, {"name":"gate","ty":"buffer"} ] }"#,
+                 "outputs": [ {"name":"freq","ty":"f32_buffer"}, {"name":"gate","ty":"f32_buffer"} ] }"#,
         ));
         assert_eq!(
             (m.inputs[0].const_name.as_str(), m.inputs[0].ordinal),
@@ -167,38 +162,38 @@ mod tests {
         );
     }
 
-    // Params index sequentially and keep their metadata; FromParam resolves to the param's const.
+    // Params index sequentially and keep their metadata; `constant` resolves to the param's const.
     #[test]
-    fn params_index_sequentially_and_lane_resolves_to_const() {
+    fn params_index_sequentially_and_constant_resolves_to_const() {
         let m = build(&spec(
             r#"{ "type_name": "voicer",
                  "params": [ {"name":"voices","min":1,"max":32,"default":8,"curve":"linear"} ],
-                 "lanes": { "from_param": "voices" } }"#,
+                 "constant": "voices" }"#,
         ));
         assert_eq!(m.params[0].const_name, "P_VOICES");
         assert_eq!(m.params[0].index, 0);
-        assert_eq!(m.lanes, LaneModel::FromParam("P_VOICES".to_string()));
+        assert_eq!(m.constant.as_deref(), Some("P_VOICES"));
     }
 
-    // The full filter port vocabulary: buffer, float-with-meta, enum naming its vocab type.
+    // The full filter port vocabulary: f32_buffer, f32-with-meta, enum naming its vocab type.
     #[test]
     fn resolves_the_filter_ports() {
         let m = build(&spec(
             r#"{ "type_name": "filter",
-                 "inputs": [ {"name":"audio","ty":"buffer"},
-                             {"name":"cutoff","ty":"float","float":{"min":20,"max":20000,"default":1000,"unit":"Hz","curve":"exponential"}},
+                 "inputs": [ {"name":"audio","ty":"f32_buffer"},
+                             {"name":"cutoff","ty":"f32","f32":{"min":20,"max":20000,"default":1000,"unit":"Hz","curve":"exponential"}},
                              {"name":"mode","ty":"enum","vocab":"FilterMode"} ] }"#,
         ));
         assert_eq!(
             (m.inputs[0].const_name.as_str(), m.inputs[0].ty.as_str()),
-            ("IN_AUDIO", "buffer")
+            ("IN_AUDIO", "f32_buffer")
         );
         assert_eq!(
             (m.inputs[2].const_name.as_str(), m.inputs[2].ordinal),
             ("IN_MODE", 2)
         );
-        assert_eq!(m.inputs[1].ty, "float");
-        assert_eq!(m.inputs[1].float.as_ref().map(|f| f.default), Some(1000.0));
+        assert_eq!(m.inputs[1].ty, "f32");
+        assert_eq!(m.inputs[1].f32.as_ref().map(|f| f.default), Some(1000.0));
         assert_eq!(m.inputs[2].ty, "enum");
         assert_eq!(m.inputs[2].vocab.as_deref(), Some("FilterMode"));
     }

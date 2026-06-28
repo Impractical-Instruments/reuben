@@ -13,7 +13,7 @@
 //! Everything the core used to carry on seven separate lanes — dense audio, sparse events,
 //! the harmony struct, held enums, params, materialized floats, the outbound sink — is one
 //! Message stream read three ways: as a stream of events, as a held (zero-order-hold) value,
-//! or, for a [`Buffer`](Arg::Buffer) payload, as a dense per-sample block.
+//! or, for a [`Buffer`](Arg::F32Buffer) payload, as a dense per-sample block.
 
 use crate::vocab::harmony::{Harmony, SnapDir, SnapTarget};
 use crate::vocab::pitch::Note;
@@ -69,7 +69,7 @@ impl<T> Signal<T> {
 ///   adds the `vocab` module + `ArgValue` derive that folds in the operator enums
 ///   (`FilterMode`, `Waveform`, `SnapMode`, `MapCurve`, `M2sMode`, …), each generating its own
 ///   OSC conversion + metadata;
-/// - the optimized dense payload — [`Buffer`](Arg::Buffer), a [`Signal`]'s samples.
+/// - the optimized dense payload — [`Buffer`](Arg::F32Buffer), a [`Signal`]'s samples.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Arg {
     // OSC primitives.
@@ -91,7 +91,7 @@ pub enum Arg {
     MapCurve(MapCurve),
 
     // The optimized dense payload.
-    Buffer(Signal<f32>),
+    F32Buffer(Signal<f32>),
 }
 
 impl Arg {
@@ -105,10 +105,10 @@ impl Arg {
         }
     }
 
-    /// The held buffer, if this Arg is a [`Buffer`](Arg::Buffer).
-    pub fn as_buffer(&self) -> Option<&Signal<f32>> {
+    /// The held buffer, if this Arg is a [`Buffer`](Arg::F32Buffer).
+    pub fn as_f32_buffer(&self) -> Option<&Signal<f32>> {
         match self {
-            Arg::Buffer(b) => Some(b),
+            Arg::F32Buffer(b) => Some(b),
             _ => None,
         }
     }
@@ -131,7 +131,7 @@ impl From<i32> for Arg {
 
 /// Decode a borrowed [`Arg`] into an operator's requested payload type — the read side of the
 /// typed I/O API (`io.stream::<T>` / `io.last::<T>`, ADR-0030). One trait spans every payload an
-/// operator reads: the OSC primitives (`f32`/`i32`/`&str`), the dense [`Buffer`](Arg::Buffer) as a
+/// operator reads: the OSC primitives (`f32`/`i32`/`&str`), the dense [`Buffer`](Arg::F32Buffer) as a
 /// borrowed `&[f32]`, and the shared *vocab* concrete types (whose impl `#[derive(ArgValue)]`
 /// generates, delegating to their `TryFrom<&Arg>`).
 ///
@@ -171,7 +171,7 @@ impl<'a> FromArg<'a> for &'a str {
 impl<'a> FromArg<'a> for &'a [f32] {
     fn from_arg(arg: &'a Arg) -> Option<Self> {
         match arg {
-            Arg::Buffer(b) => Some(b.as_slice()),
+            Arg::F32Buffer(b) => Some(b.as_slice()),
             _ => None,
         }
     }
@@ -182,7 +182,7 @@ impl<'a> FromArg<'a> for &'a [f32] {
 /// Internally a Message carries exactly one [`Arg`], but external OSC is a flat list of
 /// primitive args — so a struct vocab type spans several (`Note ↔ /note pitch vel`). A type with
 /// an external OSC form implements this; **not** implementing it is the boundary opt-out (a
-/// [`Buffer`](Arg::Buffer) never crosses, so audio is kept off the wire by construction). The
+/// [`Buffer`](Arg::F32Buffer) never crosses, so audio is kept off the wire by construction). The
 /// `args` read and `out` written are primitive `Arg`s (`F32`/`I32`/`Str`) — the OSC atoms.
 ///
 /// Enums need no impl: a vocab enum is a single OSC arg (a symbol or index), handled by its
@@ -232,17 +232,15 @@ impl Message {
 
 /// A Message an operator emits during `process` onto a Message output port (ADR-0014),
 /// before the engine stamps it block-absolute and routes it to downstream nodes. Distinct
-/// from the boundary [`Message`]: its address is a `&'static str` and its payload is the one
-/// inline [`Arg`], so emitting on the wired hot path touches no allocator (sparse `Arg::Str`
-/// aside, which only appears on cold paths).
+/// from the boundary [`Message`]: its payload is the one inline [`Arg`], so emitting on the wired
+/// hot path touches no allocator (sparse `Arg::Str` aside, which only appears on cold paths).
+/// Carries **no address** (ADR-0031 step 7): internal wires route by connection, and the OSC
+/// boundary stamps the node address from [`Plan::outbound_taps`](crate::plan::Plan), not from here.
 #[derive(Debug, Clone)]
 pub struct Emit {
     /// Which Message output port it went to, as an ordinal among the operator's Message
     /// outputs (a separate index space from Buffer/Signal outputs).
     pub port: usize,
-    /// Node-local address the engine carries for OSC shape / debug, e.g. `"notes"`. Static —
-    /// the wired edge, not this string, is the routing.
-    pub address: &'static str,
     /// The single typed payload.
     pub arg: Arg,
     /// Sample offset within the Render block. Segment-relative when the operator calls `emit`;
@@ -255,12 +253,11 @@ pub struct Emit {
 /// reference to the one [`Arg`], and a segment-relative frame. The Render loop builds these in
 /// place (no allocation), keeping Render realtime-safe while delivering events.
 ///
-/// This is the raw delivered form; the typed read API (`io.stream::<T>` / `io.last::<T>`,
-/// phase 4) decodes the borrowed `Arg` into the operator's requested payload type.
+/// This is the raw delivered form; the typed read API (`io.input::<Note>`) decodes the borrowed
+/// `Arg` into the operator's requested payload type. Carries **no address** (ADR-0031 step 7): a
+/// delivered event is identified by the input port it lands on (the wired connection), not a name.
 #[derive(Debug, Clone, Copy)]
 pub struct Event<'a> {
-    /// Address local to the receiving node, e.g. `notes` for `/voicer/notes` under `/voicer`.
-    pub address: &'a str,
     /// The single typed payload, borrowed from the source Message.
     pub arg: &'a Arg,
     /// Sample offset within the current (sub)block at which this event applies.

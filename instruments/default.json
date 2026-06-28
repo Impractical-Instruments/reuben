@@ -1,73 +1,18 @@
 {
-  "doc": "Default polyphonic playable rig (8 voices). Send /voicer/notes [midi, gate] to play (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off); send several to play a chord.",
+  "doc": "Default polyphonic playable rig (8 voices, ADR-0032). Send /voicer/notes [midi, gate] to play (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off); send several to play a chord. Each voice is a hosted `default-voice` sub-patch.",
   "instrument": "default",
   "nodes": [
     {
       "address": "/voicer",
-      "config": {
-        "voices": 8
-      },
-      "doc": "Note -> per-Voice freq + gate CV.",
-      "type": "voicer"
-    },
-    {
-      "address": "/osc",
-      "inputs": {
-        "freq": {
-          "from": "/voicer.freq"
-        }
-      },
-      "type": "oscillator"
-    },
-    {
-      "address": "/filter",
-      "doc": "Gentle lowpass.",
-      "inputs": {
-        "audio": {
-          "from": "/osc"
-        },
-        "cutoff": 3000.0
-      },
-      "type": "filter"
-    },
-    {
-      "address": "/env",
-      "doc": "ADSR contour generator -> linear gate CV (ADR-0027).",
-      "inputs": {
-        "gate": {
-          "from": "/voicer.gate"
-        }
-      },
-      "type": "envelope"
-    },
-    {
-      "address": "/env_curve",
-      "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
-      "inputs": {
-        "x": {
-          "from": "/env"
-        }
-      },
-      "type": "power"
-    },
-    {
-      "address": "/env_vca",
-      "doc": "VCA: audio * shaped envelope CV.",
-      "inputs": {
-        "a": {
-          "from": "/filter"
-        },
-        "b": {
-          "from": "/env_curve"
-        }
-      },
-      "type": "mul"
+      "doc": "Hosts 8 default-voice sub-patches; allocates notes across them and sums their audio.",
+      "type": "voicer",
+      "voice": "default-voice"
     },
     {
       "address": "/out",
       "inputs": {
         "audio": {
-          "from": "/env_vca"
+          "from": "/voicer.audio"
         }
       },
       "type": "output"
@@ -78,5 +23,8 @@
       "node": "/out",
       "port": "audio"
     }
-  ]
+  ],
+  "resources": {
+    "default-voice": "voices/default-voice.json"
+  }
 }

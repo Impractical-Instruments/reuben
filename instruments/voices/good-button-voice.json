@@ -1,0 +1,67 @@
+{
+  "doc": "Voice patch for good-button.json (ADR-0032). One monophonic saw synth voice: a held freq drives the oscillator, a held gate the ADSR. NO filter here — the Good Button's brightness drives a single master filter on the summed mix (host post-mix), so the voice is just osc -> env VCA. The envelope ADSR rests at its operator defaults (per-voice params aren't host-addressable in the hosted-voice model). interface: freq/gate in, audio/active out.",
+  "instrument": "good-button-voice",
+  "interface": {
+    "inputs": {
+      "freq": "/osc.freq",
+      "gate": "/env.gate"
+    },
+    "outputs": {
+      "audio": "/out.audio",
+      "active": "/env.active"
+    }
+  },
+  "nodes": [
+    {
+      "address": "/osc",
+      "doc": "Saw tone (harmonics for the master filter to chew).",
+      "inputs": {
+        "waveform": "Saw"
+      },
+      "type": "oscillator"
+    },
+    {
+      "address": "/env",
+      "doc": "ADSR envelope (linear CV), gated by the voicer.",
+      "type": "envelope"
+    },
+    {
+      "address": "/env_curve",
+      "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
+      "inputs": {
+        "x": {
+          "from": "/env.cv"
+        }
+      },
+      "type": "power_f32_signal"
+    },
+    {
+      "address": "/env_vca",
+      "doc": "VCA: saw * shaped envelope CV.",
+      "inputs": {
+        "a": {
+          "from": "/osc"
+        },
+        "b": {
+          "from": "/env_curve"
+        }
+      },
+      "type": "mul_f32_signal"
+    },
+    {
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/env_vca"
+        }
+      },
+      "type": "output"
+    }
+  ],
+  "outputs": [
+    {
+      "node": "/out",
+      "port": "audio"
+    }
+  ]
+}

@@ -9,9 +9,9 @@
 //! polyphony-, transpose-, and snap-composable, exactly like notes arriving from outside.
 //!
 //! Unified model (ADR-0030): `length`, `step1`..`step16`, and `pitch` are **held `Float` inputs**,
-//! each owning its unwired default — read via [`Io::last`]. `gate_mode` is a held **`enum`** input
+//! each owning its unwired default — read via [`Io::input`]. `gate_mode` is a held **`enum`** input
 //! [`GateMode`] {`Degree`, `Gate`}. `clock` is a **`buffer`** input read per-sample via
-//! [`Io::signal`] for edge detection.
+//! [`Io::input`] for edge detection.
 //!
 //! Two step interpretations, selected by `gate_mode` (ADR-0022):
 //! - **degree mode** (`Degree`, default): each `stepN` *is* the scale degree to play that beat; a
@@ -43,30 +43,30 @@ pub const NUM_STEPS: usize = 16;
 
 // Single-source contract (ADR-0025/0030). `gate_mode` references the shared `GateMode` vocab enum.
 crate::operator_contract!(Sequencer {
-    inputs:  { clock:  buffer,
-               length: float { 1.0..=16.0, default 8.0, "steps", lin },
-               step1:  float { -1.0..=24.0, default 0.0, "degree", lin },
-               step2:  float { -1.0..=24.0, default 1.0, "degree", lin },
-               step3:  float { -1.0..=24.0, default 2.0, "degree", lin },
-               step4:  float { -1.0..=24.0, default 3.0, "degree", lin },
-               step5:  float { -1.0..=24.0, default 4.0, "degree", lin },
-               step6:  float { -1.0..=24.0, default 5.0, "degree", lin },
-               step7:  float { -1.0..=24.0, default 6.0, "degree", lin },
-               step8:  float { -1.0..=24.0, default 7.0, "degree", lin },
-               step9:  float { -1.0..=24.0, default 0.0, "degree", lin },
-               step10: float { -1.0..=24.0, default 0.0, "degree", lin },
-               step11: float { -1.0..=24.0, default 0.0, "degree", lin },
-               step12: float { -1.0..=24.0, default 0.0, "degree", lin },
-               step13: float { -1.0..=24.0, default 0.0, "degree", lin },
-               step14: float { -1.0..=24.0, default 0.0, "degree", lin },
-               step15: float { -1.0..=24.0, default 0.0, "degree", lin },
-               step16: float { -1.0..=24.0, default 0.0, "degree", lin },
+    inputs:  { clock:  f32 { 0.0..=1.0, default 0.0, "", lin },
+               length: f32 { 1.0..=16.0, default 8.0, "steps", lin },
+               step1:  f32 { -1.0..=24.0, default 0.0, "degree", lin },
+               step2:  f32 { -1.0..=24.0, default 1.0, "degree", lin },
+               step3:  f32 { -1.0..=24.0, default 2.0, "degree", lin },
+               step4:  f32 { -1.0..=24.0, default 3.0, "degree", lin },
+               step5:  f32 { -1.0..=24.0, default 4.0, "degree", lin },
+               step6:  f32 { -1.0..=24.0, default 5.0, "degree", lin },
+               step7:  f32 { -1.0..=24.0, default 6.0, "degree", lin },
+               step8:  f32 { -1.0..=24.0, default 7.0, "degree", lin },
+               step9:  f32 { -1.0..=24.0, default 0.0, "degree", lin },
+               step10: f32 { -1.0..=24.0, default 0.0, "degree", lin },
+               step11: f32 { -1.0..=24.0, default 0.0, "degree", lin },
+               step12: f32 { -1.0..=24.0, default 0.0, "degree", lin },
+               step13: f32 { -1.0..=24.0, default 0.0, "degree", lin },
+               step14: f32 { -1.0..=24.0, default 0.0, "degree", lin },
+               step15: f32 { -1.0..=24.0, default 0.0, "degree", lin },
+               step16: f32 { -1.0..=24.0, default 0.0, "degree", lin },
                gate_mode: enum(GateMode),
-               pitch:  float { -1.0..=24.0, default 0.0, "degree", lin } },
+               pitch:  f32 { -1.0..=24.0, default 0.0, "degree", lin } },
     outputs: { degrees: note },
 });
 
-/// Message output ordinal of the `degrees` port (the index [`Io::emit`] uses).
+/// Message output ordinal of the `degrees` port (the index [`Io::output`] uses).
 pub const MSG_NOTES: usize = OUT_DEGREES;
 
 /// Per-sample value of step `k` (0-based): input `IN_STEP1 + k`.
@@ -112,16 +112,15 @@ impl Operator for Sequencer {
     }
 
     fn process(&mut self, io: &mut Io) {
-        let n = io.frames();
         let length =
-            (io.last::<f32>(IN_LENGTH).unwrap_or(8.0).round() as i64).clamp(1, NUM_STEPS as i64);
-        let gate_mode = io.last::<GateMode>(IN_GATE_MODE).unwrap_or_default() == GateMode::Gate;
-        let pitch = io.last::<f32>(IN_PITCH).unwrap_or(0.0);
+            (io.input::<f32>(IN_LENGTH).unwrap_or(8.0).round() as i64).clamp(1, NUM_STEPS as i64);
+        let gate_mode = io.input::<GateMode>(IN_GATE_MODE).unwrap_or_default() == GateMode::Gate;
+        let pitch = io.input::<f32>(IN_PITCH).unwrap_or(0.0);
 
         // Snapshot the held step values: constant for this (sub)block.
         let mut steps = [0.0f32; NUM_STEPS];
         for (k, p) in steps.iter_mut().enumerate() {
-            *p = io.last::<f32>(in_step(k)).unwrap_or(0.0);
+            *p = io.input::<f32>(in_step(k)).unwrap_or(0.0);
         }
         // The degree to emit for a given step, or None for a rest / off-step.
         // - degree mode: the step value IS the degree; below 0 is a rest.
@@ -139,31 +138,32 @@ impl Operator for Sequencer {
             }
         };
 
+        // `clock` is a held Value (ADR-0031): the engine block-slices at every clock change, so this
+        // call sees one constant level. Compare it to the level held across the previous slice for
+        // the edge; the slice's frame 0 *is* the change frame (block-absolute), so emitting there is
+        // sample-accurate. The held latch carries `prev` across blocks/slices.
+        let g = io.input::<f32>(IN_CLOCK).unwrap_or(0.0);
+        let prev = self.prev_clock;
         let mut step = self.step;
-        let mut prev = self.prev_clock;
         let mut held = self.held;
-        for i in 0..n {
-            let g = io.signal(IN_CLOCK).get(i).copied().unwrap_or(0.0);
-            if prev < 0.5 && g >= 0.5 {
-                // Rising edge: end any held note, advance, and play the new step.
-                if let Some(m) = held.take() {
-                    io.emit(MSG_NOTES, "notes", degree_note(m, 0.0), i);
-                }
-                step = (step + 1).rem_euclid(length);
-                if let Some(m) = note_at(step) {
-                    io.emit(MSG_NOTES, "notes", degree_note(m, 1.0), i);
-                    held = Some(m);
-                }
-            } else if prev >= 0.5 && g < 0.5 {
-                // Falling edge: release the step's note (the per-beat pluck).
-                if let Some(m) = held.take() {
-                    io.emit(MSG_NOTES, "notes", degree_note(m, 0.0), i);
-                }
+        if prev < 0.5 && g >= 0.5 {
+            // Rising edge: end any held note, advance, and play the new step.
+            if let Some(m) = held.take() {
+                io.output::<Note>(MSG_NOTES).emit(0, degree_note(m, 0.0));
             }
-            prev = g;
+            step = (step + 1).rem_euclid(length);
+            if let Some(m) = note_at(step) {
+                io.output::<Note>(MSG_NOTES).emit(0, degree_note(m, 1.0));
+                held = Some(m);
+            }
+        } else if prev >= 0.5 && g < 0.5 {
+            // Falling edge: release the step's note (the per-beat pluck).
+            if let Some(m) = held.take() {
+                io.output::<Note>(MSG_NOTES).emit(0, degree_note(m, 0.0));
+            }
         }
         self.step = step;
-        self.prev_clock = prev;
+        self.prev_clock = g;
         self.held = held;
     }
 
@@ -207,8 +207,21 @@ mod tests {
     fn run(clock: &[f32], controls: &[f32]) -> Vec<Emit> {
         let mut d = OpDriver::for_type(Sequencer::new(), SR);
         set_controls(&mut d, controls);
-        d.drive(IN_CLOCK, clock);
+        push_clock(&mut d, clock, 0.0);
         d.render(clock.len()).emits().to_vec()
+    }
+
+    /// Drive the now-held-Value `clock` from a dense gate buffer (ADR-0031): push a held-level
+    /// change at each frame the buffer crosses the 0.5 threshold — the clock is fed by edges, not a
+    /// per-sample buffer. `prev` threads the level across split renders; returns the trailing level.
+    fn push_clock(d: &mut OpDriver, clock: &[f32], mut prev: f32) -> f32 {
+        for (i, &g) in clock.iter().enumerate() {
+            if (prev < 0.5) != (g < 0.5) {
+                d.push(IN_CLOCK, i, g);
+                prev = g;
+            }
+        }
+        prev
     }
 
     /// A clock gate: high for the first half of each `period`-sample beat, repeated.
@@ -271,7 +284,6 @@ mod tests {
         let emits = run(&clock, &params(1.0, degrees));
 
         assert_eq!(emits.len(), 2, "one note-on + one note-off");
-        assert_eq!(emits[0].address, "notes");
         assert_eq!(emits[0].frame, 0);
         approx::assert_relative_eq!(deg(&emits[0]), 0.0);
         approx::assert_relative_eq!(vel(&emits[0]), 1.0);
@@ -325,9 +337,9 @@ mod tests {
         let mid = clock.len() / 2;
         let mut split = OpDriver::for_type(Sequencer::new(), SR);
         set_controls(&mut split, &p);
-        split.drive(IN_CLOCK, &clock[..mid]);
+        let prev = push_clock(&mut split, &clock[..mid], 0.0);
         let e1 = split.render(mid).emits().to_vec();
-        split.drive(IN_CLOCK, &clock[mid..]);
+        push_clock(&mut split, &clock[mid..], prev);
         let e2 = split.render(clock.len() - mid).emits().to_vec();
         let mut ons_split: Vec<f32> = e1.iter().filter(|e| vel(e) > 0.5).map(deg).collect();
         ons_split.extend(e2.iter().filter(|e| vel(e) > 0.5).map(deg));
@@ -342,14 +354,14 @@ mod tests {
         let mut a = OpDriver::for_type(Sequencer::new(), SR);
         set_controls(&mut a, &p);
         let clock = beat_gate(100, 3);
-        a.drive(IN_CLOCK, &clock);
+        push_clock(&mut a, &clock, 0.0);
         a.render(clock.len());
 
         // The spawn is fresh: its first beat plays step 0 (degree 0) again, not where `a` ended.
         let mut b = a.spawn();
         set_controls(&mut b, &p);
         let one = beat_gate(100, 1);
-        b.drive(IN_CLOCK, &one);
+        push_clock(&mut b, &one, 0.0);
         let emits = b.render(one.len()).emits().to_vec();
         let first_on = emits.iter().find(|e| vel(e) > 0.5).expect("a note-on");
         approx::assert_relative_eq!(deg(first_on), 0.0);

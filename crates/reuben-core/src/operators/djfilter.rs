@@ -17,7 +17,7 @@
 //! surface can sweep the knob via `/djfilter/position`, bit-identical to the old param behavior);
 //! when an LFO/envelope is wired the source buffer passes through and sweeps the port audio-rate.
 //! There is no longer a separate "signal port + same-named param" pair, and no wired/unwired branch
-//! in `process` — `io.signal(IN_POSITION)` is always a buffer. `position` stays a continuous
+//! in `process` — `io.input::<&[f32]>(IN_POSITION)` is always a buffer. `position` stays a continuous
 //! bipolar `Float` in [-1, +1] (its sign selects low-pass vs high-pass), not an enum.
 //!
 //! - input 0: `audio` (`Float`) — the signal to filter.
@@ -34,14 +34,14 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025/0028): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Djfilter {
-    inputs:  { audio: buffer,
-               position:  float { -1.0..=1.0,     default 0.0,     "",   lin },
-               resonance: float { 0.0..=1.0,      default 0.1,     "",   lin },
-               lp_start:  float { 20.0..=20000.0, default 20000.0, "Hz", exp },
-               lp_end:    float { 20.0..=20000.0, default 200.0,   "Hz", exp },
-               hp_start:  float { 20.0..=20000.0, default 20.0,    "Hz", exp },
-               hp_end:    float { 20.0..=20000.0, default 6000.0,  "Hz", exp } },
-    outputs: { audio: buffer },
+    inputs:  { audio: f32_buffer,
+               position:  f32_buffer { -1.0..=1.0,     default 0.0,     "",   lin },
+               resonance: f32 { 0.0..=1.0,      default 0.1,     "",   lin },
+               lp_start:  f32 { 20.0..=20000.0, default 20000.0, "Hz", exp },
+               lp_end:    f32 { 20.0..=20000.0, default 200.0,   "Hz", exp },
+               hp_start:  f32 { 20.0..=20000.0, default 20.0,    "Hz", exp },
+               hp_end:    f32 { 20.0..=20000.0, default 6000.0,  "Hz", exp } },
+    outputs: { audio: f32_buffer },
 });
 
 #[derive(Default)]
@@ -118,11 +118,11 @@ impl Operator for Djfilter {
 
         // Cutoff endpoints + resonance are the filter's voicing — `Float` inputs read once at
         // block rate (the filter's character, constant for the (sub)block, block-sliced on change).
-        let resonance = io.last::<f32>(IN_RESONANCE).unwrap_or(0.0);
-        let lp_start = io.last::<f32>(IN_LP_START).unwrap_or(0.0);
-        let lp_end = io.last::<f32>(IN_LP_END).unwrap_or(0.0);
-        let hp_start = io.last::<f32>(IN_HP_START).unwrap_or(0.0);
-        let hp_end = io.last::<f32>(IN_HP_END).unwrap_or(0.0);
+        let resonance = io.input::<f32>(IN_RESONANCE).unwrap_or(0.0);
+        let lp_start = io.input::<f32>(IN_LP_START).unwrap_or(0.0);
+        let lp_end = io.input::<f32>(IN_LP_END).unwrap_or(0.0);
+        let hp_start = io.input::<f32>(IN_HP_START).unwrap_or(0.0);
+        let hp_end = io.input::<f32>(IN_HP_END).unwrap_or(0.0);
 
         // `position` is a `Float` input — always a buffer (wired source or materialized latch),
         // one read path (ADR-0028). Mode + coefficients are recomputed only when `position`
@@ -132,8 +132,12 @@ impl Operator for Djfilter {
         let mut last_pos = f32::NAN;
         let (mut use_hp, mut k, mut a1, mut a2, mut a3) = (false, 0.0, 0.0, 0.0, 0.0);
         for i in 0..n {
-            let x = io.signal(IN_AUDIO).get(i).copied().unwrap_or(0.0);
-            let pos = io.signal(IN_POSITION).get(i).copied().unwrap_or(0.0);
+            let x = io.input::<&[f32]>(IN_AUDIO).get(i).copied().unwrap_or(0.0);
+            let pos = io
+                .input::<&[f32]>(IN_POSITION)
+                .get(i)
+                .copied()
+                .unwrap_or(0.0);
             // NaN seed forces a compute on the first sample (NaN != anything).
             if pos != last_pos {
                 let (uh, cutoff) = target(pos, lp_start, lp_end, hp_start, hp_end);
@@ -142,7 +146,7 @@ impl Operator for Djfilter {
                 last_pos = pos;
             }
             let (lp, hp) = self.svf_step(x, k, a1, a2, a3);
-            io.signal_mut(OUT_AUDIO)[i] = if use_hp { hp } else { lp };
+            io.output::<&mut [f32]>(OUT_AUDIO)[i] = if use_hp { hp } else { lp };
         }
     }
 

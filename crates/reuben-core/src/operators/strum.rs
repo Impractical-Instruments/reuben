@@ -10,7 +10,7 @@
 //! plucks each string between, like a thumb across a harp).
 //!
 //! - input 0: `position` (`Float`) — the fader's position in 0..1, read **per-sample** via
-//!   [`Io::signal`] (a materialized control), so a crossing is detected at its exact frame and a
+//!   [`Io::input`] (a materialized control), so a crossing is detected at its exact frame and a
 //!   crossing straddling a block boundary fires exactly once (the held value carries across).
 //! - input 1: `strings` (`Float`, held) — strings the 0..1 range is divided into (1..=32, default
 //!   8 = one diatonic octave).
@@ -33,10 +33,10 @@ use crate::vocab::pitch::{Note, Pitch};
 // Single-source contract (ADR-0025/0030). `position` is a materialized `Float` (read per-sample);
 // `strings`/`octaves`/`velocity` are held `Float`s.
 crate::operator_contract!(Strum {
-    inputs:  { position: float { 0.0..=1.0,  default 0.0, "",        lin },
-               strings:  float { 1.0..=32.0, default 8.0, "strings", lin },
-               octaves:  float { 1.0..=4.0,  default 1.0, "oct",     lin },
-               velocity: float { 0.0..=1.0,  default 1.0, "",        lin } },
+    inputs:  { position: f32_buffer { 0.0..=1.0,  default 0.0, "",        lin },
+               strings:  f32 { 1.0..=32.0, default 8.0, "strings", lin },
+               octaves:  f32 { 1.0..=4.0,  default 1.0, "oct",     lin },
+               velocity: f32 { 0.0..=1.0,  default 1.0, "",        lin } },
     outputs: { degrees: note },
 });
 
@@ -98,9 +98,9 @@ impl Operator for Strum {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        let strings = (io.last::<f32>(IN_STRINGS).unwrap_or(8.0).round() as i64).clamp(1, 32);
-        let octaves = io.last::<f32>(IN_OCTAVES).unwrap_or(1.0).max(1.0);
-        let velocity = io.last::<f32>(IN_VELOCITY).unwrap_or(1.0).clamp(0.0, 1.0);
+        let strings = (io.input::<f32>(IN_STRINGS).unwrap_or(8.0).round() as i64).clamp(1, 32);
+        let octaves = io.input::<f32>(IN_OCTAVES).unwrap_or(1.0).max(1.0);
+        let velocity = io.input::<f32>(IN_VELOCITY).unwrap_or(1.0).clamp(0.0, 1.0);
 
         let mut prev_string = self.prev_string;
 
@@ -110,7 +110,8 @@ impl Operator for Strum {
             while k < self.pending.len() {
                 if self.pending[k].1 <= 0 {
                     let deg = self.pending[k].0;
-                    io.emit(OUT_DEGREES, "notes", degree_note(deg, 0.0), i);
+                    io.output::<Note>(OUT_DEGREES)
+                        .emit(i, degree_note(deg, 0.0));
                     self.pending.swap_remove(k);
                 } else {
                     self.pending[k].1 -= 1;
@@ -118,9 +119,13 @@ impl Operator for Strum {
                 }
             }
 
-            // Read this sample's position (the immutable borrow ends with this `let`, so `io.emit`
+            // Read this sample's position (the immutable borrow ends with this `let`, so `io.output`
             // can borrow mutably below). Each band crossed emits a pluck + a scheduled note-off.
-            let pos = io.signal(IN_POSITION).get(i).copied().unwrap_or(0.0);
+            let pos = io
+                .input::<&[f32]>(IN_POSITION)
+                .get(i)
+                .copied()
+                .unwrap_or(0.0);
             let cur_string = Self::string_at(pos, strings);
             if prev_string < 0 {
                 // First position seen: latch the band, no pluck (no crossing yet).
@@ -131,7 +136,8 @@ impl Operator for Strum {
                 while s != cur_string {
                     s += step;
                     let deg = Self::degree_of(s, strings, octaves);
-                    io.emit(OUT_DEGREES, "notes", degree_note(deg, velocity), i);
+                    io.output::<Note>(OUT_DEGREES)
+                        .emit(i, degree_note(deg, velocity));
                     if self.pending.len() < self.pending.capacity() {
                         self.pending.push((deg, PLUCK_SAMPLES));
                     }
@@ -224,7 +230,6 @@ mod tests {
 
         let ons = on_degrees(&emits);
         assert_eq!(ons, vec![1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
-        assert!(emits.iter().all(|e| e.address == "notes"));
     }
 
     #[test]

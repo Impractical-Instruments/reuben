@@ -4,15 +4,30 @@
 use reuben_core::message::Message;
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
+use reuben_core::resources::{ResolveError, ResourceResolver, SampleBuffer};
 use reuben_core::vocab::pitch::{Note, Pitch};
-use reuben_core::{load, AudioConfig, Registry};
+use reuben_core::{load_instrument, AudioConfig, Registry};
 
 const REVERB_JSON: &str = include_str!("../../../instruments/reverb.json");
+
+/// Resolves the rig's `voice` instrument-resource (ADR-0032) from the repo `instruments/` dir.
+struct InstrumentsDir;
+impl ResourceResolver for InstrumentsDir {
+    fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        Err(ResolveError::NotFound(source.to_string()))
+    }
+    fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
+        let path = format!("{}/../../instruments/{source}", env!("CARGO_MANIFEST_DIR"));
+        std::fs::read_to_string(&path).map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))
+    }
+}
 
 #[test]
 fn reverb_example_loads_and_renders_a_held_note() {
     let cfg = AudioConfig::new(48_000.0, 256);
-    let graph = load(REVERB_JSON, &Registry::builtin()).expect("load reverb.json");
+    let graph = load_instrument(REVERB_JSON, &Registry::builtin(), &InstrumentsDir)
+        .expect("load reverb.json")
+        .graph;
     let mut plan = Plan::instantiate(graph, cfg).expect("instantiate");
     let mut r = Renderer::new(&plan);
 

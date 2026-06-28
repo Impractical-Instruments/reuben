@@ -47,7 +47,82 @@
           "if": {
             "properties": {
               "type": {
-                "const": "add"
+                "const": "add_f32_signal"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "inputs": {
+                "additionalProperties": false,
+                "properties": {
+                  "a": {
+                    "oneOf": [
+                      {
+                        "default": 0.0,
+                        "description": "unit: , curve: Linear",
+                        "maximum": 1000000.0,
+                        "minimum": -1000000.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "b": {
+                    "oneOf": [
+                      {
+                        "default": 0.0,
+                        "description": "unit: , curve: Linear",
+                        "maximum": 1000000.0,
+                        "minimum": -1000000.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "add_f32_value"
               }
             },
             "required": [
@@ -398,7 +473,7 @@
           "if": {
             "properties": {
               "type": {
-                "const": "differentiate"
+                "const": "differentiate_f32_signal"
               }
             },
             "required": [
@@ -705,6 +780,13 @@
                   "gate": {
                     "oneOf": [
                       {
+                        "default": 0.0,
+                        "description": "unit: , curve: Linear",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
                         "additionalProperties": false,
                         "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
                         "properties": {
@@ -796,6 +878,13 @@
                 "properties": {
                   "clock": {
                     "oneOf": [
+                      {
+                        "default": 0.0,
+                        "description": "unit: , curve: Linear",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
                       {
                         "additionalProperties": false,
                         "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
@@ -1395,7 +1484,7 @@
           "if": {
             "properties": {
               "type": {
-                "const": "integrate"
+                "const": "integrate_f32_signal"
               }
             },
             "required": [
@@ -1850,7 +1939,82 @@
           "if": {
             "properties": {
               "type": {
-                "const": "mul"
+                "const": "mul_f32_signal"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "inputs": {
+                "additionalProperties": false,
+                "properties": {
+                  "a": {
+                    "oneOf": [
+                      {
+                        "default": 1.0,
+                        "description": "unit: , curve: Linear",
+                        "maximum": 1000000.0,
+                        "minimum": -1000000.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "b": {
+                    "oneOf": [
+                      {
+                        "default": 1.0,
+                        "description": "unit: , curve: Linear",
+                        "maximum": 1000000.0,
+                        "minimum": -1000000.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "mul_f32_value"
               }
             },
             "required": [
@@ -2187,7 +2351,82 @@
           "if": {
             "properties": {
               "type": {
-                "const": "power"
+                "const": "power_f32_signal"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "inputs": {
+                "additionalProperties": false,
+                "properties": {
+                  "exponent": {
+                    "oneOf": [
+                      {
+                        "default": 2.0,
+                        "description": "unit: , curve: Linear",
+                        "maximum": 8.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "x": {
+                    "oneOf": [
+                      {
+                        "default": 0.0,
+                        "description": "unit: , curve: Linear",
+                        "maximum": 1000000.0,
+                        "minimum": -1000000.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "const": "power_f32_value"
               }
             },
             "required": [
@@ -2422,6 +2661,13 @@
                   "freq": {
                     "oneOf": [
                       {
+                        "default": 0.0,
+                        "description": "unit: Hz, curve: Linear",
+                        "maximum": 20000.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
                         "additionalProperties": false,
                         "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
                         "properties": {
@@ -2462,6 +2708,13 @@
                   },
                   "gate": {
                     "oneOf": [
+                      {
+                        "default": 0.0,
+                        "description": "unit: , curve: Linear",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
                       {
                         "additionalProperties": false,
                         "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
@@ -2554,6 +2807,13 @@
                 "properties": {
                   "clock": {
                     "oneOf": [
+                      {
+                        "default": 0.0,
+                        "description": "unit: , curve: Linear",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
                       {
                         "additionalProperties": false,
                         "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
@@ -3451,27 +3711,30 @@
         },
         "type": {
           "enum": [
-            "add",
+            "add_f32_signal",
+            "add_f32_value",
             "chord",
             "clock",
             "delay",
-            "differentiate",
+            "differentiate_f32_signal",
             "djfilter",
             "envelope",
             "euclid",
             "filter",
             "harmony",
-            "integrate",
+            "integrate_f32_signal",
             "lfo",
             "m2s",
             "map",
-            "mul",
+            "mul_f32_signal",
+            "mul_f32_value",
             "noise",
             "osc_out",
             "oscillator",
             "output",
             "pan",
-            "power",
+            "power_f32_signal",
+            "power_f32_value",
             "reverb",
             "sample",
             "sequencer",
@@ -3519,6 +3782,25 @@
     },
     "instrument": {
       "type": "string"
+    },
+    "interface": {
+      "additionalProperties": false,
+      "description": "Engine-honored I/O boundary (ADR-0032): external name -> internal \"/node.port\" wire-ref. `inputs` names map to internal input ports, `outputs` names to output ports (sole-output sugar \"/node\" allowed). A voice patch declares this so its host voicer binds and type-checks it. Distinct from a node's `control` (ADR-0018), which is engine-ignored.",
+      "properties": {
+        "inputs": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        },
+        "outputs": {
+          "additionalProperties": {
+            "type": "string"
+          },
+          "type": "object"
+        }
+      },
+      "type": "object"
     },
     "nodes": {
       "items": {

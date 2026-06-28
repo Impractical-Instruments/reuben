@@ -1,0 +1,73 @@
+{
+  "doc": "Voice patch for strum-harp.json (ADR-0032). One monophonic plucked saw voice: a held freq drives the oscillator, a held gate the percussive ADSR (near-instant attack, short decay, long release — each pluck rings out). NO filter here — the brightness Good Button drives a single master filter on the summed mix (host post-mix), so the voice is just osc -> env VCA. interface: freq/gate in, audio/active out.",
+  "instrument": "strum-harp-voice",
+  "interface": {
+    "inputs": {
+      "freq": "/osc.freq",
+      "gate": "/env.gate"
+    },
+    "outputs": {
+      "audio": "/out.audio",
+      "active": "/env.active"
+    }
+  },
+  "nodes": [
+    {
+      "address": "/osc",
+      "doc": "Saw",
+      "inputs": {
+        "waveform": "Saw"
+      },
+      "type": "oscillator"
+    },
+    {
+      "address": "/env",
+      "doc": "Percussive pluck: near-instant attack, short decay, no sustain — each pluck rings out on its own. Gated by the voicer; the strum op's paired note-off frees the voice.",
+      "inputs": {
+        "attack": 0.002,
+        "decay": 0.0,
+        "release": 0.8,
+        "sustain": 1.0
+      },
+      "type": "envelope"
+    },
+    {
+      "address": "/env_curve",
+      "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
+      "inputs": {
+        "x": {
+          "from": "/env.cv"
+        }
+      },
+      "type": "power_f32_signal"
+    },
+    {
+      "address": "/env_vca",
+      "doc": "VCA: saw * shaped envelope CV.",
+      "inputs": {
+        "a": {
+          "from": "/osc"
+        },
+        "b": {
+          "from": "/env_curve"
+        }
+      },
+      "type": "mul_f32_signal"
+    },
+    {
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/env_vca"
+        }
+      },
+      "type": "output"
+    }
+  ],
+  "outputs": [
+    {
+      "node": "/out",
+      "port": "audio"
+    }
+  ]
+}

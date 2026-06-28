@@ -16,7 +16,7 @@ pub enum PortType {
     /// its good-button range / curve / unwired default. An `F32`-source wired into a [`Buffer`]
     /// port ZOH-materializes (ADR-0030, the one implicit bridge).
     ///
-    /// [`Buffer`]: PortType::Buffer
+    /// [`Buffer`]: PortType::F32Buffer
     F32,
     /// A discrete integer.
     I32,
@@ -25,7 +25,7 @@ pub enum PortType {
     /// A dense per-sample signal (audio): the **only** Arg with a buffer form. A `Buffer`-source
     /// wired into a scalar port is illegal — it needs an explicit sampler op (ADR-0030). Not
     /// boundary-crossable (no OSC form), which is how audio is kept off the wire by construction.
-    Buffer,
+    F32Buffer,
     /// A shared *vocab* concrete type, named by its [`Arg`](crate::message::Arg) variant
     /// (`"Note"`, `"Harmony"`, `"SnapTarget"`). `enum_meta` is `Some` for a vocab **enum** — its
     /// variants + default + resolver, single-sourced from the type's `#[derive(ArgValue)]`
@@ -122,7 +122,7 @@ impl EnumMeta {
 /// `ty` is the sole axis (ADR-0030): the port's [`Arg`](crate::message::Arg) type says what it
 /// carries; delivery and read-style follow from that plus the read verb. `meta` is `Some` only for
 /// a scalar [`F32`](PortType::F32) control input that owns its unwired default and is materialized
-/// from a latched scalar (ADR-0030). A [`Buffer`](PortType::Buffer) audio input and vocab ports
+/// from a latched scalar (ADR-0030). A [`Buffer`](PortType::F32Buffer) audio input and vocab ports
 /// leave `meta` `None`. A vocab **enum** carries its [`EnumMeta`] inside its
 /// [`PortType::Vocab`] (reach it via [`enum_meta`](Self::enum_meta)).
 #[derive(Debug, Clone)]
@@ -133,14 +133,28 @@ pub struct Port {
 }
 
 impl Port {
-    /// A dense per-sample signal port (audio) — [`PortType::Buffer`]. The audio-passthrough input
+    /// A dense per-sample signal port (audio) — [`PortType::F32Buffer`]. The audio-passthrough input
     /// (no owned default) and the per-sample output an operator fills with `io.signal_mut`.
     /// Replaces the legacy bare `signal` carrier.
-    pub const fn buffer(name: &'static str) -> Self {
+    pub const fn f32_buffer(name: &'static str) -> Self {
         Self {
             name,
-            ty: PortType::Buffer,
+            ty: PortType::F32Buffer,
             meta: None,
+        }
+    }
+
+    /// A signal port that *also* carries a scalar default + knob range (ADR-0031, decision (a)).
+    /// Classifies [`Signal`](crate::plan::PortKind::Signal) — so a Signal source (LFO / envelope)
+    /// wires straight in with no converter — yet when unwired or knob-set it still materializes a
+    /// per-sample buffer ZOH from `meta.default`, exactly like [`f32`](Self::f32). The form a
+    /// signal-modulatable control (`oscillator.freq`, `filter.cutoff`) takes so it can accept
+    /// modulation without flipping to Value (where an LFO wire would be a hard S→V mismatch).
+    pub fn f32_buffer_meta(meta: ParamMeta) -> Self {
+        Self {
+            name: meta.name,
+            ty: PortType::F32Buffer,
+            meta: Some(meta),
         }
     }
 
@@ -172,7 +186,7 @@ impl Port {
     /// buffer from the latched default (writing mid-block changes at their frame); when wired into
     /// a buffer-consuming op the source materializes likewise. Replaces the legacy "signal port +
     /// a same-named param" pair with a single declaration.
-    pub fn float(meta: ParamMeta) -> Self {
+    pub fn f32(meta: ParamMeta) -> Self {
         Self {
             name: meta.name,
             ty: PortType::F32,
@@ -254,19 +268,6 @@ impl ParamMeta {
     }
 }
 
-/// How an operator sets the Lane (Voice) count of its outputs (ADR-0010).
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
-pub enum LaneRule {
-    /// Lane count = the max of the operator's input Lane counts (1 if it has none).
-    /// The default: ordinary single-Lane operators are replicated to match their inputs.
-    #[default]
-    Inherit,
-    /// This operator *expands* the Lane count: it produces as many Lanes as the value of
-    /// the named param slot (rounded, min 1). The Voicer is the canonical expander —
-    /// `voices` Lanes out, regardless of input. Read once at Instantiate (structural).
-    FromParam(usize),
-}
-
 /// An Operator's full self-description.
 #[derive(Debug, Clone)]
 pub struct Descriptor {
@@ -279,8 +280,10 @@ pub struct Descriptor {
     /// Empty for every operator that is a pure function of params + edges (all but the
     /// sample player today).
     pub resources: Vec<ResourceSlot>,
-    /// How this operator determines its output Lane count. Defaults to [`LaneRule::Inherit`].
-    pub lanes: LaneRule,
+    /// The slot of the one param that is an instantiate-time **`Constant`** (ADR-0028) — config
+    /// that, if changed, rebuilds the graph (e.g. the voicer's `voices` pool size). Declared
+    /// directly via the contract's `constant:` keyword. `None` for the common operator.
+    pub constant_param: Option<usize>,
 }
 
 impl Descriptor {
@@ -290,15 +293,10 @@ impl Descriptor {
     }
 
     /// The one param that is a **`Constant`** (ADR-0028): instantiate-time config that, if changed,
-    /// would rebuild the graph. Derived — not separately declared — from [`LaneRule::FromParam`]:
-    /// the lane-count param (`voices`) is the canonical and, today, only such value ("a value is a
-    /// Constant iff changing it would rebuild the graph"). `None` for an [`LaneRule::Inherit`]
-    /// operator. The loader routes it to the patch's `config` block, not `inputs`.
+    /// would rebuild the graph (e.g. the voicer's `voices` pool size). Declared via the contract's
+    /// `constant:` keyword. The loader routes it to the patch's `config` block, not `inputs`.
     pub fn constant_param(&self) -> Option<&ParamMeta> {
-        match self.lanes {
-            LaneRule::FromParam(slot) => self.params.get(slot),
-            LaneRule::Inherit => None,
-        }
+        self.constant_param.and_then(|slot| self.params.get(slot))
     }
 
     /// Whether `name` is this operator's [`Constant`](Self::constant_param) param.

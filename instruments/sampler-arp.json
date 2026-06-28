@@ -1,5 +1,5 @@
 {
-  "doc": "A self-playing sample arpeggio. The Clock's beat gate drives a sequencer that emits scale degrees — a major arpeggio (degrees 0 2 4 7 4 2 = root, third, fifth, octave, fifth, third) — one per beat into a Voicer, which resolves each degree to Hz through the default C-major/12-TET tonal context. The Voicer's per-Voice freq + gate fire the 'blip' sample (recorded pitch MIDI 57, ~220 Hz); pitch shifts the playback rate. Set tempo via /clock/tempo; edit the line via /sequencer/step1../sequencer/step6 and /sequencer/length; play in another key by adding a harmony op (see scale-demo.json).",
+  "doc": "A self-playing sample arpeggio (ADR-0032). The Clock's beat gate drives a sequencer that emits scale degrees — a major arpeggio (degrees 0 2 4 7 4 2 = root, third, fifth, octave, fifth, third) — one per beat into a Voicer, which resolves each degree to Hz through the default C-major/12-TET tonal context. Each of the 4 voices is a hosted `sampler-voice` sub-patch whose held freq + gate fire the 'blip' sample (recorded pitch MIDI 57, ~220 Hz); pitch shifts the playback rate. Set tempo via /clock/tempo; edit the line via /sequencer/step1../sequencer/step6 and /sequencer/length; play in another key by adding a harmony op (see scale-demo.json).",
   "instrument": "sampler-arp",
   "nodes": [
     {
@@ -32,34 +32,20 @@
       "config": {
         "voices": 4
       },
-      "doc": "Degree -> per-Voice freq + gate CV.",
+      "doc": "Hosts 4 sampler-voice sub-patches; resolves each degree to Hz and allocates it across the voices, summing their audio.",
       "inputs": {
         "notes": {
           "from": "/sequencer"
         }
       },
-      "type": "voicer"
-    },
-    {
-      "address": "/sample",
-      "doc": "Gate edge fires the sample; freq sets the playback rate.",
-      "inputs": {
-        "freq": {
-          "from": "/voicer.freq"
-        },
-        "gate": {
-          "from": "/voicer.gate"
-        },
-        "root": 57.0
-      },
-      "sample": "blip",
-      "type": "sample"
+      "type": "voicer",
+      "voice": "sampler-voice"
     },
     {
       "address": "/out",
       "inputs": {
         "audio": {
-          "from": "/sample"
+          "from": "/voicer.audio"
         }
       },
       "type": "output"
@@ -72,6 +58,6 @@
     }
   ],
   "resources": {
-    "blip": "samples/blip.wav"
+    "sampler-voice": "voices/sampler-voice.json"
   }
 }

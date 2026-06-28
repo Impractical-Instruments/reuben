@@ -34,7 +34,7 @@ use crate::vocab::pitch::{Note, Pitch};
 // Single-source contract (ADR-0025/0030). `set` is a `Note` event port; `size` a held `Float`.
 crate::operator_contract!(Chord {
     inputs:  { set:  note,
-               size: float { 3.0..=4.0, default 3.0, "tones", lin } },
+               size: f32 { 3.0..=4.0, default 3.0, "tones", lin } },
     outputs: { degrees: note },
 });
 
@@ -83,12 +83,12 @@ impl Operator for Chord {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        let size = (io.last::<f32>(IN_SIZE).unwrap_or(3.0).round() as usize).clamp(3, MAX_TONES);
+        let size = (io.input::<f32>(IN_SIZE).unwrap_or(3.0).round() as usize).clamp(3, MAX_TONES);
 
         // Snapshot the set events for this (sub)block, sorted by frame — can't read the stream
         // while emitting. Each: (frame, root degree, on?). A non-degree note has no root → skip.
         let mut events: SmallVec<[(usize, i32, bool); 8]> = SmallVec::new();
-        for s in io.stream::<Note>(IN_SET) {
+        for s in io.input::<Note>(IN_SET) {
             let root = match s.payload.pitch.degree() {
                 Some(d) => d,
                 None => continue,
@@ -102,12 +102,8 @@ impl Operator for Chord {
                 // Press: emit a note-on per chord tone, and remember the tone set for release.
                 let (tones, count) = chord_tones(root, size);
                 for &t in tones.iter().take(count) {
-                    io.emit(
-                        OUT_DEGREES,
-                        "notes",
-                        Note::new(Pitch::Degree(t), 1.0),
-                        frame,
-                    );
+                    io.output::<Note>(OUT_DEGREES)
+                        .emit(frame, Note::new(Pitch::Degree(t), 1.0));
                 }
                 // Re-press of an already-held root: replace its record (it re-sounds).
                 if let Some(h) = self.held.iter_mut().find(|h| h.root == root) {
@@ -120,12 +116,8 @@ impl Operator for Chord {
                 if let Some(idx) = self.held.iter().position(|h| h.root == root) {
                     let h = self.held[idx];
                     for &t in h.tones.iter().take(h.count) {
-                        io.emit(
-                            OUT_DEGREES,
-                            "notes",
-                            Note::new(Pitch::Degree(t), 0.0),
-                            frame,
-                        );
+                        io.output::<Note>(OUT_DEGREES)
+                            .emit(frame, Note::new(Pitch::Degree(t), 0.0));
                     }
                     self.held.swap_remove(idx);
                 }
@@ -184,7 +176,6 @@ mod tests {
         let emits = run(128, 3.0, &[set(0, 1.0, 0)]);
         assert_eq!(emits.len(), 3, "triad = 3 tones");
         for e in &emits {
-            assert_eq!(e.address, "notes");
             assert_eq!(e.frame, 0);
             approx::assert_relative_eq!(vel(e), 1.0);
         }
@@ -314,11 +305,7 @@ mod tests {
         let evs: Vec<Event> = events
             .iter()
             .zip(&args)
-            .map(|((frame, _), arg)| Event {
-                address: "set",
-                arg,
-                frame: *frame,
-            })
+            .map(|((frame, _), arg)| Event { arg, frame: *frame })
             .collect();
         let latched = [Arg::F32(0.0), Arg::F32(size)];
         let streams: [&[Event]; 2] = [&evs, &[]];

@@ -7,7 +7,7 @@
 //! - input 0: `audio` (`Buffer`) — per-sample audio in (the wired master bus).
 //! - output 0: `audio` (`Buffer`) — copy of the input, tapped as master.
 
-use crate::descriptor::{Descriptor, LaneRule, Port};
+use crate::descriptor::{Descriptor, Port};
 use crate::operator::{Io, Operator};
 
 /// `audio` input (`Buffer`).
@@ -28,11 +28,11 @@ impl Operator for Output {
     fn descriptor() -> Descriptor {
         Descriptor {
             type_name: "output",
-            inputs: vec![Port::buffer("audio")],
-            outputs: vec![Port::buffer("audio")],
+            inputs: vec![Port::f32_buffer("audio")],
+            outputs: vec![Port::f32_buffer("audio")],
             params: vec![],
             resources: vec![],
-            lanes: LaneRule::Inherit,
+            constant_param: None,
         }
     }
 
@@ -42,8 +42,8 @@ impl Operator for Output {
         // output write — passthrough with no allocation (realtime-safe). `audio` is a `Buffer`
         // input (the wired master bus).
         for i in 0..n {
-            let v = io.signal(IN_AUDIO).get(i).copied().unwrap_or(0.0);
-            io.signal_mut(OUT_AUDIO)[i] = v;
+            let v = io.input::<&[f32]>(IN_AUDIO).get(i).copied().unwrap_or(0.0);
+            io.output::<&mut [f32]>(OUT_AUDIO)[i] = v;
         }
     }
 

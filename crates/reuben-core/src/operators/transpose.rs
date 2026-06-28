@@ -19,7 +19,7 @@ use crate::vocab::pitch::{Note, Pitch};
 
 crate::operator_contract!(Transpose {
     inputs:  { notes:  note,
-               amount: float { -48.0..=48.0, default 0.0, "steps", lin } },
+               amount: f32 { -48.0..=48.0, default 0.0, "steps", lin } },
     outputs: { notes: note },
 });
 
@@ -48,16 +48,17 @@ impl Operator for Transpose {
     }
 
     fn process(&mut self, io: &mut Io) {
-        let amount = io.last::<f32>(IN_AMOUNT).unwrap_or(0.0);
+        let amount = io.input::<f32>(IN_AMOUNT).unwrap_or(0.0);
 
         // Snapshot the stream (its borrow of `io` ends here) so the emit loop can borrow `io`
         // mutably. `Note` is `Copy`, so this is alloc-free for the common low-event-count case.
         let mut evs: SmallVec<[(usize, Note); 16]> = SmallVec::new();
-        for s in io.stream::<Note>(IN_NOTES) {
+        for s in io.input::<Note>(IN_NOTES) {
             evs.push((s.frame, s.payload));
         }
         for (frame, note) in evs {
-            io.emit(OUT_NOTES, "notes", transpose_note(note, amount), frame);
+            io.output::<Note>(OUT_NOTES)
+                .emit(frame, transpose_note(note, amount));
         }
     }
 

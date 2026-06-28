@@ -1,5 +1,5 @@
 {
-  "doc": "The same self-playing sequence as sequence.json, but the Voicer resolves each step degree through a tonal context set to C natural minor — so the identical degree pattern (0..7) re-spells into the minor scale with no edit to the line. Change the key live with /harmony/root (MIDI), or reshape the scale with /harmony/s0../harmony/s6 (step offsets) and /harmony/degrees; both apply sample-accurately. Send a chord with /harmony/set [tag, d0, d1, ...] (tag 1 = scale-relative, 2 = absolute, 0 = clear).",
+  "doc": "The same self-playing sequence as sequence.json (ADR-0032), but the Voicer resolves each step degree through a tonal context set to C natural minor — so the identical degree pattern (0..7) re-spells into the minor scale with no edit to the line. Each step plays on a hosted `scale-voice` sub-patch. Change the key live with /harmony/root (MIDI), or reshape the scale with /harmony/s0../harmony/s6 (step offsets) and /harmony/degrees; both apply sample-accurately. Send a chord with /harmony/set [tag, d0, d1, ...] (tag 1 = scale-relative, 2 = absolute, 0 = clear).",
   "instrument": "scale-demo",
   "nodes": [
     {
@@ -40,7 +40,7 @@
       "config": {
         "voices": 4
       },
-      "doc": "Degrees -> Hz via the tonal context.",
+      "doc": "Degrees -> Hz via the tonal context, played on hosted scale-voice sub-patches.",
       "inputs": {
         "harmony": {
           "from": "/harmony"
@@ -49,68 +49,14 @@
           "from": "/sequencer"
         }
       },
-      "type": "voicer"
-    },
-    {
-      "address": "/osc",
-      "inputs": {
-        "freq": {
-          "from": "/voicer.freq"
-        }
-      },
-      "type": "oscillator"
-    },
-    {
-      "address": "/filter",
-      "inputs": {
-        "audio": {
-          "from": "/osc"
-        },
-        "cutoff": 2500.0
-      },
-      "type": "filter"
-    },
-    {
-      "address": "/env",
-      "inputs": {
-        "attack": 0.005,
-        "decay": 0.14,
-        "gate": {
-          "from": "/voicer.gate"
-        },
-        "release": 0.1,
-        "sustain": 0.3
-      },
-      "type": "envelope"
-    },
-    {
-      "address": "/env_curve",
-      "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
-      "inputs": {
-        "x": {
-          "from": "/env"
-        }
-      },
-      "type": "power"
-    },
-    {
-      "address": "/env_vca",
-      "doc": "VCA: audio * shaped envelope CV.",
-      "inputs": {
-        "a": {
-          "from": "/filter"
-        },
-        "b": {
-          "from": "/env_curve"
-        }
-      },
-      "type": "mul"
+      "type": "voicer",
+      "voice": "scale-voice"
     },
     {
       "address": "/out",
       "inputs": {
         "audio": {
-          "from": "/env_vca"
+          "from": "/voicer.audio"
         }
       },
       "type": "output"
@@ -121,5 +67,8 @@
       "node": "/out",
       "port": "audio"
     }
-  ]
+  ],
+  "resources": {
+    "scale-voice": "voices/scale-voice.json"
+  }
 }

@@ -1,5 +1,5 @@
 {
-  "doc": "A playable saw synth with one 'brightness' Good Button (ADR-0017). Send /voicer/notes [midi, gate] to play, then sweep /brightness/in [0..1] — a single knob fanned to filter cutoff AND resonance, each over its own musical range, smoothed into the audio rate. Built entirely from composition: a public identity `map` fanned to two ranged `map`s, each through an `m2s` converter into the filter's Signal cutoff/resonance inputs. No new instrument-format machinery.",
+  "doc": "A playable saw synth with one 'brightness' Good Button (ADR-0017/0032). Send /voicer/notes [midi, gate] to play, then sweep /brightness/in [0..1] — a single knob fanned to a MASTER filter's cutoff AND resonance, each over its own musical range, smoothed into the audio rate. The 8 voices are hosted `good-button-voice` sub-patches (saw -> ADSR VCA); the voicer sums them and one shared filter tones the mix. Built entirely from composition: a public identity `map` fanned to two ranged `map`s, each through an `m2s` converter into the master filter's Signal cutoff/resonance inputs.",
   "instrument": "good-button",
   "nodes": [
     {
@@ -13,92 +13,31 @@
         "port": "notes",
         "widget": "note-toggle"
       },
-      "doc": "Note -> per-Voice freq + gate.",
-      "type": "voicer"
-    },
-    {
-      "address": "/osc",
-      "doc": "Saw tone (harmonics for the filter to chew).",
-      "inputs": {
-        "freq": {
-          "from": "/voicer.freq"
-        },
-        "waveform": "Saw"
-      },
-      "type": "oscillator"
+      "doc": "Hosts 8 good-button-voice sub-patches; allocates notes across them and sums their audio.",
+      "type": "voicer",
+      "voice": "good-button-voice"
     },
     {
       "address": "/filter",
-      "doc": "Cutoff + resonance are Signal inputs, driven by the Good Button.",
+      "doc": "Master lowpass on the summed mix; cutoff + resonance are Signal inputs driven by the Good Button.",
       "inputs": {
         "audio": {
-          "from": "/osc"
+          "from": "/voicer.audio"
         },
         "cutoff": {
-          "from": "/cv_cutoff"
+          "from": "/map_cutoff"
         },
         "resonance": {
-          "from": "/cv_res"
+          "from": "/map_res"
         }
       },
       "type": "filter"
     },
     {
-      "address": "/env",
-      "control": [
-        {
-          "label": "Attack",
-          "param": "attack"
-        },
-        {
-          "label": "Decay",
-          "param": "decay"
-        },
-        {
-          "label": "Sustain",
-          "param": "sustain"
-        },
-        {
-          "label": "Release",
-          "param": "release"
-        }
-      ],
-      "doc": "ADSR envelope (linear CV), gated by the voicer.",
-      "inputs": {
-        "gate": {
-          "from": "/voicer.gate"
-        }
-      },
-      "type": "envelope"
-    },
-    {
-      "address": "/env_curve",
-      "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
-      "inputs": {
-        "x": {
-          "from": "/env"
-        }
-      },
-      "type": "power"
-    },
-    {
-      "address": "/env_vca",
-      "doc": "VCA: audio * shaped envelope CV.",
-      "inputs": {
-        "a": {
-          "from": "/filter"
-        },
-        "b": {
-          "from": "/env_curve"
-        }
-      },
-      "type": "mul"
-    },
-    {
       "address": "/out",
       "inputs": {
         "audio": {
-          "from": "/env_vca"
+          "from": "/filter"
         }
       },
       "type": "output"
@@ -109,15 +48,17 @@
         "label": "Brightness",
         "widget": "fader"
       },
-      "doc": "PUBLIC Good Button. Identity [0,1] pass-through; its value is fanned to the two ranged maps below. Send /brightness/in [0..1]. Rests at 0.5 (ADR-0018), emitted on init so the chain and any generated control surface agree at rest.",
+      "doc": "PUBLIC Good Button. The held knob value [0,1] smoothed into a CV Signal (an `m2s` is the value->signal converter), then fanned to the two ranged maps below. Send /brightness/in [0..1]. Rests at 0.5 (ADR-0018).",
       "inputs": {
-        "in": 0.5
+        "in": 0.5,
+        "mode": "Smooth",
+        "time": 0.03
       },
-      "type": "map"
+      "type": "m2s"
     },
     {
       "address": "/map_cutoff",
-      "doc": "brightness [0,1] -> cutoff [400,12000] Hz, exponential (perceptually even).",
+      "doc": "brightness [0,1] -> cutoff [400,12000] Hz, exponential (perceptually even). Reads the smoothed brightness Signal and ranges it per-sample (Signal->Signal) into the master filter cutoff.",
       "inputs": {
         "curve": "Exponential",
         "in": {
@@ -139,30 +80,6 @@
         "out_min": 0.1
       },
       "type": "map"
-    },
-    {
-      "address": "/cv_cutoff",
-      "doc": "Smooth the mapped cutoff into a CV signal; default 2500 Hz before any knob move.",
-      "inputs": {
-        "in": {
-          "from": "/map_cutoff"
-        },
-        "mode": "Smooth",
-        "time": 0.03
-      },
-      "type": "m2s"
-    },
-    {
-      "address": "/cv_res",
-      "doc": "Smooth the mapped resonance into a CV signal; default 0.3.",
-      "inputs": {
-        "in": {
-          "from": "/map_res"
-        },
-        "mode": "Smooth",
-        "time": 0.03
-      },
-      "type": "m2s"
     }
   ],
   "outputs": [
@@ -170,5 +87,8 @@
       "node": "/out",
       "port": "audio"
     }
-  ]
+  ],
+  "resources": {
+    "good-button-voice": "voices/good-button-voice.json"
+  }
 }

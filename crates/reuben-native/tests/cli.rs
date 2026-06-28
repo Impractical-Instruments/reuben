@@ -91,16 +91,14 @@ fn validate_rejects_a_cycle_that_loads_cleanly() {
 
 #[test]
 fn validate_treats_a_missing_resource_as_advisory_not_invalid() {
-    // ADR-0016: a sample that doesn't resolve plays silence rather than failing the load. The
-    // instrument is still valid (ok), but the unresolved sample surfaces as a warning.
+    // ADR-0016/0032: a voice resource that doesn't resolve plays silence rather than failing the
+    // load. The instrument is still valid (ok), but the unresolved resource surfaces as a warning.
     let json = r#"{
       "instrument": "ghost",
-      "resources": { "ghost": "samples/nope.wav" },
+      "resources": { "ghost-voice": "voices/nope.json" },
       "nodes": [
-        { "type": "voicer", "address": "/voicer", "config": { "voices": 1 } },
-        { "type": "sample", "address": "/s", "sample": "ghost",
-          "inputs": { "freq": {"from":"/voicer.freq"}, "gate": {"from":"/voicer.gate"} } },
-        { "type": "output", "address": "/out", "inputs": { "audio": {"from":"/s"} } }
+        { "type": "voicer", "address": "/voicer", "voice": "ghost-voice", "config": { "voices": 1 } },
+        { "type": "output", "address": "/out", "inputs": { "audio": {"from":"/voicer.audio"} } }
       ],
       "outputs": [ {"node":"/out","port":"audio"} ]
     }"#;

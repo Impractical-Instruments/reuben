@@ -13,10 +13,9 @@
 //!
 //! ```ignore
 //! operator_contract!(Oscillator {
-//!     inputs:  { freq: float { 20.0..=20_000.0, default 440.0, "Hz", exp },
+//!     inputs:  { freq: f32 { 20.0..=20_000.0, default 440.0, "Hz", exp },
 //!                waveform: enum(Waveform) },
-//!     outputs: { audio: buffer },
-//!     lanes: inherit,
+//!     outputs: { audio: f32_buffer },
 //! });
 //! ```
 
@@ -25,14 +24,12 @@ mod model;
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use reuben_contract::{
-    naming, ContractError, FloatMeta, LaneSpec, Locus, OperatorSpec, ParamSpec, PortSpec,
-};
+use reuben_contract::{naming, ContractError, F32Meta, Locus, OperatorSpec, ParamSpec, PortSpec};
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::{braced, parenthesized, Error, Ident, Lit, LitStr, Token};
 
-use model::{build, ContractModel, LaneModel};
+use model::{build, ContractModel};
 
 /// Emit an operator's index consts + `fn contract()` from its one declaration. See the crate docs.
 #[proc_macro]
@@ -62,9 +59,9 @@ fn expand(input: TokenStream) -> TokenStream {
 
 // --- Parsed AST (spans retained so validation errors point at the offending token) ---
 
-/// The `float { LO..=HI, default D, "unit", curve }` block (ADR-0028). `unit`/`curve` are
+/// The `f32 { LO..=HI, default D, "unit", curve }` block (ADR-0028). `unit`/`curve` are
 /// optional; an omitted curve defaults to `linear`.
-struct FloatMetaAst {
+struct F32MetaAst {
     min: f32,
     max: f32,
     default: f32,
@@ -74,10 +71,13 @@ struct FloatMetaAst {
 
 /// How a port is declared — its [`Arg`] type (ADR-0030).
 enum PortTypeAst {
-    /// `name: buffer` — a dense per-sample signal (audio / control buffer).
-    Buffer,
-    /// `name: float { .. }` — a materialized scalar control with its default/range meta.
-    Float(FloatMetaAst),
+    /// `name: f32_buffer` — a dense per-sample signal (audio / control buffer). An optional
+    /// `{ .. }` meta block (ADR-0031 decision (a)) gives a Signal port a scalar default + knob
+    /// range (`oscillator.freq`, `filter.cutoff`): unwired/knob-set it materializes from the
+    /// default, yet a Signal source still wires straight in.
+    F32Buffer(Option<F32MetaAst>),
+    /// `name: f32 { .. }` — a materialized scalar control with its default/range meta.
+    F32(F32MetaAst),
     /// `name: enum(VocabType)` — a held vocab enum, naming its shared `vocab` type.
     Enum(Ident),
     /// `name: note` — a `Note` event port.
@@ -100,11 +100,6 @@ struct ParamAst {
     curve: String,
 }
 
-enum LaneAst {
-    Inherit,
-    FromParam(Ident),
-}
-
 struct ContractInput {
     struct_ident: Ident,
     type_name: Option<LitStr>,
@@ -112,8 +107,10 @@ struct ContractInput {
     outputs: Vec<PortAst>,
     params: Vec<ParamAst>,
     resources: Vec<Ident>,
-    lanes: LaneAst,
-    lanes_span: Span,
+    /// The optional instantiate-time `Constant` param name, with its source span for error
+    /// attribution (`constant: voices`).
+    constant: Option<Ident>,
+    constant_span: Span,
 }
 
 impl ContractInput {
@@ -127,19 +124,16 @@ impl ContractInput {
         let ports = |ps: &[PortAst]| {
             ps.iter()
                 .map(|p| {
-                    let (ty, float, vocab) = match &p.ty {
-                        PortTypeAst::Buffer => ("buffer", None, None),
-                        PortTypeAst::Float(m) => (
-                            "float",
-                            Some(FloatMeta {
-                                min: m.min,
-                                max: m.max,
-                                default: m.default,
-                                unit: m.unit.clone(),
-                                curve: m.curve.clone(),
-                            }),
-                            None,
-                        ),
+                    let f32_meta = |m: &F32MetaAst| F32Meta {
+                        min: m.min,
+                        max: m.max,
+                        default: m.default,
+                        unit: m.unit.clone(),
+                        curve: m.curve.clone(),
+                    };
+                    let (ty, f32, vocab) = match &p.ty {
+                        PortTypeAst::F32Buffer(m) => ("f32_buffer", m.as_ref().map(f32_meta), None),
+                        PortTypeAst::F32(m) => ("f32", Some(f32_meta(m)), None),
                         PortTypeAst::Enum(t) => ("enum", None, Some(t.to_string())),
                         PortTypeAst::Note => ("note", None, None),
                         PortTypeAst::Harmony => ("harmony", None, None),
@@ -147,7 +141,7 @@ impl ContractInput {
                     PortSpec {
                         name: p.name.to_string(),
                         ty: ty.to_string(),
-                        float,
+                        f32,
                         vocab,
                     }
                 })
@@ -170,10 +164,7 @@ impl ContractInput {
                 })
                 .collect(),
             resources: self.resources.iter().map(Ident::to_string).collect(),
-            lanes: match &self.lanes {
-                LaneAst::Inherit => LaneSpec::Inherit,
-                LaneAst::FromParam(p) => LaneSpec::FromParam(p.to_string()),
-            },
+            constant: self.constant.as_ref().map(Ident::to_string),
         }
     }
 
@@ -188,7 +179,7 @@ impl ContractInput {
             Locus::Input(i) => self.inputs[i].name.span(),
             Locus::Output(i) => self.outputs[i].name.span(),
             Locus::Param(i) => self.params[i].name.span(),
-            Locus::Lanes => self.lanes_span,
+            Locus::Constant => self.constant_span,
         };
         Error::new(span, &err.message)
     }
@@ -220,15 +211,34 @@ impl ContractInput {
                 .map(|p| {
                     let name = &p.name;
                     match p.ty.as_str() {
-                        // A dense per-sample signal — `Port::buffer`.
-                        "buffer" => quote! { ::reuben_core::descriptor::Port::buffer(#name) },
+                        // A dense per-sample signal — `Port::f32_buffer`, or `f32_buffer_meta`
+                        // when it carries a scalar default + knob (ADR-0031 decision (a)).
+                        "f32_buffer" => match p.f32.as_ref() {
+                            None => quote! { ::reuben_core::descriptor::Port::f32_buffer(#name) },
+                            Some(m) => {
+                                let (min, max, default, unit) = (m.min, m.max, m.default, &m.unit);
+                                let curve = if m.curve == "exponential" {
+                                    quote! { ::reuben_core::descriptor::Curve::Exponential }
+                                } else {
+                                    quote! { ::reuben_core::descriptor::Curve::Linear }
+                                };
+                                quote! {
+                                    ::reuben_core::descriptor::Port::f32_buffer_meta(
+                                        ::reuben_core::descriptor::ParamMeta {
+                                            name: #name, min: #min, max: #max,
+                                            default: #default, unit: #unit, curve: #curve,
+                                        }
+                                    )
+                                }
+                            }
+                        },
                         // A `Note` event port — `Port::note`.
                         "note" => quote! { ::reuben_core::descriptor::Port::note(#name) },
                         // A `Harmony` held port — `Port::harmony`.
                         "harmony" => quote! { ::reuben_core::descriptor::Port::harmony(#name) },
-                        // A materialized scalar control — `Port::float` with its meta.
-                        "float" => {
-                            let m = p.float.as_ref().expect("validate() guarantees float meta");
+                        // A materialized scalar control — `Port::f32` with its meta.
+                        "f32" => {
+                            let m = p.f32.as_ref().expect("validate() guarantees f32 meta");
                             let (min, max, default, unit) = (m.min, m.max, m.default, &m.unit);
                             let curve = if m.curve == "exponential" {
                                 quote! { ::reuben_core::descriptor::Curve::Exponential }
@@ -236,7 +246,7 @@ impl ContractInput {
                                 quote! { ::reuben_core::descriptor::Curve::Linear }
                             };
                             quote! {
-                                ::reuben_core::descriptor::Port::float(
+                                ::reuben_core::descriptor::Port::f32(
                                     ::reuben_core::descriptor::ParamMeta {
                                         name: #name, min: #min, max: #max,
                                         default: #default, unit: #unit, curve: #curve,
@@ -285,11 +295,11 @@ impl ContractInput {
             quote! { ::reuben_core::descriptor::ResourceSlot::new(#r) }
         });
 
-        let lanes = match &model.lanes {
-            LaneModel::Inherit => quote! { ::reuben_core::descriptor::LaneRule::Inherit },
-            LaneModel::FromParam(const_name) => {
+        let constant = match &model.constant {
+            None => quote! { ::std::option::Option::None },
+            Some(const_name) => {
                 let ident = Ident::new(const_name, Span::call_site());
-                quote! { ::reuben_core::descriptor::LaneRule::FromParam(#ident) }
+                quote! { ::std::option::Option::Some(#ident) }
             }
         };
 
@@ -307,7 +317,7 @@ impl ContractInput {
                         outputs: ::std::vec![ #(#outputs),* ],
                         params: ::std::vec![ #(#params),* ],
                         resources: ::std::vec![ #(#resources),* ],
-                        lanes: #lanes,
+                        constant_param: #constant,
                     }
                 }
             }
@@ -330,8 +340,8 @@ impl Parse for ContractInput {
             outputs: Vec::new(),
             params: Vec::new(),
             resources: Vec::new(),
-            lanes: LaneAst::Inherit,
-            lanes_span: struct_ident.span(),
+            constant: None,
+            constant_span: struct_ident.span(),
         };
 
         while !body.is_empty() {
@@ -343,15 +353,15 @@ impl Parse for ContractInput {
                 "outputs" => ci.outputs = parse_ports(&body)?,
                 "params" => ci.params = parse_params(&body)?,
                 "resources" => ci.resources = parse_resources(&body)?,
-                "lanes" => {
-                    let (lanes, span) = parse_lanes(&body)?;
-                    ci.lanes = lanes;
-                    ci.lanes_span = span;
+                "constant" => {
+                    let param = Ident::parse_any(&body)?;
+                    ci.constant_span = param.span();
+                    ci.constant = Some(param);
                 }
                 other => {
                     return Err(Error::new(
                         key.span(),
-                        format!("unknown contract field `{other}` (expected inputs/outputs/params/resources/lanes/type_name)"),
+                        format!("unknown contract field `{other}` (expected inputs/outputs/params/resources/constant/type_name)"),
                     ))
                 }
             }
@@ -364,7 +374,7 @@ impl Parse for ContractInput {
 }
 
 /// A brace-wrapped, comma-separated port list. Each entry is `name: <ty>` where `<ty>` is the
-/// port's [`Arg`] type (ADR-0030): `buffer`, `float { .. }`, `enum(VocabType)`, `note`, or
+/// port's [`Arg`] type (ADR-0030): `f32_buffer`, `f32 { .. }`, `enum(VocabType)`, `note`, or
 /// `harmony`. `validate()` rejects an unknown type.
 fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
     let body;
@@ -377,10 +387,19 @@ fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
         // `parse_any` so the type keyword may be a reserved word (`enum`).
         let kw = Ident::parse_any(&body)?;
         let ty = match kw.to_string().as_str() {
-            "buffer" => PortTypeAst::Buffer,
+            // A bare `f32_buffer` is a pure signal; an optional `{ .. }` meta block gives it a
+            // scalar default + knob range (ADR-0031 decision (a)).
+            "f32_buffer" => {
+                let meta = if body.peek(syn::token::Brace) {
+                    Some(parse_f32_meta(&body)?)
+                } else {
+                    None
+                };
+                PortTypeAst::F32Buffer(meta)
+            }
             "note" => PortTypeAst::Note,
             "harmony" => PortTypeAst::Harmony,
-            "float" => PortTypeAst::Float(parse_float_meta(&body)?),
+            "f32" => PortTypeAst::F32(parse_f32_meta(&body)?),
             "enum" => {
                 let inner;
                 parenthesized!(inner in body);
@@ -389,7 +408,7 @@ fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
             other => {
                 return Err(Error::new(
                     kw.span(),
-                    format!("port type must be `buffer`, `float`, `enum(..)`, `note`, or `harmony`, got `{other}`"),
+                    format!("port type must be `f32_buffer`, `f32`, `enum(..)`, `note`, or `harmony`, got `{other}`"),
                 ))
             }
         };
@@ -401,10 +420,10 @@ fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
     Ok(out)
 }
 
-/// `{ LO..=HI, default D [, "unit"] [, curve] }` — the meta on a `float { .. }` port. `unit` and
+/// `{ LO..=HI, default D [, "unit"] [, curve] }` — the meta on a `f32 { .. }` port. `unit` and
 /// `curve` are each optional (an omitted curve defaults to `linear`), unlike the all-required
 /// legacy `params` block.
-fn parse_float_meta(input: ParseStream) -> syn::Result<FloatMetaAst> {
+fn parse_f32_meta(input: ParseStream) -> syn::Result<F32MetaAst> {
     let meta;
     braced!(meta in input);
 
@@ -440,9 +459,9 @@ fn parse_float_meta(input: ParseStream) -> syn::Result<FloatMetaAst> {
         meta.parse::<Token![,]>()?;
     }
     if !meta.is_empty() {
-        return Err(meta.error("unexpected tokens in `float { .. }` meta"));
+        return Err(meta.error("unexpected tokens in `f32 { .. }` meta"));
     }
-    Ok(FloatMetaAst {
+    Ok(F32MetaAst {
         min,
         max,
         default,
@@ -525,25 +544,6 @@ fn parse_resources(input: ParseStream) -> syn::Result<Vec<Ident>> {
     Ok(out)
 }
 
-/// `inherit` | `from_param(<param>)`.
-fn parse_lanes(input: ParseStream) -> syn::Result<(LaneAst, Span)> {
-    let kw: Ident = input.parse()?;
-    let span = kw.span();
-    match kw.to_string().as_str() {
-        "inherit" => Ok((LaneAst::Inherit, span)),
-        "from_param" => {
-            let arg;
-            parenthesized!(arg in input);
-            let param: Ident = arg.parse()?;
-            Ok((LaneAst::FromParam(param), span))
-        }
-        other => Err(Error::new(
-            span,
-            format!("lanes must be `inherit` or `from_param(<param>)`, got `{other}`"),
-        )),
-    }
-}
-
 /// A numeric literal with an optional leading `-` (param bounds and defaults can be negative).
 fn parse_signed_float(input: ParseStream) -> syn::Result<f32> {
     let neg = input.peek(Token![-]);
@@ -572,11 +572,10 @@ mod tests {
     fn emits_consts_and_contract_fn() {
         let out = render(
             r#"Oscillator {
-                inputs:  { freq: buffer },
-                outputs: { audio: buffer },
+                inputs:  { freq: f32_buffer },
+                outputs: { audio: f32_buffer },
                 params:  { freq:     { 20.0..=20_000.0, default 440.0, "Hz", exp },
                            waveform: { 0.0..=1.0,        default 0.0,   "",   lin } },
-                lanes: inherit,
             }"#,
         );
         assert!(out.contains("pub const IN_FREQ : usize = 0"), "{out}");
@@ -594,8 +593,8 @@ mod tests {
         let out = render(
             r#"SamplePlayer {
                 type_name: "sample",
-                inputs:  { freq: buffer, gate: buffer },
-                outputs: { audio: buffer },
+                inputs:  { freq: f32_buffer, gate: f32_buffer },
+                outputs: { audio: f32_buffer },
                 resources: { sample },
             }"#,
         );
@@ -605,22 +604,25 @@ mod tests {
     }
 
     // Ports number sequentially in declaration order (ADR-0030) — a note input and a harmony input
-    // are 0 and 1, not split per kind.
+    // are 0 and 1, not split per kind. `constant: voices` resolves to the param's index const.
     #[test]
-    fn ports_number_sequentially_and_lane_resolves() {
+    fn ports_number_sequentially_and_constant_resolves() {
         let out = render(
             r#"Voicer {
                 inputs:  { notes: note, ctx: harmony },
-                outputs: { freq: buffer, gate: buffer },
+                outputs: { audio: f32_buffer },
                 params:  { voices: { 1.0..=32.0, default 8.0, "", lin } },
-                lanes: from_param(voices),
+                constant: voices,
             }"#,
         );
         assert!(out.contains("pub const IN_NOTES : usize = 0"), "{out}");
         assert!(out.contains("pub const IN_CTX : usize = 1"), "{out}");
         assert!(out.contains("Port :: note (\"notes\")"), "{out}");
         assert!(out.contains("Port :: harmony (\"ctx\")"), "{out}");
-        assert!(out.contains("LaneRule :: FromParam (P_VOICES)"), "{out}");
+        assert!(
+            out.contains("constant_param : :: std :: option :: Option :: Some (P_VOICES)"),
+            "{out}"
+        );
     }
 
     // A malformed contract is rejected *with a span*, in-band as a compile_error.
@@ -628,7 +630,7 @@ mod tests {
     fn duplicate_port_is_a_spanned_compile_error() {
         let out = render(
             r#"Bad {
-                inputs: { a: buffer, a: buffer },
+                inputs: { a: f32_buffer, a: f32_buffer },
             }"#,
         );
         assert!(out.contains("compile_error !"), "{out}");
@@ -649,11 +651,11 @@ mod tests {
     fn emits_filter_contract() {
         let out = render(
             r#"Filter {
-                inputs:  { audio: buffer,
-                           cutoff: float { 20.0..=20_000.0, default 1_000.0, "Hz", exp },
-                           resonance: float { 0.0..=1.0, default 0.2 },
+                inputs:  { audio: f32_buffer,
+                           cutoff: f32 { 20.0..=20_000.0, default 1_000.0, "Hz", exp },
+                           resonance: f32 { 0.0..=1.0, default 0.2 },
                            mode: enum(FilterMode) },
-                outputs: { audio: buffer },
+                outputs: { audio: f32_buffer },
             }"#,
         );
         assert!(out.contains("pub const IN_AUDIO : usize = 0"), "{out}");
@@ -661,8 +663,8 @@ mod tests {
         assert!(out.contains("pub const IN_RESONANCE : usize = 2"), "{out}");
         assert!(out.contains("pub const IN_MODE : usize = 3"), "{out}");
         assert!(out.contains("pub const OUT_AUDIO : usize = 0"), "{out}");
-        assert!(out.contains("Port :: buffer (\"audio\")"), "{out}");
-        assert!(out.contains("Port :: float"), "{out}");
+        assert!(out.contains("Port :: f32_buffer (\"audio\")"), "{out}");
+        assert!(out.contains("Port :: f32"), "{out}");
         assert!(out.contains("Curve :: Exponential"), "{out}");
         // Enum: `Port::enumerated` single-sourced off the shared vocab type's `enum_meta`.
         assert!(out.contains("Port :: enumerated"), "{out}");
@@ -679,9 +681,9 @@ mod tests {
     fn emits_oscillator_contract() {
         let out = render(
             r#"Oscillator {
-                inputs:  { freq: float { 20.0..=20_000.0, default 440.0, "Hz", exp },
+                inputs:  { freq: f32 { 20.0..=20_000.0, default 440.0, "Hz", exp },
                            waveform: enum(Waveform) },
-                outputs: { audio: buffer },
+                outputs: { audio: f32_buffer },
             }"#,
         );
         assert!(out.contains("pub const IN_FREQ : usize = 0"), "{out}");
@@ -691,6 +693,34 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("type_name : \"oscillator\""), "{out}");
+    }
+
+    // A signal control with a scalar default (ADR-0031 decision (a)): `f32_buffer { .. }` carries
+    // its meta yet stays a buffer port, so it emits `Port::f32_buffer_meta` — distinct from the
+    // bare `Port::f32_buffer` and from a Value `Port::f32`.
+    #[test]
+    fn f32_buffer_with_meta_emits_f32_buffer_meta() {
+        let out = render(
+            r#"Osc {
+                inputs:  { freq: f32_buffer { 20.0..=20_000.0, default 440.0, "Hz", exp } },
+                outputs: { audio: f32_buffer },
+            }"#,
+        );
+        assert!(out.contains("Port :: f32_buffer_meta"), "{out}");
+        assert!(out.contains("default : 440"), "{out}");
+        assert!(out.contains("Curve :: Exponential"), "{out}");
+        // Not the bare-buffer ctor and not the Value `f32` ctor.
+        assert!(!out.contains("Port :: f32_buffer (\"freq\")"), "{out}");
+        assert!(!out.contains("Port :: f32 ("), "{out}");
+    }
+
+    // A bare `f32_buffer` (no meta) still emits the plain ctor — the meta block is optional.
+    #[test]
+    fn bare_f32_buffer_emits_plain_ctor() {
+        let out =
+            render(r#"Sig { inputs: { audio: f32_buffer }, outputs: { audio: f32_buffer } }"#);
+        assert!(out.contains("Port :: f32_buffer (\"audio\")"), "{out}");
+        assert!(!out.contains("f32_buffer_meta"), "{out}");
     }
 
     // An unknown port type is rejected with a span, as a compile_error.

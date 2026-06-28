@@ -9,8 +9,11 @@
 //! it, so `dead_code` is expected.
 #![allow(dead_code)]
 
+use reuben_core::resources::{ResolveError, ResourceResolver, SampleBuffer};
 use reuben_core::vocab::pitch::{Note, Pitch};
-use reuben_core::{load, AudioConfig, Message, Plan, Registry, Renderer, SerialExecutor};
+use reuben_core::{
+    load_instrument, AudioConfig, Message, Plan, Registry, Renderer, SerialExecutor,
+};
 
 /// Real shipped sample rate.
 pub const SAMPLE_RATE: f32 = 48_000.0;
@@ -119,12 +122,62 @@ pub struct BenchState {
     out: Vec<f32>,
 }
 
+/// Resolves a fixture's resources from the repo `instruments/` dir, so voices *bind* and the bench
+/// renders the real hosted-voice workload (#102) — not the degraded empty-voicer path `load()` gives.
+/// `resolve_text` reads a voice patch's JSON (ADR-0032 §2); `resolve` decodes a WAV (mirrors
+/// `reuben-native`'s `FsResolver`, using the `hound` dev-dependency) so `sampler-arp`'s sample player
+/// reads real data instead of idling on an empty buffer. Setup-only IO — the timed `render` reads
+/// none of it — and the decoded bytes are fixed, so iai instruction counts stay byte-stable (ADR-0019).
+struct InstrumentsDir;
+impl ResourceResolver for InstrumentsDir {
+    fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        let path = format!("{}/../../instruments/{source}", env!("CARGO_MANIFEST_DIR"));
+        let mut reader = hound::WavReader::open(&path)
+            .map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))?;
+        let spec = reader.spec();
+        let channels = spec.channels as usize;
+        if channels == 0 {
+            return Err(ResolveError::Decode("zero channels".to_string()));
+        }
+        let mut planar: Vec<Vec<f32>> = vec![Vec::new(); channels];
+        match spec.sample_format {
+            hound::SampleFormat::Float => {
+                for (i, s) in reader.samples::<f32>().enumerate() {
+                    planar[i % channels].push(s.map_err(|e| ResolveError::Decode(e.to_string()))?);
+                }
+            }
+            hound::SampleFormat::Int => {
+                let scale = (1i64 << (spec.bits_per_sample - 1)) as f32;
+                for (i, s) in reader.samples::<i32>().enumerate() {
+                    let v = s.map_err(|e| ResolveError::Decode(e.to_string()))?;
+                    planar[i % channels].push(v as f32 / scale);
+                }
+            }
+        }
+        Ok(SampleBuffer::new(planar, spec.sample_rate as f32))
+    }
+
+    fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
+        let path = format!("{}/../../instruments/{source}", env!("CARGO_MANIFEST_DIR"));
+        std::fs::read_to_string(&path).map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))
+    }
+}
+
 /// Load `name`, instantiate its plan, prime the renderer, and precompute the
 /// message schedule. Setup only — never call this inside a measured region.
 pub fn build_state(name: &str) -> BenchState {
     let fx = fixture(name);
-    let graph = load(fx.json, &Registry::builtin()).expect("fixture loads");
-    let plan = Plan::instantiate(graph, AudioConfig::new(SAMPLE_RATE, BLOCK_SIZE))
+    let loaded =
+        load_instrument(fx.json, &Registry::builtin(), &InstrumentsDir).expect("fixture loads");
+    // The bug this fixes (#102) was invisible because nothing checked the workload was real: a
+    // resource that fails to resolve degrades to silence + a warning, not an error. Treat any
+    // warning as fatal so the bench can't silently fall back to the empty workload again.
+    assert!(
+        loaded.warnings.is_empty(),
+        "fixture {name:?} loaded with resource warnings (bench would render a degraded workload): {:?}",
+        loaded.warnings,
+    );
+    let plan = Plan::instantiate(loaded.graph, AudioConfig::new(SAMPLE_RATE, BLOCK_SIZE))
         .expect("fixture instantiates");
     let renderer = Renderer::new(&plan);
     let schedule = (0..BLOCKS)
