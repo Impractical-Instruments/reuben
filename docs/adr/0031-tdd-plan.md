@@ -48,7 +48,7 @@ Execution plan for [0031](0031-float-resolves-to-value-or-signal-by-wiring.md) +
 | ADR-0032 follow-up — `voice` (+`sample`) resource id round-trip through `from_graph` (session 13) | ✅ **done** | — |
 | 6 — coercion enforcement messages (enum-specific S→V; assert G/H/I text) (session 13) | ✅ **done** | — |
 | 7 — boundary/addresses: drop `Emit.address`/`Event.address` from the hot path (session 13) | ✅ **done** | — |
-| 8 (ADR-0031 tail: docs + schema sweep) | ⬜ pending | — |
+| 8 — docs + schema sweep (`/sync-docs`: ARCHITECTURE·README·authoring; schema no-op) (session 13) | ✅ **done** | — |
 
 **Suite is green workspace-wide at `b4e558b`** (`cargo test --workspace`, clippy clean).
 **Phase A is fully done** — the only `Io` read/write verbs are now `input::<T>` / `output::<T>`
@@ -479,10 +479,32 @@ assertion, now type-enforced), `render.rs` (`EventSrc`, the Event-route push, th
 (`outbound[0].address == "/fb"`, the stamped node address) stays green — the address↔port round-trip
 lives entirely at the boundary now. `cargo test --workspace` green (27 suites), clippy clean.
 
-### ▶ Pickup — step 8 (ADR-0031 tail)
+### ✅ Step 8 (2026-06-27, session 13) — docs + schema sweep — **ADR-0031 COMPLETE**
 
-- **Step 8 — docs + schema sweep:** `/sync-docs` over ARCHITECTURE, README, `docs/agents/authoring.md`,
-  `CONTEXT.md`, create-operator skill; re-bless goldens. This is the **final ADR-0031 step**.
+`/sync-docs` over the living docs (3 parallel Explore drift-reports → applied). **Schema re-bless was
+a no-op** (no new operators — `gen_schema` produced no diff; `committed_schema_is_in_sync` green).
+Edits:
+- **ARCHITECTURE.md:** `Buffer`→`f32_buffer` Arg; rewrote the Operators para to teach the three port
+  **forms** (Signal/Value/Event) + the per-wire check (V→S materialize, S→V hard error); replaced the
+  Lane fan-out para with the Voicer-hosts-voice-sub-patches model (ADR-0032); stale `io.stream`/
+  `io.emit`/`io.last` → `io.input`/`io.output` (+ addressless internal wires); added ADR 0031/0032 to
+  the MVP prose and decision index.
+- **README.md:** Status line now records the sig/val + voicer-hosting landings; groovebox "lane
+  volumes" → per-drum volumes.
+- **authoring.md:** removed the self-placed "⚠ STALE — pending Step-8 sweep" banner; rewrote the
+  Arg/form table + the whole density/read-views/cross-type sections to the declared-form model
+  (`f32`=Value, `f32_buffer`=Signal, one legal V→S coercion); `constant:` keyword replaces `lanes:`/
+  `LaneRule`/`from_param`; added `on_instantiate`/`bind_voices` hooks, the `voice` instrument-resource +
+  `interface` block, `EventWriter`/`MsgWriter`; killed every `io.signal`/`io.last`/`io.stream`/
+  `io.emit`/`io.lane` and `buffer`/`float` keyword.
+- **CONTEXT.md: FLAGGED, not edited** (glossary is grilled, not auto-written — `/domain-modeling`).
+  Stale/contradicted: **Lane** (deleted mechanism still defined live), **Signal** (now one of three
+  forms, not *the* dense type), **Arg**'s "`F32`→`Buffer` auto-materializes" line (that auto-materialize
+  is exactly what ADR-0031 removed), **Constant**'s "sets Lane count" example. New terms wanting entries:
+  **Value**/**Event** port forms, **voice sub-patch**, **interface** block, **`constant:`**.
+
+**ADR-0031 is fully landed** (steps 0–8). Remaining ADR-0032 deferred item: the iai/criterion bench
+voicer-fixture degradation (loads via plain `load()`, unbound voices — pre-existing, out of gate scope).
 
 ### ▶ Pickup — ADR-0032 Voicer rewrite (the rest of the barrier). Forks RESOLVED above (session 9):
 
