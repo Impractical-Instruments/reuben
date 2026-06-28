@@ -19,10 +19,14 @@ on:
       - "docs/**"
       - LICENSE
 
-# Cancel superseded runs on the same ref so the latest push wins and minutes aren't wasted.
+# Cancel superseded runs on the same ref so the latest push wins and minutes aren't wasted —
+# EXCEPT pushes to main. Every main commit must get its own run so the perf gate records a history
+# point for each (ADR-0019, layer 1); cancelling an in-progress or queued main run punches a hole in
+# the trend on rapid pushes/merges. So main pushes get a SHA-unique group (nothing to cancel against)
+# with cancellation off; PR and branch runs keep per-ref grouping and still cancel superseded runs.
 concurrency:
-  group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  group: ci-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 permissions:
   contents: read
