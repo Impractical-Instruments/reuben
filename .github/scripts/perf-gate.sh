@@ -83,7 +83,16 @@ H_FULL="$(git rev-parse HEAD 2>/dev/null || echo unknown)"
 H_DATE="$(git show -s --format=%cI HEAD 2>/dev/null || echo unknown)"
 
 note() { printf '%s\n' "$*" >>"$SUMMARY"; }
+# Like note(), but ALSO writes to the streaming job log when $SUMMARY is the GitHub step-summary file
+# (a file, invisible in the live log). This is how the concise Ir Δ% summary reaches a reader watching
+# the raw CI log, not the rendered summary tab. Locally $SUMMARY is already stdout, so the guard avoids
+# double-printing.
+both() { note "$1"; [ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf '%s\n' "$1"; }
 run_bench() { local bench="$1"; shift; cargo bench -p "$PKG" --features "$FEATURES" --bench "$bench" -- "$@"; }
+
+# Accumulates one consolidated row per benched case ("| layer | case | Ir Δ% | icon |") across both
+# layers, emitted as a single at-a-glance table after all layers run (see end of file).
+declare -a SUM_ROWS=()
 
 # Harvest HEAD's absolute Ir per case from a captured compare-run log into $RECORD (one JSON object
 # per case). Parses the human-readable iai output, not --save-summary JSON: the text format is
@@ -158,8 +167,17 @@ gate_one() {
 
   # 1) Baseline engine + its own fixtures (PR bench harness) -> save as baseline "base".
   #    Swap src/ and instruments/ together so the baseline reads JSON it can actually load.
+  #    This run compares the baseline against *nothing* (no prior saved baseline exists), so its
+  #    per-case output is noise — we need only its exit code and the saved `base` snapshot for the
+  #    real PR-vs-baseline compare in step 2. Capture it to a log and surface it ONLY on failure,
+  #    where the runner's diagnostics (compile errors feeding the skip probe, or a runtime panic)
+  #    matter. The happy-path job log thus shows just the compare run, not baseline-vs-nothing.
   git checkout "$BASE_SHA" -- "${SRC[@]}" $FIXTURES
-  if ! run_bench "$bench" --save-baseline=base; then
+  local baselog
+  baselog="$(mktemp)"
+  if ! run_bench "$bench" --save-baseline=base >"$baselog" 2>&1; then
+    cat "$baselog"
+    rm -f "$baselog"
     # The baseline bench did not build/run. Classify by COMPILE, not by run. The ONLY legitimate
     # skip is "HEAD's bench harness postdates the baseline API" — a *compile* incompatibility of the
     # bench target against the swapped baseline src (e.g. the PR that introduced this layer: baseline
@@ -185,6 +203,7 @@ gate_one() {
     note ""
     return 0
   fi
+  rm -f "$baselog"
 
   # 2) Restore PR engine + fixtures, compare vs "base". callgrind enforces the hard limit and
   #    exits non-zero if any case breaches it; that exit code is this layer's verdict. We `tee` the
@@ -202,8 +221,7 @@ gate_one() {
   # diff_pct is serialized as a string (callgrind event "Ir" = instructions). The jq walk is
   # position-independent so it survives schema nesting changes; if it finds nothing the callgrind
   # exit code still rules.
-  note "| Case | Ir Δ% | Status |"
-  note "|---|---:|:---:|"
+  local layer="${bench%_iai}"
   local table_fail=0 parsed=0
   while IFS= read -r f; do
     id=$(jq -r '.id // .function_name // "?"' "$f" 2>/dev/null)
@@ -222,13 +240,14 @@ gate_one() {
       WARN) icon="⚠️"; printf '::warning title=Perf creep::%s %s Ir +%s%% (>%s%%)\n' "$bench" "$id" "$pct" "$WARN_PCT" ;;
       *)    icon="✅" ;;
     esac
-    note "| ${id} | ${pct} | ${icon} |"
+    # Accumulate for the single consolidated table emitted after all layers run, rather than printing
+    # a separate per-layer table here.
+    SUM_ROWS+=("| ${layer} | ${id} | ${pct} | ${icon} |")
   done < <(find target/iai -path "*${bench}*" -name summary.json 2>/dev/null)
 
   if [ "$parsed" -eq 0 ]; then
-    note "| _(summary parse unavailable — verdict from callgrind exit code)_ |  |  |"
+    SUM_ROWS+=("| ${layer} | _(parse unavailable — verdict from callgrind exit code)_ |  |  |")
   fi
-  note ""
 
   # This layer's verdict: callgrind's own limit breach OR our table classifying a >FAIL_PCT regress.
   if [ "$gate_rc" -ne 0 ] || [ "$table_fail" -ne 0 ]; then
@@ -240,21 +259,37 @@ gate_one() {
 
 for b in "${BENCHES[@]}"; do gate_one "$b"; done
 
+# Consolidated low-detail summary: just Ir Δ% per case across both layers, in one place. The runner's
+# full per-case detail (cache hits, cycles) stays in the job log for the PR-vs-baseline compare; this
+# is the at-a-glance "did anything move, and by how much" table. `both` so it lands in the streaming
+# job log too, not only the GitHub step-summary tab.
+both ""
+both "## Summary — instruction count Δ% by case"
+both ""
+both "| Layer | Case | Ir Δ% | Status |"
+both "|---|---|---:|:---:|"
+if [ "${#SUM_ROWS[@]}" -eq 0 ]; then
+  both "| _(no cases parsed — verdict from callgrind exit codes above)_ |  |  |  |"
+else
+  for row in "${SUM_ROWS[@]}"; do both "$row"; done
+fi
+both ""
+
 # A baseline bench that COMPILED but failed at runtime (vs. a harness that merely postdates the
 # baseline API) is fatal — the gate could not certify "no regression," and silently passing it is the
 # masking bug we are closing.
 if [ "$hard_broken" -ne 0 ]; then
-  note "**Result: baseline bench failed to run — perf gate could not run a comparison. Not a pass.**"
+  both "**Result: baseline bench failed to run — perf gate could not run a comparison. Not a pass.**"
   exit 1
 fi
 
 if [ "$overall_fail" -ne 0 ]; then
-  note "**Result: ❌ regression over ${FAIL_PCT}%.**"
+  both "**Result: ❌ regression over ${FAIL_PCT}%.**"
   exit 1
 fi
 if [ "$skipped" -ne 0 ]; then
-  note "**Result: ✅ within ${FAIL_PCT}% — but ${skipped}/${#BENCHES[@]} layer(s) skipped (partial coverage).**"
+  both "**Result: ✅ within ${FAIL_PCT}% — but ${skipped}/${#BENCHES[@]} layer(s) skipped (partial coverage).**"
   exit 0
 fi
-note "**Result: ✅ within ${FAIL_PCT}%.**"
+both "**Result: ✅ within ${FAIL_PCT}%.**"
 exit 0
