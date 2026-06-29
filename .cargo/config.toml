@@ -9,7 +9,7 @@
 # and `floor` already inlines to a native rounding instruction). Going further to `x86-64-v3`
 # (AVX2/FMA, Haswell 2013+) buys more but raises the minimum CPU — tracked in #136.
 [target.'cfg(target_arch = "x86_64")']
-rustflags = ["-C", "target-cpu=x86-64-v2"]
+rustflags = ["-C", "target-cpu=x86-64-v3"]
 
 # Cargo aliases for this workspace.
 [alias]
