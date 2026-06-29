@@ -1,0 +1,146 @@
+{
+  "doc": "Equal-power crossfade between two self-playing tones, built entirely from math operators (no crossfade Operator). Source A is a 220 Hz sine, source B a 330 Hz saw (a fifth up, different timbre) so the blend is obvious by ear with no OSC sender. The fade follows out = A*(1-t)^k + B*t^k. Two knobs: /xfade/in [0..1] sweeps the position (rests at 0 = full A), smoothed by an m2s so it is zipper-free; /fade_law/in sets the fade exponent k and is the A/B switch — 0.5 = equal-power (sqrt law, constant power, sqrt(1-t)^2 + sqrt(t)^2 = 1), 1.0 = linear. Default is 0.5 (equal power). The summed mix is attenuated 0.5 to leave headroom. This is the inline pattern meant to lift straight into a `crossfader` sub-patch once instrument nesting (ADR-0034) lands.",
+  "instrument": "crossfader-demo",
+  "nodes": [
+    {
+      "address": "/oscA",
+      "doc": "Source A: a 220 Hz sine.",
+      "inputs": {
+        "freq": 220.0,
+        "waveform": "Sine"
+      },
+      "type": "oscillator"
+    },
+    {
+      "address": "/oscB",
+      "doc": "Source B: a 330 Hz saw (a fifth above A, brighter timbre).",
+      "inputs": {
+        "freq": 330.0,
+        "waveform": "Saw"
+      },
+      "type": "oscillator"
+    },
+    {
+      "address": "/xfade",
+      "doc": "Crossfade position knob t in [0..1]; rests at 0 (full A). m2s smooths it so sweeping is zipper-free. Send /xfade/in [0..1].",
+      "inputs": {
+        "in": 0.0,
+        "mode": "Smooth",
+        "time": 0.05
+      },
+      "type": "m2s"
+    },
+    {
+      "address": "/fade_law",
+      "doc": "The fade exponent k, fanned to both gain curves so one message changes both. 0.5 = equal-power (default), 1.0 = linear. Send /fade_law/in 1.0 or /fade_law/in 0.5.",
+      "inputs": {
+        "in": 0.5,
+        "mode": "Smooth",
+        "time": 0.05
+      },
+      "type": "m2s"
+    },
+    {
+      "address": "/one_minus_t",
+      "doc": "1 - t, the complementary fade for source A.",
+      "inputs": {
+        "a": 1.0,
+        "b": {
+          "from": "/xfade.out"
+        }
+      },
+      "type": "sub_f32_signal"
+    },
+    {
+      "address": "/gainA",
+      "doc": "Gain for A = (1 - t)^k. k=0.5 gives sqrt(1-t) (equal power), k=1 gives 1-t (linear).",
+      "inputs": {
+        "x": {
+          "from": "/one_minus_t.out"
+        },
+        "exponent": {
+          "from": "/fade_law.out"
+        }
+      },
+      "type": "power_f32_signal"
+    },
+    {
+      "address": "/gainB",
+      "doc": "Gain for B = t^k.",
+      "inputs": {
+        "x": {
+          "from": "/xfade.out"
+        },
+        "exponent": {
+          "from": "/fade_law.out"
+        }
+      },
+      "type": "power_f32_signal"
+    },
+    {
+      "address": "/vcaA",
+      "doc": "Source A scaled by its fade gain.",
+      "inputs": {
+        "a": {
+          "from": "/oscA"
+        },
+        "b": {
+          "from": "/gainA.out"
+        }
+      },
+      "type": "mul_f32_signal"
+    },
+    {
+      "address": "/vcaB",
+      "doc": "Source B scaled by its fade gain.",
+      "inputs": {
+        "a": {
+          "from": "/oscB"
+        },
+        "b": {
+          "from": "/gainB.out"
+        }
+      },
+      "type": "mul_f32_signal"
+    },
+    {
+      "address": "/mix",
+      "doc": "Sum of the two faded sources: A*(1-t)^k + B*t^k.",
+      "inputs": {
+        "a": {
+          "from": "/vcaA.out"
+        },
+        "b": {
+          "from": "/vcaB.out"
+        }
+      },
+      "type": "add_f32_signal"
+    },
+    {
+      "address": "/master",
+      "doc": "Halve the mix for headroom (two sources near unity at the equal-power center).",
+      "inputs": {
+        "a": {
+          "from": "/mix.out"
+        },
+        "b": 0.5
+      },
+      "type": "mul_f32_signal"
+    },
+    {
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/master.out"
+        }
+      },
+      "type": "output"
+    }
+  ],
+  "outputs": [
+    {
+      "node": "/out",
+      "port": "audio"
+    }
+  ]
+}
