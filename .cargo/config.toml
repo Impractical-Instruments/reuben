@@ -1,3 +1,16 @@
+# Raise the x86-64 baseline to the `x86-64-v2` microarchitecture level (SSE3/SSSE3/SSE4.1/SSE4.2/
+# POPCNT — Nehalem, ~2009; effectively universal on modern hardware). The default `x86-64` target is
+# SSE2-only, so `f32::floor()` (the per-sample phase wrap in oscillator/lfo/clock and every rounding
+# operator) can't use the SSE4.1 `roundss` instruction and falls back to a libc `floorf` call —
+# ~17% of the oscillator's instructions and ~35% of the LFO's. v2 inlines it to a single
+# instruction: measured -20% instructions on the oscillator micro-bench, -35% on the LFO.
+#
+# Scoped to x86_64 so it never reaches aarch64/etc. (where `x86-64-v2` is not a valid `target-cpu`,
+# and `floor` already inlines to a native rounding instruction). Going further to `x86-64-v3`
+# (AVX2/FMA, Haswell 2013+) buys more but raises the minimum CPU — tracked in #136.
+[target.'cfg(target_arch = "x86_64")']
+rustflags = ["-C", "target-cpu=x86-64-v2"]
+
 # Cargo aliases for this workspace.
 [alias]
 # Run the full benchmark suite — both the macro (render_block) layer and the per-operator micro
