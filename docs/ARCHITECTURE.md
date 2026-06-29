@@ -131,3 +131,6 @@ The MVP is a headless "it makes a sound" spine: the portable-core / native-crate
 - [0030 — OSC-as-all-data: one `Message` type, an `Arg` payload, `Signal` as a Buffer-arg (supersedes 0028)](adr/0030-osc-as-all-data-one-message-type.md)
 - [0031 — A numeric port resolves to a held Value or a Signal buffer by declaration + wiring; per-wire form check](adr/0031-float-resolves-to-value-or-signal-by-wiring.md)
 - [0032 — The Voicer hosts standalone voice sub-patches as its pool; the Lane fan-out model is retired](adr/0032-voicer-hosts-voice-subpatches.md)
+- [0033 — Pointwise number ops are generated from one scalar fn by `number_operator_contract!`](adr/0033-number-operator-contract-macro.md)
+- [0034 — General instrument-as-operator nesting: a `subpatch` node inlined at plan-build](adr/0034-instrument-nesting.md)
+- [0035 — Typed edit-time `Constant`: a first-class config field operators read at build](adr/0035-typed-edit-time-constant.md)
