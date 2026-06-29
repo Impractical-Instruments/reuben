@@ -1,7 +1,9 @@
 //! LFO — sine low-frequency modulation source.
 //!
 //! A control-rate sine oscillator emitting an absolute Signal `out = center + depth *
-//! sin(2π·phase)`. It free-runs on the deterministic sample timeline, advancing a phase by
+//! sin(2π·phase)`, the sine taken from the shared single-cycle [`wavetable`](crate::wavetable) by
+//! phase-indexed linear interpolation (no per-sample trig). It free-runs on the deterministic
+//! sample timeline, advancing a phase by
 //! `rate / sample_rate` cycles per sample, so the modulation is continuous across blocks /
 //! block-slices and never drifts (phase held in f64 like the Clock). Designed to drive
 //! another operator's Signal input — e.g. an oscillator's `freq` — for a vibrato/siren drone.
@@ -17,6 +19,7 @@
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
+use crate::wavetable::{shared_sine, Wavetable};
 
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Lfo {
@@ -26,17 +29,29 @@ crate::operator_contract!(Lfo {
     outputs: { out: f32_buffer },
 });
 
-#[derive(Default)]
 pub struct Lfo {
     /// Phase in [0, 1), advanced per sample. Continuous across blocks / slices.
     /// Held in f64 so the modulation grid doesn't drift off the sample timeline over a long
     /// session (f32 accumulation slips audibly within seconds).
     phase: f64,
+    /// Shared single-cycle sine table — the modulation shape is a phase-indexed lookup with linear
+    /// interpolation rather than a per-sample `sin()` call. Resolved on the cold path so `process`
+    /// only ever reads the already-built table (ADR-0019 RT-safe render).
+    sine: &'static Wavetable,
 }
 
 impl Lfo {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            phase: 0.0,
+            sine: shared_sine(),
+        }
+    }
+}
+
+impl Default for Lfo {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -59,10 +74,15 @@ impl Operator for Lfo {
         let center = io.input::<f32>(IN_CENTER).unwrap_or(0.0);
 
         let mut phase = self.phase;
+        let sine = self.sine; // `&'static`, copied out so the loop doesn't hold a borrow of `self`
         let out = io.output::<&mut [f32]>(OUT_OUT);
         for s in out.iter_mut().take(n) {
-            let s_val = (std::f64::consts::TAU * phase).sin() as f32;
-            *s = center + depth * s_val;
+            // Reduce the f64 phase to an f32 in [0, 1): the f64→f32 cast can round a value just
+            // below 1.0 up to 1.0, so fold it back to meet `lookup`'s [0, 1) contract. The f64
+            // accumulator below keeps the modulation grid drift-free regardless.
+            let pf = phase as f32;
+            let pf = pf - pf.floor();
+            *s = center + depth * sine.lookup(pf);
             phase += dt;
             phase -= phase.floor();
         }
