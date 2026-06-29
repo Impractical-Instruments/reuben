@@ -332,6 +332,7 @@ impl_input_held!(
     crate::vocab::GateMode,
     crate::vocab::M2sMode,
     crate::vocab::MapCurve,
+    crate::vocab::GrainWindow,
     crate::vocab::SnapDir,
     crate::vocab::SnapTarget,
     crate::vocab::Harmony,

@@ -58,6 +58,22 @@ pub enum Waveform {
     Saw,
 }
 
+/// A granulator grain's amplitude envelope (the granulator's `window`). A shared *vocab* enum
+/// (`Arg::GrainWindow`): the shape multiplied over each grain across its lifetime, evaluated at the
+/// grain's normalized phase in [0, 1). `Hann` (raised cosine, click-free) is the default.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, reuben_macros::ArgValue)]
+pub enum GrainWindow {
+    /// Raised cosine `0.5·(1 − cos(2π·x))` — zero at both edges, peak mid-grain. Click-free.
+    #[default]
+    Hann,
+    /// Linear up-down ramp `1 − |2x − 1|` — zero at edges, peak mid-grain. Sharper than Hann.
+    Triangle,
+    /// Flat-top with cosine tapers (25% each side) — sustains the grain body, fades the edges.
+    Tukey,
+    /// Rectangular `1.0` — no fade. Verbatim playback of the grain body; clicks at grain edges.
+    Rect,
+}
+
 /// How `m2s` fills the dense per-sample gaps between sparse messages (its `mode`, ADR-0017). A
 /// shared *vocab* enum (`Arg::M2sMode`). Plain step (zero-order hold) is no longer a mode — that
 /// is the wire's automatic materialize (ADR-0030); `m2s` exists only for the gap-filling policies:

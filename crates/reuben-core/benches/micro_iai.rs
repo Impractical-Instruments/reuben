@@ -57,6 +57,7 @@ fn setup(kind: &str) -> Option<OpHarness> {
 #[bench::envelope(args = ("envelope",), setup = setup)]
 #[bench::euclid(args = ("euclid",), setup = setup)]
 #[bench::filter(args = ("filter",), setup = setup)]
+#[bench::granulator(args = ("granulator",), setup = setup)]
 #[bench::harmony(args = ("harmony",), setup = setup)]
 #[bench::integrate(args = ("integrate_f32_signal",), setup = setup)]
 #[bench::lfo(args = ("lfo",), setup = setup)]
