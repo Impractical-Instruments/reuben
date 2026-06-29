@@ -20,8 +20,9 @@
 # symmetrically while every operator that existed at the base is still benched and gated.
 #
 # What we DO swap to the baseline ref: the engine source of EVERY crate in reuben-core's build
-# closure (reuben-core + reuben-macros + reuben-contract `src/`) AND the instrument fixtures
-# (`instruments/`), together. Swapping reuben-core/src alone is not enough: its operators call
+# closure (reuben-core + reuben-macros + reuben-contract `src/`), the instrument fixtures
+# (`instruments/`), AND the build config (`.cargo/config.toml`), together. Swapping reuben-core/src
+# alone is not enough: its operators call
 # `Self::contract()`, emitted by the reuben-macros proc-macro — so a PR that changes that macro
 # (as ADR-0030 did) leaves baseline reuben-core/src compiled against HEAD's macro, which no longer
 # emits `contract`, and the baseline build fails. Moving the whole source closure together keeps
@@ -36,6 +37,17 @@
 # *semantic* workload fixed (same instrument, same notes) while letting code AND its data
 # representation move together. For non-format PRs the fixtures are byte-identical across
 # refs, so this is a no-op and the comparison is unchanged.
+#
+# `.cargo/config.toml` moves with `src/` too, so a build-config perf change (e.g. raising
+# `target-cpu`, tuning a `[profile]` rustflag) is A/B'd rather than applied to BOTH sides and thus
+# made invisible — codegen config is a first-order perf lever, and an unmeasured one means a config
+# regression sails through green. Cost is self-limiting: rustflags fingerprint into the whole build
+# graph, so when the config DIFFERS each side is a full-graph rebuild (deps included) — but when the
+# PR leaves config untouched the bytes are identical across refs, the fingerprint is unchanged, and
+# nothing extra rebuilds (a no-op like the fixtures). We swap config but NOT the toolchain
+# (`rust-toolchain.toml`) or lockfile (`Cargo.lock`): those move the compiler/dep APIs and would skew
+# the "HEAD bench harness compiles against baseline src" invariant the layer-skip logic relies on —
+# the same reason `benches/` are never swapped.
 #
 #   FAIL (exit 1): any benched instrument regresses Ir by > 10%  (enforced by callgrind
 #                  itself via --callgrind-limits; the authoritative verdict).
@@ -65,6 +77,9 @@ SRC=(
 # Version-locked fixtures the harness embeds via `include_str!`. Swapped with `src/` so each
 # side reads JSON valid for its own engine (see header). Space-separated list of pathspecs.
 FIXTURES="instruments"
+# Build config swapped with `src/` so a codegen-config perf change is A/B'd, not applied to both
+# sides (see header). Codegen only — never the toolchain or lockfile. Space-separated pathspecs.
+BUILD_CONFIG=".cargo/config.toml"
 SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 FAIL_PCT=10
 WARN_PCT=3
@@ -89,6 +104,10 @@ note() { printf '%s\n' "$*" >>"$SUMMARY"; }
 # double-printing.
 both() { note "$1"; [ -n "${GITHUB_STEP_SUMMARY:-}" ] && printf '%s\n' "$1"; }
 run_bench() { local bench="$1"; shift; cargo bench -p "$PKG" --features "$FEATURES" --bench "$bench" -- "$@"; }
+# Swap the baseline snapshot — source closure + fixtures + build config, together — to ref $1
+# ("$BASE_SHA" for the baseline run, "HEAD" to restore the PR tree). One definition of the swap set so
+# the four call sites can't drift; the bench harness (`benches/`) is deliberately NOT in it (header).
+swap_tree() { git checkout "$1" -- "${SRC[@]}" $FIXTURES $BUILD_CONFIG; }
 
 # Accumulates one consolidated row per benched case ("| layer | case | Ir Δ% | icon |") across both
 # layers, emitted as a single at-a-glance table after all layers run (see end of file).
@@ -180,7 +199,7 @@ gate_one() {
   #    real PR-vs-baseline compare in step 2. Capture it to a log and surface it ONLY on failure,
   #    where the runner's diagnostics (compile errors feeding the skip probe, or a runtime panic)
   #    matter. The happy-path job log thus shows just the compare run, not baseline-vs-nothing.
-  git checkout "$BASE_SHA" -- "${SRC[@]}" $FIXTURES
+  swap_tree "$BASE_SHA"
   local baselog
   baselog="$(mktemp)"
   if ! run_bench "$bench" --save-baseline=base >"$baselog" 2>&1; then
@@ -193,7 +212,7 @@ gate_one() {
     # with `--no-run` against the still-checked-out baseline src; its compile errors are already in
     # the log above, so the exit code is all we need.
     if ! cargo bench -p "$PKG" --features "$FEATURES" --bench "$bench" --no-run >/dev/null 2>&1; then
-      git checkout HEAD -- "${SRC[@]}" $FIXTURES
+      swap_tree HEAD
       skipped=$((skipped + 1))
       printf '::warning title=Perf layer skipped::%s HEAD bench harness does not compile against the baseline — no comparison for this layer\n' "$bench"
       note "⚠️ \`$bench\`: the HEAD bench harness does not compile against the baseline src — its harness postdates the baseline (workload API or bench bridge moved). Layer skipped, non-blocking."
@@ -203,7 +222,7 @@ gate_one() {
     # Compiles but the run failed: a panic/abort at RUNTIME, not an API gap. New operators no longer
     # crash here (the gate skips them via REUBEN_MICRO_BENCH_SKIP), so a surviving run failure is real
     # — fail the gate. Treating a runtime crash as a skip is exactly the masking bug we are closing.
-    git checkout HEAD -- "${SRC[@]}" $FIXTURES
+    swap_tree HEAD
     hard_broken=1
     overall_fail=1
     printf '::error title=Baseline bench broken::%s baseline bench compiled but failed at runtime — perf gate cannot certify no regression\n' "$bench"
@@ -217,7 +236,7 @@ gate_one() {
   #    exits non-zero if any case breaches it; that exit code is this layer's verdict. We `tee` the
   #    run so harvest_history can read HEAD's absolute Ir per case; PIPESTATUS[0] keeps the bench's
   #    own exit code as the verdict (tee always exits 0).
-  git checkout HEAD -- "${SRC[@]}" $FIXTURES
+  swap_tree HEAD
   local complog
   complog="$(mktemp)"
   run_bench "$bench" --baseline=base --save-summary=json --callgrind-limits="ir=${FAIL_PCT}%" 2>&1 | tee "$complog"
