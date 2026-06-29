@@ -82,6 +82,7 @@ fn setup(kind: &str) -> Option<OpHarness> {
 #[bench::power_value(args = ("power_f32_value",), setup = setup)]
 #[bench::reciprocal(args = ("reciprocal_f32_signal",), setup = setup)]
 #[bench::reciprocal_value(args = ("reciprocal_f32_value",), setup = setup)]
+#[bench::resonator(args = ("resonator",), setup = setup)]
 #[bench::reverb(args = ("reverb",), setup = setup)]
 #[bench::sample(args = ("sample",), setup = setup)]
 #[bench::sequencer(args = ("sequencer",), setup = setup)]
