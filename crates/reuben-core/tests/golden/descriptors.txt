@@ -193,6 +193,15 @@ operator reciprocal_f32_signal
 operator reciprocal_f32_value
   in[0] f32 x min=-1000000.0 max=1000000.0 default=1.0 unit="" curve=linear
   out[0] f32 out
+operator resonator
+  in[0] f32_buffer in
+  in[1] f32 freq min=20.0 max=8000.0 default=220.0 unit="Hz" curve=exponential
+  in[2] f32 gate min=0.0 max=1.0 default=0.0 unit="" curve=linear
+  in[3] f32 structure min=0.0 max=1.0 default=0.25 unit="" curve=linear
+  in[4] f32 brightness min=0.0 max=1.0 default=0.5 unit="" curve=linear
+  in[5] f32 damping min=0.0 max=1.0 default=0.7 unit="" curve=linear
+  in[6] f32 position min=0.0 max=1.0 default=0.3 unit="" curve=linear
+  out[0] f32_buffer out
 operator reverb
   in[0] f32_buffer audio
   in[1] f32 room min=0.0 max=1.0 default=0.5 unit="" curve=linear
