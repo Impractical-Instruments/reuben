@@ -86,6 +86,7 @@ pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) {
         Arg::Waveform(v) => out.push(Arg::Str(v.symbol().to_string())),
         Arg::M2sMode(v) => out.push(Arg::Str(v.symbol().to_string())),
         Arg::MapCurve(v) => out.push(Arg::Str(v.symbol().to_string())),
+        Arg::GrainWindow(v) => out.push(Arg::Str(v.symbol().to_string())),
         // No external OSC form.
         Arg::Harmony(_) | Arg::F32Buffer(_) => {}
     }

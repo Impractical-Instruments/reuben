@@ -78,6 +78,17 @@ operator filter
   in[2] f32_buffer resonance min=0.0 max=1.0 default=0.2 unit="" curve=linear
   in[3] enum mode variants=["Lp", "Hp", "Bp"] default=0
   out[0] f32_buffer audio
+operator granulator
+  in[0] f32_buffer position min=0.0 max=1.0 default=0.0 unit="" curve=linear
+  in[1] f32_buffer grain_size min=5.0 max=500.0 default=100.0 unit="ms" curve=linear
+  in[2] f32_buffer pitch min=-24.0 max=24.0 default=0.0 unit="st" curve=linear
+  in[3] f32 density min=1.0 max=200.0 default=20.0 unit="Hz" curve=exponential
+  in[4] f32 spray min=0.0 max=1000.0 default=0.0 unit="ms" curve=linear
+  in[5] f32 gain min=0.0 max=4.0 default=1.0 unit="" curve=linear
+  in[6] f32 channel min=-1.0 max=31.0 default=-1.0 unit="" curve=linear
+  in[7] enum window variants=["Hann", "Triangle", "Tukey", "Rect"] default=0
+  out[0] f32_buffer audio
+  resource[0] sample
 operator harmony
   in[0] harmony set
   in[1] f32 root min=0.0 max=127.0 default=60.0 unit="MIDI" curve=linear

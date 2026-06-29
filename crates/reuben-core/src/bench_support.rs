@@ -53,6 +53,10 @@ pub enum Recipe {
     /// `Default`, plus a synthetic decoded sample bound to the resource slot, the `gate` held high
     /// (rising edge ⇒ trigger), and `freq` set positive — so the sample player's read loop runs.
     Sample,
+    /// `Default`, plus a synthetic decoded sample bound to the resource slot — for the free-running
+    /// granulator, which needs no gate/note: at default density it spawns grains automatically, so
+    /// the bound sample alone exercises its real grain-summing path.
+    Grains,
     /// `Default`, plus a `note [60, 1]` event at block 0 — drives note-oriented operators (the
     /// voicer's voice allocation + render, the snap quantizer's resolve+emit).
     Notes,
@@ -100,6 +104,7 @@ pub const WORKLOADS: &[Workload] = &[
     w("envelope", Recipe::Gate),
     w("euclid", Recipe::Clocked),
     w("filter", Recipe::Default),
+    w("granulator", Recipe::Grains),
     w("harmony", Recipe::Default),
     w("integrate_f32_signal", Recipe::Value),
     w("lfo", Recipe::Default),
@@ -160,6 +165,7 @@ pub const MICRO_IAI_KINDS: &[&str] = &[
     "envelope",
     "euclid",
     "filter",
+    "granulator",
     "harmony",
     "integrate_f32_signal",
     "lfo",
@@ -260,6 +266,7 @@ fn apply_recipe(driver: &mut OpDriver, desc: &Descriptor, recipe: Recipe) {
             set_const(driver, desc, "freq", 440.0);
             bind_synthetic_sample(driver, desc);
         }
+        Recipe::Grains => bind_synthetic_sample(driver, desc),
         Recipe::Notes => push_note(driver, desc, "notes", Note::new(Pitch::Absolute(60.0), 1.0)),
         Recipe::ChordSet => push_note(driver, desc, "set", Note::new(Pitch::Degree(0), 1.0)),
         Recipe::Position => set_const(driver, desc, "position", 0.5),
