@@ -11,6 +11,7 @@
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 use crate::vocab::Waveform;
+use crate::wavetable::{shared_sine, Wavetable};
 
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts and the Descriptor.
 // `freq` is a signal control with a scalar default (ADR-0031 decision (a)): knob-set or unwired it
@@ -22,15 +23,27 @@ crate::operator_contract!(Oscillator {
     outputs: { audio: f32_buffer },
 });
 
-#[derive(Default)]
 pub struct Oscillator {
     /// Phase in turns [0, 1).
     phase: f32,
+    /// Shared single-cycle sine table — the sine waveform is a phase-indexed lookup with linear
+    /// interpolation rather than a per-sample `sin()` call. Resolved here on the cold path so
+    /// `process` only ever reads the already-built table (ADR-0019 RT-safe render).
+    sine: &'static Wavetable,
 }
 
 impl Oscillator {
     pub fn new() -> Self {
-        Self::default()
+        Self {
+            phase: 0.0,
+            sine: shared_sine(),
+        }
+    }
+}
+
+impl Default for Oscillator {
+    fn default() -> Self {
+        Self::new()
     }
 }
 
@@ -63,6 +76,7 @@ impl Operator for Oscillator {
         // Stage 2: in-place oscillator pass. `out[i]` currently holds the frequency for sample
         // `i`; overwrite it with the generated sample.
         let mut phase = self.phase;
+        let sine = self.sine; // `&'static`, copied out so the loop doesn't hold a borrow of `self`
         let out = &mut io.output::<&mut [f32]>(OUT_AUDIO)[..n];
         for slot in out.iter_mut() {
             let dt = *slot * inv_sr; // phase increment in turns
@@ -72,7 +86,10 @@ impl Operator for Oscillator {
                 let v = 2.0 * phase - 1.0;
                 v - poly_blep(phase, dt)
             } else {
-                (core::f32::consts::TAU * phase).sin()
+                // Sine by phase-indexed wavetable lookup (linear interpolation) — no per-sample
+                // trig. `phase` is kept in [0, 1) by the accumulator below, so it meets `lookup`'s
+                // contract every iteration.
+                sine.lookup(phase)
             };
             *slot = sample;
 

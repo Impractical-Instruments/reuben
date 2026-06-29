@@ -43,6 +43,7 @@ pub mod schema;
 pub mod signal;
 pub mod tuning;
 pub mod vocab;
+pub mod wavetable;
 
 pub use config::AudioConfig;
 pub use descriptor::Descriptor;
@@ -55,6 +56,7 @@ pub use message::{Arg, Message};
 pub use operator::{Io, Operator};
 pub use plan::{Plan, PlanError};
 pub use vocab::{Chord, ChordTag, Harmony, ScaleField, SnapDir, SnapPolicy, SnapTarget};
+pub use wavetable::Wavetable;
 // The single-source operator contract macro (ADR-0025). Re-exported at the crate root so operator
 // modules can call `crate::operator_contract!(..)`, mirroring `register_operator!`.
 pub use registry::Registry;
