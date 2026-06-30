@@ -127,7 +127,7 @@ impl Chord {
 }
 
 /// Which set [`Harmony::snap`] quantizes to (ADR-0013). A shared *vocab* enum (ADR-0030):
-/// rides the central `Arg` as `Arg::SnapTarget`, read by the `snap` operator as a held choice.
+/// rides the central `Arg` as `Arg::Enum`, read by the `snap` operator as a held choice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, reuben_macros::ArgValue)]
 pub enum SnapTarget {
     /// Any scale tone survives.
@@ -140,7 +140,7 @@ pub enum SnapTarget {
 }
 
 /// Snap direction (ADR-0013): `Nearest` with a deterministic **down** tie-break (ADR-0001
-/// forbids a coin-flip), or a forced `Up`/`Down`. A shared *vocab* enum (`Arg::SnapDir`).
+/// forbids a coin-flip), or a forced `Up`/`Down`. A shared *vocab* enum (`Arg::Enum`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, reuben_macros::ArgValue)]
 pub enum SnapDir {
     #[default]

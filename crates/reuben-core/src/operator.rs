@@ -151,6 +151,14 @@ impl<'a> Io<'a> {
         T::read(self, port)
     }
 
+    /// Decode the held [`Arg`] latched on `port` into `T` (the held-Value read). The shared body of
+    /// every [`IoInput`] held arm — the manual `impl_input_held!` types (`f32`, `Harmony`) and the
+    /// `#[derive(ArgValue)]`-generated enum impls both route here, so the private `latched` field is
+    /// touched in exactly one place. `None` if the port is unlatched or holds the wrong family.
+    pub(crate) fn input_held<T: FromArg<'a>>(&self, port: usize) -> Option<T> {
+        self.latched.get(port).and_then(T::from_arg)
+    }
+
     /// **Write an output port, dispatched by the payload type `T`** (ADR-0031). `io.output::<&mut
     /// [f32]>(p)` borrows this node's dense Signal buffer to fill in place; `io.output::<f32>(p)`
     /// returns a [`MsgWriter`] for a sparse Value output. One verb replaces `signal_mut`/`emit`.
@@ -311,32 +319,23 @@ impl<'a> IoInput<'a> for &'a [f32] {
     }
 }
 
-/// The held-Value arm of [`IoInput`]: a scalar / enum / `Harmony` decodes from its latched [`Arg`]
-/// to `Option<Self>`. One arm per type (a blanket `impl<T: FromArg>` would collide with the `&[f32]`
-/// Signal and `Note` Event arms), minted by this macro as ports migrate.
+/// The held-Value arm of [`IoInput`]: a scalar / `Harmony` decodes from its latched [`Arg`] to
+/// `Option<Self>`. One arm per type (a blanket `impl<T: FromArg>` would collide with the `&[f32]`
+/// Signal and `Note` Event arms). Only the two non-enum held types live here; every vocab **enum**
+/// generates its own `IoInput` from `#[derive(ArgValue)]` (routing through [`Io::input_held`] all
+/// the same), so adding an enum touches no central site.
 macro_rules! impl_input_held {
     ($($t:ty),* $(,)?) => {$(
         impl<'a> IoInput<'a> for $t {
             type Out = Option<$t>;
             fn read(io: &Io<'a>, port: usize) -> Option<$t> {
-                io.latched.get(port).and_then(<$t>::from_arg)
+                io.input_held(port)
             }
         }
     )*};
 }
 
-impl_input_held!(
-    f32,
-    crate::vocab::FilterMode,
-    crate::vocab::Waveform,
-    crate::vocab::GateMode,
-    crate::vocab::M2sMode,
-    crate::vocab::MapCurve,
-    crate::vocab::GrainWindow,
-    crate::vocab::SnapDir,
-    crate::vocab::SnapTarget,
-    crate::vocab::Harmony,
-);
+impl_input_held!(f32, crate::vocab::Harmony);
 
 /// The Event-stream arm of [`IoInput`], returned by `io.input::<Note>(port)`: a no-alloc iterator
 /// over a port's sparse [`Event`]s, each decoded to `T` and frame-stamped ([`Stamped`]). A *named*
@@ -456,7 +455,7 @@ mod new_io_api {
     #[test]
     fn input_reads_a_held_enum_value() {
         use crate::vocab::FilterMode;
-        let latch = [Arg::FilterMode(FilterMode::Bp)];
+        let latch = [Arg::from(FilterMode::Bp)];
         let io =
             Io::new(48_000.0, 1, [None], std::iter::empty::<&mut [f32]>()).with_latched(&latch);
         assert_eq!(io.input::<FilterMode>(0), Some(FilterMode::Bp));
