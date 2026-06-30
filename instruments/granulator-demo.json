@@ -1,0 +1,19 @@
+{
+  "instrument": "granulator-check",
+  "nodes": [
+    { "address": "/grain", "type": "granulator", "sample": "src",
+      "inputs": { "position": 0.25, "grain_size": 120.0, "pitch": -5.0,
+        "density": 30.0, "spray": 50.0, "window": "Hann" },
+      "control": [
+        { "label": "Position", "widget": "radial", "param": "position" },
+        { "label": "Grain Size", "widget": "radial", "param": "grain_size" },
+        { "label": "Pitch", "widget": "radial", "param": "pitch" },
+        { "label": "Density", "widget": "radial", "param": "density" },
+        { "label": "Spray", "widget": "radial", "param": "spray" },
+        { "label": "Gain", "widget": "radial", "param": "gain" }
+      ] },
+    { "address": "/out", "type": "output", "inputs": { "audio": { "from": "/grain.audio" } } }
+  ],
+  "outputs": [ { "node": "/out", "port": "audio" } ],
+  "resources": { "src": "samples/testvoice.wav" }
+}
