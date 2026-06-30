@@ -133,4 +133,3 @@ The MVP is a headless "it makes a sound" spine: the portable-core / native-crate
 - [0032 — The Voicer hosts standalone voice sub-patches as its pool; the Lane fan-out model is retired](adr/0032-voicer-hosts-voice-subpatches.md)
 - [0033 — Pointwise number ops are generated from one scalar fn by `number_operator_contract!`](adr/0033-number-operator-contract-macro.md)
 - [0034 — General instrument-as-operator nesting: a `subpatch` node inlined at plan-build](adr/0034-instrument-nesting.md)
-- [0035 — Typed edit-time `Constant`: a first-class config field operators read at build](adr/0035-typed-edit-time-constant.md)
