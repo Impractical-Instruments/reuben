@@ -4,7 +4,7 @@
 //! These back the `reuben describe` / `reuben validate` subcommands but are pure functions
 //! over [`Registry`] + JSON so they test through real load/plan code paths, not a process.
 
-use reuben_core::descriptor::{Curve, Descriptor, PortType};
+use reuben_core::descriptor::{Curve, Descriptor, Port, PortType};
 use reuben_core::format::LoadError;
 use reuben_core::plan::Plan;
 use reuben_core::resources::ResourceResolver;
@@ -16,58 +16,47 @@ use serde::Serialize;
 #[derive(Debug, Serialize)]
 pub struct OperatorInfo {
     pub type_name: String,
+    /// The whole input surface as one list (mirrors [`Descriptor::inputs`] +
+    /// [`constants`](Descriptor::constants)): runtime inputs first, then plan-time `Constant` ports
+    /// marked `constant: true`. There is no separate `params`/`enums`/`constants` split — a port's
+    /// `kind` and its optional metadata already say whether it is a scalar, integer, or enum.
     pub inputs: Vec<PortInfo>,
     pub outputs: Vec<PortInfo>,
-    pub params: Vec<ParamInfo>,
-    /// Plan-time **`Constant`** ports (ADR-0035) — config set in a patch's `config` block (e.g. the
-    /// voicer's `voices`), distinct from the runtime `params`/`inputs` surface.
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub constants: Vec<ConstantInfo>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub enums: Vec<EnumInfo>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<String>,
 }
 
-/// One plan-time integer **`Constant`** (ADR-0035), surfaced so an author sees what a patch's
-/// `config` block may set and within what range.
-#[derive(Debug, Serialize)]
-pub struct ConstantInfo {
-    pub name: String,
-    pub default: i32,
-    pub min: i32,
-    pub max: i32,
-}
-
-/// One settable `Enum` input (ADR-0030): a held, live-switchable named choice, surfaced for an
-/// author alongside the numeric `params` (it is a separate, non-numeric settable surface).
-#[derive(Debug, Serialize)]
-pub struct EnumInfo {
-    pub name: String,
-    pub variants: Vec<String>,
-    /// The unwired default variant symbol.
-    pub default: String,
-}
-
+/// One port, flattened from its [`Port`] for agent grounding. Inputs and outputs share this shape;
+/// a plan-time [`Constant`](Descriptor::constants) (ADR-0035) is just an input with `constant: true`
+/// — an immutable port set in a patch's `config` block, never wired in `inputs`. Optional metadata
+/// appears only where the port's type carries it: `default`/`min`/`max`/`unit`/`curve` for a swept
+/// scalar, `default`/`min`/`max` for an integer, `default`/`variants` for an enum.
 #[derive(Debug, Serialize)]
 pub struct PortInfo {
     pub name: String,
-    /// The port's [`PortType`] as a word: `"signal"` (F32/Buffer), `"enum"`, `"message"` (Note),
-    /// or `"harmony"` (Harmony). The signal/message/harmony words are kept for the Patcher's wiring
-    /// vocabulary; `enum` is surfaced honestly (its variants live in the operator's `enums`).
+    /// The port's [`PortType`] as a word: `"signal"` (F32/Buffer), `"int"`, `"enum"`, `"message"`
+    /// (Note), `"harmony"` (Harmony), `"vocab"`, or `"string"`.
     pub kind: String,
-}
-
-#[derive(Debug, Serialize)]
-pub struct ParamInfo {
-    pub name: String,
-    pub default: f32,
-    pub min: f32,
-    pub max: f32,
+    /// A plan-time `Constant` (ADR-0035): set in the patch `config` block, not wired in `inputs`.
+    /// Omitted (false) for an ordinary runtime input or any output.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub constant: bool,
+    /// Unwired default: a number for a scalar/integer control, the variant symbol for an enum.
+    /// Omitted for a port with no settable default (audio buffers, `Note`/`Harmony`, outputs).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default: Option<serde_json::Value>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
     #[serde(skip_serializing_if = "str::is_empty")]
     pub unit: String,
-    /// `"linear"` or `"exponential"`.
-    pub curve: String,
+    /// `"linear"` or `"exponential"` for a swept scalar; omitted for non-scalar ports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub curve: Option<String>,
+    /// The ordered enum choices (ADR-0030); empty for non-enum ports.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub variants: Vec<String>,
 }
 
 fn port_kind(ty: &PortType) -> &'static str {
@@ -86,6 +75,12 @@ fn port_kind(ty: &PortType) -> &'static str {
     }
 }
 
+/// Widen an `f32` to `f64` without exposing binary-fraction noise: round-trip through the `f32`'s
+/// own shortest decimal so `0.2_f32` serializes as `0.2`, not `0.20000000298…` (the naive `as f64`).
+fn widen(v: f32) -> f64 {
+    v.to_string().parse().unwrap_or(v as f64)
+}
+
 fn curve(c: Curve) -> &'static str {
     match c {
         Curve::Linear => "linear",
@@ -93,61 +88,69 @@ fn curve(c: Curve) -> &'static str {
     }
 }
 
+impl PortInfo {
+    /// Flatten one [`Port`] into its agent-facing view, reading whatever metadata its type carries:
+    /// the scalar [`F32Meta`](reuben_core::descriptor::F32Meta) on `Port::meta`, or the integer
+    /// range / enum variants embedded in the [`PortType`]. `constant` marks a plan-time
+    /// [`Constant`](Descriptor::constants) (ADR-0035) so the consumer routes it to `config`.
+    fn from_port(p: &Port, constant: bool) -> Self {
+        let mut info = PortInfo {
+            name: p.name.to_string(),
+            kind: port_kind(&p.ty).to_string(),
+            constant,
+            default: None,
+            min: None,
+            max: None,
+            unit: String::new(),
+            curve: None,
+            variants: Vec::new(),
+        };
+        // Scalar control (ADR-0030): a materialized `f32` input owns its range/curve/default in `meta`.
+        if let Some(m) = &p.meta {
+            info.default = Some(serde_json::json!(widen(m.default)));
+            info.min = Some(widen(m.min));
+            info.max = Some(widen(m.max));
+            info.unit = m.unit.to_string();
+            info.curve = Some(curve(m.curve).to_string());
+        }
+        // Type-embedded metadata: an integer's range (ADR-0035) or an enum's named choices (ADR-0030).
+        match &p.ty {
+            PortType::I32 { meta: Some(m) } => {
+                info.default = Some(serde_json::json!(m.default));
+                info.min = Some(m.min as f64);
+                info.max = Some(m.max as f64);
+            }
+            PortType::Vocab {
+                enum_meta: Some(e), ..
+            } => {
+                info.default = Some(serde_json::json!(e.default_symbol()));
+                info.variants = e.variants.iter().map(|v| v.to_string()).collect();
+            }
+            _ => {}
+        }
+        info
+    }
+}
+
 impl OperatorInfo {
     fn from_descriptor(d: &Descriptor) -> Self {
-        let ports = |ps: &[reuben_core::descriptor::Port]| {
-            ps.iter()
-                .map(|p| PortInfo {
-                    name: p.name.to_string(),
-                    kind: port_kind(&p.ty).to_string(),
-                })
-                .collect()
-        };
-        // Settable scalar surface (ADR-0030/0035): materialized `f32` control inputs — the old
-        // "signal port + same-named unwired-default param" is now one input, addressed by the same
-        // name. Params are gone; this is the whole numeric-settable surface `describe` shows.
-        let mut params: Vec<ParamInfo> = Vec::new();
-        for (name, m) in d.settable_inputs() {
-            params.push(ParamInfo {
-                name: name.to_string(),
-                default: m.default,
-                min: m.min,
-                max: m.max,
-                unit: m.unit.to_string(),
-                curve: curve(m.curve).to_string(),
-            });
-        }
-        // Enum inputs (ADR-0030) are a non-numeric settable surface — list their variants + default
-        // so an author can set e.g. `mode`/`waveform` by name.
-        let enums = d
-            .enum_inputs()
-            .map(|(name, e)| EnumInfo {
-                name: name.to_string(),
-                variants: e.variants.iter().map(|v| v.to_string()).collect(),
-                default: e.default_symbol().to_string(),
-            })
-            .collect();
-        // Plan-time `Constant` ports (ADR-0035) — today the voicer's integer `voices`.
-        let constants = d
-            .constants
+        // One input surface: runtime inputs, then plan-time `Constant` ports (ADR-0035) flagged
+        // `constant`. A port's `kind` + metadata already distinguish scalar / integer / enum, so
+        // there is no separate `params`/`enums`/`constants` split to keep in sync.
+        let mut inputs: Vec<PortInfo> = d
+            .inputs
             .iter()
-            .filter_map(|c| match &c.ty {
-                PortType::I32 { meta: Some(m) } => Some(ConstantInfo {
-                    name: c.name.to_string(),
-                    default: m.default,
-                    min: m.min,
-                    max: m.max,
-                }),
-                _ => None,
-            })
+            .map(|p| PortInfo::from_port(p, false))
             .collect();
+        inputs.extend(d.constants.iter().map(|p| PortInfo::from_port(p, true)));
         OperatorInfo {
             type_name: d.type_name.to_string(),
-            inputs: ports(&d.inputs),
-            outputs: ports(&d.outputs),
-            params,
-            constants,
-            enums,
+            inputs,
+            outputs: d
+                .outputs
+                .iter()
+                .map(|p| PortInfo::from_port(p, false))
+                .collect(),
             resources: d.resources.iter().map(|r| r.name.to_string()).collect(),
         }
     }

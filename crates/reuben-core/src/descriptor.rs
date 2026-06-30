@@ -415,16 +415,6 @@ impl Descriptor {
             .filter_map(|p| p.meta.as_ref().map(|m| (p.name, m)))
     }
 
-    /// Every vocab **enum** input an author may set as a **named choice** (ADR-0030), paired with
-    /// its [`EnumMeta`]. The non-numeric sibling of [`settable_inputs`](Self::settable_inputs): the
-    /// JSON-schema generator and the CLI `describe` both surface these (variants + default) so an
-    /// author can set e.g. snap `dir` to `"Up"`. Single definition keeps the two from drifting.
-    pub fn enum_inputs(&self) -> impl Iterator<Item = (&'static str, &EnumMeta)> {
-        self.inputs
-            .iter()
-            .filter_map(|p| p.enum_meta().map(|e| (p.name, e)))
-    }
-
     /// Index + metadata of a vocab **enum** input named `name` (ADR-0030), for resolving a
     /// `/node/<name> "Up"` symbol (or fallback index) to its held variant. `None` for non-enum
     /// inputs and non-inputs.

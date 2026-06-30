@@ -154,24 +154,29 @@ fn describe_one_operator_surfaces_its_ports_and_params() {
     assert_eq!(ops.len(), 1);
     let osc = &ops[0];
 
-    let input = osc
+    // A scalar control input carries its range/curve/default inline (ADR-0030).
+    let freq = osc
         .inputs
         .iter()
         .find(|p| p.name == "freq")
         .expect("freq input");
-    assert_eq!(input.kind, "signal");
+    assert_eq!(freq.kind, "signal");
+    assert!(freq.default.is_some() && freq.min.is_some() && freq.max.is_some());
+    assert_eq!(freq.curve.as_deref(), Some("exponential"));
     assert!(osc
         .outputs
         .iter()
         .any(|p| p.name == "audio" && p.kind == "signal"));
-    // `waveform` is an Enum input now (ADR-0030) — surfaced among `enums`, not numeric `params`.
+    // `waveform` is an Enum input (ADR-0030) — one input surface, no separate `enums` list; its
+    // variants + default symbol ride on the same `PortInfo`.
     let waveform = osc
-        .enums
+        .inputs
         .iter()
-        .find(|e| e.name == "waveform")
-        .expect("waveform enum");
+        .find(|p| p.name == "waveform")
+        .expect("waveform input");
+    assert_eq!(waveform.kind, "enum");
     assert_eq!(waveform.variants, ["Sine", "Saw"]);
-    assert_eq!(waveform.default, "Sine");
+    assert_eq!(waveform.default, Some(serde_json::json!("Sine")));
 }
 
 #[test]
