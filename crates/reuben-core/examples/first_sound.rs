@@ -7,7 +7,7 @@
 //! Run: `cargo run -p reuben-core --example first_sound` -> `first_sound.wav`.
 
 use reuben_core::graph::Graph;
-use reuben_core::message::Message;
+use reuben_core::message::{Arg, Message};
 use reuben_core::operators::{envelope, mul, oscillator, output, power};
 use reuben_core::operators::{Envelope, Filter, MulF32Signal, Oscillator, Output, PowerF32Signal};
 use reuben_core::plan::Plan;
@@ -39,7 +39,7 @@ fn main() {
     g.connect(vca, mul::mul_f32_signal::OUT_OUT, out, output::IN_AUDIO);
     g.tap_output(out, output::OUT_AUDIO);
 
-    g.set_param(filt, "cutoff", 3_000.0);
+    g.set_value(filt, "cutoff", &Arg::F32(3_000.0));
 
     let mut plan = Plan::instantiate(g, cfg).expect("instantiate");
     let mut r = Renderer::new(&plan);

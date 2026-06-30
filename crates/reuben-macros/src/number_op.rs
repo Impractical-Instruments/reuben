@@ -201,6 +201,7 @@ impl NumberOpInput {
                         name: op.name.to_string(),
                         ty: ty.to_string(),
                         f32,
+                        i32: None,
                         vocab: None,
                     }
                 }
@@ -209,6 +210,7 @@ impl NumberOpInput {
                     name: op.name.to_string(),
                     ty: "enum".to_string(),
                     f32: None,
+                    i32: None,
                     vocab: Some(vocab.to_string()),
                 },
             })
@@ -220,12 +222,14 @@ impl NumberOpInput {
                 name: self.output.to_string(),
                 ty: "f32_buffer".to_string(),
                 f32: None,
+                i32: None,
                 vocab: None,
             },
             Carrier::Value => PortSpec {
                 name: self.output.to_string(),
                 ty: "f32".to_string(),
                 f32: Some(num_meta(NUM_MIN, NUM_MAX, 0.0)),
+                i32: None,
                 vocab: None,
             },
         };
@@ -233,9 +237,8 @@ impl NumberOpInput {
             type_name: type_name.to_string(),
             inputs,
             outputs: vec![output],
-            params: Vec::new(),
+            constants: Vec::new(),
             resources: Vec::new(),
-            constant: None,
         }
     }
 

@@ -17,7 +17,7 @@ use std::path::Path;
 use std::process::Command;
 
 use reuben_contract::naming::{screaming, struct_name};
-use reuben_contract::{validate, OperatorSpec, ParamSpec, PortSpec};
+use reuben_contract::{validate, OperatorSpec, PortSpec};
 use serde::Serialize;
 
 /// The current contents of the registration file the scaffold must edit (`operators/mod.rs`).
@@ -200,10 +200,10 @@ fn render_operator(spec: &OperatorSpec) -> String {
     }
     out.push('\n');
 
-    // The single-source contract (ADR-0025): the macro plants the IN_/OUT_/P_ index consts AND the
+    // The single-source contract (ADR-0025): the macro plants the IN_/OUT_/C_ index consts AND the
     // matching `Descriptor` from these same tokens, so name↔slot drift is impossible.
     out.push_str(
-        "// Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.\n",
+        "// Single-source contract (ADR-0025): one declaration -> IN_/OUT_/C_ consts + Descriptor, no drift.\n",
     );
     out.push_str(&render_contract_call(spec));
     out.push('\n');
@@ -255,19 +255,15 @@ fn render_contract_call(spec: &OperatorSpec) -> String {
             render_macro_ports(&spec.outputs)
         ));
     }
-    if !spec.params.is_empty() {
-        out.push_str("    params: {\n");
-        for p in &spec.params {
-            out.push_str(&format!("        {}\n", render_macro_param(p)));
-        }
-        out.push_str("    },\n");
+    if !spec.constants.is_empty() {
+        out.push_str(&format!(
+            "    constants: {{ {} }},\n",
+            render_macro_ports(&spec.constants)
+        ));
     }
     if !spec.resources.is_empty() {
         let rs: Vec<&str> = spec.resources.iter().map(String::as_str).collect();
         out.push_str(&format!("    resources: {{ {} }},\n", rs.join(", ")));
-    }
-    if let Some(name) = &spec.constant {
-        out.push_str(&format!("    constant: {name},\n"));
     }
     out.push_str("});\n");
     out
@@ -302,6 +298,14 @@ fn render_macro_port(p: &PortSpec) -> String {
                 )
             }
         },
+        // A bounded integer control / constant carries its integer `{ .. }` meta (ADR-0035).
+        "i32" => match &p.i32 {
+            None => format!("{}: i32", p.name),
+            Some(m) => format!(
+                "{}: i32 {{ {}..={}, default {} }}",
+                p.name, m.min, m.max, m.default
+            ),
+        },
         // A held vocab enum names its shared vocab type.
         "enum" => format!(
             "{}: enum({})",
@@ -311,19 +315,6 @@ fn render_macro_port(p: &PortSpec) -> String {
         // `f32_buffer` / `note` / `harmony` need no extra syntax.
         ty => format!("{}: {}", p.name, ty),
     }
-}
-
-/// `name: { MIN..=MAX, default D, "unit", curve },` — one param in the macro grammar.
-fn render_macro_param(p: &ParamSpec) -> String {
-    let curve = if p.curve == "exponential" {
-        "exp"
-    } else {
-        "lin"
-    };
-    format!(
-        "{}: {{ {:?}..={:?}, default {:?}, {:?}, {} }},",
-        p.name, p.min, p.max, p.default, p.unit, curve
-    )
 }
 
 /// The `process` stub — fills every signal output with silence (a valid, silent operator).
@@ -420,13 +411,13 @@ mod tests {
     }
 
     #[test]
-    fn params_render_in_the_macro_grammar_with_curve() {
+    fn f32_inputs_render_in_the_macro_grammar_with_curve() {
         let src = render(
             r#"{ "type_name": "lfoish",
-                 "params": [ {"name":"rate","min":0.01,"max":20.0,"default":5.0,"unit":"Hz","curve":"exponential"} ] }"#,
+                 "inputs": [ {"name":"rate","ty":"f32","f32":{"min":0.01,"max":20.0,"default":5.0,"unit":"Hz","curve":"exponential"}} ] }"#,
         );
         assert!(
-            src.contains(r#"rate: { 0.01..=20.0, default 5.0, "Hz", exp },"#),
+            src.contains(r#"rate: f32 { 0.01..=20.0, default 5.0, "Hz", exp }"#),
             "{src}"
         );
     }
@@ -467,13 +458,15 @@ mod tests {
     }
 
     #[test]
-    fn constant_param_renders_in_the_contract() {
+    fn constant_renders_in_the_contract() {
         let src = render(
             r#"{ "type_name": "vox",
-                 "params": [ {"name":"voices","min":1.0,"max":16.0,"default":4.0} ],
-                 "constant": "voices" }"#,
+                 "constants": [ {"name":"voices","ty":"i32","i32":{"min":1,"max":16,"default":4}} ] }"#,
         );
-        assert!(src.contains("constant: voices,"), "{src}");
+        assert!(
+            src.contains("constants: { voices: i32 { 1..=16, default 4 } },"),
+            "{src}"
+        );
     }
 
     #[test]
@@ -562,25 +555,24 @@ mod tests {
     fn rejects_bad_port_type_and_curve() {
         let bad_type = r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"audio"} ] }"#;
         assert!(scaffold_err(bad_type).contains("type"));
-        let bad_curve = r#"{ "type_name": "x", "params": [ {"name":"a","min":0,"max":1,"default":0,"curve":"log"} ] }"#;
+        let bad_curve = r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"f32","f32":{"min":0,"max":1,"default":0,"curve":"log"}} ] }"#;
         assert!(scaffold_err(bad_curve).contains("curve"));
     }
 
     #[test]
     fn rejects_inverted_range_and_out_of_range_default() {
-        let inverted =
-            r#"{ "type_name": "x", "params": [ {"name":"a","min":1,"max":0,"default":0} ] }"#;
+        let inverted = r#"{ "type_name": "x", "constants": [ {"name":"a","ty":"i32","i32":{"min":1,"max":0,"default":0}} ] }"#;
         assert!(scaffold_err(inverted).contains("min"));
-        let oob = r#"{ "type_name": "x", "params": [ {"name":"a","min":0,"max":1,"default":5} ] }"#;
+        let oob = r#"{ "type_name": "x", "constants": [ {"name":"a","ty":"i32","i32":{"min":0,"max":1,"default":5}} ] }"#;
         assert!(scaffold_err(oob).contains("outside"));
     }
 
     #[test]
-    fn rejects_duplicate_names_and_dangling_constant_param() {
+    fn rejects_duplicate_input_and_constant_names() {
         let dup = r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"f32_buffer"}, {"name":"a","ty":"f32_buffer"} ] }"#;
         assert!(scaffold_err(dup).contains("duplicate"));
-        let dangling = r#"{ "type_name": "x", "constant": "voices" }"#;
-        assert!(scaffold_err(dangling).contains("constant"));
+        let dup_const = r#"{ "type_name": "x", "constants": [ {"name":"v","ty":"i32","i32":{"min":1,"max":4,"default":2}}, {"name":"v","ty":"i32","i32":{"min":1,"max":8,"default":4}} ] }"#;
+        assert!(scaffold_err(dup_const).contains("duplicate"));
     }
 
     #[test]

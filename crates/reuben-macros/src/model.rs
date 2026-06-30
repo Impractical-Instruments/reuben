@@ -6,7 +6,7 @@
 use reuben_contract::{naming, OperatorSpec, PortSpec};
 
 /// The resolved `f32 { .. }` meta on a `f32` port (ADR-0030), curve normalised to
-/// `"linear"`/`"exponential"`. Mirrors [`ParamModel`] minus the const/index.
+/// `"linear"`/`"exponential"`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct F32Model {
     pub min: f32,
@@ -14,6 +14,14 @@ pub struct F32Model {
     pub default: f32,
     pub unit: String,
     pub curve: String,
+}
+
+/// The resolved `i32 { .. }` meta on an `i32` port / constant (ADR-0035).
+#[derive(Debug, Clone, PartialEq)]
+pub struct I32Model {
+    pub min: i32,
+    pub max: i32,
+    pub default: i32,
 }
 
 /// One resolved port: its index const (`IN_FREQ`), ordinal, source name, and its
@@ -25,26 +33,14 @@ pub struct PortModel {
     pub const_name: String,
     pub ordinal: usize,
     pub name: String,
-    /// The port [`Arg`](reuben_core::message::Arg) type: `f32_buffer` | `f32` | `enum` | `note` |
-    /// `harmony`.
+    /// The port [`Arg`](reuben_core::message::Arg) type: `f32_buffer` | `f32` | `i32` | `enum` |
+    /// `note` | `harmony`.
     pub ty: String,
     pub f32: Option<F32Model>,
+    /// The resolved `i32 { .. }` meta, for `i32` ports / constants (ADR-0035).
+    pub i32: Option<I32Model>,
     /// The shared `vocab` enum type name, for `enum` ports.
     pub vocab: Option<String>,
-}
-
-/// One resolved param: its index const (`P_FREQ`), slot index, and metadata. `curve` is already
-/// normalised to `"linear"` / `"exponential"`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct ParamModel {
-    pub const_name: String,
-    pub index: usize,
-    pub name: String,
-    pub min: f32,
-    pub max: f32,
-    pub default: f32,
-    pub unit: String,
-    pub curve: String,
 }
 
 /// A fully-resolved operator contract, ready to render to tokens.
@@ -53,12 +49,10 @@ pub struct ContractModel {
     pub type_name: String,
     pub inputs: Vec<PortModel>,
     pub outputs: Vec<PortModel>,
-    pub params: Vec<ParamModel>,
+    /// Instantiate-time **`Constant`** ports (ADR-0035), numbered with `C_` index consts. Empty for
+    /// the common operator.
+    pub constants: Vec<PortModel>,
     pub resources: Vec<String>,
-    /// The instantiate-time **`Constant`** param's index **const name** (`P_VOICES`), so the emitted
-    /// `constant_param: Some(P_VOICES)` references the const the macro plants. `None` for the common
-    /// operator.
-    pub constant: Option<String>,
 }
 
 /// Number a set of ports sequentially in declaration order (ADR-0030): inputs are indexed `0..`,
@@ -80,6 +74,11 @@ fn port_models(ports: &[PortSpec], prefix: &str) -> Vec<PortModel> {
                 unit: m.unit.clone(),
                 curve: m.curve.clone(),
             }),
+            i32: p.i32.as_ref().map(|m| I32Model {
+                min: m.min,
+                max: m.max,
+                default: m.default,
+            }),
             vocab: p.vocab.clone(),
         })
         .collect()
@@ -88,32 +87,12 @@ fn port_models(ports: &[PortSpec], prefix: &str) -> Vec<PortModel> {
 /// Resolve a validated spec into its const/ordinal model. Assumes the spec already passed
 /// [`reuben_contract::validate`] (the macro validates first); curve strings are taken verbatim.
 pub fn build(spec: &OperatorSpec) -> ContractModel {
-    let params = spec
-        .params
-        .iter()
-        .enumerate()
-        .map(|(i, p)| ParamModel {
-            const_name: format!("P_{}", naming::screaming(&p.name)),
-            index: i,
-            name: p.name.clone(),
-            min: p.min,
-            max: p.max,
-            default: p.default,
-            unit: p.unit.clone(),
-            curve: p.curve.clone(),
-        })
-        .collect();
-    let constant = spec
-        .constant
-        .as_ref()
-        .map(|name| format!("P_{}", naming::screaming(name)));
     ContractModel {
         type_name: spec.type_name.clone(),
         inputs: port_models(&spec.inputs, "IN"),
         outputs: port_models(&spec.outputs, "OUT"),
-        params,
+        constants: port_models(&spec.constants, "C"),
         resources: spec.resources.clone(),
-        constant,
     }
 }
 
@@ -162,17 +141,17 @@ mod tests {
         );
     }
 
-    // Params index sequentially and keep their metadata; `constant` resolves to the param's const.
+    // Constants are ports too (ADR-0035): they number with `C_` consts and keep their i32 meta.
     #[test]
-    fn params_index_sequentially_and_constant_resolves_to_const() {
+    fn constants_index_sequentially_as_ports() {
         let m = build(&spec(
             r#"{ "type_name": "voicer",
-                 "params": [ {"name":"voices","min":1,"max":32,"default":8,"curve":"linear"} ],
-                 "constant": "voices" }"#,
+                 "constants": [ {"name":"voices","ty":"i32","i32":{"min":1,"max":32,"default":8}} ] }"#,
         ));
-        assert_eq!(m.params[0].const_name, "P_VOICES");
-        assert_eq!(m.params[0].index, 0);
-        assert_eq!(m.constant.as_deref(), Some("P_VOICES"));
+        assert_eq!(m.constants[0].const_name, "C_VOICES");
+        assert_eq!(m.constants[0].ordinal, 0);
+        assert_eq!(m.constants[0].ty, "i32");
+        assert_eq!(m.constants[0].i32.as_ref().map(|m| m.default), Some(8));
     }
 
     // The full filter port vocabulary: f32_buffer, f32-with-meta, enum naming its vocab type.
@@ -198,19 +177,26 @@ mod tests {
         assert_eq!(m.inputs[2].vocab.as_deref(), Some("FilterMode"));
     }
 
-    // A six-param profile with mixed curves and units.
+    // f32 control inputs keep their curve + unit metadata through the model (the successor to the
+    // old `params` profile — runtime controls are inputs now, ADR-0030).
     #[test]
-    fn many_params_with_curves_and_units() {
+    fn f32_inputs_keep_curves_and_units() {
         let m = build(&spec(
             r#"{ "type_name": "oscillator",
-                 "params": [
-                   {"name":"freq","min":20,"max":20000,"default":440,"unit":"Hz","curve":"exponential"},
-                   {"name":"waveform","min":0,"max":1,"default":0,"unit":"","curve":"linear"} ] }"#,
+                 "inputs": [
+                   {"name":"freq","ty":"f32","f32":{"min":20,"max":20000,"default":440,"unit":"Hz","curve":"exponential"}},
+                   {"name":"amp","ty":"f32","f32":{"min":0,"max":1,"default":0,"unit":"","curve":"linear"}} ] }"#,
         ));
-        assert_eq!(m.params.len(), 2);
-        assert_eq!(m.params[1].const_name, "P_WAVEFORM");
-        assert_eq!(m.params[1].index, 1);
-        assert_eq!(m.params[0].curve, "exponential");
-        assert_eq!(m.params[0].unit, "Hz");
+        assert_eq!(m.inputs.len(), 2);
+        assert_eq!(m.inputs[1].const_name, "IN_AMP");
+        assert_eq!(m.inputs[1].ordinal, 1);
+        assert_eq!(
+            m.inputs[0].f32.as_ref().map(|f| f.curve.as_str()),
+            Some("exponential")
+        );
+        assert_eq!(
+            m.inputs[0].f32.as_ref().map(|f| f.unit.as_str()),
+            Some("Hz")
+        );
     }
 }

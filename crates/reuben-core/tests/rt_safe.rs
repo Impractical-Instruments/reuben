@@ -10,7 +10,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::Arc;
 
-use reuben_core::message::Message;
+use reuben_core::message::{Arg, Message};
 use reuben_core::operators::{Output, SamplePlayer};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
@@ -115,7 +115,7 @@ fn render_block_is_allocation_free_after_warmup() {
     // neither a sounding one-shot nor a retriggering note grows the heap.
     let mut g = Graph::new();
     let sample = g.add("/sample", SamplePlayer::new());
-    g.set_param(sample, "root", 69.0);
+    g.set_value(sample, "root", &Arg::F32(69.0));
     let sink = g.add("/out", Output::new());
 
     // Bind the sample player to a synthetic resident buffer (a long ramp, so the one-shot sounds

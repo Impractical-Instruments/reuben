@@ -77,7 +77,7 @@ pub struct NodeDoc {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
     /// Instantiate-time **`Constant`s** (ADR-0028) by name, e.g. `{ "voices": 8 }`. A name here
-    /// must be a declared [`Constant`](Descriptor::constant_param); a runtime input set here, or a
+    /// must be a declared [`Constant`](Descriptor::constants); a runtime input set here, or a
     /// constant set in `inputs`, is a load error.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config: BTreeMap<String, ConfigValue>,
@@ -186,7 +186,7 @@ pub enum LoadError {
         input: String,
         value: String,
     },
-    /// A `config` name is not a declared [`Constant`](Descriptor::constant_param).
+    /// A `config` name is not a declared [`Constant`](Descriptor::constants).
     UnknownConfig { node: String, name: String },
     /// A `Constant` (e.g. `voices`) appears in `inputs` — it must live in `config`, since changing
     /// it would rebuild the graph (ADR-0028).
@@ -406,13 +406,17 @@ pub fn load_instrument(
 }
 
 /// The voice-pool size for a Voicer node (ADR-0032): the node's value for the operator's
-/// instantiate-time [`Constant`](Descriptor::constant_param) (the voicer's `voices` pool size),
+/// instantiate-time [`Constant`](Descriptor::constants) (the voicer's `voices` pool size),
 /// else that Constant's descriptor default, floored to 1. Reads the generic Constant slot rather
 /// than a hardcoded `"voices"` name, so the same machinery serves any future pool-sized operator.
 /// An operator with no Constant has a pool of one.
 fn voice_count(n: &NodeDoc, descriptor: &Descriptor) -> usize {
-    let Some(constant) = descriptor.constant_param() else {
+    let Some(constant) = descriptor.constants.first() else {
         return 1;
+    };
+    let default = match &constant.ty {
+        PortType::I32 { meta: Some(m) } => m.default as f64,
+        _ => 1.0,
     };
     let raw = n
         .config
@@ -421,7 +425,7 @@ fn voice_count(n: &NodeDoc, descriptor: &Descriptor) -> usize {
             ConfigValue::Number(x) => Some(*x),
             ConfigValue::Symbol(_) => None,
         })
-        .unwrap_or(constant.default as f64);
+        .unwrap_or(default);
     (raw.round() as i64).max(1) as usize
 }
 
@@ -500,23 +504,23 @@ impl InstrumentDoc {
             graph.nodes[key].sample_id = n.sample.clone();
             graph.nodes[key].voice_id = n.voice.clone();
 
-            // `config`: every name must be a declared Constant; apply it at its param slot (ADR-0028).
+            // `config`: every name must be a declared Constant (ADR-0035); apply it at its slot.
             for (name, value) in &n.config {
-                if !descriptor.is_constant_param(name) {
+                if !descriptor.is_constant(name) {
                     return Err(LoadError::UnknownConfig {
                         node: n.address.clone(),
                         name: name.clone(),
                     });
                 }
                 match value {
-                    ConfigValue::Number(v) => graph.set_param(key, name, *v as f32),
-                    ConfigValue::Symbol(s) => graph.set_value(key, name, &Arg::Str(s.clone())),
+                    ConfigValue::Number(v) => graph.set_constant(key, name, &Arg::F32(*v as f32)),
+                    ConfigValue::Symbol(s) => graph.set_constant(key, name, &Arg::Str(s.clone())),
                 }
             }
 
             // `inputs`: a Constant here is an error; literals apply now, wire-refs in pass 2.
             for (name, value) in &n.inputs {
-                if descriptor.is_constant_param(name) {
+                if descriptor.is_constant(name) {
                     return Err(LoadError::ConstantInInputs {
                         node: n.address.clone(),
                         name: name.clone(),
@@ -525,8 +529,7 @@ impl InstrumentDoc {
                 match value {
                     InputValue::Wire { .. } => {} // pass 2
                     InputValue::Number(v) => {
-                        if descriptor.param_index(name).is_none()
-                            && descriptor.materialized_input(name).is_none()
+                        if descriptor.materialized_input(name).is_none()
                             && descriptor.enum_input(name).is_none()
                         {
                             return Err(LoadError::UnknownInput {
@@ -534,7 +537,7 @@ impl InstrumentDoc {
                                 input: name.clone(),
                             });
                         }
-                        graph.set_param(key, name, *v as f32);
+                        graph.set_value(key, name, &Arg::F32(*v as f32));
                     }
                     InputValue::Symbol(s) => {
                         // An `Enum` symbol is only valid on an enum input, and must name a variant
@@ -636,8 +639,8 @@ impl InstrumentDoc {
 
     /// Derive a document from a built [`Graph`] (the canonical "save" path). Nodes are emitted in
     /// a stable order, and within a node `config`/`inputs` keys are sorted (BTreeMap), so output is
-    /// deterministic. A `Constant` param goes to `config`; a non-default param, a materialized
-    /// `Float` override, an `Enum` choice (as its symbol), and every inbound wire go to `inputs`.
+    /// deterministic. A `Constant` override goes to `config`; a materialized `Float` override, an
+    /// `Enum` choice (as its symbol), and every inbound wire go to `inputs` (ADR-0035).
     pub fn from_graph(graph: &Graph, instrument: impl Into<String>) -> Self {
         let mut nodes: Vec<NodeDoc> = graph
             .nodes
@@ -647,20 +650,23 @@ impl InstrumentDoc {
                 let mut config: BTreeMap<String, ConfigValue> = BTreeMap::new();
                 let mut inputs: BTreeMap<String, InputValue> = BTreeMap::new();
 
-                // Params: the Constant goes to `config`; others to `inputs` only when non-default
-                // (defaults reload as defaults, keeping save minimal and round-trips stable).
-                for (i, p) in d.params.iter().enumerate() {
-                    if d.is_constant_param(p.name) {
-                        config.insert(
-                            p.name.to_string(),
-                            ConfigValue::Number(node.params[i] as f64),
-                        );
-                    } else if node.params[i] != p.default {
-                        inputs.insert(
-                            p.name.to_string(),
-                            InputValue::Number(node.params[i] as f64),
-                        );
-                    }
+                // Constant overrides (ADR-0035) go to `config` — a non-default plan-time value the
+                // author set (e.g. `voices`). An `i32` count saves as a number; defaults are omitted
+                // (they reload from the descriptor), keeping save minimal and round-trips stable.
+                for (slot, arg) in &node.constant_overrides {
+                    let p = &d.constants[*slot];
+                    let value = match arg {
+                        Arg::I32(v) => ConfigValue::Number(*v as f64),
+                        Arg::F32(v) => ConfigValue::Number(*v as f64),
+                        other => {
+                            let sym = p
+                                .enum_meta()
+                                .and_then(|e| e.symbol_of(other))
+                                .unwrap_or_default();
+                            ConfigValue::Symbol(sym.to_string())
+                        }
+                    };
+                    config.insert(p.name.to_string(), value);
                 }
                 // Settable input overrides (ADR-0035) round-trip under the input's name: an `F32`
                 // control as a number, an enum as its variant **symbol** (the primary wire form).
@@ -874,8 +880,8 @@ mod tests {
             {"type":"voicer","address":"/v","config":{"voices":3}}]}"#;
         let g = load(json, &reg()).expect("load");
         let key = g.find("/v").unwrap();
-        let slot = g.nodes[key].descriptor.param_index("voices").unwrap();
-        assert_eq!(g.nodes[key].params[slot], 3.0);
+        let slot = g.nodes[key].descriptor.constant_index("voices").unwrap();
+        assert_eq!(g.nodes[key].constant_overrides, vec![(slot, Arg::I32(3))]);
     }
 
     #[test]

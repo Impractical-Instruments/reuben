@@ -171,6 +171,12 @@ fn cmd_describe(op: Option<&str>, json: bool) -> ExitCode {
                 p.name, p.default, unit, p.min, p.max, p.curve
             );
         }
+        for c in &o.constants {
+            println!(
+                "  constant {} = {} [{}..{}]",
+                c.name, c.default, c.min, c.max
+            );
+        }
         for r in &o.resources {
             println!("  resource {r}");
         }

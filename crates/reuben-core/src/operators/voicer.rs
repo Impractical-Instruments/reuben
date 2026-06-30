@@ -43,9 +43,8 @@ use crate::vocab::pitch::{Note, Pitch};
 crate::operator_contract!(Voicer {
     inputs:  { notes: note, harmony: harmony },
     outputs: { audio: f32_buffer },
-    params:  { voices: { 1.0..=32.0, default 8.0, "", lin } },
+    constants: { voices: i32 { 1..=32, default 8 } },
     resources: { voice },
-    constant: voices,
 });
 
 /// Do two pitches denote the same note for note-off matching? Degrees match by degree; absolute

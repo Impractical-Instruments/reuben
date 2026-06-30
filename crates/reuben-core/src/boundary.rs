@@ -30,7 +30,7 @@ use crate::vocab::pitch::Note;
 pub fn osc_in_arg(p: &Port, args: &[Arg]) -> Option<Arg> {
     match &p.ty {
         PortType::F32 => args.first().and_then(Arg::as_f32).map(Arg::F32),
-        PortType::I32 => args
+        PortType::I32 { .. } => args
             .first()
             .and_then(|a| match a {
                 Arg::I32(i) => Some(*i),
@@ -95,7 +95,7 @@ pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::descriptor::{Curve, ParamMeta, Port};
+    use crate::descriptor::{Curve, F32Meta, Port};
     use crate::vocab::harmony::SnapDir;
     use crate::vocab::pitch::Pitch;
 
@@ -129,7 +129,7 @@ mod tests {
     fn signal_control_buffer_crosses_and_clamps() {
         // A signal control carrying a scalar default (`f32_buffer` + meta, e.g. `djfilter.position`)
         // DOES cross — a control surface can sweep it — and clamps to the port's range.
-        let pos = Port::f32_buffer_meta(ParamMeta {
+        let pos = Port::f32_buffer_meta(F32Meta {
             name: "position",
             min: -1.0,
             max: 1.0,

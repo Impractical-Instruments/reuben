@@ -278,6 +278,5 @@ operator voicer
   in[0] message notes
   in[1] harmony harmony
   out[0] f32_buffer audio
-  param[0] voices min=1.0 max=32.0 default=8.0 unit="" curve=linear
+  constant[0] i32 voices min=1 max=32 default=8
   resource[0] voice
-  constant voices

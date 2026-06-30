@@ -12,14 +12,16 @@
 /// keeps this enum from re-enumerating every vocab type as the central `Arg` already does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum PortType {
-    /// A scalar number — a held (ZOH) control: freq, cutoff, amp. The port's [`ParamMeta`] gives
+    /// A scalar number — a held (ZOH) control: freq, cutoff, amp. The port's [`F32Meta`] gives
     /// its good-button range / curve / unwired default. An `F32`-source wired into a [`Buffer`]
     /// port ZOH-materializes (ADR-0030, the one implicit bridge).
     ///
     /// [`Buffer`]: PortType::F32Buffer
     F32,
-    /// A discrete integer.
-    I32,
+    /// A discrete integer control / constant (ADR-0035). `meta` is `Some` for a bounded settable
+    /// integer (a count like the voicer's `voices` pool size), carrying its range + default in
+    /// [`I32Meta`]; `None` for a bare integer atom with no declared range.
+    I32 { meta: Option<I32Meta> },
     /// A string / symbol atom — cold / boundary paths only.
     Str,
     /// A dense per-sample signal (audio): the **only** Arg with a buffer form. A `Buffer`-source
@@ -42,15 +44,6 @@ pub enum PortType {
         is_event: bool,
         enum_meta: Option<EnumMeta>,
     },
-}
-
-/// The shape of an instantiate-time [`Constant`](crate::descriptor::ConstantShape) — config that,
-/// if changed, would rebuild the graph (e.g. `voices`). Not a runtime [`PortType`]; a runtime
-/// integer is a rounded [`F32`](PortType::F32) or an enum.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConstantShape {
-    Int,
-    Enum,
 }
 
 /// Metadata for a vocab **enum** port (ADR-0030): the closed, ordered set of named choices an
@@ -149,7 +142,7 @@ impl EnumMeta {
 pub struct Port {
     pub name: &'static str,
     pub ty: PortType,
-    pub meta: Option<ParamMeta>,
+    pub meta: Option<F32Meta>,
 }
 
 impl Port {
@@ -170,7 +163,7 @@ impl Port {
     /// per-sample buffer ZOH from `meta.default`, exactly like [`f32`](Self::f32). The form a
     /// signal-modulatable control (`oscillator.freq`, `filter.cutoff`) takes so it can accept
     /// modulation without flipping to Value (where an LFO wire would be a hard S→V mismatch).
-    pub fn f32_buffer_meta(meta: ParamMeta) -> Self {
+    pub fn f32_buffer_meta(meta: F32Meta) -> Self {
         Self {
             name: meta.name,
             ty: PortType::F32Buffer,
@@ -208,11 +201,22 @@ impl Port {
     /// buffer from the latched default (writing mid-block changes at their frame); when wired into
     /// a buffer-consuming op the source materializes likewise. Replaces the legacy "signal port +
     /// a same-named param" pair with a single declaration.
-    pub fn f32(meta: ParamMeta) -> Self {
+    pub fn f32(meta: F32Meta) -> Self {
         Self {
             name: meta.name,
             ty: PortType::F32,
             meta: Some(meta),
+        }
+    }
+
+    /// A bounded scalar **integer** port (ADR-0035) carrying its range + default in [`I32Meta`].
+    /// Today the form a plan-time [`Constant`](Descriptor::constants) count takes (the voicer's
+    /// `voices` pool size); a settable integer whose value rides the wire as [`Arg::I32`].
+    pub fn i32(meta: I32Meta) -> Self {
+        Self {
+            name: meta.name,
+            ty: PortType::I32 { meta: Some(meta) },
+            meta: None,
         }
     }
 
@@ -250,7 +254,7 @@ impl Port {
 
     /// Coerce an author literal [`Arg`](crate::message::Arg) to this port's normalized latch value
     /// (ADR-0035) — the single type-aware seam every authoring path funnels through. A scalar
-    /// [`F32`](PortType::F32) control clamps to its [`ParamMeta`] range; a vocab **enum** resolves a
+    /// [`F32`](PortType::F32) control clamps to its [`F32Meta`] range; a vocab **enum** resolves a
     /// symbol / index / concrete variant to its `Copy`-normalized `Arg`. `None` when this port takes
     /// no settable literal (a bare audio buffer, a `Note` stream) or the literal does not resolve.
     pub fn coerce(&self, raw: &crate::message::Arg) -> Option<crate::message::Arg> {
@@ -259,6 +263,10 @@ impl Port {
             PortType::F32 | PortType::F32Buffer if self.meta.is_some() => {
                 let v = raw.as_f32()?;
                 Some(Arg::F32(self.meta.as_ref()?.clamp(v)))
+            }
+            PortType::I32 { meta: Some(m) } => {
+                let v = raw.as_f32()?.round() as i32;
+                Some(Arg::I32(m.clamp(v)))
             }
             PortType::Vocab {
                 enum_meta: Some(e), ..
@@ -295,7 +303,7 @@ pub enum Curve {
 /// Rich metadata for one parameter — enough to render a good-button control and to
 /// ground an AI author.
 #[derive(Debug, Clone)]
-pub struct ParamMeta {
+pub struct F32Meta {
     pub name: &'static str,
     pub min: f32,
     pub max: f32,
@@ -305,8 +313,25 @@ pub struct ParamMeta {
     pub curve: Curve,
 }
 
-impl ParamMeta {
+impl F32Meta {
     pub fn clamp(&self, v: f32) -> f32 {
+        v.clamp(self.min, self.max)
+    }
+}
+
+/// Metadata for a bounded **integer** control / constant (ADR-0035) — the integer sibling of
+/// [`F32Meta`], for a discrete count like a voice-pool size. No `unit`/`curve`: a count is not a
+/// swept knob, so it carries no response curve, only its inclusive range and default.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct I32Meta {
+    pub name: &'static str,
+    pub min: i32,
+    pub max: i32,
+    pub default: i32,
+}
+
+impl I32Meta {
+    pub fn clamp(&self, v: i32) -> i32 {
         v.clamp(self.min, self.max)
     }
 }
@@ -318,38 +343,49 @@ pub struct Descriptor {
     pub type_name: &'static str,
     pub inputs: Vec<Port>,
     pub outputs: Vec<Port>,
-    pub params: Vec<ParamMeta>,
+    /// Instantiate-time **`Constant`** ports (ADR-0035): plan-time config that, if changed, rebuilds
+    /// the graph (e.g. the voicer's `voices` pool size). Each is an *immutable* [`Port`] — same type +
+    /// meta as a runtime input, but it carries no edge/buffer and the loader routes it to the patch's
+    /// `config` block, never `inputs`. Empty for the common operator. Runtime vs plan-time is which
+    /// list a port lives in: [`inputs`](Self::inputs) (runtime) or here (plan-time).
+    pub constants: Vec<Port>,
     /// Declared resource slots (ADR-0016) — external data this operator binds out-of-band.
-    /// Empty for every operator that is a pure function of params + edges (all but the
+    /// Empty for every operator that is a pure function of inputs + edges (all but the
     /// sample player today).
     pub resources: Vec<ResourceSlot>,
-    /// The slot of the one param that is an instantiate-time **`Constant`** (ADR-0028) — config
-    /// that, if changed, rebuilds the graph (e.g. the voicer's `voices` pool size). Declared
-    /// directly via the contract's `constant:` keyword. `None` for the common operator.
-    pub constant_param: Option<usize>,
 }
 
 impl Descriptor {
-    /// Index of a param by name, for routing param Messages to slots.
-    pub fn param_index(&self, name: &str) -> Option<usize> {
-        self.params.iter().position(|p| p.name == name)
+    /// Index of a [`Constant`](Self::constants) port by name. `None` if `name` is not a constant.
+    pub fn constant_index(&self, name: &str) -> Option<usize> {
+        self.constants.iter().position(|p| p.name == name)
     }
 
-    /// The one param that is a **`Constant`** (ADR-0028): instantiate-time config that, if changed,
-    /// would rebuild the graph (e.g. the voicer's `voices` pool size). Declared via the contract's
-    /// `constant:` keyword. The loader routes it to the patch's `config` block, not `inputs`.
-    pub fn constant_param(&self) -> Option<&ParamMeta> {
-        self.constant_param.and_then(|slot| self.params.get(slot))
+    /// The [`Constant`](Self::constants) port named `name` (ADR-0035) — instantiate-time config the
+    /// loader routes to the patch's `config` block, not `inputs`. `None` if `name` is not a constant.
+    pub fn constant(&self, name: &str) -> Option<&Port> {
+        self.constants.iter().find(|p| p.name == name)
     }
 
-    /// Whether `name` is this operator's [`Constant`](Self::constant_param) param.
-    pub fn is_constant_param(&self, name: &str) -> bool {
-        self.constant_param().is_some_and(|p| p.name == name)
+    /// Whether `name` is one of this operator's [`Constant`](Self::constants) ports.
+    pub fn is_constant(&self, name: &str) -> bool {
+        self.constants.iter().any(|p| p.name == name)
     }
 
-    /// Default values for every param, in slot order.
-    pub fn default_params(&self) -> Vec<f32> {
-        self.params.iter().map(|p| p.default).collect()
+    /// Resolve a [`Constant`](Self::constants) by `name` and [`coerce`](Port::coerce) `raw` to its
+    /// stored [`Arg`](crate::message::Arg) (ADR-0035) — the constant-side dispatch behind
+    /// [`Graph::set_constant`](crate::graph::Graph::set_constant). `None` if `name` is not a constant
+    /// or `raw` does not resolve to its type.
+    pub fn coerce_constant(
+        &self,
+        name: &str,
+        raw: &crate::message::Arg,
+    ) -> Option<(usize, crate::message::Arg)> {
+        self.constants
+            .iter()
+            .enumerate()
+            .find(|(_, p)| p.name == name)
+            .and_then(|(i, p)| p.coerce(raw).map(|a| (i, a)))
     }
 
     /// Whether this operator declares a resource slot of the given name (ADR-0016).
@@ -360,7 +396,7 @@ impl Descriptor {
     /// Index + metadata of a scalar [`F32`](PortType::F32) control input named `name` (ADR-0030),
     /// for routing an incoming `/node/<name> v` message to its latch/materialize buffer instead of
     /// a param slot. `None` for buffer inputs (no `meta`) and non-inputs.
-    pub fn materialized_input(&self, name: &str) -> Option<(usize, &ParamMeta)> {
+    pub fn materialized_input(&self, name: &str) -> Option<(usize, &F32Meta)> {
         self.inputs
             .iter()
             .enumerate()
@@ -369,11 +405,11 @@ impl Descriptor {
     }
 
     /// Every input an author may set as a **numeric literal** (ADR-0030): each scalar
-    /// [`F32`](PortType::F32) control input, paired with its [`ParamMeta`]. The JSON-schema generator and the
+    /// [`F32`](PortType::F32) control input, paired with its [`F32Meta`]. The JSON-schema generator and the
     /// CLI `describe` both surface these alongside the real params (the old "signal port +
     /// same-named unwired-default param" is now one input), so reading them from this single
     /// definition keeps the two from drifting. Enums are a separate, non-numeric settable surface.
-    pub fn settable_inputs(&self) -> impl Iterator<Item = (&'static str, &ParamMeta)> {
+    pub fn settable_inputs(&self) -> impl Iterator<Item = (&'static str, &F32Meta)> {
         self.inputs
             .iter()
             .filter_map(|p| p.meta.as_ref().map(|m| (p.name, m)))
