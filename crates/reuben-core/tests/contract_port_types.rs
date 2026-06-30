@@ -62,7 +62,7 @@ fn filter_demo_descriptor_has_the_right_port_types() {
         }
     ));
     assert!(matches!(d.outputs[OUT_AUDIO].ty, PortType::F32Buffer));
-    assert!(d.params.is_empty()); // the floats are inputs, not params
+    assert!(d.constants.is_empty()); // the floats are inputs, and filter has no constants
 
     // The materialized `cutoff` carries its meta, single-sourced from the contract.
     let (i, m) = d.materialized_input("cutoff").unwrap();

@@ -34,7 +34,7 @@ use crate::operator::{Io, Operator};
 use crate::resources::{ResolvedRefs, ResourceStore, SampleId};
 use crate::vocab::GrainWindow;
 
-// Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.
+// Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_/C_ consts + Descriptor, no drift.
 // `position`/`grain_size`/`pitch` are signal controls with scalar defaults (ADR-0031 decision (a),
 // like the oscillator's `freq`): knob-set or unwired they materialize from the default, yet an LFO
 // Signal wires straight in and is latched per grain. `density`/`spray`/`gain`/`channel` are held

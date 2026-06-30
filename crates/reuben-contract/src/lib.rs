@@ -1,25 +1,26 @@
-//! reuben-contract — the single source of an operator's port/param contract (ADR-0025, ADR-0030).
+//! reuben-contract — the single source of an operator's port/constant contract (ADR-0025, ADR-0030).
 //!
-//! Every operator declares its ports and params **once**. Two consumers turn that one
+//! Every operator declares its ports and constants **once**. Two consumers turn that one
 //! declaration into code: the [`operator_contract!`](../reuben_macros) proc-macro (which emits
-//! the `IN_`/`OUT_`/`P_` index consts and the `Descriptor`) and the
+//! the `IN_`/`OUT_`/`C_` index consts and the `Descriptor`) and the
 //! [`scaffold`](../reuben_native) (which emits the macro call for a brand-new operator). Both
 //! must agree on what a *valid* contract is and how names map to consts, so that shared logic —
 //! the spec types, the naming rules, and [`validate`] — lives here, in a crate both depend on.
 //! Putting it anywhere else would re-create the very drift this layer exists to remove.
 //!
-//! A port carries an **[`Arg`](reuben_core::message::Arg) type** (ADR-0030), named by [`PortSpec::ty`]:
-//! `f32_buffer` (a dense per-sample signal), `f32` (a materialized scalar control with a
-//! `{ .. }` meta block), `enum` (a held vocab enum, naming its shared `vocab` type), `note`, or
-//! `harmony`. The retired `Shape`/legacy-`kind` two-surface world is gone.
+//! A port carries an **[`Arg`](reuben_core::message::Arg) type** (ADR-0030, ADR-0035), named by
+//! [`PortSpec::ty`]: `f32_buffer` (a dense per-sample signal), `f32` (a materialized scalar control
+//! with a `{ .. }` meta block), `i32` (a bounded integer control / constant), `enum` (a held vocab
+//! enum, naming its shared `vocab` type), `note`, or `harmony`. The retired `Shape`/legacy-`kind`
+//! two-surface world is gone.
 
 use serde::Deserialize;
 
 pub mod naming;
 
 /// The `{ min, max, default, unit, curve }` block on a `f32` port (ADR-0030): its unwired
-/// default, range, and display metadata. Mirrors [`ParamSpec`] without the name. Required on a
-/// `f32` port (a bare per-sample wire is `f32_buffer`, not `f32`).
+/// default, range, and display metadata. Required on a `f32` port (a bare per-sample wire is
+/// `f32_buffer`, not `f32`).
 #[derive(Debug, Clone, Deserialize)]
 pub struct F32Meta {
     pub min: f32,
@@ -29,6 +30,15 @@ pub struct F32Meta {
     pub unit: String,
     #[serde(default = "default_curve")]
     pub curve: String,
+}
+
+/// The `{ min, max, default }` block on an `i32` port (ADR-0035): a bounded integer control /
+/// constant (a count like `voices`). No unit/curve — a count is not a swept knob.
+#[derive(Debug, Clone, Deserialize)]
+pub struct I32Meta {
+    pub min: i32,
+    pub max: i32,
+    pub default: i32,
 }
 
 /// A port in the contract — carrying one [`Arg`](reuben_core::message::Arg) type (ADR-0030),
@@ -47,31 +57,21 @@ pub struct PortSpec {
     /// `Some` for a `f32` port — its materialized default/range.
     #[serde(default)]
     pub f32: Option<F32Meta>,
+    /// `Some` for an `i32` port (ADR-0035) — its bounded integer range/default.
+    #[serde(default)]
+    pub i32: Option<I32Meta>,
     /// `Some` for an `enum` port — the shared `vocab` enum type name (PascalCase, e.g.
     /// `"FilterMode"`); the descriptor reads its `VARIANTS`/default from `Type::enum_meta(name)`.
     #[serde(default)]
     pub vocab: Option<String>,
 }
 
-/// One parameter's metadata, mirroring [`reuben_core::descriptor::ParamMeta`].
-#[derive(Debug, Clone, Deserialize)]
-pub struct ParamSpec {
-    pub name: String,
-    pub min: f32,
-    pub max: f32,
-    pub default: f32,
-    #[serde(default)]
-    pub unit: String,
-    #[serde(default = "default_curve")]
-    pub curve: String,
-}
-
 fn default_curve() -> String {
     "linear".to_string()
 }
 
-/// The contract for an Operator — one declaration of its ports, params, resources, and the optional
-/// instantiate-time [`Constant`](reuben_core::descriptor::Descriptor::constant_param). The scaffold
+/// The contract for an Operator — one declaration of its ports, instantiate-time
+/// [`Constant`s](reuben_core::descriptor::Descriptor::constants), and resources. The scaffold
 /// hand-authors / deserializes it; the proc-macro parses it from `operator_contract!` syntax.
 /// Mirrors a [`reuben_core::descriptor::Descriptor`].
 #[derive(Debug, Clone, Deserialize)]
@@ -81,19 +81,18 @@ pub struct OperatorSpec {
     pub inputs: Vec<PortSpec>,
     #[serde(default)]
     pub outputs: Vec<PortSpec>,
+    /// Instantiate-time **`Constant`** ports (ADR-0035) — plan-time config (e.g. a voicer's
+    /// `voices`), each an immutable [`PortSpec`]. Empty for the common operator. Mirrors
+    /// [`reuben_core::descriptor::Descriptor::constants`].
     #[serde(default)]
-    pub params: Vec<ParamSpec>,
+    pub constants: Vec<PortSpec>,
     #[serde(default)]
     pub resources: Vec<String>,
-    /// The one param (by name) that is an instantiate-time **`Constant`** (ADR-0028) — config that,
-    /// if changed, rebuilds the graph (e.g. a voicer's `voices`). `None` for the common operator.
-    #[serde(default)]
-    pub constant: Option<String>,
 }
 
-/// The legal port [`Arg`](reuben_core::message::Arg) types (ADR-0030). Centralised so both the
-/// scaffold and the macro reject the same set.
-pub const PORT_TYPES: [&str; 5] = ["f32_buffer", "f32", "enum", "note", "harmony"];
+/// The legal port [`Arg`](reuben_core::message::Arg) types (ADR-0030, ADR-0035). Centralised so
+/// both the scaffold and the macro reject the same set.
+pub const PORT_TYPES: [&str; 6] = ["f32_buffer", "f32", "i32", "enum", "note", "harmony"];
 
 /// Where in the spec a validation error sits, so the proc-macro can attach a source span to the
 /// offending token. The scaffold ignores the locus and just formats the message.
@@ -102,8 +101,7 @@ pub enum Locus {
     TypeName,
     Input(usize),
     Output(usize),
-    Param(usize),
-    Constant,
+    Constant(usize),
 }
 
 /// A rejected contract: a human-readable reason plus where it lives.
@@ -211,6 +209,45 @@ fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractErr
         }
         (_, None) => {}
     }
+    // An `i32` port (ADR-0035) needs an integer `{ .. }` meta block; no other type may carry one.
+    match (p.ty.as_str(), &p.i32) {
+        ("i32", None) => {
+            return Err(ContractError::new(
+                at,
+                format!(
+                    "{label} {:?}: an `i32` port needs a {{ .. }} meta block",
+                    p.name
+                ),
+            ));
+        }
+        ("i32", Some(m)) => {
+            if m.min > m.max {
+                return Err(ContractError::new(
+                    at,
+                    format!("{label} {:?}: min {} > max {}", p.name, m.min, m.max),
+                ));
+            }
+            if m.default < m.min || m.default > m.max {
+                return Err(ContractError::new(
+                    at,
+                    format!(
+                        "{label} {:?}: default {} outside [{}, {}]",
+                        p.name, m.default, m.min, m.max
+                    ),
+                ));
+            }
+        }
+        (_, Some(_)) => {
+            return Err(ContractError::new(
+                at,
+                format!(
+                    "{label} {:?}: only an `i32` port carries an integer {{ .. }} meta block",
+                    p.name
+                ),
+            ));
+        }
+        (_, None) => {}
+    }
     // `vocab` type only on `enum`, and required there.
     match (p.ty.as_str(), &p.vocab) {
         ("enum", None) => {
@@ -260,48 +297,18 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
         ));
     }
 
-    let mut seen_param = std::collections::BTreeSet::new();
-    for (i, p) in spec.params.iter().enumerate() {
-        let at = Locus::Param(i);
+    for (i, p) in spec.constants.iter().enumerate() {
+        let at = Locus::Constant(i);
         if !is_snake_case(&p.name) {
             return Err(ContractError::new(
                 at,
                 format!(
-                    "param name {:?} must be snake_case: a lowercase letter then [a-z0-9_]",
+                    "constant name {:?} must be snake_case: a lowercase letter then [a-z0-9_]",
                     p.name
                 ),
             ));
         }
-        if !seen_param.insert(p.name.as_str()) {
-            return Err(ContractError::new(
-                at,
-                format!("duplicate param name {:?}", p.name),
-            ));
-        }
-        if p.min > p.max {
-            return Err(ContractError::new(
-                at,
-                format!("param {:?}: min {} > max {}", p.name, p.min, p.max),
-            ));
-        }
-        if p.default < p.min || p.default > p.max {
-            return Err(ContractError::new(
-                at,
-                format!(
-                    "param {:?}: default {} outside [{}, {}]",
-                    p.name, p.default, p.min, p.max
-                ),
-            ));
-        }
-        if !matches!(p.curve.as_str(), "linear" | "exponential") {
-            return Err(ContractError::new(
-                at,
-                format!(
-                    "param {:?}: curve {:?} must be \"linear\" or \"exponential\"",
-                    p.name, p.curve
-                ),
-            ));
-        }
+        validate_port(at, "constant", p)?;
     }
 
     for (is_input, ports) in [(true, &spec.inputs), (false, &spec.outputs)] {
@@ -332,11 +339,12 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
         }
     }
 
-    if let Some(param) = &spec.constant {
-        if !spec.params.iter().any(|p| &p.name == param) {
+    let mut seen_const = std::collections::BTreeSet::new();
+    for (i, p) in spec.constants.iter().enumerate() {
+        if !seen_const.insert(p.name.as_str()) {
             return Err(ContractError::new(
-                Locus::Constant,
-                format!("constant {param:?} names no declared param"),
+                Locus::Constant(i),
+                format!("duplicate constant name {:?}", p.name),
             ));
         }
     }
@@ -379,17 +387,19 @@ mod tests {
     }
 
     #[test]
-    fn rejects_bad_curve_and_ranges_at_that_param() {
-        let curve = err(
-            r#"{ "type_name": "x", "params": [ {"name":"a","min":0,"max":1,"default":0,"curve":"log"} ] }"#,
+    fn rejects_bad_ranges_on_an_i32_constant() {
+        let inverted = err(
+            r#"{ "type_name": "x", "constants": [ {"name":"voices","ty":"i32","i32":{"min":32,"max":1,"default":8}} ] }"#,
         );
-        assert_eq!(curve.locus, Locus::Param(0));
-        let inverted =
-            err(r#"{ "type_name": "x", "params": [ {"name":"a","min":1,"max":0,"default":0} ] }"#);
+        assert_eq!(inverted.locus, Locus::Constant(0));
         assert!(inverted.message.contains("min"), "{}", inverted.message);
-        let oob =
-            err(r#"{ "type_name": "x", "params": [ {"name":"a","min":0,"max":1,"default":5} ] }"#);
+        let oob = err(
+            r#"{ "type_name": "x", "constants": [ {"name":"voices","ty":"i32","i32":{"min":1,"max":32,"default":99}} ] }"#,
+        );
         assert!(oob.message.contains("outside"), "{}", oob.message);
+        // An `i32` port without its meta block is rejected.
+        let bare = err(r#"{ "type_name": "x", "constants": [ {"name":"voices","ty":"i32"} ] }"#);
+        assert!(bare.message.contains("meta"), "{}", bare.message);
     }
 
     #[test]
@@ -405,12 +415,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_non_snake_case_param_name_at_that_param() {
-        // `Freq` would otherwise screaming-collide with `freq` into one `P_FREQ` const.
+    fn rejects_non_snake_case_constant_name_at_that_constant() {
+        // `Voices` would otherwise screaming-collide with `voices` into one `C_VOICES` const.
         let e = err(
-            r#"{ "type_name": "x", "params": [ {"name":"Freq","min":0,"max":1,"default":0} ] }"#,
+            r#"{ "type_name": "x", "constants": [ {"name":"Voices","ty":"i32","i32":{"min":1,"max":32,"default":8}} ] }"#,
         );
-        assert_eq!(e.locus, Locus::Param(0), "{}", e.message);
+        assert_eq!(e.locus, Locus::Constant(0), "{}", e.message);
         assert!(e.message.contains("snake_case"), "{}", e.message);
     }
 
@@ -472,12 +482,14 @@ mod tests {
     }
 
     #[test]
-    fn rejects_duplicates_and_dangling_lane_param() {
+    fn rejects_duplicate_input_and_constant_names() {
         let dup = err(
             r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"f32_buffer"}, {"name":"a","ty":"f32_buffer"} ] }"#,
         );
         assert_eq!(dup.locus, Locus::Input(1));
-        let dangling = err(r#"{ "type_name": "x", "constant": "voices" }"#);
-        assert_eq!(dangling.locus, Locus::Constant);
+        let dup_const = err(
+            r#"{ "type_name": "x", "constants": [ {"name":"voices","ty":"i32","i32":{"min":1,"max":32,"default":8}}, {"name":"voices","ty":"i32","i32":{"min":1,"max":4,"default":2}} ] }"#,
+        );
+        assert_eq!(dup_const.locus, Locus::Constant(1));
     }
 }

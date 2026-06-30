@@ -20,6 +20,7 @@ fn kind(ty: &PortType) -> &'static str {
     match ty {
         PortType::F32Buffer => "f32_buffer",
         PortType::F32 => "f32",
+        PortType::I32 { .. } => "i32",
         PortType::Vocab { name: "Note", .. } => "message",
         PortType::Vocab {
             name: "Harmony", ..
@@ -70,22 +71,17 @@ fn render(d: &Descriptor) -> String {
     for (i, p) in d.outputs.iter().enumerate() {
         s.push_str(&format!("  out[{i}] {} {}\n", kind(&p.ty), p.name));
     }
-    for (i, p) in d.params.iter().enumerate() {
-        s.push_str(&format!(
-            "  param[{i}] {} min={:?} max={:?} default={:?} unit={:?} curve={}\n",
-            p.name,
-            p.min,
-            p.max,
-            p.default,
-            p.unit,
-            curve(p.curve)
-        ));
+    for (i, p) in d.constants.iter().enumerate() {
+        match &p.ty {
+            PortType::I32 { meta: Some(m) } => s.push_str(&format!(
+                "  constant[{i}] i32 {} min={} max={} default={}\n",
+                p.name, m.min, m.max, m.default
+            )),
+            _ => s.push_str(&format!("  constant[{i}] {} {}\n", kind(&p.ty), p.name)),
+        }
     }
     for (i, r) in d.resources.iter().enumerate() {
         s.push_str(&format!("  resource[{i}] {}\n", r.name));
-    }
-    if let Some(p) = d.constant_param() {
-        s.push_str(&format!("  constant {}\n", p.name));
     }
     s
 }
@@ -109,9 +105,8 @@ fn renders_enum_input_line() {
         type_name: "demo",
         inputs: vec![Port::enumerated(FilterMode::enum_meta("mode"))],
         outputs: vec![],
-        params: vec![],
+        constants: vec![],
         resources: vec![],
-        constant_param: None,
     };
     assert!(
         render(&d).contains(r#"  in[0] enum mode variants=["Lp", "Hp", "Bp"] default=0"#),

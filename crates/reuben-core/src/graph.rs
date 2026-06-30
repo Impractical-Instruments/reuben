@@ -24,8 +24,6 @@ pub struct Node {
     pub address: String,
     pub op: Box<dyn Operator>,
     pub descriptor: Descriptor,
-    /// Initial param values, in descriptor slot order.
-    pub params: Vec<f32>,
     /// Author value-overrides for settable inputs (ADR-0035), as `(input port, coerced `Arg`)` — the
     /// unwired-default a `/node/<input> v` literal sets, seeding the input's latch at Instantiate.
     /// One generic channel: an `F32` control's clamped value and an enum's concrete variant share it,
@@ -33,6 +31,12 @@ pub struct Node {
     /// Sparse — empty unless an author overrides an input's default; the value is
     /// [`Port::coerce`](crate::descriptor::Port::coerce)-normalized at set time.
     pub value_overrides: Vec<(usize, Arg)>,
+    /// Author overrides for the operator's plan-time **`Constant`** ports (ADR-0035), as
+    /// `(constant slot, coerced `Arg`)` — the value the patch's `config` block sets (e.g. the
+    /// voicer's `voices`). The sibling of [`value_overrides`](Self::value_overrides) for the
+    /// plan-time surface: sparse, descriptor-default fallback, `Arg`-valued. Routed to `config` on
+    /// save, never `inputs`.
+    pub constant_overrides: Vec<(usize, Arg)>,
     /// The logical `sample` resource id (ADR-0016) this node referenced in its document, retained so
     /// [`InstrumentDoc::from_graph`](crate::format::InstrumentDoc::from_graph) can round-trip it on
     /// save. `None` unless the node declared a `sample` slot and named an id. The *decoded bytes* are
@@ -92,39 +96,39 @@ impl Graph {
         self.add_boxed(address, Box::new(op), descriptor)
     }
 
-    /// Add an already-boxed operator with its descriptor (params defaulted from it).
-    /// Used by the instrument loader, which builds operators from a [`crate::registry`].
+    /// Add an already-boxed operator with its descriptor. Used by the instrument loader, which
+    /// builds operators from a [`crate::registry`]. Inputs and constants default from the descriptor;
+    /// only author overrides are stored on the node.
     pub fn add_boxed(
         &mut self,
         address: &str,
         op: Box<dyn Operator>,
         descriptor: Descriptor,
     ) -> NodeKey {
-        let params = descriptor.default_params();
         self.nodes.insert(Node {
             address: address.to_string(),
             op,
             descriptor,
-            params,
             value_overrides: Vec::new(),
+            constant_overrides: Vec::new(),
             sample_id: None,
             voice_id: None,
         })
     }
 
-    /// Override a single value by name on a node (clamped to its range). Sets the param slot when
-    /// `name` is a param; otherwise, when `name` is a materialized `F32` input
-    /// (ADR-0030), records an input override that seeds that input's latch at Instantiate. Unknown
-    /// names are ignored (the loader validates names up front).
-    pub fn set_param(&mut self, node: NodeKey, name: &str, value: f32) {
+    /// Override a plan-time **`Constant`** by name (ADR-0035), coercing the raw author literal to the
+    /// constant's stored [`Arg`] (an `i32` count clamps to its range). No-op if `name` is not a
+    /// constant or `raw` does not resolve. Upserts the `(slot, Arg)` override the patch's `config`
+    /// block sets and `from_graph` saves back.
+    pub fn set_constant(&mut self, node: NodeKey, name: &str, raw: &Arg) {
         let n = &mut self.nodes[node];
-        if let Some(i) = n.descriptor.param_index(name) {
-            n.params[i] = n.descriptor.params[i].clamp(value);
+        let Some((slot, arg)) = n.descriptor.coerce_constant(name, raw) else {
             return;
+        };
+        match n.constant_overrides.iter_mut().find(|(s, _)| *s == slot) {
+            Some(entry) => entry.1 = arg,
+            None => n.constant_overrides.push((slot, arg)),
         }
-        // Not a param: route the numeric literal through the generic value channel. `coerce`
-        // clamps it for an `F32` control, or reads it as the variant index for an enum input.
-        self.set_value(node, name, &Arg::F32(value));
     }
 
     /// Override a settable input's unwired default by name (ADR-0035), coercing the raw author

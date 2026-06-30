@@ -25,7 +25,7 @@ mod number_op;
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use reuben_contract::{naming, ContractError, F32Meta, Locus, OperatorSpec, ParamSpec, PortSpec};
+use reuben_contract::{naming, ContractError, F32Meta, I32Meta, Locus, OperatorSpec, PortSpec};
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::{braced, parenthesized, Error, Ident, Lit, LitStr, Token};
@@ -77,6 +77,13 @@ struct F32MetaAst {
     curve: String,
 }
 
+/// The `i32 { LO..=HI, default D }` block (ADR-0035) — a bounded integer control / constant.
+struct I32MetaAst {
+    min: i32,
+    max: i32,
+    default: i32,
+}
+
 /// How a port is declared — its [`Arg`] type (ADR-0030).
 enum PortTypeAst {
     /// `name: f32_buffer` — a dense per-sample signal (audio / control buffer). An optional
@@ -86,6 +93,8 @@ enum PortTypeAst {
     F32Buffer(Option<F32MetaAst>),
     /// `name: f32 { .. }` — a materialized scalar control with its default/range meta.
     F32(F32MetaAst),
+    /// `name: i32 { .. }` — a bounded integer control / constant (ADR-0035).
+    I32(I32MetaAst),
     /// `name: enum(VocabType)` — a held vocab enum, naming its shared `vocab` type.
     Enum(Ident),
     /// `name: note` — a `Note` event port.
@@ -99,26 +108,14 @@ struct PortAst {
     ty: PortTypeAst,
 }
 
-struct ParamAst {
-    name: Ident,
-    min: f32,
-    max: f32,
-    default: f32,
-    unit: String,
-    curve: String,
-}
-
 struct ContractInput {
     struct_ident: Ident,
     type_name: Option<LitStr>,
     inputs: Vec<PortAst>,
     outputs: Vec<PortAst>,
-    params: Vec<ParamAst>,
+    /// Instantiate-time `Constant` ports (ADR-0035) — declared like inputs, in their own block.
+    constants: Vec<PortAst>,
     resources: Vec<Ident>,
-    /// The optional instantiate-time `Constant` param name, with its source span for error
-    /// attribution (`constant: voices`).
-    constant: Option<Ident>,
-    constant_span: Span,
 }
 
 impl ContractInput {
@@ -139,17 +136,26 @@ impl ContractInput {
                         unit: m.unit.clone(),
                         curve: m.curve.clone(),
                     };
-                    let (ty, f32, vocab) = match &p.ty {
-                        PortTypeAst::F32Buffer(m) => ("f32_buffer", m.as_ref().map(f32_meta), None),
-                        PortTypeAst::F32(m) => ("f32", Some(f32_meta(m)), None),
-                        PortTypeAst::Enum(t) => ("enum", None, Some(t.to_string())),
-                        PortTypeAst::Note => ("note", None, None),
-                        PortTypeAst::Harmony => ("harmony", None, None),
+                    let i32_meta = |m: &I32MetaAst| I32Meta {
+                        min: m.min,
+                        max: m.max,
+                        default: m.default,
+                    };
+                    let (ty, f32, i32, vocab) = match &p.ty {
+                        PortTypeAst::F32Buffer(m) => {
+                            ("f32_buffer", m.as_ref().map(f32_meta), None, None)
+                        }
+                        PortTypeAst::F32(m) => ("f32", Some(f32_meta(m)), None, None),
+                        PortTypeAst::I32(m) => ("i32", None, Some(i32_meta(m)), None),
+                        PortTypeAst::Enum(t) => ("enum", None, None, Some(t.to_string())),
+                        PortTypeAst::Note => ("note", None, None, None),
+                        PortTypeAst::Harmony => ("harmony", None, None, None),
                     };
                     PortSpec {
                         name: p.name.to_string(),
                         ty: ty.to_string(),
                         f32,
+                        i32,
                         vocab,
                     }
                 })
@@ -159,20 +165,8 @@ impl ContractInput {
             type_name,
             inputs: ports(&self.inputs),
             outputs: ports(&self.outputs),
-            params: self
-                .params
-                .iter()
-                .map(|p| ParamSpec {
-                    name: p.name.to_string(),
-                    min: p.min,
-                    max: p.max,
-                    default: p.default,
-                    unit: p.unit.clone(),
-                    curve: p.curve.clone(),
-                })
-                .collect(),
+            constants: ports(&self.constants),
             resources: self.resources.iter().map(Ident::to_string).collect(),
-            constant: self.constant.as_ref().map(Ident::to_string),
         }
     }
 
@@ -186,8 +180,7 @@ impl ContractInput {
                 .unwrap_or_else(|| self.struct_ident.span()),
             Locus::Input(i) => self.inputs[i].name.span(),
             Locus::Output(i) => self.outputs[i].name.span(),
-            Locus::Param(i) => self.params[i].name.span(),
-            Locus::Constant => self.constant_span,
+            Locus::Constant(i) => self.constants[i].name.span(),
         };
         Error::new(span, &err.message)
     }
@@ -207,13 +200,8 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
             .inputs
             .iter()
             .chain(&model.outputs)
+            .chain(&model.constants)
             .map(|p| (p.const_name.as_str(), p.ordinal))
-            .chain(
-                model
-                    .params
-                    .iter()
-                    .map(|p| (p.const_name.as_str(), p.index)),
-            )
             .map(|(name, value)| {
                 let ident = Ident::new(name, Span::call_site());
                 let val = proc_macro2::Literal::usize_unsuffixed(value);
@@ -239,7 +227,7 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
                                 };
                                 quote! {
                                     ::reuben_core::descriptor::Port::f32_buffer_meta(
-                                        ::reuben_core::descriptor::ParamMeta {
+                                        ::reuben_core::descriptor::F32Meta {
                                             name: #name, min: #min, max: #max,
                                             default: #default, unit: #unit, curve: #curve,
                                         }
@@ -262,9 +250,21 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
                             };
                             quote! {
                                 ::reuben_core::descriptor::Port::f32(
-                                    ::reuben_core::descriptor::ParamMeta {
+                                    ::reuben_core::descriptor::F32Meta {
                                         name: #name, min: #min, max: #max,
                                         default: #default, unit: #unit, curve: #curve,
+                                    }
+                                )
+                            }
+                        }
+                        // A bounded integer control / constant — `Port::i32` with its meta (ADR-0035).
+                        "i32" => {
+                            let m = p.i32.as_ref().expect("validate() guarantees i32 meta");
+                            let (min, max, default) = (m.min, m.max, m.default);
+                            quote! {
+                                ::reuben_core::descriptor::Port::i32(
+                                    ::reuben_core::descriptor::I32Meta {
+                                        name: #name, min: #min, max: #max, default: #default,
                                     }
                                 )
                             }
@@ -291,32 +291,11 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
         };
         let inputs = port_toks(&model.inputs);
         let outputs = port_toks(&model.outputs);
-
-        let params = model.params.iter().map(|p| {
-            let (name, min, max, default, unit) = (&p.name, p.min, p.max, p.default, &p.unit);
-            let curve = if p.curve == "exponential" {
-                quote! { ::reuben_core::descriptor::Curve::Exponential }
-            } else {
-                quote! { ::reuben_core::descriptor::Curve::Linear }
-            };
-            quote! {
-                ::reuben_core::descriptor::ParamMeta {
-                    name: #name, min: #min, max: #max, default: #default, unit: #unit, curve: #curve,
-                }
-            }
-        });
+        let constants = port_toks(&model.constants);
 
         let resources = model.resources.iter().map(|r| {
             quote! { ::reuben_core::descriptor::ResourceSlot::new(#r) }
         });
-
-        let constant = match &model.constant {
-            None => quote! { ::std::option::Option::None },
-            Some(const_name) => {
-                let ident = Ident::new(const_name, Span::call_site());
-                quote! { ::std::option::Option::Some(#ident) }
-            }
-        };
 
         let type_name = &model.type_name;
         quote! {
@@ -330,9 +309,8 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
                         type_name: #type_name,
                         inputs: ::std::vec![ #(#inputs),* ],
                         outputs: ::std::vec![ #(#outputs),* ],
-                        params: ::std::vec![ #(#params),* ],
+                        constants: ::std::vec![ #(#constants),* ],
                         resources: ::std::vec![ #(#resources),* ],
-                        constant_param: #constant,
                     }
                 }
             }
@@ -353,10 +331,8 @@ impl Parse for ContractInput {
             type_name: None,
             inputs: Vec::new(),
             outputs: Vec::new(),
-            params: Vec::new(),
+            constants: Vec::new(),
             resources: Vec::new(),
-            constant: None,
-            constant_span: struct_ident.span(),
         };
 
         while !body.is_empty() {
@@ -366,17 +342,12 @@ impl Parse for ContractInput {
                 "type_name" => ci.type_name = Some(body.parse()?),
                 "inputs" => ci.inputs = parse_ports(&body)?,
                 "outputs" => ci.outputs = parse_ports(&body)?,
-                "params" => ci.params = parse_params(&body)?,
+                "constants" => ci.constants = parse_ports(&body)?,
                 "resources" => ci.resources = parse_resources(&body)?,
-                "constant" => {
-                    let param = Ident::parse_any(&body)?;
-                    ci.constant_span = param.span();
-                    ci.constant = Some(param);
-                }
                 other => {
                     return Err(Error::new(
                         key.span(),
-                        format!("unknown contract field `{other}` (expected inputs/outputs/params/resources/constant/type_name)"),
+                        format!("unknown contract field `{other}` (expected inputs/outputs/constants/resources/type_name)"),
                     ))
                 }
             }
@@ -415,6 +386,7 @@ fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
             "note" => PortTypeAst::Note,
             "harmony" => PortTypeAst::Harmony,
             "f32" => PortTypeAst::F32(parse_f32_meta(&body)?),
+            "i32" => PortTypeAst::I32(parse_i32_meta(&body)?),
             "enum" => {
                 let inner;
                 parenthesized!(inner in body);
@@ -423,7 +395,7 @@ fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
             other => {
                 return Err(Error::new(
                     kw.span(),
-                    format!("port type must be `f32_buffer`, `f32`, `enum(..)`, `note`, or `harmony`, got `{other}`"),
+                    format!("port type must be `f32_buffer`, `f32`, `i32`, `enum(..)`, `note`, or `harmony`, got `{other}`"),
                 ))
             }
         };
@@ -498,51 +470,43 @@ fn parse_curve_ident(input: ParseStream) -> syn::Result<String> {
     }
 }
 
-/// `{ name: { LO..=HI, default D, "unit", curve }, .. }`.
-fn parse_params(input: ParseStream) -> syn::Result<Vec<ParamAst>> {
-    let body;
-    braced!(body in input);
-    let mut out = Vec::new();
-    while !body.is_empty() {
-        // `parse_any` so a param may be named with a keyword, e.g. m2s's `default`.
-        let name = Ident::parse_any(&body)?;
-        body.parse::<Token![:]>()?;
-        let meta;
-        braced!(meta in body);
+/// `{ LO..=HI, default D }` — the meta on an `i32 { .. }` port / constant (ADR-0035). Integer
+/// bounds + default; no unit/curve (a count is not a swept knob).
+fn parse_i32_meta(input: ParseStream) -> syn::Result<I32MetaAst> {
+    let meta;
+    braced!(meta in input);
 
-        let min = parse_signed_float(&meta)?;
-        meta.parse::<Token![..=]>()?;
-        let max = parse_signed_float(&meta)?;
-        meta.parse::<Token![,]>()?;
+    let min = parse_signed_int(&meta)?;
+    meta.parse::<Token![..=]>()?;
+    let max = parse_signed_int(&meta)?;
+    meta.parse::<Token![,]>()?;
 
-        let default_kw: Ident = meta.parse()?;
-        if default_kw != "default" {
-            return Err(Error::new(default_kw.span(), "expected `default <value>`"));
-        }
-        let default = parse_signed_float(&meta)?;
-        meta.parse::<Token![,]>()?;
-
-        let unit: LitStr = meta.parse()?;
-        meta.parse::<Token![,]>()?;
-
-        let curve = parse_curve_ident(&meta)?;
-        if meta.peek(Token![,]) {
-            meta.parse::<Token![,]>()?;
-        }
-
-        out.push(ParamAst {
-            name,
-            min,
-            max,
-            default,
-            unit: unit.value(),
-            curve,
-        });
-        if body.peek(Token![,]) {
-            body.parse::<Token![,]>()?;
-        }
+    let default_kw: Ident = meta.parse()?;
+    if default_kw != "default" {
+        return Err(Error::new(default_kw.span(), "expected `default <value>`"));
     }
-    Ok(out)
+    let default = parse_signed_int(&meta)?;
+    if meta.peek(Token![,]) {
+        meta.parse::<Token![,]>()?;
+    }
+    if !meta.is_empty() {
+        return Err(meta.error("unexpected tokens in `i32 { .. }` meta"));
+    }
+    Ok(I32MetaAst { min, max, default })
+}
+
+/// A signed integer literal (an `i32` port's bounds/default may be negative).
+fn parse_signed_int(input: ParseStream) -> syn::Result<i32> {
+    let neg = input.peek(Token![-]);
+    if neg {
+        input.parse::<Token![-]>()?;
+    }
+    let lit: Lit = input.parse()?;
+    let val = match lit {
+        Lit::Int(i) => i.base10_parse::<i32>()?,
+        other => return Err(Error::new(other.span(), "expected an integer literal")),
+    };
+    Ok(if neg { -val } else { val })
 }
 
 /// `{ name, name }` — a brace-wrapped, comma-separated resource-slot list.
@@ -587,16 +551,14 @@ mod tests {
     fn emits_consts_and_contract_fn() {
         let out = render(
             r#"Oscillator {
-                inputs:  { freq: f32_buffer },
+                inputs:  { freq:     f32 { 20.0..=20_000.0, default 440.0, "Hz", exp },
+                           waveform: f32 { 0.0..=1.0,        default 0.0,   "",   lin } },
                 outputs: { audio: f32_buffer },
-                params:  { freq:     { 20.0..=20_000.0, default 440.0, "Hz", exp },
-                           waveform: { 0.0..=1.0,        default 0.0,   "",   lin } },
             }"#,
         );
         assert!(out.contains("pub const IN_FREQ : usize = 0"), "{out}");
+        assert!(out.contains("pub const IN_WAVEFORM : usize = 1"), "{out}");
         assert!(out.contains("pub const OUT_AUDIO : usize = 0"), "{out}");
-        assert!(out.contains("pub const P_FREQ : usize = 0"), "{out}");
-        assert!(out.contains("pub const P_WAVEFORM : usize = 1"), "{out}");
         assert!(out.contains("impl Oscillator"), "{out}");
         assert!(out.contains("fn contract"), "{out}");
         assert!(out.contains("type_name : \"oscillator\""), "{out}");
@@ -619,25 +581,24 @@ mod tests {
     }
 
     // Ports number sequentially in declaration order (ADR-0030) — a note input and a harmony input
-    // are 0 and 1, not split per kind. `constant: voices` resolves to the param's index const.
+    // are 0 and 1, not split per kind. A `constants:` block (ADR-0035) renders as immutable ports
+    // with their own `C_` index consts and an `i32` meta.
     #[test]
-    fn ports_number_sequentially_and_constant_resolves() {
+    fn ports_number_sequentially_and_constant_renders_as_port() {
         let out = render(
             r#"Voicer {
                 inputs:  { notes: note, ctx: harmony },
                 outputs: { audio: f32_buffer },
-                params:  { voices: { 1.0..=32.0, default 8.0, "", lin } },
-                constant: voices,
+                constants: { voices: i32 { 1..=32, default 8 } },
             }"#,
         );
         assert!(out.contains("pub const IN_NOTES : usize = 0"), "{out}");
         assert!(out.contains("pub const IN_CTX : usize = 1"), "{out}");
+        assert!(out.contains("pub const C_VOICES : usize = 0"), "{out}");
         assert!(out.contains("Port :: note (\"notes\")"), "{out}");
         assert!(out.contains("Port :: harmony (\"ctx\")"), "{out}");
-        assert!(
-            out.contains("constant_param : :: std :: option :: Option :: Some (P_VOICES)"),
-            "{out}"
-        );
+        assert!(out.contains("Port :: i32"), "{out}");
+        assert!(out.contains("I32Meta"), "{out}");
     }
 
     // A malformed contract is rejected *with a span*, in-band as a compile_error.

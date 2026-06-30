@@ -19,10 +19,24 @@ pub struct OperatorInfo {
     pub inputs: Vec<PortInfo>,
     pub outputs: Vec<PortInfo>,
     pub params: Vec<ParamInfo>,
+    /// Plan-time **`Constant`** ports (ADR-0035) — config set in a patch's `config` block (e.g. the
+    /// voicer's `voices`), distinct from the runtime `params`/`inputs` surface.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub constants: Vec<ConstantInfo>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub enums: Vec<EnumInfo>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub resources: Vec<String>,
+}
+
+/// One plan-time integer **`Constant`** (ADR-0035), surfaced so an author sees what a patch's
+/// `config` block may set and within what range.
+#[derive(Debug, Serialize)]
+pub struct ConstantInfo {
+    pub name: String,
+    pub default: i32,
+    pub min: i32,
+    pub max: i32,
 }
 
 /// One settable `Enum` input (ADR-0030): a held, live-switchable named choice, surfaced for an
@@ -67,7 +81,7 @@ fn port_kind(ty: &PortType) -> &'static str {
             enum_meta: Some(_), ..
         } => "enum",
         PortType::Vocab { .. } => "vocab",
-        PortType::I32 => "int",
+        PortType::I32 { .. } => "int",
         PortType::Str => "string",
     }
 }
@@ -89,21 +103,10 @@ impl OperatorInfo {
                 })
                 .collect()
         };
-        let mut params: Vec<ParamInfo> = d
-            .params
-            .iter()
-            .map(|p| ParamInfo {
-                name: p.name.to_string(),
-                default: p.default,
-                min: p.min,
-                max: p.max,
-                unit: p.unit.to_string(),
-                curve: curve(p.curve).to_string(),
-            })
-            .collect();
-        // Materialized Float inputs (ADR-0030) are settable literals — the old "signal port +
-        // same-named unwired-default param" is now one input, addressed by the same name. Surface
-        // their range/default alongside params so `describe` still shows what an author can set.
+        // Settable scalar surface (ADR-0030/0035): materialized `f32` control inputs — the old
+        // "signal port + same-named unwired-default param" is now one input, addressed by the same
+        // name. Params are gone; this is the whole numeric-settable surface `describe` shows.
+        let mut params: Vec<ParamInfo> = Vec::new();
         for (name, m) in d.settable_inputs() {
             params.push(ParamInfo {
                 name: name.to_string(),
@@ -124,11 +127,26 @@ impl OperatorInfo {
                 default: e.default_symbol().to_string(),
             })
             .collect();
+        // Plan-time `Constant` ports (ADR-0035) — today the voicer's integer `voices`.
+        let constants = d
+            .constants
+            .iter()
+            .filter_map(|c| match &c.ty {
+                PortType::I32 { meta: Some(m) } => Some(ConstantInfo {
+                    name: c.name.to_string(),
+                    default: m.default,
+                    min: m.min,
+                    max: m.max,
+                }),
+                _ => None,
+            })
+            .collect();
         OperatorInfo {
             type_name: d.type_name.to_string(),
             inputs: ports(&d.inputs),
             outputs: ports(&d.outputs),
             params,
+            constants,
             enums,
             resources: d.resources.iter().map(|r| r.name.to_string()).collect(),
         }

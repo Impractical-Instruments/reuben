@@ -40,9 +40,8 @@ fn desc(type_name: &'static str, inputs: Vec<Port>, outputs: Vec<Port>) -> Descr
         type_name,
         inputs,
         outputs,
-        params: vec![],
+        constants: vec![],
         resources: vec![],
-        constant_param: None,
     }
 }
 
@@ -57,7 +56,7 @@ fn signal(name: &'static str) -> Port {
 fn value(name: &'static str) -> Port {
     Port {
         name,
-        ty: PortType::I32,
+        ty: PortType::I32 { meta: None },
         meta: None,
     }
 }

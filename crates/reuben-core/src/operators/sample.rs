@@ -34,7 +34,7 @@ use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 use crate::resources::{ResolvedRefs, ResourceStore, SampleId};
 
-// Single-source contract (ADR-0025): one declaration -> IN_/OUT_/P_ consts + Descriptor, no drift.
+// Single-source contract (ADR-0025): one declaration -> IN_/OUT_/C_ consts + Descriptor, no drift.
 crate::operator_contract!(SamplePlayer {
     type_name: "sample",
     inputs:    { freq:    f32 { 0.0..=20000.0, default 0.0, "Hz", lin },

@@ -12,6 +12,7 @@
 
 use serde_json::{json, Map, Value};
 
+use crate::descriptor::PortType;
 use crate::registry::Registry;
 
 /// A wire-ref schema (`{ "from": "/node.port" }`) — one input value form (ADR-0028).
@@ -58,35 +59,23 @@ pub fn generate(registry: &Registry) -> Value {
             forms.push(wire_ref());
             in_props.insert(port.name.to_string(), json!({ "oneOf": forms }));
         }
-        for p in &d.params {
-            if d.is_constant_param(p.name) {
-                continue;
-            }
-            in_props.insert(
-                p.name.to_string(),
-                json!({
-                    "type": "number",
-                    "minimum": p.min as f64,
-                    "maximum": p.max as f64,
-                    "default": p.default as f64,
-                    "description": format!("unit: {}, curve: {:?}", p.unit, p.curve),
-                }),
-            );
-        }
 
-        // `config`: the operator's `Constant`, if any (today only a voicer's `voices`).
+        // `config`: the operator's plan-time `Constant` ports (ADR-0035; today only a voicer's
+        // `voices`). An `i32` constant emits an integer range.
         let mut cfg_props = Map::new();
-        if let Some(c) = d.constant_param() {
-            cfg_props.insert(
-                c.name.to_string(),
-                json!({
-                    "type": "integer",
-                    "minimum": c.min as f64,
-                    "maximum": c.max as f64,
-                    "default": c.default as f64,
-                    "description": "instantiate-time constant (changing it rebuilds the graph)"
-                }),
-            );
+        for c in &d.constants {
+            if let PortType::I32 { meta: Some(m) } = &c.ty {
+                cfg_props.insert(
+                    c.name.to_string(),
+                    json!({
+                        "type": "integer",
+                        "minimum": m.min,
+                        "maximum": m.max,
+                        "default": m.default,
+                        "description": "instantiate-time constant (changing it rebuilds the graph)"
+                    }),
+                );
+            }
         }
 
         branches.push(json!({

@@ -5469,10 +5469,10 @@
                 "additionalProperties": false,
                 "properties": {
                   "voices": {
-                    "default": 8.0,
+                    "default": 8,
                     "description": "instantiate-time constant (changing it rebuilds the graph)",
-                    "maximum": 32.0,
-                    "minimum": 1.0,
+                    "maximum": 32,
+                    "minimum": 1,
                     "type": "integer"
                   }
                 },

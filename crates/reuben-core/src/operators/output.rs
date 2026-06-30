@@ -30,9 +30,8 @@ impl Operator for Output {
             type_name: "output",
             inputs: vec![Port::f32_buffer("audio")],
             outputs: vec![Port::f32_buffer("audio")],
-            params: vec![],
+            constants: vec![],
             resources: vec![],
-            constant_param: None,
         }
     }
 
