@@ -122,6 +122,19 @@ impl EnumMeta {
     pub fn default_symbol(&self) -> &'static str {
         self.variants[self.default]
     }
+
+    /// The wire **symbol** for a concrete enum [`Arg`](crate::message::Arg) — the inverse of
+    /// [`resolve_arg`](Self::resolve_arg), for the save path (ADR-0035). Matches by `Copy`-normalized
+    /// equality against each variant; `None` if `arg` is not one of this enum's variants. Cold.
+    pub fn symbol_of(&self, arg: &crate::message::Arg) -> Option<&'static str> {
+        (0..self.variants.len())
+            .find(|&i| {
+                self.resolve_arg(&crate::message::Arg::I32(i as i32))
+                    .as_ref()
+                    == Some(arg)
+            })
+            .map(|i| self.variants[i])
+    }
 }
 
 /// A named input or output port.
@@ -233,6 +246,25 @@ impl Port {
     /// latched buffer for when unwired, rather than handing the operator `None`.
     pub fn is_materialized(&self) -> bool {
         self.meta.is_some()
+    }
+
+    /// Coerce an author literal [`Arg`](crate::message::Arg) to this port's normalized latch value
+    /// (ADR-0035) — the single type-aware seam every authoring path funnels through. A scalar
+    /// [`F32`](PortType::F32) control clamps to its [`ParamMeta`] range; a vocab **enum** resolves a
+    /// symbol / index / concrete variant to its `Copy`-normalized `Arg`. `None` when this port takes
+    /// no settable literal (a bare audio buffer, a `Note` stream) or the literal does not resolve.
+    pub fn coerce(&self, raw: &crate::message::Arg) -> Option<crate::message::Arg> {
+        use crate::message::Arg;
+        match &self.ty {
+            PortType::F32 | PortType::F32Buffer if self.meta.is_some() => {
+                let v = raw.as_f32()?;
+                Some(Arg::F32(self.meta.as_ref()?.clamp(v)))
+            }
+            PortType::Vocab {
+                enum_meta: Some(e), ..
+            } => e.resolve_arg(raw),
+            _ => None,
+        }
     }
 }
 
@@ -366,5 +398,21 @@ impl Descriptor {
             .enumerate()
             .find(|(_, p)| p.name == name && p.enum_meta().is_some())
             .and_then(|(i, p)| p.enum_meta().map(|m| (i, m)))
+    }
+
+    /// Resolve a settable input by `name` and [`coerce`](Port::coerce) `raw` to its latch
+    /// [`Arg`](crate::message::Arg) (ADR-0035) — the input-side dispatch behind
+    /// [`Graph::set_value`](crate::graph::Graph::set_value). `None` if `name` is not a settable input
+    /// or `raw` does not resolve to that input's type.
+    pub fn coerce_input(
+        &self,
+        name: &str,
+        raw: &crate::message::Arg,
+    ) -> Option<(usize, crate::message::Arg)> {
+        self.inputs
+            .iter()
+            .enumerate()
+            .find(|(_, p)| p.name == name)
+            .and_then(|(i, p)| p.coerce(raw).map(|a| (i, a)))
     }
 }

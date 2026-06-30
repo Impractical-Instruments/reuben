@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::descriptor::{Descriptor, PortType};
 use crate::graph::{Graph, Interface};
+use crate::message::Arg;
 use crate::registry::Registry;
 use crate::resources::{ResolvedRefs, ResourceResolver, ResourceStore, SampleBuffer, SampleId};
 
@@ -509,7 +510,7 @@ impl InstrumentDoc {
                 }
                 match value {
                     ConfigValue::Number(v) => graph.set_param(key, name, *v as f32),
-                    ConfigValue::Symbol(s) => graph.set_enum(key, name, s),
+                    ConfigValue::Symbol(s) => graph.set_value(key, name, &Arg::Str(s.clone())),
                 }
             }
 
@@ -551,7 +552,7 @@ impl InstrumentDoc {
                                 value: s.clone(),
                             });
                         }
-                        graph.set_enum(key, name, s);
+                        graph.set_value(key, name, &Arg::Str(s.clone()));
                     }
                 }
             }
@@ -661,25 +662,21 @@ impl InstrumentDoc {
                         );
                     }
                 }
-                // Materialized `Float` input overrides (ADR-0028) — the unwired-default a literal
-                // set — round-trip as the input's name.
-                for &(port, v) in &node.input_overrides {
-                    inputs.insert(
-                        d.inputs[port].name.to_string(),
-                        InputValue::Number(v as f64),
-                    );
-                }
-                // `Enum` input overrides save as the variant **symbol** (the primary wire form).
-                for &(port, idx) in &node.enum_overrides {
-                    let sym = d.inputs[port]
-                        .enum_meta()
-                        .and_then(|e| e.variants.get(idx))
-                        .copied()
-                        .unwrap_or_default();
-                    inputs.insert(
-                        d.inputs[port].name.to_string(),
-                        InputValue::Symbol(sym.to_string()),
-                    );
+                // Settable input overrides (ADR-0035) round-trip under the input's name: an `F32`
+                // control as a number, an enum as its variant **symbol** (the primary wire form).
+                for (port, arg) in &node.value_overrides {
+                    let p = &d.inputs[*port];
+                    let value = match arg {
+                        Arg::F32(v) => InputValue::Number(*v as f64),
+                        other => {
+                            let sym = p
+                                .enum_meta()
+                                .and_then(|e| e.symbol_of(other))
+                                .unwrap_or_default();
+                            InputValue::Symbol(sym.to_string())
+                        }
+                    };
+                    inputs.insert(p.name.to_string(), value);
                 }
                 // Inbound wires: each edge whose destination is this node becomes a wire-ref, using
                 // the sole-output sugar when the source has a single output.
@@ -1004,6 +1001,20 @@ mod tests {
         let saved2 = InstrumentDoc::from_graph(&g2, "test");
         assert_eq!(saved1, saved2);
         assert_eq!(saved1.nodes.len(), 2);
+    }
+
+    #[test]
+    fn value_overrides_round_trip_across_types() {
+        // ADR-0035: the collapsed `value_overrides` channel must save an `F32` control override as a
+        // number and an enum override as its variant **symbol** (reconstructed via
+        // `EnumMeta::symbol_of`, not a stored index) — one channel, two on-disk forms.
+        let json = r#"{"instrument":"t","nodes":[
+            {"type":"filter","address":"/f","inputs":{"mode":"Hp","cutoff":3000}}]}"#;
+        let g = load(json, &reg()).expect("load");
+        let doc = InstrumentDoc::from_graph(&g, "t");
+        let inputs = &doc.nodes[0].inputs;
+        assert_eq!(inputs["cutoff"], InputValue::Number(3000.0));
+        assert_eq!(inputs["mode"], InputValue::Symbol("Hp".to_string()));
     }
 
     // ADR-0032 §1 — the `interface` block. A voice-shaped patch: osc.freq / env.gate in,
