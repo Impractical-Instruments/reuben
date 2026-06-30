@@ -15,9 +15,8 @@
 //! Message stream read three ways: as a stream of events, as a held (zero-order-hold) value,
 //! or, for a [`Buffer`](Arg::F32Buffer) payload, as a dense per-sample block.
 
-use crate::vocab::harmony::{Harmony, SnapDir, SnapTarget};
+use crate::vocab::harmony::Harmony;
 use crate::vocab::pitch::Note;
-use crate::vocab::{FilterMode, GateMode, GrainWindow, M2sMode, MapCurve, Waveform};
 
 /// A contiguous sample buffer — the performant representation of a per-sample stream (a
 /// "Signal", ADR-0001, ADR-0030). `Signal<f32>` is the only element kind built today; the
@@ -63,11 +62,12 @@ impl<T> Signal<T> {
 ///
 /// A **closed, central** enum with three families:
 /// - **OSC primitives** — [`F32`](Arg::F32) / [`I32`](Arg::I32) / [`Str`](Arg::Str);
-/// - **shared *vocab* concrete types** — defined once and reused everywhere (a `FilterMode`
-///   duplicated per-operator would be the smell), which is what lets a *closed* enum
-///   enumerate them. The [`vocab`](crate::vocab) module's `#[derive(ArgValue)]` folds each in
-///   ([`Note`](Arg::Note), [`Harmony`](Arg::Harmony), `FilterMode`, `Waveform`, `MapCurve`,
-///   `M2sMode`, …), generating its OSC conversion + metadata;
+/// - **shared *vocab* types** — defined once and reused everywhere (a `FilterMode` duplicated
+///   per-operator would be the smell). Each [`vocab`](crate::vocab) type's `#[derive(ArgValue)]`
+///   folds it in: a **struct** with a real per-type shape gets its own variant
+///   ([`Note`](Arg::Note), [`Harmony`](Arg::Harmony)); every **enum** type-erases to the single
+///   [`Enum`](Arg::Enum) index variant, its identity carried by the port (ADR-0030), so adding an
+///   enum grows neither this enum nor any other central site;
 /// - the optimized dense payload — [`Buffer`](Arg::F32Buffer), a [`Signal`]'s samples.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Arg {
@@ -81,14 +81,14 @@ pub enum Arg {
     // which generates this variant's `From`/`TryFrom` glue. More land as operators migrate.
     Note(Note),
     Harmony(Harmony),
-    SnapTarget(SnapTarget),
-    SnapDir(SnapDir),
-    GateMode(GateMode),
-    FilterMode(FilterMode),
-    Waveform(Waveform),
-    M2sMode(M2sMode),
-    MapCurve(MapCurve),
-    GrainWindow(GrainWindow),
+
+    /// Any **vocab enum** value, type-erased to its bare variant **index** (ADR-0030). One
+    /// variant for *every* enum: type identity lives in the port descriptor's
+    /// [`EnumMeta`](crate::descriptor::EnumMeta), never in the value — so adding an enum touches
+    /// no central engine site. The operator names the concrete type at the read
+    /// (`io.input::<FilterMode>()` → `FilterMode::from_index`), and port-authority guarantees a
+    /// latch slot only ever holds its own port's enum, so a bare index cannot mis-decode.
+    Enum(u32),
 
     // The optimized dense payload.
     F32Buffer(Signal<f32>),
@@ -262,4 +262,41 @@ pub struct Event<'a> {
     pub arg: &'a Arg,
     /// Sample offset within the current (sub)block at which this event applies.
     pub frame: usize,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vocab::{FilterMode, GateMode};
+
+    /// `Arg` stays small (ADR-0030). Collapsing eight 1-byte vocab-enum variants into one
+    /// `Enum(u32)` must not grow it: its size is dominated by the `Harmony` struct, and the bare
+    /// index fits in the discriminant padding. Guards against a regression that would re-bloat the
+    /// hot-path carrier (latched per input port, `Copy`-cloned each routed message).
+    #[test]
+    fn arg_stays_small() {
+        assert!(
+            std::mem::size_of::<Arg>() <= std::mem::size_of::<Harmony>(),
+            "Arg ({}B) must not exceed its largest payload Harmony ({}B)",
+            std::mem::size_of::<Arg>(),
+            std::mem::size_of::<Harmony>(),
+        );
+    }
+
+    /// A vocab enum round-trips through the type-erased `Arg::Enum(index)`: `From` packs the
+    /// variant index, the typed read (`FromArg`) recovers the concrete variant. Two distinct enums
+    /// share the one variant — identity is the reader's (`from_arg::<T>`), per port-authority.
+    #[test]
+    fn enum_round_trips_through_index() {
+        let a: Arg = FilterMode::Bp.into();
+        assert!(matches!(a, Arg::Enum(_)));
+        assert_eq!(FilterMode::from_arg(&a), Some(FilterMode::Bp));
+
+        // Same erased form, different reader type → that type's variant at the same index.
+        let g: Arg = GateMode::DEFAULT.into();
+        assert_eq!(GateMode::from_arg(&g), Some(GateMode::DEFAULT));
+
+        // A numeric primitive is not an enum; the typed read declines.
+        assert_eq!(FilterMode::from_arg(&Arg::F32(1.0)), None);
+    }
 }

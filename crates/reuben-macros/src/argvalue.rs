@@ -1,15 +1,18 @@
 //! `#[derive(ArgValue)]` — integrate a shared *vocab* type with the central [`Arg`] enum
 //! (ADR-0030).
 //!
-//! A vocab type's Rust name **is** its [`Arg`] variant: `Note` ↔ `Arg::Note`, `SnapTarget` ↔
-//! `Arg::SnapTarget`. The derive generates the glue so a type is defined *once* and reused
-//! everywhere (the divergence ADR-0030 fixes: per-operator enum duplication):
+//! The derive generates the glue so a type is defined *once* and reused everywhere (the
+//! divergence ADR-0030 fixes: per-operator enum duplication):
 //!
-//! - **structs** (`Note`, `Harmony`) get `From<T> for Arg` + `TryFrom<&Arg> for T`.
-//! - **unit enums** (`SnapTarget`, `GateMode`) get the above *plus* the Enum-over-OSC table —
-//!   `VARIANTS` / `DEFAULT_INDEX` / `from_index` / `to_index` / `from_symbol` / `resolve_arg`
-//!   and an `enum_meta()` that builds the descriptor's [`EnumMeta`] from the same tokens, so
-//!   the type and its descriptor metadata cannot drift.
+//! - **structs** (`Note`, `Harmony`) get a named [`Arg`] variant (`Note` ↔ `Arg::Note`): `From<T>
+//!   for Arg` + `TryFrom<&Arg> for T`, since a struct carries a real per-type shape.
+//! - **unit enums** (`SnapTarget`, `GateMode`) type-erase to the **single** `Arg::Enum(index)`
+//!   variant — `From`/`TryFrom`/`FromArg` pack and unpack the bare index — *plus* the
+//!   Enum-over-OSC table (`VARIANTS` / `DEFAULT_INDEX` / `from_index` / `to_index` / `from_symbol`
+//!   / `resolve_arg`), an `enum_meta()` that builds the descriptor's [`EnumMeta`] from the same
+//!   tokens (so the type and its metadata cannot drift), and a held-Value `IoInput` impl so the
+//!   enum self-registers its `io.input::<E>()` read. Type identity lives in the port, never the
+//!   value — so adding an enum names no central engine site.
 //!
 //! The OSC flat-multi-arg conversion for structs (`Note ↔ /note pitch vel`) is generated at
 //! the boundary in phase 6, not here.
@@ -36,8 +39,8 @@ pub fn expand(input: TokenStream) -> TokenStream {
     }
 }
 
-/// `From<T> for Arg` + `TryFrom<&Arg> for T` — the integration every vocab type gets. The
-/// type's name is the `Arg` variant name.
+/// `From<T> for Arg` + `TryFrom<&Arg> for T` for a **struct** vocab type, whose Rust name is its
+/// own `Arg` variant. (Enums type-erase to `Arg::Enum` instead — see [`expand_enum`].)
 fn arg_conversions(name: &syn::Ident) -> TokenStream {
     quote! {
         impl ::core::convert::From<#name> for ::reuben_core::message::Arg {
@@ -113,7 +116,45 @@ fn expand_enum(ast: &DeriveInput, data: &syn::DataEnum) -> TokenStream {
         quote! { #s => ::core::option::Option::Some(Self::#v) }
     });
 
-    let conversions = arg_conversions(name);
+    // Enum integration with the central `Arg`: a vocab enum type-erases to the single
+    // `Arg::Enum(index)` variant (ADR-0030), unlike a struct which gets its own named variant.
+    // `From` packs the index; `TryFrom`/`FromArg` unpack it back through `from_index`. Type
+    // identity is the port's, not the value's — so the engine never names this concrete enum.
+    let conversions = quote! {
+        impl ::core::convert::From<#name> for ::reuben_core::message::Arg {
+            fn from(v: #name) -> Self {
+                ::reuben_core::message::Arg::Enum(v.to_index() as u32)
+            }
+        }
+
+        impl ::core::convert::TryFrom<&::reuben_core::message::Arg> for #name {
+            type Error = ();
+            fn try_from(arg: &::reuben_core::message::Arg) -> ::core::result::Result<Self, ()> {
+                match arg {
+                    ::reuben_core::message::Arg::Enum(i) => {
+                        Self::from_index(*i as usize).ok_or(())
+                    }
+                    _ => ::core::result::Result::Err(()),
+                }
+            }
+        }
+
+        impl<'a> ::reuben_core::message::FromArg<'a> for #name {
+            fn from_arg(arg: &'a ::reuben_core::message::Arg) -> ::core::option::Option<Self> {
+                <Self as ::core::convert::TryFrom<&::reuben_core::message::Arg>>::try_from(arg).ok()
+            }
+        }
+
+        // The held-Value [`IoInput`] arm, derive-generated so every enum self-registers its
+        // `io.input::<E>(port)` read without an entry in the engine's central `impl_input_held!`
+        // list (the former bleed site). Routes through the one private-`latched` accessor.
+        impl<'a> ::reuben_core::operator::IoInput<'a> for #name {
+            type Out = ::core::option::Option<#name>;
+            fn read(io: &::reuben_core::operator::Io<'a>, port: usize) -> ::core::option::Option<#name> {
+                io.input_held(port)
+            }
+        }
+    };
 
     quote! {
         impl #name {
@@ -156,13 +197,14 @@ fn expand_enum(ast: &DeriveInput, data: &syn::DataEnum) -> TokenStream {
                 }
             }
 
-            /// Resolve an [`Arg`](::reuben_core::message::Arg) to this enum (ADR-0030 binding):
-            /// the concrete variant first, then a **symbol** (`Str`), then an **index** fallback
-            /// (`I32`/`F32`, in range). Allocation-free — the boundary/latch path.
+            /// Resolve an [`Arg`](::reuben_core::message::Arg) to this enum (ADR-0030 binding): the
+            /// type-erased [`Enum`](::reuben_core::message::Arg::Enum) index (the internal form)
+            /// first, then a **symbol** (`Str`), then an **index** fallback (`I32`/`F32`, in range —
+            /// the raw inbound-boundary forms). Allocation-free — the boundary/latch path.
             pub fn resolve_arg(arg: &::reuben_core::message::Arg) -> ::core::option::Option<Self> {
                 use ::reuben_core::message::Arg;
                 match arg {
-                    Arg::#name(v) => ::core::option::Option::Some(*v),
+                    Arg::Enum(i) => Self::from_index(*i as usize),
                     Arg::Str(s) => Self::from_symbol(s.as_str()),
                     Arg::I32(i) => usize::try_from(*i).ok().and_then(Self::from_index),
                     Arg::F32(f) => usize::try_from(f.round() as i64).ok().and_then(Self::from_index),
@@ -209,7 +251,19 @@ mod tests {
         assert!(out.contains("fn from_symbol"), "{out}");
         assert!(out.contains("fn resolve_arg"), "{out}");
         assert!(out.contains("fn enum_meta"), "{out}");
-        assert!(out.contains("Arg :: SnapTarget (v)"), "{out}");
+        // The enum type-erases to `Arg::Enum(index)`, not a per-type `Arg::SnapTarget` variant.
+        assert!(!out.contains("Arg :: SnapTarget"), "{out}");
+        assert!(
+            out.contains("Arg :: Enum (v . to_index () as u32)"),
+            "{out}"
+        );
+        assert!(out.contains("Arg :: Enum (i) =>"), "{out}");
+        // And self-registers its held-Value read so no central `impl_input_held!` entry is needed.
+        assert!(
+            out.contains("impl < 'a > :: reuben_core :: operator :: IoInput"),
+            "{out}"
+        );
+        assert!(out.contains("io . input_held (port)"), "{out}");
     }
 
     #[test]

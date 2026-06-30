@@ -23,7 +23,7 @@ pub use harmony::{Chord, ChordTag, Harmony, ScaleField, SnapDir, SnapPolicy, Sna
 pub use pitch::{Note, Pitch};
 
 /// How a sequencer step drives its output (the sequencer's `gate_mode`). A shared *vocab* enum
-/// (`Arg::GateMode`): emit a pitched **degree** per step, or a bare **gate** trigger.
+/// (`Arg::Enum`): emit a pitched **degree** per step, or a bare **gate** trigger.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, reuben_macros::ArgValue)]
 pub enum GateMode {
     /// Emit a degree (pitched) per active step.
@@ -34,7 +34,7 @@ pub enum GateMode {
 }
 
 /// The state-variable filter's output tap (the filter's `mode`, ADR-0022). A shared *vocab* enum
-/// (`Arg::FilterMode`): the TPT SVF computes all three responses from one integrator state, so the
+/// (`Arg::Enum`): the TPT SVF computes all three responses from one integrator state, so the
 /// mode selects which is read. `Lp` is the default (bit-identical to the original lowpass).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, reuben_macros::ArgValue)]
 pub enum FilterMode {
@@ -48,7 +48,7 @@ pub enum FilterMode {
 }
 
 /// An oscillator's waveform (the oscillator's `waveform`). A shared *vocab* enum
-/// (`Arg::Waveform`): the band-limited shape generated each sample. `Sine` is the default.
+/// (`Arg::Enum`): the band-limited shape generated each sample. `Sine` is the default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, reuben_macros::ArgValue)]
 pub enum Waveform {
     /// Pure sine.
@@ -59,7 +59,7 @@ pub enum Waveform {
 }
 
 /// A granulator grain's amplitude envelope (the granulator's `window`). A shared *vocab* enum
-/// (`Arg::GrainWindow`): the shape multiplied over each grain across its lifetime, evaluated at the
+/// (`Arg::Enum`): the shape multiplied over each grain across its lifetime, evaluated at the
 /// grain's normalized phase in [0, 1). `Hann` (raised cosine, click-free) is the default.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, reuben_macros::ArgValue)]
 pub enum GrainWindow {
@@ -75,7 +75,7 @@ pub enum GrainWindow {
 }
 
 /// How `m2s` fills the dense per-sample gaps between sparse messages (its `mode`, ADR-0017). A
-/// shared *vocab* enum (`Arg::M2sMode`). Plain step (zero-order hold) is no longer a mode — that
+/// shared *vocab* enum (`Arg::Enum`). Plain step (zero-order hold) is no longer a mode — that
 /// is the wire's automatic materialize (ADR-0030); `m2s` exists only for the gap-filling policies:
 /// `Smooth` (one-pole), `Slew` (rate-limited), `Glide` (fixed-time ramp). `Smooth` is the default
 /// (the natural knob feel).
@@ -90,7 +90,7 @@ pub enum M2sMode {
     Glide,
 }
 
-/// `map`'s response curve across its range (its `curve`). A shared *vocab* enum (`Arg::MapCurve`):
+/// `map`'s response curve across its range (its `curve`). A shared *vocab* enum (`Arg::Enum`):
 /// `Linear` (affine) or `Exponential` (geometric, when both output bounds are positive).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, reuben_macros::ArgValue)]
 pub enum MapCurve {

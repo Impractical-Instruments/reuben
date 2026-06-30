@@ -9,6 +9,40 @@ Accepted (2026-06-25). Supersedes [ADR-0028](0028-one-input-shape.md) (shapes / 
 [ADR-0014](0014-internal-message-graph.md) (routing unifies), and
 [ADR-0015](0015-latched-context-read.md) (the Harmony lane folds into the latch).
 
+## Amendment (2026-06-30): vocab enums type-erase to `Arg::Enum(index)`
+
+The original decision (point 2) gave **every** shared vocab type its own named `Arg` variant —
+`Arg::FilterMode`, `Arg::Waveform`, `Arg::GateMode`, … one per enum. That re-introduced, in
+miniature, the very coupling this ADR set out to remove: adding a vocab enum meant editing three
+central engine sites — the `Arg` enum (`message.rs`), the outbound `osc_out_args` match
+(`boundary.rs`), and the `impl_input_held!` list (`operator.rs`) — none of which care *which*
+enum it is. The closed `Arg` named concrete vocab the engine never inspects by name.
+
+**Resolution.** Vocab **enums** collapse to a single `Arg::Enum(u32)` variant carrying the bare
+variant **index**. Type identity moves out of the value and into the **port descriptor**'s
+[`EnumMeta`] — which is already the inbound authority (the port's declared type drives
+`osc_in_arg`, per the Boundary section), so the value no longer needs to carry type redundantly.
+This is the same port-authority the original ADR applied to the inbound side, now applied to
+storage. Adding a vocab enum is purely local again: declare it in `vocab`, `#[derive(ArgValue)]`,
+done — the derive generates the `From`/`TryFrom` index pack/unpack, the `EnumMeta`, and the
+held-Value `IoInput` impl, so the enum self-registers and **no** central engine file is touched.
+
+Unchanged: the **operator API still reads real Rust enums** — `io.input::<FilterMode>(port)`
+returns a `FilterMode`, decoded via `FilterMode::from_index`. The erasure is a storage detail
+below that surface. **Structs** (`Note`, `Harmony`) keep their own named variant: they carry a
+real per-type shape (a `Note` is pitch + velocity, not an index), so there is nothing to erase.
+
+Hot path stays `Copy` + allocation-free: a latched read is `Arg::Enum(i)` → `from_index(i)` (no
+`String`, leaner than a symbol compare). The bare index cannot mis-decode because a latch slot
+only ever holds its own port's enum (port-authority) and the operator names the concrete type at
+the read site. No operator declares an enum **output** port, so a bare index never crosses a wire
+ambiguously. **Known gap:** an enum leaving over OSC-out (`osc_out`) has no port context at the
+boundary to recover its symbol, so it currently serializes as its bare index; symbol-on-the-wire
+is deferred until `osc_out` forwards typed args (issue #141). Relatedly, [ADR-0035](0035-constants-are-immutable-ports.md)'s
+save path already resolves enum overrides to symbols via the port's `EnumMeta`, not the value.
+
+[`EnumMeta`]: ../../crates/reuben-core/src/descriptor.rs
+
 ## Context
 
 [ADR-0007](0007-osc-only-core.md) set the north star: *the core speaks only OSC-shaped
@@ -47,11 +81,11 @@ spec without its binary representation.**
    genuine multi-event grouping (chords), adopted later — not for single-message timing.
 
 2. **`Arg` is one closed, central enum**: OSC primitives (`F32`/`I32`/`Str`), shared *vocab*
-   concrete types (`Note`, `Harmony`, `FilterMode`, `Waveform`, …), and the optimized dense
-   payload (`Buffer`). The concrete types are **shared domain vocabulary**, defined once and
-   reused everywhere — which is what lets a *closed* `Arg` enumerate them (a `FilterMode`
-   duplicated per-operator would be the code smell). Enums read as real Rust enums in operator
-   code (`FilterMode::HighPass`), not bare indices.
+   types (`Note`, `Harmony`, and — since the 2026-06-30 amendment — every enum erased to one
+   `Enum(index)` variant), and the optimized dense payload (`Buffer`). The vocab types are
+   **shared domain vocabulary**, defined once and reused everywhere (a `FilterMode` duplicated
+   per-operator would be the code smell). Enums read as real Rust enums in operator code
+   (`FilterMode::HighPass`) even though they **store** as a bare index — see the amendment above.
 
 3. **`Signal` is a `Message` whose `Arg` is a `Buffer`** — shorthand, not a second type.
    `Buffer` is the contiguous-memory payload, represented the most performant way. `Signal<f32>`

@@ -72,21 +72,21 @@ pub fn osc_in_arg(p: &Port, args: &[Arg]) -> Option<Arg> {
 
 /// Expand one internal [`Arg`] into the flat OSC arg list to send out (ADR-0026, ADR-0030),
 /// appending primitive `Arg`s to `out`. The inverse of [`osc_in_arg`], dispatched on the `Arg`
-/// variant (the closed central enum). A primitive forwards verbatim; an enum sends its **symbol**;
-/// a struct vocab type packs via [`OscArg::to_osc`]. [`Harmony`](Arg::Harmony) and
+/// variant (the closed central enum). A primitive forwards verbatim; a struct vocab type packs via
+/// [`OscArg::to_osc`]; a type-erased [`Enum`](Arg::Enum) goes out as its bare index (the boundary
+/// has no port to resolve a symbol — see the arm, TODO #141). [`Harmony`](Arg::Harmony) and
 /// [`Buffer`](Arg::F32Buffer) have no external form and contribute nothing.
 pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) {
     match arg {
         Arg::F32(_) | Arg::I32(_) | Arg::Str(_) => out.push(arg.clone()),
         Arg::Note(n) => n.to_osc(out),
-        Arg::SnapTarget(v) => out.push(Arg::Str(v.symbol().to_string())),
-        Arg::SnapDir(v) => out.push(Arg::Str(v.symbol().to_string())),
-        Arg::GateMode(v) => out.push(Arg::Str(v.symbol().to_string())),
-        Arg::FilterMode(v) => out.push(Arg::Str(v.symbol().to_string())),
-        Arg::Waveform(v) => out.push(Arg::Str(v.symbol().to_string())),
-        Arg::M2sMode(v) => out.push(Arg::Str(v.symbol().to_string())),
-        Arg::MapCurve(v) => out.push(Arg::Str(v.symbol().to_string())),
-        Arg::GrainWindow(v) => out.push(Arg::Str(v.symbol().to_string())),
+        // A type-erased vocab enum (`Arg::Enum`) goes out as its bare **index**: at the boundary
+        // there is no port context to recover the symbol from (type identity lives in the port, not
+        // the value). Today this arm is unreachable — no operator declares an enum output and the
+        // one sink, `osc_out`, forwards only `Note` — so nothing regresses. Symbol-on-the-wire for
+        // outbound enums needs the sink's source-port `enum_meta` resolved at the drain.
+        // TODO(#141): once `osc_out` forwards typed args, resolve the index to the enum's symbol.
+        Arg::Enum(i) => out.push(Arg::I32(*i as i32)),
         // No external OSC form.
         Arg::Harmony(_) | Arg::F32Buffer(_) => {}
     }
@@ -147,14 +147,15 @@ mod tests {
     fn enum_port_resolves_symbol_and_index() {
         let p = Port::enumerated(SnapDir::enum_meta("dir"));
         let up = SnapDir::from_symbol("Up").unwrap();
+        // Both inbound forms normalize to the type-erased `Arg::Enum(index)` the port declares.
         assert_eq!(
             osc_in_arg(&p, &[Arg::Str("Up".into())]),
-            Some(Arg::SnapDir(up))
+            Some(Arg::from(up))
         );
         // Index fallback.
         assert_eq!(
             osc_in_arg(&p, &[Arg::I32(up.to_index() as i32)]),
-            Some(Arg::SnapDir(up))
+            Some(Arg::from(up))
         );
     }
 
@@ -187,14 +188,14 @@ mod tests {
         assert_eq!(osc_in_arg(&p, &flat), Some(Arg::Note(n)));
     }
 
+    /// A type-erased outbound enum serializes as its bare index today (TODO #141: symbol). The
+    /// boundary has no port context, so it cannot recover the variant symbol from a bare `Arg::Enum`.
     #[test]
-    fn enum_out_sends_symbol() {
+    fn enum_out_sends_index() {
+        let up = SnapDir::from_symbol("Up").unwrap();
         let mut flat = Vec::new();
-        osc_out_args(
-            &Arg::SnapDir(SnapDir::from_symbol("Up").unwrap()),
-            &mut flat,
-        );
-        assert_eq!(flat, vec![Arg::Str("Up".into())]);
+        osc_out_args(&Arg::from(up), &mut flat);
+        assert_eq!(flat, vec![Arg::I32(up.to_index() as i32)]);
     }
 
     #[test]
