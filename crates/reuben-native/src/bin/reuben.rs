@@ -155,28 +155,30 @@ fn cmd_describe(op: Option<&str>, json: bool) -> ExitCode {
         println!("{}", o.type_name);
         let ports = |dir: &str, ps: &[reuben_native::cli::PortInfo]| {
             for p in ps {
-                println!("  {dir} {} : {}", p.name, p.kind);
+                let mut s = format!("  {dir} {} : {}", p.name, p.kind);
+                if p.constant {
+                    s.push_str(" (constant)");
+                }
+                if let Some(d) = &p.default {
+                    s.push_str(&format!(" = {d}"));
+                }
+                if !p.unit.is_empty() {
+                    s.push_str(&format!(" {}", p.unit));
+                }
+                if let (Some(min), Some(max)) = (p.min, p.max) {
+                    s.push_str(&format!(" [{min}..{max}]"));
+                }
+                if let Some(c) = &p.curve {
+                    s.push_str(&format!(" ({c})"));
+                }
+                if !p.variants.is_empty() {
+                    s.push_str(&format!(" {{{}}}", p.variants.join(", ")));
+                }
+                println!("{s}");
             }
         };
         ports("in ", &o.inputs);
         ports("out", &o.outputs);
-        for p in &o.params {
-            let unit = if p.unit.is_empty() {
-                String::new()
-            } else {
-                format!(" {}", p.unit)
-            };
-            println!(
-                "  param {} = {}{} [{}..{}] ({})",
-                p.name, p.default, unit, p.min, p.max, p.curve
-            );
-        }
-        for c in &o.constants {
-            println!(
-                "  constant {} = {} [{}..{}]",
-                c.name, c.default, c.min, c.max
-            );
-        }
         for r in &o.resources {
             println!("  resource {r}");
         }
