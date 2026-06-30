@@ -10,6 +10,7 @@ use std::collections::BTreeMap;
 use slotmap::{new_key_type, SlotMap};
 
 use crate::descriptor::Descriptor;
+use crate::message::Arg;
 use crate::operator::Operator;
 
 new_key_type! {
@@ -25,16 +26,13 @@ pub struct Node {
     pub descriptor: Descriptor,
     /// Initial param values, in descriptor slot order.
     pub params: Vec<f32>,
-    /// Initial value overrides for **materialized `F32` (`signal`)
-    /// inputs** (ADR-0030), as `(input port, value)` — the unwired-default a `/node/<input> v`
-    /// literal sets, seeding the input's latch at Instantiate. Empty unless an author overrides
-    /// an `F32` input's default. The successor to a legacy "unwired-default param".
-    pub input_overrides: Vec<(usize, f32)>,
-    /// Initial choice overrides for **enum (`vocab`) inputs** (ADR-0030),
-    /// as `(input port, variant index)` — the unwired default a `/node/<input> "Hp"` literal sets,
-    /// seeding the input's enum latch at Instantiate. Empty unless an author overrides an enum's
-    /// default. Sibling of `input_overrides`, for the discrete (non-numeric) settable surface.
-    pub enum_overrides: Vec<(usize, usize)>,
+    /// Author value-overrides for settable inputs (ADR-0035), as `(input port, coerced `Arg`)` — the
+    /// unwired-default a `/node/<input> v` literal sets, seeding the input's latch at Instantiate.
+    /// One generic channel: an `F32` control's clamped value and an enum's concrete variant share it,
+    /// replacing the former type-split `input_overrides` (`f32`) / `enum_overrides` (variant index).
+    /// Sparse — empty unless an author overrides an input's default; the value is
+    /// [`Port::coerce`](crate::descriptor::Port::coerce)-normalized at set time.
+    pub value_overrides: Vec<(usize, Arg)>,
     /// The logical `sample` resource id (ADR-0016) this node referenced in its document, retained so
     /// [`InstrumentDoc::from_graph`](crate::format::InstrumentDoc::from_graph) can round-trip it on
     /// save. `None` unless the node declared a `sample` slot and named an id. The *decoded bytes* are
@@ -108,8 +106,7 @@ impl Graph {
             op,
             descriptor,
             params,
-            input_overrides: Vec::new(),
-            enum_overrides: Vec::new(),
+            value_overrides: Vec::new(),
             sample_id: None,
             voice_id: None,
         })
@@ -125,50 +122,24 @@ impl Graph {
             n.params[i] = n.descriptor.params[i].clamp(value);
             return;
         }
-        if n.descriptor.materialized_input(name).is_some() {
-            self.set_input(node, name, value);
-            return;
-        }
-        // An enum input set as a numeric literal: the value is the variant **index**
-        // fallback (ADR-0030). A string symbol (`"Hp"`) arrives via the loader's typed path; this
-        // f32 surface carries the index. No-op if `name` is not an enum input.
-        self.set_enum(node, name, &(value.round() as i64).to_string());
+        // Not a param: route the numeric literal through the generic value channel. `coerce`
+        // clamps it for an `F32` control, or reads it as the variant index for an enum input.
+        self.set_value(node, name, &Arg::F32(value));
     }
 
-    /// Override a materialized `F32` input's unwired default by name (ADR-0030),
-    /// clamped to its range. No-op if `name` is not such an input. Upserts the `(port, value)`
-    /// override consumed by [`Plan::instantiate`](crate::plan::Plan::instantiate).
-    pub fn set_input(&mut self, node: NodeKey, name: &str, value: f32) {
+    /// Override a settable input's unwired default by name (ADR-0035), coercing the raw author
+    /// literal to the input's latch [`Arg`]: an `F32` control clamps to its range, an enum resolves a
+    /// symbol / index / concrete variant. No-op if `name` is not a settable input or `raw` does not
+    /// resolve (the loader validates names + values up front). Upserts the `(port, Arg)` override
+    /// consumed by [`Plan::instantiate`](crate::plan::Plan::instantiate).
+    pub fn set_value(&mut self, node: NodeKey, name: &str, raw: &Arg) {
         let n = &mut self.nodes[node];
-        let Some((port, v)) = n
-            .descriptor
-            .materialized_input(name)
-            .map(|(p, m)| (p, m.clamp(value)))
-        else {
+        let Some((port, arg)) = n.descriptor.coerce_input(name, raw) else {
             return;
         };
-        match n.input_overrides.iter_mut().find(|(p, _)| *p == port) {
-            Some(slot) => slot.1 = v,
-            None => n.input_overrides.push((port, v)),
-        }
-    }
-
-    /// Override an enum input's unwired default by name (ADR-0030), resolving a wire
-    /// **token** (symbol `"Hp"` or fallback index `"1"`) against the input's variants. No-op if
-    /// `name` is not an enum input or `token` resolves to no variant. Upserts the `(port, index)`
-    /// override consumed by [`Plan::instantiate`](crate::plan::Plan::instantiate).
-    pub fn set_enum(&mut self, node: NodeKey, name: &str, token: &str) {
-        let n = &mut self.nodes[node];
-        let Some((port, idx)) = n
-            .descriptor
-            .enum_input(name)
-            .and_then(|(p, e)| e.resolve(token).map(|i| (p, i)))
-        else {
-            return;
-        };
-        match n.enum_overrides.iter_mut().find(|(p, _)| *p == port) {
-            Some(slot) => slot.1 = idx,
-            None => n.enum_overrides.push((port, idx)),
+        match n.value_overrides.iter_mut().find(|(p, _)| *p == port) {
+            Some(slot) => slot.1 = arg,
+            None => n.value_overrides.push((port, arg)),
         }
     }
 

@@ -61,36 +61,24 @@ pub fn port_kind(p: &Port) -> PortKind {
 /// The seed [`Arg`] for an input port's latch at Instantiate (ADR-0030): an `F32` control's
 /// (override-or-default) value, an enum's (override-or-default) variant, the default `Harmony`,
 /// or a harmless placeholder for ports with no held value (`Note`, `Buffer`).
-fn seed_latch(
-    p: &Port,
-    port: usize,
-    input_overrides: &[(usize, f32)],
-    enum_overrides: &[(usize, usize)],
-) -> Arg {
+fn seed_latch(p: &Port, port: usize, value_overrides: &[(usize, Arg)]) -> Arg {
+    // An author override is already `Port::coerce`-normalized to this port's latch value (an
+    // `F32` control's clamped scalar, an enum's concrete variant) — use it verbatim (ADR-0035).
+    if let Some((_, arg)) = value_overrides.iter().find(|(po, _)| *po == port) {
+        return arg.clone();
+    }
     match &p.ty {
         // F32 (Value-bound scalar control) and an F32Buffer *carrying meta* (ADR-0031 decision (a):
-        // a signal port with a scalar default, e.g. `oscillator.freq`) both seed from their
-        // override-or-default. A bare F32Buffer (no meta — audio) has no held value and falls to the
-        // placeholder arm below.
+        // a signal port with a scalar default, e.g. `oscillator.freq`) both seed from their default.
+        // A bare F32Buffer (no meta — audio) has no held value and falls to the placeholder arm below.
         PortType::F32 | PortType::F32Buffer if p.meta.is_some() => {
-            let v = input_overrides
-                .iter()
-                .find(|(po, _)| *po == port)
-                .map(|(_, v)| *v)
-                .unwrap_or_else(|| p.meta.as_ref().map(|m| m.default).unwrap_or(0.0));
-            Arg::F32(v)
+            Arg::F32(p.meta.as_ref().map(|m| m.default).unwrap_or(0.0))
         }
         PortType::Vocab {
             enum_meta: Some(e), ..
-        } => {
-            let idx = enum_overrides
-                .iter()
-                .find(|(po, _)| *po == port)
-                .map(|(_, i)| *i)
-                .unwrap_or(e.default);
-            e.resolve_arg(&Arg::I32(idx as i32))
-                .unwrap_or(Arg::I32(idx as i32))
-        }
+        } => e
+            .resolve_arg(&Arg::I32(e.default as i32))
+            .unwrap_or(Arg::I32(e.default as i32)),
         PortType::Vocab { name, .. } if *name == "Harmony" => Arg::Harmony(Harmony::default()),
         PortType::I32 => Arg::I32(0),
         PortType::Str => Arg::Str(String::new()),
@@ -320,8 +308,7 @@ impl Plan {
         let mut scratch_buffers: Vec<usize> = Vec::new();
         for key in &order {
             let descriptor = &graph.nodes[*key].descriptor;
-            let overrides = &graph.nodes[*key].input_overrides;
-            let enum_overrides = &graph.nodes[*key].enum_overrides;
+            let overrides = &graph.nodes[*key].value_overrides;
             let n_inputs = descriptor.inputs.len();
 
             // The unified held latch per input port (ADR-0030): seeded from each input's default or
@@ -330,7 +317,7 @@ impl Plan {
                 .inputs
                 .iter()
                 .enumerate()
-                .map(|(port, p)| seed_latch(p, port, overrides, enum_overrides))
+                .map(|(port, p)| seed_latch(p, port, overrides))
                 .collect();
 
             // Input buffer wiring (ADR-0030): a Buffer input wired to a Buffer source shares its
