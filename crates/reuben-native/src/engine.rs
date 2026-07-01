@@ -135,7 +135,6 @@ mod tests {
     use crate::osc::OscIn;
     use crate::rigs::default_rig;
     use reuben_core::message::Arg;
-    use reuben_core::vocab::pitch::{Note, Pitch};
     use reuben_core::AudioConfig;
 
     fn engine_with_note() -> Engine {
@@ -211,12 +210,13 @@ mod tests {
     #[test]
     fn outbound_messages_drain_after_fill() {
         // A value addressed to the sink's node routes in and comes back out on the outbound
-        // route, stamped with the node address (ADR-0026).
+        // route, stamped with the node address (ADR-0026). The sink's input is the type-agnostic
+        // pass-through (issue #141): a single primitive atom crosses the inbound boundary
+        // verbatim and echoes out unchanged — the OSC loopback path.
         let mut e = Engine::new(osc_out_plan());
-        // Inbound note to the sink's `in` port; the sink re-emits it onto the outbound route.
         e.queue_osc(&OscIn {
             address: "/fb/in".into(),
-            args: vec![Arg::F32(69.0), Arg::F32(1.0)],
+            args: vec![Arg::F32(0.5)],
         });
         let mut out = vec![0.0f32; e.block_size() * e.channels()];
         e.fill(&mut out);
@@ -224,10 +224,7 @@ mod tests {
         let drained: Vec<_> = e.drain_outbound().collect();
         assert_eq!(drained.len(), 1);
         assert_eq!(drained[0].address, "/fb");
-        assert_eq!(
-            drained[0].arg,
-            Arg::Note(Note::new(Pitch::Absolute(69.0), 1.0))
-        );
+        assert_eq!(drained[0].arg, Arg::F32(0.5));
         // Drained once: the next fill (no input) yields nothing.
         e.fill(&mut out);
         assert_eq!(e.drain_outbound().count(), 0);

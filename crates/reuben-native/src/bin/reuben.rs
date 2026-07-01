@@ -263,6 +263,11 @@ fn play(path: Option<PathBuf>, osc_out_target: Option<String>) {
             for m in out_rx {
                 flat.clear();
                 boundary::osc_out_args(&m.arg, &mut flat);
+                // A no-OSC-form Arg expands to nothing; legality checks keep such wires out of a
+                // plan, but never let a zero-arg datagram hit the wire regardless.
+                if flat.is_empty() {
+                    continue;
+                }
                 match osc::encode(&m.address, &flat) {
                     Ok(bytes) => {
                         if log_osc {

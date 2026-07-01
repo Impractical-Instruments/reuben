@@ -72,6 +72,8 @@ fn port_kind(ty: &PortType) -> &'static str {
         PortType::Vocab { .. } => "vocab",
         PortType::I32 { .. } => "int",
         PortType::Str => "string",
+        // The type-agnostic pass-through (issue #141) — any Arg, the `osc_out` sink's input.
+        PortType::Arg => "arg",
     }
 }
 

@@ -270,8 +270,8 @@ fn render_contract_call(spec: &OperatorSpec) -> String {
 }
 
 /// The macro's port-list body. Each port renders by its [`Arg`] type (ADR-0030): `f32_buffer`,
-/// `f32 { .. }`, `enum(VocabType)`, `note`, or `harmony`. Mirrors the `operator_contract!`
-/// grammar exactly.
+/// `f32 { .. }`, `enum(VocabType)`, `note`, `harmony`, or `arg`. Mirrors the
+/// `operator_contract!` grammar exactly.
 fn render_macro_ports(ports: &[PortSpec]) -> String {
     ports
         .iter()
@@ -312,7 +312,7 @@ fn render_macro_port(p: &PortSpec) -> String {
             p.name,
             p.vocab.as_deref().unwrap_or_default()
         ),
-        // `f32_buffer` / `note` / `harmony` need no extra syntax.
+        // `f32_buffer` / `note` / `harmony` / `arg` need no extra syntax.
         ty => format!("{}: {}", p.name, ty),
     }
 }

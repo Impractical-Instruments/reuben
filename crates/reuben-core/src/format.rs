@@ -788,12 +788,19 @@ impl InstrumentDoc {
                 // Equal types wire directly. `F32` and `Buffer` interconvert (ADR-0030): an `F32`
                 // source into a `Buffer` port ZOH-materializes, and a `Buffer` source into an `F32`
                 // control port is shared and read per-sample via `io.input::<&[f32]>` (the
-                // `voicer.freq -> osc.freq` CV path). Anything else is illegal.
+                // `voicer.freq -> osc.freq` CV path). A type-agnostic `Arg` pass-through input
+                // (issue #141) is **capability-keyed**: it accepts any source whose type has an
+                // external OSC form (`boundary::has_osc_form`, the single statement shared with
+                // the plan check) — the primitives, a vocab enum, `Note`'s flat form. A `Buffer`
+                // never emits Messages (audio stays off the wire, ADR-0026/0030) and `Harmony`
+                // has no OSC form (converters: issue #146) — a wire that could never send
+                // anything is rejected here, not left silently dead. Anything else is illegal.
                 let compatible = from_ty == to_ty
                     || matches!(
                         (from_ty, to_ty),
                         (PortType::F32, PortType::F32Buffer) | (PortType::F32Buffer, PortType::F32)
-                    );
+                    )
+                    || (matches!(to_ty, PortType::Arg) && crate::boundary::has_osc_form(from_ty));
                 if !compatible {
                     return Err(LoadError::TypeMismatch {
                         from: format!("{}.{}", src_addr, src_desc.outputs[src_port].name),
@@ -1149,6 +1156,47 @@ mod tests {
                      {"type":"voicer","address":"/v","inputs":{"notes":{"from":"/osc.audio"}}}]}"#;
         assert!(matches!(
             load(json, &reg()),
+            Err(LoadError::TypeMismatch { .. })
+        ));
+    }
+
+    /// The type-agnostic `Arg` pass-through (issue #141): `osc_out.in` accepts any Message-domain
+    /// source — a Value `f32` (a Good Button `map` echo) and a `Note` stream both wire in — but a
+    /// `Buffer` (audio) source is still a TypeMismatch (audio never crosses the boundary).
+    #[test]
+    fn arg_passthrough_accepts_message_domain_sources_but_not_audio() {
+        // Value f32 source (map_f32_value.out) → osc_out.in: legal.
+        let value_src = r#"{"instrument":"t",
+            "nodes":[{"type":"map_f32_value","address":"/map"},
+                     {"type":"osc_out","address":"/fb","inputs":{"in":{"from":"/map.out"}}}]}"#;
+        assert!(load(value_src, &reg()).is_ok());
+
+        // Note event source (sequencer.degrees) → osc_out.in: legal.
+        let note_src = r#"{"instrument":"t",
+            "nodes":[{"type":"sequencer","address":"/seq"},
+                     {"type":"osc_out","address":"/fb","inputs":{"in":{"from":"/seq.degrees"}}}]}"#;
+        assert!(load(note_src, &reg()).is_ok());
+
+        // Buffer (audio) source → osc_out.in: rejected.
+        let audio_src = r#"{"instrument":"t",
+            "nodes":[{"type":"oscillator","address":"/osc"},
+                     {"type":"osc_out","address":"/fb","inputs":{"in":{"from":"/osc.audio"}}}]}"#;
+        assert!(matches!(
+            load(audio_src, &reg()),
+            Err(LoadError::TypeMismatch { .. })
+        ));
+    }
+
+    /// Legality into the pass-through is capability-keyed (`boundary::has_osc_form`): `Harmony`
+    /// has no external OSC form (the boundary opt-out — converters are issue #146), so the wire
+    /// could never send anything and is rejected at load, not left silently dead.
+    #[test]
+    fn arg_passthrough_rejects_a_source_with_no_osc_form() {
+        let harmony_src = r#"{"instrument":"t",
+            "nodes":[{"type":"harmony","address":"/h"},
+                     {"type":"osc_out","address":"/fb","inputs":{"in":{"from":"/h.harmony"}}}]}"#;
+        assert!(matches!(
+            load(harmony_src, &reg()),
             Err(LoadError::TypeMismatch { .. })
         ));
     }

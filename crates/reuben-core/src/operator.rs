@@ -236,6 +236,22 @@ impl<'a> IoOutput<'a> for crate::vocab::pitch::Note {
     }
 }
 
+impl<'a> IoOutput<'a> for Arg {
+    // A raw, type-erased Event write (issue #141): re-emit any `Arg` verbatim, append-only —
+    // the pass-through half of `io.input::<&Arg>`, used by the `osc_out` boundary sink.
+    type Out<'io>
+        = EventWriter<'io>
+    where
+        'a: 'io;
+    fn write<'io>(io: &'io mut Io<'a>, port: usize) -> EventWriter<'io> {
+        EventWriter {
+            sink: io.emit.as_deref_mut(),
+            port,
+            frame_offset: io.frame_offset,
+        }
+    }
+}
+
 /// A handle for **sparse Value writes** on one output port, returned by `io.output::<f32>(port)`
 /// (ADR-0031). Lowers to today's `Emit → Event → latch`. [`set`](MsgWriter::set) is **deduped** (a
 /// no-op change emits nothing, so the wire stays genuinely sparse), **last-write-wins per frame**,
@@ -362,6 +378,21 @@ impl<'a, T: FromArg<'a>> Iterator for EventStream<'a, T> {
 
 impl<'a> IoInput<'a> for crate::vocab::pitch::Note {
     type Out = EventStream<'a, crate::vocab::pitch::Note>;
+    fn read(io: &Io<'a>, port: usize) -> Self::Out {
+        let events: &'a [Event<'a>] = io.streams.get(port).copied().unwrap_or(&[]);
+        EventStream {
+            events: events.iter(),
+            _marker: std::marker::PhantomData,
+        }
+    }
+}
+
+/// The raw-Event arm of [`IoInput`], returned by `io.input::<&Arg>(port)`: the port's sparse
+/// Events with their payloads **undecoded** — the type-agnostic read behind a pass-through
+/// [`Arg`](crate::descriptor::PortType::Arg) port (issue #141). `&Arg`'s [`FromArg`] is the
+/// identity, so every routed event survives regardless of its Arg family.
+impl<'a> IoInput<'a> for &'a Arg {
+    type Out = EventStream<'a, &'a Arg>;
     fn read(io: &Io<'a>, port: usize) -> Self::Out {
         let events: &'a [Event<'a>] = io.streams.get(port).copied().unwrap_or(&[]);
         EventStream {

@@ -28,6 +28,8 @@ fn kind(ty: &PortType) -> &'static str {
         PortType::Vocab {
             enum_meta: Some(_), ..
         } => "enum",
+        // The type-agnostic pass-through (issue #141) — the `osc_out` sink's input.
+        PortType::Arg => "arg",
         // A bare F32/I32/Str with no `meta` falls back to the f32_buffer word.
         _ => "f32_buffer",
     }

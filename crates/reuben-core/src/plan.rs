@@ -54,6 +54,9 @@ pub fn port_kind(p: &Port) -> PortKind {
     match &p.ty {
         PortType::F32Buffer => PortKind::Signal,
         PortType::Vocab { is_event: true, .. } => PortKind::Event,
+        // A type-agnostic pass-through (issue #141) is an Event stream: routing then delivers the
+        // raw `Arg` unlatched and uncoerced, so the sink can re-emit it verbatim.
+        PortType::Arg => PortKind::Event,
         _ => PortKind::Value,
     }
 }
@@ -502,6 +505,9 @@ impl Plan {
 /// like→like (`Signal→Signal`, `Value→Value`, `Event→Event`) and the one implicit coercion
 /// `Value→Signal` (materialized downstream). Everything else is a hard error: `Signal→Value` needs
 /// an explicit sig→val converter, and any `Event` mismatch needs an explicit latch / change-detect.
+/// One destination-side exception: a type-agnostic [`Arg`](PortType::Arg) pass-through input
+/// (issue #141) accepts any Event *or* Value source **whose type has an external OSC form**
+/// ([`has_osc_form`](crate::boundary::has_osc_form)); a Signal or no-form source is rejected.
 fn check_wire_forms(graph: &Graph) -> Result<(), PlanError> {
     use PortKind::{Event, Signal, Value};
     for c in &graph.connections {
@@ -514,6 +520,35 @@ fn check_wire_forms(graph: &Graph) -> Result<(), PlanError> {
             continue;
         };
         let reason = match (port_kind(src), port_kind(dst)) {
+            // A type-agnostic pass-through input (issue #141) spans the Event/Value split:
+            // any Message-domain source whose type has an external OSC form wires in, both
+            // delivered as raw Events (capability-keyed via `boundary::has_osc_form`, the
+            // single statement shared with the load-time check). A no-form type (`Harmony`)
+            // would make a wire that can never send anything — hard error, same philosophy
+            // as the Signal arm below.
+            (Event | Value, Event) if matches!(dst.ty, PortType::Arg) => {
+                if crate::boundary::has_osc_form(&src.ty) {
+                    continue;
+                }
+                let ty = match &src.ty {
+                    PortType::Vocab { name, .. } => name,
+                    _ => "the source type",
+                };
+                format!(
+                    "{ty}→Arg: {ty} has no external OSC form (the boundary opt-out, \
+                     ADR-0030), so a pass-through wire could never send anything; \
+                     boundary converters are tracked in issue #146"
+                )
+            }
+            // A Signal source never emits Messages (its data lives in arena buffers), so
+            // wiring one into the pass-through would silently send nothing — and audio stays
+            // off the wire by construction (ADR-0026/0030): hard error.
+            (Signal, Event) if matches!(dst.ty, PortType::Arg) => {
+                "Signal→Arg: a pass-through input takes Message-domain sources only; \
+                    audio never crosses the boundary (a live Signal needs the deferred \
+                    Signal→Message sampler, ADR-0017)"
+                    .to_string()
+            }
             // like→like, and the one implicit coercion Value→Signal (materialized at the sink).
             (Signal, Signal) | (Value, Value) | (Event, Event) | (Value, Signal) => continue,
             // An enum (Value-only) sink has no numeric converter — say so, rather than dangle the

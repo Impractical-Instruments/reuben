@@ -11,8 +11,8 @@
 //! A port carries an **[`Arg`](reuben_core::message::Arg) type** (ADR-0030, ADR-0035), named by
 //! [`PortSpec::ty`]: `f32_buffer` (a dense per-sample signal), `f32` (a materialized scalar control
 //! with a `{ .. }` meta block), `i32` (a bounded integer control / constant), `enum` (a held vocab
-//! enum, naming its shared `vocab` type), `note`, or `harmony`. The retired `Shape`/legacy-`kind`
-//! two-surface world is gone.
+//! enum, naming its shared `vocab` type), `note`, `harmony`, or `arg` (the type-agnostic
+//! pass-through, issue #141). The retired `Shape`/legacy-`kind` two-surface world is gone.
 
 use serde::Deserialize;
 
@@ -52,7 +52,7 @@ pub struct I32Meta {
 pub struct PortSpec {
     pub name: String,
     /// The port's [`Arg`](reuben_core::message::Arg) type: `f32_buffer` | `f32` | `enum` | `note` |
-    /// `harmony`.
+    /// `harmony` | `arg`.
     pub ty: String,
     /// `Some` for a `f32` port — its materialized default/range.
     #[serde(default)]
@@ -91,8 +91,9 @@ pub struct OperatorSpec {
 }
 
 /// The legal port [`Arg`](reuben_core::message::Arg) types (ADR-0030, ADR-0035). Centralised so
-/// both the scaffold and the macro reject the same set.
-pub const PORT_TYPES: [&str; 6] = ["f32_buffer", "f32", "i32", "enum", "note", "harmony"];
+/// both the scaffold and the macro reject the same set. `arg` is the type-agnostic pass-through
+/// (issue #141): the port carries *any* Arg as a raw Event stream — the `osc_out` sink's input.
+pub const PORT_TYPES: [&str; 7] = ["f32_buffer", "f32", "i32", "enum", "note", "harmony", "arg"];
 
 /// Where in the spec a validation error sits, so the proc-macro can attach a source span to the
 /// offending token. The scaffold ignores the locus and just formats the message.
@@ -156,6 +157,21 @@ fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractErr
             format!(
                 "{label} {:?}: type {:?} must be one of {PORT_TYPES:?}",
                 p.name, p.ty
+            ),
+        ));
+    }
+    // `arg` is **input-only** (issue #141): it is legal only where the operator treats the payload
+    // as opaque — a pure carrier's inbound port. An `arg` output would put an untyped source on the
+    // graph, and a typed input downstream of it would need plan-time type flow *through* the
+    // carrier to recover the true source type — machinery no operator has earned. Fail closed here
+    // (the one validator) until an in-graph carrier does.
+    if p.ty == "arg" && label != "input" {
+        return Err(ContractError::new(
+            at,
+            format!(
+                "{label} {:?}: `arg` is input-only (the pass-through carries whatever its wired \
+                 source declares; an `arg` {label} would have no type authority at all)",
+                p.name
             ),
         ));
     }
@@ -479,6 +495,23 @@ mod tests {
             r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"f32","f32":{"min":0,"max":1,"default":5}} ] }"#,
         );
         assert!(oob.message.contains("outside"), "{}", oob.message);
+    }
+
+    #[test]
+    fn arg_is_input_only() {
+        // The type-agnostic pass-through (issue #141) is legal as an input...
+        assert!(validate(&spec(
+            r#"{ "type_name": "osc_out", "inputs": [ {"name":"in","ty":"arg"} ] }"#
+        ))
+        .is_ok());
+        // ...but an `arg` output or constant fails closed: an untyped source on the graph would
+        // need plan-time type flow through the carrier.
+        let out = err(r#"{ "type_name": "x", "outputs": [ {"name":"tap","ty":"arg"} ] }"#);
+        assert_eq!(out.locus, Locus::Output(0));
+        assert!(out.message.contains("input-only"), "{}", out.message);
+        let konst = err(r#"{ "type_name": "x", "constants": [ {"name":"c","ty":"arg"} ] }"#);
+        assert_eq!(konst.locus, Locus::Constant(0));
+        assert!(konst.message.contains("input-only"), "{}", konst.message);
     }
 
     #[test]

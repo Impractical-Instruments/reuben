@@ -177,6 +177,15 @@ impl<'a> FromArg<'a> for &'a [f32] {
     }
 }
 
+/// The identity decode: `&Arg` requests the raw, type-erased payload itself. The read behind a
+/// type-agnostic [`Arg`](crate::descriptor::PortType::Arg) pass-through port (issue #141) — the
+/// `osc_out` sink forwards whatever arrives without committing to a vocab type.
+impl<'a> FromArg<'a> for &'a Arg {
+    fn from_arg(arg: &'a Arg) -> Option<Self> {
+        Some(arg)
+    }
+}
+
 /// Pack/unpack a vocab type across the **flat multi-arg OSC form** at the boundary (ADR-0030).
 ///
 /// Internally a Message carries exactly one [`Arg`], but external OSC is a flat list of

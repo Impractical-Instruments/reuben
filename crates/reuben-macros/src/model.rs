@@ -34,7 +34,7 @@ pub struct PortModel {
     pub ordinal: usize,
     pub name: String,
     /// The port [`Arg`](reuben_core::message::Arg) type: `f32_buffer` | `f32` | `i32` | `enum` |
-    /// `note` | `harmony`.
+    /// `note` | `harmony` | `arg`.
     pub ty: String,
     pub f32: Option<F32Model>,
     /// The resolved `i32 { .. }` meta, for `i32` ports / constants (ADR-0035).
