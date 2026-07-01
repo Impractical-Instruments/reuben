@@ -56,7 +56,8 @@ pub struct Node {
     /// the Voicer's runtime-hosted voice graphs (which live in the operator), this is **build-time
     /// data on the parent node**, destined for the plan-build inline pass (P4) that dissolves the
     /// `subpatch` into this graph. `None` for every non-`subpatch` node, and for a `subpatch` whose
-    /// reference is missing (a warning, ADR-0016). Boxed to keep the common `Node` small.
+    /// reference is missing or fails to resolve (a warning, ADR-0016) — `Some` always holds a
+    /// **built** child, never a placeholder. Boxed to keep the common `Node` small.
     pub subpatch: Option<Box<Graph>>,
 }
 

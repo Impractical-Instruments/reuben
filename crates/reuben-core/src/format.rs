@@ -443,7 +443,9 @@ fn load_instrument_guarded(
     // graphs. `resolve_instrument` builds the child through the full load path, so its own resources
     // resolve and its `interface` is ready for the boundary contract. Structural errors in the child
     // are fatal; a missing id or a resolve failure degrades to a warning (ADR-0016), leaving the node
-    // with no sub-graph. Not yet inlined (P4) and not type-checked across the boundary (P5).
+    // with no sub-graph — `subpatch` is only ever Some(a built child), never a phantom empty graph,
+    // so the P4 inline pass can key on it. Not yet inlined (P4) and not type-checked across the
+    // boundary (P5).
     for n in &doc.nodes {
         let Some(id) = &n.patch else { continue };
         let Some(key) = graph.find(&n.address) else {
@@ -454,11 +456,13 @@ fn load_instrument_guarded(
                 node: n.address.clone(),
                 id: id.clone(),
             }),
-            Some(source) => {
-                let loaded = resolve_instrument_guarded(source, registry, resolver, loading)?;
-                warnings.extend(loaded.warnings);
-                graph.nodes[key].subpatch = Some(Box::new(loaded.graph));
-            }
+            Some(source) => match try_resolve_instrument(source, registry, resolver, loading)? {
+                Ok(loaded) => {
+                    warnings.extend(loaded.warnings);
+                    graph.nodes[key].subpatch = Some(Box::new(loaded.graph));
+                }
+                Err(warning) => warnings.push(warning),
+            },
         }
     }
 
@@ -507,16 +511,36 @@ pub fn resolve_instrument(
     resolve_instrument_guarded(source, registry, resolver, &mut Vec::new())
 }
 
-/// [`resolve_instrument`] with the cycle guard: refuse a `source` already on the `loading` stack
-/// (a voice/patch chain re-entering itself), otherwise push it and recurse through
-/// [`load_instrument_guarded`]. Cycles are keyed on the source string — the same identity the
-/// `resources` table resolves by.
+/// [`resolve_instrument`] with the cycle guard, folding an unavailable source into the ADR-0032
+/// degradation the voice pass wants: an empty graph carrying the warning (silence).
 fn resolve_instrument_guarded(
     source: &str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
     loading: &mut Vec<String>,
 ) -> Result<Loaded, LoadError> {
+    match try_resolve_instrument(source, registry, resolver, loading)? {
+        Ok(loaded) => Ok(loaded),
+        Err(warning) => Ok(Loaded {
+            graph: Graph::new(),
+            warnings: vec![warning],
+        }),
+    }
+}
+
+/// The distinguishing core of [`resolve_instrument`]: `Ok(Ok)` is a built child, `Ok(Err)` is an
+/// unavailable source (a `resolve_text` failure, non-fatal per ADR-0016) surfaced as the warning
+/// so each caller picks its own degradation — the voice pass binds silence (empty graphs), the
+/// subpatch pass leaves the node with **no** sub-graph rather than a phantom empty one. Cycles
+/// are refused before resolving: a `source` already on the `loading` stack (a voice/patch chain
+/// re-entering itself) is a fatal [`LoadError::CyclicResource`], keyed on the source string — the
+/// same identity the `resources` table resolves by.
+fn try_resolve_instrument(
+    source: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+    loading: &mut Vec<String>,
+) -> Result<Result<Loaded, LoadWarning>, LoadError> {
     if loading.iter().any(|s| s == source) {
         return Err(LoadError::CyclicResource {
             source: source.to_string(),
@@ -527,16 +551,13 @@ fn resolve_instrument_guarded(
             loading.push(source.to_string());
             let result = load_instrument_guarded(&text, registry, resolver, loading);
             loading.pop();
-            result
+            Ok(Ok(result?))
         }
-        Err(e) => Ok(Loaded {
-            graph: Graph::new(),
-            warnings: vec![LoadWarning::ResolveFailed {
-                id: source.to_string(),
-                source: source.to_string(),
-                reason: e.to_string(),
-            }],
-        }),
+        Err(e) => Ok(Err(LoadWarning::ResolveFailed {
+            id: source.to_string(),
+            source: source.to_string(),
+            reason: e.to_string(),
+        })),
     }
 }
 
@@ -1338,9 +1359,11 @@ mod tests {
     }
 
     #[test]
-    fn subpatch_resolve_failure_warns() {
+    fn subpatch_resolve_failure_warns_and_carries_no_subgraph() {
         // The id resolves to a source, but `resolve_text` fails (the default `Failing` resolver):
-        // non-fatal per ADR-0016 — a ResolveFailed warning, never a hard error.
+        // non-fatal per ADR-0016 — a ResolveFailed warning, never a hard error. Like the missing-id
+        // case, the node carries NO sub-graph: `subpatch` is never a phantom empty child, so the P4
+        // inline pass can key on `is_some()`.
         struct Failing;
         impl ResourceResolver for Failing {
             fn resolve(&self, s: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
@@ -1354,6 +1377,8 @@ mod tests {
             loaded.warnings.as_slice(),
             [LoadWarning::ResolveFailed { .. }]
         ));
+        let key = loaded.graph.find("/sub").unwrap();
+        assert!(loaded.graph.nodes[key].subpatch.is_none());
     }
 
     #[test]
