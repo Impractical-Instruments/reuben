@@ -218,6 +218,11 @@ pub enum LoadError {
     /// A node carries a `sample` reference but its operator declares no such resource slot
     /// (ADR-0016) — a structural misuse, fatal like the other wiring errors.
     UnknownResource { node: String, slot: String },
+    /// An instrument-resource `source` is referenced again while it is still being loaded — a
+    /// `voice`/`patch` chain that (directly or transitively) contains itself (ADR-0032/0034).
+    /// Loading it would recurse forever, so the cycle is a structural error, fatal like the
+    /// other wiring errors.
+    CyclicResource { source: String },
 }
 
 impl fmt::Display for LoadError {
@@ -262,6 +267,11 @@ impl fmt::Display for LoadError {
             LoadError::UnknownResource { node, slot } => {
                 write!(f, "node {node:?} has no resource slot {slot:?}")
             }
+            LoadError::CyclicResource { source } => write!(
+                f,
+                "instrument resource {source:?} references itself (directly or transitively) — \
+                 cyclic nesting cannot load"
+            ),
         }
     }
 }
@@ -329,6 +339,19 @@ pub fn load_instrument(
     json: &str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
+) -> Result<Loaded, LoadError> {
+    load_instrument_guarded(json, registry, resolver, &mut Vec::new())
+}
+
+/// [`load_instrument`] with the cycle guard threaded through: `loading` is the stack of
+/// instrument-resource sources currently being resolved (root-first). The recursive passes
+/// (`voice`, `patch`) resolve children through it so a chain that re-enters a source still on
+/// the stack is caught as [`LoadError::CyclicResource`] instead of recursing forever.
+fn load_instrument_guarded(
+    json: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+    loading: &mut Vec<String>,
 ) -> Result<Loaded, LoadError> {
     let doc = InstrumentDoc::from_json(json)?;
     let mut graph = doc.build(registry)?;
@@ -402,7 +425,7 @@ pub fn load_instrument(
             }
             Some(source) => {
                 for i in 0..n_voices {
-                    let loaded = resolve_instrument(source, registry, resolver)?;
+                    let loaded = resolve_instrument_guarded(source, registry, resolver, loading)?;
                     // One copy's warnings suffice — the N builds are identical.
                     if i == 0 {
                         warnings.extend(loaded.warnings);
@@ -432,7 +455,7 @@ pub fn load_instrument(
                 id: id.clone(),
             }),
             Some(source) => {
-                let loaded = resolve_instrument(source, registry, resolver)?;
+                let loaded = resolve_instrument_guarded(source, registry, resolver, loading)?;
                 warnings.extend(loaded.warnings);
                 graph.nodes[key].subpatch = Some(Box::new(loaded.graph));
             }
@@ -472,14 +495,40 @@ fn voice_count(n: &NodeDoc, descriptor: &Descriptor) -> usize {
 /// `interface` boundary is resolved for the host to bind. Structural/wiring problems in the patch
 /// are fatal ([`LoadError`]); a `resolve_text` failure is **non-fatal** (ADR-0016): it yields an
 /// empty graph plus a [`LoadWarning::ResolveFailed`], so one missing voice patch never crashes the
-/// host. This is the net-new piece ADR-0032 needs — "a resource that is a Graph, not bytes."
+/// host. A `source` that (directly or transitively) references itself is fatal
+/// ([`LoadError::CyclicResource`]) — the cycle guard that keeps recursive nesting (ADR-0034)
+/// from overflowing the stack. This is the net-new piece ADR-0032 needs — "a resource that is a
+/// Graph, not bytes."
 pub fn resolve_instrument(
     source: &str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
 ) -> Result<Loaded, LoadError> {
+    resolve_instrument_guarded(source, registry, resolver, &mut Vec::new())
+}
+
+/// [`resolve_instrument`] with the cycle guard: refuse a `source` already on the `loading` stack
+/// (a voice/patch chain re-entering itself), otherwise push it and recurse through
+/// [`load_instrument_guarded`]. Cycles are keyed on the source string — the same identity the
+/// `resources` table resolves by.
+fn resolve_instrument_guarded(
+    source: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+    loading: &mut Vec<String>,
+) -> Result<Loaded, LoadError> {
+    if loading.iter().any(|s| s == source) {
+        return Err(LoadError::CyclicResource {
+            source: source.to_string(),
+        });
+    }
     match resolver.resolve_text(source) {
-        Ok(text) => load_instrument(&text, registry, resolver),
+        Ok(text) => {
+            loading.push(source.to_string());
+            let result = load_instrument_guarded(&text, registry, resolver, loading);
+            loading.pop();
+            result
+        }
         Err(e) => Ok(Loaded {
             graph: Graph::new(),
             warnings: vec![LoadWarning::ResolveFailed {
@@ -1318,6 +1367,81 @@ mod tests {
             load_instrument(json, &reg(), &PatchResolver(BROKEN)),
             Err(LoadError::UnknownType { .. })
         ));
+    }
+
+    #[test]
+    fn subpatch_self_reference_is_a_cycle_error() {
+        // A patch whose `patch` resource resolves back to itself must fail as a structural
+        // CyclicResource error, not recurse until the stack overflows. `PatchResolver` returns the
+        // same text for every source, so the parent's own document is the "child" — the second
+        // resolve of "self.json" re-enters a source still on the loading stack.
+        let json = r#"{"instrument":"a","resources":{"me":"self.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"me"}]}"#;
+        // Leak the parent text so the resolver can hand it back as the child (test-only).
+        let resolver = PatchResolver(String::leak(json.to_string()));
+        assert!(matches!(
+            load_instrument(json, &reg(), &resolver),
+            Err(LoadError::CyclicResource { source }) if source == "self.json"
+        ));
+    }
+
+    #[test]
+    fn subpatch_mutual_cycle_is_a_cycle_error() {
+        // A -> B -> A through two `subpatch` nodes: the guard catches the re-entry on "a.json"
+        // wherever the load started. Also proves the guard is a *stack*, not a per-call flag —
+        // the chain crosses two distinct sources before looping.
+        struct TwoDocs;
+        impl ResourceResolver for TwoDocs {
+            fn resolve(&self, s: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
+                Err(crate::resources::ResolveError::NotFound(s.to_string()))
+            }
+            fn resolve_text(&self, source: &str) -> Result<String, crate::resources::ResolveError> {
+                Ok(match source {
+                    "a.json" => {
+                        r#"{"instrument":"a","resources":{"b":"b.json"},"nodes":[
+                        {"type":"subpatch","address":"/sub","patch":"b"}]}"#
+                    }
+                    _ => {
+                        r#"{"instrument":"b","resources":{"a":"a.json"},"nodes":[
+                        {"type":"subpatch","address":"/sub","patch":"a"}]}"#
+                    }
+                }
+                .to_string())
+            }
+        }
+        assert!(matches!(
+            resolve_instrument("a.json", &reg(), &TwoDocs),
+            Err(LoadError::CyclicResource { source }) if source == "a.json"
+        ));
+    }
+
+    #[test]
+    fn voice_self_reference_is_a_cycle_error() {
+        // The voicer's `voice` slot rides the same recursive load, so the same guard covers a
+        // voice patch that references itself (voice -> voice, or any voice/subpatch mix).
+        let json = r#"{"instrument":"v","resources":{"me":"self.json"},"nodes":[
+            {"type":"voicer","address":"/voicer","voice":"me"}]}"#;
+        let resolver = PatchResolver(String::leak(json.to_string()));
+        assert!(matches!(
+            load_instrument(json, &reg(), &resolver),
+            Err(LoadError::CyclicResource { source }) if source == "self.json"
+        ));
+    }
+
+    #[test]
+    fn diamond_reuse_is_not_a_cycle() {
+        // Two sibling subpatch nodes referencing the same child is reuse, not a cycle: the guard
+        // pops each source after its load completes, so only re-entry *while still loading* errors.
+        let json = r#"{"instrument":"p","resources":{"v":"voices/lead.json"},"nodes":[
+            {"type":"subpatch","address":"/one","patch":"v"},
+            {"type":"subpatch","address":"/two","patch":"v"}]}"#;
+        let loaded =
+            load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)).expect("reuse loads");
+        assert!(loaded.warnings.is_empty());
+        let one = loaded.graph.find("/one").unwrap();
+        let two = loaded.graph.find("/two").unwrap();
+        assert!(loaded.graph.nodes[one].subpatch.is_some());
+        assert!(loaded.graph.nodes[two].subpatch.is_some());
     }
 
     #[test]
