@@ -38,6 +38,8 @@ This is the exact shape of the Voicer's `voice` slot, generalized: a logical id 
 
 The invariant **`type` = a registered operator** is preserved: `subpatch` *is* a registered (built-in) type; the patch reference rides in the `patch` field, not in `type`.
 
+**Failure taxonomy — the ADR-0016 split lands at the fetch seam.** *Availability* problems (the id missing from `resources`, a `resolve_text` failure) degrade to a `LoadWarning` and leave the node with no sub-graph. Everything after the text is in hand is a **structural error in the referenced patch and stays fatal** (`LoadError`) — including JSON that fails to parse. A resolved-but-malformed child is a broken document the author must fix, not a missing resource to play through; treating it as ADR-0016's "bad decode → warn" would misread that clause, which classifies *sample* decoding behind the resolver seam, where no document was ever promised.
+
 **Considered and rejected:**
 
 - **`type` names the resource id** (`"type": "my_reverb"`). Reads most like ADR-0003's "as if it were an Operator," but it breaks the `type` = registered-operator invariant and forces the loader into a registry-miss → resource-fallthrough lookup, blurring the line between an operator and a patch at the one place authors and tooling rely on it being sharp. The single extra word (`"type": "subpatch"` + `"patch": "id"`) is a cheap price for keeping that line crisp, and it matches the precedent the Voicer already set.

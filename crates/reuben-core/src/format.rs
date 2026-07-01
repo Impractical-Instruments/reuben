@@ -574,9 +574,10 @@ fn voice_count(n: &NodeDoc, descriptor: &Descriptor) -> usize {
 /// JSON via [`ResourceResolver::resolve_text`], then built into a sub-[`Graph`] through the full
 /// [`load_instrument`] path — so the sub-patch's own `sample` resources resolve recursively and its
 /// `interface` boundary is resolved for the host to bind. Structural/wiring problems in the patch
-/// are fatal ([`LoadError`]); a `resolve_text` failure is **non-fatal** (ADR-0016): it yields an
-/// empty graph plus a [`LoadWarning::ResolveFailed`], so one missing voice patch never crashes the
-/// host. A `source` that (directly or transitively) references itself is fatal
+/// are fatal ([`LoadError`]) — including JSON that fails to parse: the ADR-0016 split lands at the
+/// fetch seam (ADR-0034 §1), so only *availability* degrades. A `resolve_text` failure is
+/// **non-fatal**: it yields an empty graph plus a [`LoadWarning::ResolveFailed`], so one missing
+/// voice patch never crashes the host. A `source` that (directly or transitively) references itself is fatal
 /// ([`LoadError::CyclicResource`]) — the cycle guard that keeps recursive nesting (ADR-0034)
 /// from overflowing the stack. This is the net-new piece ADR-0032 needs — "a resource that is a
 /// Graph, not bytes."
@@ -1542,6 +1543,19 @@ mod tests {
         assert!(matches!(
             load_instrument(json, &reg(), &PatchResolver(BROKEN)),
             Err(LoadError::UnknownType { .. })
+        ));
+    }
+
+    #[test]
+    fn subpatch_malformed_json_is_fatal() {
+        // The ADR-0016 split lands at the fetch seam (ADR-0034 §1): once the text is in hand,
+        // JSON that fails to parse is a structural error in the referenced patch — fatal, like an
+        // unknown operator type — not an availability warning.
+        let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"v"}]}"#;
+        assert!(matches!(
+            load_instrument(json, &reg(), &PatchResolver("{not json")),
+            Err(LoadError::Json(_))
         ));
     }
 
