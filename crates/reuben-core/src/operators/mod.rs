@@ -45,6 +45,7 @@ pub mod sequencer;
 pub mod snap;
 pub mod strum;
 pub mod sub;
+pub mod subpatch;
 pub mod transpose;
 pub mod voicer;
 
@@ -85,5 +86,6 @@ pub use sequencer::Sequencer;
 pub use snap::Snap;
 pub use strum::Strum;
 pub use sub::{SubF32Signal, SubF32Value};
+pub use subpatch::Subpatch;
 pub use transpose::Transpose;
 pub use voicer::Voicer;

@@ -347,6 +347,15 @@ boundary mapping external names (`freq`/`gate`/`audio`/`active`) to internal `(n
 so the host Voicer can drive and tap it. (`interface` is real wiring the engine type-checks, distinct
 from the engine-ignored `control` block.) See `instruments/default.json` + `instruments/voices/default-voice.json`.
 
+A **`subpatch`** node references a nested instrument the same way, by a **`patch`** field naming an
+instrument JSON ([ADR-0034](../adr/0034-instrument-nesting.md)): the loader recursively builds the
+child (its own resources resolve; cyclic references are a fatal `CyclicResource` error) and carries
+the sub-graph + its `interface` on the parent node. This is the reference/load pass only — the node
+registers **no ports** yet (its boundary face is synthesized from the child `interface` when the
+plan-build inline pass lands), so an un-inlined `subpatch` renders nothing. Availability problems
+(missing id, unreadable source) degrade to a `LoadWarning`; a resolved-but-malformed child document
+is fatal.
+
 A node may also carry an optional **`control`** block
 ([ADR-0018](../adr/0018-control-surface-generation.md)) — surface metadata marking it
 player-facing: a `label` (required) plus optional `unit`/`widget`/range, a `param` (to bind a

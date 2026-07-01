@@ -99,6 +99,14 @@ pub struct NodeDoc {
     /// graphs via [`Operator::bind_voices`](crate::operator::Operator::bind_voices).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<String>,
+    /// Nested-instrument reference (ADR-0034 §1): a logical id into the document's `resources` table
+    /// whose source is another instrument patch. Only valid on the built-in `subpatch` operator
+    /// (which declares a `patch` resource slot); rejected elsewhere as a structural
+    /// [`LoadError::UnknownResource`]. The loader builds the referenced patch via
+    /// [`resolve_instrument`] and carries the sub-[`Graph`] on the parent node (nesting P3) — not yet
+    /// inlined (P4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<String>,
     /// Public-control metadata for a generated control surface (ADR-0018): marks this node as
     /// player-facing and carries display hints (`label`, optional `unit`/`widget`/range). The
     /// engine never reads it — it is passed through opaquely so it survives load → round-trip →
@@ -109,13 +117,17 @@ pub struct NodeDoc {
 }
 
 impl NodeDoc {
-    /// This node's resource references paired with the slot each targets (ADR-0016/0032): the
-    /// typed `sample`/`voice` fields surfaced as one `(slot, ref)` list. The single place the
+    /// This node's resource references paired with the slot each targets (ADR-0016/0032/0034): the
+    /// typed `sample`/`voice`/`patch` fields surfaced as one `(slot, ref)` list. The single place the
     /// format maps its fields to descriptor [`ResourceSlot`](crate::descriptor::ResourceSlot)
     /// names, so generic resource validation iterates this rather than enumerating known slots arm
     /// by arm — a new slot extends this list and nothing downstream.
-    fn resource_refs(&self) -> [(&'static str, &Option<String>); 2] {
-        [("sample", &self.sample), ("voice", &self.voice)]
+    fn resource_refs(&self) -> [(&'static str, &Option<String>); 3] {
+        [
+            ("sample", &self.sample),
+            ("voice", &self.voice),
+            ("patch", &self.patch),
+        ]
     }
 }
 
@@ -206,6 +218,11 @@ pub enum LoadError {
     /// A node carries a `sample` reference but its operator declares no such resource slot
     /// (ADR-0016) — a structural misuse, fatal like the other wiring errors.
     UnknownResource { node: String, slot: String },
+    /// An instrument-resource `source` is referenced again while it is still being loaded — a
+    /// `voice`/`patch` chain that (directly or transitively) contains itself (ADR-0032/0034).
+    /// Loading it would recurse forever, so the cycle is a structural error, fatal like the
+    /// other wiring errors.
+    CyclicResource { source: String },
 }
 
 impl fmt::Display for LoadError {
@@ -250,6 +267,11 @@ impl fmt::Display for LoadError {
             LoadError::UnknownResource { node, slot } => {
                 write!(f, "node {node:?} has no resource slot {slot:?}")
             }
+            LoadError::CyclicResource { source } => write!(
+                f,
+                "instrument resource {source:?} references itself (directly or transitively) — \
+                 cyclic nesting cannot load"
+            ),
         }
     }
 }
@@ -277,25 +299,58 @@ pub fn load(json: &str, registry: &Registry) -> Result<Graph, LoadError> {
 /// because they are authoring errors, just not crashing ones.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadWarning {
-    /// A node names a resource id absent from the `resources` table.
-    MissingResource { node: String, id: String },
-    /// A resource id resolves to a source that could not be loaded/decoded.
+    /// A node names a resource id absent from the `resources` table. `slot` is the resource slot
+    /// the ref targeted (`"sample"`/`"voice"`/`"patch"`, [`NodeDoc::resource_refs`]) so the
+    /// message names what actually failed.
+    MissingResource {
+        node: String,
+        slot: &'static str,
+        id: String,
+    },
+    /// A resource id resolves to a source that could not be loaded/decoded. `slot` as on
+    /// [`MissingResource`](Self::MissingResource).
     ResolveFailed {
+        slot: &'static str,
         id: String,
         source: String,
         reason: String,
+    },
+    /// A warning that arose while loading a **nested** instrument (a voice or subpatch child,
+    /// ADR-0032/0034), contextualized by the referencing parent node so provenance survives the
+    /// merge into the parent's warning list: child node addresses are child-relative until P4
+    /// inlining prefixes them, and two same-shaped children would otherwise be indistinguishable.
+    /// Nests recursively for deeper chains.
+    Nested {
+        node: String,
+        warning: Box<LoadWarning>,
     },
 }
 
 impl fmt::Display for LoadWarning {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LoadWarning::MissingResource { node, id } => {
-                write!(f, "node {node:?}: sample {id:?} not in resources table")
+            LoadWarning::MissingResource { node, slot, id } => {
+                write!(f, "node {node:?}: {slot} {id:?} not in resources table")
             }
-            LoadWarning::ResolveFailed { id, source, reason } => {
-                write!(f, "sample {id:?} ({source:?}): {reason}")
+            LoadWarning::ResolveFailed {
+                slot,
+                id,
+                source,
+                reason,
+            } => {
+                write!(f, "{slot} {id:?} ({source:?}): {reason}")
             }
+            LoadWarning::Nested { node, warning } => write!(f, "in {node:?}: {warning}"),
+        }
+    }
+}
+
+impl LoadWarning {
+    /// Wrap `self` with the parent node that referenced the nested instrument it arose in.
+    fn nested_in(self, node: &str) -> LoadWarning {
+        LoadWarning::Nested {
+            node: node.to_string(),
+            warning: Box::new(self),
         }
     }
 }
@@ -318,7 +373,31 @@ pub fn load_instrument(
     registry: &Registry,
     resolver: &dyn ResourceResolver,
 ) -> Result<Loaded, LoadError> {
+    load_instrument_guarded(json, registry, resolver, &mut Vec::new())
+}
+
+/// [`load_instrument`] with the cycle guard threaded through: `loading` is the stack of
+/// instrument-resource sources currently being resolved (root-first). The recursive passes
+/// (`voice`, `patch`) resolve children through it so a chain that re-enters a source still on
+/// the stack is caught as [`LoadError::CyclicResource`] instead of recursing forever.
+fn load_instrument_guarded(
+    json: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+    loading: &mut Vec<String>,
+) -> Result<Loaded, LoadError> {
     let doc = InstrumentDoc::from_json(json)?;
+    load_doc_guarded(&doc, registry, resolver, loading)
+}
+
+/// [`load_instrument_guarded`] from an already-parsed document — the subpatch pass parses a
+/// shared child source once and loads it per referencing node through this.
+fn load_doc_guarded(
+    doc: &InstrumentDoc,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+    loading: &mut Vec<String>,
+) -> Result<Loaded, LoadError> {
     let mut graph = doc.build(registry)?;
     let mut warnings = Vec::new();
 
@@ -330,18 +409,13 @@ pub fn load_instrument(
         if handles.contains_key(id) {
             continue; // dedup: already resolved by an earlier node
         }
-        let buffer = match doc.resources.get(id) {
-            None => {
-                warnings.push(LoadWarning::MissingResource {
-                    node: n.address.clone(),
-                    id: id.clone(),
-                });
-                SampleBuffer::empty()
-            }
+        let buffer = match lookup_source(doc, &n.address, "sample", id, &mut warnings) {
+            None => SampleBuffer::empty(),
             Some(source) => match resolver.resolve(source) {
                 Ok(b) => b,
                 Err(e) => {
                     warnings.push(LoadWarning::ResolveFailed {
+                        slot: "sample",
                         id: id.clone(),
                         source: source.clone(),
                         reason: e.to_string(),
@@ -378,22 +452,21 @@ pub fn load_instrument(
         };
         let n_voices = voice_count(n, &graph.nodes[key].descriptor);
         let mut voices: Vec<Graph> = Vec::with_capacity(n_voices);
-        match doc.resources.get(id) {
+        match lookup_source(doc, &n.address, "voice", id, &mut warnings) {
             None => {
-                warnings.push(LoadWarning::MissingResource {
-                    node: n.address.clone(),
-                    id: id.clone(),
-                });
                 for _ in 0..n_voices {
                     voices.push(Graph::new());
                 }
             }
             Some(source) => {
                 for i in 0..n_voices {
-                    let loaded = resolve_instrument(source, registry, resolver)?;
-                    // One copy's warnings suffice — the N builds are identical.
+                    let loaded =
+                        resolve_instrument_slotted(source, "voice", registry, resolver, loading)?;
+                    // One copy's warnings suffice — the N builds are identical. Wrapped with the
+                    // hosting node so provenance survives the merge (see `LoadWarning::Nested`).
                     if i == 0 {
-                        warnings.extend(loaded.warnings);
+                        warnings
+                            .extend(loaded.warnings.into_iter().map(|w| w.nested_in(&n.address)));
                     }
                     voices.push(loaded.graph);
                 }
@@ -402,7 +475,75 @@ pub fn load_instrument(
         graph.nodes[key].op.bind_voices(voices);
     }
 
+    // Subpatch pass (ADR-0034 §1, nesting P3): a `subpatch` node references another instrument patch
+    // and the loader carries the built sub-`Graph` on the **parent node** (`Node::subpatch`) — build-
+    // time data for the plan-build inline pass (P4), distinct from the Voicer's runtime-hosted voice
+    // graphs. The child is loaded through the full path, so its own resources resolve and its
+    // `interface` is ready for the boundary contract. Structural errors in the child are fatal; a
+    // missing id or a resolve failure degrades to a warning (ADR-0016), leaving the node with no
+    // sub-graph — `subpatch` is only ever Some(a built child), never a phantom empty graph, so the
+    // P4 inline pass can key on it. Not yet inlined (P4) and not type-checked across the boundary
+    // (P5).
+    //
+    // The source read + parse is deduped per id (like the sample pass's `handles`): N nodes naming
+    // one patch id fetch and parse it once, and an unavailable source warns once (`None` in the
+    // cache). Each node still loads its own child below — `Graph` is not `Clone`.
+    let mut patch_docs: BTreeMap<String, Option<InstrumentDoc>> = BTreeMap::new();
+    for n in &doc.nodes {
+        let Some(id) = &n.patch else { continue };
+        let Some(key) = graph.find(&n.address) else {
+            continue;
+        };
+        let Some(source) = lookup_source(doc, &n.address, "patch", id, &mut warnings) else {
+            continue;
+        };
+        if !patch_docs.contains_key(id) {
+            let child_doc = match resolver.resolve_text(source) {
+                Ok(text) => Some(InstrumentDoc::from_json(&text)?),
+                Err(e) => {
+                    let failed = LoadWarning::ResolveFailed {
+                        slot: "patch",
+                        id: id.clone(),
+                        source: source.clone(),
+                        reason: e.to_string(),
+                    };
+                    warnings.push(failed.nested_in(&n.address));
+                    None
+                }
+            };
+            patch_docs.insert(id.clone(), child_doc);
+        }
+        let Some(child_doc) = &patch_docs[id] else {
+            continue;
+        };
+        let loaded = load_child_guarded(child_doc, source, registry, resolver, loading)?;
+        warnings.extend(loaded.warnings.into_iter().map(|w| w.nested_in(&n.address)));
+        graph.nodes[key].subpatch = Some(Box::new(loaded.graph));
+    }
+
     Ok(Loaded { graph, warnings })
+}
+
+/// Look up a node's resource `id` in the document's `resources` table — the shared first step of
+/// every resource pass (`sample`/`voice`/`patch`). A miss is the non-fatal
+/// [`LoadWarning::MissingResource`] (ADR-0016), pushed here so the policy lives in one place;
+/// each caller picks its degradation on `None` (empty buffer, silent voices, no sub-graph).
+fn lookup_source<'a>(
+    doc: &'a InstrumentDoc,
+    node: &str,
+    slot: &'static str,
+    id: &str,
+    warnings: &mut Vec<LoadWarning>,
+) -> Option<&'a String> {
+    let source = doc.resources.get(id);
+    if source.is_none() {
+        warnings.push(LoadWarning::MissingResource {
+            node: node.to_string(),
+            slot,
+            id: id.to_string(),
+        });
+    }
+    source
 }
 
 /// The voice-pool size for a Voicer node (ADR-0032): the node's value for the operator's
@@ -433,25 +574,91 @@ fn voice_count(n: &NodeDoc, descriptor: &Descriptor) -> usize {
 /// JSON via [`ResourceResolver::resolve_text`], then built into a sub-[`Graph`] through the full
 /// [`load_instrument`] path — so the sub-patch's own `sample` resources resolve recursively and its
 /// `interface` boundary is resolved for the host to bind. Structural/wiring problems in the patch
-/// are fatal ([`LoadError`]); a `resolve_text` failure is **non-fatal** (ADR-0016): it yields an
-/// empty graph plus a [`LoadWarning::ResolveFailed`], so one missing voice patch never crashes the
-/// host. This is the net-new piece ADR-0032 needs — "a resource that is a Graph, not bytes."
+/// are fatal ([`LoadError`]) — including JSON that fails to parse: the ADR-0016 split lands at the
+/// fetch seam (ADR-0034 §1), so only *availability* degrades. A `resolve_text` failure is
+/// **non-fatal**: it yields an empty graph plus a [`LoadWarning::ResolveFailed`], so one missing
+/// voice patch never crashes the host. A `source` that (directly or transitively) references itself is fatal
+/// ([`LoadError::CyclicResource`]) — the cycle guard that keeps recursive nesting (ADR-0034)
+/// from overflowing the stack. This is the net-new piece ADR-0032 needs — "a resource that is a
+/// Graph, not bytes."
 pub fn resolve_instrument(
     source: &str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
 ) -> Result<Loaded, LoadError> {
-    match resolver.resolve_text(source) {
-        Ok(text) => load_instrument(&text, registry, resolver),
-        Err(e) => Ok(Loaded {
+    resolve_instrument_slotted(source, "patch", registry, resolver, &mut Vec::new())
+}
+
+/// [`resolve_instrument`] with the cycle guard and the resource `slot` the ref came through (so
+/// warnings name what actually failed), folding an unavailable source into the ADR-0032
+/// degradation the voice pass wants: an empty graph carrying the warning (silence).
+fn resolve_instrument_slotted(
+    source: &str,
+    slot: &'static str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+    loading: &mut Vec<String>,
+) -> Result<Loaded, LoadError> {
+    match try_resolve_instrument(source, slot, registry, resolver, loading)? {
+        Ok(loaded) => Ok(loaded),
+        Err(warning) => Ok(Loaded {
             graph: Graph::new(),
-            warnings: vec![LoadWarning::ResolveFailed {
-                id: source.to_string(),
-                source: source.to_string(),
-                reason: e.to_string(),
-            }],
+            warnings: vec![warning],
         }),
     }
+}
+
+/// The distinguishing core of [`resolve_instrument`]: `Ok(Ok)` is a built child, `Ok(Err)` is an
+/// unavailable source (a `resolve_text` failure, non-fatal per ADR-0016) surfaced as the warning
+/// so each caller picks its own degradation — the voice pass binds silence (empty graphs), the
+/// subpatch pass leaves the node with **no** sub-graph rather than a phantom empty one. `slot`
+/// names the resource slot the ref came through (`"voice"`/`"patch"`) for the warning. Cycles
+/// are refused before resolving: a `source` already on the `loading` stack (a voice/patch chain
+/// re-entering itself) is a fatal [`LoadError::CyclicResource`], keyed on the source string — the
+/// same identity the `resources` table resolves by.
+fn try_resolve_instrument(
+    source: &str,
+    slot: &'static str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+    loading: &mut Vec<String>,
+) -> Result<Result<Loaded, LoadWarning>, LoadError> {
+    match resolver.resolve_text(source) {
+        Ok(text) => {
+            let doc = InstrumentDoc::from_json(&text)?;
+            Ok(Ok(load_child_guarded(
+                &doc, source, registry, resolver, loading,
+            )?))
+        }
+        Err(e) => Ok(Err(LoadWarning::ResolveFailed {
+            slot,
+            id: source.to_string(),
+            source: source.to_string(),
+            reason: e.to_string(),
+        })),
+    }
+}
+
+/// Load a child patch's parsed document with the cycle guard: refuse a `source` already on the
+/// `loading` stack (a voice/patch chain re-entering itself) as the fatal
+/// [`LoadError::CyclicResource`] — keyed on the source string, the same identity the `resources`
+/// table resolves by — otherwise push it and recurse through [`load_doc_guarded`].
+fn load_child_guarded(
+    doc: &InstrumentDoc,
+    source: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+    loading: &mut Vec<String>,
+) -> Result<Loaded, LoadError> {
+    if loading.iter().any(|s| s == source) {
+        return Err(LoadError::CyclicResource {
+            source: source.to_string(),
+        });
+    }
+    loading.push(source.to_string());
+    let result = load_doc_guarded(doc, registry, resolver, loading);
+    loading.pop();
+    result
 }
 
 impl InstrumentDoc {
@@ -503,6 +710,7 @@ impl InstrumentDoc {
             // (the resolved bytes/sub-graphs are bound out-of-band and do not survive the build).
             graph.nodes[key].sample_id = n.sample.clone();
             graph.nodes[key].voice_id = n.voice.clone();
+            graph.nodes[key].patch_id = n.patch.clone();
 
             // `config`: every name must be a declared Constant (ADR-0035); apply it at its slot.
             for (name, value) in &n.config {
@@ -713,6 +921,7 @@ impl InstrumentDoc {
                     // out-of-band and are *not* reconstructed here — reload re-resolves from the id.
                     sample: node.sample_id.clone(),
                     voice: node.voice_id.clone(),
+                    patch: node.patch_id.clone(),
                     // Control metadata (ADR-0018) lives on the document, not the built Graph, so the
                     // save-from-graph path does not reconstruct it; document-level round-trip
                     // (load → re-serialize) preserves it via serde.
@@ -1198,6 +1407,255 @@ mod tests {
             resolve_instrument("v.json", &reg(), &PatchResolver(BROKEN)),
             Err(LoadError::UnknownType { .. })
         ));
+    }
+
+    // ADR-0034 (nesting P3) — a `subpatch` node references an instrument patch and the loader
+    // carries the built sub-Graph on the parent node. Reuses the `VOICE_IFACE` patch as the child.
+    const PARENT_WITH_SUBPATCH: &str = r#"{
+        "instrument": "parent",
+        "resources": { "myvoice": "voices/lead.json" },
+        "nodes": [
+            { "type": "subpatch", "address": "/sub", "patch": "myvoice" }
+        ]
+    }"#;
+
+    #[test]
+    fn subpatch_node_carries_resolved_subgraph() {
+        // The acceptance criterion: a parent referencing a sub-instrument loads to a Graph whose
+        // nested node carries the resolved sub-Graph + its Interface (ADR-0034 §1).
+        let loaded = load_instrument(PARENT_WITH_SUBPATCH, &reg(), &PatchResolver(VOICE_IFACE))
+            .expect("load");
+        assert!(
+            loaded.warnings.is_empty(),
+            "clean load: {:?}",
+            loaded.warnings
+        );
+        let key = loaded.graph.find("/sub").expect("subpatch node exists");
+        let sub = loaded.graph.nodes[key]
+            .subpatch
+            .as_ref()
+            .expect("subpatch node carries the resolved sub-graph");
+        // The carried sub-graph IS the referenced patch — interface and all.
+        assert_eq!(sub.nodes.len(), 2);
+        assert!(sub.interface.inputs.contains_key("freq"));
+        assert!(sub.interface.outputs.contains_key("audio"));
+        // The logical id round-trips on the node (like `sample_id` / `voice_id`).
+        assert_eq!(loaded.graph.nodes[key].patch_id.as_deref(), Some("myvoice"));
+    }
+
+    #[test]
+    fn subpatch_missing_reference_warns() {
+        // A `patch` id absent from the `resources` table degrades to a warning (ADR-0016): the node
+        // carries no sub-graph and the load still succeeds — never a hard error.
+        let json = r#"{"instrument":"p","nodes":[
+            {"type":"subpatch","address":"/sub","patch":"absent"}]}"#;
+        let loaded = load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)).expect("non-fatal");
+        let key = loaded.graph.find("/sub").unwrap();
+        assert!(loaded.graph.nodes[key].subpatch.is_none());
+        // The warning names the slot that actually failed — a `patch` ref, not a sample.
+        assert!(matches!(
+            loaded.warnings.as_slice(),
+            [LoadWarning::MissingResource { slot: "patch", .. }]
+        ));
+        assert_eq!(
+            loaded.warnings[0].to_string(),
+            r#"node "/sub": patch "absent" not in resources table"#
+        );
+    }
+
+    #[test]
+    fn subpatch_resolve_failure_warns_and_carries_no_subgraph() {
+        // The id resolves to a source, but `resolve_text` fails (the default `Failing` resolver):
+        // non-fatal per ADR-0016 — a ResolveFailed warning, never a hard error. Like the missing-id
+        // case, the node carries NO sub-graph: `subpatch` is never a phantom empty child, so the P4
+        // inline pass can key on `is_some()`.
+        struct Failing;
+        impl ResourceResolver for Failing {
+            fn resolve(&self, s: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
+                Err(crate::resources::ResolveError::NotFound(s.to_string()))
+            }
+        }
+        let json = r#"{"instrument":"p","resources":{"v":"missing.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"v"}]}"#;
+        let loaded = load_instrument(json, &reg(), &Failing).expect("non-fatal");
+        // The failure is wrapped with the referencing node (ResolveFailed carries no node itself).
+        assert!(matches!(
+            loaded.warnings.as_slice(),
+            [LoadWarning::Nested { node, warning }]
+                if node == "/sub"
+                    && matches!(warning.as_ref(), LoadWarning::ResolveFailed { slot: "patch", .. })
+        ));
+        let key = loaded.graph.find("/sub").unwrap();
+        assert!(loaded.graph.nodes[key].subpatch.is_none());
+    }
+
+    #[test]
+    fn child_warnings_carry_the_subpatch_provenance() {
+        // A warning from inside the child (its own `patch` id missing from its resources table)
+        // surfaces on the parent wrapped in `Nested`, so the child-relative address is not mistaken
+        // for a parent node and two same-shaped children stay distinguishable.
+        const CHILD: &str = r#"{"instrument":"c","nodes":[
+            {"type":"subpatch","address":"/inner","patch":"absent"}]}"#;
+        let json = r#"{"instrument":"p","resources":{"c":"c.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"c"}]}"#;
+        let loaded = load_instrument(json, &reg(), &PatchResolver(CHILD)).expect("load");
+        assert_eq!(loaded.warnings.len(), 1);
+        assert_eq!(
+            loaded.warnings[0].to_string(),
+            r#"in "/sub": node "/inner": patch "absent" not in resources table"#
+        );
+    }
+
+    #[test]
+    fn diamond_reuse_reads_the_source_once() {
+        // Two subpatch nodes sharing one id fetch + parse the source once (the pass's per-id
+        // dedup, like the sample pass's `handles`); each node still gets its own built child.
+        use std::cell::Cell;
+        struct Counting(Cell<usize>);
+        impl ResourceResolver for Counting {
+            fn resolve(&self, s: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
+                Err(crate::resources::ResolveError::NotFound(s.to_string()))
+            }
+            fn resolve_text(&self, _: &str) -> Result<String, crate::resources::ResolveError> {
+                self.0.set(self.0.get() + 1);
+                Ok(VOICE_IFACE.to_string())
+            }
+        }
+        let json = r#"{"instrument":"p","resources":{"v":"voices/lead.json"},"nodes":[
+            {"type":"subpatch","address":"/one","patch":"v"},
+            {"type":"subpatch","address":"/two","patch":"v"}]}"#;
+        let resolver = Counting(Cell::new(0));
+        let loaded = load_instrument(json, &reg(), &resolver).expect("load");
+        assert_eq!(resolver.0.get(), 1, "one read serves both nodes");
+        let one = loaded.graph.find("/one").unwrap();
+        let two = loaded.graph.find("/two").unwrap();
+        assert!(loaded.graph.nodes[one].subpatch.is_some());
+        assert!(loaded.graph.nodes[two].subpatch.is_some());
+    }
+
+    #[test]
+    fn subpatch_structural_error_is_fatal() {
+        // The sub-patch resolves but is structurally broken (unknown operator type): fatal, matching
+        // the voice path — availability warns, structure/wiring errors (ADR-0016/0034).
+        const BROKEN: &str = r#"{"instrument":"v","nodes":[{"type":"nope","address":"/x"}]}"#;
+        let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"v"}]}"#;
+        assert!(matches!(
+            load_instrument(json, &reg(), &PatchResolver(BROKEN)),
+            Err(LoadError::UnknownType { .. })
+        ));
+    }
+
+    #[test]
+    fn subpatch_malformed_json_is_fatal() {
+        // The ADR-0016 split lands at the fetch seam (ADR-0034 §1): once the text is in hand,
+        // JSON that fails to parse is a structural error in the referenced patch — fatal, like an
+        // unknown operator type — not an availability warning.
+        let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"v"}]}"#;
+        assert!(matches!(
+            load_instrument(json, &reg(), &PatchResolver("{not json")),
+            Err(LoadError::Json(_))
+        ));
+    }
+
+    #[test]
+    fn subpatch_self_reference_is_a_cycle_error() {
+        // A patch whose `patch` resource resolves back to itself must fail as a structural
+        // CyclicResource error, not recurse until the stack overflows. `PatchResolver` returns the
+        // same text for every source, so the parent's own document is the "child" — the second
+        // resolve of "self.json" re-enters a source still on the loading stack.
+        let json = r#"{"instrument":"a","resources":{"me":"self.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"me"}]}"#;
+        // Leak the parent text so the resolver can hand it back as the child (test-only).
+        let resolver = PatchResolver(String::leak(json.to_string()));
+        assert!(matches!(
+            load_instrument(json, &reg(), &resolver),
+            Err(LoadError::CyclicResource { source }) if source == "self.json"
+        ));
+    }
+
+    #[test]
+    fn subpatch_mutual_cycle_is_a_cycle_error() {
+        // A -> B -> A through two `subpatch` nodes: the guard catches the re-entry on "a.json"
+        // wherever the load started. Also proves the guard is a *stack*, not a per-call flag —
+        // the chain crosses two distinct sources before looping.
+        struct TwoDocs;
+        impl ResourceResolver for TwoDocs {
+            fn resolve(&self, s: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
+                Err(crate::resources::ResolveError::NotFound(s.to_string()))
+            }
+            fn resolve_text(&self, source: &str) -> Result<String, crate::resources::ResolveError> {
+                Ok(match source {
+                    "a.json" => {
+                        r#"{"instrument":"a","resources":{"b":"b.json"},"nodes":[
+                        {"type":"subpatch","address":"/sub","patch":"b"}]}"#
+                    }
+                    _ => {
+                        r#"{"instrument":"b","resources":{"a":"a.json"},"nodes":[
+                        {"type":"subpatch","address":"/sub","patch":"a"}]}"#
+                    }
+                }
+                .to_string())
+            }
+        }
+        assert!(matches!(
+            resolve_instrument("a.json", &reg(), &TwoDocs),
+            Err(LoadError::CyclicResource { source }) if source == "a.json"
+        ));
+    }
+
+    #[test]
+    fn voice_self_reference_is_a_cycle_error() {
+        // The voicer's `voice` slot rides the same recursive load, so the same guard covers a
+        // voice patch that references itself (voice -> voice, or any voice/subpatch mix).
+        let json = r#"{"instrument":"v","resources":{"me":"self.json"},"nodes":[
+            {"type":"voicer","address":"/voicer","voice":"me"}]}"#;
+        let resolver = PatchResolver(String::leak(json.to_string()));
+        assert!(matches!(
+            load_instrument(json, &reg(), &resolver),
+            Err(LoadError::CyclicResource { source }) if source == "self.json"
+        ));
+    }
+
+    #[test]
+    fn diamond_reuse_is_not_a_cycle() {
+        // Two sibling subpatch nodes referencing the same child is reuse, not a cycle: the guard
+        // pops each source after its load completes, so only re-entry *while still loading* errors.
+        let json = r#"{"instrument":"p","resources":{"v":"voices/lead.json"},"nodes":[
+            {"type":"subpatch","address":"/one","patch":"v"},
+            {"type":"subpatch","address":"/two","patch":"v"}]}"#;
+        let loaded =
+            load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)).expect("reuse loads");
+        assert!(loaded.warnings.is_empty());
+        let one = loaded.graph.find("/one").unwrap();
+        let two = loaded.graph.find("/two").unwrap();
+        assert!(loaded.graph.nodes[one].subpatch.is_some());
+        assert!(loaded.graph.nodes[two].subpatch.is_some());
+    }
+
+    #[test]
+    fn patch_ref_on_non_subpatch_errors() {
+        // A `patch` ref is only valid on an operator declaring the slot (subpatch). On an oscillator
+        // it is a structural misuse — the same generic resource-slot check that guards sample/voice.
+        let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"oscillator","address":"/osc","patch":"v"}]}"#;
+        assert!(matches!(
+            load(json, &reg()),
+            Err(LoadError::UnknownResource { .. })
+        ));
+    }
+
+    #[test]
+    fn patch_id_round_trips_through_from_graph() {
+        // The logical `patch` id is retained on the node (like sample/voice) so save reconstructs the
+        // reference; the resolved sub-graph is bound out-of-band and does not round-trip.
+        let json = r#"{"instrument":"p","nodes":[
+            {"type":"subpatch","address":"/sub","patch":"myvoice"}]}"#;
+        let g = load(json, &reg()).expect("load");
+        let saved = InstrumentDoc::from_graph(&g, "p");
+        let n = saved.nodes.iter().find(|n| n.address == "/sub").unwrap();
+        assert_eq!(n.patch.as_deref(), Some("myvoice"));
     }
 
     #[test]

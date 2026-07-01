@@ -30,7 +30,7 @@ _Avoid_: path, route, id (id = internal identity, not the address).
 
 **Coordinator**:
 The single non-realtime owner of the canonical graph and Instrument library — the only writer of graph structure. Receives edit commands, performs Instantiate and [[swap]], and reclaims retired [[plan]]s off-thread. [[render]] only ever reads the current immutable Plan.
-_Avoid_: engine, manager, host (a host embeds the system; the Coordinator owns the graph).
+_Avoid_: engine, manager, host in the system-embedder sense (a host application embeds the system; the Coordinator owns the graph — the [[voicer]]'s [[host]] path is a different, sanctioned sense).
 
 **Plan**:
 The static parallel execution schedule — topologically ordered and clustered for parallelism — that the engine runs. Produced by instantiating a graph description; consumed by [[render]]; replaced by [[swap]].
@@ -66,6 +66,22 @@ _Avoid_: voice graph, sub-instrument, voice template.
 **Interface**:
 An [[instrument]]'s engine-honored I/O boundary: named external ports mapped to internal Operator inputs/outputs, type-checked and wired by the engine. The structural counterpart to a curated control surface ([[address]]es) — real wiring, not surface metadata. A [[voice sub-patch]]'s `freq`/`gate`/`audio`/`active` boundary is the canonical case.
 _Avoid_: boundary ports (informal), control surface, ports block.
+
+**Subpatch**:
+A nested [[instrument]] referenced as a node inside another Instrument, via a `subpatch` node whose `patch` slot names it in `resources`. Statically nested — exactly one instance, fixed at build — so it [[inline (dissolve)]]s; a [[voice sub-patch]] is the dynamic counterpart, [[host]]ed by a [[voicer]].
+_Avoid_: sub-instrument, nested patch, embedded instrument.
+
+**Inline (dissolve)**:
+The build-time splice that flattens a [[subpatch]] into its parent: child nodes spliced in, addresses namespace-prefixed, boundary wires rewired to the inner targets, the subpatch node gone before [[render]]. The fixed-cardinality half of the line: fixed-at-build → inline; runtime-varying → [[host]].
+_Avoid_: expand, flatten (as the term of art), instantiate.
+
+**Host**:
+The runtime nesting path: an Operator keeps each nested instance as its own [[plan]] and renders it re-entrantly per block. The [[voicer]] is the sole host — [[voice]]s come and go, which a build-time splice can't express. The dynamic counterpart of [[inline (dissolve)]]; distinct from the avoided system-embedder sense of "host" (see [[coordinator]]).
+_Avoid_: runtime nest, sub-plan path (informal).
+
+**Boundary face**:
+The synthesized port set a [[subpatch]] presents, computed at load from its child's [[interface]]: one port per interface name, [[arg]] type inherited from the inner port and never overridable, presentational metadata inherited and overridable per-field. A build-time and introspection artifact only — it dissolves with the node and never reaches [[render]].
+_Avoid_: descriptor (the compile-time operator contract), synthesized ports (informal).
 
 **Pitch**:
 A symbolic value, modeled as `enum { Degree(i32), Absolute(f32) }` (no invalid states) — primarily a scale `Degree` within the active [[scale]], with `Absolute` float MIDI note (60.0 = middle C) available as a 12-TET coordinate. Symbolic only; a [[tuning]] resolves it to a frequency in Hz. A **Note** is `{ pitch: Pitch, velocity: f32 }` (velocity 0 = note-off).
