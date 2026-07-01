@@ -35,6 +35,36 @@ pub fn generate(registry: &Registry) -> Value {
     for entry in registry.entries() {
         let d = &entry.descriptor;
 
+        // A nested-instrument node (ADR-0034): its ports are the referenced patch's `interface`
+        // names, synthesized at load — unknowable from the static descriptor this schema is
+        // generated from. Allow free-form `inputs` in the generic value shapes (wire-ref, number,
+        // symbol); names and types are checked by the loader against the synthesized boundary
+        // face. `config` stays locked to the (empty) constant set below.
+        if d.has_resource("patch") {
+            branches.push(json!({
+                "if": { "properties": { "type": { "const": d.type_name } }, "required": ["type"] },
+                "then": {
+                    "properties": {
+                        "inputs": {
+                            "type": "object",
+                            "additionalProperties": { "oneOf": [
+                                { "type": "number" },
+                                { "type": "string" },
+                                wire_ref()
+                            ] },
+                            "description": "Boundary inputs, named by the referenced patch's `interface` (ADR-0034 §4). Port names and Arg types are validated at load against the resolved patch, not by this schema."
+                        },
+                        "config": {
+                            "type": "object",
+                            "properties": {},
+                            "additionalProperties": false
+                        }
+                    }
+                }
+            }));
+            continue;
+        }
+
         // `inputs`: one property per input port — each accepts a wire-ref, plus the literal forms
         // its shape allows (a `Float` number, an `Enum` symbol/index) — and per non-constant param,
         // which is settable only as a number literal.
@@ -155,7 +185,7 @@ pub fn generate(registry: &Registry) -> Value {
                     },
                     "patch": {
                         "type": "string",
-                        "description": "Resource id into the document's `resources` table naming a nested instrument patch; only valid on a `subpatch` node (ADR-0034). The loader builds the referenced patch and carries the sub-graph on this node."
+                        "description": "Resource id into the document's `resources` table naming a nested instrument patch; only valid on a `subpatch` node (ADR-0034). At build the referenced patch is loaded and inlined: its nodes are spliced in under this node's address prefix, its `interface` becomes this node's ports, and the node dissolves."
                     },
                     "control": {
                         "description": "Public-control metadata for a generated control surface (ADR-0018). One control spec, or an array of them for a multi-param node (e.g. a sequencer's steps).",
@@ -248,6 +278,29 @@ mod tests {
             .expect("voicer branch");
         let voices = &voicer["then"]["properties"]["config"]["properties"]["voices"];
         assert_eq!(voices["type"], json!("integer"));
+    }
+
+    #[test]
+    fn subpatch_inputs_are_free_form() {
+        // ADR-0034 §4: a subpatch's ports are synthesized from the referenced patch's `interface`
+        // at load, so the schema cannot enumerate them — it must accept any input name in the
+        // generic value shapes and leave name/type validation to the loader.
+        let schema = generate(&Registry::builtin());
+        let branches = schema["$defs"]["node"]["allOf"].as_array().unwrap();
+        let subpatch = branches
+            .iter()
+            .find(|b| b["if"]["properties"]["type"]["const"] == json!("subpatch"))
+            .expect("subpatch branch");
+        let inputs = &subpatch["then"]["properties"]["inputs"];
+        assert!(
+            inputs
+                .get("additionalProperties")
+                .is_some_and(|v| v != &json!(false)),
+            "subpatch inputs accept interface-named entries: {inputs}"
+        );
+        // `config` stays locked — a subpatch declares no constants.
+        let config = &subpatch["then"]["properties"]["config"];
+        assert_eq!(config["additionalProperties"], json!(false));
     }
 
     #[test]

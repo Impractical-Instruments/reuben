@@ -167,4 +167,48 @@ fn render_block_is_allocation_free_after_warmup() {
         sample_retrig, 0,
         "retriggering sample render allocated {sample_retrig} time(s)"
     );
+
+    // (3) A nested instrument (ADR-0034, nesting P4): the subpatch dissolves at build into
+    // ordinary flat nodes, so its steady-state render must be exactly as allocation-free as any
+    // flat graph — inlining is a load-time transform, and the renderer never sees a boundary.
+    struct Inline(&'static str);
+    impl ResourceResolver for Inline {
+        fn resolve(&self, s: &str) -> Result<SampleBuffer, ResolveError> {
+            Err(ResolveError::NotFound(s.to_string()))
+        }
+        fn resolve_text(&self, _: &str) -> Result<String, ResolveError> {
+            Ok(self.0.to_string())
+        }
+    }
+    const TONE: &str = r#"{
+        "instrument": "tone",
+        "interface": { "inputs": { "freq": "/osc.freq" }, "outputs": { "audio": "/osc.audio" } },
+        "nodes": [ { "type": "oscillator", "address": "/osc" } ]
+    }"#;
+    const NESTED: &str = r#"{
+        "instrument": "nested",
+        "resources": { "tone": "tone.json" },
+        "nodes": [
+            { "type": "subpatch", "address": "/a", "patch": "tone", "inputs": { "freq": 220.0 } },
+            { "type": "subpatch", "address": "/b", "patch": "tone", "inputs": { "freq": 330.0 } }
+        ],
+        "outputs": [ { "node": "/a", "port": "audio" }, { "node": "/b", "port": "audio" } ]
+    }"#;
+    let graph = load_instrument(NESTED, &Registry::builtin(), &Inline(TONE))
+        .expect("load nested instrument")
+        .graph;
+    let mut plan = Plan::instantiate(graph, cfg).expect("instantiate nested");
+    let mut r = Renderer::new(&plan);
+    for _ in 0..16 {
+        r.render_block(&mut plan, &[], &mut out);
+    }
+    let before = ALLOCS.load(Ordering::Relaxed);
+    for _ in 0..1000 {
+        r.render_block(&mut plan, &[], &mut out);
+    }
+    let nested_held = ALLOCS.load(Ordering::Relaxed) - before;
+    assert_eq!(
+        nested_held, 0,
+        "nested-instrument steady-state allocated {nested_held} time(s)"
+    );
 }
