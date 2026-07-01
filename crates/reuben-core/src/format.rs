@@ -13,7 +13,7 @@
 //! [`InstrumentDoc::from_graph`] goes the other way. Loading is an authoring step, not a realtime
 //! path — it lives in the portable core but never runs on the audio thread.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::fmt;
 use std::sync::Arc;
 
@@ -102,9 +102,11 @@ pub struct NodeDoc {
     /// Nested-instrument reference (ADR-0034 §1): a logical id into the document's `resources` table
     /// whose source is another instrument patch. Only valid on the built-in `subpatch` operator
     /// (which declares a `patch` resource slot); rejected elsewhere as a structural
-    /// [`LoadError::UnknownResource`]. The loader builds the referenced patch via
-    /// [`resolve_instrument`] and carries the sub-[`Graph`] on the parent node (nesting P3) — not yet
-    /// inlined (P4).
+    /// [`LoadError::UnknownResource`]. At build the referenced patch is loaded recursively and
+    /// **inlined** (ADR-0034 §2, nesting P4): its nodes are spliced into this graph under this
+    /// node's address prefix, the boundary face is synthesized from its `interface`, and the
+    /// `subpatch` node dissolves — it never reaches the built [`Graph`]. The reference survives in
+    /// the *document* only; `from_graph` of a built graph emits the flattened equivalent (P7).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch: Option<String>,
     /// Public-control metadata for a generated control surface (ADR-0018): marks this node as
@@ -288,8 +290,9 @@ impl std::error::Error for LoadError {
 /// Parse JSON and build the [`Graph`], resolving operator types via `registry`.
 ///
 /// This path resolves no resources — a sample-bearing instrument loaded this way binds its
-/// players to nothing (they play silence). Use [`load_instrument`] to resolve and bind
-/// decoded audio.
+/// players to nothing (they play silence), and a nested `subpatch` reference dissolves dark
+/// (nothing spliced in; wires touching it dropped — see [`InstrumentDoc::build`]). Use
+/// [`load_instrument`] to resolve, bind, and inline.
 pub fn load(json: &str, registry: &Registry) -> Result<Graph, LoadError> {
     InstrumentDoc::from_json(json)?.build(registry)
 }
@@ -317,9 +320,10 @@ pub enum LoadWarning {
     },
     /// A warning that arose while loading a **nested** instrument (a voice or subpatch child,
     /// ADR-0032/0034), contextualized by the referencing parent node so provenance survives the
-    /// merge into the parent's warning list: child node addresses are child-relative until P4
-    /// inlining prefixes them, and two same-shaped children would otherwise be indistinguishable.
-    /// Nests recursively for deeper chains.
+    /// merge into the parent's warning list: warnings surface during the child's own load, while
+    /// its addresses are still child-relative (inline prefixing happens after), and two
+    /// same-shaped children would otherwise be indistinguishable. Nests recursively for deeper
+    /// chains.
     Nested {
         node: String,
         warning: Box<LoadWarning>,
@@ -398,8 +402,15 @@ fn load_doc_guarded(
     resolver: &dyn ResourceResolver,
     loading: &mut Vec<String>,
 ) -> Result<Loaded, LoadError> {
-    let mut graph = doc.build(registry)?;
-    let mut warnings = Vec::new();
+    // Build with the resolver threaded in (ADR-0034's resolution-ordering note): a `subpatch`
+    // node's boundary face only exists once its child is resolved, and it must exist *during*
+    // build pass 2 so the one wire type-checker covers boundary wires (§5) — so nested references
+    // resolve and inline inside `build`, earlier than the ADR-0016 pipeline resolves `sample`/
+    // `voice` refs below.
+    let Loaded {
+        mut graph,
+        mut warnings,
+    } = doc.build_nested(registry, Some(resolver), loading)?;
 
     // Resolve every referenced id once into the store; record id -> handle for binding.
     let mut store = ResourceStore::new();
@@ -473,52 +484,6 @@ fn load_doc_guarded(
             }
         }
         graph.nodes[key].op.bind_voices(voices);
-    }
-
-    // Subpatch pass (ADR-0034 §1, nesting P3): a `subpatch` node references another instrument patch
-    // and the loader carries the built sub-`Graph` on the **parent node** (`Node::subpatch`) — build-
-    // time data for the plan-build inline pass (P4), distinct from the Voicer's runtime-hosted voice
-    // graphs. The child is loaded through the full path, so its own resources resolve and its
-    // `interface` is ready for the boundary contract. Structural errors in the child are fatal; a
-    // missing id or a resolve failure degrades to a warning (ADR-0016), leaving the node with no
-    // sub-graph — `subpatch` is only ever Some(a built child), never a phantom empty graph, so the
-    // P4 inline pass can key on it. Not yet inlined (P4) and not type-checked across the boundary
-    // (P5).
-    //
-    // The source read + parse is deduped per id (like the sample pass's `handles`): N nodes naming
-    // one patch id fetch and parse it once, and an unavailable source warns once (`None` in the
-    // cache). Each node still loads its own child below — `Graph` is not `Clone`.
-    let mut patch_docs: BTreeMap<String, Option<InstrumentDoc>> = BTreeMap::new();
-    for n in &doc.nodes {
-        let Some(id) = &n.patch else { continue };
-        let Some(key) = graph.find(&n.address) else {
-            continue;
-        };
-        let Some(source) = lookup_source(doc, &n.address, "patch", id, &mut warnings) else {
-            continue;
-        };
-        if !patch_docs.contains_key(id) {
-            let child_doc = match resolver.resolve_text(source) {
-                Ok(text) => Some(InstrumentDoc::from_json(&text)?),
-                Err(e) => {
-                    let failed = LoadWarning::ResolveFailed {
-                        slot: "patch",
-                        id: id.clone(),
-                        source: source.clone(),
-                        reason: e.to_string(),
-                    };
-                    warnings.push(failed.nested_in(&n.address));
-                    None
-                }
-            };
-            patch_docs.insert(id.clone(), child_doc);
-        }
-        let Some(child_doc) = &patch_docs[id] else {
-            continue;
-        };
-        let loaded = load_child_guarded(child_doc, source, registry, resolver, loading)?;
-        warnings.extend(loaded.warnings.into_iter().map(|w| w.nested_in(&n.address)));
-        graph.nodes[key].subpatch = Some(Box::new(loaded.graph));
     }
 
     Ok(Loaded { graph, warnings })
@@ -611,7 +576,7 @@ fn resolve_instrument_slotted(
 /// The distinguishing core of [`resolve_instrument`]: `Ok(Ok)` is a built child, `Ok(Err)` is an
 /// unavailable source (a `resolve_text` failure, non-fatal per ADR-0016) surfaced as the warning
 /// so each caller picks its own degradation — the voice pass binds silence (empty graphs), the
-/// subpatch pass leaves the node with **no** sub-graph rather than a phantom empty one. `slot`
+/// subpatch pass dissolves the reference dark (nothing spliced in). `slot`
 /// names the resource slot the ref came through (`"voice"`/`"patch"`) for the warning. Cycles
 /// are refused before resolving: a `source` already on the `loading` stack (a voice/patch chain
 /// re-entering itself) is a fatal [`LoadError::CyclicResource`], keyed on the source string — the
@@ -676,11 +641,45 @@ impl InstrumentDoc {
     ///
     /// Two passes: pass 1 creates every node and applies its `config` constants and literal
     /// `inputs`; pass 2 resolves wire-refs (which may name a node declared later) into edges,
-    /// type-checking each `Arg` type (ADR-0030).
+    /// type-checking each `Arg` type (ADR-0030). Between them, the subpatch pass (ADR-0034)
+    /// inlines nested instruments.
+    ///
+    /// This path resolves no resources, so a nested reference cannot be loaded: every `subpatch`
+    /// node dissolves *dark* — no child is spliced in, and wires/taps touching it are dropped
+    /// (the same degradation an unavailable child gets on the full path). Use [`load_instrument`]
+    /// to resolve and inline nested instruments.
     pub fn build(&self, registry: &Registry) -> Result<Graph, LoadError> {
+        Ok(self.build_nested(registry, None, &mut Vec::new())?.graph)
+    }
+
+    /// [`build`](Self::build) with the nesting machinery threaded through (ADR-0034's
+    /// resolution-ordering note): `resolver` loads `subpatch` children so their boundary faces
+    /// exist during pass 2 (`None` — the plain [`load`]/[`build`] path — dissolves every nested
+    /// reference dark without loading it); `loading` is the cycle-guard stack shared with
+    /// [`load_child_guarded`]. Returns the built graph plus availability warnings from nested
+    /// loads.
+    fn build_nested(
+        &self,
+        registry: &Registry,
+        resolver: Option<&dyn ResourceResolver>,
+        loading: &mut Vec<String>,
+    ) -> Result<Loaded, LoadError> {
         let mut graph = Graph::new();
-        // address -> (key, descriptor) for resolving wire-refs and outputs.
-        let mut by_addr: BTreeMap<&str, (crate::graph::NodeKey, Descriptor)> = BTreeMap::new();
+        let mut warnings = Vec::new();
+        // address -> (key, descriptor) for resolving wire-refs and outputs. Document nodes only:
+        // spliced subpatch internals are deliberately not wireable — the boundary face is the
+        // contract (ADR-0034 §3's namespace scopes OSC reachability, not wiring).
+        let mut by_addr: BTreeMap<String, (crate::graph::NodeKey, Descriptor)> = BTreeMap::new();
+        // Every claimed address — document nodes *and* spliced subpatch internals — so the
+        // duplicate check also catches post-prefix collisions (fatal, ADR-0034 §3).
+        let mut addresses: BTreeSet<String> = BTreeSet::new();
+        // Synthesized boundary face per subpatch address (ADR-0034 §4): the owned-string port set
+        // pass 2 resolves boundary wires against.
+        let mut faces: BTreeMap<String, BoundaryFace> = BTreeMap::new();
+        // Subpatch addresses that dissolved dark — child unavailable (a warning, ADR-0016) or no
+        // resolver on this path. Wires and taps touching them are dropped, so the instrument
+        // still loads and the nest plays as silence, like a missing voice patch.
+        let mut dark: BTreeSet<String> = BTreeSet::new();
 
         // Pass 1: nodes, config constants, literal inputs.
         for n in &self.nodes {
@@ -690,7 +689,7 @@ impl InstrumentDoc {
                     address: n.address.clone(),
                     type_name: n.type_name.clone(),
                 })?;
-            if by_addr.contains_key(n.address.as_str()) {
+            if !addresses.insert(n.address.clone()) {
                 return Err(LoadError::DuplicateAddress(n.address.clone()));
             }
             let descriptor = entry.descriptor.clone();
@@ -705,12 +704,18 @@ impl InstrumentDoc {
                     });
                 }
             }
+            if descriptor.has_resource("patch") {
+                // A nested-instrument reference (ADR-0034): no graph node is created — the
+                // subpatch pass below splices the child's nodes in and the reference dissolves
+                // (§2). Its `inputs` are boundary values, validated there against the
+                // synthesized face rather than this (portless) descriptor.
+                continue;
+            }
             let key = graph.add_boxed(&n.address, (entry.make)(), descriptor.clone());
             // Retain the logical resource ids so `from_graph` round-trips the reference on save
             // (the resolved bytes/sub-graphs are bound out-of-band and do not survive the build).
             graph.nodes[key].sample_id = n.sample.clone();
             graph.nodes[key].voice_id = n.voice.clone();
-            graph.nodes[key].patch_id = n.patch.clone();
 
             // `config`: every name must be a declared Constant (ADR-0035); apply it at its slot.
             for (name, value) in &n.config {
@@ -768,23 +773,168 @@ impl InstrumentDoc {
                 }
             }
 
-            by_addr.insert(&n.address, (key, descriptor));
+            by_addr.insert(n.address.clone(), (key, descriptor));
         }
 
-        // Pass 2: wire-refs -> edges (Arg-type-checked).
+        // Subpatch pass (ADR-0034 §2, nesting P4): resolve each nested reference, load the child
+        // through the full path (its own resources bind and its own nests inline — recursion),
+        // then splice it into this graph: internal addresses take this node's address as a prefix,
+        // edges are remapped, and the boundary face is synthesized from the child's `interface`.
+        // The `subpatch` node itself never materializes — it dissolves into its child's nodes.
+        // Structural errors in a resolved child stay fatal; availability failures leave the
+        // address dark (see above). The source read + parse is deduped per id (like the sample
+        // pass's `handles`); each node still builds its own child — `Graph` is not `Clone` — so
+        // two reuses get disjoint nodes, addresses, and state for free.
+        let mut patch_docs: BTreeMap<String, Option<InstrumentDoc>> = BTreeMap::new();
         for n in &self.nodes {
-            let (dst_key, dst_desc) = lookup(&by_addr, &n.address)?;
+            let nested = registry
+                .get(&n.type_name)
+                .is_some_and(|e| e.descriptor.has_resource("patch"));
+            if !nested {
+                continue;
+            }
+            let (Some(resolver), Some(id)) = (resolver, &n.patch) else {
+                // No resolver (this path resolves no resources) or no `patch` ref: nothing to
+                // inline — the reference dissolves dark.
+                dark.insert(n.address.clone());
+                continue;
+            };
+            let Some(source) = lookup_source(self, &n.address, "patch", id, &mut warnings) else {
+                dark.insert(n.address.clone());
+                continue;
+            };
+            if !patch_docs.contains_key(id) {
+                let child_doc = match resolver.resolve_text(source) {
+                    Ok(text) => Some(InstrumentDoc::from_json(&text)?),
+                    Err(e) => {
+                        let failed = LoadWarning::ResolveFailed {
+                            slot: "patch",
+                            id: id.clone(),
+                            source: source.clone(),
+                            reason: e.to_string(),
+                        };
+                        warnings.push(failed.nested_in(&n.address));
+                        None
+                    }
+                };
+                patch_docs.insert(id.clone(), child_doc);
+            }
+            let Some(child_doc) = &patch_docs[id] else {
+                dark.insert(n.address.clone());
+                continue;
+            };
+            let loaded = load_child_guarded(child_doc, source, registry, resolver, loading)?;
+            warnings.extend(loaded.warnings.into_iter().map(|w| w.nested_in(&n.address)));
+            let face = splice_subpatch(&mut graph, loaded.graph, &n.address, &mut addresses)?;
+
+            // Boundary literals (ADR-0034 §1: `"wet": 0.3`): validated against the face and the
+            // inner port the interface names, then applied as that inner node's value-override.
+            // Errors speak in boundary terms — the subpatch address and external port name —
+            // never the prefixed internal address.
+            for (name, value) in &n.inputs {
+                let arg = match value {
+                    InputValue::Wire { .. } => continue, // pass 2
+                    InputValue::Number(v) => Arg::F32(*v as f32),
+                    InputValue::Symbol(s) => Arg::Str(s.clone()),
+                };
+                let Some(fp) = face.input(name) else {
+                    return Err(LoadError::UnknownInput {
+                        node: n.address.clone(),
+                        input: name.clone(),
+                    });
+                };
+                // Mirror pass 1's literal rules against the *inner* port: a number needs a
+                // materialized `Float` or an enum, a symbol needs an enum naming that variant.
+                let inner_name: &'static str = {
+                    let d = &graph.nodes[fp.node].descriptor;
+                    let inner_name = d.inputs[fp.port].name;
+                    let settable = match value {
+                        InputValue::Symbol(_) => d.enum_input(inner_name).is_some(),
+                        _ => {
+                            d.materialized_input(inner_name).is_some()
+                                || d.enum_input(inner_name).is_some()
+                        }
+                    };
+                    if !settable {
+                        return Err(LoadError::UnknownInput {
+                            node: n.address.clone(),
+                            input: name.clone(),
+                        });
+                    }
+                    if let (InputValue::Symbol(s), Some((_, e))) = (value, d.enum_input(inner_name))
+                    {
+                        if e.resolve(s).is_none() {
+                            return Err(LoadError::BadInputValue {
+                                node: n.address.clone(),
+                                input: name.clone(),
+                                value: s.clone(),
+                            });
+                        }
+                    }
+                    inner_name
+                };
+                graph.set_value(fp.node, inner_name, &arg);
+            }
+            faces.insert(n.address.clone(), face);
+        }
+
+        // Pass 2: wire-refs -> edges (Arg-type-checked). A subpatch endpoint resolves through its
+        // synthesized boundary face (ADR-0034 §4/§5) to the inner `(node, port)` its interface
+        // names — the same check that guards every other wire covers boundary wires, and the edge
+        // lands directly on the inner target, so the splice introduces no untyped edge. Because
+        // the face carries the inner port's type verbatim, checking against the face *is*
+        // checking against the inner port. Errors name the boundary port (`/reverb.wet`), never
+        // the prefixed internal address.
+        for n in &self.nodes {
+            if dark.contains(&n.address) {
+                continue; // unavailable nest: its boundary wires are dropped with the warning
+            }
             for (name, value) in &n.inputs {
                 let InputValue::Wire { from } = value else {
                     continue;
                 };
-                let dst_port = in_port(dst_desc, &n.address, name)?;
+                // Destination: this node's input port, or — on a subpatch — its face input.
+                let (dst_key, dst_port, to_ty) = match faces.get(&n.address) {
+                    Some(face) => {
+                        let fp = face.input(name).ok_or_else(|| LoadError::UnknownPort {
+                            node: n.address.clone(),
+                            port: name.clone(),
+                        })?;
+                        (fp.node, fp.port, fp.ty.clone())
+                    }
+                    None => {
+                        let (dst_key, dst_desc) = lookup(&by_addr, &n.address)?;
+                        let dst_port = in_port(dst_desc, &n.address, name)?;
+                        (dst_key, dst_port, dst_desc.inputs[dst_port].ty.clone())
+                    }
+                };
+                // Source: a node's output port, or a subpatch's face output.
                 let (src_addr, src_port_name) = parse_wire(from);
-                let (src_key, src_desc) = lookup(&by_addr, src_addr)?;
-                let src_port = resolve_out_port(src_desc, &n.address, from, src_port_name)?;
+                if dark.contains(src_addr) {
+                    continue; // wire from an unavailable nest: dropped (the input keeps its default)
+                }
+                let (src_key, src_port, from_ty, from_label) = match faces.get(src_addr) {
+                    Some(face) => {
+                        let fp = face.output(src_addr, from, src_port_name)?;
+                        (
+                            fp.node,
+                            fp.port,
+                            fp.ty.clone(),
+                            format!("{}.{}", src_addr, fp.name),
+                        )
+                    }
+                    None => {
+                        let (src_key, src_desc) = lookup(&by_addr, src_addr)?;
+                        let src_port = resolve_out_port(src_desc, &n.address, from, src_port_name)?;
+                        (
+                            src_key,
+                            src_port,
+                            src_desc.outputs[src_port].ty.clone(),
+                            format!("{}.{}", src_addr, src_desc.outputs[src_port].name),
+                        )
+                    }
+                };
 
-                let from_ty = &src_desc.outputs[src_port].ty;
-                let to_ty = &dst_desc.inputs[dst_port].ty;
                 // Equal types wire directly. `F32` and `Buffer` interconvert (ADR-0030): an `F32`
                 // source into a `Buffer` port ZOH-materializes, and a `Buffer` source into an `F32`
                 // control port is shared and read per-sample via `io.input::<&[f32]>` (the
@@ -797,26 +947,38 @@ impl InstrumentDoc {
                 // anything is rejected here, not left silently dead. Anything else is illegal.
                 let compatible = from_ty == to_ty
                     || matches!(
-                        (from_ty, to_ty),
+                        (&from_ty, &to_ty),
                         (PortType::F32, PortType::F32Buffer) | (PortType::F32Buffer, PortType::F32)
                     )
                     || (matches!(to_ty, PortType::Arg) && crate::boundary::has_osc_form(from_ty));
                 if !compatible {
                     return Err(LoadError::TypeMismatch {
-                        from: format!("{}.{}", src_addr, src_desc.outputs[src_port].name),
-                        from_type: Box::new(from_ty.clone()),
+                        from: from_label,
+                        from_type: Box::new(from_ty),
                         to: format!("{}.{}", n.address, name),
-                        to_type: Box::new(to_ty.clone()),
+                        to_type: Box::new(to_ty),
                     });
                 }
                 graph.connect(src_key, src_port, dst_key, dst_port);
             }
         }
 
-        // `outputs`: master taps (ADR-0026).
+        // `outputs`: master taps (ADR-0026). A tap on a subpatch resolves through its face to the
+        // inner output the interface names; a dark subpatch's tap is dropped (silence).
         for o in &self.outputs {
-            let (key, desc) = lookup(&by_addr, &o.node)?;
-            let port = out_port(desc, o)?;
+            if dark.contains(&o.node) {
+                continue;
+            }
+            let (key, port) = match faces.get(&o.node) {
+                Some(face) => {
+                    let fp = face.output(&o.node, &o.port, Some(&o.port))?;
+                    (fp.node, fp.port)
+                }
+                None => {
+                    let (key, desc) = lookup(&by_addr, &o.node)?;
+                    (key, out_port(desc, o)?)
+                }
+            };
             match o.channel {
                 Some(channel) => graph.tap_output_channel(key, port, channel),
                 None => graph.tap_output(key, port),
@@ -825,31 +987,62 @@ impl InstrumentDoc {
 
         // `interface`: the engine-honored I/O boundary (ADR-0032). Each external name resolves to
         // one internal `(node, port)`, direction-checked — an `inputs` name to an input port, an
-        // `outputs` name to an output port (sole-output sugar allowed). Stored on the Graph for the
-        // host Voicer to bind; no Arg-type check here (the host's contract decides port types).
+        // `outputs` name to an output port (sole-output sugar allowed). Stored on the Graph for a
+        // host Voicer or a nesting parent to bind; no Arg-type check here (the boundary inherits
+        // the inner port's type — ADR-0034 §4 — so the consumer's wire check decides). An entry
+        // may point at a subpatch's boundary port (re-export): it resolves through the face to
+        // the same inner `(node, port)`. An entry on a dark subpatch is dropped — the boundary
+        // port vanishes with the unavailable child.
         if let Some(iface) = &self.interface {
             let mut interface = Interface::default();
             for (name, reference) in &iface.inputs {
                 let (src_addr, port) = parse_wire(reference);
-                let (key, desc) = lookup(&by_addr, src_addr)?;
+                if dark.contains(src_addr) {
+                    continue;
+                }
                 // An input ref must name its port explicitly — there is no sole-input sugar.
                 let port_name = port.ok_or_else(|| LoadError::UnknownPort {
                     node: src_addr.to_string(),
                     port: reference.clone(),
                 })?;
-                let idx = in_port(desc, src_addr, port_name)?;
+                let (key, idx) = match faces.get(src_addr) {
+                    Some(face) => {
+                        let fp = face
+                            .input(port_name)
+                            .ok_or_else(|| LoadError::UnknownPort {
+                                node: src_addr.to_string(),
+                                port: port_name.to_string(),
+                            })?;
+                        (fp.node, fp.port)
+                    }
+                    None => {
+                        let (key, desc) = lookup(&by_addr, src_addr)?;
+                        (key, in_port(desc, src_addr, port_name)?)
+                    }
+                };
                 interface.inputs.insert(name.clone(), (key, idx));
             }
             for (name, reference) in &iface.outputs {
                 let (src_addr, port) = parse_wire(reference);
-                let (key, desc) = lookup(&by_addr, src_addr)?;
-                let idx = resolve_out_port(desc, src_addr, reference, port)?;
+                if dark.contains(src_addr) {
+                    continue;
+                }
+                let (key, idx) = match faces.get(src_addr) {
+                    Some(face) => {
+                        let fp = face.output(src_addr, reference, port)?;
+                        (fp.node, fp.port)
+                    }
+                    None => {
+                        let (key, desc) = lookup(&by_addr, src_addr)?;
+                        (key, resolve_out_port(desc, src_addr, reference, port)?)
+                    }
+                };
                 interface.outputs.insert(name.clone(), (key, idx));
             }
             graph.interface = interface;
         }
 
-        Ok(graph)
+        Ok(Loaded { graph, warnings })
     }
 
     /// Derive a document from a built [`Graph`] (the canonical "save" path). Nodes are emitted in
@@ -926,9 +1119,13 @@ impl InstrumentDoc {
                     // Logical resource ids round-trip from the ids stashed at build (ADR-0016
                     // `sample`, ADR-0032 `voice`). The decoded bytes/sub-graphs are bound
                     // out-of-band and are *not* reconstructed here — reload re-resolves from the id.
+                    // No `patch`: a subpatch dissolves at build (ADR-0034 §2), so a built graph
+                    // holds only the flattened equivalent — this save emits the inlined child
+                    // nodes, not the reference. Reference-preserving save is the library thread
+                    // (P7, #122); the *document*-level round-trip keeps `patch` via serde.
                     sample: node.sample_id.clone(),
                     voice: node.voice_id.clone(),
-                    patch: node.patch_id.clone(),
+                    patch: None,
                     // Control metadata (ADR-0018) lives on the document, not the built Graph, so the
                     // save-from-graph path does not reconstruct it; document-level round-trip
                     // (load → re-serialize) preserves it via serde.
@@ -990,13 +1187,139 @@ impl InstrumentDoc {
 }
 
 fn lookup<'a>(
-    by_addr: &'a BTreeMap<&str, (crate::graph::NodeKey, Descriptor)>,
+    by_addr: &'a BTreeMap<String, (crate::graph::NodeKey, Descriptor)>,
     node: &str,
 ) -> Result<(crate::graph::NodeKey, &'a Descriptor), LoadError> {
     by_addr
         .get(node)
         .map(|(k, d)| (*k, d))
         .ok_or_else(|| LoadError::UnknownNode(node.to_string()))
+}
+
+/// The synthesized boundary face of a `subpatch` node (ADR-0034 §4): one port per `interface`
+/// name of the resolved child, each carrying the **inner** port's [`PortType`] verbatim (type
+/// inherited, never overridable) and the inlined `(node, port)` it resolves to. An owned-string
+/// artifact computed at build — deliberately *not* the engine [`Descriptor`], whose names are
+/// `&'static str` because operators are compile-time-registered (ADR-0024/0025). It exists only
+/// long enough to resolve + type-check the parent's boundary wires and then drops with the build
+/// scope; the runtime holds no synthesized descriptor at all (what keeps §2's "zero runtime cost"
+/// honest).
+struct BoundaryFace {
+    /// External input name → inner `(node, input port)` + its type, name-sorted (BTreeMap order).
+    inputs: Vec<FacePort>,
+    /// External output name → inner `(node, output port)` + its type, name-sorted.
+    outputs: Vec<FacePort>,
+}
+
+/// One synthesized boundary port: the external name and the inlined internal target it stands for.
+struct FacePort {
+    name: String,
+    ty: PortType,
+    node: crate::graph::NodeKey,
+    port: usize,
+}
+
+impl BoundaryFace {
+    /// The face input named `name`, if the child's `interface` exposes one.
+    fn input(&self, name: &str) -> Option<&FacePort> {
+        self.inputs.iter().find(|p| p.name == name)
+    }
+
+    /// Resolve a face output like [`resolve_out_port`] does for a descriptor: the named port, or
+    /// — under the sole-output sugar (`port_name` = `None`) — the single output; ambiguous with
+    /// several. `node`/`reference` label the error in the author's terms.
+    fn output(
+        &self,
+        node: &str,
+        reference: &str,
+        port_name: Option<&str>,
+    ) -> Result<&FacePort, LoadError> {
+        match port_name {
+            Some(p) => {
+                self.outputs
+                    .iter()
+                    .find(|o| o.name == p)
+                    .ok_or_else(|| LoadError::UnknownPort {
+                        node: node.to_string(),
+                        port: p.to_string(),
+                    })
+            }
+            None if self.outputs.len() == 1 => Ok(&self.outputs[0]),
+            None => Err(LoadError::AmbiguousWire {
+                node: node.to_string(),
+                reference: reference.to_string(),
+            }),
+        }
+    }
+}
+
+/// Inline a resolved subpatch child into `parent` (ADR-0034 §2–§4): move every child node in
+/// under `prefix` (its address becomes `<prefix><child address>`, compounding for deeper nests),
+/// remap the child's edges onto the new keys, and synthesize the boundary face from the child's
+/// resolved `interface`. Prefixing is a pure naming transform — edges are `NodeKey`-resolved, so
+/// no wiring can break (§3) — and per-reuse state isolation is automatic: each call splices a
+/// freshly built child, so two reuses share no keys. A post-prefix address already claimed in
+/// `addresses` is the fatal [`LoadError::DuplicateAddress`] (§3). The child's master `outputs`
+/// taps do **not** cross the boundary — the `interface` is the whole contract (§4); a nested
+/// patch feeds the parent only through its boundary outputs.
+fn splice_subpatch(
+    parent: &mut Graph,
+    mut child: Graph,
+    prefix: &str,
+    addresses: &mut BTreeSet<String>,
+) -> Result<BoundaryFace, LoadError> {
+    let mut key_map: BTreeMap<crate::graph::NodeKey, crate::graph::NodeKey> = BTreeMap::new();
+    // Deterministic splice order: SlotMap iteration is insertion order, which is doc order.
+    let child_keys: Vec<crate::graph::NodeKey> = child.nodes.keys().collect();
+    for ck in child_keys {
+        let mut node = child.nodes.remove(ck).expect("child key just enumerated");
+        let address = format!("{prefix}{}", node.address);
+        if !addresses.insert(address.clone()) {
+            return Err(LoadError::DuplicateAddress(address));
+        }
+        node.address = address;
+        key_map.insert(ck, parent.nodes.insert(node));
+    }
+    for c in &child.connections {
+        parent.connections.push(crate::graph::Connection {
+            src: key_map[&c.src],
+            src_port: c.src_port,
+            dst: key_map[&c.dst],
+            dst_port: c.dst_port,
+        });
+    }
+
+    // Synthesize the face (§4): type inherited verbatim from the inner port the interface names.
+    let face_port = |(name, (ck, port)): (&String, &(crate::graph::NodeKey, usize)),
+                     output: bool| {
+        let node = key_map[ck];
+        let d = &parent.nodes[node].descriptor;
+        let ty = if output {
+            d.outputs[*port].ty.clone()
+        } else {
+            d.inputs[*port].ty.clone()
+        };
+        FacePort {
+            name: name.clone(),
+            ty,
+            node,
+            port: *port,
+        }
+    };
+    Ok(BoundaryFace {
+        inputs: child
+            .interface
+            .inputs
+            .iter()
+            .map(|e| face_port(e, false))
+            .collect(),
+        outputs: child
+            .interface
+            .outputs
+            .iter()
+            .map(|e| face_port(e, true))
+            .collect(),
+    })
 }
 
 /// Split a wire-ref string into `(node, Some(port))` (`"/osc.audio"`) or `(node, None)` (`"/osc"`,
@@ -1457,8 +1780,10 @@ mod tests {
         ));
     }
 
-    // ADR-0034 (nesting P3) — a `subpatch` node references an instrument patch and the loader
-    // carries the built sub-Graph on the parent node. Reuses the `VOICE_IFACE` patch as the child.
+    // ADR-0034 (nesting P4) — a `subpatch` node references an instrument patch; at build the
+    // child is loaded recursively and **inlined**: nodes spliced under the subpatch's address
+    // prefix, boundary wires resolved through the synthesized face, the node dissolved. Reuses
+    // the `VOICE_IFACE` patch as the child.
     const PARENT_WITH_SUBPATCH: &str = r#"{
         "instrument": "parent",
         "resources": { "myvoice": "voices/lead.json" },
@@ -1467,10 +1792,25 @@ mod tests {
         ]
     }"#;
 
+    // A parent exercising the whole boundary surface: a literal onto a face input, a wire out of
+    // a face output, and a master tap through the face.
+    const PARENT_WIRED: &str = r#"{
+        "instrument": "parent",
+        "resources": { "v": "voices/lead.json" },
+        "nodes": [
+            { "type": "subpatch", "address": "/sub", "patch": "v",
+              "inputs": { "freq": 220.0 } },
+            { "type": "output", "address": "/out",
+              "inputs": { "audio": { "from": "/sub.audio" } } }
+        ],
+        "outputs": [ { "node": "/out", "port": "audio" } ]
+    }"#;
+
     #[test]
-    fn subpatch_node_carries_resolved_subgraph() {
-        // The acceptance criterion: a parent referencing a sub-instrument loads to a Graph whose
-        // nested node carries the resolved sub-Graph + its Interface (ADR-0034 §1).
+    fn subpatch_inlines_child_under_prefixed_addresses() {
+        // The P4 acceptance shape (ADR-0034 §2–§3): the child's nodes are spliced in under the
+        // subpatch's address prefix and the subpatch node itself dissolves — no node named
+        // `/sub` survives, and the internals stay addressable as first-class parent nodes.
         let loaded = load_instrument(PARENT_WITH_SUBPATCH, &reg(), &PatchResolver(VOICE_IFACE))
             .expect("load");
         assert!(
@@ -1478,28 +1818,276 @@ mod tests {
             "clean load: {:?}",
             loaded.warnings
         );
-        let key = loaded.graph.find("/sub").expect("subpatch node exists");
-        let sub = loaded.graph.nodes[key]
-            .subpatch
-            .as_ref()
-            .expect("subpatch node carries the resolved sub-graph");
-        // The carried sub-graph IS the referenced patch — interface and all.
-        assert_eq!(sub.nodes.len(), 2);
-        assert!(sub.interface.inputs.contains_key("freq"));
-        assert!(sub.interface.outputs.contains_key("audio"));
-        // The logical id round-trips on the node (like `sample_id` / `voice_id`).
-        assert_eq!(loaded.graph.nodes[key].patch_id.as_deref(), Some("myvoice"));
+        assert!(
+            loaded.graph.find("/sub").is_none(),
+            "the subpatch node dissolves at build (§2)"
+        );
+        assert!(loaded.graph.find("/sub/osc").is_some());
+        assert!(loaded.graph.find("/sub/env").is_some());
+        assert_eq!(
+            loaded.graph.nodes.len(),
+            2,
+            "child nodes only, no host node"
+        );
     }
 
     #[test]
-    fn subpatch_missing_reference_warns() {
-        // A `patch` id absent from the `resources` table degrades to a warning (ADR-0016): the node
-        // carries no sub-graph and the load still succeeds — never a hard error.
+    fn boundary_wires_and_literals_resolve_through_the_face() {
+        // ADR-0034 §4–§5: a wire out of `/sub.audio` lands directly on the inner `(node, port)`
+        // the child interface names, and a literal onto `/sub.freq` becomes the inner node's
+        // value-override — both through the synthesized face, no subpatch node in between.
+        let loaded =
+            load_instrument(PARENT_WIRED, &reg(), &PatchResolver(VOICE_IFACE)).expect("load");
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        let g = &loaded.graph;
+        let osc = g.find("/sub/osc").expect("inlined child oscillator");
+        let out = g.find("/out").expect("parent output node");
+
+        // The boundary wire is one ordinary edge: inner osc.audio -> out.audio.
+        let audio_out = g.nodes[osc]
+            .descriptor
+            .outputs
+            .iter()
+            .position(|p| p.name == "audio")
+            .unwrap();
+        assert!(
+            g.connections
+                .iter()
+                .any(|c| c.src == osc && c.src_port == audio_out && c.dst == out),
+            "face output rewired to the inner target: {:?}",
+            g.connections
+        );
+
+        // The boundary literal seeded the inner oscillator's freq override.
+        let (freq_port, _) = g.nodes[osc].descriptor.materialized_input("freq").unwrap();
+        assert!(
+            g.nodes[osc]
+                .value_overrides
+                .iter()
+                .any(|(p, a)| *p == freq_port && *a == Arg::F32(220.0)),
+            "boundary literal lands as the inner value-override: {:?}",
+            g.nodes[osc].value_overrides
+        );
+
+        // The master tap on /out survives untouched.
+        assert_eq!(g.outputs.len(), 1);
+    }
+
+    #[test]
+    fn master_tap_through_the_face_resolves_to_the_inner_output() {
+        // An `outputs` tap naming the subpatch resolves through the face to the inner port.
+        let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"v"}],
+            "outputs":[{"node":"/sub","port":"audio"}]}"#;
+        let loaded = load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)).expect("load");
+        let osc = loaded.graph.find("/sub/osc").unwrap();
+        assert_eq!(loaded.graph.outputs.len(), 1);
+        assert_eq!(loaded.graph.outputs[0].0, osc);
+    }
+
+    #[test]
+    fn sole_output_sugar_is_ambiguous_on_a_two_output_face() {
+        // `"/sub"` with no port: VOICE_IFACE exposes two boundary outputs (audio, active), so the
+        // sugar is ambiguous — same rule as a two-output operator, named in boundary terms.
+        let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"v"},
+            {"type":"output","address":"/out","inputs":{"audio":{"from":"/sub"}}}]}"#;
+        assert!(matches!(
+            load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)),
+            Err(LoadError::AmbiguousWire { .. })
+        ));
+    }
+
+    #[test]
+    fn sole_output_sugar_resolves_on_a_single_output_face() {
+        const MONO_CHILD: &str = r#"{
+            "instrument": "mono",
+            "interface": { "outputs": { "audio": "/osc.audio" } },
+            "nodes": [ { "type": "oscillator", "address": "/osc" } ]
+        }"#;
+        let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"v"},
+            {"type":"output","address":"/out","inputs":{"audio":{"from":"/sub"}}}]}"#;
+        let loaded = load_instrument(json, &reg(), &PatchResolver(MONO_CHILD)).expect("load");
+        assert_eq!(loaded.graph.connections.len(), 1);
+    }
+
+    #[test]
+    fn unknown_boundary_port_errors_in_boundary_terms() {
+        // A wire into a face input the interface doesn't expose: UnknownPort naming the subpatch
+        // address and the external name — never the prefixed internals (P5 hardens this further).
+        let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"oscillator","address":"/osc"},
+            {"type":"subpatch","address":"/sub","patch":"v",
+             "inputs":{"nope":{"from":"/osc.audio"}}}]}"#;
+        assert!(matches!(
+            load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)),
+            Err(LoadError::UnknownPort { node, port }) if node == "/sub" && port == "nope"
+        ));
+        // A literal onto a missing boundary input follows pass 1's rule: UnknownInput.
+        let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"v","inputs":{"nope":1.0}}]}"#;
+        assert!(matches!(
+            load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)),
+            Err(LoadError::UnknownInput { node, input }) if node == "/sub" && input == "nope"
+        ));
+    }
+
+    #[test]
+    fn type_mismatch_across_the_boundary_is_fatal() {
+        // The face inherits the inner port's type verbatim (§4), so the ordinary pass-2 check
+        // rejects an illegal boundary wire: osc.audio (Buffer) into a Note boundary input. The
+        // error speaks in boundary terms (`/sub.notes`).
+        const NOTE_CHILD: &str = r#"{
+            "instrument": "notes",
+            "interface": { "inputs": { "notes": "/v.notes" } },
+            "nodes": [ { "type": "voicer", "address": "/v" } ]
+        }"#;
+        let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"oscillator","address":"/osc"},
+            {"type":"subpatch","address":"/sub","patch":"v",
+             "inputs":{"notes":{"from":"/osc.audio"}}}]}"#;
+        assert!(matches!(
+            load_instrument(json, &reg(), &PatchResolver(NOTE_CHILD)),
+            Err(LoadError::TypeMismatch { to, .. }) if to == "/sub.notes"
+        ));
+    }
+
+    #[test]
+    fn boundary_enum_symbol_literal_reaches_the_inner_port() {
+        // A symbol literal on a boundary input resolves against the *inner* enum port; an unknown
+        // variant is BadInputValue named at the boundary (ADR-0028: never snaps to default).
+        const FILTER_CHILD: &str = r#"{
+            "instrument": "fx",
+            "interface": { "inputs": { "mode": "/f.mode" } },
+            "nodes": [ { "type": "filter", "address": "/f" } ]
+        }"#;
+        let ok = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"v","inputs":{"mode":"Hp"}}]}"#;
+        let loaded = load_instrument(ok, &reg(), &PatchResolver(FILTER_CHILD)).expect("load");
+        let f = loaded.graph.find("/sub/f").unwrap();
+        assert!(
+            !loaded.graph.nodes[f].value_overrides.is_empty(),
+            "symbol literal seeds the inner enum override"
+        );
+        let bad = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"v","inputs":{"mode":"Nope"}}]}"#;
+        assert!(matches!(
+            load_instrument(bad, &reg(), &PatchResolver(FILTER_CHILD)),
+            Err(LoadError::BadInputValue { node, input, .. })
+                if node == "/sub" && input == "mode"
+        ));
+    }
+
+    #[test]
+    fn post_prefix_address_collision_is_fatal() {
+        // ADR-0034 §3: a child address that, after prefixing, collides with an existing parent
+        // address is a DuplicateAddress load error — the uniqueness check runs over the
+        // post-inline address set.
+        let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"oscillator","address":"/sub/osc"},
+            {"type":"subpatch","address":"/sub","patch":"v"}]}"#;
+        assert!(matches!(
+            load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)),
+            Err(LoadError::DuplicateAddress(a)) if a == "/sub/osc"
+        ));
+    }
+
+    #[test]
+    fn nested_in_nested_compounds_prefixes_and_reexports() {
+        // Two levels (§3): the middle patch nests a child and re-exports its boundary input as
+        // its own (`freq: "/inner.freq"` resolves through the inner face). Addresses compound:
+        // /outer/inner/osc. The outer literal flows through both boundaries to the innermost
+        // oscillator.
+        struct Chain;
+        impl ResourceResolver for Chain {
+            fn resolve(&self, s: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
+                Err(crate::resources::ResolveError::NotFound(s.to_string()))
+            }
+            fn resolve_text(&self, source: &str) -> Result<String, crate::resources::ResolveError> {
+                Ok(match source {
+                    "mid.json" => {
+                        r#"{"instrument":"mid",
+                            "resources":{"leaf":"leaf.json"},
+                            "interface":{"inputs":{"freq":"/inner.freq"},
+                                         "outputs":{"audio":"/inner.audio"}},
+                            "nodes":[{"type":"subpatch","address":"/inner","patch":"leaf"}]}"#
+                    }
+                    _ => {
+                        r#"{"instrument":"leaf",
+                            "interface":{"inputs":{"freq":"/osc.freq"},
+                                         "outputs":{"audio":"/osc.audio"}},
+                            "nodes":[{"type":"oscillator","address":"/osc"}]}"#
+                    }
+                }
+                .to_string())
+            }
+        }
+        let json = r#"{"instrument":"p","resources":{"m":"mid.json"},"nodes":[
+            {"type":"subpatch","address":"/outer","patch":"m","inputs":{"freq":330.0}},
+            {"type":"output","address":"/out","inputs":{"audio":{"from":"/outer.audio"}}}],
+            "outputs":[{"node":"/out","port":"audio"}]}"#;
+        let loaded = load_instrument(json, &reg(), &Chain).expect("load");
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        let g = &loaded.graph;
+        assert!(g.find("/outer").is_none(), "outer subpatch dissolved");
+        assert!(g.find("/outer/inner").is_none(), "inner subpatch dissolved");
+        let osc = g
+            .find("/outer/inner/osc")
+            .expect("compounded prefix reaches the innermost node");
+        // The outer boundary literal flowed through the re-export to the innermost oscillator.
+        let (freq_port, _) = g.nodes[osc].descriptor.materialized_input("freq").unwrap();
+        assert!(g.nodes[osc]
+            .value_overrides
+            .iter()
+            .any(|(p, a)| *p == freq_port && *a == Arg::F32(330.0)));
+        // And the boundary wire chain resolved to one ordinary edge onto /out.
+        assert_eq!(g.connections.len(), 1);
+    }
+
+    #[test]
+    fn child_master_taps_do_not_cross_the_boundary() {
+        // The interface is the whole contract (§4): a child's own master `outputs` taps vanish on
+        // inline — a nested patch feeds the parent only through its boundary outputs.
+        const TAPPED_CHILD: &str = r#"{
+            "instrument": "standalone",
+            "interface": { "outputs": { "audio": "/osc.audio" } },
+            "nodes": [ { "type": "oscillator", "address": "/osc" } ],
+            "outputs": [ { "node": "/osc", "port": "audio" } ]
+        }"#;
+        let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"v"}]}"#;
+        let loaded = load_instrument(json, &reg(), &PatchResolver(TAPPED_CHILD)).expect("load");
+        assert!(
+            loaded.graph.outputs.is_empty(),
+            "child taps must not reach the parent master"
+        );
+    }
+
+    #[test]
+    fn subpatch_missing_reference_warns_and_dissolves_dark() {
+        // A `patch` id absent from the `resources` table degrades to a warning (ADR-0016): the
+        // reference dissolves dark — no node, no children — and wires/taps touching it are
+        // dropped, so the instrument still loads and plays (silence through the nest), like a
+        // missing voice patch. Never a hard error.
         let json = r#"{"instrument":"p","nodes":[
-            {"type":"subpatch","address":"/sub","patch":"absent"}]}"#;
+            {"type":"subpatch","address":"/sub","patch":"absent"},
+            {"type":"output","address":"/out","inputs":{"audio":{"from":"/sub.audio"}}}],
+            "outputs":[{"node":"/sub","port":"audio"},{"node":"/out","port":"audio"}]}"#;
         let loaded = load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)).expect("non-fatal");
-        let key = loaded.graph.find("/sub").unwrap();
-        assert!(loaded.graph.nodes[key].subpatch.is_none());
+        assert!(
+            loaded.graph.find("/sub").is_none(),
+            "dark nest leaves no node"
+        );
+        assert!(
+            loaded.graph.connections.is_empty(),
+            "the wire from the dark boundary is dropped"
+        );
+        assert_eq!(
+            loaded.graph.outputs.len(),
+            1,
+            "the dark tap is dropped; /out's own tap survives"
+        );
         // The warning names the slot that actually failed — a `patch` ref, not a sample.
         assert!(matches!(
             loaded.warnings.as_slice(),
@@ -1512,11 +2100,10 @@ mod tests {
     }
 
     #[test]
-    fn subpatch_resolve_failure_warns_and_carries_no_subgraph() {
+    fn subpatch_resolve_failure_warns_and_dissolves_dark() {
         // The id resolves to a source, but `resolve_text` fails (the default `Failing` resolver):
-        // non-fatal per ADR-0016 — a ResolveFailed warning, never a hard error. Like the missing-id
-        // case, the node carries NO sub-graph: `subpatch` is never a phantom empty child, so the P4
-        // inline pass can key on `is_some()`.
+        // non-fatal per ADR-0016 — a ResolveFailed warning, never a hard error. Like the
+        // missing-id case, the reference dissolves dark: nothing is spliced in.
         struct Failing;
         impl ResourceResolver for Failing {
             fn resolve(&self, s: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
@@ -1533,8 +2120,7 @@ mod tests {
                 if node == "/sub"
                     && matches!(warning.as_ref(), LoadWarning::ResolveFailed { slot: "patch", .. })
         ));
-        let key = loaded.graph.find("/sub").unwrap();
-        assert!(loaded.graph.nodes[key].subpatch.is_none());
+        assert!(loaded.graph.nodes.is_empty(), "nothing spliced in");
     }
 
     #[test]
@@ -1575,10 +2161,9 @@ mod tests {
         let resolver = Counting(Cell::new(0));
         let loaded = load_instrument(json, &reg(), &resolver).expect("load");
         assert_eq!(resolver.0.get(), 1, "one read serves both nodes");
-        let one = loaded.graph.find("/one").unwrap();
-        let two = loaded.graph.find("/two").unwrap();
-        assert!(loaded.graph.nodes[one].subpatch.is_some());
-        assert!(loaded.graph.nodes[two].subpatch.is_some());
+        // Each reuse still gets its own inlined child — disjoint prefixes, disjoint state (§3).
+        assert!(loaded.graph.find("/one/osc").is_some());
+        assert!(loaded.graph.find("/two/osc").is_some());
     }
 
     #[test]
@@ -1676,10 +2261,8 @@ mod tests {
         let loaded =
             load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)).expect("reuse loads");
         assert!(loaded.warnings.is_empty());
-        let one = loaded.graph.find("/one").unwrap();
-        let two = loaded.graph.find("/two").unwrap();
-        assert!(loaded.graph.nodes[one].subpatch.is_some());
-        assert!(loaded.graph.nodes[two].subpatch.is_some());
+        assert!(loaded.graph.find("/one/osc").is_some());
+        assert!(loaded.graph.find("/two/osc").is_some());
     }
 
     #[test]
@@ -1695,15 +2278,28 @@ mod tests {
     }
 
     #[test]
-    fn patch_id_round_trips_through_from_graph() {
-        // The logical `patch` id is retained on the node (like sample/voice) so save reconstructs the
-        // reference; the resolved sub-graph is bound out-of-band and does not round-trip.
-        let json = r#"{"instrument":"p","nodes":[
-            {"type":"subpatch","address":"/sub","patch":"myvoice"}]}"#;
-        let g = load(json, &reg()).expect("load");
-        let saved = InstrumentDoc::from_graph(&g, "p");
-        let n = saved.nodes.iter().find(|n| n.address == "/sub").unwrap();
-        assert_eq!(n.patch.as_deref(), Some("myvoice"));
+    fn patch_ref_round_trips_through_the_document() {
+        // The nested reference lives in the *document*: parse → re-serialize preserves `patch`
+        // via serde. (A built graph holds only the flattened equivalent — see the test below;
+        // reference-preserving save from a built graph is the library thread, P7/#122.)
+        let doc = InstrumentDoc::from_json(PARENT_WITH_SUBPATCH).expect("parse");
+        let reparsed = InstrumentDoc::from_json(&doc.to_json_pretty()).expect("reparse");
+        assert_eq!(doc, reparsed);
+        assert_eq!(reparsed.nodes[0].patch.as_deref(), Some("myvoice"));
+    }
+
+    #[test]
+    fn from_graph_saves_the_flattened_equivalent() {
+        // ADR-0034 §2: the subpatch dissolves at build, so saving a built graph emits the inlined
+        // child nodes under their prefixed addresses — no `subpatch` node, no `patch` ref. The
+        // deliberate P4 shape; reference-preserving save is P7 (#122).
+        let loaded = load_instrument(PARENT_WITH_SUBPATCH, &reg(), &PatchResolver(VOICE_IFACE))
+            .expect("load");
+        let saved = InstrumentDoc::from_graph(&loaded.graph, "p");
+        let addrs: Vec<&str> = saved.nodes.iter().map(|n| n.address.as_str()).collect();
+        assert_eq!(addrs, ["/sub/env", "/sub/osc"], "flattened, prefixed nodes");
+        assert!(saved.nodes.iter().all(|n| n.patch.is_none()));
+        assert!(saved.nodes.iter().all(|n| n.type_name != "subpatch"));
     }
 
     #[test]
