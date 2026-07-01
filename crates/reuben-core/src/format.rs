@@ -299,10 +299,18 @@ pub fn load(json: &str, registry: &Registry) -> Result<Graph, LoadError> {
 /// because they are authoring errors, just not crashing ones.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LoadWarning {
-    /// A node names a resource id absent from the `resources` table.
-    MissingResource { node: String, id: String },
-    /// A resource id resolves to a source that could not be loaded/decoded.
+    /// A node names a resource id absent from the `resources` table. `slot` is the resource slot
+    /// the ref targeted (`"sample"`/`"voice"`/`"patch"`, [`NodeDoc::resource_refs`]) so the
+    /// message names what actually failed.
+    MissingResource {
+        node: String,
+        slot: &'static str,
+        id: String,
+    },
+    /// A resource id resolves to a source that could not be loaded/decoded. `slot` as on
+    /// [`MissingResource`](Self::MissingResource).
     ResolveFailed {
+        slot: &'static str,
         id: String,
         source: String,
         reason: String,
@@ -312,11 +320,16 @@ pub enum LoadWarning {
 impl fmt::Display for LoadWarning {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            LoadWarning::MissingResource { node, id } => {
-                write!(f, "node {node:?}: sample {id:?} not in resources table")
+            LoadWarning::MissingResource { node, slot, id } => {
+                write!(f, "node {node:?}: {slot} {id:?} not in resources table")
             }
-            LoadWarning::ResolveFailed { id, source, reason } => {
-                write!(f, "sample {id:?} ({source:?}): {reason}")
+            LoadWarning::ResolveFailed {
+                slot,
+                id,
+                source,
+                reason,
+            } => {
+                write!(f, "{slot} {id:?} ({source:?}): {reason}")
             }
         }
     }
@@ -369,6 +382,7 @@ fn load_instrument_guarded(
             None => {
                 warnings.push(LoadWarning::MissingResource {
                     node: n.address.clone(),
+                    slot: "sample",
                     id: id.clone(),
                 });
                 SampleBuffer::empty()
@@ -377,6 +391,7 @@ fn load_instrument_guarded(
                 Ok(b) => b,
                 Err(e) => {
                     warnings.push(LoadWarning::ResolveFailed {
+                        slot: "sample",
                         id: id.clone(),
                         source: source.clone(),
                         reason: e.to_string(),
@@ -417,6 +432,7 @@ fn load_instrument_guarded(
             None => {
                 warnings.push(LoadWarning::MissingResource {
                     node: n.address.clone(),
+                    slot: "voice",
                     id: id.clone(),
                 });
                 for _ in 0..n_voices {
@@ -425,7 +441,8 @@ fn load_instrument_guarded(
             }
             Some(source) => {
                 for i in 0..n_voices {
-                    let loaded = resolve_instrument_guarded(source, registry, resolver, loading)?;
+                    let loaded =
+                        resolve_instrument_slotted(source, "voice", registry, resolver, loading)?;
                     // One copy's warnings suffice — the N builds are identical.
                     if i == 0 {
                         warnings.extend(loaded.warnings);
@@ -454,15 +471,18 @@ fn load_instrument_guarded(
         match doc.resources.get(id) {
             None => warnings.push(LoadWarning::MissingResource {
                 node: n.address.clone(),
+                slot: "patch",
                 id: id.clone(),
             }),
-            Some(source) => match try_resolve_instrument(source, registry, resolver, loading)? {
-                Ok(loaded) => {
-                    warnings.extend(loaded.warnings);
-                    graph.nodes[key].subpatch = Some(Box::new(loaded.graph));
+            Some(source) => {
+                match try_resolve_instrument(source, "patch", registry, resolver, loading)? {
+                    Ok(loaded) => {
+                        warnings.extend(loaded.warnings);
+                        graph.nodes[key].subpatch = Some(Box::new(loaded.graph));
+                    }
+                    Err(warning) => warnings.push(warning),
                 }
-                Err(warning) => warnings.push(warning),
-            },
+            }
         }
     }
 
@@ -508,18 +528,20 @@ pub fn resolve_instrument(
     registry: &Registry,
     resolver: &dyn ResourceResolver,
 ) -> Result<Loaded, LoadError> {
-    resolve_instrument_guarded(source, registry, resolver, &mut Vec::new())
+    resolve_instrument_slotted(source, "patch", registry, resolver, &mut Vec::new())
 }
 
-/// [`resolve_instrument`] with the cycle guard, folding an unavailable source into the ADR-0032
+/// [`resolve_instrument`] with the cycle guard and the resource `slot` the ref came through (so
+/// warnings name what actually failed), folding an unavailable source into the ADR-0032
 /// degradation the voice pass wants: an empty graph carrying the warning (silence).
-fn resolve_instrument_guarded(
+fn resolve_instrument_slotted(
     source: &str,
+    slot: &'static str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
     loading: &mut Vec<String>,
 ) -> Result<Loaded, LoadError> {
-    match try_resolve_instrument(source, registry, resolver, loading)? {
+    match try_resolve_instrument(source, slot, registry, resolver, loading)? {
         Ok(loaded) => Ok(loaded),
         Err(warning) => Ok(Loaded {
             graph: Graph::new(),
@@ -531,12 +553,14 @@ fn resolve_instrument_guarded(
 /// The distinguishing core of [`resolve_instrument`]: `Ok(Ok)` is a built child, `Ok(Err)` is an
 /// unavailable source (a `resolve_text` failure, non-fatal per ADR-0016) surfaced as the warning
 /// so each caller picks its own degradation — the voice pass binds silence (empty graphs), the
-/// subpatch pass leaves the node with **no** sub-graph rather than a phantom empty one. Cycles
+/// subpatch pass leaves the node with **no** sub-graph rather than a phantom empty one. `slot`
+/// names the resource slot the ref came through (`"voice"`/`"patch"`) for the warning. Cycles
 /// are refused before resolving: a `source` already on the `loading` stack (a voice/patch chain
 /// re-entering itself) is a fatal [`LoadError::CyclicResource`], keyed on the source string — the
 /// same identity the `resources` table resolves by.
 fn try_resolve_instrument(
     source: &str,
+    slot: &'static str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
     loading: &mut Vec<String>,
@@ -554,6 +578,7 @@ fn try_resolve_instrument(
             Ok(Ok(result?))
         }
         Err(e) => Ok(Err(LoadWarning::ResolveFailed {
+            slot,
             id: source.to_string(),
             source: source.to_string(),
             reason: e.to_string(),
@@ -1352,10 +1377,15 @@ mod tests {
         let loaded = load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)).expect("non-fatal");
         let key = loaded.graph.find("/sub").unwrap();
         assert!(loaded.graph.nodes[key].subpatch.is_none());
+        // The warning names the slot that actually failed — a `patch` ref, not a sample.
         assert!(matches!(
             loaded.warnings.as_slice(),
-            [LoadWarning::MissingResource { .. }]
+            [LoadWarning::MissingResource { slot: "patch", .. }]
         ));
+        assert_eq!(
+            loaded.warnings[0].to_string(),
+            r#"node "/sub": patch "absent" not in resources table"#
+        );
     }
 
     #[test]
@@ -1375,7 +1405,7 @@ mod tests {
         let loaded = load_instrument(json, &reg(), &Failing).expect("non-fatal");
         assert!(matches!(
             loaded.warnings.as_slice(),
-            [LoadWarning::ResolveFailed { .. }]
+            [LoadWarning::ResolveFailed { slot: "patch", .. }]
         ));
         let key = loaded.graph.find("/sub").unwrap();
         assert!(loaded.graph.nodes[key].subpatch.is_none());
