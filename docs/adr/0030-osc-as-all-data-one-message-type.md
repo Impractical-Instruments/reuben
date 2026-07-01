@@ -37,8 +37,11 @@ Hot path stays `Copy` + allocation-free: a latched read is `Arg::Enum(i)` → `f
 only ever holds its own port's enum (port-authority) and the operator names the concrete type at
 the read site. No operator declares an enum **output** port, so a bare index never crosses a wire
 ambiguously. **Known gap:** an enum leaving over OSC-out (`osc_out`) has no port context at the
-boundary to recover its symbol, so it currently serializes as its bare index; symbol-on-the-wire
-is deferred until `osc_out` forwards typed args (issue #141). Relatedly, [ADR-0035](0035-constants-are-immutable-ports.md)'s
+boundary to recover its symbol, so it currently serializes as its bare index. *(2026-07-01)*
+`osc_out` now forwards **any** `Arg` verbatim through its type-agnostic `arg` pass-through input
+(issue #141), so an outbound enum can reach the boundary at all; symbol-on-the-wire still needs
+the sink's wired source-port `EnumMeta` resolved at the engine drain, which lands with the
+port-authority plan's engine-side outbound resolution. Relatedly, [ADR-0035](0035-constants-are-immutable-ports.md)'s
 save path already resolves enum overrides to symbols via the port's `EnumMeta`, not the value.
 
 [`EnumMeta`]: ../../crates/reuben-core/src/descriptor.rs

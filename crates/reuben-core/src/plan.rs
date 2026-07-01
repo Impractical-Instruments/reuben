@@ -54,6 +54,9 @@ pub fn port_kind(p: &Port) -> PortKind {
     match &p.ty {
         PortType::F32Buffer => PortKind::Signal,
         PortType::Vocab { is_event: true, .. } => PortKind::Event,
+        // A type-agnostic pass-through (issue #141) is an Event stream: routing then delivers the
+        // raw `Arg` unlatched and uncoerced, so the sink can re-emit it verbatim.
+        PortType::Arg => PortKind::Event,
         _ => PortKind::Value,
     }
 }
@@ -502,6 +505,8 @@ impl Plan {
 /// like→like (`Signal→Signal`, `Value→Value`, `Event→Event`) and the one implicit coercion
 /// `Value→Signal` (materialized downstream). Everything else is a hard error: `Signal→Value` needs
 /// an explicit sig→val converter, and any `Event` mismatch needs an explicit latch / change-detect.
+/// One destination-side exception: a type-agnostic [`Arg`](PortType::Arg) pass-through input
+/// (issue #141) accepts any Event *or* Value source (only a Signal source is rejected).
 fn check_wire_forms(graph: &Graph) -> Result<(), PlanError> {
     use PortKind::{Event, Signal, Value};
     for c in &graph.connections {
@@ -513,6 +518,23 @@ fn check_wire_forms(graph: &Graph) -> Result<(), PlanError> {
         let Some(dst) = dst_node.descriptor.inputs.get(c.dst_port) else {
             continue;
         };
+        // A type-agnostic pass-through input (issue #141) accepts any Message-domain source —
+        // Event or Value, both delivered as raw Events. A Signal source never emits Messages
+        // (its data lives in arena buffers), so wiring one in would silently send nothing —
+        // and audio stays off the wire by construction (ADR-0026/0030): hard error.
+        if matches!(dst.ty, PortType::Arg) {
+            if port_kind(src) != PortKind::Signal {
+                continue;
+            }
+            return Err(PlanError::FormMismatch {
+                src: format!("{}.{}", src_node.address, src.name),
+                dst: format!("{}.{}", dst_node.address, dst.name),
+                reason: "Signal→Arg: a pass-through input takes Message-domain sources only; \
+                    audio never crosses the boundary (a live Signal needs the deferred \
+                    Signal→Message sampler, ADR-0017)"
+                    .to_string(),
+            });
+        }
         let reason = match (port_kind(src), port_kind(dst)) {
             // like→like, and the one implicit coercion Value→Signal (materialized at the sink).
             (Signal, Signal) | (Value, Value) | (Event, Event) | (Value, Signal) => continue,

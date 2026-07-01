@@ -177,7 +177,7 @@ operator negate_f32_value
 operator noise
   out[0] f32_buffer out
 operator osc_out
-  in[0] message in
+  in[0] arg in
 operator oscillator
   in[0] f32_buffer freq min=20.0 max=20000.0 default=440.0 unit="Hz" curve=exponential
   in[1] enum waveform variants=["Sine", "Saw"] default=0

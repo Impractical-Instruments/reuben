@@ -101,6 +101,8 @@ enum PortTypeAst {
     Note,
     /// `name: harmony` — a `Harmony` held port.
     Harmony,
+    /// `name: arg` — a type-agnostic pass-through carrying any `Arg` (issue #141).
+    Arg,
 }
 
 struct PortAst {
@@ -150,6 +152,7 @@ impl ContractInput {
                         PortTypeAst::Enum(t) => ("enum", None, None, Some(t.to_string())),
                         PortTypeAst::Note => ("note", None, None, None),
                         PortTypeAst::Harmony => ("harmony", None, None, None),
+                        PortTypeAst::Arg => ("arg", None, None, None),
                     };
                     PortSpec {
                         name: p.name.to_string(),
@@ -239,6 +242,8 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
                         "note" => quote! { ::reuben_core::descriptor::Port::note(#name) },
                         // A `Harmony` held port — `Port::harmony`.
                         "harmony" => quote! { ::reuben_core::descriptor::Port::harmony(#name) },
+                        // A type-agnostic pass-through — `Port::arg` (issue #141).
+                        "arg" => quote! { ::reuben_core::descriptor::Port::arg(#name) },
                         // A materialized scalar control — `Port::f32` with its meta.
                         "f32" => {
                             let m = p.f32.as_ref().expect("validate() guarantees f32 meta");
@@ -360,8 +365,8 @@ impl Parse for ContractInput {
 }
 
 /// A brace-wrapped, comma-separated port list. Each entry is `name: <ty>` where `<ty>` is the
-/// port's [`Arg`] type (ADR-0030): `f32_buffer`, `f32 { .. }`, `enum(VocabType)`, `note`, or
-/// `harmony`. `validate()` rejects an unknown type.
+/// port's [`Arg`] type (ADR-0030): `f32_buffer`, `f32 { .. }`, `enum(VocabType)`, `note`,
+/// `harmony`, or `arg`. `validate()` rejects an unknown type.
 fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
     let body;
     braced!(body in input);
@@ -385,6 +390,7 @@ fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
             }
             "note" => PortTypeAst::Note,
             "harmony" => PortTypeAst::Harmony,
+            "arg" => PortTypeAst::Arg,
             "f32" => PortTypeAst::F32(parse_f32_meta(&body)?),
             "i32" => PortTypeAst::I32(parse_i32_meta(&body)?),
             "enum" => {
@@ -395,7 +401,7 @@ fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
             other => {
                 return Err(Error::new(
                     kw.span(),
-                    format!("port type must be `f32_buffer`, `f32`, `i32`, `enum(..)`, `note`, or `harmony`, got `{other}`"),
+                    format!("port type must be `f32_buffer`, `f32`, `i32`, `enum(..)`, `note`, `harmony`, or `arg`, got `{other}`"),
                 ))
             }
         };

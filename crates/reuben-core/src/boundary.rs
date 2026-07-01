@@ -67,6 +67,13 @@ pub fn osc_in_arg(p: &Port, args: &[Arg]) -> Option<Arg> {
             "Note" => Note::from_osc(args).map(Arg::Note),
             _ => None,
         },
+        // A type-agnostic pass-through (issue #141, the `osc_out` sink's input): a single
+        // primitive atom crosses verbatim — the OSC echo/loopback path. A multi-arg list has no
+        // unambiguous single-Arg form (the port names no vocab type to unpack it), so it drops.
+        PortType::Arg => match args {
+            [a @ (Arg::F32(_) | Arg::I32(_) | Arg::Str(_))] => Some(a.clone()),
+            _ => None,
+        },
     }
 }
 
@@ -74,7 +81,7 @@ pub fn osc_in_arg(p: &Port, args: &[Arg]) -> Option<Arg> {
 /// appending primitive `Arg`s to `out`. The inverse of [`osc_in_arg`], dispatched on the `Arg`
 /// variant (the closed central enum). A primitive forwards verbatim; a struct vocab type packs via
 /// [`OscArg::to_osc`]; a type-erased [`Enum`](Arg::Enum) goes out as its bare index (the boundary
-/// has no port to resolve a symbol — see the arm, TODO #141). [`Harmony`](Arg::Harmony) and
+/// has no port to resolve a symbol — see the arm). [`Harmony`](Arg::Harmony) and
 /// [`Buffer`](Arg::F32Buffer) have no external form and contribute nothing.
 pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) {
     match arg {
@@ -82,10 +89,9 @@ pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) {
         Arg::Note(n) => n.to_osc(out),
         // A type-erased vocab enum (`Arg::Enum`) goes out as its bare **index**: at the boundary
         // there is no port context to recover the symbol from (type identity lives in the port, not
-        // the value). Today this arm is unreachable — no operator declares an enum output and the
-        // one sink, `osc_out`, forwards only `Note` — so nothing regresses. Symbol-on-the-wire for
-        // outbound enums needs the sink's source-port `enum_meta` resolved at the drain.
-        // TODO(#141): once `osc_out` forwards typed args, resolve the index to the enum's symbol.
+        // the value). Symbol-on-the-wire for outbound enums needs the sink's wired *source-port*
+        // `enum_meta` resolved at the engine drain — that lands with the port-authority /
+        // vocab-enum plan's engine-side outbound resolution, not here.
         Arg::Enum(i) => out.push(Arg::I32(*i as i32)),
         // No external OSC form.
         Arg::Harmony(_) | Arg::F32Buffer(_) => {}
@@ -188,14 +194,32 @@ mod tests {
         assert_eq!(osc_in_arg(&p, &flat), Some(Arg::Note(n)));
     }
 
-    /// A type-erased outbound enum serializes as its bare index today (TODO #141: symbol). The
-    /// boundary has no port context, so it cannot recover the variant symbol from a bare `Arg::Enum`.
+    /// A type-erased outbound enum serializes as its bare index (symbol-on-the-wire lands with the
+    /// port-authority plan's drain-side resolution). The boundary has no port context, so it cannot
+    /// recover the variant symbol from a bare `Arg::Enum`.
     #[test]
     fn enum_out_sends_index() {
         let up = SnapDir::from_symbol("Up").unwrap();
         let mut flat = Vec::new();
         osc_out_args(&Arg::from(up), &mut flat);
         assert_eq!(flat, vec![Arg::I32(up.to_index() as i32)]);
+    }
+
+    /// The type-agnostic pass-through port (issue #141, `osc_out.in`): a **single** primitive atom
+    /// crosses verbatim — the OSC echo/loopback path — while a multi-arg list drops (no vocab type
+    /// to unpack it into one Arg).
+    #[test]
+    fn arg_passthrough_port_crosses_a_single_primitive_verbatim() {
+        let p = Port::arg("in");
+        assert_eq!(osc_in_arg(&p, &[Arg::F32(0.5)]), Some(Arg::F32(0.5)));
+        assert_eq!(osc_in_arg(&p, &[Arg::I32(3)]), Some(Arg::I32(3)));
+        assert_eq!(
+            osc_in_arg(&p, &[Arg::Str("Up".into())]),
+            Some(Arg::Str("Up".into()))
+        );
+        // Multi-arg lists have no unambiguous single-Arg form.
+        assert_eq!(osc_in_arg(&p, &[Arg::F32(1.0), Arg::F32(2.0)]), None);
+        assert_eq!(osc_in_arg(&p, &[]), None);
     }
 
     #[test]

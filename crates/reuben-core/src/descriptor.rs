@@ -44,6 +44,16 @@ pub enum PortType {
         is_event: bool,
         enum_meta: Option<EnumMeta>,
     },
+    /// A **type-agnostic pass-through** (issue #141): the port carries *any*
+    /// [`Arg`](crate::message::Arg), committing to no vocab type. Classified as an
+    /// [Event](crate::plan::PortKind::Event) stream, so routing delivers the raw `Arg` unlatched
+    /// and uncoerced; the operator reads it via `io.input::<&Arg>` and re-emits via
+    /// `io.output::<Arg>`. The form the `osc_out` boundary sink's input takes, so any
+    /// Message-domain value (a scalar echo, a vocab enum, a `Note`) can reach the wire and the
+    /// type-driven expansion happens at the boundary ([`osc_out_args`](crate::boundary::osc_out_args)).
+    /// Accepts any Event or Value source; a Signal (audio) source is rejected at plan time —
+    /// audio stays off the wire by construction (ADR-0026/0030).
+    Arg,
 }
 
 /// Metadata for a vocab **enum** port (ADR-0030): the closed, ordered set of named choices an
@@ -168,6 +178,16 @@ impl Port {
             name: meta.name,
             ty: PortType::F32Buffer,
             meta: Some(meta),
+        }
+    }
+
+    /// A type-agnostic pass-through port — [`PortType::Arg`] (issue #141): carries any
+    /// [`Arg`](crate::message::Arg) as a raw Event stream. The `osc_out` sink's input form.
+    pub const fn arg(name: &'static str) -> Self {
+        Self {
+            name,
+            ty: PortType::Arg,
+            meta: None,
         }
     }
 

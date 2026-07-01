@@ -14,22 +14,27 @@
 //! two-way control-surface feedback works without new machinery. Sending a live Signal value out
 //! needs the deferred Signal→Message sampler (ADR-0017); v1 OSC-out does not.
 //!
-//! - input 0: `in` (`Note` event) — values to send out. In the unified model (ADR-0030) the sink
-//!   simply **emits** each received Message; the engine's outbound tap (`Plan.outbound_taps`)
-//!   drains an `osc_out` node's emissions past the boundary, where the flat OSC form is encoded.
-//!   The incoming event's local address is dropped; the node's address is stamped on drain.
+//! - input 0: `in` (`arg` — the type-agnostic pass-through, issue #141) — values to send out. The
+//!   sink forwards **any** [`Arg`] verbatim: a `Note`, a scalar echo, a vocab enum, a string —
+//!   whatever Message-domain source is wired in. The type-driven expansion to the flat OSC form
+//!   happens past the boundary ([`osc_out_args`](crate::boundary::osc_out_args)); an Arg with no
+//!   external form (`Harmony`) is dropped there, and a Signal source is rejected at plan time. In
+//!   the unified model (ADR-0030) the sink simply **emits** each received Message; the engine's
+//!   outbound tap (`Plan.outbound_taps`) drains an `osc_out` node's emissions past the boundary,
+//!   where the flat OSC form is encoded. The incoming event's local address is dropped; the node's
+//!   address is stamped on drain.
 
 use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
+use crate::message::Arg;
 use crate::operator::{Io, Operator};
-use crate::vocab::pitch::Note;
 
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 // `OscOut` -> type_name "osc_out" (snake_case, required by the contract validator — the wire name
 // is `osc_out`, not the ADR's prose `osc-out`; the *CLI flag* keeps the hyphen).
 crate::operator_contract!(OscOut {
-    inputs: { in: note },
+    inputs: { in: arg },
 });
 
 #[derive(Default)]
@@ -49,15 +54,18 @@ impl Operator for OscOut {
     fn process(&mut self, io: &mut Io) {
         // Snapshot first: `io.input` borrows immutably and `io.output` needs `&mut io`, so they
         // can't overlap. Inline storage — no heap for the common handful of events per block.
-        // Each received Message is re-emitted addressless; the engine's outbound tap stamps the
-        // node's OSC address and drains these past the boundary (ADR-0030, ADR-0031). `frame` is
-        // segment-relative; the writer adds the segment offset so the tap sees block-absolute frames.
-        let mut pending: SmallVec<[(Note, usize); 4]> = SmallVec::new();
-        for ev in io.input::<Note>(IN_IN) {
-            pending.push((ev.payload, ev.frame));
+        // Each received Message is re-emitted verbatim and addressless — the raw `Arg`, no vocab
+        // decode (issue #141) — so the boundary's type-driven expansion sees exactly what arrived.
+        // The engine's outbound tap stamps the node's OSC address and drains these past the
+        // boundary (ADR-0030, ADR-0031). Cloning an `Arg` is alloc-free for every hot-path payload
+        // (`Str` aside, which only appears on cold paths). `frame` is segment-relative; the writer
+        // adds the segment offset so the tap sees block-absolute frames.
+        let mut pending: SmallVec<[(Arg, usize); 4]> = SmallVec::new();
+        for ev in io.input::<&Arg>(IN_IN) {
+            pending.push((ev.payload.clone(), ev.frame));
         }
-        for (note, frame) in pending {
-            io.output::<Note>(0).emit(frame, note);
+        for (arg, frame) in pending {
+            io.output::<Arg>(0).emit(frame, arg);
         }
     }
 
@@ -71,9 +79,9 @@ crate::register_operator!(OscOut);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::message::Arg;
     use crate::op_driver::OpDriver;
-    use crate::vocab::pitch::Pitch;
+    use crate::vocab::pitch::{Note, Pitch};
+    use crate::vocab::FilterMode;
 
     const SR: f32 = 48_000.0;
 
@@ -99,6 +107,26 @@ mod tests {
         assert_eq!(out[0].frame, 10);
         assert_eq!(out[1].arg, Arg::Note(Note::new(Pitch::Degree(12), 1.0)));
         assert_eq!(out[1].frame, 20);
+    }
+
+    /// The sink is type-agnostic (issue #141): any `Arg` family — a scalar, a string, a
+    /// type-erased vocab enum — forwards verbatim, not just `Note`. This is what lets vocab enums
+    /// and control-value echoes reach the outbound boundary at all.
+    #[test]
+    fn forwards_any_arg_type_verbatim() {
+        let mut d = OpDriver::for_type(OscOut::new(), SR);
+        d.push(IN_IN, 5, Arg::F32(0.25));
+        d.push(IN_IN, 10, Arg::from(FilterMode::Bp));
+        d.push(IN_IN, 15, Arg::Str("Up".into()));
+        d.render(128);
+        let out = d.emits();
+        assert_eq!(out.len(), 3, "one emission per input event");
+        assert_eq!((out[0].frame, &out[0].arg), (5, &Arg::F32(0.25)));
+        assert_eq!(
+            (out[1].frame, &out[1].arg),
+            (10, &Arg::from(FilterMode::Bp))
+        );
+        assert_eq!((out[2].frame, &out[2].arg), (15, &Arg::Str("Up".into())));
     }
 
     #[test]

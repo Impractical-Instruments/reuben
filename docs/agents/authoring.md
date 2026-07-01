@@ -218,6 +218,10 @@ impl Operator for Filter {
   off `VocabType::enum_meta`); the type's `#[default]` variant is the default.
 - **`name: note`** / **`name: harmony`** — `Note` (Event) / `Harmony` (Value) ports (`Port::note` /
   `Port::harmony`).
+- **`name: arg`** — a **type-agnostic pass-through** (issue #141): carries *any* `Arg` as a raw
+  Event stream (`Port::arg`), read via `io.input::<&Arg>` and re-emitted via `io.output::<Arg>`.
+  Accepts any Event or Value source (a Signal source is rejected at plan time — audio never
+  crosses the boundary). Today the form of `osc_out.in`, the outbound OSC sink.
 - **`params: { name: { ..range } }` + `constant: name`** — declares one param an instantiate-time
   `Constant` (the Voicer's `voices`); the loader routes it to the patch's `config` block. At most one
   `Constant` per operator.

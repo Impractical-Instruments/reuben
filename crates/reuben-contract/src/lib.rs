@@ -11,8 +11,8 @@
 //! A port carries an **[`Arg`](reuben_core::message::Arg) type** (ADR-0030, ADR-0035), named by
 //! [`PortSpec::ty`]: `f32_buffer` (a dense per-sample signal), `f32` (a materialized scalar control
 //! with a `{ .. }` meta block), `i32` (a bounded integer control / constant), `enum` (a held vocab
-//! enum, naming its shared `vocab` type), `note`, or `harmony`. The retired `Shape`/legacy-`kind`
-//! two-surface world is gone.
+//! enum, naming its shared `vocab` type), `note`, `harmony`, or `arg` (the type-agnostic
+//! pass-through, issue #141). The retired `Shape`/legacy-`kind` two-surface world is gone.
 
 use serde::Deserialize;
 
@@ -52,7 +52,7 @@ pub struct I32Meta {
 pub struct PortSpec {
     pub name: String,
     /// The port's [`Arg`](reuben_core::message::Arg) type: `f32_buffer` | `f32` | `enum` | `note` |
-    /// `harmony`.
+    /// `harmony` | `arg`.
     pub ty: String,
     /// `Some` for a `f32` port — its materialized default/range.
     #[serde(default)]
@@ -91,8 +91,9 @@ pub struct OperatorSpec {
 }
 
 /// The legal port [`Arg`](reuben_core::message::Arg) types (ADR-0030, ADR-0035). Centralised so
-/// both the scaffold and the macro reject the same set.
-pub const PORT_TYPES: [&str; 6] = ["f32_buffer", "f32", "i32", "enum", "note", "harmony"];
+/// both the scaffold and the macro reject the same set. `arg` is the type-agnostic pass-through
+/// (issue #141): the port carries *any* Arg as a raw Event stream — the `osc_out` sink's input.
+pub const PORT_TYPES: [&str; 7] = ["f32_buffer", "f32", "i32", "enum", "note", "harmony", "arg"];
 
 /// Where in the spec a validation error sits, so the proc-macro can attach a source span to the
 /// offending token. The scaffold ignores the locus and just formats the message.

@@ -71,6 +71,12 @@ fn event(name: &'static str) -> Port {
     Port::note(name)
 }
 
+/// A type-agnostic pass-through port — any `Arg`, delivered as a raw Event stream (issue #141:
+/// `osc_out.in`).
+fn passthrough(name: &'static str) -> Port {
+    Port::arg(name)
+}
+
 // ----------------------------------------------------------------------------------------------
 // Oracle probes (impl-prep §1).
 // ----------------------------------------------------------------------------------------------
@@ -237,6 +243,57 @@ fn event_into_signal_input_is_a_hard_error_naming_the_latch() {
             reason.contains("latch") || reason.contains("change-detect"),
             "Event→Signal error must name the latch / change-detect op: {reason}"
         ),
+        other => panic!("expected FormMismatch, got {other:?}"),
+    }
+}
+
+// ----------------------------------------------------------------------------------------------
+// The type-agnostic pass-through (issue #141) — `osc_out.in`. It classifies Event (raw, unlatched
+// delivery) and is the one destination that spans the Event/Value split: any Message-domain
+// source wires in; only a Signal source is rejected (audio never crosses the boundary).
+// ----------------------------------------------------------------------------------------------
+
+/// An Event source (a `Note` stream) wires into the pass-through like→like, costing no buffer.
+#[test]
+fn event_into_passthrough_is_legal_and_bufferless() {
+    let plan = wire(event("o"), passthrough("in")).expect("Event→Arg is legal");
+    let dst = dst_idx(&plan);
+    assert_eq!(port_form(&plan, dst, 0), PortKind::Event);
+    assert_eq!(signal_buffer_count(&plan), 0);
+}
+
+/// A Value source (a held scalar — a Good Button `map` echo) wires into the pass-through too:
+/// its emissions deliver as raw Events, so a control value can reach the outbound boundary.
+#[test]
+fn value_into_passthrough_is_legal_and_bufferless() {
+    let plan = wire(value("o"), passthrough("in")).expect("Value→Arg is legal");
+    let dst = dst_idx(&plan);
+    assert_eq!(port_form(&plan, dst, 0), PortKind::Event);
+    assert_eq!(signal_buffer_count(&plan), 0);
+}
+
+/// A vocab-enum Value source wires in as well — the wire that makes the boundary's outbound enum
+/// arm reachable at all (issue #141: enums could never flow outbound before).
+#[test]
+fn enum_value_into_passthrough_is_legal() {
+    let plan = wire(value_enum("mode"), passthrough("in")).expect("enum Value→Arg is legal");
+    let dst = dst_idx(&plan);
+    assert_eq!(port_form(&plan, dst, 0), PortKind::Event);
+}
+
+/// A Signal source stays a hard error: a dense buffer never emits Messages (the wire would
+/// silently send nothing), and audio is kept off the OSC wire by construction (ADR-0026/0030).
+#[test]
+fn signal_into_passthrough_is_a_hard_error_keeping_audio_off_the_wire() {
+    match wire(signal("o"), passthrough("in")).err() {
+        Some(PlanError::FormMismatch { src, dst, reason }) => {
+            assert_eq!(src, "/src.o");
+            assert_eq!(dst, "/dst.in");
+            assert!(
+                reason.contains("pass-through") && reason.contains("audio"),
+                "Signal→Arg error must explain the boundary opt-out: {reason}"
+            );
+        }
         other => panic!("expected FormMismatch, got {other:?}"),
     }
 }
