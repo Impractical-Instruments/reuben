@@ -152,6 +152,9 @@ and Voicer-hosts-voice-sub-patches rewrite ([ADR-0032](docs/adr/0032-voicer-host
 have landed: a port is a held **Value** (`f32`) or a **Signal** buffer (`f32_buffer`), read/written
 through `io.input::<T>` / `io.output::<T>`, and polyphony comes from the Voicer hosting voice
 sub-patches (`instruments/voices/*.json`) rather than the now-removed Lane model.
+General nesting ([ADR-0034](docs/adr/0034-instrument-nesting.md)) is in progress: a `subpatch`
+node can reference and recursively load another instrument (cycle-guarded, carried on the parent
+node); plan-build inlining is the next pass.
 
 ## Going deeper
 
