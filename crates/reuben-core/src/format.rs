@@ -99,6 +99,14 @@ pub struct NodeDoc {
     /// graphs via [`Operator::bind_voices`](crate::operator::Operator::bind_voices).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<String>,
+    /// Nested-instrument reference (ADR-0034 §1): a logical id into the document's `resources` table
+    /// whose source is another instrument patch. Only valid on the built-in `subpatch` operator
+    /// (which declares a `patch` resource slot); rejected elsewhere as a structural
+    /// [`LoadError::UnknownResource`]. The loader builds the referenced patch via
+    /// [`resolve_instrument`] and carries the sub-[`Graph`] on the parent node (nesting P3) — not yet
+    /// inlined (P4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub patch: Option<String>,
     /// Public-control metadata for a generated control surface (ADR-0018): marks this node as
     /// player-facing and carries display hints (`label`, optional `unit`/`widget`/range). The
     /// engine never reads it — it is passed through opaquely so it survives load → round-trip →
@@ -109,13 +117,17 @@ pub struct NodeDoc {
 }
 
 impl NodeDoc {
-    /// This node's resource references paired with the slot each targets (ADR-0016/0032): the
-    /// typed `sample`/`voice` fields surfaced as one `(slot, ref)` list. The single place the
+    /// This node's resource references paired with the slot each targets (ADR-0016/0032/0034): the
+    /// typed `sample`/`voice`/`patch` fields surfaced as one `(slot, ref)` list. The single place the
     /// format maps its fields to descriptor [`ResourceSlot`](crate::descriptor::ResourceSlot)
     /// names, so generic resource validation iterates this rather than enumerating known slots arm
     /// by arm — a new slot extends this list and nothing downstream.
-    fn resource_refs(&self) -> [(&'static str, &Option<String>); 2] {
-        [("sample", &self.sample), ("voice", &self.voice)]
+    fn resource_refs(&self) -> [(&'static str, &Option<String>); 3] {
+        [
+            ("sample", &self.sample),
+            ("voice", &self.voice),
+            ("patch", &self.patch),
+        ]
     }
 }
 
@@ -402,6 +414,31 @@ pub fn load_instrument(
         graph.nodes[key].op.bind_voices(voices);
     }
 
+    // Subpatch pass (ADR-0034 §1, nesting P3): a `subpatch` node references another instrument patch
+    // and the loader carries the built sub-`Graph` on the **parent node** (`Node::subpatch`) — build-
+    // time data for the plan-build inline pass (P4), distinct from the Voicer's runtime-hosted voice
+    // graphs. `resolve_instrument` builds the child through the full load path, so its own resources
+    // resolve and its `interface` is ready for the boundary contract. Structural errors in the child
+    // are fatal; a missing id or a resolve failure degrades to a warning (ADR-0016), leaving the node
+    // with no sub-graph. Not yet inlined (P4) and not type-checked across the boundary (P5).
+    for n in &doc.nodes {
+        let Some(id) = &n.patch else { continue };
+        let Some(key) = graph.find(&n.address) else {
+            continue;
+        };
+        match doc.resources.get(id) {
+            None => warnings.push(LoadWarning::MissingResource {
+                node: n.address.clone(),
+                id: id.clone(),
+            }),
+            Some(source) => {
+                let loaded = resolve_instrument(source, registry, resolver)?;
+                warnings.extend(loaded.warnings);
+                graph.nodes[key].subpatch = Some(Box::new(loaded.graph));
+            }
+        }
+    }
+
     Ok(Loaded { graph, warnings })
 }
 
@@ -503,6 +540,7 @@ impl InstrumentDoc {
             // (the resolved bytes/sub-graphs are bound out-of-band and do not survive the build).
             graph.nodes[key].sample_id = n.sample.clone();
             graph.nodes[key].voice_id = n.voice.clone();
+            graph.nodes[key].patch_id = n.patch.clone();
 
             // `config`: every name must be a declared Constant (ADR-0035); apply it at its slot.
             for (name, value) in &n.config {
@@ -713,6 +751,7 @@ impl InstrumentDoc {
                     // out-of-band and are *not* reconstructed here — reload re-resolves from the id.
                     sample: node.sample_id.clone(),
                     voice: node.voice_id.clone(),
+                    patch: node.patch_id.clone(),
                     // Control metadata (ADR-0018) lives on the document, not the built Graph, so the
                     // save-from-graph path does not reconstruct it; document-level round-trip
                     // (load → re-serialize) preserves it via serde.
@@ -1198,6 +1237,111 @@ mod tests {
             resolve_instrument("v.json", &reg(), &PatchResolver(BROKEN)),
             Err(LoadError::UnknownType { .. })
         ));
+    }
+
+    // ADR-0034 (nesting P3) — a `subpatch` node references an instrument patch and the loader
+    // carries the built sub-Graph on the parent node. Reuses the `VOICE_IFACE` patch as the child.
+    const PARENT_WITH_SUBPATCH: &str = r#"{
+        "instrument": "parent",
+        "resources": { "myvoice": "voices/lead.json" },
+        "nodes": [
+            { "type": "subpatch", "address": "/sub", "patch": "myvoice" }
+        ]
+    }"#;
+
+    #[test]
+    fn subpatch_node_carries_resolved_subgraph() {
+        // The acceptance criterion: a parent referencing a sub-instrument loads to a Graph whose
+        // nested node carries the resolved sub-Graph + its Interface (ADR-0034 §1).
+        let loaded = load_instrument(PARENT_WITH_SUBPATCH, &reg(), &PatchResolver(VOICE_IFACE))
+            .expect("load");
+        assert!(
+            loaded.warnings.is_empty(),
+            "clean load: {:?}",
+            loaded.warnings
+        );
+        let key = loaded.graph.find("/sub").expect("subpatch node exists");
+        let sub = loaded.graph.nodes[key]
+            .subpatch
+            .as_ref()
+            .expect("subpatch node carries the resolved sub-graph");
+        // The carried sub-graph IS the referenced patch — interface and all.
+        assert_eq!(sub.nodes.len(), 2);
+        assert!(sub.interface.inputs.contains_key("freq"));
+        assert!(sub.interface.outputs.contains_key("audio"));
+        // The logical id round-trips on the node (like `sample_id` / `voice_id`).
+        assert_eq!(loaded.graph.nodes[key].patch_id.as_deref(), Some("myvoice"));
+    }
+
+    #[test]
+    fn subpatch_missing_reference_warns() {
+        // A `patch` id absent from the `resources` table degrades to a warning (ADR-0016): the node
+        // carries no sub-graph and the load still succeeds — never a hard error.
+        let json = r#"{"instrument":"p","nodes":[
+            {"type":"subpatch","address":"/sub","patch":"absent"}]}"#;
+        let loaded = load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)).expect("non-fatal");
+        let key = loaded.graph.find("/sub").unwrap();
+        assert!(loaded.graph.nodes[key].subpatch.is_none());
+        assert!(matches!(
+            loaded.warnings.as_slice(),
+            [LoadWarning::MissingResource { .. }]
+        ));
+    }
+
+    #[test]
+    fn subpatch_resolve_failure_warns() {
+        // The id resolves to a source, but `resolve_text` fails (the default `Failing` resolver):
+        // non-fatal per ADR-0016 — a ResolveFailed warning, never a hard error.
+        struct Failing;
+        impl ResourceResolver for Failing {
+            fn resolve(&self, s: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
+                Err(crate::resources::ResolveError::NotFound(s.to_string()))
+            }
+        }
+        let json = r#"{"instrument":"p","resources":{"v":"missing.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"v"}]}"#;
+        let loaded = load_instrument(json, &reg(), &Failing).expect("non-fatal");
+        assert!(matches!(
+            loaded.warnings.as_slice(),
+            [LoadWarning::ResolveFailed { .. }]
+        ));
+    }
+
+    #[test]
+    fn subpatch_structural_error_is_fatal() {
+        // The sub-patch resolves but is structurally broken (unknown operator type): fatal, matching
+        // the voice path — availability warns, structure/wiring errors (ADR-0016/0034).
+        const BROKEN: &str = r#"{"instrument":"v","nodes":[{"type":"nope","address":"/x"}]}"#;
+        let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"v"}]}"#;
+        assert!(matches!(
+            load_instrument(json, &reg(), &PatchResolver(BROKEN)),
+            Err(LoadError::UnknownType { .. })
+        ));
+    }
+
+    #[test]
+    fn patch_ref_on_non_subpatch_errors() {
+        // A `patch` ref is only valid on an operator declaring the slot (subpatch). On an oscillator
+        // it is a structural misuse — the same generic resource-slot check that guards sample/voice.
+        let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"oscillator","address":"/osc","patch":"v"}]}"#;
+        assert!(matches!(
+            load(json, &reg()),
+            Err(LoadError::UnknownResource { .. })
+        ));
+    }
+
+    #[test]
+    fn patch_id_round_trips_through_from_graph() {
+        // The logical `patch` id is retained on the node (like sample/voice) so save reconstructs the
+        // reference; the resolved sub-graph is bound out-of-band and does not round-trip.
+        let json = r#"{"instrument":"p","nodes":[
+            {"type":"subpatch","address":"/sub","patch":"myvoice"}]}"#;
+        let g = load(json, &reg()).expect("load");
+        let saved = InstrumentDoc::from_graph(&g, "p");
+        let n = saved.nodes.iter().find(|n| n.address == "/sub").unwrap();
+        assert_eq!(n.patch.as_deref(), Some("myvoice"));
     }
 
     #[test]

@@ -5388,6 +5388,32 @@
           "if": {
             "properties": {
               "type": {
+                "const": "subpatch"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "inputs": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
                 "const": "transpose"
               }
             },
@@ -5549,6 +5575,10 @@
         "inputs": {
           "type": "object"
         },
+        "patch": {
+          "description": "Resource id into the document's `resources` table naming a nested instrument patch; only valid on a `subpatch` node (ADR-0034). The loader builds the referenced patch and carries the sub-graph on this node.",
+          "type": "string"
+        },
         "sample": {
           "description": "Resource id into the document's `resources` table; only valid on a `sample` node (ADR-0016).",
           "type": "string"
@@ -5605,6 +5635,7 @@
             "strum",
             "sub_f32_signal",
             "sub_f32_value",
+            "subpatch",
             "transpose",
             "voicer"
           ]

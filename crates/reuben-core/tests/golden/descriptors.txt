@@ -270,6 +270,8 @@ operator sub_f32_value
   in[0] f32 a min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   in[1] f32 b min=-1000000.0 max=1000000.0 default=0.0 unit="" curve=linear
   out[0] f32 out
+operator subpatch
+  resource[0] patch
 operator transpose
   in[0] message notes
   in[1] f32 amount min=-48.0 max=48.0 default=0.0 unit="steps" curve=linear

@@ -46,6 +46,18 @@ pub struct Node {
     /// same save round-trip as [`sample_id`](Self::sample_id). `None` unless the node declared a
     /// `voice` slot and named an id.
     pub voice_id: Option<String>,
+    /// The logical `patch` instrument-resource id (ADR-0034) a `subpatch` node referenced, retained
+    /// for the same save round-trip as [`sample_id`](Self::sample_id). `None` unless the node is a
+    /// `subpatch` naming a patch.
+    pub patch_id: Option<String>,
+    /// The **loaded sub-Graph** a `subpatch` node references (ADR-0034, nesting P3), carrying its
+    /// resolved [`Interface`] boundary. Set by the loader after the parent build, by resolving the
+    /// node's `patch` id through [`resolve_instrument`](crate::format::resolve_instrument). Unlike
+    /// the Voicer's runtime-hosted voice graphs (which live in the operator), this is **build-time
+    /// data on the parent node**, destined for the plan-build inline pass (P4) that dissolves the
+    /// `subpatch` into this graph. `None` for every non-`subpatch` node, and for a `subpatch` whose
+    /// reference is missing (a warning, ADR-0016). Boxed to keep the common `Node` small.
+    pub subpatch: Option<Box<Graph>>,
 }
 
 /// A directed connection from one node's output port to another's input port.
@@ -113,6 +125,8 @@ impl Graph {
             constant_overrides: Vec::new(),
             sample_id: None,
             voice_id: None,
+            patch_id: None,
+            subpatch: None,
         })
     }
 

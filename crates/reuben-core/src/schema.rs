@@ -153,6 +153,10 @@ pub fn generate(registry: &Registry) -> Value {
                         "type": "string",
                         "description": "Resource id into the document's `resources` table; only valid on a `sample` node (ADR-0016)."
                     },
+                    "patch": {
+                        "type": "string",
+                        "description": "Resource id into the document's `resources` table naming a nested instrument patch; only valid on a `subpatch` node (ADR-0034). The loader builds the referenced patch and carries the sub-graph on this node."
+                    },
                     "control": {
                         "description": "Public-control metadata for a generated control surface (ADR-0018). One control spec, or an array of them for a multi-param node (e.g. a sequencer's steps).",
                         "oneOf": [

@@ -91,6 +91,7 @@ fn setup(kind: &str) -> Option<OpHarness> {
 #[bench::strum(args = ("strum",), setup = setup)]
 #[bench::sub(args = ("sub_f32_signal",), setup = setup)]
 #[bench::sub_value(args = ("sub_f32_value",), setup = setup)]
+#[bench::subpatch(args = ("subpatch",), setup = setup)]
 #[bench::transpose(args = ("transpose",), setup = setup)]
 #[bench::voicer(args = ("voicer",), setup = setup)]
 fn process(harness: Option<OpHarness>) -> f32 {

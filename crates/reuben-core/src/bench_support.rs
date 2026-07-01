@@ -138,6 +138,9 @@ pub const WORKLOADS: &[Workload] = &[
     w("strum", Recipe::Position),
     w("sub_f32_signal", Recipe::Default),
     w("sub_f32_value", Recipe::Default),
+    // `subpatch` registers no ports and never renders (it dissolves at plan-build, ADR-0034); the
+    // default recipe drives nothing, so the harness just steps its no-op `process`.
+    w("subpatch", Recipe::Default),
     w("transpose", Recipe::Notes),
     w("voicer", Recipe::Notes),
 ];
@@ -199,6 +202,7 @@ pub const MICRO_IAI_KINDS: &[&str] = &[
     "strum",
     "sub_f32_signal",
     "sub_f32_value",
+    "subpatch",
     "transpose",
     "voicer",
 ];
