@@ -315,6 +315,15 @@ pub enum LoadWarning {
         source: String,
         reason: String,
     },
+    /// A warning that arose while loading a **nested** instrument (a voice or subpatch child,
+    /// ADR-0032/0034), contextualized by the referencing parent node so provenance survives the
+    /// merge into the parent's warning list: child node addresses are child-relative until P4
+    /// inlining prefixes them, and two same-shaped children would otherwise be indistinguishable.
+    /// Nests recursively for deeper chains.
+    Nested {
+        node: String,
+        warning: Box<LoadWarning>,
+    },
 }
 
 impl fmt::Display for LoadWarning {
@@ -331,6 +340,17 @@ impl fmt::Display for LoadWarning {
             } => {
                 write!(f, "{slot} {id:?} ({source:?}): {reason}")
             }
+            LoadWarning::Nested { node, warning } => write!(f, "in {node:?}: {warning}"),
+        }
+    }
+}
+
+impl LoadWarning {
+    /// Wrap `self` with the parent node that referenced the nested instrument it arose in.
+    fn nested_in(self, node: &str) -> LoadWarning {
+        LoadWarning::Nested {
+            node: node.to_string(),
+            warning: Box::new(self),
         }
     }
 }
@@ -367,6 +387,17 @@ fn load_instrument_guarded(
     loading: &mut Vec<String>,
 ) -> Result<Loaded, LoadError> {
     let doc = InstrumentDoc::from_json(json)?;
+    load_doc_guarded(&doc, registry, resolver, loading)
+}
+
+/// [`load_instrument_guarded`] from an already-parsed document — the subpatch pass parses a
+/// shared child source once and loads it per referencing node through this.
+fn load_doc_guarded(
+    doc: &InstrumentDoc,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+    loading: &mut Vec<String>,
+) -> Result<Loaded, LoadError> {
     let mut graph = doc.build(registry)?;
     let mut warnings = Vec::new();
 
@@ -378,15 +409,8 @@ fn load_instrument_guarded(
         if handles.contains_key(id) {
             continue; // dedup: already resolved by an earlier node
         }
-        let buffer = match doc.resources.get(id) {
-            None => {
-                warnings.push(LoadWarning::MissingResource {
-                    node: n.address.clone(),
-                    slot: "sample",
-                    id: id.clone(),
-                });
-                SampleBuffer::empty()
-            }
+        let buffer = match lookup_source(doc, &n.address, "sample", id, &mut warnings) {
+            None => SampleBuffer::empty(),
             Some(source) => match resolver.resolve(source) {
                 Ok(b) => b,
                 Err(e) => {
@@ -428,13 +452,8 @@ fn load_instrument_guarded(
         };
         let n_voices = voice_count(n, &graph.nodes[key].descriptor);
         let mut voices: Vec<Graph> = Vec::with_capacity(n_voices);
-        match doc.resources.get(id) {
+        match lookup_source(doc, &n.address, "voice", id, &mut warnings) {
             None => {
-                warnings.push(LoadWarning::MissingResource {
-                    node: n.address.clone(),
-                    slot: "voice",
-                    id: id.clone(),
-                });
                 for _ in 0..n_voices {
                     voices.push(Graph::new());
                 }
@@ -443,9 +462,11 @@ fn load_instrument_guarded(
                 for i in 0..n_voices {
                     let loaded =
                         resolve_instrument_slotted(source, "voice", registry, resolver, loading)?;
-                    // One copy's warnings suffice — the N builds are identical.
+                    // One copy's warnings suffice — the N builds are identical. Wrapped with the
+                    // hosting node so provenance survives the merge (see `LoadWarning::Nested`).
                     if i == 0 {
-                        warnings.extend(loaded.warnings);
+                        warnings
+                            .extend(loaded.warnings.into_iter().map(|w| w.nested_in(&n.address)));
                     }
                     voices.push(loaded.graph);
                 }
@@ -457,36 +478,72 @@ fn load_instrument_guarded(
     // Subpatch pass (ADR-0034 §1, nesting P3): a `subpatch` node references another instrument patch
     // and the loader carries the built sub-`Graph` on the **parent node** (`Node::subpatch`) — build-
     // time data for the plan-build inline pass (P4), distinct from the Voicer's runtime-hosted voice
-    // graphs. `resolve_instrument` builds the child through the full load path, so its own resources
-    // resolve and its `interface` is ready for the boundary contract. Structural errors in the child
-    // are fatal; a missing id or a resolve failure degrades to a warning (ADR-0016), leaving the node
-    // with no sub-graph — `subpatch` is only ever Some(a built child), never a phantom empty graph,
-    // so the P4 inline pass can key on it. Not yet inlined (P4) and not type-checked across the
-    // boundary (P5).
+    // graphs. The child is loaded through the full path, so its own resources resolve and its
+    // `interface` is ready for the boundary contract. Structural errors in the child are fatal; a
+    // missing id or a resolve failure degrades to a warning (ADR-0016), leaving the node with no
+    // sub-graph — `subpatch` is only ever Some(a built child), never a phantom empty graph, so the
+    // P4 inline pass can key on it. Not yet inlined (P4) and not type-checked across the boundary
+    // (P5).
+    //
+    // The source read + parse is deduped per id (like the sample pass's `handles`): N nodes naming
+    // one patch id fetch and parse it once, and an unavailable source warns once (`None` in the
+    // cache). Each node still loads its own child below — `Graph` is not `Clone`.
+    let mut patch_docs: BTreeMap<String, Option<InstrumentDoc>> = BTreeMap::new();
     for n in &doc.nodes {
         let Some(id) = &n.patch else { continue };
         let Some(key) = graph.find(&n.address) else {
             continue;
         };
-        match doc.resources.get(id) {
-            None => warnings.push(LoadWarning::MissingResource {
-                node: n.address.clone(),
-                slot: "patch",
-                id: id.clone(),
-            }),
-            Some(source) => {
-                match try_resolve_instrument(source, "patch", registry, resolver, loading)? {
-                    Ok(loaded) => {
-                        warnings.extend(loaded.warnings);
-                        graph.nodes[key].subpatch = Some(Box::new(loaded.graph));
-                    }
-                    Err(warning) => warnings.push(warning),
+        let Some(source) = lookup_source(doc, &n.address, "patch", id, &mut warnings) else {
+            continue;
+        };
+        if !patch_docs.contains_key(id) {
+            let child_doc = match resolver.resolve_text(source) {
+                Ok(text) => Some(InstrumentDoc::from_json(&text)?),
+                Err(e) => {
+                    let failed = LoadWarning::ResolveFailed {
+                        slot: "patch",
+                        id: id.clone(),
+                        source: source.clone(),
+                        reason: e.to_string(),
+                    };
+                    warnings.push(failed.nested_in(&n.address));
+                    None
                 }
-            }
+            };
+            patch_docs.insert(id.clone(), child_doc);
         }
+        let Some(child_doc) = &patch_docs[id] else {
+            continue;
+        };
+        let loaded = load_child_guarded(child_doc, source, registry, resolver, loading)?;
+        warnings.extend(loaded.warnings.into_iter().map(|w| w.nested_in(&n.address)));
+        graph.nodes[key].subpatch = Some(Box::new(loaded.graph));
     }
 
     Ok(Loaded { graph, warnings })
+}
+
+/// Look up a node's resource `id` in the document's `resources` table — the shared first step of
+/// every resource pass (`sample`/`voice`/`patch`). A miss is the non-fatal
+/// [`LoadWarning::MissingResource`] (ADR-0016), pushed here so the policy lives in one place;
+/// each caller picks its degradation on `None` (empty buffer, silent voices, no sub-graph).
+fn lookup_source<'a>(
+    doc: &'a InstrumentDoc,
+    node: &str,
+    slot: &'static str,
+    id: &str,
+    warnings: &mut Vec<LoadWarning>,
+) -> Option<&'a String> {
+    let source = doc.resources.get(id);
+    if source.is_none() {
+        warnings.push(LoadWarning::MissingResource {
+            node: node.to_string(),
+            slot,
+            id: id.to_string(),
+        });
+    }
+    source
 }
 
 /// The voice-pool size for a Voicer node (ADR-0032): the node's value for the operator's
@@ -565,17 +622,12 @@ fn try_resolve_instrument(
     resolver: &dyn ResourceResolver,
     loading: &mut Vec<String>,
 ) -> Result<Result<Loaded, LoadWarning>, LoadError> {
-    if loading.iter().any(|s| s == source) {
-        return Err(LoadError::CyclicResource {
-            source: source.to_string(),
-        });
-    }
     match resolver.resolve_text(source) {
         Ok(text) => {
-            loading.push(source.to_string());
-            let result = load_instrument_guarded(&text, registry, resolver, loading);
-            loading.pop();
-            Ok(Ok(result?))
+            let doc = InstrumentDoc::from_json(&text)?;
+            Ok(Ok(load_child_guarded(
+                &doc, source, registry, resolver, loading,
+            )?))
         }
         Err(e) => Ok(Err(LoadWarning::ResolveFailed {
             slot,
@@ -584,6 +636,28 @@ fn try_resolve_instrument(
             reason: e.to_string(),
         })),
     }
+}
+
+/// Load a child patch's parsed document with the cycle guard: refuse a `source` already on the
+/// `loading` stack (a voice/patch chain re-entering itself) as the fatal
+/// [`LoadError::CyclicResource`] — keyed on the source string, the same identity the `resources`
+/// table resolves by — otherwise push it and recurse through [`load_doc_guarded`].
+fn load_child_guarded(
+    doc: &InstrumentDoc,
+    source: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+    loading: &mut Vec<String>,
+) -> Result<Loaded, LoadError> {
+    if loading.iter().any(|s| s == source) {
+        return Err(LoadError::CyclicResource {
+            source: source.to_string(),
+        });
+    }
+    loading.push(source.to_string());
+    let result = load_doc_guarded(doc, registry, resolver, loading);
+    loading.pop();
+    result
 }
 
 impl InstrumentDoc {
@@ -1403,12 +1477,59 @@ mod tests {
         let json = r#"{"instrument":"p","resources":{"v":"missing.json"},"nodes":[
             {"type":"subpatch","address":"/sub","patch":"v"}]}"#;
         let loaded = load_instrument(json, &reg(), &Failing).expect("non-fatal");
+        // The failure is wrapped with the referencing node (ResolveFailed carries no node itself).
         assert!(matches!(
             loaded.warnings.as_slice(),
-            [LoadWarning::ResolveFailed { slot: "patch", .. }]
+            [LoadWarning::Nested { node, warning }]
+                if node == "/sub"
+                    && matches!(warning.as_ref(), LoadWarning::ResolveFailed { slot: "patch", .. })
         ));
         let key = loaded.graph.find("/sub").unwrap();
         assert!(loaded.graph.nodes[key].subpatch.is_none());
+    }
+
+    #[test]
+    fn child_warnings_carry_the_subpatch_provenance() {
+        // A warning from inside the child (its own `patch` id missing from its resources table)
+        // surfaces on the parent wrapped in `Nested`, so the child-relative address is not mistaken
+        // for a parent node and two same-shaped children stay distinguishable.
+        const CHILD: &str = r#"{"instrument":"c","nodes":[
+            {"type":"subpatch","address":"/inner","patch":"absent"}]}"#;
+        let json = r#"{"instrument":"p","resources":{"c":"c.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"c"}]}"#;
+        let loaded = load_instrument(json, &reg(), &PatchResolver(CHILD)).expect("load");
+        assert_eq!(loaded.warnings.len(), 1);
+        assert_eq!(
+            loaded.warnings[0].to_string(),
+            r#"in "/sub": node "/inner": patch "absent" not in resources table"#
+        );
+    }
+
+    #[test]
+    fn diamond_reuse_reads_the_source_once() {
+        // Two subpatch nodes sharing one id fetch + parse the source once (the pass's per-id
+        // dedup, like the sample pass's `handles`); each node still gets its own built child.
+        use std::cell::Cell;
+        struct Counting(Cell<usize>);
+        impl ResourceResolver for Counting {
+            fn resolve(&self, s: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
+                Err(crate::resources::ResolveError::NotFound(s.to_string()))
+            }
+            fn resolve_text(&self, _: &str) -> Result<String, crate::resources::ResolveError> {
+                self.0.set(self.0.get() + 1);
+                Ok(VOICE_IFACE.to_string())
+            }
+        }
+        let json = r#"{"instrument":"p","resources":{"v":"voices/lead.json"},"nodes":[
+            {"type":"subpatch","address":"/one","patch":"v"},
+            {"type":"subpatch","address":"/two","patch":"v"}]}"#;
+        let resolver = Counting(Cell::new(0));
+        let loaded = load_instrument(json, &reg(), &resolver).expect("load");
+        assert_eq!(resolver.0.get(), 1, "one read serves both nodes");
+        let one = loaded.graph.find("/one").unwrap();
+        let two = loaded.graph.find("/two").unwrap();
+        assert!(loaded.graph.nodes[one].subpatch.is_some());
+        assert!(loaded.graph.nodes[two].subpatch.is_some());
     }
 
     #[test]
