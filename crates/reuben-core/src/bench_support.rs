@@ -138,8 +138,8 @@ pub const WORKLOADS: &[Workload] = &[
     w("strum", Recipe::Position),
     w("sub_f32_signal", Recipe::Default),
     w("sub_f32_value", Recipe::Default),
-    // `subpatch` registers no ports and never renders (it dissolves at plan-build, ADR-0034); the
-    // default recipe drives nothing, so the harness just steps its no-op `process`.
+    // `subpatch` registers no ports and dissolves at plan-build from P4 on (ADR-0034); through P3
+    // it reaches the Plan, and the harness just steps its no-op `process`.
     w("subpatch", Recipe::Default),
     w("transpose", Recipe::Notes),
     w("voicer", Recipe::Notes),
