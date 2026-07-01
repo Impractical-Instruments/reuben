@@ -281,6 +281,34 @@ fn enum_value_into_passthrough_is_legal() {
     assert_eq!(port_form(&plan, dst, 0), PortKind::Event);
 }
 
+/// A no-OSC-form Value source (`Harmony`, the documented boundary opt-out) is equally a hard
+/// error: legality into the pass-through is capability-keyed (`boundary::has_osc_form`), so a
+/// wire that could never send anything is rejected at plan, not left silently dead. Boundary
+/// converters for structured types are issue #146.
+#[test]
+fn harmony_into_passthrough_is_a_hard_error_naming_the_opt_out() {
+    let harmony = Port {
+        name: "harmony",
+        ty: PortType::Vocab {
+            name: "Harmony",
+            is_event: false,
+            enum_meta: None,
+        },
+        meta: None,
+    };
+    match wire(harmony, passthrough("in")).err() {
+        Some(PlanError::FormMismatch { src, dst, reason }) => {
+            assert_eq!(src, "/src.harmony");
+            assert_eq!(dst, "/dst.in");
+            assert!(
+                reason.contains("no external OSC form"),
+                "Harmony→Arg error must name the missing OSC form: {reason}"
+            );
+        }
+        other => panic!("expected FormMismatch, got {other:?}"),
+    }
+}
+
 /// A Signal source stays a hard error: a dense buffer never emits Messages (the wire would
 /// silently send nothing), and audio is kept off the OSC wire by construction (ADR-0026/0030).
 #[test]

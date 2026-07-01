@@ -88,7 +88,7 @@ port/param is mapped to its ADR-0028 **shape** and **role**:
 | **context** | set | **Note** | in | `chord [tag, ...]` events |
 | | root/degrees/s0..s11 | Float | in | were params |
 | | ctx | **Harmony** | out | publish via `io.publish_harmony` |
-| **osc_out** | in | **Note** | in | forwarded verbatim to outbound |
+| **osc_out** | in | **Arg** (any) | in | type-agnostic pass-through (issue #141); forwarded verbatim to outbound |
 | **map** | in/out | **Float** | in/out | reframed: per-sample shaper (was Message) |
 | | in_min/in_max/out_min/out_max | Float | in | were params |
 | | curve (0/1) | **Enum** {Linear, Exponential} | in | |

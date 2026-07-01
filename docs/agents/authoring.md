@@ -220,8 +220,15 @@ impl Operator for Filter {
   `Port::harmony`).
 - **`name: arg`** — a **type-agnostic pass-through** (issue #141): carries *any* `Arg` as a raw
   Event stream (`Port::arg`), read via `io.input::<&Arg>` and re-emitted via `io.output::<Arg>`.
-  Accepts any Event or Value source (a Signal source is rejected at plan time — audio never
-  crosses the boundary). Today the form of `osc_out.in`, the outbound OSC sink.
+  **Input-only**, and only for a **pure carrier** — an operator that treats the payload as opaque
+  (forward, buffer, drop) and never interprets it; the wired *source* port is the type authority.
+  Legality is capability-keyed: any Event or Value source whose type has an **external OSC form**
+  wires in (primitives, vocab enums, `Note`'s flat form); a `Harmony` source (no OSC form —
+  converters are issue #146) and a Signal source are rejected at load/plan — audio never crosses
+  the boundary. Inbound is asymmetric: external OSC addressed at an `arg` port crosses only as a
+  **single numeric atom** (multi-arg lists and strings drop — so the flat 2-arg Note form the sink
+  *sends* does not round-trip back in through an `arg` port; a typed `note` port still decodes
+  it). Today the form of `osc_out.in`, the outbound OSC sink.
 - **`params: { name: { ..range } }` + `constant: name`** — declares one param an instantiate-time
   `Constant` (the Voicer's `voices`); the loader routes it to the patch's `config` block. At most one
   `Constant` per operator.

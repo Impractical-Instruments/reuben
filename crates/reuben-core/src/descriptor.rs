@@ -51,8 +51,13 @@ pub enum PortType {
     /// `io.output::<Arg>`. The form the `osc_out` boundary sink's input takes, so any
     /// Message-domain value (a scalar echo, a vocab enum, a `Note`) can reach the wire and the
     /// type-driven expansion happens at the boundary ([`osc_out_args`](crate::boundary::osc_out_args)).
-    /// Accepts any Event or Value source; a Signal (audio) source is rejected at plan time —
-    /// audio stays off the wire by construction (ADR-0026/0030).
+    /// **Input-only** (the contract validator fails an `arg` output/constant closed), and legal
+    /// only where the operator treats the payload as opaque — a pure carrier: the wired *source*
+    /// port is the type authority. Legality is capability-keyed
+    /// ([`has_osc_form`](crate::boundary::has_osc_form)): any Event or Value source whose type
+    /// has an external OSC form wires in; a no-form source (`Harmony`) is rejected at load/plan,
+    /// and a Signal (audio) source likewise — audio stays off the wire by construction
+    /// (ADR-0026/0030).
     Arg,
 }
 

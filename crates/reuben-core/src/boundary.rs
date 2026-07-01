@@ -68,12 +68,44 @@ pub fn osc_in_arg(p: &Port, args: &[Arg]) -> Option<Arg> {
             _ => None,
         },
         // A type-agnostic pass-through (issue #141, the `osc_out` sink's input): a single
-        // primitive atom crosses verbatim — the OSC echo/loopback path. A multi-arg list has no
-        // unambiguous single-Arg form (the port names no vocab type to unpack it), so it drops.
+        // **numeric** atom crosses verbatim — the OSC echo/loopback path (fader/encoder feedback).
+        // A multi-arg list has no unambiguous single-Arg form (the port names no vocab type to
+        // unpack it), so it drops. `Str` is excluded: an external string atom would reach
+        // `osc_out.process()` and heap-clone on the render thread (ADR-0009 forbids that), and
+        // string echo has no consumer — an RT-safe `Arg::Str` backing is noted in issue #146.
         PortType::Arg => match args {
-            [a @ (Arg::F32(_) | Arg::I32(_) | Arg::Str(_))] => Some(a.clone()),
+            [a @ (Arg::F32(_) | Arg::I32(_))] => Some(a.clone()),
             _ => None,
         },
+    }
+}
+
+/// Whether a wire of this declared [`PortType`] can ever cross the outbound boundary — the
+/// **capability key** for legality into a type-agnostic [`Arg`](PortType::Arg) pass-through input
+/// (issue #141). This is the single statement of "has an external OSC form": the load-time
+/// compat check (`format.rs`) and the plan-time form check (`plan.rs`) both consume it, so
+/// legality and [`osc_out_args`] cannot drift — a type is wireable into the pass-through **iff**
+/// the drain produces a non-empty form for it. A wire that could never send anything is a
+/// patching mistake, rejected loud at load/plan (the same philosophy as the Signal opt-out).
+pub fn has_osc_form(ty: &PortType) -> bool {
+    match ty {
+        // The OSC atoms cross verbatim.
+        PortType::F32 | PortType::I32 { .. } | PortType::Str => true,
+        // A type-erased vocab enum leaves as its bare index today; symbol-on-the-wire is
+        // issue #147 (drain-side source-port resolution).
+        PortType::Vocab {
+            enum_meta: Some(_), ..
+        } => true,
+        // A struct vocab type has a form iff `osc_out_args` packs one — the same central
+        // "Note" registry as `osc_in_arg`'s struct arm. `Harmony` opts out by omission;
+        // converters for structured types are issue #146.
+        PortType::Vocab {
+            enum_meta: None,
+            name,
+            ..
+        } => *name == "Note",
+        // Audio never crosses (ADR-0026/0030), and a pass-through names no type of its own.
+        PortType::F32Buffer | PortType::Arg => false,
     }
 }
 
@@ -90,8 +122,7 @@ pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) {
         // A type-erased vocab enum (`Arg::Enum`) goes out as its bare **index**: at the boundary
         // there is no port context to recover the symbol from (type identity lives in the port, not
         // the value). Symbol-on-the-wire for outbound enums needs the sink's wired *source-port*
-        // `enum_meta` resolved at the engine drain — that lands with the port-authority /
-        // vocab-enum plan's engine-side outbound resolution, not here.
+        // `enum_meta` resolved at the engine drain — issue #147, not here.
         Arg::Enum(i) => out.push(Arg::I32(*i as i32)),
         // No external OSC form.
         Arg::Harmony(_) | Arg::F32Buffer(_) => {}
@@ -194,9 +225,9 @@ mod tests {
         assert_eq!(osc_in_arg(&p, &flat), Some(Arg::Note(n)));
     }
 
-    /// A type-erased outbound enum serializes as its bare index (symbol-on-the-wire lands with the
-    /// port-authority plan's drain-side resolution). The boundary has no port context, so it cannot
-    /// recover the variant symbol from a bare `Arg::Enum`.
+    /// A type-erased outbound enum serializes as its bare index (symbol-on-the-wire lands with
+    /// issue #147's drain-side source-port resolution). The boundary has no port context, so it
+    /// cannot recover the variant symbol from a bare `Arg::Enum`.
     #[test]
     fn enum_out_sends_index() {
         let up = SnapDir::from_symbol("Up").unwrap();
@@ -205,21 +236,48 @@ mod tests {
         assert_eq!(flat, vec![Arg::I32(up.to_index() as i32)]);
     }
 
-    /// The type-agnostic pass-through port (issue #141, `osc_out.in`): a **single** primitive atom
+    /// The type-agnostic pass-through port (issue #141, `osc_out.in`): a **single numeric** atom
     /// crosses verbatim — the OSC echo/loopback path — while a multi-arg list drops (no vocab type
-    /// to unpack it into one Arg).
+    /// to unpack it into one Arg) and a `Str` atom drops (it would heap-clone on the render
+    /// thread; RT-safe string backing is issue #146).
     #[test]
-    fn arg_passthrough_port_crosses_a_single_primitive_verbatim() {
+    fn arg_passthrough_port_crosses_a_single_numeric_atom_verbatim() {
         let p = Port::arg("in");
         assert_eq!(osc_in_arg(&p, &[Arg::F32(0.5)]), Some(Arg::F32(0.5)));
         assert_eq!(osc_in_arg(&p, &[Arg::I32(3)]), Some(Arg::I32(3)));
-        assert_eq!(
-            osc_in_arg(&p, &[Arg::Str("Up".into())]),
-            Some(Arg::Str("Up".into()))
-        );
+        // A string atom drops: no consumer, and forwarding it would allocate on the render thread.
+        assert_eq!(osc_in_arg(&p, &[Arg::Str("Up".into())]), None);
         // Multi-arg lists have no unambiguous single-Arg form.
         assert_eq!(osc_in_arg(&p, &[Arg::F32(1.0), Arg::F32(2.0)]), None);
         assert_eq!(osc_in_arg(&p, &[]), None);
+    }
+
+    /// The capability key (issue #141): a type is wireable into the pass-through **iff**
+    /// [`osc_out_args`] produces a non-empty external form for it.
+    #[test]
+    fn has_osc_form_matches_what_the_drain_can_send() {
+        use crate::vocab::FilterMode;
+        assert!(has_osc_form(&PortType::F32));
+        assert!(has_osc_form(&PortType::I32 { meta: None }));
+        assert!(has_osc_form(&PortType::Str));
+        // A vocab enum leaves as its index (symbols: issue #147).
+        assert!(has_osc_form(
+            &Port::enumerated(FilterMode::enum_meta("mode")).ty
+        ));
+        // Note packs its flat form; Harmony has none (converters: issue #146).
+        assert!(has_osc_form(&PortType::Vocab {
+            name: "Note",
+            is_event: true,
+            enum_meta: None,
+        }));
+        assert!(!has_osc_form(&PortType::Vocab {
+            name: "Harmony",
+            is_event: false,
+            enum_meta: None,
+        }));
+        // Audio never crosses; a pass-through names no type of its own.
+        assert!(!has_osc_form(&PortType::F32Buffer));
+        assert!(!has_osc_form(&PortType::Arg));
     }
 
     #[test]

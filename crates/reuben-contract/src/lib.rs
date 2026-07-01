@@ -160,6 +160,21 @@ fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractErr
             ),
         ));
     }
+    // `arg` is **input-only** (issue #141): it is legal only where the operator treats the payload
+    // as opaque — a pure carrier's inbound port. An `arg` output would put an untyped source on the
+    // graph, and a typed input downstream of it would need plan-time type flow *through* the
+    // carrier to recover the true source type — machinery no operator has earned. Fail closed here
+    // (the one validator) until an in-graph carrier does.
+    if p.ty == "arg" && label != "input" {
+        return Err(ContractError::new(
+            at,
+            format!(
+                "{label} {:?}: `arg` is input-only (the pass-through carries whatever its wired \
+                 source declares; an `arg` {label} would have no type authority at all)",
+                p.name
+            ),
+        ));
+    }
     // A `{ .. }` meta block is **required** on `f32` (it's a scalar control) and **optional** on
     // `f32_buffer` (ADR-0031 decision (a): a signal port with a scalar default + knob, e.g.
     // `oscillator.freq`). No other port type may carry one.
@@ -480,6 +495,23 @@ mod tests {
             r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"f32","f32":{"min":0,"max":1,"default":5}} ] }"#,
         );
         assert!(oob.message.contains("outside"), "{}", oob.message);
+    }
+
+    #[test]
+    fn arg_is_input_only() {
+        // The type-agnostic pass-through (issue #141) is legal as an input...
+        assert!(validate(&spec(
+            r#"{ "type_name": "osc_out", "inputs": [ {"name":"in","ty":"arg"} ] }"#
+        ))
+        .is_ok());
+        // ...but an `arg` output or constant fails closed: an untyped source on the graph would
+        // need plan-time type flow through the carrier.
+        let out = err(r#"{ "type_name": "x", "outputs": [ {"name":"tap","ty":"arg"} ] }"#);
+        assert_eq!(out.locus, Locus::Output(0));
+        assert!(out.message.contains("input-only"), "{}", out.message);
+        let konst = err(r#"{ "type_name": "x", "constants": [ {"name":"c","ty":"arg"} ] }"#);
+        assert_eq!(konst.locus, Locus::Constant(0));
+        assert!(konst.message.contains("input-only"), "{}", konst.message);
     }
 
     #[test]

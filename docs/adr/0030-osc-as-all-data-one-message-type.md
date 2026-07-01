@@ -40,9 +40,42 @@ ambiguously. **Known gap:** an enum leaving over OSC-out (`osc_out`) has no port
 boundary to recover its symbol, so it currently serializes as its bare index. *(2026-07-01)*
 `osc_out` now forwards **any** `Arg` verbatim through its type-agnostic `arg` pass-through input
 (issue #141), so an outbound enum can reach the boundary at all; symbol-on-the-wire still needs
-the sink's wired source-port `EnumMeta` resolved at the engine drain, which lands with the
-port-authority plan's engine-side outbound resolution. Relatedly, [ADR-0035](0035-constants-are-immutable-ports.md)'s
+the sink's wired source-port `EnumMeta` resolved at the engine drain — tracked as
+[issue #147](https://github.com/Impractical-Instruments/reuben/issues/147) (drain-side
+source-port resolution). Relatedly, [ADR-0035](0035-constants-are-immutable-ports.md)'s
 save path already resolves enum overrides to symbols via the port's `EnumMeta`, not the value.
+
+## Amendment (2026-07-01): the `arg` pass-through — opaque payloads may be untyped
+
+Issue #141's fix added the first port with no declared `Arg` type: `arg`, the type-agnostic
+pass-through (`osc_out.in`). The rule that keeps it from being a hole in the typed model:
+
+**A port may be type-agnostic iff its operator treats the payload as opaque** — forward it,
+buffer it, count it, drop it, but never *interpret* it. The moment behavior depends on the type,
+the port must declare it. `arg` is therefore not a per-sink special case but the type for **pure
+carriers**, of which `osc_out` is the first; an operator that computes over its input (a math op)
+can never declare it — type-from-wiring for interpreting operators would mean dynamic dispatch on
+the render thread or plan-time monomorphization, neither of which this buys.
+
+Port-authority is *delegated*, not absent: the wire is monotyped in practice, and the **wired
+source port** is its type authority (the same authority issue #147 reads for outbound enum
+symbols). Three fences keep the delegation sound:
+
+1. **Input-only.** The contract validator rejects an `arg` output or constant. An in-graph
+   carrier (`arg` in *and* out) would need the plan to trace types *through* the carrier for any
+   typed input downstream — machinery deferred until an operator earns it.
+2. **Capability-keyed legality.** A source wires into `arg` **iff** its type has an external OSC
+   form (`boundary::has_osc_form`, the single statement consumed by both the load-time and
+   plan-time checks): the primitives, vocab enums (index today, per the gap above), and `Note`'s
+   flat form. `Harmony` (no OSC form) and any Signal are rejected loud — a wire that could never
+   send anything is a patching mistake, not a silent drop. Converters giving structured types a
+   wire form (multi-arg / bundle, both directions) are
+   [issue #146](https://github.com/Impractical-Instruments/reuben/issues/146).
+3. **Inbound is a single numeric atom.** External OSC addressed at an `arg` port crosses only as
+   one `F32`/`I32` (the echo/loopback path): a multi-arg list has no unambiguous single-`Arg`
+   form without a typed destination port, and a string atom would heap-allocate on the render
+   thread (ADR-0009). Consequently the flat 2-arg Note form the sink *sends* does not round-trip
+   back in through an `arg` port — a typed `note` port still decodes it.
 
 [`EnumMeta`]: ../../crates/reuben-core/src/descriptor.rs
 

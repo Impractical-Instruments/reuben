@@ -17,14 +17,13 @@
 //! - input 0: `in` (`arg` — the type-agnostic pass-through, issue #141) — values to send out. The
 //!   sink forwards **any** [`Arg`] verbatim: a `Note`, a scalar echo, a vocab enum, a string —
 //!   whatever Message-domain source is wired in. The type-driven expansion to the flat OSC form
-//!   happens past the boundary ([`osc_out_args`](crate::boundary::osc_out_args)); an Arg with no
-//!   external form (`Harmony`) is dropped there, and a Signal source is rejected at plan time. In
+//!   happens past the boundary ([`osc_out_args`](crate::boundary::osc_out_args)); legality is
+//!   capability-keyed ([`has_osc_form`](crate::boundary::has_osc_form)), so a no-OSC-form source
+//!   (`Harmony`) and a Signal source are both rejected at load/plan time. In
 //!   the unified model (ADR-0030) the sink simply **emits** each received Message; the engine's
 //!   outbound tap (`Plan.outbound_taps`) drains an `osc_out` node's emissions past the boundary,
 //!   where the flat OSC form is encoded. The incoming event's local address is dropped; the node's
 //!   address is stamped on drain.
-
-use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
 use crate::message::Arg;
@@ -52,20 +51,16 @@ impl Operator for OscOut {
     }
 
     fn process(&mut self, io: &mut Io) {
-        // Snapshot first: `io.input` borrows immutably and `io.output` needs `&mut io`, so they
-        // can't overlap. Inline storage — no heap for the common handful of events per block.
         // Each received Message is re-emitted verbatim and addressless — the raw `Arg`, no vocab
         // decode (issue #141) — so the boundary's type-driven expansion sees exactly what arrived.
         // The engine's outbound tap stamps the node's OSC address and drains these past the
-        // boundary (ADR-0030, ADR-0031). Cloning an `Arg` is alloc-free for every hot-path payload
-        // (`Str` aside, which only appears on cold paths). `frame` is segment-relative; the writer
-        // adds the segment offset so the tap sees block-absolute frames.
-        let mut pending: SmallVec<[(Arg, usize); 4]> = SmallVec::new();
+        // boundary (ADR-0030, ADR-0031). Cloning an `Arg` is alloc-free for every payload the
+        // boundary admits externally (the inbound loopback is numeric-only); an internally wired
+        // `Str` source still heap-clones here — a patcher choice, tracked with the RT-safe
+        // string backing in issue #146. `frame` is segment-relative; the writer adds the segment
+        // offset so the tap sees block-absolute frames.
         for ev in io.input::<&Arg>(IN_IN) {
-            pending.push((ev.payload.clone(), ev.frame));
-        }
-        for (arg, frame) in pending {
-            io.output::<Arg>(0).emit(frame, arg);
+            io.output::<Arg>(0).emit(ev.frame, ev.payload.clone());
         }
     }
 
