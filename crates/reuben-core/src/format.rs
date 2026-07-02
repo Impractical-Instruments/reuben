@@ -533,11 +533,13 @@ pub struct Loaded {
 #[derive(Default)]
 struct LoadCtx {
     /// The cycle-guard stack: instrument-resource sources currently being resolved,
-    /// root-first. A chain that re-enters a source still on the stack is the fatal
-    /// [`LoadError::CyclicResource`] instead of infinite recursion.
+    /// root-first, keyed by **canonical id** ([`ResourceResolver::canonical`]) so two spellings
+    /// of one source (`a.json` vs `./a.json`) are one identity (ADR-0034 §1). A chain that
+    /// re-enters a source still on the stack is the fatal [`LoadError::CyclicResource`]
+    /// instead of infinite recursion.
     loading: Vec<String>,
-    /// Decoded-sample cache, keyed by source (the same identity the `resources` table and the
-    /// cycle guard use). Each subpatch reuse and voice copy builds its own graph and
+    /// Decoded-sample cache, keyed by canonical id (the same identity the cycle guard
+    /// uses). Each subpatch reuse and voice copy builds its own graph and
     /// [`ResourceStore`], but a given source is fetched + decoded **once** per load; the
     /// stores share the `Arc`. Failures are deliberately not cached, so every referencing
     /// document still surfaces its own warning.
@@ -554,7 +556,7 @@ pub fn load_instrument(
     registry: &Registry,
     resolver: &dyn ResourceResolver,
 ) -> Result<Loaded, LoadError> {
-    load_instrument_guarded(json, registry, resolver, &mut LoadCtx::default())
+    load_instrument_guarded(json, registry, resolver, &mut LoadCtx::default(), None)
 }
 
 /// [`load_instrument`] from an already-parsed document — the parse-once entry point for a
@@ -565,21 +567,25 @@ pub fn load_instrument_doc(
     registry: &Registry,
     resolver: &dyn ResourceResolver,
 ) -> Result<Loaded, LoadError> {
-    load_doc_guarded(doc, registry, resolver, &mut LoadCtx::default())
+    load_doc_guarded(doc, registry, resolver, &mut LoadCtx::default(), None)
 }
 
 /// [`load_instrument`] with the shared load state threaded through: `ctx` carries the cycle
 /// guard (a chain that re-enters a source still loading is caught as
 /// [`LoadError::CyclicResource`] instead of recursing forever) and the per-load decoded-sample
-/// cache the recursive passes (`voice`, `patch`) share.
+/// cache the recursive passes (`voice`, `patch`) share. `referrer` is the canonical id of the
+/// document being loaded (`None` at the top level), threaded to
+/// [`ResourceResolver::canonical`] so a nested document's own references resolve relative to
+/// *its* location.
 fn load_instrument_guarded(
     json: &str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
     ctx: &mut LoadCtx,
+    referrer: Option<&str>,
 ) -> Result<Loaded, LoadError> {
     let doc = InstrumentDoc::from_json(json)?;
-    load_doc_guarded(&doc, registry, resolver, ctx)
+    load_doc_guarded(&doc, registry, resolver, ctx, referrer)
 }
 
 /// [`load_instrument_guarded`] from an already-parsed document — the subpatch pass parses a
@@ -589,6 +595,7 @@ fn load_doc_guarded(
     registry: &Registry,
     resolver: &dyn ResourceResolver,
     ctx: &mut LoadCtx,
+    referrer: Option<&str>,
 ) -> Result<Loaded, LoadError> {
     // Build with the resolver threaded in (ADR-0034's resolution-ordering note): a `subpatch`
     // node's boundary face only exists once its child is resolved, and it must exist *during*
@@ -598,7 +605,7 @@ fn load_doc_guarded(
     let Loaded {
         mut graph,
         mut warnings,
-    } = doc.build_nested(registry, Some(resolver), ctx)?;
+    } = doc.build_nested(registry, Some(resolver), ctx, referrer)?;
 
     // Resolve every referenced id once into the store; record id -> handle for binding. The
     // fetch + decode goes through the load-wide source cache (`LoadCtx::samples`), so N
@@ -613,26 +620,31 @@ fn load_doc_guarded(
         }
         let buffer = match lookup_source(doc, &n.address, "sample", id, &mut warnings) {
             None => Arc::new(SampleBuffer::empty()),
-            Some(source) => match ctx.samples.get(source) {
-                Some(shared) => shared.clone(),
-                None => match resolver.resolve(source) {
-                    Ok(b) => {
-                        let shared = Arc::new(b);
-                        ctx.samples.insert(source.clone(), shared.clone());
-                        shared
-                    }
-                    Err(e) => {
-                        // Not cached: every referencing document keeps its own warning.
-                        warnings.push(LoadWarning::ResolveFailed {
-                            slot: "sample",
-                            id: id.clone(),
-                            source: source.clone(),
-                            reason: e.to_string(),
-                        });
-                        Arc::new(SampleBuffer::empty())
-                    }
-                },
-            },
+            Some(source) => {
+                // Canonical id is the cache key, so one sample spelled two ways still
+                // fetches + decodes once (ADR-0034 §1's identity rule, applied to samples).
+                let canon = resolver.canonical(source, referrer);
+                match ctx.samples.get(&canon) {
+                    Some(shared) => shared.clone(),
+                    None => match resolver.resolve(&canon) {
+                        Ok(b) => {
+                            let shared = Arc::new(b);
+                            ctx.samples.insert(canon, shared.clone());
+                            shared
+                        }
+                        Err(e) => {
+                            // Not cached: every referencing document keeps its own warning.
+                            warnings.push(LoadWarning::ResolveFailed {
+                                slot: "sample",
+                                id: id.clone(),
+                                source: canon,
+                                reason: e.to_string(),
+                            });
+                            Arc::new(SampleBuffer::empty())
+                        }
+                    },
+                }
+            }
         };
         handles.insert(id.clone(), store.insert(id.clone(), buffer));
     }
@@ -669,9 +681,10 @@ fn load_doc_guarded(
                 }
             }
             Some(source) => {
+                let canon = resolver.canonical(source, referrer);
                 for i in 0..n_voices {
                     let loaded =
-                        resolve_instrument_slotted(source, "voice", registry, resolver, ctx)?;
+                        resolve_instrument_slotted(&canon, "voice", registry, resolver, ctx)?;
                     // One copy's warnings suffice — the N builds are identical. Wrapped with the
                     // hosting node so provenance survives the merge (see `LoadWarning::Nested`).
                     if i == 0 {
@@ -750,12 +763,15 @@ pub fn resolve_instrument(
     registry: &Registry,
     resolver: &dyn ResourceResolver,
 ) -> Result<Loaded, LoadError> {
-    resolve_instrument_slotted(source, "patch", registry, resolver, &mut LoadCtx::default())
+    let canon = resolver.canonical(source, None);
+    resolve_instrument_slotted(&canon, "patch", registry, resolver, &mut LoadCtx::default())
 }
 
 /// [`resolve_instrument`] with the cycle guard and the resource `slot` the ref came through (so
 /// warnings name what actually failed), folding an unavailable source into the ADR-0032
 /// degradation the voice pass wants: an empty graph carrying the warning (silence).
+/// `source` is already canonical — every caller canonicalizes at the site that knows the
+/// referring document.
 fn resolve_instrument_slotted(
     source: &str,
     slot: &'static str,
@@ -778,8 +794,8 @@ fn resolve_instrument_slotted(
 /// subpatch pass dissolves the reference dark (nothing spliced in). `slot`
 /// names the resource slot the ref came through (`"voice"`/`"patch"`) for the warning. Cycles
 /// are refused before resolving: a `source` already on the `loading` stack (a voice/patch chain
-/// re-entering itself) is a fatal [`LoadError::CyclicResource`], keyed on the source string — the
-/// same identity the `resources` table resolves by.
+/// re-entering itself) is a fatal [`LoadError::CyclicResource`], keyed on the **canonical**
+/// source string, so two spellings of one source are one identity (ADR-0034 §1).
 fn try_resolve_instrument(
     source: &str,
     slot: &'static str,
@@ -805,8 +821,9 @@ fn try_resolve_instrument(
 
 /// Load a child patch's parsed document with the cycle guard: refuse a `source` already on the
 /// `loading` stack (a voice/patch chain re-entering itself) as the fatal
-/// [`LoadError::CyclicResource`] — keyed on the source string, the same identity the `resources`
-/// table resolves by — otherwise push it and recurse through [`load_doc_guarded`].
+/// [`LoadError::CyclicResource`] — keyed on the **canonical** source id (ADR-0034 §1) —
+/// otherwise push it and recurse through [`load_doc_guarded`], with this source as the child's
+/// referrer so the child's own references resolve relative to its location.
 fn load_child_guarded(
     doc: &InstrumentDoc,
     source: &str,
@@ -820,7 +837,7 @@ fn load_child_guarded(
         });
     }
     ctx.loading.push(source.to_string());
-    let result = load_doc_guarded(doc, registry, resolver, ctx);
+    let result = load_doc_guarded(doc, registry, resolver, ctx, Some(source));
     ctx.loading.pop();
     result
 }
@@ -849,7 +866,7 @@ impl InstrumentDoc {
     /// to resolve and inline nested instruments.
     pub fn build(&self, registry: &Registry) -> Result<Graph, LoadError> {
         Ok(self
-            .build_nested(registry, None, &mut LoadCtx::default())?
+            .build_nested(registry, None, &mut LoadCtx::default(), None)?
             .graph)
     }
 
@@ -857,13 +874,15 @@ impl InstrumentDoc {
     /// resolution-ordering note): `resolver` loads `subpatch` children so their boundary faces
     /// exist during pass 2 (`None` — the plain [`load`]/[`build`] path — dissolves every nested
     /// reference dark without loading it); `ctx` carries the cycle-guard stack and the decoded-
-    /// sample cache shared with [`load_child_guarded`]. Returns the built graph plus
-    /// availability warnings from nested loads.
+    /// sample cache shared with [`load_child_guarded`]; `referrer` is this document's canonical
+    /// id (`None` at top level), so nested references resolve relative to this document.
+    /// Returns the built graph plus availability warnings from nested loads.
     fn build_nested(
         &self,
         registry: &Registry,
         resolver: Option<&dyn ResourceResolver>,
         ctx: &mut LoadCtx,
+        referrer: Option<&str>,
     ) -> Result<Loaded, LoadError> {
         let mut graph = Graph::new();
         let mut warnings = Vec::new();
@@ -965,9 +984,9 @@ impl InstrumentDoc {
         // edges are remapped, and the boundary face is synthesized from the child's `interface`.
         // The `subpatch` node itself never materializes — it dissolves into its child's nodes.
         // Structural errors in a resolved child stay fatal; availability failures leave the
-        // address dark (see above). The source read + parse is deduped per id (like the sample
-        // pass's `handles`); each node still builds its own child — `Graph` is not `Clone` — so
-        // two reuses get disjoint nodes, addresses, and state for free.
+        // address dark (see above). The source read + parse is deduped per canonical id (like
+        // the sample pass's cache); each node still builds its own child — `Graph` is not
+        // `Clone` — so two reuses get disjoint nodes, addresses, and state for free.
         let mut patch_docs: BTreeMap<String, Option<InstrumentDoc>> = BTreeMap::new();
         for n in &self.nodes {
             let nested = registry
@@ -997,27 +1016,30 @@ impl InstrumentDoc {
                 dark.insert(n.address.clone());
                 continue;
             };
-            if !patch_docs.contains_key(id) {
-                let child_doc = match resolver.resolve_text(source) {
+            // Canonical id keys the fetch/parse dedup and the cycle guard (ADR-0034 §1): two
+            // ids spelling one source (`a.json` vs `./a.json`) share one parse and one identity.
+            let canon = resolver.canonical(source, referrer);
+            if !patch_docs.contains_key(&canon) {
+                let child_doc = match resolver.resolve_text(&canon) {
                     Ok(text) => Some(InstrumentDoc::from_json(&text)?),
                     Err(e) => {
                         let failed = LoadWarning::ResolveFailed {
                             slot: "patch",
                             id: id.clone(),
-                            source: source.clone(),
+                            source: canon.clone(),
                             reason: e.to_string(),
                         };
                         warnings.push(failed.nested_in(&n.address));
                         None
                     }
                 };
-                patch_docs.insert(id.clone(), child_doc);
+                patch_docs.insert(canon.clone(), child_doc);
             }
-            let Some(child_doc) = &patch_docs[id] else {
+            let Some(child_doc) = &patch_docs[&canon] else {
                 dark.insert(n.address.clone());
                 continue;
             };
-            let loaded = load_child_guarded(child_doc, source, registry, resolver, ctx)?;
+            let loaded = load_child_guarded(child_doc, &canon, registry, resolver, ctx)?;
             warnings.extend(loaded.warnings.into_iter().map(|w| w.nested_in(&n.address)));
             let face = splice_subpatch(&mut graph, loaded.graph, &n.address, &mut addresses)?;
 

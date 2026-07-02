@@ -349,6 +349,11 @@ resource-bearing nodes reference by a `sample` field
 `ResourceResolver`, so use `format::load_instrument(json, registry, resolver)` — it returns the
 `Graph` plus any non-fatal `LoadWarning`s (a missing/undecodable sample degrades to silence).
 `instruments/sampler.json` is the worked example; `reuben-native` supplies a filesystem WAV resolver.
+A source path resolves **relative to the document that names it** (a nested patch's own resources
+live next to *it*, not next to the top-level instrument), falling back to a configurable library
+root (`reuben --instrument-root <DIR>` or `REUBEN_INSTRUMENT_ROOT`); the resolver canonicalizes
+identity, so `a.json` and `./a.json` are one cycle-guard/dedup key. For embedded hosts and tests,
+core's in-memory `MemoryResolver` serves patches and samples by exact key with no filesystem.
 
 A Voicer node references a **voice sub-patch** the same way, by a **`voice`** field naming a standalone
 instrument JSON ([ADR-0032](../adr/0032-voicer-hosts-voice-subpatches.md)); the loader resolves it
