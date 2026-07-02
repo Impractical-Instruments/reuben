@@ -476,7 +476,9 @@ fn parse_number_meta(input: ParseStream) -> syn::Result<OperandKind> {
         braced!(meta in input);
         // Optional `LO..=HI` range. It starts with a number, `-`, or a `min`/`max` sentinel — but
         // not the `default` keyword, which introduces the default instead.
-        if meta.peek(syn::LitInt) || meta.peek(syn::LitFloat) || meta.peek(Token![-])
+        if meta.peek(syn::LitInt)
+            || meta.peek(syn::LitFloat)
+            || meta.peek(Token![-])
             || peek_range_sentinel(&meta)
         {
             min = parse_float_or_sentinel(&meta)?;
