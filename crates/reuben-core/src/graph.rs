@@ -5,7 +5,7 @@
 //! ([`crate::plan::Plan::instantiate`]). Node identity is a stable slotmap key, so a
 //! future Swap can match surviving operators across re-Instantiate.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use slotmap::{new_key_type, SlotMap};
 
@@ -75,6 +75,14 @@ pub struct Interface {
     pub inputs: BTreeMap<String, (NodeKey, usize)>,
     /// External output name → the internal `(node, output port)` it exposes.
     pub outputs: BTreeMap<String, (NodeKey, usize)>,
+    /// Declared **input** names whose internal target went dark — an unavailable nested child
+    /// (ADR-0016/0034). The port is real in the document but resolves to nothing this load; a
+    /// consumer referencing it degrades (drops the wire with a warning) instead of failing, so
+    /// dark degradation stays transitive through re-exports rather than escalating to a
+    /// structural error one level up.
+    pub dark_inputs: BTreeSet<String>,
+    /// Declared **output** names whose internal target went dark (see `dark_inputs`).
+    pub dark_outputs: BTreeSet<String>,
 }
 
 /// A patch under construction.

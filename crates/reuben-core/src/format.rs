@@ -328,6 +328,19 @@ pub enum LoadWarning {
         node: String,
         warning: Box<LoadWarning>,
     },
+    /// An `interface` entry was dropped because its internal target is dark — an unavailable
+    /// nested child, or (recursively) a boundary port that itself went dark a level down. The
+    /// port is real in the document but resolves to nothing this load; it is recorded on
+    /// [`Interface::dark_inputs`](crate::graph::Interface)/`dark_outputs` so a consumer
+    /// referencing it degrades the same way (wire dropped, this warning) instead of hitting a
+    /// fatal `UnknownInput`/`UnknownPort` one level up — dark degradation stays **transitive**
+    /// (ADR-0016/0034).
+    DarkInterfaceEntry {
+        /// The external interface name that vanished.
+        name: String,
+        /// The internal reference it pointed at (`"/inner.freq"`).
+        target: String,
+    },
 }
 
 impl fmt::Display for LoadWarning {
@@ -345,6 +358,10 @@ impl fmt::Display for LoadWarning {
                 write!(f, "{slot} {id:?} ({source:?}): {reason}")
             }
             LoadWarning::Nested { node, warning } => write!(f, "in {node:?}: {warning}"),
+            LoadWarning::DarkInterfaceEntry { name, target } => write!(
+                f,
+                "interface entry {name:?} dropped: its target {target:?} is dark (unavailable nested patch)"
+            ),
         }
     }
 }
@@ -807,6 +824,9 @@ impl InstrumentDoc {
                     continue; // pass 2
                 }
                 let Some(fp) = face.input(name) else {
+                    if face.dark_inputs.contains(name) {
+                        continue; // dark boundary port: the literal is dropped (ADR-0016)
+                    }
                     return Err(LoadError::UnknownInput {
                         node: n.address.clone(),
                         input: name.clone(),
@@ -839,14 +859,22 @@ impl InstrumentDoc {
                     continue;
                 };
                 // Destination: this node's input port, or — on a subpatch — its face input.
-                let (dst_key, dst_port, to_ty) = resolve_input(&faces, &by_addr, &n.address, name)?;
+                // A dark boundary port drops the wire (ADR-0016), like a dark nest.
+                let Some((dst_key, dst_port, to_ty)) =
+                    resolve_input(&faces, &by_addr, &n.address, name)?
+                else {
+                    continue;
+                };
                 // Source: a node's output port, or a subpatch's face output.
                 let (src_addr, src_port_name) = parse_wire(from);
                 if dark.contains(src_addr) {
                     continue; // wire from an unavailable nest: dropped (the input keeps its default)
                 }
-                let (src_key, src_port, from_ty, from_label) =
-                    resolve_output(&faces, &by_addr, src_addr, from, src_port_name)?;
+                let Some((src_key, src_port, from_ty, from_label)) =
+                    resolve_output(&faces, &by_addr, src_addr, from, src_port_name)?
+                else {
+                    continue;
+                };
 
                 // Equal types wire directly. `F32` and `Buffer` interconvert (ADR-0030): an `F32`
                 // source into a `Buffer` port ZOH-materializes, and a `Buffer` source into an `F32`
@@ -877,13 +905,17 @@ impl InstrumentDoc {
         }
 
         // `outputs`: master taps (ADR-0026). A tap on a subpatch resolves through its face to the
-        // inner output the interface names; a dark subpatch's tap is dropped (silence).
+        // inner output the interface names; a tap on a dark subpatch — or on a dark boundary
+        // port of a live one — is dropped (silence).
         for o in &self.outputs {
             if dark.contains(&o.node) {
                 continue;
             }
-            let (key, port, _, _) =
-                resolve_output(&faces, &by_addr, &o.node, &o.port, Some(&o.port))?;
+            let Some((key, port, _, _)) =
+                resolve_output(&faces, &by_addr, &o.node, &o.port, Some(&o.port))?
+            else {
+                continue;
+            };
             match o.channel {
                 Some(channel) => graph.tap_output_channel(key, port, channel),
                 None => graph.tap_output(key, port),
@@ -896,13 +928,24 @@ impl InstrumentDoc {
         // host Voicer or a nesting parent to bind; no Arg-type check here (the boundary inherits
         // the inner port's type — ADR-0034 §4 — so the consumer's wire check decides). An entry
         // may point at a subpatch's boundary port (re-export): it resolves through the face to
-        // the same inner `(node, port)`. An entry on a dark subpatch is dropped — the boundary
-        // port vanishes with the unavailable child.
+        // the same inner `(node, port)`. An entry whose target is dark — an unavailable subpatch,
+        // or a dark boundary port of a live one — is dropped **and recorded** on the resolved
+        // interface's dark sets, with a warning: the boundary port vanishes with the unavailable
+        // child, but a consumer one level up degrades the same way instead of hitting a fatal
+        // unknown-port error (dark degradation is transitive, ADR-0016).
         if let Some(iface) = &self.interface {
             let mut interface = Interface::default();
+            let mut go_dark = |set: &mut BTreeSet<String>, name: &String, reference: &String| {
+                set.insert(name.clone());
+                warnings.push(LoadWarning::DarkInterfaceEntry {
+                    name: name.clone(),
+                    target: reference.clone(),
+                });
+            };
             for (name, reference) in &iface.inputs {
                 let (src_addr, port) = parse_wire(reference);
                 if dark.contains(src_addr) {
+                    go_dark(&mut interface.dark_inputs, name, reference);
                     continue;
                 }
                 // An input ref must name its port explicitly — there is no sole-input sugar.
@@ -910,15 +953,25 @@ impl InstrumentDoc {
                     node: src_addr.to_string(),
                     port: reference.clone(),
                 })?;
-                let (key, idx, _) = resolve_input(&faces, &by_addr, src_addr, port_name)?;
+                let Some((key, idx, _)) = resolve_input(&faces, &by_addr, src_addr, port_name)?
+                else {
+                    go_dark(&mut interface.dark_inputs, name, reference);
+                    continue;
+                };
                 interface.inputs.insert(name.clone(), (key, idx));
             }
             for (name, reference) in &iface.outputs {
                 let (src_addr, port) = parse_wire(reference);
                 if dark.contains(src_addr) {
+                    go_dark(&mut interface.dark_outputs, name, reference);
                     continue;
                 }
-                let (key, idx, _, _) = resolve_output(&faces, &by_addr, src_addr, reference, port)?;
+                let Some((key, idx, _, _)) =
+                    resolve_output(&faces, &by_addr, src_addr, reference, port)?
+                else {
+                    go_dark(&mut interface.dark_outputs, name, reference);
+                    continue;
+                };
                 interface.outputs.insert(name.clone(), (key, idx));
             }
             graph.interface = interface;
@@ -1091,6 +1144,12 @@ struct BoundaryFace {
     inputs: Vec<FacePort>,
     /// External output name → inner `(node, output port)` + its type, name-sorted.
     outputs: Vec<FacePort>,
+    /// Declared input names whose target went dark inside the child (see
+    /// [`Interface::dark_inputs`]): real boundary ports this load can't resolve. A parent
+    /// reference to one degrades (dropped, warned) instead of failing — transitive darkness.
+    dark_inputs: BTreeSet<String>,
+    /// Declared output names whose target went dark inside the child (see `dark_inputs`).
+    dark_outputs: BTreeSet<String>,
 }
 
 /// One synthesized boundary port: the external name and the inlined internal target it stands for.
@@ -1107,23 +1166,34 @@ impl BoundaryFace {
         self.inputs.iter().find(|p| p.name == name)
     }
 
-    /// Resolve a face output like [`resolve_out_port`] does for a descriptor — one shared
-    /// [`pick_output`] statement of the sole-output sugar. `node`/`reference` label the error
-    /// in the author's terms.
+    /// Resolve a face output like [`resolve_out_port`] does for a descriptor, plus the dark
+    /// dimension a descriptor doesn't have: `Ok(None)` means the reference lands on a **dark**
+    /// boundary port (declared by the child, unresolvable this load) — the caller drops it
+    /// (ADR-0016) instead of erroring. The sole-output sugar counts dark ports as real, so
+    /// darkness can only ever drop a wire, never silently re-target it: a two-output face with
+    /// one port dark keeps `"/sub"` ambiguous, exactly as if the child were healthy.
+    /// `node`/`reference` label errors in the author's terms.
     fn output(
         &self,
         node: &str,
         reference: &str,
         port_name: Option<&str>,
-    ) -> Result<&FacePort, LoadError> {
-        let idx = pick_output(
+    ) -> Result<Option<&FacePort>, LoadError> {
+        if let Some(p) = port_name {
+            if self.dark_outputs.contains(p) {
+                return Ok(None);
+            }
+        } else if self.outputs.is_empty() && self.dark_outputs.len() == 1 {
+            return Ok(None); // the face's sole output is dark: the sugar resolves to it, darkly
+        }
+        pick_output(
             |p| self.outputs.iter().position(|o| o.name == p),
-            self.outputs.len(),
+            self.outputs.len() + self.dark_outputs.len(),
             node,
             reference,
             port_name,
-        )?;
-        Ok(&self.outputs[idx])
+        )
+        .map(|idx| Some(&self.outputs[idx]))
     }
 }
 
@@ -1178,24 +1248,27 @@ fn literal_arg(
 /// through the document node's descriptor. The one statement of face-vs-descriptor input
 /// resolution — every pass that lands on an input goes through here, so errors are labeled the
 /// same way everywhere: the address and port name the author wrote, never a prefixed internal.
+/// `Ok(None)` means the name is a **dark** boundary port (declared by the child, unresolvable
+/// this load, ADR-0016) — the caller drops the reference; an unknown name stays fatal.
 fn resolve_input(
     faces: &BTreeMap<String, BoundaryFace>,
     by_addr: &BTreeMap<String, (crate::graph::NodeKey, Descriptor)>,
     addr: &str,
     name: &str,
-) -> Result<(crate::graph::NodeKey, usize, PortType), LoadError> {
+) -> Result<Option<(crate::graph::NodeKey, usize, PortType)>, LoadError> {
     match faces.get(addr) {
-        Some(face) => {
-            let fp = face.input(name).ok_or_else(|| LoadError::UnknownPort {
+        Some(face) => match face.input(name) {
+            Some(fp) => Ok(Some((fp.node, fp.port, fp.ty.clone()))),
+            None if face.dark_inputs.contains(name) => Ok(None),
+            None => Err(LoadError::UnknownPort {
                 node: addr.to_string(),
                 port: name.to_string(),
-            })?;
-            Ok((fp.node, fp.port, fp.ty.clone()))
-        }
+            }),
+        },
         None => {
             let (key, desc) = lookup(by_addr, addr)?;
             let port = in_port(desc, addr, name)?;
-            Ok((key, port, desc.inputs[port].ty.clone()))
+            Ok(Some((key, port, desc.inputs[port].ty.clone())))
         }
     }
 }
@@ -1203,33 +1276,36 @@ fn resolve_input(
 /// [`resolve_input`]'s output-side twin: face output or descriptor output (sole-output sugar in
 /// both arms via [`pick_output`]), plus the `"addr.port"` label wire-type errors print — the face
 /// arm labels with the **boundary** port name (ADR-0034 §4's "errors speak in boundary terms").
-/// Errors name `addr` — the node being resolved — in both arms.
+/// Errors name `addr` — the node being resolved — in both arms; `Ok(None)` is a dark boundary
+/// port (see [`resolve_input`]).
 fn resolve_output(
     faces: &BTreeMap<String, BoundaryFace>,
     by_addr: &BTreeMap<String, (crate::graph::NodeKey, Descriptor)>,
     addr: &str,
     reference: &str,
     port: Option<&str>,
-) -> Result<(crate::graph::NodeKey, usize, PortType, String), LoadError> {
+) -> Result<Option<(crate::graph::NodeKey, usize, PortType, String)>, LoadError> {
     match faces.get(addr) {
         Some(face) => {
-            let fp = face.output(addr, reference, port)?;
-            Ok((
+            let Some(fp) = face.output(addr, reference, port)? else {
+                return Ok(None);
+            };
+            Ok(Some((
                 fp.node,
                 fp.port,
                 fp.ty.clone(),
                 format!("{}.{}", addr, fp.name),
-            ))
+            )))
         }
         None => {
             let (key, desc) = lookup(by_addr, addr)?;
             let p = resolve_out_port(desc, addr, reference, port)?;
-            Ok((
+            Ok(Some((
                 key,
                 p,
                 desc.outputs[p].ty.clone(),
                 format!("{}.{}", addr, desc.outputs[p].name),
-            ))
+            )))
         }
     }
 }
@@ -1300,6 +1376,10 @@ fn splice_subpatch(
             .iter()
             .map(|e| face_port(e, true))
             .collect(),
+        // Boundary ports the child declared but couldn't resolve (a dark grandchild) stay
+        // visible as dark — a parent reference degrades instead of failing (transitivity).
+        dark_inputs: child.interface.dark_inputs,
+        dark_outputs: child.interface.dark_outputs,
     })
 }
 
@@ -2053,6 +2133,75 @@ mod tests {
             .any(|(p, a)| *p == freq_port && *a == Arg::F32(330.0)));
         // And the boundary wire chain resolved to one ordinary edge onto /out.
         assert_eq!(g.connections.len(), 1);
+    }
+
+    #[test]
+    fn missing_grandchild_degrades_dark_transitively() {
+        // The review-repro shape: mid re-exports its whole interface from a leaf whose file is
+        // missing. Mid loads with a warning and records `freq`/`audio` as **dark** interface
+        // entries; the parent's boundary literal, wire, and tap onto them then degrade exactly
+        // like references to a dark nest — dropped with the warning — instead of escalating to
+        // a fatal UnknownInput/UnknownPort one level up (ADR-0016: dark is transitive).
+        struct MissingLeaf;
+        impl ResourceResolver for MissingLeaf {
+            fn resolve(&self, s: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
+                Err(crate::resources::ResolveError::NotFound(s.to_string()))
+            }
+            fn resolve_text(&self, source: &str) -> Result<String, crate::resources::ResolveError> {
+                match source {
+                    "mid.json" => Ok(r#"{"instrument":"mid",
+                        "resources":{"leaf":"leaf.json"},
+                        "interface":{"inputs":{"freq":"/inner.freq"},
+                                     "outputs":{"audio":"/inner.audio"}},
+                        "nodes":[{"type":"subpatch","address":"/inner","patch":"leaf"}]}"#
+                        .to_string()),
+                    other => Err(crate::resources::ResolveError::NotFound(other.to_string())),
+                }
+            }
+        }
+        let json = r#"{"instrument":"p","resources":{"m":"mid.json"},"nodes":[
+            {"type":"subpatch","address":"/outer","patch":"m","inputs":{"freq":220.0}},
+            {"type":"output","address":"/out","inputs":{"audio":{"from":"/outer.audio"}}}],
+            "outputs":[{"node":"/outer","port":"audio"},{"node":"/out","port":"audio"}]}"#;
+        let loaded = load_instrument(json, &reg(), &MissingLeaf)
+            .expect("a missing grandchild must stay non-fatal at every level");
+        let g = &loaded.graph;
+        assert!(g.find("/out").is_some());
+        assert!(
+            g.connections.is_empty(),
+            "the wire from the dark boundary port is dropped"
+        );
+        assert_eq!(g.outputs.len(), 1, "dark tap dropped; /out's tap survives");
+        // The leaf's unavailability warned, and each dropped interface entry warned too.
+        assert!(
+            loaded
+                .warnings
+                .iter()
+                .any(|w| matches!(unwrap_nested(w), LoadWarning::ResolveFailed { .. })),
+            "{:?}",
+            loaded.warnings
+        );
+        assert!(
+            loaded.warnings.iter().any(|w| matches!(unwrap_nested(w),
+                    LoadWarning::DarkInterfaceEntry { name, .. } if name == "freq")),
+            "{:?}",
+            loaded.warnings
+        );
+        // A name the child never declared stays fatal — darkness never swallows a typo.
+        let typo = r#"{"instrument":"p","resources":{"m":"mid.json"},"nodes":[
+            {"type":"subpatch","address":"/outer","patch":"m","inputs":{"nope":220.0}}]}"#;
+        assert!(matches!(
+            load_instrument(typo, &reg(), &MissingLeaf),
+            Err(LoadError::UnknownInput { node, input }) if node == "/outer" && input == "nope"
+        ));
+    }
+
+    /// Peel [`LoadWarning::Nested`] wrappers to the innermost warning.
+    fn unwrap_nested(w: &LoadWarning) -> &LoadWarning {
+        match w {
+            LoadWarning::Nested { warning, .. } => unwrap_nested(warning),
+            other => other,
+        }
     }
 
     #[test]
