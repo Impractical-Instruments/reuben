@@ -173,6 +173,15 @@ fn print_ports(dir: &str, ps: &[reuben_native::cli::PortInfo]) {
     }
 }
 
+/// Read an instrument file to its JSON text, paired with a resolver rooted at its directory —
+/// resource paths (samples, nested patches) resolve relative to the instrument file. The one
+/// loading preamble behind `describe`, `validate`, and `play`.
+fn read_instrument(path: &Path) -> Result<(String, FsResolver), String> {
+    let json =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    Ok((json, FsResolver::for_instrument(path)))
+}
+
 /// `describe`'s argument is a patch **path** by shape alone: it ends in `.json` or contains a
 /// path separator. A bare name is always an operator, so a stray file named `filter` in the
 /// cwd cannot shadow `describe filter` — routing must not depend on directory contents.
@@ -221,24 +230,19 @@ fn cmd_describe(op: Option<&str>, json: bool) -> ExitCode {
 /// `describe <patch.json>`: the nested-instrument boundary view — the `interface` ports a host
 /// wires against, with metadata inherited from the inner ports and the entry overrides applied.
 fn cmd_describe_patch(path: &Path, json: bool) -> ExitCode {
-    let instrument_json = match std::fs::read_to_string(path) {
-        Ok(s) => s,
+    let (instrument_json, resolver) = match read_instrument(path) {
+        Ok(r) => r,
         Err(e) => {
-            eprintln!("error: read {}: {e}", path.display());
+            eprintln!("error: {e}");
             return ExitCode::FAILURE;
         }
     };
-    let base_dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
 
     // Introspection never renders audio: stat samples for availability instead of decoding them.
     let boundary = match describe_patch(
         &instrument_json,
         &Registry::builtin(),
-        &FsResolver::new(base_dir).stat_only(),
+        &resolver.stat_only(),
     ) {
         Ok(b) => b,
         Err(e) => {
@@ -276,24 +280,15 @@ fn cmd_describe_patch(path: &Path, json: bool) -> ExitCode {
 /// `validate`: report whether an instrument loads + plans cleanly. Exit 1 only on hard errors;
 /// warnings (e.g. an unresolved sample) are advisory and keep exit 0.
 fn cmd_validate(path: &Path, json: bool) -> ExitCode {
-    let instrument_json = match std::fs::read_to_string(path) {
-        Ok(s) => s,
+    let (instrument_json, resolver) = match read_instrument(path) {
+        Ok(r) => r,
         Err(e) => {
-            eprintln!("error: read {}: {e}", path.display());
+            eprintln!("error: {e}");
             return ExitCode::FAILURE;
         }
     };
-    let base_dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
 
-    let report = validate(
-        &instrument_json,
-        &Registry::builtin(),
-        &FsResolver::new(base_dir),
-    );
+    let report = validate(&instrument_json, &Registry::builtin(), &resolver);
 
     if json {
         println!(
@@ -401,21 +396,14 @@ fn play(path: Option<PathBuf>, osc_out_target: Option<String>) {
     // Instrument source: a path argument, else the embedded default. Resource paths (sample
     // files) resolve relative to the instrument file's directory; the embedded default has
     // none, so it roots at the current directory.
-    let (instrument_json, base_dir) = match path {
+    let (instrument_json, resolver) = match path {
         Some(path) => {
             println!("instrument: {}", path.display());
-            let json = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            let base = path
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from("."));
-            (json, base)
+            read_instrument(&path).unwrap_or_else(|e| panic!("{e}"))
         }
         None => {
             println!("instrument: <default> (pass a path to load your own)");
-            (DEFAULT_JSON.to_string(), PathBuf::from("."))
+            (DEFAULT_JSON.to_string(), FsResolver::new("."))
         }
     };
 
@@ -424,7 +412,6 @@ fn play(path: Option<PathBuf>, osc_out_target: Option<String>) {
             "audio out @ {} Hz, block {}",
             cfg.sample_rate, cfg.block_size
         );
-        let resolver = FsResolver::new(&base_dir);
         let loaded = load_instrument(&instrument_json, &Registry::builtin(), &resolver)
             .expect("load instrument");
         // Resource problems are non-fatal (ADR-0016): the rig still plays, but the user must
