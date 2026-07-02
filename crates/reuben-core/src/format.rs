@@ -556,6 +556,17 @@ pub fn load_instrument(
     load_instrument_guarded(json, registry, resolver, &mut LoadCtx::default())
 }
 
+/// [`load_instrument`] from an already-parsed document — the parse-once entry point for a
+/// caller that needs both the document (e.g. for its `interface` overrides,
+/// [`crate::describe::describe_boundary`]) and the built graph, without re-parsing the JSON.
+pub fn load_instrument_doc(
+    doc: &InstrumentDoc,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> Result<Loaded, LoadError> {
+    load_doc_guarded(doc, registry, resolver, &mut LoadCtx::default())
+}
+
 /// [`load_instrument`] with the shared load state threaded through: `ctx` carries the cycle
 /// guard (a chain that re-enters a source still loading is caught as
 /// [`LoadError::CyclicResource`] instead of recursing forever) and the per-load decoded-sample
@@ -1220,16 +1231,9 @@ impl InstrumentDoc {
                 // (they reload from the descriptor), keeping save minimal and round-trips stable.
                 for (slot, arg) in &node.constant_overrides {
                     let p = &d.constants[*slot];
-                    let value = match arg {
-                        Arg::I32(v) => ConfigValue::Number(*v as f64),
-                        Arg::F32(v) => ConfigValue::Number(*v as f64),
-                        other => {
-                            let sym = p
-                                .enum_meta()
-                                .and_then(|e| e.symbol_of(other))
-                                .unwrap_or_default();
-                            ConfigValue::Symbol(sym.to_string())
-                        }
+                    let value = match doc_value(p, arg) {
+                        DocValue::Number(n) => ConfigValue::Number(n),
+                        DocValue::Symbol(s) => ConfigValue::Symbol(s),
                     };
                     config.insert(p.name.to_string(), value);
                 }
@@ -1237,15 +1241,9 @@ impl InstrumentDoc {
                 // control as a number, an enum as its variant **symbol** (the primary wire form).
                 for (port, arg) in &node.value_overrides {
                     let p = &d.inputs[*port];
-                    let value = match arg {
-                        Arg::F32(v) => InputValue::Number(*v as f64),
-                        other => {
-                            let sym = p
-                                .enum_meta()
-                                .and_then(|e| e.symbol_of(other))
-                                .unwrap_or_default();
-                            InputValue::Symbol(sym.to_string())
-                        }
+                    let value = match doc_value(p, arg) {
+                        DocValue::Number(n) => InputValue::Number(n),
+                        DocValue::Symbol(s) => InputValue::Symbol(s),
                     };
                     inputs.insert(p.name.to_string(), value);
                 }
@@ -1610,10 +1608,34 @@ fn splice_subpatch(
 }
 
 /// Widen an `f32` to `f64` without exposing binary-fraction noise: round-trip through the `f32`'s
-/// own shortest decimal so `0.2_f32` compares equal to a document's `0.2`, not `0.20000000298…`
-/// (the naive `as f64`).
-pub(crate) fn widen_f32(v: f32) -> f64 {
+/// own shortest decimal so `0.2_f32` widens to `0.2`, not `0.20000000298…` (the naive `as f64`).
+pub fn widen_f32(v: f32) -> f64 {
     v.to_string().parse().unwrap_or(v as f64)
+}
+
+/// A single override [`Arg`] in document-facing form (ADR-0035): a number for `F32`/`I32`, the
+/// variant **symbol** for an enum choice (the primary wire form, ADR-0028).
+#[derive(Debug, Clone, PartialEq)]
+pub enum DocValue {
+    Number(f64),
+    Symbol(String),
+}
+
+/// The one Arg→document-value mapping, shared by [`InstrumentDoc::from_graph`] (save: `config`
+/// and `inputs` overrides) and boundary introspection ([`crate::describe`]) — a new numeric
+/// [`Arg`] variant extends this match and nothing downstream. `port` supplies the enum metadata
+/// a non-numeric Arg resolves its symbol through.
+pub fn doc_value(port: &crate::descriptor::Port, arg: &Arg) -> DocValue {
+    match arg {
+        Arg::F32(v) => DocValue::Number(widen_f32(*v)),
+        Arg::I32(v) => DocValue::Number(*v as f64),
+        other => DocValue::Symbol(
+            port.enum_meta()
+                .and_then(|e| e.symbol_of(other))
+                .unwrap_or_default()
+                .to_string(),
+        ),
+    }
 }
 
 /// Enforce the presentational-override law (ADR-0034 §4) on one resolved `interface` entry:

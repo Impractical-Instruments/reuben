@@ -29,6 +29,7 @@ pub mod op_driver;
 
 pub mod boundary;
 pub mod config;
+pub mod describe;
 pub mod descriptor;
 pub mod format;
 pub mod graph;
@@ -46,10 +47,11 @@ pub mod vocab;
 pub mod wavetable;
 
 pub use config::AudioConfig;
+pub use describe::{describe_boundary, BoundaryDesc, BoundaryPortDesc};
 pub use descriptor::Descriptor;
 pub use format::{
-    load, load_instrument, resolve_instrument, InstrumentDoc, InterfaceDoc, LoadError, LoadWarning,
-    Loaded,
+    load, load_instrument, load_instrument_doc, resolve_instrument, DocValue, InstrumentDoc,
+    InterfaceDoc, LoadError, LoadWarning, Loaded,
 };
 pub use graph::{Graph, Interface, NodeKey};
 pub use message::{Arg, Message};

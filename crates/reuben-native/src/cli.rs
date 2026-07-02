@@ -5,10 +5,13 @@
 //! over [`Registry`] + JSON so they test through real load/plan code paths, not a process.
 
 use reuben_core::descriptor::{Curve, Descriptor, Port, PortType};
-use reuben_core::format::{InstrumentDoc, LoadError};
+use reuben_core::format::{DocValue, InstrumentDoc, LoadError};
 use reuben_core::plan::Plan;
 use reuben_core::resources::ResourceResolver;
-use reuben_core::{load_instrument, AudioConfig, Registry};
+use reuben_core::{
+    describe_boundary, load_instrument, load_instrument_doc, AudioConfig, BoundaryPortDesc,
+    Registry,
+};
 
 use serde::Serialize;
 
@@ -64,6 +67,12 @@ pub struct PortInfo {
     /// Widget hint override from an `interface` entry (ADR-0034 §4 / ADR-0018); boundary-only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub widget: Option<String>,
+    /// Boundary-only: this input's inner **Signal** port is already driven inside the nested
+    /// patch, so a host wire onto it is a fatal `BoundaryInputDriven` — the port is real (its
+    /// effective default still tells you what it holds) but not wireable. Omitted (false) for
+    /// wireable inputs, all outputs, and operator ports.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub driven: bool,
 }
 
 fn port_kind(ty: &PortType) -> &'static str {
@@ -115,6 +124,7 @@ impl PortInfo {
             variants: Vec::new(),
             label: None,
             widget: None,
+            driven: false,
         };
         // Scalar control (ADR-0030): a materialized `f32` input owns its range/curve/default in `meta`.
         if let Some(m) = &p.meta {
@@ -203,87 +213,51 @@ pub struct PatchBoundary {
     pub warnings: Vec<String>,
 }
 
+impl PortInfo {
+    /// The CLI view of one core [`BoundaryPortDesc`] (ADR-0034 §4): the inherit+override merge
+    /// happened in `reuben-core` ([`describe_boundary`]); this only maps its typed fields onto
+    /// the flat agent-facing shape shared with operator ports.
+    fn from_boundary(b: BoundaryPortDesc) -> Self {
+        PortInfo {
+            name: b.name,
+            kind: port_kind(&b.ty).to_string(),
+            constant: false,
+            default: b.default.map(|v| match v {
+                DocValue::Number(n) => serde_json::json!(n),
+                DocValue::Symbol(s) => serde_json::json!(s),
+            }),
+            min: b.min,
+            max: b.max,
+            unit: b.unit,
+            curve: b.curve.map(|c| curve(c).to_string()),
+            variants: b.variants,
+            label: b.label,
+            widget: b.widget,
+            driven: b.driven,
+        }
+    }
+}
+
 /// Describe an instrument document's boundary the way a host patch will see it (ADR-0034 §4):
-/// load it through the real engine path, resolve its `interface` to inner ports, and present
-/// each as an operator-style [`PortInfo`] — type + metadata **inherited** from the inner port,
-/// then the entry's presentational overrides applied. The `Arg` type is never overridable, so
-/// `kind` is always the inner port's truth. A patch with no `interface` yields empty port lists
-/// (it nests, but exposes nothing to wire).
+/// load it through the real engine path (parsed once), let core's [`describe_boundary`] do the
+/// inherit+override merge, and present each port as an operator-style [`PortInfo`]. The `Arg`
+/// type is never overridable, so `kind` is always the inner port's truth. A patch with no
+/// `interface` yields empty port lists (it nests, but exposes nothing to wire).
 pub fn describe_patch(
     json: &str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
 ) -> Result<PatchBoundary, String> {
     let doc = InstrumentDoc::from_json(json).map_err(|e| e.to_string())?;
-    let loaded = load_instrument(json, registry, resolver).map_err(|e| e.to_string())?;
-    let g = &loaded.graph;
-
-    // One boundary port: inherit the inner port's PortInfo, rename to the external name, then
-    // decorate with the interface entry's overrides (presentation only — kind/variants stay).
-    let boundary_port = |name: &String, key: reuben_core::NodeKey, idx: usize, output: bool| {
-        let node = &g.nodes[key];
-        let d = &node.descriptor;
-        let p = if output {
-            &d.outputs[idx]
-        } else {
-            &d.inputs[idx]
-        };
-        let mut info = PortInfo::from_port(p, false);
-        info.name = name.clone();
-        // The effective unwired value is what a host actually gets: the child's own literal
-        // (`"mix": 0.35`, a value-override on the inner node) beats the descriptor default.
-        if !output {
-            if let Some((_, arg)) = node.value_overrides.iter().find(|(port, _)| *port == idx) {
-                match arg {
-                    reuben_core::Arg::F32(v) => info.default = Some(serde_json::json!(widen(*v))),
-                    other => {
-                        if let Some(sym) = p.enum_meta().and_then(|e| e.symbol_of(other)) {
-                            info.default = Some(serde_json::json!(sym));
-                        }
-                    }
-                }
-            }
-        }
-        let entries = doc
-            .interface
-            .as_ref()
-            .map(|i| if output { &i.outputs } else { &i.inputs });
-        if let Some(m) = entries.and_then(|e| e.get(name)).and_then(|e| e.meta()) {
-            if let Some(l) = &m.label {
-                info.label = Some(l.clone());
-            }
-            if let Some(u) = &m.unit {
-                info.unit = u.clone();
-            }
-            if let Some(w) = &m.widget {
-                info.widget = Some(w.clone());
-            }
-            if let Some(min) = m.min {
-                info.min = Some(min);
-            }
-            if let Some(max) = m.max {
-                info.max = Some(max);
-            }
-        }
-        info
-    };
+    let loaded = load_instrument_doc(&doc, registry, resolver).map_err(|e| e.to_string())?;
+    let b = describe_boundary(&doc, &loaded);
 
     Ok(PatchBoundary {
-        instrument: doc.instrument.clone(),
-        inputs: g
-            .interface
-            .inputs
-            .iter()
-            .map(|(name, (k, i))| boundary_port(name, *k, *i, false))
-            .collect(),
-        outputs: g
-            .interface
-            .outputs
-            .iter()
-            .map(|(name, (k, i))| boundary_port(name, *k, *i, true))
-            .collect(),
-        dark_inputs: g.interface.dark_inputs.iter().cloned().collect(),
-        dark_outputs: g.interface.dark_outputs.iter().cloned().collect(),
+        instrument: doc.instrument,
+        inputs: b.inputs.into_iter().map(PortInfo::from_boundary).collect(),
+        outputs: b.outputs.into_iter().map(PortInfo::from_boundary).collect(),
+        dark_inputs: b.dark_inputs,
+        dark_outputs: b.dark_outputs,
         warnings: loaded.warnings.iter().map(|w| w.to_string()).collect(),
     })
 }

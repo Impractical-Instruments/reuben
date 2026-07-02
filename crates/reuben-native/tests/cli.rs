@@ -275,6 +275,28 @@ fn describe_patch_refuses_a_range_the_engine_would_not_honor() {
 }
 
 #[test]
+fn describe_patch_flags_an_internally_driven_boundary_input() {
+    // Review F2: the child drives /filter.audio itself, so a host wire onto `in` is the fatal
+    // BoundaryInputDriven — the introspection view must state that instead of listing the port
+    // as wireable and letting the host discover it at build.
+    let json = r#"{
+      "instrument": "self-fed",
+      "interface": { "inputs": { "in": "/filter.audio", "tone": "/filter.cutoff" } },
+      "nodes": [
+        { "type": "oscillator", "address": "/osc" },
+        { "type": "filter", "address": "/filter", "inputs": { "audio": { "from": "/osc.audio" } } }
+      ]
+    }"#;
+    let b = describe_patch(json, &Registry::builtin(), &FsResolver::new(".")).expect("describe");
+    let port = |n: &str| b.inputs.iter().find(|p| p.name == n).expect(n);
+    assert!(
+        port("in").driven,
+        "internally driven Signal input is flagged"
+    );
+    assert!(!port("tone").driven, "unwired input stays wireable");
+}
+
+#[test]
 fn describe_patch_without_interface_yields_an_empty_boundary() {
     let json = r#"{ "instrument": "plain",
       "nodes": [ { "type": "oscillator", "address": "/osc" } ] }"#;
