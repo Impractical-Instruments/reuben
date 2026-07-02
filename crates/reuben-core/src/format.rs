@@ -61,9 +61,73 @@ pub struct InstrumentDoc {
 #[serde(deny_unknown_fields)]
 pub struct InterfaceDoc {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub inputs: BTreeMap<String, String>,
+    pub inputs: BTreeMap<String, InterfaceEntry>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
-    pub outputs: BTreeMap<String, String>,
+    pub outputs: BTreeMap<String, InterfaceEntry>,
+}
+
+/// One `interface` entry: the internal target, optionally decorated with presentational
+/// overrides (ADR-0034 §4). Untagged: a JSON string is the bare target (`"wet": "/mix.wet"`);
+/// a JSON object is the [`Detailed`](Self::Detailed) form carrying per-field metadata overrides.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum InterfaceEntry {
+    /// The common bare form: just the internal `/node.port` wire-ref.
+    Target(String),
+    /// Target plus presentational-metadata overrides (label, unit, range, widget).
+    Detailed(InterfaceMeta),
+}
+
+/// The object form of an [`InterfaceEntry`] (ADR-0034 §4): the internal target plus
+/// **presentational** metadata overriding what the boundary port inherits from the inner port —
+/// how a control *presents* (label, unit, range, widget), consumed by introspection (`describe`)
+/// and control-surface generation (ADR-0017/0018). The `Arg` **type is inherited and not
+/// overridable** — there is deliberately no field to express one, and `deny_unknown_fields`
+/// rejects an attempt, so the boundary can never lie to the type-checker (§4/§5).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InterfaceMeta {
+    /// The internal `/node.port` wire-ref this external name resolves to.
+    pub target: String,
+    /// Display name override (the boundary name itself is the wiring handle; this is UI-facing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Unit override (e.g. `"Hz"`, `"%"`), replacing the inner port's unit.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    /// Widget hint override for a generated control surface (ADR-0018), e.g. `"knob"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widget: Option<String>,
+    /// Range-minimum override (presentational: narrows/renames the swept range a control shows).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    /// Range-maximum override (see `min`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+}
+
+impl InterfaceEntry {
+    /// The internal `/node.port` wire-ref, whichever form carries it.
+    pub fn target(&self) -> &str {
+        match self {
+            InterfaceEntry::Target(t) => t,
+            InterfaceEntry::Detailed(m) => &m.target,
+        }
+    }
+
+    /// The presentational overrides, when the entry carries any (the object form).
+    pub fn meta(&self) -> Option<&InterfaceMeta> {
+        match self {
+            InterfaceEntry::Target(_) => None,
+            InterfaceEntry::Detailed(m) => Some(m),
+        }
+    }
+}
+
+impl From<String> for InterfaceEntry {
+    fn from(target: String) -> Self {
+        InterfaceEntry::Target(target)
+    }
 }
 
 /// One operator instance.
@@ -1046,14 +1110,15 @@ impl InstrumentDoc {
         // unknown-port error (dark degradation is transitive, ADR-0016).
         if let Some(iface) = &self.interface {
             let mut interface = Interface::default();
-            let mut go_dark = |set: &mut BTreeSet<String>, name: &String, reference: &String| {
+            let mut go_dark = |set: &mut BTreeSet<String>, name: &String, reference: &str| {
                 set.insert(name.clone());
                 warnings.push(LoadWarning::DarkInterfaceEntry {
                     name: name.clone(),
-                    target: reference.clone(),
+                    target: reference.to_string(),
                 });
             };
-            for (name, reference) in &iface.inputs {
+            for (name, entry) in &iface.inputs {
+                let reference = entry.target();
                 let (src_addr, port) = parse_wire(reference);
                 if dark.contains(src_addr) {
                     go_dark(&mut interface.dark_inputs, name, reference);
@@ -1062,7 +1127,7 @@ impl InstrumentDoc {
                 // An input ref must name its port explicitly — there is no sole-input sugar.
                 let port_name = port.ok_or_else(|| LoadError::UnknownPort {
                     node: src_addr.to_string(),
-                    port: reference.clone(),
+                    port: reference.to_string(),
                 })?;
                 let Some((key, idx, _)) = resolve_input(&faces, &by_addr, src_addr, port_name)?
                 else {
@@ -1071,7 +1136,8 @@ impl InstrumentDoc {
                 };
                 interface.inputs.insert(name.clone(), (key, idx));
             }
-            for (name, reference) in &iface.outputs {
+            for (name, entry) in &iface.outputs {
+                let reference = entry.target();
                 let (src_addr, port) = parse_wire(reference);
                 if dark.contains(src_addr) {
                     go_dark(&mut interface.dark_outputs, name, reference);
@@ -1208,15 +1274,19 @@ impl InstrumentDoc {
             None
         } else {
             Some(InterfaceDoc {
+                // Bare targets only: presentational overrides (ADR-0034 §4) live on the
+                // document, like `control` — the built Graph doesn't hold them, so the
+                // save-from-graph path can't reconstruct them; the document-level round-trip
+                // (load → re-serialize) preserves them via serde.
                 inputs: iface
                     .inputs
                     .iter()
-                    .map(|(name, np)| (name.clone(), port_ref(np, false)))
+                    .map(|(name, np)| (name.clone(), port_ref(np, false).into()))
                     .collect(),
                 outputs: iface
                     .outputs
                     .iter()
-                    .map(|(name, np)| (name.clone(), port_ref(np, true)))
+                    .map(|(name, np)| (name.clone(), port_ref(np, true).into()))
                     .collect(),
             })
         };
@@ -1867,6 +1937,63 @@ mod tests {
         ));
     }
 
+    // ADR-0034 §4 — the object entry form: target + presentational overrides.
+    const VOICE_IFACE_META: &str = r#"{
+        "instrument": "voice",
+        "interface": {
+            "inputs": {
+                "freq": { "target": "/osc.freq", "label": "Pitch", "unit": "Hz", "min": 50, "max": 2000, "widget": "knob" },
+                "gate": "/env.gate"
+            },
+            "outputs": { "audio": "/osc.audio" }
+        },
+        "nodes": [
+            { "type": "oscillator", "address": "/osc" },
+            { "type": "envelope", "address": "/env" }
+        ]
+    }"#;
+
+    #[test]
+    fn interface_entry_object_form_resolves_like_the_bare_form() {
+        // The object form's `target` resolves exactly as a bare string entry would (§4:
+        // overrides decorate presentation; they never change what resolves or what type flows).
+        let g = load(VOICE_IFACE_META, &reg()).expect("load");
+        let osc = g.find("/osc").unwrap();
+        let freq = g.nodes[osc]
+            .descriptor
+            .inputs
+            .iter()
+            .position(|p| p.name == "freq")
+            .unwrap();
+        assert_eq!(g.interface.inputs["freq"], (osc, freq));
+    }
+
+    #[test]
+    fn interface_entry_overrides_round_trip_through_the_document() {
+        // Overrides live on the document (like `control`): serde round-trip preserves them.
+        let doc = InstrumentDoc::from_json(VOICE_IFACE_META).expect("parse");
+        let meta = doc.interface.as_ref().unwrap().inputs["freq"]
+            .meta()
+            .expect("object form carries overrides");
+        assert_eq!(meta.target, "/osc.freq");
+        assert_eq!(meta.label.as_deref(), Some("Pitch"));
+        assert_eq!(meta.unit.as_deref(), Some("Hz"));
+        assert_eq!(meta.widget.as_deref(), Some("knob"));
+        assert_eq!((meta.min, meta.max), (Some(50.0), Some(2000.0)));
+        let reparsed = InstrumentDoc::from_json(&doc.to_json_pretty()).expect("reparse");
+        assert_eq!(doc, reparsed);
+    }
+
+    #[test]
+    fn interface_entry_type_override_is_rejected() {
+        // §4: the Arg type is inherited and NOT overridable — the object form has no field to
+        // express one, so an attempt fails to parse (never a silently ignored key).
+        let json = r#"{"instrument":"t","interface":{
+            "inputs":{"freq":{"target":"/osc.freq","type":"note"}}},
+            "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
+        assert!(matches!(load(json, &reg()), Err(LoadError::Json(_))));
+    }
+
     #[test]
     fn interface_input_requires_explicit_port() {
         // No sole-input sugar: an `inputs` ref must name its port.
@@ -1888,8 +2015,8 @@ mod tests {
         let g = load(VOICE_IFACE, &reg()).expect("load");
         let saved = InstrumentDoc::from_graph(&g, "voice");
         let iface = saved.interface.as_ref().expect("interface reconstructed");
-        assert_eq!(iface.inputs["freq"], "/osc.freq");
-        assert_eq!(iface.outputs["active"], "/env.active");
+        assert_eq!(iface.inputs["freq"].target(), "/osc.freq");
+        assert_eq!(iface.outputs["active"].target(), "/env.active");
         // Rebuild and compare by (address, port) — raw NodeKeys are build-specific (the slotmap
         // assigns them fresh, and from_graph re-sorts nodes), so resolve keys to addresses first.
         let g2 = saved.build(&reg()).expect("rebuild");

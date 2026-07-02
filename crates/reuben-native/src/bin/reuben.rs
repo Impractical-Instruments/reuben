@@ -9,8 +9,10 @@
 //!   /voicer/notes  [69.0, 0.0]   # note-off (gate 0)
 //!   ```
 //!
-//! - `reuben describe [op] [--json]` — print the operator set (or one operator's ports,
-//!   params, and resource slots). The introspection half of the Patcher skill (ADR-0020).
+//! - `reuben describe [op|patch.json] [--json]` — print the operator set, one operator's ports/
+//!   params/resource slots, or — given an instrument JSON path — that patch's `interface`
+//!   boundary as a host patch sees it (ADR-0034 §4: types inherited from the inner ports,
+//!   presentational overrides applied). The introspection half of the Patcher skill (ADR-0020).
 //! - `reuben validate <path> [--json]` — load + plan an instrument with no audio device and
 //!   report structural/wiring errors. Exit 1 if invalid; warnings alone stay exit 0.
 //! - `reuben scaffold-operator --spec <path> [--json]` — generate a new Operator's Rust skeleton
@@ -29,7 +31,7 @@ use reuben_core::boundary;
 use reuben_core::message::Message;
 use reuben_core::plan::Plan;
 use reuben_core::{load_instrument, Registry};
-use reuben_native::cli::{describe, validate};
+use reuben_native::cli::{describe, describe_patch, validate};
 use reuben_native::engine::Engine;
 use reuben_native::resources::FsResolver;
 use reuben_native::rigs::DEFAULT_JSON;
@@ -56,9 +58,11 @@ enum Command {
         #[arg(long, value_name = "HOST:PORT")]
         osc_out: Option<String>,
     },
-    /// Print the operator set, or one operator's ports/params/resources.
+    /// Print the operator set, one operator's ports/params/resources, or — given an instrument
+    /// JSON path — that patch's `interface` boundary as a host sees it (ADR-0034).
     Describe {
-        /// Operator type to describe; omit to list them all.
+        /// Operator type to describe, or a path to an instrument JSON (its nested boundary);
+        /// omit to list every operator.
         op: Option<String>,
         /// Emit machine-readable JSON instead of a human summary.
         #[arg(long)]
@@ -133,8 +137,49 @@ fn cmd_scaffold(spec: &Path, core_root: &Path, json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `describe`: dump the operator set (or one operator) as human text or JSON.
+/// Render one port line of `describe` output, shared by the operator and patch-boundary views.
+fn print_ports(dir: &str, ps: &[reuben_native::cli::PortInfo]) {
+    for p in ps {
+        let mut s = format!("  {dir} {} : {}", p.name, p.kind);
+        if p.constant {
+            s.push_str(" (constant)");
+        }
+        if let Some(d) = &p.default {
+            s.push_str(&format!(" = {d}"));
+        }
+        if !p.unit.is_empty() {
+            s.push_str(&format!(" {}", p.unit));
+        }
+        if let (Some(min), Some(max)) = (p.min, p.max) {
+            s.push_str(&format!(" [{min}..{max}]"));
+        }
+        if let Some(c) = &p.curve {
+            s.push_str(&format!(" ({c})"));
+        }
+        if !p.variants.is_empty() {
+            s.push_str(&format!(" {{{}}}", p.variants.join(", ")));
+        }
+        if let Some(l) = &p.label {
+            s.push_str(&format!(" \"{l}\""));
+        }
+        if let Some(w) = &p.widget {
+            s.push_str(&format!(" <{w}>"));
+        }
+        println!("{s}");
+    }
+}
+
+/// `describe`: dump the operator set, one operator, or — for an instrument JSON path — that
+/// patch's boundary as a host patch sees it (ADR-0034 §4), as human text or JSON.
 fn cmd_describe(op: Option<&str>, json: bool) -> ExitCode {
+    // A `.json` argument (or an existing file) is an instrument path: describe its boundary.
+    if let Some(arg) = op {
+        let p = Path::new(arg);
+        if p.extension().is_some_and(|e| e == "json") || p.is_file() {
+            return cmd_describe_patch(p, json);
+        }
+    }
+
     let ops = match describe(&Registry::builtin(), op) {
         Ok(ops) => ops,
         Err(e) => {
@@ -153,35 +198,66 @@ fn cmd_describe(op: Option<&str>, json: bool) -> ExitCode {
 
     for o in &ops {
         println!("{}", o.type_name);
-        let ports = |dir: &str, ps: &[reuben_native::cli::PortInfo]| {
-            for p in ps {
-                let mut s = format!("  {dir} {} : {}", p.name, p.kind);
-                if p.constant {
-                    s.push_str(" (constant)");
-                }
-                if let Some(d) = &p.default {
-                    s.push_str(&format!(" = {d}"));
-                }
-                if !p.unit.is_empty() {
-                    s.push_str(&format!(" {}", p.unit));
-                }
-                if let (Some(min), Some(max)) = (p.min, p.max) {
-                    s.push_str(&format!(" [{min}..{max}]"));
-                }
-                if let Some(c) = &p.curve {
-                    s.push_str(&format!(" ({c})"));
-                }
-                if !p.variants.is_empty() {
-                    s.push_str(&format!(" {{{}}}", p.variants.join(", ")));
-                }
-                println!("{s}");
-            }
-        };
-        ports("in ", &o.inputs);
-        ports("out", &o.outputs);
+        print_ports("in ", &o.inputs);
+        print_ports("out", &o.outputs);
         for r in &o.resources {
             println!("  resource {r}");
         }
+    }
+    ExitCode::SUCCESS
+}
+
+/// `describe <patch.json>`: the nested-instrument boundary view — the `interface` ports a host
+/// wires against, with metadata inherited from the inner ports and the entry overrides applied.
+fn cmd_describe_patch(path: &Path, json: bool) -> ExitCode {
+    let instrument_json = match std::fs::read_to_string(path) {
+        Ok(s) => s,
+        Err(e) => {
+            eprintln!("error: read {}: {e}", path.display());
+            return ExitCode::FAILURE;
+        }
+    };
+    let base_dir = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| PathBuf::from("."));
+
+    let boundary = match describe_patch(
+        &instrument_json,
+        &Registry::builtin(),
+        &FsResolver::new(base_dir),
+    ) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&boundary).expect("serialize boundary")
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    for w in &boundary.warnings {
+        eprintln!("warning: {w}");
+    }
+    println!("{} (instrument boundary)", boundary.instrument);
+    if boundary.inputs.is_empty() && boundary.outputs.is_empty() && boundary.dark_inputs.is_empty()
+    {
+        println!("  (no `interface` boundary — nests, but exposes nothing to wire)");
+    }
+    print_ports("in ", &boundary.inputs);
+    print_ports("out", &boundary.outputs);
+    for d in &boundary.dark_inputs {
+        println!("  in  {d} : (dark — unresolved this load)");
+    }
+    for d in &boundary.dark_outputs {
+        println!("  out {d} : (dark — unresolved this load)");
     }
     ExitCode::SUCCESS
 }

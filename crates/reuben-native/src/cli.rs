@@ -5,7 +5,7 @@
 //! over [`Registry`] + JSON so they test through real load/plan code paths, not a process.
 
 use reuben_core::descriptor::{Curve, Descriptor, Port, PortType};
-use reuben_core::format::LoadError;
+use reuben_core::format::{InstrumentDoc, LoadError};
 use reuben_core::plan::Plan;
 use reuben_core::resources::ResourceResolver;
 use reuben_core::{load_instrument, AudioConfig, Registry};
@@ -57,6 +57,13 @@ pub struct PortInfo {
     /// The ordered enum choices (ADR-0030); empty for non-enum ports.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<String>,
+    /// Display-name override from an `interface` entry (ADR-0034 §4). Only a nested-instrument
+    /// boundary port carries one — operator ports have no label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Widget hint override from an `interface` entry (ADR-0034 §4 / ADR-0018); boundary-only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub widget: Option<String>,
 }
 
 fn port_kind(ty: &PortType) -> &'static str {
@@ -106,6 +113,8 @@ impl PortInfo {
             unit: String::new(),
             curve: None,
             variants: Vec::new(),
+            label: None,
+            widget: None,
         };
         // Scalar control (ADR-0030): a materialized `f32` input owns its range/curve/default in `meta`.
         if let Some(m) = &p.meta {
@@ -171,6 +180,112 @@ pub fn describe(registry: &Registry, which: Option<&str>) -> Result<Vec<Operator
             None => Err(format!("unknown operator type {name:?}")),
         },
     }
+}
+
+/// A nested instrument's synthesized boundary (ADR-0034 §4), described **as if it were an
+/// Operator**: one [`PortInfo`] per `interface` name, each inheriting the inner port's type and
+/// metadata and then applying the entry's presentational overrides (label/unit/widget/min/max).
+/// This is the introspection view of the boundary face a `subpatch` node presents (P6, #121).
+#[derive(Debug, Serialize)]
+pub struct PatchBoundary {
+    /// The patch's `instrument` name.
+    pub instrument: String,
+    pub inputs: Vec<PortInfo>,
+    pub outputs: Vec<PortInfo>,
+    /// Declared boundary ports whose internal target went dark this load (an unavailable
+    /// nested child, ADR-0016/0034) — real ports the description can't type.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dark_inputs: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dark_outputs: Vec<String>,
+    /// Non-fatal load warnings (unresolved resources etc.), advisory as in `validate`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+/// Describe an instrument document's boundary the way a host patch will see it (ADR-0034 §4):
+/// load it through the real engine path, resolve its `interface` to inner ports, and present
+/// each as an operator-style [`PortInfo`] — type + metadata **inherited** from the inner port,
+/// then the entry's presentational overrides applied. The `Arg` type is never overridable, so
+/// `kind` is always the inner port's truth. A patch with no `interface` yields empty port lists
+/// (it nests, but exposes nothing to wire).
+pub fn describe_patch(
+    json: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> Result<PatchBoundary, String> {
+    let doc = InstrumentDoc::from_json(json).map_err(|e| e.to_string())?;
+    let loaded = load_instrument(json, registry, resolver).map_err(|e| e.to_string())?;
+    let g = &loaded.graph;
+
+    // One boundary port: inherit the inner port's PortInfo, rename to the external name, then
+    // decorate with the interface entry's overrides (presentation only — kind/variants stay).
+    let boundary_port = |name: &String, key: reuben_core::NodeKey, idx: usize, output: bool| {
+        let node = &g.nodes[key];
+        let d = &node.descriptor;
+        let p = if output {
+            &d.outputs[idx]
+        } else {
+            &d.inputs[idx]
+        };
+        let mut info = PortInfo::from_port(p, false);
+        info.name = name.clone();
+        // The effective unwired value is what a host actually gets: the child's own literal
+        // (`"mix": 0.35`, a value-override on the inner node) beats the descriptor default.
+        if !output {
+            if let Some((_, arg)) = node.value_overrides.iter().find(|(port, _)| *port == idx) {
+                match arg {
+                    reuben_core::Arg::F32(v) => info.default = Some(serde_json::json!(widen(*v))),
+                    other => {
+                        if let Some(sym) = p.enum_meta().and_then(|e| e.symbol_of(other)) {
+                            info.default = Some(serde_json::json!(sym));
+                        }
+                    }
+                }
+            }
+        }
+        let entries = doc
+            .interface
+            .as_ref()
+            .map(|i| if output { &i.outputs } else { &i.inputs });
+        if let Some(m) = entries.and_then(|e| e.get(name)).and_then(|e| e.meta()) {
+            if let Some(l) = &m.label {
+                info.label = Some(l.clone());
+            }
+            if let Some(u) = &m.unit {
+                info.unit = u.clone();
+            }
+            if let Some(w) = &m.widget {
+                info.widget = Some(w.clone());
+            }
+            if let Some(min) = m.min {
+                info.min = Some(min);
+            }
+            if let Some(max) = m.max {
+                info.max = Some(max);
+            }
+        }
+        info
+    };
+
+    Ok(PatchBoundary {
+        instrument: doc.instrument.clone(),
+        inputs: g
+            .interface
+            .inputs
+            .iter()
+            .map(|(name, (k, i))| boundary_port(name, *k, *i, false))
+            .collect(),
+        outputs: g
+            .interface
+            .outputs
+            .iter()
+            .map(|(name, (k, i))| boundary_port(name, *k, *i, true))
+            .collect(),
+        dark_inputs: g.interface.dark_inputs.iter().cloned().collect(),
+        dark_outputs: g.interface.dark_outputs.iter().cloned().collect(),
+        warnings: loaded.warnings.iter().map(|w| w.to_string()).collect(),
+    })
 }
 
 /// One validation problem, with the offending node/port when the loader localized it.

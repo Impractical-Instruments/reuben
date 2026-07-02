@@ -26,6 +26,11 @@ Run all `reuben` commands from the repo root.
      (`Signal`), `enum`=a shared `vocab` enum, `message`=a `Note` stream, `context`=`Harmony`),
      settable inputs (`min`/`max`/`default`/`unit`/`curve`), enum inputs (`variants`+`default`),
      resource slots.
+   - `cargo run -q -p reuben-native --bin reuben -- describe <patch.json> --json` — a nested
+     instrument's **boundary** (ADR-0034): its `interface` ports as if they were operator ports,
+     with metadata inherited from the inner ports (effective defaults included) and any
+     presentational overrides applied. This is what a `subpatch` node referencing that file
+     exposes — wire against these names, never the child's internals.
    The schema at `crates/reuben-core/schema/instrument.schema.json` is the same data as a
    document shape; `describe` is the per-operator view.
 
@@ -86,6 +91,33 @@ voicer ─gate──────────────────────
 
 **Self-playing** (no external notes): add a `clock` + `sequencer` feeding the voicer, as in
 `instruments/sampler-arp.json`.
+
+**Nesting an instrument as a node** (ADR-0034) — the worked pair is
+`instruments/patches/space.json` (the nestable child) + `instruments/nested-space.json` (the host):
+
+- **Host side**: add the child to `resources` and reference it from a `subpatch` node's `patch`
+  field. The node's ports are the child's `interface` names — `describe <patch.json>` first, then
+  wire/set them like any operator's (`"in": {"from":"/voicer.audio"}, "tone": 2500`):
+
+  ```json
+  "resources": { "space": "patches/space.json" },
+  "nodes": [ { "type": "subpatch", "address": "/space", "patch": "space",
+               "inputs": { "in": { "from": "/voicer.audio" }, "tone": 2500 } } ]
+  ```
+
+  At build the child inlines under the node's address (`/space/filter`…, OSC-reachable) and the
+  node dissolves — zero runtime cost. Boundary wires type-check against the **inner** ports the
+  interface names; errors name the subpatch address + external name.
+- **Child side**: a nestable patch declares `interface { inputs, outputs }` mapping external
+  names to internal `/node.port` targets. An entry can be a bare string or an object adding
+  **presentational overrides** — `label`/`unit`/`widget`/`min`/`max`, inherited from the inner
+  port, per-field overridable; the **Arg type is never overridable** (no field exists for it):
+
+  ```json
+  "tone": { "target": "/filter.cutoff", "label": "Tone", "widget": "knob", "min": 200, "max": 8000 }
+  ```
+- A cyclic patch reference is a fatal error; a missing/unreadable child degrades to a warning
+  (the node goes dark). Validate the child standalone too — it's a full instrument.
 
 When unsure of a port or param name, **`describe` it** — don't infer from these sketches.
 
