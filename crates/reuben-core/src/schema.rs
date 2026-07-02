@@ -357,6 +357,50 @@ mod tests {
     }
 
     #[test]
+    fn interface_meta_and_schema_entry_list_the_same_fields() {
+        // Drift guard: the interfaceEntry field list lives in both the serde struct
+        // (`format::InterfaceMeta`) and this schema literal, and `additionalProperties: false`
+        // means a schema missing a serde field REJECTS documents the loader accepts. The struct
+        // literal is exhaustive on purpose — adding an InterfaceMeta field fails compilation
+        // here until the schema (and the committed schema file, via the staleness test) follow.
+        let full = crate::format::InterfaceMeta {
+            target: "/n.p".to_string(),
+            label: Some("L".to_string()),
+            unit: Some("Hz".to_string()),
+            widget: Some("knob".to_string()),
+            min: Some(0.0),
+            max: Some(1.0),
+        };
+        let serde_fields: std::collections::BTreeSet<String> = serde_json::to_value(&full)
+            .expect("serialize full meta")
+            .as_object()
+            .expect("object")
+            .keys()
+            .cloned()
+            .collect();
+
+        let schema = generate(&Registry::builtin());
+        let obj = schema["$defs"]["interfaceEntry"]["oneOf"]
+            .as_array()
+            .expect("oneOf forms")
+            .iter()
+            .find(|f| f["type"] == json!("object"))
+            .expect("object form")
+            .clone();
+        let schema_fields: std::collections::BTreeSet<String> = obj["properties"]
+            .as_object()
+            .expect("properties")
+            .keys()
+            .cloned()
+            .collect();
+
+        assert_eq!(
+            serde_fields, schema_fields,
+            "InterfaceMeta (format.rs) and interfaceEntry (schema.rs) disagree on the field list"
+        );
+    }
+
+    #[test]
     fn is_deterministic() {
         assert_eq!(
             generate_pretty(&Registry::builtin()),
