@@ -259,8 +259,7 @@ fn cmd_describe_patch(path: &Path, json: bool) -> ExitCode {
         eprintln!("warning: {w}");
     }
     println!("{} (instrument boundary)", boundary.instrument);
-    if boundary.inputs.is_empty() && boundary.outputs.is_empty() && boundary.dark_inputs.is_empty()
-    {
+    if boundary.is_empty() {
         println!("  (no `interface` boundary — nests, but exposes nothing to wire)");
     }
     print_ports("in ", &boundary.inputs);

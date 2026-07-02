@@ -213,6 +213,18 @@ pub struct PatchBoundary {
     pub warnings: Vec<String>,
 }
 
+impl PatchBoundary {
+    /// No boundary port of any kind — typed or dark, either direction. The patch nests but
+    /// exposes nothing to wire. Kept here (not at a call site) so a fifth port collection
+    /// can't be forgotten by one of the views.
+    pub fn is_empty(&self) -> bool {
+        self.inputs.is_empty()
+            && self.outputs.is_empty()
+            && self.dark_inputs.is_empty()
+            && self.dark_outputs.is_empty()
+    }
+}
+
 impl PortInfo {
     /// The CLI view of one core [`BoundaryPortDesc`] (ADR-0034 §4): the inherit+override merge
     /// happened in `reuben-core` ([`describe_boundary`]); this only maps its typed fields onto

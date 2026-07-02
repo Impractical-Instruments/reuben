@@ -301,5 +301,21 @@ fn describe_patch_without_interface_yields_an_empty_boundary() {
     let json = r#"{ "instrument": "plain",
       "nodes": [ { "type": "oscillator", "address": "/osc" } ] }"#;
     let b = describe_patch(json, &Registry::builtin(), &FsResolver::new(".")).expect("describe");
-    assert!(b.inputs.is_empty() && b.outputs.is_empty());
+    assert!(b.is_empty());
+}
+
+#[test]
+fn a_boundary_with_only_dark_ports_is_not_empty() {
+    // Review A: the empty-boundary banner once checked three of the four port collections, so a
+    // patch whose only entries went dark (unavailable nested child) printed "exposes nothing to
+    // wire" and then listed the dark outputs it just denied. `is_empty` owns the definition.
+    let json = r#"{
+      "instrument": "dark-out",
+      "resources": { "v": "missing-child.json" },
+      "interface": { "outputs": { "out": "/sub.audio" } },
+      "nodes": [ { "type": "subpatch", "address": "/sub", "patch": "v" } ]
+    }"#;
+    let b = describe_patch(json, &Registry::builtin(), &FsResolver::new(".")).expect("describe");
+    assert_eq!(b.dark_outputs, vec!["out".to_string()]);
+    assert!(!b.is_empty(), "dark-only boundary still exposes ports");
 }
