@@ -407,6 +407,22 @@ pub struct Loaded {
     pub warnings: Vec<LoadWarning>,
 }
 
+/// Shared state threaded through the recursive nested-load passes (`voice`/`patch`,
+/// ADR-0032/0034), one per top-level load.
+#[derive(Default)]
+struct LoadCtx {
+    /// The cycle-guard stack: instrument-resource sources currently being resolved,
+    /// root-first. A chain that re-enters a source still on the stack is the fatal
+    /// [`LoadError::CyclicResource`] instead of infinite recursion.
+    loading: Vec<String>,
+    /// Decoded-sample cache, keyed by source (the same identity the `resources` table and the
+    /// cycle guard use). Each subpatch reuse and voice copy builds its own graph and
+    /// [`ResourceStore`], but a given source is fetched + decoded **once** per load; the
+    /// stores share the `Arc`. Failures are deliberately not cached, so every referencing
+    /// document still surfaces its own warning.
+    samples: BTreeMap<String, Arc<SampleBuffer>>,
+}
+
 /// Parse, build, and **resolve + bind decoded resources** (ADR-0016) — the full authoring
 /// load path. Structural/wiring problems are fatal ([`LoadError`]); resource problems are
 /// non-fatal: a missing id or a resolve/decode failure binds the node to an empty buffer
@@ -417,21 +433,21 @@ pub fn load_instrument(
     registry: &Registry,
     resolver: &dyn ResourceResolver,
 ) -> Result<Loaded, LoadError> {
-    load_instrument_guarded(json, registry, resolver, &mut Vec::new())
+    load_instrument_guarded(json, registry, resolver, &mut LoadCtx::default())
 }
 
-/// [`load_instrument`] with the cycle guard threaded through: `loading` is the stack of
-/// instrument-resource sources currently being resolved (root-first). The recursive passes
-/// (`voice`, `patch`) resolve children through it so a chain that re-enters a source still on
-/// the stack is caught as [`LoadError::CyclicResource`] instead of recursing forever.
+/// [`load_instrument`] with the shared load state threaded through: `ctx` carries the cycle
+/// guard (a chain that re-enters a source still loading is caught as
+/// [`LoadError::CyclicResource`] instead of recursing forever) and the per-load decoded-sample
+/// cache the recursive passes (`voice`, `patch`) share.
 fn load_instrument_guarded(
     json: &str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
-    loading: &mut Vec<String>,
+    ctx: &mut LoadCtx,
 ) -> Result<Loaded, LoadError> {
     let doc = InstrumentDoc::from_json(json)?;
-    load_doc_guarded(&doc, registry, resolver, loading)
+    load_doc_guarded(&doc, registry, resolver, ctx)
 }
 
 /// [`load_instrument_guarded`] from an already-parsed document — the subpatch pass parses a
@@ -440,7 +456,7 @@ fn load_doc_guarded(
     doc: &InstrumentDoc,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
-    loading: &mut Vec<String>,
+    ctx: &mut LoadCtx,
 ) -> Result<Loaded, LoadError> {
     // Build with the resolver threaded in (ADR-0034's resolution-ordering note): a `subpatch`
     // node's boundary face only exists once its child is resolved, and it must exist *during*
@@ -450,9 +466,12 @@ fn load_doc_guarded(
     let Loaded {
         mut graph,
         mut warnings,
-    } = doc.build_nested(registry, Some(resolver), loading)?;
+    } = doc.build_nested(registry, Some(resolver), ctx)?;
 
-    // Resolve every referenced id once into the store; record id -> handle for binding.
+    // Resolve every referenced id once into the store; record id -> handle for binding. The
+    // fetch + decode goes through the load-wide source cache (`LoadCtx::samples`), so N
+    // subpatch reuses or voice copies of a sample-heavy child decode each source once and
+    // share the buffer.
     let mut store = ResourceStore::new();
     let mut handles: BTreeMap<String, SampleId> = BTreeMap::new();
     for n in &doc.nodes {
@@ -461,18 +480,26 @@ fn load_doc_guarded(
             continue; // dedup: already resolved by an earlier node
         }
         let buffer = match lookup_source(doc, &n.address, "sample", id, &mut warnings) {
-            None => SampleBuffer::empty(),
-            Some(source) => match resolver.resolve(source) {
-                Ok(b) => b,
-                Err(e) => {
-                    warnings.push(LoadWarning::ResolveFailed {
-                        slot: "sample",
-                        id: id.clone(),
-                        source: source.clone(),
-                        reason: e.to_string(),
-                    });
-                    SampleBuffer::empty()
-                }
+            None => Arc::new(SampleBuffer::empty()),
+            Some(source) => match ctx.samples.get(source) {
+                Some(shared) => shared.clone(),
+                None => match resolver.resolve(source) {
+                    Ok(b) => {
+                        let shared = Arc::new(b);
+                        ctx.samples.insert(source.clone(), shared.clone());
+                        shared
+                    }
+                    Err(e) => {
+                        // Not cached: every referencing document keeps its own warning.
+                        warnings.push(LoadWarning::ResolveFailed {
+                            slot: "sample",
+                            id: id.clone(),
+                            source: source.clone(),
+                            reason: e.to_string(),
+                        });
+                        Arc::new(SampleBuffer::empty())
+                    }
+                },
             },
         };
         handles.insert(id.clone(), store.insert(id.clone(), buffer));
@@ -512,7 +539,7 @@ fn load_doc_guarded(
             Some(source) => {
                 for i in 0..n_voices {
                     let loaded =
-                        resolve_instrument_slotted(source, "voice", registry, resolver, loading)?;
+                        resolve_instrument_slotted(source, "voice", registry, resolver, ctx)?;
                     // One copy's warnings suffice — the N builds are identical. Wrapped with the
                     // hosting node so provenance survives the merge (see `LoadWarning::Nested`).
                     if i == 0 {
@@ -591,7 +618,7 @@ pub fn resolve_instrument(
     registry: &Registry,
     resolver: &dyn ResourceResolver,
 ) -> Result<Loaded, LoadError> {
-    resolve_instrument_slotted(source, "patch", registry, resolver, &mut Vec::new())
+    resolve_instrument_slotted(source, "patch", registry, resolver, &mut LoadCtx::default())
 }
 
 /// [`resolve_instrument`] with the cycle guard and the resource `slot` the ref came through (so
@@ -602,9 +629,9 @@ fn resolve_instrument_slotted(
     slot: &'static str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
-    loading: &mut Vec<String>,
+    ctx: &mut LoadCtx,
 ) -> Result<Loaded, LoadError> {
-    match try_resolve_instrument(source, slot, registry, resolver, loading)? {
+    match try_resolve_instrument(source, slot, registry, resolver, ctx)? {
         Ok(loaded) => Ok(loaded),
         Err(warning) => Ok(Loaded {
             graph: Graph::new(),
@@ -626,13 +653,13 @@ fn try_resolve_instrument(
     slot: &'static str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
-    loading: &mut Vec<String>,
+    ctx: &mut LoadCtx,
 ) -> Result<Result<Loaded, LoadWarning>, LoadError> {
     match resolver.resolve_text(source) {
         Ok(text) => {
             let doc = InstrumentDoc::from_json(&text)?;
             Ok(Ok(load_child_guarded(
-                &doc, source, registry, resolver, loading,
+                &doc, source, registry, resolver, ctx,
             )?))
         }
         Err(e) => Ok(Err(LoadWarning::ResolveFailed {
@@ -653,16 +680,16 @@ fn load_child_guarded(
     source: &str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
-    loading: &mut Vec<String>,
+    ctx: &mut LoadCtx,
 ) -> Result<Loaded, LoadError> {
-    if loading.iter().any(|s| s == source) {
+    if ctx.loading.iter().any(|s| s == source) {
         return Err(LoadError::CyclicResource {
             source: source.to_string(),
         });
     }
-    loading.push(source.to_string());
-    let result = load_doc_guarded(doc, registry, resolver, loading);
-    loading.pop();
+    ctx.loading.push(source.to_string());
+    let result = load_doc_guarded(doc, registry, resolver, ctx);
+    ctx.loading.pop();
     result
 }
 
@@ -689,20 +716,22 @@ impl InstrumentDoc {
     /// (the same degradation an unavailable child gets on the full path). Use [`load_instrument`]
     /// to resolve and inline nested instruments.
     pub fn build(&self, registry: &Registry) -> Result<Graph, LoadError> {
-        Ok(self.build_nested(registry, None, &mut Vec::new())?.graph)
+        Ok(self
+            .build_nested(registry, None, &mut LoadCtx::default())?
+            .graph)
     }
 
     /// [`build`](Self::build) with the nesting machinery threaded through (ADR-0034's
     /// resolution-ordering note): `resolver` loads `subpatch` children so their boundary faces
     /// exist during pass 2 (`None` — the plain [`load`]/[`build`] path — dissolves every nested
-    /// reference dark without loading it); `loading` is the cycle-guard stack shared with
-    /// [`load_child_guarded`]. Returns the built graph plus availability warnings from nested
-    /// loads.
+    /// reference dark without loading it); `ctx` carries the cycle-guard stack and the decoded-
+    /// sample cache shared with [`load_child_guarded`]. Returns the built graph plus
+    /// availability warnings from nested loads.
     fn build_nested(
         &self,
         registry: &Registry,
         resolver: Option<&dyn ResourceResolver>,
-        loading: &mut Vec<String>,
+        ctx: &mut LoadCtx,
     ) -> Result<Loaded, LoadError> {
         let mut graph = Graph::new();
         let mut warnings = Vec::new();
@@ -856,7 +885,7 @@ impl InstrumentDoc {
                 dark.insert(n.address.clone());
                 continue;
             };
-            let loaded = load_child_guarded(child_doc, source, registry, resolver, loading)?;
+            let loaded = load_child_guarded(child_doc, source, registry, resolver, ctx)?;
             warnings.extend(loaded.warnings.into_iter().map(|w| w.nested_in(&n.address)));
             let face = splice_subpatch(&mut graph, loaded.graph, &n.address, &mut addresses)?;
 
@@ -2317,6 +2346,40 @@ mod tests {
         assert!(
             loaded.graph.outputs.is_empty(),
             "child taps must not reach the parent master"
+        );
+    }
+
+    #[test]
+    fn reused_subpatch_decodes_each_sample_source_once() {
+        // Two reuses of a sample-bearing child still build two graphs (state isolation), but the
+        // fetch + decode goes through the load-wide source cache: one resolve() per source, and
+        // both stores share the Arc'd buffer.
+        use std::cell::Cell;
+        const SAMPLED_CHILD: &str = r#"{"instrument":"c",
+            "resources":{"kick":"kick.wav"},
+            "interface":{"outputs":{"audio":"/s.audio"}},
+            "nodes":[{"type":"sample","address":"/s","sample":"kick"}]}"#;
+        struct Counting(Cell<usize>);
+        impl ResourceResolver for Counting {
+            fn resolve(&self, _s: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
+                self.0.set(self.0.get() + 1);
+                Ok(SampleBuffer::new(vec![vec![0.5, -0.5]], 48_000.0))
+            }
+            fn resolve_text(&self, _s: &str) -> Result<String, crate::resources::ResolveError> {
+                Ok(SAMPLED_CHILD.to_string())
+            }
+        }
+        let json = r#"{"instrument":"p","resources":{"v":"c.json"},"nodes":[
+            {"type":"subpatch","address":"/a","patch":"v"},
+            {"type":"subpatch","address":"/b","patch":"v"}]}"#;
+        let counting = Counting(Cell::new(0));
+        let loaded = load_instrument(json, &reg(), &counting).expect("load");
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+        assert!(loaded.graph.find("/a/s").is_some() && loaded.graph.find("/b/s").is_some());
+        assert_eq!(
+            counting.0.get(),
+            1,
+            "two reuses of one sample source must decode it once"
         );
     }
 
