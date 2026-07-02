@@ -324,6 +324,73 @@ class EmitTest(unittest.TestCase):
         self.assertEqual(a, b, "same instrument must emit identical bytes")
 
 
+class BoundaryTest(unittest.TestCase):
+    """The nested-instrument path (ADR-0034 §4): one fader per wireable `interface` input, sourced
+    from a `reuben describe --json` boundary view. Fed fixture boundary JSON directly (the merge is
+    core's job, exercised by reuben's own tests) so these don't need the built binary."""
+
+    # An instrument's `interface.inputs`: bare-target strings and an override object with `target`.
+    IFACE = {
+        "freq": "/osc.freq",
+        "gate": "/env.gate",
+        "tone": {"target": "/filter.cutoff", "label": "Tone", "min": 200, "max": 8000, "widget": "radial"},
+        "in": "/filter.audio",     # driven inside the patch
+        "mode": "/filter.mode",    # an enum — needs a selector widget, not a fader
+    }
+    # The matching `describe --json` boundary: kinds/ranges as core would report them (freq/tone
+    # inherit + override, gate a 0..1 signal, `in` a driven bare audio buffer, `mode` an enum).
+    BOUNDARY = {"inputs": [
+        {"name": "freq", "kind": "signal", "default": 440.0, "min": 20.0, "max": 20000.0, "unit": "Hz", "curve": "exponential"},
+        {"name": "gate", "kind": "signal", "default": 0.0, "min": 0.0, "max": 1.0, "curve": "linear"},
+        {"name": "tone", "kind": "signal", "default": 4000.0, "min": 200.0, "max": 8000.0, "unit": "Hz", "curve": "exponential", "label": "Tone", "widget": "radial"},
+        {"name": "in", "kind": "signal", "driven": True},
+        {"name": "mode", "kind": "enum", "default": "lowpass", "variants": ["lowpass", "highpass"]},
+    ]}
+
+    def test_osc_address_is_the_interface_target(self):
+        # `.` (the port separator) becomes `/`: the same reachable `/<node>/<input>` a direct
+        # input uses (ADR-0034 §3).
+        self.assertEqual(g._osc_from_target("/filter.cutoff"), "/filter/cutoff")
+
+    def test_one_fader_per_wireable_input(self):
+        controls = g.boundary_controls(self.IFACE, self.BOUNDARY)
+        by_addr = {c["osc_addr"]: c for c in controls}
+        # freq, gate, tone are wireable; `in` (driven) and `mode` (enum) are dropped.
+        self.assertEqual(set(by_addr), {"/osc/freq", "/env/gate", "/filter/cutoff"})
+
+    def test_inherited_metadata_flows_through(self):
+        freq = next(c for c in g.boundary_controls(self.IFACE, self.BOUNDARY) if c["osc_addr"] == "/osc/freq")
+        self.assertEqual((freq["min"], freq["max"], freq["default"], freq["unit"]), (20.0, 20000.0, 440.0, "Hz"))
+        self.assertEqual(freq["label"], "Freq")   # no override -> titled from the boundary name
+        self.assertEqual(freq["widget"], "fader")
+
+    def test_overrides_win(self):
+        tone = next(c for c in g.boundary_controls(self.IFACE, self.BOUNDARY) if c["osc_addr"] == "/filter/cutoff")
+        self.assertEqual((tone["label"], tone["widget"]), ("Tone", "radial"))
+        self.assertEqual((tone["min"], tone["max"]), (200.0, 8000.0))
+
+    def test_driven_input_is_skipped(self):
+        addrs = [c["osc_addr"] for c in g.boundary_controls(self.IFACE, self.BOUNDARY)]
+        self.assertNotIn("/filter/audio", addrs, "a driven inner Signal port is not host-wireable")
+
+    def test_non_fader_kinds_are_skipped(self):
+        # An enum input needs a selector widget (out of scope); a bare audio signal has no range.
+        audio_only = {"inputs": [{"name": "in", "kind": "signal"}]}  # no min/max -> not a fader
+        self.assertEqual(g.boundary_controls({"in": "/x.audio"}, audio_only), [])
+
+    def test_emits_faders_with_boundary_addresses_and_scaling(self):
+        controls = g.boundary_controls(self.IFACE, self.BOUNDARY)
+        doc = ET.fromstring(zlib.decompress(g.build_tosc({"instrument": "nested"}, controls, 4)))
+        scaling = {}
+        for osc in doc.findall(".//osc"):
+            arg = osc.find("./arguments/partial")
+            scaling[osc.find("./path/partial/value").text] = (arg.find("scaleMin").text, arg.find("scaleMax").text)
+        self.assertEqual(scaling["/osc/freq"], ("20", "20000"))
+        self.assertEqual(scaling["/filter/cutoff"], ("200", "8000"))
+        # The radial override renders a RADIAL, not a FADER, for that control.
+        self.assertIsNotNone(doc.find(".//node[@type='RADIAL']"))
+
+
 class FixtureMatchTest(unittest.TestCase):
     """Lock the emitter to the known-good export: for each control type, our property *key set*
     must match the reference's. Catches format drift (a renamed/missing property) that unit
