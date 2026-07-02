@@ -61,8 +61,9 @@ enum Command {
     /// Print the operator set, one operator's ports/params/resources, or — given an instrument
     /// JSON path — that patch's `interface` boundary as a host sees it (ADR-0034).
     Describe {
-        /// Operator type to describe, or a path to an instrument JSON (its nested boundary);
-        /// omit to list every operator.
+        /// Operator type to describe, or an instrument JSON path (its nested boundary). A path
+        /// is recognized by shape — ends in `.json` or contains a separator; a bare name is
+        /// always an operator. Omit to list every operator.
         op: Option<String>,
         /// Emit machine-readable JSON instead of a human summary.
         #[arg(long)]
@@ -172,14 +173,21 @@ fn print_ports(dir: &str, ps: &[reuben_native::cli::PortInfo]) {
     }
 }
 
+/// `describe`'s argument is a patch **path** by shape alone: it ends in `.json` or contains a
+/// path separator. A bare name is always an operator, so a stray file named `filter` in the
+/// cwd cannot shadow `describe filter` — routing must not depend on directory contents.
+fn is_patch_path(arg: &str) -> bool {
+    Path::new(arg).extension().is_some_and(|e| e == "json")
+        || arg.chars().any(std::path::is_separator)
+}
+
 /// `describe`: dump the operator set, one operator, or — for an instrument JSON path — that
 /// patch's boundary as a host patch sees it (ADR-0034 §4), as human text or JSON.
 fn cmd_describe(op: Option<&str>, json: bool) -> ExitCode {
-    // A `.json` argument (or an existing file) is an instrument path: describe its boundary.
+    // A path-shaped argument is an instrument: describe its boundary.
     if let Some(arg) = op {
-        let p = Path::new(arg);
-        if p.extension().is_some_and(|e| e == "json") || p.is_file() {
-            return cmd_describe_patch(p, json);
+        if is_patch_path(arg) {
+            return cmd_describe_patch(Path::new(arg), json);
         }
     }
 
@@ -433,5 +441,26 @@ fn play(path: Option<PathBuf>, osc_out_target: Option<String>) {
     // Keep the process (and thus the audio stream) alive.
     loop {
         thread::park();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_patch_path;
+
+    /// Dispatch is by argument shape alone: a bare name is an operator even when a file of the
+    /// same name exists in the cwd (the shadowing bug this rule exists to prevent).
+    #[test]
+    fn bare_name_is_never_a_path() {
+        assert!(!is_patch_path("filter"));
+        assert!(!is_patch_path("oscillator"));
+    }
+
+    #[test]
+    fn json_extension_or_separator_is_a_path() {
+        assert!(is_patch_path("space.json"));
+        assert!(is_patch_path("instruments/patches/space.json"));
+        assert!(is_patch_path("./filter"));
+        assert!(is_patch_path("instruments/space"));
     }
 }
