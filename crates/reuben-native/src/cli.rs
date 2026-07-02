@@ -191,7 +191,10 @@ impl Diag {
             LoadError::UnknownType { address, .. } => (Some(address.clone()), None),
             LoadError::DuplicateAddress(a) | LoadError::UnknownNode(a) => (Some(a.clone()), None),
             LoadError::UnknownPort { node, port } => (Some(node.clone()), Some(port.clone())),
-            LoadError::UnknownInput { node, input } => (Some(node.clone()), Some(input.clone())),
+            LoadError::UnknownInput { node, input }
+            | LoadError::BoundaryInputDriven { node, input } => {
+                (Some(node.clone()), Some(input.clone()))
+            }
             LoadError::BadInputValue { node, input, .. } => {
                 (Some(node.clone()), Some(input.clone()))
             }

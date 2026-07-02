@@ -22,6 +22,7 @@ use serde::{Deserialize, Serialize};
 use crate::descriptor::{Descriptor, PortType};
 use crate::graph::{Graph, Interface};
 use crate::message::Arg;
+use crate::plan::{port_kind, PortKind};
 use crate::registry::Registry;
 use crate::resources::{ResolvedRefs, ResourceResolver, ResourceStore, SampleBuffer, SampleId};
 
@@ -225,6 +226,14 @@ pub enum LoadError {
     /// Loading it would recurse forever, so the cycle is a structural error, fatal like the
     /// other wiring errors.
     CyclicResource { source: String },
+    /// A wire lands on a boundary input whose inner **Signal** port the nested child already
+    /// drives with its own internal wire (ADR-0034). The plan reads exactly one inbound edge per
+    /// Signal input, so the outer wire would load clean and do nothing — a silently dead wire,
+    /// a state flat authoring can never produce (one `inputs` key, one wire). Fatal, named in
+    /// boundary terms; a child that wants an externally wireable Signal port must leave it
+    /// unwired internally. (Value/Event inputs merge message streams from several edges, so
+    /// multiple drivers stay legal there.)
+    BoundaryInputDriven { node: String, input: String },
 }
 
 impl fmt::Display for LoadError {
@@ -273,6 +282,11 @@ impl fmt::Display for LoadError {
                 f,
                 "instrument resource {source:?} references itself (directly or transitively) — \
                  cyclic nesting cannot load"
+            ),
+            LoadError::BoundaryInputDriven { node, input } => write!(
+                f,
+                "boundary input {node:?}.{input:?} is already driven by a wire inside the nested \
+                 patch — an outside wire would be silently dead"
             ),
         }
     }
@@ -865,6 +879,25 @@ impl InstrumentDoc {
                 else {
                     continue;
                 };
+                // A face input may land on an inner Signal port the child already drives with
+                // its own wire (or that another boundary alias just wired). The plan reads
+                // exactly one inbound edge per Signal input, so this wire would be silently
+                // dead — fatal instead (`BoundaryInputDriven`). Only reachable through a face:
+                // a document node takes one wire per input key, and spliced internals are not
+                // wireable. Value/Event ports merge message edges, so several drivers are legal.
+                if faces.contains_key(&n.address)
+                    && port_kind(&graph.nodes[dst_key].descriptor.inputs[dst_port])
+                        == PortKind::Signal
+                    && graph
+                        .connections
+                        .iter()
+                        .any(|c| c.dst == dst_key && c.dst_port == dst_port)
+                {
+                    return Err(LoadError::BoundaryInputDriven {
+                        node: n.address.clone(),
+                        input: name.clone(),
+                    });
+                }
                 // Source: a node's output port, or a subpatch's face output.
                 let (src_addr, src_port_name) = parse_wire(from);
                 if dark.contains(src_addr) {
@@ -2133,6 +2166,39 @@ mod tests {
             .any(|(p, a)| *p == freq_port && *a == Arg::F32(330.0)));
         // And the boundary wire chain resolved to one ordinary edge onto /out.
         assert_eq!(g.connections.len(), 1);
+    }
+
+    #[test]
+    fn wiring_an_internally_driven_boundary_input_is_fatal() {
+        // The child drives its exposed `audio` input with its own internal wire; the plan reads
+        // exactly one inbound edge per Signal input, so a parent wire onto `/sub.audio` would
+        // load clean and do nothing. Reject it loud, in boundary terms.
+        const DRIVEN_CHILD: &str = r#"{
+            "instrument": "fx",
+            "interface": { "inputs": { "audio": "/out.audio" } },
+            "nodes": [
+                { "type": "oscillator", "address": "/osc" },
+                { "type": "output", "address": "/out",
+                  "inputs": { "audio": { "from": "/osc.audio" } } }
+            ]
+        }"#;
+        let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"oscillator","address":"/mod"},
+            {"type":"subpatch","address":"/sub","patch":"v",
+             "inputs":{"audio":{"from":"/mod.audio"}}}]}"#;
+        assert!(matches!(
+            load_instrument(json, &reg(), &PatchResolver(DRIVEN_CHILD)),
+            Err(LoadError::BoundaryInputDriven { node, input })
+                if node == "/sub" && input == "audio"
+        ));
+        // The same boundary input left unwired inside the child accepts the parent's wire.
+        const OPEN_CHILD: &str = r#"{
+            "instrument": "fx",
+            "interface": { "inputs": { "audio": "/out.audio" } },
+            "nodes": [ { "type": "output", "address": "/out" } ]
+        }"#;
+        let loaded = load_instrument(json, &reg(), &PatchResolver(OPEN_CHILD)).expect("load");
+        assert_eq!(loaded.graph.connections.len(), 1);
     }
 
     #[test]
