@@ -61,6 +61,22 @@ pub enum PortType {
     Arg,
 }
 
+impl core::fmt::Display for PortType {
+    /// The short author-facing type name load errors print (`F32`, `F32Buffer`, `Note`,
+    /// `Waveform`, …): a vocab port names its concrete type, everything else its `Arg` family.
+    /// The `Debug` form is unfit for errors — a vocab enum's `Debug` dumps its whole [`EnumMeta`].
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            PortType::F32 => write!(f, "F32"),
+            PortType::I32 { .. } => write!(f, "I32"),
+            PortType::Str => write!(f, "Str"),
+            PortType::F32Buffer => write!(f, "F32Buffer"),
+            PortType::Vocab { name, .. } => write!(f, "{name}"),
+            PortType::Arg => write!(f, "Arg"),
+        }
+    }
+}
+
 /// Metadata for a vocab **enum** port (ADR-0030): the closed, ordered set of named choices an
 /// author may pick, the unwired default, and a type-erased resolver — all single-sourced from the
 /// type's `#[derive(ArgValue)]` via `T::enum_meta(name)`, so the descriptor and the type cannot

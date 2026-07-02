@@ -210,8 +210,12 @@ pub enum LoadError {
     /// so the intended port is ambiguous.
     AmbiguousWire { node: String, reference: String },
     /// A wire joins two ports of incompatible [`PortType`]s (e.g. `Note` → `Buffer`) — the illegal
-    /// wiring (ADR-0030). Equal types are fine, and an `F32` source into a `Buffer` port is the one
-    /// implicit ZOH bridge; everything else is rejected here.
+    /// wiring (ADR-0030). Equal types are fine, an `F32` source into a `Buffer` port is the one
+    /// implicit ZOH bridge (ADR-0031 — the reverse, `Buffer` → `F32`, is Signal→Value and rejected:
+    /// no implicit sample-and-hold), and an [`Arg`](PortType::Arg) pass-through input takes any
+    /// source with an OSC form; everything else is rejected here. On a nested boundary wire,
+    /// `from`/`to` name the **boundary** port (`/sub.audio`), never the prefixed internals
+    /// (ADR-0034 §5).
     TypeMismatch {
         from: String,
         from_type: Box<PortType>,
@@ -271,10 +275,23 @@ impl fmt::Display for LoadError {
                 from_type,
                 to,
                 to_type,
-            } => write!(
-                f,
-                "wire {from} ({from_type:?}) -> {to} ({to_type:?}) joins ports of different Arg types"
-            ),
+            } => {
+                write!(
+                    f,
+                    "wire {from} ({from_type}) -> {to} ({to_type}): incompatible port types"
+                )?;
+                // The one near-miss worth a hint: audio into a scalar control looks plausible
+                // (the legal ZOH bridge runs the other way) — point at the sanctioned path.
+                if matches!(**from_type, PortType::F32Buffer) && matches!(**to_type, PortType::F32)
+                {
+                    write!(
+                        f,
+                        " — no implicit sample-and-hold; wire an explicit sig→val converter \
+                         (envelope follower / quantizer)"
+                    )?;
+                }
+                Ok(())
+            }
             LoadError::UnknownResource { node, slot } => {
                 write!(f, "node {node:?} has no resource slot {slot:?}")
             }
@@ -969,10 +986,14 @@ impl InstrumentDoc {
                     continue;
                 };
 
-                // Equal types wire directly. `F32` and `Buffer` interconvert (ADR-0030): an `F32`
-                // source into a `Buffer` port ZOH-materializes, and a `Buffer` source into an `F32`
-                // control port is shared and read per-sample via `io.input::<&[f32]>` (the
-                // `voicer.freq -> osc.freq` CV path). A type-agnostic `Arg` pass-through input
+                // Equal types wire directly. An `F32` source into a `Buffer` port is the **one
+                // implicit bridge** — Value→Signal, ZOH-materialized at the sink (ADR-0031). The
+                // reverse, a `Buffer` source into an `F32` control port, is Signal→Value: a hard
+                // error with no implicit sample-and-hold (ADR-0031 — an explicit sig→val converter
+                // op is the sanctioned path). It is rejected *here*, not left to the plan's form
+                // check, so a mistyped wire into a nested boundary fails at load named in boundary
+                // terms (`/sub.audio`) instead of surfacing at instantiate as a FormMismatch on
+                // the prefixed internals (ADR-0034 §5). A type-agnostic `Arg` pass-through input
                 // (issue #141) is **capability-keyed**: it accepts any source whose type has an
                 // external OSC form (`boundary::has_osc_form`, the single statement shared with
                 // the plan check) — the primitives, a vocab enum, `Note`'s flat form. A `Buffer`
@@ -980,10 +1001,7 @@ impl InstrumentDoc {
                 // has no OSC form (converters: issue #146) — a wire that could never send
                 // anything is rejected here, not left silently dead. Anything else is illegal.
                 let compatible = from_ty == to_ty
-                    || matches!(
-                        (&from_ty, &to_ty),
-                        (PortType::F32, PortType::F32Buffer) | (PortType::F32Buffer, PortType::F32)
-                    )
+                    || matches!((&from_ty, &to_ty), (PortType::F32, PortType::F32Buffer))
                     || (matches!(to_ty, PortType::Arg) && crate::boundary::has_osc_form(&from_ty));
                 if !compatible {
                     return Err(LoadError::TypeMismatch {
@@ -2134,6 +2152,157 @@ mod tests {
             load_instrument(json, &reg(), &PatchResolver(NOTE_CHILD)),
             Err(LoadError::TypeMismatch { to, .. }) if to == "/sub.notes"
         ));
+    }
+
+    #[test]
+    fn buffer_into_f32_value_input_is_fatal_at_load() {
+        // Signal→Value is a hard error with no implicit sample-and-hold (ADR-0031). The load-time
+        // check owns it (not just the plan's form check), so it fails at load everywhere — and
+        // the message points at the sanctioned converter path.
+        let json = r#"{"instrument":"t","nodes":[
+            {"type":"oscillator","address":"/osc"},
+            {"type":"add_f32_value","address":"/sum","inputs":{"a":{"from":"/osc.audio"}}}]}"#;
+        let Err(err) = load(json, &reg()) else {
+            panic!("Buffer -> F32 must fail at load");
+        };
+        assert!(matches!(
+            &err,
+            LoadError::TypeMismatch { from, to, .. }
+                if from == "/osc.audio" && to == "/sum.a"
+        ));
+        let msg = err.to_string();
+        assert!(
+            msg.contains("(F32Buffer)") && msg.contains("(F32)"),
+            "{msg}"
+        );
+        assert!(msg.contains("sample-and-hold"), "{msg}");
+    }
+
+    // P5 (ADR-0034 §5): the adversarial boundary-type matrix. Every case is a **well-typed inner
+    // graph** with a mistyped *boundary* wire, and every case must fail at parent load — these
+    // tests never reach `Plan::instantiate` — with an error naming the boundary port in the
+    // author's terms, never the prefixed internals.
+
+    /// A child whose face spans the port kinds: a bare-`F32` Value input, a `Buffer` audio
+    /// output, and a vocab-enum input — the faithfulness matrix's fixture.
+    const KINDS_CHILD: &str = r#"{
+        "instrument": "kinds",
+        "interface": {
+            "inputs":  { "gain": "/amt.a", "waveform": "/osc.waveform" },
+            "outputs": { "audio": "/osc.audio", "level": "/amt.out" }
+        },
+        "nodes": [
+            { "type": "oscillator", "address": "/osc" },
+            { "type": "add_f32_value", "address": "/amt" }
+        ]
+    }"#;
+
+    #[test]
+    fn boundary_f32_input_inherits_the_inner_value_type() {
+        // Face input `gain` is the inner add_f32_value's bare-F32 Value port: an audio wire into
+        // it is Signal→Value, fatal at load, named `/sub.gain` — with the converter hint.
+        let json = r#"{"instrument":"p","resources":{"k":"k.json"},"nodes":[
+            {"type":"oscillator","address":"/mod"},
+            {"type":"subpatch","address":"/sub","patch":"k",
+             "inputs":{"gain":{"from":"/mod.audio"}}}]}"#;
+        let Err(err) = load_instrument(json, &reg(), &PatchResolver(KINDS_CHILD)) else {
+            panic!("audio into an F32 boundary input must fail at load");
+        };
+        assert!(matches!(
+            &err,
+            LoadError::TypeMismatch { from, to, .. }
+                if from == "/mod.audio" && to == "/sub.gain"
+        ));
+        assert!(err.to_string().contains("sample-and-hold"), "{err}");
+    }
+
+    #[test]
+    fn boundary_enum_input_inherits_the_inner_vocab_type() {
+        // Face input `waveform` is the inner oscillator's Waveform enum: an audio wire into it is
+        // fatal, and the message prints the concrete vocab name, not a Debug dump of its meta.
+        let json = r#"{"instrument":"p","resources":{"k":"k.json"},"nodes":[
+            {"type":"oscillator","address":"/mod"},
+            {"type":"subpatch","address":"/sub","patch":"k",
+             "inputs":{"waveform":{"from":"/mod.audio"}}}]}"#;
+        let Err(err) = load_instrument(json, &reg(), &PatchResolver(KINDS_CHILD)) else {
+            panic!("audio into an enum boundary input must fail at load");
+        };
+        assert!(
+            matches!(&err, LoadError::TypeMismatch { to, .. } if to == "/sub.waveform"),
+            "{err:?}"
+        );
+        let msg = err.to_string();
+        assert!(msg.contains("(Waveform)"), "{msg}");
+        assert!(!msg.contains("enum_meta"), "Debug leak: {msg}");
+    }
+
+    #[test]
+    fn boundary_output_mismatch_names_the_boundary_port_as_source() {
+        // The other direction: a boundary *output* (`/sub.audio`, Buffer) wired into a parent
+        // F32 Value input. The error's `from` is the boundary label, not `/sub/osc.audio`.
+        let json = r#"{"instrument":"p","resources":{"k":"k.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"k"},
+            {"type":"add_f32_value","address":"/sum",
+             "inputs":{"a":{"from":"/sub.audio"}}}]}"#;
+        let Err(err) = load_instrument(json, &reg(), &PatchResolver(KINDS_CHILD)) else {
+            panic!("boundary audio into a parent F32 input must fail at load");
+        };
+        assert!(matches!(
+            &err,
+            LoadError::TypeMismatch { from, to, .. }
+                if from == "/sub.audio" && to == "/sum.a"
+        ));
+    }
+
+    #[test]
+    fn mistyping_only_the_second_of_two_reuses_names_that_reuse() {
+        // Two reuses of one child; only `/b`'s wire is mistyped. The error names `/b.gain` —
+        // per-reuse identity holds for errors, not just state.
+        let json = r#"{"instrument":"p","resources":{"k":"k.json"},"nodes":[
+            {"type":"oscillator","address":"/mod"},
+            {"type":"subpatch","address":"/a","patch":"k","inputs":{"gain":0.5}},
+            {"type":"subpatch","address":"/b","patch":"k",
+             "inputs":{"gain":{"from":"/mod.audio"}}}]}"#;
+        assert!(matches!(
+            load_instrument(json, &reg(), &PatchResolver(KINDS_CHILD)),
+            Err(LoadError::TypeMismatch { to, .. }) if to == "/b.gain"
+        ));
+    }
+
+    #[test]
+    fn nest_in_nest_boundary_mismatch_names_the_outer_face() {
+        // A middle patch re-exports its inner child's F32 boundary input; the parent mistypes a
+        // wire into the *outer* face. The error speaks the outermost author's terms
+        // (`/outer.gain`), leaking neither `/inner.gain` nor `/outer/inner/amt.a`.
+        struct Chain;
+        impl ResourceResolver for Chain {
+            fn resolve(&self, s: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
+                Err(crate::resources::ResolveError::NotFound(s.to_string()))
+            }
+            fn resolve_text(&self, source: &str) -> Result<String, crate::resources::ResolveError> {
+                Ok(match source {
+                    "mid.json" => r#"{"instrument":"mid",
+                            "resources":{"leaf":"leaf.json"},
+                            "interface":{"inputs":{"gain":"/inner.gain"},
+                                         "outputs":{"audio":"/inner.audio"}},
+                            "nodes":[{"type":"subpatch","address":"/inner","patch":"leaf"}]}"#
+                        .to_string(),
+                    _ => KINDS_CHILD.to_string(),
+                })
+            }
+        }
+        let json = r#"{"instrument":"p","resources":{"m":"mid.json"},"nodes":[
+            {"type":"oscillator","address":"/mod"},
+            {"type":"subpatch","address":"/outer","patch":"m",
+             "inputs":{"gain":{"from":"/mod.audio"}}}]}"#;
+        let Err(err) = load_instrument(json, &reg(), &Chain) else {
+            panic!("mistyped wire into a re-exported boundary port must fail at load");
+        };
+        assert!(
+            matches!(&err, LoadError::TypeMismatch { to, .. } if to == "/outer.gain"),
+            "{err:?}"
+        );
+        assert!(!err.to_string().contains("/inner"), "{err}");
     }
 
     #[test]
