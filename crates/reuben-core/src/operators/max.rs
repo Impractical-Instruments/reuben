@@ -31,7 +31,7 @@ fn max_fn<T: PartialOrd>(a: T, b: T) -> T {
 crate::number_operator_contract!(Max {
     numbers:  [f32],
     carriers: [value, signal],
-    inputs:   { a: number { default 0.0 }, b: number { default -1000000.0 } },
+    inputs:   { a: number { default 0.0 }, b: number { default min } },
     outputs:  { out },
     function: max_fn(a, b),
 });

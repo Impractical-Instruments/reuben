@@ -32,17 +32,14 @@
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use reuben_contract::{naming, F32Meta, OperatorSpec, PortSpec};
+use reuben_contract::{naming, F32Meta, OperatorSpec, PortSpec, NUMBER_MAX, NUMBER_MIN};
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::{braced, bracketed, parenthesized, Error, Ident, Path, Token};
 
+use crate::grammar::{parse_default_value, parse_float_or_sentinel, peek_range_sentinel};
 use crate::model::{build, ContractModel};
 use crate::render_contract;
-
-/// The type-wide default operand/output range when a `number` operand gives none.
-const NUM_MIN: f32 = -1_000_000.0;
-const NUM_MAX: f32 = 1_000_000.0;
 
 /// The proc-macro body, over `proc_macro2` so it is unit-testable without a proc-macro context.
 pub(crate) fn expand(input: TokenStream) -> TokenStream {
@@ -75,7 +72,7 @@ impl Carrier {
 /// One declared operand.
 enum OperandKind {
     /// A number operand: follows the carrier. `default` falls back to the number type's zero; the
-    /// range falls back to the type-wide [`NUM_MIN`]/[`NUM_MAX`].
+    /// range falls back to the type-wide [`NUMBER_MIN`]/[`NUMBER_MAX`].
     Number { min: f32, max: f32, default: f32 },
     /// A held enum mode operand, naming its shared `vocab` type. Always held, both carriers.
     Enum(Ident),
@@ -228,7 +225,7 @@ impl NumberOpInput {
             Carrier::Value => PortSpec {
                 name: self.output.to_string(),
                 ty: "f32".to_string(),
-                f32: Some(num_meta(NUM_MIN, NUM_MAX, 0.0)),
+                f32: Some(num_meta(NUMBER_MIN, NUMBER_MAX, 0.0)),
                 i32: None,
                 vocab: None,
             },
@@ -467,30 +464,38 @@ fn parse_operands(input: ParseStream) -> syn::Result<Vec<Operand>> {
 }
 
 /// The optional `{ [LO..=HI,] [default D] }` on a `number` operand. Missing range -> type-wide
-/// [`NUM_MIN`]/[`NUM_MAX`]; missing default -> `0.0` (the number type's zero).
+/// [`NUMBER_MIN`]/[`NUMBER_MAX`]; missing default -> `0.0` (the number type's zero). A range endpoint
+/// may be written `min`/`max` (the type-wide sentinel), and `default` may be written `default max` /
+/// `default min` to park the operand at its own range edge (issue #127) — e.g. `min`'s no-op `b`.
 fn parse_number_meta(input: ParseStream) -> syn::Result<OperandKind> {
-    let mut min = NUM_MIN;
-    let mut max = NUM_MAX;
+    let mut min = NUMBER_MIN;
+    let mut max = NUMBER_MAX;
     let mut default = 0.0;
     if input.peek(syn::token::Brace) {
         let meta;
         braced!(meta in input);
-        // Optional `LO..=HI` range.
-        if meta.peek(syn::LitInt) || meta.peek(syn::LitFloat) || meta.peek(Token![-]) {
-            min = parse_signed_float(&meta)?;
+        // Optional `LO..=HI` range. It starts with a number, `-`, or a `min`/`max` sentinel — but
+        // not the `default` keyword, which introduces the default instead.
+        if meta.peek(syn::LitInt)
+            || meta.peek(syn::LitFloat)
+            || meta.peek(Token![-])
+            || peek_range_sentinel(&meta)
+        {
+            min = parse_float_or_sentinel(&meta)?;
             meta.parse::<Token![..=]>()?;
-            max = parse_signed_float(&meta)?;
+            max = parse_float_or_sentinel(&meta)?;
             if meta.peek(Token![,]) {
                 meta.parse::<Token![,]>()?;
             }
         }
-        // Optional `default D`.
+        // Optional `default D`, where `D` may be a literal or `max`/`min` (the operand's own range
+        // extreme, resolved from the range parsed just above).
         if meta.peek(Ident) {
             let kw: Ident = meta.parse()?;
             if kw != "default" {
                 return Err(Error::new(kw.span(), "expected `default <value>`"));
             }
-            default = parse_signed_float(&meta)?;
+            default = parse_default_value(&meta, min, max)?;
         }
         if meta.peek(Token![,]) {
             meta.parse::<Token![,]>()?;
@@ -529,21 +534,6 @@ fn parse_call_shape(input: ParseStream) -> syn::Result<(Path, Vec<Ident>)> {
         }
     }
     Ok((func, out))
-}
-
-/// A numeric literal with an optional leading `-`.
-fn parse_signed_float(input: ParseStream) -> syn::Result<f32> {
-    let neg = input.peek(Token![-]);
-    if neg {
-        input.parse::<Token![-]>()?;
-    }
-    let lit: syn::Lit = input.parse()?;
-    let val = match lit {
-        syn::Lit::Float(f) => f.base10_parse::<f32>()?,
-        syn::Lit::Int(i) => i.base10_parse::<f32>()?,
-        other => return Err(Error::new(other.span(), "expected a numeric literal")),
-    };
-    Ok(if neg { -val } else { val })
 }
 
 #[cfg(test)]
@@ -633,6 +623,26 @@ mod tests {
         // The keyword operand `in` becomes a raw local `r#in`, passed to the fn.
         assert!(out.contains("r#in"), "{out}");
         assert!(out.contains("remap (r#in , r#curve)"), "{out}");
+    }
+
+    // `default max` / `default min` on a `number` operand park it at its own range edge — for a
+    // range-less operand that is the type-wide ±1e6 sentinel (issue #127), so `min`/`max`'s no-op
+    // `b` needs no raw literal.
+    #[test]
+    fn default_sentinel_parks_at_the_range_edge() {
+        let out = render(
+            r#"Min {
+                numbers:  [f32],
+                carriers: [value],
+                inputs:   { a: number { default 0.0 }, b: number { default max } },
+                outputs:  { out },
+                function: min_fn(a, b),
+            }"#,
+        );
+        // `b`'s default is the range maximum (1e6), materialized into its `f32` port meta and its
+        // held-read fallback.
+        assert!(out.contains("default : 1000000f32"), "{out}");
+        assert!(out.contains("unwrap_or (1000000.0)"), "{out}");
     }
 
     // Omitting a carrier yields a single-form op (the stateful-op shape, e.g. value-less).
