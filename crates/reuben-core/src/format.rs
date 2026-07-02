@@ -739,37 +739,8 @@ impl InstrumentDoc {
                         name: name.clone(),
                     });
                 }
-                match value {
-                    InputValue::Wire { .. } => {} // pass 2
-                    InputValue::Number(v) => {
-                        if descriptor.materialized_input(name).is_none()
-                            && descriptor.enum_input(name).is_none()
-                        {
-                            return Err(LoadError::UnknownInput {
-                                node: n.address.clone(),
-                                input: name.clone(),
-                            });
-                        }
-                        graph.set_value(key, name, &Arg::F32(*v as f32));
-                    }
-                    InputValue::Symbol(s) => {
-                        // An `Enum` symbol is only valid on an enum input, and must name a variant
-                        // (ADR-0028: an unknown symbol is an error, never a silent default).
-                        let Some((_, e)) = descriptor.enum_input(name) else {
-                            return Err(LoadError::UnknownInput {
-                                node: n.address.clone(),
-                                input: name.clone(),
-                            });
-                        };
-                        if e.resolve(s).is_none() {
-                            return Err(LoadError::BadInputValue {
-                                node: n.address.clone(),
-                                input: name.clone(),
-                                value: s.clone(),
-                            });
-                        }
-                        graph.set_value(key, name, &Arg::Str(s.clone()));
-                    }
+                if let Some(arg) = literal_arg(&descriptor, name, value, &n.address, name)? {
+                    graph.set_value(key, name, &arg);
                 }
             }
 
@@ -832,48 +803,22 @@ impl InstrumentDoc {
             // Errors speak in boundary terms — the subpatch address and external port name —
             // never the prefixed internal address.
             for (name, value) in &n.inputs {
-                let arg = match value {
-                    InputValue::Wire { .. } => continue, // pass 2
-                    InputValue::Number(v) => Arg::F32(*v as f32),
-                    InputValue::Symbol(s) => Arg::Str(s.clone()),
-                };
+                if matches!(value, InputValue::Wire { .. }) {
+                    continue; // pass 2
+                }
                 let Some(fp) = face.input(name) else {
                     return Err(LoadError::UnknownInput {
                         node: n.address.clone(),
                         input: name.clone(),
                     });
                 };
-                // Mirror pass 1's literal rules against the *inner* port: a number needs a
-                // materialized `Float` or an enum, a symbol needs an enum naming that variant.
-                let inner_name: &'static str = {
-                    let d = &graph.nodes[fp.node].descriptor;
-                    let inner_name = d.inputs[fp.port].name;
-                    let settable = match value {
-                        InputValue::Symbol(_) => d.enum_input(inner_name).is_some(),
-                        _ => {
-                            d.materialized_input(inner_name).is_some()
-                                || d.enum_input(inner_name).is_some()
-                        }
-                    };
-                    if !settable {
-                        return Err(LoadError::UnknownInput {
-                            node: n.address.clone(),
-                            input: name.clone(),
-                        });
-                    }
-                    if let (InputValue::Symbol(s), Some((_, e))) = (value, d.enum_input(inner_name))
-                    {
-                        if e.resolve(s).is_none() {
-                            return Err(LoadError::BadInputValue {
-                                node: n.address.clone(),
-                                input: name.clone(),
-                                value: s.clone(),
-                            });
-                        }
-                    }
-                    inner_name
-                };
-                graph.set_value(fp.node, inner_name, &arg);
+                // Pass 1's literal rules, checked against the *inner* port the interface names —
+                // the same `literal_arg` statement, labeled in boundary terms.
+                let d = &graph.nodes[fp.node].descriptor;
+                let inner_name = d.inputs[fp.port].name;
+                if let Some(arg) = literal_arg(d, inner_name, value, &n.address, name)? {
+                    graph.set_value(fp.node, inner_name, &arg);
+                }
             }
             faces.insert(n.address.clone(), face);
         }
@@ -1179,6 +1124,52 @@ impl BoundaryFace {
             port_name,
         )?;
         Ok(&self.outputs[idx])
+    }
+}
+
+/// Validate one literal `inputs` value against the port named `port_name` on `desc` and produce
+/// the [`Arg`] to set — `None` for a wire-ref (pass 2's job). The one statement of the literal
+/// rules for both surfaces that accept literals — a document node's input in pass 1, and a
+/// subpatch boundary input checked against the **inner** port its face names (ADR-0034 §1):
+/// a number needs a materialized `Float` or an enum, a symbol needs an enum, and the symbol must
+/// name a variant (ADR-0028: an unknown symbol is an error, never a silent default).
+/// `err_node`/`err_input` label errors in the author's terms — for a boundary literal, the
+/// subpatch address and external name, never the prefixed internal.
+fn literal_arg(
+    desc: &Descriptor,
+    port_name: &str,
+    value: &InputValue,
+    err_node: &str,
+    err_input: &str,
+) -> Result<Option<Arg>, LoadError> {
+    match value {
+        InputValue::Wire { .. } => Ok(None),
+        InputValue::Number(v) => {
+            if desc.materialized_input(port_name).is_none() && desc.enum_input(port_name).is_none()
+            {
+                return Err(LoadError::UnknownInput {
+                    node: err_node.to_string(),
+                    input: err_input.to_string(),
+                });
+            }
+            Ok(Some(Arg::F32(*v as f32)))
+        }
+        InputValue::Symbol(s) => {
+            let Some((_, e)) = desc.enum_input(port_name) else {
+                return Err(LoadError::UnknownInput {
+                    node: err_node.to_string(),
+                    input: err_input.to_string(),
+                });
+            };
+            if e.resolve(s).is_none() {
+                return Err(LoadError::BadInputValue {
+                    node: err_node.to_string(),
+                    input: err_input.to_string(),
+                    value: s.clone(),
+                });
+            }
+            Ok(Some(Arg::Str(s.clone())))
+        }
     }
 }
 
