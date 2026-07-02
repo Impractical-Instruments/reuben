@@ -262,9 +262,13 @@ mod tests {
         let resolver = FsResolver::new("/tmp/reuben_canon_base");
         let child = resolver.canonical("sub/pad.json", None);
         let leaf = resolver.canonical("kick.wav", Some(&child));
+        // Platform-neutral (the base absolutizes to a drive root on Windows): resolving next
+        // to the referrer must land on the same identity as spelling the path from the top.
+        assert_eq!(leaf, resolver.canonical("sub/kick.wav", None));
         assert_eq!(
-            Path::new(&leaf),
-            Path::new("/tmp/reuben_canon_base/sub/kick.wav")
+            resolver.canonical("../up.wav", Some(&child)),
+            resolver.canonical("up.wav", None),
+            "`..` climbs out of the referrer's directory"
         );
     }
 
