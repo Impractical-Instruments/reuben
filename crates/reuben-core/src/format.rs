@@ -748,7 +748,18 @@ impl InstrumentDoc {
                 // A nested-instrument reference (ADR-0034): no graph node is created — the
                 // subpatch pass below splices the child's nodes in and the reference dissolves
                 // (§2). Its `inputs` are boundary values, validated there against the
-                // synthesized face rather than this (portless) descriptor.
+                // synthesized face rather than this (portless) descriptor. `config` has no
+                // boundary surface at all — validate it here against the (constant-less)
+                // descriptor so a stray entry fails UnknownConfig, exactly as the schema
+                // locks it.
+                for name in n.config.keys() {
+                    if !descriptor.is_constant(name) {
+                        return Err(LoadError::UnknownConfig {
+                            node: n.address.clone(),
+                            name: name.clone(),
+                        });
+                    }
+                }
                 continue;
             }
             let key = graph.add_boxed(&n.address, (entry.make)(), descriptor.clone());
@@ -2307,6 +2318,19 @@ mod tests {
             loaded.graph.outputs.is_empty(),
             "child taps must not reach the parent master"
         );
+    }
+
+    #[test]
+    fn config_on_a_subpatch_node_is_fatal() {
+        // The subpatch descriptor declares no Constants and the schema locks its `config` to
+        // additionalProperties: false — the loader agrees: a stray config entry is
+        // UnknownConfig, not silently ignored.
+        let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"v","config":{"voices":4}}]}"#;
+        assert!(matches!(
+            load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)),
+            Err(LoadError::UnknownConfig { node, name }) if node == "/sub" && name == "voices"
+        ));
     }
 
     #[test]
