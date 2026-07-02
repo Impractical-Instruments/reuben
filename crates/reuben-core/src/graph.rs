@@ -5,7 +5,7 @@
 //! ([`crate::plan::Plan::instantiate`]). Node identity is a stable slotmap key, so a
 //! future Swap can match surviving operators across re-Instantiate.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use slotmap::{new_key_type, SlotMap};
 
@@ -45,20 +45,13 @@ pub struct Node {
     /// The logical `voice` instrument-resource id (ADR-0032) this node referenced, retained for the
     /// same save round-trip as [`sample_id`](Self::sample_id). `None` unless the node declared a
     /// `voice` slot and named an id.
+    ///
+    /// A `subpatch` node's `patch` id has no counterpart here: the node **dissolves** at build
+    /// (ADR-0034 §2, nesting P4) — its child's nodes are spliced in with prefixed addresses and no
+    /// node survives to carry the reference. A built graph is the *flattened* instrument;
+    /// reference-preserving save is the library thread (P7,
+    /// [#122](https://github.com/Impractical-Instruments/reuben/issues/122)).
     pub voice_id: Option<String>,
-    /// The logical `patch` instrument-resource id (ADR-0034) a `subpatch` node referenced, retained
-    /// for the same save round-trip as [`sample_id`](Self::sample_id). `None` unless the node is a
-    /// `subpatch` naming a patch.
-    pub patch_id: Option<String>,
-    /// The **loaded sub-Graph** a `subpatch` node references (ADR-0034, nesting P3), carrying its
-    /// resolved [`Interface`] boundary. Set by the loader after the parent build, by resolving the
-    /// node's `patch` id through [`resolve_instrument`](crate::format::resolve_instrument). Unlike
-    /// the Voicer's runtime-hosted voice graphs (which live in the operator), this is **build-time
-    /// data on the parent node**, destined for the plan-build inline pass (P4) that dissolves the
-    /// `subpatch` into this graph. `None` for every non-`subpatch` node, and for a `subpatch` whose
-    /// reference is missing or fails to resolve (a warning, ADR-0016) — `Some` always holds a
-    /// **built** child, never a placeholder. Boxed to keep the common `Node` small.
-    pub subpatch: Option<Box<Graph>>,
 }
 
 /// A directed connection from one node's output port to another's input port.
@@ -82,6 +75,14 @@ pub struct Interface {
     pub inputs: BTreeMap<String, (NodeKey, usize)>,
     /// External output name → the internal `(node, output port)` it exposes.
     pub outputs: BTreeMap<String, (NodeKey, usize)>,
+    /// Declared **input** names whose internal target went dark — an unavailable nested child
+    /// (ADR-0016/0034). The port is real in the document but resolves to nothing this load; a
+    /// consumer referencing it degrades (drops the wire with a warning) instead of failing, so
+    /// dark degradation stays transitive through re-exports rather than escalating to a
+    /// structural error one level up.
+    pub dark_inputs: BTreeSet<String>,
+    /// Declared **output** names whose internal target went dark (see `dark_inputs`).
+    pub dark_outputs: BTreeSet<String>,
 }
 
 /// A patch under construction.
@@ -126,8 +127,6 @@ impl Graph {
             constant_overrides: Vec::new(),
             sample_id: None,
             voice_id: None,
-            patch_id: None,
-            subpatch: None,
         })
     }
 

@@ -5403,8 +5403,30 @@
                 "type": "object"
               },
               "inputs": {
-                "additionalProperties": false,
-                "properties": {},
+                "additionalProperties": {
+                  "oneOf": [
+                    {
+                      "type": "number"
+                    },
+                    {
+                      "type": "string"
+                    },
+                    {
+                      "additionalProperties": false,
+                      "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                      "properties": {
+                        "from": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "from"
+                      ],
+                      "type": "object"
+                    }
+                  ]
+                },
+                "description": "Boundary inputs, named by the referenced patch's `interface` (ADR-0034 §4). Port names and Arg types are validated at load against the resolved patch, not by this schema.",
                 "type": "object"
               }
             }
@@ -5576,7 +5598,7 @@
           "type": "object"
         },
         "patch": {
-          "description": "Resource id into the document's `resources` table naming a nested instrument patch; only valid on a `subpatch` node (ADR-0034). The loader builds the referenced patch and carries the sub-graph on this node.",
+          "description": "Resource id into the document's `resources` table naming a nested instrument patch; only valid on a `subpatch` node (ADR-0034). At build the referenced patch is loaded and inlined: its nodes are spliced in under this node's address prefix, its `interface` becomes this node's ports, and the node dissolves.",
           "type": "string"
         },
         "sample": {

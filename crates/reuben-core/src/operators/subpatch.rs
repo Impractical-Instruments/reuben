@@ -1,24 +1,21 @@
-//! `subpatch` — a nested instrument referenced as a node (ADR-0034, nesting P3).
+//! `subpatch` — a nested instrument referenced as a node (ADR-0034, nesting P4).
 //!
 //! A `subpatch` node names another instrument patch (an instrument-resource, ADR-0032 §2, via a
-//! `patch` resource slot) and the loader carries the built sub-[`Graph`] on the **parent node**
-//! (`Node::subpatch`, `graph.rs`) — *not* on this operator. That placement is the whole point of
-//! the split ADR-0034 draws: the Voicer **hosts** its voice sub-patches at runtime (their graphs
-//! ride in the operator, turned into per-voice sub-plans), whereas a static `subpatch` is destined
-//! to be **inlined / dissolved** into the parent graph at plan-build (P4, [#119]). So the sub-graph
-//! is build-time data on the node, consumed by that later inline pass — it never becomes runtime
-//! state of a `subpatch` operator, and this operator never renders anything.
+//! `patch` resource slot). At build the referenced patch is loaded recursively and **inlined**
+//! (§2): its nodes are spliced into the parent graph under the subpatch's address prefix, parent
+//! wires resolve through the boundary face synthesized from the child's `interface` (§4), and the
+//! node **dissolves** — no `subpatch` ever reaches the built [`Graph`](crate::graph::Graph), the
+//! `Plan`, or the renderer. That is the split ADR-0034 draws: the Voicer **hosts** its voice
+//! sub-patches at runtime (runtime-varying cardinality), whereas a static nest inlines at build
+//! (fixed cardinality) for zero runtime cost.
 //!
-//! This is P3 ([#118]): *reference and load only*. The node's ports are **synthesized** from the
-//! resolved child's `interface` (§4) at inline/introspection time (P4–P6); until then this operator
-//! declares **no ports** — only the `patch` resource slot — and its [`process`](Operator::process)
-//! is a no-op. A `subpatch` node that survives to render (i.e. was never inlined) simply does
-//! nothing, which is why P3 is safe to land before the inline pass exists.
+//! This registered operator is therefore a *format anchor*, not a DSP unit: it exists so `type`
+//! keeps its "registered operator" invariant (§1) and so the registry/schema/introspection know
+//! the node form. It declares **no ports** — the boundary face is synthesized per reference at
+//! load, never registered here — and its [`process`](Operator::process) is an unreachable no-op
+//! (the graph API could still instantiate one by hand; it renders nothing).
 //!
 //! - resource `patch` — the referenced instrument patch (instrument-resource, ADR-0032 §2).
-//!
-//! [#118]: https://github.com/Impractical-Instruments/reuben/issues/118
-//! [#119]: https://github.com/Impractical-Instruments/reuben/issues/119
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -30,9 +27,9 @@ crate::operator_contract!(Subpatch {
     resources: { patch },
 });
 
-/// A reference to a nested instrument. Carries no runtime state: the resolved sub-graph lives on the
-/// parent [`Node`](crate::graph::Node), destined for plan-build inlining (P4), so this operator is an
-/// inert placeholder that never renders (see the module docs).
+/// A reference to a nested instrument. Carries no runtime state: the loader inlines the referenced
+/// patch and dissolves the node at build (ADR-0034 §2), so this operator is an inert format anchor
+/// that never renders (see the module docs).
 #[derive(Default)]
 pub struct Subpatch;
 
@@ -47,8 +44,8 @@ impl Operator for Subpatch {
         Self::contract()
     }
 
-    /// No-op: a `subpatch` is inlined at plan-build (P4) and never survives to render. An
-    /// un-inlined one (P3, before the inline pass exists) simply produces nothing.
+    /// No-op: a `subpatch` dissolves at build (ADR-0034 §2) and never survives to render; one
+    /// instantiated by hand through the graph API simply produces nothing.
     fn process(&mut self, _io: &mut Io) {}
 
     fn spawn(&self) -> Box<dyn Operator> {

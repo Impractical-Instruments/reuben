@@ -19,6 +19,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::Arc;
 
 /// A handle to a decoded resource within a [`ResourceStore`]. `Copy`, cheap to carry on an
 /// operator and through [`Operator::spawn`](crate::operator::Operator::spawn).
@@ -88,7 +89,10 @@ impl SampleBuffer {
 /// held forever; the accessors' signatures are what the future streaming bank reuses.
 #[derive(Debug, Default)]
 pub struct ResourceStore {
-    buffers: Vec<SampleBuffer>,
+    /// `Arc` so several stores can share one decoded buffer: each subpatch reuse and voice
+    /// copy builds its own store, and the loader's per-load cache hands them all the same
+    /// allocation instead of a deep copy per reference.
+    buffers: Vec<Arc<SampleBuffer>>,
     by_id: BTreeMap<String, SampleId>,
 }
 
@@ -98,10 +102,15 @@ impl ResourceStore {
     }
 
     /// Insert a decoded buffer under a logical id, returning its handle. The loader
-    /// dedups, so each unique id is inserted exactly once.
-    pub fn insert(&mut self, id: impl Into<String>, buffer: SampleBuffer) -> SampleId {
+    /// dedups, so each unique id is inserted exactly once. Takes anything `Arc`-able so
+    /// plain owned buffers (tests, drivers) and the loader's shared cache entries both fit.
+    pub fn insert(
+        &mut self,
+        id: impl Into<String>,
+        buffer: impl Into<Arc<SampleBuffer>>,
+    ) -> SampleId {
         let sid = SampleId(self.buffers.len());
-        self.buffers.push(buffer);
+        self.buffers.push(buffer.into());
         self.by_id.insert(id.into(), sid);
         sid
     }
