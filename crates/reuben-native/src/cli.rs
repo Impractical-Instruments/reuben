@@ -307,7 +307,8 @@ impl Diag {
             LoadError::InterfaceOverride { name, .. } => (None, Some(name.clone())),
             LoadError::TypeMismatch { .. }
             | LoadError::Json(_)
-            | LoadError::CyclicResource { .. } => (None, None),
+            | LoadError::CyclicResource { .. }
+            | LoadError::UnsupportedVersion { .. } => (None, None),
         };
         Diag {
             node,

@@ -135,6 +135,11 @@ pub fn generate(registry: &Registry) -> Value {
         "required": ["instrument", "nodes"],
         "additionalProperties": false,
         "properties": {
+            "format_version": {
+                "type": "integer",
+                "minimum": 1,
+                "description": "Document format version (ADR-0036). Absent means 1; saving writes the current version. A version newer than the engine understands refuses to load."
+            },
             "instrument": { "type": "string" },
             "doc": { "type": "string" },
             "resources": {
