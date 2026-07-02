@@ -358,14 +358,47 @@ boundary mapping external names (`freq`/`gate`/`audio`/`active`) to internal `(n
 so the host Voicer can drive and tap it. (`interface` is real wiring the engine type-checks, distinct
 from the engine-ignored `control` block.) See `instruments/default.json` + `instruments/voices/default-voice.json`.
 
+### Nesting: a `subpatch` node inlined at build ([ADR-0034](../adr/0034-instrument-nesting.md))
+
 A **`subpatch`** node references a nested instrument the same way, by a **`patch`** field naming an
-instrument JSON ([ADR-0034](../adr/0034-instrument-nesting.md)): the loader recursively builds the
-child (its own resources resolve; cyclic references are a fatal `CyclicResource` error) and carries
-the sub-graph + its `interface` on the parent node. This is the reference/load pass only — the node
-registers **no ports** yet (its boundary face is synthesized from the child `interface` when the
-plan-build inline pass lands), so an un-inlined `subpatch` renders nothing. Availability problems
-(missing id, unreadable source) degrade to a `LoadWarning`; a resolved-but-malformed child document
-is fatal.
+instrument JSON in `resources`. At build the child is resolved recursively and **inlined**: its
+nodes splice into the parent under the node's address prefix (child `/filter` inside `/space`
+becomes `/space/filter` — still OSC-reachable; a post-prefix collision is a fatal
+`DuplicateAddress`), every parent wire onto a boundary port is rewired straight to the inner
+target, and the `subpatch` node **dissolves** — nesting costs nothing at runtime. Two uses of one
+patch get disjoint prefixes, so per-reuse state isolation is automatic. Cyclic references are a
+fatal `CyclicResource`; availability problems (missing id, unreadable source) degrade to a
+`LoadWarning` (the node goes *dark* — references to it drop with warnings); a
+resolved-but-malformed child document is fatal.
+
+The node's ports are the child's **`interface` names** — a synthesized **boundary face**, one port
+per name, each carrying the **inner port's `Arg` type verbatim** (§4: the type is inherited and
+*never* overridable; the ordinary pass-2 wire check covers boundary wires, and errors speak in
+boundary terms — the subpatch address and external name). Wire or set literals on those names
+exactly as on operator ports: `"tone": 2500` validates against the inner port the interface names.
+
+An `interface` entry is a bare `/node.port` string, or an **object form** carrying
+**presentational-metadata overrides** (ADR-0034 §4) — `label`, `unit`, `widget`, `min`/`max` —
+inherited from the inner port and overridable per-field. Overrides decorate how a boundary control
+*presents* — introspection today; control-surface generation is the intended next consumer
+(issue #153). They never change what type flows, and
+there is deliberately no field to express a type override (`deny_unknown_fields` rejects one):
+
+```json
+"interface": {
+  "inputs": {
+    "in":   "/filter.audio",
+    "tone": { "target": "/filter.cutoff", "label": "Tone", "widget": "knob", "min": 200, "max": 8000 }
+  },
+  "outputs": { "out": "/verb.audio" }
+}
+```
+
+`reuben describe <patch.json>` prints the boundary a host wires against — each `interface` port
+with metadata inherited from the inner port (the *effective* default: a child literal like
+`"mix": 0.35` beats the descriptor default) and the entry's overrides applied.
+`instruments/patches/space.json` (nestable effect) + `instruments/nested-space.json` (host) are
+the worked pair.
 
 A node may also carry an optional **`control`** block
 ([ADR-0018](../adr/0018-control-surface-generation.md)) — surface metadata marking it

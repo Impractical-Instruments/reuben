@@ -82,6 +82,7 @@ cargo run -p reuben-native --bin reuben -- play instruments/<name>.json
 | `groovebox`   | **yes**           | The Groovebox Toy (ADR-0022): a free-running 16-step drum machine — kick/snare/hat synthesized from operators (no samples), each a sequencer driving its own voicer voice on a shared clock. Toggle steps `/kick/step1`..`step16` (also `/snare/*`, `/hat/*`), ride `/clock/tempo`; per-drum volumes and master tone are Good Buttons. |
 | `strum-harp`  | needs OSC         | The Strum harp Toy (ADR-0022): drag-to-strum. Stream `/strum/position [0..1]` and the `strum` op plucks a note each time the bar crosses a string boundary. Strings are scale degrees through the tonal context, so it stays in key. `/strum/octaves` sets the span; `/harmony/root` the key. |
 | `stereo-autopan` | needs OSC notes | Stereo demo (ADR-0026): an 8-voice synth swept across the stereo field by an LFO driving a `pan` op, whose `left`/`right` feed the two master channels directly (no `output` node). Tweak `/autopan/{rate,depth}`, `/filter/cutoff`. |
+| `nested-space` | needs OSC notes | General-nesting demo (ADR-0034): the 8-voice synth feeding a nested `space` instrument (`instruments/patches/space.json`, a tone+reverb effect) referenced by a `subpatch` node and inlined at build. Its internals stay reachable (`/space/filter/cutoff`); `reuben describe instruments/patches/space.json` shows the boundary. |
 
 The rows marked **yes** make sound immediately — good for a first run with no OSC sender. Every
 node's inputs are live over OSC at its address (e.g. `/delay/time`).
@@ -152,9 +153,13 @@ and Voicer-hosts-voice-sub-patches rewrite ([ADR-0032](docs/adr/0032-voicer-host
 have landed: a port is a held **Value** (`f32`) or a **Signal** buffer (`f32_buffer`), read/written
 through `io.input::<T>` / `io.output::<T>`, and polyphony comes from the Voicer hosting voice
 sub-patches (`instruments/voices/*.json`) rather than the now-removed Lane model.
-General nesting ([ADR-0034](docs/adr/0034-instrument-nesting.md)) is in progress: a `subpatch`
-node can reference and recursively load another instrument (cycle-guarded, carried on the parent
-node); plan-build inlining is the next pass.
+General nesting ([ADR-0034](docs/adr/0034-instrument-nesting.md)) has landed end to end: a
+`subpatch` node references another instrument (cycle-guarded), inlines into the parent graph at
+build (zero runtime cost, internals still OSC-reachable under the node's address prefix), presents
+the child's `interface` as its ports — types inherited and type-checked by the ordinary wire check,
+presentational metadata (label/unit/widget/range) inherited and per-field overridable — and
+`reuben describe <patch.json>` introspects that boundary (`instruments/nested-space.json` is the
+worked example). The library/versioning story (#122) trails.
 
 ## Going deeper
 

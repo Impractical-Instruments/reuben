@@ -1,0 +1,45 @@
+{
+  "doc": "Nestable tone + space send effect (ADR-0034): a lowpass into a Freeverb, exposed through an `interface` boundary so a host patch uses it as one node. Boundary: `in` (audio), `tone` (the filter cutoff, presented as a Tone knob per ADR-0034 §4 overrides), `space` (the reverb mix, labeled Space) in; `out` (audio) out. The overrides decorate presentation only — the Arg types are inherited from the inner ports and cannot be overridden.",
+  "instrument": "space",
+  "interface": {
+    "inputs": {
+      "in": "/filter.audio",
+      "tone": {
+        "target": "/filter.cutoff",
+        "label": "Tone",
+        "widget": "knob",
+        "min": 200,
+        "max": 8000
+      },
+      "space": {
+        "target": "/verb.mix",
+        "label": "Space"
+      }
+    },
+    "outputs": {
+      "out": "/verb.audio"
+    }
+  },
+  "nodes": [
+    {
+      "address": "/filter",
+      "doc": "Tone control: gentle lowpass ahead of the reverb.",
+      "inputs": {
+        "cutoff": 4000.0
+      },
+      "type": "filter"
+    },
+    {
+      "address": "/verb",
+      "doc": "Freeverb tail; `mix` is the boundary's `space` input.",
+      "inputs": {
+        "audio": {
+          "from": "/filter.audio"
+        },
+        "mix": 0.35,
+        "room": 0.7
+      },
+      "type": "reverb"
+    }
+  ]
+}

@@ -64,8 +64,8 @@ A standalone [[instrument]] a [[voicer]] hosts as one [[voice]] of its pool — 
 _Avoid_: voice graph, sub-instrument, voice template.
 
 **Interface**:
-An [[instrument]]'s engine-honored I/O boundary: named external ports mapped to internal Operator inputs/outputs, type-checked and wired by the engine. The structural counterpart to a curated control surface ([[address]]es) — real wiring, not surface metadata. A [[voice sub-patch]]'s `freq`/`gate`/`audio`/`active` boundary is the canonical case.
-_Avoid_: boundary ports (informal), control surface, ports block.
+An [[instrument]]'s engine-honored I/O boundary: named external ports — its **boundary ports** — mapped to internal Operator inputs/outputs, type-checked and wired by the engine. The structural counterpart to a curated control surface ([[address]]es) — real wiring, not surface metadata. A [[voice sub-patch]]'s `freq`/`gate`/`audio`/`active` boundary is the canonical case.
+_Avoid_: control surface, ports block.
 
 **Subpatch**:
 A nested [[instrument]] referenced as a node inside another Instrument, via a `subpatch` node whose `patch` slot names it in `resources`. Statically nested — exactly one instance, fixed at build — so it [[inline (dissolve)]]s; a [[voice sub-patch]] is the dynamic counterpart, [[host]]ed by a [[voicer]].

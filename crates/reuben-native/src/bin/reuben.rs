@@ -9,8 +9,10 @@
 //!   /voicer/notes  [69.0, 0.0]   # note-off (gate 0)
 //!   ```
 //!
-//! - `reuben describe [op] [--json]` — print the operator set (or one operator's ports,
-//!   params, and resource slots). The introspection half of the Patcher skill (ADR-0020).
+//! - `reuben describe [op|patch.json] [--json]` — print the operator set, one operator's ports/
+//!   params/resource slots, or — given an instrument JSON path — that instrument's `interface`
+//!   boundary as a host sees it (ADR-0034 §4: types inherited from the inner ports,
+//!   presentational overrides applied). The introspection half of the Patcher skill (ADR-0020).
 //! - `reuben validate <path> [--json]` — load + plan an instrument with no audio device and
 //!   report structural/wiring errors. Exit 1 if invalid; warnings alone stay exit 0.
 //! - `reuben scaffold-operator --spec <path> [--json]` — generate a new Operator's Rust skeleton
@@ -29,7 +31,7 @@ use reuben_core::boundary;
 use reuben_core::message::Message;
 use reuben_core::plan::Plan;
 use reuben_core::{load_instrument, Registry};
-use reuben_native::cli::{describe, validate};
+use reuben_native::cli::{describe, describe_patch, validate};
 use reuben_native::engine::Engine;
 use reuben_native::resources::FsResolver;
 use reuben_native::rigs::DEFAULT_JSON;
@@ -56,9 +58,12 @@ enum Command {
         #[arg(long, value_name = "HOST:PORT")]
         osc_out: Option<String>,
     },
-    /// Print the operator set, or one operator's ports/params/resources.
+    /// Print the operator set, one operator's ports/params/resources, or — given an instrument
+    /// JSON path — that instrument's `interface` boundary as a host sees it (ADR-0034).
     Describe {
-        /// Operator type to describe; omit to list them all.
+        /// Operator type to describe, or an instrument JSON path (its nested boundary). A path
+        /// is recognized by shape — ends in `.json` or contains a separator; a bare name is
+        /// always an operator. Omit to list every operator.
         op: Option<String>,
         /// Emit machine-readable JSON instead of a human summary.
         #[arg(long)]
@@ -133,8 +138,68 @@ fn cmd_scaffold(spec: &Path, core_root: &Path, json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `describe`: dump the operator set (or one operator) as human text or JSON.
+/// Render one port line of `describe` output, shared by the operator and patch-boundary views.
+fn print_ports(dir: &str, ps: &[reuben_native::cli::PortInfo]) {
+    for p in ps {
+        let mut s = format!("  {dir} {} : {}", p.name, p.kind);
+        if p.constant {
+            s.push_str(" (constant)");
+        }
+        if let Some(d) = &p.default {
+            s.push_str(&format!(" = {d}"));
+        }
+        if !p.unit.is_empty() {
+            s.push_str(&format!(" {}", p.unit));
+        }
+        if let (Some(min), Some(max)) = (p.min, p.max) {
+            s.push_str(&format!(" [{min}..{max}]"));
+        }
+        if let Some(c) = &p.curve {
+            s.push_str(&format!(" ({c})"));
+        }
+        if !p.variants.is_empty() {
+            s.push_str(&format!(" {{{}}}", p.variants.join(", ")));
+        }
+        if let Some(l) = &p.label {
+            s.push_str(&format!(" \"{l}\""));
+        }
+        if let Some(w) = &p.widget {
+            s.push_str(&format!(" <{w}>"));
+        }
+        if p.driven {
+            s.push_str(" (driven internally — wiring it is an error)");
+        }
+        println!("{s}");
+    }
+}
+
+/// Read an instrument file to its JSON text, paired with a resolver rooted at its directory —
+/// resource paths (samples, nested instruments) resolve relative to the instrument file. The one
+/// loading preamble behind `describe`, `validate`, and `play`.
+fn read_instrument(path: &Path) -> Result<(String, FsResolver), String> {
+    let json =
+        std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
+    Ok((json, FsResolver::for_instrument(path)))
+}
+
+/// `describe`'s argument is an instrument **path** by shape alone: it ends in `.json` or contains a
+/// path separator. A bare name is always an operator, so a stray file named `filter` in the
+/// cwd cannot shadow `describe filter` — routing must not depend on directory contents.
+fn is_patch_path(arg: &str) -> bool {
+    Path::new(arg).extension().is_some_and(|e| e == "json")
+        || arg.chars().any(std::path::is_separator)
+}
+
+/// `describe`: dump the operator set, one operator, or — for an instrument JSON path — that
+/// instrument's boundary as a host sees it (ADR-0034 §4), as human text or JSON.
 fn cmd_describe(op: Option<&str>, json: bool) -> ExitCode {
+    // A path-shaped argument is an instrument: describe its boundary.
+    if let Some(arg) = op {
+        if is_patch_path(arg) {
+            return cmd_describe_patch(Path::new(arg), json);
+        }
+    }
+
     let ops = match describe(&Registry::builtin(), op) {
         Ok(ops) => ops,
         Err(e) => {
@@ -153,32 +218,8 @@ fn cmd_describe(op: Option<&str>, json: bool) -> ExitCode {
 
     for o in &ops {
         println!("{}", o.type_name);
-        let ports = |dir: &str, ps: &[reuben_native::cli::PortInfo]| {
-            for p in ps {
-                let mut s = format!("  {dir} {} : {}", p.name, p.kind);
-                if p.constant {
-                    s.push_str(" (constant)");
-                }
-                if let Some(d) = &p.default {
-                    s.push_str(&format!(" = {d}"));
-                }
-                if !p.unit.is_empty() {
-                    s.push_str(&format!(" {}", p.unit));
-                }
-                if let (Some(min), Some(max)) = (p.min, p.max) {
-                    s.push_str(&format!(" [{min}..{max}]"));
-                }
-                if let Some(c) = &p.curve {
-                    s.push_str(&format!(" ({c})"));
-                }
-                if !p.variants.is_empty() {
-                    s.push_str(&format!(" {{{}}}", p.variants.join(", ")));
-                }
-                println!("{s}");
-            }
-        };
-        ports("in ", &o.inputs);
-        ports("out", &o.outputs);
+        print_ports("in ", &o.inputs);
+        print_ports("out", &o.outputs);
         for r in &o.resources {
             println!("  resource {r}");
         }
@@ -186,27 +227,68 @@ fn cmd_describe(op: Option<&str>, json: bool) -> ExitCode {
     ExitCode::SUCCESS
 }
 
-/// `validate`: report whether an instrument loads + plans cleanly. Exit 1 only on hard errors;
-/// warnings (e.g. an unresolved sample) are advisory and keep exit 0.
-fn cmd_validate(path: &Path, json: bool) -> ExitCode {
-    let instrument_json = match std::fs::read_to_string(path) {
-        Ok(s) => s,
+/// `describe <patch.json>`: the nested-instrument boundary view — the `interface` ports a host
+/// wires against, with metadata inherited from the inner ports and the entry overrides applied.
+fn cmd_describe_patch(path: &Path, json: bool) -> ExitCode {
+    let (instrument_json, resolver) = match read_instrument(path) {
+        Ok(r) => r,
         Err(e) => {
-            eprintln!("error: read {}: {e}", path.display());
+            eprintln!("error: {e}");
             return ExitCode::FAILURE;
         }
     };
-    let base_dir = path
-        .parent()
-        .filter(|p| !p.as_os_str().is_empty())
-        .map(Path::to_path_buf)
-        .unwrap_or_else(|| PathBuf::from("."));
 
-    let report = validate(
+    // Introspection never renders audio: stat samples for availability instead of decoding them.
+    let boundary = match describe_patch(
         &instrument_json,
         &Registry::builtin(),
-        &FsResolver::new(base_dir),
-    );
+        &resolver.stat_only(),
+    ) {
+        Ok(b) => b,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&boundary).expect("serialize boundary")
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    for w in &boundary.warnings {
+        eprintln!("warning: {w}");
+    }
+    println!("{} (instrument boundary)", boundary.instrument);
+    if boundary.is_empty() {
+        println!("  (no `interface` boundary — nests, but exposes nothing to wire)");
+    }
+    print_ports("in ", &boundary.inputs);
+    print_ports("out", &boundary.outputs);
+    for d in &boundary.dark_inputs {
+        println!("  in  {d} : (dark — unresolved this load)");
+    }
+    for d in &boundary.dark_outputs {
+        println!("  out {d} : (dark — unresolved this load)");
+    }
+    ExitCode::SUCCESS
+}
+
+/// `validate`: report whether an instrument loads + plans cleanly. Exit 1 only on hard errors;
+/// warnings (e.g. an unresolved sample) are advisory and keep exit 0.
+fn cmd_validate(path: &Path, json: bool) -> ExitCode {
+    let (instrument_json, resolver) = match read_instrument(path) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    let report = validate(&instrument_json, &Registry::builtin(), &resolver);
 
     if json {
         println!(
@@ -314,21 +396,14 @@ fn play(path: Option<PathBuf>, osc_out_target: Option<String>) {
     // Instrument source: a path argument, else the embedded default. Resource paths (sample
     // files) resolve relative to the instrument file's directory; the embedded default has
     // none, so it roots at the current directory.
-    let (instrument_json, base_dir) = match path {
+    let (instrument_json, resolver) = match path {
         Some(path) => {
             println!("instrument: {}", path.display());
-            let json = std::fs::read_to_string(&path)
-                .unwrap_or_else(|e| panic!("read {}: {e}", path.display()));
-            let base = path
-                .parent()
-                .filter(|p| !p.as_os_str().is_empty())
-                .map(Path::to_path_buf)
-                .unwrap_or_else(|| PathBuf::from("."));
-            (json, base)
+            read_instrument(&path).unwrap_or_else(|e| panic!("{e}"))
         }
         None => {
             println!("instrument: <default> (pass a path to load your own)");
-            (DEFAULT_JSON.to_string(), PathBuf::from("."))
+            (DEFAULT_JSON.to_string(), FsResolver::new("."))
         }
     };
 
@@ -337,7 +412,6 @@ fn play(path: Option<PathBuf>, osc_out_target: Option<String>) {
             "audio out @ {} Hz, block {}",
             cfg.sample_rate, cfg.block_size
         );
-        let resolver = FsResolver::new(&base_dir);
         let loaded = load_instrument(&instrument_json, &Registry::builtin(), &resolver)
             .expect("load instrument");
         // Resource problems are non-fatal (ADR-0016): the rig still plays, but the user must
@@ -354,5 +428,26 @@ fn play(path: Option<PathBuf>, osc_out_target: Option<String>) {
     // Keep the process (and thus the audio stream) alive.
     loop {
         thread::park();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_patch_path;
+
+    /// Dispatch is by argument shape alone: a bare name is an operator even when a file of the
+    /// same name exists in the cwd (the shadowing bug this rule exists to prevent).
+    #[test]
+    fn bare_name_is_never_a_path() {
+        assert!(!is_patch_path("filter"));
+        assert!(!is_patch_path("oscillator"));
+    }
+
+    #[test]
+    fn json_extension_or_separator_is_a_path() {
+        assert!(is_patch_path("space.json"));
+        assert!(is_patch_path("instruments/patches/space.json"));
+        assert!(is_patch_path("./filter"));
+        assert!(is_patch_path("instruments/space"));
     }
 }

@@ -145,16 +145,35 @@ pub fn generate(registry: &Registry) -> Value {
             "interface": {
                 "type": "object",
                 "additionalProperties": false,
-                "description": "Engine-honored I/O boundary (ADR-0032): external name -> internal \"/node.port\" wire-ref. `inputs` names map to internal input ports, `outputs` names to output ports (sole-output sugar \"/node\" allowed). A voice patch declares this so its host voicer binds and type-checks it. Distinct from a node's `control` (ADR-0018), which is engine-ignored.",
+                "description": "Engine-honored I/O boundary (ADR-0032/0034): external name -> internal \"/node.port\" wire-ref, as a bare string or an object adding presentational overrides. `inputs` names map to internal input ports, `outputs` names to output ports (sole-output sugar \"/node\" allowed). A voice patch declares this so its host voicer binds and type-checks it; a nested instrument's `subpatch` ports are synthesized from it. Distinct from a node's `control` (ADR-0018), which is engine-ignored.",
                 "properties": {
-                    "inputs": { "type": "object", "additionalProperties": { "type": "string" } },
-                    "outputs": { "type": "object", "additionalProperties": { "type": "string" } }
+                    "inputs": { "type": "object", "additionalProperties": { "$ref": "#/$defs/interfaceEntry" } },
+                    "outputs": { "type": "object", "additionalProperties": { "$ref": "#/$defs/interfaceEntry" } }
                 }
             },
             "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
             "outputs": { "type": "array", "items": { "$ref": "#/$defs/portRef" } }
         },
         "$defs": {
+            "interfaceEntry": {
+                "description": "One boundary entry (ADR-0034 §4): the internal \"/node.port\" target, bare or with presentational-metadata overrides (label/unit/widget/min/max) inherited-then-overridden from the inner port. The Arg TYPE is inherited and not overridable — there is deliberately no field for it, and unknown fields are rejected. A min/max override must narrow the inner port's engine-enforced range (subset, not inverted, numeric port only) and keep the effective default inside it — the loader rejects an override that advertises a range the engine would not honor.",
+                "oneOf": [
+                    { "type": "string" },
+                    {
+                        "type": "object",
+                        "required": ["target"],
+                        "additionalProperties": false,
+                        "properties": {
+                            "target": { "type": "string", "description": "Internal \"/node.port\" wire-ref this external name resolves to." },
+                            "label": { "type": "string" },
+                            "unit": { "type": "string" },
+                            "widget": { "type": "string" },
+                            "min": { "type": "number" },
+                            "max": { "type": "number" }
+                        }
+                    }
+                ]
+            },
             "portRef": {
                 "type": "object",
                 "required": ["node", "port"],
@@ -301,6 +320,84 @@ mod tests {
         // `config` stays locked — a subpatch declares no constants.
         let config = &subpatch["then"]["properties"]["config"];
         assert_eq!(config["additionalProperties"], json!(false));
+    }
+
+    #[test]
+    fn interface_entry_takes_string_or_override_object_but_never_a_type() {
+        // ADR-0034 §4: an interface entry is a bare target string or an object of target +
+        // presentational overrides. The object enumerates its fields closed
+        // (`additionalProperties: false`) and none of them is a type — a type override is
+        // structurally inexpressible, matching the loader's `deny_unknown_fields`.
+        let schema = generate(&Registry::builtin());
+        let entry = &schema["$defs"]["interfaceEntry"];
+        let forms = entry["oneOf"].as_array().expect("oneOf forms");
+        assert!(forms.iter().any(|f| f["type"] == json!("string")));
+        let obj = forms
+            .iter()
+            .find(|f| f["type"] == json!("object"))
+            .expect("object form");
+        assert_eq!(obj["additionalProperties"], json!(false));
+        assert_eq!(obj["required"], json!(["target"]));
+        let props = obj["properties"].as_object().unwrap();
+        for allowed in ["target", "label", "unit", "widget", "min", "max"] {
+            assert!(props.contains_key(allowed), "missing {allowed}");
+        }
+        assert!(
+            !props.contains_key("type") && !props.contains_key("kind"),
+            "no field may express a type override"
+        );
+        // Both boundary maps use the entry.
+        let iface = &schema["properties"]["interface"]["properties"];
+        for dir in ["inputs", "outputs"] {
+            assert_eq!(
+                iface[dir]["additionalProperties"]["$ref"],
+                json!("#/$defs/interfaceEntry")
+            );
+        }
+    }
+
+    #[test]
+    fn interface_meta_and_schema_entry_list_the_same_fields() {
+        // Drift guard: the interfaceEntry field list lives in both the serde struct
+        // (`format::InterfaceMeta`) and this schema literal, and `additionalProperties: false`
+        // means a schema missing a serde field REJECTS documents the loader accepts. The struct
+        // literal is exhaustive on purpose — adding an InterfaceMeta field fails compilation
+        // here until the schema (and the committed schema file, via the staleness test) follow.
+        let full = crate::format::InterfaceMeta {
+            target: "/n.p".to_string(),
+            label: Some("L".to_string()),
+            unit: Some("Hz".to_string()),
+            widget: Some("knob".to_string()),
+            min: Some(0.0),
+            max: Some(1.0),
+        };
+        let serde_fields: std::collections::BTreeSet<String> = serde_json::to_value(&full)
+            .expect("serialize full meta")
+            .as_object()
+            .expect("object")
+            .keys()
+            .cloned()
+            .collect();
+
+        let schema = generate(&Registry::builtin());
+        let obj = schema["$defs"]["interfaceEntry"]["oneOf"]
+            .as_array()
+            .expect("oneOf forms")
+            .iter()
+            .find(|f| f["type"] == json!("object"))
+            .expect("object form")
+            .clone();
+        let schema_fields: std::collections::BTreeSet<String> = obj["properties"]
+            .as_object()
+            .expect("properties")
+            .keys()
+            .cloned()
+            .collect();
+
+        assert_eq!(
+            serde_fields, schema_fields,
+            "InterfaceMeta (format.rs) and interfaceEntry (schema.rs) disagree on the field list"
+        );
     }
 
     #[test]

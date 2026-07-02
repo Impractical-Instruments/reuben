@@ -4,7 +4,7 @@
 use std::path::PathBuf;
 
 use reuben_core::Registry;
-use reuben_native::cli::{describe, validate};
+use reuben_native::cli::{describe, describe_patch, validate};
 use reuben_native::resources::FsResolver;
 
 /// Absolute path to the workspace `instruments/` directory, independent of test CWD.
@@ -186,4 +186,136 @@ fn describe_unknown_operator_errors() {
         err.contains("nope"),
         "error should name the missing type: {err}"
     );
+}
+
+#[test]
+fn describe_patch_surfaces_the_boundary_with_inherited_metadata() {
+    // ADR-0034 §4 (P6): a voice patch's `interface` describes as operator-style ports, each
+    // inheriting the inner port's type + metadata (default-voice's `freq` targets the
+    // oscillator's swept-Hz control, so its range/unit/curve come through).
+    let dir = instruments_dir().join("voices");
+    let json = std::fs::read_to_string(dir.join("default-voice.json")).expect("read voice");
+    let b = describe_patch(&json, &Registry::builtin(), &FsResolver::new(&dir)).expect("describe");
+
+    assert_eq!(b.instrument, "default-voice");
+    let freq = b.inputs.iter().find(|p| p.name == "freq").expect("freq");
+    assert_eq!(freq.kind, "signal", "type inherited from /osc.freq");
+    assert_eq!(freq.unit, "Hz", "unit inherited from the inner port");
+    assert!(
+        freq.min.is_some() && freq.max.is_some() && freq.default.is_some(),
+        "range/default inherited: {freq:?}"
+    );
+    assert!(
+        b.outputs.iter().any(|p| p.name == "audio"),
+        "boundary outputs surface: {:?}",
+        b.outputs
+    );
+}
+
+#[test]
+fn describe_patch_applies_interface_overrides_but_never_the_type() {
+    // ADR-0034 §4: presentational overrides (label/unit/widget/range) decorate the inherited
+    // port; the Arg type (`kind`) stays the inner port's truth — there is no way to override it.
+    // The range override must narrow the engine-enforced [20..20000] (override law, review F1):
+    // an advertised range the engine wouldn't honor is a load error, so what `describe` prints
+    // here is guaranteed to be a subset of what the engine accepts.
+    let json = r#"{
+      "instrument": "shimmer",
+      "interface": {
+        "inputs": {
+          "brightness": { "target": "/filter.cutoff", "label": "Brightness", "unit": "hertz",
+                          "min": 200, "max": 8000, "widget": "knob" }
+        },
+        "outputs": { "audio": "/filter.audio" }
+      },
+      "nodes": [ { "type": "filter", "address": "/filter", "inputs": { "cutoff": 2000 } } ]
+    }"#;
+    let b = describe_patch(json, &Registry::builtin(), &FsResolver::new(".")).expect("describe");
+
+    let p = &b.inputs[0];
+    assert_eq!(p.name, "brightness");
+    assert_eq!(
+        p.kind, "signal",
+        "kind is the inner cutoff's, not overridable"
+    );
+    assert_eq!(p.label.as_deref(), Some("Brightness"));
+    assert_eq!(p.unit, "hertz", "unit override replaces the inner Hz");
+    assert_eq!(p.widget.as_deref(), Some("knob"));
+    assert_eq!((p.min, p.max), (Some(200.0), Some(8000.0)));
+    assert_eq!(
+        p.curve.as_deref(),
+        Some("exponential"),
+        "un-overridden fields stay inherited"
+    );
+    assert_eq!(
+        p.default,
+        Some(serde_json::json!(2000.0)),
+        "the default is the effective unwired value — the child's literal, not the descriptor"
+    );
+}
+
+#[test]
+fn describe_patch_refuses_a_range_the_engine_would_not_honor() {
+    // Review F1's poster child: presenting a Hz port as a 0..100 "%" knob. The engine would
+    // reinterpret those values as raw Hz and clamp to [20..20000] — the advertised contract is
+    // a lie, so the loader rejects it and `describe` surfaces the boundary-named error.
+    let json = r#"{
+      "instrument": "shimmer",
+      "interface": {
+        "inputs": {
+          "brightness": { "target": "/filter.cutoff", "unit": "%", "min": 0, "max": 100 }
+        }
+      },
+      "nodes": [ { "type": "filter", "address": "/filter" } ]
+    }"#;
+    let err = describe_patch(json, &Registry::builtin(), &FsResolver::new("."))
+        .expect_err("lying range must not describe");
+    assert!(err.contains("brightness"), "boundary-named: {err}");
+    assert!(err.contains("engine-enforced range"), "{err}");
+}
+
+#[test]
+fn describe_patch_flags_an_internally_driven_boundary_input() {
+    // Review F2: the child drives /filter.audio itself, so a host wire onto `in` is the fatal
+    // BoundaryInputDriven — the introspection view must state that instead of listing the port
+    // as wireable and letting the host discover it at build.
+    let json = r#"{
+      "instrument": "self-fed",
+      "interface": { "inputs": { "in": "/filter.audio", "tone": "/filter.cutoff" } },
+      "nodes": [
+        { "type": "oscillator", "address": "/osc" },
+        { "type": "filter", "address": "/filter", "inputs": { "audio": { "from": "/osc.audio" } } }
+      ]
+    }"#;
+    let b = describe_patch(json, &Registry::builtin(), &FsResolver::new(".")).expect("describe");
+    let port = |n: &str| b.inputs.iter().find(|p| p.name == n).expect(n);
+    assert!(
+        port("in").driven,
+        "internally driven Signal input is flagged"
+    );
+    assert!(!port("tone").driven, "unwired input stays wireable");
+}
+
+#[test]
+fn describe_patch_without_interface_yields_an_empty_boundary() {
+    let json = r#"{ "instrument": "plain",
+      "nodes": [ { "type": "oscillator", "address": "/osc" } ] }"#;
+    let b = describe_patch(json, &Registry::builtin(), &FsResolver::new(".")).expect("describe");
+    assert!(b.is_empty());
+}
+
+#[test]
+fn a_boundary_with_only_dark_ports_is_not_empty() {
+    // Review A: the empty-boundary banner once checked three of the four port collections, so a
+    // patch whose only entries went dark (unavailable nested child) printed "exposes nothing to
+    // wire" and then listed the dark outputs it just denied. `is_empty` owns the definition.
+    let json = r#"{
+      "instrument": "dark-out",
+      "resources": { "v": "missing-child.json" },
+      "interface": { "outputs": { "out": "/sub.audio" } },
+      "nodes": [ { "type": "subpatch", "address": "/sub", "patch": "v" } ]
+    }"#;
+    let b = describe_patch(json, &Registry::builtin(), &FsResolver::new(".")).expect("describe");
+    assert_eq!(b.dark_outputs, vec!["out".to_string()]);
+    assert!(!b.is_empty(), "dark-only boundary still exposes ports");
 }

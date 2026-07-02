@@ -5,10 +5,13 @@
 //! over [`Registry`] + JSON so they test through real load/plan code paths, not a process.
 
 use reuben_core::descriptor::{Curve, Descriptor, Port, PortType};
-use reuben_core::format::LoadError;
+use reuben_core::format::{DocValue, InstrumentDoc, LoadError};
 use reuben_core::plan::Plan;
 use reuben_core::resources::ResourceResolver;
-use reuben_core::{load_instrument, AudioConfig, Registry};
+use reuben_core::{
+    describe_boundary, load_instrument, load_instrument_doc, AudioConfig, BoundaryPortDesc,
+    Registry,
+};
 
 use serde::Serialize;
 
@@ -28,7 +31,7 @@ pub struct OperatorInfo {
 
 /// One port, flattened from its [`Port`] for agent grounding. Inputs and outputs share this shape;
 /// a plan-time [`Constant`](Descriptor::constants) (ADR-0035) is just an input with `constant: true`
-/// — an immutable port set in a patch's `config` block, never wired in `inputs`. Optional metadata
+/// — an immutable port set in a node's `config` block, never wired in `inputs`. Optional metadata
 /// appears only where the port's type carries it: `default`/`min`/`max`/`unit`/`curve` for a swept
 /// scalar, `default`/`min`/`max` for an integer, `default`/`variants` for an enum.
 #[derive(Debug, Serialize)]
@@ -37,7 +40,7 @@ pub struct PortInfo {
     /// The port's [`PortType`] as a word: `"signal"` (F32/Buffer), `"int"`, `"enum"`, `"message"`
     /// (Note), `"harmony"` (Harmony), `"vocab"`, or `"string"`.
     pub kind: String,
-    /// A plan-time `Constant` (ADR-0035): set in the patch `config` block, not wired in `inputs`.
+    /// A plan-time `Constant` (ADR-0035): set in the node's `config` block, not wired in `inputs`.
     /// Omitted (false) for an ordinary runtime input or any output.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub constant: bool,
@@ -57,6 +60,19 @@ pub struct PortInfo {
     /// The ordered enum choices (ADR-0030); empty for non-enum ports.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<String>,
+    /// Display-name override from an `interface` entry (ADR-0034 §4). Only a nested-instrument
+    /// boundary port carries one — operator ports have no label.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Widget hint override from an `interface` entry (ADR-0034 §4 / ADR-0018); boundary-only.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub widget: Option<String>,
+    /// Boundary-only: this input's inner **Signal** port is already driven inside the nested
+    /// instrument, so a host wire onto it is a fatal `BoundaryInputDriven` — the port is real (its
+    /// effective default still tells you what it holds) but not wireable. Omitted (false) for
+    /// wireable inputs, all outputs, and operator ports.
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    pub driven: bool,
 }
 
 fn port_kind(ty: &PortType) -> &'static str {
@@ -106,6 +122,9 @@ impl PortInfo {
             unit: String::new(),
             curve: None,
             variants: Vec::new(),
+            label: None,
+            widget: None,
+            driven: false,
         };
         // Scalar control (ADR-0030): a materialized `f32` input owns its range/curve/default in `meta`.
         if let Some(m) = &p.meta {
@@ -173,6 +192,88 @@ pub fn describe(registry: &Registry, which: Option<&str>) -> Result<Vec<Operator
     }
 }
 
+/// A nested instrument's synthesized boundary (ADR-0034 §4), described **as if it were an
+/// Operator**: one [`PortInfo`] per `interface` name, each inheriting the inner port's type and
+/// metadata and then applying the entry's presentational overrides (label/unit/widget/min/max).
+/// This is the introspection view of the boundary face a `subpatch` node presents (P6, #121).
+#[derive(Debug, Serialize)]
+pub struct PatchBoundary {
+    /// The document's `instrument` name.
+    pub instrument: String,
+    pub inputs: Vec<PortInfo>,
+    pub outputs: Vec<PortInfo>,
+    /// Declared boundary ports whose internal target went dark this load (an unavailable
+    /// nested child, ADR-0016/0034) — real ports the description can't type.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dark_inputs: Vec<String>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub dark_outputs: Vec<String>,
+    /// Non-fatal load warnings (unresolved resources etc.), advisory as in `validate`.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<String>,
+}
+
+impl PatchBoundary {
+    /// No boundary port of any kind — typed or dark, either direction. The instrument nests but
+    /// exposes nothing to wire. Kept here (not at a call site) so a fifth port collection
+    /// can't be forgotten by one of the views.
+    pub fn is_empty(&self) -> bool {
+        self.inputs.is_empty()
+            && self.outputs.is_empty()
+            && self.dark_inputs.is_empty()
+            && self.dark_outputs.is_empty()
+    }
+}
+
+impl PortInfo {
+    /// The CLI view of one core [`BoundaryPortDesc`] (ADR-0034 §4): the inherit+override merge
+    /// happened in `reuben-core` ([`describe_boundary`]); this only maps its typed fields onto
+    /// the flat agent-facing shape shared with operator ports.
+    fn from_boundary(b: BoundaryPortDesc) -> Self {
+        PortInfo {
+            name: b.name,
+            kind: port_kind(&b.ty).to_string(),
+            constant: false,
+            default: b.default.map(|v| match v {
+                DocValue::Number(n) => serde_json::json!(n),
+                DocValue::Symbol(s) => serde_json::json!(s),
+            }),
+            min: b.min,
+            max: b.max,
+            unit: b.unit,
+            curve: b.curve.map(|c| curve(c).to_string()),
+            variants: b.variants,
+            label: b.label,
+            widget: b.widget,
+            driven: b.driven,
+        }
+    }
+}
+
+/// Describe an instrument document's boundary the way a host instrument will see it (ADR-0034 §4):
+/// load it through the real engine path (parsed once), let core's [`describe_boundary`] do the
+/// inherit+override merge, and present each port as an operator-style [`PortInfo`]. The `Arg`
+/// type is never overridable, so `kind` is always the inner port's truth. An instrument with no
+/// `interface` yields empty port lists (it nests, but exposes nothing to wire).
+pub fn describe_patch(
+    json: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> Result<PatchBoundary, String> {
+    let doc = InstrumentDoc::from_json(json).map_err(|e| e.to_string())?;
+    let loaded = load_instrument_doc(&doc, registry, resolver).map_err(|e| e.to_string())?;
+    let b = describe_boundary(&doc, &loaded);
+
+    Ok(PatchBoundary {
+        instrument: doc.instrument,
+        inputs: b.inputs.into_iter().map(PortInfo::from_boundary).collect(),
+        outputs: b.outputs.into_iter().map(PortInfo::from_boundary).collect(),
+        dark_inputs: b.dark_inputs,
+        dark_outputs: b.dark_outputs,
+        warnings: loaded.warnings.iter().map(|w| w.to_string()).collect(),
+    })
+}
+
 /// One validation problem, with the offending node/port when the loader localized it.
 #[derive(Debug, Serialize)]
 pub struct Diag {
@@ -202,6 +303,8 @@ impl Diag {
             | LoadError::ConstantInInputs { node, .. }
             | LoadError::AmbiguousWire { node, .. }
             | LoadError::UnknownResource { node, .. } => (Some(node.clone()), None),
+            // A boundary-named problem: the offending "node" is the interface entry itself.
+            LoadError::InterfaceOverride { name, .. } => (None, Some(name.clone())),
             LoadError::TypeMismatch { .. }
             | LoadError::Json(_)
             | LoadError::CyclicResource { .. } => (None, None),
