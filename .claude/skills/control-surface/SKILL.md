@@ -28,9 +28,36 @@ over musical ranges), exactly as `good-button.json` does; a direct input is the 
 full-range alternative. `enum` inputs (filter `mode`, osc `waveform`) are settable too but aren't
 emitted as faders yet — they need a selector/toggle widget (out of scope today).
 
+### Nested instruments: the `interface` boundary *is* the surface
+
+A **nested** instrument (one with an `interface` block, ADR-0034 §4) already declares a curated
+boundary — external names → internal `(node, port)`, decorated with presentational overrides
+(label/unit/widget/min/max). That boundary needs no hand-authored `control` blocks: it *is* the
+curated set. The `boundary` subcommand emits **one fader per wireable interface input** straight
+from it.
+
+| Control | OSC address the widget sends to | Range / unit / default |
+|---|---|---|
+| **Boundary input** — a name in `interface.inputs` | the entry's inner target, `.`→`/` (e.g. `/osc.freq` → `/osc/freq`), reachable because internals stay addressable (ADR-0034 §3) | the merged boundary view from `describe --json`: inner-port metadata + the entry's overrides |
+
+Metadata comes from `reuben describe <instrument>.json --json` (core `describe_boundary` does the
+inherit+override merge — the script never re-implements it). Inputs the host can't drive from a
+fader are skipped: a **`driven`** input (its inner Signal port is already wired inside the patch,
+so an external wire is a fatal `BoundaryInputDriven`), an **`enum`**/message/harmony input (needs a
+non-fader widget), and a **bare audio** input (a `signal` with no range to scale into).
+
 ## Workflow
 
 Run from the repo root. The script is `gen_surface.py` in this skill's directory.
+
+**Shortcut for a nested instrument** (has an `interface` block): skip the infer/curate steps —
+the boundary is already the curated set. Just
+`python3 <skilldir>/gen_surface.py boundary instruments/<name>.json --host <host>`
+(runs `reuben describe --json` itself; pass `--reuben PATH` if the binary isn't under `target/`,
+or `--describe FILE` to feed pre-captured output). It writes `control-surfaces/<name>.tosc` with
+one fader per wireable boundary input. Then jump to step 5 (verify on device). Use the full
+`infer`→curate→`emit` flow below for a flat instrument (no `interface`) or when you want to hand-
+curate Good Buttons / toggles beyond the boundary.
 
 1. **Pick the instrument and host.** Ask which `instruments/*.json` and the host running reuben
    (default `localhost`, port `9000`).
@@ -119,7 +146,8 @@ the zlib/XML round-trip, and the structural match against `fixtures/REUBEN_REF.t
 | Thing | Action |
 |---|---|
 | `control` blocks in the instrument JSON | **write** (curated, confirmed, via Edit) |
-| `.tosc` surface file | **emit** via `gen_surface.py emit` |
+| `.tosc` surface file | **emit** via `gen_surface.py emit` (control blocks) or `boundary` (a nested instrument's `interface`) |
+| nested instrument's `interface` boundary | **read** via `describe --json`; never edit — a `boundary` surface authors no `control` blocks |
 | instrument graph / operators | **never edit** — surface metadata only |
 | two-way OSC feedback, grouped layouts | **out of scope** (ADR-0018 deferred) |
 

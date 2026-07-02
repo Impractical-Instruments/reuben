@@ -6,7 +6,7 @@ surface should have and labels them (writing `control` blocks into the instrumen
 script does the mechanical, repeatable parts — resolving each control's OSC address + value
 range from authoritative metadata, and emitting the gzip/zlib-packed XML TouchOSC reads.
 
-Two subcommands:
+Three subcommands:
 
   infer  INSTRUMENT [--schema P]
       Read-only. Print JSON describing every control *candidate* — externally-driven Good
@@ -17,6 +17,14 @@ Two subcommands:
   emit   INSTRUMENT [--schema P] [--host H] [--port N] [--out F] [--cols N]
       Read-only on the instrument. Resolve every node that carries a `control` block and write
       a `.tosc` surface targeting `host:port`.
+
+  boundary INSTRUMENT [--describe F] [--reuben P] [--host H] [--port N] [--out F] [--cols N]
+      Read-only on the instrument. For a *nested* instrument with a curated `interface`
+      (ADR-0034 §4), emit one fader per wireable boundary input straight from the interface —
+      no `control` blocks needed, the boundary *is* the curated set. Metadata (kind, effective
+      default, min/max, unit, curve, label, widget, `driven`) is read from `reuben describe
+      --json` (core `describe_boundary`, so this never re-implements the inherit+override merge);
+      the OSC address is the entry's inner target, which stays reachable (ADR-0034 §3).
 
 Metadata is read from the committed instrument schema (the per-type param ranges + unit/curve),
 which is kept in sync with the operator descriptors by the `committed_schema_is_in_sync` test — so this
@@ -32,6 +40,7 @@ OSC addressing (verified against the core router, ADR-0011):
 
 import argparse
 import json
+import subprocess
 import sys
 import uuid
 import zlib
@@ -254,6 +263,102 @@ def infer_candidates(instrument: dict, meta: dict) -> dict:
                 "default": pm["default"], "unit": pm["unit"], "curve": pm["curve"],
             })
     return {"good_buttons": good_buttons, "params": params}
+
+
+# --- interface boundary (nested instruments, ADR-0034 §4) -------------------------------
+
+# The boundary port kinds that map to a fader: a swept scalar (`signal`) or a ranged integer
+# (`int`). `reuben describe --json` reports the kind. Everything else — a bare audio buffer (a
+# `signal` with no range), an `enum` (needs a selector widget), a `message`/`harmony`/`arg`/
+# `string` — is not a fader and is skipped (matching the operator-param scope: enums out today).
+FADER_BOUNDARY_KINDS = {"signal", "int"}
+
+
+def _osc_from_target(target: str) -> str:
+    """The OSC address an `interface` entry's internal `/node.port` target is reachable at.
+    ADR-0034 §3 keeps a nested instrument's inner addresses OSC-reachable; the port separator
+    `.` becomes `/`, yielding exactly the `/<node>/<input>` shape a direct input already uses
+    (e.g. `/filter.cutoff` -> `/filter/cutoff`)."""
+    return target.replace(".", "/", 1)
+
+
+def _entry_target(entry) -> str | None:
+    """The internal target of one `interface.inputs` entry: a bare `"/node.port"` string, or the
+    `target` field of an override object (ADR-0034 §4). `None` if neither is present."""
+    if isinstance(entry, str):
+        return entry
+    if isinstance(entry, dict):
+        return entry.get("target")
+    return None
+
+
+def boundary_controls(interface_inputs: dict, boundary: dict) -> list:
+    """One fader control per wireable `interface` input, resolved from a `reuben describe --json`
+    boundary view (ADR-0034 §4). The boundary is already the curated presentational metadata, so
+    unlike `collect_controls` this authors no `control` blocks — the interface *is* the surface.
+
+    `interface_inputs` is the instrument's `interface.inputs` map (name -> target string or
+    override object), read straight from the document for each entry's inner target (the OSC
+    address; `describe` deliberately omits it). `boundary` is the parsed `describe --json` output,
+    the source of every port's kind/default/min/max/unit/curve/label/widget/`driven`.
+
+    Skips inputs a host cannot drive from a fader: a `driven` input (its inner Signal port is
+    already wired inside the patch, so an external wire is the fatal `BoundaryInputDriven`), a
+    non-fader kind, and a ranged-less `signal` (bare audio, no min/max to scale into)."""
+    controls = []
+    for port in boundary.get("inputs", []):
+        name = port.get("name")
+        if port.get("driven"):
+            continue
+        if port.get("kind") not in FADER_BOUNDARY_KINDS:
+            continue
+        if port.get("min") is None or port.get("max") is None:
+            continue  # a bare audio buffer (undriven, but unranged) — not a fader
+        target = _entry_target(interface_inputs.get(name))
+        if not target:
+            continue  # no way to address it (dark entry / malformed) — skip rather than misfire
+        lo, hi = float(port["min"]), float(port["max"])
+        default = float(port["default"]) if port.get("default") is not None else lo
+        controls.append({
+            "kind": "fader",
+            "label": port.get("label") or str(name).replace("_", " ").title(),
+            "widget": port.get("widget") or "fader",
+            "osc_addr": _osc_from_target(target),
+            "min": lo, "max": hi, "default": default,
+            "unit": port.get("unit", ""),
+        })
+    return controls
+
+
+def find_reuben(script: Path, override: str | None) -> str:
+    """The `reuben` binary to run `describe` with: an explicit `--reuben` path, else the built
+    binary under the repo's `target/{release,debug}`, else `reuben` on `PATH`."""
+    if override:
+        return override
+    root = script.resolve().parents[3]  # .claude/skills/control-surface/ -> repo root
+    for profile in ("release", "debug"):
+        cand = root / "target" / profile / "reuben"
+        if cand.exists():
+            return str(cand)
+    return "reuben"
+
+
+def run_describe(reuben_bin: str, inst_path: Path) -> dict:
+    """Invoke `reuben describe <instrument> --json` and parse its boundary view. Raises with the
+    binary's own stderr on failure so a bad patch reads the same as it would on the CLI."""
+    try:
+        proc = subprocess.run(
+            [reuben_bin, "describe", str(inst_path), "--json"],
+            capture_output=True, text=True,
+        )
+    except FileNotFoundError:
+        raise SystemExit(
+            f"could not run {reuben_bin!r} — build it (`cargo build --bin reuben`) or pass "
+            f"`--reuben PATH`, or feed a pre-captured `--describe FILE`."
+        )
+    if proc.returncode != 0:
+        raise SystemExit(f"`reuben describe {inst_path}` failed: {proc.stderr.strip()}")
+    return json.loads(proc.stdout)
 
 
 # --- .tosc emission ---------------------------------------------------------------------
@@ -537,6 +642,14 @@ def _read_json(p: Path) -> dict:
     return json.loads(p.read_text())
 
 
+def _surface_out(script: Path, inst_path: Path, override) -> Path:
+    """Where the `.tosc` lands: an explicit `--out`, else the repo's versioned, shareable
+    `control-surfaces/<instrument-stem>.tosc`."""
+    out = Path(override) if override else script.resolve().parents[3] / "control-surfaces" / f"{inst_path.stem}.tosc"
+    out.parent.mkdir(parents=True, exist_ok=True)
+    return out
+
+
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Generate a TouchOSC surface from a reuben instrument.")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -554,9 +667,38 @@ def main(argv=None):
     pe.add_argument("--out", default=None)
     pe.add_argument("--cols", type=int, default=DEFAULT_COLS)
 
+    pb = sub.add_parser("boundary",
+                        help="emit a .tosc from a nested instrument's `interface` boundary")
+    pb.add_argument("instrument")
+    pb.add_argument("--describe", default=None,
+                    help="pre-captured `reuben describe --json` output (skips running the binary)")
+    pb.add_argument("--reuben", default=None, help="path to the `reuben` binary")
+    pb.add_argument("--host", default="localhost")
+    pb.add_argument("--port", type=int, default=9000)
+    pb.add_argument("--out", default=None)
+    pb.add_argument("--cols", type=int, default=DEFAULT_COLS)
+
     args = ap.parse_args(argv)
     inst_path = Path(args.instrument)
     instrument = _read_json(inst_path)
+
+    if args.cmd == "boundary":
+        # The boundary is served, already merged, by core `describe_boundary` (ADR-0034 §4) — so
+        # this path reads `describe --json`, not the committed operator schema.
+        boundary = _read_json(Path(args.describe)) if args.describe \
+            else run_describe(find_reuben(script, args.reuben), inst_path)
+        iface = (instrument.get("interface") or {}).get("inputs", {})
+        controls = boundary_controls(iface, boundary)
+        if not controls:
+            sys.exit(f"{inst_path}: no wireable `interface` inputs to surface — needs a nested "
+                     f"instrument with a curated boundary (ADR-0034 §4).")
+        out = _surface_out(script, inst_path, args.out)
+        out.write_bytes(build_tosc(instrument, controls, args.cols))
+        print(f"wrote {out} — {len(controls)} control(s) from the interface boundary, "
+              f"send to {args.host}:{args.port}")
+        print("NOTE: in TouchOSC, set the OSC connection host/port to the machine running reuben.")
+        return 0
+
     schema_path = Path(args.schema) if args.schema else default_schema_path(script)
     meta = load_param_meta(_read_json(schema_path))
 
@@ -567,12 +709,7 @@ def main(argv=None):
     controls = collect_controls(instrument, meta)
     if not controls:
         sys.exit(f"{inst_path}: no `control` blocks found — run `infer` and add them first (ADR-0018).")
-    # Generated surfaces live in the repo's versioned `control-surfaces/` dir (shareable).
-    if args.out:
-        out = Path(args.out)
-    else:
-        out = script.resolve().parents[3] / "control-surfaces" / f"{inst_path.stem}.tosc"
-    out.parent.mkdir(parents=True, exist_ok=True)
+    out = _surface_out(script, inst_path, args.out)
     out.write_bytes(build_tosc(instrument, controls, args.cols))
     print(f"wrote {out} — {len(controls)} control(s), send to {args.host}:{args.port}")
     print("NOTE: in TouchOSC, set the OSC connection host/port to the machine running reuben.")
