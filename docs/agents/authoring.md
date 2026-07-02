@@ -380,7 +380,8 @@ exactly as on operator ports: `"tone": 2500` validates against the inner port th
 An `interface` entry is a bare `/node.port` string, or an **object form** carrying
 **presentational-metadata overrides** (ADR-0034 §4) — `label`, `unit`, `widget`, `min`/`max` —
 inherited from the inner port and overridable per-field. Overrides decorate how a boundary control
-*presents* (introspection, control-surface generation); they never change what type flows, and
+*presents* — introspection today; control-surface generation is the intended next consumer
+(issue #153). They never change what type flows, and
 there is deliberately no field to express a type override (`deny_unknown_fields` rejects one):
 
 ```json

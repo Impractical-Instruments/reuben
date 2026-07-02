@@ -83,8 +83,9 @@ pub enum InterfaceEntry {
 
 /// The object form of an [`InterfaceEntry`] (ADR-0034 §4): the internal target plus
 /// **presentational** metadata overriding what the boundary port inherits from the inner port —
-/// how a control *presents* (label, unit, range, widget), consumed by introspection (`describe`)
-/// and control-surface generation (ADR-0017/0018). The `Arg` **type is inherited and not
+/// how a control *presents* (label, unit, range, widget), consumed by introspection (`describe`);
+/// control-surface generation (ADR-0017/0018) is the intended next consumer (issue #153, not yet
+/// reading it). The `Arg` **type is inherited and not
 /// overridable** — there is deliberately no field to express one, and `deny_unknown_fields`
 /// rejects an attempt, so the boundary can never lie to the type-checker (§4/§5).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

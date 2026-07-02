@@ -108,7 +108,7 @@ voicer ─gate──────────────────────
   At build the child inlines under the node's address (`/space/filter`…, OSC-reachable) and the
   node dissolves — zero runtime cost. Boundary wires type-check against the **inner** ports the
   interface names; errors name the subpatch address + external name.
-- **Child side**: a nestable patch declares `interface { inputs, outputs }` mapping external
+- **Child side**: a nestable instrument declares `interface { inputs, outputs }` mapping external
   names to internal `/node.port` targets. An entry can be a bare string or an object adding
   **presentational overrides** — `label`/`unit`/`widget`/`min`/`max`, inherited from the inner
   port, per-field overridable; the **Arg type is never overridable** (no field exists for it):

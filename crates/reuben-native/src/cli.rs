@@ -31,7 +31,7 @@ pub struct OperatorInfo {
 
 /// One port, flattened from its [`Port`] for agent grounding. Inputs and outputs share this shape;
 /// a plan-time [`Constant`](Descriptor::constants) (ADR-0035) is just an input with `constant: true`
-/// — an immutable port set in a patch's `config` block, never wired in `inputs`. Optional metadata
+/// — an immutable port set in a node's `config` block, never wired in `inputs`. Optional metadata
 /// appears only where the port's type carries it: `default`/`min`/`max`/`unit`/`curve` for a swept
 /// scalar, `default`/`min`/`max` for an integer, `default`/`variants` for an enum.
 #[derive(Debug, Serialize)]
@@ -40,7 +40,7 @@ pub struct PortInfo {
     /// The port's [`PortType`] as a word: `"signal"` (F32/Buffer), `"int"`, `"enum"`, `"message"`
     /// (Note), `"harmony"` (Harmony), `"vocab"`, or `"string"`.
     pub kind: String,
-    /// A plan-time `Constant` (ADR-0035): set in the patch `config` block, not wired in `inputs`.
+    /// A plan-time `Constant` (ADR-0035): set in the node's `config` block, not wired in `inputs`.
     /// Omitted (false) for an ordinary runtime input or any output.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub constant: bool,
@@ -68,7 +68,7 @@ pub struct PortInfo {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub widget: Option<String>,
     /// Boundary-only: this input's inner **Signal** port is already driven inside the nested
-    /// patch, so a host wire onto it is a fatal `BoundaryInputDriven` — the port is real (its
+    /// instrument, so a host wire onto it is a fatal `BoundaryInputDriven` — the port is real (its
     /// effective default still tells you what it holds) but not wireable. Omitted (false) for
     /// wireable inputs, all outputs, and operator ports.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
@@ -198,7 +198,7 @@ pub fn describe(registry: &Registry, which: Option<&str>) -> Result<Vec<Operator
 /// This is the introspection view of the boundary face a `subpatch` node presents (P6, #121).
 #[derive(Debug, Serialize)]
 pub struct PatchBoundary {
-    /// The patch's `instrument` name.
+    /// The document's `instrument` name.
     pub instrument: String,
     pub inputs: Vec<PortInfo>,
     pub outputs: Vec<PortInfo>,
@@ -214,7 +214,7 @@ pub struct PatchBoundary {
 }
 
 impl PatchBoundary {
-    /// No boundary port of any kind — typed or dark, either direction. The patch nests but
+    /// No boundary port of any kind — typed or dark, either direction. The instrument nests but
     /// exposes nothing to wire. Kept here (not at a call site) so a fifth port collection
     /// can't be forgotten by one of the views.
     pub fn is_empty(&self) -> bool {
@@ -250,10 +250,10 @@ impl PortInfo {
     }
 }
 
-/// Describe an instrument document's boundary the way a host patch will see it (ADR-0034 §4):
+/// Describe an instrument document's boundary the way a host instrument will see it (ADR-0034 §4):
 /// load it through the real engine path (parsed once), let core's [`describe_boundary`] do the
 /// inherit+override merge, and present each port as an operator-style [`PortInfo`]. The `Arg`
-/// type is never overridable, so `kind` is always the inner port's truth. A patch with no
+/// type is never overridable, so `kind` is always the inner port's truth. An instrument with no
 /// `interface` yields empty port lists (it nests, but exposes nothing to wire).
 pub fn describe_patch(
     json: &str,

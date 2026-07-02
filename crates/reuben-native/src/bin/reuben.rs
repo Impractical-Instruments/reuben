@@ -10,8 +10,8 @@
 //!   ```
 //!
 //! - `reuben describe [op|patch.json] [--json]` — print the operator set, one operator's ports/
-//!   params/resource slots, or — given an instrument JSON path — that patch's `interface`
-//!   boundary as a host patch sees it (ADR-0034 §4: types inherited from the inner ports,
+//!   params/resource slots, or — given an instrument JSON path — that instrument's `interface`
+//!   boundary as a host sees it (ADR-0034 §4: types inherited from the inner ports,
 //!   presentational overrides applied). The introspection half of the Patcher skill (ADR-0020).
 //! - `reuben validate <path> [--json]` — load + plan an instrument with no audio device and
 //!   report structural/wiring errors. Exit 1 if invalid; warnings alone stay exit 0.
@@ -59,7 +59,7 @@ enum Command {
         osc_out: Option<String>,
     },
     /// Print the operator set, one operator's ports/params/resources, or — given an instrument
-    /// JSON path — that patch's `interface` boundary as a host sees it (ADR-0034).
+    /// JSON path — that instrument's `interface` boundary as a host sees it (ADR-0034).
     Describe {
         /// Operator type to describe, or an instrument JSON path (its nested boundary). A path
         /// is recognized by shape — ends in `.json` or contains a separator; a bare name is
@@ -174,7 +174,7 @@ fn print_ports(dir: &str, ps: &[reuben_native::cli::PortInfo]) {
 }
 
 /// Read an instrument file to its JSON text, paired with a resolver rooted at its directory —
-/// resource paths (samples, nested patches) resolve relative to the instrument file. The one
+/// resource paths (samples, nested instruments) resolve relative to the instrument file. The one
 /// loading preamble behind `describe`, `validate`, and `play`.
 fn read_instrument(path: &Path) -> Result<(String, FsResolver), String> {
     let json =
@@ -182,7 +182,7 @@ fn read_instrument(path: &Path) -> Result<(String, FsResolver), String> {
     Ok((json, FsResolver::for_instrument(path)))
 }
 
-/// `describe`'s argument is a patch **path** by shape alone: it ends in `.json` or contains a
+/// `describe`'s argument is an instrument **path** by shape alone: it ends in `.json` or contains a
 /// path separator. A bare name is always an operator, so a stray file named `filter` in the
 /// cwd cannot shadow `describe filter` — routing must not depend on directory contents.
 fn is_patch_path(arg: &str) -> bool {
@@ -191,7 +191,7 @@ fn is_patch_path(arg: &str) -> bool {
 }
 
 /// `describe`: dump the operator set, one operator, or — for an instrument JSON path — that
-/// patch's boundary as a host patch sees it (ADR-0034 §4), as human text or JSON.
+/// instrument's boundary as a host sees it (ADR-0034 §4), as human text or JSON.
 fn cmd_describe(op: Option<&str>, json: bool) -> ExitCode {
     // A path-shaped argument is an instrument: describe its boundary.
     if let Some(arg) = op {

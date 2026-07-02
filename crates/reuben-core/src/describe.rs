@@ -42,7 +42,7 @@ pub struct BoundaryPortDesc {
 }
 
 /// A loaded instrument's boundary (ADR-0034 §4), described as if it were an operator: one entry
-/// per `interface` name. A patch with no `interface` yields empty lists (it nests, but exposes
+/// per `interface` name. An instrument with no `interface` yields empty lists (it nests, but exposes
 /// nothing to wire).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct BoundaryDesc {
@@ -54,7 +54,7 @@ pub struct BoundaryDesc {
     pub dark_outputs: Vec<String>,
 }
 
-/// Describe `loaded`'s boundary the way a host patch will see it. `doc` must be the document
+/// Describe `loaded`'s boundary the way a host instrument will see it. `doc` must be the document
 /// `loaded` was built from — it carries the `interface` entries' presentational overrides, which
 /// the built [`Graph`](crate::graph::Graph) deliberately does not (they are document-level, like
 /// `control`). Overrides are load-validated ([ADR-0034 §4's override
