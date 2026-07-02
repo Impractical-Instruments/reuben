@@ -950,7 +950,7 @@ impl InstrumentDoc {
                         (&from_ty, &to_ty),
                         (PortType::F32, PortType::F32Buffer) | (PortType::F32Buffer, PortType::F32)
                     )
-                    || (matches!(to_ty, PortType::Arg) && crate::boundary::has_osc_form(from_ty));
+                    || (matches!(to_ty, PortType::Arg) && crate::boundary::has_osc_form(&from_ty));
                 if !compatible {
                     return Err(LoadError::TypeMismatch {
                         from: from_label,
