@@ -20,6 +20,7 @@
 //! ```
 
 mod argvalue;
+mod grammar;
 mod model;
 mod number_op;
 
@@ -30,6 +31,7 @@ use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::{braced, parenthesized, Error, Ident, Lit, LitStr, Token};
 
+use grammar::{parse_default_value, parse_float_or_sentinel};
 use model::{build, ContractModel};
 
 /// Emit an operator's index consts + `fn contract()` from its one declaration. See the crate docs.
@@ -415,21 +417,23 @@ fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
 
 /// `{ LO..=HI, default D [, "unit"] [, curve] }` — the meta on a `f32 { .. }` port. `unit` and
 /// `curve` are each optional (an omitted curve defaults to `linear`), unlike the all-required
-/// legacy `params` block.
+/// legacy `params` block. A range endpoint may be the `min`/`max` sentinel (the type-wide `±1e6`
+/// bound), and `default` may be `default max` / `default min` (the port's own range edge) — so the
+/// sentinel is never a raw literal (issue #127).
 fn parse_f32_meta(input: ParseStream) -> syn::Result<F32MetaAst> {
     let meta;
     braced!(meta in input);
 
-    let min = parse_signed_float(&meta)?;
+    let min = parse_float_or_sentinel(&meta)?;
     meta.parse::<Token![..=]>()?;
-    let max = parse_signed_float(&meta)?;
+    let max = parse_float_or_sentinel(&meta)?;
     meta.parse::<Token![,]>()?;
 
     let default_kw: Ident = meta.parse()?;
     if default_kw != "default" {
         return Err(Error::new(default_kw.span(), "expected `default <value>`"));
     }
-    let default = parse_signed_float(&meta)?;
+    let default = parse_default_value(&meta, min, max)?;
 
     let mut unit = String::new();
     let mut curve = "linear".to_string();
@@ -527,21 +531,6 @@ fn parse_resources(input: ParseStream) -> syn::Result<Vec<Ident>> {
         }
     }
     Ok(out)
-}
-
-/// A numeric literal with an optional leading `-` (param bounds and defaults can be negative).
-fn parse_signed_float(input: ParseStream) -> syn::Result<f32> {
-    let neg = input.peek(Token![-]);
-    if neg {
-        input.parse::<Token![-]>()?;
-    }
-    let lit: Lit = input.parse()?;
-    let val = match lit {
-        Lit::Float(f) => f.base10_parse::<f32>()?,
-        Lit::Int(i) => i.base10_parse::<f32>()?,
-        other => return Err(Error::new(other.span(), "expected a numeric literal")),
-    };
-    Ok(if neg { -val } else { val })
 }
 
 #[cfg(test)]
@@ -703,6 +692,30 @@ mod tests {
             render(r#"Sig { inputs: { audio: f32_buffer }, outputs: { audio: f32_buffer } }"#);
         assert!(out.contains("Port :: f32_buffer (\"audio\")"), "{out}");
         assert!(!out.contains("f32_buffer_meta"), "{out}");
+    }
+
+    // The `min`/`max` range sentinels resolve to the type-wide ±1e6 bound, and `default max` /
+    // `default min` to the port's own range edge — no raw literal in the contract (issue #127). A
+    // half-sentinel range (`0.0..=max`, m2s's `rate`) keeps its real lower bound.
+    #[test]
+    fn min_max_sentinels_resolve_to_type_wide_bounds() {
+        let out = render(
+            r#"Op {
+                inputs:  { in:   f32 { min..=max, default 0.0 },
+                           rate: f32 { 0.0..=max, default 1_000.0 },
+                           ceil: f32 { min..=max, default max },
+                           floor: f32 { min..=max, default min } },
+                outputs: { out: f32_buffer },
+            }"#,
+        );
+        // Type-wide bounds materialize as the shared ±1e6 sentinel.
+        assert!(out.contains("min : - 1000000f32"), "{out}");
+        assert!(out.contains("max : 1000000f32"), "{out}");
+        // `rate` keeps its real 0.0 floor next to the `max` sentinel ceiling.
+        assert!(out.contains("min : 0f32 , max : 1000000f32"), "{out}");
+        // `default max` parks at the ceiling, `default min` at the floor.
+        assert!(out.contains("default : 1000000f32"), "{out}");
+        assert!(out.contains("default : - 1000000f32"), "{out}");
     }
 
     // An unknown port type is rejected with a span, as a compile_error.

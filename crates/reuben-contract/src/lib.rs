@@ -18,6 +18,19 @@ use serde::Deserialize;
 
 pub mod naming;
 
+/// The type-wide default range for a `number` operand — the **one** definition of the `±1e6`
+/// sentinel both macros reference (issue #127). It is *descriptor metadata* (a control-surface fader
+/// span and a loader validation/clamp bound), **not** a numeric type bound: `f32::MAX` (`3.4e38`) is
+/// deliberately not used, because you can't sweep a knob across it, exponential curve-mapping over it
+/// is meaningless, and a `default` that must validate inside `[min, max]` near `f32::MAX` invites
+/// `inf`/`NaN`. `±1e6` is the "effectively unbounded but still finite and knob-able" value.
+///
+/// Both `operator_contract!` and `number_operator_contract!` expose this as the `min`/`max` grammar
+/// sentinel (in a range endpoint and in `default`), so no operator contract repeats the literal.
+pub const NUMBER_MIN: f32 = -1_000_000.0;
+/// The upper half of the type-wide default range. See [`NUMBER_MIN`].
+pub const NUMBER_MAX: f32 = 1_000_000.0;
+
 /// The `{ min, max, default, unit, curve }` block on a `f32` port (ADR-0030): its unwired
 /// default, range, and display metadata. Required on a `f32` port (a bare per-sample wire is
 /// `f32_buffer`, not `f32`).

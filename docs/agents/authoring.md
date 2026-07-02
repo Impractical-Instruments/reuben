@@ -214,6 +214,12 @@ impl Operator for Filter {
   buffer from `default`. Use for *swept* controls (`filter.cutoff`, `oscillator.freq`).
 - **`name: f32 { MIN..=MAX, default D, "unit", lin|exp }`** — a **held `f32` Value control** that owns
   its unwired default (`Port::f32`), read once per slice. `"unit"` and the curve are each optional.
+- **`min`/`max` range sentinels** — anywhere a range endpoint or `default` takes a literal, `min`/`max`
+  stand in for the type-wide `±1e6` bound (`reuben_contract::NUMBER_MIN`/`NUMBER_MAX`, the one
+  definition — issue #127): `{ min..=max, default 0.0 }` is an unbounded knob, `{ 0.0..=max, .. }`
+  pins a real floor with an unbounded ceiling. In `default`, `max`/`min` resolve to the port's **own**
+  declared range edge — `default max` parks an operand at its ceiling as a no-op (see `min`/`max`'s
+  `b`) without repeating the number.
 - **`name: enum(VocabType)`** — an enum (Value) input naming its shared *vocab* type (`Port::enumerated`
   off `VocabType::enum_meta`); the type's `#[default]` variant is the default.
 - **`name: note`** / **`name: harmony`** — `Note` (Event) / `Harmony` (Value) ports (`Port::note` /
