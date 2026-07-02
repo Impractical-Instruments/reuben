@@ -622,6 +622,18 @@ fn load_doc_guarded(
     ctx: &mut LoadCtx,
     referrer: Option<&str>,
 ) -> Result<Loaded, LoadError> {
+    // The version gate normally fires in `from_json`, but an embedded host can build an
+    // `InstrumentDoc` straight through the public `Deserialize` and hand it here (this is a
+    // public entry via `load_instrument_doc`), bypassing that boundary — so re-check before
+    // trusting the shape (ADR-0036 §4). Documents that came through `from_json` are already
+    // normalized to the current version, so this is a no-op for them.
+    if doc.format_version > FORMAT_VERSION {
+        return Err(LoadError::UnsupportedVersion {
+            found: doc.format_version,
+            supported: FORMAT_VERSION,
+        });
+    }
+
     // Build with the resolver threaded in (ADR-0034's resolution-ordering note): a `subpatch`
     // node's boundary face only exists once its child is resolved, and it must exist *during*
     // build pass 2 so the one wire type-checker covers boundary wires (§5) — so nested references
@@ -870,7 +882,7 @@ fn load_child_guarded(
 impl InstrumentDoc {
     /// Parse a document from JSON (no operator resolution yet).
     pub fn from_json(json: &str) -> Result<Self, LoadError> {
-        let doc: Self = serde_json::from_str(json).map_err(LoadError::Json)?;
+        let mut doc: Self = serde_json::from_str(json).map_err(LoadError::Json)?;
         // The version gate lives at the parse boundary so every load path — top-level,
         // voice, subpatch — refuses a too-new document before touching its shape
         // (ADR-0036). Older versions migrate here when a breaking change first ships.
@@ -880,6 +892,12 @@ impl InstrumentDoc {
                 supported: FORMAT_VERSION,
             });
         }
+        // Normalize to the current version. Today every accepted document is already v1;
+        // once migrations exist they run just above, transforming the shape to current, so
+        // stamping here is what makes "save always writes the current version" a mechanism,
+        // not a coincidence — a migrated doc never saves back under its old version number,
+        // and a stray `format_version: 0` (below the schema minimum) heals to 1.
+        doc.format_version = FORMAT_VERSION;
         Ok(doc)
     }
 
@@ -2069,6 +2087,35 @@ mod tests {
     }
 
     #[test]
+    fn parse_normalizes_the_version_so_save_never_understamps() {
+        // A document below the current version (here the schema-illegal `0`) parses — the gate
+        // only refuses the *future* — and normalizes to the current version, so it saves back
+        // stamped correctly rather than re-emitting the shape's old, now-wrong version number
+        // (ADR-0036 §4). Once migrations exist this is what keeps a migrated v1→v2 doc from
+        // saving as v1 on a v2 shape.
+        let doc = InstrumentDoc::from_json(r#"{"format_version":0,"instrument":"t","nodes":[]}"#)
+            .expect("a below-current version parses");
+        assert_eq!(doc.format_version, FORMAT_VERSION);
+        assert!(doc.to_json_pretty().contains("\"format_version\": 1"));
+    }
+
+    #[test]
+    fn a_gate_bypassing_doc_is_still_refused_at_load() {
+        // The natural embedded-host idiom deserializes straight to `InstrumentDoc` (bypassing
+        // `from_json`'s gate) then loads it — the load path re-checks so a too-new document
+        // can't sneak past (ADR-0036 §4).
+        let doc: InstrumentDoc =
+            serde_json::from_str(r#"{"format_version":99,"instrument":"t","nodes":[]}"#)
+                .expect("raw deserialize does not gate");
+        assert_eq!(doc.format_version, 99);
+        match load_instrument_doc(&doc, &reg(), &PatchResolver("")) {
+            Err(LoadError::UnsupportedVersion { found: 99, .. }) => {}
+            Err(other) => panic!("expected UnsupportedVersion, got {other:?}"),
+            Ok(_) => panic!("a gate-bypassing too-new document must be refused"),
+        }
+    }
+
+    #[test]
     fn newer_format_version_is_refused_with_a_clear_error() {
         let err = InstrumentDoc::from_json(r#"{"format_version":99,"instrument":"t","nodes":[]}"#)
             .expect_err("future version must not parse");
@@ -2092,28 +2139,14 @@ mod tests {
     fn newer_format_version_in_a_nested_child_is_fatal() {
         // The gate lives at the parse boundary, so a too-new *child* refuses too — a host
         // must not splice a shape it can't trust (structural, not availability: ADR-0034 §1).
-        struct FutureChild;
-        impl crate::resources::ResourceResolver for FutureChild {
-            fn resolve(
-                &self,
-                source: &str,
-            ) -> Result<crate::resources::SampleBuffer, crate::resources::ResolveError>
-            {
-                Err(crate::resources::ResolveError::NotFound(source.to_string()))
-            }
-            fn resolve_text(
-                &self,
-                _source: &str,
-            ) -> Result<String, crate::resources::ResolveError> {
-                Ok(r#"{"format_version":99,"instrument":"future","nodes":[]}"#.to_string())
-            }
-        }
+        let future_child =
+            PatchResolver(r#"{"format_version":99,"instrument":"future","nodes":[]}"#);
         const HOST: &str = r#"{
             "instrument": "host",
             "resources": { "f": "future.json" },
             "nodes": [ { "type": "subpatch", "address": "/f", "patch": "f" } ]
         }"#;
-        match load_instrument(HOST, &Registry::builtin(), &FutureChild) {
+        match load_instrument(HOST, &Registry::builtin(), &future_child) {
             Err(LoadError::UnsupportedVersion { found: 99, .. }) => {}
             Err(other) => panic!("expected UnsupportedVersion, got {other:?}"),
             Ok(_) => panic!("a too-new child must be fatal"),

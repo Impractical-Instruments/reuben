@@ -69,11 +69,25 @@ written before versioning is a valid v1. Saving always writes the current versio
 lives at the parse boundary (`InstrumentDoc::from_json`), so every load path — top-level,
 voice, subpatch — refuses a **newer** document (`LoadError::UnsupportedVersion`, naming both
 versions and the remedy) before touching its shape; a too-new *child* is fatal to the host
-load, like any structural error (ADR-0034 §1). Bump rules:
+load, like any structural error (ADR-0034 §1). `from_json` also **normalizes** the accepted
+document to the current version (older versions migrate here first), so "save writes the
+current version" is a mechanism, not a coincidence — a migrated document never saves back
+under its old number. The public `Deserialize` can build an `InstrumentDoc` around the gate,
+so the load path re-checks the version before trusting the shape. Bump rules:
 
 - **Additive** changes (a new optional field) never bump the version.
 - **Breaking** shape changes bump it and ship a parse-time migration, so older documents keep
   loading — only the future is unreadable.
+
+The format is **fail-closed** on unknown fields (`deny_unknown_fields` throughout), so a typo
+in a hand-authored document fails loudly at parse rather than being silently dropped. The
+consequence is deliberate: an **older** engine rejects a newer-but-still-v1 document that
+carries an additive field it doesn't know. Old engines are not expected to read newer
+documents — the engine and its instruments version together; upgrade the engine. "Additive
+changes never bump" means a document stays loadable by the **same-or-newer** engine without a
+version dance, and keeps the `format_version` gate reserved for *breaking* shape changes,
+where it gives a clear, actionable error instead of a shape misparse. Forward-reading old→new
+is a non-goal; strict typo detection is worth more than it to a hand-authored format.
 
 ### 5. No reference pinning
 
