@@ -355,6 +355,11 @@ pub enum LoadWarning {
         /// The internal reference it pointed at (`"/inner.freq"`).
         target: String,
     },
+    /// A `subpatch` node carries no `patch` reference at all (ADR-0034 §1) — an authoring
+    /// mistake, not an availability failure, but the node still dissolves dark so the
+    /// instrument stays playable (ADR-0016). Warned rather than silent: pre-inline this shape
+    /// failed loud, and silence through the nest would hide the typo.
+    NoPatchRef { node: String },
 }
 
 impl fmt::Display for LoadWarning {
@@ -375,6 +380,10 @@ impl fmt::Display for LoadWarning {
             LoadWarning::DarkInterfaceEntry { name, target } => write!(
                 f,
                 "interface entry {name:?} dropped: its target {target:?} is dark (unavailable nested patch)"
+            ),
+            LoadWarning::NoPatchRef { node } => write!(
+                f,
+                "node {node:?}: subpatch has no `patch` reference — nothing inlined (plays silence)"
             ),
         }
     }
@@ -795,9 +804,20 @@ impl InstrumentDoc {
             if !nested {
                 continue;
             }
-            let (Some(resolver), Some(id)) = (resolver, &n.patch) else {
-                // No resolver (this path resolves no resources) or no `patch` ref: nothing to
-                // inline — the reference dissolves dark.
+            let Some(id) = &n.patch else {
+                // No `patch` key at all: an authoring mistake, not an availability failure —
+                // but the node still dissolves dark (ADR-0016 keeps the instrument playable).
+                // Warn loudly: pre-inline this shape was a fatal UnknownPort, and pure silence
+                // would hide the typo.
+                warnings.push(LoadWarning::NoPatchRef {
+                    node: n.address.clone(),
+                });
+                dark.insert(n.address.clone());
+                continue;
+            };
+            let Some(resolver) = resolver else {
+                // No resolver — the plain [`load`]/[`build`] path resolves no resources: every
+                // nested reference dissolves dark by design, no warning.
                 dark.insert(n.address.clone());
                 continue;
             };
@@ -2287,6 +2307,25 @@ mod tests {
             loaded.graph.outputs.is_empty(),
             "child taps must not reach the parent master"
         );
+    }
+
+    #[test]
+    fn subpatch_without_patch_key_warns_and_dissolves_dark() {
+        // The author wrote a subpatch node but forgot the `patch` key entirely: an authoring
+        // mistake, not an availability failure. Pre-inline (P3) this failed loud; dissolving
+        // silently would turn the typo invisible — so it degrades dark like a missing child,
+        // but with a NoPatchRef warning naming the node.
+        let json = r#"{"instrument":"p","nodes":[
+            {"type":"subpatch","address":"/sub"},
+            {"type":"output","address":"/out","inputs":{"audio":{"from":"/sub.audio"}}}],
+            "outputs":[{"node":"/out","port":"audio"}]}"#;
+        let loaded = load_instrument(json, &reg(), &PatchResolver(VOICE_IFACE)).expect("non-fatal");
+        assert!(loaded.graph.find("/sub").is_none());
+        assert!(loaded.graph.connections.is_empty(), "dark wire dropped");
+        assert!(matches!(
+            loaded.warnings.as_slice(),
+            [LoadWarning::NoPatchRef { node }] if node == "/sub"
+        ));
     }
 
     #[test]
