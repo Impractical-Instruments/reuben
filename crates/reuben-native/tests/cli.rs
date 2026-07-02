@@ -216,12 +216,15 @@ fn describe_patch_surfaces_the_boundary_with_inherited_metadata() {
 fn describe_patch_applies_interface_overrides_but_never_the_type() {
     // ADR-0034 §4: presentational overrides (label/unit/widget/range) decorate the inherited
     // port; the Arg type (`kind`) stays the inner port's truth — there is no way to override it.
+    // The range override must narrow the engine-enforced [20..20000] (override law, review F1):
+    // an advertised range the engine wouldn't honor is a load error, so what `describe` prints
+    // here is guaranteed to be a subset of what the engine accepts.
     let json = r#"{
       "instrument": "shimmer",
       "interface": {
         "inputs": {
-          "brightness": { "target": "/filter.cutoff", "label": "Brightness", "unit": "%",
-                          "min": 0, "max": 100, "widget": "knob" }
+          "brightness": { "target": "/filter.cutoff", "label": "Brightness", "unit": "hertz",
+                          "min": 200, "max": 8000, "widget": "knob" }
         },
         "outputs": { "audio": "/filter.audio" }
       },
@@ -236,9 +239,9 @@ fn describe_patch_applies_interface_overrides_but_never_the_type() {
         "kind is the inner cutoff's, not overridable"
     );
     assert_eq!(p.label.as_deref(), Some("Brightness"));
-    assert_eq!(p.unit, "%", "unit override replaces the inner Hz");
+    assert_eq!(p.unit, "hertz", "unit override replaces the inner Hz");
     assert_eq!(p.widget.as_deref(), Some("knob"));
-    assert_eq!((p.min, p.max), (Some(0.0), Some(100.0)));
+    assert_eq!((p.min, p.max), (Some(200.0), Some(8000.0)));
     assert_eq!(
         p.curve.as_deref(),
         Some("exponential"),
@@ -249,6 +252,26 @@ fn describe_patch_applies_interface_overrides_but_never_the_type() {
         Some(serde_json::json!(2000.0)),
         "the default is the effective unwired value — the child's literal, not the descriptor"
     );
+}
+
+#[test]
+fn describe_patch_refuses_a_range_the_engine_would_not_honor() {
+    // Review F1's poster child: presenting a Hz port as a 0..100 "%" knob. The engine would
+    // reinterpret those values as raw Hz and clamp to [20..20000] — the advertised contract is
+    // a lie, so the loader rejects it and `describe` surfaces the boundary-named error.
+    let json = r#"{
+      "instrument": "shimmer",
+      "interface": {
+        "inputs": {
+          "brightness": { "target": "/filter.cutoff", "unit": "%", "min": 0, "max": 100 }
+        }
+      },
+      "nodes": [ { "type": "filter", "address": "/filter" } ]
+    }"#;
+    let err = describe_patch(json, &Registry::builtin(), &FsResolver::new("."))
+        .expect_err("lying range must not describe");
+    assert!(err.contains("brightness"), "boundary-named: {err}");
+    assert!(err.contains("engine-enforced range"), "{err}");
 }
 
 #[test]

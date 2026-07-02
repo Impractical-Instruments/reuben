@@ -317,6 +317,8 @@ impl Diag {
             | LoadError::ConstantInInputs { node, .. }
             | LoadError::AmbiguousWire { node, .. }
             | LoadError::UnknownResource { node, .. } => (Some(node.clone()), None),
+            // A boundary-named problem: the offending "node" is the interface entry itself.
+            LoadError::InterfaceOverride { name, .. } => (None, Some(name.clone())),
             LoadError::TypeMismatch { .. }
             | LoadError::Json(_)
             | LoadError::CyclicResource { .. } => (None, None),

@@ -323,6 +323,13 @@ pub enum LoadError {
     /// Loading it would recurse forever, so the cycle is a structural error, fatal like the
     /// other wiring errors.
     CyclicResource { source: String },
+    /// An `interface` entry's presentational range override lies about what the engine enforces
+    /// (ADR-0034 §4): a range override on a port with no numeric range, a bound outside the inner
+    /// port's engine-clamped range, an inverted/empty advertised range, or an effective default
+    /// outside the advertised range. `describe` publishes these values as the boundary contract
+    /// and no engine path reconciles them, so advertised must stay a subset of enforced — checked
+    /// here at load, named by the boundary port.
+    InterfaceOverride { name: String, reason: String },
     /// A wire lands on a boundary input whose inner **Signal** port the nested child already
     /// drives with its own internal wire (ADR-0034). The plan reads exactly one inbound edge per
     /// Signal input, so the outer wire would load clean and do nothing — a silently dead wire,
@@ -393,6 +400,9 @@ impl fmt::Display for LoadError {
                 "instrument resource {source:?} references itself (directly or transitively) — \
                  cyclic nesting cannot load"
             ),
+            LoadError::InterfaceOverride { name, reason } => {
+                write!(f, "interface entry {name:?}: {reason}")
+            }
             LoadError::BoundaryInputDriven { node, input } => write!(
                 f,
                 "boundary input {node:?}.{input:?} is already driven by a wire inside the nested \
@@ -1163,6 +1173,9 @@ impl InstrumentDoc {
                     go_dark(&mut interface.dark_inputs, name, reference);
                     continue;
                 };
+                if let Some(m) = entry.meta() {
+                    check_interface_override(name, m, &graph.nodes[key], idx, false)?;
+                }
                 interface.inputs.insert(name.clone(), (key, idx));
             }
             for (name, entry) in &iface.outputs {
@@ -1178,6 +1191,9 @@ impl InstrumentDoc {
                     go_dark(&mut interface.dark_outputs, name, reference);
                     continue;
                 };
+                if let Some(m) = entry.meta() {
+                    check_interface_override(name, m, &graph.nodes[key], idx, true)?;
+                }
                 interface.outputs.insert(name.clone(), (key, idx));
             }
             graph.interface = interface;
@@ -1591,6 +1607,98 @@ fn splice_subpatch(
         dark_inputs: child.interface.dark_inputs,
         dark_outputs: child.interface.dark_outputs,
     })
+}
+
+/// Widen an `f32` to `f64` without exposing binary-fraction noise: round-trip through the `f32`'s
+/// own shortest decimal so `0.2_f32` compares equal to a document's `0.2`, not `0.20000000298…`
+/// (the naive `as f64`).
+pub(crate) fn widen_f32(v: f32) -> f64 {
+    v.to_string().parse().unwrap_or(v as f64)
+}
+
+/// Enforce the presentational-override law (ADR-0034 §4) on one resolved `interface` entry:
+/// overrides decorate presentation but must stay **truthful**, because `describe` publishes them
+/// as the boundary contract and no engine path reconciles them with the range the engine actually
+/// clamps to. A `min`/`max` override must land on a port that has a numeric range, stay within
+/// the engine-enforced bounds, not invert, and keep the effective default (the child's own
+/// literal, else the descriptor default) inside the range it advertises. `label`/`unit`/`widget`
+/// are unconstrained — they rename, they cannot lie about a value the engine will accept.
+fn check_interface_override(
+    name: &str,
+    meta: &InterfaceMeta,
+    node: &crate::graph::Node,
+    port_idx: usize,
+    output: bool,
+) -> Result<(), LoadError> {
+    if meta.min.is_none() && meta.max.is_none() {
+        return Ok(());
+    }
+    let err = |reason: String| LoadError::InterfaceOverride {
+        name: name.to_string(),
+        reason,
+    };
+    let d = &node.descriptor;
+    let p = if output {
+        &d.outputs[port_idx]
+    } else {
+        &d.inputs[port_idx]
+    };
+    // The engine-enforced range: a swept scalar's F32Meta, or an integer port's I32 meta.
+    let (inner_min, inner_max, inner_default) = match (&p.meta, &p.ty) {
+        (Some(m), _) => (
+            widen_f32(m.min),
+            widen_f32(m.max),
+            Some(widen_f32(m.default)),
+        ),
+        (None, PortType::I32 { meta: Some(m) }) => {
+            (m.min as f64, m.max as f64, Some(m.default as f64))
+        }
+        _ => {
+            return Err(err(format!(
+                "range override on inner port {:?}, which has no numeric range",
+                p.name
+            )))
+        }
+    };
+    for (bound, value) in [("min", meta.min), ("max", meta.max)] {
+        if let Some(v) = value {
+            if v < inner_min || v > inner_max {
+                return Err(err(format!(
+                    "{bound} {v} is outside the engine-enforced range [{inner_min}..{inner_max}] \
+                     — the advertised range must be a subset of what the engine accepts"
+                )));
+            }
+        }
+    }
+    let lo = meta.min.unwrap_or(inner_min);
+    let hi = meta.max.unwrap_or(inner_max);
+    if lo >= hi {
+        return Err(err(format!(
+            "advertised range [{lo}..{hi}] is inverted or empty"
+        )));
+    }
+    // Inputs only: the effective default is what an unwired host actually gets — it must sit
+    // inside the range a generated control will span.
+    if !output {
+        let effective = node
+            .value_overrides
+            .iter()
+            .find(|(i, _)| *i == port_idx)
+            .and_then(|(_, a)| match a {
+                Arg::F32(v) => Some(widen_f32(*v)),
+                Arg::I32(v) => Some(*v as f64),
+                _ => None,
+            })
+            .or(inner_default);
+        if let Some(v) = effective {
+            if v < lo || v > hi {
+                return Err(err(format!(
+                    "effective default {v} is outside the advertised range [{lo}..{hi}]"
+                )));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Split a wire-ref string into `(node, Some(port))` (`"/osc.audio"`) or `(node, None)` (`"/osc"`,
@@ -2063,6 +2171,77 @@ mod tests {
                 "{body}: expected {expect:?} in error, got: {err}"
             );
         }
+    }
+
+    /// `load` unwrapped to its error (Graph is not Debug, so no `expect_err`).
+    fn load_err(json: &str, why: &str) -> LoadError {
+        match load(json, &reg()) {
+            Err(e) => e,
+            Ok(_) => panic!("{why}"),
+        }
+    }
+
+    // ADR-0034 §4 override law (review F1/F5/F6): a range override must stay a subset of the
+    // engine-enforced range, not invert, land on a numeric port, and keep the effective default
+    // inside the advertised range — `describe` publishes it as the boundary contract.
+    fn iface_freq(entry: &str, freq_literal: &str) -> String {
+        // Oscillator `freq`: engine-enforced [20..20000], descriptor default 440.
+        format!(
+            r#"{{"instrument":"t","interface":{{"inputs":{{"pitch":{entry}}}}},
+            "nodes":[{{"type":"oscillator","address":"/osc"{freq_literal}}}]}}"#
+        )
+    }
+
+    #[test]
+    fn interface_override_narrowing_the_engine_range_loads() {
+        let json = iface_freq(r#"{"target":"/osc.freq","min":50,"max":2000}"#, "");
+        load(&json, &reg()).expect("narrowing override with in-range default loads");
+    }
+
+    #[test]
+    fn interface_override_outside_the_engine_range_is_rejected() {
+        // Advertising 5 Hz when the engine clamps to 20 would let `describe` publish a range
+        // nothing enforces.
+        let json = iface_freq(r#"{"target":"/osc.freq","min":5,"max":2000}"#, "");
+        let err = load_err(&json, "widened range must not load");
+        assert!(
+            matches!(&err, LoadError::InterfaceOverride { name, .. } if name == "pitch"),
+            "boundary-named: {err}"
+        );
+        assert!(err.to_string().contains("engine-enforced range"), "{err}");
+    }
+
+    #[test]
+    fn interface_inverted_range_override_is_rejected() {
+        let json = iface_freq(r#"{"target":"/osc.freq","min":8000,"max":200}"#, "");
+        let err = load_err(&json, "inverted range must not load");
+        assert!(err.to_string().contains("inverted or empty"), "{err}");
+    }
+
+    #[test]
+    fn interface_override_leaving_the_effective_default_outside_is_rejected() {
+        // The child's own literal (3000) is what an unwired host gets — it must sit inside the
+        // advertised [50..2000], or a generated control starts out of range.
+        let json = iface_freq(
+            r#"{"target":"/osc.freq","min":50,"max":2000}"#,
+            r#","inputs":{"freq":3000.0}"#,
+        );
+        let err = load_err(&json, "out-of-range effective default must not load");
+        assert!(err.to_string().contains("effective default 3000"), "{err}");
+
+        // Same law with no literal: the descriptor default (440) must fit the advertised range.
+        let json = iface_freq(r#"{"target":"/osc.freq","min":500,"max":2000}"#, "");
+        let err = load_err(&json, "descriptor default outside range must not load");
+        assert!(err.to_string().contains("effective default 440"), "{err}");
+    }
+
+    #[test]
+    fn interface_range_override_on_a_rangeless_port_is_rejected() {
+        // `waveform` is an enum — no numeric range for a min/max to narrow. (Label/unit/widget
+        // stay legal anywhere: they rename, they can't lie about accepted values.)
+        let json = iface_freq(r#"{"target":"/osc.waveform","min":0}"#, "");
+        let err = load_err(&json, "range on rangeless port must not load");
+        assert!(err.to_string().contains("no numeric range"), "{err}");
     }
 
     #[test]
