@@ -894,46 +894,14 @@ impl InstrumentDoc {
                     continue;
                 };
                 // Destination: this node's input port, or — on a subpatch — its face input.
-                let (dst_key, dst_port, to_ty) = match faces.get(&n.address) {
-                    Some(face) => {
-                        let fp = face.input(name).ok_or_else(|| LoadError::UnknownPort {
-                            node: n.address.clone(),
-                            port: name.clone(),
-                        })?;
-                        (fp.node, fp.port, fp.ty.clone())
-                    }
-                    None => {
-                        let (dst_key, dst_desc) = lookup(&by_addr, &n.address)?;
-                        let dst_port = in_port(dst_desc, &n.address, name)?;
-                        (dst_key, dst_port, dst_desc.inputs[dst_port].ty.clone())
-                    }
-                };
+                let (dst_key, dst_port, to_ty) = resolve_input(&faces, &by_addr, &n.address, name)?;
                 // Source: a node's output port, or a subpatch's face output.
                 let (src_addr, src_port_name) = parse_wire(from);
                 if dark.contains(src_addr) {
                     continue; // wire from an unavailable nest: dropped (the input keeps its default)
                 }
-                let (src_key, src_port, from_ty, from_label) = match faces.get(src_addr) {
-                    Some(face) => {
-                        let fp = face.output(src_addr, from, src_port_name)?;
-                        (
-                            fp.node,
-                            fp.port,
-                            fp.ty.clone(),
-                            format!("{}.{}", src_addr, fp.name),
-                        )
-                    }
-                    None => {
-                        let (src_key, src_desc) = lookup(&by_addr, src_addr)?;
-                        let src_port = resolve_out_port(src_desc, &n.address, from, src_port_name)?;
-                        (
-                            src_key,
-                            src_port,
-                            src_desc.outputs[src_port].ty.clone(),
-                            format!("{}.{}", src_addr, src_desc.outputs[src_port].name),
-                        )
-                    }
-                };
+                let (src_key, src_port, from_ty, from_label) =
+                    resolve_output(&faces, &by_addr, src_addr, from, src_port_name)?;
 
                 // Equal types wire directly. `F32` and `Buffer` interconvert (ADR-0030): an `F32`
                 // source into a `Buffer` port ZOH-materializes, and a `Buffer` source into an `F32`
@@ -969,16 +937,8 @@ impl InstrumentDoc {
             if dark.contains(&o.node) {
                 continue;
             }
-            let (key, port) = match faces.get(&o.node) {
-                Some(face) => {
-                    let fp = face.output(&o.node, &o.port, Some(&o.port))?;
-                    (fp.node, fp.port)
-                }
-                None => {
-                    let (key, desc) = lookup(&by_addr, &o.node)?;
-                    (key, out_port(desc, o)?)
-                }
-            };
+            let (key, port, _, _) =
+                resolve_output(&faces, &by_addr, &o.node, &o.port, Some(&o.port))?;
             match o.channel {
                 Some(channel) => graph.tap_output_channel(key, port, channel),
                 None => graph.tap_output(key, port),
@@ -1005,21 +965,7 @@ impl InstrumentDoc {
                     node: src_addr.to_string(),
                     port: reference.clone(),
                 })?;
-                let (key, idx) = match faces.get(src_addr) {
-                    Some(face) => {
-                        let fp = face
-                            .input(port_name)
-                            .ok_or_else(|| LoadError::UnknownPort {
-                                node: src_addr.to_string(),
-                                port: port_name.to_string(),
-                            })?;
-                        (fp.node, fp.port)
-                    }
-                    None => {
-                        let (key, desc) = lookup(&by_addr, src_addr)?;
-                        (key, in_port(desc, src_addr, port_name)?)
-                    }
-                };
+                let (key, idx, _) = resolve_input(&faces, &by_addr, src_addr, port_name)?;
                 interface.inputs.insert(name.clone(), (key, idx));
             }
             for (name, reference) in &iface.outputs {
@@ -1027,16 +973,7 @@ impl InstrumentDoc {
                 if dark.contains(src_addr) {
                     continue;
                 }
-                let (key, idx) = match faces.get(src_addr) {
-                    Some(face) => {
-                        let fp = face.output(src_addr, reference, port)?;
-                        (fp.node, fp.port)
-                    }
-                    None => {
-                        let (key, desc) = lookup(&by_addr, src_addr)?;
-                        (key, resolve_out_port(desc, src_addr, reference, port)?)
-                    }
-                };
+                let (key, idx, _, _) = resolve_output(&faces, &by_addr, src_addr, reference, port)?;
                 interface.outputs.insert(name.clone(), (key, idx));
             }
             graph.interface = interface;
@@ -1225,30 +1162,83 @@ impl BoundaryFace {
         self.inputs.iter().find(|p| p.name == name)
     }
 
-    /// Resolve a face output like [`resolve_out_port`] does for a descriptor: the named port, or
-    /// — under the sole-output sugar (`port_name` = `None`) — the single output; ambiguous with
-    /// several. `node`/`reference` label the error in the author's terms.
+    /// Resolve a face output like [`resolve_out_port`] does for a descriptor — one shared
+    /// [`pick_output`] statement of the sole-output sugar. `node`/`reference` label the error
+    /// in the author's terms.
     fn output(
         &self,
         node: &str,
         reference: &str,
         port_name: Option<&str>,
     ) -> Result<&FacePort, LoadError> {
-        match port_name {
-            Some(p) => {
-                self.outputs
-                    .iter()
-                    .find(|o| o.name == p)
-                    .ok_or_else(|| LoadError::UnknownPort {
-                        node: node.to_string(),
-                        port: p.to_string(),
-                    })
-            }
-            None if self.outputs.len() == 1 => Ok(&self.outputs[0]),
-            None => Err(LoadError::AmbiguousWire {
-                node: node.to_string(),
-                reference: reference.to_string(),
-            }),
+        let idx = pick_output(
+            |p| self.outputs.iter().position(|o| o.name == p),
+            self.outputs.len(),
+            node,
+            reference,
+            port_name,
+        )?;
+        Ok(&self.outputs[idx])
+    }
+}
+
+/// Resolve a wire/tap/interface endpoint's **input** side to the inner `(node, port, type)`:
+/// through the subpatch's synthesized boundary face when `addr` names one (ADR-0034 §4), else
+/// through the document node's descriptor. The one statement of face-vs-descriptor input
+/// resolution — every pass that lands on an input goes through here, so errors are labeled the
+/// same way everywhere: the address and port name the author wrote, never a prefixed internal.
+fn resolve_input(
+    faces: &BTreeMap<String, BoundaryFace>,
+    by_addr: &BTreeMap<String, (crate::graph::NodeKey, Descriptor)>,
+    addr: &str,
+    name: &str,
+) -> Result<(crate::graph::NodeKey, usize, PortType), LoadError> {
+    match faces.get(addr) {
+        Some(face) => {
+            let fp = face.input(name).ok_or_else(|| LoadError::UnknownPort {
+                node: addr.to_string(),
+                port: name.to_string(),
+            })?;
+            Ok((fp.node, fp.port, fp.ty.clone()))
+        }
+        None => {
+            let (key, desc) = lookup(by_addr, addr)?;
+            let port = in_port(desc, addr, name)?;
+            Ok((key, port, desc.inputs[port].ty.clone()))
+        }
+    }
+}
+
+/// [`resolve_input`]'s output-side twin: face output or descriptor output (sole-output sugar in
+/// both arms via [`pick_output`]), plus the `"addr.port"` label wire-type errors print — the face
+/// arm labels with the **boundary** port name (ADR-0034 §4's "errors speak in boundary terms").
+/// Errors name `addr` — the node being resolved — in both arms.
+fn resolve_output(
+    faces: &BTreeMap<String, BoundaryFace>,
+    by_addr: &BTreeMap<String, (crate::graph::NodeKey, Descriptor)>,
+    addr: &str,
+    reference: &str,
+    port: Option<&str>,
+) -> Result<(crate::graph::NodeKey, usize, PortType, String), LoadError> {
+    match faces.get(addr) {
+        Some(face) => {
+            let fp = face.output(addr, reference, port)?;
+            Ok((
+                fp.node,
+                fp.port,
+                fp.ty.clone(),
+                format!("{}.{}", addr, fp.name),
+            ))
+        }
+        None => {
+            let (key, desc) = lookup(by_addr, addr)?;
+            let p = resolve_out_port(desc, addr, reference, port)?;
+            Ok((
+                key,
+                p,
+                desc.outputs[p].ty.clone(),
+                format!("{}.{}", addr, desc.outputs[p].name),
+            ))
         }
     }
 }
@@ -1335,35 +1325,46 @@ fn parse_wire(reference: &str) -> (&str, Option<&str>) {
 /// sugar — the source's single output (ambiguous, hence an error, if it has several).
 fn resolve_out_port(
     desc: &Descriptor,
-    dst_node: &str,
+    node: &str,
+    reference: &str,
+    port: Option<&str>,
+) -> Result<usize, LoadError> {
+    pick_output(
+        |p| desc.outputs.iter().position(|o| o.name == p),
+        desc.outputs.len(),
+        node,
+        reference,
+        port,
+    )
+}
+
+/// The sole-output sugar, stated once for descriptor and face outputs: a named port resolves by
+/// `find`; no name resolves to the single output when there is exactly one, is [`AmbiguousWire`]
+/// with several — and with **none** (a face may expose zero outputs) is [`UnknownPort`], because
+/// "source has multiple outputs" would be a lie. `node`/`reference` label errors in the author's
+/// terms.
+fn pick_output(
+    find: impl Fn(&str) -> Option<usize>,
+    count: usize,
+    node: &str,
     reference: &str,
     port: Option<&str>,
 ) -> Result<usize, LoadError> {
     match port {
-        Some(p) => desc
-            .outputs
-            .iter()
-            .position(|o| o.name == p)
-            .ok_or_else(|| LoadError::UnknownPort {
-                node: dst_node.to_string(),
-                port: p.to_string(),
-            }),
-        None if desc.outputs.len() == 1 => Ok(0),
+        Some(p) => find(p).ok_or_else(|| LoadError::UnknownPort {
+            node: node.to_string(),
+            port: p.to_string(),
+        }),
+        None if count == 1 => Ok(0),
+        None if count == 0 => Err(LoadError::UnknownPort {
+            node: node.to_string(),
+            port: reference.to_string(),
+        }),
         None => Err(LoadError::AmbiguousWire {
-            node: dst_node.to_string(),
+            node: node.to_string(),
             reference: reference.to_string(),
         }),
     }
-}
-
-fn out_port(desc: &Descriptor, r: &PortRef) -> Result<usize, LoadError> {
-    desc.outputs
-        .iter()
-        .position(|p| p.name == r.port)
-        .ok_or_else(|| LoadError::UnknownPort {
-            node: r.node.clone(),
-            port: r.port.clone(),
-        })
 }
 
 fn in_port(desc: &Descriptor, node: &str, name: &str) -> Result<usize, LoadError> {
@@ -1910,6 +1911,24 @@ mod tests {
             {"type":"output","address":"/out","inputs":{"audio":{"from":"/sub"}}}]}"#;
         let loaded = load_instrument(json, &reg(), &PatchResolver(MONO_CHILD)).expect("load");
         assert_eq!(loaded.graph.connections.len(), 1);
+    }
+
+    #[test]
+    fn sole_output_sugar_on_a_zero_output_face_is_unknown_port() {
+        // A face may expose no outputs at all — then `"/sub"` with no port is UnknownPort, not
+        // AmbiguousWire ("source has multiple outputs" would be a lie).
+        const INPUT_ONLY_CHILD: &str = r#"{
+            "instrument": "sink",
+            "interface": { "inputs": { "freq": "/osc.freq" } },
+            "nodes": [ { "type": "oscillator", "address": "/osc" } ]
+        }"#;
+        let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"v"},
+            {"type":"output","address":"/out","inputs":{"audio":{"from":"/sub"}}}]}"#;
+        assert!(matches!(
+            load_instrument(json, &reg(), &PatchResolver(INPUT_ONLY_CHILD)),
+            Err(LoadError::UnknownPort { node, .. }) if node == "/sub"
+        ));
     }
 
     #[test]
