@@ -234,10 +234,11 @@ fn cmd_describe_patch(path: &Path, json: bool) -> ExitCode {
         .map(Path::to_path_buf)
         .unwrap_or_else(|| PathBuf::from("."));
 
+    // Introspection never renders audio: stat samples for availability instead of decoding them.
     let boundary = match describe_patch(
         &instrument_json,
         &Registry::builtin(),
-        &FsResolver::new(base_dir),
+        &FsResolver::new(base_dir).stat_only(),
     ) {
         Ok(b) => b,
         Err(e) => {

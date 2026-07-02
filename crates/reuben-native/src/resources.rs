@@ -15,6 +15,11 @@ use reuben_core::resources::{ResolveError, ResourceResolver, SampleBuffer};
 /// Resolves resource sources as filesystem paths relative to a base directory, decoding WAV.
 pub struct FsResolver {
     base_dir: PathBuf,
+    /// Check sample availability (a stat) instead of decoding — for introspection paths like
+    /// `describe`, which only report port metadata and never touch audio, so eagerly decoding
+    /// every referenced WAV would be pure waste. Patch text still reads for real: nested
+    /// boundaries can't be described without building the nested graph.
+    stat_only: bool,
 }
 
 impl FsResolver {
@@ -22,6 +27,7 @@ impl FsResolver {
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
         Self {
             base_dir: base_dir.into(),
+            stat_only: false,
         }
     }
 
@@ -35,11 +41,27 @@ impl FsResolver {
             .unwrap_or_else(|| PathBuf::from("."));
         Self::new(base)
     }
+
+    /// Only stat samples instead of decoding them; missing files still report `NotFound`.
+    pub fn stat_only(mut self) -> Self {
+        self.stat_only = true;
+        self
+    }
 }
 
 impl ResourceResolver for FsResolver {
     fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
         let path = self.base_dir.join(source);
+        if self.stat_only {
+            return match std::fs::metadata(&path) {
+                Ok(m) if m.is_file() => Ok(SampleBuffer::empty()),
+                Ok(_) => Err(ResolveError::NotFound(format!(
+                    "{}: not a file",
+                    path.display()
+                ))),
+                Err(e) => Err(ResolveError::NotFound(format!("{}: {e}", path.display()))),
+            };
+        }
         decode_wav(&path)
     }
 
@@ -132,6 +154,25 @@ mod tests {
             resolver.resolve("does_not_exist_xyz.wav"),
             Err(ResolveError::NotFound(_))
         ));
+    }
+
+    /// Stat-only mode reports availability without decoding: a file whose bytes are not WAV at
+    /// all still resolves (to an empty buffer), while a missing file is still `NotFound`.
+    #[test]
+    fn stat_only_checks_availability_without_decoding() {
+        let dir = std::env::temp_dir();
+        let path = dir.join("reuben_test_stat_only.wav");
+        std::fs::write(&path, b"not a wav").unwrap();
+
+        let resolver = FsResolver::new(&dir).stat_only();
+        let buf = resolver.resolve("reuben_test_stat_only.wav").expect("stat");
+        assert_eq!(buf.frame_count(), 0);
+        assert!(matches!(
+            resolver.resolve("does_not_exist_xyz.wav"),
+            Err(ResolveError::NotFound(_))
+        ));
+
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]
