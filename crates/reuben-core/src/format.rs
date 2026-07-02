@@ -67,9 +67,12 @@ pub struct InterfaceDoc {
 }
 
 /// One `interface` entry: the internal target, optionally decorated with presentational
-/// overrides (ADR-0034 §4). Untagged: a JSON string is the bare target (`"wet": "/mix.wet"`);
-/// a JSON object is the [`Detailed`](Self::Detailed) form carrying per-field metadata overrides.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+/// overrides (ADR-0034 §4). A JSON string is the bare target (`"wet": "/mix.wet"`); a JSON
+/// object is the [`Detailed`](Self::Detailed) form carrying per-field metadata overrides.
+/// Deserialization dispatches on the JSON type by hand (not `#[serde(untagged)]`) so a
+/// malformed object keeps [`InterfaceMeta`]'s pointed field-level errors — "unknown field
+/// `lable`", "missing field `target`" — instead of collapsing into one opaque no-variant error.
+#[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum InterfaceEntry {
     /// The common bare form: just the internal `/node.port` wire-ref.
@@ -127,6 +130,32 @@ impl InterfaceEntry {
 impl From<String> for InterfaceEntry {
     fn from(target: String) -> Self {
         InterfaceEntry::Target(target)
+    }
+}
+
+impl<'de> Deserialize<'de> for InterfaceEntry {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct EntryVisitor;
+        impl<'de> serde::de::Visitor<'de> for EntryVisitor {
+            type Value = InterfaceEntry;
+
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a \"/node.port\" target string or an override object with `target`")
+            }
+
+            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Ok(InterfaceEntry::Target(v.to_string()))
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                map: A,
+            ) -> Result<Self::Value, A::Error> {
+                InterfaceMeta::deserialize(serde::de::value::MapAccessDeserializer::new(map))
+                    .map(InterfaceEntry::Detailed)
+            }
+        }
+        deserializer.deserialize_any(EntryVisitor)
     }
 }
 
@@ -1987,11 +2016,53 @@ mod tests {
     #[test]
     fn interface_entry_type_override_is_rejected() {
         // §4: the Arg type is inherited and NOT overridable — the object form has no field to
-        // express one, so an attempt fails to parse (never a silently ignored key).
+        // express one, so an attempt fails to parse (never a silently ignored key), and the
+        // error names the offending field.
         let json = r#"{"instrument":"t","interface":{
             "inputs":{"freq":{"target":"/osc.freq","type":"note"}}},
             "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
-        assert!(matches!(load(json, &reg()), Err(LoadError::Json(_))));
+        let err = match load(json, &reg()) {
+            Err(e @ LoadError::Json(_)) => e,
+            Err(e) => panic!("expected Json error, got {e:?}"),
+            Ok(_) => panic!("type override must not load"),
+        };
+        assert!(
+            err.to_string().contains("unknown field `type`"),
+            "error must name the rejected field: {err}"
+        );
+    }
+
+    #[test]
+    fn interface_entry_errors_name_the_offending_field() {
+        // Hand-dispatched entry parsing (string vs object) keeps InterfaceMeta's pointed serde
+        // errors; `#[serde(untagged)]` would collapse all of these into one opaque
+        // "did not match any variant" message.
+        let entry = |body: &str| {
+            format!(
+                r#"{{"instrument":"t","interface":{{"inputs":{{"freq":{body}}}}},
+                "nodes":[{{"type":"oscillator","address":"/osc"}}]}}"#
+            )
+        };
+        for (body, expect) in [
+            (
+                r#"{"target":"/osc.freq","lable":"Pitch"}"#,
+                "unknown field `lable`",
+            ),
+            (r#"{"label":"Pitch"}"#, "missing field `target`"),
+            (
+                r#"{"target":"/osc.freq","min":"200"}"#,
+                "invalid type: string",
+            ),
+            (r#"true"#, "target string or an override object"),
+        ] {
+            let err = load(&entry(body), &reg())
+                .err()
+                .unwrap_or_else(|| panic!("{body} must not load"));
+            assert!(
+                err.to_string().contains(expect),
+                "{body}: expected {expect:?} in error, got: {err}"
+            );
+        }
     }
 
     #[test]
