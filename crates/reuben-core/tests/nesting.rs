@@ -93,6 +93,48 @@ fn nested_renders_bit_identical_to_hand_flattened() {
 }
 
 #[test]
+fn osc_message_reaches_a_spliced_node_shadowed_by_an_ancestor_address() {
+    // `/a` is an ordinary parent node and the subpatch at `/a/sub` splices its child in as
+    // `/a/sub/osc` — ancestor-prefixed addresses P4 manufactures systematically. An inbound
+    // `/a/sub/osc/freq` prefix-matches `/a` first in plan order with no port match; routing must
+    // keep scanning and deliver to the deeper node, not drop the message.
+    // The wire from `/a` into the boundary pins the topo order: `/a` renders (and routes)
+    // before the spliced `/a/sub/osc`, so the shadowing ancestor is genuinely scanned first.
+    const NESTED: &str = r#"{
+        "instrument": "nested",
+        "resources": { "tone": "tone.json" },
+        "nodes": [
+            { "type": "oscillator", "address": "/a" },
+            { "type": "subpatch", "address": "/a/sub", "patch": "tone",
+              "inputs": { "freq": { "from": "/a.audio" } } }
+        ],
+        "outputs": [ { "node": "/a/sub", "port": "audio" } ]
+    }"#;
+    let cfg = AudioConfig::new(48_000.0, 256);
+    let reg = Registry::builtin();
+
+    let render_with = |msgs: &[reuben_core::message::Message]| {
+        let loaded = load_instrument(NESTED, &reg, &ToneResolver).expect("load");
+        let mut plan = Plan::instantiate(loaded.graph, cfg).expect("instantiate");
+        let mut r = Renderer::new(&plan);
+        let mut buf = vec![0.0f32; cfg.block_size];
+        r.render_block(&mut plan, msgs, &mut buf);
+        buf
+    };
+
+    let sine = render_with(&[]);
+    let saw = render_with(&[reuben_core::message::Message::new(
+        "/a/sub/osc/waveform",
+        reuben_core::message::Arg::Str("Saw".to_string()),
+        0,
+    )]);
+    assert_ne!(
+        sine, saw,
+        "the waveform message must reach /a/sub/osc through the /a prefix shadow"
+    );
+}
+
+#[test]
 fn boundary_wire_renders_bit_identical_to_direct_wire() {
     // The wire path through the face: parent node fed from `/a.audio` must be the same edge —
     // and the same audio — as wiring the inner oscillator directly.

@@ -537,8 +537,12 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
                         });
                     }
                 }
+                break; // delivered — a message targets exactly one port
             }
-            break; // a message targets at most one node
+            // The prefix matched but no port did: keep scanning. Node addresses may be
+            // ancestors of one another (`/fx` beside an inlined `/fx/verb/delay`, ADR-0034 §3
+            // manufactures these systematically), and `/fx/verb/delay/time` must reach the
+            // deeper node even though `/fx` prefix-matches it first in plan order.
         }
     }
 
