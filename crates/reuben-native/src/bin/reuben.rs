@@ -43,8 +43,18 @@ const OSC_BIND: &str = "0.0.0.0:9000";
 #[derive(Parser)]
 #[command(name = "reuben", about = "Play and author reuben instruments.")]
 struct Cli {
+    /// Instrument library root: a sample or nested-patch reference that does not exist next
+    /// to the file referencing it is looked up under this directory instead (sibling-first
+    /// search). Falls back to the `REUBEN_INSTRUMENT_ROOT` env var.
+    #[arg(long, global = true, value_name = "DIR")]
+    instrument_root: Option<PathBuf>,
     #[command(subcommand)]
     command: Command,
+}
+
+/// The effective library root: the `--instrument-root` flag, else `REUBEN_INSTRUMENT_ROOT`.
+fn instrument_root(flag: Option<PathBuf>) -> Option<PathBuf> {
+    flag.or_else(|| std::env::var_os("REUBEN_INSTRUMENT_ROOT").map(PathBuf::from))
 }
 
 #[derive(Subcommand)]
@@ -92,13 +102,15 @@ enum Command {
 }
 
 fn main() -> ExitCode {
-    match Cli::parse().command {
+    let cli = Cli::parse();
+    let root = instrument_root(cli.instrument_root);
+    match cli.command {
         Command::Play { path, osc_out } => {
-            play(path, osc_out);
+            play(path, osc_out, root);
             ExitCode::SUCCESS
         }
-        Command::Describe { op, json } => cmd_describe(op.as_deref(), json),
-        Command::Validate { path, json } => cmd_validate(&path, json),
+        Command::Describe { op, json } => cmd_describe(op.as_deref(), json, root),
+        Command::Validate { path, json } => cmd_validate(&path, json, root),
         Command::ScaffoldOperator {
             spec,
             core_root,
@@ -174,12 +186,17 @@ fn print_ports(dir: &str, ps: &[reuben_native::cli::PortInfo]) {
 }
 
 /// Read an instrument file to its JSON text, paired with a resolver rooted at its directory —
-/// resource paths (samples, nested instruments) resolve relative to the instrument file. The one
-/// loading preamble behind `describe`, `validate`, and `play`.
-fn read_instrument(path: &Path) -> Result<(String, FsResolver), String> {
+/// resource paths (samples, nested instruments) resolve relative to the referencing file,
+/// falling back to the library `root` when configured. The one loading preamble behind
+/// `describe`, `validate`, and `play`.
+fn read_instrument(path: &Path, root: Option<PathBuf>) -> Result<(String, FsResolver), String> {
     let json =
         std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
-    Ok((json, FsResolver::for_instrument(path)))
+    let mut resolver = FsResolver::for_instrument(path);
+    if let Some(root) = root {
+        resolver = resolver.with_root(root);
+    }
+    Ok((json, resolver))
 }
 
 /// `describe`'s argument is an instrument **path** by shape alone: it ends in `.json` or contains a
@@ -192,11 +209,11 @@ fn is_patch_path(arg: &str) -> bool {
 
 /// `describe`: dump the operator set, one operator, or — for an instrument JSON path — that
 /// instrument's boundary as a host sees it (ADR-0034 §4), as human text or JSON.
-fn cmd_describe(op: Option<&str>, json: bool) -> ExitCode {
+fn cmd_describe(op: Option<&str>, json: bool, root: Option<PathBuf>) -> ExitCode {
     // A path-shaped argument is an instrument: describe its boundary.
     if let Some(arg) = op {
         if is_patch_path(arg) {
-            return cmd_describe_patch(Path::new(arg), json);
+            return cmd_describe_patch(Path::new(arg), json, root);
         }
     }
 
@@ -229,8 +246,8 @@ fn cmd_describe(op: Option<&str>, json: bool) -> ExitCode {
 
 /// `describe <patch.json>`: the nested-instrument boundary view — the `interface` ports a host
 /// wires against, with metadata inherited from the inner ports and the entry overrides applied.
-fn cmd_describe_patch(path: &Path, json: bool) -> ExitCode {
-    let (instrument_json, resolver) = match read_instrument(path) {
+fn cmd_describe_patch(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCode {
+    let (instrument_json, resolver) = match read_instrument(path, root) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: {e}");
@@ -279,8 +296,8 @@ fn cmd_describe_patch(path: &Path, json: bool) -> ExitCode {
 
 /// `validate`: report whether an instrument loads + plans cleanly. Exit 1 only on hard errors;
 /// warnings (e.g. an unresolved sample) are advisory and keep exit 0.
-fn cmd_validate(path: &Path, json: bool) -> ExitCode {
-    let (instrument_json, resolver) = match read_instrument(path) {
+fn cmd_validate(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCode {
+    let (instrument_json, resolver) = match read_instrument(path, root) {
         Ok(r) => r,
         Err(e) => {
             eprintln!("error: {e}");
@@ -319,7 +336,7 @@ fn cmd_validate(path: &Path, json: bool) -> ExitCode {
 }
 
 /// `play`: the live audio path — load an instrument and render it, driven by incoming OSC.
-fn play(path: Option<PathBuf>, osc_out_target: Option<String>) {
+fn play(path: Option<PathBuf>, osc_out_target: Option<String>, root: Option<PathBuf>) {
     let (tx, rx) = mpsc::channel();
 
     // Log incoming/outgoing OSC only when asked: this runs on the I/O paths, and the stdout
@@ -399,11 +416,15 @@ fn play(path: Option<PathBuf>, osc_out_target: Option<String>) {
     let (instrument_json, resolver) = match path {
         Some(path) => {
             println!("instrument: {}", path.display());
-            read_instrument(&path).unwrap_or_else(|e| panic!("{e}"))
+            read_instrument(&path, root).unwrap_or_else(|e| panic!("{e}"))
         }
         None => {
             println!("instrument: <default> (pass a path to load your own)");
-            (DEFAULT_JSON.to_string(), FsResolver::new("."))
+            let resolver = match root {
+                Some(root) => FsResolver::new(".").with_root(root),
+                None => FsResolver::new("."),
+            };
+            (DEFAULT_JSON.to_string(), resolver)
         }
     };
 

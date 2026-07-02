@@ -159,7 +159,12 @@ build (zero runtime cost, internals still OSC-reachable under the node's address
 the child's `interface` as its ports — types inherited and type-checked by the ordinary wire check,
 presentational metadata (label/unit/widget/range) inherited and per-field overridable — and
 `reuben describe <patch.json>` introspects that boundary (`instruments/nested-space.json` is the
-worked example). The library/versioning story (#122) trails.
+worked example). The library resolution story (#122) has landed: a reference resolves relative
+to the document that names it (a library patch bundles its private sub-patches and samples next
+to itself), falling back to a configurable instrument root (`reuben --instrument-root <DIR>` or
+`REUBEN_INSTRUMENT_ROOT`); the resolver canonicalizes source identity, so two spellings of one
+path are one cycle-guard/dedup key, and an in-memory `MemoryResolver` serves embedded hosts and
+tests with no filesystem. Format versioning/migration trails.
 
 ## Going deeper
 

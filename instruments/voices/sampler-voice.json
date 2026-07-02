@@ -37,6 +37,6 @@
     }
   ],
   "resources": {
-    "blip": "samples/blip.wav"
+    "blip": "../samples/blip.wav"
   }
 }

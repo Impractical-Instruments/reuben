@@ -5,16 +5,24 @@
 //! that decodes **WAV** (`hound`; PCM int + float — tiny, deterministic, no codec
 //! licensing). Compressed formats and non-file sources drop in behind the same trait later.
 //!
-//! Paths in a resource table resolve **relative to the instrument file's directory** (a
-//! sample lives next to its rig); a configurable sample-root can come later.
+//! Paths in a resource table resolve **relative to the referencing document's directory** (a
+//! sample or sub-patch lives next to the file that names it), falling back to a configurable
+//! [library root](FsResolver::with_root) — so a project keeps local references working while
+//! shared patches come from one place. Identity is the resolver's job (ADR-0034 §1):
+//! [`FsResolver::canonical`] lexically normalizes the winning absolute path, so `a.json`,
+//! `./a.json`, and `x/../a.json` are one cycle-guard/dedup key. Symlinks are *not* chased —
+//! canonicalization never does IO beyond the sibling-vs-root existence probe.
 
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 use reuben_core::resources::{ResolveError, ResourceResolver, SampleBuffer};
 
 /// Resolves resource sources as filesystem paths relative to a base directory, decoding WAV.
 pub struct FsResolver {
     base_dir: PathBuf,
+    /// Library fallback (the configurable instrument-root): a source that does not exist
+    /// next to its referencing document is looked up here instead.
+    root: Option<PathBuf>,
     /// Check sample availability (a stat) instead of decoding — for introspection paths like
     /// `describe`, which only report port metadata and never touch audio, so eagerly decoding
     /// every referenced WAV would be pure waste. Patch text still reads for real: nested
@@ -24,11 +32,22 @@ pub struct FsResolver {
 
 impl FsResolver {
     /// A resolver rooted at `base_dir` (typically the instrument file's parent directory).
+    /// The base is made absolute up front so [`canonical`](ResourceResolver::canonical) ids
+    /// are absolute — one identity regardless of how the caller spelled the base.
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
         Self {
-            base_dir: base_dir.into(),
+            base_dir: absolute(base_dir.into()),
+            root: None,
             stat_only: false,
         }
+    }
+
+    /// Fall back to a library root: a source that does not exist relative to its referencing
+    /// document resolves against `root` instead (sibling-first search). Local project
+    /// references keep working; shared patches come from the root.
+    pub fn with_root(mut self, root: impl Into<PathBuf>) -> Self {
+        self.root = Some(absolute(root.into()));
+        self
     }
 
     /// A resolver rooted at the directory containing `instrument_path` (or `.` if it has
@@ -47,6 +66,30 @@ impl FsResolver {
         self.stat_only = true;
         self
     }
+}
+
+/// Make `p` absolute against the current directory and lexically normalize it (collapse
+/// `.`/`..` without touching the filesystem — symlinks are deliberately not chased).
+fn absolute(p: PathBuf) -> PathBuf {
+    normalize(&std::path::absolute(&p).unwrap_or(p))
+}
+
+/// Lexical normalization: fold `.` away and resolve `..` against the path built so far.
+/// Pure string work — no IO, so it holds for missing files and `stat_only` introspection.
+fn normalize(p: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for c in p.components() {
+        match c {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                if !out.pop() {
+                    out.push(c.as_os_str());
+                }
+            }
+            other => out.push(other.as_os_str()),
+        }
+    }
+    out
 }
 
 impl ResourceResolver for FsResolver {
@@ -71,6 +114,29 @@ impl ResourceResolver for FsResolver {
         let path = self.base_dir.join(source);
         std::fs::read_to_string(&path)
             .map_err(|e| ResolveError::NotFound(format!("{}: {e}", path.display())))
+    }
+
+    /// Canonical identity = the winning absolute path, lexically normalized. Sibling-first:
+    /// resolve relative to the referencing document's directory (`referrer` is that document's
+    /// canonical id; the top level uses `base_dir`); if nothing exists there and a
+    /// [library root](FsResolver::with_root) is configured, a hit under the root wins instead.
+    /// A miss in both canonicalizes to the sibling candidate, so the eventual `NotFound`
+    /// warning names the path the author most likely meant.
+    fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
+        let base = referrer
+            .and_then(|r| Path::new(r).parent())
+            .filter(|p| !p.as_os_str().is_empty())
+            .unwrap_or(&self.base_dir);
+        let sibling = normalize(&base.join(source));
+        if let Some(root) = &self.root {
+            if !sibling.is_file() {
+                let rooted = normalize(&root.join(source));
+                if rooted.is_file() {
+                    return rooted.display().to_string();
+                }
+            }
+        }
+        sibling.display().to_string()
     }
 }
 
@@ -173,6 +239,69 @@ mod tests {
         ));
 
         let _ = std::fs::remove_file(&path);
+    }
+
+    /// Canonicalization is lexical (ADR-0034 §1): spelling variants of one path are one
+    /// identity, with no filesystem probe needed when no library root is configured.
+    #[test]
+    fn canonical_normalizes_path_spellings() {
+        let resolver = FsResolver::new("/tmp/reuben_canon_base");
+        let plain = resolver.canonical("a.json", None);
+        assert_eq!(plain, resolver.canonical("./a.json", None));
+        assert_eq!(plain, resolver.canonical("x/../a.json", None));
+        assert!(
+            Path::new(&plain).is_absolute(),
+            "canonical ids are absolute"
+        );
+    }
+
+    /// A referrer (the canonical id of the referencing document) rebases resolution: a nested
+    /// patch's own references resolve next to *it*, not next to the top-level instrument.
+    #[test]
+    fn canonical_resolves_relative_to_the_referrer() {
+        let resolver = FsResolver::new("/tmp/reuben_canon_base");
+        let child = resolver.canonical("sub/pad.json", None);
+        let leaf = resolver.canonical("kick.wav", Some(&child));
+        // Platform-neutral (the base absolutizes to a drive root on Windows): resolving next
+        // to the referrer must land on the same identity as spelling the path from the top.
+        assert_eq!(leaf, resolver.canonical("sub/kick.wav", None));
+        assert_eq!(
+            resolver.canonical("../up.wav", Some(&child)),
+            resolver.canonical("up.wav", None),
+            "`..` climbs out of the referrer's directory"
+        );
+    }
+
+    /// Sibling-first search: the library root only wins when nothing exists next to the
+    /// referencing document; a local file shadows the library copy.
+    #[test]
+    fn canonical_falls_back_to_the_library_root() {
+        let base = std::env::temp_dir().join("reuben_root_test/proj");
+        let root = std::env::temp_dir().join("reuben_root_test/lib");
+        std::fs::create_dir_all(&base).unwrap();
+        std::fs::create_dir_all(&root).unwrap();
+        std::fs::write(root.join("shared.json"), "{}").unwrap();
+        std::fs::write(base.join("local.json"), "{}").unwrap();
+        std::fs::write(root.join("local.json"), "{}").unwrap();
+
+        let resolver = FsResolver::new(&base).with_root(&root);
+        // Only in the root: the root wins.
+        assert_eq!(
+            Path::new(&resolver.canonical("shared.json", None)),
+            root.join("shared.json")
+        );
+        // In both: the sibling wins.
+        assert_eq!(
+            Path::new(&resolver.canonical("local.json", None)),
+            base.join("local.json")
+        );
+        // In neither: canonicalizes to the sibling candidate (what NotFound will name).
+        assert_eq!(
+            Path::new(&resolver.canonical("missing.json", None)),
+            base.join("missing.json")
+        );
+
+        let _ = std::fs::remove_dir_all(std::env::temp_dir().join("reuben_root_test"));
     }
 
     #[test]

@@ -206,6 +206,21 @@ pub trait ResourceResolver {
     /// Decode `source` (e.g. a path from the instrument's `resources` table) to a buffer.
     fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError>;
 
+    /// The canonical identity of `source` — the key the loader uses for the cycle guard and the
+    /// per-load dedup caches (ADR-0034 §1: two spellings of one source must be one identity, and
+    /// that judgment belongs to the resolver seam, not the loader). `referrer` is the canonical
+    /// id of the document the reference appears in (`None` for the top-level document), so a
+    /// nested patch's own references resolve relative to *its* location, not the root's.
+    ///
+    /// The loader canonicalizes every source before calling [`resolve`](Self::resolve) /
+    /// [`resolve_text`](Self::resolve_text), so implementations receive their own canonical
+    /// form back. Defaults to identity (sources are exact keys — right for in-memory and test
+    /// resolvers); the filesystem resolver normalizes paths here.
+    fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
+        let _ = referrer;
+        source.to_string()
+    }
+
     /// Read `source` as **text** — the seam for the instrument-kind resource (ADR-0032 §2): a voice
     /// patch path resolves to its JSON, which the core then builds into a sub-`Graph`
     /// ([`load_instrument`](crate::format::load_instrument) recursively, so nested `sample`
@@ -213,6 +228,53 @@ pub trait ResourceResolver {
     /// not implement it; the filesystem resolver overrides it to read the file.
     fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
         Err(ResolveError::NotFound(source.to_string()))
+    }
+}
+
+/// An in-memory [`ResourceResolver`]: sources are exact map keys, nothing touches a
+/// filesystem. The non-file side of the library seam (ADR-0016) made concrete — an embedded
+/// or WASM host registers its patches and decoded samples programmatically and loads
+/// instruments with no IO; tests get a self-contained resolver without temp files.
+///
+/// Identity is the literal key ([`ResourceResolver::canonical`] stays the identity default),
+/// so a nested patch's references name library keys, not relative paths.
+#[derive(Debug, Clone, Default)]
+pub struct MemoryResolver {
+    texts: BTreeMap<String, String>,
+    samples: BTreeMap<String, SampleBuffer>,
+}
+
+impl MemoryResolver {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Register instrument JSON (or any text resource) under `key`.
+    pub fn insert_text(&mut self, key: impl Into<String>, text: impl Into<String>) -> &mut Self {
+        self.texts.insert(key.into(), text.into());
+        self
+    }
+
+    /// Register a decoded sample under `key`.
+    pub fn insert_sample(&mut self, key: impl Into<String>, buffer: SampleBuffer) -> &mut Self {
+        self.samples.insert(key.into(), buffer);
+        self
+    }
+}
+
+impl ResourceResolver for MemoryResolver {
+    fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        self.samples
+            .get(source)
+            .cloned()
+            .ok_or_else(|| ResolveError::NotFound(source.to_string()))
+    }
+
+    fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
+        self.texts
+            .get(source)
+            .cloned()
+            .ok_or_else(|| ResolveError::NotFound(source.to_string()))
     }
 }
 

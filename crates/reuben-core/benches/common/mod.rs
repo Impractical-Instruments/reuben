@@ -161,6 +161,29 @@ impl ResourceResolver for InstrumentsDir {
         let path = format!("{}/../../instruments/{source}", env!("CARGO_MANIFEST_DIR"));
         std::fs::read_to_string(&path).map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))
     }
+
+    /// Per-document rebase, like `reuben-native`'s `FsResolver`: identity keys stay
+    /// `instruments/`-relative, and a nested patch's own references (e.g. a voice's
+    /// `../samples/blip.wav`) resolve next to *it*, lexically normalized.
+    fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
+        let mut out: Vec<&str> = referrer
+            .map(|r| {
+                let mut parts: Vec<&str> = r.split('/').collect();
+                parts.pop(); // drop the referrer's file name, keep its directory
+                parts
+            })
+            .unwrap_or_default();
+        for part in source.split('/') {
+            match part {
+                "" | "." => {}
+                ".." => {
+                    out.pop();
+                }
+                p => out.push(p),
+            }
+        }
+        out.join("/")
+    }
 }
 
 /// Load `name`, instantiate its plan, prime the renderer, and precompute the
