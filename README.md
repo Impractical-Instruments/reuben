@@ -164,7 +164,9 @@ to the document that names it (a library patch bundles its private sub-patches a
 to itself), falling back to a configurable instrument root (`reuben --instrument-root <DIR>` or
 `REUBEN_INSTRUMENT_ROOT`); the resolver canonicalizes source identity, so two spellings of one
 path are one cycle-guard/dedup key, and an in-memory `MemoryResolver` serves embedded hosts and
-tests with no filesystem. Format versioning/migration trails.
+tests with no filesystem. Documents carry a `format_version` (absent means 1; a newer-than-engine
+document refuses to load with a clear message) and the document is the save source of truth —
+`from_graph` is the explicit flatten/export path ([ADR-0036](docs/adr/0036-instrument-library-and-format-versioning.md)).
 
 ## Going deeper
 

@@ -5734,6 +5734,11 @@
     "doc": {
       "type": "string"
     },
+    "format_version": {
+      "description": "Document format version (ADR-0036). Absent means 1; saving writes the current version. A version newer than the engine understands refuses to load.",
+      "minimum": 1,
+      "type": "integer"
+    },
     "instrument": {
       "type": "string"
     },

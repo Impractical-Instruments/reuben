@@ -360,6 +360,10 @@ live next to *it*, not next to the top-level instrument), falling back to a conf
 root (`reuben --instrument-root <DIR>` or `REUBEN_INSTRUMENT_ROOT`); the resolver canonicalizes
 identity, so `a.json` and `./a.json` are one cycle-guard/dedup key. For embedded hosts and tests,
 core's in-memory `MemoryResolver` serves patches and samples by exact key with no filesystem.
+A document may declare a `format_version` ([ADR-0036](../adr/0036-instrument-library-and-format-versioning.md));
+absent means 1, and a version newer than the engine understands refuses to load. To **save**, serialize
+the `InstrumentDoc` (nested references survive); `InstrumentDoc::from_graph` is the explicit
+flatten/export path — a built graph's spliced subpatches appear as their inlined nodes.
 
 A Voicer node references a **voice sub-patch** the same way, by a **`voice`** field naming a standalone
 instrument JSON ([ADR-0032](../adr/0032-voicer-hosts-voice-subpatches.md)); the loader resolves it
