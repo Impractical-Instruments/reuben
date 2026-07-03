@@ -31,6 +31,7 @@ pub mod boundary;
 pub mod config;
 pub mod describe;
 pub mod descriptor;
+pub mod dsp;
 pub mod format;
 pub mod graph;
 pub mod message;

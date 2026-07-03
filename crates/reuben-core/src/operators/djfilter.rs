@@ -30,6 +30,7 @@
 //! - output 0: `audio` (`Float`) — filtered output.
 
 use crate::descriptor::Descriptor;
+use crate::dsp::svf::{Svf, SvfCoeffs};
 use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
@@ -46,30 +47,14 @@ crate::operator_contract!(Djfilter {
 
 #[derive(Default)]
 pub struct Djfilter {
-    /// SVF integrator state 1 (continuous across calls / block slices).
-    ic1eq: f32,
-    /// SVF integrator state 2 (continuous across calls / block slices).
-    ic2eq: f32,
+    /// Shared SVF core (`dsp::svf`), continuous across calls / block slices. `process`
+    /// copies it to a local, ticks that, and writes it back once per block (#169).
+    svf: Svf,
 }
 
 impl Djfilter {
     pub fn new() -> Self {
         Self::default()
-    }
-
-    /// One Cytomic SVF sample step against precomputed coefficients. Returns the low-pass and
-    /// high-pass taps together (band-pass is `v1`); the caller picks which to emit. Advances the
-    /// integrator state. `k` is the damping (`1/Q`) the high-pass tap needs.
-    #[inline]
-    fn svf_step(&mut self, x: f32, k: f32, a1: f32, a2: f32, a3: f32) -> (f32, f32) {
-        let v3 = x - self.ic2eq;
-        let v1 = a1 * self.ic1eq + a2 * v3;
-        let v2 = self.ic2eq + a2 * self.ic1eq + a3 * v3;
-        self.ic1eq = 2.0 * v1 - self.ic1eq;
-        self.ic2eq = 2.0 * v2 - self.ic2eq;
-        let lp = v2;
-        let hp = x - k * v1 - v2;
-        (lp, hp)
     }
 }
 
@@ -91,20 +76,6 @@ fn target(position: f32, lp_start: f32, lp_end: f32, hp_start: f32, hp_end: f32)
     } else {
         (false, geom(lp_start, lp_end, (-position).min(1.0)))
     }
-}
-
-/// TPT / zero-delay-feedback SVF coefficients for a cutoff (Hz) and resonance (0..1). Cutoff is
-/// clamped to a safe range so `tan` never blows up; resonance maps to damping `k = 1/Q` (k = 2 ⇒
-/// no resonance, smaller k ⇒ more), clamped away from 0 for stability. Returns `(k, a1, a2, a3)`.
-#[inline]
-fn coeffs(cutoff: f32, resonance: f32, sample_rate: f32) -> (f32, f32, f32, f32) {
-    let cutoff = cutoff.clamp(20.0, 0.45 * sample_rate);
-    let k = (2.0 - 1.9 * resonance.clamp(0.0, 1.0)).max(0.1);
-    let g = (std::f32::consts::PI * cutoff / sample_rate).tan();
-    let a1 = 1.0 / (1.0 + g * (g + k));
-    let a2 = g * a1;
-    let a3 = g * a2;
-    (k, a1, a2, a3)
 }
 
 impl Operator for Djfilter {
@@ -133,7 +104,8 @@ impl Operator for Djfilter {
         // survived across `process` calls would go stale on any voicing change at an unchanged knob.
         // The `NaN` seed (≠ anything) forces a compute on the first sample of every block.
         let mut last_pos = f32::NAN;
-        let (mut use_hp, mut k, mut a1, mut a2, mut a3) = (false, 0.0, 0.0, 0.0, 0.0);
+        let mut use_hp = false;
+        let mut c = SvfCoeffs::default();
         // Resolve the per-sample buffers once, outside the loop: a per-iteration `io.read`/
         // `io.write` re-derives the slice from `io`'s input/output tables every sample (a table
         // index + `Option` unwrap per access) — the ADR-0037 handle layer stopped LLVM hoisting
@@ -141,19 +113,24 @@ impl Operator for Djfilter {
         let position = io.read(IN_POSITION);
         let audio = io.read(IN_AUDIO);
         let out = io.write(OUT_AUDIO);
+        // Block-local copy of the SVF state, stored back once after the loop: ticking
+        // `self.svf` directly spills the two integrators to memory every sample; the local
+        // stays in registers, leaving ~1 data-write per sample — the output store (#169).
+        let mut svf = self.svf;
         for i in 0..n {
             let pos = position[i];
 
             if pos != last_pos {
                 let (uh, cutoff) = target(pos, lp_start, lp_end, hp_start, hp_end);
-                (k, a1, a2, a3) = coeffs(cutoff, resonance, sample_rate);
+                c = SvfCoeffs::new(cutoff, resonance, sample_rate);
                 use_hp = uh;
                 last_pos = pos;
             }
 
-            let (lp, hp) = self.svf_step(audio[i], k, a1, a2, a3);
-            out[i] = if use_hp { hp } else { lp };
+            let taps = svf.tick(audio[i], c);
+            out[i] = if use_hp { taps.hp } else { taps.lp };
         }
+        self.svf = svf;
     }
 
     fn spawn(&self) -> Box<dyn Operator> {
@@ -336,19 +313,9 @@ mod tests {
         }
     }
 
-    #[test]
-    fn high_resonance_stays_bounded() {
-        let n = 8192;
-        // Drive near the resonant frequency at full CCW with maximum resonance.
-        let mut voicing = default_voicing();
-        voicing[0] = 1.0; // resonance
-        let input = sine(200.0, n);
-        let out = render(&input, -1.0, voicing);
-        for (i, &s) in out.iter().enumerate() {
-            assert!(s.is_finite(), "sample {i} not finite: {s}");
-            assert!(s.abs() < 50.0, "sample {i} unbounded: {s}");
-        }
-    }
+    // Raw SVF behavior (attenuation slopes, DC, resonance boundedness) is covered on the
+    // shared core in `dsp::svf`'s tests; the tests here cover what the *operator* adds —
+    // the knob→mode/cutoff mapping, port semantics, and state across blocks.
 
     #[test]
     fn state_continuous_across_block_slices() {
