@@ -132,7 +132,7 @@ impl Operator for SamplePlayer {
         // Resolve the output buffer once (see filter.rs): index a flat local rather than
         // re-deriving the slice from `io` per sample.
         let out = io.write(OUT_AUDIO);
-        for i in 0..n {
+        for out_sample in out.iter_mut().take(n) {
             let s = if playing {
                 let base = playhead.floor();
                 let idx = base as usize;
@@ -148,7 +148,7 @@ impl Operator for SamplePlayer {
             } else {
                 0.0
             };
-            out[i] = s;
+            *out_sample = s;
         }
 
         self.playhead = playhead;
