@@ -131,7 +131,7 @@ impl NumberOpInput {
         let model = build(&spec);
         let contract = render_contract(&struct_ident, &model);
 
-        let process = self.process_body(number, carrier, &model);
+        let process = self.process_body(carrier, &model);
         let defaults_test = self.defaults_test(&struct_ident, &model);
 
         Ok(quote! {
@@ -242,12 +242,7 @@ impl NumberOpInput {
     /// The `process` body for one carrier: read each operand through its typed handle (ADR-0037
     /// — a held read's default is the handle's declared default, a signal read is a length-n
     /// buffer indexed directly), call the shared scalar fn, write the output.
-    fn process_body(
-        &self,
-        _number: &Ident,
-        carrier: Carrier,
-        model: &ContractModel,
-    ) -> TokenStream {
+    fn process_body(&self, carrier: Carrier, model: &ContractModel) -> TokenStream {
         let out_const = Ident::new(&model.outputs[0].const_name, Span::call_site());
         let call = self.call();
 
@@ -257,22 +252,17 @@ impl NumberOpInput {
         for (op, port) in self.inputs.iter().zip(&model.inputs) {
             let local = raw(&op.name);
             let in_const = Ident::new(&port.const_name, Span::call_site());
-            match &op.kind {
-                OperandKind::Enum(_) => {
-                    held.push(quote! {
-                        let #local = io.read(#in_const);
-                    });
-                }
-                OperandKind::Number { .. } => match carrier {
-                    Carrier::Value => held.push(quote! {
-                        let #local = io.read(#in_const);
-                    }),
-                    // The buffer-presence invariant (ADR-0037): a Signal input is always exactly
-                    // `frames` samples, so it indexes directly — no `.get(i).unwrap_or(..)`.
-                    Carrier::Signal => looped.push(quote! {
-                        let #local = io.read(#in_const)[i];
-                    }),
-                },
+            // The one per-sample read is a `number` operand in the signal carrier; enum modes
+            // (always held) and value-carrier numbers alike are held reads of the handle default.
+            match (&op.kind, carrier) {
+                // The buffer-presence invariant (ADR-0037): a Signal input is always exactly
+                // `frames` samples, so it indexes directly — no `.get(i).unwrap_or(..)`.
+                (OperandKind::Number { .. }, Carrier::Signal) => looped.push(quote! {
+                    let #local = io.read(#in_const)[i];
+                }),
+                _ => held.push(quote! {
+                    let #local = io.read(#in_const);
+                }),
             }
         }
 

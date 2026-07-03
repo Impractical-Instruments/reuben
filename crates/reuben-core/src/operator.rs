@@ -191,6 +191,14 @@ impl<'a> Io<'a> {
         self.latched.get(port).and_then(T::from_arg)
     }
 
+    /// The routed [`Event`] slice for `port`, or an empty slice if the port has no stream. The
+    /// shared source of the empty-stream fallback behind every Event read (the [`form::Event`] /
+    /// [`form::Raw`] handles and the `Note` / `&Arg` [`IoInput`] arms), so the private `streams`
+    /// field is touched in exactly one place.
+    pub(crate) fn stream(&self, port: usize) -> &'a [Event<'a>] {
+        self.streams.get(port).copied().unwrap_or(&[])
+    }
+
     /// **Write an output port, dispatched by the payload type `T`** (ADR-0031). `io.output::<&mut
     /// [f32]>(p)` borrows this node's dense Signal buffer to fill in place; `io.output::<f32>(p)`
     /// returns a [`MsgWriter`] for a sparse Value output. Demoted to a `pub(crate)` primitive
@@ -230,7 +238,9 @@ impl<F: form::InForm> In<F> {
 
     /// The declared default this handle carries — the held-read fallback ([`Io::read`]). For a
     /// Signal handle it is the descriptor default as *data* (the buffer-presence invariant means
-    /// a signal read never falls back to it).
+    /// a signal read never falls back to it). Test-only: production reads the stored default
+    /// through [`Io::read`], never this accessor.
+    #[cfg(test)]
     pub fn default_value(&self) -> F::Default {
         self.default
     }
@@ -391,7 +401,7 @@ pub mod form {
         type Default = ();
         type Read<'a> = EventStream<'a, T>;
         fn read<'a>(io: &Io<'a>, index: usize, _default: ()) -> EventStream<'a, T> {
-            EventStream::over(io.streams.get(index).copied().unwrap_or(&[]))
+            EventStream::over(io.stream(index))
         }
     }
 
@@ -399,7 +409,7 @@ pub mod form {
         type Default = ();
         type Read<'a> = EventStream<'a, &'a Arg>;
         fn read<'a>(io: &Io<'a>, index: usize, _default: ()) -> EventStream<'a, &'a Arg> {
-            EventStream::over(io.streams.get(index).copied().unwrap_or(&[]))
+            EventStream::over(io.stream(index))
         }
     }
 
@@ -676,7 +686,7 @@ impl<'a, T: FromArg<'a>> Iterator for EventStream<'a, T> {
 impl<'a> IoInput<'a> for crate::vocab::pitch::Note {
     type Out = EventStream<'a, crate::vocab::pitch::Note>;
     fn read(io: &Io<'a>, port: usize) -> Self::Out {
-        EventStream::over(io.streams.get(port).copied().unwrap_or(&[]))
+        EventStream::over(io.stream(port))
     }
 }
 
@@ -687,7 +697,7 @@ impl<'a> IoInput<'a> for crate::vocab::pitch::Note {
 impl<'a> IoInput<'a> for &'a Arg {
     type Out = EventStream<'a, &'a Arg>;
     fn read(io: &Io<'a>, port: usize) -> Self::Out {
-        EventStream::over(io.streams.get(port).copied().unwrap_or(&[]))
+        EventStream::over(io.stream(port))
     }
 }
 

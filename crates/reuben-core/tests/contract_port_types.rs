@@ -57,12 +57,6 @@ fn filter_demo_descriptor_has_the_right_port_types() {
         (0, 1, 2, 3)
     );
     assert_eq!(OUT_AUDIO.index(), 0);
-    // The declared default rides the handle itself (the held-read fallback, ADR-0037).
-    assert_eq!(IN_CUTOFF.default_value(), 1_000.0);
-    assert_eq!(
-        IN_MODE.default_value(),
-        reuben_core::vocab::FilterMode::DEFAULT
-    );
 
     // The port's Arg type follows the declaration; a `f32_buffer` is the dense per-sample wire and
     // carries no materialized default, a `f32 { .. }` is a materialized scalar control.

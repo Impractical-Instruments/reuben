@@ -196,70 +196,12 @@ impl ContractInput {
     }
 }
 
-/// The typed-handle const for one **input** port (ADR-0037): its [`form`] marker type comes from
-/// the declared port type, its stored default from the same declaration — so the descriptor
-/// default and the held-read fallback are one datum. `In::new` takes `()` for defaultless forms
-/// (events, the raw pass-through).
-fn input_handle(p: &model::PortModel) -> TokenStream {
-    let ident = Ident::new(&p.const_name, Span::call_site());
-    let idx = proc_macro2::Literal::usize_unsuffixed(p.ordinal);
-    let (form, default) = match p.ty.as_str() {
-        // A Signal handle carries the declared scalar default as data (a bare audio buffer's is
-        // 0.0 — literally what an unwired bare input materializes, the buffer-presence invariant).
-        "f32_buffer" => {
-            let d = p.f32.as_ref().map(|m| m.default).unwrap_or(0.0);
-            (quote! { SignalF32 }, quote! { #d })
-        }
-        "f32" => {
-            let d = p
-                .f32
-                .as_ref()
-                .expect("validate() guarantees f32 meta")
-                .default;
-            (quote! { Held<f32> }, quote! { #d })
-        }
-        "i32" => {
-            let d = p
-                .i32
-                .as_ref()
-                .expect("validate() guarantees i32 meta")
-                .default;
-            (quote! { Held<i32> }, quote! { #d })
-        }
-        "enum" => {
-            let vocab = p.vocab.as_ref().expect("validate() guarantees enum vocab");
-            let ty = Ident::new(vocab, Span::call_site());
-            (
-                quote! { Held<::reuben_core::vocab::#ty> },
-                quote! { ::reuben_core::vocab::#ty::DEFAULT },
-            )
-        }
-        "note" => (
-            quote! { Event<::reuben_core::vocab::pitch::Note> },
-            quote! { () },
-        ),
-        "harmony" => (
-            quote! { Held<::reuben_core::vocab::Harmony> },
-            quote! { ::reuben_core::vocab::Harmony::DEFAULT },
-        ),
-        "arg" => (quote! { Raw }, quote! { () }),
-        other => {
-            let msg = format!("unsupported input port type {other:?}");
-            return quote! { compile_error!(#msg); };
-        }
-    };
-    quote! {
-        pub const #ident: ::reuben_core::operator::In<::reuben_core::operator::form::#form> =
-            ::reuben_core::operator::In::new(#idx, #default);
-    }
-}
-
-/// The typed-handle const for one **output** port (ADR-0037). Outputs carry no default — the
-/// handle is index + form only.
-fn output_handle(p: &model::PortModel) -> TokenStream {
-    let ident = Ident::new(&p.const_name, Span::call_site());
-    let idx = proc_macro2::Literal::usize_unsuffixed(p.ordinal);
-    let form = match p.ty.as_str() {
+/// The [`form`] marker type for a port's declared type — the single source of the port-type →
+/// form-marker mapping, shared by the input and output handle emitters so the two can't drift.
+/// (`arg` maps to `Raw`; the validator rejects `arg` *outputs*, so [`output_handle`] never reaches
+/// that arm.)
+fn port_form(p: &model::PortModel) -> TokenStream {
+    match p.ty.as_str() {
         "f32_buffer" => quote! { SignalF32 },
         "f32" => quote! { Held<f32> },
         "i32" => quote! { Held<i32> },
@@ -270,12 +212,66 @@ fn output_handle(p: &model::PortModel) -> TokenStream {
         }
         "note" => quote! { Event<::reuben_core::vocab::pitch::Note> },
         "harmony" => quote! { Held<::reuben_core::vocab::Harmony> },
-        // `arg` outputs are rejected by the validator (the pass-through is input-only).
+        "arg" => quote! { Raw },
         other => {
-            let msg = format!("unsupported output port type {other:?}");
-            return quote! { compile_error!(#msg); };
+            let msg = format!("unsupported port type {other:?}");
+            quote! { compile_error!(#msg) }
         }
+    }
+}
+
+/// The typed-handle const for one **input** port (ADR-0037): its [`form`] marker type comes from
+/// the declared port type ([`port_form`]), its stored default from the same declaration — so the
+/// descriptor default and the held-read fallback are one datum. `In::new` takes `()` for
+/// defaultless forms (events, the raw pass-through).
+fn input_handle(p: &model::PortModel) -> TokenStream {
+    let ident = Ident::new(&p.const_name, Span::call_site());
+    let idx = proc_macro2::Literal::usize_unsuffixed(p.ordinal);
+    let form = port_form(p);
+    let default = match p.ty.as_str() {
+        // A Signal handle carries the declared scalar default as data (a bare audio buffer's is
+        // 0.0 — literally what an unwired bare input materializes, the buffer-presence invariant).
+        "f32_buffer" => {
+            let d = p.f32.as_ref().map(|m| m.default).unwrap_or(0.0);
+            quote! { #d }
+        }
+        "f32" => {
+            let d = p
+                .f32
+                .as_ref()
+                .expect("validate() guarantees f32 meta")
+                .default;
+            quote! { #d }
+        }
+        "i32" => {
+            let d = p
+                .i32
+                .as_ref()
+                .expect("validate() guarantees i32 meta")
+                .default;
+            quote! { #d }
+        }
+        "enum" => {
+            let vocab = p.vocab.as_ref().expect("validate() guarantees enum vocab");
+            let ty = Ident::new(vocab, Span::call_site());
+            quote! { ::reuben_core::vocab::#ty::DEFAULT }
+        }
+        "harmony" => quote! { ::reuben_core::vocab::Harmony::DEFAULT },
+        // Defaultless forms (events, the raw pass-through) store `()`.
+        _ => quote! { () },
     };
+    quote! {
+        pub const #ident: ::reuben_core::operator::In<::reuben_core::operator::form::#form> =
+            ::reuben_core::operator::In::new(#idx, #default);
+    }
+}
+
+/// The typed-handle const for one **output** port (ADR-0037). Outputs carry no default — the
+/// handle is index + form ([`port_form`]) only.
+fn output_handle(p: &model::PortModel) -> TokenStream {
+    let ident = Ident::new(&p.const_name, Span::call_site());
+    let idx = proc_macro2::Literal::usize_unsuffixed(p.ordinal);
+    let form = port_form(p);
     quote! {
         pub const #ident: ::reuben_core::operator::Out<::reuben_core::operator::form::#form> =
             ::reuben_core::operator::Out::new(#idx);
