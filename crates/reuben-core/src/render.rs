@@ -506,49 +506,67 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
     }
 
     for (mi, msg) in messages.iter().enumerate() {
-        for (i, node) in plan.nodes.iter().enumerate() {
-            let Some(local) = local_address(&msg.address, &node.address) else {
-                continue;
-            };
-            // Match the local address to an input port by name; deliver per the port's kind
-            // (ADR-0030, Q11a — routing is by port, not by operator address-filtering).
-            if let Some((port, p)) = node
-                .descriptor
-                .inputs
-                .iter()
-                .enumerate()
-                .find(|(_, p)| p.name == local)
-            {
-                match node.input_kinds[port] {
-                    PortKind::Signal => {
-                        if let Some(v) = msg.as_f32() {
-                            routes[i].materialize_writes.push((msg.frame, port, v));
-                        }
-                    }
-                    PortKind::Value => {
-                        if let Some(a) = held_arg(p, &msg.arg) {
-                            routes[i].held.push((msg.frame, port, a));
-                        }
-                    }
-                    PortKind::Event => {
-                        routes[i].events.push(RoutedEvent {
-                            dst_port: port,
-                            src: EventSrc::External { msg: mi },
-                        });
-                    }
+        // Resolve the address to its one destination port ([`resolve_port`], shared with the
+        // boundary's [`Plan::osc_in_message`]); deliver per the port's kind (ADR-0030, Q11a —
+        // routing is by port, not by operator address-filtering).
+        let Some((i, port, p)) = resolve_port(&plan.nodes, &msg.address) else {
+            continue;
+        };
+        match plan.nodes[i].input_kinds[port] {
+            PortKind::Signal => {
+                if let Some(v) = msg.as_f32() {
+                    routes[i].materialize_writes.push((msg.frame, port, v));
                 }
-                break; // delivered — a message targets exactly one port
             }
-            // The prefix matched but no port did: keep scanning. Node addresses may be
-            // ancestors of one another (`/fx` beside an inlined `/fx/verb/delay`, ADR-0034 §3
-            // manufactures these systematically), and `/fx/verb/delay/time` must reach the
-            // deeper node even though `/fx` prefix-matches it first in plan order.
+            PortKind::Value => {
+                if let Some(a) = held_arg(p, &msg.arg) {
+                    routes[i].held.push((msg.frame, port, a));
+                }
+            }
+            PortKind::Event => {
+                routes[i].events.push(RoutedEvent {
+                    dst_port: port,
+                    src: EventSrc::External { msg: mi },
+                });
+            }
         }
     }
 
     for r in routes.iter_mut() {
         r.materialize_writes.sort_by_key(|(f, _, _)| *f);
     }
+}
+
+/// Resolve an inbound address to its destination — `(node index, input port index, port)` —
+/// by matching a node address prefix ([`local_address`]) and then an input port by name. The
+/// **single** "address → node + port" rule: both [`route_messages`] and the boundary's
+/// [`Plan::osc_in_message`] call it, so the two inbound paths cannot diverge (issue #165 —
+/// a diverged copy silently dropped messages to nested nodes).
+///
+/// A node whose address prefix-matches but has **no** matching port does not decide the
+/// outcome — keep scanning. Node addresses may be ancestors of one another (`/fx` beside an
+/// inlined `/fx/verb/delay`, ADR-0034 §3 manufactures these systematically), and
+/// `/fx/verb/delay/time` must reach the deeper node even though `/fx` prefix-matches it
+/// first in plan order.
+pub(crate) fn resolve_port<'p>(
+    nodes: &'p [PlanNode],
+    address: &str,
+) -> Option<(usize, usize, &'p Port)> {
+    for (i, node) in nodes.iter().enumerate() {
+        let Some(local) = local_address(address, &node.address) else {
+            continue;
+        };
+        if let Some((pi, port)) = node
+            .descriptor
+            .inputs
+            .iter()
+            .enumerate()
+            .find(|(_, p)| p.name == local)
+        {
+            return Some((i, pi, port)); // a message targets exactly one port
+        }
+    }
+    None
 }
 
 /// Local address of `addr` relative to `node_addr`, if `addr` targets that node.
@@ -721,5 +739,91 @@ fn process_node(
             arena[bi] = std::mem::take(&mut out_scratch[k]);
             k += 1;
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{load, AudioConfig, Registry};
+
+    /// Two leaf nodes in an ancestor-prefix relationship — the shape ADR-0034 §3's inlining
+    /// manufactures systematically (`/fx` beside an inlined `/fx/verb/delay`). The wire from
+    /// `/fx` pins the topo order, so the portless ancestor is genuinely scanned first.
+    fn shadowed_plan() -> Plan {
+        const SHADOWED: &str = r#"{
+            "instrument": "shadowed",
+            "nodes": [
+                { "type": "oscillator", "address": "/fx" },
+                { "type": "delay", "address": "/fx/verb/delay",
+                  "inputs": { "audio": { "from": "/fx.audio" } } }
+            ],
+            "outputs": [ { "node": "/fx/verb/delay", "port": "audio" } ]
+        }"#;
+        let graph = load(SHADOWED, &Registry::builtin()).expect("load");
+        Plan::instantiate(graph, AudioConfig::new(48_000.0, 64)).expect("instantiate")
+    }
+
+    /// Issue #165: inbound OSC to a nested node must not be dropped because a shallower
+    /// prefix-matching node that lacks the port sits earlier in `plan.nodes`.
+    #[test]
+    fn osc_in_message_reaches_a_node_shadowed_by_a_portless_ancestor() {
+        let plan = shadowed_plan();
+        let fx = plan
+            .nodes
+            .iter()
+            .position(|n| n.address == "/fx")
+            .expect("/fx node");
+        let deep = plan
+            .nodes
+            .iter()
+            .position(|n| n.address == "/fx/verb/delay")
+            .expect("/fx/verb/delay node");
+        assert!(
+            fx < deep,
+            "precondition broken: /fx must precede /fx/verb/delay in plan order"
+        );
+
+        let msg = plan
+            .osc_in_message("/fx/verb/delay/time", &[Arg::F32(0.5)])
+            .expect("message to the nested node was dropped at the boundary");
+        assert_eq!(msg.address, "/fx/verb/delay/time");
+        assert_eq!(msg.arg, Arg::F32(0.5));
+        assert_eq!(msg.frame, 0);
+    }
+
+    /// Parity guard: the boundary conversion (`osc_in_message`) and the render routing
+    /// (`route_messages`) agree on the destination node. Both call [`resolve_port`]; this
+    /// pins them together behaviorally if either ever re-inlines the rule (issue #165).
+    #[test]
+    fn osc_in_message_and_route_messages_agree_on_the_destination() {
+        let plan = shadowed_plan();
+        let cases = [
+            // A direct hit on the ancestor (Signal input: oscillator freq is a signal control).
+            ("/fx/freq", "/fx"),
+            // Nested targets behind the portless prefix (Value inputs).
+            ("/fx/verb/delay/time", "/fx/verb/delay"),
+            ("/fx/verb/delay/mix", "/fx/verb/delay"),
+        ];
+        let mut routes = Vec::new();
+        for (addr, want) in cases {
+            let msg = plan
+                .osc_in_message(addr, &[Arg::F32(0.25)])
+                .unwrap_or_else(|| panic!("{addr}: the boundary dropped the message"));
+            route_messages(&mut routes, &plan, &[msg]);
+            let delivered: Vec<&str> = routes
+                .iter()
+                .zip(&plan.nodes)
+                .filter(|(r, _)| {
+                    !r.materialize_writes.is_empty() || !r.held.is_empty() || !r.events.is_empty()
+                })
+                .map(|(_, n)| n.address.as_str())
+                .collect();
+            assert_eq!(delivered, [want], "{addr}: the two paths disagree");
+        }
+        // An address no node claims resolves nowhere on either path.
+        assert!(plan
+            .osc_in_message("/nowhere/time", &[Arg::F32(0.25)])
+            .is_none());
     }
 }
