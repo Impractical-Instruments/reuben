@@ -25,7 +25,7 @@
       "address": "/kick_env",
       "control": { "label": "Kick Decay", "widget": "radial", "group": "kick", "param": "decay" },
       "doc": "Kick amp+pitch envelope, gated by the euclid pulse. `decay` is the DECAY control: longer = boomier tail AND longer pitch drop.",
-      "inputs": { "gate": { "from": "/kick_eu.gate" }, "attack": 0.001, "decay": 0.1, "sustain": 0.0, "release": 0.08 },
+      "inputs": { "gate": { "from": "/kick_eu.gate" }, "attack": 0.001, "decay": 0.0, "sustain": 1.0, "release": 0.08 },
       "type": "envelope"
     },
     {
@@ -112,7 +112,7 @@
       "address": "/snare_env",
       "control": { "label": "Snare Decay", "widget": "radial", "group": "snare", "param": "decay" },
       "doc": "Snare amp envelope, gated by the euclid pulse. `decay` is the DECAY control (snap length).",
-      "inputs": { "gate": { "from": "/snare_eu.gate" }, "attack": 0.001, "decay": 0.08, "sustain": 0.0, "release": 0.06 },
+      "inputs": { "gate": { "from": "/snare_eu.gate" }, "attack": 0.001, "decay": 0.00, "sustain": 1.0, "release": 0.06 },
       "type": "envelope"
     },
     {
@@ -198,7 +198,7 @@
       "address": "/tom_env",
       "control": { "label": "Tom Decay", "widget": "radial", "group": "tom", "param": "decay" },
       "doc": "Tom amp+pitch envelope, gated by the euclid pulse. `decay` is the DECAY control: longer = boomier tail AND longer pitch drop.",
-      "inputs": { "gate": { "from": "/tom_eu.gate" }, "attack": 0.001, "decay": 0.18, "sustain": 0.0, "release": 0.12 },
+      "inputs": { "gate": { "from": "/tom_eu.gate" }, "attack": 0.001, "decay": 0.0, "sustain": 1.0, "release": 0.12 },
       "type": "envelope"
     },
     {
@@ -296,7 +296,7 @@
       "address": "/hat_env",
       "control": { "label": "Hat Decay", "widget": "radial", "group": "hat", "param": "decay" },
       "doc": "Very short hat amp envelope, gated by the euclid pulse. `decay` is the DECAY control: short tick .. open hat.",
-      "inputs": { "gate": { "from": "/hat_eu.gate" }, "attack": 0.001, "decay": 0.04, "sustain": 0.0, "release": 0.03 },
+      "inputs": { "gate": { "from": "/hat_eu.gate" }, "attack": 0.001, "decay": 0.00, "sustain": 1.0, "release": 0.03 },
       "type": "envelope"
     },
     {
