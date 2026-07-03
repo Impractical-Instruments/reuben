@@ -142,8 +142,12 @@ impl Operator for Reverb {
         let wet = mix;
         let dry = 1.0 - mix;
 
+        // Resolve the audio input and output buffers once (see filter.rs): index flat locals
+        // rather than re-deriving each slice from `io` per sample.
+        let audio = io.read(IN_AUDIO);
+        let out = io.write(OUT_AUDIO);
         for i in 0..n {
-            let dry_in = io.read(IN_AUDIO)[i];
+            let dry_in = audio[i];
             let input = dry_in * FIXED_GAIN;
 
             // 8 parallel comb filters summed.
@@ -157,7 +161,7 @@ impl Operator for Reverb {
                 wet_sig = ap.process(wet_sig, allpass_feedback);
             }
 
-            io.write(OUT_AUDIO)[i] = dry_in * dry + wet_sig * wet;
+            out[i] = dry_in * dry + wet_sig * wet;
         }
     }
 

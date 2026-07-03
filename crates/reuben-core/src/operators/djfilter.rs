@@ -134,8 +134,15 @@ impl Operator for Djfilter {
         // The `NaN` seed (≠ anything) forces a compute on the first sample of every block.
         let mut last_pos = f32::NAN;
         let (mut use_hp, mut k, mut a1, mut a2, mut a3) = (false, 0.0, 0.0, 0.0, 0.0);
+        // Resolve the per-sample buffers once, outside the loop: a per-iteration `io.read`/
+        // `io.write` re-derives the slice from `io`'s input/output tables every sample (a table
+        // index + `Option` unwrap per access) — the ADR-0037 handle layer stopped LLVM hoisting
+        // it. Binding flat locals once restores the pre-handle codegen (ADR-0037 perf fix).
+        let position = io.read(IN_POSITION);
+        let audio = io.read(IN_AUDIO);
+        let out = io.write(OUT_AUDIO);
         for i in 0..n {
-            let pos = io.read(IN_POSITION)[i];
+            let pos = position[i];
 
             if pos != last_pos {
                 let (uh, cutoff) = target(pos, lp_start, lp_end, hp_start, hp_end);
@@ -144,9 +151,8 @@ impl Operator for Djfilter {
                 last_pos = pos;
             }
 
-            let x = io.read(IN_AUDIO)[i];
-            let (lp, hp) = self.svf_step(x, k, a1, a2, a3);
-            io.write(OUT_AUDIO)[i] = if use_hp { hp } else { lp };
+            let (lp, hp) = self.svf_step(audio[i], k, a1, a2, a3);
+            out[i] = if use_hp { hp } else { lp };
         }
     }
 

@@ -73,8 +73,12 @@ impl Operator for Delay {
         let delay_samples = (time * sample_rate).clamp(1.0, (cap - 1) as f32);
 
         let len = self.buf.len();
+        // Resolve the audio input and output buffers once (see filter.rs): indexing flat locals
+        // avoids re-deriving each slice from `io` on every sample.
+        let audio = io.read(IN_AUDIO);
+        let out = io.write(OUT_AUDIO);
         for i in 0..n {
-            let x = io.read(IN_AUDIO)[i];
+            let x = audio[i];
 
             // Fractional read position `delay_samples` behind the write head.
             let read_pos = self.head as f32 + len as f32 - delay_samples;
@@ -88,7 +92,7 @@ impl Operator for Delay {
             self.buf[self.head] = x + feedback * delayed;
 
             // Dry/wet mix.
-            io.write(OUT_AUDIO)[i] = (1.0 - mix) * x + mix * delayed;
+            out[i] = (1.0 - mix) * x + mix * delayed;
 
             self.head = (self.head + 1) % len;
         }

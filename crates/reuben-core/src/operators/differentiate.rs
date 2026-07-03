@@ -51,11 +51,15 @@ impl Operator for DifferentiateF32Signal {
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
         let mut last = self.last;
+        // Resolve the input and output buffers once (see filter.rs): index flat locals rather than
+        // re-deriving each slice from `io` per sample.
+        let input = io.read(IN_IN);
+        let out = io.write(OUT_OUT);
         for i in 0..n {
-            let cur = io.read(IN_IN)[i];
+            let cur = input[i];
             // First sample ever seeds `last = cur`, so it emits 0 (no predecessor ⇒ no change).
             let prev = last.unwrap_or(cur);
-            io.write(OUT_OUT)[i] = step(prev, cur);
+            out[i] = step(prev, cur);
             last = Some(cur);
         }
         self.last = last;
