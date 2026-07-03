@@ -19,6 +19,7 @@
 //! - output 0: `audio` (`Buffer`) — the selected response (lowpass / highpass / bandpass).
 
 use crate::descriptor::Descriptor;
+use crate::dsp::svf::{Svf, SvfCoeffs, SvfTaps};
 use crate::operator::{Io, Operator};
 use crate::vocab::FilterMode;
 
@@ -36,69 +37,67 @@ crate::operator_contract!(Filter {
 
 #[derive(Default)]
 pub struct Filter {
-    /// SVF integrator state 1 (continuous across calls / block slices).
-    ic1eq: f32,
-    /// SVF integrator state 2 (continuous across calls / block slices).
-    ic2eq: f32,
+    /// Shared SVF core (`dsp::svf`), continuous across calls / block slices. `process`
+    /// copies it to a local, ticks that, and writes it back once per block (#169).
+    svf: Svf,
 }
 
 impl Filter {
     pub fn new() -> Self {
         Self::default()
     }
+}
 
-    /// One Cytomic SVF sample step against precomputed coefficients; returns the low-pass
-    /// output and advances the integrator state. Shared by the constant and modulated paths.
-    /// The lowpass tap (`v2`) is bit-identical to the pre-V1.3 filter.
-    #[inline]
-    fn svf_step(&mut self, x: f32, a1: f32, a2: f32, a3: f32) -> f32 {
-        let v3 = x - self.ic2eq;
-        let v1 = a1 * self.ic1eq + a2 * v3;
-        let v2 = self.ic2eq + a2 * self.ic1eq + a3 * v3;
-        self.ic1eq = 2.0 * v1 - self.ic1eq;
-        self.ic2eq = 2.0 * v2 - self.ic2eq;
-        v2
-    }
-
-    /// One SVF step returning the **selected** response. The TPT SVF exposes all three taps
-    /// from the same state: `lp = v2`, `bp = v1`, `hp = x - k·bp - lp` (standard Cytomic).
-    /// Mode `Lowpass` returns exactly what [`Self::svf_step`] does, so it stays bit-identical.
-    #[inline]
-    fn svf_step_mode(
-        &mut self,
-        x: f32,
-        a1: f32,
-        a2: f32,
-        a3: f32,
-        k: f32,
-        mode: FilterMode,
-    ) -> f32 {
-        let v3 = x - self.ic2eq;
-        let v1 = a1 * self.ic1eq + a2 * v3;
-        let v2 = self.ic2eq + a2 * self.ic1eq + a3 * v3;
-        self.ic1eq = 2.0 * v1 - self.ic1eq;
-        self.ic2eq = 2.0 * v2 - self.ic2eq;
-        match mode {
-            FilterMode::Lp => v2,
-            FilterMode::Bp => v1,
-            FilterMode::Hp => x - k * v1 - v2,
-        }
+/// The held-controls fast path: constant coefficients, one tick per sample. Generic over
+/// the tap selector so each [`FilterMode`] gets its own monomorphized loop — the tap
+/// choice stays *outside* the sample loop and the unpicked taps' math dead-codes away.
+/// With `|t| t.lp` this compiles to exactly the pre-V1.3 lowpass-only loop
+/// (bit-identical; a per-sample `match mode` in the loop was measurably not unswitched
+/// by LLVM and kept the dead `hp` arithmetic alive).
+#[inline]
+fn const_block(
+    svf: &mut Svf,
+    c: SvfCoeffs,
+    audio: &[f32],
+    out: &mut [f32],
+    tap: impl Fn(SvfTaps) -> f32,
+) {
+    for i in 0..out.len() {
+        out[i] = tap(svf.tick(audio[i], c));
     }
 }
 
-/// TPT / zero-delay-feedback SVF coefficients for a given cutoff (Hz) and resonance (0..1).
-/// Cutoff is clamped to a safe range so `tan` never blows up; resonance maps to damping
-/// `k = 1/Q` (k = 2 ⇒ no resonance, smaller k ⇒ more), clamped away from 0 for stability.
-/// Returns `(a1, a2, a3, k)` — `k` is needed for the highpass tap.
+/// The modulated path: per-sample `cutoff`/`resonance`, coefficients recomputed only when
+/// the pair actually changes from the previous sample — a settled or slowly-moving control
+/// costs one compare per sample instead of a `tan()`. [`SvfCoeffs::new`] is pure, so
+/// reusing the cache on an unchanged input is bit-identical to recomputing every sample. A
+/// genuinely audio-rate sweep still recomputes per sample; a coarser control-rate recompute
+/// is tracked in #24. Generic over the tap selector for the same per-mode monomorphization
+/// as [`const_block`]. The `NaN` seeds force a compute on the first sample (NaN ≠ anything).
 #[inline]
-fn coeffs(cutoff: f32, resonance: f32, sample_rate: f32) -> (f32, f32, f32, f32) {
-    let cutoff = cutoff.clamp(20.0, 0.45 * sample_rate);
-    let k = (2.0 - 1.9 * resonance.clamp(0.0, 1.0)).max(0.1);
-    let g = (std::f32::consts::PI * cutoff / sample_rate).tan();
-    let a1 = 1.0 / (1.0 + g * (g + k));
-    let a2 = g * a1;
-    let a3 = g * a2;
-    (a1, a2, a3, k)
+#[allow(clippy::too_many_arguments)]
+fn modulated_block(
+    svf: &mut Svf,
+    sample_rate: f32,
+    audio: &[f32],
+    cutoff_buf: &[f32],
+    resonance_buf: &[f32],
+    out: &mut [f32],
+    tap: impl Fn(SvfTaps) -> f32,
+) {
+    let mut last_cutoff = f32::NAN;
+    let mut last_resonance = f32::NAN;
+    let mut c = SvfCoeffs::default();
+    for i in 0..out.len() {
+        let cutoff = cutoff_buf[i];
+        let resonance = resonance_buf[i];
+        if cutoff != last_cutoff || resonance != last_resonance {
+            c = SvfCoeffs::new(cutoff, resonance, sample_rate);
+            last_cutoff = cutoff;
+            last_resonance = resonance;
+        }
+        out[i] = tap(svf.tick(audio[i], c));
+    }
 }
 
 impl Operator for Filter {
@@ -107,20 +106,26 @@ impl Operator for Filter {
     }
 
     fn process(&mut self, io: &mut Io) {
-        let n = io.frames();
         let sample_rate = io.sample_rate();
         let mode = io.read(IN_MODE);
 
+        // Copy the SVF state to a local for the whole block and store it back once at the
+        // end. Ticking `self.svf` directly would write the two integrators to memory every
+        // sample (LLVM won't promote fields behind `&mut self` across the loop); the local
+        // is register-promoted, dropping `process` to ~1 data-write per sample — just the
+        // output store (#169).
+        let mut svf = self.svf;
+
         // `cutoff`/`resonance` are Signal inputs — always a buffer (wired source or materialized
         // default), one read path (ADR-0031). When neither changed this block (`varying` false,
-        // both held), compute coefficients once — the old fast path, and `Lp` via `svf_step` is
+        // both held), compute coefficients once — the old fast path, and the `lp` tap is
         // bit-identical to the prior param-only filter.
         if !io.varying(IN_CUTOFF) && !io.varying(IN_RESONANCE) {
             // Held-unchanged this block, so the materialized buffer is uniform — sample 0 is the
             // held value (the former separate held-scalar read of the same latch).
             let cutoff = io.read(IN_CUTOFF)[0];
             let resonance = io.read(IN_RESONANCE)[0];
-            let (a1, a2, a3, k) = coeffs(cutoff, resonance, sample_rate);
+            let c = SvfCoeffs::new(cutoff, resonance, sample_rate);
             // Resolve the audio slice and output buffer once, outside the loop. A per-sample
             // `io.read(IN_AUDIO)[i]` / `io.write(OUT_AUDIO)[i]` re-derives the slice from `io`'s
             // input/output tables every iteration (a table index + `Option` unwrap per access);
@@ -128,47 +133,53 @@ impl Operator for Filter {
             // locals once restores the pre-handle codegen (ADR-0037 perf fix).
             let audio = io.read(IN_AUDIO);
             let out = io.write(OUT_AUDIO);
-            for i in 0..n {
-                out[i] = if mode == FilterMode::Lp {
-                    self.svf_step(audio[i], a1, a2, a3)
-                } else {
-                    self.svf_step_mode(audio[i], a1, a2, a3, k, mode)
-                };
+            match mode {
+                FilterMode::Lp => const_block(&mut svf, c, audio, out, |t| t.lp),
+                FilterMode::Bp => const_block(&mut svf, c, audio, out, |t| t.bp),
+                FilterMode::Hp => const_block(&mut svf, c, audio, out, |t| t.hp),
             }
+            self.svf = svf;
             return;
         }
 
-        // Modulated path: at least one control is dense/changing. Read each per sample (audio-rate
-        // sweep). Coefficients are recomputed only when the (cutoff, resonance) pair actually
-        // changes from the previous sample, so a settled or slowly-moving control costs one compare
-        // per sample instead of a `tan()`. `coeffs` is pure, so reusing the cached triple on an
-        // unchanged input is bit-identical to recomputing it every sample. A genuinely audio-rate
-        // sweep still recomputes per sample; a coarser control-rate recompute is tracked in #24.
-        let mut last_cutoff = f32::NAN;
-        let mut last_resonance = f32::NAN;
-        let (mut a1, mut a2, mut a3, mut k) = (0.0, 0.0, 0.0, 0.0);
-        // Hoist the per-sample buffers to flat locals (see the fast-path note): resolves each
-        // slice once instead of re-deriving it from `io` on every `io.read`/`io.write` access.
+        // Modulated path: at least one control is dense/changing — read each per sample
+        // (audio-rate sweep). Hoist the per-sample buffers to flat locals (see the fast-path
+        // note): resolves each slice once instead of re-deriving it from `io` on every
+        // `io.read`/`io.write` access.
         let audio = io.read(IN_AUDIO);
         let cutoff_buf = io.read(IN_CUTOFF);
         let resonance_buf = io.read(IN_RESONANCE);
         let out = io.write(OUT_AUDIO);
-        for i in 0..n {
-            let cutoff = cutoff_buf[i];
-            let resonance = resonance_buf[i];
-            // NaN seed forces a compute on the first sample (NaN != anything).
-            if cutoff != last_cutoff || resonance != last_resonance {
-                (a1, a2, a3, k) = coeffs(cutoff, resonance, sample_rate);
-                last_cutoff = cutoff;
-                last_resonance = resonance;
-            }
-            // Lowpass stays on `svf_step` for bit-identity with the pre-V1.3 modulated path.
-            out[i] = if mode == FilterMode::Lp {
-                self.svf_step(audio[i], a1, a2, a3)
-            } else {
-                self.svf_step_mode(audio[i], a1, a2, a3, k, mode)
-            };
+        match mode {
+            FilterMode::Lp => modulated_block(
+                &mut svf,
+                sample_rate,
+                audio,
+                cutoff_buf,
+                resonance_buf,
+                out,
+                |t| t.lp,
+            ),
+            FilterMode::Bp => modulated_block(
+                &mut svf,
+                sample_rate,
+                audio,
+                cutoff_buf,
+                resonance_buf,
+                out,
+                |t| t.bp,
+            ),
+            FilterMode::Hp => modulated_block(
+                &mut svf,
+                sample_rate,
+                audio,
+                cutoff_buf,
+                resonance_buf,
+                out,
+                |t| t.hp,
+            ),
         }
+        self.svf = svf;
     }
 
     fn spawn(&self) -> Box<dyn Operator> {
@@ -239,55 +250,10 @@ mod tests {
         (sum / buf.len() as f32).sqrt()
     }
 
-    #[test]
-    fn filter_attenuates_high_more_than_low() {
-        let sr = 48_000.0;
-        let n = 8192;
-        // Skip the transient at the front to measure steady-state attenuation.
-        let warmup = 2048;
-
-        let low = render(&sine(200.0, sr, n), sr, 1_000.0, 0.0);
-        let high = render(&sine(8_000.0, sr, n), sr, 1_000.0, 0.0);
-
-        let low_rms = rms(&low[warmup..]);
-        let high_rms = rms(&high[warmup..]);
-
-        // Cutoff is 1 kHz: 200 Hz passes, 8 kHz is well below the cutoff.
-        assert!(
-            low_rms > high_rms * 4.0,
-            "expected low ({low_rms}) >> high ({high_rms})"
-        );
-    }
-
-    #[test]
-    fn filter_passes_dc_near_unity() {
-        let sr = 48_000.0;
-        let n = 4096;
-        let input = vec![1.0f32; n];
-        let out = render(&input, sr, 1_000.0, 0.0);
-
-        // After settling, a low-pass should pass DC at unity gain.
-        let tail = &out[n - 256..];
-        let avg = tail.iter().sum::<f32>() / tail.len() as f32;
-        assert!(
-            (avg - 1.0).abs() < 0.01,
-            "expected DC near unity, got {avg}"
-        );
-    }
-
-    #[test]
-    fn filter_high_resonance_stays_bounded() {
-        let sr = 48_000.0;
-        let n = 8192;
-        // Drive at the resonant frequency with maximum resonance.
-        let input = sine(1_000.0, sr, n);
-        let out = render(&input, sr, 1_000.0, 1.0);
-
-        for (i, &s) in out.iter().enumerate() {
-            assert!(s.is_finite(), "sample {i} not finite: {s}");
-            assert!(s.abs() < 1_000.0, "sample {i} unbounded: {s}");
-        }
-    }
+    // Frequency-response and stability behavior of the SVF itself (attenuation slopes, DC,
+    // resonance boundedness) is covered on the shared core in `dsp::svf`'s tests; the tests
+    // here cover what the *operator* adds: port semantics, the two coefficient paths, mode
+    // selection, and state across blocks.
 
     #[test]
     fn constant_cutoff_buffer_matches_held_default() {
@@ -345,12 +311,12 @@ mod tests {
         let res_buf = vec![0.0f32; n];
         let out = render_buffers(&input, sr, &constant, &res_buf, FilterMode::Lp);
 
-        // Reference: a fresh filter stepping the same once-computed coeffs every sample.
-        let mut reference = Filter::new();
-        let (a1, a2, a3, _k) = coeffs(2_500.0, 0.0, sr);
+        // Reference: a fresh raw SVF stepping the same once-computed coeffs every sample.
+        let mut reference = Svf::default();
+        let c = SvfCoeffs::new(2_500.0, 0.0, sr);
         let mut ref_out = vec![0.0f32; n];
         for i in 0..n {
-            ref_out[i] = reference.svf_step(input[i], a1, a2, a3);
+            ref_out[i] = reference.tick(input[i], c).lp;
         }
         for i in 0..n {
             assert_eq!(
@@ -410,16 +376,16 @@ mod tests {
         let n = 4096;
         let input = sine(1_000.0, sr, n);
 
-        // Reference: explicit lowpass via the fast path (`svf_step`).
+        // Reference: explicit lowpass via the fast path.
         let lp = render_mode(&input, sr, 1_200.0, 0.4, FilterMode::Lp);
 
         // The descriptor's defaults give cutoff 1000, resonance 0.2, mode 0. Render with the
-        // *default* mode but a matching cutoff/resonance, against an explicit `svf_step` ref.
-        let mut reference = Filter::new();
-        let (a1, a2, a3, _k) = coeffs(1_200.0, 0.4, sr);
+        // *default* mode but a matching cutoff/resonance, against a raw shared-SVF reference.
+        let mut reference = Svf::default();
+        let c = SvfCoeffs::new(1_200.0, 0.4, sr);
         let mut ref_out = vec![0.0f32; n];
         for i in 0..n {
-            ref_out[i] = reference.svf_step(input[i], a1, a2, a3);
+            ref_out[i] = reference.tick(input[i], c).lp;
         }
         for i in 0..n {
             assert_eq!(
@@ -431,54 +397,30 @@ mod tests {
     }
 
     #[test]
-    fn highpass_attenuates_lows_more_than_highs() {
-        // Mirror of the lowpass test: with cutoff at 1 kHz, a highpass passes 8 kHz and
-        // attenuates 200 Hz.
+    fn every_mode_is_bit_identical_to_its_raw_svf_tap() {
+        // `mode` must select exactly the shared core's tap — Lp→lp, Bp→bp, Hp→hp — with no
+        // drift in the operator's plumbing. (That each tap *sounds* right — attenuation
+        // slopes, DC behavior, the bandpass peak — is proven on the core in `dsp::svf`.)
         let sr = 48_000.0;
-        let n = 8192;
-        let warmup = 2048;
+        let n = 4096;
+        let input = sine(1_000.0, sr, n);
+        let c = SvfCoeffs::new(1_200.0, 0.4, sr);
 
-        let low = render_mode(&sine(200.0, sr, n), sr, 1_000.0, 0.0, FilterMode::Hp);
-        let high = render_mode(&sine(8_000.0, sr, n), sr, 1_000.0, 0.0, FilterMode::Hp);
-
-        let low_rms = rms(&low[warmup..]);
-        let high_rms = rms(&high[warmup..]);
-        assert!(
-            high_rms > low_rms * 4.0,
-            "highpass: expected high ({high_rms}) >> low ({low_rms})"
-        );
-    }
-
-    #[test]
-    fn bandpass_peaks_near_cutoff() {
-        // A bandpass centered at 1 kHz passes 1 kHz far more strongly than either a much
-        // lower (100 Hz) or much higher (8 kHz) tone.
-        let sr = 48_000.0;
-        let n = 8192;
-        let warmup = 2048;
-        let res = 0.6; // a little resonance sharpens the peak
-
-        let center = render_mode(&sine(1_000.0, sr, n), sr, 1_000.0, res, FilterMode::Bp);
-        let below = render_mode(&sine(100.0, sr, n), sr, 1_000.0, res, FilterMode::Bp);
-        let above = render_mode(&sine(8_000.0, sr, n), sr, 1_000.0, res, FilterMode::Bp);
-
-        let c = rms(&center[warmup..]);
-        let b = rms(&below[warmup..]);
-        let a = rms(&above[warmup..]);
-        assert!(
-            c > b * 2.0 && c > a * 2.0,
-            "bandpass should peak at cutoff: center {c}, below {b}, above {a}"
-        );
-    }
-
-    #[test]
-    fn highpass_blocks_dc() {
-        // A highpass must reject DC: a constant input settles to ~0.
-        let sr = 48_000.0;
-        let n = 8192;
-        let out = render_mode(&vec![1.0f32; n], sr, 1_000.0, 0.0, FilterMode::Hp);
-        let tail = &out[n - 256..];
-        let avg = tail.iter().sum::<f32>() / tail.len() as f32;
-        assert!(avg.abs() < 0.02, "highpass should block DC, got {avg}");
+        for (mode, tap) in [
+            (FilterMode::Lp, (|t: SvfTaps| t.lp) as fn(SvfTaps) -> f32),
+            (FilterMode::Bp, |t: SvfTaps| t.bp),
+            (FilterMode::Hp, |t: SvfTaps| t.hp),
+        ] {
+            let out = render_mode(&input, sr, 1_200.0, 0.4, mode);
+            let mut reference = Svf::default();
+            for i in 0..n {
+                let expect = tap(reference.tick(input[i], c));
+                assert_eq!(
+                    out[i].to_bits(),
+                    expect.to_bits(),
+                    "mode {mode:?} diverged from its raw SVF tap at {i}"
+                );
+            }
+        }
     }
 }
