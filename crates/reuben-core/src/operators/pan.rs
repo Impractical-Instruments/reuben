@@ -45,15 +45,15 @@ impl Operator for Pan {
             // `audio`/`pan` are Signal inputs — always a buffer (wired source or materialized
             // default), one read path (ADR-0031). Read both into locals first so each immutable
             // borrow of `io` ends before the two output writes — keeps `process` allocation-free.
-            let a = io.input::<&[f32]>(IN_AUDIO).get(i).copied().unwrap_or(0.0);
-            let p = io.input::<&[f32]>(IN_PAN).get(i).copied().unwrap_or(0.0);
+            let a = io.read(IN_AUDIO)[i];
+            let p = io.read(IN_PAN)[i];
             // Equal-power law: map [-1, 1] -> [0, π/2], split with cos/sin. cos²+sin²=1 keeps
             // total power constant across the sweep; center (p=0) is cos(π/4)=sin(π/4)≈0.707.
             let theta = (p.clamp(-1.0, 1.0) + 1.0) * (core::f32::consts::FRAC_PI_4);
             let l = a * theta.cos();
             let r = a * theta.sin();
-            io.output::<&mut [f32]>(OUT_LEFT)[i] = l;
-            io.output::<&mut [f32]>(OUT_RIGHT)[i] = r;
+            io.write(OUT_LEFT)[i] = l;
+            io.write(OUT_RIGHT)[i] = r;
         }
     }
 

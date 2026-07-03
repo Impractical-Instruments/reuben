@@ -34,7 +34,7 @@ use crate::config::AudioConfig;
 use crate::descriptor::{Descriptor, PortType};
 use crate::graph::Graph;
 use crate::message::{Arg, Emit, Message};
-use crate::operator::Operator;
+use crate::operator::{Operator, PortIndex};
 use crate::plan::Plan;
 use crate::render::Renderer;
 use crate::resources::{ResolvedRefs, ResourceStore, SampleBuffer};
@@ -95,11 +95,12 @@ impl OpDriver {
         }
     }
 
-    /// Set a held control (read via `io.input::<T>`) — scalar, enum, or `Harmony` — **or** a constant
+    /// Set a held control (read via `io.read`) — scalar, enum, or `Harmony` — **or** a constant
     /// audio-in (the materialized buffer ZOH-fills from it). Sticky across blocks (the latch
     /// persists), so call it once. For a numeric value on a materialized port, seeds the
-    /// materialize fill too, so `io.input::<&[f32]>` and `io.input::<f32>` agree.
-    pub fn set(&mut self, port: usize, value: impl Into<Arg>) -> &mut Self {
+    /// materialize fill too, so the dense read and the held latch agree.
+    pub fn set(&mut self, port: impl PortIndex, value: impl Into<Arg>) -> &mut Self {
+        let port = port.index();
         let node = &mut self.plan.nodes[0];
         // Force the materialized scratch to refill from the new latch on the next block.
         if let Some(k) = node.materialize.iter().position(|(p, _)| *p == port) {
@@ -111,16 +112,22 @@ impl OpDriver {
 
     /// Queue a transient event (a `Note`) on a Stream input at a **global** frame. Delivered via the
     /// real message router (built into a `"<addr>/<port>"` Message), so it lands as a zero-copy
-    /// `io.input::<Note>` event in the block that contains `frame`.
-    pub fn push(&mut self, port: usize, frame: usize, payload: impl Into<Arg>) -> &mut Self {
-        self.pushes.push((frame, port, payload.into()));
+    /// `io.read` event in the block that contains `frame`.
+    pub fn push(
+        &mut self,
+        port: impl PortIndex,
+        frame: usize,
+        payload: impl Into<Arg>,
+    ) -> &mut Self {
+        self.pushes.push((frame, port.index(), payload.into()));
         self
     }
 
     /// Drive a time-varying audio-in: write `samples` into the input's scratch buffer per block.
     /// Detaches the port from materialize (so `process_node` won't overwrite our data) and marks it
     /// `varying`, so a const-folding op (the filter) takes its modulated path.
-    pub fn drive(&mut self, port: usize, samples: &[f32]) -> &mut Self {
+    pub fn drive(&mut self, port: impl PortIndex, samples: &[f32]) -> &mut Self {
+        let port = port.index();
         let node = &mut self.plan.nodes[0];
         let bi = node.inputs[port]
             .as_ref()
@@ -202,8 +209,8 @@ impl OpDriver {
 
     /// The rendered samples on a Buffer output `port` (its `OUT_*` const) — `n` frames after the
     /// last [`render`](OpDriver::render).
-    pub fn output(&self, port: usize) -> &[f32] {
-        &self.outputs[self.signal_ordinal(port)]
+    pub fn output(&self, port: impl PortIndex) -> &[f32] {
+        &self.outputs[self.signal_ordinal(port.index())]
     }
 
     /// The Messages the operator emitted across the last [`render`](OpDriver::render), block-absolute.
@@ -320,7 +327,7 @@ mod tests {
     /// Block-boundary zero-order-hold on a materialized `Float` port (ADR-0030). A held value that
     /// changes mid-block must (a) write sample-accurately from its frame within that block, and
     /// (b) carry its end-of-block value into the *next* block's materialize fill **and** into the
-    /// `io.input::<T>` read — the single-source-of-truth contract the former `input_latches` f32 shadow
+    /// held read — the single-source-of-truth contract the former `input_latches` f32 shadow
     /// hand-synced against `latch`. Pinned so a future re-split of the two lanes is caught loudly.
     #[test]
     fn materialized_float_zoh_holds_across_the_block_boundary() {
@@ -359,11 +366,54 @@ mod tests {
             signal[BLOCK_SIZE..].iter().all(|&s| s == 7.0),
             "next block holds the carried value"
         );
-        // ...and `io.input::<T>` (the `latch`) reflects the same end-of-block value: one source, no drift.
+        // ...and the held read (the `latch`) reflects the same end-of-block value: one source, no drift.
         assert_eq!(
             d.plan.nodes[0].latch[port_a].as_f32(),
             Some(7.0),
-            "io.input::<f32> reads the carried ZOH value"
+            "the held read sees the carried ZOH value"
+        );
+    }
+
+    /// **Buffer-presence invariant** (ADR-0037, the engine half of the typed-handle contract):
+    /// every declared `f32_buffer` input handed to `process` is a dense buffer of **exactly
+    /// `frames` samples** — an unwired *bare* buffer input (no meta, no source) materializes
+    /// **silence** (zeros), never `&[]` or a short slice. This is what lets `io.read(SIG)[i]`
+    /// index directly with no `.get(i).unwrap_or(..)` guard in every operator.
+    ///
+    /// The probe encodes the check into its output: `out[i] = in[i] + 10·(in.len() == frames)`,
+    /// so a uniform `10.0` output proves the input read as length-n zeros through the real
+    /// engine seeding + stepping (a `&[]` read would yield `0.0`s — and, first, trip the
+    /// `debug_assert` inside the Signal handle read).
+    #[test]
+    fn unwired_bare_buffer_input_reads_length_n_zeros() {
+        crate::operator_contract!(BarePresenceProbe {
+            inputs:  { audio: f32_buffer },
+            outputs: { audio: f32_buffer },
+        });
+        struct BarePresenceProbe;
+        impl Operator for BarePresenceProbe {
+            fn descriptor() -> Descriptor {
+                Self::contract()
+            }
+            fn process(&mut self, io: &mut crate::operator::Io) {
+                let n = io.frames();
+                let input = io.read(IN_AUDIO);
+                let ok = if input.len() == n { 10.0 } else { 0.0 };
+                for (i, slot) in io.write(OUT_AUDIO)[..n].iter_mut().enumerate() {
+                    *slot = input[i] + ok;
+                }
+            }
+            fn spawn(&self) -> Box<dyn Operator> {
+                Box::new(BarePresenceProbe)
+            }
+        }
+
+        // Nothing wired, nothing set: the bare `audio` input must still present n zeros.
+        let mut d = OpDriver::for_type(BarePresenceProbe, 48_000.0);
+        d.render(2 * BLOCK_SIZE + 32); // partial final block: the invariant holds per sub-block
+        assert!(
+            d.output(OUT_AUDIO).iter().all(|&s| s == 10.0),
+            "unwired bare buffer input must read as length-n silence"
         );
     }
 

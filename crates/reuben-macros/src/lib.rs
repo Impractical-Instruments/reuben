@@ -196,22 +196,110 @@ impl ContractInput {
     }
 }
 
-/// Render a resolved [`ContractModel`] to the `IN_`/`OUT_`/`P_` const block + the inherent
+/// The typed-handle const for one **input** port (ADR-0037): its [`form`] marker type comes from
+/// the declared port type, its stored default from the same declaration — so the descriptor
+/// default and the held-read fallback are one datum. `In::new` takes `()` for defaultless forms
+/// (events, the raw pass-through).
+fn input_handle(p: &model::PortModel) -> TokenStream {
+    let ident = Ident::new(&p.const_name, Span::call_site());
+    let idx = proc_macro2::Literal::usize_unsuffixed(p.ordinal);
+    let (form, default) = match p.ty.as_str() {
+        // A Signal handle carries the declared scalar default as data (a bare audio buffer's is
+        // 0.0 — literally what an unwired bare input materializes, the buffer-presence invariant).
+        "f32_buffer" => {
+            let d = p.f32.as_ref().map(|m| m.default).unwrap_or(0.0);
+            (quote! { SignalF32 }, quote! { #d })
+        }
+        "f32" => {
+            let d = p
+                .f32
+                .as_ref()
+                .expect("validate() guarantees f32 meta")
+                .default;
+            (quote! { Held<f32> }, quote! { #d })
+        }
+        "i32" => {
+            let d = p
+                .i32
+                .as_ref()
+                .expect("validate() guarantees i32 meta")
+                .default;
+            (quote! { Held<i32> }, quote! { #d })
+        }
+        "enum" => {
+            let vocab = p.vocab.as_ref().expect("validate() guarantees enum vocab");
+            let ty = Ident::new(vocab, Span::call_site());
+            (
+                quote! { Held<::reuben_core::vocab::#ty> },
+                quote! { ::reuben_core::vocab::#ty::DEFAULT },
+            )
+        }
+        "note" => (
+            quote! { Event<::reuben_core::vocab::pitch::Note> },
+            quote! { () },
+        ),
+        "harmony" => (
+            quote! { Held<::reuben_core::vocab::Harmony> },
+            quote! { ::reuben_core::vocab::Harmony::DEFAULT },
+        ),
+        "arg" => (quote! { Raw }, quote! { () }),
+        other => {
+            let msg = format!("unsupported input port type {other:?}");
+            return quote! { compile_error!(#msg); };
+        }
+    };
+    quote! {
+        pub const #ident: ::reuben_core::operator::In<::reuben_core::operator::form::#form> =
+            ::reuben_core::operator::In::new(#idx, #default);
+    }
+}
+
+/// The typed-handle const for one **output** port (ADR-0037). Outputs carry no default — the
+/// handle is index + form only.
+fn output_handle(p: &model::PortModel) -> TokenStream {
+    let ident = Ident::new(&p.const_name, Span::call_site());
+    let idx = proc_macro2::Literal::usize_unsuffixed(p.ordinal);
+    let form = match p.ty.as_str() {
+        "f32_buffer" => quote! { SignalF32 },
+        "f32" => quote! { Held<f32> },
+        "i32" => quote! { Held<i32> },
+        "enum" => {
+            let vocab = p.vocab.as_ref().expect("validate() guarantees enum vocab");
+            let ty = Ident::new(vocab, Span::call_site());
+            quote! { Held<::reuben_core::vocab::#ty> }
+        }
+        "note" => quote! { Event<::reuben_core::vocab::pitch::Note> },
+        "harmony" => quote! { Held<::reuben_core::vocab::Harmony> },
+        // `arg` outputs are rejected by the validator (the pass-through is input-only).
+        other => {
+            let msg = format!("unsupported output port type {other:?}");
+            return quote! { compile_error!(#msg); };
+        }
+    };
+    quote! {
+        pub const #ident: ::reuben_core::operator::Out<::reuben_core::operator::form::#form> =
+            ::reuben_core::operator::Out::new(#idx);
+    }
+}
+
+/// Render a resolved [`ContractModel`] to the `IN_`/`OUT_`/`C_` const block + the inherent
 /// `impl T { fn contract() }` (ADR-0025). Free function so both `operator_contract!` and the
 /// derived `number_operator_contract!` variants emit the identical contract from the same code.
+///
+/// Inputs/outputs emit **typed handles** (`In<form>`/`Out<form>`, ADR-0037) whose type fixes the
+/// `io.read`/`io.write` shape and whose value carries the declared default. Constants stay bare
+/// `usize` ordinals: a `C_*` is instantiate-time config, never read in `process`, so it gets no
+/// handle.
 pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> TokenStream {
     {
-        let consts = model
-            .inputs
-            .iter()
-            .chain(&model.outputs)
-            .chain(&model.constants)
-            .map(|p| (p.const_name.as_str(), p.ordinal))
-            .map(|(name, value)| {
-                let ident = Ident::new(name, Span::call_site());
-                let val = proc_macro2::Literal::usize_unsuffixed(value);
-                quote! { pub const #ident: usize = #val; }
-            });
+        let in_handles = model.inputs.iter().map(input_handle);
+        let out_handles = model.outputs.iter().map(output_handle);
+        let const_ordinals = model.constants.iter().map(|p| {
+            let ident = Ident::new(&p.const_name, Span::call_site());
+            let val = proc_macro2::Literal::usize_unsuffixed(p.ordinal);
+            quote! { pub const #ident: usize = #val; }
+        });
+        let consts = in_handles.chain(out_handles).chain(const_ordinals);
 
         let port_toks = |ports: &[model::PortModel]| -> Vec<TokenStream> {
             ports
@@ -551,9 +639,19 @@ mod tests {
                 outputs: { audio: f32_buffer },
             }"#,
         );
-        assert!(out.contains("pub const IN_FREQ : usize = 0"), "{out}");
-        assert!(out.contains("pub const IN_WAVEFORM : usize = 1"), "{out}");
-        assert!(out.contains("pub const OUT_AUDIO : usize = 0"), "{out}");
+        // Typed handles (ADR-0037): the const's type carries the form, its value the ordinal +
+        // declared default.
+        assert!(
+            out.contains("pub const IN_FREQ : :: reuben_core :: operator :: In < :: reuben_core :: operator :: form :: Held < f32 > >"),
+            "{out}"
+        );
+        assert!(out.contains("In :: new (0 , 440f32)"), "{out}");
+        assert!(out.contains("pub const IN_WAVEFORM :"), "{out}");
+        assert!(out.contains("In :: new (1 , 0f32)"), "{out}");
+        assert!(
+            out.contains("pub const OUT_AUDIO : :: reuben_core :: operator :: Out < :: reuben_core :: operator :: form :: SignalF32 > = :: reuben_core :: operator :: Out :: new (0)"),
+            "{out}"
+        );
         assert!(out.contains("impl Oscillator"), "{out}");
         assert!(out.contains("fn contract"), "{out}");
         assert!(out.contains("type_name : \"oscillator\""), "{out}");
@@ -572,7 +670,12 @@ mod tests {
         );
         assert!(out.contains("type_name : \"sample\""), "{out}");
         assert!(out.contains("ResourceSlot :: new (\"sample\")"), "{out}");
-        assert!(out.contains("pub const IN_GATE : usize = 1"), "{out}");
+        // A bare `f32_buffer` handle carries 0.0 — literally what an unwired bare input
+        // materializes (the buffer-presence invariant).
+        assert!(
+            out.contains("pub const IN_GATE : :: reuben_core :: operator :: In < :: reuben_core :: operator :: form :: SignalF32 > = :: reuben_core :: operator :: In :: new (1 , 0f32)"),
+            "{out}"
+        );
     }
 
     // Ports number sequentially in declaration order (ADR-0030) — a note input and a harmony input
@@ -587,8 +690,16 @@ mod tests {
                 constants: { voices: i32 { 1..=32, default 8 } },
             }"#,
         );
-        assert!(out.contains("pub const IN_NOTES : usize = 0"), "{out}");
-        assert!(out.contains("pub const IN_CTX : usize = 1"), "{out}");
+        // An Event handle stores no default (`()`); a held `Harmony` carries the const C-major
+        // default. Constants stay bare `usize` ordinals (no handle — never read in `process`).
+        assert!(
+            out.contains("pub const IN_NOTES : :: reuben_core :: operator :: In < :: reuben_core :: operator :: form :: Event < :: reuben_core :: vocab :: pitch :: Note > > = :: reuben_core :: operator :: In :: new (0 , ())"),
+            "{out}"
+        );
+        assert!(
+            out.contains("pub const IN_CTX : :: reuben_core :: operator :: In < :: reuben_core :: operator :: form :: Held < :: reuben_core :: vocab :: Harmony > > = :: reuben_core :: operator :: In :: new (1 , :: reuben_core :: vocab :: Harmony :: DEFAULT)"),
+            "{out}"
+        );
         assert!(out.contains("pub const C_VOICES : usize = 0"), "{out}");
         assert!(out.contains("Port :: note (\"notes\")"), "{out}");
         assert!(out.contains("Port :: harmony (\"ctx\")"), "{out}");
@@ -629,11 +740,29 @@ mod tests {
                 outputs: { audio: f32_buffer },
             }"#,
         );
-        assert!(out.contains("pub const IN_AUDIO : usize = 0"), "{out}");
-        assert!(out.contains("pub const IN_CUTOFF : usize = 1"), "{out}");
-        assert!(out.contains("pub const IN_RESONANCE : usize = 2"), "{out}");
-        assert!(out.contains("pub const IN_MODE : usize = 3"), "{out}");
-        assert!(out.contains("pub const OUT_AUDIO : usize = 0"), "{out}");
+        assert!(out.contains("pub const IN_AUDIO :"), "{out}");
+        assert!(
+            out.contains(
+                "form :: SignalF32 > = :: reuben_core :: operator :: In :: new (0 , 0f32)"
+            ),
+            "{out}"
+        );
+        assert!(out.contains("pub const IN_CUTOFF :"), "{out}");
+        assert!(
+            out.contains(
+                "form :: Held < f32 > > = :: reuben_core :: operator :: In :: new (1 , 1000f32)"
+            ),
+            "{out}"
+        );
+        assert!(out.contains("pub const IN_RESONANCE :"), "{out}");
+        assert!(out.contains("In :: new (2 , 0.2f32)"), "{out}");
+        // A held enum handle defaults to the shared type's derive-generated `DEFAULT`.
+        assert!(
+            out.contains("pub const IN_MODE : :: reuben_core :: operator :: In < :: reuben_core :: operator :: form :: Held < :: reuben_core :: vocab :: FilterMode > > = :: reuben_core :: operator :: In :: new (3 , :: reuben_core :: vocab :: FilterMode :: DEFAULT)"),
+            "{out}"
+        );
+        assert!(out.contains("pub const OUT_AUDIO :"), "{out}");
+        assert!(out.contains("Out :: new (0)"), "{out}");
         assert!(out.contains("Port :: f32_buffer (\"audio\")"), "{out}");
         assert!(out.contains("Port :: f32"), "{out}");
         assert!(out.contains("Curve :: Exponential"), "{out}");
@@ -657,8 +786,13 @@ mod tests {
                 outputs: { audio: f32_buffer },
             }"#,
         );
-        assert!(out.contains("pub const IN_FREQ : usize = 0"), "{out}");
-        assert!(out.contains("pub const IN_WAVEFORM : usize = 1"), "{out}");
+        assert!(out.contains("pub const IN_FREQ :"), "{out}");
+        assert!(out.contains("In :: new (0 , 440f32)"), "{out}");
+        assert!(out.contains("pub const IN_WAVEFORM :"), "{out}");
+        assert!(
+            out.contains("In :: new (1 , :: reuben_core :: vocab :: Waveform :: DEFAULT)"),
+            "{out}"
+        );
         assert!(
             out.contains("vocab :: Waveform :: enum_meta (\"waveform\")"),
             "{out}"
@@ -716,6 +850,50 @@ mod tests {
         // `default max` parks at the ceiling, `default min` at the floor.
         assert!(out.contains("default : 1000000f32"), "{out}");
         assert!(out.contains("default : - 1000000f32"), "{out}");
+    }
+
+    // The remaining handle forms (ADR-0037), one assertion per PortType: a raw `arg`
+    // pass-through input, a bounded `i32` input, and the message-output handles (`f32`, `note`,
+    // `harmony`) — every port form gets a typed handle, full coverage.
+    #[test]
+    fn emits_typed_handles_for_every_remaining_port_form() {
+        let out = render(
+            r#"Kitchen {
+                inputs:  { passthru: arg,
+                           count: i32 { 1..=8, default 3 } },
+                outputs: { cv: f32_buffer,
+                           active: f32 { 0.0..=1.0, default 0.0 },
+                           degrees: note,
+                           ctx: harmony },
+            }"#,
+        );
+        // Raw pass-through: no default to carry.
+        assert!(
+            out.contains("pub const IN_PASSTHRU : :: reuben_core :: operator :: In < :: reuben_core :: operator :: form :: Raw > = :: reuben_core :: operator :: In :: new (0 , ())"),
+            "{out}"
+        );
+        // Held i32: the declared integer default rides the handle.
+        assert!(
+            out.contains("pub const IN_COUNT : :: reuben_core :: operator :: In < :: reuben_core :: operator :: form :: Held < i32 > > = :: reuben_core :: operator :: In :: new (1 , 3i32)"),
+            "{out}"
+        );
+        // Outputs: form-typed, index-only (all-outputs index — signal then message, ADR-0030).
+        assert!(
+            out.contains("pub const OUT_CV : :: reuben_core :: operator :: Out < :: reuben_core :: operator :: form :: SignalF32 > = :: reuben_core :: operator :: Out :: new (0)"),
+            "{out}"
+        );
+        assert!(
+            out.contains("pub const OUT_ACTIVE : :: reuben_core :: operator :: Out < :: reuben_core :: operator :: form :: Held < f32 > > = :: reuben_core :: operator :: Out :: new (1)"),
+            "{out}"
+        );
+        assert!(
+            out.contains("pub const OUT_DEGREES : :: reuben_core :: operator :: Out < :: reuben_core :: operator :: form :: Event < :: reuben_core :: vocab :: pitch :: Note > > = :: reuben_core :: operator :: Out :: new (2)"),
+            "{out}"
+        );
+        assert!(
+            out.contains("pub const OUT_CTX : :: reuben_core :: operator :: Out < :: reuben_core :: operator :: form :: Held < :: reuben_core :: vocab :: Harmony > > = :: reuben_core :: operator :: Out :: new (3)"),
+            "{out}"
+        );
     }
 
     // An unknown port type is rejected with a span, as a compile_error.

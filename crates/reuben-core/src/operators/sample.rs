@@ -82,11 +82,11 @@ impl Operator for SamplePlayer {
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
         let engine_sr = io.sample_rate();
-        // Block-rate controls: read once at the top (ADR-0030 `Float` inputs, held via `io.input::<f32>`).
-        let root_hz = Self::midi_hz(io.input::<f32>(IN_ROOT).unwrap_or(60.0));
-        let gain = io.input::<f32>(IN_GAIN).unwrap_or(1.0);
-        let start_norm = io.input::<f32>(IN_START).unwrap_or(0.0).clamp(0.0, 1.0);
-        let channel = io.input::<f32>(IN_CHANNEL).unwrap_or(-1.0);
+        // Block-rate controls: read once at the top (ADR-0030 `Float` inputs, read held via `io.read`).
+        let root_hz = Self::midi_hz(io.read(IN_ROOT));
+        let gain = io.read(IN_GAIN);
+        let start_norm = io.read(IN_START).clamp(0.0, 1.0);
+        let channel = io.read(IN_CHANNEL);
 
         // Resolve the binding; unbound, missing, or empty → silence.
         let store = match &self.store {
@@ -117,11 +117,11 @@ impl Operator for SamplePlayer {
         // frame 0 *is* the change frame, so the retrigger stays sample-accurate); `prev_gate` carries
         // the level across slices/blocks. Reading the held values here ends the immutable borrow
         // before the per-sample output writes below (keeps `process` alloc-free).
-        let g = io.input::<f32>(IN_GATE).unwrap_or(0.0);
+        let g = io.read(IN_GATE);
         if self.prev_gate <= 0.0 && g > 0.0 {
             // A non-positive `freq` (the unwired Value reads its default 0) → play at `root`,
             // preserving the old "freq unconnected → root pitch" semantics.
-            let freq = io.input::<f32>(IN_FREQ).unwrap_or(0.0);
+            let freq = io.read(IN_FREQ);
             let f = if freq > 0.0 { freq } else { root_hz };
             rate = (f as f64 / root_hz as f64) * sr_fold;
             playhead = start_norm as f64 * frames as f64;
@@ -145,7 +145,7 @@ impl Operator for SamplePlayer {
             } else {
                 0.0
             };
-            io.output::<&mut [f32]>(OUT_AUDIO)[i] = s;
+            io.write(OUT_AUDIO)[i] = s;
         }
 
         self.playhead = playhead;
@@ -173,7 +173,7 @@ crate::register_operator!(SamplePlayer);
 
 /// Write `n` frames of silence to the audio output.
 fn silence(io: &mut Io, n: usize) {
-    for s in io.output::<&mut [f32]>(OUT_AUDIO)[..n].iter_mut() {
+    for s in io.write(OUT_AUDIO)[..n].iter_mut() {
         *s = 0.0;
     }
 }

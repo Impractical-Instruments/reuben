@@ -131,6 +131,10 @@ _Avoid_: event, control, OSC packet (as a distinct internal type), typed args (p
 One functional value an Operator consumes, declared once with an [[arg]] type and an unwired default. Fed by a literal or by a wire from another Operator's output — the same slot takes either. Replaces the old split of Signal port / param / connection / context port: one Input per function.
 _Avoid_: port, param, connection, slot (the slot is the Input; its payload is the [[arg]]).
 
+**Handle**:
+The typed `In`/`Out` const the operator contract emits per [[input]]/output (`IN_FREQ`, `OUT_AUDIO`). Its *type* names the port's form ([[signal]] / held [[value]] / [[event]] / raw pass-through), so `io.read`/`io.write` return the right shape by construction and a wrong-form access does not compile; its value carries the declared default, which is the held read's fallback. Named `In`/`Out` — never `InPort`/`OutPort` ("port" stays avoided; the domain word is [[input]]).
+_Avoid_: port handle, index const (the handle replaced the bare `usize` const), port.
+
 **Arg**:
 The single typed payload of a [[message]], and the type an [[input]]/output declares — what replaced the old "shape" axis (delivery and read-style now follow from the Arg type plus the read verb, never declared separately). One closed, central enum: an OSC primitive (`F32`/`I32`/`Str`), a shared [[vocab]] concrete type (`Note`/`Harmony`/`FilterMode`/`Waveform`/…), or an `f32_buffer`. Concrete types exist *because* a Message holds exactly one Arg — two scalars (pitch+velocity) pack into one `Arg::Note`. Enums read as real Rust enums in operator code (`FilterMode::HighPass`), not bare indices. Crossing from one Arg type to another is an explicit converter Operator; the one implicit coercion is a held [[value]] materializing into a [[signal]] buffer, and its reverse ([[signal]]→[[value]]) is a hard error.
 _Avoid_: shape, kind, PortKind, value, blob, carrier, port.

@@ -10,7 +10,7 @@
 //! plucks each string between, like a thumb across a harp).
 //!
 //! - input 0: `position` (`f32`, held Value) — the fader's position in 0..1, read **once per
-//!   block-slice** via [`Io::input`]. The engine block-slices at every position change (ADR-0031),
+//!   block-slice** via [`Io::read`]. The engine block-slices at every position change (ADR-0031),
 //!   so a moved fader re-spells the strum at the change frame — the slice's frame 0 *is* the change
 //!   frame, so the pluck is sample-accurate — and a crossing straddling a block boundary fires
 //!   exactly once (`prev_string` carries the band across).
@@ -100,17 +100,17 @@ impl Operator for Strum {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        let strings = (io.input::<f32>(IN_STRINGS).unwrap_or(8.0).round() as i64).clamp(1, 32);
-        let octaves = io.input::<f32>(IN_OCTAVES).unwrap_or(1.0).max(1.0);
-        let velocity = io.input::<f32>(IN_VELOCITY).unwrap_or(1.0).clamp(0.0, 1.0);
+        let strings = (io.read(IN_STRINGS).round() as i64).clamp(1, 32);
+        let octaves = io.read(IN_OCTAVES).max(1.0);
+        let velocity = io.read(IN_VELOCITY).clamp(0.0, 1.0);
 
         // `position` is a held Value (ADR-0031): the engine block-slices at every position change,
         // so this call sees one constant fader position. Read it once (the immutable borrow ends
-        // with this `let`, so `io.output` can borrow mutably below) and resolve the band. Any band
+        // with this `let`, so `io.write` can borrow mutably below) and resolve the band. Any band
         // crossed since the last slice emits a pluck **at frame 0** — the slice's start *is* the
         // change frame (block-absolute), so the pluck is sample-accurate — plus a scheduled
         // note-off. `prev_string` carries the band across blocks/slices.
-        let pos = io.input::<f32>(IN_POSITION).unwrap_or(0.0);
+        let pos = io.read(IN_POSITION);
         let cur_string = Self::string_at(pos, strings);
         if self.prev_string < 0 {
             // First position seen: latch the band, no pluck (no crossing yet).
@@ -121,8 +121,7 @@ impl Operator for Strum {
             while s != cur_string {
                 s += step;
                 let deg = Self::degree_of(s, strings, octaves);
-                io.output::<Note>(OUT_DEGREES)
-                    .emit(0, degree_note(deg, velocity));
+                io.write(OUT_DEGREES).emit(0, degree_note(deg, velocity));
                 if self.pending.len() < self.pending.capacity() {
                     self.pending.push((deg, PLUCK_SAMPLES));
                 }
@@ -137,8 +136,7 @@ impl Operator for Strum {
             while k < self.pending.len() {
                 if self.pending[k].1 <= 0 {
                     let deg = self.pending[k].0;
-                    io.output::<Note>(OUT_DEGREES)
-                        .emit(i, degree_note(deg, 0.0));
+                    io.write(OUT_DEGREES).emit(i, degree_note(deg, 0.0));
                     self.pending.swap_remove(k);
                 } else {
                     self.pending[k].1 -= 1;

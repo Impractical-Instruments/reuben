@@ -217,11 +217,11 @@ impl Operator for Resonator {
         let sample_rate = io.sample_rate();
 
         // Held controls (ADR-0031): one read each, constant for this block-slice.
-        let freq = io.input::<f32>(IN_FREQ).unwrap_or(220.0);
-        let structure = io.input::<f32>(IN_STRUCTURE).unwrap_or(0.25);
-        let brightness = io.input::<f32>(IN_BRIGHTNESS).unwrap_or(0.5);
-        let damping = io.input::<f32>(IN_DAMPING).unwrap_or(0.7);
-        let position = io.input::<f32>(IN_POSITION).unwrap_or(0.3);
+        let freq = io.read(IN_FREQ);
+        let structure = io.read(IN_STRUCTURE);
+        let brightness = io.read(IN_BRIGHTNESS);
+        let damping = io.read(IN_DAMPING);
+        let position = io.read(IN_POSITION);
 
         // Recompute the bank only when a control actually changed (NaN seed forces the first).
         if freq != self.last_freq
@@ -243,7 +243,7 @@ impl Operator for Resonator {
         // `gate` is a held Value: the engine block-slices at each change, so the slice's frame 0 is
         // the edge — fire the mallet there (sample-accurate to the slice). `prev_gate` carries the
         // level across slices/blocks so a held gate fires exactly once.
-        let gate = io.input::<f32>(IN_GATE).unwrap_or(0.0);
+        let gate = io.read(IN_GATE);
         let gate_hi = gate > 0.5;
         if gate_hi && !self.prev_gate {
             self.burst_len = ((BURST_SECS * sample_rate) as i32).max(1);
@@ -258,7 +258,7 @@ impl Operator for Resonator {
         for i in 0..n {
             // `in` is a Signal — always a buffer (wired source or materialized silence). Read per
             // sample so the immutable borrow ends before the mutable output write below.
-            let x_in = io.input::<&[f32]>(IN_IN).get(i).copied().unwrap_or(0.0);
+            let x_in = io.read(IN_IN)[i];
             let exc = self.exciter_step(lp_alpha);
             let x = x_in + exc;
 
@@ -270,7 +270,7 @@ impl Operator for Resonator {
                 self.y1[m] = y;
                 acc += y;
             }
-            io.output::<&mut [f32]>(OUT_OUT)[i] = acc * MASTER_GAIN;
+            io.write(OUT_OUT)[i] = acc * MASTER_GAIN;
         }
     }
 

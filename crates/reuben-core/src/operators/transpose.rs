@@ -2,7 +2,7 @@
 //!
 //! The proof that the unified model carries a real two-message-input operator: a `Note` **Stream**
 //! input plus a `Float` **Held** input, producing a `Note` Stream output. Each note event on
-//! `notes` is shifted by the current `amount` (read via `io.input::<f32>`, block-sliced at changes) and
+//! `notes` is shifted by the current `amount` (read via `io.read(IN_AMOUNT)`, block-sliced at changes) and
 //! re-emitted at the same frame. A scale **degree** shifts by whole steps; an **absolute** MIDI
 //! pitch shifts by the same number of semitones. Velocity (and a note-off's zero velocity) carries
 //! through untouched.
@@ -48,16 +48,16 @@ impl Operator for Transpose {
     }
 
     fn process(&mut self, io: &mut Io) {
-        let amount = io.input::<f32>(IN_AMOUNT).unwrap_or(0.0);
+        let amount = io.read(IN_AMOUNT);
 
         // Snapshot the stream (its borrow of `io` ends here) so the emit loop can borrow `io`
         // mutably. `Note` is `Copy`, so this is alloc-free for the common low-event-count case.
         let mut evs: SmallVec<[(usize, Note); 16]> = SmallVec::new();
-        for s in io.input::<Note>(IN_NOTES) {
+        for s in io.read(IN_NOTES) {
             evs.push((s.frame, s.payload));
         }
         for (frame, note) in evs {
-            io.output::<Note>(OUT_NOTES)
+            io.write(OUT_NOTES)
                 .emit(frame, transpose_note(note, amount));
         }
     }
@@ -78,7 +78,7 @@ mod tests {
     const SR: f32 = 48_000.0;
 
     /// Drive a fresh Transpose through the real engine: a held `amount` (`set` once, read via
-    /// `io.input::<f32>`) and a set of `Note` events pushed on `notes`. Renders one block, returns the
+    /// `io.read`) and a set of `Note` events pushed on `notes`. Renders one block, returns the
     /// emitted Messages.
     fn run(amount: f32, notes: &[(usize, Note)]) -> Vec<Emit> {
         let mut d = OpDriver::for_type(Transpose::new(), SR);

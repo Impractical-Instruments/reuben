@@ -239,9 +239,15 @@ impl NumberOpInput {
         }
     }
 
-    /// The `process` body for one carrier: read each operand (per-sample buffer or held scalar /
-    /// held enum), call the shared scalar fn, write the output.
-    fn process_body(&self, number: &Ident, carrier: Carrier, model: &ContractModel) -> TokenStream {
+    /// The `process` body for one carrier: read each operand through its typed handle (ADR-0037
+    /// — a held read's default is the handle's declared default, a signal read is a length-n
+    /// buffer indexed directly), call the shared scalar fn, write the output.
+    fn process_body(
+        &self,
+        _number: &Ident,
+        carrier: Carrier,
+        model: &ContractModel,
+    ) -> TokenStream {
         let out_const = Ident::new(&model.outputs[0].const_name, Span::call_site());
         let call = self.call();
 
@@ -252,38 +258,35 @@ impl NumberOpInput {
             let local = raw(&op.name);
             let in_const = Ident::new(&port.const_name, Span::call_site());
             match &op.kind {
-                OperandKind::Enum(vocab) => {
+                OperandKind::Enum(_) => {
                     held.push(quote! {
-                        let #local = io.input::<::reuben_core::vocab::#vocab>(#in_const)
-                            .unwrap_or_default();
+                        let #local = io.read(#in_const);
                     });
                 }
-                OperandKind::Number { default, .. } => {
-                    let def = proc_macro2::Literal::f32_unsuffixed(*default);
-                    match carrier {
-                        Carrier::Value => held.push(quote! {
-                            let #local = io.input::<#number>(#in_const).unwrap_or(#def);
-                        }),
-                        Carrier::Signal => looped.push(quote! {
-                            let #local = io.input::<&[#number]>(#in_const)
-                                .get(i).copied().unwrap_or(#def);
-                        }),
-                    }
-                }
+                OperandKind::Number { .. } => match carrier {
+                    Carrier::Value => held.push(quote! {
+                        let #local = io.read(#in_const);
+                    }),
+                    // The buffer-presence invariant (ADR-0037): a Signal input is always exactly
+                    // `frames` samples, so it indexes directly — no `.get(i).unwrap_or(..)`.
+                    Carrier::Signal => looped.push(quote! {
+                        let #local = io.read(#in_const)[i];
+                    }),
+                },
             }
         }
 
         match carrier {
             Carrier::Value => quote! {
                 #(#held)*
-                io.output::<#number>(#out_const).set(0, #call);
+                io.write(#out_const).set(0, #call);
             },
             Carrier::Signal => quote! {
                 let n = io.frames();
                 #(#held)*
                 for i in 0..n {
                     #(#looped)*
-                    io.output::<&mut [#number]>(#out_const)[i] = #call;
+                    io.write(#out_const)[i] = #call;
                 }
             },
         }
@@ -588,19 +591,22 @@ mod tests {
                 function: add_fn(in_a, in_b),
             }"#,
         );
-        // Value: held read + a single set(0, ..).
-        assert!(out.contains("io . input :: < f32 > (IN_IN_A)"), "{out}");
+        // Value: held handle read (the declared default rides the handle) + a single set(0, ..).
+        assert!(out.contains("let r#in_a = io . read (IN_IN_A) ;"), "{out}");
         assert!(
-            out.contains(". set (0i32 ,") || out.contains(". set (0 ,"),
+            out.contains("io . write (OUT_OUT) . set (0 ,")
+                || out.contains("io . write (OUT_OUT) . set (0i32 ,"),
             "{out}"
         );
-        // Signal: slice read + loop write.
-        assert!(out.contains("io . input :: < & [f32] > (IN_IN_A)"), "{out}");
+        // Signal: direct-indexed buffer read (the buffer-presence invariant — no
+        // `.get(i).unwrap_or(..)` guard) + loop write through the handle.
+        assert!(
+            out.contains("let r#in_a = io . read (IN_IN_A) [i] ;"),
+            "{out}"
+        );
         assert!(out.contains("io . frames ()"), "{out}");
-        assert!(
-            out.contains("io . output :: < & mut [f32] > (OUT_OUT) [i]"),
-            "{out}"
-        );
+        assert!(out.contains("io . write (OUT_OUT) [i]"), "{out}");
+        assert!(!out.contains("unwrap_or"), "{out}");
     }
 
     // An enum operand stays a held read in BOTH carriers (no buffer form), typed via its vocab.
@@ -615,9 +621,14 @@ mod tests {
                 function: remap(in, curve),
             }"#,
         );
-        // Held enum read appears in the signal variant (no `&[..]` for the enum).
+        // Held enum read appears in the signal variant too (no `[i]` indexing for the enum) —
+        // the handle's `Held<MapCurve>` form makes it a held read in both carriers.
         assert!(
-            out.contains("io . input :: < :: reuben_core :: vocab :: MapCurve > (IN_CURVE) . unwrap_or_default ()"),
+            out.contains("let r#curve = io . read (IN_CURVE) ;"),
+            "{out}"
+        );
+        assert!(
+            out.contains("form :: Held < :: reuben_core :: vocab :: MapCurve > >"),
             "{out}"
         );
         // The keyword operand `in` becomes a raw local `r#in`, passed to the fn.
@@ -639,10 +650,10 @@ mod tests {
                 function: min_fn(a, b),
             }"#,
         );
-        // `b`'s default is the range maximum (1e6), materialized into its `f32` port meta and its
-        // held-read fallback.
+        // `b`'s default is the range maximum (1e6), materialized into its `f32` port meta and
+        // carried by its typed handle (the held-read fallback — one datum, ADR-0037).
         assert!(out.contains("default : 1000000f32"), "{out}");
-        assert!(out.contains("unwrap_or (1000000.0)"), "{out}");
+        assert!(out.contains("In :: new (1 , 1000000f32)"), "{out}");
     }
 
     // Omitting a carrier yields a single-form op (the stateful-op shape, e.g. value-less).

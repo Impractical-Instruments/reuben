@@ -133,14 +133,11 @@ impl Operator for Granulator {
         let engine_sr = io.sample_rate();
 
         // Block-rate held controls (ADR-0031): read once at the top.
-        let density = io
-            .input::<f32>(IN_DENSITY)
-            .unwrap_or(20.0)
-            .clamp(1.0, 200.0);
-        let spray_ms = io.input::<f32>(IN_SPRAY).unwrap_or(0.0).max(0.0);
-        let gain = io.input::<f32>(IN_GAIN).unwrap_or(1.0);
-        let channel = io.input::<f32>(IN_CHANNEL).unwrap_or(-1.0);
-        let window = io.input::<GrainWindow>(IN_WINDOW).unwrap_or_default();
+        let density = io.read(IN_DENSITY).clamp(1.0, 200.0);
+        let spray_ms = io.read(IN_SPRAY).max(0.0);
+        let gain = io.read(IN_GAIN);
+        let channel = io.read(IN_CHANNEL);
+        let window = io.read(IN_WINDOW);
 
         // Resolve the binding; unbound, missing, or empty → silence.
         let store = match &self.store {
@@ -168,12 +165,12 @@ impl Operator for Granulator {
 
         // Signal controls are read per grain at its spawn frame. These slices borrow the arena, not
         // `io`, so they stay valid alongside the mutable `out` borrow below (the oscillator pattern).
-        let position = io.input::<&[f32]>(IN_POSITION);
-        let grain_size = io.input::<&[f32]>(IN_GRAIN_SIZE);
-        let pitch = io.input::<&[f32]>(IN_PITCH);
+        let position = io.read(IN_POSITION);
+        let grain_size = io.read(IN_GRAIN_SIZE);
+        let pitch = io.read(IN_PITCH);
 
         let mut spawn_counter = self.spawn_counter;
-        let out = io.output::<&mut [f32]>(OUT_AUDIO);
+        let out = io.write(OUT_AUDIO);
 
         for (i, slot) in out.iter_mut().enumerate().take(n) {
             // Spawn any grains due at this frame (interval ≥ 1, so at most one in practice).
@@ -250,7 +247,7 @@ crate::register_operator!(Granulator);
 
 /// Write `n` frames of silence to the audio output.
 fn silence(io: &mut Io, n: usize) {
-    io.output::<&mut [f32]>(OUT_AUDIO)[..n].fill(0.0);
+    io.write(OUT_AUDIO)[..n].fill(0.0);
 }
 
 /// The grain amplitude envelope at normalized phase `x` ∈ [0, 1). Each shape is 0 at the edges

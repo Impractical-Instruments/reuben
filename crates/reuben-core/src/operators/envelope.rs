@@ -98,21 +98,21 @@ impl Operator for Envelope {
         let sample_rate = io.sample_rate();
 
         // ADSR times are `Float` inputs, read once at block rate as the held (ZOH) value via
-        // `io.input::<f32>` — the shape is block-rate, exactly as the old params were (ADR-0030).
-        let sustain = io.input::<f32>(IN_SUSTAIN).unwrap_or(0.7).clamp(0.0, 1.0);
-        let attack_step = per_sample_step(io.input::<f32>(IN_ATTACK).unwrap_or(0.01), sample_rate);
-        let decay_step = per_sample_step(io.input::<f32>(IN_DECAY).unwrap_or(0.1), sample_rate)
-            * (1.0 - sustain);
+        // `io.read` (each handle carrying its declared default) — the shape is block-rate, exactly
+        // as the old params were (ADR-0030).
+        let sustain = io.read(IN_SUSTAIN).clamp(0.0, 1.0);
+        let attack_step = per_sample_step(io.read(IN_ATTACK), sample_rate);
+        let decay_step = per_sample_step(io.read(IN_DECAY), sample_rate) * (1.0 - sustain);
         // Base per-sample rate that would span the full [0,1] range in `release` seconds. The
         // actual Release decrement is this scaled by the level at the note-off edge (below), so
         // release lasts `release` seconds from wherever the level is — never frozen at sustain=0.
-        let release_rate = per_sample_step(io.input::<f32>(IN_RELEASE).unwrap_or(0.2), sample_rate);
+        let release_rate = per_sample_step(io.read(IN_RELEASE), sample_rate);
 
         // `gate` is a held Value (ADR-0031): the engine block-slices at every gate change, so this
         // call sees one constant level — read it once and detect the edge against the flag held
         // across the previous slice. The slice's frame 0 *is* the change frame (block-absolute), so
         // the A/R trigger is sample-accurate. An unwired gate reads 0 (gate-off).
-        let gate_on = io.input::<f32>(IN_GATE).unwrap_or(0.0) > 0.5;
+        let gate_on = io.read(IN_GATE) > 0.5;
         if gate_on && !self.held {
             self.stage = Stage::Attack;
         } else if !gate_on && self.held {
@@ -157,14 +157,14 @@ impl Operator for Envelope {
                 }
             }
 
-            io.output::<&mut [f32]>(OUT_CV)[i] = self.level;
+            io.write(OUT_CV)[i] = self.level;
 
             // Voice-liveness (ADR-0032): active for the whole contour incl. the release tail, idle
             // only at Stage::Idle (level == 0). Emit a sparse held change on each transition; the
             // MsgWriter dedups, so an unchanging block emits nothing and the latch holds.
             let now_active = self.stage != Stage::Idle;
             if now_active != self.active {
-                io.output::<f32>(OUT_ACTIVE)
+                io.write(OUT_ACTIVE)
                     .set(i, if now_active { 1.0 } else { 0.0 });
                 self.active = now_active;
             }

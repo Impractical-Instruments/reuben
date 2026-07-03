@@ -151,7 +151,8 @@ Need behavior no operator provides? That's a new **Operator** in Rust — `scaff
 The signal/value port-form refactor ([ADR-0031](docs/adr/0031-float-resolves-to-value-or-signal-by-wiring.md))
 and Voicer-hosts-voice-sub-patches rewrite ([ADR-0032](docs/adr/0032-voicer-hosts-voice-subpatches.md))
 have landed: a port is a held **Value** (`f32`) or a **Signal** buffer (`f32_buffer`), read/written
-through `io.input::<T>` / `io.output::<T>`, and polyphony comes from the Voicer hosting voice
+through the contract's typed handles (`io.read(IN_X)` / `io.write(OUT_X)`,
+[ADR-0037](docs/adr/0037-typed-port-handles.md)), and polyphony comes from the Voicer hosting voice
 sub-patches (`instruments/voices/*.json`) rather than the now-removed Lane model.
 General nesting ([ADR-0034](docs/adr/0034-instrument-nesting.md)) has landed end to end: a
 `subpatch` node references another instrument (cycle-guarded), inlines into the parent graph at

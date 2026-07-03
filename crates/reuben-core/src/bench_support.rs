@@ -297,13 +297,13 @@ fn input_index(desc: &Descriptor, name: &str) -> usize {
         .unwrap_or_else(|| panic!("{:?} has no input {name:?}", desc.type_name))
 }
 
-/// Hold a named control (or constant audio-in) at `value` — the held (ZOH) `io.input::<T>` value for a
+/// Hold a named control (or constant audio-in) at `value` — the held (ZOH) `io.read` value for a
 /// `Float`/enum, a constant materialized buffer for an audio input. Sticky across blocks.
 fn set_const(driver: &mut OpDriver, desc: &Descriptor, name: &str, value: f32) {
     driver.set(input_index(desc, name), value);
 }
 
-/// Queue a `Note` event for block 0 on the named event input (the engine routes it to `io.input::<Note>`).
+/// Queue a `Note` event for block 0 on the named event input (the engine routes it to the port's `io.read` stream).
 fn push_note(driver: &mut OpDriver, desc: &Descriptor, name: &str, note: Note) {
     driver.push(input_index(desc, name), 0, note);
 }

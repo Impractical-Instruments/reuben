@@ -9,9 +9,9 @@
 //! polyphony-, transpose-, and snap-composable, exactly like notes arriving from outside.
 //!
 //! Unified model (ADR-0030): `length`, `step1`..`step16`, and `pitch` are **held `Float` inputs**,
-//! each owning its unwired default — read via [`Io::input`]. `gate_mode` is a held **`enum`** input
+//! each owning its unwired default — read via [`Io::read`]. `gate_mode` is a held **`enum`** input
 //! [`GateMode`] {`Degree`, `Gate`}. `clock` is a **`buffer`** input read per-sample via
-//! [`Io::input`] for edge detection.
+//! [`Io::read`] for edge detection.
 //!
 //! Two step interpretations, selected by `gate_mode` (ADR-0022):
 //! - **degree mode** (`Degree`, default): each `stepN` *is* the scale degree to play that beat; a
@@ -66,13 +66,13 @@ crate::operator_contract!(Sequencer {
     outputs: { degrees: note },
 });
 
-/// Message output ordinal of the `degrees` port (the index [`Io::output`] uses).
-pub const MSG_NOTES: usize = OUT_DEGREES;
-
-/// Per-sample value of step `k` (0-based): input `IN_STEP1 + k`.
-const fn in_step(k: usize) -> usize {
-    IN_STEP1 + k
-}
+/// The step-value inputs in pattern order — `step1`..`step16` as typed handles (ADR-0037), so
+/// the per-step snapshot loop reads through the handles the contract emitted (a computed
+/// `IN_STEP1 + k` index would bypass the form typing).
+const IN_STEPS: [crate::operator::In<crate::operator::form::Held<f32>>; NUM_STEPS] = [
+    IN_STEP1, IN_STEP2, IN_STEP3, IN_STEP4, IN_STEP5, IN_STEP6, IN_STEP7, IN_STEP8, IN_STEP9,
+    IN_STEP10, IN_STEP11, IN_STEP12, IN_STEP13, IN_STEP14, IN_STEP15, IN_STEP16,
+];
 
 pub struct Sequencer {
     /// Index of the current step, or -1 before the first beat edge. Continuous across
@@ -112,15 +112,14 @@ impl Operator for Sequencer {
     }
 
     fn process(&mut self, io: &mut Io) {
-        let length =
-            (io.input::<f32>(IN_LENGTH).unwrap_or(8.0).round() as i64).clamp(1, NUM_STEPS as i64);
-        let gate_mode = io.input::<GateMode>(IN_GATE_MODE).unwrap_or_default() == GateMode::Gate;
-        let pitch = io.input::<f32>(IN_PITCH).unwrap_or(0.0);
+        let length = (io.read(IN_LENGTH).round() as i64).clamp(1, NUM_STEPS as i64);
+        let gate_mode = io.read(IN_GATE_MODE) == GateMode::Gate;
+        let pitch = io.read(IN_PITCH);
 
         // Snapshot the held step values: constant for this (sub)block.
         let mut steps = [0.0f32; NUM_STEPS];
         for (k, p) in steps.iter_mut().enumerate() {
-            *p = io.input::<f32>(in_step(k)).unwrap_or(0.0);
+            *p = io.read(IN_STEPS[k]);
         }
         // The degree to emit for a given step, or None for a rest / off-step.
         // - degree mode: the step value IS the degree; below 0 is a rest.
@@ -142,25 +141,25 @@ impl Operator for Sequencer {
         // call sees one constant level. Compare it to the level held across the previous slice for
         // the edge; the slice's frame 0 *is* the change frame (block-absolute), so emitting there is
         // sample-accurate. The held latch carries `prev` across blocks/slices.
-        let g = io.input::<f32>(IN_CLOCK).unwrap_or(0.0);
+        let g = io.read(IN_CLOCK);
         let mut step = self.step;
         let mut held = self.held;
         match self.clock.detect(g) {
             Edge::Rising => {
                 // End any held note, advance, and play the new step.
                 if let Some(m) = held.take() {
-                    io.output::<Note>(MSG_NOTES).emit(0, degree_note(m, 0.0));
+                    io.write(OUT_DEGREES).emit(0, degree_note(m, 0.0));
                 }
                 step = (step + 1).rem_euclid(length);
                 if let Some(m) = note_at(step) {
-                    io.output::<Note>(MSG_NOTES).emit(0, degree_note(m, 1.0));
+                    io.write(OUT_DEGREES).emit(0, degree_note(m, 1.0));
                     held = Some(m);
                 }
             }
             Edge::Falling => {
                 // Release the step's note (the per-beat pluck).
                 if let Some(m) = held.take() {
-                    io.output::<Note>(MSG_NOTES).emit(0, degree_note(m, 0.0));
+                    io.write(OUT_DEGREES).emit(0, degree_note(m, 0.0));
                 }
             }
             Edge::None => {}
@@ -189,7 +188,7 @@ mod tests {
     fn set_controls(d: &mut OpDriver, controls: &[f32]) {
         d.set(IN_LENGTH, controls[0]);
         for k in 0..NUM_STEPS {
-            d.set(in_step(k), controls[1 + k]);
+            d.set(IN_STEPS[k], controls[1 + k]);
         }
         let gate = controls[NUM_STEPS + 1] as usize == 1; // Degree=0, Gate=1
         d.set(
@@ -376,20 +375,27 @@ mod tests {
         // The descriptor's input defaults (length 8, degree mode, ascending 0..7) must reproduce
         // the prior 8-step ascending pattern.
         let desc = Sequencer::descriptor();
-        let length_default = desc.inputs[IN_LENGTH].meta.as_ref().unwrap().default;
+        let length_default = desc.inputs[IN_LENGTH.index()]
+            .meta
+            .as_ref()
+            .unwrap()
+            .default;
         assert_eq!(length_default, 8.0, "default length stays 8");
         assert_eq!(
-            desc.inputs[IN_GATE_MODE].enum_meta().unwrap().default,
+            desc.inputs[IN_GATE_MODE.index()]
+                .enum_meta()
+                .unwrap()
+                .default,
             GateMode::Degree.to_index(),
             "default is degree mode"
         );
 
         let mut defaults = vec![length_default];
-        for k in 0..NUM_STEPS {
-            defaults.push(desc.inputs[in_step(k)].meta.as_ref().unwrap().default);
+        for step in IN_STEPS {
+            defaults.push(desc.inputs[step.index()].meta.as_ref().unwrap().default);
         }
         defaults.push(0.0); // gate_mode -> Degree
-        defaults.push(desc.inputs[IN_PITCH].meta.as_ref().unwrap().default); // pitch
+        defaults.push(desc.inputs[IN_PITCH.index()].meta.as_ref().unwrap().default); // pitch
 
         let clock = beat_gate(100, 8);
         let emits = run(&clock, &defaults);

@@ -24,7 +24,7 @@ use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
-use crate::vocab::harmony::{Harmony, SnapDir, SnapPolicy, SnapTarget};
+use crate::vocab::harmony::SnapPolicy;
 use crate::vocab::pitch::{Note, Pitch};
 
 // Single-source contract (ADR-0025/0030). `target`/`direction` reference the shared `SnapTarget`/
@@ -53,15 +53,15 @@ impl Operator for Snap {
 
     fn process(&mut self, io: &mut Io) {
         let policy = SnapPolicy {
-            target: io.input::<SnapTarget>(IN_TARGET).unwrap_or_default(),
-            direction: io.input::<SnapDir>(IN_DIRECTION).unwrap_or_default(),
+            target: io.read(IN_TARGET),
+            direction: io.read(IN_DIRECTION),
         };
-        let harmony = io.input::<Harmony>(IN_HARMONY).unwrap_or_default();
+        let harmony = io.read(IN_HARMONY);
 
         // Snapshot incoming notes (its borrow of `io` ends here) so the emit loop can borrow `io`
         // mutably. `Note` is `Copy`, so this is alloc-free for the common low-event-count case.
         let mut notes: SmallVec<[(usize, Note); 8]> = SmallVec::new();
-        for s in io.input::<Note>(IN_NOTES) {
+        for s in io.read(IN_NOTES) {
             notes.push((s.frame, s.payload));
         }
 
@@ -71,7 +71,7 @@ impl Operator for Snap {
                 Pitch::Absolute(midi) => harmony.snap(midi, policy),
                 Pitch::Degree(_) => note.pitch,
             };
-            io.output::<Note>(OUT_NOTES)
+            io.write(OUT_NOTES)
                 .emit(frame, Note::new(pitch, note.velocity));
         }
     }
@@ -88,6 +88,7 @@ mod tests {
     use super::*;
     use crate::message::{Arg, Emit};
     use crate::op_driver::OpDriver;
+    use crate::vocab::harmony::{Harmony, SnapDir, SnapTarget};
 
     const SR: f32 = 48_000.0;
 

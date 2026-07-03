@@ -3,7 +3,7 @@
 //! Port types (ADR-0030): `time`, `feedback`, and `mix` are **`F32` inputs**, each owning its
 //! unwired default. When nothing is wired the engine materializes the input from its latched
 //! default; when an LFO or envelope is wired the source buffer passes through. They are read
-//! block-rate via `io.input::<f32>` (the held ZOH value), and `io.input::<&[f32]>(IN_AUDIO)` is always a
+//! block-rate via `io.read` (the held ZOH value), and `io.read(IN_AUDIO)` is always a
 //! buffer (wired source or materialized latch).
 //!
 //! - input 0: `audio` (`Float`) — the signal to delay.
@@ -66,18 +66,15 @@ impl Operator for Delay {
             self.head = 0;
         }
 
-        let feedback = io.input::<f32>(IN_FEEDBACK).unwrap_or(0.0).clamp(0.0, 0.95);
-        let mix = io.input::<f32>(IN_MIX).unwrap_or(0.0).clamp(0.0, 1.0);
+        let feedback = io.read(IN_FEEDBACK).clamp(0.0, 0.95);
+        let mix = io.read(IN_MIX).clamp(0.0, 1.0);
         // Read offset in samples; clamp so the interpolated tap stays inside the buffer.
-        let time = io
-            .input::<f32>(IN_TIME)
-            .unwrap_or(0.0)
-            .clamp(0.001, MAX_DELAY_SECS);
+        let time = io.read(IN_TIME).clamp(0.001, MAX_DELAY_SECS);
         let delay_samples = (time * sample_rate).clamp(1.0, (cap - 1) as f32);
 
         let len = self.buf.len();
         for i in 0..n {
-            let x = io.input::<&[f32]>(IN_AUDIO).get(i).copied().unwrap_or(0.0);
+            let x = io.read(IN_AUDIO)[i];
 
             // Fractional read position `delay_samples` behind the write head.
             let read_pos = self.head as f32 + len as f32 - delay_samples;
@@ -91,7 +88,7 @@ impl Operator for Delay {
             self.buf[self.head] = x + feedback * delayed;
 
             // Dry/wet mix.
-            io.output::<&mut [f32]>(OUT_AUDIO)[i] = (1.0 - mix) * x + mix * delayed;
+            io.write(OUT_AUDIO)[i] = (1.0 - mix) * x + mix * delayed;
 
             self.head = (self.head + 1) % len;
         }
@@ -111,7 +108,7 @@ mod tests {
 
     /// Drive `input` through a fresh Delay at the given values through the real engine, returning the
     /// output buffer. `time`/`feedback`/`mix` are held `Float` controls (`set` once, read via
-    /// `io.input::<f32>`); `audio` is a time-varying Buffer input (`drive`d block by block). The state threads
+    /// `io.read`); `audio` is a time-varying Buffer input (`drive`d block by block). The state threads
     /// across the real 128-frame blocks, so an echo lands at its true sample offset across them.
     fn render(input: &[f32], sample_rate: f32, time: f32, feedback: f32, mix: f32) -> Vec<f32> {
         OpDriver::for_type(Delay::new(), sample_rate)

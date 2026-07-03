@@ -67,9 +67,9 @@ impl Operator for M2s {
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
         let sr = io.sample_rate();
-        let mode = io.input::<M2sMode>(IN_MODE).unwrap_or_default();
-        let rate = io.input::<f32>(IN_RATE).unwrap_or(0.0).max(0.0);
-        let time = io.input::<f32>(IN_TIME).unwrap_or(0.0).max(0.0);
+        let mode = io.read(IN_MODE);
+        let rate = io.read(IN_RATE).max(0.0);
+        let time = io.read(IN_TIME).max(0.0);
 
         // Per-sample smoothing coefficients.
         let tau_samples = (time * sr).max(1e-6);
@@ -87,7 +87,7 @@ impl Operator for M2s {
         // one constant target — read it once. A mid-block retarget arrives as the next slice's frame
         // 0 (the change frame), so the move stays sample-accurate. The smoothing itself runs
         // per-sample below toward that held target. This read ends before the per-sample output write.
-        let t = io.input::<f32>(IN_IN).unwrap_or(0.0);
+        let t = io.read(IN_IN);
         if !initialized {
             cur = t;
             target = t;
@@ -122,7 +122,7 @@ impl Operator for M2s {
                     }
                 }
             }
-            io.output::<&mut [f32]>(OUT_OUT)[i] = cur;
+            io.write(OUT_OUT)[i] = cur;
         }
 
         self.cur = cur;

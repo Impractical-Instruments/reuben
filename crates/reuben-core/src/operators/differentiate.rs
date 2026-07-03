@@ -52,10 +52,10 @@ impl Operator for DifferentiateF32Signal {
         let n = io.frames();
         let mut last = self.last;
         for i in 0..n {
-            let cur = io.input::<&[f32]>(IN_IN).get(i).copied().unwrap_or(0.0);
+            let cur = io.read(IN_IN)[i];
             // First sample ever seeds `last = cur`, so it emits 0 (no predecessor ⇒ no change).
             let prev = last.unwrap_or(cur);
-            io.output::<&mut [f32]>(OUT_OUT)[i] = step(prev, cur);
+            io.write(OUT_OUT)[i] = step(prev, cur);
             last = Some(cur);
         }
         self.last = last;

@@ -54,9 +54,16 @@ impl ScaleField {
         }
     }
 
+    /// The 12-EDO major scale `[0,2,4,5,7,9,11]` — the default. A `const` so
+    /// [`Harmony::DEFAULT`] can be a `const` (the typed-handle default, ADR-0037).
+    pub const MAJOR: Self = Self {
+        offsets: [0, 2, 4, 5, 7, 9, 11, 0, 0, 0, 0, 0],
+        len: 7,
+    };
+
     /// The 12-EDO major scale `[0,2,4,5,7,9,11]` — the default.
     pub fn major() -> Self {
-        Self::new(&[0, 2, 4, 5, 7, 9, 11])
+        Self::MAJOR
     }
 
     /// Number of degrees in the scale (≥ 1).
@@ -96,8 +103,8 @@ pub struct Chord {
 }
 
 impl Chord {
-    /// The empty chord (no chord tones).
-    pub fn empty() -> Self {
+    /// The empty chord (no chord tones). `const` so [`Harmony::DEFAULT`] can be one too.
+    pub const fn empty() -> Self {
         Self {
             tag: ChordTag::None,
             offsets: [0; CHORD_CAP],
@@ -168,15 +175,23 @@ pub struct Harmony {
     pub chord: Chord,
 }
 
+impl Harmony {
+    /// C major, 12-TET, no chord — the unwired-default tonal frame. A `const` (like every vocab
+    /// enum's derive-generated `DEFAULT`) so a typed input handle can carry it as its declared
+    /// default (ADR-0037); [`Default::default`] returns exactly this value.
+    pub const DEFAULT: Harmony = Harmony {
+        root: 60,
+        scale: ScaleField::MAJOR,
+        chord: Chord::empty(),
+    };
+}
+
 impl Default for Harmony {
     /// C major, 12-TET, no chord — so a rig with no context node resolves degrees exactly
-    /// like the prior 12-TET default (existing rigs sound identical).
+    /// like the prior 12-TET default (existing rigs sound identical). One source:
+    /// [`Harmony::DEFAULT`].
     fn default() -> Self {
-        Self {
-            root: 60,
-            scale: ScaleField::major(),
-            chord: Chord::empty(),
-        }
+        Self::DEFAULT
     }
 }
 

@@ -83,12 +83,12 @@ impl Operator for Chord {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        let size = (io.input::<f32>(IN_SIZE).unwrap_or(3.0).round() as usize).clamp(3, MAX_TONES);
+        let size = (io.read(IN_SIZE).round() as usize).clamp(3, MAX_TONES);
 
         // Snapshot the set events for this (sub)block, sorted by frame — can't read the stream
         // while emitting. Each: (frame, root degree, on?). A non-degree note has no root → skip.
         let mut events: SmallVec<[(usize, i32, bool); 8]> = SmallVec::new();
-        for s in io.input::<Note>(IN_SET) {
+        for s in io.read(IN_SET) {
             let root = match s.payload.pitch.degree() {
                 Some(d) => d,
                 None => continue,
@@ -102,7 +102,7 @@ impl Operator for Chord {
                 // Press: emit a note-on per chord tone, and remember the tone set for release.
                 let (tones, count) = chord_tones(root, size);
                 for &t in tones.iter().take(count) {
-                    io.output::<Note>(OUT_DEGREES)
+                    io.write(OUT_DEGREES)
                         .emit(frame, Note::new(Pitch::Degree(t), 1.0));
                 }
                 // Re-press of an already-held root: replace its record (it re-sounds).
@@ -116,7 +116,7 @@ impl Operator for Chord {
                 if let Some(idx) = self.held.iter().position(|h| h.root == root) {
                     let h = self.held[idx];
                     for &t in h.tones.iter().take(h.count) {
-                        io.output::<Note>(OUT_DEGREES)
+                        io.write(OUT_DEGREES)
                             .emit(frame, Note::new(Pitch::Degree(t), 0.0));
                     }
                     self.held.swap_remove(idx);
@@ -141,7 +141,7 @@ mod tests {
     const SR: f32 = 48_000.0;
 
     /// Drive a fresh Chord through the real engine: `size` is a held `Float` (`set` once, read via
-    /// `io.input::<f32>`); the `set` press/release notes are pushed as `Note` events at their global frames.
+    /// `io.read`); the `set` press/release notes are pushed as `Note` events at their global frames.
     /// Renders `n` frames (as real 128-frame blocks) and returns the emitted Messages.
     fn run(n: usize, size: f32, events: &[(usize, Note)]) -> Vec<Emit> {
         let mut d = OpDriver::for_type(Chord::new(), SR);
