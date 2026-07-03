@@ -227,28 +227,17 @@ pub enum PlanError {
 impl Plan {
     /// Convert an inbound OSC datagram — an address plus a flat list of primitive `Arg`s — into the
     /// single typed [`Message`] it routes to, driven by the **destination port's Arg type**
-    /// (ADR-0030, the boundary). Matches the address to a node by prefix and to an input port by
-    /// name (the same rule the render path uses), then calls [`crate::boundary::osc_in_arg`] with
-    /// that [`Port`] to type the flat args (the port's `meta` is what lets a scalar-defaulted
-    /// `f32_buffer` control like `djfilter.position` cross, while bare audio does not). `None` if no
-    /// node/port matches or the args don't fit the port. External OSC carries no timestamp, so the
-    /// Message is stamped frame 0 ("now").
+    /// (ADR-0030, the boundary). Resolves the address to a node + input port via
+    /// [`crate::render::resolve_port`] — the *same* resolver the render routing path uses, so a
+    /// nested node behind a prefix-matching ancestor stays reachable on both paths (issue #165) —
+    /// then calls [`crate::boundary::osc_in_arg`] with that [`Port`] to type the flat args (the
+    /// port's `meta` is what lets a scalar-defaulted `f32_buffer` control like `djfilter.position`
+    /// cross, while bare audio does not). `None` if no node/port matches or the args don't fit the
+    /// port. External OSC carries no timestamp, so the Message is stamped frame 0 ("now").
     pub fn osc_in_message(&self, address: &str, args: &[Arg]) -> Option<Message> {
-        for node in &self.nodes {
-            let Some(local) = crate::render::local_address(address, &node.address) else {
-                continue;
-            };
-            // The address targets this node; a message routes to at most one node, so this node
-            // decides the outcome whether or not a port matches.
-            let arg = node
-                .descriptor
-                .inputs
-                .iter()
-                .find(|p| p.name == local)
-                .and_then(|p| crate::boundary::osc_in_arg(p, args))?;
-            return Some(Message::new(address, arg, 0));
-        }
-        None
+        let (_, _, port) = crate::render::resolve_port(&self.nodes, address)?;
+        let arg = crate::boundary::osc_in_arg(port, args)?;
+        Some(Message::new(address, arg, 0))
     }
 
     /// Instantiate a Graph into an executable Plan (the construction sub-step of a Swap).
