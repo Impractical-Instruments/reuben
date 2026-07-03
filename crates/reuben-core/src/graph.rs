@@ -11,7 +11,7 @@ use slotmap::{new_key_type, SlotMap};
 
 use crate::descriptor::Descriptor;
 use crate::message::Arg;
-use crate::operator::Operator;
+use crate::operator::{Operator, PortIndex};
 
 new_key_type! {
     /// Stable identity of a node within a Graph.
@@ -161,25 +161,32 @@ impl Graph {
         }
     }
 
-    /// Connect `src` output port to `dst` input port.
-    pub fn connect(&mut self, src: NodeKey, src_port: usize, dst: NodeKey, dst_port: usize) {
+    /// Connect `src` output port to `dst` input port. Ports are typed contract handles
+    /// (`OUT_*`/`IN_*`, ADR-0037) or bare indices (the loader's resolved ordinals).
+    pub fn connect(
+        &mut self,
+        src: NodeKey,
+        src_port: impl PortIndex,
+        dst: NodeKey,
+        dst_port: impl PortIndex,
+    ) {
         self.connections.push(Connection {
             src,
-            src_port,
+            src_port: src_port.index(),
             dst,
-            dst_port,
+            dst_port: dst_port.index(),
         });
     }
 
     /// Designate a master output tap broadcast to every logical channel (the mono fan).
-    pub fn tap_output(&mut self, node: NodeKey, port: usize) {
-        self.outputs.push((node, port, None));
+    pub fn tap_output(&mut self, node: NodeKey, port: impl PortIndex) {
+        self.outputs.push((node, port.index(), None));
     }
 
     /// Designate a master output tap feeding a single logical master `channel` (ADR-0026) —
     /// e.g. a `pan` op's `left`/`right` tapped as channel 0 / 1.
-    pub fn tap_output_channel(&mut self, node: NodeKey, port: usize, channel: usize) {
-        self.outputs.push((node, port, Some(channel)));
+    pub fn tap_output_channel(&mut self, node: NodeKey, port: impl PortIndex, channel: usize) {
+        self.outputs.push((node, port.index(), Some(channel)));
     }
 
     /// Find a node by its OSC address. Used by the loader to bind resources to the right

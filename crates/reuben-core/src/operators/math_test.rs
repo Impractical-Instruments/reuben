@@ -7,7 +7,7 @@
 
 use crate::message::{Arg, Emit};
 use crate::op_driver::OpDriver;
-use crate::operator::Operator;
+use crate::operator::{Operator, PortIndex};
 
 /// The sample rate every math-op test renders at.
 pub const SR: f32 = 48_000.0;
@@ -32,7 +32,7 @@ pub fn value_emits<O: Operator + 'static>(op: O, setup: impl FnOnce(&mut OpDrive
 /// the `out` buffer. `setup` calls `d.drive(IN_*, buf)` / `d.set(IN_*, ..)` for each operand.
 pub fn signal_out<O: Operator + 'static>(
     op: O,
-    out: usize,
+    out: impl PortIndex,
     n: usize,
     setup: impl FnOnce(&mut OpDriver),
 ) -> Vec<f32> {

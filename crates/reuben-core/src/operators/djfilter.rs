@@ -17,7 +17,7 @@
 //! surface can sweep the knob via `/djfilter/position`, bit-identical to the old param behavior);
 //! when an LFO/envelope is wired the source buffer passes through and sweeps the port audio-rate.
 //! There is no longer a separate "signal port + same-named param" pair, and no wired/unwired branch
-//! in `process` — `io.input::<&[f32]>(IN_POSITION)` is always a buffer. `position` stays a continuous
+//! in `process` — `io.read(IN_POSITION)` is always a buffer. `position` stays a continuous
 //! bipolar `Float` in [-1, +1] (its sign selects low-pass vs high-pass), not an enum.
 //!
 //! - input 0: `audio` (`Float`) — the signal to filter.
@@ -118,11 +118,11 @@ impl Operator for Djfilter {
 
         // Cutoff endpoints + resonance are the filter's voicing — `Float` inputs read once at
         // block rate (the filter's character, constant for the (sub)block, block-sliced on change).
-        let resonance = io.input::<f32>(IN_RESONANCE).unwrap_or(0.0);
-        let lp_start = io.input::<f32>(IN_LP_START).unwrap_or(0.0);
-        let lp_end = io.input::<f32>(IN_LP_END).unwrap_or(0.0);
-        let hp_start = io.input::<f32>(IN_HP_START).unwrap_or(0.0);
-        let hp_end = io.input::<f32>(IN_HP_END).unwrap_or(0.0);
+        let resonance = io.read(IN_RESONANCE);
+        let lp_start = io.read(IN_LP_START);
+        let lp_end = io.read(IN_LP_END);
+        let hp_start = io.read(IN_HP_START);
+        let hp_end = io.read(IN_HP_END);
 
         // `position` is a Signal input — always a buffer (wired source or materialized default),
         // one read path (ADR-0031). Mode + coefficients are recomputed only when `position`
@@ -134,12 +134,15 @@ impl Operator for Djfilter {
         // The `NaN` seed (≠ anything) forces a compute on the first sample of every block.
         let mut last_pos = f32::NAN;
         let (mut use_hp, mut k, mut a1, mut a2, mut a3) = (false, 0.0, 0.0, 0.0, 0.0);
+        // Resolve the per-sample buffers once, outside the loop: a per-iteration `io.read`/
+        // `io.write` re-derives the slice from `io`'s input/output tables every sample (a table
+        // index + `Option` unwrap per access) — the ADR-0037 handle layer stopped LLVM hoisting
+        // it. Binding flat locals once restores the pre-handle codegen (ADR-0037 perf fix).
+        let position = io.read(IN_POSITION);
+        let audio = io.read(IN_AUDIO);
+        let out = io.write(OUT_AUDIO);
         for i in 0..n {
-            let pos = io
-                .input::<&[f32]>(IN_POSITION)
-                .get(i)
-                .copied()
-                .unwrap_or(0.0);
+            let pos = position[i];
 
             if pos != last_pos {
                 let (uh, cutoff) = target(pos, lp_start, lp_end, hp_start, hp_end);
@@ -148,9 +151,8 @@ impl Operator for Djfilter {
                 last_pos = pos;
             }
 
-            let x = io.input::<&[f32]>(IN_AUDIO).get(i).copied().unwrap_or(0.0);
-            let (lp, hp) = self.svf_step(x, k, a1, a2, a3);
-            io.output::<&mut [f32]>(OUT_AUDIO)[i] = if use_hp { hp } else { lp };
+            let (lp, hp) = self.svf_step(audio[i], k, a1, a2, a3);
+            out[i] = if use_hp { hp } else { lp };
         }
     }
 
@@ -174,7 +176,7 @@ mod tests {
         [0.1, 20_000.0, 200.0, 20.0, 6_000.0]
     }
 
-    /// Set the 5 held `Float` voicing controls (read block-rate via `io.input::<f32>`) on a driver.
+    /// Set the 5 held `Float` voicing controls (read block-rate via `io.read`) on a driver.
     fn set_voicing(d: &mut OpDriver, voicing: [f32; 5]) -> &mut OpDriver {
         d.set(IN_RESONANCE, voicing[0])
             .set(IN_LP_START, voicing[1])

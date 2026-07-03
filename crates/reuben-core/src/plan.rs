@@ -97,9 +97,12 @@ pub struct PlanNode {
     pub ops: Vec<Box<dyn Operator>>,
     pub descriptor: Descriptor,
     /// For each input port (full input-port order): the source's arena buffer index (a one-element
-    /// `Vec`), or `None`. `Some` only for a [`Buffer`](PortType::F32Buffer) input — either wired to a
-    /// Buffer source (zero-copy share) or fed by a scalar source and so **materialized** (a dedicated
-    /// scratch buffer, see `materialize`). Held / Stream inputs carry no buffer (`None`).
+    /// `Vec`), or `None`. `Some` for **every** [`Buffer`](PortType::F32Buffer) input — wired to a
+    /// Buffer source (zero-copy share) or **materialized** (a dedicated scratch buffer, see
+    /// `materialize`) when fed by a scalar source *or unwired* (an unwired bare buffer fills with
+    /// silence from its zero-seeded latch). That totality is the **buffer-presence invariant**
+    /// (ADR-0037): `process` always sees a dense length-n buffer on a Signal input, so a typed
+    /// Signal read indexes directly. Held / Stream inputs carry no buffer (`None`).
     pub inputs: Vec<Option<Vec<usize>>>,
     /// Per input port (full input-port order): its [`PortKind`], precomputed at Instantiate so the
     /// hot message-routing path reads the bucket directly instead of re-deriving it from the port
@@ -333,11 +336,13 @@ impl Plan {
             // wiring below and the per-node `input_kinds` the hot router reads each block.
             let input_kinds: Vec<PortKind> = descriptor.inputs.iter().map(port_kind).collect();
             for (port, &kind) in input_kinds.iter().enumerate() {
-                // Buffer and F32 (float control) inputs both present a per-sample buffer to
-                // `io.input::<&[f32]>` (ADR-0030): wired to a Buffer source they share it zero-copy;
-                // otherwise (unwired, or fed by a scalar) the engine materializes a scratch filled
-                // ZOH from the latch. Vocab inputs (enum / Note / Harmony) carry no buffer — they
-                // are read via `io.input::<T>` / `io.input::<Note>`.
+                // Every Signal (Buffer) input presents a per-sample buffer to the operator's
+                // Signal read (ADR-0030): wired to a Buffer source it shares it zero-copy;
+                // otherwise (unwired, or fed by a scalar) the engine materializes a scratch
+                // filled ZOH from the latch — an unwired *bare* buffer's latch seeds 0.0, so it
+                // fills with silence. No Signal input is ever `None`: the buffer-presence
+                // invariant (ADR-0037). Held / Event inputs carry no buffer — they are read held
+                // / as a stream.
                 if kind != PortKind::Signal {
                     inputs.push(None);
                     continue;

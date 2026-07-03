@@ -2,26 +2,24 @@
 //! (key/scale/chord) (ADR-0013, ADR-0030).
 //!
 //! It owns the latched [`Harmony`] and publishes it onto a `harmony` output port; followers (the
-//! Voicer's degree resolution, a snap op) read "what's the key/chord right now" via
-//! [`Io::input`]. A single default instance in a Rig makes everything agree out of the box
-//! — the same on-ramp as the default Clock — without baking *global* into the core (multiple harmony
-//! nodes = polytonality).
+//! Voicer's degree resolution, a snap op) read "what's the key/chord right now" through their
+//! held `harmony` input handle. A single default instance in a Rig makes everything agree out of
+//! the box — the same on-ramp as the default Clock — without baking *global* into the core
+//! (multiple harmony nodes = polytonality).
 //!
 //! Per-field **last-write-wins** (ADR-0013):
-//! - **Static fields** — `root` and the scale (`degrees` + `s0`..`s11` step offsets) — are
-//!   materialized `Float` inputs (ADR-0030; the good-button: dial the key, shape the scale). They
-//!   are per-sample buffers, so `process` scans them for change frames and publishes at the exact
-//!   frame — a mid-block `/harmony/root` stays sample-accurate (ADR-0015) and each can be
-//!   wired/modulated.
+//! - **Static fields** — `root` and the scale (`degrees` + `s0`..`s11` step offsets) — are held
+//!   `f32` Value inputs (ADR-0031; the good-button: dial the key, shape the scale). A mid-block
+//!   change block-slices `process` at its frame, so the publish stays sample-accurate (ADR-0015).
 //! - **Dynamic field** — `chord` — arrives on the held `set` (`Harmony`) input: its chord field is
 //!   adopted (LWW). The chord-progression op that drives it is deferred (ADR-0030); the engine
 //!   block-slices a `set` change to the segment boundary, so a chord change lands frame-accurate.
 //!
-//! The node publishes **on change** (emit-on-change, ADR-0015): the first block, and any block where
-//! root/scale/chord differ from the last published value — so steady state is allocation-free.
+//! The node publishes **on change** (emit-on-change, ADR-0015): the first block, and any (sub)block
+//! where root/scale/chord differ from the last published value — so steady state is allocation-free.
 //!
 //! - input `set` (`Harmony`, held) — adopts its `chord` field.
-//! - inputs `root`, `degrees`, `s0`..`s11` (`Float`) — the static key/scale fields.
+//! - inputs `root`, `degrees`, `s0`..`s11` (`f32`, held) — the static key/scale fields.
 //! - output `harmony` (`harmony`) — the latched tonal context followers read.
 
 use crate::descriptor::Descriptor;
@@ -53,8 +51,12 @@ crate::operator_contract!(HarmonyOp {
     outputs: { harmony: harmony },
 });
 
-/// Input ordinal of the first scale step offset; degree `k` is input `IN_S0 + k`.
-pub const IN_STEP0: usize = IN_S0;
+/// The scale step-offset inputs in degree order — `s0`..`s11` as typed handles (ADR-0037), so a
+/// loop over degrees reads through the handles the contract emitted (a computed `IN_S0 + k`
+/// index would bypass the form typing).
+const IN_STEPS: [crate::operator::In<crate::operator::form::Held<f32>>; NUM_STEPS] = [
+    IN_S0, IN_S1, IN_S2, IN_S3, IN_S4, IN_S5, IN_S6, IN_S7, IN_S8, IN_S9, IN_S10, IN_S11,
+];
 
 pub struct HarmonyOp {
     /// Latched chord, persisted across blocks (LWW from the `set` input's chord field).
@@ -62,10 +64,6 @@ pub struct HarmonyOp {
     /// Last value published, to publish only on change (ADR-0015). `None` until the first block,
     /// which always publishes (so the baseline picks up a non-default config).
     last: Option<Harmony>,
-    /// Reused scratch for candidate publish frames, kept across blocks so steady state never
-    /// reallocates. A `Float` field wired to a per-sample source can push up to `block_size - 1`
-    /// change frames; a node-owned `Vec` that grows once to block size avoids an audio-thread alloc.
-    frames: Vec<usize>,
 }
 
 impl Default for HarmonyOp {
@@ -73,7 +71,6 @@ impl Default for HarmonyOp {
         Self {
             chord: Chord::empty(),
             last: None,
-            frames: Vec::new(),
         }
     }
 }
@@ -83,22 +80,16 @@ impl HarmonyOp {
         Self::default()
     }
 
-    /// Build the current context from the `Float` inputs **at frame `f`** + the latched chord. The
-    /// static fields are per-sample buffers, so reading them at the change frame is what keeps a
-    /// mid-block `/harmony/root` sample-accurate (ADR-0015). Falls back to a field's held default
-    /// when it has no materialized buffer.
-    fn current_at(&self, io: &Io, f: usize) -> Harmony {
-        let at = |port| {
-            io.input::<&[f32]>(port)
-                .get(f)
-                .copied()
-                .unwrap_or_else(|| io.input::<f32>(port).unwrap_or(0.0))
-        };
-        let root = at(IN_ROOT).round() as i32;
-        let degrees = (at(IN_DEGREES).round() as usize).clamp(1, NUM_STEPS);
+    /// Build the current context from the held key/scale inputs + the latched chord. The static
+    /// fields are held Values (ADR-0031): a mid-block `/harmony/root` block-slices `process` at
+    /// its change frame, so reading the held value once per (sub)block call is what keeps the
+    /// publish sample-accurate (ADR-0015).
+    fn current(&self, io: &Io) -> Harmony {
+        let root = io.read(IN_ROOT).round() as i32;
+        let degrees = (io.read(IN_DEGREES).round() as usize).clamp(1, NUM_STEPS);
         let mut offsets = [0i16; SCALE_CAP];
         for (k, o) in offsets.iter_mut().enumerate().take(degrees) {
-            *o = at(IN_STEP0 + k).round() as i16;
+            *o = io.read(IN_STEPS[k]).round() as i16;
         }
         Harmony {
             root,
@@ -116,47 +107,20 @@ impl Operator for HarmonyOp {
     }
 
     fn process(&mut self, io: &mut Io) {
-        // Adopt the chord from the held `set` Harmony, if wired (the engine block-slices a change to
-        // the segment boundary, so it is frame-accurate at frame 0).
-        if let Some(h) = io.input::<Harmony>(IN_SET) {
-            self.chord = h.chord;
-        }
+        // Adopt the chord from the held `set` Harmony (LWW). The engine seeds an unwired port
+        // with the default `Harmony` (empty chord), so this read is total; a change block-slices
+        // to the segment boundary, landing frame-accurate at this call's frame 0.
+        self.chord = io.read(IN_SET).chord;
 
-        // Candidate publish frames: frame 0 (first-block / cross-block change) and every interior
-        // frame where a static `Float` field changes (scan only inputs that varied, so steady state
-        // is free — ADR-0030). Take the reused scratch out so the publish walk can borrow `self`
-        // mutably; restore it at the end, retaining capacity (alloc-free steady state).
-        let n = io.frames();
-        let mut frames = std::mem::take(&mut self.frames);
-        frames.clear();
-        frames.push(0);
-        for port in [IN_ROOT, IN_DEGREES]
-            .into_iter()
-            .chain(IN_STEP0..IN_STEP0 + NUM_STEPS)
-        {
-            if io.varying(port) {
-                let buf = io.input::<&[f32]>(port);
-                for i in 1..buf.len().min(n) {
-                    if buf[i] != buf[i - 1] {
-                        frames.push(i);
-                    }
-                }
-            }
+        // Publish on change (ADR-0015), once per (sub)block call: every key/scale field is a
+        // held Value, so any mid-block change starts a new slice — frame 0 of *this* call is the
+        // change frame, and the `MsgWriter` stamps it block-absolute. Steady state emits nothing
+        // (the value compare short-circuits the deduping writer).
+        let cur = self.current(io);
+        if self.last != Some(cur) {
+            io.write(OUT_HARMONY).set(0, cur);
+            self.last = Some(cur);
         }
-        frames.sort_unstable();
-        frames.dedup();
-
-        // Walk the frames in order: publish the resolved context if it differs from the last
-        // published value.
-        for &f in &frames {
-            let cur = self.current_at(io, f);
-            if self.last != Some(cur) {
-                io.output::<Harmony>(OUT_HARMONY).set(f, cur);
-                self.last = Some(cur);
-            }
-        }
-
-        self.frames = frames;
     }
 
     fn spawn(&self) -> Box<dyn Operator> {

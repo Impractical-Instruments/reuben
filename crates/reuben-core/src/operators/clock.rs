@@ -7,7 +7,7 @@
 //! position); groove, swing, and meter are separate concerns (ADR-0006).
 //!
 //! - input 0: `sync` (`Note` event) — a trigger port (ADR-0030): **any** event re-zeroes the
-//!   phase at its (sample-accurate) frame, locating position 1. Read via `io.input::<Note>` — the port,
+//!   phase at its (sample-accurate) frame, locating position 1. Read via `io.read(IN_SYNC)` — the port,
 //!   not the address, identifies it, so there is no address-filtering.
 //! - output 0: `phase` (`Buffer`) — beat phasor, a [0, 1) sawtooth that wraps once per beat.
 //!   **Unaffected by `division`** — it is always the once-per-beat phasor.
@@ -26,7 +26,6 @@ use smallvec::SmallVec;
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
-use crate::vocab::pitch::Note;
 
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Clock {
@@ -65,19 +64,19 @@ impl Operator for Clock {
 
         // Beats advanced per sample. Tempo is constant for this (sub)block (block-sliced).
         let dt: f64 = if sample_rate > 0.0 {
-            (io.input::<f32>(IN_TEMPO).unwrap_or(120.0).max(0.0) as f64 / 60.0) / sample_rate as f64
+            (io.read(IN_TEMPO).max(0.0) as f64 / 60.0) / sample_rate as f64
         } else {
             0.0
         };
         // Gate subdivisions per beat. division 1 = the original once-per-beat gate; N pulses N
         // times per beat. Rounded and floored at 1 so it never collapses the gate.
-        let division = (io.input::<f32>(IN_DIVISION).unwrap_or(1.0).round() as f64).max(1.0);
+        let division = (io.read(IN_DIVISION).round() as f64).max(1.0);
 
         // Reset frames within this (sub)block, sorted. Any `sync` event re-zeroes the phase at its
         // exact sample (ADR-0030: the port identifies it, payload ignored) — a sample-accurate
         // position locate.
         let mut resets: SmallVec<[usize; 4]> = SmallVec::new();
-        for ev in io.input::<Note>(IN_SYNC) {
+        for ev in io.read(IN_SYNC) {
             if ev.frame < n {
                 resets.push(ev.frame);
             }
@@ -91,7 +90,7 @@ impl Operator for Clock {
 
         let end;
         {
-            let out = io.output::<&mut [f32]>(OUT_PHASE);
+            let out = io.write(OUT_PHASE);
             let mut phase = start;
             let mut ri = 0;
             for (i, s) in out.iter_mut().enumerate().take(n) {
@@ -115,7 +114,7 @@ impl Operator for Clock {
             // `MsgWriter` change only at each rising/falling edge instead of writing every sample.
             // The held level carries across blocks (`self.gate_high`), so frame 0 only re-emits on a
             // genuine change. A downstream Value/materialize bridge ZOH-reconstructs the dense gate.
-            let mut out = io.output::<f32>(OUT_GATE);
+            let mut out = io.write(OUT_GATE);
             let mut phase = start;
             let mut ri = 0;
             let mut high = self.gate_high;
@@ -156,6 +155,7 @@ crate::register_operator!(Clock);
 mod tests {
     use super::*;
     use crate::op_driver::OpDriver;
+    use crate::vocab::pitch::Note;
     use crate::vocab::pitch::Pitch;
 
     const SR: f32 = 48_000.0;

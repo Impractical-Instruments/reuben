@@ -52,22 +52,28 @@ Run all `reuben`/`cargo` commands from the repo root.
      source); the operator-specific contract follows.
    - **Single-Voice**: write one mono stream. Polyphony is not your concern — the Voicer hosts N
      voice sub-patches and sums them (ADR-0032).
-   - **Read each input by its `Arg` type** (ADR-0031) — the payload `T` selects the read view; it's a
-     *static* choice, never conditional on what's wired:
-     - **Signal (`f32_buffer`)** → `io.input::<&[f32]>(IN) -> &[f32]` — per-sample DSP, also the
-       materialized buffer of a Value wired into a Signal input. Always `io.frames()` long;
-       `io.varying(IN)` lets a const-folding op skip recompute on a held block.
-     - **held Value (`f32`)** → `io.input::<f32>(IN) -> Option<f32>` — a block-rate scalar.
-     - **enum** → `io.input::<MyVocabEnum>(IN).unwrap_or_default()` — a real Rust enum, not an index.
-     - **`Harmony`** → `io.input::<Harmony>(IN)`; **`Note`** → `io.input::<Note>(IN)` (an iterator of
+   - **Read each input through its typed handle** (ADR-0037) — `io.read(IN_X)`; the handle's
+     form (fixed by the contract declaration) selects the read shape, so a wrong-form read does
+     not compile:
+     - **Signal (`f32_buffer`)** → `io.read(IN) -> &[f32]` — per-sample DSP, also the
+       materialized buffer of a Value wired into a Signal input. **Always exactly `io.frames()`
+       long** (the buffer-presence invariant) — index `io.read(IN)[i]` directly, no
+       `.get(i).unwrap_or(..)` guard; `io.varying(IN)` lets a const-folding op skip recompute on
+       a held block.
+     - **held Value (`f32`)** → `io.read(IN) -> f32` — a block-rate scalar, defaulted to the
+       contract's declared default (never restate the default in `process`).
+     - **enum** → `io.read(IN) -> MyVocabEnum` — a real Rust enum, not an index; defaults to the
+       type's `#[default]` variant.
+     - **`Harmony`** → `io.read(IN) -> Harmony`; **`Note`** → `io.read(IN)` (an iterator of
        `Stamped<Note>` — `.frame`, `.payload`).
-   - **Write outputs by `Arg` type** — Signal → `io.output::<&mut [f32]>(OUT)`; a `Note` via
-     `io.output::<Note>(OUT)` (`.emit(frame, note)`, append-only), a held `f32`/`Harmony` via
-     `io.output::<f32>`/`io.output::<Harmony>` (`.set(frame, v)`, dedup + last-write-wins).
+   - **Write outputs through their handles** — Signal → `io.write(OUT) -> &mut [f32]`; a `Note`
+     via `io.write(OUT)` (`.emit(frame, note)`, append-only); a held `f32`/`Harmony` via
+     `io.write(OUT)` (`.set(frame, v)`, dedup + last-write-wins).
    - **Persistent state carries across blocks** — keep phase/filter state in the struct; use `f64`
      for a phase accumulator so it doesn't drift (lfo/clock).
    - **`spawn`** resets per-voice state but **carries any resource binding forward** (ADR-0016).
-   - The **index consts are the contract** downstream nodes reference — don't renumber casually.
+   - The **typed `IN_*`/`OUT_*` handles are the contract** downstream nodes reference — don't
+     renumber casually.
 
 4. **Close the gate** — `validate` can't prove DSP is correct, so the gate is richer than the
    patcher's. In order:

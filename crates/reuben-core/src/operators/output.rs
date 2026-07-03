@@ -7,13 +7,16 @@
 //! - input 0: `audio` (`Buffer`) — per-sample audio in (the wired master bus).
 //! - output 0: `audio` (`Buffer`) — copy of the input, tapped as master.
 
-use crate::descriptor::{Descriptor, Port};
+use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-/// `audio` input (`Buffer`).
-pub const IN_AUDIO: usize = 0;
-/// `audio` output (`Buffer`).
-pub const OUT_AUDIO: usize = 0;
+// Single-source contract (ADR-0025/0030): one declaration -> typed IN_/OUT_ handles + the
+// Descriptor. Was the one hand-written descriptor; folded into the macro with the typed-handle
+// switch (ADR-0037) so its ports get handles like every other operator.
+crate::operator_contract!(Output {
+    inputs:  { audio: f32_buffer },
+    outputs: { audio: f32_buffer },
+});
 
 #[derive(Default)]
 pub struct Output;
@@ -26,24 +29,15 @@ impl Output {
 
 impl Operator for Output {
     fn descriptor() -> Descriptor {
-        Descriptor {
-            type_name: "output",
-            inputs: vec![Port::f32_buffer("audio")],
-            outputs: vec![Port::f32_buffer("audio")],
-            constants: vec![],
-            resources: vec![],
-        }
+        Self::contract()
     }
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        // Copy input -> output one sample at a time so the input borrow ends before each
-        // output write — passthrough with no allocation (realtime-safe). `audio` is a `Buffer`
-        // input (the wired master bus).
-        for i in 0..n {
-            let v = io.input::<&[f32]>(IN_AUDIO).get(i).copied().unwrap_or(0.0);
-            io.output::<&mut [f32]>(OUT_AUDIO)[i] = v;
-        }
+        // Unity passthrough. The input slice borrows the arena (not `io`), so it stays valid
+        // alongside the mutable output borrow — sample-exact copy, no allocation (realtime-safe).
+        let input = io.read(IN_AUDIO);
+        io.write(OUT_AUDIO)[..n].copy_from_slice(&input[..n]);
     }
 
     fn spawn(&self) -> Box<dyn Operator> {

@@ -31,8 +31,7 @@ use crate::message::{Arg, Message};
 use crate::operator::{Io, Operator};
 use crate::plan::{Plan, PlanError};
 use crate::render::{render_plan, RenderScratch, SerialExecutor};
-use crate::vocab::harmony::Harmony;
-use crate::vocab::pitch::{Note, Pitch};
+use crate::vocab::pitch::Pitch;
 
 // Single-source contract (ADR-0025/0030/0032): `notes` is a `Note` event port, `harmony` a held
 // `Harmony`; the one output `audio` is the summed voice mix. `voices` sizes the hosted voice pool —
@@ -272,19 +271,19 @@ impl Operator for Voicer {
         let n = io.frames();
         if self.slots.is_empty() {
             // No voice patch bound (e.g. driven bare): output silence.
-            let out = io.output::<&mut [f32]>(OUT_AUDIO);
+            let out = io.write(OUT_AUDIO);
             out[..n].iter_mut().for_each(|s| *s = 0.0);
             return;
         }
 
         // Current context (constant this segment; the engine slices at context changes, so a held
         // degree re-spells at the change frame). Default when unconnected.
-        let harmony = io.input::<Harmony>(IN_HARMONY).unwrap_or_default();
+        let harmony = io.read(IN_HARMONY);
 
         // Snapshot note events for this (sub)block, sorted by frame. (Can't read the stream while an
         // output borrow is live, so snapshot first.)
         self.events.clear();
-        for s in io.input::<Note>(IN_NOTES) {
+        for s in io.read(IN_NOTES) {
             self.events
                 .push((s.frame.min(n), s.payload.velocity > 0.0, s.payload.pitch));
         }
@@ -313,7 +312,7 @@ impl Operator for Voicer {
         }
 
         // Render each voice into its own arena and sum its audio (fixed index order — determinism).
-        let out = io.output::<&mut [f32]>(OUT_AUDIO);
+        let out = io.write(OUT_AUDIO);
         out[..n].iter_mut().for_each(|s| *s = 0.0);
         let Voicer {
             pool,

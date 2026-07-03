@@ -66,16 +66,16 @@ impl Operator for Lfo {
 
         // Cycles advanced per sample. Rate is constant for this (sub)block (block-sliced).
         let dt: f64 = if sample_rate > 0.0 {
-            io.input::<f32>(IN_RATE).unwrap_or(0.0).max(0.0) as f64 / sample_rate as f64
+            io.read(IN_RATE).max(0.0) as f64 / sample_rate as f64
         } else {
             0.0
         };
-        let depth = io.input::<f32>(IN_DEPTH).unwrap_or(0.0);
-        let center = io.input::<f32>(IN_CENTER).unwrap_or(0.0);
+        let depth = io.read(IN_DEPTH);
+        let center = io.read(IN_CENTER);
 
         let mut phase = self.phase;
         let sine = self.sine; // `&'static`, copied out so the loop doesn't hold a borrow of `self`
-        let out = io.output::<&mut [f32]>(OUT_OUT);
+        let out = io.write(OUT_OUT);
         for s in out.iter_mut().take(n) {
             // Reduce the f64 phase to an f32 in [0, 1): the f64→f32 cast can round a value just
             // below 1.0 up to 1.0, so fold it back to meet `lookup`'s [0, 1) contract. The f64
@@ -105,7 +105,7 @@ mod tests {
 
     /// Drive `lfo` for `n` frames at the given params through the real engine, returning the out
     /// buffer. `rate`/`depth`/`center` are held `Float` controls — set once (sticky), read via
-    /// `io.input::<f32>`; `out` is the operator's Buffer output, accumulated across the real 128-frame blocks.
+    /// `io.read`; `out` is the operator's Buffer output, accumulated across the real 128-frame blocks.
     fn run(n: usize, rate: f32, depth: f32, center: f32) -> Vec<f32> {
         OpDriver::for_type(Lfo::new(), SR)
             .set(IN_RATE, rate)

@@ -5,10 +5,10 @@
 //! default (so `/filter/cutoff 3000` needs no upstream node, bit-identical to the old param
 //! behavior); when an LFO or envelope is wired the source buffer passes through and sweeps the
 //! port audio-rate. There is no longer a separate "signal port + same-named param" pair, and no
-//! wired/unwired branch in `process` — `io.input::<&[f32]>(IN_CUTOFF)` is always a buffer.
+//! wired/unwired branch in `process` — `io.read(IN_CUTOFF)` is always a buffer.
 //!
 //! `mode` is an **`Enum` input** [`FilterMode`] {`Lp`, `Hp`, `Bp`}: a held, live-switchable choice
-//! read via `io.input::<FilterMode>`. The TPT / Cytomic SVF computes all three responses from the
+//! read via `io.read(IN_MODE)`. The TPT / Cytomic SVF computes all three responses from the
 //! same integrator state, so `mode` selects the output tap (ADR-0022): `lp = v2`, `bp = v1`,
 //! `hp = x - k·bp - lp`. `Lp` is the default and bit-identical to the prior lowpass-only filter.
 //!
@@ -109,22 +109,30 @@ impl Operator for Filter {
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
         let sample_rate = io.sample_rate();
-        let mode = io.input::<FilterMode>(IN_MODE).unwrap_or_default();
+        let mode = io.read(IN_MODE);
 
         // `cutoff`/`resonance` are Signal inputs — always a buffer (wired source or materialized
         // default), one read path (ADR-0031). When neither changed this block (`varying` false,
         // both held), compute coefficients once — the old fast path, and `Lp` via `svf_step` is
         // bit-identical to the prior param-only filter.
         if !io.varying(IN_CUTOFF) && !io.varying(IN_RESONANCE) {
-            let cutoff = io.input::<f32>(IN_CUTOFF).unwrap_or(0.0);
-            let resonance = io.input::<f32>(IN_RESONANCE).unwrap_or(0.0);
+            // Held-unchanged this block, so the materialized buffer is uniform — sample 0 is the
+            // held value (the former separate held-scalar read of the same latch).
+            let cutoff = io.read(IN_CUTOFF)[0];
+            let resonance = io.read(IN_RESONANCE)[0];
             let (a1, a2, a3, k) = coeffs(cutoff, resonance, sample_rate);
+            // Resolve the audio slice and output buffer once, outside the loop. A per-sample
+            // `io.read(IN_AUDIO)[i]` / `io.write(OUT_AUDIO)[i]` re-derives the slice from `io`'s
+            // input/output tables every iteration (a table index + `Option` unwrap per access);
+            // the ADR-0037 handle layer stopped LLVM from hoisting that out. Binding two flat
+            // locals once restores the pre-handle codegen (ADR-0037 perf fix).
+            let audio = io.read(IN_AUDIO);
+            let out = io.write(OUT_AUDIO);
             for i in 0..n {
-                let x = io.input::<&[f32]>(IN_AUDIO).get(i).copied().unwrap_or(0.0);
-                io.output::<&mut [f32]>(OUT_AUDIO)[i] = if mode == FilterMode::Lp {
-                    self.svf_step(x, a1, a2, a3)
+                out[i] = if mode == FilterMode::Lp {
+                    self.svf_step(audio[i], a1, a2, a3)
                 } else {
-                    self.svf_step_mode(x, a1, a2, a3, k, mode)
+                    self.svf_step_mode(audio[i], a1, a2, a3, k, mode)
                 };
             }
             return;
@@ -139,14 +147,15 @@ impl Operator for Filter {
         let mut last_cutoff = f32::NAN;
         let mut last_resonance = f32::NAN;
         let (mut a1, mut a2, mut a3, mut k) = (0.0, 0.0, 0.0, 0.0);
+        // Hoist the per-sample buffers to flat locals (see the fast-path note): resolves each
+        // slice once instead of re-deriving it from `io` on every `io.read`/`io.write` access.
+        let audio = io.read(IN_AUDIO);
+        let cutoff_buf = io.read(IN_CUTOFF);
+        let resonance_buf = io.read(IN_RESONANCE);
+        let out = io.write(OUT_AUDIO);
         for i in 0..n {
-            let x = io.input::<&[f32]>(IN_AUDIO).get(i).copied().unwrap_or(0.0);
-            let cutoff = io.input::<&[f32]>(IN_CUTOFF).get(i).copied().unwrap_or(0.0);
-            let resonance = io
-                .input::<&[f32]>(IN_RESONANCE)
-                .get(i)
-                .copied()
-                .unwrap_or(0.0);
+            let cutoff = cutoff_buf[i];
+            let resonance = resonance_buf[i];
             // NaN seed forces a compute on the first sample (NaN != anything).
             if cutoff != last_cutoff || resonance != last_resonance {
                 (a1, a2, a3, k) = coeffs(cutoff, resonance, sample_rate);
@@ -154,10 +163,10 @@ impl Operator for Filter {
                 last_resonance = resonance;
             }
             // Lowpass stays on `svf_step` for bit-identity with the pre-V1.3 modulated path.
-            io.output::<&mut [f32]>(OUT_AUDIO)[i] = if mode == FilterMode::Lp {
-                self.svf_step(x, a1, a2, a3)
+            out[i] = if mode == FilterMode::Lp {
+                self.svf_step(audio[i], a1, a2, a3)
             } else {
-                self.svf_step_mode(x, a1, a2, a3, k, mode)
+                self.svf_step_mode(audio[i], a1, a2, a3, k, mode)
             };
         }
     }

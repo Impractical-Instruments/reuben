@@ -584,9 +584,12 @@ fn process_node(
 
     // Materialize each Buffer-from-scalar input into its scratch buffer (ADR-0030): fill from the
     // latched scalar, overwrite with each mid-block change from its frame onward, persist the final
-    // value as the next block's latch, and flag `varying`. Done before the output-swap — scratch
-    // buffers are inputs, disjoint from this node's outputs. These writes do NOT split the block;
-    // sample-accuracy comes from writing them into the buffer at their frame.
+    // value as the next block's latch, and flag `varying`. Unwired inputs materialize too — a bare
+    // buffer's latch seeds 0.0, so it fills with silence — which is what upholds the
+    // buffer-presence invariant (ADR-0037): every Signal input reaches `process` as a dense
+    // length-n slice. Done before the output-swap — scratch buffers are inputs, disjoint from this
+    // node's outputs. These writes do NOT split the block; sample-accuracy comes from writing them
+    // into the buffer at their frame.
     //
     // Cached steady state: a held-unchanged input is refilled only when it must be. Its scratch is
     // excluded from the per-block arena clear, so it persists; a constant block leaves it untouched.

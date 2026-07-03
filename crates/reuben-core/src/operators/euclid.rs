@@ -17,8 +17,8 @@
 //! `s + r`. E(4,16) is four-on-the-floor (steps 0,4,8,12); E(3,8) is the tresillo (0,3,6).
 //!
 //! Unified model (ADR-0030): `steps`, `pulses`, and `rotation` are **held `Float` inputs**, each
-//! owning its unwired default — read block-rate via [`Io::input`] (rounded to an integer, then
-//! clamped/wrapped). `clock` is a **`buffer`** input read per-sample via [`Io::input`] for edge
+//! owning its unwired default — read block-rate via [`Io::read`] (rounded to an integer, then
+//! clamped/wrapped). `clock` is a **`buffer`** input read per-sample via [`Io::read`] for edge
 //! detection. Edge behaviour is forgiving for live knob-twiddling and modulation: `pulses` clamps
 //! to `0..=steps` (0 = silence, `steps` = every step hits) and `rotation` wraps modulo `steps`.
 //!
@@ -100,34 +100,32 @@ impl Operator for Euclid {
 
     fn process(&mut self, io: &mut Io) {
         // Held controls, constant for this (sub)block (the engine block-slices at changes).
-        let total =
-            (io.input::<f32>(IN_STEPS).unwrap_or(16.0).round() as i64).clamp(1, NUM_STEPS as i64);
-        let pulses = (io.input::<f32>(IN_PULSES).unwrap_or(4.0).round() as i64).clamp(0, total);
-        let rotation =
-            (io.input::<f32>(IN_ROTATION).unwrap_or(0.0).round() as i64).rem_euclid(total);
+        let total = (io.read(IN_STEPS).round() as i64).clamp(1, NUM_STEPS as i64);
+        let pulses = (io.read(IN_PULSES).round() as i64).clamp(0, total);
+        let rotation = (io.read(IN_ROTATION).round() as i64).rem_euclid(total);
 
         // `clock` is a held Value (ADR-0031): the engine block-slices at every clock change, so this
         // call sees one constant level. Compare it to the level held across the previous slice to
         // detect the edge; the slice's frame 0 *is* the change frame (block-absolute), so emitting
         // there is sample-accurate. The held latch carries `prev` across blocks/slices.
-        let g = io.input::<f32>(IN_CLOCK).unwrap_or(0.0);
+        let g = io.read(IN_CLOCK);
         match self.clock.detect(g) {
             Edge::Rising => {
                 // Close any open gate, advance, and open a gate on a pulse step.
                 if self.high {
-                    io.output::<f32>(OUT_GATE).set(0, 0.0f32);
+                    io.write(OUT_GATE).set(0, 0.0f32);
                     self.high = false;
                 }
                 self.step = (self.step + 1).rem_euclid(total);
                 if is_pulse(self.step, total, pulses, rotation) {
-                    io.output::<f32>(OUT_GATE).set(0, 1.0f32);
+                    io.write(OUT_GATE).set(0, 1.0f32);
                     self.high = true;
                 }
             }
             Edge::Falling => {
                 // Close the gate so its width tracks the clock pulse.
                 if self.high {
-                    io.output::<f32>(OUT_GATE).set(0, 0.0f32);
+                    io.write(OUT_GATE).set(0, 0.0f32);
                     self.high = false;
                 }
             }
@@ -353,9 +351,26 @@ mod tests {
     fn descriptor_defaults_match_the_frozen_contract() {
         // The contract freeze the rig builder wires against: default E(4,16), single Float gate out.
         let desc = Euclid::descriptor();
-        assert_eq!(desc.inputs[IN_STEPS].meta.as_ref().unwrap().default, 16.0);
-        assert_eq!(desc.inputs[IN_PULSES].meta.as_ref().unwrap().default, 4.0);
-        assert_eq!(desc.inputs[IN_ROTATION].meta.as_ref().unwrap().default, 0.0);
+        assert_eq!(
+            desc.inputs[IN_STEPS.index()].meta.as_ref().unwrap().default,
+            16.0
+        );
+        assert_eq!(
+            desc.inputs[IN_PULSES.index()]
+                .meta
+                .as_ref()
+                .unwrap()
+                .default,
+            4.0
+        );
+        assert_eq!(
+            desc.inputs[IN_ROTATION.index()]
+                .meta
+                .as_ref()
+                .unwrap()
+                .default,
+            0.0
+        );
         assert_eq!(desc.outputs.len(), 1, "one gate output");
     }
 }

@@ -48,9 +48,9 @@ impl Operator for IntegrateF32Signal {
         let n = io.frames();
         let mut acc = self.acc;
         for i in 0..n {
-            let cur = io.input::<&[f32]>(IN_IN).get(i).copied().unwrap_or(0.0);
+            let cur = io.read(IN_IN)[i];
             acc = accumulate(acc, cur);
-            io.output::<&mut [f32]>(OUT_OUT)[i] = acc;
+            io.write(OUT_OUT)[i] = acc;
         }
         self.acc = acc;
     }

@@ -59,7 +59,10 @@ impl Operator for OscOut {
         // `Str` source still heap-clones here — a patcher choice, tracked with the RT-safe
         // string backing in issue #146. `frame` is segment-relative; the writer adds the segment
         // offset so the tap sees block-absolute frames.
-        for ev in io.input::<&Arg>(IN_IN) {
+        for ev in io.read(IN_IN) {
+            // The one sanctioned use of the `io.output` primitive (ADR-0037): the sink emits on
+            // an *undeclared* output port (index 0 — outbound taps drain by node, not by wired
+            // edge), so there is no contract handle to write through.
             io.output::<Arg>(0).emit(ev.frame, ev.payload.clone());
         }
     }

@@ -45,30 +45,42 @@ fn filter_demo_descriptor_has_the_right_port_types() {
     let d = FilterDemo::contract();
     assert_eq!(d.type_name, "filter_demo");
 
-    // Inputs number in declaration order (sequential, not per-kind), matching the consts.
-    assert_eq!((IN_AUDIO, IN_CUTOFF, IN_RESONANCE, IN_MODE), (0, 1, 2, 3));
-    assert_eq!(OUT_AUDIO, 0);
+    // Inputs number in declaration order (sequential, not per-kind), matching the handles'
+    // ordinals (the consts are typed `In`/`Out` handles since ADR-0037; `index()` is the slot).
+    assert_eq!(
+        (
+            IN_AUDIO.index(),
+            IN_CUTOFF.index(),
+            IN_RESONANCE.index(),
+            IN_MODE.index()
+        ),
+        (0, 1, 2, 3)
+    );
+    assert_eq!(OUT_AUDIO.index(), 0);
 
     // The port's Arg type follows the declaration; a `f32_buffer` is the dense per-sample wire and
     // carries no materialized default, a `f32 { .. }` is a materialized scalar control.
-    assert!(matches!(d.inputs[IN_AUDIO].ty, PortType::F32Buffer));
-    assert!(!d.inputs[IN_AUDIO].is_materialized());
-    assert!(d.inputs[IN_CUTOFF].is_materialized());
+    assert!(matches!(d.inputs[IN_AUDIO.index()].ty, PortType::F32Buffer));
+    assert!(!d.inputs[IN_AUDIO.index()].is_materialized());
+    assert!(d.inputs[IN_CUTOFF.index()].is_materialized());
     assert!(matches!(
-        d.inputs[IN_MODE].ty,
+        d.inputs[IN_MODE.index()].ty,
         PortType::Vocab {
             enum_meta: Some(_),
             ..
         }
     ));
-    assert!(matches!(d.outputs[OUT_AUDIO].ty, PortType::F32Buffer));
+    assert!(matches!(
+        d.outputs[OUT_AUDIO.index()].ty,
+        PortType::F32Buffer
+    ));
     assert!(d.constants.is_empty()); // the floats are inputs, and filter has no constants
 
     // The materialized `cutoff` carries its meta, single-sourced from the contract.
     let (i, m) = d.materialized_input("cutoff").unwrap();
     assert_eq!(
         (i, m.default, m.min, m.max),
-        (IN_CUTOFF, 1_000.0, 20.0, 20_000.0)
+        (IN_CUTOFF.index(), 1_000.0, 20.0, 20_000.0)
     );
     assert!(matches!(m.curve, Curve::Exponential));
 
@@ -83,7 +95,7 @@ fn enum_input_binds_by_symbol_then_index() {
     use filter_demo::*;
     let d = FilterDemo::contract();
     let (i, e) = d.enum_input("mode").unwrap();
-    assert_eq!(i, IN_MODE);
+    assert_eq!(i, IN_MODE.index());
     assert_eq!(e.variants, FilterMode::VARIANTS); // descriptor single-sourced off the shared vocab
     assert_eq!(e.variants, ["Lp", "Hp", "Bp"]);
     assert_eq!(e.default, 0);
@@ -108,7 +120,7 @@ fn shared_vocab_enums_round_trip_and_coexist() {
     // The oscillator's `Waveform` is a distinct shared vocab type with its own variants.
     assert_eq!(Waveform::VARIANTS, ["Sine", "Saw"]);
     assert!(matches!(
-        osc_demo::OscDemo::contract().inputs[osc_demo::IN_WAVEFORM].ty,
+        osc_demo::OscDemo::contract().inputs[osc_demo::IN_WAVEFORM.index()].ty,
         PortType::Vocab {
             enum_meta: Some(_),
             ..

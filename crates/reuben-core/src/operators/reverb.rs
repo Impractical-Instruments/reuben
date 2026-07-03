@@ -4,7 +4,7 @@
 //! Mono in, mono out.
 //!
 //! `room`/`damp`/`mix` are Value inputs (ADR-0031), each owning its unwired default;
-//! `io.input::<f32>(IN_ROOM)` reads the latched value.
+//! `io.read(IN_ROOM)` reads the latched value.
 //!
 //! - input 0: `audio` (`Float`)
 //! - input 1: `room` (`Float`) — room size / tail length (0..1).
@@ -131,9 +131,9 @@ impl Operator for Reverb {
         }
 
         // `room`/`damp`/`mix` are `Float` inputs — read the latched block-rate value (ADR-0030).
-        let room = io.input::<f32>(IN_ROOM).unwrap_or(0.0).clamp(0.0, 1.0);
-        let damp = io.input::<f32>(IN_DAMP).unwrap_or(0.0).clamp(0.0, 1.0);
-        let mix = io.input::<f32>(IN_MIX).unwrap_or(0.0).clamp(0.0, 1.0);
+        let room = io.read(IN_ROOM).clamp(0.0, 1.0);
+        let damp = io.read(IN_DAMP).clamp(0.0, 1.0);
+        let mix = io.read(IN_MIX).clamp(0.0, 1.0);
 
         // Standard Freeverb parameter mappings.
         let roomsize = room * 0.28 + 0.7; // comb feedback
@@ -142,8 +142,12 @@ impl Operator for Reverb {
         let wet = mix;
         let dry = 1.0 - mix;
 
+        // Resolve the audio input and output buffers once (see filter.rs): index flat locals
+        // rather than re-deriving each slice from `io` per sample.
+        let audio = io.read(IN_AUDIO);
+        let out = io.write(OUT_AUDIO);
         for i in 0..n {
-            let dry_in = io.input::<&[f32]>(IN_AUDIO).get(i).copied().unwrap_or(0.0);
+            let dry_in = audio[i];
             let input = dry_in * FIXED_GAIN;
 
             // 8 parallel comb filters summed.
@@ -157,7 +161,7 @@ impl Operator for Reverb {
                 wet_sig = ap.process(wet_sig, allpass_feedback);
             }
 
-            io.output::<&mut [f32]>(OUT_AUDIO)[i] = dry_in * dry + wet_sig * wet;
+            out[i] = dry_in * dry + wet_sig * wet;
         }
     }
 
@@ -175,7 +179,7 @@ mod tests {
 
     /// Run `input` through a fresh Reverb at the given room/damp/mix through the real engine and
     /// return the output. `room`/`damp`/`mix` are held `Float` controls (`set` once, read via
-    /// `io.input::<f32>`); `audio` is a time-varying Buffer input (`drive`d block by block). The comb /
+    /// `io.read`); `audio` is a time-varying Buffer input (`drive`d block by block). The comb /
     /// allpass state threads across the real 128-frame blocks, so the tail builds continuously.
     fn render(input: &[f32], sample_rate: f32, room: f32, damp: f32, mix: f32) -> Vec<f32> {
         OpDriver::for_type(Reverb::new(), sample_rate)

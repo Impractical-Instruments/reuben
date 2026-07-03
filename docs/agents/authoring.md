@@ -26,17 +26,19 @@ read follows from the `Arg` type plus the read verb; whether a numeric port is a
 Outputs carry an `Arg` the same way. (The ADR-0028 **`shape`** axis is **retired** — the axes now
 are the port's `Arg` type and its declared form.)
 
-The read/write surface is **two return-type-dispatched verbs** ([ADR-0031](../adr/0031-float-resolves-to-value-or-signal-by-wiring.md)):
-`io.input::<T>(port)` and `io.output::<T>(port)`. The payload type `T` selects the form and the
-return shape — there is no separate `signal`/`last`/`stream` family.
+The read/write surface is **two verbs over typed handles** ([ADR-0037](../adr/0037-typed-port-handles.md),
+extending ADR-0031): `io.read(IN_X)` and `io.write(OUT_X)`. The contract macro emits each port's
+const as a typed handle — `In<form>` / `Out<form>` — whose *type* fixes the read/write shape and
+whose value carries the declared default, so a wrong-form read **does not compile** and a held
+read's fallback **is** the contract default (no second literal to drift).
 
-| `Arg` type (form) | what it is | read view (input) / write view (output) |
+| `Arg` type (form) | what it is | `io.read(IN)` / `io.write(OUT)` |
 |---|---|---|
-| **`f32_buffer`** (a *Signal*) | dense per-sample audio / CV / control — the one buffer payload | `io.input::<&[f32]>(IN) -> &[f32]` (+ `io.varying(IN)`) · out: `io.output::<&mut [f32]>(OUT) -> &mut [f32]` |
-| **`f32`** (a held *Value*) | a number — freq, cutoff, amp, a contour; owns a default, latched and read once per (sub)block | `io.input::<f32>(IN) -> Option<f32>` · out: `io.output::<f32>(OUT) -> MsgWriter` (`.set(frame, v)`) |
-| **enum** (a *vocab* type, a Value) | a named discrete choice — `FilterMode`, `Waveform` | `io.input::<FilterMode>(IN).unwrap_or_default()` — a real Rust enum, not an index |
-| **`Harmony`** (vocab struct, a Value) | the tonal-context struct: `root`/`scale`/`chord` + resolvers `hz()`/`snap()`/`chord_tone()` | `io.input::<Harmony>(IN) -> Option<Harmony>` · out: `io.output::<Harmony>(OUT) -> MsgWriter` (`.set(frame, h)`) |
-| **`Note`** (vocab struct, an Event) | a pitch/velocity event | `io.input::<Note>(IN)` → `EventStream<Note>` of `Stamped<Note>` (`.frame`, `.payload`) · out: `io.output::<Note>(OUT) -> EventWriter` (`.emit(frame, note)`) |
+| **`f32_buffer`** (a *Signal*, `In<SignalF32>`) | dense per-sample audio / CV / control — the one buffer payload | read: `&[f32]`, **always exactly `io.frames()` samples** (the buffer-presence invariant — index directly; + `io.varying(IN)`) · write: `&mut [f32]` |
+| **`f32`** (a held *Value*, `In<Held<f32>>`) | a number — freq, cutoff, amp, a contour; owns a default, latched and read once per (sub)block | read: `f32`, defaulted to the declared default · write: `MsgWriter` (`.set(frame, v)`) |
+| **enum** (a *vocab* type, a Value, `In<Held<E>>`) | a named discrete choice — `FilterMode`, `Waveform` | read: the real Rust enum (not an index), defaulted to its `#[default]` variant |
+| **`Harmony`** (vocab struct, a Value, `In<Held<Harmony>>`) | the tonal-context struct: `root`/`scale`/`chord` + resolvers `hz()`/`snap()`/`chord_tone()` | read: `Harmony`, defaulted to C-major 12-TET (`Harmony::DEFAULT`) · write: `MsgWriter` (`.set(frame, h)`) |
+| **`Note`** (vocab struct, an Event, `In<Event<Note>>`) | a pitch/velocity event | read: `EventStream<Note>` of `Stamped<Note>` (`.frame`, `.payload`) · write: `EventWriter` (`.emit(frame, note)`) |
 
 A port's **form** is one of three — **Signal** (`f32_buffer`), **Value** (`f32`/enum/`Harmony`, a
 held latch read once per slice), **Event** (`Note`, a sparse frame-stamped stream) — and follows from
@@ -50,18 +52,20 @@ an OSC primitive `Arg`, but no operator declares an `Int` port.
 The author picks a numeric port's form by which keyword it declares
 ([ADR-0031](../adr/0031-float-resolves-to-value-or-signal-by-wiring.md)):
 
-- **`f32` → a held Value.** A latched scalar read once per block-slice with `io.input::<f32>(IN)`. The
-  engine block-slices at each change frame, so the read is sample-accurate without a buffer. With a
-  `meta` block (`f32 { range, default, .. }`) it seeds its latch from override-or-default; unwired it
-  reads the default. No buffer allocated.
-- **`f32_buffer` → a Signal.** A dense per-sample buffer read with `io.input::<&[f32]>(IN)` — audio, CV,
-  or any *swept* control (a filter cutoff an LFO modulates). An optional `meta` default lets an
-  unwired/knob-set port materialize a constant buffer, so the read is a real buffer either way.
+- **`f32` → a held Value.** A latched scalar read once per block-slice with `io.read(IN)`. The
+  engine block-slices at each change frame, so the read is sample-accurate without a buffer. It
+  seeds its latch from override-or-default; unwired it reads the declared default (carried by the
+  handle itself, ADR-0037). No buffer allocated.
+- **`f32_buffer` → a Signal.** A dense per-sample buffer read with `io.read(IN)` — audio, CV,
+  or any *swept* control (a filter cutoff an LFO modulates). A meta default materializes a constant
+  buffer when unwired/knob-set; an unwired *bare* buffer materializes **silence** — so the read is
+  a real length-n buffer in every case (the **buffer-presence invariant**, ADR-0037): index
+  `io.read(IN)[i]` directly, no `.get(i).unwrap_or(..)` guard.
 
 A cheap **`varying: bool`** rides alongside a Signal read (`io.varying(IN)`): `false` when a
 materialized input held unchanged this block, `true` when dense or changed. A const-folding op (a
 filter recomputing biquad coefficients only when `cutoff` moves) opts in; a naive op ignores it and
-reads `io.input::<&[f32]>(IN)[i]` — always correct.
+reads `io.read(IN)[i]` — always correct.
 
 So form follows the processing model: per-sample DSP (osc, filter, `mul_f32_signal`, the envelope's
 `cv`) declares `f32_buffer` and reads a slice; block-rate controls (a clock's `tempo`, a sequencer's
@@ -131,26 +135,29 @@ path.
 
 - **`descriptor()`** — see below. The single source of an operator's ports and metadata.
 - **`process(io)`** — the only realtime path. **Allocation-free.** Read inputs, write outputs
-  through the `Io` view, by `Arg` type (ADR-0030):
-  - `io.input::<&[f32]>(IN) -> &[f32]` — read a **`f32_buffer`** (Signal) input per sample, or the
-    materialized buffer of a Value source wired into it. `io.varying(IN)` is the change hint.
-    `io.output::<&mut [f32]>(OUT) -> &mut [f32]` writes a `f32_buffer` output. Each buffer is exactly
-    `io.frames()` long.
-  - `io.input::<f32>(IN) -> Option<f32>` — read a held **`f32`** Value (the block-rate scalar view, a
-    clock's `tempo`, a gate edge). `io.input::<E>(IN) -> Option<E>` reads an **enum** input as its
-    real *vocab* type, constant for the (sub)block: `io.input::<Waveform>(IN_WAVEFORM).unwrap_or_default()`.
-    No `enum_index`/`from_index` on the hot path. `io.output::<f32>(OUT) -> MsgWriter` writes a held
-    Value: `.set(frame, v)` is deduped (an unchanged value emits nothing) + last-write-wins per frame.
-  - `io.input::<Note>(IN)` — read **`Note`** events (Voicer, sequencer): a zero-copy `EventStream<Note>`
-    iterator of `Stamped<Note>` (`.frame` segment-relative, `.payload` the decoded `Note`).
-    `io.output::<Note>(OUT) -> EventWriter` writes events: `.emit(frame, payload)` is **append-only**
-    (no dedup, no last-write-wins — a chord's tones at one frame all survive). Internal wires are
-    **addressless** — routed by connection, not name ([ADR-0014](../adr/0014-internal-message-graph.md),
-    ADR-0031 step 7). See `sequencer.rs` / `snap.rs`.
-  - `io.input::<Harmony>(IN) -> Option<Harmony>` — read the latched tonal **`Harmony`** (key/scale/chord
-    + resolver `hz`/`snap`/`chord_tone`), constant for the (sub)block, default C-major/12-TET when
-    unwired (`.unwrap_or_default()`). A `harmony` Operator writes the other side via
-    `io.output::<Harmony>(OUT_HARMONY) -> MsgWriter` (a Harmony is a held Value, dedup+LWW is correct).
+  through the `Io` view, by the contract's typed handles (ADR-0037) — the handle's form decides
+  the shape; a wrong-form access does not compile:
+  - `io.read(IN) -> &[f32]` on an `In<SignalF32>` — read a **`f32_buffer`** (Signal) input, or the
+    materialized buffer of a Value source wired into it. Exactly `io.frames()` samples, always
+    (buffer-presence invariant) — index directly. `io.varying(IN)` is the change hint.
+    `io.write(OUT) -> &mut [f32]` fills a `f32_buffer` output in place.
+  - `io.read(IN) -> f32` on an `In<Held<f32>>` — read a held **`f32`** Value (the block-rate scalar
+    view, a clock's `tempo`, a gate edge), defaulted to the contract default the handle carries.
+    An enum handle (`In<Held<Waveform>>`) reads the real *vocab* type, constant for the
+    (sub)block: `io.read(IN_WAVEFORM) == Waveform::Saw`. No `enum_index`/`from_index` on the hot
+    path. `io.write(OUT) -> MsgWriter` writes a held Value: `.set(frame, v)` is deduped (an
+    unchanged value emits nothing) + last-write-wins per frame.
+  - `io.read(IN) -> EventStream<Note>` on an `In<Event<Note>>` — read **`Note`** events (Voicer,
+    sequencer): a zero-copy iterator of `Stamped<Note>` (`.frame` segment-relative, `.payload` the
+    decoded `Note`). `io.write(OUT) -> EventWriter` writes events: `.emit(frame, payload)` is
+    **append-only** (no dedup, no last-write-wins — a chord's tones at one frame all survive).
+    Internal wires are **addressless** — routed by connection, not name
+    ([ADR-0014](../adr/0014-internal-message-graph.md), ADR-0031 step 7). See `sequencer.rs` /
+    `snap.rs`.
+  - `io.read(IN) -> Harmony` on an `In<Held<Harmony>>` — read the latched tonal **`Harmony`**
+    (key/scale/chord + resolver `hz`/`snap`/`chord_tone`), constant for the (sub)block, default
+    C-major/12-TET when unwired. A `harmony` Operator writes the other side via
+    `io.write(OUT_HARMONY) -> MsgWriter` (a Harmony is a held Value, dedup+LWW is correct).
     The Voicer and `snap.rs` read it; `harmony.rs` emits it.
 - **`spawn()`** — usually `Box::new(Self::new())`. Resets per-Voice state only. A resource-bearing
   operator carries its binding (the `Arc<ResourceStore>` + resolved handle) forward while resetting
@@ -171,8 +178,9 @@ serialization, connection checking, and AI grounding
 
 You declare it **once**, in an `operator_contract!` call
 ([ADR-0025](../adr/0025-single-source-operator-contract.md)). The macro plants, at module scope,
-the `IN_/OUT_/P_` index consts **and** an inherent `fn contract() -> Descriptor` from the same
-tokens, so consts and descriptor can't drift. An `enum` port **references a shared *vocab* enum** by
+the **typed `IN_`/`OUT_` handles** (`In<form>`/`Out<form>` consts whose type is the port's form and
+whose value carries the declared default — ADR-0037), the `C_*` constant ordinals, **and** an
+inherent `fn contract() -> Descriptor` from the same tokens, so handles and descriptor can't drift. An `enum` port **references a shared *vocab* enum** by
 name (`enum(FilterMode)`) — it generates no per-op type; the descriptor is single-sourced off the
 vocab type's `FilterMode::enum_meta(name)` (ADR-0030). The trait's `descriptor()` delegates:
 
@@ -185,21 +193,20 @@ crate::operator_contract!(Filter {
     outputs: { audio: f32_buffer },
 });
 
-// An operator with an instantiate-time Constant declares it with `constant:` (the Voicer):
+// An operator with an instantiate-time Constant declares it in `constants:` (the Voicer):
 crate::operator_contract!(Voicer {
     inputs:  { notes: note, harmony: harmony },
     outputs: { audio: f32_buffer },
-    params:  { voices: { 1.0..=32.0, default 8.0, "", lin } },
+    constants: { voices: i32 { 1..=32, default 8 } },          // instantiate-time config — rebuilds the graph if changed
     resources: { voice },                                      // an instrument-resource slot (the voice sub-patch)
-    constant: voices,                                          // instantiate-time config — rebuilds the graph if changed
 });
 
 impl Operator for Filter {
     fn descriptor() -> Descriptor { Self::contract() }   // one-liner delegate (ADR-0025)
     fn process(&mut self, io: &mut Io) {
-        let mode = io.input::<FilterMode>(IN_MODE).unwrap_or_default();  // a real Rust enum
-        // per sample: let x = io.input::<&[f32]>(IN_AUDIO); let cut = io.input::<&[f32]>(IN_CUTOFF);  (`varying` lets it const-fold)
-        // one buffer loop over io.frames(), writing io.output::<&mut [f32]>(OUT_AUDIO) ...
+        let mode = io.read(IN_MODE);  // a real Rust enum, defaulted to FilterMode's #[default]
+        // per sample: let x = io.read(IN_AUDIO)[i]; let cut = io.read(IN_CUTOFF)[i];  (`varying` lets it const-fold)
+        // one buffer loop over io.frames(), writing io.write(OUT_AUDIO)[i] ...
     }
     // spawn ...
 }
@@ -225,7 +232,8 @@ impl Operator for Filter {
 - **`name: note`** / **`name: harmony`** — `Note` (Event) / `Harmony` (Value) ports (`Port::note` /
   `Port::harmony`).
 - **`name: arg`** — a **type-agnostic pass-through** (issue #141): carries *any* `Arg` as a raw
-  Event stream (`Port::arg`), read via `io.input::<&Arg>` and re-emitted via `io.output::<Arg>`.
+  Event stream (`Port::arg`), read via its `In<Raw>` handle (`io.read(IN)` yields undecoded
+  `&Arg` payloads) and re-emitted via the `io.output::<Arg>` primitive.
   **Input-only**, and only for a **pure carrier** — an operator that treats the payload as opaque
   (forward, buffer, drop) and never interprets it; the wired *source* port is the type authority.
   Legality is capability-keyed: any Event or Value source whose type has an **external OSC form**
@@ -235,9 +243,10 @@ impl Operator for Filter {
   **single numeric atom** (multi-arg lists and strings drop — so the flat 2-arg Note form the sink
   *sends* does not round-trip back in through an `arg` port; a typed `note` port still decodes
   it). Today the form of `osc_out.in`, the outbound OSC sink.
-- **`params: { name: { ..range } }` + `constant: name`** — declares one param an instantiate-time
-  `Constant` (the Voicer's `voices`); the loader routes it to the patch's `config` block. At most one
-  `Constant` per operator.
+- **`constants: { name: i32 { LO..=HI, default D } }`** — instantiate-time `Constant`s
+  ([ADR-0035](../adr/0035-constants-are-immutable-ports.md), the Voicer's `voices`); the loader
+  routes them to the patch's `config` block. Constants keep bare `usize` `C_*` ordinals — they are
+  never read in `process`, so they get no handle (ADR-0037).
 
 Other notes:
 
@@ -245,10 +254,9 @@ Other notes:
   `type_name: "sample"` when they diverge (e.g. `SamplePlayer`).
 - **Ports are referenced by name** in the JSON format, not by index — names are the stable
   contract the rig builder wires against. The macro computes the ordinals.
-- **Exceptions:** `output` is the lone operator that still hand-writes `descriptor()`, where the
-  macro DSL can't express its contract. Everything else delegates to the macro via
-  `Self::contract()` — including `m2s` / `oscillator` (now macro-expressible: a shared-vocab enum
-  default falls out of the type's `#[default]`). One operator per module since
+- **No exceptions:** every operator declares its contract through the macro and delegates via
+  `Self::contract()` (`output`, the last hand-written descriptor, folded in with ADR-0037 so its
+  ports get typed handles too). One operator per module since
   [ADR-0029](../adr/0029-math-family-dense-float-one-file-per-op.md) deleted the old `math.rs`.
 - **Pointwise number ops use a higher-level macro.** `add`, `mul`, `power`, `map` are each a single
   `crate::number_operator_contract!(..)` call over one scalar fn, which generates **both carriers**
@@ -297,7 +305,8 @@ it never silently snaps to the default.
 5. **Test** in the operator module, test-first, with
    [`OpDriver`](../../crates/reuben-core/src/op_driver.rs) — it drives your operator through the
    **real** engine (`Plan::instantiate` + `Renderer::step_node`), so a test can never drift from how
-   the engine actually seeds and steps a node. Address ports by the generated `IN_*` / `OUT_*` consts:
+   the engine actually seeds and steps a node. Address ports by the generated `IN_*` / `OUT_*`
+   typed handles (every driver verb takes a handle or a bare index — `PortIndex`):
    - `set(IN_X, v)` — a held control (scalar / enum / `Harmony`) or a constant audio-in (sticky/ZOH).
    - `push(IN_X, frame, note)` — a transient `Note` event at a global frame.
    - `drive(IN_X, &buf)` — a time-varying audio-in.
