@@ -17,7 +17,8 @@ const TONE: &str = r#"{
         "inputs":  { "freq": "/osc.freq" },
         "outputs": { "audio": "/osc.audio" }
     },
-    "nodes": [ { "type": "oscillator", "address": "/osc" } ]
+    "nodes": [ { "type": "oscillator", "address": "/osc" } ],
+    "outputs": [ { "node": "/osc", "port": "audio" } ]
 }"#;
 
 /// Canonicalizes away a leading `./` (a toy of the filesystem resolver's normalization) and
@@ -106,7 +107,8 @@ fn memory_resolver_serves_nested_patches_and_samples_without_io() {
         "instrument": "hit",
         "interface": { "outputs": { "audio": "/sample.audio" } },
         "resources": { "blip": "lib/blip" },
-        "nodes": [ { "type": "sample", "address": "/sample", "sample": "blip" } ]
+        "nodes": [ { "type": "sample", "address": "/sample", "sample": "blip" } ],
+        "outputs": [ { "node": "/sample", "port": "audio" } ]
     }"#;
     const PARENT: &str = r#"{
         "instrument": "parent",

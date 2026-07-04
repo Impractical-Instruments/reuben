@@ -87,7 +87,7 @@ pub struct InstrumentDoc {
 
 /// See [`InstrumentDoc::migration`]: the non-fatal residue of a v1→v2 migration, carried from
 /// parse (where migration runs, with no warning channel of its own) to build (which has one).
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default)]
 pub(crate) struct MigrationNotes {
     /// Warnings to surface on the next build of this document ([`LoadWarning::Migration`]).
     warnings: Vec<LoadWarning>,
@@ -96,6 +96,16 @@ pub(crate) struct MigrationNotes {
     /// transitive degradation an unavailable nested target gets — instead of a fatal
     /// `UnknownInput` (ADR-0036 §4: a legal v1 document keeps loading).
     dark_inputs: BTreeSet<String>,
+}
+
+impl PartialEq for MigrationNotes {
+    /// Notes are **parse-session state, not document identity**: two documents are equal iff
+    /// their serialized forms are (the notes never serialize), so a freshly migrated document
+    /// compares equal to its own save→reparse and to a hand-written native-v2 equivalent even
+    /// when migration had something to say.
+    fn eq(&self, _: &Self) -> bool {
+        true
+    }
 }
 
 /// A document's `interface` block — the named I/O boundary as **pipes** (ADR-0038 §2, format
@@ -2062,46 +2072,74 @@ fn migrate_v1(
     // A v1 boundary entry no tap claims migrates untouched; played at top level it becomes a
     // broadcast tap v1 did not have — the one v1 output shape the consolidated block cannot
     // express (ADR-0038 §4 unified "boundary output" with "master tap"; v1 kept them
-    // separate). Hosted/nested behavior — the position such entries were used in — is exact.
+    // separate). **Accepted + warned** (decided 2026-07-04, recorded in ADR-0038 §5):
+    // hosted/nested behavior — the position such entries were used in — is exact, and each
+    // such signal entry gets a `Migration` warning naming it, so the new top-level audibility
+    // is never silent.
     let anon = std::mem::take(&mut doc.outputs);
-    if !anon.is_empty() {
-        let InstrumentDoc {
-            ref nodes,
-            ref mut interface,
-            ..
-        } = *doc;
-        let iface = interface.get_or_insert_with(InterfaceDoc::default);
-        let mut unclaimed: BTreeSet<String> = iface.outputs.keys().cloned().collect();
-        for o in anon {
-            let claim = unclaimed
-                .iter()
-                .find(|n| {
-                    let Some(f) = iface.outputs[n.as_str()].feed() else {
-                        return false;
-                    };
-                    f.channel.is_none()
-                        && feed_names_port(f, &o, nodes, registry)
-                        && (o.channel.is_none() || feed_is_signal(f, nodes, registry))
-                })
-                .cloned();
-            if let Some(name) = claim {
-                unclaimed.remove(&name);
-                if o.channel.is_some() {
-                    if let Some(InterfaceEntry::Feed(f)) = iface.outputs.get_mut(&name) {
-                        f.channel = o.channel;
-                    }
+    let InstrumentDoc {
+        ref nodes,
+        ref mut interface,
+        ref mut migration,
+        ..
+    } = *doc;
+    if interface.is_none() && anon.is_empty() {
+        return Ok(());
+    }
+    let iface = interface.get_or_insert_with(InterfaceDoc::default);
+    let mut unclaimed: BTreeSet<String> = iface.outputs.keys().cloned().collect();
+    for o in anon {
+        let claim = unclaimed
+            .iter()
+            .find(|n| {
+                let Some(f) = iface.outputs[n.as_str()].feed() else {
+                    return false;
+                };
+                f.channel.is_none()
+                    && feed_names_port(f, &o, nodes, registry)
+                    && (o.channel.is_none() || feed_is_signal(f, nodes, registry))
+            })
+            .cloned();
+        if let Some(name) = claim {
+            unclaimed.remove(&name);
+            if o.channel.is_some() {
+                if let Some(InterfaceEntry::Feed(f)) = iface.outputs.get_mut(&name) {
+                    f.channel = o.channel;
                 }
-                continue;
             }
-            let name = generated_name(|c| iface.outputs.contains_key(c));
-            iface.outputs.insert(
-                name,
-                InterfaceEntry::Feed(OutputPipeDoc {
-                    from: format!("{}.{}", o.node, o.port),
-                    channel: o.channel,
-                    ..Default::default()
-                }),
-            );
+            continue;
+        }
+        let name = generated_name(|c| iface.outputs.contains_key(c));
+        iface.outputs.insert(
+            name,
+            InterfaceEntry::Feed(OutputPipeDoc {
+                from: format!("{}.{}", o.node, o.port),
+                channel: o.channel,
+                ..Default::default()
+            }),
+        );
+    }
+    // The accepted §4 divergence, surfaced loudly: every v1 boundary-only **signal** output —
+    // an entry no anonymous tap claimed — is a master tap in v2, audible at top level where
+    // v1 played nothing from it. Provably-signal only: a message-typed feed never taps (no
+    // divergence), and a nested re-export's type is unknowable at parse (rare; under-warning
+    // there beats mis-warning every voice's `active`).
+    for name in unclaimed {
+        let Some(f) = iface.outputs[name.as_str()].feed() else {
+            continue;
+        };
+        if feed_is_signal(f, nodes, registry) {
+            migration.warnings.push(LoadWarning::Migration {
+                name: name.clone(),
+                detail: format!(
+                    "this v1 interface output was boundary-only; in v2 it is a master tap \
+                     (ADR-0038 §4) and is now audible when this instrument plays at top \
+                     level, where v1 played nothing from it (hosted/nested behavior is \
+                     unchanged) — delete the entry from the migrated document if that tap \
+                     is unwanted (feeds {:?})",
+                    f.from
+                ),
+            });
         }
     }
     Ok(())
@@ -3402,6 +3440,9 @@ mod tests {
     // ADR-0032 §1 — the `interface` block. A voice-shaped patch: osc.freq / env.gate in,
     // osc.audio / env.active out. `/env` has two outputs so a sole-output ref would be ambiguous;
     // the explicit `/env.active` resolves it.
+    // A well-formed v1 voice: like every shipped v1 voice patch, its `audio` boundary output
+    // is ALSO anonymously tapped, so migration claims the entry (one tap, no divergence, no
+    // warning — see `boundary_only_v1_signal_outputs_warn_on_migration` for the other case).
     const VOICE_IFACE: &str = r#"{
         "instrument": "voice",
         "interface": {
@@ -3411,7 +3452,8 @@ mod tests {
         "nodes": [
             { "type": "oscillator", "address": "/osc" },
             { "type": "envelope", "address": "/env" }
-        ]
+        ],
+        "outputs": [ { "node": "/osc", "port": "audio" } ]
     }"#;
 
     #[test]
@@ -4305,6 +4347,28 @@ mod tests {
     }
 
     #[test]
+    fn boundary_only_v1_signal_outputs_warn_on_migration() {
+        // The accepted ADR-0038 §4/§5 divergence (decided 2026-07-04): a v1 **signal**
+        // interface output no anonymous tap claims becomes a real master tap in v2 — audible
+        // at top level where v1 played nothing from it — and migration says so, naming the
+        // entry. Message-typed entries never tap, so they migrate silently.
+        let json = r#"{"instrument":"c","interface":{
+            "inputs":{"in":"/f.audio"},
+            "outputs":{"out":"/f.audio","state":"/env.active"}},
+            "nodes":[{"type":"filter","address":"/f"},{"type":"envelope","address":"/env"}]}"#;
+        let loaded = load_instrument(json, &reg(), &PatchResolver("")).expect("load");
+        assert!(
+            matches!(
+                loaded.warnings.as_slice(),
+                [LoadWarning::Migration { name, detail }]
+                    if name == "out" && detail.contains("master tap")
+            ),
+            "exactly the signal entry warns (the Value-typed `state` never taps): {:?}",
+            loaded.warnings
+        );
+    }
+
+    #[test]
     fn voicer_hosted_bare_signal_pipe_warns_unwired() {
         // ADR-0038 §3 promises the silence warning for "nested/hosted" alike: a Voicer feeds
         // only the message pipes it knows by name (`freq`/`gate`), so a hosted voice's bare
@@ -4392,7 +4456,8 @@ mod tests {
                         r#"{"instrument":"leaf",
                             "interface":{"inputs":{"freq":"/osc.freq"},
                                          "outputs":{"audio":"/osc.audio"}},
-                            "nodes":[{"type":"oscillator","address":"/osc"}]}"#
+                            "nodes":[{"type":"oscillator","address":"/osc"}],
+                            "outputs":[{"node":"/osc","port":"audio"}]}"#
                     }
                 }
                 .to_string())
@@ -4581,7 +4646,8 @@ mod tests {
         const SAMPLED_CHILD: &str = r#"{"instrument":"c",
             "resources":{"kick":"kick.wav"},
             "interface":{"outputs":{"audio":"/s.audio"}},
-            "nodes":[{"type":"sample","address":"/s","sample":"kick"}]}"#;
+            "nodes":[{"type":"sample","address":"/s","sample":"kick"}],
+            "outputs":[{"node":"/s","port":"audio"}]}"#;
         struct Counting(Cell<usize>);
         impl ResourceResolver for Counting {
             fn resolve(&self, _s: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
