@@ -1,7 +1,8 @@
 //! Live audio out via cpal.
 //!
-//! Opens the default output device, builds an [`Engine`] matched to the device sample
-//! rate, and renders inside the audio callback. Incoming decoded OSC ([`OscIn`]) is pulled from an
+//! Opens an output device (the host default, or a [`DeviceProfile`]'s `output.device`
+//! substring selection, ADR-0038 §6), builds an [`Engine`] matched to the device sample rate,
+//! and renders inside the audio callback. Incoming decoded OSC ([`OscIn`]) is pulled from an
 //! [`std::sync::mpsc::Receiver`] (fed by the OSC/UDP thread) at the top of each callback and typed
 //! to a Message against the Plan (ADR-0030).
 //!
@@ -9,7 +10,13 @@
 //! instrument's *logical* master channels (left/right/…), and [`map_frame`] places them onto
 //! whatever channel count the real device has — a straight copy when they match, a downmix
 //! for a mono device, and zero-fill for a device with more channels than the instrument uses.
-//! Core never learns the device's channel count.
+//! An explicit `output.map` in the profile **overrides** that implicit policy entirely
+//! ([`OutputMap::Explicit`], ADR-0038 §6/§7); no profile (or an empty map) keeps [`map_frame`]'s
+//! behavior, bit-identical to before. Core never learns the device's channel count.
+//!
+//! `sample_rate`/`buffer_size` in the profile are **preferences**: [`negotiate_output_config`]
+//! requests them against the device's supported configs and adopts whatever is granted,
+//! logging the outcome (ADR-0038 §6/§8) — reuben never fights the device.
 //!
 //! It also measures the callback against its own real-time budget (ADR-0038 §9, P6/#183): a
 //! render that takes longer than the audio time it produced is an output xrun, counted through
@@ -18,19 +25,21 @@
 //!
 //! The returned [`cpal::Stream`] must be kept alive for audio to keep playing.
 
+use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
-use cpal::{SampleFormat, Stream};
+use cpal::{SampleFormat, Stream, SupportedBufferSize};
 use reuben_core::message::Message;
 use reuben_core::AudioConfig;
 
 use crate::diagnostics::Diagnostics;
 use crate::engine::Engine;
 use crate::osc::OscIn;
+use crate::profile::DeviceProfile;
 
 /// How often the periodic diagnostics logger wakes to check the counters (ADR-0038 §9). It only
 /// emits a line when something changed, so a healthy run stays quiet at this cadence regardless.
@@ -41,8 +50,15 @@ const DIAGNOSTICS_LOG_INTERVAL: Duration = Duration::from_secs(5);
 pub enum AudioError {
     /// No default output device.
     NoDevice,
+    /// No output device's name contains the profile's `output.device` substring.
+    NoMatchingDevice(String),
+    /// Enumerating output devices failed.
+    DevicesQuery(cpal::DevicesError),
     /// The device reported an unusable default config.
     Config(cpal::DefaultStreamConfigError),
+    /// Querying the device's supported configs failed (only reached when a profile requests a
+    /// specific sample rate).
+    SupportedConfigs(cpal::SupportedStreamConfigsError),
     /// The device's default sample format isn't supported (MVP handles f32 only).
     UnsupportedFormat(SampleFormat),
     /// Building the stream failed.
@@ -55,7 +71,14 @@ impl fmt::Display for AudioError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             AudioError::NoDevice => write!(f, "no default output device"),
+            AudioError::NoMatchingDevice(s) => {
+                write!(f, "no output device name contains {s:?}")
+            }
+            AudioError::DevicesQuery(e) => write!(f, "query output devices: {e}"),
             AudioError::Config(e) => write!(f, "default output config: {e}"),
+            AudioError::SupportedConfigs(e) => {
+                write!(f, "query supported output configs: {e}")
+            }
             AudioError::UnsupportedFormat(fmt) => {
                 write!(f, "unsupported sample format {fmt:?} (only f32 for now)")
             }
@@ -67,41 +90,44 @@ impl fmt::Display for AudioError {
 
 impl std::error::Error for AudioError {}
 
-/// Start live playback on the default output device.
+/// Start live playback on an output device, per `profile` (ADR-0038 §6).
 ///
 /// `block_size` is the core render block size; `make_engine` builds the engine once the
 /// device sample rate is known (so the Plan's tuning matches the hardware). `osc_out` is the
 /// optional OSC-out sink (ADR-0026): when `Some`, the callback forwards each outbound Message to
 /// it (a sender thread encodes + UDP-sends, off the audio thread); when `None`, outbound is
-/// drained and dropped, with one warning the first time a rig actually sends. Returns the live
-/// [`Stream`] (keep it alive) and the [`Diagnostics`] counters this callback feeds — hand the
-/// same `Arc` to P5's input stream so both sides of the boundary share one counter surface
-/// (ADR-0038 §9). A background thread is already logging it periodically; no further wiring is
-/// required to get stderr output.
+/// drained and dropped, with one warning the first time a rig actually sends. `profile` selects
+/// the device, negotiates sample-rate/buffer-size preferences, and overrides the output channel
+/// map — pass [`DeviceProfile::default`] for today's behavior (default device, identity map).
+/// Returns the live [`Stream`] (keep it alive) and the [`Diagnostics`] counters this callback
+/// feeds — hand the same `Arc` to P5's input stream so both sides of the boundary share one
+/// counter surface (ADR-0038 §9). A background thread is already logging it periodically; no
+/// further wiring is required to get stderr output.
 pub fn start<F>(
     rx: Receiver<OscIn>,
     block_size: usize,
     osc_out: Option<Sender<Message>>,
+    profile: &DeviceProfile,
     make_engine: F,
 ) -> Result<(Stream, Arc<Diagnostics>), AudioError>
 where
     F: FnOnce(AudioConfig) -> Engine,
 {
     let host = cpal::default_host();
-    let device = host.default_output_device().ok_or(AudioError::NoDevice)?;
-    let supported = device.default_output_config().map_err(AudioError::Config)?;
+    let device = select_output_device(&host, profile.output.device.as_deref())?;
 
-    let sample_format = supported.sample_format();
+    let (sample_format, config) =
+        negotiate_output_config(&device, profile.sample_rate, profile.buffer_size)?;
     if sample_format != SampleFormat::F32 {
         return Err(AudioError::UnsupportedFormat(sample_format));
     }
 
-    let config: cpal::StreamConfig = supported.into();
     let channels = config.channels as usize;
     let sample_rate = config.sample_rate.0 as f32;
 
     let mut engine = make_engine(AudioConfig::new(sample_rate, block_size));
     let logical = engine.channels();
+    let output_map = build_output_map(&profile.output.map, logical, channels);
     // Scratch for one callback's worth of interleaved logical samples; grows to the largest
     // callback (audio-thread allocation only while warming up, never in steady state).
     let mut buf: Vec<f32> = Vec::new();
@@ -156,7 +182,7 @@ where
                 }
                 for (frame, dst) in data.chunks_mut(channels).enumerate() {
                     let src = &buf[frame * logical..frame * logical + logical];
-                    map_frame(src, dst);
+                    apply_output_map(&output_map, src, dst);
                 }
 
                 // The budget is this callback's own frame count over the sample rate, not a
@@ -194,6 +220,155 @@ fn callback_budget(frames: usize, sample_rate: f32) -> Duration {
     Duration::from_secs_f32(secs)
 }
 
+/// Select an output device (ADR-0038 §6): `None` is the host default (today's only behavior);
+/// `Some(substr)` is the first device whose name contains `substr`, case-insensitively.
+fn select_output_device(
+    host: &cpal::Host,
+    name_substr: Option<&str>,
+) -> Result<cpal::Device, AudioError> {
+    match name_substr {
+        None => host.default_output_device().ok_or(AudioError::NoDevice),
+        Some(substr) => {
+            let needle = substr.to_lowercase();
+            host.output_devices()
+                .map_err(AudioError::DevicesQuery)?
+                .find(|d| {
+                    d.name()
+                        .map(|n| device_name_matches(&n, &needle))
+                        .unwrap_or(false)
+                })
+                .ok_or_else(|| AudioError::NoMatchingDevice(substr.to_string()))
+        }
+    }
+}
+
+/// The case-insensitive substring match behind `output.device` selection, pulled out of
+/// [`select_output_device`] so it has a unit test that doesn't need a real [`cpal::Host`]
+/// (review finding #6) — `needle` is already lowercased by the caller (once per call, not per
+/// device).
+fn device_name_matches(name: &str, needle_lower: &str) -> bool {
+    name.to_lowercase().contains(needle_lower)
+}
+
+/// The outcome of matching a requested output sample rate against a device's supported configs
+/// (review finding #2): a rate match is only "granted" at the device *default's* channel
+/// count — a config that matches the rate but not the channel count would otherwise silently
+/// hand back a different channel count than the caller (and `build_output_map`'s validation)
+/// expect.
+enum RateNegotiation {
+    /// A config at the requested rate, at the device default's channel count.
+    Granted(cpal::SupportedStreamConfig),
+    /// No same-channel-count config matched the rate; this is the best rate match found, at a
+    /// *different* channel count than the device default. Never returned silently — the caller
+    /// must log it.
+    ChannelCountChanged(cpal::SupportedStreamConfig),
+    /// Nothing at all matched the requested rate.
+    Unsupported,
+}
+
+/// Pure selection logic for [`negotiate_output_config`]'s sample-rate branch: no device I/O, so
+/// it has a unit test that doesn't need a real [`cpal::Device`] (review finding #6). Prefers an
+/// F32 config at `want` Hz whose channel count matches `default_channels`; only falls back to a
+/// different channel count if nothing at `want` Hz matches it.
+fn negotiate_rate(
+    configs: &[cpal::SupportedStreamConfigRange],
+    default_channels: cpal::ChannelCount,
+    want: u32,
+) -> RateNegotiation {
+    let at_rate = || {
+        configs.iter().filter(|r| {
+            r.sample_format() == SampleFormat::F32
+                && r.min_sample_rate().0 <= want
+                && want <= r.max_sample_rate().0
+        })
+    };
+    if let Some(r) = at_rate().find(|r| r.channels() == default_channels) {
+        return RateNegotiation::Granted(r.with_sample_rate(cpal::SampleRate(want)));
+    }
+    match at_rate().next() {
+        Some(r) => RateNegotiation::ChannelCountChanged(r.with_sample_rate(cpal::SampleRate(want))),
+        None => RateNegotiation::Unsupported,
+    }
+}
+
+/// Request → grant → adopt `sample_rate`/`buffer_size` preferences against `device`'s supported
+/// configs (ADR-0038 §6/§8): reuben never fights the device, it logs what it asked for and what
+/// it got. Neither preference set is bit-identical to before — the device's own default config,
+/// untouched. A requested rate/size the device can't grant is a reality mismatch (§7): warn and
+/// fall back/clamp, never fatal.
+fn negotiate_output_config(
+    device: &cpal::Device,
+    sample_rate: Option<u32>,
+    buffer_size: Option<u32>,
+) -> Result<(SampleFormat, cpal::StreamConfig), AudioError> {
+    let default_config = device.default_output_config().map_err(AudioError::Config)?;
+    let supported = match sample_rate {
+        None => default_config,
+        Some(want) => {
+            let default_channels = default_config.channels();
+            let configs: Vec<_> = device
+                .supported_output_configs()
+                .map_err(AudioError::SupportedConfigs)?
+                .collect();
+            match negotiate_rate(&configs, default_channels, want) {
+                RateNegotiation::Granted(cfg) => {
+                    println!(
+                        "io-map: requested output sample rate {want} Hz, device grants it \
+                         ({default_channels} channel(s))"
+                    );
+                    cfg
+                }
+                RateNegotiation::ChannelCountChanged(cfg) => {
+                    eprintln!(
+                        "warning: io-map requested output sample rate {want} Hz at the device's \
+                         default channel count ({default_channels}); no config matches both, \
+                         granting {} channel(s) instead",
+                        cfg.channels()
+                    );
+                    cfg
+                }
+                RateNegotiation::Unsupported => {
+                    eprintln!(
+                        "warning: io-map requested output sample rate {want} Hz; device doesn't \
+                         support it, using its default {} Hz",
+                        default_config.sample_rate().0
+                    );
+                    default_config
+                }
+            }
+        }
+    };
+
+    let sample_format = supported.sample_format();
+    let mut config: cpal::StreamConfig = supported.clone().into();
+
+    if let Some(want) = buffer_size {
+        config.buffer_size = match supported.buffer_size() {
+            SupportedBufferSize::Range { min, max } => {
+                let granted = want.clamp(*min, *max);
+                if granted == want {
+                    println!("io-map: requested output buffer size {want}, device grants it");
+                } else {
+                    eprintln!(
+                        "warning: io-map requested output buffer size {want}; device supports \
+                         {min}..={max}, using {granted}"
+                    );
+                }
+                cpal::BufferSize::Fixed(granted)
+            }
+            SupportedBufferSize::Unknown => {
+                println!(
+                    "io-map: requested output buffer size {want}; device doesn't report a \
+                     supported range, requesting it as-is"
+                );
+                cpal::BufferSize::Fixed(want)
+            }
+        };
+    }
+
+    Ok((sample_format, config))
+}
+
 /// Place one frame of `logical` master channels onto a `device`-channel frame (ADR-0026).
 ///
 /// - **Equal counts** → straight copy (the common stereo→stereo and the historical
@@ -214,9 +389,108 @@ fn map_frame(logical: &[f32], device: &mut [f32]) {
     }
 }
 
+/// The active output channel mapping (ADR-0038 §6/§7): [`OutputMap::Identity`] defers to
+/// [`map_frame`]'s implicit broadcast/downmix/zero-fill policy; [`OutputMap::Explicit`] is a
+/// profile's validated `output.map`, which **overrides** that policy entirely. Validated once,
+/// at stream setup ([`build_output_map`]) — never re-checked per frame, since the logical and
+/// device channel counts are both fixed once the stream is open.
+enum OutputMap {
+    Identity,
+    Explicit {
+        /// Validated `(logical, device)` pairs — both indices already checked in range.
+        pairs: Vec<(usize, usize)>,
+        /// `true` at index `d` for every device channel a pair targets, precomputed once here
+        /// so [`apply_output_map`] can zero *only* the unmapped channels instead of zeroing the
+        /// whole frame and then overwriting the mapped ones every callback (review finding #5).
+        mapped: Vec<bool>,
+    },
+}
+
+/// Build the active output map from a profile's `output.map` (ADR-0038 §6). An empty map (no
+/// profile, or `output.map` omitted) is [`OutputMap::Identity`] — [`map_frame`]'s behavior,
+/// unchanged. Otherwise every pair is checked against the real `logical`/`device` channel
+/// counts once, here: a pair naming a channel that doesn't exist on either side is a reality
+/// mismatch (ADR-0038 §7) — warned about now and dropped, not fatal. Two *different* logical
+/// channels naming the *same* device channel are also a reality mismatch (review finding #1):
+/// both pairs are kept (so the mapping is still fully described), but colliding targets are
+/// warned about once, here, since [`apply_output_map`] applies pairs in ascending-logical order
+/// and the higher logical channel silently wins otherwise.
+fn build_output_map(map: &BTreeMap<usize, usize>, logical: usize, device: usize) -> OutputMap {
+    if map.is_empty() {
+        return OutputMap::Identity;
+    }
+    let mut pairs = Vec::with_capacity(map.len());
+    for (&l, &d) in map {
+        if l >= logical {
+            eprintln!(
+                "warning: io-map output.map logical channel {l} does not exist (instrument has \
+                 {logical} logical channel(s)); dropped"
+            );
+            continue;
+        }
+        if d >= device {
+            eprintln!(
+                "warning: io-map output.map targets device channel {d}, but the device has \
+                 {device} channel(s); dropped"
+            );
+            continue;
+        }
+        pairs.push((l, d));
+    }
+    warn_duplicate_device_targets(&pairs);
+    let mut mapped = vec![false; device];
+    for &(_, d) in &pairs {
+        mapped[d] = true;
+    }
+    OutputMap::Explicit { pairs, mapped }
+}
+
+/// Warn about `output.map` pairs that target the same device channel from different logical
+/// channels (review finding #1). `pairs` is in ascending-logical order (the `BTreeMap`'s
+/// iteration order), and [`apply_output_map`] applies pairs in that same order, so — for a
+/// colliding device channel — the *highest* logical channel in the collision is the one whose
+/// value survives; named explicitly here so the behavior isn't just an implementation accident.
+fn warn_duplicate_device_targets(pairs: &[(usize, usize)]) {
+    let mut by_device: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for &(l, d) in pairs {
+        by_device.entry(d).or_default().push(l);
+    }
+    for (d, logicals) in by_device {
+        if logicals.len() > 1 {
+            let winner = *logicals.last().expect("just checked len() > 1 above");
+            eprintln!(
+                "warning: io-map output.map targets device channel {d} from multiple logical \
+                 channels {logicals:?}; logical channel {winner} wins (applied last), the rest \
+                 are dropped for that device channel"
+            );
+        }
+    }
+}
+
+/// Apply the active output mapping to one frame. `Identity` defers to [`map_frame`]'s policy;
+/// `Explicit` zeros every device channel the map doesn't target (ADR-0038 §7's degrade-to-silence)
+/// and then copies each validated `(logical, device)` pair. Allocation-free: `pairs`/`mapped` are
+/// built once at stream setup, never in the render callback.
+fn apply_output_map(map: &OutputMap, logical_frame: &[f32], device_frame: &mut [f32]) {
+    match map {
+        OutputMap::Identity => map_frame(logical_frame, device_frame),
+        OutputMap::Explicit { pairs, mapped } => {
+            for (d, out) in device_frame.iter_mut().enumerate() {
+                if !mapped[d] {
+                    *out = 0.0;
+                }
+            }
+            for &(l, d) in pairs {
+                device_frame[d] = logical_frame[l];
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
-    use super::{callback_budget, map_frame};
+    use super::*;
+    use std::collections::BTreeMap;
     use std::time::Duration;
 
     #[test]
@@ -291,5 +565,165 @@ mod tests {
         let mut dev = [9.0f32; 4];
         map_frame(&[0.1, 0.2], &mut dev);
         assert_eq!(dev, [0.1, 0.2, 0.0, 0.0]);
+    }
+
+    #[test]
+    fn empty_map_is_identity() {
+        // No profile (or `output.map` omitted) builds `Identity` — ADR-0038 §6's bit-identical
+        // no-profile guarantee starts here, before a frame is ever touched.
+        let map = build_output_map(&BTreeMap::new(), 2, 2);
+        assert!(matches!(map, OutputMap::Identity));
+    }
+
+    #[test]
+    fn no_profile_output_is_bit_identical_to_map_frame() {
+        // The load-bearing assertion (ADR-0038 §6/issue #181): with no profile, `apply_output_map`
+        // must render exactly what `map_frame` renders today, sample-for-sample, for every shape
+        // existing instruments hit (stereo, mono downmix, extra device channels).
+        let cases: &[(&[f32], usize)] = &[
+            (&[0.25, -0.5], 2),
+            (&[0.2, 0.4], 1),
+            (&[0.123_456_79, 0.123_456_79], 1),
+            (&[0.1, 0.2], 4),
+        ];
+        let identity = build_output_map(&BTreeMap::new(), 2, 2); // channel counts unused by Identity
+        for &(logical, device_channels) in cases {
+            let mut want = vec![0.0f32; device_channels];
+            map_frame(logical, &mut want);
+            let mut got = vec![0.0f32; device_channels];
+            apply_output_map(&identity, logical, &mut got);
+            assert_eq!(
+                want.iter().map(|f| f.to_bits()).collect::<Vec<_>>(),
+                got.iter().map(|f| f.to_bits()).collect::<Vec<_>>(),
+                "no-profile output must be bit-identical to map_frame for {logical:?} -> {device_channels} device channel(s)"
+            );
+        }
+    }
+
+    #[test]
+    fn explicit_map_overrides_and_zero_fills_unmapped_targets() {
+        let mut profile_map = BTreeMap::new();
+        profile_map.insert(0, 2); // logical 0 -> device channel 2
+        profile_map.insert(1, 0); // logical 1 -> device channel 0
+        let map = build_output_map(&profile_map, 2, 4);
+        let mut dev = [9.0f32; 4];
+        apply_output_map(&map, &[0.5, -0.25], &mut dev);
+        // device 0 <- logical 1 (-0.25), device 2 <- logical 0 (0.5), 1 and 3 unmapped -> zero.
+        assert_eq!(dev, [-0.25, 0.0, 0.5, 0.0]);
+    }
+
+    #[test]
+    fn explicit_map_drops_out_of_range_logical_channel() {
+        let mut profile_map = BTreeMap::new();
+        profile_map.insert(5, 0); // instrument only has 2 logical channels
+        let map = build_output_map(&profile_map, 2, 2);
+        match map {
+            OutputMap::Explicit { pairs, .. } => {
+                assert!(pairs.is_empty(), "out-of-range pair kept")
+            }
+            OutputMap::Identity => panic!("non-empty map must build Explicit"),
+        }
+    }
+
+    #[test]
+    fn explicit_map_drops_out_of_range_device_channel() {
+        let mut profile_map = BTreeMap::new();
+        profile_map.insert(0, 9); // device only has 2 channels
+        let map = build_output_map(&profile_map, 2, 2);
+        match map {
+            OutputMap::Explicit { pairs, .. } => {
+                assert!(pairs.is_empty(), "out-of-range pair kept")
+            }
+            OutputMap::Identity => panic!("non-empty map must build Explicit"),
+        }
+    }
+
+    #[test]
+    fn duplicate_device_targets_keep_both_pairs_deterministically() {
+        // Review finding #1: two logical channels mapping to the same device channel is a
+        // reality mismatch, not a silent last-write-wins. Both pairs are kept (so nothing is
+        // dropped without a reason), and application order (ascending logical) determines which
+        // one's value survives on that device channel.
+        let mut profile_map = BTreeMap::new();
+        profile_map.insert(0, 0);
+        profile_map.insert(1, 0); // collides with logical 0 on device channel 0
+        let map = build_output_map(&profile_map, 2, 2);
+        match &map {
+            OutputMap::Explicit { pairs, .. } => assert_eq!(pairs, &vec![(0, 0), (1, 0)]),
+            OutputMap::Identity => panic!("non-empty map must build Explicit"),
+        }
+        let mut dev = [9.0f32; 2];
+        apply_output_map(&map, &[0.1, 0.2], &mut dev);
+        // Logical 1 is applied after logical 0 (ascending order), so it wins device channel 0.
+        assert_eq!(dev, [0.2, 0.0]);
+    }
+
+    #[test]
+    fn explicit_map_zeros_unmapped_channels_without_double_writing_mapped_ones() {
+        // Review finding #5: mapped channels should be written exactly once per callback.
+        let mut profile_map = BTreeMap::new();
+        profile_map.insert(0, 1); // device channel 0 is left unmapped
+        let map = build_output_map(&profile_map, 1, 2);
+        match &map {
+            OutputMap::Explicit { mapped, .. } => assert_eq!(mapped, &vec![false, true]),
+            OutputMap::Identity => panic!("non-empty map must build Explicit"),
+        }
+        let mut dev = [9.0f32; 2];
+        apply_output_map(&map, &[0.5], &mut dev);
+        assert_eq!(dev, [0.0, 0.5]);
+    }
+
+    fn config(
+        channels: cpal::ChannelCount,
+        min: u32,
+        max: u32,
+    ) -> cpal::SupportedStreamConfigRange {
+        cpal::SupportedStreamConfigRange::new(
+            channels,
+            cpal::SampleRate(min),
+            cpal::SampleRate(max),
+            SupportedBufferSize::Range { min: 64, max: 4096 },
+            SampleFormat::F32,
+        )
+    }
+
+    #[test]
+    fn negotiate_rate_prefers_default_channel_count() {
+        let configs = vec![config(1, 44_100, 48_000), config(2, 44_100, 48_000)];
+        match negotiate_rate(&configs, 2, 48_000) {
+            RateNegotiation::Granted(cfg) => {
+                assert_eq!(cfg.channels(), 2);
+                assert_eq!(cfg.sample_rate().0, 48_000);
+            }
+            _ => panic!("expected a same-channel-count grant"),
+        }
+    }
+
+    #[test]
+    fn negotiate_rate_falls_back_to_different_channel_count_and_says_so() {
+        // Only a mono config supports the requested rate; the device default is stereo.
+        let configs = vec![config(1, 88_200, 96_000)];
+        match negotiate_rate(&configs, 2, 96_000) {
+            RateNegotiation::ChannelCountChanged(cfg) => {
+                assert_eq!(cfg.channels(), 1);
+                assert_eq!(cfg.sample_rate().0, 96_000);
+            }
+            _ => panic!("expected a channel-count-changed grant"),
+        }
+    }
+
+    #[test]
+    fn negotiate_rate_unsupported_when_nothing_matches() {
+        let configs = vec![config(2, 44_100, 48_000)];
+        assert!(matches!(
+            negotiate_rate(&configs, 2, 96_000),
+            RateNegotiation::Unsupported
+        ));
+    }
+
+    #[test]
+    fn device_name_match_is_case_insensitive_substring() {
+        assert!(device_name_matches("Scarlett 2i2 USB", "scarlett"));
+        assert!(!device_name_matches("Built-in Output", "scarlett"));
     }
 }

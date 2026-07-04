@@ -1,0 +1,63 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://reuben.dev/schema/device-profile.schema.json",
+  "title": "reuben device profile",
+  "description": "The --io-map <file> document (ADR-0038 §6/§7): binds an instrument's logical master channels to a real device, outside the patch, so the same instrument plays on any rig. Every field is optional; an empty document (or omitting --io-map) means identity map + the default device, bit-identical to today's behavior. Hand-maintained (unlike instrument.schema.json, this is not generated from the operator Registry) — keep in sync with crates/reuben-native/src/profile.rs.",
+  "type": "object",
+  "additionalProperties": false,
+  "properties": {
+    "output": { "$ref": "#/$defs/side" },
+    "input": {
+      "$ref": "#/$defs/side",
+      "description": "Parsed and type-checked by the loader; not yet applied anywhere — no input audio stream exists until P5 (#182). `map` here is device channel -> logical channel, the reverse direction of `output.map`."
+    },
+    "sample_rate": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Preferred output sample rate in Hz, requested against the device's supported configs. The engine adopts whatever the device grants and logs the outcome; omit for the device's own default rate."
+    },
+    "buffer_size": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Preferred output buffer size in frames, clamped into the device's supported range and logged. This is the device callback's buffer size, independent of the core engine's fixed render block size."
+    }
+  },
+  "$defs": {
+    "side": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "device": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Select a device by case-insensitive name substring. Omit for the host's default device."
+        },
+        "map": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "integer",
+            "minimum": 0
+          },
+          "propertyNames": {
+            "pattern": "^[0-9]+$"
+          },
+          "description": "Channel index pairs, JSON-object keys spelled as non-negative integer strings (object keys are always strings). output.map: logical channel -> device channel. input.map: device channel -> logical channel. A pair naming a channel that doesn't exist on the real device is a load-time reality mismatch handled by warn + degrade (dropped for output, zeros for input), never a load error; a non-numeric key/value is a structural load error."
+        }
+      }
+    }
+  },
+  "examples": [
+    {},
+    {
+      "output": {
+        "map": { "0": 2, "1": 3 }
+      }
+    },
+    {
+      "output": { "device": "Scarlett", "map": { "0": 0, "1": 1 } },
+      "input": { "device": "Scarlett", "map": { "0": 0, "1": 1 } },
+      "sample_rate": 48000,
+      "buffer_size": 256
+    }
+  ]
+}

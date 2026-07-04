@@ -47,6 +47,11 @@ The `reuben` binary is subcommand-driven: `play` (live audio), `describe` (list 
 `validate` (load-check an instrument), `scaffold-operator` (new-operator skeleton). Add
 `--help` to any of them. Everything after `--` is passed to the binary.
 
+`play` opens the default device by default; `play --io-map <file>` loads a **device profile**
+([docs/device-profile.md](docs/device-profile.md)) to bind logical channels to a specific
+device's channels, pick a non-default device by name, and request sample-rate/buffer-size
+preferences.
+
 Play a note by sending OSC `/voicer/notes [midi, gate]` from any OSC source:
 
 - `[69.0, 1.0]` — note-on, A4
