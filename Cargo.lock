@@ -1012,6 +1012,7 @@ dependencies = [
  "iai-callgrind",
  "inventory",
  "num-traits",
+ "reuben-contract",
  "reuben-macros",
  "serde",
  "serde_json",

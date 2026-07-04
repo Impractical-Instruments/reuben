@@ -1,13 +1,17 @@
-//! Instrument format — the JSON canonical document (ADR-0004, ADR-0028).
+//! Instrument format — the JSON canonical document (ADR-0004, ADR-0028; **v2**, ADR-0038).
 //!
 //! An instrument is plain data: a list of operator `nodes`, each carrying one `inputs` map
-//! (ADR-0028) and an optional `config` block, plus master `outputs`. A node's `inputs` entry is
-//! either a **literal** (a number, or an `Enum` symbol like `"Hp"`) or a **wire-ref** to another
-//! node's output (`{ "from": "/osc.audio" }`, or `{ "from": "/osc" }` when the source has a single
-//! output). `config` carries instantiate-time **`Constant`s** (e.g. a voicer's `voices`). Ports are
-//! referenced by **name** (from the operator's [`Descriptor`](crate::descriptor::Descriptor)), not
-//! by brittle index. Optional `doc` fields carry human/agent notes. The schema that validates these
-//! documents is generated from the operator descriptors ([`crate::schema`]).
+//! (ADR-0028) and an optional `config` block, plus an `interface` block of named boundary
+//! **pipes** (ADR-0038). A node's `inputs` entry is either a **literal** (a number, or an
+//! `Enum` symbol like `"Hp"`) or a **wire-ref** to another node's output
+//! (`{ "from": "/osc.audio" }`, or `{ "from": "/osc" }` when the source has a single output —
+//! an interface input pipe is such a source: `{ "from": "/in" }`). `config` carries
+//! instantiate-time **`Constant`s** (e.g. a voicer's `voices`). Master output is the Signal
+//! `interface.outputs` pipes (`"main_l": {"from": "/pan.left", "channel": 0}`); the v1
+//! anonymous `outputs` block migrates into them at parse. Ports are referenced by **name**
+//! (from the operator's [`Descriptor`](crate::descriptor::Descriptor)), not by brittle index.
+//! Optional `doc` fields carry human/agent notes. The schema that validates these documents is
+//! generated from the operator descriptors ([`crate::schema`]).
 //!
 //! [`load`] turns JSON into a [`Graph`] (resolving types via a [`Registry`]);
 //! [`InstrumentDoc::from_graph`] goes the other way. Loading is an authoring step, not a realtime
@@ -19,15 +23,18 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::descriptor::{Descriptor, PortType};
+use crate::descriptor::{Curve, Descriptor, F32Meta, Port, PortType};
 use crate::graph::{Graph, Interface};
 use crate::message::Arg;
-use crate::plan::{port_kind, PortKind};
+use crate::operators::pipe::Pipe;
+use crate::plan::PortKind;
 use crate::registry::Registry;
 use crate::resources::{ResolvedRefs, ResourceResolver, ResourceStore, SampleBuffer, SampleId};
 
-/// The document format version this engine reads and writes (ADR-0036).
-pub const FORMAT_VERSION: u32 = 1;
+/// The document format version this engine reads and writes (ADR-0036). **v2** (ADR-0038): the
+/// `interface` direction flip — inputs/outputs are named pipes; the target-pointing entry form
+/// and the top-level anonymous `outputs` block are v1-only, auto-migrated at parse.
+pub const FORMAT_VERSION: u32 = 2;
 
 fn default_format_version() -> u32 {
     1
@@ -56,21 +63,29 @@ pub struct InstrumentDoc {
     /// ignored.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub resources: BTreeMap<String, String>,
-    /// Engine-honored I/O boundary (ADR-0032 §1): external names → internal `node.port` refs the
-    /// engine binds and type-checks. A voice patch declares this so its host Voicer can drive its
-    /// `freq`/`gate` and tap its `audio`/`active`. `None` (the common case) for a top-level rig.
-    /// Distinct from a node's `control` (ADR-0018), which is opaque, engine-ignored UI metadata.
+    /// Engine-honored I/O boundary as named **pipes** (ADR-0032 §1, reshaped by ADR-0038):
+    /// each `inputs` entry declares its type and mints an address internal nodes consume from;
+    /// each `outputs` entry is fed from an internal port and — when Signal — is a master tap.
+    /// A voice patch declares this so its host Voicer can drive its `freq`/`gate` pipes and tap
+    /// its `audio`/`active`. Distinct from a node's `control` (ADR-0018), which is opaque,
+    /// engine-ignored UI metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interface: Option<InterfaceDoc>,
     pub nodes: Vec<NodeDoc>,
-    #[serde(default)]
+    /// **v1-only** (ADR-0038 §4): the anonymous top-level master-tap list. Migration moves its
+    /// entries into `interface.outputs` under generated names; a v2 document carrying one is a
+    /// load error, and save never writes it (empty after migration).
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outputs: Vec<PortRef>,
 }
 
-/// A document's `interface` block (ADR-0032 §1): the named I/O boundary, as external name → internal
-/// `node.port` wire-ref (the same `/node.port` form `inputs` wire-refs use; the sole-output sugar
-/// `/node` is allowed for an `outputs` ref). `inputs` names map to internal **input** ports;
-/// `outputs` names to internal **output** ports. Resolved + direction-checked at
+/// A document's `interface` block — the named I/O boundary as **pipes** (ADR-0038 §2, format
+/// v2). Every `inputs` entry is an [`InputPipeDoc`]: it declares its `Arg` type and **mints an
+/// address in the flat node namespace** (`in` → `/in`) that internal nodes consume with ordinary
+/// wire-refs (`{"from": "/in"}`, fan-out free). Every `outputs` entry is an [`OutputPipeDoc`]
+/// **fed from an internal port** (`"main_l": {"from": "/pan.left", "channel": 0}`). The v1
+/// target-pointing forms still parse for migration and are rewritten at
+/// [`from_json`](InstrumentDoc::from_json); they are illegal in a v2 document. Resolved at
 /// [`build`](InstrumentDoc::build) into [`Interface`].
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -81,97 +96,219 @@ pub struct InterfaceDoc {
     pub outputs: BTreeMap<String, InterfaceEntry>,
 }
 
-/// One `interface` entry: the internal target, optionally decorated with presentational
-/// overrides (ADR-0034 §4). A JSON string is the bare target (`"wet": "/mix.wet"`); a JSON
-/// object is the [`Detailed`](Self::Detailed) form carrying per-field metadata overrides.
-/// Deserialization dispatches on the JSON type by hand (not `#[serde(untagged)]`) so a
-/// malformed object keeps [`InterfaceMeta`]'s pointed field-level errors — "unknown field
-/// `lable`", "missing field `target`" — instead of collapsing into one opaque no-variant error.
+/// One `interface` entry. The v2 forms are [`Pipe`](Self::Pipe) (an input pipe, `{"type": …}`)
+/// and [`Feed`](Self::Feed) (an output pipe, `{"from": …}`). The v1 target-pointing forms —
+/// [`Target`](Self::Target) (a bare `"/node.port"` string) and [`Detailed`](Self::Detailed)
+/// (`{"target": …}` plus presentational overrides) — parse so ADR-0036 §4 migration can rewrite
+/// them; the loader rejects them un-migrated. Deserialization dispatches on the JSON shape and
+/// the object's discriminator key (`type` / `from` / `target`) by hand, so a malformed object
+/// keeps pointed field-level serde errors ("unknown field `lable`") instead of collapsing into
+/// one opaque untagged no-variant error.
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum InterfaceEntry {
-    /// The common bare form: just the internal `/node.port` wire-ref.
+    /// A v2 **input pipe**: declared type + optional channel binding + metadata (ADR-0038 §2).
+    Pipe(InputPipeDoc),
+    /// A v2 **output pipe**: fed from an internal port, optional channel binding (ADR-0038 §2).
+    Feed(OutputPipeDoc),
+    /// v1-only: the bare internal `/node.port` target (migrated at parse).
     Target(String),
-    /// Target plus presentational-metadata overrides (label, unit, range, widget).
+    /// v1-only: target plus presentational-metadata overrides (migrated at parse).
     Detailed(InterfaceMeta),
 }
 
-/// The object form of an [`InterfaceEntry`] (ADR-0034 §4): the internal target plus
-/// **presentational** metadata overriding what the boundary port inherits from the inner port —
-/// how a control *presents* (label, unit, range, widget), consumed by introspection (`describe`);
-/// control-surface generation (ADR-0017/0018) is the intended next consumer (issue #153, not yet
-/// reading it). The `Arg` **type is inherited and not
-/// overridable** — there is deliberately no field to express one, and `deny_unknown_fields`
-/// rejects an attempt, so the boundary can never lie to the type-checker (§4/§5).
+/// A pipe's declared unwired/seed value: a number (`f32` / `f32_buffer` pipes) or a vocab-enum
+/// variant **symbol** (enum pipes) — mirroring [`InputValue`]'s literal forms.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum PipeDefault {
+    Number(f64),
+    Symbol(String),
+}
+
+/// A declared curve on an input pipe's numeric range (the good-button sweep hint), the document
+/// spelling of [`Curve`]: `"lin"` or `"exp"` — the same tokens the operator contract macro uses.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum CurveDoc {
+    #[serde(rename = "lin")]
+    Lin,
+    #[serde(rename = "exp")]
+    Exp,
+}
+
+impl From<CurveDoc> for Curve {
+    fn from(c: CurveDoc) -> Curve {
+        match c {
+            CurveDoc::Lin => Curve::Linear,
+            CurveDoc::Exp => Curve::Exponential,
+        }
+    }
+}
+
+/// One v2 `interface.inputs` entry (ADR-0038 §2): a named **input pipe**. There is no inner
+/// port to inherit from — the entry **declares its `Arg` type** (`"f32_buffer"`, `"f32"`,
+/// `"note"`, `"harmony"`, or a vocab enum name like `"FilterMode"`), and the declared type is
+/// enforced against every consumer by the existing pass-2 wire check. A numeric pipe may carry
+/// its own `default`/`min`/`max`/`curve` — **engine-enforced** on the pipe's port (literals and
+/// external messages clamp to it; an unwired signal pipe materializes `default`, or silence when
+/// bare). A **signal** pipe may bind a logical input `channel` (ADR-0038 §3), honored only when
+/// the graph is played at top level; `channel` on a message pipe is a load error.
+/// `label`/`unit`/`widget` are presentational (describe / control-surface generation).
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct InputPipeDoc {
+    /// The declared `Arg` type: `"f32_buffer"` (Signal), `"f32"` (held Value), `"note"`
+    /// (Event), `"harmony"` (held Value), or a shared vocab enum's type name (`"FilterMode"`).
+    #[serde(rename = "type")]
+    pub ty: String,
+    /// Logical input channel binding (ADR-0038 §3); signal pipes only, top-level-honored.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<usize>,
+    /// Unwired/seed value: number for a numeric pipe, variant symbol for an enum pipe.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub default: Option<PipeDefault>,
+    /// Engine-enforced range floor (numeric pipes; defaults to the type-wide `NUMBER_MIN`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    /// Engine-enforced range ceiling (numeric pipes; defaults to the type-wide `NUMBER_MAX`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+    /// Sweep-curve hint for a numeric pipe (`"lin"`/`"exp"`); defaults to linear.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub curve: Option<CurveDoc>,
+    /// Display unit, e.g. `"Hz"` — presentational (the engine enforces only the range).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    /// Display name (the entry name itself is the wiring handle; this is UI-facing).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    /// Widget hint for a generated control surface (ADR-0018), e.g. `"knob"`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widget: Option<String>,
+}
+
+/// One v2 `interface.outputs` entry (ADR-0038 §2): a named **output pipe** fed from an internal
+/// port. `from` is an ordinary wire-ref (`"/node.port"`, sole-output sugar allowed). A signal
+/// pipe may bind the logical master `channel` it feeds (omitted = today's broadcast meaning,
+/// ADR-0026); `channel` on a message-typed pipe is a load error. `label`/`unit`/`widget` are
+/// presentational; `min`/`max` presentational overrides obey the ADR-0034 §4 subset law against
+/// the feeding port's engine-enforced range.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OutputPipeDoc {
+    /// The internal `/node.port` (or sole-output `/node`) wire-ref feeding this pipe.
+    pub from: String,
+    /// Logical master output channel this pipe feeds (ADR-0026/0038); omitted = broadcast.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub channel: Option<usize>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub unit: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub widget: Option<String>,
+    /// Presentational range-minimum override (subset of the feeding port's range, ADR-0034 §4).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub min: Option<f64>,
+    /// Presentational range-maximum override (see `min`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max: Option<f64>,
+}
+
+/// The v1 object entry form (ADR-0034 §4, superseded by ADR-0038): the internal target plus
+/// presentational overrides. Parses so migration can rewrite it into the pipe forms; never
+/// written back (save writes v2). `deny_unknown_fields` keeps its field-level errors pointed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InterfaceMeta {
     /// The internal `/node.port` wire-ref this external name resolves to.
     pub target: String,
-    /// Display name override (the boundary name itself is the wiring handle; this is UI-facing).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// Unit override (e.g. `"Hz"`, `"%"`), replacing the inner port's unit.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
-    /// Widget hint override for a generated control surface (ADR-0018), e.g. `"knob"`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub widget: Option<String>,
-    /// Range-minimum override (presentational: narrows/renames the swept range a control shows).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min: Option<f64>,
-    /// Range-maximum override (see `min`).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max: Option<f64>,
 }
 
 impl InterfaceEntry {
-    /// The internal `/node.port` wire-ref, whichever form carries it.
-    pub fn target(&self) -> &str {
+    /// The v2 input-pipe form, if this entry is one.
+    pub fn pipe(&self) -> Option<&InputPipeDoc> {
         match self {
-            InterfaceEntry::Target(t) => t,
-            InterfaceEntry::Detailed(m) => &m.target,
+            InterfaceEntry::Pipe(p) => Some(p),
+            _ => None,
         }
     }
 
-    /// The presentational overrides, when the entry carries any (the object form).
-    pub fn meta(&self) -> Option<&InterfaceMeta> {
+    /// The v2 output-pipe form, if this entry is one.
+    pub fn feed(&self) -> Option<&OutputPipeDoc> {
         match self {
-            InterfaceEntry::Target(_) => None,
+            InterfaceEntry::Feed(f) => Some(f),
+            _ => None,
+        }
+    }
+
+    /// The v1 target this entry points at, if it is an un-migrated v1 form.
+    fn v1_target(&self) -> Option<&str> {
+        match self {
+            InterfaceEntry::Target(t) => Some(t),
+            InterfaceEntry::Detailed(m) => Some(&m.target),
+            _ => None,
+        }
+    }
+
+    /// The v1 presentational overrides, when the entry carries any (the v1 object form).
+    fn v1_meta(&self) -> Option<&InterfaceMeta> {
+        match self {
             InterfaceEntry::Detailed(m) => Some(m),
+            _ => None,
         }
-    }
-}
-
-impl From<String> for InterfaceEntry {
-    fn from(target: String) -> Self {
-        InterfaceEntry::Target(target)
     }
 }
 
 impl<'de> Deserialize<'de> for InterfaceEntry {
     fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
-        struct EntryVisitor;
-        impl<'de> serde::de::Visitor<'de> for EntryVisitor {
-            type Value = InterfaceEntry;
-
-            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-                f.write_str("a \"/node.port\" target string or an override object with `target`")
+        use serde::de::Error;
+        // Buffer the value so the object form can dispatch on its discriminator key. Cold path
+        // (parse-time only); `from_value` keeps the concrete struct's pointed field errors.
+        let v = serde_json::Value::deserialize(deserializer)?;
+        match v {
+            serde_json::Value::String(s) => Ok(InterfaceEntry::Target(s)),
+            serde_json::Value::Object(ref map) => {
+                type Parse = fn(serde_json::Value) -> Result<InterfaceEntry, serde_json::Error>;
+                let picks: [(&str, Parse); 3] = [
+                    ("type", |v| {
+                        serde_json::from_value(v).map(InterfaceEntry::Pipe)
+                    }),
+                    ("from", |v| {
+                        serde_json::from_value(v).map(InterfaceEntry::Feed)
+                    }),
+                    ("target", |v| {
+                        serde_json::from_value(v).map(InterfaceEntry::Detailed)
+                    }),
+                ];
+                let hits: Vec<_> = picks.iter().filter(|(k, _)| map.contains_key(*k)).collect();
+                match hits.as_slice() {
+                    [(_, parse)] => parse(v).map_err(D::Error::custom),
+                    [] => Err(D::Error::custom(
+                        "an interface entry object needs `type` (an input pipe) or `from` (an \
+                         output pipe); the v1 `target` form is also accepted for migration",
+                    )),
+                    _ => Err(D::Error::custom(
+                        "an interface entry object may carry only one of `type` (input pipe), \
+                         `from` (output pipe), or `target` (v1)",
+                    )),
+                }
             }
-
-            fn visit_str<E: serde::de::Error>(self, v: &str) -> Result<Self::Value, E> {
-                Ok(InterfaceEntry::Target(v.to_string()))
-            }
-
-            fn visit_map<A: serde::de::MapAccess<'de>>(
-                self,
-                map: A,
-            ) -> Result<Self::Value, A::Error> {
-                InterfaceMeta::deserialize(serde::de::value::MapAccessDeserializer::new(map))
-                    .map(InterfaceEntry::Detailed)
-            }
+            _ => Err(D::Error::custom(
+                "an interface entry is an object (`{\"type\": …}` input pipe / `{\"from\": …}` \
+                 output pipe) or a v1 \"/node.port\" target string",
+            )),
         }
-        deserializer.deserialize_any(EntryVisitor)
     }
 }
 
@@ -344,21 +481,22 @@ pub enum LoadError {
     /// Loading it would recurse forever, so the cycle is a structural error, fatal like the
     /// other wiring errors.
     CyclicResource { source: String },
-    /// An `interface` entry's presentational range override lies about what the engine enforces
-    /// (ADR-0034 §4): a range override on a port with no numeric range, a bound outside the inner
-    /// port's engine-clamped range, an inverted/empty advertised range, or an effective default
-    /// outside the advertised range. `describe` publishes these values as the boundary contract
-    /// and no engine path reconciles them, so advertised must stay a subset of enforced — checked
-    /// here at load, named by the boundary port.
+    /// An `interface.outputs` entry's presentational range override lies about what the engine
+    /// enforces (ADR-0034 §4): a range override on a port with no numeric range, a bound outside
+    /// the feeding port's engine-clamped range, or an inverted/empty advertised range.
+    /// `describe` publishes these values as the boundary contract and no engine path reconciles
+    /// them, so advertised must stay a subset of enforced — checked here at load, named by the
+    /// boundary port. (Input pipes own their range outright — ADR-0038 §2 — so this law now
+    /// applies to outputs, and to v1 input entries during migration.)
     InterfaceOverride { name: String, reason: String },
-    /// A wire lands on a boundary input whose inner **Signal** port the nested child already
-    /// drives with its own internal wire (ADR-0034). The plan reads exactly one inbound edge per
-    /// Signal input, so the outer wire would load clean and do nothing — a silently dead wire,
-    /// a state flat authoring can never produce (one `inputs` key, one wire). Fatal, named in
-    /// boundary terms; a child that wants an externally wireable Signal port must leave it
-    /// unwired internally. (Value/Event inputs merge message streams from several edges, so
-    /// multiple drivers stay legal there.)
-    BoundaryInputDriven { node: String, input: String },
+    /// An `interface` **pipe** entry is malformed (ADR-0038 §2/§3): an unknown declared type, a
+    /// `channel` on a message pipe, numeric metadata on a non-numeric pipe, an incoherent
+    /// declared range/default, a v1 target-form entry surviving in a v2 document, or a v1 entry
+    /// migration cannot express. Named by the boundary entry.
+    InterfacePipe { name: String, reason: String },
+    /// A v2 document carries the top-level anonymous `outputs` block, which is v1-only
+    /// (ADR-0038 §4): master taps are declared as `interface.outputs` pipes now.
+    AnonymousOutputs,
 }
 
 impl fmt::Display for LoadError {
@@ -429,10 +567,13 @@ impl fmt::Display for LoadError {
             LoadError::InterfaceOverride { name, reason } => {
                 write!(f, "interface entry {name:?}: {reason}")
             }
-            LoadError::BoundaryInputDriven { node, input } => write!(
+            LoadError::InterfacePipe { name, reason } => {
+                write!(f, "interface pipe {name:?}: {reason}")
+            }
+            LoadError::AnonymousOutputs => write!(
                 f,
-                "boundary input {node:?}.{input:?} is already driven by a wire inside the nested \
-                 patch — an outside wire would be silently dead"
+                "the top-level anonymous `outputs` block is format v1 — declare named \
+                 `interface.outputs` pipes instead (ADR-0038)"
             ),
         }
     }
@@ -454,7 +595,7 @@ impl std::error::Error for LoadError {
 /// (nothing spliced in; wires touching it dropped — see [`InstrumentDoc::build`]). Use
 /// [`load_instrument`] to resolve, bind, and inline.
 pub fn load(json: &str, registry: &Registry) -> Result<Graph, LoadError> {
-    InstrumentDoc::from_json(json)?.build(registry)
+    InstrumentDoc::from_json(json, registry)?.build(registry)
 }
 
 /// A non-fatal resource problem found at load (ADR-0016). The owning node still builds and
@@ -506,6 +647,13 @@ pub enum LoadWarning {
     /// instrument stays playable (ADR-0016). Warned rather than silent: pre-inline this shape
     /// failed loud, and silence through the nest would hide the typo.
     NoPatchRef { node: String },
+    /// A nested child's **bare signal input pipe** (no declared default) is left unfed by the
+    /// hosting node — neither a wire nor a literal lands on the boundary name — so the pipe
+    /// renders **silence** (ADR-0038 §3). Warned, never fatal: silence is honest, but a nest
+    /// whose audio input nobody wired is usually an authoring slip. A pipe with a declared
+    /// default (a control) materializes that default unfed — normal knob behavior, no warning —
+    /// and message pipes are silent-by-nature streams.
+    UnwiredPipe { node: String, name: String },
 }
 
 impl fmt::Display for LoadWarning {
@@ -530,6 +678,10 @@ impl fmt::Display for LoadWarning {
             LoadWarning::NoPatchRef { node } => write!(
                 f,
                 "node {node:?}: subpatch has no `patch` reference — nothing inlined (plays silence)"
+            ),
+            LoadWarning::UnwiredPipe { node, name } => write!(
+                f,
+                "node {node:?}: input pipe {name:?} is unfed — it renders silence"
             ),
         }
     }
@@ -609,7 +761,7 @@ fn load_instrument_guarded(
     ctx: &mut LoadCtx,
     referrer: Option<&str>,
 ) -> Result<Loaded, LoadError> {
-    let doc = InstrumentDoc::from_json(json)?;
+    let doc = InstrumentDoc::parse_with(json, registry, Some(resolver), ctx, referrer)?;
     load_doc_guarded(&doc, registry, resolver, ctx, referrer)
 }
 
@@ -622,17 +774,27 @@ fn load_doc_guarded(
     ctx: &mut LoadCtx,
     referrer: Option<&str>,
 ) -> Result<Loaded, LoadError> {
-    // The version gate normally fires in `from_json`, but an embedded host can build an
+    // The gate + migration normally fire in `from_json`, but an embedded host can build an
     // `InstrumentDoc` straight through the public `Deserialize` and hand it here (this is a
-    // public entry via `load_instrument_doc`), bypassing that boundary — so re-check before
-    // trusting the shape (ADR-0036 §4). Documents that came through `from_json` are already
-    // normalized to the current version, so this is a no-op for them.
-    if doc.format_version > FORMAT_VERSION {
-        return Err(LoadError::UnsupportedVersion {
-            found: doc.format_version,
-            supported: FORMAT_VERSION,
-        });
-    }
+    // public entry via `load_instrument_doc`), bypassing that boundary — so re-normalize before
+    // trusting the shape (ADR-0036 §4): refuse the future, migrate the past (on a clone; this
+    // borrow is read-only). Documents that came through `from_json` are already stamped
+    // current, so the common case clones nothing.
+    let normalized;
+    let doc = if doc.format_version != FORMAT_VERSION {
+        if doc.format_version > FORMAT_VERSION {
+            return Err(LoadError::UnsupportedVersion {
+                found: doc.format_version,
+                supported: FORMAT_VERSION,
+            });
+        }
+        let mut d = doc.clone();
+        d.normalize(registry, Some(resolver), ctx, referrer)?;
+        normalized = d;
+        &normalized
+    } else {
+        doc
+    };
 
     // Build with the resolver threaded in (ADR-0034's resolution-ordering note): a `subpatch`
     // node's boundary face only exists once its child is resolved, and it must exist *during*
@@ -842,7 +1004,8 @@ fn try_resolve_instrument(
 ) -> Result<Result<Loaded, LoadWarning>, LoadError> {
     match resolver.resolve_text(source) {
         Ok(text) => {
-            let doc = InstrumentDoc::from_json(&text)?;
+            let doc =
+                InstrumentDoc::parse_with(&text, registry, Some(resolver), ctx, Some(source))?;
             Ok(Ok(load_child_guarded(
                 &doc, source, registry, resolver, ctx,
             )?))
@@ -880,25 +1043,92 @@ fn load_child_guarded(
 }
 
 impl InstrumentDoc {
-    /// Parse a document from JSON (no operator resolution yet).
-    pub fn from_json(json: &str) -> Result<Self, LoadError> {
+    /// Parse a document from JSON (no operator resolution yet) and **normalize it to the
+    /// current format version** (ADR-0036 §4): a v1 document auto-migrates — target-form
+    /// `interface` entries flip into pipes plus consumer wire-refs, and the anonymous
+    /// `outputs` block dissolves into named `interface.outputs` entries (ADR-0038 §5) — so the
+    /// document you hold is always current-shaped and saves as v2. `registry` supplies the
+    /// operator descriptors migration derives each pipe's declared type from. A v1 entry
+    /// targeting a **nested** boundary port needs the child document too; this resolver-less
+    /// entry point types such a pipe `"f32"` as a fallback (the full
+    /// [`load_instrument`] path, which has the resolver, derives the real type).
+    pub fn from_json(json: &str, registry: &Registry) -> Result<Self, LoadError> {
+        Self::parse_with(json, registry, None, &mut LoadCtx::default(), None)
+    }
+
+    /// [`from_json`](Self::from_json) with the nested-load machinery threaded through, so a v1
+    /// entry re-exporting a nested child's boundary port can parse the child (recursively,
+    /// cycle-guarded via `ctx`) and copy its pipe's declared type.
+    fn parse_with(
+        json: &str,
+        registry: &Registry,
+        resolver: Option<&dyn ResourceResolver>,
+        ctx: &mut LoadCtx,
+        referrer: Option<&str>,
+    ) -> Result<Self, LoadError> {
         let mut doc: Self = serde_json::from_str(json).map_err(LoadError::Json)?;
-        // The version gate lives at the parse boundary so every load path — top-level,
-        // voice, subpatch — refuses a too-new document before touching its shape
-        // (ADR-0036). Older versions migrate here when a breaking change first ships.
-        if doc.format_version > FORMAT_VERSION {
+        doc.normalize(registry, resolver, ctx, referrer)?;
+        Ok(doc)
+    }
+
+    /// Gate + migrate + stamp (ADR-0036 §4). The version gate lives at the parse boundary so
+    /// every load path — top-level, voice, subpatch — refuses a too-new document before
+    /// touching its shape; an older version migrates to current here; a current-version
+    /// document is shape-checked (no v1 forms may hide under a v2 stamp). Stamping last is
+    /// what makes "save always writes the current version" a mechanism, not a coincidence —
+    /// a migrated doc never saves back under its old version number.
+    fn normalize(
+        &mut self,
+        registry: &Registry,
+        resolver: Option<&dyn ResourceResolver>,
+        ctx: &mut LoadCtx,
+        referrer: Option<&str>,
+    ) -> Result<(), LoadError> {
+        if self.format_version > FORMAT_VERSION {
             return Err(LoadError::UnsupportedVersion {
-                found: doc.format_version,
+                found: self.format_version,
                 supported: FORMAT_VERSION,
             });
         }
-        // Normalize to the current version. Today every accepted document is already v1;
-        // once migrations exist they run just above, transforming the shape to current, so
-        // stamping here is what makes "save always writes the current version" a mechanism,
-        // not a coincidence — a migrated doc never saves back under its old version number,
-        // and a stray `format_version: 0` (below the schema minimum) heals to 1.
-        doc.format_version = FORMAT_VERSION;
-        Ok(doc)
+        if self.format_version < FORMAT_VERSION {
+            migrate_v1(self, registry, resolver, ctx, referrer)?;
+        } else {
+            self.check_v2_shape()?;
+        }
+        self.format_version = FORMAT_VERSION;
+        Ok(())
+    }
+
+    /// Refuse v1-only forms under a v2 stamp: a target-pointing `interface` entry or the
+    /// anonymous top-level `outputs` block. Migration only runs for documents that *declare*
+    /// themselves older, so a v2 document must already speak pipes.
+    fn check_v2_shape(&self) -> Result<(), LoadError> {
+        if !self.outputs.is_empty() {
+            return Err(LoadError::AnonymousOutputs);
+        }
+        if let Some(iface) = &self.interface {
+            for (name, entry) in &iface.inputs {
+                if entry.pipe().is_none() {
+                    return Err(LoadError::InterfacePipe {
+                        name: name.clone(),
+                        reason: "a v2 interface input is a named pipe declaring its type \
+                                 ({\"type\": …}); the target-pointing form is v1-only"
+                            .to_string(),
+                    });
+                }
+            }
+            for (name, entry) in &iface.outputs {
+                if entry.feed().is_none() {
+                    return Err(LoadError::InterfacePipe {
+                        name: name.clone(),
+                        reason: "a v2 interface output is fed from an internal port \
+                                 ({\"from\": …}); the target-pointing form is v1-only"
+                            .to_string(),
+                    });
+                }
+            }
+        }
+        Ok(())
     }
 
     /// Serialize to pretty JSON (the canonical on-disk form).
@@ -953,6 +1183,50 @@ impl InstrumentDoc {
         // resolver on this path. Wires and taps touching them are dropped, so the instrument
         // still loads and the nest plays as silence, like a missing voice patch.
         let mut dark: BTreeSet<String> = BTreeSet::new();
+        // The resolved boundary, accumulated through the build: input pipes as they mint below,
+        // outputs after pass 2 resolves the graph they feed from.
+        let mut interface = Interface::default();
+
+        // Pass 0 — interface input pipes (ADR-0038 §2): each `interface.inputs` entry **mints an
+        // address in the flat node namespace** (`in` → `/in`) as a loader-built pass-through
+        // node of its declared type. Minting runs before the document's own nodes claim
+        // addresses, so a collision is the fatal `DuplicateAddress` either way the clash reads.
+        // Internal consumers wire from the pipe with ordinary wire-refs — it is in `by_addr`
+        // like any source — and whatever feeds the boundary (a parent edge through the face, a
+        // Voicer, external OSC, P3's input master) lands on its single `in` port.
+        let mut input_width = 0usize;
+        if let Some(iface) = &self.interface {
+            for (name, entry) in &iface.inputs {
+                let pipe = entry.pipe().ok_or_else(|| LoadError::InterfacePipe {
+                    name: name.clone(),
+                    reason: "the target-pointing entry form is v1-only — declare the pipe's \
+                             type ({\"type\": …}); a v1 document migrates when parsed via \
+                             `InstrumentDoc::from_json`"
+                        .to_string(),
+                })?;
+                let (descriptor, kind) = pipe_descriptor(name, pipe)?;
+                let address = format!("/{name}");
+                if !addresses.insert(address.clone()) {
+                    return Err(LoadError::DuplicateAddress(address));
+                }
+                let key = graph.add_boxed(&address, Box::new(Pipe::new(kind)), descriptor.clone());
+                // An enum pipe's declared default seeds the pipe's latch as a value-override;
+                // numeric pipes carry theirs inside the port's own meta.
+                if descriptor.inputs[0].enum_meta().is_some() {
+                    if let Some(PipeDefault::Symbol(s)) = &pipe.default {
+                        graph.set_value(key, "in", &Arg::Str(s.clone()));
+                    }
+                }
+                by_addr.insert(address, (key, descriptor));
+                interface.inputs.insert(name.clone(), (key, 0));
+                if let Some(ch) = pipe.channel {
+                    // A logical input channel binding (ADR-0038 §3) — honored only when this
+                    // graph is played at top level; recorded for the input master (P3).
+                    interface.input_channels.insert(name.clone(), ch);
+                    input_width = input_width.max(ch + 1);
+                }
+            }
+        }
 
         // Pass 1: nodes, config constants, literal inputs.
         for n in &self.nodes {
@@ -1074,7 +1348,13 @@ impl InstrumentDoc {
             let canon = resolver.canonical(source, referrer);
             if !patch_docs.contains_key(&canon) {
                 let child_doc = match resolver.resolve_text(&canon) {
-                    Ok(text) => Some(InstrumentDoc::from_json(&text)?),
+                    Ok(text) => Some(InstrumentDoc::parse_with(
+                        &text,
+                        registry,
+                        Some(resolver),
+                        ctx,
+                        Some(&canon),
+                    )?),
                     Err(e) => {
                         let failed = LoadWarning::ResolveFailed {
                             slot: "patch",
@@ -1121,6 +1401,19 @@ impl InstrumentDoc {
                     graph.set_value(fp.node, inner_name, &arg);
                 }
             }
+            // An unfed **bare signal** input pipe renders silence (ADR-0038 §3) — warn, never
+            // fatal. A pipe with a declared default is a control at rest (no warning), and
+            // message pipes are silent-by-nature streams.
+            for fp in &face.inputs {
+                let p = &graph.nodes[fp.node].descriptor.inputs[fp.port];
+                let bare_signal = matches!(p.ty, PortType::F32Buffer) && p.meta.is_none();
+                if bare_signal && !n.inputs.contains_key(&fp.name) {
+                    warnings.push(LoadWarning::UnwiredPipe {
+                        node: n.address.clone(),
+                        name: fp.name.clone(),
+                    });
+                }
+            }
             faces.insert(n.address.clone(), face);
         }
 
@@ -1146,25 +1439,6 @@ impl InstrumentDoc {
                 else {
                     continue;
                 };
-                // A face input may land on an inner Signal port the child already drives with
-                // its own wire (or that another boundary alias just wired). The plan reads
-                // exactly one inbound edge per Signal input, so this wire would be silently
-                // dead — fatal instead (`BoundaryInputDriven`). Only reachable through a face:
-                // a document node takes one wire per input key, and spliced internals are not
-                // wireable. Value/Event ports merge message edges, so several drivers are legal.
-                if faces.contains_key(&n.address)
-                    && port_kind(&graph.nodes[dst_key].descriptor.inputs[dst_port])
-                        == PortKind::Signal
-                    && graph
-                        .connections
-                        .iter()
-                        .any(|c| c.dst == dst_key && c.dst_port == dst_port)
-                {
-                    return Err(LoadError::BoundaryInputDriven {
-                        node: n.address.clone(),
-                        input: name.clone(),
-                    });
-                }
                 // Source: a node's output port, or a subpatch's face output.
                 let (src_addr, src_port_name) = parse_wire(from);
                 if dark.contains(src_addr) {
@@ -1190,7 +1464,7 @@ impl InstrumentDoc {
                 // never emits Messages (audio stays off the wire, ADR-0026/0030) and `Harmony`
                 // has no OSC form (converters: issue #146) — a wire that could never send
                 // anything is rejected here, not left silently dead. Anything else is illegal.
-                let compatible = from_ty == to_ty
+                let compatible = same_wire_type(&from_ty, &to_ty)
                     || matches!((&from_ty, &to_ty), (PortType::F32, PortType::F32Buffer))
                     || (matches!(to_ty, PortType::Arg) && crate::boundary::has_osc_form(&from_ty));
                 if !compatible {
@@ -1223,68 +1497,74 @@ impl InstrumentDoc {
             }
         }
 
-        // `interface`: the engine-honored I/O boundary (ADR-0032). Each external name resolves to
-        // one internal `(node, port)`, direction-checked — an `inputs` name to an input port, an
-        // `outputs` name to an output port (sole-output sugar allowed). Stored on the Graph for a
-        // host Voicer or a nesting parent to bind; no Arg-type check here (the boundary inherits
-        // the inner port's type — ADR-0034 §4 — so the consumer's wire check decides). An entry
-        // may point at a subpatch's boundary port (re-export): it resolves through the face to
-        // the same inner `(node, port)`. An entry whose target is dark — an unavailable subpatch,
-        // or a dark boundary port of a live one — is dropped **and recorded** on the resolved
-        // interface's dark sets, with a warning: the boundary port vanishes with the unavailable
-        // child, but a consumer one level up degrades the same way instead of hitting a fatal
+        // `interface.outputs` (ADR-0038 §2/§4): each named output pipe is **fed from an internal
+        // port** — an ordinary wire-ref, resolving through a subpatch face when it names one
+        // (re-export) — and, when Signal-typed, feeds the **master taps**: `channel: k` pins
+        // logical master channel k (`tap_output_channel`), omitted keeps the broadcast meaning
+        // (ADR-0026). One consolidated block: at top level it is the master output; nested or
+        // hosted, the same entries are the boundary a parent/Voicer reads. An entry whose
+        // feeding port is dark — an unavailable subpatch, or a dark boundary port of a live one
+        // — is dropped **and recorded** on the resolved interface's dark sets, with a warning,
+        // so a consumer one level up degrades the same way instead of hitting a fatal
         // unknown-port error (dark degradation is transitive, ADR-0016).
         if let Some(iface) = &self.interface {
-            let mut interface = Interface::default();
-            let mut go_dark = |set: &mut BTreeSet<String>, name: &String, reference: &str| {
-                set.insert(name.clone());
-                warnings.push(LoadWarning::DarkInterfaceEntry {
-                    name: name.clone(),
-                    target: reference.to_string(),
-                });
-            };
-            for (name, entry) in &iface.inputs {
-                let reference = entry.target();
-                let (src_addr, port) = parse_wire(reference);
-                if dark.contains(src_addr) {
-                    go_dark(&mut interface.dark_inputs, name, reference);
-                    continue;
-                }
-                // An input ref must name its port explicitly — there is no sole-input sugar.
-                let port_name = port.ok_or_else(|| LoadError::UnknownPort {
-                    node: src_addr.to_string(),
-                    port: reference.to_string(),
-                })?;
-                let Some((key, idx, _)) = resolve_input(&faces, &by_addr, src_addr, port_name)?
-                else {
-                    go_dark(&mut interface.dark_inputs, name, reference);
-                    continue;
-                };
-                if let Some(m) = entry.meta() {
-                    check_interface_override(name, m, &graph.nodes[key], idx, false)?;
-                }
-                interface.inputs.insert(name.clone(), (key, idx));
-            }
             for (name, entry) in &iface.outputs {
-                let reference = entry.target();
-                let (src_addr, port) = parse_wire(reference);
-                if dark.contains(src_addr) {
-                    go_dark(&mut interface.dark_outputs, name, reference);
-                    continue;
-                }
-                let Some((key, idx, _, _)) =
-                    resolve_output(&faces, &by_addr, src_addr, reference, port)?
-                else {
-                    go_dark(&mut interface.dark_outputs, name, reference);
+                let feed = entry.feed().ok_or_else(|| LoadError::InterfacePipe {
+                    name: name.clone(),
+                    reason: "the target-pointing entry form is v1-only — feed the pipe from an \
+                             internal port ({\"from\": …}); a v1 document migrates when parsed \
+                             via `InstrumentDoc::from_json`"
+                        .to_string(),
+                })?;
+                let (src_addr, port) = parse_wire(&feed.from);
+                let resolved = if dark.contains(src_addr) {
+                    None
+                } else {
+                    resolve_output(&faces, &by_addr, src_addr, &feed.from, port)?
+                };
+                let Some((key, idx, ty, _)) = resolved else {
+                    interface.dark_outputs.insert(name.clone());
+                    warnings.push(LoadWarning::DarkInterfaceEntry {
+                        name: name.clone(),
+                        target: feed.from.clone(),
+                    });
                     continue;
                 };
-                if let Some(m) = entry.meta() {
-                    check_interface_override(name, m, &graph.nodes[key], idx, true)?;
+                // Presentational min/max stay a truthful subset of the feeding port's
+                // engine-enforced range (ADR-0034 §4's law, outputs half).
+                check_range_override(
+                    name,
+                    feed.min,
+                    feed.max,
+                    &graph.nodes[key].descriptor.outputs[idx],
+                    None,
+                )?;
+                let signal = matches!(ty, PortType::F32Buffer);
+                match feed.channel {
+                    Some(_) if !signal => {
+                        return Err(LoadError::InterfacePipe {
+                            name: name.clone(),
+                            reason: format!(
+                                "`channel` binds hardware channels, which carry signals — \
+                                 {:?} feeds from a message-domain port (ADR-0038 §3)",
+                                feed.from
+                            ),
+                        });
+                    }
+                    Some(ch) => {
+                        graph.tap_output_channel(key, idx, ch);
+                        interface.output_channels.insert(name.clone(), ch);
+                    }
+                    // A signal pipe with no binding keeps today's broadcast master meaning.
+                    None if signal => graph.tap_output(key, idx),
+                    // A message-typed pipe (a voice's `active`) is boundary-only — no tap.
+                    None => {}
                 }
                 interface.outputs.insert(name.clone(), (key, idx));
             }
-            graph.interface = interface;
         }
+        graph.interface = interface;
+        graph.input_channels_width = input_width;
 
         Ok(Loaded { graph, warnings })
     }
@@ -1300,9 +1580,42 @@ impl InstrumentDoc {
     /// deterministic. A `Constant` override goes to `config`; a materialized `Float` override, an
     /// `Enum` choice (as its symbol), and every inbound wire go to `inputs` (ADR-0035).
     pub fn from_graph(graph: &Graph, instrument: impl Into<String>) -> Self {
+        // Interface pipes are loader-built nodes (ADR-0038), not document nodes. The graph's
+        // **own** boundary pipes (named by `graph.interface`) re-emit as `interface.inputs`
+        // entries below; a pipe spliced in from a nested child (its boundary flattened away)
+        // **dissolves**: consumers rewire to whatever fed it, or take its seed as a literal.
+        let own_pipe: BTreeSet<crate::graph::NodeKey> =
+            graph.interface.inputs.values().map(|(k, _)| *k).collect();
+        let is_pipe = |k: crate::graph::NodeKey| graph.nodes[k].descriptor.type_name == "pipe";
+        // What feeds a dissolved pipe, if anything: its single inbound edge.
+        let feeder = |k: crate::graph::NodeKey| {
+            graph
+                .connections
+                .iter()
+                .find(|c| c.dst == k)
+                .map(|c| (c.src, c.src_port))
+        };
+        // A pipe's seed value in document form: its author/host override, else its declared
+        // numeric default — what an unfed pipe forwards, so a dissolved unfed pipe leaves it
+        // on the consumer as a literal.
+        let pipe_seed = |k: crate::graph::NodeKey| -> Option<InputValue> {
+            let n = &graph.nodes[k];
+            let p = &n.descriptor.inputs[0];
+            if let Some((_, arg)) = n.value_overrides.first() {
+                return Some(match doc_value(p, arg) {
+                    DocValue::Number(v) => InputValue::Number(v),
+                    DocValue::Symbol(s) => InputValue::Symbol(s),
+                });
+            }
+            p.meta
+                .as_ref()
+                .map(|m| InputValue::Number(widen_f32(m.default)))
+        };
+
         let mut nodes: Vec<NodeDoc> = graph
             .nodes
             .iter()
+            .filter(|(key, _)| !is_pipe(*key))
             .map(|(key, node)| {
                 let d = &node.descriptor;
                 let mut config: BTreeMap<String, ConfigValue> = BTreeMap::new();
@@ -1329,22 +1642,38 @@ impl InstrumentDoc {
                     };
                     inputs.insert(p.name.to_string(), value);
                 }
-                // Inbound wires: each edge whose destination is this node becomes a wire-ref, using
-                // the sole-output sugar when the source has a single output.
+                // Inbound wires: each edge whose destination is this node becomes a wire-ref,
+                // using the sole-output sugar when the source has a single output. A source
+                // that is a **dissolved** pipe (a flattened nested boundary) is chased to
+                // whatever fed it — or, unfed, leaves its seed as a literal.
                 for c in graph.connections.iter().filter(|c| c.dst == key) {
-                    let src = &graph.nodes[c.src];
+                    let (mut src_key, mut src_port) = (c.src, c.src_port);
+                    let input_name = d.inputs[c.dst_port].name.to_string();
+                    let mut dead = false;
+                    while is_pipe(src_key) && !own_pipe.contains(&src_key) {
+                        match feeder(src_key) {
+                            Some((k, p)) => (src_key, src_port) = (k, p),
+                            None => {
+                                // Unfed dissolved pipe: its seed becomes the consumer's
+                                // literal (nothing, for a bare/message pipe — silence).
+                                if let Some(v) = pipe_seed(src_key) {
+                                    inputs.insert(input_name.clone(), v);
+                                }
+                                dead = true;
+                                break;
+                            }
+                        }
+                    }
+                    if dead {
+                        continue;
+                    }
+                    let src = &graph.nodes[src_key];
                     let from = if src.descriptor.outputs.len() == 1 {
                         src.address.clone()
                     } else {
-                        format!(
-                            "{}.{}",
-                            src.address, src.descriptor.outputs[c.src_port].name
-                        )
+                        format!("{}.{}", src.address, src.descriptor.outputs[src_port].name)
                     };
-                    inputs.insert(
-                        d.inputs[c.dst_port].name.to_string(),
-                        InputValue::Wire { from },
-                    );
+                    inputs.insert(input_name, InputValue::Wire { from });
                 }
 
                 NodeDoc {
@@ -1372,48 +1701,87 @@ impl InstrumentDoc {
             .collect();
         nodes.sort_by(|a, b| a.address.cmp(&b.address));
 
-        let outputs = graph
-            .outputs
+        // Reconstruct the boundary in v2 pipe form (ADR-0038). Inputs re-derive each pipe's
+        // declaration from its synthesized descriptor; outputs re-emit the canonical explicit
+        // `/node.port` feed (never the sole-output sugar) plus its channel binding, so a
+        // load → save → reload round-trip is stable. Presentational fields (label/unit/widget)
+        // live on the *document*, like `control` — the built Graph doesn't hold them, so this
+        // path can't reconstruct them; the document-level round-trip preserves them via serde.
+        let iface = &graph.interface;
+        let out_ref = |(key, port): &(crate::graph::NodeKey, usize)| {
+            let n = &graph.nodes[*key];
+            format!("{}.{}", n.address, n.descriptor.outputs[*port].name)
+        };
+        let inputs: BTreeMap<String, InterfaceEntry> = iface
+            .inputs
             .iter()
-            .map(|(key, port, channel)| PortRef {
-                node: graph.nodes[*key].address.clone(),
-                port: graph.nodes[*key].descriptor.outputs[*port].name.to_string(),
-                channel: *channel,
+            .map(|(name, (key, _))| {
+                let n = &graph.nodes[*key];
+                (
+                    name.clone(),
+                    InterfaceEntry::Pipe(pipe_doc_from_descriptor(
+                        n,
+                        iface.input_channels.get(name).copied(),
+                    )),
+                )
             })
             .collect();
-
-        // Reconstruct the `interface` boundary (ADR-0032) from its resolved `(node, port)` pairs,
-        // emitting the canonical explicit `/node.port` form (never the sole-output sugar) so a
-        // load → save → reload round-trip is stable. `None` when no boundary is declared.
-        let iface = &graph.interface;
-        let port_ref = |(key, port): &(crate::graph::NodeKey, usize), out: bool| {
-            let n = &graph.nodes[*key];
-            let pname = if out {
-                n.descriptor.outputs[*port].name
-            } else {
-                n.descriptor.inputs[*port].name
+        let mut outputs: BTreeMap<String, InterfaceEntry> = BTreeMap::new();
+        // Master taps this boundary already accounts for (a signal output pipe *is* a tap):
+        // multiset by (node, port, channel), consumed as interface entries claim them.
+        let mut open_taps: Vec<(crate::graph::NodeKey, usize, Option<usize>)> =
+            graph.outputs.clone();
+        for (name, np @ (key, port)) in &iface.outputs {
+            let channel = iface.output_channels.get(name).copied();
+            if let Some(i) = open_taps.iter().position(|t| *t == (*key, *port, channel)) {
+                open_taps.swap_remove(i);
+            }
+            outputs.insert(
+                name.clone(),
+                InterfaceEntry::Feed(OutputPipeDoc {
+                    from: out_ref(np),
+                    channel,
+                    label: None,
+                    unit: None,
+                    widget: None,
+                    min: None,
+                    max: None,
+                }),
+            );
+        }
+        // Any tap the boundary does not yet name (a programmatically built graph that called
+        // `tap_output*` directly) gets a generated entry, exactly as v1 migration names an
+        // anonymous tap — so no master output is lost in the flatten.
+        for (key, port, channel) in open_taps {
+            let mut i = 0usize;
+            let name = loop {
+                i += 1;
+                let candidate = if i == 1 {
+                    "out".to_string()
+                } else {
+                    format!("out_{i}")
+                };
+                if !outputs.contains_key(&candidate) {
+                    break candidate;
+                }
             };
-            format!("{}.{}", n.address, pname)
-        };
-        let interface = if iface.inputs.is_empty() && iface.outputs.is_empty() {
+            outputs.insert(
+                name,
+                InterfaceEntry::Feed(OutputPipeDoc {
+                    from: out_ref(&(key, port)),
+                    channel,
+                    label: None,
+                    unit: None,
+                    widget: None,
+                    min: None,
+                    max: None,
+                }),
+            );
+        }
+        let interface = if inputs.is_empty() && outputs.is_empty() {
             None
         } else {
-            Some(InterfaceDoc {
-                // Bare targets only: presentational overrides (ADR-0034 §4) live on the
-                // document, like `control` — the built Graph doesn't hold them, so the
-                // save-from-graph path can't reconstruct them; the document-level round-trip
-                // (load → re-serialize) preserves them via serde.
-                inputs: iface
-                    .inputs
-                    .iter()
-                    .map(|(name, np)| (name.clone(), port_ref(np, false).into()))
-                    .collect(),
-                outputs: iface
-                    .outputs
-                    .iter()
-                    .map(|(name, np)| (name.clone(), port_ref(np, true).into()))
-                    .collect(),
-            })
+            Some(InterfaceDoc { inputs, outputs })
         };
 
         Self {
@@ -1423,9 +1791,459 @@ impl InstrumentDoc {
             resources: BTreeMap::new(),
             interface,
             nodes,
-            outputs,
+            // v2 never writes the anonymous block (ADR-0038 §4): every tap is an
+            // `interface.outputs` pipe above.
+            outputs: Vec::new(),
         }
     }
+}
+
+/// Re-derive an input pipe's document declaration from its synthesized runtime descriptor —
+/// [`from_graph`](InstrumentDoc::from_graph)'s inverse of [`pipe_descriptor`]. Range fields are
+/// emitted only when they differ from the loader's defaults (the type-wide sentinels, a
+/// zero default, a linear curve), so a save is minimal and `build → from_graph` round-trips
+/// stably. A host/author value-override on the pipe becomes its declared `default`.
+fn pipe_doc_from_descriptor(node: &crate::graph::Node, channel: Option<usize>) -> InputPipeDoc {
+    let p = &node.descriptor.inputs[0];
+    let mut pipe = InputPipeDoc {
+        ty: String::new(),
+        channel,
+        default: None,
+        min: None,
+        max: None,
+        curve: None,
+        unit: None,
+        label: None,
+        widget: None,
+    };
+    match &p.ty {
+        PortType::F32Buffer => pipe.ty = "f32_buffer".to_string(),
+        PortType::F32 => pipe.ty = "f32".to_string(),
+        PortType::Vocab {
+            name: "Note",
+            is_event: true,
+            ..
+        } => pipe.ty = "note".to_string(),
+        PortType::Vocab {
+            name: "Harmony", ..
+        } => pipe.ty = "harmony".to_string(),
+        PortType::Vocab {
+            enum_meta: Some(e), ..
+        } => {
+            pipe.ty = e.type_name.to_string();
+            if let Some((_, arg)) = node.value_overrides.first() {
+                if let Some(sym) = e.symbol_of(arg) {
+                    pipe.default = Some(PipeDefault::Symbol(sym.to_string()));
+                }
+            }
+            return pipe;
+        }
+        // Unreachable for loader-built pipes; harmless fallback for a hand-built graph.
+        other => pipe.ty = other.to_string(),
+    }
+    if let Some(m) = &p.meta {
+        if m.min != reuben_contract::NUMBER_MIN {
+            pipe.min = Some(widen_f32(m.min));
+        }
+        if m.max != reuben_contract::NUMBER_MAX {
+            pipe.max = Some(widen_f32(m.max));
+        }
+        if m.curve == Curve::Exponential {
+            pipe.curve = Some(CurveDoc::Exp);
+        }
+        let seed = node
+            .value_overrides
+            .first()
+            .and_then(|(_, a)| a.as_f32())
+            .unwrap_or(m.default);
+        if seed != 0.0_f32.clamp(m.min, m.max) {
+            pipe.default = Some(PipeDefault::Number(widen_f32(seed)));
+        }
+    }
+    pipe
+}
+
+/// The v1→v2 migration (ADR-0036 §4, ADR-0038 §5), run at parse on any document declaring a
+/// version below current. Mechanical, in three moves:
+///
+/// 1. every `interface.inputs` target entry **flips** into a pipe — its declared type derived
+///    from the old target port — and the old target input gains a consumer wire-ref
+///    (`"cutoff": {"from": "/tone"}`); a target literal moves onto the pipe as its `default`;
+/// 2. every `interface.outputs` target entry is respelled `{"from": …}` (outputs were already
+///    fed-from-inside; only the key changes);
+/// 3. the anonymous top-level `outputs` block dissolves into named `interface.outputs` entries
+///    (generated names), deduplicated against pipes already feeding from the same port.
+///
+/// Two v1 shapes are inexpressible after the flip and degrade explicitly:
+/// - an entry whose target input the child **already wires internally** (v1's `driven` state —
+///   a host wire onto it was fatal) is dropped: the internal wire keeps feeding the port;
+/// - an entry re-exporting a **nested** child's boundary port derives its type from the child's
+///   own (migrated) pipe; when the child is unavailable (no resolver / missing / unreadable) the
+///   pipe falls back to `"f32"` so the document still loads and references degrade dark at
+///   build, exactly like every other reference to an unavailable nest (ADR-0016).
+fn migrate_v1(
+    doc: &mut InstrumentDoc,
+    registry: &Registry,
+    resolver: Option<&dyn ResourceResolver>,
+    ctx: &mut LoadCtx,
+    referrer: Option<&str>,
+) -> Result<(), LoadError> {
+    let v2_in_v1 = |name: &str| LoadError::InterfacePipe {
+        name: name.to_string(),
+        reason: "a pipe-form entry in a v1 document — declare `format_version: 2`".to_string(),
+    };
+
+    // 1+2: flip the interface block.
+    if let Some(iface) = doc.interface.take() {
+        let mut inputs: BTreeMap<String, InterfaceEntry> = BTreeMap::new();
+        for (name, entry) in iface.inputs {
+            let Some(target) = entry.v1_target().map(str::to_string) else {
+                return Err(v2_in_v1(&name));
+            };
+            let meta = entry.v1_meta().cloned();
+            if let Some(pipe) = migrate_input_entry(
+                doc,
+                &name,
+                &target,
+                meta.as_ref(),
+                registry,
+                resolver,
+                ctx,
+                referrer,
+            )? {
+                inputs.insert(name, InterfaceEntry::Pipe(pipe));
+            }
+        }
+        let mut outputs: BTreeMap<String, InterfaceEntry> = BTreeMap::new();
+        for (name, entry) in iface.outputs {
+            let Some(target) = entry.v1_target().map(str::to_string) else {
+                return Err(v2_in_v1(&name));
+            };
+            let m = entry.v1_meta();
+            outputs.insert(
+                name,
+                InterfaceEntry::Feed(OutputPipeDoc {
+                    from: target,
+                    channel: None,
+                    label: m.and_then(|m| m.label.clone()),
+                    unit: m.and_then(|m| m.unit.clone()),
+                    widget: m.and_then(|m| m.widget.clone()),
+                    min: m.and_then(|m| m.min),
+                    max: m.and_then(|m| m.max),
+                }),
+            );
+        }
+        doc.interface = Some(InterfaceDoc { inputs, outputs });
+    }
+
+    // 3: the anonymous `outputs` block dissolves into `interface.outputs` (ADR-0038 §4).
+    let anon = std::mem::take(&mut doc.outputs);
+    if !anon.is_empty() {
+        let InstrumentDoc {
+            ref nodes,
+            ref mut interface,
+            ..
+        } = *doc;
+        let iface = interface.get_or_insert_with(InterfaceDoc::default);
+        for o in anon {
+            let already = iface.outputs.values().any(|e| {
+                e.feed().is_some_and(|f| {
+                    f.channel == o.channel && feed_names_port(f, &o, nodes, registry)
+                })
+            });
+            if already {
+                continue; // a named pipe already feeds from this port (e.g. a voice's `audio`)
+            }
+            let mut i = 0usize;
+            let name = loop {
+                i += 1;
+                let candidate = if i == 1 {
+                    "out".to_string()
+                } else {
+                    format!("out_{i}")
+                };
+                if !iface.outputs.contains_key(&candidate) {
+                    break candidate;
+                }
+            };
+            iface.outputs.insert(
+                name,
+                InterfaceEntry::Feed(OutputPipeDoc {
+                    from: format!("{}.{}", o.node, o.port),
+                    channel: o.channel,
+                    label: None,
+                    unit: None,
+                    widget: None,
+                    min: None,
+                    max: None,
+                }),
+            );
+        }
+    }
+    Ok(())
+}
+
+/// Whether an already-migrated output pipe feeds from the same port a v1 anonymous tap names —
+/// the migration dedup (a voice patch declared `audio: /out.audio` *and* tapped it). Handles
+/// the sole-output sugar by resolving the node's descriptor when the ref names no port.
+fn feed_names_port(
+    feed: &OutputPipeDoc,
+    tap: &PortRef,
+    nodes: &[NodeDoc],
+    registry: &Registry,
+) -> bool {
+    let (addr, port) = parse_wire(&feed.from);
+    if addr != tap.node {
+        return false;
+    }
+    match port {
+        Some(p) => p == tap.port,
+        None => nodes
+            .iter()
+            .find(|n| n.address == addr)
+            .and_then(|n| registry.get(&n.type_name))
+            .map(|e| &e.descriptor.outputs)
+            .is_some_and(|outs| outs.len() == 1 && outs[0].name == tap.port),
+    }
+}
+
+/// Migrate one v1 `interface.inputs` entry (see [`migrate_v1`]): derive the pipe declaration
+/// from the target port, apply the v1 presentational overrides, capture the target's literal as
+/// the pipe default, and rewrite the target input into a consumer wire-ref. `Ok(None)` drops
+/// the entry (internally-driven target — the one v1 state the flip cannot express).
+#[allow(clippy::too_many_arguments)]
+fn migrate_input_entry(
+    doc: &mut InstrumentDoc,
+    name: &str,
+    target: &str,
+    meta: Option<&InterfaceMeta>,
+    registry: &Registry,
+    resolver: Option<&dyn ResourceResolver>,
+    ctx: &mut LoadCtx,
+    referrer: Option<&str>,
+) -> Result<Option<InputPipeDoc>, LoadError> {
+    let (addr, port) = parse_wire(target);
+    // v1 rule: an input ref names its port explicitly — no sole-input sugar.
+    let port_name = port.ok_or_else(|| LoadError::UnknownPort {
+        node: addr.to_string(),
+        port: target.to_string(),
+    })?;
+    let node_idx = doc
+        .nodes
+        .iter()
+        .position(|n| n.address == addr)
+        .ok_or_else(|| LoadError::UnknownNode(addr.to_string()))?;
+    let entry = registry
+        .get(&doc.nodes[node_idx].type_name)
+        .ok_or_else(|| LoadError::UnknownType {
+            address: addr.to_string(),
+            type_name: doc.nodes[node_idx].type_name.clone(),
+        })?;
+
+    let existing = doc.nodes[node_idx].inputs.get(port_name).cloned();
+    if matches!(existing, Some(InputValue::Wire { .. })) {
+        // The child already drives this input internally: v1 exposed the name but made a host
+        // wire fatal (`BoundaryInputDriven`). The flip cannot express that state — drop the
+        // entry; the internal wire keeps feeding the port.
+        return Ok(None);
+    }
+
+    let mut pipe = if entry.descriptor.has_resource("patch") {
+        // A re-export of a nested child's boundary port: the pipe declaration is the child's
+        // own (migrated) pipe. Unavailable child → the `"f32"` fallback (degrades dark at
+        // build, ADR-0016).
+        child_input_pipe(
+            doc, node_idx, addr, port_name, registry, resolver, ctx, referrer,
+        )?
+    } else {
+        let d = &entry.descriptor;
+        let pi = d
+            .inputs
+            .iter()
+            .position(|p| p.name == port_name)
+            .ok_or_else(|| LoadError::UnknownPort {
+                node: addr.to_string(),
+                port: port_name.to_string(),
+            })?;
+        // The v1 override law (ADR-0034 §4) still holds for v1 documents: an override must
+        // stay a truthful subset of what the target port enforced.
+        if let Some(m) = meta {
+            check_range_override(
+                name,
+                m.min,
+                m.max,
+                &d.inputs[pi],
+                Some(effective_default(&d.inputs[pi], existing.as_ref())),
+            )?;
+        }
+        pipe_from_port(name, &d.inputs[pi])?
+    };
+
+    // The target's own literal is what an unwired v1 host got — it becomes the pipe's default.
+    match &existing {
+        Some(InputValue::Number(v)) => pipe.default = Some(PipeDefault::Number(*v)),
+        Some(InputValue::Symbol(s)) => pipe.default = Some(PipeDefault::Symbol(s.clone())),
+        _ => {}
+    }
+    // The v1 presentational overrides decorate/narrow the derived declaration.
+    if let Some(m) = meta {
+        if m.label.is_some() {
+            pipe.label = m.label.clone();
+        }
+        if m.unit.is_some() {
+            pipe.unit = m.unit.clone();
+        }
+        if m.widget.is_some() {
+            pipe.widget = m.widget.clone();
+        }
+        if m.min.is_some() {
+            pipe.min = m.min;
+        }
+        if m.max.is_some() {
+            pipe.max = m.max;
+        }
+    }
+
+    // The mechanical flip: the old target input now consumes the pipe.
+    doc.nodes[node_idx].inputs.insert(
+        port_name.to_string(),
+        InputValue::Wire {
+            from: format!("/{name}"),
+        },
+    );
+    Ok(Some(pipe))
+}
+
+/// The effective unwired value of a v1 target port: the child's own literal beats the
+/// descriptor default (`None` for a port with neither — a bare buffer).
+fn effective_default(port: &Port, literal: Option<&InputValue>) -> Option<f64> {
+    match literal {
+        Some(InputValue::Number(v)) => Some(*v),
+        _ => port.meta.as_ref().map(|m| widen_f32(m.default)),
+    }
+}
+
+/// Derive a migrated pipe's declaration from the v1 target [`Port`]: the declared type string,
+/// and — for a numeric port — the engine range/default/curve/unit it enforced, so the pipe
+/// enforces (and renders) exactly what the v1 boundary did.
+fn pipe_from_port(name: &str, port: &Port) -> Result<InputPipeDoc, LoadError> {
+    let mut pipe = InputPipeDoc {
+        ty: String::new(),
+        channel: None,
+        default: None,
+        min: None,
+        max: None,
+        curve: None,
+        unit: None,
+        label: None,
+        widget: None,
+    };
+    let numeric_meta = |pipe: &mut InputPipeDoc| {
+        if let Some(m) = &port.meta {
+            pipe.default = Some(PipeDefault::Number(widen_f32(m.default)));
+            pipe.min = Some(widen_f32(m.min));
+            pipe.max = Some(widen_f32(m.max));
+            if m.curve == Curve::Exponential {
+                pipe.curve = Some(CurveDoc::Exp);
+            }
+            if !m.unit.is_empty() {
+                pipe.unit = Some(m.unit.to_string());
+            }
+        }
+    };
+    match &port.ty {
+        PortType::F32Buffer => {
+            pipe.ty = "f32_buffer".to_string();
+            numeric_meta(&mut pipe);
+        }
+        PortType::F32 => {
+            pipe.ty = "f32".to_string();
+            numeric_meta(&mut pipe);
+        }
+        PortType::Vocab {
+            name: "Note",
+            is_event: true,
+            ..
+        } => pipe.ty = "note".to_string(),
+        PortType::Vocab {
+            name: "Harmony", ..
+        } => pipe.ty = "harmony".to_string(),
+        PortType::Vocab {
+            enum_meta: Some(e), ..
+        } => pipe.ty = e.type_name.to_string(),
+        other => {
+            return Err(LoadError::InterfacePipe {
+                name: name.to_string(),
+                reason: format!(
+                    "cannot migrate a v1 entry targeting a {other} port — declare the pipe \
+                     by hand"
+                ),
+            })
+        }
+    }
+    Ok(pipe)
+}
+
+/// The nested-re-export arm of [`migrate_input_entry`]: parse the referenced child (recursively
+/// migrated, cycle-guarded) and copy the named boundary pipe's declaration. Any availability
+/// failure — no resolver on this path, a missing id/source, unreadable text — falls back to a
+/// plain `"f32"` pipe so the document loads and references degrade dark at build (ADR-0016);
+/// a child that *parses* but declares no such pipe stays the fatal `UnknownPort` v1 raised.
+#[allow(clippy::too_many_arguments)]
+fn child_input_pipe(
+    doc: &InstrumentDoc,
+    node_idx: usize,
+    addr: &str,
+    port_name: &str,
+    registry: &Registry,
+    resolver: Option<&dyn ResourceResolver>,
+    ctx: &mut LoadCtx,
+    referrer: Option<&str>,
+) -> Result<InputPipeDoc, LoadError> {
+    let fallback = || InputPipeDoc {
+        ty: "f32".to_string(),
+        channel: None,
+        default: None,
+        min: None,
+        max: None,
+        curve: None,
+        unit: None,
+        label: None,
+        widget: None,
+    };
+    let (Some(resolver), Some(id)) = (resolver, &doc.nodes[node_idx].patch) else {
+        return Ok(fallback());
+    };
+    let Some(source) = doc.resources.get(id) else {
+        return Ok(fallback());
+    };
+    let canon = resolver.canonical(source, referrer);
+    if ctx.loading.iter().any(|s| s == &canon) {
+        return Err(LoadError::CyclicResource { source: canon });
+    }
+    let Ok(text) = resolver.resolve_text(&canon) else {
+        return Ok(fallback());
+    };
+    ctx.loading.push(canon.clone());
+    let child = InstrumentDoc::parse_with(&text, registry, Some(resolver), ctx, Some(&canon));
+    ctx.loading.pop();
+    let child = child?; // a resolved-but-malformed child stays fatal (ADR-0034 §1)
+    let pipe = child
+        .interface
+        .as_ref()
+        .and_then(|i| i.inputs.get(port_name))
+        .and_then(|e| e.pipe())
+        .cloned()
+        .ok_or_else(|| LoadError::UnknownPort {
+            node: addr.to_string(),
+            port: port_name.to_string(),
+        })?;
+    Ok(InputPipeDoc {
+        // The child's own channel binding is child-local (inert when nested, ADR-0038 §3);
+        // a re-export does not inherit it.
+        channel: None,
+        ..pipe
+    })
 }
 
 fn lookup<'a>(
@@ -1721,43 +2539,33 @@ pub fn doc_value(port: &crate::descriptor::Port, arg: &Arg) -> DocValue {
     }
 }
 
-/// Enforce the presentational-override law (ADR-0034 §4) on one resolved `interface` entry:
-/// overrides decorate presentation but must stay **truthful**, because `describe` publishes them
-/// as the boundary contract and no engine path reconciles them with the range the engine actually
-/// clamps to. A `min`/`max` override must land on a port that has a numeric range, stay within
-/// the engine-enforced bounds, not invert, and keep the effective default (the child's own
-/// literal, else the descriptor default) inside the range it advertises. `label`/`unit`/`widget`
-/// are unconstrained — they rename, they cannot lie about a value the engine will accept.
-fn check_interface_override(
+/// Enforce the presentational-override law (ADR-0034 §4): a `min`/`max` override decorates
+/// presentation but must stay **truthful**, because `describe` publishes it as the boundary
+/// contract and no engine path reconciles it with the range the engine actually clamps to. It
+/// must land on a port with a numeric range, stay within the engine-enforced bounds, and not
+/// invert; `effective` (inputs only — v1 migration) additionally pins the effective default
+/// inside the advertised range. `label`/`unit`/`widget` are unconstrained — they rename, they
+/// cannot lie about a value the engine will accept. In v2 this law governs `interface.outputs`
+/// overrides and v1 input entries at migration; a v2 **input pipe owns its range outright**
+/// (ADR-0038 §2), validated in [`pipe_descriptor`] instead.
+fn check_range_override(
     name: &str,
-    meta: &InterfaceMeta,
-    node: &crate::graph::Node,
-    port_idx: usize,
-    output: bool,
+    min_o: Option<f64>,
+    max_o: Option<f64>,
+    p: &Port,
+    effective: Option<Option<f64>>,
 ) -> Result<(), LoadError> {
-    if meta.min.is_none() && meta.max.is_none() {
+    if min_o.is_none() && max_o.is_none() {
         return Ok(());
     }
     let err = |reason: String| LoadError::InterfaceOverride {
         name: name.to_string(),
         reason,
     };
-    let d = &node.descriptor;
-    let p = if output {
-        &d.outputs[port_idx]
-    } else {
-        &d.inputs[port_idx]
-    };
     // The engine-enforced range: a swept scalar's F32Meta, or an integer port's I32 meta.
-    let (inner_min, inner_max, inner_default) = match (&p.meta, &p.ty) {
-        (Some(m), _) => (
-            widen_f32(m.min),
-            widen_f32(m.max),
-            Some(widen_f32(m.default)),
-        ),
-        (None, PortType::I32 { meta: Some(m) }) => {
-            (m.min as f64, m.max as f64, Some(m.default as f64))
-        }
+    let (inner_min, inner_max) = match (&p.meta, &p.ty) {
+        (Some(m), _) => (widen_f32(m.min), widen_f32(m.max)),
+        (None, PortType::I32 { meta: Some(m) }) => (m.min as f64, m.max as f64),
         _ => {
             return Err(err(format!(
                 "range override on inner port {:?}, which has no numeric range",
@@ -1765,7 +2573,7 @@ fn check_interface_override(
             )))
         }
     };
-    for (bound, value) in [("min", meta.min), ("max", meta.max)] {
+    for (bound, value) in [("min", min_o), ("max", max_o)] {
         if let Some(v) = value {
             if v < inner_min || v > inner_max {
                 return Err(err(format!(
@@ -1775,8 +2583,8 @@ fn check_interface_override(
             }
         }
     }
-    let lo = meta.min.unwrap_or(inner_min);
-    let hi = meta.max.unwrap_or(inner_max);
+    let lo = min_o.unwrap_or(inner_min);
+    let hi = max_o.unwrap_or(inner_max);
     if lo >= hi {
         return Err(err(format!(
             "advertised range [{lo}..{hi}] is inverted or empty"
@@ -1784,26 +2592,180 @@ fn check_interface_override(
     }
     // Inputs only: the effective default is what an unwired host actually gets — it must sit
     // inside the range a generated control will span.
-    if !output {
-        let effective = node
-            .value_overrides
-            .iter()
-            .find(|(i, _)| *i == port_idx)
-            .and_then(|(_, a)| match a {
-                Arg::F32(v) => Some(widen_f32(*v)),
-                Arg::I32(v) => Some(*v as f64),
-                _ => None,
-            })
-            .or(inner_default);
-        if let Some(v) = effective {
-            if v < lo || v > hi {
-                return Err(err(format!(
-                    "effective default {v} is outside the advertised range [{lo}..{hi}]"
-                )));
-            }
+    if let Some(Some(v)) = effective {
+        if v < lo || v > hi {
+            return Err(err(format!(
+                "effective default {v} is outside the advertised range [{lo}..{hi}]"
+            )));
         }
     }
     Ok(())
+}
+
+/// Synthesize an input pipe's per-entry [`Descriptor`] from its declaration (ADR-0038 §2): one
+/// `in` port the boundary feeds and one `out` port consumers wire from, both of the **declared**
+/// `Arg` type — the existing pass-2 wire check then enforces that type against every consumer,
+/// no new checker. A numeric pipe's declared `default`/`min`/`max`/`curve` become the port's own
+/// engine-enforced [`F32Meta`] (an unwired signal pipe materializes `default`; a **bare** signal
+/// pipe materializes silence). Validation is local and pointed: unknown type, numeric metadata
+/// on a message pipe, an incoherent range, or a `channel` on anything but a signal pipe
+/// (hardware channels carry signals — ADR-0038 §3).
+fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortKind), LoadError> {
+    let err = |reason: String| LoadError::InterfacePipe {
+        name: name.to_string(),
+        reason,
+    };
+
+    // The declared numeric meta for one of the pipe's two ports (they mirror each other).
+    let f32_meta = |port_name: &'static str| -> Result<F32Meta, LoadError> {
+        let min = pipe
+            .min
+            .map(|v| v as f32)
+            .unwrap_or(reuben_contract::NUMBER_MIN);
+        let max = pipe
+            .max
+            .map(|v| v as f32)
+            .unwrap_or(reuben_contract::NUMBER_MAX);
+        if min >= max {
+            return Err(err(format!(
+                "declared range [{min}..{max}] is inverted or empty"
+            )));
+        }
+        let default = match &pipe.default {
+            None => 0.0_f32.clamp(min, max),
+            Some(PipeDefault::Number(v)) => {
+                let v = *v as f32;
+                if v < min || v > max {
+                    return Err(err(format!(
+                        "default {v} is outside the declared range [{min}..{max}]"
+                    )));
+                }
+                v
+            }
+            Some(PipeDefault::Symbol(s)) => {
+                return Err(err(format!(
+                    "default {s:?} is a symbol — a numeric pipe takes a number"
+                )))
+            }
+        };
+        Ok(F32Meta {
+            name: port_name,
+            min,
+            max,
+            default,
+            // `unit` is presentational and document-owned (F32Meta's is `&'static str`);
+            // describe reads it from the entry.
+            unit: "",
+            curve: pipe.curve.map(Curve::from).unwrap_or(Curve::Linear),
+        })
+    };
+    let no_numeric_meta = || -> Result<(), LoadError> {
+        if pipe.default.is_some()
+            || pipe.min.is_some()
+            || pipe.max.is_some()
+            || pipe.curve.is_some()
+        {
+            return Err(err(format!(
+                "`default`/`min`/`max`/`curve` apply to numeric pipes only, not {:?}",
+                pipe.ty
+            )));
+        }
+        Ok(())
+    };
+
+    let (input, output, kind) = match pipe.ty.as_str() {
+        "f32_buffer" => {
+            let declared = pipe.default.is_some()
+                || pipe.min.is_some()
+                || pipe.max.is_some()
+                || pipe.curve.is_some();
+            if declared {
+                (
+                    Port::f32_buffer_meta(f32_meta("in")?),
+                    Port::f32_buffer_meta(f32_meta("out")?),
+                    PortKind::Signal,
+                )
+            } else {
+                // A bare signal pipe: unwired it materializes silence (the ADR-0038 promise).
+                (
+                    Port::f32_buffer("in"),
+                    Port::f32_buffer("out"),
+                    PortKind::Signal,
+                )
+            }
+        }
+        "f32" => (
+            Port::f32(f32_meta("in")?),
+            Port::f32(f32_meta("out")?),
+            PortKind::Value,
+        ),
+        "note" => {
+            no_numeric_meta()?;
+            (Port::note("in"), Port::note("out"), PortKind::Event)
+        }
+        "harmony" => {
+            no_numeric_meta()?;
+            (Port::harmony("in"), Port::harmony("out"), PortKind::Value)
+        }
+        other => {
+            let (Some(im), Some(om)) = (
+                crate::vocab::enum_meta_by_type(other, "in"),
+                crate::vocab::enum_meta_by_type(other, "out"),
+            ) else {
+                return Err(err(format!(
+                    "unknown pipe type {other:?} — one of \"f32_buffer\", \"f32\", \"note\", \
+                     \"harmony\", or a shared vocab enum name (e.g. \"FilterMode\")"
+                )));
+            };
+            if pipe.min.is_some() || pipe.max.is_some() || pipe.curve.is_some() {
+                return Err(err(format!(
+                    "`min`/`max`/`curve` apply to numeric pipes only, not {other:?}"
+                )));
+            }
+            match &pipe.default {
+                Some(PipeDefault::Symbol(s)) if im.resolve(s).is_none() => {
+                    return Err(err(format!("default {s:?} names no {other} variant")));
+                }
+                Some(PipeDefault::Number(_)) => {
+                    return Err(err(
+                        "an enum pipe's default is its variant symbol, not a number".to_string(),
+                    ));
+                }
+                _ => {}
+            }
+            (Port::enumerated(im), Port::enumerated(om), PortKind::Value)
+        }
+    };
+    if pipe.channel.is_some() && kind != PortKind::Signal {
+        return Err(err(format!(
+            "`channel` binds hardware channels, which carry signals — a {:?} pipe is \
+             message-domain (ADR-0038 §3)",
+            pipe.ty
+        )));
+    }
+    Ok((
+        Descriptor {
+            type_name: "pipe",
+            inputs: vec![input],
+            outputs: vec![output],
+            constants: Vec::new(),
+            resources: Vec::new(),
+        },
+        kind,
+    ))
+}
+
+/// Whether two ports carry the same **`Arg` type** for wiring (the equal-types arm of the
+/// pass-2 check). [`PortType`]'s derived equality also compares per-port metadata — a vocab
+/// enum's [`EnumMeta`] carries the *port* name, so `pipe.out` (an interface pipe's output,
+/// ADR-0038) would spuriously mismatch `filter.mode` even though both carry a `FilterMode`.
+/// Type identity is the variant plus, for a vocab, its **type** name; metadata (ranges,
+/// defaults, port labels) never decides wireability.
+fn same_wire_type(from: &PortType, to: &PortType) -> bool {
+    match (from, to) {
+        (PortType::Vocab { name: a, .. }, PortType::Vocab { name: b, .. }) => a == b,
+        _ => std::mem::discriminant(from) == std::mem::discriminant(to),
+    }
 }
 
 /// Split a wire-ref string into `(node, Some(port))` (`"/osc.audio"`) or `(node, None)` (`"/osc"`,
@@ -2051,8 +3013,8 @@ mod tests {
 
     #[test]
     fn doc_json_round_trips() {
-        let doc = InstrumentDoc::from_json(TWO_NODE).expect("parse");
-        let reparsed = InstrumentDoc::from_json(&doc.to_json_pretty()).expect("reparse");
+        let doc = InstrumentDoc::from_json(TWO_NODE, &reg()).expect("parse");
+        let reparsed = InstrumentDoc::from_json(&doc.to_json_pretty(), &reg()).expect("reparse");
         assert_eq!(doc, reparsed);
     }
 
@@ -2063,26 +3025,27 @@ mod tests {
         let json = r#"{"instrument":"t",
             "nodes":[{"type":"map_f32_signal","address":"/brightness",
                       "control":{"label":"Brightness","widget":"fader","unit":"%"}}]}"#;
-        let doc = InstrumentDoc::from_json(json).expect("parse");
+        let doc = InstrumentDoc::from_json(json, &reg()).expect("parse");
         let ctl = doc.nodes[0]
             .control
             .as_ref()
             .expect("control preserved on load");
         assert_eq!(ctl["label"], "Brightness");
-        let reparsed = InstrumentDoc::from_json(&doc.to_json_pretty()).expect("reparse");
+        let reparsed = InstrumentDoc::from_json(&doc.to_json_pretty(), &reg()).expect("reparse");
         assert_eq!(doc, reparsed, "control block must round-trip unchanged");
     }
 
     #[test]
-    fn absent_format_version_is_v1_and_save_writes_it() {
-        // Every pre-versioning document is a valid v1 (ADR-0036)...
-        let doc = InstrumentDoc::from_json(r#"{"instrument":"t","nodes":[]}"#).expect("parse");
-        assert_eq!(doc.format_version, 1);
-        // ...and saving stamps the current version explicitly.
+    fn absent_format_version_is_v1_and_save_writes_v2() {
+        // Every pre-versioning document is a valid v1 (ADR-0036); it migrates at parse...
+        let doc =
+            InstrumentDoc::from_json(r#"{"instrument":"t","nodes":[]}"#, &reg()).expect("parse");
+        assert_eq!(doc.format_version, FORMAT_VERSION);
+        // ...and saving stamps the current version explicitly (never the old number).
         let json = doc.to_json_pretty();
         assert!(
-            json.contains("\"format_version\": 1"),
-            "save must write the version: {json}"
+            json.contains("\"format_version\": 2"),
+            "save must write the current version: {json}"
         );
     }
 
@@ -2093,10 +3056,13 @@ mod tests {
         // stamped correctly rather than re-emitting the shape's old, now-wrong version number
         // (ADR-0036 §4). Once migrations exist this is what keeps a migrated v1→v2 doc from
         // saving as v1 on a v2 shape.
-        let doc = InstrumentDoc::from_json(r#"{"format_version":0,"instrument":"t","nodes":[]}"#)
-            .expect("a below-current version parses");
+        let doc = InstrumentDoc::from_json(
+            r#"{"format_version":0,"instrument":"t","nodes":[]}"#,
+            &reg(),
+        )
+        .expect("a below-current version parses");
         assert_eq!(doc.format_version, FORMAT_VERSION);
-        assert!(doc.to_json_pretty().contains("\"format_version\": 1"));
+        assert!(doc.to_json_pretty().contains("\"format_version\": 2"));
     }
 
     #[test]
@@ -2117,8 +3083,11 @@ mod tests {
 
     #[test]
     fn newer_format_version_is_refused_with_a_clear_error() {
-        let err = InstrumentDoc::from_json(r#"{"format_version":99,"instrument":"t","nodes":[]}"#)
-            .expect_err("future version must not parse");
+        let err = InstrumentDoc::from_json(
+            r#"{"format_version":99,"instrument":"t","nodes":[]}"#,
+            &reg(),
+        )
+        .expect_err("future version must not parse");
         match &err {
             LoadError::UnsupportedVersion {
                 found: 99,
@@ -2194,29 +3163,51 @@ mod tests {
     }"#;
 
     #[test]
-    fn interface_block_resolves_to_internal_ports() {
+    fn interface_inputs_become_pipes_and_outputs_resolve_to_internal_ports() {
+        // ADR-0038 §2 via v1 migration: each input entry mints a pipe node (`freq` → `/freq`)
+        // whose `in` port the boundary feeds; the old target consumes it with an ordinary
+        // wire; outputs resolve to the internal ports that feed them.
         let g = load(VOICE_IFACE, &reg()).expect("load");
         let osc = g.find("/osc").unwrap();
         let env = g.find("/env").unwrap();
+        let freq_pipe = g.find("/freq").expect("input pipe minted at /freq");
+        let gate_pipe = g.find("/gate").expect("input pipe minted at /gate");
+
+        // The boundary feeds each pipe's `in` port.
+        assert_eq!(g.interface.inputs["freq"], (freq_pipe, 0));
+        assert_eq!(g.interface.inputs["gate"], (gate_pipe, 0));
+        // The pipe's declared type derives from the old target port (osc.freq is a
+        // signal-with-default control; env.gate a held f32 Value).
+        assert_eq!(
+            g.nodes[freq_pipe].descriptor.inputs[0].ty,
+            PortType::F32Buffer
+        );
+        assert_eq!(g.nodes[gate_pipe].descriptor.inputs[0].ty, PortType::F32);
+        // The flip: the old targets now consume the pipes with ordinary edges.
+        let osc_freq = g.nodes[osc]
+            .descriptor
+            .inputs
+            .iter()
+            .position(|p| p.name == "freq")
+            .unwrap();
+        assert!(g
+            .connections
+            .iter()
+            .any(|c| c.src == freq_pipe && c.dst == osc && c.dst_port == osc_freq));
+        let env_gate = g.nodes[env]
+            .descriptor
+            .inputs
+            .iter()
+            .position(|p| p.name == "gate")
+            .unwrap();
+        assert!(g
+            .connections
+            .iter()
+            .any(|c| c.src == gate_pipe && c.dst == env && c.dst_port == env_gate));
+
+        // Outputs resolve to the right node + output port index (explicit `/env.active`).
         let osc_d = &g.nodes[osc].descriptor;
         let env_d = &g.nodes[env].descriptor;
-
-        // inputs resolve to the right node + input port index, direction-checked.
-        assert_eq!(
-            g.interface.inputs["freq"],
-            (
-                osc,
-                osc_d.inputs.iter().position(|p| p.name == "freq").unwrap()
-            )
-        );
-        assert_eq!(
-            g.interface.inputs["gate"],
-            (
-                env,
-                env_d.inputs.iter().position(|p| p.name == "gate").unwrap()
-            )
-        );
-        // outputs resolve to the right node + output port index (explicit `/env.active`).
         assert_eq!(
             g.interface.outputs["audio"],
             (
@@ -2239,6 +3230,104 @@ mod tests {
                     .unwrap()
             )
         );
+    }
+
+    #[test]
+    fn native_v2_pipe_fans_out_to_several_consumers() {
+        // ADR-0038 §2: a pipe behaves like a source node, so fan-out is free — two consumers
+        // wire from one input pipe with plain wire-refs.
+        let json = r#"{"format_version":2,"instrument":"t","interface":{
+            "inputs":{"in":{"type":"f32_buffer"}}},
+            "nodes":[
+              {"type":"filter","address":"/a","inputs":{"audio":{"from":"/in"}}},
+              {"type":"delay","address":"/b","inputs":{"audio":{"from":"/in"}}}]}"#;
+        let g = load(json, &reg()).expect("load");
+        let pipe = g.find("/in").expect("pipe minted");
+        let consumers = g.connections.iter().filter(|c| c.src == pipe).count();
+        assert_eq!(consumers, 2, "one pipe, two consumer edges");
+    }
+
+    #[test]
+    fn pipe_address_collision_with_a_node_is_fatal() {
+        // ADR-0038 §2: the entry mints `/in`; a document node claiming the same address is the
+        // existing fatal DuplicateAddress.
+        let json = r#"{"format_version":2,"instrument":"t","interface":{
+            "inputs":{"in":{"type":"f32_buffer"}}},
+            "nodes":[{"type":"output","address":"/in"}]}"#;
+        assert!(matches!(
+            load(json, &reg()),
+            Err(LoadError::DuplicateAddress(a)) if a == "/in"
+        ));
+    }
+
+    #[test]
+    fn channel_on_a_message_pipe_is_a_load_error() {
+        // ADR-0038 §3: hardware channels carry signals; a channel binding on a Value/Event
+        // pipe is a pointed load error, both directions.
+        for iface in [
+            r#""inputs":{"gate":{"type":"f32","channel":0}}"#,
+            r#""inputs":{"notes":{"type":"note","channel":1}}"#,
+        ] {
+            let json = format!(
+                r#"{{"format_version":2,"instrument":"t","interface":{{{iface}}},"nodes":[]}}"#
+            );
+            let err = load(&json, &reg()).err().expect("channel on message pipe");
+            assert!(matches!(&err, LoadError::InterfacePipe { .. }), "{err:?}");
+            assert!(err.to_string().contains("channel"), "{err}");
+        }
+        // The output direction: `active` is a Value (message) port.
+        let json = r#"{"format_version":2,"instrument":"t","interface":{
+            "outputs":{"act":{"from":"/env.active","channel":0}}},
+            "nodes":[{"type":"envelope","address":"/env"}]}"#;
+        let err = load(json, &reg()).err().expect("channel on message feed");
+        assert!(matches!(&err, LoadError::InterfacePipe { .. }), "{err:?}");
+    }
+
+    #[test]
+    fn channel_bindings_derive_the_logical_widths() {
+        // ADR-0038 §3: input width = max bound input channel + 1 (0 when none); output pipes
+        // with channels feed the pinned master taps.
+        let json = r#"{"format_version":2,"instrument":"t","interface":{
+            "inputs":{"mic_l":{"type":"f32_buffer","channel":0},
+                      "mic_r":{"type":"f32_buffer","channel":3}},
+            "outputs":{"main_l":{"from":"/gain.out","channel":0}}},
+            "nodes":[{"type":"mul_f32_signal","address":"/gain","inputs":{"a":{"from":"/mic_l"}}}]}"#;
+        let g = load(json, &reg()).expect("load");
+        assert_eq!(g.input_channels_width, 4, "max bound input channel + 1");
+        assert_eq!(g.interface.input_channels["mic_r"], 3);
+        assert_eq!(g.outputs.len(), 1);
+        assert_eq!(g.outputs[0].2, Some(0), "output pipe channel pins the tap");
+        // A patch that binds no input channel pays nothing.
+        let none = load(VOICE_IFACE, &reg()).expect("load");
+        assert_eq!(none.input_channels_width, 0);
+    }
+
+    #[test]
+    fn unknown_pipe_type_is_a_pointed_error() {
+        let json = r#"{"format_version":2,"instrument":"t","interface":{
+            "inputs":{"in":{"type":"f32buffer"}}},"nodes":[]}"#;
+        let err = load(json, &reg()).err().expect("unknown type");
+        assert!(err.to_string().contains("unknown pipe type"), "{err}");
+    }
+
+    #[test]
+    fn v2_doc_with_v1_forms_is_refused() {
+        // A v2 stamp must not hide v1 shapes: target-form entries and the anonymous outputs
+        // block are both refused with pointed errors (ADR-0038 §5).
+        let target = r#"{"format_version":2,"instrument":"t","interface":{
+            "inputs":{"freq":"/osc.freq"}},
+            "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
+        assert!(matches!(
+            load(target, &reg()),
+            Err(LoadError::InterfacePipe { name, .. }) if name == "freq"
+        ));
+        let anon = r#"{"format_version":2,"instrument":"t",
+            "nodes":[{"type":"oscillator","address":"/osc"}],
+            "outputs":[{"node":"/osc","port":"audio"}]}"#;
+        assert!(matches!(
+            load(anon, &reg()),
+            Err(LoadError::AnonymousOutputs)
+        ));
     }
 
     #[test]
@@ -2276,60 +3365,68 @@ mod tests {
     }"#;
 
     #[test]
-    fn interface_entry_object_form_resolves_like_the_bare_form() {
-        // The object form's `target` resolves exactly as a bare string entry would (§4:
-        // overrides decorate presentation; they never change what resolves or what type flows).
+    fn v1_object_form_migrates_like_the_bare_form_with_overrides_applied() {
+        // The v1 object form's `target` migrates exactly as a bare string entry would; its
+        // presentational overrides decorate the derived pipe (label/unit/widget) and its
+        // min/max narrow the pipe's now-engine-enforced range.
         let g = load(VOICE_IFACE_META, &reg()).expect("load");
-        let osc = g.find("/osc").unwrap();
-        let freq = g.nodes[osc]
-            .descriptor
-            .inputs
-            .iter()
-            .position(|p| p.name == "freq")
-            .unwrap();
-        assert_eq!(g.interface.inputs["freq"], (osc, freq));
+        let pipe = g.find("/freq").expect("pipe minted");
+        assert_eq!(g.interface.inputs["freq"], (pipe, 0));
+        let p = &g.nodes[pipe].descriptor.inputs[0];
+        assert_eq!(p.ty, PortType::F32Buffer, "type derived from /osc.freq");
+        let m = p.meta.as_ref().expect("numeric pipe meta");
+        assert_eq!((m.min, m.max), (50.0, 2000.0), "override narrows the range");
+        assert_eq!(m.default, 440.0, "target's default carried over");
     }
 
     #[test]
-    fn interface_entry_overrides_round_trip_through_the_document() {
-        // Overrides live on the document (like `control`): serde round-trip preserves them.
-        let doc = InstrumentDoc::from_json(VOICE_IFACE_META).expect("parse");
-        let meta = doc.interface.as_ref().unwrap().inputs["freq"]
-            .meta()
-            .expect("object form carries overrides");
-        assert_eq!(meta.target, "/osc.freq");
-        assert_eq!(meta.label.as_deref(), Some("Pitch"));
-        assert_eq!(meta.unit.as_deref(), Some("Hz"));
-        assert_eq!(meta.widget.as_deref(), Some("knob"));
-        assert_eq!((meta.min, meta.max), (Some(50.0), Some(2000.0)));
-        let reparsed = InstrumentDoc::from_json(&doc.to_json_pretty()).expect("reparse");
+    fn migrated_entry_round_trips_through_the_document_as_a_pipe() {
+        // Migration happens at parse, so the held document is v2: the entry is a pipe carrying
+        // the v1 overrides as its own declaration, and re-serialize → reparse is stable.
+        let doc = InstrumentDoc::from_json(VOICE_IFACE_META, &reg()).expect("parse");
+        let iface = doc.interface.as_ref().unwrap();
+        let pipe = iface.inputs["freq"].pipe().expect("migrated to a pipe");
+        assert_eq!(pipe.ty, "f32_buffer");
+        assert_eq!(pipe.label.as_deref(), Some("Pitch"));
+        assert_eq!(pipe.unit.as_deref(), Some("Hz"));
+        assert_eq!(pipe.widget.as_deref(), Some("knob"));
+        assert_eq!((pipe.min, pipe.max), (Some(50.0), Some(2000.0)));
+        assert_eq!(pipe.default, Some(PipeDefault::Number(440.0)));
+        // The consumer flipped: /osc.freq now wires from the pipe.
+        let osc = doc.nodes.iter().find(|n| n.address == "/osc").unwrap();
+        assert_eq!(
+            osc.inputs["freq"],
+            InputValue::Wire {
+                from: "/freq".to_string()
+            }
+        );
+        let reparsed = InstrumentDoc::from_json(&doc.to_json_pretty(), &reg()).expect("reparse");
         assert_eq!(doc, reparsed);
     }
 
     #[test]
-    fn interface_entry_type_override_is_rejected() {
-        // §4: the Arg type is inherited and NOT overridable — the object form has no field to
-        // express one, so an attempt fails to parse (never a silently ignored key), and the
-        // error names the offending field.
+    fn v1_entry_mixing_target_and_type_is_rejected() {
+        // An object may carry exactly one discriminator (`type`/`from`/`target`) — mixing the
+        // v1 target form with a v2 type declaration is a parse error naming the conflict.
         let json = r#"{"instrument":"t","interface":{
             "inputs":{"freq":{"target":"/osc.freq","type":"note"}}},
             "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
         let err = match load(json, &reg()) {
             Err(e @ LoadError::Json(_)) => e,
             Err(e) => panic!("expected Json error, got {e:?}"),
-            Ok(_) => panic!("type override must not load"),
+            Ok(_) => panic!("mixed entry must not load"),
         };
         assert!(
-            err.to_string().contains("unknown field `type`"),
-            "error must name the rejected field: {err}"
+            err.to_string().contains("only one of"),
+            "error must name the conflict: {err}"
         );
     }
 
     #[test]
     fn interface_entry_errors_name_the_offending_field() {
-        // Hand-dispatched entry parsing (string vs object) keeps InterfaceMeta's pointed serde
-        // errors; `#[serde(untagged)]` would collapse all of these into one opaque
-        // "did not match any variant" message.
+        // Hand-dispatched entry parsing (discriminator key, then the concrete struct) keeps
+        // pointed serde errors; `#[serde(untagged)]` would collapse all of these into one
+        // opaque "did not match any variant" message.
         let entry = |body: &str| {
             format!(
                 r#"{{"instrument":"t","interface":{{"inputs":{{"freq":{body}}}}},
@@ -2341,12 +3438,13 @@ mod tests {
                 r#"{"target":"/osc.freq","lable":"Pitch"}"#,
                 "unknown field `lable`",
             ),
-            (r#"{"label":"Pitch"}"#, "missing field `target`"),
+            (r#"{"label":"Pitch"}"#, "needs `type`"),
             (
                 r#"{"target":"/osc.freq","min":"200"}"#,
                 "invalid type: string",
             ),
-            (r#"true"#, "target string or an override object"),
+            (r#"{"type":"f32","chanel":0}"#, "unknown field `chanel`"),
+            (r#"true"#, "target string"),
         ] {
             let err = load(&entry(body), &reg())
                 .err()
@@ -2443,15 +3541,22 @@ mod tests {
     #[test]
     fn interface_round_trips_through_doc_and_graph() {
         // Document round-trip (serde) preserves the block...
-        let doc = InstrumentDoc::from_json(VOICE_IFACE).expect("parse");
-        let reparsed = InstrumentDoc::from_json(&doc.to_json_pretty()).expect("reparse");
+        let doc = InstrumentDoc::from_json(VOICE_IFACE, &reg()).expect("parse");
+        let reparsed = InstrumentDoc::from_json(&doc.to_json_pretty(), &reg()).expect("reparse");
         assert_eq!(doc, reparsed);
-        // ...and from_graph reconstructs an equivalent, stable interface (canonical `/node.port`).
+        // ...and from_graph reconstructs an equivalent, stable interface: inputs re-derive
+        // their pipe declaration, outputs the canonical explicit `/node.port` feed.
         let g = load(VOICE_IFACE, &reg()).expect("load");
         let saved = InstrumentDoc::from_graph(&g, "voice");
         let iface = saved.interface.as_ref().expect("interface reconstructed");
-        assert_eq!(iface.inputs["freq"].target(), "/osc.freq");
-        assert_eq!(iface.outputs["active"].target(), "/env.active");
+        assert_eq!(
+            iface.inputs["freq"].pipe().expect("pipe form").ty,
+            "f32_buffer"
+        );
+        assert_eq!(
+            iface.outputs["active"].feed().expect("feed form").from,
+            "/env.active"
+        );
         // Rebuild and compare by (address, port) — raw NodeKeys are build-specific (the slotmap
         // assigns them fresh, and from_graph re-sorts nodes), so resolve keys to addresses first.
         let g2 = saved.build(&reg()).expect("rebuild");
@@ -2490,7 +3595,8 @@ mod tests {
         let loaded = resolve_instrument("voices/lead.json", &reg(), &PatchResolver(VOICE_IFACE))
             .expect("resolve");
         assert!(loaded.warnings.is_empty());
-        assert_eq!(loaded.graph.nodes.len(), 2);
+        // Two document nodes plus the two minted input pipes (ADR-0038).
+        assert_eq!(loaded.graph.nodes.len(), 4);
         // The sub-Graph carries its resolved interface, ready for a host to bind.
         assert!(loaded.graph.interface.inputs.contains_key("freq"));
         assert!(loaded.graph.interface.outputs.contains_key("audio"));
@@ -2569,10 +3675,13 @@ mod tests {
         );
         assert!(loaded.graph.find("/sub/osc").is_some());
         assert!(loaded.graph.find("/sub/env").is_some());
+        // The child's input pipes splice in under the prefix too (ADR-0038).
+        assert!(loaded.graph.find("/sub/freq").is_some());
+        assert!(loaded.graph.find("/sub/gate").is_some());
         assert_eq!(
             loaded.graph.nodes.len(),
-            2,
-            "child nodes only, no host node"
+            4,
+            "child nodes + its input pipes, no host node"
         );
     }
 
@@ -2603,15 +3712,29 @@ mod tests {
             g.connections
         );
 
-        // The boundary literal seeded the inner oscillator's freq override.
-        let (freq_port, _) = g.nodes[osc].descriptor.materialized_input("freq").unwrap();
+        // The boundary literal seeds the child's `freq` PIPE (ADR-0038): the pipe forwards it
+        // to the oscillator it feeds, so the value still lands — but as pipe state, not an
+        // override on the inner node.
+        let pipe = g.find("/sub/freq").expect("spliced freq pipe");
         assert!(
-            g.nodes[osc]
+            g.nodes[pipe]
                 .value_overrides
                 .iter()
-                .any(|(p, a)| *p == freq_port && *a == Arg::F32(220.0)),
-            "boundary literal lands as the inner value-override: {:?}",
-            g.nodes[osc].value_overrides
+                .any(|(p, a)| *p == 0 && *a == Arg::F32(220.0)),
+            "boundary literal lands on the pipe: {:?}",
+            g.nodes[pipe].value_overrides
+        );
+        let osc_freq = g.nodes[osc]
+            .descriptor
+            .inputs
+            .iter()
+            .position(|p| p.name == "freq")
+            .unwrap();
+        assert!(
+            g.connections
+                .iter()
+                .any(|c| c.src == pipe && c.dst == osc && c.dst_port == osc_freq),
+            "the pipe feeds the inner oscillator"
         );
 
         // The master tap on /out survives untouched.
@@ -2879,10 +4002,10 @@ mod tests {
         let ok = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
             {"type":"subpatch","address":"/sub","patch":"v","inputs":{"mode":"Hp"}}]}"#;
         let loaded = load_instrument(ok, &reg(), &PatchResolver(FILTER_CHILD)).expect("load");
-        let f = loaded.graph.find("/sub/f").unwrap();
+        let pipe = loaded.graph.find("/sub/mode").expect("spliced enum pipe");
         assert!(
-            !loaded.graph.nodes[f].value_overrides.is_empty(),
-            "symbol literal seeds the inner enum override"
+            !loaded.graph.nodes[pipe].value_overrides.is_empty(),
+            "symbol literal seeds the enum pipe's override"
         );
         let bad = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
             {"type":"subpatch","address":"/sub","patch":"v","inputs":{"mode":"Nope"}}]}"#;
@@ -2891,6 +4014,35 @@ mod tests {
             Err(LoadError::BadInputValue { node, input, .. })
                 if node == "/sub" && input == "mode"
         ));
+    }
+
+    #[test]
+    fn unwired_nested_bare_signal_pipe_warns_and_renders_silence() {
+        // ADR-0038 §3: a nested child's bare signal input pipe left unfed by the host renders
+        // silence — honest, but almost always an authoring slip, so it warns. A defaulted
+        // control pipe at rest and a fed pipe stay quiet.
+        const FX_CHILD: &str = r#"{"format_version":2,"instrument":"fx",
+            "interface":{
+              "inputs":{"in":{"type":"f32_buffer"},
+                        "tone":{"type":"f32_buffer","default":1000,"min":20,"max":20000}},
+              "outputs":{"out":{"from":"/f.audio"}}},
+            "nodes":[{"type":"filter","address":"/f",
+                      "inputs":{"audio":{"from":"/in"},"cutoff":{"from":"/tone"}}}]}"#;
+        // Host leaves `in` unfed: one warning, naming the node and the pipe.
+        let unfed = r#"{"format_version":2,"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"subpatch","address":"/sub","patch":"v"}]}"#;
+        let loaded = load_instrument(unfed, &reg(), &PatchResolver(FX_CHILD)).expect("load");
+        assert!(matches!(
+            loaded.warnings.as_slice(),
+            [LoadWarning::UnwiredPipe { node, name }] if node == "/sub" && name == "in"
+        ));
+        // Host wires it: clean.
+        let fed = r#"{"format_version":2,"instrument":"p","resources":{"v":"v.json"},"nodes":[
+            {"type":"oscillator","address":"/osc"},
+            {"type":"subpatch","address":"/sub","patch":"v",
+             "inputs":{"in":{"from":"/osc.audio"}}}]}"#;
+        let loaded = load_instrument(fed, &reg(), &PatchResolver(FX_CHILD)).expect("load");
+        assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
     }
 
     #[test]
@@ -2949,21 +4101,40 @@ mod tests {
         let osc = g
             .find("/outer/inner/osc")
             .expect("compounded prefix reaches the innermost node");
-        // The outer boundary literal flowed through the re-export to the innermost oscillator.
-        let (freq_port, _) = g.nodes[osc].descriptor.materialized_input("freq").unwrap();
-        assert!(g.nodes[osc]
+        // The outer boundary literal seeds mid's re-export pipe; the value then flows through
+        // the pipe chain to the innermost oscillator at render (ADR-0038).
+        let outer_pipe = g.find("/outer/freq").expect("mid's migrated freq pipe");
+        assert!(g.nodes[outer_pipe]
             .value_overrides
             .iter()
-            .any(|(p, a)| *p == freq_port && *a == Arg::F32(330.0)));
-        // And the boundary wire chain resolved to one ordinary edge onto /out.
-        assert_eq!(g.connections.len(), 1);
+            .any(|(_, a)| *a == Arg::F32(330.0)));
+        let inner_pipe = g.find("/outer/inner/freq").expect("leaf's freq pipe");
+        let osc_freq = g.nodes[osc]
+            .descriptor
+            .inputs
+            .iter()
+            .position(|p| p.name == "freq")
+            .unwrap();
+        // The chain: outer pipe → inner pipe → oscillator, plus the boundary wire onto /out.
+        assert!(g
+            .connections
+            .iter()
+            .any(|c| c.src == outer_pipe && c.dst == inner_pipe));
+        assert!(g
+            .connections
+            .iter()
+            .any(|c| c.src == inner_pipe && c.dst == osc && c.dst_port == osc_freq));
+        let out = g.find("/out").unwrap();
+        assert!(g.connections.iter().any(|c| c.src == osc && c.dst == out));
+        assert_eq!(g.connections.len(), 3);
     }
 
     #[test]
-    fn wiring_an_internally_driven_boundary_input_is_fatal() {
-        // The child drives its exposed `audio` input with its own internal wire; the plan reads
-        // exactly one inbound edge per Signal input, so a parent wire onto `/sub.audio` would
-        // load clean and do nothing. Reject it loud, in boundary terms.
+    fn an_internally_driven_v1_boundary_input_is_dropped_by_migration() {
+        // v1 could expose an input whose inner Signal port the child drove internally — a name
+        // a host could see but never wire (the old fatal `BoundaryInputDriven`). The flip
+        // cannot express that state (ADR-0038): migration drops the entry, so a parent wire
+        // onto the name is now the ordinary boundary-named UnknownPort.
         const DRIVEN_CHILD: &str = r#"{
             "instrument": "fx",
             "interface": { "inputs": { "audio": "/out.audio" } },
@@ -2979,17 +4150,18 @@ mod tests {
              "inputs":{"audio":{"from":"/mod.audio"}}}]}"#;
         assert!(matches!(
             load_instrument(json, &reg(), &PatchResolver(DRIVEN_CHILD)),
-            Err(LoadError::BoundaryInputDriven { node, input })
-                if node == "/sub" && input == "audio"
+            Err(LoadError::UnknownPort { node, port })
+                if node == "/sub" && port == "audio"
         ));
-        // The same boundary input left unwired inside the child accepts the parent's wire.
+        // The same boundary input left unwired inside the child migrates to a pipe and accepts
+        // the parent's wire: parent → pipe.in, pipe.out → inner target (two ordinary edges).
         const OPEN_CHILD: &str = r#"{
             "instrument": "fx",
             "interface": { "inputs": { "audio": "/out.audio" } },
             "nodes": [ { "type": "output", "address": "/out" } ]
         }"#;
         let loaded = load_instrument(json, &reg(), &PatchResolver(OPEN_CHILD)).expect("load");
-        assert_eq!(loaded.graph.connections.len(), 1);
+        assert_eq!(loaded.graph.connections.len(), 2);
     }
 
     #[test]
@@ -3038,9 +4210,12 @@ mod tests {
             "{:?}",
             loaded.warnings
         );
+        // Mid's `audio` output pipe feeds from the dark inner face: dropped + recorded dark.
+        // (Its `freq` INPUT migrated to a fallback pipe instead — an input pipe is
+        // self-contained in v2, so it never goes dark; the parent's literal landed on it.)
         assert!(
             loaded.warnings.iter().any(|w| matches!(unwrap_nested(w),
-                    LoadWarning::DarkInterfaceEntry { name, .. } if name == "freq")),
+                    LoadWarning::DarkInterfaceEntry { name, .. } if name == "audio")),
             "{:?}",
             loaded.warnings
         );
@@ -3170,10 +4345,14 @@ mod tests {
             1,
             "the dark tap is dropped; /out's own tap survives"
         );
-        // The warning names the slot that actually failed — a `patch` ref, not a sample.
+        // The warning names the slot that actually failed — a `patch` ref, not a sample —
+        // and the migrated output pipe feeding from the dark nest warned as it was dropped.
         assert!(matches!(
             loaded.warnings.as_slice(),
-            [LoadWarning::MissingResource { slot: "patch", .. }]
+            [
+                LoadWarning::MissingResource { slot: "patch", .. },
+                LoadWarning::DarkInterfaceEntry { .. }
+            ]
         ));
         assert_eq!(
             loaded.warnings[0].to_string(),
@@ -3364,8 +4543,8 @@ mod tests {
         // The nested reference lives in the *document*: parse → re-serialize preserves `patch`
         // via serde. (A built graph holds only the flattened equivalent — see the test below;
         // reference-preserving save from a built graph is the library thread, P7/#122.)
-        let doc = InstrumentDoc::from_json(PARENT_WITH_SUBPATCH).expect("parse");
-        let reparsed = InstrumentDoc::from_json(&doc.to_json_pretty()).expect("reparse");
+        let doc = InstrumentDoc::from_json(PARENT_WITH_SUBPATCH, &reg()).expect("parse");
+        let reparsed = InstrumentDoc::from_json(&doc.to_json_pretty(), &reg()).expect("reparse");
         assert_eq!(doc, reparsed);
         assert_eq!(reparsed.nodes[0].patch.as_deref(), Some("myvoice"));
     }

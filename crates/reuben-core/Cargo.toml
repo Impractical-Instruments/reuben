@@ -23,6 +23,9 @@ serde_json.workspace = true
 inventory.workspace = true
 # The operator_contract! macro: single-sources each operator's index consts + Descriptor (ADR-0025).
 reuben-macros = { path = "../reuben-macros" }
+# The type-wide NUMBER_MIN/NUMBER_MAX sentinels (issue #127): interface pipes (ADR-0038) default
+# their declared range to the same one definition the contract macro uses.
+reuben-contract = { path = "../reuben-contract" }
 
 [dev-dependencies]
 approx.workspace = true

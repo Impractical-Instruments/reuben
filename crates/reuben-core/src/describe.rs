@@ -1,27 +1,27 @@
-//! Boundary introspection (ADR-0034 §4, P6): describe a loaded instrument's `interface` as the
-//! operator-style port list a host wires against — type and metadata **inherited** from the
-//! inner port each entry names, the entry's presentational overrides applied, the effective
-//! default resolved. This is the core-side construction ADR-0034 asks the synthesized face to
-//! feed ("feed introspection/schema/docs"): every host — the CLI's `reuben describe`, a wasm or
-//! embedded embedder — reads the same inherit+override merge instead of re-implementing it.
+//! Boundary introspection (ADR-0034 §4 / ADR-0038): describe a loaded instrument's `interface`
+//! as the operator-style port list a host wires against. An **input pipe** is described from
+//! its own declaration (the synthesized pipe descriptor carries the declared type, range, and
+//! default; the document entry carries the presentational fields); an **output pipe** inherits
+//! type and metadata from the internal port that feeds it, decorated by the entry's
+//! presentational overrides. This is the core-side construction every host — the CLI's
+//! `reuben describe`, a wasm or embedded embedder — reads instead of re-implementing the merge.
 
 use crate::descriptor::{Curve, PortType};
-use crate::format::{doc_value, widen_f32, DocValue, InstrumentDoc, Loaded};
-use crate::plan::{port_kind, PortKind};
+use crate::format::{doc_value, widen_f32, DocValue, InstrumentDoc, InterfaceEntry, Loaded};
 
-/// One boundary port as a host sees it (ADR-0034 §4): the inner port's type (inherited verbatim,
-/// never overridable) and metadata, decorated by the `interface` entry's presentational
-/// overrides. Values are owned/document-facing (`f64`, `String`) — a description, not a
-/// descriptor.
+/// One boundary port as a host sees it (ADR-0034 §4 / ADR-0038 §2): an input pipe's **declared**
+/// type/range/default, or an output pipe's type and metadata inherited from the internal port
+/// feeding it, decorated by the entry's presentational fields. Values are owned/document-facing
+/// (`f64`, `String`) — a description, not a descriptor.
 #[derive(Debug, Clone, PartialEq)]
 pub struct BoundaryPortDesc {
     /// The external boundary name — the wiring handle a host uses.
     pub name: String,
-    /// The inner port's [`PortType`], inherited verbatim (§4: an override decorates
-    /// presentation, never what type flows).
+    /// The pipe's `Arg` type: declared on an input pipe (nothing to inherit from — ADR-0038),
+    /// inherited from the feeding port on an output pipe.
     pub ty: PortType,
-    /// Effective unwired value: the child's own literal (a value-override on the inner node)
-    /// beats the descriptor default. `None` for a port with no settable default.
+    /// Effective unwired value: an input pipe's seed (a host literal beats the declared
+    /// default), an output pipe's inherited default. `None` for a port with no settable default.
     pub default: Option<DocValue>,
     pub min: Option<f64>,
     pub max: Option<f64>,
@@ -30,36 +30,35 @@ pub struct BoundaryPortDesc {
     pub curve: Option<Curve>,
     /// The ordered enum choices (ADR-0030); empty for non-enum ports.
     pub variants: Vec<String>,
-    /// Display-name override from the entry (§4); `None` when not overridden.
+    /// Display-name from the entry; `None` when not set.
     pub label: Option<String>,
-    /// Widget hint override for a generated control surface (ADR-0018).
+    /// Widget hint for a generated control surface (ADR-0018).
     pub widget: Option<String>,
-    /// An input whose inner **Signal** port the child already drives internally: still a real
-    /// boundary port, but a host wire onto it is the fatal
-    /// [`BoundaryInputDriven`](crate::format::LoadError::BoundaryInputDriven) — surfaced here so
-    /// introspection states the build contract instead of the host discovering it at build.
-    pub driven: bool,
+    /// Logical channel binding (ADR-0038 §3): the input channel a signal input pipe reads, or
+    /// the master channel a signal output pipe feeds, when the graph plays at top level.
+    pub channel: Option<usize>,
 }
 
-/// A loaded instrument's boundary (ADR-0034 §4), described as if it were an operator: one entry
-/// per `interface` name. An instrument with no `interface` yields empty lists (it nests, but exposes
-/// nothing to wire).
+/// A loaded instrument's boundary (ADR-0034 §4 / ADR-0038), described as if it were an operator:
+/// one entry per `interface` name. An instrument with no `interface` yields empty lists (it
+/// nests, but exposes nothing to wire).
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct BoundaryDesc {
     pub inputs: Vec<BoundaryPortDesc>,
     pub outputs: Vec<BoundaryPortDesc>,
     /// Declared boundary ports whose internal target went dark this load (an unavailable nested
-    /// child, ADR-0016/0034) — real ports the description can't type.
+    /// child, ADR-0016/0034) — real ports the description can't type. Always outputs in v2
+    /// (an input pipe is self-contained), kept per-direction for the host view.
     pub dark_inputs: Vec<String>,
     pub dark_outputs: Vec<String>,
 }
 
 /// Describe `loaded`'s boundary the way a host instrument will see it. `doc` must be the document
-/// `loaded` was built from — it carries the `interface` entries' presentational overrides, which
-/// the built [`Graph`](crate::graph::Graph) deliberately does not (they are document-level, like
-/// `control`). Overrides are load-validated ([ADR-0034 §4's override
-/// law](crate::format::LoadError::InterfaceOverride)), so every range here is a subset of what
-/// the engine enforces.
+/// `loaded` was built from — it carries the entries' presentational fields (label/unit/widget),
+/// which the built [`Graph`](crate::graph::Graph) deliberately does not (they are
+/// document-level, like `control`). Output overrides are load-validated (the ADR-0034 §4
+/// subset law), so every range here is a subset of what the engine enforces; an input pipe's
+/// range *is* what the engine enforces (ADR-0038 §2).
 pub fn describe_boundary(doc: &InstrumentDoc, loaded: &Loaded) -> BoundaryDesc {
     let g = &loaded.graph;
     let port_desc = |name: &String, key: crate::graph::NodeKey, idx: usize, output: bool| {
@@ -81,10 +80,10 @@ pub fn describe_boundary(doc: &InstrumentDoc, loaded: &Loaded) -> BoundaryDesc {
             variants: Vec::new(),
             label: None,
             widget: None,
-            driven: false,
+            channel: None,
         };
-        // Inherit (ADR-0030/0035): a swept scalar's F32Meta, an integer's range, an enum's
-        // named choices — the same metadata an operator port advertises.
+        // The port's own metadata: an input pipe's declared range/default (its descriptor was
+        // synthesized from the entry), or the feeding port's inherited metadata for an output.
         if let Some(m) = &p.meta {
             desc.default = Some(DocValue::Number(widen_f32(m.default)));
             desc.min = Some(widen_f32(m.min));
@@ -107,40 +106,45 @@ pub fn describe_boundary(doc: &InstrumentDoc, loaded: &Loaded) -> BoundaryDesc {
             _ => {}
         }
         if !output {
-            // The effective unwired value is what a host actually gets: the child's own literal
-            // (`"mix": 0.35`, a value-override on the inner node) beats the descriptor default.
+            // The effective seed is what an unfed pipe forwards: a host literal (a
+            // value-override on the pipe node) beats the declared default.
             if let Some((_, arg)) = node.value_overrides.iter().find(|(port, _)| *port == idx) {
                 desc.default = Some(doc_value(p, arg));
             }
-            // An inner Signal port the child already drives: wiring the boundary name is fatal
-            // (LoadError::BoundaryInputDriven) — say so here, not first at host build.
-            desc.driven = port_kind(p) == PortKind::Signal
-                && g.connections
-                    .iter()
-                    .any(|c| c.dst == key && c.dst_port == idx);
         }
-        // Decorate with the entry's presentational overrides (§4) — kind/variants stay.
+        // Decorate with the entry's presentational fields — type/range/variants stay.
         let entries = doc
             .interface
             .as_ref()
             .map(|i| if output { &i.outputs } else { &i.inputs });
-        if let Some(m) = entries.and_then(|e| e.get(name)).and_then(|e| e.meta()) {
-            if let Some(l) = &m.label {
-                desc.label = Some(l.clone());
+        match entries.and_then(|e| e.get(name)) {
+            Some(InterfaceEntry::Pipe(p)) => {
+                desc.label = p.label.clone();
+                desc.widget = p.widget.clone();
+                if let Some(u) = &p.unit {
+                    desc.unit = u.clone();
+                }
             }
-            if let Some(u) = &m.unit {
-                desc.unit = u.clone();
+            Some(InterfaceEntry::Feed(f)) => {
+                desc.label = f.label.clone();
+                desc.widget = f.widget.clone();
+                if let Some(u) = &f.unit {
+                    desc.unit = u.clone();
+                }
+                if let Some(min) = f.min {
+                    desc.min = Some(min);
+                }
+                if let Some(max) = f.max {
+                    desc.max = Some(max);
+                }
             }
-            if let Some(w) = &m.widget {
-                desc.widget = Some(w.clone());
-            }
-            if let Some(min) = m.min {
-                desc.min = Some(min);
-            }
-            if let Some(max) = m.max {
-                desc.max = Some(max);
-            }
+            _ => {}
         }
+        desc.channel = if output {
+            g.interface.output_channels.get(name).copied()
+        } else {
+            g.interface.input_channels.get(name).copied()
+        };
         desc
     };
 
@@ -178,15 +182,45 @@ mod tests {
     }
 
     fn boundary(json: &str) -> BoundaryDesc {
-        let doc = InstrumentDoc::from_json(json).expect("parse");
+        let doc = InstrumentDoc::from_json(json, &Registry::builtin()).expect("parse");
         let loaded = load_instrument_doc(&doc, &Registry::builtin(), &NoResources).expect("load");
         describe_boundary(&doc, &loaded)
     }
 
     #[test]
-    fn boundary_port_inherits_then_applies_overrides() {
-        // `tone` inherits /filter.cutoff's type/curve, the child literal beats the descriptor
-        // default (1000), and the entry's label + narrowed range decorate the result.
+    fn input_pipe_describes_its_own_declaration() {
+        // A native-v2 pipe: the declared type/range/default/curve and presentation come from
+        // the entry itself — nothing inherited (ADR-0038 §2).
+        let b = boundary(
+            r#"{"format_version":2,"instrument":"t","interface":{
+                "inputs":{"tone":{"type":"f32_buffer","default":4000,"min":200,"max":8000,
+                                  "curve":"exp","unit":"Hz","label":"Tone","widget":"knob"}},
+                "outputs":{"out":{"from":"/filter.audio"}}},
+            "nodes":[{"type":"filter","address":"/filter",
+                      "inputs":{"cutoff":{"from":"/tone"}}}]}"#,
+        );
+        let tone = &b.inputs[0];
+        assert_eq!(tone.name, "tone");
+        assert_eq!(tone.ty, PortType::F32Buffer, "declared type");
+        assert_eq!(tone.default, Some(DocValue::Number(4000.0)));
+        assert_eq!((tone.min, tone.max), (Some(200.0), Some(8000.0)));
+        assert_eq!(tone.unit, "Hz", "unit comes from the entry");
+        assert_eq!(tone.curve, Some(Curve::Exponential));
+        assert_eq!(tone.label.as_deref(), Some("Tone"));
+        assert_eq!(tone.widget.as_deref(), Some("knob"));
+        assert_eq!(b.outputs[0].name, "out");
+        assert_eq!(
+            b.outputs[0].ty,
+            PortType::F32Buffer,
+            "output inherits the feeding port's type"
+        );
+    }
+
+    #[test]
+    fn migrated_v1_boundary_describes_like_the_original() {
+        // The v1 fixture from ADR-0034: `tone` targeted /filter.cutoff with overrides. After
+        // migration the pipe owns the narrowed range, the child literal became its default,
+        // and the label decorates — the same numbers v1 `describe` published.
         let b = boundary(
             r#"{"instrument":"t","interface":{
                 "inputs":{"tone":{"target":"/filter.cutoff","label":"Tone","min":200,"max":8000}},
@@ -194,38 +228,28 @@ mod tests {
             "nodes":[{"type":"filter","address":"/filter","inputs":{"cutoff":4000.0}}]}"#,
         );
         let tone = &b.inputs[0];
-        assert_eq!(tone.name, "tone");
-        assert_eq!(
-            tone.ty,
-            PortType::F32Buffer,
-            "type inherited, never overridden"
-        );
+        assert_eq!(tone.ty, PortType::F32Buffer, "type derived from the target");
         assert_eq!(
             tone.default,
             Some(DocValue::Number(4000.0)),
-            "child literal wins"
+            "child literal became the pipe default"
         );
         assert_eq!((tone.min, tone.max), (Some(200.0), Some(8000.0)));
-        assert_eq!(tone.unit, "Hz", "un-overridden unit stays inherited");
+        assert_eq!(tone.unit, "Hz", "target port's unit carried over");
         assert_eq!(tone.curve, Some(Curve::Exponential));
         assert_eq!(tone.label.as_deref(), Some("Tone"));
-        assert!(!tone.driven, "unwired inner port is host-wireable");
-        assert_eq!(b.outputs[0].name, "out");
     }
 
     #[test]
-    fn internally_driven_signal_input_is_flagged() {
-        // The child drives /filter.audio itself; the exposed boundary name is a real port, but a
-        // host wire onto it is fatal (BoundaryInputDriven) — the description must say so.
+    fn channel_bindings_surface_on_the_description() {
         let b = boundary(
-            r#"{"instrument":"t","interface":{
-                "inputs":{"in":"/filter.audio","tone":"/filter.cutoff"}},
-            "nodes":[
-                {"type":"oscillator","address":"/osc"},
-                {"type":"filter","address":"/filter","inputs":{"audio":{"from":"/osc.audio"}}}]}"#,
+            r#"{"format_version":2,"instrument":"t","interface":{
+                "inputs":{"mic":{"type":"f32_buffer","channel":1}},
+                "outputs":{"main_l":{"from":"/gain.out","channel":0}}},
+            "nodes":[{"type":"mul_f32_signal","address":"/gain",
+                      "inputs":{"a":{"from":"/mic"}}}]}"#,
         );
-        let by_name = |n: &str| b.inputs.iter().find(|p| p.name == n).expect(n).driven;
-        assert!(by_name("in"), "internally driven Signal input flags driven");
-        assert!(!by_name("tone"), "unwired input stays wireable");
+        assert_eq!(b.inputs[0].channel, Some(1));
+        assert_eq!(b.outputs[0].channel, Some(0));
     }
 }

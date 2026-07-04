@@ -100,3 +100,27 @@ pub enum MapCurve {
     /// Geometric remap (positive output bounds only).
     Exponential,
 }
+
+/// Resolve a vocab **enum** type by its `Arg`-variant name (`"FilterMode"`, `"SnapDir"`, …) to
+/// its [`EnumMeta`](crate::descriptor::EnumMeta) for port `port_name` — the central name→type
+/// table the **interface pipe** loader (ADR-0038) uses when an `interface.inputs` entry declares
+/// an enum type (`"type": "FilterMode"`). Operators never come through here (their contracts
+/// name the Rust type directly); only the document-declared pipe does, so this match is the one
+/// place a *string* names a vocab enum. `None` for an unknown name — the loader turns that into
+/// a pointed load error. Adding a vocab enum that should be pipeable = one arm here.
+pub fn enum_meta_by_type(
+    type_name: &str,
+    port_name: &'static str,
+) -> Option<crate::descriptor::EnumMeta> {
+    Some(match type_name {
+        "GateMode" => GateMode::enum_meta(port_name),
+        "FilterMode" => FilterMode::enum_meta(port_name),
+        "Waveform" => Waveform::enum_meta(port_name),
+        "GrainWindow" => GrainWindow::enum_meta(port_name),
+        "M2sMode" => M2sMode::enum_meta(port_name),
+        "MapCurve" => MapCurve::enum_meta(port_name),
+        "SnapDir" => SnapDir::enum_meta(port_name),
+        "SnapTarget" => SnapTarget::enum_meta(port_name),
+        _ => return None,
+    })
+}

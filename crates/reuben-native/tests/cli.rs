@@ -321,10 +321,10 @@ fn describe_patch_refuses_a_range_the_engine_would_not_honor() {
 }
 
 #[test]
-fn describe_patch_flags_an_internally_driven_boundary_input() {
-    // Review F2: the child drives /filter.audio itself, so a host wire onto `in` is the fatal
-    // BoundaryInputDriven — the introspection view must state that instead of listing the port
-    // as wireable and letting the host discover it at build.
+fn describe_patch_drops_an_internally_driven_v1_boundary_input() {
+    // ADR-0038: v1 could expose an input whose inner Signal port the child drove internally —
+    // a port a host could see but never wire (the old `driven` flag). The flip cannot express
+    // that state, so migration drops the entry: the boundary lists only wireable pipes.
     let json = r#"{
       "instrument": "self-fed",
       "interface": { "inputs": { "in": "/filter.audio", "tone": "/filter.cutoff" } },
@@ -334,12 +334,12 @@ fn describe_patch_flags_an_internally_driven_boundary_input() {
       ]
     }"#;
     let b = describe_patch(json, &Registry::builtin(), &FsResolver::new(".")).expect("describe");
-    let port = |n: &str| b.inputs.iter().find(|p| p.name == n).expect(n);
-    assert!(
-        port("in").driven,
-        "internally driven Signal input is flagged"
+    let names: Vec<&str> = b.inputs.iter().map(|p| p.name.as_str()).collect();
+    assert_eq!(
+        names,
+        ["tone"],
+        "the internally-driven `in` entry is dropped by migration; `tone` stays wireable"
     );
-    assert!(!port("tone").driven, "unwired input stays wireable");
 }
 
 #[test]
