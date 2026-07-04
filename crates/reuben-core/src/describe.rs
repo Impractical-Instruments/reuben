@@ -219,8 +219,11 @@ mod tests {
     #[test]
     fn migrated_v1_boundary_describes_like_the_original() {
         // The v1 fixture from ADR-0034: `tone` targeted /filter.cutoff with overrides. After
-        // migration the pipe owns the narrowed range, the child literal became its default,
-        // and the label decorates — the same numbers v1 `describe` published.
+        // migration the pipe carries the **inner port's engine range** (v1's min/max were
+        // presentational — the engine clamped to the target's own range, and a v2 pipe range
+        // is engine-enforced, so the narrowing cannot ride along), the child literal became
+        // its default, and the label decorates. What describe publishes is what the engine
+        // enforces — the ADR-0034 §4 truthfulness law, now with nothing lost in between.
         let b = boundary(
             r#"{"instrument":"t","interface":{
                 "inputs":{"tone":{"target":"/filter.cutoff","label":"Tone","min":200,"max":8000}},
@@ -234,7 +237,11 @@ mod tests {
             Some(DocValue::Number(4000.0)),
             "child literal became the pipe default"
         );
-        assert_eq!((tone.min, tone.max), (Some(200.0), Some(8000.0)));
+        assert_eq!(
+            (tone.min, tone.max),
+            (Some(20.0), Some(20_000.0)),
+            "the migrated pipe advertises the engine-enforced (inner-port) range"
+        );
         assert_eq!(tone.unit, "Hz", "target port's unit carried over");
         assert_eq!(tone.curve, Some(Curve::Exponential));
         assert_eq!(tone.label.as_deref(), Some("Tone"));

@@ -63,12 +63,10 @@ impl Operator for Pipe {
         match self.kind {
             PortKind::Signal => {
                 // Buffer-presence invariant (ADR-0037): the input is always a dense length-n
-                // buffer (wired share, or materialized default/silence). Zip stays panic-free.
+                // buffer (wired share, or materialized default/silence), so `copy_from_slice`
+                // asserts the equal-length invariant instead of zip-truncating around a breach.
                 let src = io.input::<&[f32]>(0);
-                let out = io.output::<&mut [f32]>(0);
-                for (o, s) in out.iter_mut().zip(src.iter()) {
-                    *o = *s;
-                }
+                io.output::<&mut [f32]>(0).copy_from_slice(src);
             }
             PortKind::Value => {
                 // Forward the held latch, type-erased: the pipe's declared type already
@@ -165,11 +163,36 @@ mod tests {
 
     #[test]
     fn spawn_resets_the_dedup_baseline() {
-        let mut pipe = Pipe::new(PortKind::Value);
-        pipe.last = Some(Arg::F32(1.0));
-        let fresh = pipe.spawn();
-        // A fresh copy forwards its first value again (state reset).
-        drop(fresh); // behavior covered by construction: `spawn` builds `Pipe::new`
-        assert!(Pipe::new(PortKind::Value).last.is_none());
+        // Voice copies spawn from the loader-built template (ADR-0032); a copy must forward
+        // its first value even when the template already forwarded (and latched) the same one
+        // — "spawn starts fresh" (authoring.md), asserted on the SPAWNED copy's behavior.
+        let run = |pipe: &mut dyn Operator, v: f32| -> Vec<Emit> {
+            let mut sink: Vec<Emit> = Vec::new();
+            let latch = [Arg::F32(v)];
+            let mut io = Io::new(48_000.0, 8, [None], std::iter::empty::<&mut [f32]>())
+                .with_latched(&latch)
+                .with_emit(&mut sink, 0);
+            pipe.process(&mut io);
+            drop(io);
+            sink
+        };
+        let mut template = Pipe::new(PortKind::Value);
+        assert_eq!(
+            run(&mut template, 440.0).len(),
+            1,
+            "template forwards its seed"
+        );
+        assert!(
+            run(&mut template, 440.0).is_empty(),
+            "template deduped — its baseline is now 440"
+        );
+        let mut spawned = template.spawn();
+        let first = run(spawned.as_mut(), 440.0);
+        assert_eq!(
+            first.len(),
+            1,
+            "the spawned copy forwards the same value again: its dedup baseline is reset"
+        );
+        assert_eq!((first[0].frame, &first[0].arg), (0, &Arg::F32(440.0)));
     }
 }

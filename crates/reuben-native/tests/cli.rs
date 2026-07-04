@@ -260,11 +260,12 @@ fn describe_patch_surfaces_the_boundary_with_inherited_metadata() {
 
 #[test]
 fn describe_patch_applies_interface_overrides_but_never_the_type() {
-    // ADR-0034 §4: presentational overrides (label/unit/widget/range) decorate the inherited
-    // port; the Arg type (`kind`) stays the inner port's truth — there is no way to override it.
-    // The range override must narrow the engine-enforced [20..20000] (override law, review F1):
-    // an advertised range the engine wouldn't honor is a load error, so what `describe` prints
-    // here is guaranteed to be a subset of what the engine accepts.
+    // ADR-0034 §4: presentational overrides (label/unit/widget) decorate the inherited port;
+    // the Arg type (`kind`) stays the inner port's truth — there is no way to override it.
+    // The v1 range override is validated against the engine-enforced [20..20000] (override
+    // law) but NOT migrated onto the pipe: a v2 pipe range is engine-enforced, and v1's was
+    // display-only — so `describe` publishes the inner port's range, exactly what the engine
+    // clamps to (nothing advertised that the engine wouldn't honor, and vice versa).
     let json = r#"{
       "instrument": "shimmer",
       "interface": {
@@ -287,7 +288,11 @@ fn describe_patch_applies_interface_overrides_but_never_the_type() {
     assert_eq!(p.label.as_deref(), Some("Brightness"));
     assert_eq!(p.unit, "hertz", "unit override replaces the inner Hz");
     assert_eq!(p.widget.as_deref(), Some("knob"));
-    assert_eq!((p.min, p.max), (Some(200.0), Some(8000.0)));
+    assert_eq!(
+        (p.min, p.max),
+        (Some(20.0), Some(20000.0)),
+        "the engine-enforced (inner-port) range, not the v1 display narrowing"
+    );
     assert_eq!(
         p.curve.as_deref(),
         Some("exponential"),

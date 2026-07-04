@@ -1,7 +1,7 @@
 {
   "format_version": 2,
   "instrument": "nested-space",
-  "doc": "Worked general-nesting example (ADR-0034): a polyphonic voicer feeding a nested `space` instrument (instruments/patches/space.json) referenced by a `subpatch` node. At build the child inlines under /space (its internals become /space/filter, /space/verb — still OSC-reachable), the node's ports are the child's `interface` names, and the node dissolves: zero runtime cost. Play with /voicer/notes [midi, gate]; shape live via /space/filter/cutoff or the boundary-set literals here. `reuben describe instruments/patches/space.json` shows the boundary a host wires against.",
+  "doc": "Worked general-nesting example (ADR-0034): a polyphonic voicer feeding a nested `space` instrument (instruments/patches/space.json) referenced by a `subpatch` node. At build the child inlines under /space (its internals become /space/filter, /space/verb — still OSC-reachable), the node's ports are the child's `interface` names, and the node dissolves: zero runtime cost. Play with /voicer/notes [midi, gate]; shape live via the boundary pipes \u2014 /space/tone/in and /space/space/in \u2014 or the boundary-set literals here. `reuben describe instruments/patches/space.json` shows the boundary a host wires against.",
   "resources": {
     "default-voice": "voices/default-voice.json",
     "space": "patches/space.json"

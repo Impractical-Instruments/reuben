@@ -266,7 +266,12 @@ pub fn describe_patch(
     registry: &Registry,
     resolver: &dyn ResourceResolver,
 ) -> Result<PatchBoundary, String> {
-    let doc = InstrumentDoc::from_json(json, registry).map_err(|e| e.to_string())?;
+    // Parse WITH the resolver (the same way `play` does): a v1 entry re-exporting a nested
+    // child's boundary port migrates to the child's real pipe type; the resolver-less
+    // `from_json` would fall back to `"f32"` and this description would diverge from what the
+    // engine actually loads.
+    let doc =
+        InstrumentDoc::from_json_with(json, registry, Some(resolver)).map_err(|e| e.to_string())?;
     let loaded = load_instrument_doc(&doc, registry, resolver).map_err(|e| e.to_string())?;
     let b = describe_boundary(&doc, &loaded);
 
