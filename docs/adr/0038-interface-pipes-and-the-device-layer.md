@@ -159,6 +159,20 @@ All shipped documents (`instruments/`, `instruments/patches/`, `instruments/voic
 rewritten to native v2, and the schema is regenerated. **Migrated and rewritten instruments
 render bit-identically — asserted in tests** (the ADR-0026 discipline).
 
+**Scope note — the one accepted divergence (decided 2026-07-04 with the repo owner, during
+the [#189](https://github.com/Impractical-Instruments/reuben/pull/189) review).** §4's
+unification means a channel-less **signal** `interface.outputs` pipe at top level *is* a
+broadcast master tap; v1 kept boundary outputs and master taps separate, so a v1
+**boundary-only** signal output — declared in `interface.outputs` but never anonymously
+tapped — made no top-level sound. The consolidated block has no way to spell "signal boundary
+output, not a tap", and the unification **stands** (no opt-out marker is added). Migration
+keeps such entries: hosted/nested behavior — the position they were authored for — stays
+bit-identical, and the entry becomes **audible when the migrated document is played at top
+level**, by design. The divergence is never silent: migration emits a `LoadWarning` naming
+each such entry and the consequence; deleting the entry from the migrated document retires
+both the tap and the warning. Every other v1 shape keeps the full bit-identical guarantee
+(anonymous taps reproduce exactly, multiplicity and channels included).
+
 ### 6. Logical↔device mapping lives outside the patch: the device profile (`--io-map`)
 
 Patches speak *logical* channels only; a small **device-profile JSON**, loaded with
