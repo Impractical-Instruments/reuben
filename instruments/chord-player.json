@@ -1,9 +1,25 @@
 {
-  "doc": "V1.3 Toy 2 — the Chord player (ADR-0022/0032). Seven buttons play the diatonic triads I–vii° of the current key: tap-and-hold sustains a chord, release stops it. Each button sends /chord/set [degree, gate] (a chord-root scale degree + gate); the `chord` op stacks scale-relative thirds and emits `degree` notes, which the voicer resolves through the tonal context — so held and tapped chords RE-SPELL LIVE when you change the key (send /harmony/root [48..72]). Each of the 12 voices is a hosted `chord-player-voice` sub-patch (saw -> slow-attack ADSR VCA); the voicer sums them and a 'brightness' Good Button (/brightness/in [0..1]) tones the mix through a master filter. Polyphonic: 12 voices cover four held seventh chords.",
+  "format_version": 2,
   "instrument": "chord-player",
+  "doc": "V1.3 Toy 2 — the Chord player (ADR-0022/0032). Seven buttons play the diatonic triads I–vii° of the current key: tap-and-hold sustains a chord, release stops it. Each button sends /chord/set [degree, gate] (a chord-root scale degree + gate); the `chord` op stacks scale-relative thirds and emits `degree` notes, which the voicer resolves through the tonal context — so held and tapped chords RE-SPELL LIVE when you change the key (send /harmony/root [48..72]). Each of the 12 voices is a hosted `chord-player-voice` sub-patch (saw -> slow-attack ADSR VCA); the voicer sums them and a 'brightness' Good Button (/brightness/in [0..1]) tones the mix through a master filter. Polyphonic: 12 voices cover four held seventh chords.",
+  "resources": {
+    "chord-player-voice": "voices/chord-player-voice.json"
+  },
+  "interface": {
+    "outputs": {
+      "out": {
+        "from": "/out.audio"
+      }
+    }
+  },
   "nodes": [
     {
+      "type": "chord",
       "address": "/chord",
+      "doc": "Tap-to-harmony: /chord/set [degree, gate] -> stacked-thirds `degree` notes. `size` 3 = triad (default), 4 = seventh. No harmony input — the voicer resolves degrees, so chords re-spell on key change. The 7 chord buttons each send a fixed root degree 0..6 (I–vii°) via the chord-button widget.",
+      "inputs": {
+        "size": 3.0
+      },
       "control": [
         {
           "degree": 0,
@@ -47,30 +63,26 @@
           "port": "set",
           "widget": "chord-button"
         }
-      ],
-      "doc": "Tap-to-harmony: /chord/set [degree, gate] -> stacked-thirds `degree` notes. `size` 3 = triad (default), 4 = seventh. No harmony input — the voicer resolves degrees, so chords re-spell on key change. The 7 chord buttons each send a fixed root degree 0..6 (I–vii°) via the chord-button widget.",
-      "inputs": {
-        "size": 3.0
-      },
-      "type": "chord"
+      ]
     },
     {
+      "type": "harmony",
       "address": "/harmony",
+      "doc": "The tonal context the voicer resolves degrees against. KEY SELECTOR: send /harmony/root [48..72] (MIDI tonic) to transpose; held & tapped chords re-spell live. Default C major.",
       "control": {
         "label": "Key",
         "max": 72.0,
         "min": 48.0,
         "param": "root"
-      },
-      "doc": "The tonal context the voicer resolves degrees against. KEY SELECTOR: send /harmony/root [48..72] (MIDI tonic) to transpose; held & tapped chords re-spell live. Default C major.",
-      "type": "harmony"
+      }
     },
     {
+      "type": "voicer",
       "address": "/voicer",
-      "config": {
-        "voices": 12
-      },
       "doc": "Hosts 12 chord-player-voice sub-patches. Degree notes from /chord re-spell through /harmony; the voicer resolves + allocates them across the voices and sums their audio. 12 voices = four held seventh chords.",
+      "config": {
+        "voices": 12.0
+      },
       "inputs": {
         "harmony": {
           "from": "/harmony"
@@ -79,10 +91,10 @@
           "from": "/chord"
         }
       },
-      "type": "voicer",
       "voice": "chord-player-voice"
     },
     {
+      "type": "filter",
       "address": "/filter",
       "doc": "Master lowpass on the summed mix; cutoff is a Signal input driven by the brightness Good Button.",
       "inputs": {
@@ -92,18 +104,18 @@
         "cutoff": {
           "from": "/map_cutoff"
         }
-      },
-      "type": "filter"
+      }
     },
     {
+      "type": "m2s",
       "address": "/vtrim",
       "doc": "Master headroom: a constant equal-power trim (~1/sqrt(12)) smoothed into a CV, so a full 12-voice chord stays off the clip ceiling while a typical 3–6 note chord stays loud.",
       "inputs": {
         "in": 0.289
-      },
-      "type": "m2s"
+      }
     },
     {
+      "type": "mul_f32_signal",
       "address": "/trim",
       "doc": "master filtered mix (a) * trim CV (b).",
       "inputs": {
@@ -113,34 +125,34 @@
         "b": {
           "from": "/vtrim"
         }
-      },
-      "type": "mul_f32_signal"
+      }
     },
     {
+      "type": "output",
       "address": "/out",
       "inputs": {
         "audio": {
           "from": "/trim"
         }
-      },
-      "type": "output"
+      }
     },
     {
+      "type": "m2s",
       "address": "/brightness",
-      "control": {
-        "label": "Brightness",
-        "unit": "%",
-        "widget": "fader"
-      },
       "doc": "PUBLIC Good Button. The held knob value [0,1] smoothed into a CV Signal (an `m2s` is the value->signal converter), then ranged into the master filter cutoff. Send /brightness/in [0..1]. Rests at 0.5 (ADR-0018).",
       "inputs": {
         "in": 0.5,
         "mode": "Smooth",
         "time": 0.03
       },
-      "type": "m2s"
+      "control": {
+        "label": "Brightness",
+        "unit": "%",
+        "widget": "fader"
+      }
     },
     {
+      "type": "map_f32_signal",
       "address": "/map_cutoff",
       "doc": "brightness [0,1] -> cutoff [300,9000] Hz, exponential (perceptually even).",
       "inputs": {
@@ -150,17 +162,7 @@
         },
         "out_max": 9000.0,
         "out_min": 300.0
-      },
-      "type": "map_f32_signal"
+      }
     }
-  ],
-  "outputs": [
-    {
-      "node": "/out",
-      "port": "audio"
-    }
-  ],
-  "resources": {
-    "chord-player-voice": "voices/chord-player-voice.json"
-  }
+  ]
 }

@@ -1,47 +1,71 @@
 {
-  "doc": "Voice patch for chord-player.json (ADR-0032). One monophonic saw PAD voice: a held freq drives the oscillator, a held gate the slow-attack ADSR. NO filter here — the brightness Good Button drives a single master filter on the summed mix (host post-mix). The pad ADSR (slow attack/release) is baked at the values the host's /env controls used to set (per-voice params aren't host-addressable in the hosted-voice model). interface: freq/gate in, audio/active out.",
+  "format_version": 2,
   "instrument": "chord-player-voice",
+  "doc": "Voice patch for chord-player.json (ADR-0032). One monophonic saw PAD voice: a held freq drives the oscillator, a held gate the slow-attack ADSR. NO filter here — the brightness Good Button drives a single master filter on the summed mix (host post-mix). The pad ADSR (slow attack/release) is baked at the values the host's /env controls used to set (per-voice params aren't host-addressable in the hosted-voice model). interface: freq/gate in, audio/active out.",
   "interface": {
     "inputs": {
-      "freq": "/osc.freq",
-      "gate": "/env.gate"
+      "freq": {
+        "type": "f32_buffer",
+        "default": 440.0,
+        "min": 20.0,
+        "max": 20000.0,
+        "curve": "exp",
+        "unit": "Hz"
+      },
+      "gate": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      }
     },
     "outputs": {
-      "audio": "/out.audio",
-      "active": "/env.active"
+      "active": {
+        "from": "/env.active"
+      },
+      "audio": {
+        "from": "/out.audio"
+      }
     }
   },
   "nodes": [
     {
+      "type": "oscillator",
       "address": "/osc",
       "doc": "Saw pad tone (harmonics for the master filter to shape).",
       "inputs": {
+        "freq": {
+          "from": "/freq"
+        },
         "waveform": "Saw"
-      },
-      "type": "oscillator"
+      }
     },
     {
+      "type": "envelope",
       "address": "/env",
       "doc": "Slow-attack pad envelope (linear CV), gated by the voicer.",
       "inputs": {
         "attack": 0.6,
         "decay": 0.3,
+        "gate": {
+          "from": "/gate"
+        },
         "release": 0.8,
         "sustain": 0.8
-      },
-      "type": "envelope"
+      }
     },
     {
+      "type": "power_f32_signal",
       "address": "/env_curve",
       "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
       "inputs": {
         "x": {
           "from": "/env.cv"
         }
-      },
-      "type": "power_f32_signal"
+      }
     },
     {
+      "type": "mul_f32_signal",
       "address": "/env_vca",
       "doc": "VCA: saw * shaped envelope CV.",
       "inputs": {
@@ -51,23 +75,16 @@
         "b": {
           "from": "/env_curve"
         }
-      },
-      "type": "mul_f32_signal"
+      }
     },
     {
+      "type": "output",
       "address": "/out",
       "inputs": {
         "audio": {
           "from": "/env_vca"
         }
-      },
-      "type": "output"
-    }
-  ],
-  "outputs": [
-    {
-      "node": "/out",
-      "port": "audio"
+      }
     }
   ]
 }

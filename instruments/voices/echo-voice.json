@@ -1,23 +1,46 @@
 {
-  "doc": "Voice patch for echo.json (ADR-0032). One monophonic subtractive synth voice: a held freq drives the oscillator, a held gate the envelope; gentle static lowpass. Hosted N times by the rig's `voicer`, which sums the dry voices before the master feedback delay. interface: freq/gate in, audio/active out.",
+  "format_version": 2,
   "instrument": "echo-voice",
+  "doc": "Voice patch for echo.json (ADR-0032). One monophonic subtractive synth voice: a held freq drives the oscillator, a held gate the envelope; gentle static lowpass. Hosted N times by the rig's `voicer`, which sums the dry voices before the master feedback delay. interface: freq/gate in, audio/active out.",
   "interface": {
     "inputs": {
-      "freq": "/osc.freq",
-      "gate": "/env.gate"
+      "freq": {
+        "type": "f32_buffer",
+        "default": 440.0,
+        "min": 20.0,
+        "max": 20000.0,
+        "curve": "exp",
+        "unit": "Hz"
+      },
+      "gate": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      }
     },
     "outputs": {
-      "audio": "/out.audio",
-      "active": "/env.active"
+      "active": {
+        "from": "/env.active"
+      },
+      "audio": {
+        "from": "/out.audio"
+      }
     }
   },
   "nodes": [
     {
+      "type": "oscillator",
       "address": "/osc",
       "doc": "Oscillator; freq driven by the voice's interface freq input.",
-      "type": "oscillator"
+      "inputs": {
+        "freq": {
+          "from": "/freq"
+        }
+      }
     },
     {
+      "type": "filter",
       "address": "/filter",
       "doc": "Gentle lowpass.",
       "inputs": {
@@ -25,24 +48,29 @@
           "from": "/osc"
         },
         "cutoff": 3000.0
-      },
-      "type": "filter"
+      }
     },
     {
+      "type": "envelope",
       "address": "/env",
-      "type": "envelope"
+      "inputs": {
+        "gate": {
+          "from": "/gate"
+        }
+      }
     },
     {
+      "type": "power_f32_signal",
       "address": "/env_curve",
       "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
       "inputs": {
         "x": {
           "from": "/env.cv"
         }
-      },
-      "type": "power_f32_signal"
+      }
     },
     {
+      "type": "mul_f32_signal",
       "address": "/env_vca",
       "doc": "VCA: audio * shaped envelope CV.",
       "inputs": {
@@ -52,23 +80,16 @@
         "b": {
           "from": "/env_curve"
         }
-      },
-      "type": "mul_f32_signal"
+      }
     },
     {
+      "type": "output",
       "address": "/out",
       "inputs": {
         "audio": {
           "from": "/env_vca"
         }
-      },
-      "type": "output"
-    }
-  ],
-  "outputs": [
-    {
-      "node": "/out",
-      "port": "audio"
+      }
     }
   ]
 }

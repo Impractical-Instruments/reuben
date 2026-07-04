@@ -1,27 +1,44 @@
 {
-  "doc": "Stereo demo (ADR-0026, ADR-0032). A playable 8-voice synth whose summed voices are swept across the stereo field by an LFO driving a `pan` op. Each voice is a hosted `autopan-voice` sub-patch. Play it: send /voicer/notes [midi, gate] (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off; several at once = a chord) and listen to it move left<->right. The pan op's `left`/`right` outputs are tapped as master channel 0 / 1 — no `output` op needed for stereo. Tweak live over OSC: /autopan/rate (sweep speed, Hz), /autopan/depth (how far it swings, 0..1). Set /autopan/rate near 0 to park it, then /pan/pan to position it by hand.",
+  "format_version": 2,
   "instrument": "stereo-autopan",
+  "doc": "Stereo demo (ADR-0026, ADR-0032). A playable 8-voice synth whose summed voices are swept across the stereo field by an LFO driving a `pan` op. Each voice is a hosted `autopan-voice` sub-patch. Play it: send /voicer/notes [midi, gate] (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off; several at once = a chord) and listen to it move left<->right. The pan op's `left`/`right` outputs are tapped as master channel 0 / 1 \u2014 no `output` op needed for stereo. Tweak live over OSC: /autopan/rate (sweep speed, Hz), /autopan/depth (how far it swings, 0..1). Set /autopan/rate near 0 to park it, then /pan/pan to position it by hand.",
+  "resources": {
+    "autopan-voice": "voices/autopan-voice.json"
+  },
+  "interface": {
+    "outputs": {
+      "main_l": {
+        "from": "/pan.left",
+        "channel": 0
+      },
+      "main_r": {
+        "from": "/pan.right",
+        "channel": 1
+      }
+    }
+  },
   "nodes": [
     {
-      "address": "/voicer",
-      "config": {
-        "voices": 8
-      },
-      "doc": "Hosts 8 autopan-voice sub-patches; allocates notes across them and sums their audio.",
       "type": "voicer",
+      "address": "/voicer",
+      "doc": "Hosts 8 autopan-voice sub-patches; allocates notes across them and sums their audio.",
+      "config": {
+        "voices": 8.0
+      },
       "voice": "autopan-voice"
     },
     {
+      "type": "lfo",
       "address": "/autopan",
       "doc": "Sweeps the pan position in [-1, 1].",
       "inputs": {
         "center": 0.0,
         "depth": 1.0,
         "rate": 0.5
-      },
-      "type": "lfo"
+      }
     },
     {
+      "type": "pan",
       "address": "/pan",
       "doc": "Equal-power stereo placement of the summed voices; position driven by the LFO.",
       "inputs": {
@@ -31,23 +48,7 @@
         "pan": {
           "from": "/autopan"
         }
-      },
-      "type": "pan"
+      }
     }
-  ],
-  "outputs": [
-    {
-      "channel": 0,
-      "node": "/pan",
-      "port": "left"
-    },
-    {
-      "channel": 1,
-      "node": "/pan",
-      "port": "right"
-    }
-  ],
-  "resources": {
-    "autopan-voice": "voices/autopan-voice.json"
-  }
+  ]
 }
