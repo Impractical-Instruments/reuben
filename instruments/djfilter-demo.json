@@ -1,27 +1,39 @@
 {
-  "doc": "A self-playing saw arpeggio through the DJ-mixer `djfilter` knob (ADR-0032). The Clock's beat gate drives a sequencer (a major arpeggio) into a 4-voice Voicer; each of the 4 voices is a hosted `djfilter-demo-voice` sub-patch (saw -> plucky ADSR VCA). The voicer sums them and the star — one bipolar filter knob — sweeps the master djfilter. The knob `/filterpos` is an `m2s` (the value->signal converter; rests at North = 0, smoothed so turning it is zipper-free) wired straight into the master djfilter's Signal `position`. Send /filterpos/in [-1..1]: 0 = open/no filter, negative (CCW) sweeps a low-pass down, positive (CW) sweeps a high-pass up. Set tempo via /clock/tempo; edit the line via /sequencer/step1../sequencer/step8.",
+  "format_version": 2,
   "instrument": "djfilter-demo",
+  "doc": "A self-playing saw arpeggio through the DJ-mixer `djfilter` knob (ADR-0032). The Clock's beat gate drives a sequencer (a major arpeggio) into a 4-voice Voicer; each of the 4 voices is a hosted `djfilter-demo-voice` sub-patch (saw -> plucky ADSR VCA). The voicer sums them and the star — one bipolar filter knob — sweeps the master djfilter. The knob `/filterpos` is an `m2s` (the value->signal converter; rests at North = 0, smoothed so turning it is zipper-free) wired straight into the master djfilter's Signal `position`. Send /filterpos/in [-1..1]: 0 = open/no filter, negative (CCW) sweeps a low-pass down, positive (CW) sweeps a high-pass up. Set tempo via /clock/tempo; edit the line via /sequencer/step1../sequencer/step8.",
+  "resources": {
+    "djfilter-demo-voice": "voices/djfilter-demo-voice.json"
+  },
+  "interface": {
+    "outputs": {
+      "out": {
+        "from": "/out.audio"
+      }
+    }
+  },
   "nodes": [
     {
+      "type": "clock",
       "address": "/clock",
-      "control": {
-        "label": "Tempo",
-        "param": "tempo"
-      },
       "doc": "Beat phasor + beat gate.",
       "inputs": {
         "tempo": 115.0
       },
-      "type": "clock"
+      "control": {
+        "label": "Tempo",
+        "param": "tempo"
+      }
     },
     {
+      "type": "sequencer",
       "address": "/sequencer",
       "doc": "Walks a major arpeggio one step per beat -> degree Messages.",
       "inputs": {
         "clock": {
           "from": "/clock.gate"
         },
-        "length": 8,
+        "length": 8.0,
         "step1": 0.0,
         "step2": 2.0,
         "step3": 4.0,
@@ -30,46 +42,40 @@
         "step6": 7.0,
         "step7": 4.0,
         "step8": 2.0
-      },
-      "type": "sequencer"
+      }
     },
     {
+      "type": "voicer",
       "address": "/voicer",
-      "config": {
-        "voices": 4
-      },
       "doc": "Hosts 4 djfilter-demo-voice sub-patches; resolves each degree to Hz and allocates it across the voices, summing their audio.",
+      "config": {
+        "voices": 4.0
+      },
       "inputs": {
         "notes": {
           "from": "/sequencer"
         }
       },
-      "type": "voicer",
       "voice": "djfilter-demo-voice"
     },
     {
+      "type": "m2s",
       "address": "/filterpos",
-      "control": [
-        {
-          "label": "Filter",
-          "param": "in"
-        }
-      ],
       "inputs": {
         "in": 0.0,
         "mode": "Smooth",
         "time": 0.1
       },
-      "type": "m2s"
-    },
-    {
-      "address": "/djfilter",
       "control": [
         {
-          "label": "Resonance",
-          "param": "resonance"
+          "label": "Filter",
+          "param": "in"
         }
-      ],
+      ]
+    },
+    {
+      "type": "djfilter",
+      "address": "/djfilter",
       "doc": "The master DJ filter on the summed mix. position is driven by the smoothed knob; resonance set to sing on sweeps.",
       "inputs": {
         "audio": {
@@ -80,25 +86,21 @@
         },
         "resonance": 0.35
       },
-      "type": "djfilter"
+      "control": [
+        {
+          "label": "Resonance",
+          "param": "resonance"
+        }
+      ]
     },
     {
+      "type": "output",
       "address": "/out",
       "inputs": {
         "audio": {
           "from": "/djfilter"
         }
-      },
-      "type": "output"
+      }
     }
-  ],
-  "outputs": [
-    {
-      "node": "/out",
-      "port": "audio"
-    }
-  ],
-  "resources": {
-    "djfilter-demo-voice": "voices/djfilter-demo-voice.json"
-  }
+  ]
 }

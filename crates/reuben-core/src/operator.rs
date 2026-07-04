@@ -191,6 +191,14 @@ impl<'a> Io<'a> {
         self.latched.get(port).and_then(T::from_arg)
     }
 
+    /// The raw held [`Arg`] latched on `port`, undecoded — the type-erased twin of
+    /// [`Io::input_held`]. In-crate only: the interface **pipe** (ADR-0038) forwards whatever
+    /// Value its declared type latched (`f32`, an enum's concrete variant, a `Harmony`) without
+    /// naming a concrete Rust type, so it reads the latch as the `Arg` it already is.
+    pub(crate) fn latch_arg(&self, port: usize) -> Option<&'a Arg> {
+        self.latched.get(port)
+    }
+
     /// The routed [`Event`] slice for `port`, or an empty slice if the port has no stream. The
     /// shared source of the empty-stream fallback behind every Event read (the [`form::Event`] /
     /// [`form::Raw`] handles and the `Note` / `&Arg` [`IoInput`] arms), so the private `streams`

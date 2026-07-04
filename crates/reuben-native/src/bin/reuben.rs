@@ -192,8 +192,8 @@ fn print_ports(dir: &str, ps: &[reuben_native::cli::PortInfo]) {
         if let Some(w) = &p.widget {
             s.push_str(&format!(" <{w}>"));
         }
-        if p.driven {
-            s.push_str(" (driven internally — wiring it is an error)");
+        if let Some(ch) = p.channel {
+            s.push_str(&format!(" @channel {ch}"));
         }
         println!("{s}");
     }

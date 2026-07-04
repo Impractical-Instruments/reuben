@@ -63,18 +63,29 @@ pub struct Connection {
     pub dst_port: usize,
 }
 
-/// A patch's engine-honored I/O boundary (ADR-0032 §1) — the resolved form of a document's
-/// `interface` block. Each external name maps to one internal `(node, port)`: an **input** name to
-/// a node's input port (the boundary feeds it), an **output** name to a node's output port (the
-/// boundary reads it). Empty unless the document declares an `interface`. Distinct from `control`
-/// (ADR-0018), which is engine-ignored: this is real wiring the engine binds and type-checks (the
-/// Voicer reads it to drive each voice sub-patch's `freq`/`gate` and tap its `audio`/`active`).
+/// A patch's engine-honored I/O boundary — the resolved form of a document's `interface` block
+/// (ADR-0032 §1, reshaped by ADR-0038 §2 into **pipes**). Each external **input** name maps to
+/// the `in` port of the loader-built pipe node it minted (`in` → `/in`); whatever feeds the
+/// boundary lands there, and internal consumers wire from the pipe's output. Each **output**
+/// name maps to the internal `(node, output port)` that feeds it. Empty unless the document
+/// declares an `interface`. Distinct from `control` (ADR-0018), which is engine-ignored: this
+/// is real wiring the engine binds and type-checks (the Voicer reads it to drive each voice
+/// sub-patch's `freq`/`gate` pipes and tap its `audio`/`active`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Interface {
-    /// External input name → the internal `(node, input port)` it drives.
+    /// External input name → the pipe node's `(node, input port)` the boundary feeds.
     pub inputs: BTreeMap<String, (NodeKey, usize)>,
-    /// External output name → the internal `(node, output port)` it exposes.
+    /// External output name → the internal `(node, output port)` that feeds it.
     pub outputs: BTreeMap<String, (NodeKey, usize)>,
+    /// Logical **input** channel bindings (ADR-0038 §3): input pipe name → the logical input
+    /// channel it reads when this graph is played at top level. Inert when nested/hosted (a
+    /// splice discards the child's `Interface`, so a binding never reaches hardware from inside
+    /// a nest). Consumed by the core input master (P3).
+    pub input_channels: BTreeMap<String, usize>,
+    /// Logical **output** channel bindings (ADR-0038 §3): output pipe name → the logical master
+    /// channel it feeds (already applied to [`Graph::outputs`] taps at build; retained here so
+    /// save/introspection can reconstruct the entry). Omitted = broadcast.
+    pub output_channels: BTreeMap<String, usize>,
     /// Declared **input** names whose internal target went dark — an unavailable nested child
     /// (ADR-0016/0034). The port is real in the document but resolves to nothing this load; a
     /// consumer referencing it degrades (drops the wire with a warning) instead of failing, so
@@ -97,6 +108,11 @@ pub struct Graph {
     /// The resolved `interface` boundary (ADR-0032), empty unless declared. Set by the loader's
     /// [`build`](crate::format::InstrumentDoc::build) after nodes/wires resolve.
     pub interface: Interface,
+    /// Derived **logical input width** (ADR-0038 §3): max bound input channel + 1 across this
+    /// graph's own input pipes, `0` when none binds a channel — a patch that uses no inputs pays
+    /// nothing. Honored only when this graph is played at top level (the core input master, P3);
+    /// a nested/hosted graph's value is inert.
+    pub input_channels_width: usize,
 }
 
 impl Graph {

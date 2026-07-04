@@ -17,7 +17,8 @@ const LEAF: &str = r#"{
         "inputs":  { "freq": "/osc.freq" },
         "outputs": { "audio": "/osc.audio" }
     },
-    "nodes": [ { "type": "oscillator", "address": "/osc" } ]
+    "nodes": [ { "type": "oscillator", "address": "/osc" } ],
+    "outputs": [ { "node": "/osc", "port": "audio" } ]
 }"#;
 
 /// A mid-level patch that references its **sibling** `leaf.json` — only resolvable if the

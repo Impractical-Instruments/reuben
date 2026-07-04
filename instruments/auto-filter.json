@@ -1,17 +1,29 @@
 {
-  "doc": "A saw synth whose MASTER filter cutoff is a base value PLUS an LFO wobble — base-plus-modulation built explicitly with a Signal `add` operator (ADR-0017/0032). Play with /voicer/notes [midi, gate]. The 8 voices are hosted `auto-filter-voice` sub-patches (saw -> ADSR VCA); the voicer sums them and one shared resonant filter sweeps the mix. Move the base cutoff with /cutoff/in [20..12000]; change the wobble with /lfo/rate (Hz) and /lfo/depth (Hz of sweep). The LFO swings around 0 and `add` sums it onto the base CV, which feeds the master filter's Signal cutoff input.",
+  "format_version": 2,
   "instrument": "auto-filter",
+  "doc": "A saw synth whose MASTER filter cutoff is a base value PLUS an LFO wobble — base-plus-modulation built explicitly with a Signal `add` operator (ADR-0017/0032). Play with /voicer/notes [midi, gate]. The 8 voices are hosted `auto-filter-voice` sub-patches (saw -> ADSR VCA); the voicer sums them and one shared resonant filter sweeps the mix. Move the base cutoff with /cutoff/in [20..12000]; change the wobble with /lfo/rate (Hz) and /lfo/depth (Hz of sweep). The LFO swings around 0 and `add` sums it onto the base CV, which feeds the master filter's Signal cutoff input.",
+  "resources": {
+    "auto-filter-voice": "voices/auto-filter-voice.json"
+  },
+  "interface": {
+    "outputs": {
+      "out": {
+        "from": "/out.audio"
+      }
+    }
+  },
   "nodes": [
     {
-      "address": "/voicer",
-      "config": {
-        "voices": 8
-      },
-      "doc": "Hosts 8 auto-filter-voice sub-patches; allocates notes across them and sums their audio.",
       "type": "voicer",
+      "address": "/voicer",
+      "doc": "Hosts 8 auto-filter-voice sub-patches; allocates notes across them and sums their audio.",
+      "config": {
+        "voices": 8.0
+      },
       "voice": "auto-filter-voice"
     },
     {
+      "type": "filter",
       "address": "/filter",
       "doc": "Master filter on the summed mix; cutoff driven by base + LFO; resonant so the sweep sings.",
       "inputs": {
@@ -22,39 +34,39 @@
           "from": "/add"
         },
         "resonance": 0.7
-      },
-      "type": "filter"
+      }
     },
     {
+      "type": "output",
       "address": "/out",
       "inputs": {
         "audio": {
           "from": "/filter"
         }
-      },
-      "type": "output"
+      }
     },
     {
+      "type": "lfo",
       "address": "/lfo",
       "doc": "Wobble around 0 (center 0), added onto the base cutoff.",
       "inputs": {
         "center": 0.0,
         "depth": 1500.0,
         "rate": 2.0
-      },
-      "type": "lfo"
+      }
     },
     {
+      "type": "m2s",
       "address": "/cutoff",
       "doc": "Base cutoff as a smoothed CV; default 2000 Hz. Send /cutoff/in [Hz].",
       "inputs": {
         "in": 2000.0,
         "mode": "Smooth",
         "time": 0.05
-      },
-      "type": "m2s"
+      }
     },
     {
+      "type": "add_f32_signal",
       "address": "/add",
       "doc": "out = base cutoff (a) + LFO wobble (b).",
       "inputs": {
@@ -64,17 +76,7 @@
         "b": {
           "from": "/lfo"
         }
-      },
-      "type": "add_f32_signal"
+      }
     }
-  ],
-  "outputs": [
-    {
-      "node": "/out",
-      "port": "audio"
-    }
-  ],
-  "resources": {
-    "auto-filter-voice": "voices/auto-filter-voice.json"
-  }
+  ]
 }

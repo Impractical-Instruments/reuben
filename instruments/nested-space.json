@@ -1,21 +1,30 @@
 {
-  "doc": "Worked general-nesting example (ADR-0034): a polyphonic voicer feeding a nested `space` instrument (instruments/patches/space.json) referenced by a `subpatch` node. At build the child inlines under /space (its internals become /space/filter, /space/verb — still OSC-reachable), the node's ports are the child's `interface` names, and the node dissolves: zero runtime cost. Play with /voicer/notes [midi, gate]; shape live via /space/filter/cutoff or the boundary-set literals here. `reuben describe instruments/patches/space.json` shows the boundary a host wires against.",
+  "format_version": 2,
   "instrument": "nested-space",
+  "doc": "Worked general-nesting example (ADR-0034): a polyphonic voicer feeding a nested `space` instrument (instruments/patches/space.json) referenced by a `subpatch` node. At build the child inlines under /space (its internals become /space/filter, /space/verb — still OSC-reachable), the node's ports are the child's `interface` names, and the node dissolves: zero runtime cost. Play with /voicer/notes [midi, gate]; shape live via the boundary pipes \u2014 /space/tone/in and /space/space/in \u2014 or the boundary-set literals here. `reuben describe instruments/patches/space.json` shows the boundary a host wires against.",
   "resources": {
     "default-voice": "voices/default-voice.json",
     "space": "patches/space.json"
   },
+  "interface": {
+    "outputs": {
+      "out": {
+        "from": "/out.audio"
+      }
+    }
+  },
   "nodes": [
     {
-      "address": "/voicer",
-      "config": {
-        "voices": 8
-      },
-      "doc": "8 hosted default-voice sub-patches, summed.",
       "type": "voicer",
+      "address": "/voicer",
+      "doc": "8 hosted default-voice sub-patches, summed.",
+      "config": {
+        "voices": 8.0
+      },
       "voice": "default-voice"
     },
     {
+      "type": "subpatch",
       "address": "/space",
       "doc": "The nested tone+reverb effect; `in`/`tone`/`space` are its boundary ports.",
       "inputs": {
@@ -25,23 +34,16 @@
         "space": 0.4,
         "tone": 2500.0
       },
-      "patch": "space",
-      "type": "subpatch"
+      "patch": "space"
     },
     {
+      "type": "output",
       "address": "/out",
       "inputs": {
         "audio": {
           "from": "/space.out"
         }
-      },
-      "type": "output"
-    }
-  ],
-  "outputs": [
-    {
-      "node": "/out",
-      "port": "audio"
+      }
     }
   ]
 }

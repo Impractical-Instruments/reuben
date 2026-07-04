@@ -16,7 +16,7 @@ use slotmap::SecondaryMap;
 
 use crate::config::AudioConfig;
 use crate::descriptor::{Descriptor, Port, PortType};
-use crate::graph::{Graph, NodeKey};
+use crate::graph::{Connection, Graph, NodeKey};
 use crate::message::{Arg, Message};
 use crate::operator::Operator;
 use crate::vocab::harmony::Harmony;
@@ -176,6 +176,37 @@ pub struct InterfaceOutput {
     pub captured_slot: Option<usize>,
 }
 
+/// One **dissolved interface pipe**'s live external address (ADR-0038 §2). Instantiate collapses
+/// a single-consumer pass-through pipe node out of the schedule (see
+/// [`dissolve_interface_pipes`]) — the pipe stays an authoring/format concept, not a rendered
+/// node — but its minted address (`in` → `/in`) is real boundary surface: the Voicer drives a
+/// voice's `freq`/`gate` by message there, and external OSC lands there. This alias keeps that
+/// address routable: a message to `<address>/<port.name>` delivers to the rewired consumer
+/// `(node, dst_port)` with exactly the normalization the rendered pipe applied (the pipe port
+/// types/clamps first, then the consumer port — the same two hops the node made).
+pub(crate) struct InputAlias {
+    /// The dissolved pipe node's minted address (e.g. `/freq`).
+    pub address: String,
+    /// The pipe's synthesized `in` port: types inbound OSC args ([`Plan::osc_in_message`]) and
+    /// clamps/resolves Value messages, exactly as routing to the rendered pipe node did.
+    pub port: Port,
+    /// The pipe's declared form — decides delivery, as the pipe's `process` arm did.
+    pub kind: PortKind,
+    /// The consumer's node index in execution order.
+    pub node: usize,
+    /// The consumer's input port index.
+    pub dst_port: usize,
+}
+
+/// A pipe collapsed by [`dissolve_interface_pipes`], keyed by its (pre-instantiate) consumer.
+struct DissolvedPipe {
+    address: String,
+    port: Port,
+    kind: PortKind,
+    consumer: NodeKey,
+    consumer_port: usize,
+}
+
 /// One master tap: a tapped port's arena buffers, summed into the master output.
 pub struct OutputTap {
     /// Logical master channel this tap feeds (ADR-0026), or `None` to broadcast to every
@@ -207,6 +238,16 @@ pub struct Plan {
     /// `interface_outputs`): the port's last-emitted scalar, held ZOH across blocks (seeded `0.0`).
     /// `render_plan` updates it when the port emits; the host reads it post-render.
     pub captured: Vec<f32>,
+    /// The graph's derived **logical input width** (ADR-0038 §3): max bound input channel + 1
+    /// across its input pipes, `0` when none binds a channel. Carried from
+    /// [`Graph::input_channels_width`] for the core input master (P3) to size its scratch when
+    /// this plan is the played top-level graph; inert for a hosted (voice) plan.
+    pub input_channels: usize,
+    /// Live addresses of interface pipes dissolved out of the schedule (ADR-0038 §2): message
+    /// routing ([`crate::render`]) and [`Plan::osc_in_message`] consult these before the node
+    /// scan, so a collapsed pipe's minted address keeps feeding its rewired consumer. Empty for
+    /// a graph with no dissolvable pipes.
+    pub(crate) input_aliases: Vec<InputAlias>,
 }
 
 /// Why Instantiate failed.
@@ -235,15 +276,32 @@ impl Plan {
     /// cross, while bare audio does not). `None` if no node/port matches or the args don't fit the
     /// port. External OSC carries no timestamp, so the Message is stamped frame 0 ("now").
     pub fn osc_in_message(&self, address: &str, args: &[Arg]) -> Option<Message> {
-        let (_, _, port) = crate::render::resolve_port(&self.nodes, address)?;
+        // A dissolved pipe's minted address stays live (ADR-0038 §2): type the args by the
+        // pipe's own synthesized port, exactly as when the pipe was a rendered node.
+        let port = self
+            .input_alias(address)
+            .map(|a| &a.port)
+            .or_else(|| crate::render::resolve_port(&self.nodes, address).map(|(_, _, p)| p))?;
         let arg = crate::boundary::osc_in_arg(port, args)?;
         Some(Message::new(address, arg, 0))
     }
 
+    /// The dissolved-pipe alias `address` targets, if any — the pipe-form `/name/in` address of
+    /// an interface pipe [`dissolve_interface_pipes`] collapsed out of the schedule.
+    pub(crate) fn input_alias(&self, address: &str) -> Option<&InputAlias> {
+        self.input_aliases
+            .iter()
+            .find(|a| crate::render::local_address(address, &a.address) == Some(a.port.name))
+    }
+
     /// Instantiate a Graph into an executable Plan (the construction sub-step of a Swap).
     pub fn instantiate(mut graph: Graph, mut config: AudioConfig) -> Result<Plan, PlanError> {
-        let order = topo_order(&graph)?;
+        // Validate the authored wires first (same error surface as before), then collapse
+        // pass-through interface pipes out of the schedule (ADR-0038 §2 — the pipe is a format
+        // concept, not a mandatory rendered node) before ordering what actually executes.
         check_wire_forms(&graph)?;
+        let dissolved = dissolve_interface_pipes(&mut graph);
+        let order = topo_order(&graph)?;
 
         // Logical master width is derived from the instrument, not the device (ADR-0026):
         // the highest referenced channel index + 1, floored to stereo so a mono patch still
@@ -461,6 +519,20 @@ impl Plan {
             })
             .collect();
 
+        // Dissolved pipes' addresses, re-keyed from NodeKey to execution index now that the
+        // order is fixed. The consumer key is always live: chain dissolution re-pointed any
+        // alias whose consumer was itself dissolved.
+        let input_aliases: Vec<InputAlias> = dissolved
+            .into_iter()
+            .map(|d| InputAlias {
+                address: d.address,
+                port: d.port,
+                kind: d.kind,
+                node: index_of[d.consumer],
+                dst_port: d.consumer_port,
+            })
+            .collect();
+
         Ok(Plan {
             config,
             nodes,
@@ -470,6 +542,8 @@ impl Plan {
             outbound_taps,
             interface_outputs,
             captured: vec![0.0; captured_len],
+            input_channels: graph.input_channels_width,
+            input_aliases,
         })
     }
 
@@ -490,6 +564,130 @@ impl Plan {
             .iter()
             .find(|o| o.name == name)
             .and_then(|o| o.captured_slot)
+    }
+}
+
+/// Collapse pass-through **interface pipes** out of the execution schedule (ADR-0038 §2,
+/// issue #189). A pipe is an authoring/format concept — a named boundary entry that mints an
+/// address — and rendering one as a real node costs a full per-node engine pass every block
+/// (routing, segmenting, an arena buffer + copy for a signal pipe), multiplied by the Voicer's
+/// per-voice plans. This pass removes each dissolvable pipe node and rewires around it so the
+/// rendered schedule is what a hand-flattened patch would have been:
+///
+/// - its single consumer takes the pipe's **feeder wire** directly (zero-copy for signals), or —
+///   when the boundary feeds the pipe by message (a Voicer, external OSC) — the consumer's own
+///   materialize/latch path, with the pipe's rest **seed transferred** as a value-override so an
+///   unfed boundary renders exactly what the rendered pipe did (declared default, or silence);
+/// - its minted address stays live through [`InputAlias`] — Instantiate's caller-visible
+///   surface (message routing, `osc_in_message`) is unchanged.
+///
+/// A pipe is kept as a rendered node when collapsing could change behavior or lose surface:
+/// fan-out (≥ 2 consumers share the one materialized feed), no consumer (the address must stay
+/// addressable), a master tap or `interface` output reading the pipe's `out` port, or a Value
+/// pipe feeding an Event/`Arg` pass-through input (its frame-0 seed emission is observable
+/// there). Chains (a pipe feeding a pipe, e.g. through a spliced nest) collapse to fixpoint;
+/// an alias whose consumer dissolves is re-pointed to that pipe's own consumer.
+fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
+    let mut dissolved: Vec<DissolvedPipe> = Vec::new();
+    loop {
+        // One dissolve per scan, to fixpoint: rewiring can make another pipe dissolvable
+        // (chains), and mutating while iterating the slotmap is not on.
+        let mut found: Option<(NodeKey, NodeKey, usize)> = None;
+        for (key, node) in &graph.nodes {
+            // Loader-built pipes only: a document cannot name `"type": "pipe"` on a node.
+            if node.descriptor.type_name != "pipe" {
+                continue;
+            }
+            // Exactly one wire consumer — its input port absorbs the pipe's role wholesale.
+            let mut consumers = graph.connections.iter().filter(|c| c.src == key);
+            let Some(c0) = consumers.next() else { continue };
+            if consumers.next().is_some() {
+                continue;
+            }
+            // The pipe's `out` must not be read by name elsewhere: a master tap or an
+            // `interface` output on it needs the rendered buffer/port to exist.
+            if graph.outputs.iter().any(|(k, _, _)| *k == key)
+                || graph.interface.outputs.values().any(|(k, _)| *k == key)
+            {
+                continue;
+            }
+            // A Value pipe into an Event/`Arg` pass-through input: the pipe's frame-0 seed
+            // emission lands there as a real observable event — keep the node.
+            let kind = port_kind(&node.descriptor.inputs[0]);
+            let dst_kind = port_kind(&graph.nodes[c0.dst].descriptor.inputs[c0.dst_port]);
+            if kind == PortKind::Value && dst_kind == PortKind::Event {
+                continue;
+            }
+            found = Some((key, c0.dst, c0.dst_port));
+            break;
+        }
+        let Some((key, dst, dst_port)) = found else {
+            return dissolved;
+        };
+
+        let node = &graph.nodes[key];
+        let pipe_port = node.descriptor.inputs[0].clone();
+        let kind = port_kind(&pipe_port);
+        let address = node.address.clone();
+        // What the pipe held at rest: its declared default (or an author/boundary override),
+        // via the same seeding rule Instantiate applies below.
+        let seed = seed_latch(&pipe_port, 0, &node.value_overrides);
+
+        // Splice the pipe out of the wiring: its feeder (if any) takes over the consumer edge.
+        // Legality is transitive — the pipe's `in`/`out` share one declared type, so every
+        // rewired pair is a combination `check_wire_forms` already admitted (the one crossing it
+        // would not, Value-source→Arg-input, is excluded by the Event-consumer guard above).
+        let feeder = graph
+            .connections
+            .iter()
+            .find(|c| c.dst == key)
+            .map(|c| (c.src, c.src_port));
+        graph.connections.retain(|c| c.src != key && c.dst != key);
+        if let Some((src, src_port)) = feeder {
+            graph.connections.push(Connection {
+                src,
+                src_port,
+                dst,
+                dst_port,
+            });
+        }
+
+        // Transfer the pipe's rest seed to the consumer's latch, normalized exactly as the
+        // rendered pipe's frame-0 seed emission would have landed (ADR-0030 routing): raw f32
+        // onto a materialized Signal input, `held_arg`-resolved onto a Value input. An Event
+        // pipe holds nothing. If the seed cannot land (as it could not by message), the
+        // consumer keeps its own default — same as when the emission was dropped.
+        if kind != PortKind::Event {
+            let dst_p = &graph.nodes[dst].descriptor.inputs[dst_port];
+            let transferred = match port_kind(dst_p) {
+                PortKind::Signal => seed.as_f32().map(Arg::F32),
+                _ => crate::render::held_arg(dst_p, &seed),
+            };
+            if let Some(arg) = transferred {
+                let overrides = &mut graph.nodes[dst].value_overrides;
+                overrides.retain(|(p, _)| *p != dst_port);
+                overrides.push((dst_port, arg));
+            }
+        }
+
+        graph.nodes.remove(key);
+        graph.interface.inputs.retain(|_, (k, _)| *k != key);
+        // A chained alias (this pipe was another dissolved pipe's consumer) follows through to
+        // this pipe's own consumer. (Its normalization keeps the outermost pipe's port — for
+        // in-range values, the only case authored chains produce, the hops agree.)
+        for d in dissolved.iter_mut() {
+            if d.consumer == key {
+                d.consumer = dst;
+                d.consumer_port = dst_port;
+            }
+        }
+        dissolved.push(DissolvedPipe {
+            address,
+            port: pipe_port,
+            kind,
+            consumer: dst,
+            consumer_port: dst_port,
+        });
     }
 }
 

@@ -63,19 +63,18 @@ pub struct PortInfo {
     /// The ordered enum choices (ADR-0030); empty for non-enum ports.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<String>,
-    /// Display-name override from an `interface` entry (ADR-0034 §4). Only a nested-instrument
-    /// boundary port carries one — operator ports have no label.
+    /// Display-name from an `interface` pipe entry (ADR-0034 §4 / ADR-0038). Only a boundary
+    /// port carries one — operator ports have no label.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub label: Option<String>,
-    /// Widget hint override from an `interface` entry (ADR-0034 §4 / ADR-0018); boundary-only.
+    /// Widget hint from an `interface` pipe entry (ADR-0034 §4 / ADR-0018); boundary-only.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub widget: Option<String>,
-    /// Boundary-only: this input's inner **Signal** port is already driven inside the nested
-    /// instrument, so a host wire onto it is a fatal `BoundaryInputDriven` — the port is real (its
-    /// effective default still tells you what it holds) but not wireable. Omitted (false) for
-    /// wireable inputs, all outputs, and operator ports.
-    #[serde(skip_serializing_if = "std::ops::Not::not")]
-    pub driven: bool,
+    /// Boundary-only (ADR-0038 §3): the logical channel a signal pipe binds — the input channel
+    /// an input pipe reads, or the master channel an output pipe feeds, when the instrument is
+    /// played at top level. Omitted for unbound pipes and operator ports.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub channel: Option<usize>,
 }
 
 fn port_kind(ty: &PortType) -> &'static str {
@@ -131,7 +130,7 @@ impl PortInfo {
             variants: Vec::new(),
             label: None,
             widget: None,
-            driven: false,
+            channel: None,
         };
         // Scalar control (ADR-0030): a materialized `f32` input owns its range/curve/default in `meta`.
         if let Some(m) = &p.meta {
@@ -252,7 +251,7 @@ impl PortInfo {
             variants: b.variants,
             label: b.label,
             widget: b.widget,
-            driven: b.driven,
+            channel: b.channel,
         }
     }
 }
@@ -267,7 +266,12 @@ pub fn describe_patch(
     registry: &Registry,
     resolver: &dyn ResourceResolver,
 ) -> Result<PatchBoundary, String> {
-    let doc = InstrumentDoc::from_json(json).map_err(|e| e.to_string())?;
+    // Parse WITH the resolver (the same way `play` does): a v1 entry re-exporting a nested
+    // child's boundary port migrates to the child's real pipe type; the resolver-less
+    // `from_json` would fall back to `"f32"` and this description would diverge from what the
+    // engine actually loads.
+    let doc =
+        InstrumentDoc::from_json_with(json, registry, Some(resolver)).map_err(|e| e.to_string())?;
     let loaded = load_instrument_doc(&doc, registry, resolver).map_err(|e| e.to_string())?;
     let b = describe_boundary(&doc, &loaded);
 
@@ -299,10 +303,7 @@ impl Diag {
             LoadError::UnknownType { address, .. } => (Some(address.clone()), None),
             LoadError::DuplicateAddress(a) | LoadError::UnknownNode(a) => (Some(a.clone()), None),
             LoadError::UnknownPort { node, port } => (Some(node.clone()), Some(port.clone())),
-            LoadError::UnknownInput { node, input }
-            | LoadError::BoundaryInputDriven { node, input } => {
-                (Some(node.clone()), Some(input.clone()))
-            }
+            LoadError::UnknownInput { node, input } => (Some(node.clone()), Some(input.clone())),
             LoadError::BadInputValue { node, input, .. } => {
                 (Some(node.clone()), Some(input.clone()))
             }
@@ -311,11 +312,14 @@ impl Diag {
             | LoadError::AmbiguousWire { node, .. }
             | LoadError::UnknownResource { node, .. } => (Some(node.clone()), None),
             // A boundary-named problem: the offending "node" is the interface entry itself.
-            LoadError::InterfaceOverride { name, .. } => (None, Some(name.clone())),
+            LoadError::InterfaceOverride { name, .. } | LoadError::InterfacePipe { name, .. } => {
+                (None, Some(name.clone()))
+            }
             LoadError::TypeMismatch { .. }
             | LoadError::Json(_)
             | LoadError::CyclicResource { .. }
-            | LoadError::UnsupportedVersion { .. } => (None, None),
+            | LoadError::UnsupportedVersion { .. }
+            | LoadError::AnonymousOutputs => (None, None),
         };
         Diag {
             node,

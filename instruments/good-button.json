@@ -1,23 +1,35 @@
 {
-  "doc": "A playable saw synth with one 'brightness' Good Button (ADR-0017/0032). Send /voicer/notes [midi, gate] to play, then sweep /brightness/in [0..1] — a single knob fanned to a MASTER filter's cutoff AND resonance, each over its own musical range, smoothed into the audio rate. The 8 voices are hosted `good-button-voice` sub-patches (saw -> ADSR VCA); the voicer sums them and one shared filter tones the mix. Built entirely from composition: one public `m2s` knob (`/brightness`) smoothing the held value into a CV Signal, fanned to two ranged `map`s wired into the master filter's Signal cutoff/resonance inputs.",
+  "format_version": 2,
   "instrument": "good-button",
+  "doc": "A playable saw synth with one 'brightness' Good Button (ADR-0017/0032). Send /voicer/notes [midi, gate] to play, then sweep /brightness/in [0..1] — a single knob fanned to a MASTER filter's cutoff AND resonance, each over its own musical range, smoothed into the audio rate. The 8 voices are hosted `good-button-voice` sub-patches (saw -> ADSR VCA); the voicer sums them and one shared filter tones the mix. Built entirely from composition: one public `m2s` knob (`/brightness`) smoothing the held value into a CV Signal, fanned to two ranged `map`s wired into the master filter's Signal cutoff/resonance inputs.",
+  "resources": {
+    "good-button-voice": "voices/good-button-voice.json"
+  },
+  "interface": {
+    "outputs": {
+      "out": {
+        "from": "/out.audio"
+      }
+    }
+  },
   "nodes": [
     {
+      "type": "voicer",
       "address": "/voicer",
+      "doc": "Hosts 8 good-button-voice sub-patches; allocates notes across them and sums their audio.",
       "config": {
-        "voices": 8
+        "voices": 8.0
       },
+      "voice": "good-button-voice",
       "control": {
         "label": "Play C",
         "note": 60,
         "port": "notes",
         "widget": "note-toggle"
-      },
-      "doc": "Hosts 8 good-button-voice sub-patches; allocates notes across them and sums their audio.",
-      "type": "voicer",
-      "voice": "good-button-voice"
+      }
     },
     {
+      "type": "filter",
       "address": "/filter",
       "doc": "Master lowpass on the summed mix; cutoff + resonance are Signal inputs driven by the Good Button.",
       "inputs": {
@@ -30,33 +42,33 @@
         "resonance": {
           "from": "/map_res"
         }
-      },
-      "type": "filter"
+      }
     },
     {
+      "type": "output",
       "address": "/out",
       "inputs": {
         "audio": {
           "from": "/filter"
         }
-      },
-      "type": "output"
+      }
     },
     {
+      "type": "m2s",
       "address": "/brightness",
-      "control": {
-        "label": "Brightness",
-        "widget": "fader"
-      },
       "doc": "PUBLIC Good Button. The held knob value [0,1] smoothed into a CV Signal (an `m2s` is the value->signal converter), then fanned to the two ranged maps below. Send /brightness/in [0..1]. Rests at 0.5 (ADR-0018).",
       "inputs": {
         "in": 0.5,
         "mode": "Smooth",
         "time": 0.03
       },
-      "type": "m2s"
+      "control": {
+        "label": "Brightness",
+        "widget": "fader"
+      }
     },
     {
+      "type": "map_f32_signal",
       "address": "/map_cutoff",
       "doc": "brightness [0,1] -> cutoff [400,12000] Hz, exponential (perceptually even). Reads the smoothed brightness Signal and ranges it per-sample (Signal->Signal) into the master filter cutoff.",
       "inputs": {
@@ -66,10 +78,10 @@
         },
         "out_max": 12000.0,
         "out_min": 400.0
-      },
-      "type": "map_f32_signal"
+      }
     },
     {
+      "type": "map_f32_signal",
       "address": "/map_res",
       "doc": "brightness [0,1] -> resonance [0.1,0.85], linear.",
       "inputs": {
@@ -78,17 +90,7 @@
         },
         "out_max": 0.85,
         "out_min": 0.1
-      },
-      "type": "map_f32_signal"
+      }
     }
-  ],
-  "outputs": [
-    {
-      "node": "/out",
-      "port": "audio"
-    }
-  ],
-  "resources": {
-    "good-button-voice": "voices/good-button-voice.json"
-  }
+  ]
 }

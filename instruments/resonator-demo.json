@@ -1,12 +1,44 @@
 {
-  "doc": "Throwaway: clock gate pings the resonator on every beat.",
+  "format_version": 2,
   "instrument": "ping-resonator",
+  "doc": "Throwaway: clock gate pings the resonator on every beat.",
+  "interface": {
+    "outputs": {
+      "out": {
+        "from": "/out.audio"
+      }
+    }
+  },
   "nodes": [
-    { "address": "/clock", "inputs": { "tempo": 120.0 }, "type": "clock" },
-    { "address": "/res", "type": "resonator",
-      "inputs": { "freq": 220.0, "gate": { "from": "/clock.gate" },
-        "structure": 0.2, "brightness": 0.6, "damping": 0.8, "position": 0.3 } },
-    { "address": "/out", "inputs": { "audio": { "from": "/res" } }, "type": "output" }
-  ],
-  "outputs": [ { "node": "/out", "port": "audio" } ]
+    {
+      "type": "clock",
+      "address": "/clock",
+      "inputs": {
+        "tempo": 120.0
+      }
+    },
+    {
+      "type": "resonator",
+      "address": "/res",
+      "inputs": {
+        "brightness": 0.6,
+        "damping": 0.8,
+        "freq": 220.0,
+        "gate": {
+          "from": "/clock.gate"
+        },
+        "position": 0.3,
+        "structure": 0.2
+      }
+    },
+    {
+      "type": "output",
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/res"
+        }
+      }
+    }
+  ]
 }
