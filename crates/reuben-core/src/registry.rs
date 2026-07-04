@@ -126,6 +126,23 @@ mod tests {
     // that fails loudly if the linker ever dead-strips the submissions.
 
     #[test]
+    #[should_panic(expected = "reserved")]
+    fn registering_the_reserved_pipe_name_panics() {
+        // ADR-0038: pipes are loader-built; an embedder-registered "pipe" operator's nodes
+        // would silently vanish on save (`from_graph` drops nodes by this type name).
+        use crate::operator::Operator;
+        let mut r = Registry::new();
+        r.register(
+            || {
+                Box::new(crate::operators::pipe::Pipe::new(
+                    crate::plan::PortKind::Value,
+                ))
+            },
+            crate::operators::pipe::Pipe::descriptor(),
+        );
+    }
+
+    #[test]
     fn builtin_is_nonempty() {
         // If self-registration silently produced nothing (dead-stripped slice), this trips first.
         assert!(

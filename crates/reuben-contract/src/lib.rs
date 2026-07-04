@@ -421,6 +421,15 @@ mod tests {
     }
 
     #[test]
+    fn rejects_the_reserved_pipe_type_name() {
+        // Interface pipes are loader-built (ADR-0038): the name is reserved so a scaffolded
+        // `pipe` operator fails before any code is generated.
+        let e = err(r#"{ "type_name": "pipe" }"#);
+        assert_eq!(e.locus, Locus::TypeName);
+        assert!(e.message.contains("reserved"), "{}", e.message);
+    }
+
+    #[test]
     fn rejects_bad_port_type_at_that_port() {
         let e = err(r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"audio"} ] }"#);
         assert_eq!(e.locus, Locus::Input(0));

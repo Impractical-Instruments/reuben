@@ -4305,6 +4305,56 @@ mod tests {
     }
 
     #[test]
+    fn voicer_hosted_bare_signal_pipe_warns_unwired() {
+        // ADR-0038 §3 promises the silence warning for "nested/hosted" alike: a Voicer feeds
+        // only the message pipes it knows by name (`freq`/`gate`), so a hosted voice's bare
+        // signal pipe is never fed — it renders silence and must warn, exactly as the
+        // subpatch face does.
+        const AUX_VOICE: &str = r#"{"format_version":2,"instrument":"v",
+            "interface":{
+              "inputs":{"aux":{"type":"f32_buffer"}},
+              "outputs":{"audio":{"from":"/out.audio"}}},
+            "nodes":[{"type":"output","address":"/out","inputs":{"audio":{"from":"/aux"}}}]}"#;
+        let host = r#"{"format_version":2,"instrument":"h","resources":{"v":"v.json"},
+            "interface":{"outputs":{"out":{"from":"/voicer.audio"}}},
+            "nodes":[{"type":"voicer","address":"/voicer","voice":"v"}]}"#;
+        let loaded = load_instrument(host, &reg(), &PatchResolver(AUX_VOICE)).expect("load");
+        assert!(
+            loaded.warnings.iter().any(|w| matches!(
+                w,
+                LoadWarning::UnwiredPipe { node, name } if node == "/voicer" && name == "aux"
+            )),
+            "hosted bare signal pipe must warn: {:?}",
+            loaded.warnings
+        );
+    }
+
+    #[test]
+    fn a_v2_stamped_doc_handed_to_load_instrument_doc_is_shape_checked() {
+        // Fail-closed (#189 F8a): an embedder can deserialize an `InstrumentDoc` directly
+        // (bypassing `from_json`) and hand it to the public `load_instrument_doc` already
+        // stamped v2. A v1-only shape hiding under that stamp — the anonymous `outputs`
+        // block next to `interface.outputs` — must fail exactly as `from_json` fails it,
+        // not silently tap twice.
+        let smuggled: InstrumentDoc = serde_json::from_str(
+            r#"{"format_version":2,"instrument":"s",
+                "interface":{"outputs":{"out":{"from":"/osc.audio"}}},
+                "nodes":[{"type":"oscillator","address":"/osc"}],
+                "outputs":[{"node":"/osc","port":"audio"}]}"#,
+        )
+        .expect("raw deserialize");
+        assert!(matches!(
+            load_instrument_doc(&smuggled, &reg(), &PatchResolver("")),
+            Err(LoadError::AnonymousOutputs)
+        ));
+        // The other boundary around `from_json`: calling `build` directly.
+        assert!(matches!(
+            smuggled.build(&reg()),
+            Err(LoadError::AnonymousOutputs)
+        ));
+    }
+
+    #[test]
     fn post_prefix_address_collision_is_fatal() {
         // ADR-0034 §3: a child address that, after prefixing, collides with an existing parent
         // address is a DuplicateAddress load error — the uniqueness check runs over the
