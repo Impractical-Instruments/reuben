@@ -13,6 +13,8 @@
 //! - [`resources`] — a filesystem + WAV [`ResourceResolver`](reuben_core::resources::ResourceResolver)
 //!   decoding sample data for the sample player (ADR-0016).
 //! - [`rigs`] — ready-made instrument graphs (the default playable rig for now).
+//! - [`profile`] — the device profile (`--io-map`, ADR-0038 §6/§7): logical↔device channel
+//!   maps, device selection, and sample-rate/buffer-size preferences, outside the patch.
 //!
 //! The portable core does all the DSP; everything here is I/O glue and is meant to be
 //! swappable per platform (or removed entirely when embedding the core elsewhere).
@@ -22,6 +24,7 @@ pub mod cli;
 pub mod diagnostics;
 pub mod engine;
 pub mod osc;
+pub mod profile;
 pub mod resources;
 pub mod rigs;
 pub mod scaffold;

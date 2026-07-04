@@ -1,8 +1,11 @@
 //! `reuben` — the command-line entry point.
 //!
 //! Four subcommands:
-//! - `reuben play [path]` — render an instrument live, driven by OSC over UDP. With no path
-//!   it plays the built-in default rig. Send notes with:
+//! - `reuben play [path] [--io-map <file>]` — render an instrument live, driven by OSC over UDP.
+//!   With no path it plays the built-in default rig. `--io-map` loads a device profile (ADR-0038
+//!   §6): logical↔device channel maps, device selection by name substring, and sample-rate/
+//!   buffer-size preferences — see docs/device-profile.md. Omit it for the default device and
+//!   identity map, bit-identical to before. Send notes with:
 //!
 //!   ```text
 //!   /voicer/notes  [69.0, 1.0]   # note-on  (MIDI 69 = A4, gate 1)
@@ -33,6 +36,7 @@ use reuben_core::plan::Plan;
 use reuben_core::{load_instrument, Registry};
 use reuben_native::cli::{describe, describe_patch, validate};
 use reuben_native::engine::Engine;
+use reuben_native::profile::DeviceProfile;
 use reuben_native::resources::FsResolver;
 use reuben_native::rigs::DEFAULT_JSON;
 use reuben_native::{audio, osc, scaffold};
@@ -67,6 +71,12 @@ enum Command {
         /// `osc_out` node's Messages are encoded and UDP-sent to (ADR-0026). Omit to disable.
         #[arg(long, value_name = "HOST:PORT")]
         osc_out: Option<String>,
+        /// Device profile JSON (ADR-0038 §6): logical↔device channel maps, device selection by
+        /// name substring, and sample-rate/buffer-size preferences — outside the patch, so the
+        /// same instrument plays on any rig. Omit for the default device and identity map,
+        /// bit-identical to today's behavior. See docs/device-profile.md.
+        #[arg(long, value_name = "FILE")]
+        io_map: Option<PathBuf>,
     },
     /// Print the operator set, one operator's ports/params/resources, or — given an instrument
     /// JSON path — that instrument's `interface` boundary as a host sees it (ADR-0034).
@@ -105,8 +115,12 @@ fn main() -> ExitCode {
     let cli = Cli::parse();
     let root = instrument_root(cli.instrument_root);
     match cli.command {
-        Command::Play { path, osc_out } => {
-            play(path, osc_out, root);
+        Command::Play {
+            path,
+            osc_out,
+            io_map,
+        } => {
+            play(path, osc_out, io_map, root);
             ExitCode::SUCCESS
         }
         Command::Describe { op, json } => cmd_describe(op.as_deref(), json, root),
@@ -336,7 +350,31 @@ fn cmd_validate(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCode {
 }
 
 /// `play`: the live audio path — load an instrument and render it, driven by incoming OSC.
-fn play(path: Option<PathBuf>, osc_out_target: Option<String>, root: Option<PathBuf>) {
+fn play(
+    path: Option<PathBuf>,
+    osc_out_target: Option<String>,
+    io_map: Option<PathBuf>,
+    root: Option<PathBuf>,
+) {
+    // Device profile (ADR-0038 §6): `--io-map <file>` loads logical↔device channel maps, device
+    // selection, and sample-rate/buffer-size preferences. No flag -> the default profile, which
+    // is identity map + the default device (today's behavior, unchanged). A malformed profile is
+    // a structural load error (§7) — fatal, like any other bad instrument input this binary reads.
+    let profile = match &io_map {
+        Some(path) => {
+            let profile = DeviceProfile::load(path)
+                .unwrap_or_else(|e| panic!("io-map {}: {e}", path.display()));
+            println!("io-map: {}", path.display());
+            if profile.has_input() {
+                println!(
+                    "  note: input.* is parsed but not yet applied — no input stream exists until P5"
+                );
+            }
+            profile
+        }
+        None => DeviceProfile::default(),
+    };
+
     let (tx, rx) = mpsc::channel();
 
     // Log incoming/outgoing OSC only when asked: this runs on the I/O paths, and the stdout
@@ -431,7 +469,7 @@ fn play(path: Option<PathBuf>, osc_out_target: Option<String>, root: Option<Path
     // `_diagnostics` is the shared xrun/ring counter surface (ADR-0038 §9): `audio::start` is
     // already logging it periodically to stderr. Kept named (not `_`) as the handle P5's input
     // stream will also take an `Arc::clone` of, once it opens.
-    let (_stream, _diagnostics) = audio::start(rx, BLOCK_SIZE, osc_out_tx, |cfg| {
+    let (_stream, _diagnostics) = audio::start(rx, BLOCK_SIZE, osc_out_tx, &profile, |cfg| {
         println!(
             "audio out @ {} Hz, block {}",
             cfg.sample_rate, cfg.block_size
