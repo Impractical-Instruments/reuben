@@ -36,6 +36,7 @@ pub mod osc_out;
 pub mod oscillator;
 pub mod output;
 pub mod pan;
+pub mod pipe;
 pub mod power;
 pub mod reciprocal;
 pub mod resonator;

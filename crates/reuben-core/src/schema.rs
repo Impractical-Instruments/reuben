@@ -150,34 +150,54 @@ pub fn generate(registry: &Registry) -> Value {
             "interface": {
                 "type": "object",
                 "additionalProperties": false,
-                "description": "Engine-honored I/O boundary (ADR-0032/0034): external name -> internal \"/node.port\" wire-ref, as a bare string or an object adding presentational overrides. `inputs` names map to internal input ports, `outputs` names to output ports (sole-output sugar \"/node\" allowed). A voice patch declares this so its host voicer binds and type-checks it; a nested instrument's `subpatch` ports are synthesized from it. Distinct from a node's `control` (ADR-0018), which is engine-ignored.",
+                "description": "Engine-honored I/O boundary as named PIPES (ADR-0038, format v2). Each `inputs` entry declares its Arg type and mints an address in the flat node namespace (`in` -> `/in`) that internal nodes consume with ordinary wire-refs (`{\"from\": \"/in\"}`, fan-out free). Each `outputs` entry is fed from an internal port (`{\"from\": \"/pan.left\", \"channel\": 0}`); signal output pipes are the master taps. A voice patch declares this so its host voicer binds and type-checks it; a nested instrument's `subpatch` ports are synthesized from it. Distinct from a node's `control` (ADR-0018), which is engine-ignored. (The v1 target-pointing entry forms auto-migrate at load and are not valid v2 — this schema describes v2.)",
                 "properties": {
-                    "inputs": { "type": "object", "additionalProperties": { "$ref": "#/$defs/interfaceEntry" } },
-                    "outputs": { "type": "object", "additionalProperties": { "$ref": "#/$defs/interfaceEntry" } }
+                    "inputs": { "type": "object", "additionalProperties": { "$ref": "#/$defs/inputPipe" } },
+                    "outputs": { "type": "object", "additionalProperties": { "$ref": "#/$defs/outputPipe" } }
                 }
             },
             "nodes": { "type": "array", "items": { "$ref": "#/$defs/node" } },
-            "outputs": { "type": "array", "items": { "$ref": "#/$defs/portRef" } }
+            "outputs": {
+                "type": "array",
+                "items": { "$ref": "#/$defs/portRef" },
+                "description": "v1-only (ADR-0038 §4): the anonymous master-tap list. Auto-migrated into named `interface.outputs` pipes at load; a v2 document must not carry it."
+            }
         },
         "$defs": {
-            "interfaceEntry": {
-                "description": "One boundary entry (ADR-0034 §4): the internal \"/node.port\" target, bare or with presentational-metadata overrides (label/unit/widget/min/max) inherited-then-overridden from the inner port. The Arg TYPE is inherited and not overridable — there is deliberately no field for it, and unknown fields are rejected. A min/max override must narrow the inner port's engine-enforced range (subset, not inverted, numeric port only) and keep the effective default inside it — the loader rejects an override that advertises a range the engine would not honor.",
-                "oneOf": [
-                    { "type": "string" },
-                    {
-                        "type": "object",
-                        "required": ["target"],
-                        "additionalProperties": false,
-                        "properties": {
-                            "target": { "type": "string", "description": "Internal \"/node.port\" wire-ref this external name resolves to." },
-                            "label": { "type": "string" },
-                            "unit": { "type": "string" },
-                            "widget": { "type": "string" },
-                            "min": { "type": "number" },
-                            "max": { "type": "number" }
-                        }
-                    }
-                ]
+            "inputPipe": {
+                "type": "object",
+                "required": ["type"],
+                "additionalProperties": false,
+                "description": "One interface INPUT pipe (ADR-0038 §2): a named source in the flat namespace (`in` -> `/in`; a post-mint collision is a fatal duplicate address). It DECLARES its Arg type — nothing to inherit from — enforced against every consumer by the ordinary wire check. Numeric pipes may declare an engine-enforced default/min/max/curve (an unwired signal pipe materializes `default`; a bare one, silence). A SIGNAL pipe may bind a logical input `channel`, honored only when the graph is played at top level (inert nested/hosted); `channel` on a message pipe is a load error.",
+                "properties": {
+                    "type": { "type": "string", "description": "The declared Arg type: \"f32_buffer\" (Signal), \"f32\" (held Value), \"note\" (Event), \"harmony\" (held Value), or a shared vocab enum name (e.g. \"FilterMode\")." },
+                    "channel": { "type": "integer", "minimum": 0, "description": "Logical input channel binding (signal pipes only; top-level-honored, ADR-0038 §3)." },
+                    "default": {
+                        "description": "Unwired/seed value: a number for a numeric pipe, the variant symbol for an enum pipe.",
+                        "oneOf": [ { "type": "number" }, { "type": "string" } ]
+                    },
+                    "min": { "type": "number", "description": "Engine-enforced range floor (numeric pipes; defaults to the type-wide bound)." },
+                    "max": { "type": "number", "description": "Engine-enforced range ceiling (numeric pipes)." },
+                    "curve": { "enum": ["lin", "exp"], "description": "Sweep-curve hint for a numeric pipe; defaults to lin." },
+                    "unit": { "type": "string" },
+                    "label": { "type": "string" },
+                    "widget": { "type": "string" }
+                }
+            },
+            "outputPipe": {
+                "type": "object",
+                "required": ["from"],
+                "additionalProperties": false,
+                "description": "One interface OUTPUT pipe (ADR-0038 §2): fed from an internal port by an ordinary wire-ref. `channel` pins the logical master channel a signal pipe feeds (omitted = broadcast, ADR-0026); on a message-typed pipe it is a load error. min/max are presentational overrides obeying the ADR-0034 §4 subset law against the feeding port's range.",
+                "properties": {
+                    "from": { "type": "string", "description": "Internal \"/node.port\" (or sole-output \"/node\") wire-ref feeding this pipe." },
+                    "channel": { "type": "integer", "minimum": 0, "description": "Logical master output channel (signal pipes only); omitted = broadcast." },
+                    "label": { "type": "string" },
+                    "unit": { "type": "string" },
+                    "widget": { "type": "string" },
+                    "min": { "type": "number" },
+                    "max": { "type": "number" }
+                }
             },
             "portRef": {
                 "type": "object",
@@ -328,80 +348,82 @@ mod tests {
     }
 
     #[test]
-    fn interface_entry_takes_string_or_override_object_but_never_a_type() {
-        // ADR-0034 §4: an interface entry is a bare target string or an object of target +
-        // presentational overrides. The object enumerates its fields closed
-        // (`additionalProperties: false`) and none of them is a type — a type override is
-        // structurally inexpressible, matching the loader's `deny_unknown_fields`.
+    fn interface_maps_reference_the_pipe_defs() {
+        // ADR-0038 §2: inputs are typed pipes, outputs are fed-from entries — two distinct
+        // closed shapes, each with `additionalProperties: false` matching the loader's
+        // `deny_unknown_fields`.
         let schema = generate(&Registry::builtin());
-        let entry = &schema["$defs"]["interfaceEntry"];
-        let forms = entry["oneOf"].as_array().expect("oneOf forms");
-        assert!(forms.iter().any(|f| f["type"] == json!("string")));
-        let obj = forms
-            .iter()
-            .find(|f| f["type"] == json!("object"))
-            .expect("object form");
-        assert_eq!(obj["additionalProperties"], json!(false));
-        assert_eq!(obj["required"], json!(["target"]));
-        let props = obj["properties"].as_object().unwrap();
-        for allowed in ["target", "label", "unit", "widget", "min", "max"] {
-            assert!(props.contains_key(allowed), "missing {allowed}");
-        }
-        assert!(
-            !props.contains_key("type") && !props.contains_key("kind"),
-            "no field may express a type override"
-        );
-        // Both boundary maps use the entry.
         let iface = &schema["properties"]["interface"]["properties"];
-        for dir in ["inputs", "outputs"] {
-            assert_eq!(
-                iface[dir]["additionalProperties"]["$ref"],
-                json!("#/$defs/interfaceEntry")
-            );
-        }
+        assert_eq!(
+            iface["inputs"]["additionalProperties"]["$ref"],
+            json!("#/$defs/inputPipe")
+        );
+        assert_eq!(
+            iface["outputs"]["additionalProperties"]["$ref"],
+            json!("#/$defs/outputPipe")
+        );
+        let input = &schema["$defs"]["inputPipe"];
+        assert_eq!(input["required"], json!(["type"]));
+        assert_eq!(input["additionalProperties"], json!(false));
+        let output = &schema["$defs"]["outputPipe"];
+        assert_eq!(output["required"], json!(["from"]));
+        assert_eq!(output["additionalProperties"], json!(false));
+        // The v1 discriminator is gone: an input pipe has no `target`.
+        assert!(!input["properties"]
+            .as_object()
+            .unwrap()
+            .contains_key("target"));
     }
 
     #[test]
-    fn interface_meta_and_schema_entry_list_the_same_fields() {
-        // Drift guard: the interfaceEntry field list lives in both the serde struct
-        // (`format::InterfaceMeta`) and this schema literal, and `additionalProperties: false`
-        // means a schema missing a serde field REJECTS documents the loader accepts. The struct
-        // literal is exhaustive on purpose — adding an InterfaceMeta field fails compilation
-        // here until the schema (and the committed schema file, via the staleness test) follow.
-        let full = crate::format::InterfaceMeta {
-            target: "/n.p".to_string(),
+    fn pipe_docs_and_schema_defs_list_the_same_fields() {
+        // Drift guard: the pipe field lists live in both the serde structs
+        // (`format::InputPipeDoc`/`OutputPipeDoc`) and this schema literal, and
+        // `additionalProperties: false` means a schema missing a serde field REJECTS documents
+        // the loader accepts. The struct literals are exhaustive on purpose — adding a field
+        // fails compilation here until the schema (and the committed schema file, via the
+        // staleness test) follow.
+        let full_input = crate::format::InputPipeDoc {
+            ty: "f32".to_string(),
+            channel: Some(0),
+            default: Some(crate::format::PipeDefault::Number(1.0)),
+            min: Some(0.0),
+            max: Some(1.0),
+            curve: Some(crate::format::CurveDoc::Lin),
+            unit: Some("Hz".to_string()),
+            label: Some("L".to_string()),
+            widget: Some("knob".to_string()),
+        };
+        let full_output = crate::format::OutputPipeDoc {
+            from: "/n.p".to_string(),
+            channel: Some(0),
             label: Some("L".to_string()),
             unit: Some("Hz".to_string()),
             widget: Some("knob".to_string()),
             min: Some(0.0),
             max: Some(1.0),
         };
-        let serde_fields: std::collections::BTreeSet<String> = serde_json::to_value(&full)
-            .expect("serialize full meta")
-            .as_object()
-            .expect("object")
-            .keys()
-            .cloned()
-            .collect();
-
         let schema = generate(&Registry::builtin());
-        let obj = schema["$defs"]["interfaceEntry"]["oneOf"]
-            .as_array()
-            .expect("oneOf forms")
-            .iter()
-            .find(|f| f["type"] == json!("object"))
-            .expect("object form")
-            .clone();
-        let schema_fields: std::collections::BTreeSet<String> = obj["properties"]
-            .as_object()
-            .expect("properties")
-            .keys()
-            .cloned()
-            .collect();
-
+        let fields = |v: serde_json::Value| -> std::collections::BTreeSet<String> {
+            v.as_object().expect("object").keys().cloned().collect()
+        };
+        let schema_fields = |def: &str| -> std::collections::BTreeSet<String> {
+            schema["$defs"][def]["properties"]
+                .as_object()
+                .expect("properties")
+                .keys()
+                .cloned()
+                .collect()
+        };
         assert_eq!(
-            serde_fields, schema_fields,
-            "InterfaceMeta (format.rs) and interfaceEntry (schema.rs) disagree on the field list"
+            fields(serde_json::to_value(&full_input).unwrap()),
+            schema_fields("inputPipe"),
+            "InputPipeDoc (format.rs) and inputPipe (schema.rs) disagree on the field list"
+        );
+        assert_eq!(
+            fields(serde_json::to_value(&full_output).unwrap()),
+            schema_fields("outputPipe"),
+            "OutputPipeDoc (format.rs) and outputPipe (schema.rs) disagree on the field list"
         );
     }
 

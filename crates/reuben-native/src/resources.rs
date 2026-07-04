@@ -326,7 +326,8 @@ mod tests {
         )
         .expect("resolve patch");
         assert!(loaded.warnings.is_empty());
-        assert_eq!(loaded.graph.nodes.len(), 1);
+        // The oscillator plus the `freq` input pipe its migrated interface minted (ADR-0038).
+        assert_eq!(loaded.graph.nodes.len(), 2);
         assert!(loaded.graph.interface.inputs.contains_key("freq"));
 
         let _ = std::fs::remove_file(&path);

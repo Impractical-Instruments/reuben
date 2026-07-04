@@ -207,6 +207,11 @@ pub struct Plan {
     /// `interface_outputs`): the port's last-emitted scalar, held ZOH across blocks (seeded `0.0`).
     /// `render_plan` updates it when the port emits; the host reads it post-render.
     pub captured: Vec<f32>,
+    /// The graph's derived **logical input width** (ADR-0038 §3): max bound input channel + 1
+    /// across its input pipes, `0` when none binds a channel. Carried from
+    /// [`Graph::input_channels_width`] for the core input master (P3) to size its scratch when
+    /// this plan is the played top-level graph; inert for a hosted (voice) plan.
+    pub input_channels: usize,
 }
 
 /// Why Instantiate failed.
@@ -470,6 +475,7 @@ impl Plan {
             outbound_taps,
             interface_outputs,
             captured: vec![0.0; captured_len],
+            input_channels: graph.input_channels_width,
         })
     }
 
