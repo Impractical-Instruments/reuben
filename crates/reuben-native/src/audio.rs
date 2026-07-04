@@ -184,7 +184,14 @@ where
 /// `block_size / sample_rate`, generalized to the callback's actual frame count — see
 /// [`start`]'s doc comment on why `frames` rather than the fixed core `block_size`).
 fn callback_budget(frames: usize, sample_rate: f32) -> Duration {
-    Duration::from_secs_f32(frames as f32 / sample_rate)
+    let secs = frames as f32 / sample_rate;
+    // `from_secs_f32` panics on non-finite/negative input; a device reporting a zero (or
+    // garbage) sample rate must not become a panic inside the audio callback. No budget is
+    // computable then, so nothing counts as a miss.
+    if !secs.is_finite() || secs < 0.0 {
+        return Duration::MAX;
+    }
+    Duration::from_secs_f32(secs)
 }
 
 /// Place one frame of `logical` master channels onto a `device`-channel frame (ADR-0026).
@@ -211,6 +218,14 @@ fn map_frame(logical: &[f32], device: &mut [f32]) {
 mod tests {
     use super::{callback_budget, map_frame};
     use std::time::Duration;
+
+    #[test]
+    fn callback_budget_survives_zero_sample_rate() {
+        // A garbage device rate must not panic in the callback; an incomputable budget
+        // means nothing ever counts as a miss.
+        assert_eq!(callback_budget(256, 0.0), Duration::MAX);
+        assert_eq!(callback_budget(256, -48_000.0), Duration::MAX);
+    }
 
     #[test]
     fn callback_budget_matches_block_size_over_sample_rate() {
