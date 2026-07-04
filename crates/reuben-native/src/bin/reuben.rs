@@ -484,7 +484,7 @@ fn play(
         let plan = Plan::instantiate(loaded.graph, cfg).expect("instantiate rig");
         Engine::new(plan)
     })
-    .expect("start audio");
+    .unwrap_or_else(|e| panic!("start audio: {e}"));
 
     println!("playing — Ctrl-C to quit.");
     // Keep the process (and thus the audio stream) alive.

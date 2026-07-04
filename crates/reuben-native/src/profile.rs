@@ -63,15 +63,24 @@ pub struct DeviceProfile {
 /// mismatch (those degrade with a warning at the point they're discovered; ADR-0038 §7).
 #[derive(Debug)]
 pub enum ProfileError {
-    Io(std::io::Error),
+    Io(std::io::Error, std::path::PathBuf),
     Json(serde_json::Error),
+    /// A field violates a bound the schema declares (`"minimum": 1` on `sample_rate` and
+    /// `buffer_size`) but serde can't enforce on a plain `Option<u32>`. Checked once at load,
+    /// here — ADR-0038 §7 treats this as a structural document problem (like malformed JSON),
+    /// not a reality mismatch, since a `0` would otherwise reach `negotiate_output_config` and
+    /// fail opaquely inside cpal instead of at the clean load-time boundary the schema promises.
+    OutOfRange(&'static str),
 }
 
 impl fmt::Display for ProfileError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            ProfileError::Io(e) => write!(f, "read io-map profile: {e}"),
+            ProfileError::Io(e, path) => {
+                write!(f, "read io-map profile {}: {e}", path.display())
+            }
             ProfileError::Json(e) => write!(f, "parse io-map profile: {e}"),
+            ProfileError::OutOfRange(msg) => write!(f, "invalid io-map profile: {msg}"),
         }
     }
 }
@@ -80,11 +89,32 @@ impl std::error::Error for ProfileError {}
 
 impl DeviceProfile {
     /// Load + parse a device profile from `path`. Any structural problem (bad JSON, an unknown
-    /// field, a non-numeric map key/value) is a load error — never silently ignored, per
-    /// ADR-0038 §7's distinction between a broken document and a reality mismatch.
+    /// field, a non-numeric map key/value, an out-of-range `sample_rate`/`buffer_size`) is a
+    /// load error — never silently ignored, per ADR-0038 §7's distinction between a broken
+    /// document and a reality mismatch.
     pub fn load(path: &Path) -> Result<Self, ProfileError> {
-        let text = std::fs::read_to_string(path).map_err(ProfileError::Io)?;
-        serde_json::from_str(&text).map_err(ProfileError::Json)
+        let text =
+            std::fs::read_to_string(path).map_err(|e| ProfileError::Io(e, path.to_path_buf()))?;
+        let profile: Self = serde_json::from_str(&text).map_err(ProfileError::Json)?;
+        profile.validate()?;
+        Ok(profile)
+    }
+
+    /// The schema's `"minimum": 1` bound on `sample_rate`/`buffer_size` (review finding #3) —
+    /// `0` isn't a meaningful preference for either (cpal has no "silent"/"unbuffered" mode),
+    /// so it's rejected here rather than flowing through to `negotiate_output_config`.
+    fn validate(&self) -> Result<(), ProfileError> {
+        if self.sample_rate == Some(0) {
+            return Err(ProfileError::OutOfRange(
+                "sample_rate must be at least 1 (0 is not a valid rate)",
+            ));
+        }
+        if self.buffer_size == Some(0) {
+            return Err(ProfileError::OutOfRange(
+                "buffer_size must be at least 1 (0 is not a valid buffer size)",
+            ));
+        }
+        Ok(())
     }
 
     /// True when the profile carries any `input.*` field (ADR-0038 §6/P5): parsed and typed
@@ -167,9 +197,12 @@ mod tests {
 
     #[test]
     fn load_missing_file_is_an_io_error() {
-        let err = DeviceProfile::load(Path::new("/nonexistent/io-map.json"))
-            .expect_err("missing file should error");
-        assert!(matches!(err, ProfileError::Io(_)));
+        let path = Path::new("/nonexistent/io-map.json");
+        let err = DeviceProfile::load(path).expect_err("missing file should error");
+        assert!(matches!(err, ProfileError::Io(_, _)));
+        // Finding #7: the path should reach the user via Display, matching read_instrument's
+        // "read <path>: <e>" convention elsewhere in this crate.
+        assert!(err.to_string().contains(&path.display().to_string()));
     }
 
     #[test]
@@ -181,5 +214,43 @@ mod tests {
         let err = DeviceProfile::load(&path).expect_err("malformed json should error");
         assert!(matches!(err, ProfileError::Json(_)));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn zero_sample_rate_is_a_load_error() {
+        let err = serde_json::from_str::<DeviceProfile>(r#"{"sample_rate": 0}"#)
+            .map(|p| p.validate())
+            .expect("valid JSON shape")
+            .expect_err("sample_rate: 0 should be rejected");
+        assert!(matches!(err, ProfileError::OutOfRange(_)));
+    }
+
+    #[test]
+    fn zero_buffer_size_is_a_load_error() {
+        let err = serde_json::from_str::<DeviceProfile>(r#"{"buffer_size": 0}"#)
+            .map(|p| p.validate())
+            .expect("valid JSON shape")
+            .expect_err("buffer_size: 0 should be rejected");
+        assert!(matches!(err, ProfileError::OutOfRange(_)));
+    }
+
+    #[test]
+    fn load_rejects_zero_sample_rate_end_to_end() {
+        let dir =
+            std::env::temp_dir().join(format!("reuben-profile-test-zero-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("zero.json");
+        std::fs::write(&path, r#"{"sample_rate": 0}"#).unwrap();
+        let err = DeviceProfile::load(&path).expect_err("sample_rate: 0 should be rejected");
+        assert!(matches!(err, ProfileError::OutOfRange(_)));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn nonzero_sample_rate_and_buffer_size_are_accepted() {
+        let p: DeviceProfile =
+            serde_json::from_str(r#"{"sample_rate": 48000, "buffer_size": 256}"#)
+                .expect("parse profile");
+        assert!(p.validate().is_ok());
     }
 }
