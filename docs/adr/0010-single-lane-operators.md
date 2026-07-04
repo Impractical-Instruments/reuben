@@ -1,5 +1,10 @@
 # Single-Lane Operators; cross-cutting work lives above the operator layer
 
+> **The Lane fan-out model is retired by [ADR-0032](0032-voicer-hosts-voice-subpatches.md):**
+> polyphony now comes from the Voicer hosting voice sub-patches, and the per-Lane replication
+> machinery is deleted. The principle decided here — operators are authored as one single-Voice
+> stream, with cross-cutting work above the operator layer — stands.
+
 ## Context
 
 A synth may have many Voices, each spanning multiple Channels. The product is a set of **Lanes** (one Voice in one Channel). Either each operator author handles that Voice×Channel fan-out, or the engine does. Authoring ergonomics and AI-authorability (ADR-0004) are first-class, and operators should stay small and composable.

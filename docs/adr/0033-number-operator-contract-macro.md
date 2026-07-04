@@ -1,5 +1,10 @@
 # Pointwise number ops are generated from one scalar fn by `number_operator_contract!`
 
+## Status
+
+Accepted (2026-06-28). Supersedes in part [ADR-0029](0029-math-family-dense-float-one-file-per-op.md)
+(hand-written one-file-per-op math).
+
 ## Context
 
 [ADR-0029](0029-math-family-dense-float-one-file-per-op.md) made each math op a hand-written file

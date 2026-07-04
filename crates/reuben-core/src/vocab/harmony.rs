@@ -4,7 +4,7 @@
 //! snapshot it onto the Message wire allocation-free (ADR-0015): the slicing model *forces*
 //! the `Copy` shape. It owns the resolver — `hz` (degree → Hz), `snap` (arbitrary pitch →
 //! nearest in-scale degree), `chord_tone` — so the Scale∘Tuning composition lives in one
-//! correct place and followers stay dumb (`io.context().hz(p)`).
+//! correct place and followers stay dumb (`io.read(IN_HARMONY).hz(p)`).
 //!
 //! Representation (ADR-0013): a **Scale** is ordered **step**-offsets within the tuning's
 //! period (12-EDO major = `[0,2,4,5,7,9,11]`) plus a root; `degree d → root + scale[d mod

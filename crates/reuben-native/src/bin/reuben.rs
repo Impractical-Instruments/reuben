@@ -1,6 +1,6 @@
 //! `reuben` — the command-line entry point.
 //!
-//! Three subcommands:
+//! Four subcommands:
 //! - `reuben play [path]` — render an instrument live, driven by OSC over UDP. With no path
 //!   it plays the built-in default rig. Send notes with:
 //!
@@ -89,7 +89,7 @@ enum Command {
     },
     /// Generate a new Operator's Rust skeleton from a contract spec and wire its registration.
     ScaffoldOperator {
-        /// Contract JSON (type_name, inputs, outputs, params, resources, constant).
+        /// Contract JSON (type_name, inputs, outputs, constants, resources).
         #[arg(long)]
         spec: PathBuf,
         /// reuben-core source root holding `operators/` and `registry.rs`.

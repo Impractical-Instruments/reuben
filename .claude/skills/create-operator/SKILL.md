@@ -120,7 +120,7 @@ Run all `reuben`/`cargo` commands from the repo root.
 }
 ```
 
-- **`ty`** (ADR-0030) ∈ `f32_buffer` | `f32` | `enum` | `note` | `harmony` — the port's `Arg` type. A
+- **`ty`** (ADR-0030) ∈ `f32_buffer` | `f32` | `i32` | `enum` | `note` | `harmony` | `arg` — the port's `Arg` type. A
   `f32_buffer` port is a dense audio/CV Signal (no settable default). A `f32` port is a held Value and
   adds `"f32": { min, max, default, unit, curve }` for its materialized default; `curve` ∈ `linear` |
   `exponential` (default linear), `unit` defaults `""`.
@@ -132,9 +132,10 @@ Run all `reuben`/`cargo` commands from the repo root.
 - The generated `IN_*`/`OUT_*`/`P_*` index consts follow declaration order — the scaffold renders
   the contract in `operator_contract!` grammar, so a `f32_buffer`/`f32 { .. }`/`enum(VocabType)` spec
   lands as the real port declaration, no Stage-B retyping.
-- A **`Constant`** is declared by listing the param in `params` and naming it in `"constant":
-  "voices"` — the instantiate-time value that sizes the voice pool (the loader routes it to the
-  patch's `config` block, ADR-0032).
+- A **`Constant`** (ADR-0035) is a `PortSpec` in the top-level `constants` array — e.g.
+  `"constants": [{ "name": "voices", "ty": "i32", "i32": { "min": 1, "max": 32, "default": 8 } }]` —
+  the instantiate-time value that sizes the voice pool (the loader routes it to the patch's
+  `config` block, ADR-0032).
 - `resources: ["wave"]` adds a `ResourceSlot` and a `bind_resources` stub (ADR-0016).
 
 ## Scope

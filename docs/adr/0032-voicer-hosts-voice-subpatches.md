@@ -12,8 +12,8 @@ the active ones each block rather than inlining them (see [Decision](#decision) 
 [Considered and rejected](#considered-and-rejected)).
 
 Supersedes the **withdrawn** "stub Voicer silent, flip the per-Voice ports anyway, restore polyphony
-later under `#99`" ruling (grilling session 4) recorded in
-[the 0031 TDD plan](0031-tdd-plan.md). That path deleted/neutered Voicer + `chord_player` +
+later under `#99`" ruling (grilling session 4) recorded in the 0031 TDD plan (a working doc, since
+removed — the migration is complete; see git history). That path deleted/neutered Voicer + `chord_player` +
 `tonal_context` + `first_sound` tests for a deferred fix; this ADR does the real rewrite instead.
 
 ## Context

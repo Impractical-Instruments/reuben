@@ -2,7 +2,8 @@
 
 ## Status
 
-Proposed.
+Accepted. Implemented — `Constant` ports live in `descriptor.rs`, the `param` concept is deleted,
+and [ADR-0037](0037-typed-port-handles.md) builds on this.
 
 Supersedes the param-coupling of [ADR-0028](0028-one-input-shape.md) (Constant declared *as a param*) and
 completes the migration begun in [ADR-0030](0030-osc-as-all-data-one-message-type.md) /

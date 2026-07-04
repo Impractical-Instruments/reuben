@@ -43,8 +43,10 @@ These are **defects, not opinions** — they glitch or crash the audio thread. E
   trait-object or closure boxing.
 - **Panic** → `make-total`. Tells: `unwrap` / `expect` / `panic!` / `unreachable!` / `assert!` /
   `todo!` / `unimplemented!`. Fix with the codebase's totality idioms:
-  `io.input(IN_GATE).map_or(0.0, |s| s[i])`, `.unwrap_or(..)`, `.clamp(0.0, 1.0)` (see
-  `operators/envelope.rs`). A panic in the cpal callback unwinds across the FFI boundary.
+  `.unwrap_or(..)`, `.map_or(..)`, `.clamp(0.0, 1.0)` (see `operators/envelope.rs`; typed
+  handles make port reads total by construction — `io.read(IN_GATE)` returns a defaulted value,
+  and a Signal read is always exactly `io.frames()` samples, ADR-0037). A panic in the cpal
+  callback unwinds across the FFI boundary.
   - **`debug_assert!` is blessed** — it vanishes in release; prefer it for hot-path invariants.
   - **Plain in-bounds indexing is exempt** — `buf[i]` where `i < n` (the `for i in 0..n` pattern) is
     fine; do not flag it.

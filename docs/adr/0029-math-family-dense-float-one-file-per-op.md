@@ -1,5 +1,10 @@
 # Math is a family of dense `Float` ops, one file per op; the `Number` core is retired
 
+> **Superseded in part by [ADR-0033](0033-number-operator-contract-macro.md):** pointwise number
+> ops are no longer hand-written one file per op — they are generated from one scalar fn by
+> `number_operator_contract!`. The one-operator-per-module rule and the `Number`-core retirement
+> stand.
+
 ## Context
 
 The math-operator family ([ADR-0017](0017-playable-surface-and-control-domain.md)) is built

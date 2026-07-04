@@ -1,5 +1,5 @@
 {
-  "doc": "A playable saw synth with one 'brightness' Good Button (ADR-0017/0032). Send /voicer/notes [midi, gate] to play, then sweep /brightness/in [0..1] — a single knob fanned to a MASTER filter's cutoff AND resonance, each over its own musical range, smoothed into the audio rate. The 8 voices are hosted `good-button-voice` sub-patches (saw -> ADSR VCA); the voicer sums them and one shared filter tones the mix. Built entirely from composition: a public identity `map` fanned to two ranged `map`s, each through an `m2s` converter into the master filter's Signal cutoff/resonance inputs.",
+  "doc": "A playable saw synth with one 'brightness' Good Button (ADR-0017/0032). Send /voicer/notes [midi, gate] to play, then sweep /brightness/in [0..1] — a single knob fanned to a MASTER filter's cutoff AND resonance, each over its own musical range, smoothed into the audio rate. The 8 voices are hosted `good-button-voice` sub-patches (saw -> ADSR VCA); the voicer sums them and one shared filter tones the mix. Built entirely from composition: one public `m2s` knob (`/brightness`) smoothing the held value into a CV Signal, fanned to two ranged `map`s wired into the master filter's Signal cutoff/resonance inputs.",
   "instrument": "good-button",
   "nodes": [
     {

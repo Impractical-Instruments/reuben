@@ -31,8 +31,8 @@ resolved.
 
 When your output names a domain concept (an issue title, a refactor proposal, a hypothesis,
 a test name), use the term as defined in `CONTEXT.md` — Operator, Instrument, Rig, Plan,
-Swap, Lane, Voice, and so on. Don't drift to the synonyms the glossary explicitly tells you
-to avoid (e.g. "node", "module", "patch" as a noun).
+Swap, Voice, and so on. Don't drift to the synonyms the glossary explicitly tells you
+to avoid (e.g. "node", "module", "patch" as a noun), or to retired terms (e.g. "Lane").
 
 If the concept you need isn't in the glossary yet, that's a signal — either you're inventing
 language the project doesn't use (reconsider) or there's a real gap (note it for

@@ -22,9 +22,9 @@
 //!
 //! True linear interpolation *between* targets is excluded — it needs the next value, so it is not
 //! RT-causal without a one-block delay (ADR-0017). State (current value, glide ramp) carries across
-//! blocks. The target is read **per-sample** from `in`'s buffer (an `F32` control always presents
-//! one — the materialized ZOH of a held/sparse target, or a wired CV source), so a stepped source
-//! retargets exactly at its change frame and a continuous source is tracked sample-accurately.
+//! blocks. The target `in` is a held Value (ADR-0031): the engine block-slices at every change
+//! frame, so each `process` call reads one constant target and a mid-block retarget stays
+//! sample-accurate; the smoothing itself runs per-sample toward that held target.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};

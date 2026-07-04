@@ -205,8 +205,11 @@ they leave V1.2:
     one sanctioned Message→Signal bridge. (S→M deferred.)
   - Worked examples: **`instruments/good-button.json`** (a brightness Good Button — `map` fan
     → `m2s` → filter cutoff/resonance) and **`instruments/auto-filter.json`** (base + LFO via
-    Signal `add`). Both covered by integration tests and the `rt_safe` allocation check; a
-    human OSC walkthrough lives in [v1.2-playable-surface-testing.md](../v1.2-playable-surface-testing.md).
+    Signal `add`). Both covered by integration tests and the `rt_safe` allocation check. (A
+    human OSC walkthrough, `v1.2-playable-surface-testing.md`, has since been removed — it
+    described this ADR's retired carrier model; see
+    [v1.4-control-surface-testing.md](../v1.4-control-surface-testing.md) for the current
+    walkthrough.)
 - **Operator sweep (one-port-one-type):** every existing operator reclassified to one port per
   function; Signal input ports gain unwired default scalars. **Oscillator `freq` → Signal-only**
   (param becomes the port default); **filter `cutoff`/`resonance` → Signal inputs**. Update each
