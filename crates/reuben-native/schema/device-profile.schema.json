@@ -9,7 +9,7 @@
     "output": { "$ref": "#/$defs/side" },
     "input": {
       "$ref": "#/$defs/side",
-      "description": "Parsed and type-checked by the loader; not yet applied anywhere — no input audio stream exists until P5 (#182). `map` here is device channel -> logical channel, the reverse direction of `output.map`."
+      "description": "Applied by the input stream (P5, #182), which opens only when the played instrument binds input channels — an instrument without input pipes never opens an input device. `map` here is device channel -> logical channel, the reverse direction of `output.map`."
     },
     "sample_rate": {
       "type": "integer",

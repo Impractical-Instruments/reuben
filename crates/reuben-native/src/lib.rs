@@ -12,7 +12,7 @@
 //!   engine rate, with the device→logical input channel map.
 //! - [`diagnostics`] — the shared xrun/ring counter surface (ADR-0038 §9) and its periodic
 //!   stderr logging; [`audio`] feeds it output-deadline misses, [`input`] feeds it input-ring
-//!   under/overruns.
+//!   underruns, overruns, and producer-backstop drops.
 //! - [`resources`] — a filesystem + WAV [`ResourceResolver`](reuben_core::resources::ResourceResolver)
 //!   decoding sample data for the sample player (ADR-0016).
 //! - [`rigs`] — ready-made instrument graphs (the default playable rig for now).

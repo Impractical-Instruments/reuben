@@ -23,11 +23,11 @@
 //! the shared [`crate::diagnostics::Diagnostics`] surface — the device still plays its own
 //! underrun silence, reuben only observes and counts it (fixed policy, no recovery mode).
 //!
-//! When the played patch binds input channels (ADR-0038 §3), [`start`] also opens the input
-//! side (P5/#182, [`crate::input`]): a cpal input stream feeding a lock-free SPSC ring that
-//! this module's output callback drains — resampled and drift-compensated into the engine
-//! rate — into [`Engine::fill_duplex`]. A patch without input pipes never touches an input
-//! device.
+//! When the played instrument binds input channels (ADR-0038 §3), [`start`] also opens the
+//! input side (P5/#182, [`crate::input`]): a cpal input stream feeding a lock-free SPSC ring
+//! that this module's output callback drains — resampled and drift-compensated into the
+//! engine rate — into [`Engine::fill_duplex`]. An instrument without input pipes never
+//! touches an input device.
 //!
 //! The returned [`Streams`] must be kept alive for audio to keep playing.
 
@@ -71,10 +71,11 @@ pub enum AudioError {
     Build(cpal::BuildStreamError),
     /// Starting playback failed.
     Play(cpal::PlayStreamError),
-    /// The played patch binds input channels but there is no default input device (P5/#182).
-    /// Fatal by design: the patch explicitly asked for live input, so playing silently
-    /// without a device would violate ADR-0038 §9's "know and say" (§7's dark-degrade covers
-    /// *channel* mismatches on a device that did open, not the absence of any device).
+    /// The played instrument binds input channels but there is no default input device
+    /// (P5/#182). Fatal by design — a deliberate, recorded ADR-0038 §7 carve-out: the
+    /// instrument explicitly asked for live input, so playing silently without a device
+    /// would violate §9's "know and say" (§7's dark-degrade covers *channel* mismatches on
+    /// a device that did open, not the absence of any device).
     NoInputDevice,
     /// No input device's name contains the profile's `input.device` substring.
     NoMatchingInputDevice(String),
@@ -82,8 +83,16 @@ pub enum AudioError {
     InputDevicesQuery(cpal::DevicesError),
     /// The input device reported an unusable default config.
     InputConfig(cpal::DefaultStreamConfigError),
-    /// The input device's default sample format isn't supported (f32 only, like output).
+    /// Querying the input device's supported configs failed (only reached when its default
+    /// format isn't f32 and `crate::input` negotiates for one).
+    InputSupportedConfigs(cpal::SupportedStreamConfigsError),
+    /// The input device has no f32-capable config at all — its default format is carried
+    /// here. Only returned after `supported_input_configs` was searched (the default merely
+    /// being non-f32 negotiates instead), so this is a statement about the hardware.
     UnsupportedInputFormat(SampleFormat),
+    /// The input device's usable config reports zero channels; opening it would arm a
+    /// guaranteed panic in the RT input callback.
+    NoInputChannels,
     /// Building the input stream failed.
     BuildInput(cpal::BuildStreamError),
     /// Starting input capture failed.
@@ -116,11 +125,18 @@ impl fmt::Display for AudioError {
             }
             AudioError::InputDevicesQuery(e) => write!(f, "query input devices: {e}"),
             AudioError::InputConfig(e) => write!(f, "default input config: {e}"),
+            AudioError::InputSupportedConfigs(e) => {
+                write!(f, "query supported input configs: {e}")
+            }
             AudioError::UnsupportedInputFormat(fmt) => {
                 write!(
                     f,
-                    "unsupported input sample format {fmt:?} (only f32 for now)"
+                    "input device has no f32-capable config (default sample format {fmt:?}; \
+                     only f32 for now)"
                 )
+            }
+            AudioError::NoInputChannels => {
+                write!(f, "input device reports zero input channels")
             }
             AudioError::BuildInput(e) => write!(f, "build input stream: {e}"),
             AudioError::PlayInput(e) => write!(f, "play input stream: {e}"),
@@ -131,8 +147,8 @@ impl fmt::Display for AudioError {
 impl std::error::Error for AudioError {}
 
 /// The live cpal streams [`start`] returns — keep the whole struct alive for audio to keep
-/// flowing. `input` is `Some` only when the played patch binds input channels (ADR-0038 §3):
-/// a patch without input pipes never touches an input device (P5/#182).
+/// flowing. `input` is `Some` only when the played instrument binds input channels
+/// (ADR-0038 §3): an instrument without input pipes never touches an input device (P5/#182).
 pub struct Streams {
     pub output: Stream,
     pub input: Option<Stream>,
@@ -190,7 +206,7 @@ where
     let mut buf: Vec<f32> = Vec::new();
     // The input-side dual of `buf`: one callback's worth of interleaved logical *input* at
     // the engine rate, filled from the ring and consumed by `fill_duplex`. Same warmup-only
-    // growth policy. Stays empty for a patch with no input pipes.
+    // growth policy. Stays empty for an instrument with no input pipes.
     let mut in_buf: Vec<f32> = Vec::new();
     // Warn at most once if a rig sends OSC out with no target configured (ADR-0026).
     let mut warned_no_target = false;
@@ -199,8 +215,8 @@ where
     let diag_for_callback = Arc::clone(&diagnostics);
     crate::diagnostics::spawn_periodic_logger(Arc::clone(&diagnostics), DIAGNOSTICS_LOG_INTERVAL);
 
-    // Input opens ONLY when the played patch binds input channels (ADR-0038 §3/P5): a patch
-    // without input pipes never touches an input device. The stage moves into the output
+    // Input opens ONLY when the played instrument binds input channels (ADR-0038 §3/P5): an
+    // instrument without input pipes never touches an input device. The stage moves into the output
     // callback; the stream is played *after* the output side is running, so the ring prefill
     // starts with a live consumer.
     let (input_stream, mut input_stage) = if in_channels > 0 {
@@ -323,7 +339,8 @@ fn callback_budget(frames: usize, sample_rate: f32) -> Duration {
 }
 
 /// Select an output device (ADR-0038 §6): `None` is the host default (today's only behavior);
-/// `Some(substr)` is the first device whose name contains `substr`, case-insensitively.
+/// `Some(substr)` is the first device whose name contains `substr`, case-insensitively (the
+/// [`find_named_device`] kernel shared with the input side).
 fn select_output_device(
     host: &cpal::Host,
     name_substr: Option<&str>,
@@ -331,22 +348,29 @@ fn select_output_device(
     match name_substr {
         None => host.default_output_device().ok_or(AudioError::NoDevice),
         Some(substr) => {
-            let needle = substr.to_lowercase();
-            host.output_devices()
-                .map_err(AudioError::DevicesQuery)?
-                .find(|d| {
-                    d.name()
-                        .map(|n| device_name_matches(&n, &needle))
-                        .unwrap_or(false)
-                })
+            let devices = host.output_devices().map_err(AudioError::DevicesQuery)?;
+            find_named_device(devices, substr)
                 .ok_or_else(|| AudioError::NoMatchingDevice(substr.to_string()))
         }
     }
 }
 
-/// The case-insensitive substring match behind `output.device` selection (and, via
-/// [`crate::input`], `input.device` selection), pulled out of [`select_output_device`] so it
-/// has a unit test that doesn't need a real [`cpal::Host`] (review finding #6) — `needle` is
+/// The name-substring device search behind `output.device` and (via [`crate::input`])
+/// `input.device` selection — one kernel, so the two sides' matching rules can't drift.
+pub(crate) fn find_named_device(
+    mut devices: impl Iterator<Item = cpal::Device>,
+    substr: &str,
+) -> Option<cpal::Device> {
+    let needle = substr.to_lowercase();
+    devices.find(|d| {
+        d.name()
+            .map(|n| device_name_matches(&n, &needle))
+            .unwrap_or(false)
+    })
+}
+
+/// The case-insensitive substring match behind [`find_named_device`], pulled out so it has a
+/// unit test that doesn't need a real [`cpal::Host`] (review finding #6) — `needle` is
 /// already lowercased by the caller (once per call, not per device).
 pub(crate) fn device_name_matches(name: &str, needle_lower: &str) -> bool {
     name.to_lowercase().contains(needle_lower)
@@ -511,60 +535,95 @@ enum OutputMap {
 /// Build the active output map from a profile's `output.map` (ADR-0038 §6). An empty map (no
 /// profile, or `output.map` omitted) is [`OutputMap::Identity`] — [`map_frame`]'s behavior,
 /// unchanged. Otherwise every pair is checked against the real `logical`/`device` channel
-/// counts once, here: a pair naming a channel that doesn't exist on either side is a reality
-/// mismatch (ADR-0038 §7) — warned about now and dropped, not fatal. Two *different* logical
-/// channels naming the *same* device channel are also a reality mismatch (review finding #1):
-/// both pairs are kept (so the mapping is still fully described), but colliding targets are
-/// warned about once, here, since [`apply_output_map`] applies pairs in ascending-logical order
-/// and the higher logical channel silently wins otherwise.
+/// counts once, here (the [`validate_map_pairs`] kernel shared with the input side): a pair
+/// naming a channel that doesn't exist on either side is a reality mismatch (ADR-0038 §7) —
+/// warned about now and dropped, not fatal. Two *different* logical channels naming the
+/// *same* device channel are also a reality mismatch (review finding #1): both pairs are kept
+/// (so the mapping is still fully described), but colliding targets are warned about once,
+/// here ([`for_each_duplicate_target`]), since [`apply_output_map`] applies pairs in
+/// ascending-logical order and the higher logical channel silently wins otherwise.
 fn build_output_map(map: &BTreeMap<usize, usize>, logical: usize, device: usize) -> OutputMap {
     if map.is_empty() {
         return OutputMap::Identity;
     }
-    let mut pairs = Vec::with_capacity(map.len());
-    for (&l, &d) in map {
-        if l >= logical {
+    let (pairs, mapped) = validate_map_pairs(
+        map,
+        logical,
+        device,
+        |l| {
             eprintln!(
                 "warning: io-map output.map logical channel {l} does not exist (instrument has \
                  {logical} logical channel(s)); dropped"
             );
-            continue;
-        }
-        if d >= device {
+        },
+        |d| {
             eprintln!(
                 "warning: io-map output.map targets device channel {d}, but the device has \
                  {device} channel(s); dropped"
             );
-            continue;
-        }
-        pairs.push((l, d));
-    }
-    warn_duplicate_device_targets(&pairs);
-    let mut mapped = vec![false; device];
-    for &(_, d) in &pairs {
-        mapped[d] = true;
-    }
+        },
+    );
+    for_each_duplicate_target(&pairs, |d, logicals, winner| {
+        eprintln!(
+            "warning: io-map output.map targets device channel {d} from multiple logical \
+             channels {logicals:?}; logical channel {winner} wins (applied last), the rest \
+             are dropped for that device channel"
+        );
+    });
     OutputMap::Explicit { pairs, mapped }
 }
 
-/// Warn about `output.map` pairs that target the same device channel from different logical
-/// channels (review finding #1). `pairs` is in ascending-logical order (the `BTreeMap`'s
-/// iteration order), and [`apply_output_map`] applies pairs in that same order, so — for a
-/// colliding device channel — the *highest* logical channel in the collision is the one whose
-/// value survives; named explicitly here so the behavior isn't just an implementation accident.
-fn warn_duplicate_device_targets(pairs: &[(usize, usize)]) {
-    let mut by_device: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
-    for &(l, d) in pairs {
-        by_device.entry(d).or_default().push(l);
+/// The validate-and-mask kernel behind [`build_output_map`] and its input dual
+/// (`crate::input`'s `build_input_map`) — one implementation, so the two sides' §7
+/// warn+degrade rules can't drift apart. Walks a profile map's `(from, to)` pairs in
+/// ascending `from` order (the `BTreeMap`'s iteration order — also the application order both
+/// sides document), drops each out-of-range pair through the side's own warning closure, and
+/// returns the surviving pairs plus the `to`-side mask of channels at least one pair feeds
+/// (the rest degrade to silence/zero-fill).
+pub(crate) fn validate_map_pairs(
+    map: &BTreeMap<usize, usize>,
+    from_bound: usize,
+    to_bound: usize,
+    mut warn_from_out_of_range: impl FnMut(usize),
+    mut warn_to_out_of_range: impl FnMut(usize),
+) -> (Vec<(usize, usize)>, Vec<bool>) {
+    let mut pairs = Vec::with_capacity(map.len());
+    for (&from, &to) in map {
+        if from >= from_bound {
+            warn_from_out_of_range(from);
+            continue;
+        }
+        if to >= to_bound {
+            warn_to_out_of_range(to);
+            continue;
+        }
+        pairs.push((from, to));
     }
-    for (d, logicals) in by_device {
-        if logicals.len() > 1 {
-            let winner = *logicals.last().expect("just checked len() > 1 above");
-            eprintln!(
-                "warning: io-map output.map targets device channel {d} from multiple logical \
-                 channels {logicals:?}; logical channel {winner} wins (applied last), the rest \
-                 are dropped for that device channel"
-            );
+    let mut mask = vec![false; to_bound];
+    for &(_, to) in &pairs {
+        mask[to] = true;
+    }
+    (pairs, mask)
+}
+
+/// The duplicate-target collision rule shared by `output.map` (review finding #1) and its
+/// input dual: group validated `(source, target)` pairs by target and hand every collision
+/// (two or more sources feeding one target) to `warn` as
+/// `(target, sources_in_application_order, winner)`. Both sides apply pairs in ascending
+/// source order, so the *highest* colliding source is the one whose value survives — named
+/// explicitly (once, here) so the behavior isn't just an implementation accident.
+pub(crate) fn for_each_duplicate_target(
+    pairs: &[(usize, usize)],
+    mut warn: impl FnMut(usize, &[usize], usize),
+) {
+    let mut by_target: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for &(source, target) in pairs {
+        by_target.entry(target).or_default().push(source);
+    }
+    for (target, sources) in by_target {
+        if sources.len() > 1 {
+            let winner = *sources.last().expect("just checked len() > 1 above");
+            warn(target, &sources, winner);
         }
     }
 }

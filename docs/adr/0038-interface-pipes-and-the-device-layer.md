@@ -188,6 +188,12 @@ fails to play because the rig is smaller than the author's studio. (Structural e
 profile itself — malformed JSON, `channel` on a message pipe — remain load errors; degrade is
 for *reality* mismatches, not broken documents.)
 
+P5 ([#182](https://github.com/Impractical-Instruments/reuben/issues/182)) records one
+deliberate carve-out: an instrument that explicitly binds input channels **fails fast** at
+`play` when no input device exists at all (or none matches the profile's `input.device`) —
+consistent with the output side's no-device precedent; dark-degrade covers mismatches on a
+device that opened, not the absence of any device.
+
 ### 8. Clock anchor: the output device rate; input is resampled from day one
 
 The engine stays hosted **in the output callback**, rendering at the output device's rate,
