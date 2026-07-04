@@ -446,7 +446,7 @@ impl<E: Executor> Renderer<E> {
 /// Normalize a routed [`Arg`] for a **Held** input port (ADR-0030): clamp an `F32` to the port's
 /// range, resolve an enum control message (symbol / index / variant) to the enum's concrete `Arg`,
 /// or take any other vocab value (`Harmony`) as-is. `None` if it cannot be a value of this port.
-fn held_arg(p: &Port, arg: &Arg) -> Option<Arg> {
+pub(crate) fn held_arg(p: &Port, arg: &Arg) -> Option<Arg> {
     match &p.ty {
         PortType::F32 => arg
             .as_f32()
@@ -506,6 +506,51 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
     }
 
     for (mi, msg) in messages.iter().enumerate() {
+        // A dissolved interface pipe's minted address (ADR-0038 §2): deliver to its rewired
+        // consumer with the pipe's own normalization — the same two hops (pipe port, then
+        // consumer port) the rendered pipe node made. Checked first; alias addresses belonged
+        // to removed nodes, so they can never shadow a live port.
+        if let Some(alias) = plan.input_alias(&msg.address) {
+            let (n, port) = (alias.node, alias.dst_port);
+            match alias.kind {
+                // A signal pipe's message feed was a raw ZOH materialize write (unclamped).
+                PortKind::Signal => {
+                    if let Some(v) = msg.as_f32() {
+                        routes[n].materialize_writes.push((msg.frame, port, v));
+                    }
+                }
+                // A value pipe latched (pipe-meta clamp), then forwarded; the emission landed
+                // by the consumer port's kind — Value re-`held_arg`s, Signal materializes.
+                PortKind::Value => {
+                    let Some(a) = held_arg(&alias.port, &msg.arg) else {
+                        continue;
+                    };
+                    match plan.nodes[n].input_kinds[port] {
+                        PortKind::Signal => {
+                            if let Some(v) = a.as_f32() {
+                                routes[n].materialize_writes.push((msg.frame, port, v));
+                            }
+                        }
+                        PortKind::Value => {
+                            let p = &plan.nodes[n].descriptor.inputs[port];
+                            if let Some(a2) = held_arg(p, &a) {
+                                routes[n].held.push((msg.frame, port, a2));
+                            }
+                        }
+                        // Never aliased: dissolve keeps a Value pipe feeding an Event input.
+                        PortKind::Event => {}
+                    }
+                }
+                // An event pipe re-emitted each routed event verbatim at its frame.
+                PortKind::Event => {
+                    routes[n].events.push(RoutedEvent {
+                        dst_port: port,
+                        src: EventSrc::External { msg: mi },
+                    });
+                }
+            }
+            continue;
+        }
         // Resolve the address to its one destination port ([`resolve_port`], shared with the
         // boundary's [`Plan::osc_in_message`]); deliver per the port's kind (ADR-0030, Q11a —
         // routing is by port, not by operator address-filtering).
