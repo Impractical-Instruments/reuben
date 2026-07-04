@@ -89,6 +89,8 @@ cargo run -p reuben-native --bin reuben -- play instruments/<name>.json
 | `euclidean-drums` | **yes**         | A self-playing 4-channel Euclidean rhythm machine — kick/snare/tom/hat synthesized from operators, each driven by a `euclid` generator on a shared 16th-note clock. Reshape patterns via `/<chan>_eu/{pulses,steps,rotation}`; per-channel DJ-filter, level, and decay knobs; `/clock/tempo`. |
 | `stereo-autopan` | needs OSC notes | Stereo demo (ADR-0026): an 8-voice synth swept across the stereo field by an LFO driving a `pan` op, whose `left`/`right` feed the two master channels directly (no `output` node). Tweak `/autopan/{rate,depth}`. |
 | `nested-space` | needs OSC notes | General-nesting demo (ADR-0034): the 8-voice synth feeding a nested `space` instrument (`instruments/patches/space.json`, a tone+reverb effect) referenced by a `subpatch` node and inlined at build. Its internals stay reachable (`/space/filter/cutoff`); `reuben describe instruments/patches/space.json` shows the boundary. |
+| `mic-space` | needs a **mic**  | Live-input demo (ADR-0038): a top-level input pipe bound to logical input channel 0 feeds the same nested `space` patch — speak/play into your default input device and hear it through the tone+reverb, broadcast to stereo out. Fails fast if no input device exists; pick a device / remap channels with `play --io-map`. Tweak `/space/tone/in` (Hz), `/space/space/in` (mix). |
+| `stereo-sub`  | needs OSC notes | Multichannel-out demo (ADR-0038): the 8-voice synth on stereo mains (logical channels 0/1) plus a dedicated 120 Hz low-passed sub send on logical channel 2. Its sibling `instruments/stereo-sub.io-map.json` is a worked **device profile**: add `--io-map instruments/stereo-sub.io-map.json` to route the sub to device channel 3 ([docs/device-profile.md](docs/device-profile.md)). Tweak `/sub/cutoff`, `/pan/pan`. |
 
 The rows marked **yes** make sound immediately — good for a first run with no OSC sender. Every
 node's inputs are live over OSC at its address (e.g. `/delay/time`).
@@ -161,8 +163,9 @@ sub-patches (`instruments/voices/*.json`) rather than the now-removed Lane model
 General nesting ([ADR-0034](docs/adr/0034-instrument-nesting.md)) has landed end to end: a
 `subpatch` node references another instrument (cycle-guarded), inlines into the parent graph at
 build (zero runtime cost, internals still OSC-reachable under the node's address prefix), presents
-the child's `interface` as its ports — types inherited and type-checked by the ordinary wire check,
-presentational metadata (label/unit/widget/range) inherited and per-field overridable — and
+the child's `interface` as its ports — each entry declaring its own type and presentational
+metadata (label/unit/widget/range) since the ADR-0038 pipe flip, type-checked by the ordinary
+wire check — and
 `reuben describe <patch.json>` introspects that boundary (`instruments/nested-space.json` is the
 worked example). The library resolution story (#122) has landed: a reference resolves relative
 to the document that names it (a library patch bundles its private sub-patches and samples next
@@ -172,6 +175,21 @@ path are one cycle-guard/dedup key, and an in-memory `MemoryResolver` serves emb
 tests with no filesystem. Documents carry a `format_version` (absent means 1; a newer-than-engine
 document refuses to load with a clear message) and the document is the save source of truth —
 `from_graph` is the explicit flatten/export path ([ADR-0036](docs/adr/0036-instrument-library-and-format-versioning.md)).
+The I/O-mapping epic ([ADR-0038](docs/adr/0038-interface-pipes-and-the-device-layer.md), #185) has
+landed end to end: **format v2** makes `interface` entries typed named **pipes** (direction
+flipped — an input pipe mints an address internal nodes wire from, an output pipe is fed from an
+internal port; the old anonymous master `outputs` array dissolved into `interface.outputs`; v1
+documents auto-migrate at parse and render bit-identically, and save writes v2). A signal pipe may
+bind a **logical channel**, honored only on the top-level played graph — and **audio input
+exists**: an input pipe with `channel: k` carries real device audio (`instruments/mic-space.json`
+is the demo), the input stream opened only when a patch binds input channels, crossing a
+lock-free ring into the render callback with resampling and drift compensation from day one,
+under fixed, counted xrun/ring policies surfaced as diagnostics. Logical channels bind to real
+hardware outside the patch via the **device profile** (`play --io-map`,
+[docs/device-profile.md](docs/device-profile.md); `instruments/stereo-sub.json` +
+`instruments/stereo-sub.io-map.json` are the worked pair). Live input is the one sanctioned
+nondeterministic boundary — offline render injects known buffers, so the determinism story is
+unchanged (ADR-0038 §10).
 
 ## Going deeper
 
