@@ -33,7 +33,7 @@ fn forwards_input_to_outbound_stamped_with_node_address() {
     // it out, and the loop stamps the node address `/fb` (the input's local address is dropped).
     let note = Note::new(Pitch::Degree(0), 1.0);
     let msgs = [Message::new("/fb/in", note, 0)];
-    r.render_block_multi(&mut plan, &msgs, &mut master, &mut outbound);
+    r.render_block_multi(&mut plan, &msgs, &[], &mut master, &mut outbound);
 
     assert_eq!(outbound.len(), 1, "the sink forwarded one Message");
     assert_eq!(outbound[0].address, "/fb", "stamped with the node address");
@@ -67,7 +67,7 @@ fn forwards_a_wired_value_source_for_control_feedback() {
     // the sink forwards it out as a scalar — the enum/scalar path that was unreachable when the
     // sink decoded only `Note`.
     let msgs = [Message::float("/map/in", 0.75, 0)];
-    r.render_block_multi(&mut plan, &msgs, &mut master, &mut outbound);
+    r.render_block_multi(&mut plan, &msgs, &[], &mut master, &mut outbound);
 
     assert_eq!(outbound.len(), 1, "the control echo reached the boundary");
     assert_eq!(outbound[0].address, "/fb", "stamped with the sink address");
@@ -86,7 +86,7 @@ fn outbound_is_silent_with_no_input() {
     let mut master = vec![vec![0.0f32; 256]; plan.config.channels];
     let mut outbound: Vec<Message> = Vec::new();
 
-    r.render_block_multi(&mut plan, &[], &mut master, &mut outbound);
+    r.render_block_multi(&mut plan, &[], &[], &mut master, &mut outbound);
     assert!(outbound.is_empty(), "no input -> nothing sent out");
 }
 
@@ -104,8 +104,8 @@ fn outbound_appends_across_blocks() {
     let note_b = Note::new(Pitch::Degree(2), 1.0);
     let a = [Message::new("/fb/in", note_a, 0)];
     let b = [Message::new("/fb/in", note_b, 0)];
-    r.render_block_multi(&mut plan, &a, &mut master, &mut outbound);
-    r.render_block_multi(&mut plan, &b, &mut master, &mut outbound);
+    r.render_block_multi(&mut plan, &a, &[], &mut master, &mut outbound);
+    r.render_block_multi(&mut plan, &b, &[], &mut master, &mut outbound);
 
     assert_eq!(outbound.len(), 2, "appended, not cleared");
     assert_eq!(outbound[0].arg, Arg::Note(note_a));

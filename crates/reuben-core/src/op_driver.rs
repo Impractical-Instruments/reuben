@@ -27,6 +27,13 @@
 //!
 //! Gated to test/bench builds: it reaches `Renderer`'s `pub(crate)` `step_node` seam, which is not
 //! part of the public render API.
+//!
+//! **Input injection** (ADR-0038 §10): at the single-node level, [`drive`](OpDriver::drive) is
+//! the known-buffer seam — it is how a loader-built signal `Pipe` (an interface input pipe's
+//! runtime node) is driven with deterministic audio in tests. At the *graph* level, the same
+//! carve-out is [`Renderer::render_block_multi`]'s `inputs` parameter: the offline render path
+//! injects known buffers per logical input channel, so a render with injected input stays
+//! bit-reproducible while live device input remains the sanctioned nondeterministic boundary.
 
 use std::sync::Arc;
 
@@ -414,6 +421,31 @@ mod tests {
         assert!(
             d.output(OUT_AUDIO).iter().all(|&s| s == 10.0),
             "unwired bare buffer input must read as length-n silence"
+        );
+    }
+
+    /// The loader-built interface pipe (ADR-0038 §2) through the real engine substrate: a signal
+    /// `Pipe` driven with a known buffer reproduces it verbatim — the single-node face of the
+    /// P3 injection seam (§10). `Pipe` is deliberately unregistered, so the registry smoke test
+    /// below never covers it; this drives it through `from_boxed` like the loader does.
+    #[test]
+    fn signal_pipe_driven_with_a_known_buffer_reproduces_it() {
+        use crate::operators::pipe::Pipe;
+        use crate::plan::PortKind;
+
+        let n = 2 * BLOCK_SIZE + 17; // partial final block: the copy holds per sub-block
+        let samples: Vec<f32> = (0..n).map(|i| ((i * 7) % 31) as f32 / 31.0 - 0.5).collect();
+        let mut d = OpDriver::from_boxed(
+            Box::new(Pipe::new(PortKind::Signal)),
+            Pipe::descriptor(),
+            48_000.0,
+        );
+        d.drive(0, &samples);
+        d.render(n);
+        assert_eq!(
+            d.output(0),
+            &samples[..],
+            "a signal pipe must pass a driven buffer through bit-exact"
         );
     }
 

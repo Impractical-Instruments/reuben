@@ -41,7 +41,7 @@ fn render(
     let mut all: Vec<Vec<f32>> = (0..channels).map(|_| Vec::new()).collect();
     for b in 0..BLOCKS {
         let msgs = messages(b);
-        r.render_block_multi(&mut plan, &msgs, &mut master, &mut outbound);
+        r.render_block_multi(&mut plan, &msgs, &[], &mut master, &mut outbound);
         for (chan, sink) in master.iter().zip(all.iter_mut()) {
             sink.extend_from_slice(chan);
         }

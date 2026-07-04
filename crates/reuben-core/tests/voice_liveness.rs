@@ -15,6 +15,7 @@ const CFG: AudioConfig = AudioConfig {
     sample_rate: 48_000.0,
     block_size: 128,
     channels: AudioConfig::MIN_CHANNELS,
+    input_channels: 0,
 };
 
 /// `default-voice` pulls no resources; everything fails to resolve.
