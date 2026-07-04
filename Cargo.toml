@@ -39,3 +39,6 @@ serde_json = "1"
 cpal = "0.15"
 rosc = "0.10"
 clap = { version = "4", features = ["derive"] }
+# Lock-free SPSC ring between the input callback and the render thread (ADR-0038 §8 — the
+# primitive ADR-0002 anticipated). Wait-free push/pop, no locks, no allocation after creation.
+rtrb = "0.3"

@@ -7,8 +7,11 @@
 //!   block-size core and a real-time audio callback).
 //! - [`osc`] — decoding external OSC/UDP packets into core [`Message`](reuben_core::Message)s.
 //! - [`audio`] — a cpal output stream driving the engine live.
+//! - [`input`] — the cpal input stream (P5/#182, ADR-0038 §8/§9): a lock-free SPSC ring from
+//!   the input callback into the output callback, resampled + drift-compensated into the
+//!   engine rate, with the device→logical input channel map.
 //! - [`diagnostics`] — the shared xrun/ring counter surface (ADR-0038 §9) and its periodic
-//!   stderr logging; [`audio`] feeds it output-deadline misses, P5 will feed it input-ring
+//!   stderr logging; [`audio`] feeds it output-deadline misses, [`input`] feeds it input-ring
 //!   under/overruns.
 //! - [`resources`] — a filesystem + WAV [`ResourceResolver`](reuben_core::resources::ResourceResolver)
 //!   decoding sample data for the sample player (ADR-0016).
@@ -23,6 +26,7 @@ pub mod audio;
 pub mod cli;
 pub mod diagnostics;
 pub mod engine;
+pub mod input;
 pub mod osc;
 pub mod profile;
 pub mod resources;
