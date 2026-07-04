@@ -211,4 +211,40 @@ fn render_block_is_allocation_free_after_warmup() {
         nested_held, 0,
         "nested-instrument steady-state allocated {nested_held} time(s)"
     );
+
+    // (4) The input master (ADR-0038 §3, P3): a channel-bound input pipe's per-block feed is a
+    // copy into a scratch buffer allocated at plan build — rendering with injected input must
+    // be exactly as allocation-free as the output side (issue #180's RT-safety clause).
+    const MIC: &str = r#"{
+        "format_version": 2,
+        "instrument": "mic_through",
+        "interface": {
+            "inputs":  { "mic": { "type": "f32_buffer", "channel": 0 } },
+            "outputs": { "main": { "from": "/echo.audio" } }
+        },
+        "nodes": [
+            { "type": "delay", "address": "/echo", "inputs": { "audio": { "from": "/mic" } } }
+        ]
+    }"#;
+    let graph = load_instrument(MIC, &Registry::builtin(), &InstrumentsDir)
+        .expect("load input-bound instrument")
+        .graph;
+    let mut plan = Plan::instantiate(graph, cfg).expect("instantiate input-bound");
+    assert_eq!(plan.config.input_channels, 1);
+    let mut r = Renderer::new(&plan);
+    let mut master: Vec<Vec<f32>> = vec![vec![0.0; cfg.block_size]; plan.config.channels];
+    let mut outbound: Vec<reuben_core::message::Message> = Vec::with_capacity(8);
+    let inputs: Vec<Vec<f32>> = vec![(0..cfg.block_size).map(|i| i as f32 * 1e-4).collect()];
+    for _ in 0..16 {
+        r.render_block_multi(&mut plan, &[], &inputs, &mut master, &mut outbound);
+    }
+    let before = ALLOCS.load(Ordering::Relaxed);
+    for _ in 0..1000 {
+        r.render_block_multi(&mut plan, &[], &inputs, &mut master, &mut outbound);
+    }
+    let input_held = ALLOCS.load(Ordering::Relaxed) - before;
+    assert_eq!(
+        input_held, 0,
+        "input-master render allocated {input_held} time(s)"
+    );
 }

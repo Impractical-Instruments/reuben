@@ -72,7 +72,7 @@ fn render(
     for b in 0..BLOCKS {
         let msgs = messages(b);
         outbound.clear();
-        r.render_block_multi(&mut plan, &msgs, &mut master, &mut outbound);
+        r.render_block_multi(&mut plan, &msgs, &[], &mut master, &mut outbound);
         for (chan, sink) in master.iter().zip(rendered.channels.iter_mut()) {
             sink.extend_from_slice(chan);
         }
