@@ -1,5 +1,13 @@
 # One `Input`, one axis: `shape`. Density and delivery follow from it
 
+> **Superseded by [ADR-0030](0030-osc-as-all-data-one-message-type.md)** — the `shape` axis is
+> retired; a port declares one `Arg` type. Parts were further revised by
+> [ADR-0029](0029-math-family-dense-float-one-file-per-op.md) (math family),
+> [ADR-0031](0031-float-resolves-to-value-or-signal-by-wiring.md) (declared Value/Signal forms —
+> a `Float` is no longer always materialized), and
+> [ADR-0035](0035-constants-are-immutable-ports.md) (Constants are ports, not params).
+> Kept for the reasoning; the one-`Input` collapse itself survives.
+
 ## Context
 
 An operator today receives data through **six** distinct concepts, several of which describe the

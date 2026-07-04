@@ -75,23 +75,22 @@ cargo run -p reuben-native --bin reuben -- play instruments/<name>.json
 | `autotune`   | needs OSC notes   | Play any pitch at `/snap/notes [midi, gate]`; it snaps to the nearest scale tone. Set the key on `/harmony`, snap mode on `/snap/{target,direction}`. |
 | `sampler`    | needs OSC notes   | One-shot trigger sampler: a note fires `samples/blip.wav`; pitch shifts the playback rate. `/sample/{root,gain,start,channel}`. |
 | `sampler-arp` | **yes**          | A self-playing sample arpeggio: a clock-driven sequencer fires `samples/blip.wav` through a major arpeggio. `/clock/tempo`, `/sequencer/step1`..`step6`, `/sequencer/length`. |
-| `good-button` | needs OSC notes   | The synth with one **Good Button** (ADR-0017): sweep `/brightness [0..1]` — a single knob fanned to filter cutoff *and* resonance, each over its own range. Built from `map` + `m2s` operators, no format change. |
+| `good-button` | needs OSC notes   | The synth with one **Good Button** (ADR-0017): sweep `/brightness/in [0..1]` — a single knob fanned to filter cutoff *and* resonance, each over its own range. Built from `m2s` + `map` operators, no format change. |
 | `auto-filter` | needs OSC notes   | The synth with a base-plus-LFO auto-wah: a Signal `add` sums a base cutoff CV with an LFO wobble into the filter. `/cutoff [Hz]`, `/lfo/{rate,depth}`. |
-| `djfilter-demo` | **yes**         | Self-playing saw arpeggio through a DJ-mixer filter knob. One bipolar control: `/filter_knob [-1..1]` — 0 = open, CCW sweeps a low-pass down, CW sweeps a high-pass up (zipper-free via an `m2s` smoother). `/clock/tempo`, `/djfilter/resonance`. |
+| `djfilter-demo` | **yes**         | Self-playing saw arpeggio through a DJ-mixer filter knob. One bipolar control: `/filterpos/in [-1..1]` — 0 = open, CCW sweeps a low-pass down, CW sweeps a high-pass up (zipper-free via an `m2s` smoother). `/clock/tempo`, `/djfilter/resonance`. |
 | `chord-player` | needs OSC       | The Chord player Toy (ADR-0022): tap-and-hold diatonic triad buttons (I–vii°) at `/chord/set [degree, gate]`. The `chord` op stacks scale thirds and the voicer resolves them through the tonal context, so held chords re-spell live when you change key (`/harmony/root`). A 12-voice pad. |
 | `groovebox`   | **yes**           | The Groovebox Toy (ADR-0022): a free-running 16-step drum machine — kick/snare/hat synthesized from operators (no samples), each a sequencer driving its own voicer voice on a shared clock. Toggle steps `/kick/step1`..`step16` (also `/snare/*`, `/hat/*`), ride `/clock/tempo`; per-drum volumes and master tone are Good Buttons. |
 | `strum-harp`  | needs OSC         | The Strum harp Toy (ADR-0022): drag-to-strum. Stream `/strum/position [0..1]` and the `strum` op plucks a note each time the bar crosses a string boundary. Strings are scale degrees through the tonal context, so it stays in key. `/strum/octaves` sets the span; `/harmony/root` the key. |
-| `stereo-autopan` | needs OSC notes | Stereo demo (ADR-0026): an 8-voice synth swept across the stereo field by an LFO driving a `pan` op, whose `left`/`right` feed the two master channels directly (no `output` node). Tweak `/autopan/{rate,depth}`, `/filter/cutoff`. |
+| `euclidean-drums` | **yes**         | A self-playing 4-channel Euclidean rhythm machine — kick/snare/tom/hat synthesized from operators, each driven by a `euclid` generator on a shared 16th-note clock. Reshape patterns via `/<chan>_eu/{pulses,steps,rotation}`; per-channel DJ-filter, level, and decay knobs; `/clock/tempo`. |
+| `stereo-autopan` | needs OSC notes | Stereo demo (ADR-0026): an 8-voice synth swept across the stereo field by an LFO driving a `pan` op, whose `left`/`right` feed the two master channels directly (no `output` node). Tweak `/autopan/{rate,depth}`. |
 | `nested-space` | needs OSC notes | General-nesting demo (ADR-0034): the 8-voice synth feeding a nested `space` instrument (`instruments/patches/space.json`, a tone+reverb effect) referenced by a `subpatch` node and inlined at build. Its internals stay reachable (`/space/filter/cutoff`); `reuben describe instruments/patches/space.json` shows the boundary. |
 
 The rows marked **yes** make sound immediately — good for a first run with no OSC sender. Every
 node's inputs are live over OSC at its address (e.g. `/delay/time`).
 
-See **[docs/v1.2-playable-surface-testing.md](docs/v1.2-playable-surface-testing.md)** for a
-step-by-step OSC walkthrough of the V1.2 control surface (Good Buttons, the math operators,
-and the Message→Signal converter), and
-**[docs/v1.4-control-surface-testing.md](docs/v1.4-control-surface-testing.md)** for playing an
-instrument from a phone/tablet via a generated TouchOSC layout (the `control-surface` skill).
+See **[docs/v1.4-control-surface-testing.md](docs/v1.4-control-surface-testing.md)** for a
+step-by-step walkthrough of playing an instrument from a phone/tablet via a generated
+TouchOSC layout (the `control-surface` skill).
 
 ### Offline (no audio device)
 

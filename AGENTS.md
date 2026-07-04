@@ -26,7 +26,7 @@ core · single-writer Coordinator. Details + enforcing tests:
 
 ## Language
 
-Use the project's exact terms (Operator, Instrument, Rig, Plan, Swap, Lane, Voice…).
+Use the project's exact terms (Operator, Instrument, Rig, Plan, Swap, Voice…).
 [CONTEXT.md](CONTEXT.md) is the glossary — don't drift to synonyms it says to avoid.
 
 ## Code navigation

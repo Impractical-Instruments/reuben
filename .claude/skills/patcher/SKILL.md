@@ -22,8 +22,9 @@ Run all `reuben` commands from the repo root.
 1. **Introspect the operators you need.** Never guess ports/inputs — ask the binary:
    - `cargo run -q -p reuben-native --bin reuben -- describe --json` — every operator.
    - `cargo run -q -p reuben-native --bin reuben -- describe <op> --json` — one operator's
-     ports (`name`+`kind`, where `kind` is the Arg-type word: `signal`=a dense per-sample buffer
-     (`Signal`), `enum`=a shared `vocab` enum, `message`=a `Note` stream, `context`=`Harmony`),
+     ports (`name`+`kind`, where `kind` is the Arg-type word: `signal`=a numeric port (a held
+     `f32` Value or a dense `f32_buffer` Signal), `enum`=a shared `vocab` enum, `message`=a `Note`
+     stream, `harmony`=`Harmony`),
      settable inputs (`min`/`max`/`default`/`unit`/`curve`), enum inputs (`variants`+`default`),
      resource slots.
    - `cargo run -q -p reuben-native --bin reuben -- describe <patch.json> --json` — a nested
@@ -46,7 +47,7 @@ Run all `reuben` commands from the repo root.
      when the source has exactly one output. `"cutoff": 1500` and `"cutoff": {"from":"/lfo"}` target
      the same slot.
    - **A wire must join matching Arg types.** `signal`→`signal`, `message`→`message`,
-     `context`→`context`. A `signal` wired into a `message` input (or a symbol into an audio input)
+     `harmony`→`harmony`. A `signal` wired into a `message` input (or a symbol into an audio input)
      is a `TypeMismatch` error — the one implicit bridge is an `F32`/`signal` source into a
      `signal` (`Buffer`) input, which ZOH-materializes. There is **no Message-vs-Signal carrier**
      anymore: a `signal` input takes a literal, a wire, OR live OSC directly — you do **not** need a

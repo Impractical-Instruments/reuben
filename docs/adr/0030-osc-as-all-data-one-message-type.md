@@ -8,6 +8,10 @@ Accepted (2026-06-25). Supersedes [ADR-0028](0028-one-input-shape.md) (shapes / 
 [ADR-0011](0011-message-delivery-and-timing.md) (block-slicing now serves the unified latch),
 [ADR-0014](0014-internal-message-graph.md) (routing unifies), and
 [ADR-0015](0015-latched-context-read.md) (the Harmony lane folds into the latch).
+Partially superseded by [ADR-0031](0031-float-resolves-to-value-or-signal-by-wiring.md) (a numeric
+port declares a held Value or a Signal form) and amended by
+[ADR-0037](0037-typed-port-handles.md) (typed port handles replace the `input::<T>`/`output::<T>`
+verbs).
 
 ## Amendment (2026-06-30): vocab enums type-erase to `Arg::Enum(index)`
 

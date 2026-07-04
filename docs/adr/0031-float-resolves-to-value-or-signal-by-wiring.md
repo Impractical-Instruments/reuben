@@ -277,8 +277,8 @@ The discriminator throughout: **does the value vary per-sample in a musically re
 ## Implementation plan (sequenced; each step compiles + tests green before the next)
 
 A separate thread from the decision, sketched here so the migration is ordered, not discovered. The
-detailed per-step oracle, fixtures, and operator waves live in
-[0031-impl-prep.md](0031-impl-prep.md).
+detailed per-step oracle, fixtures, and operator waves lived in a companion prep doc
+(`0031-impl-prep.md`, since removed — the migration is complete; see git history).
 
 1. **Forms + per-wire checker, behind the current API.** Introduce
    `PortKind { Signal, Value, Event }` and the **wire-checker** in `plan.rs`: allocate an
