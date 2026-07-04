@@ -4454,13 +4454,18 @@ mod tests {
             "outputs":{"out":"/f.audio","state":"/env.active"}},
             "nodes":[{"type":"filter","address":"/f"},{"type":"envelope","address":"/env"}]}"#;
         let loaded = load_instrument(json, &reg(), &PatchResolver("")).expect("load");
+        // Two warnings here, one per concern: the migration divergence for `out`, plus the
+        // input master's unbound-bare-pipe notice for `in` (this doc binds no channel; that
+        // path landed with P3). The Value-typed `state` entry never taps, so it stays silent.
         assert!(
             matches!(
                 loaded.warnings.as_slice(),
-                [LoadWarning::Migration { name, detail }]
-                    if name == "out" && detail.contains("master tap")
+                [
+                    LoadWarning::Migration { name, detail },
+                    LoadWarning::UnboundInputPipe { name: pipe }
+                ] if name == "out" && detail.contains("master tap") && pipe == "in"
             ),
-            "exactly the signal entry warns (the Value-typed `state` never taps): {:?}",
+            "exactly the signal entry warns of the tap, plus the unbound input pipe: {:?}",
             loaded.warnings
         );
     }
