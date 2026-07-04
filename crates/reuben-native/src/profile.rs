@@ -12,9 +12,10 @@
 //! channel index) are load errors — [`ProfileError`], surfaced by [`DeviceProfile::load`].
 //! Once a profile parses, it is never a load error again: a map entry naming a channel that
 //! turns out not to exist on the real device is a **reality mismatch**, handled by warn +
-//! degrade at the point the mismatch is discovered (`audio.rs`'s output path here; P5's input
-//! stream later) — see ADR-0038 §7. `input.*` is parsed and typed here only; no input stream
-//! exists yet to apply it against (P5, [#182](https://github.com/Impractical-Instruments/reuben/issues/182)).
+//! degrade at the point the mismatch is discovered (`audio.rs`'s output path; `crate::input`'s
+//! input path) — see ADR-0038 §7. `input.*` is applied by the input stream
+//! (P5, [#182](https://github.com/Impractical-Instruments/reuben/issues/182)), which opens
+//! only when the played instrument binds input channels.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -47,7 +48,8 @@ pub struct SideProfile {
 pub struct DeviceProfile {
     #[serde(default)]
     pub output: SideProfile,
-    /// Parsed + validated here only — see the module doc. Consumed by P5's input stream.
+    /// Applied by the input stream (`crate::input`, P5/#182), which opens only when the
+    /// played instrument binds input channels — see the module doc.
     #[serde(default)]
     pub input: SideProfile,
     /// Preferred output sample rate in Hz, requested against the device's supported configs
@@ -117,8 +119,9 @@ impl DeviceProfile {
         Ok(())
     }
 
-    /// True when the profile carries any `input.*` field (ADR-0038 §6/P5): parsed and typed
-    /// by this module, but inert until P5's input stream exists to apply it.
+    /// True when the profile carries any `input.*` field (ADR-0038 §6/P5). `play` uses this
+    /// to note that input settings take effect only when the played instrument binds input
+    /// channels — an instrument without input pipes never opens an input device.
     pub fn has_input(&self) -> bool {
         self.input.device.is_some() || !self.input.map.is_empty()
     }

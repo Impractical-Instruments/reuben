@@ -12,8 +12,8 @@
 //! later without any change to this module. An OSC diagnostic endpoint is explicitly a later
 //! step (ADR-0038 §9), not built here.
 //!
-//! [`Diagnostics`] is designed to be bumped from an RT thread (the audio callback, and later
-//! P5's input-ring producer/consumer) and read from an ordinary thread: every field is an
+//! [`Diagnostics`] is designed to be bumped from an RT thread (the output callback, and P5's
+//! input-ring producer/consumer, #182) and read from an ordinary thread: every field is an
 //! [`AtomicU64`], every write is a single `fetch_add`, and reads take a [`Snapshot`] copy so a
 //! logger never holds a reference into the live struct.
 
@@ -38,11 +38,29 @@ pub struct Diagnostics {
     /// still played *something* (its own underrun silence, ADR-0038 §9) — this only counts
     /// that the miss happened.
     pub output_xruns: AtomicU64,
-    // P5 (#182) adds input-ring counters here, e.g.:
-    //   pub input_ring_underruns: AtomicU64,  // ring empty on a read -> zeros supplied
-    //   pub input_ring_overruns: AtomicU64,    // ring full on a write -> oldest frame dropped
-    // Add fields, not a second struct — `Snapshot`, `spawn_periodic_logger`, and
-    // `log_snapshot` below all need to grow in step (each is a small, mechanical edit).
+    /// Input-ring underruns (P5, #182), counted in **frames**: the ring ran empty while the
+    /// output callback was pulling logical input, and this many input frames were read as
+    /// zeros instead (ADR-0038 §9's empty→zeros policy). Silence delivered while *re*-priming
+    /// after a dry spell is counted too (per callback, as its input-frame demand) — a
+    /// glitching device's delivered silence is fully accounted for. Only the *initial*
+    /// startup prefill is uncounted: silence before the ring has ever flowed is expected,
+    /// not an underrun.
+    pub input_ring_underruns: AtomicU64,
+    /// Input-ring overruns (P5, #182), counted in **frames**: the *consumer-side* drop-oldest
+    /// trim discarded this many of the oldest queued frames because ring fill crossed the
+    /// high-water mark (ADR-0038 §9's full→drop-oldest policy). Diagnosis: input is arriving
+    /// faster than the drift servo's ±0.5% authority can absorb (a real rate mismatch), or an
+    /// output stall left a backlog the trim re-anchored to the floor. The opposite failure —
+    /// the output callback stalled outright — counts in
+    /// [`Self::input_ring_producer_drops`] instead.
+    pub input_ring_overruns: AtomicU64,
+    /// Producer-side backstop drops (P5, #182), counted in **frames**: the ring was
+    /// completely full when the input callback tried to commit, so the *incoming* (newest)
+    /// frame was dropped — the only move a producer has in an SPSC ring. Diagnosis: the
+    /// consumer (the output callback) has stalled outright and nothing is draining; distinct
+    /// from [`Self::input_ring_overruns`], whose fix is rate/servo-side. Kept as a separate
+    /// counter precisely so the two opposite diagnoses stay distinguishable.
+    pub input_ring_producer_drops: AtomicU64,
 }
 
 impl Diagnostics {
@@ -57,10 +75,35 @@ impl Diagnostics {
         self.output_xruns.fetch_add(1, Ordering::Relaxed);
     }
 
+    /// Count `frames` input frames read as zeros because the ring was empty (ADR-0038 §9).
+    /// RT-safe: a single atomic add, no allocation, no syscall, no lock.
+    pub fn record_input_ring_underrun_frames(&self, frames: u64) {
+        self.input_ring_underruns
+            .fetch_add(frames, Ordering::Relaxed);
+    }
+
+    /// Count `frames` *oldest* input frames dropped by the consumer-side high-water trim
+    /// (ADR-0038 §9). RT-safe: a single atomic add, no allocation, no syscall, no lock.
+    pub fn record_input_ring_overrun_frames(&self, frames: u64) {
+        self.input_ring_overruns
+            .fetch_add(frames, Ordering::Relaxed);
+    }
+
+    /// Count `frames` *incoming* input frames dropped by the producer because the ring was
+    /// completely full (the stalled-consumer backstop). RT-safe: a single atomic add, no
+    /// allocation, no syscall, no lock.
+    pub fn record_input_ring_producer_drop_frames(&self, frames: u64) {
+        self.input_ring_producer_drops
+            .fetch_add(frames, Ordering::Relaxed);
+    }
+
     /// A point-in-time copy of every counter, cheap enough to take on every logging tick.
     pub fn snapshot(&self) -> Snapshot {
         Snapshot {
             output_xruns: self.output_xruns.load(Ordering::Relaxed),
+            input_ring_underruns: self.input_ring_underruns.load(Ordering::Relaxed),
+            input_ring_overruns: self.input_ring_overruns.load(Ordering::Relaxed),
+            input_ring_producer_drops: self.input_ring_producer_drops.load(Ordering::Relaxed),
         }
     }
 }
@@ -70,6 +113,9 @@ impl Diagnostics {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct Snapshot {
     pub output_xruns: u64,
+    pub input_ring_underruns: u64,
+    pub input_ring_overruns: u64,
+    pub input_ring_producer_drops: u64,
 }
 
 impl Snapshot {
@@ -83,7 +129,11 @@ impl Snapshot {
 /// Emit one snapshot to stderr. Shared wording for periodic and exit logging so both read the
 /// same line format.
 pub fn log_snapshot(s: &Snapshot) {
-    eprintln!("diagnostics: output_xruns={}", s.output_xruns);
+    eprintln!(
+        "diagnostics: output_xruns={} input_ring_underruns={} input_ring_overruns={} \
+         input_ring_producer_drops={}",
+        s.output_xruns, s.input_ring_underruns, s.input_ring_overruns, s.input_ring_producer_drops
+    );
 }
 
 /// Spawn a background thread that logs a [`Diagnostics`] snapshot every `interval`, but only
@@ -141,9 +191,53 @@ mod tests {
     #[test]
     fn changed_since_detects_a_moved_counter() {
         let a = Snapshot::default();
-        let b = Snapshot { output_xruns: 1 };
+        let b = Snapshot {
+            output_xruns: 1,
+            ..Snapshot::default()
+        };
         assert!(b.changed_since(&a));
         assert!(!a.changed_since(&a));
+        // The input-ring counters (P5) gate logging too, not just output xruns.
+        let c = Snapshot {
+            input_ring_underruns: 1,
+            ..Snapshot::default()
+        };
+        let d = Snapshot {
+            input_ring_overruns: 1,
+            ..Snapshot::default()
+        };
+        let e = Snapshot {
+            input_ring_producer_drops: 1,
+            ..Snapshot::default()
+        };
+        assert!(c.changed_since(&a));
+        assert!(d.changed_since(&a));
+        assert!(e.changed_since(&a));
+    }
+
+    #[test]
+    fn input_ring_counters_accumulate_frame_counts() {
+        let d = Diagnostics::new();
+        d.record_input_ring_underrun_frames(3);
+        d.record_input_ring_underrun_frames(2);
+        d.record_input_ring_overrun_frames(7);
+        d.record_input_ring_producer_drop_frames(4);
+        let s = d.snapshot();
+        assert_eq!(s.input_ring_underruns, 5);
+        assert_eq!(s.input_ring_overruns, 7);
+        assert_eq!(s.input_ring_producer_drops, 4);
+        assert_eq!(s.output_xruns, 0);
+    }
+
+    #[test]
+    fn overruns_and_producer_drops_are_separate_diagnoses() {
+        // The consumer-side trim (rate mismatch / stall recovery) and the producer backstop
+        // (stalled output callback) must never merge into one number — opposite fixes.
+        let d = Diagnostics::new();
+        d.record_input_ring_overrun_frames(3);
+        let s = d.snapshot();
+        assert_eq!(s.input_ring_overruns, 3);
+        assert_eq!(s.input_ring_producer_drops, 0);
     }
 
     #[test]

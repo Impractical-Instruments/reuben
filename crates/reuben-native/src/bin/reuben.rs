@@ -367,7 +367,8 @@ fn play(
             println!("io-map: {}", path.display());
             if profile.has_input() {
                 println!(
-                    "  note: input.* is parsed but not yet applied — no input stream exists until P5"
+                    "  note: input.* takes effect only when the played instrument binds input \
+                     channels; an instrument without input pipes never opens an input device"
                 );
             }
             profile
@@ -466,10 +467,12 @@ fn play(
         }
     };
 
-    // `_diagnostics` is the shared xrun/ring counter surface (ADR-0038 §9): `audio::start` is
-    // already logging it periodically to stderr. Kept named (not `_`) as the handle P5's input
-    // stream will also take an `Arc::clone` of, once it opens.
-    let (_stream, _diagnostics) = audio::start(rx, BLOCK_SIZE, osc_out_tx, &profile, |cfg| {
+    // `_diagnostics` is the shared xrun/ring counter surface (ADR-0038 §9) — both the output
+    // callback and the input stream (P5/#182) feed it, and `audio::start` is already logging
+    // it periodically to stderr. `_streams` holds the live cpal stream(s): output always,
+    // plus the input stream when the played instrument binds input channels; dropping it
+    // stops audio, so it lives until the park loop below.
+    let (_streams, _diagnostics) = audio::start(rx, BLOCK_SIZE, osc_out_tx, &profile, |cfg| {
         println!(
             "audio out @ {} Hz, block {}",
             cfg.sample_rate, cfg.block_size

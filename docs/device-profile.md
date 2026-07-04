@@ -30,8 +30,8 @@ before. The profile only changes behavior where you say so.
     "map": { "0": 2, "1": 3 }   // logical channel -> device channel
   },
 
-  // Input device selection + channel map. Parsed and validated today; not yet applied — no
-  // input audio stream exists until P5 (#182) builds one.
+  // Input device selection + channel map, applied when the played instrument binds input
+  // channels (P5, #182) — an instrument without input pipes never opens an input device.
   "input": {
     "device": "Scarlett",
     "map": { "0": 0, "1": 1 }   // device channel -> logical channel (the reverse direction)
@@ -70,13 +70,21 @@ pair is checked once, at stream startup, against the real logical/device channel
 `output.device` selects the device (by case-insensitive name substring) that map is checked
 against.
 
-## Input parsing only, for now
+## Input mapping, applied by the input stream
 
-`input.device`/`input.map` are parsed and structurally validated by this same document, but
-nothing consumes them yet — no input audio stream exists until P5
-([#182](https://github.com/Impractical-Instruments/reuben/issues/182)). `reuben play --io-map`
-prints a note when a loaded profile carries any `input.*` field, so it's clear the values are
-inert for now.
+`input.device`/`input.map` are applied by the input stream (P5,
+[#182](https://github.com/Impractical-Instruments/reuben/issues/182)), which opens **only when
+the played instrument binds input channels** — an instrument without input pipes never touches
+an input device. `input.map` runs device→logical (the reverse direction of `output.map`), and
+the same warn+degrade policy applies at stream startup: out-of-range pairs are dropped with a
+warning, and a logical input channel nothing feeds reads silence. The input device runs at its
+own rate; audio is resampled (with drift compensation) into the engine rate, so
+mismatched-rate and dual-device setups work (ADR-0038 §8).
+
+One deliberate exception to "never fatal" (recorded in ADR-0038 §7): when the played
+instrument explicitly binds input channels but **no input device exists at all** (or none
+matches `input.device`), `play` fails fast instead of playing silently — the same precedent as
+a missing output device.
 
 ## Sample-rate / buffer-size negotiation
 
