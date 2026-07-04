@@ -40,6 +40,11 @@ pub struct Engine {
     /// `scratch`, filled by [`Engine::fill_duplex`] and consumed by the next rendered block.
     /// Empty when `in_channels == 0`. Preallocated here; never grown on the audio thread.
     in_scratch: Vec<Vec<f32>>,
+    /// `true` once a [`Engine::fill_duplex`] call staged real (non-empty) input, i.e.
+    /// `in_scratch` may hold nonzero samples. While `false` — the entire pre-input life of a
+    /// patch driven through [`Engine::fill`] — the no-input path skips staging altogether, so
+    /// an input-bound patch pays nothing per frame in the device callback.
+    in_dirty: bool,
     /// Index of the next unread frame in `scratch`; `>= block_size` means exhausted.
     pos: usize,
 }
@@ -60,6 +65,7 @@ impl Engine {
             in_channels,
             scratch: vec![vec![0.0; block_size]; channels],
             in_scratch: vec![vec![0.0; block_size]; in_channels],
+            in_dirty: false,
             pos: block_size, // exhausted -> first fill renders immediately
         }
     }
@@ -111,8 +117,9 @@ impl Engine {
 
     /// Fill `out` with **interleaved logical** samples, rendering core blocks as needed.
     /// `out.len()` must be a multiple of [`Engine::channels`]; frame `f`, channel `c` lands at
-    /// `out[f * channels + c]`. The no-input convenience: an instrument with bound input pipes
-    /// reads silence (use [`Engine::fill_duplex`] to supply the logical input).
+    /// `out[f * channels + c]`. The no-input convenience: an instrument's bound input pipes
+    /// fall back to their declared defaults (a bare pipe reads silence) — use
+    /// [`Engine::fill_duplex`] to supply the logical input.
     pub fn fill(&mut self, out: &mut [f32]) {
         self.fill_duplex(&[], out);
     }
@@ -120,9 +127,11 @@ impl Engine {
     /// [`Engine::fill`] with the **logical input master** supplied (ADR-0038 §3): `input` is
     /// interleaved at [`Engine::input_channels`] channels and carries **one input frame per
     /// output frame** (`input.len() / input_channels == out.len() / channels`; same clock —
-    /// the device layer resamples before this seam, ADR-0038 §8). A short (or empty) `input`
-    /// reads zeros for the missing samples — dark-degrade (§7) — so a caller with no input
-    /// stream can always pass `&[]`.
+    /// the device layer resamples before this seam, ADR-0038 §8). A short `input` stages
+    /// zeros for the missing samples — dark-degrade (§7). A caller with no input stream can
+    /// always pass `&[]`: before any input has ever been staged that is the true no-input
+    /// path (bound pipes fall back to their declared defaults); after, it stages honest
+    /// device silence.
     ///
     /// **Alignment:** input is staged one core block ahead — the block rendered at global
     /// frame `k·B` consumes input frames `[(k-1)·B, k·B)` (the first block reads silence).
@@ -138,9 +147,28 @@ impl Engine {
             0,
             "fill buffer must be a multiple of channels"
         );
+        // The input stride pin, mirroring the output-side assert: `input` carries one input
+        // frame per output frame at `in_channels` interleave, or is empty (the sanctioned
+        // no-input call). A wrong-width capture buffer would otherwise channel-smear silently.
+        debug_assert!(
+            input.is_empty() || input.len() * ch == out.len() * in_ch,
+            "duplex input must carry one frame per output frame at input_channels stride \
+             (got {} input samples for {} frames at {} input channels)",
+            input.len(),
+            out.len() / ch,
+            in_ch
+        );
         let frames = out.len() / ch;
         // Fresh outbound collection for this fill; the render path appends, the caller drains.
         self.outbound.clear();
+        // The no-input path stages nothing: `in_scratch` starts zeroed, so until some call
+        // stages real input (`in_dirty`), skipping the staging loop *is* staging zeros — an
+        // input-bound patch driven by plain `fill()` pays nothing per frame here. Once dirty,
+        // an empty-input call must re-stage zeros so stale samples never re-enter the render.
+        let stage = !input.is_empty() || self.in_dirty;
+        if !input.is_empty() {
+            self.in_dirty = true;
+        }
         for f in 0..frames {
             if self.pos >= self.block_size() {
                 self.render_next();
@@ -148,8 +176,10 @@ impl Engine {
             }
             // Stage this frame's input for the *next* rendered block (see the alignment note
             // above). Missing samples stage zeros, so partial input degrades dark, not stale.
-            for c in 0..in_ch {
-                self.in_scratch[c][self.pos] = input.get(f * in_ch + c).copied().unwrap_or(0.0);
+            if stage {
+                for c in 0..in_ch {
+                    self.in_scratch[c][self.pos] = input.get(f * in_ch + c).copied().unwrap_or(0.0);
+                }
             }
             for c in 0..ch {
                 out[f * ch + c] = self.scratch[c][self.pos];
@@ -159,12 +189,17 @@ impl Engine {
     }
 
     /// Render one block into `scratch`, consuming any queued Messages and the staged input.
+    /// Until real input has ever been staged (`in_dirty`), the render sees **no** input
+    /// channels rather than staged zeros: an input pipe with a declared `default` then
+    /// materializes that default (ADR-0038 §3/§7 — no device stream is not the same as a
+    /// silent device stream). Once a stream exists, staged zeros are honest device silence.
     fn render_next(&mut self) {
         let msgs = std::mem::take(&mut self.pending);
+        let inputs: &[Vec<f32>] = if self.in_dirty { &self.in_scratch } else { &[] };
         self.renderer.render_block_multi(
             &mut self.plan,
             &msgs,
-            &self.in_scratch,
+            inputs,
             &mut self.scratch,
             &mut self.outbound,
         );
