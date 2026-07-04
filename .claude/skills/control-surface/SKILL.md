@@ -19,9 +19,11 @@ play with.
 | Control | OSC address the widget sends to | Range / unit / default |
 |---|---|---|
 | **Good Button** — a `map` whose input is not wired from another node | the node address, e.g. `/brightness` | the map's `in_min`/`in_max` instance inputs; default = `map`'s `default` |
-| **Direct input** — a settable numeric (`signal`) input on a node | `/<node>/<input>`, e.g. `/clock/tempo` or `/filter/cutoff` | the input's schema metadata (min/max/unit/default) |
+| **Direct input** — a settable numeric (`value`/`signal`) input on a node | `/<node>/<input>`, e.g. `/clock/tempo` or `/filter/cutoff` | the input's schema metadata (min/max/unit/default) |
 
-A numeric (`signal`) input (e.g. a filter's `cutoff`) is now **directly controllable** over OSC at
+A numeric input — a held `f32` Value (`kind: "value"`, e.g. `/clock/tempo`) or a dense
+`f32_buffer` Signal (`kind: "signal"`, e.g. a filter's `cutoff`) — is now **directly
+controllable** over OSC at
 `/<node>/<input>` (ADR-0030) — no `map`/`m2s` front-end is required to reach it. A **Good Button**
 remains the right pattern for a *curated, ranged* player face (one knob fanned to several inputs
 over musical ranges), exactly as `good-button.json` does; a direct input is the raw,
@@ -44,7 +46,7 @@ Metadata comes from `reuben describe <instrument>.json --json` (core `describe_b
 inherit+override merge — the script never re-implements it). Inputs the host can't drive from a
 fader are skipped: a **`driven`** input (its inner Signal port is already wired inside the patch,
 so an external wire is a fatal `BoundaryInputDriven`), an **`enum`**/message/harmony input (needs a
-non-fader widget), and a **bare audio** input (a `signal` with no range to scale into).
+non-fader widget), and a **bare audio** input (a `signal` kind with no range to scale into).
 
 ## Workflow
 

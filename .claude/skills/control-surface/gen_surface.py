@@ -267,11 +267,13 @@ def infer_candidates(instrument: dict, meta: dict) -> dict:
 
 # --- interface boundary (nested instruments, ADR-0034 §4) -------------------------------
 
-# The boundary port kinds that map to a fader: a swept scalar (`signal`) or a ranged integer
-# (`int`). `reuben describe --json` reports the kind. Everything else — a bare audio buffer (a
-# `signal` with no range), an `enum` (needs a selector widget), a `message`/`harmony`/`arg`/
-# `string` — is not a fader and is skipped (matching the operator-param scope: enums out today).
-FADER_BOUNDARY_KINDS = {"signal", "int"}
+# The boundary port kinds that map to a fader: a held scalar knob (`value`), a swept scalar
+# (`signal`), or a ranged integer (`int`). `reuben describe --json` reports the kind (issue #176:
+# a held `f32` Value is `value`, a dense `f32_buffer` Signal is `signal`). Everything else — a
+# bare audio buffer (a `signal` with no range), an `enum` (needs a selector widget), a
+# `message`/`harmony`/`arg`/`string` — is not a fader and is skipped (matching the operator-param
+# scope: enums out today).
+FADER_BOUNDARY_KINDS = {"value", "signal", "int"}
 
 
 def _osc_from_target(target: str) -> str:
@@ -304,7 +306,7 @@ def boundary_controls(interface_inputs: dict, boundary: dict) -> list:
 
     Skips inputs a host cannot drive from a fader: a `driven` input (its inner Signal port is
     already wired inside the patch, so an external wire is the fatal `BoundaryInputDriven`), a
-    non-fader kind, and a ranged-less `signal` (bare audio, no min/max to scale into)."""
+    non-fader kind, and a range-less numeric (bare audio, no min/max to scale into)."""
     controls = []
     for port in boundary.get("inputs", []):
         name = port.get("name")

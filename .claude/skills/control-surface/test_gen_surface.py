@@ -338,10 +338,12 @@ class BoundaryTest(unittest.TestCase):
         "mode": "/filter.mode",    # an enum — needs a selector widget, not a fader
     }
     # The matching `describe --json` boundary: kinds/ranges as core would report them (freq/tone
-    # inherit + override, gate a 0..1 signal, `in` a driven bare audio buffer, `mode` an enum).
+    # inherit + override, gate a held 0..1 `value` — issue #176 splits the numeric kinds into
+    # `value` (held f32) vs `signal` (dense f32_buffer); both fader — `in` a driven bare audio
+    # buffer, `mode` an enum).
     BOUNDARY = {"inputs": [
         {"name": "freq", "kind": "signal", "default": 440.0, "min": 20.0, "max": 20000.0, "unit": "Hz", "curve": "exponential"},
-        {"name": "gate", "kind": "signal", "default": 0.0, "min": 0.0, "max": 1.0, "curve": "linear"},
+        {"name": "gate", "kind": "value", "default": 0.0, "min": 0.0, "max": 1.0, "curve": "linear"},
         {"name": "tone", "kind": "signal", "default": 4000.0, "min": 200.0, "max": 8000.0, "unit": "Hz", "curve": "exponential", "label": "Tone", "widget": "radial"},
         {"name": "in", "kind": "signal", "driven": True},
         {"name": "mode", "kind": "enum", "default": "lowpass", "variants": ["lowpass", "highpass"]},

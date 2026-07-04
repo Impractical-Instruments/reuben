@@ -160,7 +160,7 @@ fn describe_one_operator_surfaces_its_ports_and_params() {
         .iter()
         .find(|p| p.name == "freq")
         .expect("freq input");
-    assert_eq!(freq.kind, "signal");
+    assert_eq!(freq.kind, "signal", "osc.freq is a dense f32_buffer Signal");
     assert!(freq.default.is_some() && freq.min.is_some() && freq.max.is_some());
     assert_eq!(freq.curve.as_deref(), Some("exponential"));
     assert!(osc
@@ -177,6 +177,47 @@ fn describe_one_operator_surfaces_its_ports_and_params() {
     assert_eq!(waveform.kind, "enum");
     assert_eq!(waveform.variants, ["Sine", "Saw"]);
     assert_eq!(waveform.default, Some(serde_json::json!("Sine")));
+}
+
+#[test]
+fn describe_speaks_the_glossary_for_the_two_numeric_forms() {
+    // Issue #176: a held `f32` is a Value, a dense `f32_buffer` is a Signal (ADR-0031,
+    // CONTEXT.md) — `describe` must not collapse both into `"signal"`. The envelope has both:
+    // its gate/ADSR inputs are held Values, its `cv` output a per-sample Signal.
+    let ops = describe(&Registry::builtin(), Some("envelope")).expect("describe envelope");
+    let env = &ops[0];
+
+    for held in ["gate", "attack", "decay", "sustain", "release"] {
+        let p = env.inputs.iter().find(|p| p.name == held).expect(held);
+        assert_eq!(p.kind, "value", "envelope.{held} is a held f32 Value");
+    }
+    let cv = env.outputs.iter().find(|p| p.name == "cv").expect("cv");
+    assert_eq!(
+        cv.kind, "signal",
+        "envelope.cv is a dense f32_buffer Signal"
+    );
+    let active = env
+        .outputs
+        .iter()
+        .find(|p| p.name == "active")
+        .expect("active");
+    assert_eq!(active.kind, "value", "envelope.active is a held f32 Value");
+
+    // The clock splits the same way: a knob (Value) vs a per-sample ramp (Signal).
+    let ops = describe(&Registry::builtin(), Some("clock")).expect("describe clock");
+    let clock = &ops[0];
+    let tempo = clock
+        .inputs
+        .iter()
+        .find(|p| p.name == "tempo")
+        .expect("tempo");
+    assert_eq!(tempo.kind, "value", "clock.tempo is a block-rate knob");
+    let phase = clock
+        .outputs
+        .iter()
+        .find(|p| p.name == "phase")
+        .expect("phase");
+    assert_eq!(phase.kind, "signal", "clock.phase is a per-sample ramp");
 }
 
 #[test]
@@ -204,6 +245,11 @@ fn describe_patch_surfaces_the_boundary_with_inherited_metadata() {
     assert!(
         freq.min.is_some() && freq.max.is_some() && freq.default.is_some(),
         "range/default inherited: {freq:?}"
+    );
+    let gate = b.inputs.iter().find(|p| p.name == "gate").expect("gate");
+    assert_eq!(
+        gate.kind, "value",
+        "gate inherits the envelope's held f32 Value, not a Signal (#176)"
     );
     assert!(
         b.outputs.iter().any(|p| p.name == "audio"),
