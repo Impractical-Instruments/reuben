@@ -136,3 +136,4 @@ The MVP is a headless "it makes a sound" spine: the portable-core / native-crate
 - [0035 — Constants are immutable ports; the param concept is deleted](adr/0035-constants-are-immutable-ports.md)
 - [0036 — Instrument library and format versioning: document-relative resolution, `format_version`](adr/0036-instrument-library-and-format-versioning.md)
 - [0037 — Typed port handles: `In`/`Out` consts fix the read/write form at compile time](adr/0037-typed-port-handles.md)
+- [0038 — Interface pipes, logical channel binding, and the device layer: mono Signal forever, format v2, device-profile JSON](adr/0038-interface-pipes-and-the-device-layer.md)
