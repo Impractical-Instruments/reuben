@@ -692,6 +692,20 @@ pub enum LoadWarning {
     /// `detail` says, and re-authoring the entry in v2 form retires the warning. `name` is the
     /// interface entry (or node address) affected.
     Migration { name: String, detail: String },
+    /// A **top-level** bare signal input pipe (no declared default) binds no logical input
+    /// channel (ADR-0038 §3). At top level nothing else can ever feed a signal pipe — there is
+    /// no parent edge, and audio does not cross the OSC boundary — so it renders **silence**.
+    /// Warned, never fatal (dark-degrade, ADR-0038 §7): the patch still plays, but a declared
+    /// audio input nobody bound is usually an authoring slip. A pipe with a declared default
+    /// is a control at rest (no warning); nested/hosted pipes get [`UnwiredPipe`](Self::UnwiredPipe)
+    /// from their host instead.
+    UnboundInputPipe { name: String },
+    /// A **hosted voice** patch's input pipe binds a logical input channel, which is **inert**
+    /// when hosted (ADR-0038 §3): a pipe inside a nest is never a magic hardware connection —
+    /// the host's edges feed a voice's pipes, and an unfed one renders silence. The binding
+    /// still works when the same patch is played at top level, so this is a warning, not an
+    /// error. Wrapped in [`Nested`](Self::Nested) with the hosting node.
+    InertChannelBinding { name: String },
 }
 
 impl fmt::Display for LoadWarning {
@@ -724,6 +738,16 @@ impl fmt::Display for LoadWarning {
             LoadWarning::Migration { name, detail } => {
                 write!(f, "v1 migration, {name:?}: {detail}")
             }
+            LoadWarning::UnboundInputPipe { name } => write!(
+                f,
+                "top-level input pipe {name:?} binds no logical input channel — nothing can \
+                 feed it; it renders silence"
+            ),
+            LoadWarning::InertChannelBinding { name } => write!(
+                f,
+                "input pipe {name:?} binds a logical input channel, which is inert in a hosted \
+                 voice — the host's edges feed a voice's pipes; unfed, it renders silence"
+            ),
         }
     }
 }
@@ -943,14 +967,28 @@ fn load_doc_guarded(
                         // drives the message pipes it knows by name (`freq`/`gate`) and nothing
                         // else reaches a hosted boundary, so the pipe renders silence — warn,
                         // exactly as the subpatch face does (ADR-0038 §3 "nested/hosted").
+                        // A channel-bound pipe gets the more specific `InertChannelBinding`
+                        // below instead, not both.
                         for (name, (key, _)) in &loaded.graph.interface.inputs {
                             let p = &loaded.graph.nodes[*key].descriptor.inputs[0];
-                            if matches!(p.ty, PortType::F32Buffer) && p.meta.is_none() {
+                            if matches!(p.ty, PortType::F32Buffer)
+                                && p.meta.is_none()
+                                && !loaded.graph.interface.input_channels.contains_key(name)
+                            {
                                 warnings.push(LoadWarning::UnwiredPipe {
                                     node: n.address.clone(),
                                     name: name.clone(),
                                 });
                             }
+                        }
+                        // A hosted voice's channel bindings are inert (ADR-0038 §3): the
+                        // Voicer clears them before instantiating the sub-plan, so a bound
+                        // pipe the host doesn't drive renders silence. Say so at load, once.
+                        for pipe in loaded.graph.interface.input_channels.keys() {
+                            warnings.push(
+                                LoadWarning::InertChannelBinding { name: pipe.clone() }
+                                    .nested_in(&n.address),
+                            );
                         }
                     }
                     voices.push(loaded.graph);
@@ -1313,6 +1351,7 @@ impl InstrumentDoc {
                         .to_string(),
                 })?;
                 let (descriptor, kind) = pipe_descriptor(name, pipe)?;
+                let bare_signal = kind == PortKind::Signal && descriptor.inputs[0].meta.is_none();
                 let address = format!("/{name}");
                 if !addresses.insert(address.clone()) {
                     return Err(LoadError::DuplicateAddress(address));
@@ -1332,6 +1371,14 @@ impl InstrumentDoc {
                     // graph is played at top level; recorded for the input master (P3).
                     interface.input_channels.insert(name.clone(), ch);
                     input_width = input_width.max(ch + 1);
+                } else if referrer.is_none() && bare_signal {
+                    // A top-level **bare signal** pipe with no channel binding renders
+                    // silence forever: no parent edge exists at top level, and audio never
+                    // crosses the OSC boundary (ADR-0038 §3). Warn, never fatal (§7). A
+                    // pipe with a declared default is a control at rest — no warning — and
+                    // a nested/hosted child (`referrer.is_some()`) gets `UnwiredPipe` from
+                    // its host when the host leaves it unfed.
+                    warnings.push(LoadWarning::UnboundInputPipe { name: name.clone() });
                 }
             }
         }
