@@ -112,6 +112,13 @@ convention, now on both sides:
   boundary wire. An unwired nested/hosted pipe renders **silence + `LoadWarning`**. *Inputs
   of a graph are pipes — never a magic hardware connection from inside a nest.*
 - `channel` on a **message** pipe is a **load error** (hardware channels carry signals).
+- A channel-bound pipe **keeps its declared `default` as the unfed fallback**: while no
+  input stream supplies the channel, the pipe materializes its default and stays
+  message-drivable — exactly the control `describe` advertises (a bare pipe's fallback is
+  silence). When the channel is supplied, device audio drives the pipe for the block.
+- A logical `channel` index is **bounded** (4096, both sides): the derived width sizes
+  real per-channel buffers, so past the bound the document is structurally broken — a
+  load error, not a degrade (§7 degrades reality mismatches, not broken documents).
 - Omitted `channel` on a top-level **output** pipe keeps today's broadcast-to-all-logical-
   channels meaning ([ADR-0026](0026-v1-finish-line-osc-out-and-stereo.md), unchanged).
   Logical widths derive from the played top graph: output width = max bound output channel

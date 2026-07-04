@@ -7,16 +7,19 @@
 //!
 //! - a bound pipe carries the injected channel, sample-exact, across blocks;
 //! - fan-out at the master (two pipes, one channel), like output broadcast;
-//! - dark-degrade (§7): no input, a missing channel, or a short buffer reads **zeros**;
+//! - dark-degrade (§7): an unsupplied channel falls back to the pipe's declared default (a
+//!   bare pipe reads **zeros**) and stays message-drivable; a short buffer's tail reads zeros;
 //! - determinism (§10): offline render with injected input is **bit-reproducible**;
 //! - inertness (§3): nested (subpatch-inlined) and Voicer-hosted channel bindings never
 //!   reach the input master — the parent/host edge feeds the pipe, unfed renders silence —
 //!   with the load warnings that make each dark path honest.
 
+use reuben_core::message::{Arg, Message};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
 use reuben_core::resources::MemoryResolver;
-use reuben_core::{load_instrument, AudioConfig, LoadWarning, Registry};
+use reuben_core::vocab::pitch::{Note, Pitch};
+use reuben_core::{load_instrument, AudioConfig, LoadError, LoadWarning, Registry};
 
 const BLOCK: usize = 128;
 
@@ -439,6 +442,256 @@ fn top_level_bare_pipe_without_a_channel_warns_unbound() {
             .iter()
             .any(|w| matches!(w, LoadWarning::UnboundInputPipe { .. })),
         "bound / defaulted / value pipes must not warn: {:?}",
+        loaded.warnings
+    );
+}
+
+#[test]
+fn channel_bound_default_pipe_falls_back_to_its_default_unfed() {
+    // #190 F1 / ADR-0038 §3: `channel` + `default` on one pipe must not kill the knob.
+    // Unfed, the declared default materializes (not zeros) and messages still sweep it;
+    // fed, device audio wins for the block; unfed again, the held control resumes.
+    const LEVEL: &str = r#"{
+      "format_version": 2,
+      "instrument": "lvl",
+      "interface": {
+        "inputs":  { "lvl": { "type": "f32_buffer", "channel": 0,
+                              "default": 0.25, "min": 0, "max": 1 } },
+        "outputs": { "main": { "from": "/out.audio" } }
+      },
+      "nodes": [
+        { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/lvl" } } }
+      ]
+    }"#;
+    let none = MemoryResolver::new();
+    let loaded = load_instrument(LEVEL, &Registry::builtin(), &none).expect("load");
+    assert!(
+        loaded.warnings.is_empty(),
+        "channel+default loads clean: {:?}",
+        loaded.warnings
+    );
+    let mut plan =
+        Plan::instantiate(loaded.graph, AudioConfig::new(48_000.0, BLOCK)).expect("instantiate");
+    assert_eq!(plan.config.input_channels, 1);
+    let mut r = Renderer::new(&plan);
+    let mut master: Vec<Vec<f32>> = vec![vec![0.0; BLOCK]; plan.config.channels];
+    let mut outbound = Vec::new();
+
+    // Unfed: the declared default materializes — the control is at rest, not dead.
+    r.render_block_multi(&mut plan, &[], &[], &mut master, &mut outbound);
+    assert!(
+        master[0].iter().all(|&s| s == 0.25),
+        "unfed channel reads the declared default, not zeros: {:?}",
+        &master[0][..4]
+    );
+
+    // Still unfed: a routed message sweeps the knob, exactly as without `channel`.
+    let sweep = Message::new("/lvl/in", Arg::F32(0.75), 0);
+    r.render_block_multi(&mut plan, &[sweep], &[], &mut master, &mut outbound);
+    assert!(
+        master[0].iter().all(|&s| s == 0.75),
+        "an unfed channel-bound pipe stays message-drivable: {:?}",
+        &master[0][..4]
+    );
+
+    // Fed: device audio wins for the block.
+    let device = vec![vec![0.5f32; BLOCK]];
+    r.render_block_multi(&mut plan, &[], &device, &mut master, &mut outbound);
+    assert!(
+        master[0].iter().all(|&s| s == 0.5),
+        "a supplied channel drives the pipe: {:?}",
+        &master[0][..4]
+    );
+
+    // Unfed again: the knob resumes at its last swept value (held ZOH).
+    r.render_block_multi(&mut plan, &[], &[], &mut master, &mut outbound);
+    assert!(
+        master[0].iter().all(|&s| s == 0.75),
+        "the held control resumes when the device stream goes away: {:?}",
+        &master[0][..4]
+    );
+}
+
+// A voice patch whose `freq` pipe carries a channel binding — the #190 F2 regression shape.
+const BOUND_FREQ_VOICE: &str = r#"{
+  "format_version": 2,
+  "instrument": "bound_voice",
+  "interface": {
+    "inputs": {
+      "freq": { "type": "f32_buffer", "channel": 0,
+                "default": 440, "min": 20, "max": 20000 },
+      "gate": { "type": "f32", "default": 0, "min": 0, "max": 1 }
+    },
+    "outputs": { "audio": { "from": "/vca.out" }, "active": { "from": "/env.active" } }
+  },
+  "nodes": [
+    { "type": "oscillator", "address": "/osc", "inputs": { "freq": { "from": "/freq" } } },
+    { "type": "envelope", "address": "/env", "inputs": { "gate": { "from": "/gate" } } },
+    { "type": "mul_f32_signal", "address": "/vca",
+      "inputs": { "a": { "from": "/osc" }, "b": { "from": "/env.cv" } } }
+  ]
+}"#;
+
+const BOUND_FREQ_HOST: &str = r#"{
+  "format_version": 2,
+  "instrument": "vhost",
+  "resources": { "v": "bound_voice.json" },
+  "interface": { "outputs": { "main": { "from": "/out.audio" } } },
+  "nodes": [
+    { "type": "voicer", "address": "/voicer", "voice": "v", "config": { "voices": 2 } },
+    { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/voicer.audio" } } }
+  ]
+}"#;
+
+/// Render `blocks` blocks of BOUND_FREQ_HOST from a fresh plan: a note lands in block 0 and
+/// every block is rendered with `inputs` as the logical input master.
+fn render_bound_freq_host(blocks: usize, inputs: &[Vec<f32>]) -> Vec<Vec<f32>> {
+    let mut resolver = MemoryResolver::new();
+    resolver.insert_text("bound_voice.json", BOUND_FREQ_VOICE);
+    let loaded = load_instrument(BOUND_FREQ_HOST, &Registry::builtin(), &resolver).expect("load");
+    let mut plan =
+        Plan::instantiate(loaded.graph, AudioConfig::new(48_000.0, BLOCK)).expect("instantiate");
+    assert_eq!(
+        plan.config.input_channels, 0,
+        "hosted bindings must derive no top-level input width"
+    );
+    let mut r = Renderer::new(&plan);
+    let mut master: Vec<Vec<f32>> = vec![vec![0.0; BLOCK]; plan.config.channels];
+    let mut outbound = Vec::new();
+    let mut all: Vec<Vec<f32>> = vec![Vec::new(); plan.config.channels];
+    for b in 0..blocks {
+        let note_on = Message::new(
+            "/voicer/notes",
+            Arg::Note(Note::new(Pitch::Absolute(69.0), 1.0)),
+            0,
+        );
+        let msgs = if b == 0 { vec![note_on] } else { Vec::new() };
+        r.render_block_multi(&mut plan, &msgs, inputs, &mut master, &mut outbound);
+        for (chan, sink) in master.iter().zip(all.iter_mut()) {
+            sink.extend_from_slice(chan);
+        }
+    }
+    all
+}
+
+#[test]
+fn hosted_voice_with_channel_bound_freq_stays_message_fed() {
+    // #190 F2 — the regression the review proved unprotected: a hosted voice whose `freq`
+    // pipe carries a channel binding must stay *message-fed* (the Voicer drives freq/gate
+    // by message). Hosted inertness is enforced once, in the loader's voice-resource pass
+    // (bindings cleared for every copy); if that enforcement is lost and bindings ever
+    // detach a hosted pipe from its message-fed materialize path again, the voice goes
+    // musically dead and this note stops sounding.
+    let unfed = render_bound_freq_host(4, &[]);
+    assert!(
+        unfed[0].iter().any(|s| s.abs() > 0.01),
+        "a noted voice with a channel-bound freq pipe must sound (message-fed freq)"
+    );
+
+    // And the binding is fully inert: flooding logical channel 0 with a constant must not
+    // change a single bit of the render — the host's messages, not the input master, feed
+    // a hosted voice's pipes (ADR-0038 §3).
+    let flooded = render_bound_freq_host(4, &[vec![0.33f32; BLOCK]]);
+    for (ch, (a, b)) in unfed.iter().zip(flooded.iter()).enumerate() {
+        for (g, (p, q)) in a.iter().zip(b.iter()).enumerate() {
+            assert_eq!(
+                p.to_bits(),
+                q.to_bits(),
+                "channel {ch} sample {g}: hosted channel bindings must be bit-inert"
+            );
+        }
+    }
+}
+
+#[test]
+fn out_of_range_channel_is_a_pointed_load_error() {
+    // #190 F3: `"channel": 100000000` must fail the load with a pointed error, not size a
+    // ~50 GB staging allocation in the engine. Both sides are bounded the same way.
+    let none = MemoryResolver::new();
+    const IN_HUGE: &str = r#"{
+      "format_version": 2, "instrument": "huge",
+      "interface": {
+        "inputs":  { "mic": { "type": "f32_buffer", "channel": 100000000 } },
+        "outputs": { "main": { "from": "/out.audio" } }
+      },
+      "nodes": [
+        { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/mic" } } }
+      ]
+    }"#;
+    let Err(err) = load_instrument(IN_HUGE, &Registry::builtin(), &none) else {
+        panic!("a 1e8 input channel must not load");
+    };
+    assert!(
+        matches!(&err, LoadError::InterfacePipe { name, reason }
+            if name == "mic" && reason.contains("out of range")),
+        "unexpected error: {err:?}"
+    );
+
+    const OUT_HUGE: &str = r#"{
+      "format_version": 2, "instrument": "huge_out",
+      "interface": {
+        "outputs": { "main": { "from": "/osc.audio", "channel": 100000000 } }
+      },
+      "nodes": [ { "type": "oscillator", "address": "/osc" } ]
+    }"#;
+    let Err(err) = load_instrument(OUT_HUGE, &Registry::builtin(), &none) else {
+        panic!("a 1e8 output channel must not load");
+    };
+    assert!(
+        matches!(&err, LoadError::InterfacePipe { name, reason }
+            if name == "main" && reason.contains("out of range")),
+        "unexpected error: {err:?}"
+    );
+
+    // The boundary itself: 4095 is the last legal channel, 4096 is out.
+    let ok = r#"{
+      "format_version": 2, "instrument": "edge",
+      "interface": {
+        "inputs":  { "mic": { "type": "f32_buffer", "channel": 4095 } },
+        "outputs": { "main": { "from": "/out.audio" } }
+      },
+      "nodes": [
+        { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/mic" } } }
+      ]
+    }"#;
+    load_instrument(ok, &Registry::builtin(), &none).expect("4095 is in range");
+    let over = ok.replace("4095", "4096");
+    assert!(
+        load_instrument(&over, &Registry::builtin(), &none).is_err(),
+        "4096 is out of range"
+    );
+}
+
+#[test]
+fn subpatch_inlined_channel_binding_warns_inert() {
+    // #190 F4: the warning symmetry — a subpatch-inlined child's channel binding is
+    // discarded at splice, exactly as inert as under a Voicer, and must say so the same
+    // way (`InertChannelBinding`, nested in the hosting node).
+    const PARENT: &str = r#"{
+      "format_version": 2,
+      "instrument": "host",
+      "resources": { "fx": "gainer.json" },
+      "interface": { "outputs": { "main": { "from": "/out.audio" } } },
+      "nodes": [
+        { "type": "subpatch", "address": "/fx", "patch": "fx" },
+        { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/fx.audio" } } }
+      ]
+    }"#;
+    let mut resolver = MemoryResolver::new();
+    resolver.insert_text("gainer.json", CHILD_BOUND);
+    let loaded = load_instrument(PARENT, &Registry::builtin(), &resolver).expect("load");
+    let inert = loaded.warnings.iter().any(|w| {
+        matches!(
+            w,
+            LoadWarning::Nested { node, warning }
+                if node == "/fx"
+                    && matches!(warning.as_ref(),
+                        LoadWarning::InertChannelBinding { name } if name == "in")
+        )
+    });
+    assert!(
+        inert,
+        "a subpatch-inlined channel binding warns inert, like a Voicer-hosted one: {:?}",
         loaded.warnings
     );
 }

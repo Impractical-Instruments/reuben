@@ -245,15 +245,14 @@ impl Operator for Voicer {
 
         let block = config.block_size;
         let mut slots = Vec::with_capacity(graphs.len());
-        for mut g in graphs {
-            // Hosted voice plans get **no input-master plumbing** (ADR-0038 §3): a channel
-            // binding inside a hosted graph is inert — the Voicer's own edges feed the voice's
-            // pipes; an unwired one renders silence (the loader warned at load). Clearing the
-            // bindings here keeps `Plan::instantiate` from building input taps (which would
-            // detach the pipe from the message-fed materialize path) and derives
-            // `config.input_channels == 0` for every voice sub-plan.
-            g.interface.input_channels.clear();
-            g.input_channels_width = 0;
+        for g in graphs {
+            // Hosted voice plans get **no input-master plumbing** (ADR-0038 §3): the loader's
+            // voice-resource pass cleared each copy's channel bindings (hosted inertness is
+            // enforced at that one altitude, for every host), so `Plan::instantiate` derives
+            // `config.input_channels == 0` and builds no input taps here. Even if a binding
+            // slipped through (a programmatic `bind_voices` caller), the Voicer renders every
+            // voice with `inputs = &[]`, and an unsupplied channel falls back to the pipe's
+            // ordinary message-fed materialize path — hosted bindings stay inert either way.
             let plan = Plan::instantiate(g, *config)?;
             let arena = (0..plan.num_buffers).map(|_| vec![0.0; block]).collect();
             slots.push(VoiceSlot { plan, arena });
