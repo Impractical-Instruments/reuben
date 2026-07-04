@@ -22,9 +22,9 @@ Run all `reuben` commands from the repo root.
 1. **Introspect the operators you need.** Never guess ports/inputs — ask the binary:
    - `cargo run -q -p reuben-native --bin reuben -- describe --json` — every operator.
    - `cargo run -q -p reuben-native --bin reuben -- describe <op> --json` — one operator's
-     ports (`name`+`kind`, where `kind` is the Arg-type word: `signal`=a numeric port (a held
-     `f32` Value or a dense `f32_buffer` Signal), `enum`=a shared `vocab` enum, `message`=a `Note`
-     stream, `harmony`=`Harmony`),
+     ports (`name`+`kind`, where `kind` is the glossary word: `value`=a held `f32` Value (a knob,
+     a gate, a latched pitch), `signal`=a dense `f32_buffer` Signal (audio, a per-sample sweep),
+     `enum`=a shared `vocab` enum, `message`=a `Note` stream, `harmony`=`Harmony`),
      settable inputs (`min`/`max`/`default`/`unit`/`curve`), enum inputs (`variants`+`default`),
      resource slots.
    - `cargo run -q -p reuben-native --bin reuben -- describe <patch.json> --json` — a nested
@@ -41,17 +41,21 @@ Run all `reuben` commands from the repo root.
    top-level `connections` array** and **no per-node `params` map**. Honour the rules the loader
    enforces (so step 3 passes first try):
    - **Every node** has a unique `address` and a registered `type`.
-   - **An `inputs` value is a literal or a wire-ref.** A literal sets a numeric (`signal`) default
+   - **An `inputs` value is a literal or a wire-ref.** A literal sets a numeric (`value`/`signal`) default
      (`"cutoff": 1500`) or an `enum` by symbol (`"mode": "Hp"`). A wire-ref connects an upstream
      output: `"audio": { "from": "/osc.audio" }`, or the sole-output sugar `{ "from": "/osc" }`
      when the source has exactly one output. `"cutoff": 1500` and `"cutoff": {"from":"/lfo"}` target
      the same slot.
-   - **A wire must join matching Arg types.** `signal`→`signal`, `message`→`message`,
-     `harmony`→`harmony`. A `signal` wired into a `message` input (or a symbol into an audio input)
-     is a `TypeMismatch` error — the one implicit bridge is an `F32`/`signal` source into a
-     `signal` (`Buffer`) input, which ZOH-materializes. There is **no Message-vs-Signal carrier**
-     anymore: a `signal` input takes a literal, a wire, OR live OSC directly — you do **not** need a
-     `map`→`m2s` front-end just to drive a filter's `cutoff`.
+   - **A wire must join matching Arg types.** `value`→`value`, `signal`→`signal`,
+     `message`→`message`, `harmony`→`harmony`. A numeric wired into a `message` input (or a
+     symbol into an audio input) is a `TypeMismatch` error. The two numeric kinds are one wiring
+     family with exactly one implicit bridge (ADR-0031): a `value` source into a `signal` input
+     ZOH-materializes (a constant `cutoff` still works). The reverse — a `signal` source into a
+     `value` input, e.g. an envelope's `cv` into a gate — is a **hard plan error**: there is no
+     implicit sample-and-hold, and the explicit sig→val converter ops don't exist yet. There is
+     **no Message-vs-Signal carrier** anymore: a `value` or `signal` input takes a literal, a
+     wire, OR live OSC directly — you do **not** need a `map`→`m2s` front-end just to drive a
+     filter's `cutoff`.
    - **`Constant`s go in `config`, not `inputs`.** Today that's the Voicer's `voices`
      (`"config": { "voices": 8 }`). Putting it in `inputs` is a `ConstantInInputs` error.
    - Out-of-range numeric literals are clamped; an unknown `enum` symbol or out-of-range index is
@@ -80,7 +84,7 @@ voicer ─freq→ oscillator ─audio→ filter ─audio→ envelope ─audio→
 voicer ─gate───────────────────────────────────→ envelope(gate)
 ```
 
-- `voicer` turns `/voicer/notes [midi, gate]` into per-Voice `freq` + `gate` (`signal` outputs);
+- `voicer` turns `/voicer/notes [midi, gate]` into per-Voice `freq` + `gate` (held `value` outputs);
   wire them into the chain via `"freq": {"from":"/voicer.freq"}` etc.
 - `filter` `cutoff`/`resonance` are `signal` inputs — leave them at their literal defaults
   (`"cutoff": 1200`), wire a modulator (`"cutoff": {"from":"/lfo.audio"}`), or drive them live over

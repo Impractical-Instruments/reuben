@@ -37,8 +37,11 @@ pub struct OperatorInfo {
 #[derive(Debug, Serialize)]
 pub struct PortInfo {
     pub name: String,
-    /// The port's [`PortType`] as a word: `"signal"` (F32/Buffer), `"int"`, `"enum"`, `"message"`
-    /// (Note), `"harmony"` (Harmony), `"vocab"`, or `"string"`.
+    /// The port's [`PortType`] as the glossary's word: `"value"` (a held `f32` Value),
+    /// `"signal"` (a dense `f32_buffer` Signal), `"int"`, `"enum"`, `"message"` (Note),
+    /// `"harmony"` (Harmony), `"vocab"`, or `"string"`. The two numeric kinds are one wiring
+    /// family with a single implicit bridge: `value` → `signal` materializes (ADR-0031);
+    /// the reverse is a hard error.
     pub kind: String,
     /// A plan-time `Constant` (ADR-0035): set in the node's `config` block, not wired in `inputs`.
     /// Omitted (false) for an ordinary runtime input or any output.
@@ -77,7 +80,11 @@ pub struct PortInfo {
 
 fn port_kind(ty: &PortType) -> &'static str {
     match ty {
-        PortType::F32 | PortType::F32Buffer => "signal",
+        // The glossary's two numeric forms (ADR-0031): a held `f32` is a Value, a dense
+        // `f32_buffer` is a Signal. Wire-compatible one way only — a Value source materializes
+        // into a Signal input; a Signal into a Value input is a hard plan error.
+        PortType::F32 => "value",
+        PortType::F32Buffer => "signal",
         PortType::Vocab { name: "Note", .. } => "message",
         PortType::Vocab {
             name: "Harmony", ..
