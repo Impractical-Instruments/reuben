@@ -45,6 +45,58 @@ fn validate_accepts_the_stereo_autopan_example() {
 }
 
 #[test]
+fn validate_accepts_the_mic_space_example() {
+    // The live-input demo (ADR-0038): a channel-bound top-level input pipe feeding the nested
+    // space patch. Bound pipes are fed by the input master, so validate must be warning-clean
+    // (an *unbound* bare signal pipe would warn).
+    let dir = instruments_dir();
+    let json = std::fs::read_to_string(dir.join("mic-space.json")).expect("read mic-space.json");
+    let report = validate(&json, &Registry::builtin(), &FsResolver::new(&dir));
+    assert!(
+        report.ok && report.errors.is_empty(),
+        "mic-space.json should validate: {:?}",
+        report.errors
+    );
+    assert!(
+        report.warnings.is_empty(),
+        "mic-space.json should validate warning-clean: {:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn validate_accepts_the_stereo_sub_example() {
+    // The multichannel-out demo (ADR-0038): three channel-bound output pipes (mains + sub send).
+    let dir = instruments_dir();
+    let json = std::fs::read_to_string(dir.join("stereo-sub.json")).expect("read stereo-sub.json");
+    let report = validate(&json, &Registry::builtin(), &FsResolver::new(&dir));
+    assert!(
+        report.ok && report.errors.is_empty(),
+        "stereo-sub.json should validate: {:?}",
+        report.errors
+    );
+    assert!(
+        report.warnings.is_empty(),
+        "stereo-sub.json should validate warning-clean: {:?}",
+        report.warnings
+    );
+}
+
+#[test]
+fn shipped_stereo_sub_io_map_parses() {
+    // The example device profile shipped next to the demo (ADR-0038 §6) stays structurally
+    // valid: mains identity-mapped, the sub send routed to device channel 3.
+    let profile = reuben_native::profile::DeviceProfile::load(
+        &instruments_dir().join("stereo-sub.io-map.json"),
+    )
+    .expect("stereo-sub.io-map.json should parse as a device profile");
+    let map = &profile.output.map;
+    assert_eq!(map.get(&0), Some(&0));
+    assert_eq!(map.get(&1), Some(&1));
+    assert_eq!(map.get(&2), Some(&3));
+}
+
+#[test]
 fn validate_rejects_unknown_operator_and_names_the_node() {
     let json = r#"{
       "instrument": "typo",

@@ -326,10 +326,13 @@ seam for the "agents author new Operators in Rust" goal ([ADR-0004](../adr/0004-
 
 ## The Instrument format (`crates/reuben-core/src/format.rs`)
 
-An Instrument is plain JSON data ([ADR-0028](../adr/0028-one-input-shape.md)): `nodes` (operator
+An Instrument is plain JSON data ([ADR-0028](../adr/0028-one-input-shape.md); **format v2**
+since [ADR-0038](../adr/0038-interface-pipes-and-the-device-layer.md)): `nodes` (operator
 `type` + `address`, plus an `inputs` map, an optional `config` block, and optional `doc`) and
-master `outputs`. There is **no top-level `connections` array** and **no per-node `params` map** —
-both fold into `inputs`.
+an optional **`interface`** block — the graph's one boundary, everything that crosses its edge
+(see below). There is **no top-level `connections` array** and **no per-node `params` map**
+(both fold into `inputs`), and **no anonymous master `outputs` array** (v1-only — it dissolved
+into named `interface.outputs` entries; the loader migrates old documents).
 
 Each entry in a node's **`inputs`** map is one of:
 
@@ -358,6 +361,59 @@ never the audio thread. Errors are specific: `UnknownInput`, `BadInputValue`, `T
 `ConstantInInputs` (a `Constant` placed in `inputs`), `UnknownConfig`, `AmbiguousWire`. See
 `instruments/*.json` for worked examples.
 
+### The `interface` block: named pipes at the boundary ([ADR-0038](../adr/0038-interface-pipes-and-the-device-layer.md))
+
+`interface.inputs` / `interface.outputs` entries are **named pipes** — the single boundary
+mechanism at every graph level, with the wiring direction **flipped** relative to the v1
+target-pointing form (no entry points inward anymore):
+
+- An **input pipe mints an address in the flat node namespace** (entry `in` → node `/in`; a
+  collision with a real node is the fatal `DuplicateAddress`) and behaves like a source node:
+  internal consumers wire from it with ordinary wire-refs (`"audio": { "from": "/in" }`),
+  fan-out free. Because nothing is pointed at, **the entry declares its own `Arg` type** —
+  `"type"`: `"f32_buffer"`, `"f32"`, `"note"`, `"harmony"`, or a vocab enum name — enforced
+  against every consumer wire by the ordinary pass-2 wire check. A numeric pipe owns
+  engine-enforced `default`/`min`/`max`/`curve`, plus the same presentational metadata as any
+  boundary entry (`label`/`unit`/`widget`). A defaulted pipe unfed materializes its default —
+  a knob at rest, message-drivable at **`/<name>/in`** over OSC; an unfed *bare* signal pipe
+  renders silence (and warns at top level, where nothing can ever feed it).
+- An **output pipe is fed from an internal port**: `"main_l": { "from": "/pan.left" }`.
+  Signal output pipes drive the logical master channels.
+- A **signal** pipe may carry an optional logical **`channel: <int>`** binding — **honored
+  only on the graph actually played at top level**: an input pipe with `channel: k` reads
+  logical input channel `k` (real device audio via the input stream); an output pipe with
+  `channel: k` feeds logical output channel `k`. A channel-bound pipe keeps its declared
+  `default` as the unfed fallback. `channel` on a **message** pipe is a load error. An output
+  pipe with `channel` omitted **broadcasts** to all logical output channels (the v1 default,
+  unchanged). Logical widths derive from the played top graph: output = max bound output
+  channel + 1 (floor 2), input = max bound input channel + 1 (0 if none — a patch with no
+  input pipes pays nothing).
+- **Nested or Voicer-hosted, `channel` is inert** — the parent feeds the pipe through the
+  synthesized face like any boundary wire; a nest never reaches the hardware on its own.
+  Patches never name *device* channels at all: binding logical channels to a real rig is the
+  device profile's job (`play --io-map`, [docs/device-profile.md](../device-profile.md)).
+
+```json
+"interface": {
+  "inputs": {
+    "in":   { "type": "f32_buffer" },
+    "mic":  { "type": "f32_buffer", "channel": 0, "label": "Mic" },
+    "tone": { "type": "f32_buffer", "default": 4000.0, "min": 20.0, "max": 20000.0,
+              "curve": "exp", "unit": "Hz", "label": "Tone", "widget": "knob" }
+  },
+  "outputs": {
+    "main_l": { "from": "/pan.left",  "channel": 0 },
+    "main_r": { "from": "/pan.right", "channel": 1 }
+  }
+}
+```
+
+Worked examples: `instruments/patches/space.json` (a nestable effect's typed pipes),
+`instruments/mic-space.json` (a channel-bound live-input pipe feeding a nested patch),
+`instruments/stereo-sub.json` + `instruments/stereo-sub.io-map.json` (three bound output
+channels + the device profile that maps them), `instruments/stereo-autopan.json` (stereo
+channel-pinned outputs).
+
 A document may also carry a top-level `resources` table (logical id → source path) that
 resource-bearing nodes reference by a `sample` field
 ([ADR-0016](../adr/0016-sample-player-and-resource-store.md)). Resolving + decoding those needs a
@@ -370,16 +426,25 @@ root (`reuben --instrument-root <DIR>` or `REUBEN_INSTRUMENT_ROOT`); the resolve
 identity, so `a.json` and `./a.json` are one cycle-guard/dedup key. For embedded hosts and tests,
 core's in-memory `MemoryResolver` serves patches and samples by exact key with no filesystem.
 A document may declare a `format_version` ([ADR-0036](../adr/0036-instrument-library-and-format-versioning.md));
-absent means 1, and a version newer than the engine understands refuses to load. To **save**, serialize
+absent means 1, and a version newer than the engine understands refuses to load. The current
+version is **2** — ADR-0038's interface-pipe direction flip, the first breaking bump. A v1
+document keeps loading forever: the loader migrates it at parse (target-form `interface`
+entries flip to pipes + consumer wire-refs, deriving each pipe's type/range/default from the
+old target port; the anonymous `outputs` array becomes named `interface.outputs` entries), and
+migrated-vs-native renders are **bit-identical** (asserted in
+`crates/reuben-core/tests/format_v2.rs`). Save writes v2 — a migrated document never saves
+back under its old number. To **save**, serialize
 the `InstrumentDoc` (nested references survive); `InstrumentDoc::from_graph` is the explicit
 flatten/export path — a built graph's spliced subpatches appear as their inlined nodes.
 
 A Voicer node references a **voice sub-patch** the same way, by a **`voice`** field naming a standalone
 instrument JSON ([ADR-0032](../adr/0032-voicer-hosts-voice-subpatches.md)); the loader resolves it
 (nested `sample` resources resolve recursively), builds it `voices` times, and binds the graphs. A
-voice patch declares a top-level **`interface { inputs, outputs }`** block — the engine-honored I/O
-boundary mapping external names (`freq`/`gate`/`audio`/`active`) to internal `(node, port)` pairs —
-so the host Voicer can drive and tap it. (`interface` is real wiring the engine type-checks, distinct
+voice patch declares its **`interface`** like any graph (pipes, ADR-0038): input pipes
+(`freq`/`gate`) its internal nodes consume, output pipes (`audio`/`active`) fed from internal
+ports — so the host Voicer can drive and tap it through the boundary. Hosted this way, any
+`channel` binding on a voice's pipes is inert, exactly as for a nested subpatch.
+(`interface` is real wiring the engine type-checks, distinct
 from the engine-ignored `control` block.) See `instruments/default.json` + `instruments/voices/default-voice.json`.
 
 ### Nesting: a `subpatch` node inlined at build ([ADR-0034](../adr/0034-instrument-nesting.md))
@@ -396,33 +461,38 @@ fatal `CyclicResource`; availability problems (missing id, unreadable source) de
 resolved-but-malformed child document is fatal.
 
 The node's ports are the child's **`interface` names** — a synthesized **boundary face**, one port
-per name, each carrying the **inner port's `Arg` type verbatim** (§4: the type is inherited and
-*never* overridable; the ordinary pass-2 wire check covers boundary wires, and errors speak in
-boundary terms — the subpatch address and external name). Wire or set literals on those names
-exactly as on operator ports: `"tone": 2500` validates against the inner port the interface names.
+per name, each carrying the **entry's declared `Arg` type** (ADR-0038 §2, amending ADR-0034 §4's
+inherit-from-the-inner-port rule: a pipe points at no inner port, so there is nothing to inherit
+from and the entry declares its type itself; the ordinary pass-2 wire check covers boundary wires,
+and errors speak in boundary terms — the subpatch address and external name). Wire or set literals
+on those names exactly as on operator ports: `"tone": 2500` validates against the pipe's declared
+type and range. Inlined this way, a child pipe's `channel` binding is **inert** (ADR-0038 §3): the
+host's wiring feeds the pipe through the face; an unwired nested pipe falls back to its declared
+default (silence for a bare signal pipe) with a `LoadWarning` — a nest never reaches the hardware
+on its own.
 
-An `interface` entry is a bare `/node.port` string, or an **object form** carrying
-**presentational-metadata overrides** (ADR-0034 §4) — `label`, `unit`, `widget`, `min`/`max` —
-inherited from the inner port and overridable per-field. Overrides decorate how a boundary control
-*presents* — introspection today; control-surface generation is the intended next consumer
-(issue #153). They never change what type flows, and
-there is deliberately no field to express a type override (`deny_unknown_fields` rejects one):
+A pipe entry carries its **presentational metadata** alongside the declared type — `label`,
+`unit`, `widget`, and for numeric pipes the engine-enforced `default`/`min`/`max`/`curve`
+(ADR-0038 §2, reshaping ADR-0034 §4's per-field overrides: the entry now *owns* this metadata
+outright). It decorates how a boundary control *presents* — introspection today;
+control-surface generation is the intended next consumer (issue #153) — while the declared
+`type` is what flows (see `instruments/patches/space.json`):
 
 ```json
 "interface": {
   "inputs": {
-    "in":   "/filter.audio",
-    "tone": { "target": "/filter.cutoff", "label": "Tone", "widget": "knob", "min": 200, "max": 8000 }
+    "in":   { "type": "f32_buffer" },
+    "tone": { "type": "f32_buffer", "default": 4000.0, "min": 20.0, "max": 20000.0,
+              "curve": "exp", "unit": "Hz", "label": "Tone", "widget": "knob" }
   },
-  "outputs": { "out": "/verb.audio" }
+  "outputs": { "out": { "from": "/verb.audio" } }
 }
 ```
 
-`reuben describe <patch.json>` prints the boundary a host wires against — each `interface` port
-with metadata inherited from the inner port (the *effective* default: a child literal like
-`"mix": 0.35` beats the descriptor default) and the entry's overrides applied.
+`reuben describe <patch.json>` prints the boundary a host wires against — each pipe with its
+declared type, range, default, and presentation metadata.
 `instruments/patches/space.json` (nestable effect) + `instruments/nested-space.json` (host) are
-the worked pair.
+the worked pair; `instruments/mic-space.json` nests the same effect behind a live-input pipe.
 
 A node may also carry an optional **`control`** block
 ([ADR-0018](../adr/0018-control-surface-generation.md)) — surface metadata marking it
@@ -453,7 +523,11 @@ but not built — today a Message targets at most one node
 
 - **Determinism** — output is bit-identical regardless of executor or thread interleaving
   ([ADR-0001](../adr/0001-unified-block-graph-execution.md)). No wall-clock, no RNG without
-  a seeded, plan-owned source.
+  a seeded, plan-owned source. **Live audio input is the one sanctioned nondeterministic
+  boundary** ([ADR-0038](../adr/0038-interface-pipes-and-the-device-layer.md) §10, the same
+  category as OSC-in): a patch with no input pipes gains no new nondeterminism, and offline
+  render / `OpDriver` injects known buffers into input pipes, so injected-input renders stay
+  bit-reproducible.
 - <a id="rt-safe-render"></a>**RT-safe Render** — `render_block` is allocation-free after
   warmup, asserted by `crates/reuben-core/tests/rt_safe.rs`. Code that runs on the audio
   render thread(s) — the **hot** path — must not allocate, lock, or block, and must not
