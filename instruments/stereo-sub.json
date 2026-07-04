@@ -1,0 +1,58 @@
+{
+  "format_version": 2,
+  "instrument": "stereo-sub",
+  "doc": "Multichannel-out demo (ADR-0038): three bound output channels — the playable 8-voice synth on stereo mains (logical channels 0/1) plus a dedicated low-passed sub send on logical channel 2. Each output pipe is one mono channel with an explicit logical `channel` binding (the Signal stays mono forever; width lives at the graph boundary — ADR-0038 §1/§3), so the logical output width derives to 3. Logical channels say nothing about hardware: `instruments/stereo-sub.io-map.json` is the matching device profile (`play instruments/stereo-sub.json --io-map instruments/stereo-sub.io-map.json`) routing the sub to a real device channel; without a profile the identity map applies, and a device with fewer channels drops the extra with a warning, never fatally (ADR-0038 §7). Play it: send /voicer/notes [midi, gate]. Tweak live: /sub/cutoff (sub crossover, Hz), /pan/pan (stereo position, -1..1).",
+  "resources": {
+    "default-voice": "voices/default-voice.json"
+  },
+  "interface": {
+    "outputs": {
+      "main_l": {
+        "from": "/pan.left",
+        "channel": 0
+      },
+      "main_r": {
+        "from": "/pan.right",
+        "channel": 1
+      },
+      "sub": {
+        "from": "/sub.audio",
+        "channel": 2
+      }
+    }
+  },
+  "nodes": [
+    {
+      "type": "voicer",
+      "address": "/voicer",
+      "doc": "8 hosted default-voice sub-patches, summed.",
+      "config": {
+        "voices": 8.0
+      },
+      "voice": "default-voice"
+    },
+    {
+      "type": "pan",
+      "address": "/pan",
+      "doc": "Equal-power stereo placement of the summed voices onto the mains.",
+      "inputs": {
+        "audio": {
+          "from": "/voicer.audio"
+        },
+        "pan": 0.0
+      }
+    },
+    {
+      "type": "filter",
+      "address": "/sub",
+      "doc": "Sub send: the pre-pan mono sum low-passed at 120 Hz onto its own channel.",
+      "inputs": {
+        "audio": {
+          "from": "/voicer.audio"
+        },
+        "cutoff": 120.0,
+        "mode": "Lp"
+      }
+    }
+  ]
+}
