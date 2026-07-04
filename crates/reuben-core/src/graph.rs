@@ -108,11 +108,6 @@ pub struct Graph {
     /// The resolved `interface` boundary (ADR-0032), empty unless declared. Set by the loader's
     /// [`build`](crate::format::InstrumentDoc::build) after nodes/wires resolve.
     pub interface: Interface,
-    /// Derived **logical input width** (ADR-0038 §3): max bound input channel + 1 across this
-    /// graph's own input pipes, `0` when none binds a channel — a patch that uses no inputs pays
-    /// nothing. Honored only when this graph is played at top level (the core input master, P3);
-    /// a nested/hosted graph's value is inert.
-    pub input_channels_width: usize,
 }
 
 impl Graph {

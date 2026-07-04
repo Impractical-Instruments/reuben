@@ -148,7 +148,9 @@ impl<E: Executor> Renderer<E> {
     /// examples, and single-channel callers. `out` is `block_size` long and receives **logical
     /// channel 0** of the master. For a broadcast/mono instrument every channel is identical,
     /// so this is bit-identical to the pre-stereo output; for a true stereo patch it is the
-    /// left channel only (use [`Renderer::render_block_multi`] for both). Allocation-free.
+    /// left channel only (use [`Renderer::render_block_multi`] for both). Supplies **no input
+    /// master**: a channel-bound input pipe reads zeros here (`render_block_multi` takes the
+    /// input buffers, ADR-0038 §3). Allocation-free.
     pub fn render_block(&mut self, plan: &mut Plan, messages: &[Message], out: &mut [f32]) {
         debug_assert_eq!(out.len(), self.block_size);
         // Borrow `master`/`outbound_sink` out of `self` so `render_into` can take `&mut self` (both
@@ -157,7 +159,7 @@ impl<E: Executor> Renderer<E> {
         let mut master = std::mem::take(&mut self.master);
         let mut outbound = std::mem::take(&mut self.outbound_sink);
         outbound.clear();
-        self.render_into(plan, messages, &mut master, &mut outbound);
+        self.render_into(plan, messages, &[], &mut master, &mut outbound);
         if let Some(ch0) = master.first() {
             out.copy_from_slice(&ch0[..out.len()]);
         } else {
@@ -169,17 +171,30 @@ impl<E: Executor> Renderer<E> {
 
     /// Render one block across **N logical master channels** (ADR-0026). `out` has one buffer
     /// per channel (`out.len() == plan.config.channels`), each `block_size` long. This is the
-    /// stereo/multichannel path the engine drives. `outbound` receives any Messages an `osc_out`
-    /// sink sent this block (ADR-0026, ADR-0030); it is **appended to, never cleared** — the caller
-    /// drains it. Allocation-free in steady state.
+    /// stereo/multichannel path the engine drives.
+    ///
+    /// `inputs` is the **logical input master** (ADR-0038 §3), the dual of `out`: one buffer
+    /// per logical input channel (`inputs.len() == plan.config.input_channels`), each at least
+    /// `block_size` long, that this block's channel-bound input pipes read. It is also the
+    /// determinism seam (ADR-0038 §10): the offline/test path injects known buffers here, so a
+    /// render with injected input is bit-reproducible. A channel the caller does not supply
+    /// (`inputs` shorter than the bound width) leaves its pipes on the ordinary ZOH path —
+    /// the pipe's **declared default materializes** (a bare pipe's zero seed fills silence)
+    /// and routed messages still drive it (dark-degrade, ADR-0038 §7); a supplied-but-short
+    /// buffer's tail reads **zeros**. A no-input patch passes `&[]` and pays nothing.
+    ///
+    /// `outbound` receives any Messages an `osc_out` sink sent this block (ADR-0026,
+    /// ADR-0030); it is **appended to, never cleared** — the caller drains it.
+    /// Allocation-free in steady state.
     pub fn render_block_multi(
         &mut self,
         plan: &mut Plan,
         messages: &[Message],
+        inputs: &[Vec<f32>],
         out: &mut [Vec<f32>],
         outbound: &mut Vec<Message>,
     ) {
-        self.render_into(plan, messages, out, outbound);
+        self.render_into(plan, messages, inputs, out, outbound);
     }
 
     /// The shared render path: execute every node for the block and sum the master taps into
@@ -190,6 +205,7 @@ impl<E: Executor> Renderer<E> {
         &mut self,
         plan: &mut Plan,
         messages: &[Message],
+        inputs: &[Vec<f32>],
         master: &mut [Vec<f32>],
         outbound: &mut Vec<Message>,
     ) {
@@ -200,14 +216,18 @@ impl<E: Executor> Renderer<E> {
             &self.executor,
             messages,
             self.block_size,
+            inputs,
             master,
             outbound,
         );
     }
 }
 
-/// Re-entrant block render over an explicit `(plan, arena, scratch)` (ADR-0032 §4): execute every
-/// node for `frames` frames and sum the master taps into `master` (one buffer per logical channel,
+/// Re-entrant block render over an explicit `(plan, arena, scratch)` (ADR-0032 §4): feed the
+/// input master from `inputs` (one buffer per logical input channel, ADR-0038 §3; an
+/// unsupplied channel falls back to its pipe's declared default — a no-input plan passes
+/// `&[]`), execute every node for
+/// `frames` frames, and sum the master taps into `master` (one buffer per logical channel,
 /// `master.len()` should equal `plan.config.channels`; a tap beyond `master` is dropped). `outbound`
 /// is **appended to** (ADR-0026) — the caller drains it.
 ///
@@ -232,6 +252,7 @@ pub fn render_plan<E: Executor>(
     executor: &E,
     messages: &[Message],
     frames: usize,
+    inputs: &[Vec<f32>],
     master: &mut [Vec<f32>],
     outbound: &mut Vec<Message>,
 ) {
@@ -244,6 +265,26 @@ pub fn render_plan<E: Executor>(
             continue;
         }
         buf.iter_mut().for_each(|s| *s = 0.0);
+    }
+
+    // Feed the input master (ADR-0038 §3): copy each caller-supplied logical input channel
+    // into its bound pipe's `in` materialize scratch before any node runs, and flag the entry
+    // `materialize_device_fed` so `process_node`'s ZOH fill yields the buffer for the block
+    // (device audio wins). Distinct taps may share a channel (fan-out at the master). A
+    // channel the caller doesn't supply is left alone: the ordinary materialize fill then
+    // renders the pipe's declared default and applies routed messages — dark-degrade
+    // (ADR-0038 §7) to the control the pipe advertises, not to a dead knob. The tail of a
+    // supplied-but-short buffer reads zeros. No-input plans have no taps and pay nothing.
+    for i in 0..plan.input_taps.len() {
+        let tap = plan.input_taps[i];
+        let Some(src) = inputs.get(tap.channel) else {
+            continue;
+        };
+        let dst = &mut arena[tap.buffer];
+        let supplied = frames.min(src.len());
+        dst[..supplied].copy_from_slice(&src[..supplied]);
+        dst[supplied..frames].fill(0.0);
+        plan.nodes[tap.node].materialize_device_fed[tap.mat_index] = true;
     }
 
     // Route external messages to node input ports, classified by port kind. Reuses scratch.
@@ -658,6 +699,17 @@ fn process_node(
     // excluded from the per-block arena clear, so it persists; a constant block leaves it untouched.
     for k in 0..node.materialize.len() {
         let (port, buf) = node.materialize[k];
+        // The input master already wrote device audio into this scratch for the block
+        // (ADR-0038 §3, `InputTap`): device audio wins — skip the ZOH fill (and this block's
+        // routed messages; the latch keeps its value for the next unsupplied block). The
+        // buffer no longer holds the latch, so mark it dirty for the next ZOH refill, and
+        // `varying` — device audio is per-sample data, not a held constant.
+        if node.materialize_device_fed[k] {
+            node.materialize_device_fed[k] = false;
+            node.materialize_clean[k] = false;
+            node.varying[port] = true;
+            continue;
+        }
         let target = &mut arena[buf];
         let changed = route.materialize_writes.iter().any(|&(_, p, _)| p == port);
         // The latch is the sole ZOH store (ADR-0030): a materialized port is always seeded/set

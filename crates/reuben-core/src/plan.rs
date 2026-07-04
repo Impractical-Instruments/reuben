@@ -118,6 +118,12 @@ pub struct PlanNode {
     /// uniformly across the block, so a held-unchanged input can skip its refill (ADR-0030).
     /// Carried across blocks. Starts `false` so the first block fills.
     pub materialize_clean: Vec<bool>,
+    /// Per `materialize` entry (same index): `true` when the input master wrote device audio
+    /// into the scratch **this block** ([`InputTap`], ADR-0038 §3) — the ZOH fill must skip it
+    /// (device audio wins over the latch and over routed messages for the block). Set by
+    /// [`crate::render::render_plan`]'s tap copy, consumed (reset) by `process_node`. Always
+    /// all-`false` for a plan with no channel-bound pipes — the common case pays one branch.
+    pub materialize_device_fed: Vec<bool>,
     /// The held [`Arg`] latch per input port (ADR-0030) — the unified ZOH value `io.input::<T>` reads,
     /// collapsing the former Harmony / enum / param lanes into one. Length = input count; seeded
     /// from each input's default / author override, `Copy`-normalized, carried across blocks. Render
@@ -207,6 +213,33 @@ struct DissolvedPipe {
     consumer_port: usize,
 }
 
+/// One input-master tap (ADR-0038 §3) — the dual of [`OutputTap`]: a **top-level** signal
+/// input pipe bound to a logical input channel. Each block, [`crate::render::render_plan`]
+/// copies the caller-supplied channel buffer into `buffer` (the pipe's `in` scratch, excluded
+/// from the per-block arena clear) *before* any node runs. A channel the caller does not
+/// supply leaves the pipe on its ordinary materialize path, so the pipe's **declared default
+/// materializes** (a bare pipe's zero-seeded latch fills silence) and routed messages still
+/// drive it — dark-degrade, never fatal (ADR-0038 §7), and a `channel` + `default` pipe stays
+/// the sweepable control `describe` advertises. Distinct taps may share a channel (fan-out at
+/// the master, like output broadcast); each pipe still owns its own buffer. Built only from
+/// the played graph's **own** channel bindings: a subpatch-inlined child's bindings are
+/// discarded at splice and a Voicer-hosted voice's are cleared in the loader's voice pass,
+/// so nested/hosted bindings stay inert (ADR-0038 §3).
+#[derive(Clone, Copy)]
+pub struct InputTap {
+    /// The logical input channel this pipe reads.
+    pub channel: usize,
+    /// Arena buffer index of the pipe's `in` materialize scratch, overwritten from the
+    /// caller's input each supplied block. The entry **stays** in the node's `materialize`
+    /// list: when the channel is unsupplied, the ZOH latch fill (declared default + routed
+    /// messages) owns the buffer exactly as for an unbound pipe.
+    pub buffer: usize,
+    /// The pipe node's execution index, for flagging `materialize_device_fed`.
+    pub node: usize,
+    /// Index of `buffer`'s entry in the node's `materialize`/`materialize_device_fed` lists.
+    pub mat_index: usize,
+}
+
 /// One master tap: a tapped port's arena buffers, summed into the master output.
 pub struct OutputTap {
     /// Logical master channel this tap feeds (ADR-0026), or `None` to broadcast to every
@@ -229,6 +262,10 @@ pub struct Plan {
     pub materialize_scratch_mask: Vec<bool>,
     /// Master taps, summed into the per-channel master output (ADR-0026).
     pub output_taps: Vec<OutputTap>,
+    /// Input-master taps (ADR-0038 §3): each channel-bound top-level signal input pipe, fed
+    /// from the caller's logical input buffers before nodes run. Empty for a patch that binds
+    /// no input channel (the common case pays nothing) and for hosted voice plans.
+    pub input_taps: Vec<InputTap>,
     /// Outbound (OSC-out) sinks, drained past the boundary each block (ADR-0026, ADR-0030).
     pub outbound_taps: Vec<OutboundTap>,
     /// Resolved `interface` outputs (ADR-0032 §4), for a host operator to read this plan's boundary
@@ -238,11 +275,6 @@ pub struct Plan {
     /// `interface_outputs`): the port's last-emitted scalar, held ZOH across blocks (seeded `0.0`).
     /// `render_plan` updates it when the port emits; the host reads it post-render.
     pub captured: Vec<f32>,
-    /// The graph's derived **logical input width** (ADR-0038 §3): max bound input channel + 1
-    /// across its input pipes, `0` when none binds a channel. Carried from
-    /// [`Graph::input_channels_width`] for the core input master (P3) to size its scratch when
-    /// this plan is the played top-level graph; inert for a hosted (voice) plan.
-    pub input_channels: usize,
     /// Live addresses of interface pipes dissolved out of the schedule (ADR-0038 §2): message
     /// routing ([`crate::render`]) and [`Plan::osc_in_message`] consult these before the node
     /// scan, so a collapsed pipe's minted address keeps feeding its rewired consumer. Empty for
@@ -313,6 +345,22 @@ impl Plan {
             .max()
             .unwrap_or(0)
             .max(AudioConfig::MIN_CHANNELS);
+
+        // Logical **input** width, the dual (ADR-0038 §3): max bound input channel + 1 across
+        // the graph's own input pipes, 0 when none binds — a patch that uses no inputs pays
+        // nothing (no floor). Derived here from the one binding source of truth
+        // (`interface.input_channels`, the same map the taps below are built from), so no
+        // writer can desynchronize width from taps. Nested bindings never reach here (a
+        // splice discards the child's `Interface`; the loader's voice pass clears a hosted
+        // voice graph's bindings), so a hosted plan derives 0 and gets no input-master
+        // plumbing.
+        config.input_channels = graph
+            .interface
+            .input_channels
+            .values()
+            .map(|&c| c + 1)
+            .max()
+            .unwrap_or(0);
 
         // 1. Assign every (node, Buffer output port) a unique arena buffer index. A message output
         // (Note / Harmony / scalar control out) carries no Signal data — events arrive via routing
@@ -457,6 +505,7 @@ impl Plan {
             let ops = vec![op];
 
             let materialize_clean = vec![false; materialize.len()];
+            let materialize_device_fed = vec![false; materialize.len()];
             nodes.push(PlanNode {
                 address: node.address,
                 ops,
@@ -465,6 +514,7 @@ impl Plan {
                 input_kinds,
                 materialize,
                 materialize_clean,
+                materialize_device_fed,
                 latch,
                 varying,
                 outputs,
@@ -475,6 +525,47 @@ impl Plan {
         let mut materialize_scratch_mask = vec![false; next_buffer];
         for b in scratch_buffers {
             materialize_scratch_mask[b] = true;
+        }
+
+        // Input-master taps (ADR-0038 §3): bind each channel-bound signal input pipe to its
+        // logical input channel. The pipe's `in` port is unwired at its own level (an input
+        // pipe is a source; only a parent face ever wires into it, and then this graph is not
+        // the one being played), so the node loop above materialized it a scratch buffer.
+        // The entry **stays** on the ZOH materialize path: each block the render tap copy
+        // overwrites the scratch with the caller's channel and flags `materialize_device_fed`
+        // so the ZOH fill yields; an **unsupplied** channel leaves the ordinary materialize
+        // fill in charge, so the pipe's declared default (and routed messages) drive it — a
+        // `channel` + `default` pipe degrades to the control it advertises, not to zeros.
+        // Both loader invariants (a channel binding names a real pipe; a pipe's `in` is
+        // unwired at top level, hence materialized) are asserted loudly in dev and skipped
+        // dark in release — a broken invariant must not become a silent dead mic. BTreeMap
+        // iteration makes tap order (and so behavior) deterministic.
+        let mut input_taps: Vec<InputTap> = Vec::new();
+        for (name, &channel) in &graph.interface.input_channels {
+            let entry = graph.interface.inputs.get(name);
+            debug_assert!(
+                entry.is_some(),
+                "channel binding {name:?} names no interface input pipe"
+            );
+            let Some(&(key, port)) = entry else { continue };
+            let node_idx = index_of[key];
+            let mat_index = nodes[node_idx]
+                .materialize
+                .iter()
+                .position(|(p, _)| *p == port);
+            debug_assert!(
+                mat_index.is_some(),
+                "channel-bound pipe {name:?} has no materialized `in` scratch — wired or \
+                 non-signal, which the loader forbids"
+            );
+            let Some(mat_index) = mat_index else { continue };
+            let (_, buffer) = nodes[node_idx].materialize[mat_index];
+            input_taps.push(InputTap {
+                channel,
+                buffer,
+                node: node_idx,
+                mat_index,
+            });
         }
 
         // Outbound sinks (ADR-0030): the `osc_out` operator is the one whose output is the external
@@ -539,10 +630,10 @@ impl Plan {
             num_buffers: next_buffer,
             materialize_scratch_mask,
             output_taps,
+            input_taps,
             outbound_taps,
             interface_outputs,
             captured: vec![0.0; captured_len],
-            input_channels: graph.input_channels_width,
             input_aliases,
         })
     }
@@ -596,6 +687,20 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
         for (key, node) in &graph.nodes {
             // Loader-built pipes only: a document cannot name `"type": "pipe"` on a node.
             if node.descriptor.type_name != "pipe" {
+                continue;
+            }
+            // A channel-bound pipe stays a rendered node (ADR-0038 §3): the input master
+            // writes the caller's logical channel into the pipe's materialized scratch each
+            // block, so the buffer — and the interface entry that finds it — must survive.
+            // Hosted/nested bindings are cleared/discarded before instantiate, so their pipes
+            // still dissolve.
+            if graph.interface.input_channels.keys().any(|n| {
+                graph
+                    .interface
+                    .inputs
+                    .get(n)
+                    .is_some_and(|(k, _)| *k == key)
+            }) {
                 continue;
             }
             // Exactly one wire consumer — its input port absorbs the pipe's role wholesale.

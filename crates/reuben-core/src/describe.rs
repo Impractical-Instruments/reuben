@@ -259,4 +259,27 @@ mod tests {
         assert_eq!(b.inputs[0].channel, Some(1));
         assert_eq!(b.outputs[0].channel, Some(0));
     }
+
+    #[test]
+    fn channel_plus_default_pipe_describes_both_truthfully() {
+        // #190 F1: a `channel` + `default` pipe is *both* a device input and a knob — the
+        // engine honors the default as the unfed fallback (and keeps the pipe
+        // message-drivable), so describe advertising both is the truth, not a lie.
+        let b = boundary(
+            r#"{"format_version":2,"instrument":"t","interface":{
+                "inputs":{"lvl":{"type":"f32_buffer","channel":0,
+                                 "default":0.25,"min":0,"max":1}},
+                "outputs":{"main":{"from":"/gain.out"}}},
+            "nodes":[{"type":"mul_f32_signal","address":"/gain",
+                      "inputs":{"a":{"from":"/lvl"}}}]}"#,
+        );
+        let lvl = &b.inputs[0];
+        assert_eq!(lvl.channel, Some(0), "the device binding surfaces");
+        assert_eq!(
+            lvl.default,
+            Some(DocValue::Number(0.25)),
+            "the unfed fallback default surfaces"
+        );
+        assert_eq!((lvl.min, lvl.max), (Some(0.0), Some(1.0)));
+    }
 }

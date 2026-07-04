@@ -31,8 +31,20 @@ pub struct Engine {
     outbound: Vec<Message>,
     /// Logical master channel count, fixed for this Plan.
     channels: usize,
+    /// Logical **input** channel count (ADR-0038 §3), fixed for this Plan; `0` for a patch
+    /// that binds no input channels — the common case, which pays nothing below.
+    in_channels: usize,
     /// One block of rendered, not-yet-consumed samples, planar: `scratch[channel][frame]`.
     scratch: Vec<Vec<f32>>,
+    /// One block of staged logical input, planar: `in_scratch[channel][frame]` — the dual of
+    /// `scratch`, filled by [`Engine::fill_duplex`] and consumed by the next rendered block.
+    /// Empty when `in_channels == 0`. Preallocated here; never grown on the audio thread.
+    in_scratch: Vec<Vec<f32>>,
+    /// `true` once a [`Engine::fill_duplex`] call staged real (non-empty) input, i.e.
+    /// `in_scratch` may hold nonzero samples. While `false` — the entire pre-input life of a
+    /// patch driven through [`Engine::fill`] — the no-input path skips staging altogether, so
+    /// an input-bound patch pays nothing per frame in the device callback.
+    in_dirty: bool,
     /// Index of the next unread frame in `scratch`; `>= block_size` means exhausted.
     pos: usize,
 }
@@ -42,6 +54,7 @@ impl Engine {
     pub fn new(plan: Plan) -> Self {
         let block_size = plan.config.block_size;
         let channels = plan.config.channels;
+        let in_channels = plan.config.input_channels;
         let renderer = Renderer::new(&plan);
         Self {
             plan,
@@ -49,7 +62,10 @@ impl Engine {
             pending: Vec::new(),
             outbound: Vec::new(),
             channels,
+            in_channels,
             scratch: vec![vec![0.0; block_size]; channels],
+            in_scratch: vec![vec![0.0; block_size]; in_channels],
+            in_dirty: false,
             pos: block_size, // exhausted -> first fill renders immediately
         }
     }
@@ -62,6 +78,13 @@ impl Engine {
     /// Logical master channel count (ADR-0026). `fill` interleaves this many channels.
     pub fn channels(&self) -> usize {
         self.channels
+    }
+
+    /// Logical **input** channel count (ADR-0038 §3). [`Engine::fill_duplex`] de-interleaves
+    /// this many channels from its `input`; `0` (a patch with no bound input pipes) means
+    /// input is ignored entirely.
+    pub fn input_channels(&self) -> usize {
+        self.in_channels
     }
 
     /// Sample rate this engine's Plan was instantiated for.
@@ -94,21 +117,69 @@ impl Engine {
 
     /// Fill `out` with **interleaved logical** samples, rendering core blocks as needed.
     /// `out.len()` must be a multiple of [`Engine::channels`]; frame `f`, channel `c` lands at
-    /// `out[f * channels + c]`.
+    /// `out[f * channels + c]`. The no-input convenience: an instrument's bound input pipes
+    /// fall back to their declared defaults (a bare pipe reads silence) — use
+    /// [`Engine::fill_duplex`] to supply the logical input.
     pub fn fill(&mut self, out: &mut [f32]) {
+        self.fill_duplex(&[], out);
+    }
+
+    /// [`Engine::fill`] with the **logical input master** supplied (ADR-0038 §3): `input` is
+    /// interleaved at [`Engine::input_channels`] channels and carries **one input frame per
+    /// output frame** (`input.len() / input_channels == out.len() / channels`; same clock —
+    /// the device layer resamples before this seam, ADR-0038 §8). A short `input` stages
+    /// zeros for the missing samples — dark-degrade (§7). A caller with no input stream can
+    /// always pass `&[]`: before any input has ever been staged that is the true no-input
+    /// path (bound pipes fall back to their declared defaults); after, it stages honest
+    /// device silence.
+    ///
+    /// **Alignment:** input is staged one core block ahead — the block rendered at global
+    /// frame `k·B` consumes input frames `[(k-1)·B, k·B)` (the first block reads silence).
+    /// One block of input latency is what makes the pull **causal** (a block renders only
+    /// after all of its input frames have arrived, whatever the caller's chunk size) and
+    /// keeps output a pure function of the global frame index — chunk-size independent, like
+    /// the output side.
+    pub fn fill_duplex(&mut self, input: &[f32], out: &mut [f32]) {
         let ch = self.channels;
+        let in_ch = self.in_channels;
         debug_assert_eq!(
             out.len() % ch,
             0,
             "fill buffer must be a multiple of channels"
         );
+        // The input stride pin, mirroring the output-side assert: `input` carries one input
+        // frame per output frame at `in_channels` interleave, or is empty (the sanctioned
+        // no-input call). A wrong-width capture buffer would otherwise channel-smear silently.
+        debug_assert!(
+            input.is_empty() || input.len() * ch == out.len() * in_ch,
+            "duplex input must carry one frame per output frame at input_channels stride \
+             (got {} input samples for {} frames at {} input channels)",
+            input.len(),
+            out.len() / ch,
+            in_ch
+        );
         let frames = out.len() / ch;
         // Fresh outbound collection for this fill; the render path appends, the caller drains.
         self.outbound.clear();
+        // The no-input path stages nothing: `in_scratch` starts zeroed, so until some call
+        // stages real input (`in_dirty`), skipping the staging loop *is* staging zeros — an
+        // input-bound patch driven by plain `fill()` pays nothing per frame here. Once dirty,
+        // an empty-input call must re-stage zeros so stale samples never re-enter the render.
+        let stage = !input.is_empty() || self.in_dirty;
+        if !input.is_empty() {
+            self.in_dirty = true;
+        }
         for f in 0..frames {
             if self.pos >= self.block_size() {
                 self.render_next();
                 self.pos = 0;
+            }
+            // Stage this frame's input for the *next* rendered block (see the alignment note
+            // above). Missing samples stage zeros, so partial input degrades dark, not stale.
+            if stage {
+                for c in 0..in_ch {
+                    self.in_scratch[c][self.pos] = input.get(f * in_ch + c).copied().unwrap_or(0.0);
+                }
             }
             for c in 0..ch {
                 out[f * ch + c] = self.scratch[c][self.pos];
@@ -117,12 +188,18 @@ impl Engine {
         }
     }
 
-    /// Render one block into `scratch`, consuming any queued Messages.
+    /// Render one block into `scratch`, consuming any queued Messages and the staged input.
+    /// Until real input has ever been staged (`in_dirty`), the render sees **no** input
+    /// channels rather than staged zeros: an input pipe with a declared `default` then
+    /// materializes that default (ADR-0038 §3/§7 — no device stream is not the same as a
+    /// silent device stream). Once a stream exists, staged zeros are honest device silence.
     fn render_next(&mut self) {
         let msgs = std::mem::take(&mut self.pending);
+        let inputs: &[Vec<f32>] = if self.in_dirty { &self.in_scratch } else { &[] };
         self.renderer.render_block_multi(
             &mut self.plan,
             &msgs,
+            inputs,
             &mut self.scratch,
             &mut self.outbound,
         );
@@ -228,6 +305,101 @@ mod tests {
         // Drained once: the next fill (no input) yields nothing.
         e.fill(&mut out);
         assert_eq!(e.drain_outbound().count(), 0);
+    }
+
+    /// A one-pipe passthrough bound to logical input channel 0 (ADR-0038 §3, P3).
+    fn input_engine(block_size: usize) -> Engine {
+        const MIC: &str = r#"{
+          "format_version": 2,
+          "instrument": "mic_through",
+          "interface": {
+            "inputs":  { "mic": { "type": "f32_buffer", "channel": 0 } },
+            "outputs": { "main": { "from": "/out.audio" } }
+          },
+          "nodes": [
+            { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/mic" } } }
+          ]
+        }"#;
+        let graph = reuben_core::load(MIC, &reuben_core::Registry::builtin()).expect("load");
+        let plan =
+            Plan::instantiate(graph, AudioConfig::new(48_000.0, block_size)).expect("instantiate");
+        Engine::new(plan)
+    }
+
+    /// Deterministic mono input as a pure function of the global frame index.
+    fn in_sig(global_frame: usize) -> f32 {
+        (global_frame % 89) as f32 / 89.0 - 0.5
+    }
+
+    #[test]
+    fn fill_duplex_stages_input_one_block_ahead() {
+        // The alignment pin (see `fill_duplex` docs): the block rendered at global frame k*B
+        // consumes input frames [(k-1)*B, k*B), so a bound pipe echoes the input with exactly
+        // one core block of latency — and the first block is silence, whatever the input.
+        let mut e = input_engine(128);
+        assert_eq!(e.input_channels(), 1);
+        let b = e.block_size();
+        let ch = e.channels();
+        let frames = 3 * b;
+        let input: Vec<f32> = (0..frames).map(in_sig).collect(); // 1 input channel
+        let mut out = vec![0.0f32; frames * ch];
+        e.fill_duplex(&input, &mut out);
+        for f in 0..frames {
+            let expect = if f < b { 0.0 } else { in_sig(f - b) };
+            assert_eq!(
+                out[f * ch].to_bits(),
+                expect.to_bits(),
+                "frame {f}: input must land exactly one block later"
+            );
+        }
+    }
+
+    #[test]
+    fn fill_duplex_is_independent_of_chunk_size() {
+        // The input-side analog of `fill_is_independent_of_chunk_size`: one big duplex fill
+        // must equal many ragged ones sample-for-sample — output stays a pure function of the
+        // global frame index however input+output arrive.
+        let probe = input_engine(128);
+        let ch = probe.channels();
+        let in_ch = probe.input_channels();
+        let total_frames = 5_000;
+
+        let input: Vec<f32> = (0..total_frames * in_ch)
+            .map(|i| in_sig(i / in_ch))
+            .collect();
+
+        let mut whole = input_engine(128);
+        let mut a = vec![0.0f32; total_frames * ch];
+        whole.fill_duplex(&input, &mut a);
+
+        let mut chunked = input_engine(128);
+        let mut b = vec![0.0f32; total_frames * ch];
+        let mut f = 0;
+        for step in [37usize, 256, 1, 500, 129].iter().cycle() {
+            if f >= total_frames {
+                break;
+            }
+            let end = (f + step).min(total_frames);
+            chunked.fill_duplex(&input[f * in_ch..end * in_ch], &mut b[f * ch..end * ch]);
+            f = end;
+        }
+
+        for (k, (x, y)) in a.iter().zip(&b).enumerate() {
+            assert_eq!(x.to_bits(), y.to_bits(), "mismatch at sample {k}");
+        }
+    }
+
+    #[test]
+    fn fill_without_input_is_silence_for_a_bound_patch() {
+        // The no-input convenience on an input-bound patch reads zeros (ADR-0038 §7) — the
+        // exact behavior every pre-P5 caller (no input stream yet) gets.
+        let mut e = input_engine(256);
+        let mut out = vec![1.0f32; 2048 * e.channels()];
+        e.fill(&mut out);
+        assert!(
+            out.iter().all(|&s| s == 0.0),
+            "unfed input pipe must be silent"
+        );
     }
 
     #[test]

@@ -692,6 +692,20 @@ pub enum LoadWarning {
     /// `detail` says, and re-authoring the entry in v2 form retires the warning. `name` is the
     /// interface entry (or node address) affected.
     Migration { name: String, detail: String },
+    /// A **top-level** bare signal input pipe (no declared default) binds no logical input
+    /// channel (ADR-0038 §3). At top level nothing else can ever feed a signal pipe — there is
+    /// no parent edge, and audio does not cross the OSC boundary — so it renders **silence**.
+    /// Warned, never fatal (dark-degrade, ADR-0038 §7): the patch still plays, but a declared
+    /// audio input nobody bound is usually an authoring slip. A pipe with a declared default
+    /// is a control at rest (no warning); nested/hosted pipes get [`UnwiredPipe`](Self::UnwiredPipe)
+    /// from their host instead.
+    UnboundInputPipe { name: String },
+    /// A **hosted voice** patch's input pipe binds a logical input channel, which is **inert**
+    /// when hosted (ADR-0038 §3): a pipe inside a nest is never a magic hardware connection —
+    /// the host's edges feed a voice's pipes, and an unfed one renders silence. The binding
+    /// still works when the same patch is played at top level, so this is a warning, not an
+    /// error. Wrapped in [`Nested`](Self::Nested) with the hosting node.
+    InertChannelBinding { name: String },
 }
 
 impl fmt::Display for LoadWarning {
@@ -724,6 +738,16 @@ impl fmt::Display for LoadWarning {
             LoadWarning::Migration { name, detail } => {
                 write!(f, "v1 migration, {name:?}: {detail}")
             }
+            LoadWarning::UnboundInputPipe { name } => write!(
+                f,
+                "top-level input pipe {name:?} binds no logical input channel — nothing can \
+                 feed it; it renders silence"
+            ),
+            LoadWarning::InertChannelBinding { name } => write!(
+                f,
+                "input pipe {name:?} binds a logical input channel, which is inert in a hosted \
+                 voice — the host's edges feed a voice's pipes; unfed, it renders silence"
+            ),
         }
     }
 }
@@ -943,6 +967,9 @@ fn load_doc_guarded(
                         // drives the message pipes it knows by name (`freq`/`gate`) and nothing
                         // else reaches a hosted boundary, so the pipe renders silence — warn,
                         // exactly as the subpatch face does (ADR-0038 §3 "nested/hosted").
+                        // A channel-bound bare pipe warns here *and* `InertChannelBinding`
+                        // below, matching the subpatch path: the two warnings say different
+                        // things (this pipe is silent; that binding is inert).
                         for (name, (key, _)) in &loaded.graph.interface.inputs {
                             let p = &loaded.graph.nodes[*key].descriptor.inputs[0];
                             if matches!(p.ty, PortType::F32Buffer) && p.meta.is_none() {
@@ -952,8 +979,25 @@ fn load_doc_guarded(
                                 });
                             }
                         }
+                        // A hosted voice's channel bindings are inert (ADR-0038 §3): the
+                        // Voicer clears them before instantiating the sub-plan, so a bound
+                        // pipe the host doesn't drive renders silence. Say so at load, once.
+                        for pipe in loaded.graph.interface.input_channels.keys() {
+                            warnings.push(
+                                LoadWarning::InertChannelBinding { name: pipe.clone() }
+                                    .nested_in(&n.address),
+                            );
+                        }
                     }
-                    voices.push(loaded.graph);
+                    // Hosted inertness is enforced *here*, once, for every copy (ADR-0038
+                    // §3): clearing a hosted voice graph's channel bindings before any host
+                    // sees it means `Plan::instantiate` derives no input-master plumbing for
+                    // voice sub-plans — no host operator has to remember caller-side
+                    // mutation, and the pipes stay on the message-fed materialize path the
+                    // Voicer drives (`freq`/`gate`).
+                    let mut voice = loaded.graph;
+                    voice.interface.input_channels.clear();
+                    voices.push(voice);
                 }
             }
         }
@@ -1302,7 +1346,6 @@ impl InstrumentDoc {
         // Internal consumers wire from the pipe with ordinary wire-refs — it is in `by_addr`
         // like any source — and whatever feeds the boundary (a parent edge through the face, a
         // Voicer, external OSC, P3's input master) lands on its single `in` port.
-        let mut input_width = 0usize;
         if let Some(iface) = &self.interface {
             for (name, entry) in &iface.inputs {
                 let pipe = entry.pipe().ok_or_else(|| LoadError::InterfacePipe {
@@ -1313,6 +1356,7 @@ impl InstrumentDoc {
                         .to_string(),
                 })?;
                 let (descriptor, kind) = pipe_descriptor(name, pipe)?;
+                let bare_signal = kind == PortKind::Signal && descriptor.inputs[0].meta.is_none();
                 let address = format!("/{name}");
                 if !addresses.insert(address.clone()) {
                     return Err(LoadError::DuplicateAddress(address));
@@ -1329,9 +1373,22 @@ impl InstrumentDoc {
                 interface.inputs.insert(name.clone(), (key, 0));
                 if let Some(ch) = pipe.channel {
                     // A logical input channel binding (ADR-0038 §3) — honored only when this
-                    // graph is played at top level; recorded for the input master (P3).
+                    // graph is played at top level; recorded for the input master (P3). The
+                    // index is bounded (`MAX_LOGICAL_CHANNELS`): the derived width sizes real
+                    // per-channel buffers, so an unbounded document value would turn a typo
+                    // into an allocation of arbitrary size. A structural bound is a load
+                    // error, not a degrade (ADR-0038 §7: degrade is for reality mismatches,
+                    // not broken documents).
+                    check_logical_channel(name, ch)?;
                     interface.input_channels.insert(name.clone(), ch);
-                    input_width = input_width.max(ch + 1);
+                } else if referrer.is_none() && bare_signal {
+                    // A top-level **bare signal** pipe with no channel binding renders
+                    // silence forever: no parent edge exists at top level, and audio never
+                    // crosses the OSC boundary (ADR-0038 §3). Warn, never fatal (§7). A
+                    // pipe with a declared default is a control at rest — no warning — and
+                    // a nested/hosted child (`referrer.is_some()`) gets `UnwiredPipe` from
+                    // its host when the host leaves it unfed.
+                    warnings.push(LoadWarning::UnboundInputPipe { name: name.clone() });
                 }
             }
         }
@@ -1493,6 +1550,14 @@ impl InstrumentDoc {
             };
             let loaded = load_child_guarded(child_doc, &canon, registry, resolver, ctx)?;
             warnings.extend(loaded.warnings.into_iter().map(|w| w.nested_in(&n.address)));
+            // A subpatch-inlined child's channel bindings are discarded at splice — inert
+            // (ADR-0038 §3), exactly as under a Voicer, and warned symmetrically: the same
+            // authoring slip must not go quiet just because the host is a subpatch.
+            for pipe in loaded.graph.interface.input_channels.keys() {
+                warnings.push(
+                    LoadWarning::InertChannelBinding { name: pipe.clone() }.nested_in(&n.address),
+                );
+            }
             let face = splice_subpatch(&mut graph, loaded.graph, &n.address, &mut addresses)?;
 
             // Boundary literals (ADR-0034 §1: `"wet": 0.3`): validated against the face and the
@@ -1653,6 +1718,9 @@ impl InstrumentDoc {
                         });
                     }
                     Some(ch) => {
+                        // Same structural bound as the input side: the logical output width
+                        // sizes real per-channel master buffers.
+                        check_logical_channel(name, ch)?;
                         graph.tap_output_channel(key, idx, ch);
                         interface.output_channels.insert(name.clone(), ch);
                     }
@@ -1665,7 +1733,6 @@ impl InstrumentDoc {
             }
         }
         graph.interface = interface;
-        graph.input_channels_width = input_width;
 
         Ok(Loaded { graph, warnings })
     }
@@ -2900,6 +2967,28 @@ fn check_range_override(
 /// pipe materializes silence). Validation is local and pointed: unknown type, numeric metadata
 /// on a message pipe, an incoherent range, or a `channel` on anything but a signal pipe
 /// (hardware channels carry signals — ADR-0038 §3).
+/// Upper bound (exclusive) on a logical `channel` binding, input or output (ADR-0038 §3).
+/// Logical widths derive as `max bound channel + 1` and size **real per-channel buffers**
+/// (the engine's input staging, the render master), so an unbounded document value would turn
+/// a typo'd `"channel": 100000000` into a multi-gigabyte allocation. 4096 is beyond any real
+/// rig; past it the document is structurally broken, which is a load error, not a degrade
+/// (ADR-0038 §7 degrades *reality* mismatches, not broken documents).
+pub const MAX_LOGICAL_CHANNELS: usize = 4096;
+
+/// Reject an out-of-range logical `channel` binding (see [`MAX_LOGICAL_CHANNELS`]).
+fn check_logical_channel(name: &str, ch: usize) -> Result<(), LoadError> {
+    if ch >= MAX_LOGICAL_CHANNELS {
+        return Err(LoadError::InterfacePipe {
+            name: name.to_string(),
+            reason: format!(
+                "`channel` {ch} is out of range — logical channels are 0..{MAX_LOGICAL_CHANNELS} \
+                 (the derived width sizes real per-channel buffers)"
+            ),
+        });
+    }
+    Ok(())
+}
+
 fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortKind), LoadError> {
     let err = |reason: String| LoadError::InterfacePipe {
         name: name.to_string(),
@@ -3587,13 +3676,21 @@ mod tests {
             "outputs":{"main_l":{"from":"/gain.out","channel":0}}},
             "nodes":[{"type":"mul_f32_signal","address":"/gain","inputs":{"a":{"from":"/mic_l"}}}]}"#;
         let g = load(json, &reg()).expect("load");
-        assert_eq!(g.input_channels_width, 4, "max bound input channel + 1");
+        let width = |g: &crate::graph::Graph| {
+            g.interface
+                .input_channels
+                .values()
+                .map(|&c| c + 1)
+                .max()
+                .unwrap_or(0)
+        };
+        assert_eq!(width(&g), 4, "max bound input channel + 1");
         assert_eq!(g.interface.input_channels["mic_r"], 3);
         assert_eq!(g.outputs.len(), 1);
         assert_eq!(g.outputs[0].2, Some(0), "output pipe channel pins the tap");
         // A patch that binds no input channel pays nothing.
         let none = load(VOICE_IFACE, &reg()).expect("load");
-        assert_eq!(none.input_channels_width, 0);
+        assert_eq!(width(&none), 0);
     }
 
     #[test]
@@ -4357,13 +4454,18 @@ mod tests {
             "outputs":{"out":"/f.audio","state":"/env.active"}},
             "nodes":[{"type":"filter","address":"/f"},{"type":"envelope","address":"/env"}]}"#;
         let loaded = load_instrument(json, &reg(), &PatchResolver("")).expect("load");
+        // Two warnings here, one per concern: the migration divergence for `out`, plus the
+        // input master's unbound-bare-pipe notice for `in` (this doc binds no channel; that
+        // path landed with P3). The Value-typed `state` entry never taps, so it stays silent.
         assert!(
             matches!(
                 loaded.warnings.as_slice(),
-                [LoadWarning::Migration { name, detail }]
-                    if name == "out" && detail.contains("master tap")
+                [
+                    LoadWarning::Migration { name, detail },
+                    LoadWarning::UnboundInputPipe { name: pipe }
+                ] if name == "out" && detail.contains("master tap") && pipe == "in"
             ),
-            "exactly the signal entry warns (the Value-typed `state` never taps): {:?}",
+            "exactly the signal entry warns of the tap, plus the unbound input pipe: {:?}",
             loaded.warnings
         );
     }

@@ -16,6 +16,14 @@ pub struct AudioConfig {
     /// channel count never enters core (`audio.rs` owns the logical→device map). The seed
     /// only matters for a renderer built without a Plan.
     pub channels: usize,
+    /// Logical **input** channel count (ADR-0038 §3) — the input master's width, the dual of
+    /// [`channels`](Self::channels). Also derived from the instrument at
+    /// [`Plan::instantiate`](crate::plan::Plan::instantiate): max bound input `channel` + 1
+    /// across the played top graph's input pipes, **`0` when the patch binds none** — the
+    /// common case pays nothing (no floor: unlike the output master's stereo floor, a patch
+    /// without input pipes has no input master at all). The device's real input geometry
+    /// never enters core; the device layer (P4/P5) maps onto these logical indices.
+    pub input_channels: usize,
 }
 
 impl AudioConfig {
@@ -29,8 +37,9 @@ impl AudioConfig {
         Self {
             sample_rate,
             block_size,
-            // Placeholder; `Plan::instantiate` derives the real width from the instrument.
+            // Placeholders; `Plan::instantiate` derives the real widths from the instrument.
             channels: Self::MIN_CHANNELS,
+            input_channels: 0,
         }
     }
 
