@@ -13,13 +13,17 @@ use reuben_core::resources::{ResolveError, ResourceResolver, SampleBuffer};
 use reuben_core::{load, load_instrument, AudioConfig, Graph, Registry};
 
 /// A single-oscillator sub-instrument exposing `freq` in / `audio` out.
+// A well-formed v1 child: its `audio` boundary output is also anonymously tapped (as every
+// shipped v1 patch's was), so migration claims the entry — no boundary-only divergence
+// warning (that accepted ADR-0038 §5 case is covered in format_v2.rs).
 const TONE: &str = r#"{
     "instrument": "tone",
     "interface": {
         "inputs":  { "freq": "/osc.freq" },
         "outputs": { "audio": "/osc.audio" }
     },
-    "nodes": [ { "type": "oscillator", "address": "/osc" } ]
+    "nodes": [ { "type": "oscillator", "address": "/osc" } ],
+    "outputs": [ { "node": "/osc", "port": "audio" } ]
 }"#;
 
 /// Hands back [`TONE`] for every source.
@@ -201,7 +205,8 @@ fn f32_value_zoh_materializes_into_the_nest() {
             "inputs":  { "audio": "/out.audio" },
             "outputs": { "audio": "/out.audio" }
         },
-        "nodes": [ { "type": "output", "address": "/out" } ]
+        "nodes": [ { "type": "output", "address": "/out" } ],
+        "outputs": [ { "node": "/out", "port": "audio" } ]
     }"#;
     const NESTED: &str = r#"{
         "instrument": "nested",

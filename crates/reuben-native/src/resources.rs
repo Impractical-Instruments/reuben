@@ -314,7 +314,8 @@ mod tests {
             &path,
             r#"{"instrument":"voice",
                 "interface":{"inputs":{"freq":"/osc.freq"},"outputs":{"audio":"/osc.audio"}},
-                "nodes":[{"type":"oscillator","address":"/osc"}]}"#,
+                "nodes":[{"type":"oscillator","address":"/osc"}],
+                "outputs":[{"node":"/osc","port":"audio"}]}"#,
         )
         .unwrap();
 

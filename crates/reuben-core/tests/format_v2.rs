@@ -593,14 +593,16 @@ fn boundary_only_v1_outputs_are_exact_when_hosted() {
 }
 
 #[test]
-fn boundary_only_v1_output_played_top_level_is_the_documented_adr_fork() {
+fn boundary_only_v1_output_played_top_level_is_the_accepted_warned_divergence() {
     // ADR-0038 §4 unified "boundary output" with "master tap": a channel-less signal output
     // pipe at top level IS a broadcast tap. v1 kept the two separate — `wet` above produced no
     // sound at top level (only the anonymous `outputs` tapped). The consolidated block has no
     // way to spell "signal boundary output, not a tap", so this ONE v1 shape diverges when the
-    // migrated document is played top-level: `wet` now broadcasts alongside the dry tap. This
-    // test documents that fork (reported on PR #189) rather than hiding it; everything
-    // hosted/nested — the position these entries were authored for — is exact (test above).
+    // migrated document is played top-level: `wet` now broadcasts alongside the dry tap.
+    // **Accepted + warned** (decided 2026-07-04, recorded in ADR-0038 §5): the unification
+    // stands, the divergence is surfaced via a Migration warning naming the entry, and
+    // everything hosted/nested — the position these entries were authored for — is exact
+    // (test above).
     let reg = Registry::builtin();
     let none = MemoryResolver::new();
     let loaded = load_instrument(WETDRY_V1, &reg, &none).expect("load");
@@ -608,12 +610,42 @@ fn boundary_only_v1_output_played_top_level_is_the_documented_adr_fork() {
     assert_eq!(
         taps.len(),
         2,
-        "migrated top-level taps: v1's dry tap + the fork's wet broadcast ({taps:?})"
+        "migrated top-level taps: v1's dry tap + the accepted wet broadcast ({taps:?})"
     );
     assert_eq!(
         taps.iter().filter(|(_, _, ch)| ch.is_none()).count(),
         2,
         "both broadcast: the claimed dry entry and the boundary-only wet entry"
+    );
+    // The divergence is loud: the boundary-only entry is warned, naming it and the consequence.
+    assert!(
+        loaded.warnings.iter().any(|w| matches!(
+            flat(w),
+            LoadWarning::Migration { name, detail }
+                if name == "wet" && detail.contains("master tap") && detail.contains("top")
+        )),
+        "the accepted top-level tap must be warned: {:?}",
+        loaded.warnings
+    );
+    // ...and precise: `out` was claimed by v1's own anonymous tap — same taps as v1, no
+    // divergence, no warning. Nor for message-typed boundary outputs (a voice's `active`),
+    // which never tap: the fully claimed voice patch migrates without a whisper.
+    assert!(
+        !loaded
+            .warnings
+            .iter()
+            .any(|w| matches!(flat(w), LoadWarning::Migration { name, .. } if name == "out")),
+        "the claimed entry reproduces v1 exactly — it must not warn: {:?}",
+        loaded.warnings
+    );
+    let voice = load_instrument(VOICE_V1, &reg, &none).expect("load voice");
+    assert!(
+        !voice
+            .warnings
+            .iter()
+            .any(|w| matches!(flat(w), LoadWarning::Migration { .. })),
+        "claimed `audio` + message `active`: no divergence, no warning: {:?}",
+        voice.warnings
     );
 }
 
