@@ -1,25 +1,37 @@
 {
-  "doc": "The same self-playing sequence as sequence.json (ADR-0032), but the Voicer resolves each step degree through a tonal context set to C natural minor — so the identical degree pattern (0..7) re-spells into the minor scale with no edit to the line. Each step plays on a hosted `scale-voice` sub-patch. Change the key live with /harmony/root (MIDI), or reshape the scale with /harmony/s0../harmony/s6 (step offsets) and /harmony/degrees; both apply sample-accurately. Send a chord with /harmony/set [tag, d0, d1, ...] (tag 1 = scale-relative, 2 = absolute, 0 = clear).",
+  "format_version": 2,
   "instrument": "scale-demo",
+  "doc": "The same self-playing sequence as sequence.json (ADR-0032), but the Voicer resolves each step degree through a tonal context set to C natural minor — so the identical degree pattern (0..7) re-spells into the minor scale with no edit to the line. Each step plays on a hosted `scale-voice` sub-patch. Change the key live with /harmony/root (MIDI), or reshape the scale with /harmony/s0../harmony/s6 (step offsets) and /harmony/degrees; both apply sample-accurately. Send a chord with /harmony/set [tag, d0, d1, ...] (tag 1 = scale-relative, 2 = absolute, 0 = clear).",
+  "resources": {
+    "scale-voice": "voices/scale-voice.json"
+  },
+  "interface": {
+    "outputs": {
+      "out": {
+        "from": "/out.audio"
+      }
+    }
+  },
   "nodes": [
     {
+      "type": "clock",
       "address": "/clock",
       "inputs": {
         "tempo": 110.0
-      },
-      "type": "clock"
+      }
     },
     {
+      "type": "sequencer",
       "address": "/sequencer",
       "doc": "Default ascending pattern, degrees 0..7.",
       "inputs": {
         "clock": {
           "from": "/clock.gate"
         }
-      },
-      "type": "sequencer"
+      }
     },
     {
+      "type": "harmony",
       "address": "/harmony",
       "doc": "C natural minor, 12-TET.",
       "inputs": {
@@ -32,15 +44,15 @@
         "s4": 7.0,
         "s5": 8.0,
         "s6": 10.0
-      },
-      "type": "harmony"
+      }
     },
     {
+      "type": "voicer",
       "address": "/voicer",
-      "config": {
-        "voices": 4
-      },
       "doc": "Degrees -> Hz via the tonal context, played on hosted scale-voice sub-patches.",
+      "config": {
+        "voices": 4.0
+      },
       "inputs": {
         "harmony": {
           "from": "/harmony"
@@ -49,26 +61,16 @@
           "from": "/sequencer"
         }
       },
-      "type": "voicer",
       "voice": "scale-voice"
     },
     {
+      "type": "output",
       "address": "/out",
       "inputs": {
         "audio": {
           "from": "/voicer.audio"
         }
-      },
-      "type": "output"
+      }
     }
-  ],
-  "outputs": [
-    {
-      "node": "/out",
-      "port": "audio"
-    }
-  ],
-  "resources": {
-    "scale-voice": "voices/scale-voice.json"
-  }
+  ]
 }

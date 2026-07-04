@@ -1,17 +1,29 @@
 {
-  "doc": "Polyphonic playable rig (8 voices) with a feedback delay in the master path. Each voice is a hosted `echo-voice` sub-patch; the voicer sums them and the delay echoes the mix. Send /voicer/notes [midi, gate] to play (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off; several = a chord). Tweak the echo live over OSC: /delay/time (seconds), /delay/feedback (0..0.95), /delay/mix (dry/wet 0..1).",
+  "format_version": 2,
   "instrument": "echo",
+  "doc": "Polyphonic playable rig (8 voices) with a feedback delay in the master path. Each voice is a hosted `echo-voice` sub-patch; the voicer sums them and the delay echoes the mix. Send /voicer/notes [midi, gate] to play (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off; several = a chord). Tweak the echo live over OSC: /delay/time (seconds), /delay/feedback (0..0.95), /delay/mix (dry/wet 0..1).",
+  "resources": {
+    "echo-voice": "voices/echo-voice.json"
+  },
+  "interface": {
+    "outputs": {
+      "out": {
+        "from": "/out.audio"
+      }
+    }
+  },
   "nodes": [
     {
-      "address": "/voicer",
-      "config": {
-        "voices": 8
-      },
-      "doc": "Hosts 8 echo-voice sub-patches; allocates notes across them and sums their audio.",
       "type": "voicer",
+      "address": "/voicer",
+      "doc": "Hosts 8 echo-voice sub-patches; allocates notes across them and sums their audio.",
+      "config": {
+        "voices": 8.0
+      },
       "voice": "echo-voice"
     },
     {
+      "type": "delay",
       "address": "/delay",
       "doc": "Feedback echo on the master mix.",
       "inputs": {
@@ -21,26 +33,16 @@
         "feedback": 0.4,
         "mix": 0.5,
         "time": 0.3
-      },
-      "type": "delay"
+      }
     },
     {
+      "type": "output",
       "address": "/out",
       "inputs": {
         "audio": {
           "from": "/delay"
         }
-      },
-      "type": "output"
+      }
     }
-  ],
-  "outputs": [
-    {
-      "node": "/out",
-      "port": "audio"
-    }
-  ],
-  "resources": {
-    "echo-voice": "voices/echo-voice.json"
-  }
+  ]
 }

@@ -1,41 +1,67 @@
 {
-  "doc": "Voice patch for good-button.json (ADR-0032). One monophonic saw synth voice: a held freq drives the oscillator, a held gate the ADSR. NO filter here — the Good Button's brightness drives a single master filter on the summed mix (host post-mix), so the voice is just osc -> env VCA. The envelope ADSR rests at its operator defaults (per-voice params aren't host-addressable in the hosted-voice model). interface: freq/gate in, audio/active out.",
+  "format_version": 2,
   "instrument": "good-button-voice",
+  "doc": "Voice patch for good-button.json (ADR-0032). One monophonic saw synth voice: a held freq drives the oscillator, a held gate the ADSR. NO filter here — the Good Button's brightness drives a single master filter on the summed mix (host post-mix), so the voice is just osc -> env VCA. The envelope ADSR rests at its operator defaults (per-voice params aren't host-addressable in the hosted-voice model). interface: freq/gate in, audio/active out.",
   "interface": {
     "inputs": {
-      "freq": "/osc.freq",
-      "gate": "/env.gate"
+      "freq": {
+        "type": "f32_buffer",
+        "default": 440.0,
+        "min": 20.0,
+        "max": 20000.0,
+        "curve": "exp",
+        "unit": "Hz"
+      },
+      "gate": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      }
     },
     "outputs": {
-      "audio": "/out.audio",
-      "active": "/env.active"
+      "active": {
+        "from": "/env.active"
+      },
+      "audio": {
+        "from": "/out.audio"
+      }
     }
   },
   "nodes": [
     {
+      "type": "oscillator",
       "address": "/osc",
       "doc": "Saw tone (harmonics for the master filter to chew).",
       "inputs": {
+        "freq": {
+          "from": "/freq"
+        },
         "waveform": "Saw"
-      },
-      "type": "oscillator"
+      }
     },
     {
+      "type": "envelope",
       "address": "/env",
       "doc": "ADSR envelope (linear CV), gated by the voicer.",
-      "type": "envelope"
+      "inputs": {
+        "gate": {
+          "from": "/gate"
+        }
+      }
     },
     {
+      "type": "power_f32_signal",
       "address": "/env_curve",
       "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
       "inputs": {
         "x": {
           "from": "/env.cv"
         }
-      },
-      "type": "power_f32_signal"
+      }
     },
     {
+      "type": "mul_f32_signal",
       "address": "/env_vca",
       "doc": "VCA: saw * shaped envelope CV.",
       "inputs": {
@@ -45,23 +71,16 @@
         "b": {
           "from": "/env_curve"
         }
-      },
-      "type": "mul_f32_signal"
+      }
     },
     {
+      "type": "output",
       "address": "/out",
       "inputs": {
         "audio": {
           "from": "/env_vca"
         }
-      },
-      "type": "output"
-    }
-  ],
-  "outputs": [
-    {
-      "node": "/out",
-      "port": "audio"
+      }
     }
   ]
 }
