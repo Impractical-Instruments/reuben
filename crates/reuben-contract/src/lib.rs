@@ -325,6 +325,18 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
             format!("type_name {name:?} must be snake_case: a lowercase letter then [a-z0-9_]"),
         ));
     }
+    // Reserved: interface pipes are **loader-built** (ADR-0038 §2) — declared through
+    // `interface.inputs` entries, never a registered operator — and the save path identifies
+    // pipe nodes by this type name. Refused here (the one validator: macro + scaffold) so a
+    // scaffolded/hand-written `pipe` operator fails before any code is generated; the registry
+    // carries the same reservation for embedders registering descriptors directly.
+    if name == "pipe" {
+        return Err(ContractError::new(
+            Locus::TypeName,
+            "type_name \"pipe\" is reserved: interface pipes are loader-built (ADR-0038), \
+             declared as `interface.inputs` entries, never as an operator type",
+        ));
+    }
 
     for (i, p) in spec.constants.iter().enumerate() {
         let at = Locus::Constant(i);
@@ -406,6 +418,15 @@ mod tests {
             assert!(e.message.contains("snake_case"), "{}", e.message);
         }
         assert_eq!(err(r#"{ "type_name": "" }"#).locus, Locus::TypeName);
+    }
+
+    #[test]
+    fn rejects_the_reserved_pipe_type_name() {
+        // Interface pipes are loader-built (ADR-0038): the name is reserved so a scaffolded
+        // `pipe` operator fails before any code is generated.
+        let e = err(r#"{ "type_name": "pipe" }"#);
+        assert_eq!(e.locus, Locus::TypeName);
+        assert!(e.message.contains("reserved"), "{}", e.message);
     }
 
     #[test]

@@ -85,7 +85,18 @@ impl Registry {
     }
 
     /// Register an operator type. Keyed by its descriptor's `type_name`.
+    ///
+    /// Panics on the reserved name `"pipe"`: interface pipes are **loader-built** (ADR-0038 §2
+    /// — declared through `interface.inputs` entries, never as document nodes), and save
+    /// (`InstrumentDoc::from_graph`) identifies pipe nodes by that type name — a registered
+    /// `"pipe"` operator's nodes would silently vanish on save. Fail loudly at registration
+    /// (a programming error in the embedder, not a document error).
     pub fn register(&mut self, make: fn() -> Box<dyn Operator>, descriptor: Descriptor) {
+        assert_ne!(
+            descriptor.type_name, "pipe",
+            "operator type name \"pipe\" is reserved: interface pipes are loader-built \
+             (ADR-0038) and save identifies their nodes by this name"
+        );
         self.entries
             .insert(descriptor.type_name, Entry { make, descriptor });
     }
@@ -113,6 +124,23 @@ mod tests {
     // The built-in set is no longer an enumerated list (it self-registers, ADR-0024), so these
     // are churn-free invariants over whatever the `inventory` slice gathered, plus a small canary
     // that fails loudly if the linker ever dead-strips the submissions.
+
+    #[test]
+    #[should_panic(expected = "reserved")]
+    fn registering_the_reserved_pipe_name_panics() {
+        // ADR-0038: pipes are loader-built; an embedder-registered "pipe" operator's nodes
+        // would silently vanish on save (`from_graph` drops nodes by this type name).
+        use crate::operator::Operator;
+        let mut r = Registry::new();
+        r.register(
+            || {
+                Box::new(crate::operators::pipe::Pipe::new(
+                    crate::plan::PortKind::Value,
+                ))
+            },
+            crate::operators::pipe::Pipe::descriptor(),
+        );
+    }
 
     #[test]
     fn builtin_is_nonempty() {

@@ -168,10 +168,10 @@ pub fn generate(registry: &Registry) -> Value {
                 "type": "object",
                 "required": ["type"],
                 "additionalProperties": false,
-                "description": "One interface INPUT pipe (ADR-0038 §2): a named source in the flat namespace (`in` -> `/in`; a post-mint collision is a fatal duplicate address). It DECLARES its Arg type — nothing to inherit from — enforced against every consumer by the ordinary wire check. Numeric pipes may declare an engine-enforced default/min/max/curve (an unwired signal pipe materializes `default`; a bare one, silence). A SIGNAL pipe may bind a logical input `channel`, honored only when the graph is played at top level (inert nested/hosted); `channel` on a message pipe is a load error.",
+                "description": "One interface INPUT pipe (ADR-0038 §2): a named source in the flat namespace (`in` -> `/in`; a post-mint collision is a fatal duplicate address). It DECLARES its Arg type — nothing to inherit from — enforced against every consumer by the ordinary wire check. Numeric pipes may declare an engine-enforced default/min/max/curve (an unwired signal pipe materializes `default`; a bare one, silence). A SIGNAL pipe may bind a logical input `channel` (0..4095), honored only when the graph is played at top level (inert nested/hosted); while the channel is unsupplied the pipe falls back to its declared `default` and stays message-drivable. `channel` on a message pipe is a load error.",
                 "properties": {
                     "type": { "type": "string", "description": "The declared Arg type: \"f32_buffer\" (Signal), \"f32\" (held Value), \"note\" (Event), \"harmony\" (held Value), or a shared vocab enum name (e.g. \"FilterMode\")." },
-                    "channel": { "type": "integer", "minimum": 0, "description": "Logical input channel binding (signal pipes only; top-level-honored, ADR-0038 §3)." },
+                    "channel": { "type": "integer", "minimum": 0, "maximum": 4095, "description": "Logical input channel binding (signal pipes only; top-level-honored; unsupplied falls back to `default`, ADR-0038 §3)." },
                     "default": {
                         "description": "Unwired/seed value: a number for a numeric pipe, the variant symbol for an enum pipe.",
                         "oneOf": [ { "type": "number" }, { "type": "string" } ]
@@ -191,7 +191,7 @@ pub fn generate(registry: &Registry) -> Value {
                 "description": "One interface OUTPUT pipe (ADR-0038 §2): fed from an internal port by an ordinary wire-ref. `channel` pins the logical master channel a signal pipe feeds (omitted = broadcast, ADR-0026); on a message-typed pipe it is a load error. min/max are presentational overrides obeying the ADR-0034 §4 subset law against the feeding port's range.",
                 "properties": {
                     "from": { "type": "string", "description": "Internal \"/node.port\" (or sole-output \"/node\") wire-ref feeding this pipe." },
-                    "channel": { "type": "integer", "minimum": 0, "description": "Logical master output channel (signal pipes only); omitted = broadcast." },
+                    "channel": { "type": "integer", "minimum": 0, "maximum": 4095, "description": "Logical master output channel (signal pipes only); omitted = broadcast." },
                     "label": { "type": "string" },
                     "unit": { "type": "string" },
                     "widget": { "type": "string" },

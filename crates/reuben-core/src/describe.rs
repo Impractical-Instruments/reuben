@@ -219,8 +219,11 @@ mod tests {
     #[test]
     fn migrated_v1_boundary_describes_like_the_original() {
         // The v1 fixture from ADR-0034: `tone` targeted /filter.cutoff with overrides. After
-        // migration the pipe owns the narrowed range, the child literal became its default,
-        // and the label decorates — the same numbers v1 `describe` published.
+        // migration the pipe carries the **inner port's engine range** (v1's min/max were
+        // presentational — the engine clamped to the target's own range, and a v2 pipe range
+        // is engine-enforced, so the narrowing cannot ride along), the child literal became
+        // its default, and the label decorates. What describe publishes is what the engine
+        // enforces — the ADR-0034 §4 truthfulness law, now with nothing lost in between.
         let b = boundary(
             r#"{"instrument":"t","interface":{
                 "inputs":{"tone":{"target":"/filter.cutoff","label":"Tone","min":200,"max":8000}},
@@ -234,7 +237,11 @@ mod tests {
             Some(DocValue::Number(4000.0)),
             "child literal became the pipe default"
         );
-        assert_eq!((tone.min, tone.max), (Some(200.0), Some(8000.0)));
+        assert_eq!(
+            (tone.min, tone.max),
+            (Some(20.0), Some(20_000.0)),
+            "the migrated pipe advertises the engine-enforced (inner-port) range"
+        );
         assert_eq!(tone.unit, "Hz", "target port's unit carried over");
         assert_eq!(tone.curve, Some(Curve::Exponential));
         assert_eq!(tone.label.as_deref(), Some("Tone"));
@@ -251,5 +258,28 @@ mod tests {
         );
         assert_eq!(b.inputs[0].channel, Some(1));
         assert_eq!(b.outputs[0].channel, Some(0));
+    }
+
+    #[test]
+    fn channel_plus_default_pipe_describes_both_truthfully() {
+        // #190 F1: a `channel` + `default` pipe is *both* a device input and a knob — the
+        // engine honors the default as the unfed fallback (and keeps the pipe
+        // message-drivable), so describe advertising both is the truth, not a lie.
+        let b = boundary(
+            r#"{"format_version":2,"instrument":"t","interface":{
+                "inputs":{"lvl":{"type":"f32_buffer","channel":0,
+                                 "default":0.25,"min":0,"max":1}},
+                "outputs":{"main":{"from":"/gain.out"}}},
+            "nodes":[{"type":"mul_f32_signal","address":"/gain",
+                      "inputs":{"a":{"from":"/lvl"}}}]}"#,
+        );
+        let lvl = &b.inputs[0];
+        assert_eq!(lvl.channel, Some(0), "the device binding surfaces");
+        assert_eq!(
+            lvl.default,
+            Some(DocValue::Number(0.25)),
+            "the unfed fallback default surfaces"
+        );
+        assert_eq!((lvl.min, lvl.max), (Some(0.0), Some(1.0)));
     }
 }

@@ -177,9 +177,11 @@ impl<E: Executor> Renderer<E> {
     /// per logical input channel (`inputs.len() == plan.config.input_channels`), each at least
     /// `block_size` long, that this block's channel-bound input pipes read. It is also the
     /// determinism seam (ADR-0038 §10): the offline/test path injects known buffers here, so a
-    /// render with injected input is bit-reproducible. A channel the caller does not supply —
-    /// `inputs` shorter than the bound width, or a short buffer's tail — reads **zeros**
-    /// (dark-degrade, ADR-0038 §7); a no-input patch passes `&[]` and pays nothing.
+    /// render with injected input is bit-reproducible. A channel the caller does not supply
+    /// (`inputs` shorter than the bound width) leaves its pipes on the ordinary ZOH path —
+    /// the pipe's **declared default materializes** (a bare pipe's zero seed fills silence)
+    /// and routed messages still drive it (dark-degrade, ADR-0038 §7); a supplied-but-short
+    /// buffer's tail reads **zeros**. A no-input patch passes `&[]` and pays nothing.
     ///
     /// `outbound` receives any Messages an `osc_out` sink sent this block (ADR-0026,
     /// ADR-0030); it is **appended to, never cleared** — the caller drains it.
@@ -223,7 +225,8 @@ impl<E: Executor> Renderer<E> {
 
 /// Re-entrant block render over an explicit `(plan, arena, scratch)` (ADR-0032 §4): feed the
 /// input master from `inputs` (one buffer per logical input channel, ADR-0038 §3; an
-/// unsupplied channel reads zeros — a no-input plan passes `&[]`), execute every node for
+/// unsupplied channel falls back to its pipe's declared default — a no-input plan passes
+/// `&[]`), execute every node for
 /// `frames` frames, and sum the master taps into `master` (one buffer per logical channel,
 /// `master.len()` should equal `plan.config.channels`; a tap beyond `master` is dropped). `outbound`
 /// is **appended to** (ADR-0026) — the caller drains it.
@@ -265,22 +268,23 @@ pub fn render_plan<E: Executor>(
     }
 
     // Feed the input master (ADR-0038 §3): copy each caller-supplied logical input channel
-    // into its bound pipe's `in` buffer before any node runs. Distinct taps may share a
-    // channel (fan-out at the master). A channel the caller doesn't supply — or the tail of a
-    // short buffer — reads zeros (dark-degrade, ADR-0038 §7). The tap buffers sit in the
-    // materialize-scratch mask, so the clear above skipped them; this write is what keeps
-    // them fully defined each block. No-input plans have no taps and pay nothing.
-    for tap in &plan.input_taps {
-        let dst = &mut arena[tap.buffer];
-        let supplied = match inputs.get(tap.channel) {
-            Some(src) => {
-                let n = frames.min(src.len());
-                dst[..n].copy_from_slice(&src[..n]);
-                n
-            }
-            None => 0,
+    // into its bound pipe's `in` materialize scratch before any node runs, and flag the entry
+    // `materialize_device_fed` so `process_node`'s ZOH fill yields the buffer for the block
+    // (device audio wins). Distinct taps may share a channel (fan-out at the master). A
+    // channel the caller doesn't supply is left alone: the ordinary materialize fill then
+    // renders the pipe's declared default and applies routed messages — dark-degrade
+    // (ADR-0038 §7) to the control the pipe advertises, not to a dead knob. The tail of a
+    // supplied-but-short buffer reads zeros. No-input plans have no taps and pay nothing.
+    for i in 0..plan.input_taps.len() {
+        let tap = plan.input_taps[i];
+        let Some(src) = inputs.get(tap.channel) else {
+            continue;
         };
-        dst[supplied..frames].iter_mut().for_each(|s| *s = 0.0);
+        let dst = &mut arena[tap.buffer];
+        let supplied = frames.min(src.len());
+        dst[..supplied].copy_from_slice(&src[..supplied]);
+        dst[supplied..frames].fill(0.0);
+        plan.nodes[tap.node].materialize_device_fed[tap.mat_index] = true;
     }
 
     // Route external messages to node input ports, classified by port kind. Reuses scratch.
@@ -483,7 +487,7 @@ impl<E: Executor> Renderer<E> {
 /// Normalize a routed [`Arg`] for a **Held** input port (ADR-0030): clamp an `F32` to the port's
 /// range, resolve an enum control message (symbol / index / variant) to the enum's concrete `Arg`,
 /// or take any other vocab value (`Harmony`) as-is. `None` if it cannot be a value of this port.
-fn held_arg(p: &Port, arg: &Arg) -> Option<Arg> {
+pub(crate) fn held_arg(p: &Port, arg: &Arg) -> Option<Arg> {
     match &p.ty {
         PortType::F32 => arg
             .as_f32()
@@ -543,6 +547,51 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
     }
 
     for (mi, msg) in messages.iter().enumerate() {
+        // A dissolved interface pipe's minted address (ADR-0038 §2): deliver to its rewired
+        // consumer with the pipe's own normalization — the same two hops (pipe port, then
+        // consumer port) the rendered pipe node made. Checked first; alias addresses belonged
+        // to removed nodes, so they can never shadow a live port.
+        if let Some(alias) = plan.input_alias(&msg.address) {
+            let (n, port) = (alias.node, alias.dst_port);
+            match alias.kind {
+                // A signal pipe's message feed was a raw ZOH materialize write (unclamped).
+                PortKind::Signal => {
+                    if let Some(v) = msg.as_f32() {
+                        routes[n].materialize_writes.push((msg.frame, port, v));
+                    }
+                }
+                // A value pipe latched (pipe-meta clamp), then forwarded; the emission landed
+                // by the consumer port's kind — Value re-`held_arg`s, Signal materializes.
+                PortKind::Value => {
+                    let Some(a) = held_arg(&alias.port, &msg.arg) else {
+                        continue;
+                    };
+                    match plan.nodes[n].input_kinds[port] {
+                        PortKind::Signal => {
+                            if let Some(v) = a.as_f32() {
+                                routes[n].materialize_writes.push((msg.frame, port, v));
+                            }
+                        }
+                        PortKind::Value => {
+                            let p = &plan.nodes[n].descriptor.inputs[port];
+                            if let Some(a2) = held_arg(p, &a) {
+                                routes[n].held.push((msg.frame, port, a2));
+                            }
+                        }
+                        // Never aliased: dissolve keeps a Value pipe feeding an Event input.
+                        PortKind::Event => {}
+                    }
+                }
+                // An event pipe re-emitted each routed event verbatim at its frame.
+                PortKind::Event => {
+                    routes[n].events.push(RoutedEvent {
+                        dst_port: port,
+                        src: EventSrc::External { msg: mi },
+                    });
+                }
+            }
+            continue;
+        }
         // Resolve the address to its one destination port ([`resolve_port`], shared with the
         // boundary's [`Plan::osc_in_message`]); deliver per the port's kind (ADR-0030, Q11a —
         // routing is by port, not by operator address-filtering).
@@ -650,6 +699,17 @@ fn process_node(
     // excluded from the per-block arena clear, so it persists; a constant block leaves it untouched.
     for k in 0..node.materialize.len() {
         let (port, buf) = node.materialize[k];
+        // The input master already wrote device audio into this scratch for the block
+        // (ADR-0038 §3, `InputTap`): device audio wins — skip the ZOH fill (and this block's
+        // routed messages; the latch keeps its value for the next unsupplied block). The
+        // buffer no longer holds the latch, so mark it dirty for the next ZOH refill, and
+        // `varying` — device audio is per-sample data, not a held constant.
+        if node.materialize_device_fed[k] {
+            node.materialize_device_fed[k] = false;
+            node.materialize_clean[k] = false;
+            node.varying[port] = true;
+            continue;
+        }
         let target = &mut arena[buf];
         let changed = route.materialize_writes.iter().any(|&(_, p, _)| p == port);
         // The latch is the sole ZOH store (ADR-0030): a materialized port is always seeded/set
