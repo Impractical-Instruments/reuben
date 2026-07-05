@@ -80,7 +80,7 @@ fn arg_to_osc(a: &Arg) -> Option<OscType> {
     match a {
         Arg::F32(f) => Some(OscType::Float(*f)),
         Arg::I32(i) => Some(OscType::Int(*i)),
-        Arg::Str(s) => Some(OscType::String(s.clone())),
+        Arg::Str(s) => Some(OscType::String(s.to_string())),
         _ => None,
     }
 }
@@ -95,8 +95,8 @@ fn arg_from_osc(t: &OscType) -> Option<Arg> {
         OscType::Float(f) => Some(Arg::F32(*f)),
         OscType::Double(d) => Some(Arg::F32(*d as f32)),
         OscType::Bool(b) => Some(Arg::I32(*b as i32)),
-        OscType::String(s) => Some(Arg::Str(s.clone())),
-        OscType::Char(c) => Some(Arg::Str(c.to_string())),
+        OscType::String(s) => Some(Arg::Str(s.as_str().into())),
+        OscType::Char(c) => Some(Arg::Str(c.to_string().into())),
         _ => None,
     }
 }

@@ -1372,7 +1372,7 @@ impl InstrumentDoc {
                 // numeric pipes carry theirs inside the port's own meta.
                 if descriptor.inputs[0].enum_meta().is_some() {
                     if let Some(PipeDefault::Symbol(s)) = &pipe.default {
-                        graph.set_value(key, "in", &Arg::Str(s.clone()));
+                        graph.set_value(key, "in", &Arg::Str(s.as_str().into()));
                     }
                 }
                 by_addr.insert(address, (key, descriptor));
@@ -1456,7 +1456,9 @@ impl InstrumentDoc {
                 }
                 match value {
                     ConfigValue::Number(v) => graph.set_constant(key, name, &Arg::F32(*v as f32)),
-                    ConfigValue::Symbol(s) => graph.set_constant(key, name, &Arg::Str(s.clone())),
+                    ConfigValue::Symbol(s) => {
+                        graph.set_constant(key, name, &Arg::Str(s.as_str().into()))
+                    }
                 }
             }
 
@@ -2715,7 +2717,7 @@ fn literal_arg(
                     value: s.clone(),
                 });
             }
-            Ok(Some(Arg::Str(s.clone())))
+            Ok(Some(Arg::Str(s.as_str().into())))
         }
     }
 }

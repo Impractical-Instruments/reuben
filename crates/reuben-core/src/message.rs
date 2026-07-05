@@ -17,6 +17,7 @@
 
 use crate::vocab::harmony::Harmony;
 use crate::vocab::pitch::Note;
+use std::sync::Arc;
 
 /// A contiguous sample buffer — the performant representation of a per-sample stream (a
 /// "Signal", ADR-0001, ADR-0030). `Signal<f32>` is the only element kind built today; the
@@ -74,8 +75,39 @@ pub enum Arg {
     // OSC primitives.
     F32(f32),
     I32(i32),
-    /// A string / symbol atom. Cold/boundary paths only (interned later if it shows hot).
-    Str(String),
+    /// A string / symbol atom, backed by `Arc<str>` so cloning on the render thread is a
+    /// refcount bump, never a heap allocation (issue #206). Construction (`Arc::from`) still
+    /// allocates — it happens only on cold paths (the OSC decode thread, instrument load).
+    ///
+    /// **Render-thread dealloc analysis (issue #206).** A clone is RT-safe, but the *last*
+    /// `Arc` drop frees the backing allocation on whichever thread holds it. Where each
+    /// reachable last drop lands:
+    ///
+    /// - **The echo path** (external `Str` → `arg` pass-through → `osc_out` → outbound): the
+    ///   sink's emit is *moved* into the outbound [`Message`], which native hands to the
+    ///   OSC-out sender thread before dropping — in the configured case the last drop lands
+    ///   off the render thread by design. (With no `--osc-out` target, native's drain-and-drop
+    ///   frees on the audio thread — a warned misconfiguration, and the same path that already
+    ///   frees each outbound Message's `address: String` there.)
+    /// - **A `Str` Value-port latch overwrite** (`render.rs`): the previous latched payload
+    ///   drops on the render thread, and by then its source Message is usually gone, so the
+    ///   latch is the last owner. This is a bounded `free()` at exactly the site where the old
+    ///   `String` backing *always* freed (and the incoming clone *always* allocated) —
+    ///   `Arc<str>` strictly improves it.
+    /// - **The engine's pending-message hand-off** (`reuben-native`'s `engine.rs`): a queued
+    ///   inbound Message that latched (or routed nowhere) drops with its payload on the audio
+    ///   thread — the same explicitly-tracked RT-debt path that already frees each pending
+    ///   Message's `address: String` per message.
+    ///
+    /// The residual — one `free()` per *replaced or unconsumed* string, only ever on sparse
+    /// boundary-driven message traffic, never in the steady-state signal loop (`rt_safe.rs`
+    /// still holds: no string Messages, no allocator traffic) — is accepted rather than fenced
+    /// with a retain/reclaim buffer: every reachable site either already deallocates a
+    /// per-message `String` at the same moment (the hand-off paths) or previously deallocated
+    /// the `String` backing there (the latch), so a fence here would not make the render
+    /// thread allocator-free. Eliminating those frees belongs to the preallocated lock-free
+    /// hand-off the engine's RT-debt note tracks, not to this type.
+    Str(Arc<str>),
 
     // Shared vocab concrete types (ADR-0030) — each defined once with `#[derive(ArgValue)]`,
     // which generates this variant's `From`/`TryFrom` glue. More land as operators migrate.
@@ -162,7 +194,7 @@ impl<'a> FromArg<'a> for i32 {
 impl<'a> FromArg<'a> for &'a str {
     fn from_arg(arg: &'a Arg) -> Option<Self> {
         match arg {
-            Arg::Str(s) => Some(s.as_str()),
+            Arg::Str(s) => Some(&**s),
             _ => None,
         }
     }
@@ -242,7 +274,7 @@ impl Message {
 /// A Message an operator emits during `process` onto a Message output port (ADR-0014),
 /// before the engine stamps it block-absolute and routes it to downstream nodes. Distinct
 /// from the boundary [`Message`]: its payload is the one inline [`Arg`], so emitting on the wired
-/// hot path touches no allocator (sparse `Arg::Str` aside, which only appears on cold paths).
+/// hot path touches no allocator (a sparse [`Arg::Str`] included — its clone is an `Arc` bump).
 /// Carries **no address** (ADR-0031 step 7): internal wires route by connection, and the OSC
 /// boundary stamps the node address from [`Plan::outbound_taps`](crate::plan::Plan), not from here.
 #[derive(Debug, Clone)]
