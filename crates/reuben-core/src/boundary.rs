@@ -6,15 +6,15 @@
 //! destination port carries, and expanding one internal `Arg` back into the flat list to send.
 //!
 //! **Dest-port-type-driven** (ADR-0030, Q10a). External OSC routes by address to a node/port; the
-//! **port's declared [`PortType`]** drives [`osc_in_arg`] — there is no separate registry to drift
-//! from the descriptor. A primitive port wraps the single arg; a vocab enum resolves it via its
-//! [`EnumMeta`](crate::descriptor::EnumMeta); a struct vocab type unpacks the flat form via
-//! [`OscArg::from_osc`]. A [`Buffer`](Arg::F32Buffer) port has no OSC form, so audio cannot cross —
-//! the opt-out is by construction.
+//! **port's declared [`PortType`]** drives [`osc_in_arg`]. A primitive port wraps the single arg; a
+//! vocab enum resolves it via its [`EnumMeta`](crate::descriptor::EnumMeta); a struct vocab type
+//! unpacks the flat form via the converter it registered with [`register_osc_form!`] (its
+//! [`OscArg::from_osc`], keyed by the port's declared type name — port-authority, epic #146). A
+//! [`Buffer`](Arg::F32Buffer) port has no OSC form, so audio cannot cross — the opt-out is by
+//! construction.
 
 use crate::descriptor::{Port, PortType};
 use crate::message::{Arg, OscArg};
-use crate::vocab::pitch::Note;
 
 /// A compile-time OSC-form registration for a **struct vocab type** (issue #204, epic #146),
 /// submitted at the type's definition site via [`register_osc_form!`] and collected by
@@ -117,18 +117,14 @@ pub fn osc_in_arg(p: &Port, args: &[Arg]) -> Option<Arg> {
         PortType::Vocab {
             enum_meta: Some(e), ..
         } => args.first().and_then(|a| e.resolve_arg(a)),
-        // A struct vocab type: dispatch on its `Arg` variant name to the one type that has an
-        // external form. This central match is the boundary's registry for multi-arg vocab
-        // structs (mirroring how `Arg` is itself the closed central enum). A name with no arm
-        // (e.g. `Harmony`) has no OSC form — opt-out by omission.
+        // A struct vocab type: look up its registered converter ([`OscForm`], issue #205) by the
+        // port's declared type name and unpack the flat form. A name with no registration
+        // (e.g. `Harmony`) has no OSC form — opt-out by not calling `register_osc_form!`.
         PortType::Vocab {
             enum_meta: None,
             name,
             ..
-        } => match *name {
-            "Note" => Note::from_osc(args).map(Arg::Note),
-            _ => None,
-        },
+        } => osc_form_by_name(name).and_then(|f| (f.from_osc)(args)),
         // A type-agnostic pass-through (issue #141, the `osc_out` sink's input): a single
         // **numeric** atom crosses verbatim — the OSC echo/loopback path (fader/encoder feedback).
         // A multi-arg list has no unambiguous single-Arg form (the port names no vocab type to
@@ -158,14 +154,15 @@ pub fn has_osc_form(ty: &PortType) -> bool {
         PortType::Vocab {
             enum_meta: Some(_), ..
         } => true,
-        // A struct vocab type has a form iff `osc_out_args` packs one — the same central
-        // "Note" registry as `osc_in_arg`'s struct arm. `Harmony` opts out by omission;
-        // converters for structured types are issue #146.
+        // A struct vocab type has a form iff it registered a converter ([`OscForm`], the same
+        // registry `osc_in_arg`'s struct arm decodes through). `Harmony` opts out by not
+        // registering; the `has_osc_form_matches_what_the_drain_can_send` test guards the
+        // name-keyed registry against drifting from the variant-keyed drain (`osc_out_args`).
         PortType::Vocab {
             enum_meta: None,
             name,
             ..
-        } => *name == "Note",
+        } => has_form(name),
         // Audio never crosses (ADR-0026/0030), and a pass-through names no type of its own.
         PortType::F32Buffer | PortType::Arg => false,
     }
@@ -204,7 +201,7 @@ mod tests {
     use super::*;
     use crate::descriptor::{Curve, F32Meta, Port};
     use crate::vocab::harmony::SnapDir;
-    use crate::vocab::pitch::Pitch;
+    use crate::vocab::pitch::{Note, Pitch};
 
     /// A bare port of the given type (no meta) — the fixture for the type-driven arms.
     fn port(ty: PortType) -> Port {
