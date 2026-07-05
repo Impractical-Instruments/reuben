@@ -1,17 +1,28 @@
 //! Boundary — the OSC ⇄ [`Arg`] conversion at the external edge (ADR-0007, ADR-0026, ADR-0030).
 //!
 //! The native layer decodes a UDP datagram into an address plus a flat list of **primitive**
-//! `Arg`s (the OSC atoms `F32`/`I32`/`Str`) and, on the way out, encodes the same. These two
-//! functions are the *typed* half in between: turning that flat list into the single `Arg` a
-//! destination port carries, and expanding one internal `Arg` back into the flat list to send.
+//! `Arg`s (the OSC atoms `F32`/`I32`/`Str`) and, on the way out, encodes the same. The two
+//! conversion functions here are the *typed* half in between: [`osc_in_arg`] turns that flat
+//! list into the single `Arg` a destination port carries, and [`osc_out_args`] expands one
+//! internal `Arg` back into the flat list to send.
 //!
 //! **Dest-port-type-driven** (ADR-0030, Q10a). External OSC routes by address to a node/port; the
 //! **port's declared [`PortType`]** drives [`osc_in_arg`]. A primitive port wraps the single arg; a
 //! vocab enum resolves it via its [`EnumMeta`](crate::descriptor::EnumMeta); a struct vocab type
 //! unpacks the flat form via the converter it registered with [`register_osc_form!`] (its
 //! [`OscArg::from_osc`], keyed by the port's declared type name — port-authority, epic #146). A
-//! [`Buffer`](Arg::F32Buffer) port has no OSC form, so audio cannot cross — the opt-out is by
-//! construction.
+//! [`Buffer`](Arg::F32Buffer) port has no OSC form, so audio cannot cross, and a struct type
+//! that registers no form (`Harmony`; its wire form is issue #209) cannot either — the opt-out
+//! is by construction / by omission.
+//!
+//! **The converter registry** ([`OscForm`], issues #204/#205): struct vocab converters
+//! self-register at their definition site and are collected by `inventory` into a link-time
+//! slice (the ADR-0024 pattern). [`osc_form_by_name`] serves the inbound decode; [`has_form`]
+//! serves [`has_osc_form`]'s capability key. Only those two sides are registry-backed:
+//! outbound ([`osc_out_args`]) stays a **closed exhaustive match** over [`Arg`] — see
+//! [`OscForm`]'s docs for why — with the
+//! `has_osc_form_matches_what_the_drain_can_send` test pinning the name-keyed registry to the
+//! variant-keyed drain.
 
 use crate::descriptor::{Port, PortType};
 use crate::message::{Arg, OscArg};

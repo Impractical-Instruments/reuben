@@ -237,12 +237,15 @@ impl Operator for Filter {
   **Input-only**, and only for a **pure carrier** — an operator that treats the payload as opaque
   (forward, buffer, drop) and never interprets it; the wired *source* port is the type authority.
   Legality is capability-keyed: any Event or Value source whose type has an **external OSC form**
-  wires in (primitives, vocab enums, `Note`'s flat form); a `Harmony` source (no OSC form —
-  converters are issue #146) and a Signal source are rejected at load/plan — audio never crosses
-  the boundary. Inbound is asymmetric: external OSC addressed at an `arg` port crosses only as a
-  **single numeric atom** (multi-arg lists and strings drop — so the flat 2-arg Note form the sink
-  *sends* does not round-trip back in through an `arg` port; a typed `note` port still decodes
-  it). Today the form of `osc_out.in`, the outbound OSC sink.
+  wires in — primitives, vocab enums, and any struct vocab type whose converter is registered
+  with the boundary (`register_osc_form!` in `boundary.rs`, epic #146; `Note`'s flat form today);
+  a `Harmony` source (no OSC form — it registers none; its wire form is deferred to issue #209)
+  and a Signal source are rejected at load/plan — audio never crosses the boundary. Inbound is
+  asymmetric: external OSC addressed at an `arg` port crosses only as a **single atom**, numeric
+  or string (the string joined once `Arg::Str` went `Arc<str>`-backed, issues #206/#207), while
+  multi-arg lists drop — so the flat 2-arg Note form the sink *sends* does not round-trip back in
+  through an `arg` port; a typed `note` port still decodes it. Today the form of `osc_out.in`,
+  the outbound OSC sink.
 - **`constants: { name: i32 { LO..=HI, default D } }`** — instantiate-time `Constant`s
   ([ADR-0035](../adr/0035-constants-are-immutable-ports.md), the Voicer's `voices`); the loader
   routes them to the patch's `config` block. Constants keep bare `usize` `C_*` ordinals — they are
