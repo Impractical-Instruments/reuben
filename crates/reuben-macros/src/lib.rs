@@ -837,7 +837,7 @@ mod tests {
                 outputs: { audio: f32_buffer },
             }"#,
         );
-        assert!(out.contains("Port :: f32_buffer_meta"), "{out}");
+        assert!(out.contains("Port :: f32_buffer_meta (\"freq\""), "{out}");
         assert!(out.contains("default : 440"), "{out}");
         assert!(out.contains("Curve :: Exponential"), "{out}");
         // Not the bare-buffer ctor and not the Value `f32` ctor.
