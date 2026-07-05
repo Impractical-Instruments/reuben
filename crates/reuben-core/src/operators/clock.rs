@@ -364,4 +364,51 @@ mod tests {
             "phase wraps once per beat, not per sub-beat"
         );
     }
+
+    #[test]
+    fn tempo_change_mid_render_takes_effect_at_its_frame() {
+        // The module-doc invariant for the ADR-0031 Value inputs: a `tempo` change block-slices
+        // and takes effect at the *exact sample* of the change (not the next 128-block boundary),
+        // with the beat phase continuous across the cut. The change lands mid-beat (phase 0.75)
+        // so a phase reset at the slice would be visible — at a beat boundary the wrap masks it.
+        let n = 48_000;
+        let cut = 18_000; // 120 BPM @ 48 kHz: 0.75 beats in — mid-beat, gate low
+        let mut d = OpDriver::for_type(Clock::new(), SR);
+        d.set(IN_TEMPO, 120.0).set(IN_DIVISION, 1.0);
+        d.push(IN_TEMPO, cut, 240.0);
+        d.render(n);
+        let phase = d.output(OUT_PHASE).to_vec();
+        let gate = gate_buffer(d.emits(), n);
+
+        let old_dt = 1.0 / 24_000.0f64; // 120 BPM beats/sample
+        let new_dt = 1.0 / 12_000.0f64; // 240 BPM beats/sample
+                                        // Phase continuity at the cut: the step *onto* the cut frame is still the old dt (the
+                                        // accumulator carried across the slice, no re-zero)...
+        let step_in = phase[cut] as f64 - phase[cut - 1] as f64;
+        assert!(
+            (step_in - old_dt).abs() < 1e-6,
+            "step onto the cut should be the old dt: got {step_in}, want {old_dt}"
+        );
+        // ...and the very next step advances at the new dt — 240 BPM from exactly frame `cut`.
+        let step_out = phase[cut + 1] as f64 - phase[cut] as f64;
+        assert!(
+            (step_out - new_dt).abs() < 1e-6,
+            "step off the cut should be the new dt: got {step_out}, want {new_dt}"
+        );
+
+        // The beat grid downstream: the remaining 0.25 beat takes 3000 samples at 240 BPM (wrap
+        // at 21000), then the 12000-sample 240 BPM grid. A tempo latched at block granularity or
+        // a phase reset at the slice shifts every one of these trigger frames.
+        let edges = rising_edges(&gate);
+        let expected = [0usize, 21_000, 33_000, 45_000];
+        assert_eq!(
+            edges.len(),
+            expected.len(),
+            "expected {} beat triggers, got {edges:?}",
+            expected.len()
+        );
+        for (k, (&e, &x)) in edges.iter().zip(expected.iter()).enumerate() {
+            assert!(e.abs_diff(x) <= 1, "beat {k} edge at {e}, expected ~{x}");
+        }
+    }
 }

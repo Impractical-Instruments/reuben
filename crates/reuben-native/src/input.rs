@@ -1069,6 +1069,36 @@ mod tests {
         assert!(!pop_frame(&mut c, &mut frame), "empty ring must report dry");
     }
 
+    #[test]
+    fn frames_survive_the_ring_wrap_intact() {
+        // The split-copy path in push_frame/pop_frame: a frame straddling the ring's
+        // physical wrap point makes write_chunk/read_chunk hand back *two* non-empty
+        // slices, and the frame must be reassembled across them in order — a swapped
+        // sub-slice or an off-by-one at `split` misaligns channel interleaving for the
+        // rest of the run (the module's central invariant). Odd capacity forces the
+        // straddle: with an even capacity, stereo frames always land frame-aligned at
+        // the wrap and the second slice stays empty.
+        let (mut p, mut c) = rtrb::RingBuffer::<f32>::new(5);
+        assert!(push_frame(&mut p, &[1.0, 2.0])); // slots 0-1
+        assert!(push_frame(&mut p, &[3.0, 4.0])); // slots 2-3
+        let mut frame = [0.0f32; 2];
+        assert!(pop_frame(&mut c, &mut frame)); // read index now 2
+        assert_eq!(frame, [1.0, 2.0]);
+        // Write index 4: this frame splits — left sample in slot 4, right sample wrapped
+        // to slot 0 (the two-slice WRITE path).
+        assert!(push_frame(&mut p, &[5.0, 6.0]));
+        assert!(pop_frame(&mut c, &mut frame));
+        assert_eq!(frame, [3.0, 4.0]);
+        // Read index 4: the two-slice READ path must put the pre-wrap sample at frame[0]
+        // and the wrapped one at frame[1].
+        assert!(pop_frame(&mut c, &mut frame));
+        assert_eq!(frame, [5.0, 6.0]);
+        // Contiguous again past the wrap (slots 1-2): alignment survived the straddle.
+        assert!(push_frame(&mut p, &[7.0, 8.0]));
+        assert!(pop_frame(&mut c, &mut frame));
+        assert_eq!(frame, [7.0, 8.0]);
+    }
+
     // --- InputStage (whole-policy tests over a real ring — no device needed) -------------
 
     /// A stage over a real rtrb ring with small, legible geometry: mono, ratio 1.0,
@@ -1246,7 +1276,10 @@ mod tests {
         // After a fill that leaves the residual above the floor, the next fill consumes
         // faster than nominal (ratio > 1), draining the surplus over time.
         let (mut p, mut stage, _diag) = test_stage();
-        push_samples(&mut p, 0..40); // residual after first fill: 40 - 17 = 23 > floor 8
+        // Warmup trims the 40-frame backlog to need (16 + 2 window prime = 18) + floor (8)
+        // = 26 uncounted; the resampler then pulls 17 (16 + window prime), so the residual
+        // the servo sees is 9 > floor 8 — a strict, deterministic 1-frame surplus.
+        push_samples(&mut p, 0..40);
         let mut out = [0.0f32; 16];
         stage.fill(&mut out);
         assert!(

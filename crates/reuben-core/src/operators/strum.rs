@@ -264,6 +264,33 @@ mod tests {
     }
 
     #[test]
+    fn pending_overflow_drops_note_offs_but_still_emits_ons() {
+        // The pending note-off queue is capacity-bounded (PENDING_CAP = 32, allocation-free) and
+        // the guard is asymmetric: a pluck's note-on is emitted unconditionally, but past capacity
+        // its paired note-off is silently dropped. The boundary is reachable in normal play — 32
+        // strings and one fast back-and-forth drag inside the 1440-sample ring window: frame 0
+        // latches band 0, the jump to 1.0 plucks bands 1..=31 (31 ons, 31 pending offs), the jump
+        // back plucks 30..=0 (31 more ons, but only 1 more off fits). This pins the current
+        // drop-the-off-keep-the-on shape: the 30 unmatched ons are a hung-note hazard for any
+        // downstream Voicer, so a future fix (dropping the on too, or force-firing the oldest
+        // off) must consciously change these counts.
+        let n = (PLUCK_SAMPLES as usize) + 200;
+        let positions = [(0, 0.0), (10, 1.0), (20, 0.0)];
+        let emits = run(n, &params(32.0, 1.0, 1.0), &positions);
+
+        let ons = emits.iter().filter(|e| vel(e) > 0.5).count();
+        let offs = emits.iter().filter(|e| vel(e) < 0.5).count();
+        assert_eq!(
+            ons, 62,
+            "every crossing plucks its note-on, unconditionally"
+        );
+        assert_eq!(
+            offs, PENDING_CAP,
+            "note-offs past queue capacity are dropped"
+        );
+    }
+
+    #[test]
     fn octaves_param_widens_the_string_span() {
         // 8 strings over 2 octaves: ascending plucks land on 2,4,6,8,10,12,14 (round(k * 14 / 7)).
         let positions: Vec<(usize, f32)> =

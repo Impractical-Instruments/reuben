@@ -185,4 +185,42 @@ mod tests {
         assert_eq!(pubs.len(), 1);
         assert_eq!(harmony_of(&pubs[0]).root, 62);
     }
+
+    #[test]
+    fn scale_shape_change_publishes_the_new_scale() {
+        // The scale shape (`degrees` + `s0`..`s11`) is read through the hand-ordered IN_STEPS
+        // handle table: any two swapped entries — or an off-by-one against the contract's port
+        // numbering — would publish a scrambled scale while the root/chord tests stay green.
+        // All five pentatonic offsets are distinct, so the whole-Harmony compare below is
+        // sensitive to any single-pair swap; `s5 = 24` proves slots past `degrees` are
+        // truncated, never leaked into the published scale.
+        let mut d = OpDriver::for_type(HarmonyOp::new(), SR);
+        let _ = d.render(128); // consume the initial default publish
+        d.set(IN_DEGREES, 5.0)
+            .set(IN_S0, 0.0)
+            .set(IN_S1, 3.0)
+            .set(IN_S2, 5.0)
+            .set(IN_S3, 7.0)
+            .set(IN_S4, 10.0)
+            .set(IN_S5, 24.0); // past `degrees` — must not reach the scale
+        let pubs = d.render(128).emits().to_vec();
+        assert_eq!(pubs.len(), 1, "one publish for the scale change");
+        assert_eq!(pubs[0].frame, 0);
+        assert_eq!(
+            harmony_of(&pubs[0]),
+            Harmony {
+                root: 60, // untouched static fields keep their defaults
+                scale: ScaleField::new(&[0, 3, 5, 7, 10]),
+                chord: Chord::empty(),
+            }
+        );
+        // Emit-on-change (ADR-0015) covers the scale fields too, not just root/chord.
+        let quiet = d.render(128).emits().to_vec();
+        assert!(quiet.is_empty(), "unchanged scale does not re-publish");
+        // `degrees` clamps up to 1: a 0 request still publishes a 1-degree scale (`s0` only).
+        d.set(IN_DEGREES, 0.0);
+        let pubs = d.render(128).emits().to_vec();
+        assert_eq!(pubs.len(), 1);
+        assert_eq!(harmony_of(&pubs[0]).scale, ScaleField::new(&[0]));
+    }
 }

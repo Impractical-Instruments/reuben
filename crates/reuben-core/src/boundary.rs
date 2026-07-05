@@ -211,6 +211,36 @@ mod tests {
         assert_eq!(got, Some(Arg::Note(Note::new(Pitch::Degree(2), 1.0))));
     }
 
+    /// ADR-0028 at the runtime boundary: external OSC that doesn't fit the destination port
+    /// **drops** (`None`) — it never snaps to a default. Load time pins this for documents
+    /// (`unknown_symbol_errors` in `format.rs`); this is the counterpart for live input, the
+    /// hardening surface against arbitrary external OSC (a control surface sending a typo'd
+    /// symbol or a stale index). A regression making the derived enum resolver fall back to
+    /// variant 0 on garbage, or `osc_in_arg` default-fill a malformed Note, fails here.
+    #[test]
+    fn boundary_drops_args_that_do_not_fit_the_port() {
+        // Enum port: an unknown symbol, an out-of-range index, and a negative index all drop.
+        let dir = Port::enumerated(SnapDir::enum_meta("dir"));
+        assert_eq!(osc_in_arg(&dir, &[Arg::Str("Nope".into())]), None);
+        assert_eq!(osc_in_arg(&dir, &[Arg::I32(99)]), None);
+        assert_eq!(osc_in_arg(&dir, &[Arg::I32(-1)]), None);
+        // F32 port: a string atom has no numeric coercion.
+        let f32p = port(PortType::F32);
+        assert_eq!(osc_in_arg(&f32p, &[Arg::Str("loud".into())]), None);
+        // Str port: a numeric atom is not a string.
+        let strp = port(PortType::Str);
+        assert_eq!(osc_in_arg(&strp, &[Arg::F32(1.0)]), None);
+        // Note port: an empty list and a non-numeric pitch atom are malformed flat forms —
+        // neither default-fills into a note-on.
+        let note = port(PortType::Vocab {
+            name: "Note",
+            is_event: true,
+            enum_meta: None,
+        });
+        assert_eq!(osc_in_arg(&note, &[]), None);
+        assert_eq!(osc_in_arg(&note, &[Arg::Str("A4".into())]), None);
+    }
+
     #[test]
     fn note_round_trips_through_osc() {
         let n = Note::new(Pitch::Absolute(60.0), 0.5);

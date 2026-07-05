@@ -88,7 +88,7 @@ mod tests {
     use super::*;
     use crate::message::{Arg, Emit};
     use crate::op_driver::OpDriver;
-    use crate::vocab::harmony::{Harmony, SnapDir, SnapTarget};
+    use crate::vocab::harmony::{Chord, ChordTag, Harmony, SnapDir, SnapTarget};
 
     const SR: f32 = 48_000.0;
 
@@ -150,6 +150,32 @@ mod tests {
             &[on],
         );
         assert_eq!(degree(&emits[0]), 4);
+    }
+
+    #[test]
+    fn non_default_policy_reaches_the_snapper() {
+        // Every other test uses both enums' `#[default]` variants (Scale/Nearest), so none can
+        // tell reading the `target`/`direction` ports apart from `SnapPolicy::default()` — or
+        // from a mis-indexed port whose failed enum decode falls back to the handle default.
+        // Pin one non-default value per port, cross-checked against the vocab-level snap tests.
+        //
+        // Non-default direction: 64.8 in default C major snaps to F (degree 3) at Nearest
+        // (pinned by snaps_gesture_to_nearest_scale_degree); a held SnapDir::Down must reach
+        // Harmony::snap and give E (degree 2).
+        let on = (0, Note::new(Pitch::Absolute(64.8), 1.0));
+        let emits = run(Harmony::default(), SnapTarget::Scale, SnapDir::Down, &[on]);
+        assert_eq!(degree(&emits[0]), 2); // E, not Nearest's F
+
+        // Non-default target: strict Chord over C-E-G (scale-relative {0,2,4}) snaps 65.0 (F,
+        // a scale tone Scale/Nearest would keep) to the nearest chord tone E — mirrors the
+        // vocab-level chord-target case, but through the operator's ports.
+        let c = Harmony {
+            chord: Chord::new(ChordTag::ScaleRelative, &[0, 2, 4]),
+            ..Harmony::default()
+        };
+        let on = (0, Note::new(Pitch::Absolute(65.0), 1.0));
+        let emits = run(c, SnapTarget::Chord, SnapDir::Nearest, &[on]);
+        assert_eq!(c.degree_to_step(degree(&emits[0])), 64); // E = MIDI 64
     }
 
     #[test]

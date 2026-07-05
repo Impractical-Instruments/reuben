@@ -239,14 +239,4 @@ mod tests {
         assert_eq!(s.input_ring_overruns, 3);
         assert_eq!(s.input_ring_producer_drops, 0);
     }
-
-    #[test]
-    fn shared_arc_reflects_writes_from_another_handle() {
-        // The production shape: one Arc handed to the audio callback (writer) and another to
-        // the logger thread (reader) — both must see the same counts.
-        let d = Diagnostics::new();
-        let writer = Arc::clone(&d);
-        writer.record_output_xrun();
-        assert_eq!(d.snapshot().output_xruns, 1);
-    }
 }

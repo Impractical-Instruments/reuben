@@ -223,6 +223,56 @@ mod tests {
         }
     }
 
+    #[test]
+    fn time_beyond_max_clamps_to_the_ring_capacity() {
+        // `time` is a wireable/modulatable Float (ADR-0031) and `set` writes the latch without
+        // range-clamping, so an out-of-range 5.0 s really reaches `io.read` — the clamp chain on
+        // the fractional read head is the only guard keeping the interpolated tap inside the ring.
+        // Unclamped, `read_pos` goes negative and saturating-casts to index 0: a wrong-*time* echo
+        // with no panic — so pin the echo's position at the 2 s cap, not mere finiteness.
+        let sr = 48_000.0;
+        let n = 144_000; // 3 s: room past the 2 s cap for the echo to land
+        let mut input = vec![0.0f32; n];
+        input[0] = 1.0;
+
+        // mix = 1 (fully wet), no feedback: the single echo is isolated from the dry impulse.
+        let out = render(&input, sr, 5.0, 0.0, 1.0);
+
+        // cap = ceil(2.0 * 48000) = 96000; delay_samples clamps to cap-1 = 95999.
+        let expected = 95_999i64;
+        let peak = argmax_abs(&out[1..]) + 1;
+        assert!(
+            (expected - peak as i64).abs() <= 2,
+            "echo expected at the 2 s cap (~{expected}), peaked at {peak}"
+        );
+        assert!(out[peak] > 0.9, "echo too quiet: {}", out[peak]);
+    }
+
+    #[test]
+    fn mid_render_time_change_stays_finite_and_bounded() {
+        // Changing `time` while the line is ringing is the modulation path the wireable port
+        // exists for (ADR-0031). Jump the read head hard in both directions across the ring —
+        // 0.5 s -> 1 ms -> 1.9 s — mid-render, with feedback keeping the line charged: the output
+        // must stay finite and bounded (no wrapped/garbage read head, no runaway).
+        let sr = 48_000.0;
+        let n = 48_000;
+        let input: Vec<f32> = (0..n)
+            .map(|i| (2.0 * std::f32::consts::PI * 440.0 * i as f32 / sr).sin())
+            .collect();
+        let mut d = OpDriver::for_type(Delay::new(), sr);
+        d.set(IN_TIME, 0.5)
+            .set(IN_FEEDBACK, 0.5)
+            .set(IN_MIX, 0.5)
+            .push(IN_TIME, 16_000, 0.001)
+            .push(IN_TIME, 32_000, 1.9)
+            .drive(IN_AUDIO, &input);
+        let out = d.render(n).output(OUT_AUDIO).to_vec();
+        for (i, &s) in out.iter().enumerate() {
+            assert!(s.is_finite(), "sample {i} not finite: {s}");
+            assert!(s.abs() < 10.0, "sample {i} unbounded: {s}");
+        }
+    }
+
     // The former `state_continuous_across_block_slices` (a hand-built two-`Io`-call split) is
     // retired: `OpDriver::render` always steps the operator as real 128-frame blocks, so every test
     // here crosses dozens of block boundaries. `impulse_produces_a_delayed_echo` (echo at frame

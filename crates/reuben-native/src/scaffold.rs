@@ -524,6 +524,71 @@ mod tests {
     }
 
     #[test]
+    fn wires_mod_rs_sorted_after_the_last_member() {
+        // "zzz_op" sorts after every existing module, so `insert_at` stays `None` and the
+        // end-of-run fallback (`last_member + 1`) decides the position — a classic
+        // off-by-one site: dropping the `+ 1` would insert *before* the current last
+        // member, and `run_scaffold` would then write the unsorted run into the real
+        // `operators/mod.rs`. The mid-run insertion in `wires_mod_rs_sorted` never
+        // reaches this branch.
+        let out = scaffold_real(r#"{ "type_name": "zzz_op" }"#);
+        let mods: Vec<&str> = out
+            .mod_rs
+            .lines()
+            .filter_map(|l| {
+                l.trim()
+                    .strip_prefix("pub mod ")
+                    .and_then(|r| r.strip_suffix(';'))
+            })
+            .collect();
+        let mut sorted = mods.clone();
+        sorted.sort();
+        assert_eq!(mods, sorted, "pub mod run must stay sorted: {mods:?}");
+        assert_eq!(
+            mods.last(),
+            Some(&"zzz_op"),
+            "the new module must land at the end of the run: {mods:?}"
+        );
+        // Same fallback, independently, for the `pub use` run.
+        let uses: Vec<&str> = out
+            .mod_rs
+            .lines()
+            .filter_map(|l| {
+                l.trim()
+                    .strip_prefix("pub use ")
+                    .and_then(|r| r.split("::").next())
+            })
+            .collect();
+        let mut sorted_uses = uses.clone();
+        sorted_uses.sort();
+        assert_eq!(uses, sorted_uses, "pub use run must stay sorted: {uses:?}");
+        assert_eq!(
+            uses.last(),
+            Some(&"zzz_op"),
+            "the new re-export must land at the end of the run: {uses:?}"
+        );
+    }
+
+    #[test]
+    fn errors_when_mod_rs_has_no_module_run() {
+        // A mod.rs with no `pub mod` lines gives `insert_line_sorted` nothing to sort
+        // against: it must refuse loudly rather than guess a position — `run_scaffold`
+        // writes the result straight into real source, so a silent bad insert corrupts
+        // `operators/mod.rs`.
+        let err = scaffold(
+            &spec(r#"{ "type_name": "x_op" }"#),
+            &ScaffoldInputs {
+                mod_rs: "// empty\n",
+            },
+        )
+        .unwrap_err();
+        assert!(
+            err.contains("no existing module lines"),
+            "expected the empty-run error, got: {err}"
+        );
+    }
+
+    #[test]
     fn render_emits_self_registration() {
         // The operator wires itself in (ADR-0024): the generated file carries its own
         // `register_operator!` call — there is no registry.rs edit to make.

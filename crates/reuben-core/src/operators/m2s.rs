@@ -193,13 +193,17 @@ mod tests {
 
     #[test]
     fn smooth_approaches_monotonically_without_overshoot() {
-        let out = run(
-            M2sMode::Smooth,
-            1000.0,
-            0.01,
-            1.0,
-            2048,
-            &mut OpDriver::for_type(M2s::new(), SR),
+        // Seed resting at 0 first — a fresh converter seeds cur = target on its first block
+        // (see `spawned_converter_starts_uninitialized`), so a first-ever target of 1.0 would
+        // output a constant 1.0 and never exercise the approach. Then retarget to 1.0: the
+        // one-pole must rise from ~0 strictly toward the target and never exceed it.
+        let mut m = OpDriver::for_type(M2s::new(), SR);
+        let _ = run(M2sMode::Smooth, 1000.0, 0.01, 0.0, 1, &mut m); // seed resting value
+        let out = run(M2sMode::Smooth, 1000.0, 0.01, 1.0, 2048, &mut m);
+        assert!(
+            out[0] < 0.05,
+            "approach must start near the resting value, got {}",
+            out[0]
         );
         for w in out.windows(2) {
             assert!(w[1] >= w[0] - 1e-6, "smooth must not decrease");

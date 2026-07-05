@@ -717,10 +717,38 @@ mod tests {
         assert!(!out.contains("fn contract"), "{out}");
     }
 
+    // An unknown curve keyword is rejected by `parse_curve_ident` itself, not by some earlier
+    // grammar failure — the input is otherwise a fully valid contract, so the only thing wrong
+    // with it is the curve, and the assertion pins the curve-specific message.
     #[test]
     fn bad_curve_keyword_is_rejected() {
-        let out = render(r#"Bad { params: { a: { 0.0..=1.0, default 0.0, "", log } } }"#);
+        let out = render(
+            r#"Bad {
+                inputs:  { a: f32 { 0.0..=1.0, default 0.0, "", log } },
+                outputs: { out: f32_buffer },
+            }"#,
+        );
         assert!(out.contains("compile_error !"), "{out}");
+        assert!(out.contains("curve must be `lin` or `exp`"), "{out}");
+    }
+
+    // `unit` and `curve` are each independently optional in the `f32 { .. }` meta: the
+    // curve-without-unit form `{ LO..=HI, default D, exp }` still parses (the `Ident` peek after
+    // the comma, not the `LitStr` one) and keeps the curve exponential rather than silently
+    // falling back to linear, with the omitted unit defaulting to the empty string. Every real
+    // operator contract writes a unit before its curve, so nothing else exercises this branch.
+    #[test]
+    fn curve_without_unit_is_accepted() {
+        let out = render(
+            r#"Osc {
+                inputs:  { freq: f32 { 20.0..=20_000.0, default 440.0, exp } },
+                outputs: { audio: f32_buffer },
+            }"#,
+        );
+        assert!(!out.contains("compile_error !"), "{out}");
+        assert!(out.contains("Curve :: Exponential"), "{out}");
+        // The omitted unit defaults to the empty string.
+        assert!(out.contains("unit : \"\""), "{out}");
     }
 
     // The filter target contract (ADR-0030): a buffer audio in/out, float-with-meta controls, and

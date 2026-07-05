@@ -3259,6 +3259,31 @@ mod tests {
         assert_eq!(g.nodes[key].constant_overrides, vec![(slot, Arg::I32(3))]);
     }
 
+    /// ADR-0035: an out-of-range `voices` config passes through the single coercion seam
+    /// (`Graph::set_constant` → `Port::coerce`), so the **stored** constant clamps to the
+    /// voicer's declared `1..=32` range at both ends — a save/reload never resurrects the
+    /// out-of-range value. (The pool the voice-resource pass *builds* should agree with this
+    /// stored value, but today it does not: `voice_count` reads the raw config number with only
+    /// `.max(1)`, skipping the `1..=32` coerce — so `voices: 100` builds a 100-voice pool while
+    /// the document stores 32. Known divergence, not yet fixed; when `voice_count` reads through
+    /// the coercion seam, extend this test with the build-vs-stored consistency assertion.)
+    #[test]
+    fn out_of_range_voices_config_is_clamped_through_the_coercion_seam() {
+        let over = r#"{"instrument":"t","nodes":[
+            {"type":"voicer","address":"/v","config":{"voices":100}}]}"#;
+        let g = load(over, &reg()).expect("load");
+        let key = g.find("/v").unwrap();
+        let slot = g.nodes[key].descriptor.constant_index("voices").unwrap();
+        assert_eq!(g.nodes[key].constant_overrides, vec![(slot, Arg::I32(32))]);
+
+        // Low end: 0 clamps to the I32Meta min (1), not merely a loader-side floor.
+        let under = r#"{"instrument":"t","nodes":[
+            {"type":"voicer","address":"/v","config":{"voices":0}}]}"#;
+        let g = load(under, &reg()).expect("load");
+        let key = g.find("/v").unwrap();
+        assert_eq!(g.nodes[key].constant_overrides, vec![(slot, Arg::I32(1))]);
+    }
+
     #[test]
     fn enum_symbol_input_loads() {
         let json = r#"{"instrument":"t","nodes":[

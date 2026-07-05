@@ -267,8 +267,13 @@ mod tests {
         );
     }
 
-    /// (5) Materialize — held default. With nothing set, an oscillator renders its latched default
-    /// (440 Hz): the engine fills the `freq` input buffer from the default scalar.
+    /// (5) Materialize — the nothing-set default configuration. With **no** `set` on any port the
+    /// engine must seed *every* latch from its declared default: the `freq` buffer materializes
+    /// from the 440 Hz scalar **and** the `waveform` enum latch seeds to `Sine`. Unlike (1b) —
+    /// which overwrites the waveform latch via `set(IN_WAVEFORM, ..)` and so masks a regression in
+    /// enum default-latch seeding — this renders a completely untouched plan. The crossings count
+    /// alone is waveform-insensitive (a 440 Hz saw also makes ~440 upward crossings), so the
+    /// default shape is pinned explicitly via the rising fraction (~0.5 for a sine, ~1 for a saw).
     #[test]
     fn materialized_default_produces_default_tone() {
         let n = SR as usize; // 1 second
@@ -280,6 +285,11 @@ mod tests {
         assert!(
             (430..=450).contains(&crossings),
             "expected ~440 crossings from the materialized default, got {crossings}"
+        );
+        let rising = rising_fraction(&out);
+        assert!(
+            (0.4..=0.6).contains(&rising),
+            "default waveform should be the Sine shape (~0.5 rising fraction), got {rising}"
         );
     }
 
@@ -381,6 +391,40 @@ mod tests {
             rising_fraction(saw2) > 0.9,
             "Saw latch should persist into block 3, rising frac {}",
             rising_fraction(saw2)
+        );
+    }
+
+    /// (10) Wired `freq` — a per-sample-varying source buffer actually drives the pitch. The module
+    /// doc promises the wired case passes the source buffer through (`io.read(IN_FREQ)` is the
+    /// source, not the materialized latch — ADR-0031 decision (a), the vibrato/FM contract), and
+    /// every other test here feeds `freq` via `set`/`push` (the latch path). `drive` is the
+    /// wired-buffer seam: feed 220 Hz for the first half-second and 880 Hz for the second, and
+    /// count crossings per half. Any constant-frequency fallback fails at least one half — the
+    /// 440 default gives ~220/~220 crossings, a stuck 220 gives ~110/~110, a stuck 880 ~440/~440.
+    #[test]
+    fn driven_freq_buffer_modulates_pitch_per_sample() {
+        let n = SR as usize; // 1 second
+        let half = n / 2;
+        let mut buf = vec![220.0f32; n];
+        buf[half..].fill(880.0);
+
+        let out = OpDriver::for_type(Oscillator::new(), SR)
+            .set(IN_WAVEFORM, Waveform::Sine)
+            .drive(IN_FREQ, &buf)
+            .render(n)
+            .output(OUT_AUDIO)
+            .to_vec();
+
+        let first = upward_crossings(&out[..half]);
+        let second = upward_crossings(&out[half..]);
+        // 220 Hz over 0.5 s ≈ 110 crossings; 880 Hz over 0.5 s ≈ 440.
+        assert!(
+            (105..=115).contains(&first),
+            "first half should ride the driven 220 Hz (~110 crossings), got {first}"
+        );
+        assert!(
+            (430..=450).contains(&second),
+            "second half should ride the driven 880 Hz (~440 crossings), got {second}"
         );
     }
 }

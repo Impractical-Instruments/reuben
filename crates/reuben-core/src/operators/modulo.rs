@@ -106,6 +106,21 @@ mod tests {
     }
 
     #[test]
+    fn negative_modulus_stays_finite_and_non_negative() {
+        // The modulus port is per-sample modulatable, so a transiently negative `b` is a
+        // reachable runtime state; mod_fn's guard only special-cases b == 0. rem_euclid(-b)
+        // lands in [0, |b|): pin that the output stays finite and non-negative (a
+        // sign-following `%` rewrite would emit -1.0 for the second sample), and document the
+        // shipped Euclidean semantics:
+        //   7.0 mod -3.0 = 1.0,  -1.0 mod -3.0 = 2.0,  2.5 mod -1.0 = 0.5.
+        let a = [7.0, -1.0, 2.5];
+        let b = [-3.0, -3.0, -1.0];
+        let out = sig(Some(&a), Some(&b), 3);
+        assert!(out.iter().all(|s| s.is_finite() && *s >= 0.0));
+        assert_eq!(out, vec![1.0, 2.0, 0.5]);
+    }
+
+    #[test]
     fn wraps_held_operands() {
         assert_eq!(val(Some(10.0), Some(4.0)), vec![2.0]);
     }

@@ -263,6 +263,37 @@ mod tests {
     }
 
     #[test]
+    fn higher_damp_darkens_the_tail() {
+        // `damp` steepens the one-pole lowpass in each comb's feedback path (`damp_coeff =
+        // damp * 0.4`), so a high `damp` must strip high-frequency energy from the late tail
+        // relative to `damp` 0 — the control's whole purpose. No other test moves `damp`, so
+        // without this pin the port could be severed (damp_coeff hardwired to 0) with the
+        // suite green. HF proxy: RMS of the tail's first difference normalized by the tail's
+        // RMS — relative, so it is robust to overall tail level and Freeverb tuning tweaks.
+        let sr = 48_000.0;
+        let n = sr as usize; // 1 second
+        let bright = render(&impulse(n), sr, 0.7, 0.0, 1.0);
+        let damped = render(&impulse(n), sr, 0.7, 0.9, 1.0);
+
+        // Late tail window (300..500 ms), well past the direct impulse.
+        let a = (sr * 0.3) as usize;
+        let b = (sr * 0.5) as usize;
+        let hf_ratio = |win: &[f32]| {
+            let diff: Vec<f32> = win.windows(2).map(|w| w[1] - w[0]).collect();
+            rms(&diff) / rms(win)
+        };
+        // Both tails must actually be sounding, or the ratio comparison is vacuous.
+        assert!(rms(&bright[a..b]) > 0.0, "bright tail is silent");
+        assert!(rms(&damped[a..b]) > 0.0, "damped tail is silent");
+        let ratio_bright = hf_ratio(&bright[a..b]);
+        let ratio_damped = hf_ratio(&damped[a..b]);
+        assert!(
+            ratio_damped < ratio_bright * 0.7,
+            "damp 0.9 should darken the tail vs damp 0 (bright {ratio_bright}, damped {ratio_damped})"
+        );
+    }
+
+    #[test]
     fn larger_room_yields_a_longer_louder_late_tail() {
         let sr = 48_000.0;
         let n = sr as usize; // 1 second
