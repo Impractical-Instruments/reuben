@@ -400,10 +400,9 @@ fn play(
             let mut flat = Vec::new();
             for m in out_rx {
                 flat.clear();
-                boundary::osc_out_args(&m.arg, &mut flat);
-                // A no-OSC-form Arg expands to nothing; legality checks keep such wires out of a
-                // plan, but never let a zero-arg datagram hit the wire regardless.
-                if flat.is_empty() {
+                // `false` means the Arg has no OSC form and expanded to nothing — skip the
+                // datagram (the rule is `osc_out_args`' contract, see its docs).
+                if !boundary::osc_out_args(&m.arg, &mut flat) {
                     continue;
                 }
                 match osc::encode(&m.address, &flat) {
