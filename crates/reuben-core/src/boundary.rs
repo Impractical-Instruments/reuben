@@ -113,9 +113,16 @@ pub fn has_osc_form(ty: &PortType) -> bool {
 /// appending primitive `Arg`s to `out`. The inverse of [`osc_in_arg`], dispatched on the `Arg`
 /// variant (the closed central enum). A primitive forwards verbatim; a struct vocab type packs via
 /// [`OscArg::to_osc`]; a type-erased [`Enum`](Arg::Enum) goes out as its bare index (the boundary
-/// has no port to resolve a symbol — see the arm). [`Harmony`](Arg::Harmony) and
-/// [`Buffer`](Arg::F32Buffer) have no external form and contribute nothing.
-pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) {
+/// has no port to resolve a symbol — see the arm).
+///
+/// Returns whether anything was appended. A no-OSC-form `Arg` ([`Harmony`](Arg::Harmony),
+/// [`Buffer`](Arg::F32Buffer)) expands to nothing and returns `false`: **no OSC form → emit
+/// nothing** — the caller must skip the datagram, never encode zero args onto the wire. Legality
+/// checks ([`has_osc_form`]) keep such wires out of a plan, so a `false` here is belt-and-braces,
+/// but the rule lives with the expansion.
+#[must_use]
+pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) -> bool {
+    let before = out.len();
     match arg {
         Arg::F32(_) | Arg::I32(_) | Arg::Str(_) => out.push(arg.clone()),
         Arg::Note(n) => n.to_osc(out),
@@ -127,6 +134,7 @@ pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) {
         // No external OSC form.
         Arg::Harmony(_) | Arg::F32Buffer(_) => {}
     }
+    out.len() > before
 }
 
 #[cfg(test)]
@@ -245,7 +253,7 @@ mod tests {
     fn note_round_trips_through_osc() {
         let n = Note::new(Pitch::Absolute(60.0), 0.5);
         let mut flat = Vec::new();
-        osc_out_args(&Arg::Note(n), &mut flat);
+        assert!(osc_out_args(&Arg::Note(n), &mut flat));
         assert_eq!(flat, vec![Arg::F32(60.0), Arg::F32(0.5)]);
         let p = port(PortType::Vocab {
             name: "Note",
@@ -262,7 +270,7 @@ mod tests {
     fn enum_out_sends_index() {
         let up = SnapDir::from_symbol("Up").unwrap();
         let mut flat = Vec::new();
-        osc_out_args(&Arg::from(up), &mut flat);
+        assert!(osc_out_args(&Arg::from(up), &mut flat));
         assert_eq!(flat, vec![Arg::I32(up.to_index() as i32)]);
     }
 
@@ -310,17 +318,19 @@ mod tests {
         assert!(!has_osc_form(&PortType::Arg));
     }
 
+    /// No OSC form → emit nothing: the expansion appends nothing and says so (`false`), which is
+    /// what tells the sender to skip the datagram.
     #[test]
     fn harmony_and_buffer_have_no_osc_form() {
         let mut flat = Vec::new();
-        osc_out_args(
+        assert!(!osc_out_args(
             &Arg::Harmony(crate::vocab::harmony::Harmony::default()),
             &mut flat,
-        );
-        osc_out_args(
+        ));
+        assert!(!osc_out_args(
             &Arg::F32Buffer(crate::message::Signal::default()),
             &mut flat,
-        );
+        ));
         assert!(flat.is_empty());
     }
 }
