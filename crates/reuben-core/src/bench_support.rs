@@ -295,23 +295,20 @@ impl OpHarness {
     /// [`OpDriver`]. Setup only — plan instantiation, resource decode, and event/buffer construction
     /// all happen here, never in [`render`](Self::render).
     pub fn for_kind(kind: &str) -> Self {
-        // `overhead` is bench-only and deliberately unregistered (see [`overhead`]) — the registry
-        // lookup below can never find it, so it is the one kind constructed directly.
-        let (make, desc): (fn() -> Box<dyn crate::operator::Operator>, _) =
-            if kind == overhead::KIND {
-                use crate::operator::Operator;
-                (
-                    || Box::new(overhead::Overhead::new()),
-                    overhead::Overhead::descriptor(),
-                )
-            } else {
-                let reg = Registry::builtin();
-                let entry = reg
-                    .get(kind)
-                    .unwrap_or_else(|| panic!("unknown operator kind {kind:?}"));
-                (entry.make, entry.descriptor.clone())
-            };
-        let mut driver = OpDriver::from_boxed(make(), desc.clone(), SAMPLE_RATE);
+        use crate::operator::Operator;
+        // `overhead` is bench-only and deliberately absent from `Registry::builtin` (see
+        // [`overhead`]) — layer it onto this local lookup copy through the embedder seam
+        // (ADR-0004), so every kind resolves through one uniform path.
+        let mut reg = Registry::builtin();
+        reg.register(
+            || Box::new(overhead::Overhead::new()),
+            overhead::Overhead::descriptor(),
+        );
+        let entry = reg
+            .get(kind)
+            .unwrap_or_else(|| panic!("unknown operator kind {kind:?}"));
+        let desc = entry.descriptor.clone();
+        let mut driver = OpDriver::from_boxed((entry.make)(), desc.clone(), SAMPLE_RATE);
         apply_recipe(&mut driver, &desc, workload(kind).recipe);
         Self {
             driver,

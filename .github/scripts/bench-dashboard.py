@@ -9,6 +9,10 @@ repo. stdlib only: the runner's system python3 is the whole toolchain.
 
 Usage: bench-dashboard.py <bench-history.jsonl> <outdir>
 
+Any subset of the data must render: a series with only one layer, only stubs, or a missing
+case skips that chart/section instead of crashing (the append script treats a crash as
+best-effort, so a crash here means a stale dashboard).
+
 Chart styling follows the reference data-viz palette (validated for CVD separation in both
 modes); identity is never color-alone — every series carries a direct end label and every
 number is repeated in a table.
@@ -22,20 +26,29 @@ from collections import defaultdict
 
 # A first data point can be a registration stub (an operator whose workload landed a commit
 # later benches as a ~11-Ir no-op once). Anything below this floor is not a real measurement;
-# the cheapest real case (subpatch, the no-op format anchor) sits around 500k Ir.
+# the cheapest real case (subpatch, the no-op format anchor) sits around 500k Ir. The floor
+# must live here (not at harvest): the recorded history already contains stub rows.
 STUB_FLOOR = 1_000
 
 # The dedicated per-node overhead case: a bench-only no-op operator (bench_support.rs) whose
 # entire Ir is the engine's per-node stepping overhead (edge clear, routing, materialize, `Io`
-# build). Falls back to the cheapest value-rate case — whose `process` does ~nothing, so ~99%
-# of its Ir is the same overhead — for a series recorded before the dedicated case landed.
+# build). The proxy is the cheapest value-rate case — whose `process` does ~nothing, so ~99%
+# of its Ir is the same overhead — charted alongside to cover history recorded before the
+# dedicated case landed.
 OVERHEAD_CASE = "overhead"
 OVERHEAD_FALLBACK = "abs_f32_value"
 
-BLOCKS = 375  # the fixed 1 s schedule: 375 * 128 frames @ 48 kHz (ADR-0019)
+# Keep in lockstep with `bench_support::BLOCKS` (the fixed schedule's single source of truth):
+# 375 * 128 frames @ 48 kHz == exactly 1 s. Feeds the instructions-per-block figure only.
+BLOCKS = 375
 
-# Reference categorical palette, slots 1..8, stepped per mode (see docs of the perf ADR).
-# Ordering is the CVD-safety mechanism — never reorder or cycle.
+# Bold threshold for table deltas — keep in lockstep with WARN_PCT in perf-gate.sh.
+WARN_PCT = 3.0
+
+REPO = os.environ.get("GITHUB_REPOSITORY", "Impractical-Instruments/reuben")
+
+# Reference categorical palette, slots 1..8, stepped per mode. Ordering is the CVD-safety
+# mechanism — never reorder or cycle.
 CATEGORICAL = {
     "light": ["#2a78d6", "#1baf7a", "#eda100", "#008300", "#4a3aa7", "#e34948", "#e87ba4", "#eb6834"],
     "dark": ["#3987e5", "#199e70", "#c98500", "#008300", "#9085e9", "#e66767", "#d55181", "#d95926"],
@@ -70,9 +83,9 @@ def load(path):
     return order, series
 
 
-def real_points(pts):
+def real_points(points_by_commit):
     """Series points with leading registration stubs dropped (sorted (idx, ir) list)."""
-    items = sorted(pts.items())
+    items = sorted(points_by_commit.items())
     while items and items[0][1] < STUB_FLOOR:
         items.pop(0)
     return items
@@ -88,22 +101,19 @@ def fmt_ir(v):
     return f"{v:,}"
 
 
-def fmt_pct(cur, base):
-    if not base:
-        return "—"
-    pct = 100.0 * (cur - base) / base
-    if abs(pct) < 0.05:
-        return "±0.0%"
-    return f"{pct:+.1f}%"
-
-
 def nice_ticks(lo, hi, n=5):
     """Clean 1-2-5 axis ticks covering [lo, hi]."""
     if hi <= lo:
         hi = lo + 1
     raw = (hi - lo) / n
     mag = 10 ** math.floor(math.log10(raw))
-    step = next(s * mag for s in (1, 2, 2.5, 5, 10) if s * mag >= raw)
+    # Fallback covers float underestimation of log10 at a power-of-ten boundary (raw/mag can
+    # then sit epsilon above 10, exhausting the candidates).
+    step = 10 * mag
+    for s in (1, 2, 2.5, 5, 10):
+        if s * mag >= raw:
+            step = s * mag
+            break
     start = math.floor(lo / step) * step
     ticks = []
     t = start
@@ -115,19 +125,22 @@ def nice_ticks(lo, hi, n=5):
 
 
 def esc(s):
-    return s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+    """Escape text for SVG/HTML content AND double-quoted attributes (aria-label, alt)."""
+    return (
+        s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;").replace('"', "&quot;")
+    )
 
 
 def line_chart(mode, title, subtitle, order, named_series, unit_div, unit_label,
                zero_base=True, width=880, height=340):
-    """One themed SVG line chart. named_series: [(name, {idx: ir})], slots assigned in order."""
+    """One themed SVG line chart. named_series: [(name, [(commit_idx, ir), ...])] — already
+    stub-stripped and non-empty (write_chart guards); slots assigned in list order."""
     c = CHROME[mode]
     pal = CATEGORICAL[mode]
     pad_l, pad_r, pad_t, pad_b = 64, 150, 56, 34
     pw, ph = width - pad_l - pad_r, height - pad_t - pad_b
 
-    pts_by_name = {n: real_points(p) for n, p in named_series}
-    all_vals = [v / unit_div for p in pts_by_name.values() for _, v in p]
+    all_vals = [v / unit_div for _, p in named_series for _, v in p]
     n_commits = len(order)
     lo = 0.0 if zero_base else min(all_vals)
     hi = max(all_vals)
@@ -185,10 +198,7 @@ def line_chart(mode, title, subtitle, order, named_series, unit_div, unit_label,
     # Series: 2px lines broken at gaps, end dot with surface ring, direct end labels
     # (collision-resolved; leader line when a label had to move off its line end).
     labels = []
-    for si, (name, _) in enumerate(named_series):
-        pts = pts_by_name[name]
-        if not pts:
-            continue
+    for si, (name, pts) in enumerate(named_series):
         color = pal[si % len(pal)]
         runs, run = [], [pts[0]]
         for a, b in zip(pts, pts[1:]):
@@ -214,7 +224,8 @@ def line_chart(mode, title, subtitle, order, named_series, unit_div, unit_label,
         out.append(f'<circle cx="{ex:.1f}" cy="{ey:.1f}" r="4" fill="{color}"/>')
         labels.append({"name": name, "value": lv, "color": color, "lx": ex, "ly": ey, "ty": ey})
 
-    # Resolve end-label collisions by minimal vertical spread.
+    # Resolve end-label collisions: spread downward to min_gap, then shift the block back up if
+    # it overflowed the baseline. The uniform shift preserves the gaps, so no second pass.
     labels.sort(key=lambda l: l["ty"])
     min_gap = 28  # each end label is two 11px lines (name + value)
     for a, b in zip(labels, labels[1:]):
@@ -224,9 +235,6 @@ def line_chart(mode, title, subtitle, order, named_series, unit_div, unit_label,
     if over > 0:
         for l in labels:
             l["ty"] -= over
-        for a, b in zip(reversed(labels), list(reversed(labels))[1:]):
-            if a["ty"] - b["ty"] < min_gap:
-                b["ty"] = a["ty"] - min_gap
     for l in labels:
         tx = l["lx"] + 12
         if abs(l["ty"] - l["ly"]) > 4:  # leader line: the label moved off its line end
@@ -254,27 +262,35 @@ def picture(basename, alt):
 
 def write_chart(outdir, basename, order, named_series, title, subtitle, unit_div, unit_label,
                 zero_base=True):
+    """Render both mode variants; returns False (writing nothing) when there is no data, so a
+    one-layer or all-stub history skips the chart instead of crashing the render."""
+    named_series = [(n, p) for n, p in named_series if p]
+    if not named_series:
+        return False
     for mode in ("light", "dark"):
         svg = line_chart(mode, title, subtitle, order, named_series, unit_div, unit_label,
                          zero_base=zero_base)
         with open(os.path.join(outdir, "charts", f"{basename}-{mode}.svg"), "w",
                   encoding="utf-8") as f:
             f.write(svg)
+    return True
 
 
 def delta_cell(cur, base):
-    s = fmt_pct(cur, base)
-    if s not in ("—", "±0.0%") and abs(100.0 * (cur - base) / base) > 3.0:
-        return f"**{s}**"
-    return s
+    """Signed percent change, bolded past the gate's warn line; em dash when there is no base."""
+    if not base:
+        return "—"
+    pct = 100.0 * (cur - base) / base
+    s = "±0.0%" if abs(pct) < 0.05 else f"{pct:+.1f}%"
+    return f"**{s}**" if abs(pct) > WARN_PCT else s
 
 
-def series_row(name, pts, order):
+def series_row(name, points, order):
     """One table row: latest, Δ vs previous point, Δ vs first real point."""
-    latest_i, latest = pts[-1]
-    prev = pts[-2][1] if len(pts) >= 2 else None
-    first_i, first = pts[0]
-    return (f"| `{name}` | {fmt_ir(latest)} | {delta_cell(latest, prev) if prev else '—'} | "
+    latest_i, latest = points[-1]
+    prev = points[-2][1] if len(points) >= 2 else None
+    first_i, first = points[0]
+    return (f"| `{name}` | {fmt_ir(latest)} | {delta_cell(latest, prev)} | "
             f"{delta_cell(latest, first)} | {order[first_i]['date'][:10]} |")
 
 
@@ -288,50 +304,80 @@ def main():
         return
     os.makedirs(os.path.join(outdir, "charts"), exist_ok=True)
 
-    macro = sorted(c for l, c in series if l == "macro")
-    micro = sorted(c for l, c in series if l == "micro")
+    # One stub-stripped view of every series, computed once — charts and tables all read this.
+    pts = {k: p for k, p in ((k, real_points(s)) for k, s in series.items()) if p}
+    macro = sorted(c for l, c in pts if l == "macro")
+    micro = sorted(c for l, c in pts if l == "micro")
     last = order[-1]
     first_day, last_day = order[0]["date"][:10], last["date"][:10]
-    n_points = sum(len(p) for p in series.values())
+    n_points = sum(len(s) for s in series.values())
+    charts_written = []
 
-    write_chart(
+    def table(rows, col="Case"):
+        """A delta table; rows are (display_name, layer, case) triples."""
+        head = [f"| {col} | Latest Ir | vs prev | vs first | since |",
+                "|---|---:|---:|---:|---|"]
+        return head + [series_row(nm, pts[(layer, c)], order) for nm, layer, c in rows]
+
+    if write_chart(
         outdir, "macro", order,
-        [(c, series[("macro", c)]) for c in macro],
+        [(c, pts[("macro", c)]) for c in macro],
         "Whole-instrument render cost",
         f"render_block of 1 s of audio - callgrind instructions (Ir), per main commit, "
-        f"{first_day} to {last_day}",
+        + f"{first_day} to {last_day}",
         1e6, "Ir (M)",
-    )
+    ):
+        charts_written.append("macro")
 
-    dedicated = bool(real_points(series.get(("micro", OVERHEAD_CASE), {})))
-    proxy_case = OVERHEAD_CASE if dedicated else OVERHEAD_FALLBACK
-    proxy_pts = series.get(("micro", proxy_case), {})
-    if proxy_pts:
-        subtitle = (
-            f"Ir of the bench-only no-op operator ({OVERHEAD_CASE}) - pure engine "
-            f"per-node stepping cost, gated like any operator. Axis zoomed."
-            if dedicated else
-            f"Ir of the cheapest value-rate micro case ({proxy_case}) - "
-            f"~99% engine stepping overhead, not operator math. Axis zoomed."
+    # Per-node overhead: the dedicated case, with the proxy charted alongside for the history
+    # recorded before it landed (their absolute levels differ — never stitched into one line).
+    over_series = []
+    if ("micro", OVERHEAD_CASE) in pts:
+        over_series.append((OVERHEAD_CASE, pts[("micro", OVERHEAD_CASE)]))
+    if ("micro", OVERHEAD_FALLBACK) in pts:
+        over_series.append((f"proxy ({OVERHEAD_FALLBACK})", pts[("micro", OVERHEAD_FALLBACK)]))
+    dedicated = over_series and over_series[0][0] == OVERHEAD_CASE
+    if dedicated:
+        overhead_title = "Per-node engine overhead"
+        overhead_latest = over_series[0][1][-1][1]
+        overhead_explain = (
+            f"`{OVERHEAD_CASE}` is a bench-only no-op operator behind a typical port shape, so "
+            + "its entire cost is the engine's per-node stepping overhead (edge clear, routing, "
+            + "materialize, `Io` build — see `bench_support.rs`)."
         )
-        write_chart(
-            outdir, "overhead", order,
-            [("per-node overhead", proxy_pts)],
-            "Per-node engine overhead" + ("" if dedicated else " (proxy)"),
-            subtitle,
-            1e3, "Ir (k)", zero_base=False,
+        if len(over_series) > 1:
+            overhead_explain += (
+                f" The `proxy ({OVERHEAD_FALLBACK})` line is the cheapest value-rate case — "
+                + "~99% the same overhead — covering history from before the dedicated case "
+                + "landed; its level differs (a smaller port surface), so the two are separate "
+                + "lines, never stitched."
+            )
+    elif over_series:
+        overhead_title = "Per-node engine overhead (proxy)"
+        overhead_latest = over_series[0][1][-1][1]
+        overhead_explain = (
+            f"`{OVERHEAD_FALLBACK}` does almost no work of its own, so its cost is ~all engine "
+            + "per-node stepping overhead (edge clear, routing, materialize, `Io` build — see "
+            + "`bench_support.rs`). A dedicated `overhead` case takes over once it records."
         )
+    if over_series and write_chart(
+        outdir, "overhead", order, over_series,
+        overhead_title,
+        "callgrind instructions of a case that is ~pure engine stepping cost, gated like any "
+        + "operator. Axis zoomed.",
+        1e3, "Ir (k)", zero_base=False,
+    ):
+        charts_written.append("overhead")
 
-    heavy = sorted(micro, key=lambda c: real_points(series[("micro", c)])[-1][1]
-                   if real_points(series[("micro", c)]) else 0, reverse=True)[:6]
-    heavy = sorted(heavy)  # alphabetical slot assignment: color follows the entity, not rank
-    write_chart(
+    heavy = sorted(sorted(micro, key=lambda c: pts[("micro", c)][-1][1], reverse=True)[:6])
+    if write_chart(
         outdir, "micro-heavy", order,
-        [(c, series[("micro", c)]) for c in heavy],
+        [(c, pts[("micro", c)]) for c in heavy],
         "Heaviest operators (micro)",
         "per-operator step_node cost over the same 1 s schedule - top 6 by latest Ir",
         1e6, "Ir (M)",
-    )
+    ):
+        charts_written.append("micro-heavy")
 
     lines = [
         "# reuben bench history",
@@ -350,61 +396,46 @@ def main():
         "",
         "## Whole-instrument render (macro)",
         "",
-        picture("macro", "Line chart of render_block instruction counts per instrument "
-                         + "across main commits"),
-        "",
-        "| Instrument | Latest Ir | vs prev | vs first | since |",
-        "|---|---:|---:|---:|---|",
     ]
-    for c in macro:
-        pts = real_points(series[("macro", c)])
-        if pts:
-            lines.append(series_row(c, pts, order))
-    lines += ["", "## Per-node engine overhead" + ("" if dedicated else " (proxy)"), ""]
-    if proxy_pts:
-        pts = real_points(proxy_pts)
-        latest = pts[-1][1]
-        explain = (
-            f"`{OVERHEAD_CASE}` is a bench-only no-op operator behind a typical port shape, so "
-            f"its entire cost is the engine's per-node stepping overhead (edge clear, routing, "
-            f"materialize, `Io` build — see `bench_support.rs`)."
-            if dedicated else
-            f"`{proxy_case}` does almost no work of its own, so its cost is ~all engine "
-            f"per-node stepping overhead (edge clear, routing, materialize, `Io` build — see "
-            f"`bench_support.rs`)."
-        )
+    if macro:
+        if "macro" in charts_written:
+            lines += [picture("macro", "Line chart of render_block instruction counts per "
+                                       + "instrument across main commits"), ""]
+        lines += table([(c, "macro", c) for c in macro], col="Instrument")
+    else:
+        lines.append("_No macro data recorded yet._")
+    lines += ["", f"## {overhead_title}" if over_series else "## Per-node engine overhead", ""]
+    if over_series:
+        if "overhead" in charts_written:
+            lines += [picture("overhead", "Line chart of per-node engine overhead across "
+                                          + "main commits"), ""]
         lines += [
-            picture("overhead", "Line chart of per-node engine overhead across main commits"),
-            "",
-            f"{explain} Latest: **{fmt_ir(latest)} Ir** ≈ "
-            + f"**{latest / BLOCKS:,.0f} instructions per node per block**. This overhead is a "
-            + "constant offset on every micro case and scales with node count in an instrument.",
+            f"{overhead_explain} Latest: **{fmt_ir(overhead_latest)} Ir** ≈ "
+            + f"**{overhead_latest / BLOCKS:,.0f} instructions per node per block**. This "
+            + "overhead is a constant offset on every micro case and scales with node count in "
+            + "an instrument.",
         ]
+    else:
+        lines.append("_No overhead data recorded yet._")
+    lines += ["", "## Heaviest operators (micro)", ""]
+    if micro:
+        if "micro-heavy" in charts_written:
+            lines += [picture("micro-heavy", "Line chart of the six heaviest per-operator "
+                                             + "micro benchmarks"), ""]
+        lines += [
+            "## All cases",
+            "",
+            "<details><summary>Full table — every benched case, latest vs previous and first "
+            + "recording</summary>",
+            "",
+        ]
+        micro_by_cost = sorted(micro, key=lambda c: -pts[("micro", c)][-1][1])
+        lines += table([(f"macro/{c}", "macro", c) for c in macro]
+                       + [(c, "micro", c) for c in micro_by_cost])
+        lines += ["", "</details>"]
+    else:
+        lines.append("_No micro data recorded yet._")
     lines += [
-        "",
-        "## Heaviest operators (micro)",
-        "",
-        picture("micro-heavy", "Line chart of the six heaviest per-operator micro benchmarks"),
-        "",
-        "## All cases",
-        "",
-        "<details><summary>Full table — every benched case, latest vs previous and first "
-        + "recording</summary>",
-        "",
-        "| Case | Latest Ir | vs prev | vs first | since |",
-        "|---|---:|---:|---:|---|",
-    ]
-    for c in macro:
-        pts = real_points(series[("macro", c)])
-        if pts:
-            lines.append(series_row(f"macro/{c}", pts, order))
-    for c in sorted(micro, key=lambda c: -(real_points(series[("micro", c)]) or [(0, 0)])[-1][1]):
-        pts = real_points(series[("micro", c)])
-        if pts:
-            lines.append(series_row(c, pts, order))
-    lines += [
-        "",
-        "</details>",
         "",
         "## Reading notes",
         "",
@@ -422,14 +453,14 @@ def main():
         + "changes (e.g. the x86-64-v3 bump on 2026-06-29) — those steps are real cost changes "
         + "on the same workload, but not source-code regressions/wins.",
         "",
-        "[ADR-0019]: https://github.com/Impractical-Instruments/reuben/blob/main/docs/adr/"
+        f"[ADR-0019]: https://github.com/{REPO}/blob/main/docs/adr/"
         + "0019-performance-benchmarking.md",
         "",
     ]
     with open(os.path.join(outdir, "README.md"), "w", encoding="utf-8") as f:
         f.write("\n".join(lines))
-    print(f"bench-dashboard: rendered README.md + 6 charts for {len(order)} commits "
-          f"into {outdir}")
+    print(f"bench-dashboard: rendered README.md + {2 * len(charts_written)} chart files "
+          + f"({', '.join(charts_written) or 'none'}) for {len(order)} commits into {outdir}")
 
 
 if __name__ == "__main__":

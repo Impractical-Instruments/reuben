@@ -57,10 +57,16 @@ for attempt in 1 2 3 4 5; do
   fi
   cat "$abs_rec" >>"$FILE"
   # Re-render the dashboard (ADR-0019, layer 2) over the full series so browsing the branch on
-  # GitHub shows the trend. Best-effort: a render bug must never lose the data point itself.
+  # GitHub shows the trend. Best-effort BOTH ways: a render bug must never lose the data point,
+  # and a failed render must never commit the deletion (or a half-written replacement) of the
+  # previous dashboard — wipe whatever the failed run left and restore the branch-tip render,
+  # path by path (a first-ever run has neither in the index; checkout of a missing path fails
+  # alone without blocking the other).
   rm -rf README.md charts
   if ! python3 "$DASHBOARD" "$FILE" .; then
-    echo "WARNING: dashboard render failed — appending data without it." >&2
+    echo "WARNING: dashboard render failed — restoring the previous dashboard, appending data only." >&2
+    rm -rf README.md charts
+    for p in README.md charts; do git checkout -q -- "$p" 2>/dev/null || true; done
   fi
   git add -A
   git commit -q -m "bench: record ${count} data point(s) @ ${GITHUB_SHA:0:12}"
