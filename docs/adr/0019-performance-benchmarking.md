@@ -101,8 +101,15 @@ That job is the **only** `contents: write` grant in CI — the gate itself stays
 branch is orphaned (not `main`) so `main`'s tree never churns and recording never re-triggers CI. It
 runs on direct pushes to `main` only, even when the gate redded (the `Ir` is still valid history),
 and no-ops when the harness didn't compile against its baseline — an honest gap, not a fabricated
-point. Harvesting is best-effort and never affects the gate verdict. (Visualization — a dashboard
-over this JSONL — is a deferred layer 2; the data now exists to build it.)
+point. Harvesting is best-effort and never affects the gate verdict.
+
+Layer 2 — visualization — renders that JSONL into the branch itself: the same CI job runs
+[`bench-dashboard.py`](../../.github/scripts/bench-dashboard.py) (stdlib-only python) and commits a
+`README.md` plus light/dark SVG charts beside the data, so **browsing the `bench-history` branch on
+GitHub is the dashboard** — macro trend per instrument, a per-node engine-overhead proxy (the
+cheapest value-rate micro case, whose Ir is ~all `step_node` overhead), the heaviest micro cases,
+and a full latest/Δ table. No Pages setup, no external service, works on a private repo. Rendering
+is best-effort: a dashboard bug never loses the data point.
 
 ## Deferred
 
