@@ -84,7 +84,7 @@ fn seed_latch(p: &Port, port: usize, value_overrides: &[(usize, Arg)]) -> Arg {
             .unwrap_or(Arg::I32(e.default as i32)),
         PortType::Vocab { name, .. } if *name == "Harmony" => Arg::Harmony(Harmony::default()),
         PortType::I32 { meta } => Arg::I32(meta.as_ref().map(|m| m.default).unwrap_or(0)),
-        PortType::Str => Arg::Str(String::new()),
+        PortType::Str => Arg::Str("".into()),
         // Note (stream) / Buffer (dense): no held value — a placeholder `io.input::<T>` never decodes.
         _ => Arg::F32(0.0),
     }

@@ -129,7 +129,7 @@ fn osc_message_reaches_a_spliced_node_shadowed_by_an_ancestor_address() {
     let sine = render_with(&[]);
     let saw = render_with(&[reuben_core::message::Message::new(
         "/a/sub/osc/waveform",
-        reuben_core::message::Arg::Str("Saw".to_string()),
+        reuben_core::message::Arg::Str("Saw".into()),
         0,
     )]);
     assert_ne!(
