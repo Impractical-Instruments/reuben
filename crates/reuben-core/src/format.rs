@@ -24,7 +24,7 @@ use std::sync::Arc;
 use serde::{Deserialize, Serialize};
 
 use crate::descriptor::{Curve, Descriptor, F32Meta, Port, PortType};
-use crate::graph::{Graph, Interface};
+use crate::graph::{Graph, Interface, Node};
 use crate::message::Arg;
 use crate::operators::pipe::Pipe;
 use crate::plan::PortKind;
@@ -945,7 +945,7 @@ fn load_doc_guarded(
         let Some(key) = graph.find(&n.address) else {
             continue;
         };
-        let n_voices = voice_count(n, &graph.nodes[key].descriptor);
+        let n_voices = voice_count(&graph.nodes[key]);
         let mut voices: Vec<Graph> = Vec::with_capacity(n_voices);
         match lookup_source(doc, &n.address, "voice", id, &mut warnings) {
             None => {
@@ -1029,28 +1029,34 @@ fn lookup_source<'a>(
     source
 }
 
-/// The voice-pool size for a Voicer node (ADR-0032): the node's value for the operator's
-/// instantiate-time [`Constant`](Descriptor::constants) (the voicer's `voices` pool size),
-/// else that Constant's descriptor default, floored to 1. Reads the generic Constant slot rather
-/// than a hardcoded `"voices"` name, so the same machinery serves any future pool-sized operator.
-/// An operator with no Constant has a pool of one.
-fn voice_count(n: &NodeDoc, descriptor: &Descriptor) -> usize {
-    let Some(constant) = descriptor.constants.first() else {
+/// The voice-pool size for a Voicer node (ADR-0032): the node's **stored** value for the
+/// operator's instantiate-time [`Constant`](Descriptor::constants) (the voicer's `voices` pool
+/// size), else that Constant's descriptor default, floored to 1. Reads the coerce-clamped
+/// `constant_overrides` entry the config pass stored through the single coercion seam
+/// ([`Graph::set_constant`] → [`Port::coerce`]) rather than re-reading the raw config number, so
+/// the pool this pass builds always agrees with the constant a save/reload round-trips
+/// (ADR-0035) — an out-of-range `voices` can't build one pool size and store another. Reads the
+/// generic first Constant slot rather than a hardcoded `"voices"` name, so the same machinery
+/// serves any future pool-sized operator. An operator with no Constant has a pool of one.
+fn voice_count(node: &Node) -> usize {
+    let Some(constant) = node.descriptor.constants.first() else {
         return 1;
     };
     let default = match &constant.ty {
-        PortType::I32 { meta: Some(m) } => m.default as f64,
-        _ => 1.0,
+        PortType::I32 { meta: Some(m) } => i64::from(m.default),
+        _ => 1,
     };
-    let raw = n
-        .config
-        .get(constant.name)
-        .and_then(|v| match v {
-            ConfigValue::Number(x) => Some(*x),
-            ConfigValue::Symbol(_) => None,
+    let stored = node
+        .constant_overrides
+        .iter()
+        .find(|(slot, _)| *slot == 0)
+        .map(|(_, arg)| match arg {
+            Arg::I32(v) => i64::from(*v),
+            Arg::F32(v) => v.round() as i64,
+            _ => default,
         })
         .unwrap_or(default);
-    (raw.round() as i64).max(1) as usize
+    stored.max(1) as usize
 }
 
 /// Resolve an **instrument-kind resource** (ADR-0032 §2): a patch `source` (a path) is read to its
@@ -3262,11 +3268,10 @@ mod tests {
     /// ADR-0035: an out-of-range `voices` config passes through the single coercion seam
     /// (`Graph::set_constant` → `Port::coerce`), so the **stored** constant clamps to the
     /// voicer's declared `1..=32` range at both ends — a save/reload never resurrects the
-    /// out-of-range value. (The pool the voice-resource pass *builds* should agree with this
-    /// stored value, but today it does not: `voice_count` reads the raw config number with only
-    /// `.max(1)`, skipping the `1..=32` coerce — so `voices: 100` builds a 100-voice pool while
-    /// the document stores 32. Known divergence, not yet fixed; when `voice_count` reads through
-    /// the coercion seam, extend this test with the build-vs-stored consistency assertion.)
+    /// out-of-range value. And the pool the voice-resource pass *builds* agrees with the stored
+    /// constant: `voice_count` reads the coerced override, not the raw config number, so
+    /// `voices: 100` can't build a 100-voice pool while the document stores 32 (a load→save→
+    /// reload round trip preserves polyphony).
     #[test]
     fn out_of_range_voices_config_is_clamped_through_the_coercion_seam() {
         let over = r#"{"instrument":"t","nodes":[
@@ -3275,6 +3280,7 @@ mod tests {
         let key = g.find("/v").unwrap();
         let slot = g.nodes[key].descriptor.constant_index("voices").unwrap();
         assert_eq!(g.nodes[key].constant_overrides, vec![(slot, Arg::I32(32))]);
+        assert_eq!(voice_count(&g.nodes[key]), 32);
 
         // Low end: 0 clamps to the I32Meta min (1), not merely a loader-side floor.
         let under = r#"{"instrument":"t","nodes":[
@@ -3282,6 +3288,21 @@ mod tests {
         let g = load(under, &reg()).expect("load");
         let key = g.find("/v").unwrap();
         assert_eq!(g.nodes[key].constant_overrides, vec![(slot, Arg::I32(1))]);
+        assert_eq!(voice_count(&g.nodes[key]), 1);
+
+        // No config at all: nothing stored, so the pool falls back to the constant's
+        // descriptor default — the same value a saved document (which stores no override)
+        // rebuilds with.
+        let bare = r#"{"instrument":"t","nodes":[
+            {"type":"voicer","address":"/v"}]}"#;
+        let g = load(bare, &reg()).expect("load");
+        let key = g.find("/v").unwrap();
+        assert!(g.nodes[key].constant_overrides.is_empty());
+        let default = match &g.nodes[key].descriptor.constants[slot].ty {
+            PortType::I32 { meta: Some(m) } => m.default as usize,
+            other => panic!("voices constant should be I32 with meta, got {other:?}"),
+        };
+        assert_eq!(voice_count(&g.nodes[key]), default);
     }
 
     #[test]
