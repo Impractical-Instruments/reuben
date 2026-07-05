@@ -328,6 +328,41 @@ mod tests {
     }
 
     #[test]
+    fn swept_cutoff_is_bit_identical_to_per_sample_recompute() {
+        // The other half of the cache contract (see above): under genuinely *changing* controls
+        // the recompute-on-change path must still be bit-for-bit identical to recomputing
+        // `SvfCoeffs` every sample. Cutoff moves as a staircase (holds each value for 3 samples,
+        // so that key repeats) while resonance ramps per sample (that key changes every sample,
+        // forcing the per-sample-sweep recompute) — the two keys change on different schedules,
+        // so the compare must get both right. (The cache-*hit* branch is bit-checked by the
+        // constant-control test above.) `SvfCoeffs::new` is pure, so bit equality is the correct,
+        // non-flaky assertion; a lag-by-one cache bug (coefficients from the previous sample's
+        // controls) diverges immediately.
+        let sr = 48_000.0;
+        let n = 4096;
+        let input = sine(6_000.0, sr, n);
+        let cutoff: Vec<f32> = (0..n).map(|i| 300.0 + ((i / 3) as f32) * 8.0).collect();
+        let res: Vec<f32> = (0..n).map(|i| i as f32 / n as f32 * 0.8).collect();
+        let out = render_buffers(&input, sr, &cutoff, &res, FilterMode::Lp);
+
+        // Reference: a fresh raw SVF recomputing the coefficients from scratch on every sample.
+        let mut reference = Svf::default();
+        let mut ref_out = vec![0.0f32; n];
+        for i in 0..n {
+            ref_out[i] = reference
+                .tick(input[i], SvfCoeffs::new(cutoff[i], res[i], sr))
+                .lp;
+        }
+        for i in 0..n {
+            assert_eq!(
+                out[i].to_bits(),
+                ref_out[i].to_bits(),
+                "swept-control output diverged from per-sample recompute at {i}"
+            );
+        }
+    }
+
+    #[test]
     fn filter_state_continuous_across_block_slices() {
         // One render of `n` must equal two back-to-back renders of `n/2` sharing the driver's
         // operator: the SVF integrator state threads across the real block boundaries and across
@@ -369,9 +404,12 @@ mod tests {
 
     #[test]
     fn default_mode_is_bit_identical_to_lowpass() {
-        // The descriptor default `mode` is 0 (lowpass). Rendering with the default param set
-        // must be bit-for-bit identical to an explicit lowpass — proving existing instruments,
-        // which never set `mode`, are unchanged.
+        // The descriptor default `mode` is `Lp`. A driver that never touches IN_MODE seeds the
+        // mode latch from the descriptor default through the real `Plan::instantiate` path, so
+        // rendering with the *default* mode must be bit-for-bit identical to an explicit
+        // lowpass — proving existing instruments, which never set `mode`, are unchanged. (The
+        // descriptor *value* `default=0` is pinned by the golden snapshot; this pins the
+        // behavioral latch-seeded render.)
         let sr = 48_000.0;
         let n = 4096;
         let input = sine(1_000.0, sr, n);
@@ -379,19 +417,20 @@ mod tests {
         // Reference: explicit lowpass via the fast path.
         let lp = render_mode(&input, sr, 1_200.0, 0.4, FilterMode::Lp);
 
-        // The descriptor's defaults give cutoff 1000, resonance 0.2, mode 0. Render with the
-        // *default* mode but a matching cutoff/resonance, against a raw shared-SVF reference.
-        let mut reference = Svf::default();
-        let c = SvfCoeffs::new(1_200.0, 0.4, sr);
-        let mut ref_out = vec![0.0f32; n];
-        for i in 0..n {
-            ref_out[i] = reference.tick(input[i], c).lp;
-        }
+        // Render with matching cutoff/resonance but `mode` never set — the latch keeps the
+        // descriptor default.
+        let defaulted = OpDriver::for_type(Filter::new(), sr)
+            .set(IN_CUTOFF, 1_200.0)
+            .set(IN_RESONANCE, 0.4)
+            .drive(IN_AUDIO, &input)
+            .render(n)
+            .output(OUT_AUDIO)
+            .to_vec();
         for i in 0..n {
             assert_eq!(
+                defaulted[i].to_bits(),
                 lp[i].to_bits(),
-                ref_out[i].to_bits(),
-                "lowpass mode diverged from the bare SVF lowpass at {i}"
+                "default mode diverged from explicit lowpass at {i}"
             );
         }
     }

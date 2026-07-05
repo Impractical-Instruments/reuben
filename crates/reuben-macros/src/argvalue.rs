@@ -285,4 +285,15 @@ mod tests {
         let out = render("union U { a: u32, b: f32 }");
         assert!(out.contains("compile_error !"), "{out}");
     }
+
+    // An empty enum is rejected with a spanned diagnostic — the guard is the only thing standing
+    // between `#[derive(ArgValue)] enum Empty {}` and an out-of-bounds `idents[default_index]`
+    // panic inside the proc macro (which would surface as an opaque compiler error, not this
+    // in-band compile_error).
+    #[test]
+    fn empty_enum_is_rejected() {
+        let out = render("enum Empty {}");
+        assert!(out.contains("compile_error !"), "{out}");
+        assert!(out.contains("at least one variant"), "{out}");
+    }
 }

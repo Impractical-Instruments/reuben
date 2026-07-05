@@ -612,11 +612,16 @@ mod tests {
             }"#,
         );
         // Held enum read appears in the signal variant too (no `[i]` indexing for the enum) —
-        // the handle's `Held<MapCurve>` form makes it a held read in both carriers.
-        assert!(
-            out.contains("let r#curve = io . read (IN_CURVE) ;"),
+        // the handle's `Held<MapCurve>` form makes it a held read in both carriers. The value
+        // variant alone satisfies a bare `contains`, so pin the signal variant explicitly: the
+        // held read occurs exactly twice (once per carrier, hoisted before the signal loop) and
+        // the looped `[i]` form never appears for the enum.
+        assert_eq!(
+            out.matches("let r#curve = io . read (IN_CURVE) ;").count(),
+            2,
             "{out}"
         );
+        assert!(!out.contains("io . read (IN_CURVE) [i]"), "{out}");
         assert!(
             out.contains("form :: Held < :: reuben_core :: vocab :: MapCurve > >"),
             "{out}"

@@ -209,4 +209,48 @@ mod tests {
             out[0]
         );
     }
+
+    #[test]
+    fn rate_change_mid_render_is_phase_continuous() {
+        // The module-doc invariant for the ADR-0031 Value inputs: a `/lfo/rate` change
+        // block-slices and takes effect at the exact sample of the change, with the phase
+        // continuous across the cut — the modulation speeds up in place, it never jumps.
+        // depth 1 / center 0 makes the continuity bound exact: a unit sine at 8 Hz moves at
+        // most 2π·8/SR per sample, so any phase reset at the cut (a step toward sin(0)=0 from
+        // mid-swing) or a stale-latch glitch shows up as an over-limit step.
+        let n = 48_000;
+        let cut = 24_000;
+        let mut d = OpDriver::for_type(Lfo::new(), SR);
+        d.set(IN_RATE, 2.0).set(IN_DEPTH, 1.0).set(IN_CENTER, 0.0);
+        d.push(IN_RATE, cut, 8.0);
+        let out = d.render(n).output(OUT_OUT).to_vec();
+
+        let max_step = 2.0 * std::f32::consts::PI * 8.0 / SR * 1.05;
+        for i in 1..n {
+            let step = (out[i] - out[i - 1]).abs();
+            assert!(
+                step <= max_step,
+                "discontinuity at {i}: step {step} exceeds the 8 Hz slope bound {max_step}"
+            );
+        }
+
+        // And the rate actually changed *at the cut*: 2 Hz over the first 0.5 s is exactly one
+        // cycle (1 upward zero-crossing), 8 Hz over the second 0.5 s is four. A rate latched at
+        // block granularity or ignored entirely breaks one of the counts.
+        let upward = |buf: &[f32]| {
+            let mut crossings = 0usize;
+            let mut prev = 0.0f32;
+            for &s in buf {
+                if prev <= 0.0 && s > 0.0 {
+                    crossings += 1;
+                }
+                prev = s;
+            }
+            crossings
+        };
+        let first = upward(&out[..cut]);
+        let second = upward(&out[cut..]);
+        assert_eq!(first, 1, "first half should run at 2 Hz (one cycle)");
+        assert_eq!(second, 4, "second half should run at 8 Hz (four cycles)");
+    }
 }

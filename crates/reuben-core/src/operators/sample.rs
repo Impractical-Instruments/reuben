@@ -342,6 +342,29 @@ mod tests {
     }
 
     #[test]
+    fn freq_change_mid_hit_does_not_retune_the_playing_hit() {
+        // Pitch is latched at the trigger frame and fixed for the hit (module doc): a `freq`
+        // change arriving mid-playback must not warp the in-flight one-shot — a Voicer gliding
+        // `freq` into a sounding voice depends on this. `freq` holds 440 (rate 1.0 at ROOT_A4)
+        // at the frame-0 trigger, then jumps to 880 at frame 2; the engine block-slices there,
+        // but the playing hit must keep rate 1.0 for all 8 frames.
+        let mut p = bound(mono(&[0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]));
+        let freq = [440.0, 440.0, 880.0, 880.0, 880.0, 880.0, 880.0, 880.0];
+        let out = run(&mut p, 8, &[1.0; 8], Some(&freq), ROOT_A4);
+        assert_eq!(out, vec![0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0]);
+
+        // Re-gate with the held 880: the next rising edge latches rate 2.0 (frames 0,2,4,6,
+        // then off the end) — the latch releases on retrigger, so `freq` is live at edges, not
+        // dead. The gate must start low: `prev_gate` carries 1.0 across renders, so frame 0 low
+        // + frame 1 high is the rising edge.
+        let gate2 = [0.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0];
+        let out2 = run(&mut p, 8, &gate2, Some(&[880.0; 8]), ROOT_A4);
+        assert_eq!(out2[0], 0.0);
+        assert_eq!(&out2[1..5], &[0.0, 2.0, 4.0, 6.0]);
+        assert!(out2[5..].iter().all(|&s| s == 0.0), "past the buffer end");
+    }
+
+    #[test]
     fn fractional_rate_interpolates_linearly() {
         let mut p = bound(mono(&[0.0, 10.0, 20.0, 30.0, 40.0, 50.0]));
         let freq = vec![660.0f32; 6]; // 1.5× root → rate 1.5

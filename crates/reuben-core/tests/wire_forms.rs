@@ -247,6 +247,61 @@ fn event_into_signal_input_is_a_hard_error_naming_the_latch() {
     }
 }
 
+/// J — Value→Event is a hard error: a held scalar (a gate, a knob echo) is not a note stream, and
+/// wiring one into a vocab Event input (`voicer.notes`) must be rejected, not silently latched.
+/// The sink is `Port::note` — a *vocab* Event, not the `Arg` pass-through — so the issue-#141
+/// passthrough exception must not swallow this wire.
+#[test]
+fn value_into_event_input_is_a_hard_error() {
+    match wire(value("o"), event("i")).err() {
+        Some(PlanError::FormMismatch { src, dst, reason }) => {
+            assert_eq!(src, "/src.o");
+            assert_eq!(dst, "/dst.i");
+            assert!(
+                reason.contains("Event port takes only an Event source"),
+                "Value→Event error must state the Event-only rule: {reason}"
+            );
+        }
+        other => panic!("expected FormMismatch, got {other:?}"),
+    }
+}
+
+/// K — Signal→Event is equally illegal: a dense audio buffer never becomes a note stream. Distinct
+/// from the Signal→Arg pass-through rejection (whose message explains the *boundary* opt-out) —
+/// this arm's message states the Event-only rule, so the two rejections can't be conflated.
+#[test]
+fn signal_into_event_input_is_a_hard_error() {
+    match wire(signal("o"), event("i")).err() {
+        Some(PlanError::FormMismatch { src, dst, reason }) => {
+            assert_eq!(src, "/src.o");
+            assert_eq!(dst, "/dst.i");
+            assert!(
+                reason.contains("Event port takes only an Event source"),
+                "Signal→Event error must state the Event-only rule: {reason}"
+            );
+        }
+        other => panic!("expected FormMismatch, got {other:?}"),
+    }
+}
+
+/// L — Event→Value is the other half of I: a note stream cannot drive a held knob without an
+/// explicit op, and the message must name the missing latch / change-detect. Pinned separately
+/// from I even though the checker shares one arm today, so the halves can split independently.
+#[test]
+fn event_into_value_input_is_a_hard_error_naming_the_latch() {
+    match wire(event("o"), value("i")).err() {
+        Some(PlanError::FormMismatch { src, dst, reason }) => {
+            assert_eq!(src, "/src.o");
+            assert_eq!(dst, "/dst.i");
+            assert!(
+                reason.contains("latch") || reason.contains("change-detect"),
+                "Event→Value error must name the latch / change-detect op: {reason}"
+            );
+        }
+        other => panic!("expected FormMismatch, got {other:?}"),
+    }
+}
+
 // ----------------------------------------------------------------------------------------------
 // The type-agnostic pass-through (issue #141) — `osc_out.in`. It classifies Event (raw, unlatched
 // delivery) and is the one destination that spans the Event/Value split: any Message-domain

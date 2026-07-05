@@ -398,6 +398,34 @@ mod tests {
         approx(c.hz(Pitch::from_degree(7)), 523.25);
     }
 
+    // §2 — octave wrap off the heptatonic path. `degree_to_step` wraps by the tuning PERIOD
+    // (12) while a scale-relative `chord_tone` wraps by the *scale length* — the two constants
+    // ADR-0013's `degree d → root + scale[d mod len] + octave*period` keeps distinct. Every
+    // other resolver test uses a 7-note scale, where a "unify the two wraps" refactor can pass
+    // the whole suite; a 5-note pentatonic separates len (5) from PERIOD (12) and pins both.
+    #[test]
+    fn pentatonic_wrap_uses_period_for_steps_and_len_for_chord_tones() {
+        let c = Harmony {
+            root: 60,
+            scale: ScaleField::new(&[0, 3, 5, 7, 10]), // C minor pentatonic (len 5)
+            chord: Chord::new(ChordTag::ScaleRelative, &[0, 2, 4]),
+        };
+        // Degree 5 wraps to idx 0, one octave up: 60 + 0 + 1*PERIOD = 72 — not scale-len drift.
+        assert_eq!(c.degree_to_step(5), 72);
+        // Euclidean down-wrap: degree -1 → idx 4 (offset 10), octave -1: 60 + 10 - 12 = 58.
+        assert_eq!(c.degree_to_step(-1), 58);
+        // And two-part up: degree 9 → idx 4, octave 1: 60 + 10 + 12 = 82.
+        assert_eq!(c.degree_to_step(9), 82);
+        // Scale-relative chord tones wrap by scale *len* (5), not 7 and not PERIOD:
+        // chord_tone(3) → offset 0 + 1*len = degree 5.
+        assert_eq!(c.chord_tone(3), Pitch::from_degree(5));
+        // Negative chord-tone indices wrap down the same way: offset 4 + (-1 * len) = -1.
+        assert_eq!(c.chord_tone(-1), Pitch::from_degree(-1));
+        // Chain the two wraps through one resolution: chord_tone(3)'s degree (len-wrapped)
+        // resolves via PERIOD to exactly the octave above the root.
+        assert_eq!(c.degree_to_step(c.chord_tone(3).degree().unwrap()), 72);
+    }
+
     #[test]
     fn absolute_pitch_ignores_scale() {
         // An absolute pitch resolves by MIDI regardless of root/scale.

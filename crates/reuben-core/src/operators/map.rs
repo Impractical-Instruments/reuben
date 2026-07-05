@@ -104,10 +104,46 @@ mod tests {
     }
 
     #[test]
+    fn zero_width_input_range_yields_out_min_no_nan() {
+        // The bounds are live per-sample signal inputs, so a degenerate range like [0.5, 0.5] is
+        // a reachable runtime state. The span guard (|in_max - in_min| < 1e-12) forces t = 0, so
+        // every sample maps to out_min — never NaN/inf from the zero-span division. Input samples
+        // at, below, and above the degenerate bound all behave the same (map's op-local NaN
+        // guard, the same class every sibling math op pins).
+        let out = run_map(0.5, 0.5, 2.0, 8.0, MapCurve::Linear, &[0.5, 0.0, 1.0]);
+        for &s in &out {
+            assert!(s.is_finite());
+            approx::assert_relative_eq!(s, 2.0);
+        }
+        // Same guard under Exponential (positive bounds): out_min * (out_max/out_min)^0 = out_min.
+        let out = run_map(0.5, 0.5, 2.0, 8.0, MapCurve::Exponential, &[0.0, 1.0]);
+        for &s in &out {
+            approx::assert_relative_eq!(s, 2.0);
+        }
+    }
+
+    #[test]
     fn exponential_curve_is_geometric_midpoint() {
         // [0,1] -> [100,10000] exponential: t=0.5 -> sqrt(100*10000)=1000.
         let out = run_map(0.0, 1.0, 100.0, 10_000.0, MapCurve::Exponential, &[0.5]);
         approx::assert_relative_eq!(out[0], 1000.0, epsilon = 1e-1);
+    }
+
+    #[test]
+    fn exponential_with_nonpositive_bound_falls_back_to_linear() {
+        // out_min < 0: geometric interpolation is meaningless across zero -> the documented
+        // linear fallback (module doc). A regression applying out_min * (out_max/out_min).powf(t)
+        // here would yield NaN (negative-base powf) at t = 0.5.
+        let out = run_map(0.0, 1.0, -1.0, 1.0, MapCurve::Exponential, &[0.0, 0.5, 1.0]);
+        assert!(out.iter().all(|s| s.is_finite()));
+        approx::assert_relative_eq!(out[0], -1.0);
+        approx::assert_relative_eq!(out[1], 0.0);
+        approx::assert_relative_eq!(out[2], 1.0);
+
+        // Boundary of the strict `> 0.0` check: out_min == 0.0 also falls back to linear
+        // (exponential would collapse to a constant 0 or divide by zero).
+        let out = run_map(0.0, 1.0, 0.0, 10.0, MapCurve::Exponential, &[0.5]);
+        approx::assert_relative_eq!(out[0], 5.0);
     }
 
     #[test]

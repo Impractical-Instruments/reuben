@@ -729,6 +729,18 @@ mod tests {
     }
 
     #[test]
+    fn more_logical_than_device_channels_drops_the_extras() {
+        // `map_frame`'s fourth documented case: more logical channels than device channels
+        // (device > 1) copies the leading channels and drops the rest — never fatal
+        // (ADR-0038 §7). Not hypothetical: stereo-sub binds three logical channels
+        // (main_l/main_r/sub), so a plain stereo interface with no profile lands here.
+        // The 9.0 sentinel proves both device slots were overwritten, not skipped.
+        let mut dev = [9.0f32; 2];
+        map_frame(&[0.1, 0.2, 0.3], &mut dev);
+        assert_eq!(dev, [0.1, 0.2]);
+    }
+
+    #[test]
     fn empty_map_is_identity() {
         // No profile (or `output.map` omitted) builds `Identity` — ADR-0038 §6's bit-identical
         // no-profile guarantee starts here, before a frame is ever touched.
@@ -740,12 +752,13 @@ mod tests {
     fn no_profile_output_is_bit_identical_to_map_frame() {
         // The load-bearing assertion (ADR-0038 §6/issue #181): with no profile, `apply_output_map`
         // must render exactly what `map_frame` renders today, sample-for-sample, for every shape
-        // existing instruments hit (stereo, mono downmix, extra device channels).
+        // existing instruments hit (stereo, mono downmix, extra device channels, dropped extras).
         let cases: &[(&[f32], usize)] = &[
             (&[0.25, -0.5], 2),
             (&[0.2, 0.4], 1),
             (&[0.123_456_79, 0.123_456_79], 1),
             (&[0.1, 0.2], 4),
+            (&[0.1, 0.2, 0.3], 2),
         ];
         let identity = build_output_map(&BTreeMap::new(), 2, 2); // channel counts unused by Identity
         for &(logical, device_channels) in cases {

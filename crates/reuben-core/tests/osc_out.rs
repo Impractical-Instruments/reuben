@@ -78,6 +78,71 @@ fn forwards_a_wired_value_source_for_control_feedback() {
     );
 }
 
+/// The frame on an outbound Message is **block-absolute** (ADR-0011 timing, ADR-0026 feedback):
+/// the render loop stamps operator emissions by adding each segment's start (`with_emit(..,
+/// seg_start)`), and the outbound drain forwards that frame verbatim — it must neither re-stamp
+/// nor lose the offset. Two held changes to the map's `in` split its block into segments [0,100)
+/// and [100,256); the second emission is produced at segment-relative frame 0, so a regression
+/// passing 0 instead of `seg_start` would surface it at frame 0 — this pins that it surfaces at
+/// 100. (The values differ so each frame is tied to its own emission.)
+#[test]
+fn outbound_message_carries_its_block_absolute_frame() {
+    let cfg = AudioConfig::new(48_000.0, 256);
+    let mut g = Graph::new();
+    let osc = g.add("/osc", Oscillator::new());
+    let out = g.add("/out", Output::new());
+    g.connect(osc, 0, out, 0);
+    g.tap_output(out, 0);
+    let map = g.add("/map", MapF32Value::new());
+    let fb = g.add("/fb", OscOut::new());
+    g.connect(map, 0, fb, 0);
+
+    let mut plan = Plan::instantiate(g, cfg).expect("instantiate");
+    let mut r = Renderer::new(&plan);
+    let mut master = vec![vec![0.0f32; 256]; plan.config.channels];
+    let mut outbound: Vec<Message> = Vec::new();
+
+    // Two held-value changes in one block: the frame-100 change is a Held-change segment bound,
+    // so the map's second `process` call runs on [100,256) and emits at segment-relative 0.
+    let msgs = [
+        Message::float("/map/in", 0.25, 0),
+        Message::float("/map/in", 0.75, 100),
+    ];
+    r.render_block_multi(&mut plan, &msgs, &[], &mut master, &mut outbound);
+
+    assert_eq!(outbound.len(), 2, "one emission per segment");
+    assert_eq!(
+        (outbound[0].frame, outbound[1].frame),
+        (0, 100),
+        "emission frames surface block-absolute, not segment-relative"
+    );
+    assert_eq!(
+        outbound[0].arg,
+        Arg::F32(0.25),
+        "frame 0 is the first value"
+    );
+    assert_eq!(
+        outbound[1].arg,
+        Arg::F32(0.75),
+        "frame 100 is the second value"
+    );
+
+    // The external-event forward path preserves a mid-block frame too: routing delivers the
+    // Note to the pass-through as a segment-relative event, the sink re-emits it, and the
+    // drain surfaces it back at its original block-absolute frame. A fresh mapless rig, so the
+    // map's per-block held re-emission can't sit beside the Note in the outbound list.
+    let mut plan = Plan::instantiate(build_rig(), cfg).expect("instantiate");
+    let mut r = Renderer::new(&plan);
+    outbound.clear();
+    let msgs = [Message::new("/fb/in", Note::new(Pitch::Degree(0), 1.0), 37)];
+    r.render_block_multi(&mut plan, &msgs, &[], &mut master, &mut outbound);
+    assert_eq!(outbound.len(), 1, "the forwarded Note reached the boundary");
+    assert_eq!(
+        outbound[0].frame, 37,
+        "a mid-block external frame survives routing, re-emit, and drain"
+    );
+}
+
 #[test]
 fn outbound_is_silent_with_no_input() {
     let cfg = AudioConfig::new(48_000.0, 256);

@@ -179,16 +179,6 @@ mod tests {
     }
 
     #[test]
-    fn no_duplicate_type_names() {
-        // builtin() panics on a duplicate; this asserts the map is internally consistent too.
-        let r = Registry::builtin();
-        let names: Vec<_> = r.type_names().collect();
-        let mut deduped = names.clone();
-        deduped.dedup();
-        assert_eq!(names, deduped, "duplicate type_name in builtin()");
-    }
-
-    #[test]
     fn type_names_are_snake_case() {
         let r = Registry::builtin();
         for name in r.type_names() {
@@ -207,15 +197,41 @@ mod tests {
     }
 
     #[test]
-    fn make_builds_the_right_operator() {
-        let r = Registry::builtin();
-        let entry = r.get("oscillator").expect("oscillator registered");
-        let op = (entry.make)();
-        // The boxed operator's descriptor matches the entry's.
-        assert_eq!(entry.descriptor.type_name, "oscillator");
-        // Constructing twice yields independent instances (no shared state).
-        let _op2 = (entry.make)();
-        drop(op);
+    fn register_overrides_an_existing_type_name_last_writer_wins() {
+        // ADR-0004/ADR-0024: builtin() panics on a duplicate type_name (two built-ins claiming
+        // one name is a build error), but register() is the *embedder override seam* — a
+        // re-registration under an existing name must replace the entry, not panic and not keep
+        // the old one. That asymmetry is the contract; a "harden the invariant" refactor moving
+        // builtin()'s duplicate assert down into register() would break every embedder override.
+        let builtins = Registry::builtin();
+        let osc = builtins.get("oscillator").expect("oscillator registered");
+        // A distinguishable override descriptor under the same name: one extra input port
+        // (cloned from the original, so the fixture doesn't care what oscillator's ports are).
+        let mut second = osc.descriptor.clone();
+        second.inputs.push(second.inputs[0].clone());
+
+        let mut r = Registry::new();
+        r.register(osc.make, osc.descriptor.clone());
+        r.register(osc.make, second.clone()); // must not panic, must replace
+
+        let entry = r
+            .get("oscillator")
+            .expect("still registered after override");
+        assert_eq!(
+            entry.descriptor.inputs.len(),
+            second.inputs.len(),
+            "descriptor replaced, not kept"
+        );
+        assert_ne!(
+            entry.descriptor.inputs.len(),
+            osc.descriptor.inputs.len(),
+            "fixture: the override must be distinguishable from the original"
+        );
+        assert_eq!(
+            r.type_names().filter(|n| *n == "oscillator").count(),
+            1,
+            "replace, not accumulate"
+        );
     }
 
     #[test]

@@ -355,6 +355,47 @@ mod tests {
     }
 
     #[test]
+    fn fill_duplex_then_empty_input_stages_silence_not_stale_samples() {
+        // The `in_dirty` stale-input pin (see `fill_duplex` docs): once real input has been
+        // staged, a later empty-input call (`fill()`) must re-stage zeros so the last block
+        // of live input never re-enters the render — the obvious refactor (early-return past
+        // the staging loop when `input.is_empty()`, exactly what the pre-dirty path does)
+        // would loop the final block of mic audio forever.
+        let mut e = input_engine(128);
+        let b = e.block_size();
+        let ch = e.channels();
+        // Stage two blocks of real input. One-block-ahead alignment: output block 0 is
+        // silence, block 1 echoes input block 0 — and `in_scratch` now holds input block 1,
+        // i.e. in_sig(b..2b), staged but not yet rendered.
+        let input: Vec<f32> = (0..2 * b).map(in_sig).collect();
+        let mut out = vec![0.0f32; 2 * b * ch];
+        e.fill_duplex(&input, &mut out);
+
+        // Switch to the no-input path. The first post-switch block legitimately echoes the
+        // last real input block — that's the one-block latency playing out what was already
+        // staged, not staleness.
+        let mut post = vec![9.0f32; b * ch];
+        e.fill(&mut post);
+        for f in 0..b {
+            assert_eq!(
+                post[f * ch].to_bits(),
+                in_sig(b + f).to_bits(),
+                "frame {f}: the already-staged input block must still play out"
+            );
+        }
+        // The second post-switch block reads what `fill()` staged: exact zeros — NOT a
+        // replay of `in_scratch`'s previous (real-input) contents.
+        e.fill(&mut post);
+        for f in 0..b {
+            assert_eq!(
+                post[f * ch].to_bits(),
+                0.0f32.to_bits(),
+                "frame {f}: empty input after real input must stage silence, not stale samples"
+            );
+        }
+    }
+
+    #[test]
     fn fill_duplex_is_independent_of_chunk_size() {
         // The input-side analog of `fill_is_independent_of_chunk_size`: one big duplex fill
         // must equal many ragged ones sample-for-sample — output stays a pure function of the

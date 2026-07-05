@@ -247,4 +247,48 @@ fn render_block_is_allocation_free_after_warmup() {
         input_held, 0,
         "input-master render allocated {input_held} time(s)"
     );
+
+    // (5) A self-playing rig (ADR-0014's emission machinery under sustained *internal* traffic):
+    // `sequence.json`'s clock gate drives the sequencer, which emits note Messages into the
+    // Voicer every beat — so the operator-emitted routing path (the `emit_scratch`/`emitted`
+    // pool and each node's `events`/`held`/`materialize_writes` route vectors) runs every block
+    // with no external messages at all. Sections (1)-(4) are emission-quiet in steady state or
+    // drive messages from outside through `route_messages`; this is the only coverage of the
+    // internal emission fan-out (note → Voicer retrigger → hosted-voice attack/release) staying
+    // allocation-free once every pool has grown to steady capacity.
+    let graph = load_instrument(
+        include_str!("../../../instruments/sequence.json"),
+        &Registry::builtin(),
+        &InstrumentsDir,
+    )
+    .expect("load sequence.json")
+    .graph;
+    let mut plan = Plan::instantiate(graph, cfg).expect("instantiate sequence");
+    let mut r = Renderer::new(&plan);
+
+    // Warm up across the whole 8-step loop: at 120 BPM a beat is 24 000 frames ≈ 94 blocks of
+    // 256, so 800 blocks covers all 8 steps, all 4 hosted voices, and every attack/release —
+    // growing every scratch/pool to its steady-state high-water mark. Sanity-check the rig is
+    // genuinely self-playing (a silent render would make the zero-alloc assertion vacuous).
+    let mut sounded = false;
+    for _ in 0..800 {
+        r.render_block(&mut plan, &[], &mut out);
+        sounded |= out.iter().any(|&s| s != 0.0);
+    }
+    assert!(
+        sounded,
+        "the sequenced rig must produce audio during warmup"
+    );
+
+    // Steady state: another 800 blocks — multiple beats, so note emissions, event routing, and
+    // voice retriggers all happen *inside* the measured window — must not allocate.
+    let before = ALLOCS.load(Ordering::Relaxed);
+    for _ in 0..800 {
+        r.render_block(&mut plan, &[], &mut out);
+    }
+    let sequenced = ALLOCS.load(Ordering::Relaxed) - before;
+    assert_eq!(
+        sequenced, 0,
+        "sequenced-rig steady-state render allocated {sequenced} time(s)"
+    );
 }

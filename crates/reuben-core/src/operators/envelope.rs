@@ -389,6 +389,78 @@ mod tests {
     }
 
     #[test]
+    fn retrigger_during_release_resumes_attack_from_current_level() {
+        // Fast repeated notes on a mono line: the gate rises again while the envelope is
+        // mid-Release. The retrigger must flip the stage back to Attack and ramp from the level
+        // *at that instant* — never reset to 0 (an audible click) — so the top arrives in less
+        // than a full attack time. And `active` (ADR-0032 voice-liveness) must emit nothing at
+        // the retrigger: the envelope never reached Idle, so the held MsgWriter value never
+        // transitions — the Voicer keeps seeing one continuously-live voice.
+        let attack = 0.01; // 480 samples
+        let decay = 0.01; // 480 samples
+        let sustain = 0.6;
+        let release = 0.04; // 1920 samples
+        let mut d = OpDriver::for_type(Envelope::new(), SR);
+        d.set(IN_ATTACK, attack)
+            .set(IN_DECAY, decay)
+            .set(IN_SUSTAIN, sustain)
+            .set(IN_RELEASE, release);
+
+        // One render, gate edges pushed directly: note-on at 0; note-off at 4800 (well past
+        // attack+decay, level == sustain 0.6); retrigger at 5760 — half-way through the
+        // 1920-sample release, so the level is ~0.3 at that instant.
+        let retrig = 5_760;
+        d.push(IN_GATE, 0, 1.0)
+            .push(IN_GATE, 4_800, 0.0)
+            .push(IN_GATE, retrig, 1.0);
+        let out = d.render(12_000).output(OUT_CV).to_vec();
+
+        // Mid-release just before the retrigger: half-way down from sustain.
+        assert_abs_diff_eq!(out[retrig - 1], 0.3, epsilon = 0.02);
+
+        // From the retrigger the level only rises until it tops out — no reset, no dip toward 0.
+        assert!(
+            out[retrig] >= out[retrig - 1] - 1e-4,
+            "level reset at the retrigger frame: {} -> {}",
+            out[retrig - 1],
+            out[retrig]
+        );
+        let top = retrig
+            + out[retrig..]
+                .iter()
+                .position(|&s| s >= 0.99)
+                .expect("retriggered attack reaches the top");
+        for i in retrig..top {
+            assert!(
+                out[i + 1] >= out[i] - 1e-4,
+                "level dipped during the retriggered attack at {i}: {} -> {}",
+                out[i],
+                out[i + 1]
+            );
+        }
+
+        // Resuming from ~0.3 the attack tops out in ~(1-0.3)*480 ≈ 336 samples — well inside 400,
+        // faster than the 480-sample full attack (a reset-to-0 regression only reads ~0.83 here).
+        let peak = out[retrig..=retrig + 400]
+            .iter()
+            .cloned()
+            .fold(0.0f32, f32::max);
+        assert_abs_diff_eq!(peak, 1.0, epsilon = 0.02);
+
+        // Sparse `active`: exactly one emit across the whole run — the note-on transition at
+        // frame 0. No active=0.0 (the release never completed) and no second active=1.0 (the
+        // retrigger is not a liveness transition; the latch dedups).
+        let emits = d.emits();
+        assert_eq!(
+            emits.len(),
+            1,
+            "expected exactly one active transition, got {emits:?}"
+        );
+        assert_eq!(emits[0].frame, 0);
+        assert_abs_diff_eq!(active_val(&emits[0]), 1.0);
+    }
+
+    #[test]
     fn gate_never_on_is_silent() {
         let params = vec![0.01, 0.1, 0.7, 0.2];
         let n = 1_024;

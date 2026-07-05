@@ -531,6 +531,24 @@ mod tests {
         assert!(oob.message.contains("outside"), "{}", oob.message);
     }
 
+    // An f32/f32_buffer meta whose curve string is neither "linear" nor "exponential" is
+    // rejected. The scaffold path deserializes PortSpec from JSON, where curve is an arbitrary
+    // string — the macro's parse-time `lin`/`exp` keyword check never runs there, so this
+    // validate() branch is that path's only guard.
+    #[test]
+    fn rejects_unknown_curve_string() {
+        let e = err(
+            r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"f32","f32":{"min":0,"max":1,"default":0,"curve":"log"}} ] }"#,
+        );
+        assert_eq!(e.locus, Locus::Input(0));
+        assert!(e.message.contains("curve"), "{}", e.message);
+        // `f32_buffer` shares the same meta branch (ADR-0031 decision (a)).
+        let buf = err(
+            r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"f32_buffer","f32":{"min":0,"max":1,"default":0,"curve":"log"}} ] }"#,
+        );
+        assert!(buf.message.contains("curve"), "{}", buf.message);
+    }
+
     #[test]
     fn arg_is_input_only() {
         // The type-agnostic pass-through (issue #141) is legal as an input...
