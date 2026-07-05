@@ -120,7 +120,7 @@ pub fn has_osc_form(ty: &PortType) -> bool {
 /// nothing** — the caller must skip the datagram, never encode zero args onto the wire. Legality
 /// checks ([`has_osc_form`]) keep such wires out of a plan, so a `false` here is belt-and-braces,
 /// but the rule lives with the expansion.
-#[must_use]
+#[must_use = "false means the Arg had no OSC form and nothing was appended — skip the datagram"]
 pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) -> bool {
     let before = out.len();
     match arg {
@@ -291,7 +291,9 @@ mod tests {
     }
 
     /// The capability key (issue #141): a type is wireable into the pass-through **iff**
-    /// [`osc_out_args`] produces a non-empty external form for it.
+    /// [`osc_out_args`] produces a non-empty external form for it. The second half locks the
+    /// "cannot drift" claim in [`has_osc_form`]'s docs: for a value of every `Arg` variant, the
+    /// drain reports a form (`true`) exactly where the key grants one.
     #[test]
     fn has_osc_form_matches_what_the_drain_can_send() {
         use crate::vocab::FilterMode;
@@ -316,6 +318,28 @@ mod tests {
         // Audio never crosses; a pass-through names no type of its own.
         assert!(!has_osc_form(&PortType::F32Buffer));
         assert!(!has_osc_form(&PortType::Arg));
+
+        // Key ↔ drain: `osc_out_args` emits iff the corresponding type has a form.
+        let mut flat = Vec::new();
+        assert!(osc_out_args(&Arg::F32(1.0), &mut flat));
+        assert!(osc_out_args(&Arg::I32(3), &mut flat));
+        assert!(osc_out_args(&Arg::Str("s".into()), &mut flat));
+        assert!(osc_out_args(
+            &Arg::from(FilterMode::from_symbol("Lp").unwrap_or_default()),
+            &mut flat,
+        ));
+        assert!(osc_out_args(
+            &Arg::Note(Note::new(Pitch::Absolute(60.0), 0.5)),
+            &mut flat,
+        ));
+        assert!(!osc_out_args(
+            &Arg::Harmony(crate::vocab::harmony::Harmony::default()),
+            &mut flat,
+        ));
+        assert!(!osc_out_args(
+            &Arg::F32Buffer(crate::message::Signal::default()),
+            &mut flat,
+        ));
     }
 
     /// No OSC form → emit nothing: the expansion appends nothing and says so (`false`), which is
