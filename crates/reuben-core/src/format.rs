@@ -3263,7 +3263,10 @@ mod tests {
     /// (`Graph::set_constant` → `Port::coerce`), so the **stored** constant clamps to the
     /// voicer's declared `1..=32` range at both ends — a save/reload never resurrects the
     /// out-of-range value. (The pool the voice-resource pass *builds* should agree with this
-    /// stored value; `voice_count`'s range behavior is a known divergence — see tracking notes.)
+    /// stored value, but today it does not: `voice_count` reads the raw config number with only
+    /// `.max(1)`, skipping the `1..=32` coerce — so `voices: 100` builds a 100-voice pool while
+    /// the document stores 32. Known divergence, not yet fixed; when `voice_count` reads through
+    /// the coercion seam, extend this test with the build-vs-stored consistency assertion.)
     #[test]
     fn out_of_range_voices_config_is_clamped_through_the_coercion_seam() {
         let over = r#"{"instrument":"t","nodes":[

@@ -331,10 +331,11 @@ mod tests {
     fn swept_cutoff_is_bit_identical_to_per_sample_recompute() {
         // The other half of the cache contract (see above): under genuinely *changing* controls
         // the recompute-on-change path must still be bit-for-bit identical to recomputing
-        // `SvfCoeffs` every sample. Cutoff moves as a staircase (holds each value for 3 samples,
-        // so that key repeats) while resonance ramps per sample (that key changes every sample,
-        // forcing the per-sample-sweep recompute) — the two keys change on different schedules,
-        // so the compare must get both right. (The cache-*hit* branch is bit-checked by the
+        // `SvfCoeffs` every sample. Both controls move as staircases with coprime hold periods
+        // (cutoff every 3 samples, resonance every 5), so the guard's single combined condition
+        // (`cutoff != last || resonance != last`) misses at every multiple of 3 or 5 and hits on
+        // the samples in between — the render genuinely interleaves cache hits with recomputes
+        // triggered by either control alone. (The all-hit steady state is bit-checked by the
         // constant-control test above.) `SvfCoeffs::new` is pure, so bit equality is the correct,
         // non-flaky assertion; a lag-by-one cache bug (coefficients from the previous sample's
         // controls) diverges immediately.
@@ -342,7 +343,7 @@ mod tests {
         let n = 4096;
         let input = sine(6_000.0, sr, n);
         let cutoff: Vec<f32> = (0..n).map(|i| 300.0 + ((i / 3) as f32) * 8.0).collect();
-        let res: Vec<f32> = (0..n).map(|i| i as f32 / n as f32 * 0.8).collect();
+        let res: Vec<f32> = (0..n).map(|i| ((i / 5) as f32) * 0.001).collect();
         let out = render_buffers(&input, sr, &cutoff, &res, FilterMode::Lp);
 
         // Reference: a fresh raw SVF recomputing the coefficients from scratch on every sample.
