@@ -400,7 +400,8 @@ mod tests {
         assert!(has_osc_form(
             &Port::enumerated(FilterMode::enum_meta("mode")).ty
         ));
-        // Note packs its flat form; Harmony has none (converters: issue #146).
+        // Note packs its registered flat form; Harmony registers none — the boundary opt-out
+        // (its wire form is deferred to issue #209).
         assert!(has_osc_form(&PortType::Vocab {
             name: "Note",
             is_event: true,

@@ -338,8 +338,9 @@ fn enum_value_into_passthrough_is_legal() {
 
 /// A no-OSC-form Value source (`Harmony`, the documented boundary opt-out) is equally a hard
 /// error: legality into the pass-through is capability-keyed (`boundary::has_osc_form`), so a
-/// wire that could never send anything is rejected at plan, not left silently dead. Boundary
-/// converters for structured types are issue #146.
+/// wire that could never send anything is rejected at plan, not left silently dead. Struct
+/// converters landed with the boundary registry (`register_osc_form!`, epic #146); `Harmony`
+/// registers none — its wire form is deferred to issue #209.
 #[test]
 fn harmony_into_passthrough_is_a_hard_error_naming_the_opt_out() {
     let harmony = Port {

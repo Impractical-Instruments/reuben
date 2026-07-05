@@ -1652,10 +1652,11 @@ impl InstrumentDoc {
                 // the prefixed internals (ADR-0034 §5). A type-agnostic `Arg` pass-through input
                 // (issue #141) is **capability-keyed**: it accepts any source whose type has an
                 // external OSC form (`boundary::has_osc_form`, the single statement shared with
-                // the plan check) — the primitives, a vocab enum, `Note`'s flat form. A `Buffer`
-                // never emits Messages (audio stays off the wire, ADR-0026/0030) and `Harmony`
-                // has no OSC form (converters: issue #146) — a wire that could never send
-                // anything is rejected here, not left silently dead. Anything else is illegal.
+                // the plan check) — the primitives, a vocab enum, `Note`'s registered flat form.
+                // A `Buffer` never emits Messages (audio stays off the wire, ADR-0026/0030) and
+                // `Harmony` has no OSC form (it registers no converter; its wire form is issue
+                // #209) — a wire that could never send anything is rejected here, not left
+                // silently dead. Anything else is illegal.
                 let compatible = same_wire_type(&from_ty, &to_ty)
                     || matches!((&from_ty, &to_ty), (PortType::F32, PortType::F32Buffer))
                     || (matches!(to_ty, PortType::Arg) && crate::boundary::has_osc_form(&from_ty));
@@ -3395,8 +3396,9 @@ mod tests {
     }
 
     /// Legality into the pass-through is capability-keyed (`boundary::has_osc_form`): `Harmony`
-    /// has no external OSC form (the boundary opt-out — converters are issue #146), so the wire
-    /// could never send anything and is rejected at load, not left silently dead.
+    /// has no external OSC form (the boundary opt-out — it registers no converter; its wire
+    /// form is deferred to issue #209), so the wire could never send anything and is rejected
+    /// at load, not left silently dead.
     #[test]
     fn arg_passthrough_rejects_a_source_with_no_osc_form() {
         let harmony_src = r#"{"instrument":"t",
