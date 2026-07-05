@@ -3004,8 +3004,8 @@ fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortK
         reason,
     };
 
-    // The declared numeric meta for one of the pipe's two ports (they mirror each other).
-    let f32_meta = |port_name: &'static str| -> Result<F32Meta, LoadError> {
+    // The declared numeric meta for the pipe's two ports (they mirror each other).
+    let f32_meta = || -> Result<F32Meta, LoadError> {
         let min = pipe
             .min
             .map(|v| v as f32)
@@ -3037,7 +3037,6 @@ fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortK
             }
         };
         Ok(F32Meta {
-            name: port_name,
             min,
             max,
             default,
@@ -3068,9 +3067,10 @@ fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortK
                 || pipe.max.is_some()
                 || pipe.curve.is_some();
             if declared {
+                let meta = f32_meta()?;
                 (
-                    Port::f32_buffer_meta(f32_meta("in")?),
-                    Port::f32_buffer_meta(f32_meta("out")?),
+                    Port::f32_buffer_meta("in", meta.clone()),
+                    Port::f32_buffer_meta("out", meta),
                     PortKind::Signal,
                 )
             } else {
@@ -3082,11 +3082,14 @@ fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortK
                 )
             }
         }
-        "f32" => (
-            Port::f32(f32_meta("in")?),
-            Port::f32(f32_meta("out")?),
-            PortKind::Value,
-        ),
+        "f32" => {
+            let meta = f32_meta()?;
+            (
+                Port::f32("in", meta.clone()),
+                Port::f32("out", meta),
+                PortKind::Value,
+            )
+        }
         "note" => {
             no_numeric_meta()?;
             (Port::note("in"), Port::note("out"), PortKind::Event)
