@@ -72,9 +72,16 @@ symbols). Three fences keep the delegation sound:
    form (`boundary::has_osc_form`, the single statement consumed by both the load-time and
    plan-time checks): the primitives, vocab enums (index today, per the gap above), and `Note`'s
    flat form. `Harmony` (no OSC form) and any Signal are rejected loud — a wire that could never
-   send anything is a patching mistake, not a silent drop. Converters giving structured types a
-   wire form (multi-arg / bundle, both directions) are
-   [issue #146](https://github.com/Impractical-Instruments/reuben/issues/146).
+   send anything is a patching mistake, not a silent drop. *(2026-07-05)* The converters
+   [issue #146](https://github.com/Impractical-Instruments/reuben/issues/146) promised have
+   landed (issues #204/#205): a struct vocab type self-registers its inbound converter at its
+   definition site (`register_osc_form!` → `boundary::OscForm`, the ADR-0024 inventory pattern;
+   `Note` is the first registrant), and `has_osc_form`'s struct arm reads the same registry.
+   Outbound deliberately stays the closed exhaustive `osc_out_args` match over `Arg` — a runtime
+   outbound registry over a closed enum was rejected — with a test pinning the two sides
+   together. `Harmony` remains the legitimate no-form opt-out (it registers nothing); its
+   external wire form is deferred to
+   [issue #209](https://github.com/Impractical-Instruments/reuben/issues/209).
 3. **Inbound is a single atom.** External OSC addressed at an `arg` port crosses only as one
    `F32`/`I32`/`Str` (the echo/loopback path): a multi-arg list has no unambiguous single-`Arg`
    form without a typed destination port. The string atom was originally excluded because
@@ -166,6 +173,13 @@ conversion (a primitive port wraps the single arg; a vocab port calls `T::from_o
 single source of truth is the descriptor, no separate registry to drift. The external form is
 flat multi-arg (`Note ↔ /note pitch vel`), derive-generated. Opt-out is by *not* implementing
 the OSC trait — `Buffer` does not, so audio cannot cross the boundary by construction.
+*(2026-07-05)* As built (epic #146): the struct-type conversion is a hand-written `OscArg` impl
+beside the type, **self-registered** with the boundary via `register_osc_form!`
+(`boundary::OscForm`, the ADR-0024 inventory pattern) and looked up by the port's declared type
+name — port-authority holds, and self-registration means adding a converter edits no central
+match. Outbound (`osc_out_args`) stays a closed exhaustive match over `Arg`, drift-guarded by
+test. The struct opt-out is by *not registering*: `Harmony` does neither (wire form deferred to
+issue #209).
 
 ## Considered alternatives
 
@@ -203,5 +217,6 @@ the OSC trait — `Buffer` does not, so audio cannot cross the boundary by const
   them: an internal timestamp, one Arg per Message, concrete-type Args (instead of blobs), and
   the Buffer payload.
 - **Deferred:** a `vocab` `Trigger`/unit type for payload-less bangs; `Arg::Str` interning if a
-  hot path appears; chord-as-simultaneous-notes via the reserved OSC Bundle; non-f32
-  `Signal<T>` element kinds (architected-for, not built).
+  hot path appears *(2026-07-05: `Str` is `Arc<str>`-backed since issue #206, so a render-thread
+  clone is a refcount bump; interning proper stays deferred)*; chord-as-simultaneous-notes via
+  the reserved OSC Bundle; non-f32 `Signal<T>` element kinds (architected-for, not built).

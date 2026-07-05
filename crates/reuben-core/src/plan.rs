@@ -834,7 +834,8 @@ fn check_wire_forms(graph: &Graph) -> Result<(), PlanError> {
                 format!(
                     "{ty}→Arg: {ty} has no external OSC form (the boundary opt-out, \
                      ADR-0030), so a pass-through wire could never send anything; \
-                     boundary converters are tracked in issue #146"
+                     the type registers no boundary converter — Harmony's wire form \
+                     is tracked in issue #209"
                 )
             }
             // A Signal source never emits Messages (its data lives in arena buffers), so

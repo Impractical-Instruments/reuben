@@ -14,8 +14,9 @@
 //!   enum self-registers its `io.input::<E>()` read. Type identity lives in the port, never the
 //!   value — so adding an enum names no central engine site.
 //!
-//! The OSC flat-multi-arg conversion for structs (`Note ↔ /note pitch vel`) is generated at
-//! the boundary in phase 6, not here.
+//! The OSC flat-multi-arg conversion for structs (`Note ↔ /note pitch vel`) is not derived
+//! here: the type hand-implements `OscArg` beside its definition and self-registers the
+//! converter with the boundary's registry (`register_osc_form!` in `boundary.rs`, epic #146).
 //!
 //! [`Arg`]: ../../reuben_core/message/enum.Arg.html
 //! [`EnumMeta`]: ../../reuben_core/descriptor/struct.EnumMeta.html

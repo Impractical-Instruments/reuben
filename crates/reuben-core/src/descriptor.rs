@@ -22,7 +22,9 @@ pub enum PortType {
     /// integer (a count like the voicer's `voices` pool size), carrying its range + default in
     /// [`I32Meta`]; `None` for a bare integer atom with no declared range.
     I32 { meta: Option<I32Meta> },
-    /// A string / symbol atom — cold / boundary paths only.
+    /// A string / symbol atom — cold / boundary paths only. Its `Arg` is `Arc<str>`-backed
+    /// (issue #206), so forwarding one across the render thread is a refcount bump;
+    /// construction still allocates and stays on the cold paths.
     Str,
     /// A dense per-sample signal (audio): the **only** Arg with a buffer form. A `Buffer`-source
     /// wired into a scalar port is illegal — it needs an explicit sampler op (ADR-0030). Not
@@ -55,8 +57,10 @@ pub enum PortType {
     /// only where the operator treats the payload as opaque — a pure carrier: the wired *source*
     /// port is the type authority. Legality is capability-keyed
     /// ([`has_osc_form`](crate::boundary::has_osc_form)): any Event or Value source whose type
-    /// has an external OSC form wires in; a no-form source (`Harmony`) is rejected at load/plan,
-    /// and a Signal (audio) source likewise — audio stays off the wire by construction
+    /// has an external OSC form wires in — for a struct vocab type that means a converter
+    /// registered via `register_osc_form!` ([`OscForm`](crate::boundary::OscForm), epic #146);
+    /// a no-form source (`Harmony`, which registers none) is rejected at load/plan, and a
+    /// Signal (audio) source likewise — audio stays off the wire by construction
     /// (ADR-0026/0030).
     Arg,
 }

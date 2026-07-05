@@ -19,7 +19,11 @@
 //!   whatever Message-domain source is wired in. The type-driven expansion to the flat OSC form
 //!   happens past the boundary ([`osc_out_args`](crate::boundary::osc_out_args)); legality is
 //!   capability-keyed ([`has_osc_form`](crate::boundary::has_osc_form)), so a no-OSC-form source
-//!   (`Harmony`) and a Signal source are both rejected at load/plan time. In
+//!   (`Harmony`) and a Signal source are both rejected at load/plan time. The port is also
+//!   externally addressable — the OSC echo/loopback path: a **single** numeric or string atom
+//!   crosses back in verbatim (the string since `Arg::Str` went `Arc<str>`-backed, issues
+//!   #206/#207), while a multi-arg list drops ([`osc_in_arg`](crate::boundary::osc_in_arg)'s
+//!   pass-through arm). In
 //!   the unified model (ADR-0030) the sink simply **emits** each received Message; the engine's
 //!   outbound tap (`Plan.outbound_taps`) drains an `osc_out` node's emissions past the boundary,
 //!   where the flat OSC form is encoded. The incoming event's local address is dropped; the node's

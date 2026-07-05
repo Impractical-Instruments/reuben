@@ -9,8 +9,11 @@
 //! `resolve_arg` / `enum_meta`).
 //!
 //! Adding a domain type = define it here (or beside its logic), derive `ArgValue`, and add one
-//! variant to [`Arg`](crate::message::Arg). The OSC flat-multi-arg boundary conversion for
-//! struct types is derive-generated (`from_osc`/`to_osc`).
+//! variant to [`Arg`](crate::message::Arg). A struct type that should cross the OSC boundary
+//! also hand-implements [`OscArg`](crate::message::OscArg) (its flat multi-arg form,
+//! `from_osc`/`to_osc`) and self-registers the converter beside that impl with
+//! `crate::register_osc_form!` (epic #146) — [`Note`] does; [`Harmony`] deliberately does
+//! neither (the boundary opt-out; its wire form is issue #209).
 //!
 //! Types live next to their behavior — [`Harmony`] and its resolver in the [`harmony`]
 //! submodule, [`Pitch`]/[`Note`] in [`pitch`] — and are re-exported here so a
