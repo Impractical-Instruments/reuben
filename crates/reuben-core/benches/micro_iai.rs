@@ -78,6 +78,7 @@ fn setup(kind: &str) -> Option<OpHarness> {
 #[bench::osc_out(args = ("osc_out",), setup = setup)]
 #[bench::oscillator(args = ("oscillator",), setup = setup)]
 #[bench::output(args = ("output",), setup = setup)]
+#[bench::overhead(args = ("overhead",), setup = setup)]
 #[bench::pan(args = ("pan",), setup = setup)]
 #[bench::power(args = ("power_f32_signal",), setup = setup)]
 #[bench::power_value(args = ("power_f32_value",), setup = setup)]

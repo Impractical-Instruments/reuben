@@ -11,6 +11,9 @@
 //! actually seeds and steps a node — and the engine per-node overhead it now includes (edge clear,
 //! routing, materialize, `Io` build) is a *constant* per-operator offset, so regression detection
 //! survives the shift from "process cost" to "per-node cost" (the OpDriver reframe of ADR-0019).
+//! That constant offset is also measured *by itself*: the bench-only [`overhead`] case is a no-op
+//! operator behind a typical port shape, so a change to the engine's stepping cost fails one case
+//! whose name says so instead of smearing small deltas across every cheap operator.
 //! The external bench crate constructs an `OpHarness` by operator kind and never touches raw `Io`.
 //!
 //! The single source of truth for *which* operators are benched and *how* each is driven is
@@ -84,9 +87,11 @@ const fn w(kind: &'static str, recipe: Recipe) -> Workload {
     Workload { kind, recipe }
 }
 
-/// Every built-in operator, with the recipe that exercises its real path. MUST stay in lockstep
-/// with [`Registry::builtin`] — the forcing-function test fails CI if an operator is missing here.
-/// Keep alphabetical for easy diffing against the registry's stable (type-name) order.
+/// Every built-in operator, with the recipe that exercises its real path, plus the bench-only
+/// [`overhead`] case. MUST stay in lockstep with [`Registry::builtin`] — the forcing-function test
+/// fails CI if an operator is missing here (`overhead` is its one carved-out exception: benched but
+/// deliberately unregistered). Keep alphabetical for easy diffing against the registry's stable
+/// (type-name) order.
 pub const WORKLOADS: &[Workload] = &[
     w("abs_f32_signal", Recipe::Default),
     w("abs_f32_value", Recipe::Default),
@@ -125,6 +130,9 @@ pub const WORKLOADS: &[Workload] = &[
     w("osc_out", Recipe::Value),
     w("oscillator", Recipe::Default),
     w("output", Recipe::Default),
+    // Bench-only, not a registered operator (see the [`overhead`] module): the zero-DSP point that
+    // isolates the engine's per-node stepping overhead as its own gated, attributable case.
+    w(overhead::KIND, Recipe::Default),
     w("pan", Recipe::Default),
     w("power_f32_signal", Recipe::Default),
     w("power_f32_value", Recipe::Default),
@@ -190,6 +198,7 @@ pub const MICRO_IAI_KINDS: &[&str] = &[
     "osc_out",
     "oscillator",
     "output",
+    "overhead",
     "pan",
     "power_f32_signal",
     "power_f32_value",
@@ -207,6 +216,60 @@ pub const MICRO_IAI_KINDS: &[&str] = &[
     "transpose",
     "voicer",
 ];
+
+/// `overhead` — the zero-DSP measurement point (ADR-0019 follow-up to the OpDriver reframe).
+///
+/// Every micro case measures `step_node` = the operator's own `process` **plus** the engine's
+/// per-node overhead (edge clear, routing, materialize, `Io` build). That overhead is a constant
+/// offset per case, so a change to it smears across all fifty-odd cases as small uniform deltas —
+/// visible only as "+6% on every cheap value op" — instead of failing one case whose name says
+/// what regressed. This operator pins it down: a **no-op `process`** behind a typical port shape
+/// (two Value inputs, one Signal output), so its entire instruction count *is* the per-node
+/// stepping overhead, gated by the same 3%/10% thresholds as any operator.
+///
+/// It is deliberately **not registered** (`register_operator!` is never invoked): it isn't part of
+/// the instrument format, must not appear in the schema / `describe` / a patchable graph, and the
+/// committed schema stays identical with and without the `bench` feature. The census forcing
+/// function carves out exactly this one kind, and [`OpHarness::for_kind`] constructs it directly
+/// instead of through the registry.
+pub mod overhead {
+    use crate::descriptor::Descriptor;
+    use crate::operator::{Io, Operator};
+
+    /// The workload/bench kind string — a name the registry census must never claim.
+    pub const KIND: &str = "overhead";
+
+    // A representative surface, not a used one: two held Values + a Signal out is the modal
+    // operator shape, so the engine builds/clears/materializes what it would for a real node.
+    crate::operator_contract!(Overhead {
+        inputs:  { a: f32 { 0.0..=1.0, default 0.0, "", lin },
+                   b: f32 { 0.0..=1.0, default 0.0, "", lin } },
+        outputs: { out: f32_buffer },
+    });
+
+    /// Stateless: the whole point is that `process` contributes zero instructions.
+    #[derive(Default)]
+    pub struct Overhead;
+
+    impl Overhead {
+        pub fn new() -> Self {
+            Self
+        }
+    }
+
+    impl Operator for Overhead {
+        fn descriptor() -> Descriptor {
+            Self::contract()
+        }
+
+        /// Deliberately empty — everything the bench counts happens in the engine around it.
+        fn process(&mut self, _io: &mut Io) {}
+
+        fn spawn(&self) -> Box<dyn Operator> {
+            Box::new(Self::new())
+        }
+    }
+}
 
 /// Look up the workload for an operator kind. Panics if absent — a bench referenced a kind with no
 /// workload, which the forcing-function test would also have caught.
@@ -232,12 +295,23 @@ impl OpHarness {
     /// [`OpDriver`]. Setup only — plan instantiation, resource decode, and event/buffer construction
     /// all happen here, never in [`render`](Self::render).
     pub fn for_kind(kind: &str) -> Self {
-        let reg = Registry::builtin();
-        let entry = reg
-            .get(kind)
-            .unwrap_or_else(|| panic!("unknown operator kind {kind:?}"));
-        let desc = entry.descriptor.clone();
-        let mut driver = OpDriver::from_boxed((entry.make)(), desc.clone(), SAMPLE_RATE);
+        // `overhead` is bench-only and deliberately unregistered (see [`overhead`]) — the registry
+        // lookup below can never find it, so it is the one kind constructed directly.
+        let (make, desc): (fn() -> Box<dyn crate::operator::Operator>, _) =
+            if kind == overhead::KIND {
+                use crate::operator::Operator;
+                (
+                    || Box::new(overhead::Overhead::new()),
+                    overhead::Overhead::descriptor(),
+                )
+            } else {
+                let reg = Registry::builtin();
+                let entry = reg
+                    .get(kind)
+                    .unwrap_or_else(|| panic!("unknown operator kind {kind:?}"));
+                (entry.make, entry.descriptor.clone())
+            };
+        let mut driver = OpDriver::from_boxed(make(), desc.clone(), SAMPLE_RATE);
         apply_recipe(&mut driver, &desc, workload(kind).recipe);
         Self {
             driver,
@@ -350,12 +424,49 @@ mod tests {
     #[test]
     fn every_operator_has_a_micro_bench_workload() {
         let registered: BTreeSet<&str> = Registry::builtin().type_names().collect();
-        let benched: BTreeSet<&str> = WORKLOADS.iter().map(|w| w.kind).collect();
+        let mut benched: BTreeSet<&str> = WORKLOADS.iter().map(|w| w.kind).collect();
+        // The one deliberate registry/bench asymmetry: `overhead` is benched but never registered
+        // (bench-only, not part of the instrument format — see the `overhead` module docs). Remove
+        // it before comparing; if it ever *does* get registered, the duplicate-name panic in
+        // `Registry::builtin` and the assert below both have it covered.
+        assert!(
+            benched.remove(overhead::KIND),
+            "the bench-only `overhead` workload disappeared from WORKLOADS"
+        );
+        assert!(
+            !registered.contains(overhead::KIND),
+            "`overhead` is bench-only and must never be a registered operator — registering it \
+             would leak it into the schema and patchable graphs"
+        );
         assert_eq!(
             registered, benched,
             "WORKLOADS is out of sync with the operator registry — add a `w(\"<kind>\", …)` entry \
              in bench_support.rs for any new operator (or remove a stale one)"
         );
+    }
+
+    /// The overhead case is a true zero-DSP point: a typical port surface (two Values in, one
+    /// Signal out) around a `process` that writes nothing — driven through the real engine, its
+    /// output is silence and its cost is pure per-node stepping overhead.
+    #[test]
+    fn overhead_probe_is_a_silent_noop_with_a_typical_surface() {
+        use crate::operator::Operator;
+        let d = overhead::Overhead::descriptor();
+        assert_eq!(d.type_name, overhead::KIND);
+        assert_eq!(
+            d.inputs.len(),
+            2,
+            "two Value inputs (the modal operator shape)"
+        );
+        assert_eq!(d.outputs.len(), 1, "one Signal output");
+
+        let mut driver = OpDriver::for_type(overhead::Overhead::new(), SAMPLE_RATE);
+        driver.render(BLOCK_SIZE * 4);
+        assert!(
+            driver.output(0).iter().all(|&s| s == 0.0),
+            "overhead must write nothing — silence out"
+        );
+        assert!(driver.emits().is_empty(), "overhead must emit nothing");
     }
 
     /// Forcing function, half 2 (#30): the iai CI gate ([`MICRO_IAI_KINDS`] / `micro_iai.rs`'s

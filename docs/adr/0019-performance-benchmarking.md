@@ -106,8 +106,9 @@ point. Harvesting is best-effort and never affects the gate verdict.
 Layer 2 — visualization — renders that JSONL into the branch itself: the same CI job runs
 [`bench-dashboard.py`](../../.github/scripts/bench-dashboard.py) (stdlib-only python) and commits a
 `README.md` plus light/dark SVG charts beside the data, so **browsing the `bench-history` branch on
-GitHub is the dashboard** — macro trend per instrument, a per-node engine-overhead proxy (the
-cheapest value-rate micro case, whose Ir is ~all `step_node` overhead), the heaviest micro cases,
+GitHub is the dashboard** — macro trend per instrument, the per-node engine-overhead series (the
+`overhead` case below; the cheapest value-rate micro case stands in as a proxy for history recorded
+before it existed), the heaviest micro cases,
 and a full latest/Δ table. No Pages setup, no external service, works on a private repo. Rendering
 is best-effort: a dashboard bug never loses the data point.
 
@@ -125,6 +126,15 @@ is best-effort: a dashboard bug never loses the data point.
   voicer) joined the macro fixture set, exercising the `hz`/`snap`/`chord_tone` resolver and
   context-driven block-slicing (ADR-0013) that the original four fixtures never touched. The
   per-operator layer additionally micro-benches `snap`/`context`/`m2s` directly.
+- **A dedicated per-node overhead case** — ✅ landed with the dashboard. Every micro case measures
+  `step_node` = operator DSP **plus** a constant per-node engine overhead (edge clear, routing,
+  materialize, `Io` build), so an overhead regression used to smear across all cheap cases as
+  uniform small deltas (the ~+6% creep on every `*_f32_value` case, 2026-06-30) instead of failing
+  one attributable case. The `overhead` workload is a **bench-only no-op operator** with a typical
+  port shape (two Value inputs, one Signal output) living in `bench_support` — deliberately **never
+  registered**, so it stays out of the schema, `describe`, and patchable graphs, and the committed
+  schema is identical with and without the `bench` feature. The registry↔workloads forcing function
+  carves out exactly this one kind; `OpHarness::for_kind` constructs it directly.
 - **Promoting the 3% warn to a machine-enforced annotation** — currently best-effort from the
   summary JSON; harden once a real CI run confirms the 0.16 schema path.
 - **Marking `bench` a required check** — after a bake-in period.

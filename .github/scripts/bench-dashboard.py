@@ -25,11 +25,12 @@ from collections import defaultdict
 # the cheapest real case (subpatch, the no-op format anchor) sits around 500k Ir.
 STUB_FLOOR = 1_000
 
-# The cheapest value-rate micro case: its `process` does ~nothing (375 single-value ops), so
-# ~99% of its Ir is the engine's per-node stepping overhead (edge clear, routing, materialize,
-# `Io` build — see bench_support.rs). Charted as the overhead proxy until a dedicated
-# overhead bench exists.
-OVERHEAD_PROXY = "abs_f32_value"
+# The dedicated per-node overhead case: a bench-only no-op operator (bench_support.rs) whose
+# entire Ir is the engine's per-node stepping overhead (edge clear, routing, materialize, `Io`
+# build). Falls back to the cheapest value-rate case — whose `process` does ~nothing, so ~99%
+# of its Ir is the same overhead — for a series recorded before the dedicated case landed.
+OVERHEAD_CASE = "overhead"
+OVERHEAD_FALLBACK = "abs_f32_value"
 
 BLOCKS = 375  # the fixed 1 s schedule: 375 * 128 frames @ 48 kHz (ADR-0019)
 
@@ -302,14 +303,22 @@ def main():
         1e6, "Ir (M)",
     )
 
-    proxy_pts = series.get(("micro", OVERHEAD_PROXY), {})
+    dedicated = bool(real_points(series.get(("micro", OVERHEAD_CASE), {})))
+    proxy_case = OVERHEAD_CASE if dedicated else OVERHEAD_FALLBACK
+    proxy_pts = series.get(("micro", proxy_case), {})
     if proxy_pts:
+        subtitle = (
+            f"Ir of the bench-only no-op operator ({OVERHEAD_CASE}) - pure engine "
+            f"per-node stepping cost, gated like any operator. Axis zoomed."
+            if dedicated else
+            f"Ir of the cheapest value-rate micro case ({proxy_case}) - "
+            f"~99% engine stepping overhead, not operator math. Axis zoomed."
+        )
         write_chart(
             outdir, "overhead", order,
             [("per-node overhead", proxy_pts)],
-            "Per-node engine overhead (proxy)",
-            f"Ir of the cheapest value-rate micro case ({OVERHEAD_PROXY}) - "
-            f"~99% engine stepping overhead, not operator math. Axis zoomed.",
+            "Per-node engine overhead" + ("" if dedicated else " (proxy)"),
+            subtitle,
             1e3, "Ir (k)", zero_base=False,
         )
 
@@ -351,17 +360,23 @@ def main():
         pts = real_points(series[("macro", c)])
         if pts:
             lines.append(series_row(c, pts, order))
-    lines += ["", "## Per-node engine overhead (proxy)", ""]
+    lines += ["", "## Per-node engine overhead" + ("" if dedicated else " (proxy)"), ""]
     if proxy_pts:
         pts = real_points(proxy_pts)
         latest = pts[-1][1]
-        lines += [
-            picture("overhead", "Line chart of the per-node engine overhead proxy "
-                                "(cheapest value-rate micro case)"),
-            "",
-            f"`{OVERHEAD_PROXY}` does almost no work of its own, so its cost is ~all engine "
+        explain = (
+            f"`{OVERHEAD_CASE}` is a bench-only no-op operator behind a typical port shape, so "
+            f"its entire cost is the engine's per-node stepping overhead (edge clear, routing, "
+            f"materialize, `Io` build — see `bench_support.rs`)."
+            if dedicated else
+            f"`{proxy_case}` does almost no work of its own, so its cost is ~all engine "
             f"per-node stepping overhead (edge clear, routing, materialize, `Io` build — see "
-            f"`bench_support.rs`). Latest: **{fmt_ir(latest)} Ir** ≈ "
+            f"`bench_support.rs`)."
+        )
+        lines += [
+            picture("overhead", "Line chart of per-node engine overhead across main commits"),
+            "",
+            f"{explain} Latest: **{fmt_ir(latest)} Ir** ≈ "
             f"**{latest / BLOCKS:,.0f} instructions per node per block**. This overhead is a "
             f"constant offset on every micro case and scales with node count in an instrument.",
         ]
