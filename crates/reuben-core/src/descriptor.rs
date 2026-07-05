@@ -198,9 +198,9 @@ impl Port {
     /// per-sample buffer ZOH from `meta.default`, exactly like [`f32`](Self::f32). The form a
     /// signal-modulatable control (`oscillator.freq`, `filter.cutoff`) takes so it can accept
     /// modulation without flipping to Value (where an LFO wire would be a hard S→V mismatch).
-    pub fn f32_buffer_meta(meta: F32Meta) -> Self {
+    pub fn f32_buffer_meta(name: &'static str, meta: F32Meta) -> Self {
         Self {
-            name: meta.name,
+            name,
             ty: PortType::F32Buffer,
             meta: Some(meta),
         }
@@ -246,9 +246,9 @@ impl Port {
     /// buffer from the latched default (writing mid-block changes at their frame); when wired into
     /// a buffer-consuming op the source materializes likewise. Replaces the legacy "signal port +
     /// a same-named param" pair with a single declaration.
-    pub fn f32(meta: F32Meta) -> Self {
+    pub fn f32(name: &'static str, meta: F32Meta) -> Self {
         Self {
-            name: meta.name,
+            name,
             ty: PortType::F32,
             meta: Some(meta),
         }
@@ -345,11 +345,11 @@ pub enum Curve {
     Exponential,
 }
 
-/// Rich metadata for one parameter — enough to render a good-button control and to
-/// ground an AI author.
+/// Rich metadata for one scalar control — enough to render a good-button control and to
+/// ground an AI author. Nameless: the owning [`Port`] carries the name (mirroring the
+/// contract-side `F32Meta`), so a control's name lives in exactly one place.
 #[derive(Debug, Clone)]
 pub struct F32Meta {
-    pub name: &'static str,
     pub min: f32,
     pub max: f32,
     pub default: f32,

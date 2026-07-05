@@ -245,14 +245,16 @@ mod tests {
     fn signal_control_buffer_crosses_and_clamps() {
         // A signal control carrying a scalar default (`f32_buffer` + meta, e.g. `djfilter.position`)
         // DOES cross — a control surface can sweep it — and clamps to the port's range.
-        let pos = Port::f32_buffer_meta(F32Meta {
-            name: "position",
-            min: -1.0,
-            max: 1.0,
-            default: 0.0,
-            unit: "",
-            curve: Curve::Linear,
-        });
+        let pos = Port::f32_buffer_meta(
+            "position",
+            F32Meta {
+                min: -1.0,
+                max: 1.0,
+                default: 0.0,
+                unit: "",
+                curve: Curve::Linear,
+            },
+        );
         assert_eq!(osc_in_arg(&pos, &[Arg::F32(0.5)]), Some(Arg::F32(0.5)));
         // Out-of-range clamps to the knob's bounds.
         assert_eq!(osc_in_arg(&pos, &[Arg::F32(9.0)]), Some(Arg::F32(1.0)));

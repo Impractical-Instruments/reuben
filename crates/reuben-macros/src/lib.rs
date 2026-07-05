@@ -316,8 +316,9 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
                                 };
                                 quote! {
                                     ::reuben_core::descriptor::Port::f32_buffer_meta(
+                                        #name,
                                         ::reuben_core::descriptor::F32Meta {
-                                            name: #name, min: #min, max: #max,
+                                            min: #min, max: #max,
                                             default: #default, unit: #unit, curve: #curve,
                                         }
                                     )
@@ -341,8 +342,9 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
                             };
                             quote! {
                                 ::reuben_core::descriptor::Port::f32(
+                                    #name,
                                     ::reuben_core::descriptor::F32Meta {
-                                        name: #name, min: #min, max: #max,
+                                        min: #min, max: #max,
                                         default: #default, unit: #unit, curve: #curve,
                                     }
                                 )
@@ -835,7 +837,7 @@ mod tests {
                 outputs: { audio: f32_buffer },
             }"#,
         );
-        assert!(out.contains("Port :: f32_buffer_meta"), "{out}");
+        assert!(out.contains("Port :: f32_buffer_meta (\"freq\""), "{out}");
         assert!(out.contains("default : 440"), "{out}");
         assert!(out.contains("Curve :: Exponential"), "{out}");
         // Not the bare-buffer ctor and not the Value `f32` ctor.
