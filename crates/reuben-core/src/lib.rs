@@ -72,6 +72,9 @@ pub use reuben_macros::ArgValue;
 // Re-export the self-registration macro at the crate root so operator modules can call
 // `crate::register_operator!(..)` regardless of module declaration order (ADR-0024).
 pub(crate) use registry::register_operator;
+// Its boundary sibling: `crate::register_osc_form!(..)` submits a struct vocab type's external
+// OSC form from its definition site (issue #204, the same ADR-0024 pattern).
+pub(crate) use boundary::register_osc_form;
 pub use render::{render_plan, RenderScratch, Renderer, SerialExecutor};
 pub use resources::{
     ResolveError, ResolvedRefs, ResourceResolver, ResourceStore, SampleBuffer, SampleId,
