@@ -307,6 +307,29 @@ mod tests {
         assert_eq!(e.drain_outbound().count(), 0);
     }
 
+    #[test]
+    fn outbound_string_echoes_intact_after_fill() {
+        // The first externally-admitted string on the engine path (issues #206/#207): a single
+        // `Str` atom queued at the inbound boundary crosses verbatim, routes through the sink's
+        // pass-through input, and drains outbound with the string intact and the sink's node
+        // address stamped — the end-to-end string loopback.
+        let mut e = Engine::new(osc_out_plan());
+        e.queue_osc(&OscIn {
+            address: "/fb/in".into(),
+            args: vec![Arg::Str("hello".into())],
+        });
+        let mut out = vec![0.0f32; e.block_size() * e.channels()];
+        e.fill(&mut out);
+
+        let drained: Vec<_> = e.drain_outbound().collect();
+        assert_eq!(drained.len(), 1);
+        assert_eq!(drained[0].address, "/fb");
+        assert_eq!(drained[0].arg, Arg::Str("hello".into()));
+        // Drained once: the next fill (no input) yields nothing.
+        e.fill(&mut out);
+        assert_eq!(e.drain_outbound().count(), 0);
+    }
+
     /// A one-pipe passthrough bound to logical input channel 0 (ADR-0038 §3, P3).
     fn input_engine(block_size: usize) -> Engine {
         const MIC: &str = r#"{

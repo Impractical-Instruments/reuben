@@ -91,9 +91,24 @@ pub enum Arg {
     ///   frees each outbound Message's `address: String` there.)
     /// - **A `Str` Value-port latch overwrite** (`render.rs`): the previous latched payload
     ///   drops on the render thread, and by then its source Message is usually gone, so the
-    ///   latch is the last owner. This is a bounded `free()` at exactly the site where the old
-    ///   `String` backing *always* freed (and the incoming clone *always* allocated) —
-    ///   `Arc<str>` strictly improves it.
+    ///   latch is the last owner. For every *replaced* string this is a bounded `free()` at
+    ///   the same site where the old `String` backing freed (and the incoming clone
+    ///   heap-allocated, which the `Arc` bump does not) — an improvement, with one seed
+    ///   exception: the latch seeds `Arg::Str("".into())` (`plan.rs`), which heap-allocates an
+    ///   `ArcInner` even for `""`, where the old `String::new()` seed was allocation-free, so
+    ///   the *first* overwrite of a `Str` latch performs one render-thread free that
+    ///   previously didn't exist (one per `Str` port per plan lifetime; same accepted class).
+    ///   This site is currently **unreachable in live code** — no builtin operator declares a
+    ///   [`PortType::Str`](crate::descriptor::PortType::Str) input, `format.rs` defines no str
+    ///   pipe type, and enum symbol traffic resolves to [`Enum`](Arg::Enum) in `held_arg`
+    ///   (via `EnumMeta::resolve_arg`) before latching — so this bullet is anticipatory, for
+    ///   future `Str`-input operators.
+    /// - **The next block's scratch clears** (`render.rs`): the latch assignment *clones* out
+    ///   of the routed scratch, so when several `Str` messages hit one Value port in a block,
+    ///   the last-owner drop of a replaced string lands not at the latch overwrite but at the
+    ///   next block's `routes[i].held.clear()` (`route_messages`) — or, for an
+    ///   operator-emitted string, `scratch.emitted.clear()`. Same thread, same
+    ///   one-free-per-replaced-string class as the latch site.
     /// - **The engine's pending-message hand-off** (`reuben-native`'s `engine.rs`): a queued
     ///   inbound Message that latched (or routed nowhere) drops with its payload on the audio
     ///   thread — the same explicitly-tracked RT-debt path that already frees each pending
@@ -104,7 +119,8 @@ pub enum Arg {
     /// still holds: no string Messages, no allocator traffic) — is accepted rather than fenced
     /// with a retain/reclaim buffer: every reachable site either already deallocates a
     /// per-message `String` at the same moment (the hand-off paths) or previously deallocated
-    /// the `String` backing there (the latch), so a fence here would not make the render
+    /// the `String` backing there (the latch, seed overwrite excepted — see above), so a fence
+    /// here would not make the render
     /// thread allocator-free. Eliminating those frees belongs to the preallocated lock-free
     /// hand-off the engine's RT-debt note tracks, not to this type.
     Str(Arc<str>),
