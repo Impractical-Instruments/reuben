@@ -16,6 +16,68 @@ use crate::descriptor::{Port, PortType};
 use crate::message::{Arg, OscArg};
 use crate::vocab::pitch::Note;
 
+/// A compile-time OSC-form registration for a **struct vocab type** (issue #204, epic #146),
+/// submitted at the type's definition site via [`register_osc_form!`] and collected by
+/// `inventory` into a link-time slice — the same self-registration pattern as the operator
+/// registry's [`OpReg`](crate::registry::OpReg) (ADR-0024). Keyed by
+/// [`PortType::Vocab`]'s `name`, the inbound + capability authority: [`osc_form_by_name`]
+/// serves [`osc_in_arg`]'s struct decode and [`has_form`] serves [`has_osc_form`]'s
+/// capability key, so a struct type registers its external form once instead of editing
+/// hand-maintained matches here.
+///
+/// Inbound + capability only, deliberately: [`osc_out_args`] dispatches on the **closed**
+/// [`Arg`] enum — a struct type's own variant is a central-enum addition regardless — so the
+/// outbound side stays an exhaustive match whose struct arms are one-line
+/// [`OscArg::to_osc`] delegations, never a runtime registry.
+pub struct OscForm {
+    /// The vocab type's name — the [`PortType::Vocab`] `name` this form is looked up by.
+    pub type_name: &'static str,
+    /// Build the single internal [`Arg`] from the flat external OSC arg list, or `None`
+    /// when the args don't fit (malformed forms drop, never default-fill).
+    pub from_osc: fn(&[Arg]) -> Option<Arg>,
+}
+
+inventory::collect!(OscForm);
+
+/// Register a struct vocab type's external OSC form at compile time (issue #204, mirroring
+/// [`register_operator!`](crate::registry) — ADR-0024).
+///
+/// Invoke **by path** next to the type's [`OscArg`] impl: `crate::register_osc_form!(Note);`.
+/// The submitted entry wraps `<T as OscArg>::from_osc(args).map(Arg::from)`, so it requires
+/// `T: OscArg` and an `Arg` variant (via the `ArgValue`-derived `From<T>`). The macro name is
+/// the greppable census of boundary-crossing struct forms.
+macro_rules! register_osc_form {
+    ($t:ty) => {
+        inventory::submit! {
+            $crate::boundary::OscForm {
+                type_name: ::core::stringify!($t),
+                from_osc: |args| {
+                    <$t as $crate::message::OscArg>::from_osc(args)
+                        .map($crate::message::Arg::from)
+                },
+            }
+        }
+    };
+}
+// Re-export at the crate root (via `lib.rs`) so vocab modules can call
+// `crate::register_osc_form!(..)` regardless of source order (macro_rules visibility is lexical).
+pub(crate) use register_osc_form;
+
+/// Look up a struct vocab type's registered [`OscForm`] by its [`PortType::Vocab`] `name`.
+/// `None` means the type has no external OSC form — the boundary opt-out (`Harmony`).
+/// A walk of the link-time slice: allocation-free, and the slice is a handful of entries.
+pub fn osc_form_by_name(name: &str) -> Option<&'static OscForm> {
+    inventory::iter::<OscForm>
+        .into_iter()
+        .find(|f| f.type_name == name)
+}
+
+/// Whether a struct vocab type of this name has a registered external OSC form — the
+/// registry-backed half of [`has_osc_form`]'s capability key.
+pub fn has_form(name: &str) -> bool {
+    osc_form_by_name(name).is_some()
+}
+
 /// Convert a flat OSC arg list into the single [`Arg`] a destination port carries, driven by the
 /// **destination port** (ADR-0030). `None` when the args don't fit the port (a wrong-typed wire —
 /// dropped) or the port has no OSC form (a *bare* [`Buffer`](Arg::F32Buffer): audio never crosses).
@@ -340,6 +402,53 @@ mod tests {
             &Arg::F32Buffer(crate::message::Signal::default()),
             &mut flat,
         ));
+    }
+
+    /// The converter registry (issue #204): `Note` self-registers its flat form via
+    /// `register_osc_form!`, so the lookup finds it by its `PortType::Vocab` name; `Harmony`
+    /// (no `OscArg` impl — the boundary opt-out) is absent by omission.
+    #[test]
+    fn registry_finds_note_by_name_and_omits_harmony() {
+        assert!(osc_form_by_name("Note").is_some());
+        assert!(has_form("Note"));
+        assert!(osc_form_by_name("Harmony").is_none());
+        assert!(!has_form("Harmony"));
+        // Anti-dead-strip canary + uniqueness: the link-time slice gathered at least Note, and
+        // no two types registered the same name (the same guard `Registry::builtin` asserts).
+        let mut names: Vec<&str> = inventory::iter::<OscForm>
+            .into_iter()
+            .map(|f| f.type_name)
+            .collect();
+        assert!(!names.is_empty(), "no OscForm submissions gathered");
+        names.sort_unstable();
+        let before = names.len();
+        names.dedup();
+        assert_eq!(before, names.len(), "duplicate OscForm type_name");
+    }
+
+    /// Consistency (issue #204): the registry's `from_osc` agrees with the hand-baked `"Note"`
+    /// arm for representative flat args — degree (int pitch), absolute (float pitch), missing
+    /// velocity, and malformed forms (empty list, non-numeric pitch atom). Locks the additive
+    /// registry to the behavior the dispatch rewire (issue #205) must preserve.
+    #[test]
+    fn registered_note_form_agrees_with_the_hand_baked_arm() {
+        let form = osc_form_by_name("Note").expect("Note registered");
+        let cases: &[&[Arg]] = &[
+            &[Arg::I32(2)],                          // degree, missing velocity → defaults 1.0
+            &[Arg::F32(69.0), Arg::F32(0.8)],        // absolute pitch + velocity
+            &[Arg::I32(-3), Arg::F32(0.0)],          // degree + note-off velocity
+            &[Arg::F32(60.0)],                       // absolute, missing velocity
+            &[],                                     // malformed: empty
+            &[Arg::Str("A4".into())],                // malformed: non-numeric pitch atom
+            &[Arg::Str("A4".into()), Arg::F32(0.5)], // malformed pitch, well-formed velocity
+        ];
+        for args in cases {
+            assert_eq!(
+                (form.from_osc)(args),
+                Note::from_osc(args).map(Arg::Note),
+                "registry vs hand-baked arm diverged for {args:?}"
+            );
+        }
     }
 
     /// No OSC form → emit nothing: the expansion appends nothing and says so (`false`), which is
