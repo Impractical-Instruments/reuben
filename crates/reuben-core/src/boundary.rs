@@ -325,7 +325,7 @@ mod tests {
         assert!(osc_out_args(&Arg::I32(3), &mut flat));
         assert!(osc_out_args(&Arg::Str("s".into()), &mut flat));
         assert!(osc_out_args(
-            &Arg::from(FilterMode::from_symbol("Lp").unwrap_or_default()),
+            &Arg::from(FilterMode::from_symbol("Lp").unwrap()),
             &mut flat,
         ));
         assert!(osc_out_args(
