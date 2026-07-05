@@ -75,11 +75,14 @@ symbols). Three fences keep the delegation sound:
    send anything is a patching mistake, not a silent drop. Converters giving structured types a
    wire form (multi-arg / bundle, both directions) are
    [issue #146](https://github.com/Impractical-Instruments/reuben/issues/146).
-3. **Inbound is a single numeric atom.** External OSC addressed at an `arg` port crosses only as
-   one `F32`/`I32` (the echo/loopback path): a multi-arg list has no unambiguous single-`Arg`
-   form without a typed destination port, and a string atom would heap-allocate on the render
-   thread (ADR-0009). Consequently the flat 2-arg Note form the sink *sends* does not round-trip
-   back in through an `arg` port — a typed `note` port still decodes it.
+3. **Inbound is a single atom.** External OSC addressed at an `arg` port crosses only as one
+   `F32`/`I32`/`Str` (the echo/loopback path): a multi-arg list has no unambiguous single-`Arg`
+   form without a typed destination port. The string atom was originally excluded because
+   forwarding it would heap-allocate on the render thread (ADR-0009); *(2026-07-05)* with
+   `Arg::Str` backed by `Arc<str>` (issue #206) that forward is a refcount bump, so a single
+   string atom crosses too (issue #207). Consequently the flat 2-arg Note form the sink *sends*
+   still does not round-trip back in through an `arg` port — a typed `note` port still decodes
+   it.
 
 [`EnumMeta`]: ../../crates/reuben-core/src/descriptor.rs
 

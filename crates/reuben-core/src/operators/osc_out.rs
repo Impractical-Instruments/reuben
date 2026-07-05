@@ -54,10 +54,10 @@ impl Operator for OscOut {
         // Each received Message is re-emitted verbatim and addressless — the raw `Arg`, no vocab
         // decode (issue #141) — so the boundary's type-driven expansion sees exactly what arrived.
         // The engine's outbound tap stamps the node's OSC address and drains these past the
-        // boundary (ADR-0030, ADR-0031). Cloning an `Arg` is alloc-free for every payload the
-        // boundary admits externally (the inbound loopback is numeric-only); an internally wired
-        // `Str` source still heap-clones here — a patcher choice, tracked with the RT-safe
-        // string backing in issue #146. `frame` is segment-relative; the writer adds the segment
+        // boundary (ADR-0030, ADR-0031). Cloning an `Arg` is alloc-free for every payload that
+        // can arrive here: `Str` is `Arc<str>`-backed (issue #206), so a string — echoed in from
+        // outside through the `arg` port (issue #207) or internally wired — clones as a refcount
+        // bump, never a heap clone. `frame` is segment-relative; the writer adds the segment
         // offset so the tap sees block-absolute frames.
         for ev in io.read(IN_IN) {
             // The one sanctioned use of the `io.output` primitive (ADR-0037): the sink emits on

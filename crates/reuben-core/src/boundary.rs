@@ -125,14 +125,15 @@ pub fn osc_in_arg(p: &Port, args: &[Arg]) -> Option<Arg> {
             name,
             ..
         } => osc_form_by_name(name).and_then(|f| (f.from_osc)(args)),
-        // A type-agnostic pass-through (issue #141, the `osc_out` sink's input): a single
-        // **numeric** atom crosses verbatim — the OSC echo/loopback path (fader/encoder feedback).
-        // A multi-arg list has no unambiguous single-Arg form (the port names no vocab type to
-        // unpack it), so it drops. `Str` is excluded: an external string atom would reach
-        // `osc_out.process()` and heap-clone on the render thread (ADR-0009 forbids that), and
-        // string echo has no consumer — an RT-safe `Arg::Str` backing is noted in issue #146.
+        // A type-agnostic pass-through (issue #141, the `osc_out` sink's input): a single atom
+        // with a verbatim single-Arg form — numeric or string — crosses as-is: the OSC
+        // echo/loopback path (fader/encoder/label feedback). The string atom joined once
+        // `Arg::Str` went `Arc<str>`-backed (issues #206/#207): forwarding it through
+        // `osc_out.process()` is now a refcount bump, not a heap clone (ADR-0009 holds). A
+        // multi-arg list still has no unambiguous single-Arg form (the port names no vocab type
+        // to unpack it), so it drops — a typed destination port decodes those.
         PortType::Arg => match args {
-            [a @ (Arg::F32(_) | Arg::I32(_))] => Some(a.clone()),
+            [a @ (Arg::F32(_) | Arg::I32(_) | Arg::Str(_))] => Some(a.clone()),
             _ => None,
         },
     }
@@ -333,20 +334,45 @@ mod tests {
         assert_eq!(flat, vec![Arg::I32(up.to_index() as i32)]);
     }
 
-    /// The type-agnostic pass-through port (issue #141, `osc_out.in`): a **single numeric** atom
-    /// crosses verbatim — the OSC echo/loopback path — while a multi-arg list drops (no vocab type
-    /// to unpack it into one Arg) and a `Str` atom drops (it would heap-clone on the render
-    /// thread; RT-safe string backing is issue #146).
+    /// The type-agnostic pass-through port (issue #141, `osc_out.in`): a **single numeric or
+    /// string** atom crosses verbatim — the OSC echo/loopback path (the string atom joined in
+    /// issue #207, once `Arc<str>` backing made its forward a refcount bump, issue #206) — while
+    /// a multi-arg list drops (no vocab type to unpack it into one Arg).
     #[test]
-    fn arg_passthrough_port_crosses_a_single_numeric_atom_verbatim() {
+    fn arg_passthrough_port_crosses_a_single_numeric_or_string_atom_verbatim() {
         let p = Port::arg("in");
         assert_eq!(osc_in_arg(&p, &[Arg::F32(0.5)]), Some(Arg::F32(0.5)));
         assert_eq!(osc_in_arg(&p, &[Arg::I32(3)]), Some(Arg::I32(3)));
-        // A string atom drops: no consumer, and forwarding it would allocate on the render thread.
-        assert_eq!(osc_in_arg(&p, &[Arg::Str("Up".into())]), None);
+        // A string atom crosses too: forwarding it is an `Arc` clone, no render-thread alloc.
+        assert_eq!(
+            osc_in_arg(&p, &[Arg::Str("Up".into())]),
+            Some(Arg::Str("Up".into()))
+        );
         // Multi-arg lists have no unambiguous single-Arg form.
         assert_eq!(osc_in_arg(&p, &[Arg::F32(1.0), Arg::F32(2.0)]), None);
         assert_eq!(osc_in_arg(&p, &[]), None);
+    }
+
+    /// Inbound string echo (issue #207): a single `Str` atom round-trips through an `arg` port —
+    /// in via [`osc_in_arg`] (an `Arc` clone, RT-safe since issue #206), back out via
+    /// [`osc_out_args`] as the same single flat atom. Multi-arg lists — string ones included —
+    /// still drop on the way in: without a typed destination port there is no unambiguous
+    /// single-`Arg` form.
+    #[test]
+    fn str_atom_round_trips_through_an_arg_passthrough_port() {
+        let p = Port::arg("in");
+        let crossed = osc_in_arg(&p, &[Arg::Str("hello".into())]).expect("single Str crosses");
+        assert_eq!(crossed, Arg::Str("hello".into()));
+        // Outbound: the crossed Arg expands back to the identical single-atom flat form.
+        let mut flat = Vec::new();
+        assert!(osc_out_args(&crossed, &mut flat));
+        assert_eq!(flat, vec![Arg::Str("hello".into())]);
+        // Multi-arg still drops, whatever the atom types.
+        assert_eq!(
+            osc_in_arg(&p, &[Arg::Str("a".into()), Arg::Str("b".into())]),
+            None
+        );
+        assert_eq!(osc_in_arg(&p, &[Arg::F32(1.0), Arg::Str("x".into())]), None);
     }
 
     /// The capability key (issue #141): a type is wireable into the pass-through **iff**
