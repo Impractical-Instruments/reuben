@@ -160,7 +160,10 @@ note ""
 # is excluded from the comparison (nothing to compare it against) while every operator that existed at
 # the base is still benched and gated. `MICRO_IAI_KINDS` mirrors the registry (forcing function #30),
 # so it's an exact, build-free census of each side's operators. macro_iai ignores the var.
-micro_kinds() { sed -n '/MICRO_IAI_KINDS/,/];/p' | grep -oE '"[a-z0-9_]+"' | tr -d '"' | LC_ALL=C sort -u; }
+# First range only (awk exits at the const's closing `];`): sed's restarting /a/,/b/ ranges re-open
+# at every later MICRO_IAI_KINDS mention (e.g. in test text) and would sweep quoted snake_case
+# strings from the rest of the file into the census as phantom kinds.
+micro_kinds() { awk '/MICRO_IAI_KINDS/{f=1} f&&/];/{exit} f{print}' | grep -oE '"[a-z0-9_]+"' | tr -d '"' | LC_ALL=C sort -u; }
 head_kinds="$(micro_kinds <"crates/${PKG}/src/bench_support.rs")"
 base_kinds="$(git show "${BASE_SHA}:crates/${PKG}/src/bench_support.rs" 2>/dev/null | micro_kinds)"
 REUBEN_MICRO_BENCH_SKIP="$(comm -23 <(printf '%s\n' "$head_kinds") <(printf '%s\n' "$base_kinds") | paste -sd, -)"

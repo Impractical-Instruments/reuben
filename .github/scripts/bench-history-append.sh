@@ -7,6 +7,9 @@
 #
 #     git show bench-history:bench-history.jsonl
 #
+# It also re-renders the dashboard (layer 2, bench-dashboard.py) — a README.md + SVG charts
+# committed beside the JSONL, so browsing the branch on GitHub *is* the trend view.
+#
 # It runs ONLY on direct pushes to main, in a dedicated job whose token is the single `contents:
 # write` grant in CI; the gate job itself stays `contents: read` (ADR-0019). The history lives on an
 # orphan branch, not main, so main's tree never churns and recording never re-triggers CI.
@@ -23,6 +26,7 @@ set -euo pipefail
 REC="${1:?usage: bench-history-append.sh <record.jsonl>}"
 BRANCH="bench-history"
 FILE="bench-history.jsonl"
+DASHBOARD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bench-dashboard.py"
 
 if [ ! -s "$REC" ]; then
   echo "No benchmark records to append (empty or missing: $REC) — nothing to persist."
@@ -52,7 +56,19 @@ for attempt in 1 2 3 4 5; do
     git rm -rqf . >/dev/null 2>&1 || true
   fi
   cat "$abs_rec" >>"$FILE"
-  git add "$FILE"
+  # Re-render the dashboard (ADR-0019, layer 2) over the full series so browsing the branch on
+  # GitHub shows the trend. Best-effort BOTH ways: a render bug must never lose the data point,
+  # and a failed render must never commit the deletion (or a half-written replacement) of the
+  # previous dashboard — wipe whatever the failed run left and restore the branch-tip render,
+  # path by path (a first-ever run has neither in the index; checkout of a missing path fails
+  # alone without blocking the other).
+  rm -rf README.md charts
+  if ! python3 "$DASHBOARD" "$FILE" .; then
+    echo "WARNING: dashboard render failed — restoring the previous dashboard, appending data only." >&2
+    rm -rf README.md charts
+    for p in README.md charts; do git checkout -q -- "$p" 2>/dev/null || true; done
+  fi
+  git add -A
   git commit -q -m "bench: record ${count} data point(s) @ ${GITHUB_SHA:0:12}"
   if git push -q origin "$BRANCH"; then
     echo "Appended ${count} record(s) to '${BRANCH}'."
