@@ -160,6 +160,13 @@ jobs:
       - name: Build .wasm (release)
         run: cargo build --release --target wasm32-unknown-unknown
 
+      # The plain-Node direct-call matrix harness (issue #224): instantiates the real .wasm,
+      # runs the fetch-on-miss loader from disk, and renders the 20-instrument matrix with
+      # per-class assertions + the groovebox /clock/tempo and mic-space duplex checks. Uses
+      # the runner's preinstalled Node — no browser, no npm install.
+      - name: Node matrix harness
+        run: node js/check.mjs
+
   bench:
     name: perf gate (macro + micro Ir)
     runs-on: ubuntu-latest

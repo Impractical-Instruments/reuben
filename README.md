@@ -194,6 +194,15 @@ hardware outside the patch via the **device profile** (`play --io-map`,
 `instruments/stereo-sub.io-map.json` are the worked pair). Live input is the one sanctioned
 nondeterministic boundary — offline render injects known buffers, so the determinism story is
 unchanged (ADR-0038 §10).
+The web player epic ([#151](https://github.com/Impractical-Instruments/reuben/issues/151)) is
+under way: the `Engine` now lives in `reuben-core` as the shared **embed surface**
+([ADR-0039](docs/adr/0039-engine-in-core-embed-surface.md)), and `crates/reuben-web` — a
+workspace-detached crate — runs it in the browser as raw C-ABI WASM inside an AudioWorklet
+([ADR-0040](docs/adr/0040-raw-c-abi-worklet-boundary.md)): fetch-on-miss resource staging, WAV
+decode in WASM, a flat tagged control channel, and mic input over the same duplex seam, with a
+co-located ES-module JS API (`crates/reuben-web/js/`) and a plain-Node CI harness that renders
+the whole instrument matrix headlessly. Engine-infrastructure only so far — the player UI, asset
+pipeline, and PWA are later rungs of the epic.
 
 ## Going deeper
 

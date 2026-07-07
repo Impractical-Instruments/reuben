@@ -4,7 +4,9 @@ A configurable musical instrument built from composable **Operators** — small
 single-purpose DSP units patched into playable Instruments and Rigs. OSC is the
 lingua franca, in and out.
 
-**Stack:** Rust workspace (Cargo). Core: `reuben-core`; binary: `reuben-native`.
+**Stack:** Rust workspace (Cargo). Core: `reuben-core`; binary: `reuben-native`. The web
+shell `crates/reuben-web` is deliberately **detached** from the workspace (own `[workspace]`
+table) — workspace-wide commands don't touch it; run cargo inside that crate (its CI job does).
 
 ## Commands
 
