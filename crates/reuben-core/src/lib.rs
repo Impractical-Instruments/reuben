@@ -32,6 +32,7 @@ pub mod config;
 pub mod describe;
 pub mod descriptor;
 pub mod dsp;
+pub mod engine;
 pub mod format;
 pub mod graph;
 pub mod message;
@@ -50,6 +51,7 @@ pub mod wavetable;
 pub use config::AudioConfig;
 pub use describe::{describe_boundary, BoundaryDesc, BoundaryPortDesc};
 pub use descriptor::Descriptor;
+pub use engine::{Engine, FromDocumentError};
 pub use format::{
     load, load_instrument, load_instrument_doc, resolve_instrument, DocValue, InstrumentDoc,
     InterfaceDoc, LoadError, LoadWarning, Loaded,

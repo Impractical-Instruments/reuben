@@ -32,10 +32,8 @@ use clap::{Parser, Subcommand};
 
 use reuben_core::boundary;
 use reuben_core::message::Message;
-use reuben_core::plan::Plan;
-use reuben_core::{load_instrument, Registry};
+use reuben_core::{Engine, Registry};
 use reuben_native::cli::{describe, describe_patch, validate};
-use reuben_native::engine::Engine;
 use reuben_native::profile::DeviceProfile;
 use reuben_native::resources::FsResolver;
 use reuben_native::rigs::DEFAULT_JSON;
@@ -476,15 +474,15 @@ fn play(
             "audio out @ {} Hz, block {}",
             cfg.sample_rate, cfg.block_size
         );
-        let loaded = load_instrument(&instrument_json, &Registry::builtin(), &resolver)
-            .expect("load instrument");
+        let (engine, warnings) =
+            Engine::from_document(&instrument_json, &Registry::builtin(), &resolver, cfg)
+                .expect("load instrument");
         // Resource problems are non-fatal (ADR-0016): the rig still plays, but the user must
         // see them — they are authoring errors.
-        for w in &loaded.warnings {
+        for w in &warnings {
             eprintln!("warning: {w}");
         }
-        let plan = Plan::instantiate(loaded.graph, cfg).expect("instantiate rig");
-        Engine::new(plan)
+        engine
     })
     .unwrap_or_else(|e| panic!("start audio: {e}"));
 

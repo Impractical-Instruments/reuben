@@ -43,9 +43,9 @@ use reuben_core::message::Message;
 use reuben_core::AudioConfig;
 
 use crate::diagnostics::Diagnostics;
-use crate::engine::Engine;
 use crate::osc::OscIn;
 use crate::profile::DeviceProfile;
+use reuben_core::engine::Engine;
 
 /// How often the periodic diagnostics logger wakes to check the counters (ADR-0038 §9). It only
 /// emits a line when something changed, so a healthy run stays quiet at this cadence regardless.
@@ -250,7 +250,7 @@ where
                 while let Ok(m) = rx.try_recv() {
                     // Convert flat OSC -> typed Message at the engine, where the Plan (and so each
                     // dest port's Arg type) is known (ADR-0030).
-                    engine.queue_osc(&m);
+                    engine.queue_osc(&m.address, &m.args);
                 }
                 let frames = data.len() / channels;
                 if buf.len() < frames * logical {
