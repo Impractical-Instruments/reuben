@@ -19,12 +19,13 @@ Three subcommands:
       a `.tosc` surface targeting `host:port`.
 
   boundary INSTRUMENT [--describe F] [--reuben P] [--host H] [--port N] [--out F] [--cols N]
-      Read-only on the instrument. For a *nested* instrument with a curated `interface`
-      (ADR-0034 §4), emit one fader per wireable boundary input straight from the interface —
-      no `control` blocks needed, the boundary *is* the curated set. Metadata (kind, effective
-      default, min/max, unit, curve, label, widget, `driven`) is read from `reuben describe
-      --json` (core `describe_boundary`, so this never re-implements the inherit+override merge);
-      the OSC address is the entry's inner target, which stays reachable (ADR-0034 §3).
+      Read-only on the instrument. For an instrument whose `interface.inputs` declares control
+      pipes (ADR-0038 §2), emit one fader per wireable input pipe straight from the interface —
+      no `control` blocks needed, the boundary *is* the curated set. Metadata (kind, default,
+      min/max, unit, curve, label, widget) is read from `reuben describe --json`; each input
+      pipe declares its own type + owned metadata, so this re-implements nothing. The OSC
+      address is the pipe's `/<name>/in` port (ADR-0038's direction flip: the pipe mints its own
+      address and fans out to internal consumers, so a fader drives the pipe, not an inner port).
 
 Metadata is read from the committed instrument schema (the per-type param ranges + unit/curve),
 which is kept in sync with the operator descriptors by the `committed_schema_is_in_sync` test — so this
@@ -265,7 +266,7 @@ def infer_candidates(instrument: dict, meta: dict) -> dict:
     return {"good_buttons": good_buttons, "params": params}
 
 
-# --- interface boundary (nested instruments, ADR-0034 §4) -------------------------------
+# --- interface boundary (interface input pipes, ADR-0038 §2) ----------------------------
 
 # The boundary port kinds that map to a fader: a held scalar knob (`value`), a swept scalar
 # (`signal`), or a ranged integer (`int`). `reuben describe --json` reports the kind (issue #176:
@@ -276,56 +277,46 @@ def infer_candidates(instrument: dict, meta: dict) -> dict:
 FADER_BOUNDARY_KINDS = {"value", "signal", "int"}
 
 
-def _osc_from_target(target: str) -> str:
-    """The OSC address an `interface` entry's internal `/node.port` target is reachable at.
-    ADR-0034 §3 keeps a nested instrument's inner addresses OSC-reachable; the port separator
-    `.` becomes `/`, yielding exactly the `/<node>/<input>` shape a direct input already uses
-    (e.g. `/filter.cutoff` -> `/filter/cutoff`)."""
-    return target.replace(".", "/", 1)
+def _osc_from_pipe(name: str) -> str:
+    """The OSC address an `interface.inputs` pipe is driven at — the authoritative account of the
+    ADR-0038 §2 addressing contract this whole boundary path rests on. An input pipe mints an
+    address in the flat node namespace (`tone` -> node `/tone`) and takes external control on its
+    single `in` port, so the address is `/<name>/in` — driving the pipe, which fans out to every
+    internal consumer, rather than any one inner port. That is the ADR-0038 *direction flip*: a v2
+    pipe declares its own type and owns its metadata, so there is no inner target to resolve — the
+    describe view alone suffices. (Assumes the described instrument is the top-level graph; nested
+    under a host at `/h`, the same pipe is `/h/<name>/in`.)"""
+    return f"/{name}/in"
 
 
-def _entry_target(entry) -> str | None:
-    """The internal target of one `interface.inputs` entry: a bare `"/node.port"` string, or the
-    `target` field of an override object (ADR-0034 §4). `None` if neither is present."""
-    if isinstance(entry, str):
-        return entry
-    if isinstance(entry, dict):
-        return entry.get("target")
-    return None
+def boundary_controls(boundary: dict) -> list:
+    """One fader control per wireable `interface` input pipe, resolved from a `reuben describe
+    --json` boundary view (ADR-0038 §2). The boundary is already the curated presentational
+    metadata, so unlike `collect_controls` this authors no `control` blocks — the interface *is*
+    the surface.
 
+    `boundary` is the parsed `describe --json` output, the source of every pipe's
+    name/kind/default/min/max/unit/curve/label/widget. The OSC address derives from the pipe name
+    alone via `_osc_from_pipe` (see there for the ADR-0038 direction flip).
 
-def boundary_controls(interface_inputs: dict, boundary: dict) -> list:
-    """One fader control per wireable `interface` input, resolved from a `reuben describe --json`
-    boundary view (ADR-0034 §4). The boundary is already the curated presentational metadata, so
-    unlike `collect_controls` this authors no `control` blocks — the interface *is* the surface.
-
-    `interface_inputs` is the instrument's `interface.inputs` map (name -> target string or
-    override object), read straight from the document for each entry's inner target (the OSC
-    address; `describe` deliberately omits it). `boundary` is the parsed `describe --json` output,
-    the source of every port's kind/default/min/max/unit/curve/label/widget/`driven`.
-
-    Skips inputs a host cannot drive from a fader: a `driven` input (its inner Signal port is
-    already wired inside the patch, so an external wire is the fatal `BoundaryInputDriven`), a
-    non-fader kind, and a range-less numeric (bare audio, no min/max to scale into)."""
+    Skips inputs a host cannot drive from a fader: a non-fader kind (enum/message/harmony) and a
+    range-less numeric (a bare audio pipe, no min/max to scale into)."""
     controls = []
     for port in boundary.get("inputs", []):
         name = port.get("name")
-        if port.get("driven"):
-            continue
+        if not name:
+            continue  # a nameless describe entry can't mint an address — skip, don't emit `/None/in`
         if port.get("kind") not in FADER_BOUNDARY_KINDS:
             continue
         if port.get("min") is None or port.get("max") is None:
-            continue  # a bare audio buffer (undriven, but unranged) — not a fader
-        target = _entry_target(interface_inputs.get(name))
-        if not target:
-            continue  # no way to address it (dark entry / malformed) — skip rather than misfire
+            continue  # a bare audio pipe (unranged) — not a fader
         lo, hi = float(port["min"]), float(port["max"])
         default = float(port["default"]) if port.get("default") is not None else lo
         controls.append({
             "kind": "fader",
             "label": port.get("label") or str(name).replace("_", " ").title(),
             "widget": port.get("widget") or "fader",
-            "osc_addr": _osc_from_target(target),
+            "osc_addr": _osc_from_pipe(name),
             "min": lo, "max": hi, "default": default,
             "unit": port.get("unit", ""),
         })
@@ -599,8 +590,7 @@ def _widget_node(name: str, c: dict, wframe) -> tuple:
                                           messages=_osc_fader(c["osc_addr"], c["min"], c["max"]))
 
 
-def build_tosc(instrument: dict, controls: list, cols: int) -> bytes:
-    name = instrument.get("instrument", "surface")
+def build_tosc(name: str, controls: list, cols: int) -> bytes:
     cols = max(1, cols)
     rows = layout_rows(controls, cols)
     nrows = max(1, len(rows))
@@ -670,7 +660,7 @@ def main(argv=None):
     pe.add_argument("--cols", type=int, default=DEFAULT_COLS)
 
     pb = sub.add_parser("boundary",
-                        help="emit a .tosc from a nested instrument's `interface` boundary")
+                        help="emit a .tosc from an instrument's `interface` input pipes (ADR-0038)")
     pb.add_argument("instrument")
     pb.add_argument("--describe", default=None,
                     help="pre-captured `reuben describe --json` output (skips running the binary)")
@@ -682,25 +672,35 @@ def main(argv=None):
 
     args = ap.parse_args(argv)
     inst_path = Path(args.instrument)
-    instrument = _read_json(inst_path)
 
     if args.cmd == "boundary":
-        # The boundary is served, already merged, by core `describe_boundary` (ADR-0034 §4) — so
-        # this path reads `describe --json`, not the committed operator schema.
-        boundary = _read_json(Path(args.describe)) if args.describe \
-            else run_describe(find_reuben(script, args.reuben), inst_path)
-        iface = (instrument.get("interface") or {}).get("inputs", {})
-        controls = boundary_controls(iface, boundary)
+        # The boundary is served by core `describe --json` (ADR-0038 §2) — the single source of
+        # truth for both the pipe surface *and* the instrument name, so this path reads that view,
+        # not the committed operator schema (addresses come from `_osc_from_pipe`).
+        if args.describe:
+            boundary = _read_json(Path(args.describe))
+            # A pre-captured describe view must belong to the positional instrument, else we'd
+            # silently surface the wrong patch. Compare declared names (the file stem if unnamed).
+            declared = _read_json(inst_path).get("instrument", inst_path.stem)
+            described = boundary.get("instrument")
+            if described is not None and described != declared:
+                sys.exit(f"--describe {args.describe} describes instrument {described!r}, but "
+                         f"{inst_path} declares {declared!r} — pass a describe view of the same "
+                         f"instrument.")
+        else:
+            boundary = run_describe(find_reuben(script, args.reuben), inst_path)
+        controls = boundary_controls(boundary)
         if not controls:
-            sys.exit(f"{inst_path}: no wireable `interface` inputs to surface — needs a nested "
-                     f"instrument with a curated boundary (ADR-0034 §4).")
+            sys.exit(f"{inst_path}: no wireable `interface` input pipes to surface — needs an "
+                     f"instrument whose `interface.inputs` declares ranged control pipes (ADR-0038 §2).")
         out = _surface_out(script, inst_path, args.out)
-        out.write_bytes(build_tosc(instrument, controls, args.cols))
+        out.write_bytes(build_tosc(boundary.get("instrument", inst_path.stem), controls, args.cols))
         print(f"wrote {out} — {len(controls)} control(s) from the interface boundary, "
               f"send to {args.host}:{args.port}")
         print("NOTE: in TouchOSC, set the OSC connection host/port to the machine running reuben.")
         return 0
 
+    instrument = _read_json(inst_path)
     schema_path = Path(args.schema) if args.schema else default_schema_path(script)
     meta = load_param_meta(_read_json(schema_path))
 
@@ -712,7 +712,7 @@ def main(argv=None):
     if not controls:
         sys.exit(f"{inst_path}: no `control` blocks found — run `infer` and add them first (ADR-0018).")
     out = _surface_out(script, inst_path, args.out)
-    out.write_bytes(build_tosc(instrument, controls, args.cols))
+    out.write_bytes(build_tosc(instrument.get("instrument", "surface"), controls, args.cols))
     print(f"wrote {out} — {len(controls)} control(s), send to {args.host}:{args.port}")
     print("NOTE: in TouchOSC, set the OSC connection host/port to the machine running reuben.")
     return 0

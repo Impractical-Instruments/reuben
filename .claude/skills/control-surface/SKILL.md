@@ -30,36 +30,38 @@ over musical ranges), exactly as `good-button.json` does; a direct input is the 
 full-range alternative. `enum` inputs (filter `mode`, osc `waveform`) are settable too but aren't
 emitted as faders yet — they need a selector/toggle widget (out of scope today).
 
-### Nested instruments: the `interface` boundary *is* the surface
+### Interface pipes: the `interface` boundary *is* the surface
 
-A **nested** instrument (one with an `interface` block, ADR-0034 §4) already declares a curated
-boundary — external names → internal `(node, port)`, decorated with presentational overrides
-(label/unit/widget/min/max). That boundary needs no hand-authored `control` blocks: it *is* the
-curated set. The `boundary` subcommand emits **one fader per wireable interface input** straight
-from it.
+An instrument whose `interface.inputs` declares control **pipes** (ADR-0038 §2) already carries a
+curated boundary — each input pipe declares its own `Arg` type and **owns** its presentation
+metadata (label/unit/widget/min/max/curve/default). That boundary needs no hand-authored `control`
+blocks: it *is* the curated set. The `boundary` subcommand emits **one fader per wireable interface
+input pipe** straight from it.
 
 | Control | OSC address the widget sends to | Range / unit / default |
 |---|---|---|
-| **Boundary input** — a name in `interface.inputs` | the entry's inner target, `.`→`/` (e.g. `/osc.freq` → `/osc/freq`), reachable because internals stay addressable (ADR-0034 §3) | the merged boundary view from `describe --json`: inner-port metadata + the entry's overrides |
+| **Boundary input pipe** — a name in `interface.inputs` | the pipe's `/<name>/in` port (ADR-0038: an input pipe mints its own address `/<name>` and takes control on its single `in` port; it fans out to every internal consumer, so the fader drives the pipe, not an inner port) | the pipe's own declared metadata from `describe --json` |
 
-Metadata comes from `reuben describe <instrument>.json --json` (core `describe_boundary` does the
-inherit+override merge — the script never re-implements it). Inputs the host can't drive from a
-fader are skipped: a **`driven`** input (its inner Signal port is already wired inside the patch,
-so an external wire is a fatal `BoundaryInputDriven`), an **`enum`**/message/harmony input (needs a
-non-fader widget), and a **bare audio** input (a `signal` kind with no range to scale into).
+Metadata comes from `reuben describe <instrument>.json --json` — each pipe reports its declared
+type, range, default, unit, curve, label, and widget, so the script re-implements nothing. Inputs
+the host can't drive from a fader are skipped: an **`enum`**/message/harmony pipe (needs a non-fader
+widget) and a **bare audio** pipe (a `signal` kind with no range to scale into). The address
+assumes the surfaced instrument is played at top level; nested under a host at `/h`, the same pipe
+is `/h/<name>/in`.
 
 ## Workflow
 
 Run from the repo root. The script is `gen_surface.py` in this skill's directory.
 
-**Shortcut for a nested instrument** (has an `interface` block): skip the infer/curate steps —
-the boundary is already the curated set. Just
+**Shortcut for an instrument with interface input pipes** (`interface.inputs` declares ranged
+control pipes, ADR-0038 §2): skip the infer/curate steps — the boundary is already the curated
+set. Just
 `python3 <skilldir>/gen_surface.py boundary instruments/<name>.json --host <host>`
 (runs `reuben describe --json` itself; pass `--reuben PATH` if the binary isn't under `target/`,
 or `--describe FILE` to feed pre-captured output). It writes `control-surfaces/<name>.tosc` with
-one fader per wireable boundary input. Then jump to step 5 (verify on device). Use the full
-`infer`→curate→`emit` flow below for a flat instrument (no `interface`) or when you want to hand-
-curate Good Buttons / toggles beyond the boundary.
+one fader per wireable input pipe. Then jump to step 5 (verify on device). Use the full
+`infer`→curate→`emit` flow below for an instrument with no control pipes, or when you want to
+hand-curate Good Buttons / toggles beyond the boundary.
 
 1. **Pick the instrument and host.** Ask which `instruments/*.json` and the host running reuben
    (default `localhost`, port `9000`).
@@ -141,7 +143,11 @@ their own width, so a 6-knob channel row and a 1-knob tempo row still share the 
 ## Run the tests
 
 `cd <skilldir> && python3 -m unittest` — covers metadata resolution, inference, OSC addressing,
-the zlib/XML round-trip, and the structural match against `fixtures/REUBEN_REF.tosc`.
+the zlib/XML round-trip, the structural match against `fixtures/REUBEN_REF.tosc`, and a
+**live-engine boundary test** that runs the real `reuben describe` (via `cargo run`, so it tracks
+current source) on `instruments/patches/space.json` and asserts the emitted pipe surface — this is
+the guard that fails on an ADR-0038-style interface-format flip instead of letting the boundary
+path rot silently. It skips (loudly) if `cargo` isn't on `PATH`.
 
 ## Scope
 
@@ -149,7 +155,7 @@ the zlib/XML round-trip, and the structural match against `fixtures/REUBEN_REF.t
 |---|---|
 | `control` blocks in the instrument JSON | **write** (curated, confirmed, via Edit) |
 | `.tosc` surface file | **emit** via `gen_surface.py emit` (control blocks) or `boundary` (a nested instrument's `interface`) |
-| nested instrument's `interface` boundary | **read** via `describe --json`; never edit — a `boundary` surface authors no `control` blocks |
+| instrument's `interface` input pipes | **read** via `describe --json`; never edit — a `boundary` surface authors no `control` blocks |
 | instrument graph / operators | **never edit** — surface metadata only |
 | two-way OSC feedback, grouped layouts | **out of scope** (ADR-0018 deferred) |
 

@@ -22,7 +22,7 @@
         "curve": "exp",
         "unit": "Hz",
         "label": "Tone",
-        "widget": "knob"
+        "widget": "radial"
       }
     },
     "outputs": {

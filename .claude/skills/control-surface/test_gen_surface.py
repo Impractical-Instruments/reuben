@@ -5,6 +5,9 @@ These cover the deterministic half — metadata resolution, candidate inference,
 and the zlib/XML round-trip. Whether the emitted .tosc *loads in TouchOSC* is the on-device
 verify step the skill calls out; it cannot be asserted here."""
 
+import json
+import shutil
+import subprocess
 import unittest
 import zlib
 from pathlib import Path
@@ -125,7 +128,7 @@ class NoteToggleTest(unittest.TestCase):
 
     def test_emits_a_toggle_button_with_constant_note_and_gate(self):
         c = g.resolve_control(self.NODE, self.NODE["control"], META)
-        doc = ET.fromstring(zlib.decompress(g.build_tosc({"instrument": "t"}, [c], 1)))
+        doc = ET.fromstring(zlib.decompress(g.build_tosc("t", [c], 1)))
         btn = doc.find(".//node[@type='BUTTON']")
         self.assertIsNotNone(btn, "note-toggle must emit a BUTTON")
         btype = [p for p in btn.findall("./properties/property") if p.find("key").text == "buttonType"][0]
@@ -160,7 +163,7 @@ class ParamToggleTest(unittest.TestCase):
 
     def test_emits_a_button_sending_x_to_the_param(self):
         c = g.resolve_control(self.LANE, self.LANE["control"][0], META)
-        doc = ET.fromstring(zlib.decompress(g.build_tosc({"instrument": "t"}, [c], 4)))
+        doc = ET.fromstring(zlib.decompress(g.build_tosc("t", [c], 4)))
         btn = doc.find(".//node[@type='BUTTON']")
         self.assertIsNotNone(btn, "param-toggle must emit a BUTTON")
         btype = [p for p in btn.findall("./properties/property") if p.find("key").text == "buttonType"][0]
@@ -225,7 +228,7 @@ class ChordButtonTest(unittest.TestCase):
 
     def test_emits_a_toggle_button_with_constant_degree_and_gate(self):
         c = g.resolve_control(self.NODE, self.NODE["control"], META)
-        doc = ET.fromstring(zlib.decompress(g.build_tosc({"instrument": "t"}, [c], 1)))
+        doc = ET.fromstring(zlib.decompress(g.build_tosc("t", [c], 1)))
         btn = doc.find(".//node[@type='BUTTON']")
         self.assertIsNotNone(btn, "chord-button must emit a BUTTON")
         btype = [p for p in btn.findall("./properties/property") if p.find("key").text == "buttonType"][0]
@@ -244,7 +247,7 @@ class ChordButtonTest(unittest.TestCase):
                               for d in range(7)]}]
         controls = g.collect_controls({"instrument": "cp", "nodes": nodes}, META)
         self.assertEqual(len(controls), 7)
-        doc = ET.fromstring(zlib.decompress(g.build_tosc({"instrument": "cp"}, controls, 7)))
+        doc = ET.fromstring(zlib.decompress(g.build_tosc("cp", controls, 7)))
         degrees = []
         for btn in doc.findall(".//node[@type='BUTTON']"):
             addr = btn.find("./messages/osc/path/partial/value").text
@@ -261,7 +264,7 @@ class RadialTest(unittest.TestCase):
         c = g.resolve_control(node, {"label": "Tempo", "param": "tempo", "widget": "radial"}, META)
         self.assertEqual(c["kind"], "fader")          # still resolves through the fader path
         self.assertEqual(c["widget"], "radial")
-        doc = ET.fromstring(zlib.decompress(g.build_tosc({"instrument": "t"}, [c], 1)))
+        doc = ET.fromstring(zlib.decompress(g.build_tosc("t", [c], 1)))
         self.assertIsNone(doc.find(".//node[@type='FADER']"), "radial must not emit a FADER")
         rad = doc.find(".//node[@type='RADIAL']")
         self.assertIsNotNone(rad, "radial widget must emit a RADIAL node")
@@ -277,7 +280,7 @@ class RadialTest(unittest.TestCase):
                   "control": {"label": f"K{i}", "param": "tempo", "widget": "radial"}}
                  for i in range(5)]  # 5 in a 4-col grid -> a full row of 4 + a lone 5th
         controls = g.collect_controls({"instrument": "t", "nodes": nodes}, META)
-        doc = ET.fromstring(zlib.decompress(g.build_tosc({"instrument": "t"}, controls, 4)))
+        doc = ET.fromstring(zlib.decompress(g.build_tosc("t", controls, 4)))
         for rad in doc.findall(".//node[@type='RADIAL']"):
             f = [p for p in rad.findall("./properties/property") if p.find("key").text == "frame"][0]
             w, h = int(f.find("value/w").text), int(f.find("value/h").text)
@@ -287,7 +290,7 @@ class RadialTest(unittest.TestCase):
 class EmitTest(unittest.TestCase):
     def setUp(self):
         controls = g.collect_controls(INSTRUMENT, META)
-        self.doc = ET.fromstring(zlib.decompress(g.build_tosc(INSTRUMENT, controls, 4)))
+        self.doc = ET.fromstring(zlib.decompress(g.build_tosc(INSTRUMENT["instrument"], controls, 4)))
 
     def test_round_trips_to_parseable_xml(self):
         # Matches the editor's export: lexml version 6.
@@ -319,78 +322,152 @@ class EmitTest(unittest.TestCase):
 
     def test_deterministic_bytes(self):
         controls = g.collect_controls(INSTRUMENT, META)
-        a = g.build_tosc(INSTRUMENT, controls, 4)
-        b = g.build_tosc(INSTRUMENT, controls, 4)
+        a = g.build_tosc(INSTRUMENT["instrument"], controls, 4)
+        b = g.build_tosc(INSTRUMENT["instrument"], controls, 4)
         self.assertEqual(a, b, "same instrument must emit identical bytes")
 
 
 class BoundaryTest(unittest.TestCase):
-    """The nested-instrument path (ADR-0034 §4): one fader per wireable `interface` input, sourced
-    from a `reuben describe --json` boundary view. Fed fixture boundary JSON directly (the merge is
-    core's job, exercised by reuben's own tests) so these don't need the built binary."""
+    """The interface-pipe path (ADR-0038 §2): one fader per wireable `interface` input pipe, sourced
+    from a `reuben describe --json` boundary view. Fed fixture boundary JSON directly (the view is
+    core's job, exercised by reuben's own tests) so these don't need the built binary. In v2 an
+    input pipe declares its own type + owned metadata and mints its own address — there is no inner
+    target to read from the document, so `boundary_controls` takes the describe view alone and the
+    OSC address is the pipe's `/<name>/in` port."""
 
-    # An instrument's `interface.inputs`: bare-target strings and an override object with `target`.
-    IFACE = {
-        "freq": "/osc.freq",
-        "gate": "/env.gate",
-        "tone": {"target": "/filter.cutoff", "label": "Tone", "min": 200, "max": 8000, "widget": "radial"},
-        "in": "/filter.audio",     # driven inside the patch
-        "mode": "/filter.mode",    # an enum — needs a selector widget, not a fader
-    }
-    # The matching `describe --json` boundary: kinds/ranges as core would report them (freq/tone
-    # inherit + override, gate a held 0..1 `value` — issue #176 splits the numeric kinds into
-    # `value` (held f32) vs `signal` (dense f32_buffer); both fader — `in` a driven bare audio
-    # buffer, `mode` an enum).
+    # The `describe --json` boundary: kinds/ranges as core would report them for space.json-style
+    # input pipes. issue #176 splits the numeric kinds into `value` (held f32) vs `signal` (dense
+    # f32_buffer); both fader. `in` is a bare audio pipe (no range); `mode` an enum.
     BOUNDARY = {"inputs": [
         {"name": "freq", "kind": "signal", "default": 440.0, "min": 20.0, "max": 20000.0, "unit": "Hz", "curve": "exponential"},
         {"name": "gate", "kind": "value", "default": 0.0, "min": 0.0, "max": 1.0, "curve": "linear"},
         {"name": "tone", "kind": "signal", "default": 4000.0, "min": 200.0, "max": 8000.0, "unit": "Hz", "curve": "exponential", "label": "Tone", "widget": "radial"},
-        {"name": "in", "kind": "signal", "driven": True},
+        {"name": "in", "kind": "signal"},
         {"name": "mode", "kind": "enum", "default": "lowpass", "variants": ["lowpass", "highpass"]},
     ]}
 
-    def test_osc_address_is_the_interface_target(self):
-        # `.` (the port separator) becomes `/`: the same reachable `/<node>/<input>` a direct
-        # input uses (ADR-0034 §3).
-        self.assertEqual(g._osc_from_target("/filter.cutoff"), "/filter/cutoff")
+    def test_osc_address_is_the_pipe_in_port(self):
+        # ADR-0038: a pipe mints its own address and takes control on its `in` port -> `/<name>/in`.
+        self.assertEqual(g._osc_from_pipe("tone"), "/tone/in")
 
     def test_one_fader_per_wireable_input(self):
-        controls = g.boundary_controls(self.IFACE, self.BOUNDARY)
+        controls = g.boundary_controls(self.BOUNDARY)
         by_addr = {c["osc_addr"]: c for c in controls}
-        # freq, gate, tone are wireable; `in` (driven) and `mode` (enum) are dropped.
-        self.assertEqual(set(by_addr), {"/osc/freq", "/env/gate", "/filter/cutoff"})
+        # freq, gate, tone are wireable; `in` (bare audio, no range) and `mode` (enum) are dropped.
+        self.assertEqual(set(by_addr), {"/freq/in", "/gate/in", "/tone/in"})
 
-    def test_inherited_metadata_flows_through(self):
-        freq = next(c for c in g.boundary_controls(self.IFACE, self.BOUNDARY) if c["osc_addr"] == "/osc/freq")
+    def test_declared_metadata_flows_through(self):
+        freq = next(c for c in g.boundary_controls(self.BOUNDARY) if c["osc_addr"] == "/freq/in")
         self.assertEqual((freq["min"], freq["max"], freq["default"], freq["unit"]), (20.0, 20000.0, 440.0, "Hz"))
-        self.assertEqual(freq["label"], "Freq")   # no override -> titled from the boundary name
+        self.assertEqual(freq["label"], "Freq")   # no label -> titled from the pipe name
         self.assertEqual(freq["widget"], "fader")
 
-    def test_overrides_win(self):
-        tone = next(c for c in g.boundary_controls(self.IFACE, self.BOUNDARY) if c["osc_addr"] == "/filter/cutoff")
+    def test_pipe_owned_presentation_wins(self):
+        tone = next(c for c in g.boundary_controls(self.BOUNDARY) if c["osc_addr"] == "/tone/in")
         self.assertEqual((tone["label"], tone["widget"]), ("Tone", "radial"))
         self.assertEqual((tone["min"], tone["max"]), (200.0, 8000.0))
 
-    def test_driven_input_is_skipped(self):
-        addrs = [c["osc_addr"] for c in g.boundary_controls(self.IFACE, self.BOUNDARY)]
-        self.assertNotIn("/filter/audio", addrs, "a driven inner Signal port is not host-wireable")
-
     def test_non_fader_kinds_are_skipped(self):
-        # An enum input needs a selector widget (out of scope); a bare audio signal has no range.
+        # An enum input needs a selector widget (out of scope); a bare audio pipe has no range.
         audio_only = {"inputs": [{"name": "in", "kind": "signal"}]}  # no min/max -> not a fader
-        self.assertEqual(g.boundary_controls({"in": "/x.audio"}, audio_only), [])
+        self.assertEqual(g.boundary_controls(audio_only), [])
 
     def test_emits_faders_with_boundary_addresses_and_scaling(self):
-        controls = g.boundary_controls(self.IFACE, self.BOUNDARY)
-        doc = ET.fromstring(zlib.decompress(g.build_tosc({"instrument": "nested"}, controls, 4)))
+        controls = g.boundary_controls(self.BOUNDARY)
+        doc = ET.fromstring(zlib.decompress(g.build_tosc("nested", controls, 4)))
         scaling = {}
         for osc in doc.findall(".//osc"):
             arg = osc.find("./arguments/partial")
             scaling[osc.find("./path/partial/value").text] = (arg.find("scaleMin").text, arg.find("scaleMax").text)
-        self.assertEqual(scaling["/osc/freq"], ("20", "20000"))
-        self.assertEqual(scaling["/filter/cutoff"], ("200", "8000"))
-        # The radial override renders a RADIAL, not a FADER, for that control.
+        self.assertEqual(scaling["/freq/in"], ("20", "20000"))
+        self.assertEqual(scaling["/tone/in"], ("200", "8000"))
+        # The pipe-owned radial widget renders a RADIAL, not a FADER, for that control.
         self.assertIsNotNone(doc.find(".//node[@type='RADIAL']"))
+
+
+class LiveEngineBoundaryTest(unittest.TestCase):
+    """Bind the boundary path to the **live engine**, not a hand-written fixture. `BoundaryTest`
+    above feeds `boundary_controls` a describe view *we* wrote, so it stays green even if the real
+    `describe --json` shape flips under it — exactly the blind spot that let issue #233 rot (the
+    interface `target`→pipe direction flip, ADR-0038, silently retired the v1 shape this script
+    hand-decoded). This test runs the real `reuben describe` on the committed v2 instrument
+    `instruments/patches/space.json` and asserts the surface, so a future breaking format change
+    breaks *here* instead of drifting silently.
+
+    It shells out via `cargo run` (the same command the skills document) rather than a pre-built
+    binary, so it always reflects *current source* — a stale `target/` binary can't make it pass
+    or fail spuriously. It needs the Rust toolchain; when `cargo` is absent it skips loudly rather
+    than passing vacuously. (Precedent: `FixtureMatchTest` does the same for the .tosc format
+    against a real editor export. This is that discipline for the *engine contract* the boundary
+    path consumes.)
+
+    KNOWN LIMITATION: the `/<name>/in` OSC address scheme is *synthesized by the skill*
+    (`_osc_from_pipe`) and never appears in `describe --json`, which emits only the bare pipe
+    `name`. So this test guards the pipe *surface* the engine reports — names, ranges, kinds — not
+    the address scheme layered on top: a port-rename or address-shape drift (e.g. the pipe's control
+    port going `in`→`set`) would slip past it, because the address is our invention, not the
+    engine's. `test_osc_address_is_the_pipe_in_port` pins the scheme itself."""
+
+    REPO_ROOT = Path(__file__).resolve().parents[3]
+    SPACE = REPO_ROOT / "instruments" / "patches" / "space.json"
+    # `cargo run`/`cargo build` guard: a target-dir lock (a parallel cargo holding it) otherwise
+    # hangs the suite silently. Generous enough for a cold first compile.
+    CARGO_TIMEOUT = 300
+
+    def _live_describe(self):
+        if shutil.which("cargo") is None:
+            self.skipTest("cargo not on PATH — the live-engine boundary test needs the Rust "
+                          "toolchain to build a current `reuben` (guards ADR-0038 pipe drift)")
+        # `--features reuben-core/bench` mirrors CI's clippy/test steps so this shares their
+        # compiled artifacts instead of forcing a featureless rebuild (the `bench` feature is inert
+        # for `describe`).
+        cmd = ["cargo", "run", "-q", "-p", "reuben-native", "--bin", "reuben",
+               "--features", "reuben-core/bench", "--",
+               "describe", str(self.SPACE), "--json"]
+        try:
+            proc = subprocess.run(cmd, cwd=self.REPO_ROOT, capture_output=True, text=True,
+                                  timeout=self.CARGO_TIMEOUT)
+        except subprocess.TimeoutExpired as e:
+            stderr = e.stderr.decode() if isinstance(e.stderr, bytes) else (e.stderr or "")
+            self.fail(f"`cargo run ... describe` timed out after {self.CARGO_TIMEOUT}s "
+                      f"(a held target-dir lock?):\n{stderr}")
+        self.assertEqual(proc.returncode, 0, f"`reuben describe` failed:\n{proc.stderr}")
+        return json.loads(proc.stdout)
+
+    def test_live_describe_surfaces_v2_pipe_addresses(self):
+        by_addr = {c["osc_addr"]: c for c in g.boundary_controls(self._live_describe())}
+        # The two regressions #233 fixed, asserted against *real* engine output:
+        #  - non-empty (v1-decoding produced zero controls on a v2 doc), and
+        #  - addressed by the pipe's own `/<name>/in` port (ADR-0038), not a v1 inner target.
+        # space.json's ranged pipes `space` (0..1 value) + `tone` (20..20000 signal) surface;
+        # the bare-audio `in` pipe (no range) is skipped.
+        self.assertEqual(set(by_addr), {"/space/in", "/tone/in"})
+        # Derive the expected range/unit from the source doc's declared `tone` pipe rather than
+        # hardcoding the musical literals, so a legitimate retune of space.json doesn't read as a
+        # describe-format regression. What's under test is that the engine round-trips the pipe's
+        # *declared* metadata out through `describe`.
+        tone_pipe = json.loads(self.SPACE.read_text())["interface"]["inputs"]["tone"]
+        tone = by_addr["/tone/in"]
+        self.assertEqual((tone["min"], tone["max"], tone["unit"]),
+                         (tone_pipe["min"], tone_pipe["max"], tone_pipe["unit"]))
+
+    def test_run_describe_and_find_reuben_cover_the_prebuilt_path(self):
+        """Exercise the production `find_reuben` + `run_describe` helpers, which `_live_describe`
+        deliberately bypasses (it wants `cargo run` to reflect current source). Builds the binary
+        once — reusing `_live_describe`'s artifacts, same feature set — then drives the helpers
+        against it, so their subprocess/returncode/JSON handling isn't left with zero live coverage."""
+        if shutil.which("cargo") is None:
+            self.skipTest("cargo not on PATH — needs the Rust toolchain to build `reuben`")
+        build = subprocess.run(
+            ["cargo", "build", "-q", "-p", "reuben-native", "--bin", "reuben",
+             "--features", "reuben-core/bench"],
+            cwd=self.REPO_ROOT, capture_output=True, text=True, timeout=self.CARGO_TIMEOUT,
+        )
+        self.assertEqual(build.returncode, 0, f"cargo build failed:\n{build.stderr}")
+        reuben_bin = g.find_reuben(Path(g.__file__), None)
+        self.assertNotEqual(reuben_bin, "reuben", "find_reuben should locate the freshly built binary")
+        by_addr = {c["osc_addr"] for c in g.boundary_controls(g.run_describe(reuben_bin, self.SPACE))}
+        self.assertEqual(by_addr, {"/space/in", "/tone/in"})
 
 
 class FixtureMatchTest(unittest.TestCase):
@@ -410,7 +487,7 @@ class FixtureMatchTest(unittest.TestCase):
              "control": {"label": "Play", "widget": "note-toggle", "note": 60}},
         ]}
         controls = g.collect_controls(inst, META)
-        cls.mine = ET.fromstring(zlib.decompress(g.build_tosc(inst, controls, 2)))
+        cls.mine = ET.fromstring(zlib.decompress(g.build_tosc(inst["instrument"], controls, 2)))
 
     def _keys(self, doc, ctype):
         n = doc.find(f".//node[@type='{ctype}']")

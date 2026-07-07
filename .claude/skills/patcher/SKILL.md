@@ -28,10 +28,10 @@ Run all `reuben` commands from the repo root.
      settable inputs (`min`/`max`/`default`/`unit`/`curve`), enum inputs (`variants`+`default`),
      resource slots.
    - `cargo run -q -p reuben-native --bin reuben -- describe <patch.json> --json` — a nested
-     instrument's **boundary** (ADR-0034): its `interface` ports as if they were operator ports,
-     with metadata inherited from the inner ports (effective defaults included) and any
-     presentational overrides applied. This is what a `subpatch` node referencing that file
-     exposes — wire against these names, never the child's internals.
+     instrument's **boundary** (ADR-0034/0038): its `interface` pipes as if they were operator
+     ports, each with its **declared** `Arg` type, range, default, and presentation metadata.
+     This is what a `subpatch` node referencing that file exposes — wire against these names,
+     never the child's internals.
    The schema at `crates/reuben-core/schema/instrument.schema.json` is the same data as a
    document shape; `describe` is the per-operator view.
 
@@ -111,16 +111,33 @@ voicer ─gate──────────────────────
   ```
 
   At build the child inlines under the node's address (`/space/filter`…, OSC-reachable) and the
-  node dissolves — zero runtime cost. Boundary wires type-check against the **inner** ports the
-  interface names; errors name the subpatch address + external name.
-- **Child side**: a nestable instrument declares `interface { inputs, outputs }` mapping external
-  names to internal `/node.port` targets. An entry can be a bare string or an object adding
-  **presentational overrides** — `label`/`unit`/`widget`/`min`/`max`, inherited from the inner
-  port, per-field overridable; the **Arg type is never overridable** (no field exists for it):
+  node dissolves — zero runtime cost. Boundary wires type-check against each interface pipe's
+  **declared type** (ADR-0038 §2); errors name the subpatch address + external name.
+- **Child side**: a nestable instrument declares `interface { inputs, outputs }` as **named
+  pipes** (ADR-0038 flipped the wiring direction from v1's target-pointing entries — no entry
+  points inward anymore). An **input pipe** mints an address in the flat node namespace (entry
+  `tone` → `/tone`) that internal nodes consume with an ordinary wire-ref, and — pointing at no
+  inner port — **declares its own `type`** (`f32`, `f32_buffer`, `note`, `harmony`, or a vocab
+  enum name) plus the metadata it now **owns**: `default`/`min`/`max`/`curve`/`unit` (engine-
+  enforced for a numeric pipe) and `label`/`widget` (presentational). An **output pipe** is fed
+  **from** an internal port:
 
   ```json
-  "tone": { "target": "/filter.cutoff", "label": "Tone", "widget": "knob", "min": 200, "max": 8000 }
+  "interface": {
+    "inputs":  { "in":   { "type": "f32_buffer" },
+                 "tone": { "type": "f32_buffer", "default": 4000.0, "min": 20.0, "max": 20000.0,
+                           "curve": "exp", "unit": "Hz", "label": "Tone", "widget": "radial" } },
+    "outputs": { "out": { "from": "/verb.audio" } }
+  }
   ```
+
+  Internal nodes wire from an input pipe by its minted address — the filter's
+  `"audio": { "from": "/in" }`, `"cutoff": { "from": "/tone" }` (see `patches/space.json`). A
+  **signal** pipe may carry an optional `channel: <int>` binding to a logical hardware channel,
+  honored only when the graph is played at top level and **inert when nested** (ADR-0038 §3).
+  The declared `Arg` type is enforced against every consumer wire by the ordinary wire check.
+  (v1 documents that spell interface entries as `{ "target": "/node.port" }` still load — the
+  loader migrates them to pipes at parse — but author new **instruments** in the pipe form.)
 - A cyclic patch reference is a fatal error; a missing/unreadable child degrades to a warning
   (the node goes dark). Validate the child standalone too — it's a full instrument.
 
