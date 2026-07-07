@@ -111,6 +111,55 @@ jobs:
       - name: Test
         run: cargo test --workspace --features reuben-core/bench
 
+  web:
+    name: reuben-web (host tests + wasm build)
+    runs-on: ubuntu-latest
+    # Same draft-skip as `check`. The crate is deliberately detached from the root
+    # workspace (issue #224: own `[workspace]` table, path-dep on reuben-core), so the
+    # `check` job never touches it — this job is its whole gate: host tests exercise the
+    # logic (codec/resolver/decode/shell), then the wasm32 build proves the C-ABI artifact
+    # links. No ALSA: the web shell has no cpal.
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+      RUSTFLAGS: -D warnings
+    defaults:
+      run:
+        working-directory: crates/reuben-web
+    steps:
+      - uses: actions/checkout@v4
+
+      # Same pinned toolchain as `check`, via the shared composite (ADR-0023).
+      - name: Setup pinned Rust toolchain
+        uses: ./.github/actions/setup-rust
+
+      # The composite installs only the host toolchain; the shell's artifact target is added
+      # here (the one CI job that needs it).
+      - name: Add wasm32-unknown-unknown target
+        run: rustup target add wasm32-unknown-unknown
+
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/reuben-web
+
+      - name: Format
+        run: cargo fmt --check
+
+      - name: Clippy (host)
+        run: cargo clippy --all-targets -- -D warnings
+
+      # The bridge module only compiles for wasm32 — lint it on the real target too.
+      - name: Clippy (wasm32)
+        run: cargo clippy --target wasm32-unknown-unknown -- -D warnings
+
+      - name: Test (host)
+        run: cargo test
+
+      - name: Build .wasm (release)
+        run: cargo build --release --target wasm32-unknown-unknown
+
   bench:
     name: perf gate (macro + micro Ir)
     runs-on: ubuntu-latest
