@@ -1,0 +1,2 @@
+# The staged WASM artifact (copied here from target/ for serving) is never committed.
+reuben_web.wasm
