@@ -1,0 +1,25 @@
+# Throwaway spike (issue #223): reuben-core → WASM inside an AudioWorklet.
+#
+# Deliberately NOT a workspace member: the empty [workspace] table below stops cargo
+# from attaching this crate to the repo root's workspace, so `cargo test --workspace`,
+# fmt --all, clippy --workspace, and CI are unaffected *by construction*. This crate is
+# never merged to main — the branch is the archive (see the design comment on #223).
+
+[package]
+name = "reuben-wasm-worklet-spike"
+version = "0.0.0"
+edition = "2021"
+publish = false
+license = "BSD-3-Clause"
+
+[lib]
+# Raw C-ABI cdylib, no wasm-bindgen: bindgen's generated JS glue assumes a Window/Worker
+# global and fights AudioWorkletGlobalScope. The whole boundary is 6 flat exports + one
+# `log` import (see src/lib.rs).
+crate-type = ["cdylib"]
+
+[dependencies]
+reuben-core = { path = "../../crates/reuben-core" }
+
+# Detach from the root workspace (see header comment).
+[workspace]

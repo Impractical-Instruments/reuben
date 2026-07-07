@@ -1,0 +1,4 @@
+# This crate is outside the workspace, so the repo root's /target doesn't cover it.
+/target
+# Build artifact staged next to the page by build.sh; rebuildable, never committed.
+/web/*.wasm

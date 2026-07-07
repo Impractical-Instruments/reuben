@@ -1,0 +1,53 @@
+<!doctype html>
+<!-- Throwaway spike (issue #223): reuben-core → WASM in an AudioWorklet. -->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>reuben WASM worklet spike (#223)</title>
+    <style>
+      body {
+        font-family: system-ui, sans-serif;
+        max-width: 40rem;
+        margin: 2rem auto;
+        padding: 0 1rem;
+      }
+      #start {
+        font-size: 1.5rem;
+        padding: 1rem 3rem;
+        cursor: pointer;
+      }
+      #status.ok { color: #0a7d24; }
+      #status.bad { color: #c0182b; font-weight: bold; }
+      #log {
+        margin-top: 1rem;
+        padding: 0.5rem;
+        background: #f4f4f4;
+        font-family: monospace;
+        font-size: 0.8rem;
+        white-space: pre-wrap;
+        overflow-wrap: anywhere;
+      }
+      small { color: #666; }
+    </style>
+  </head>
+  <body>
+    <h1>reuben → WASM → AudioWorklet spike</h1>
+    <p>
+      Instrument: <strong id="which"></strong>
+      (<a href="?">vibrato</a> · <a href="?instrument=sequence">sequence</a>)
+    </p>
+    <!-- The single user gesture; its handler ONLY resumes the pre-staged context. -->
+    <button id="start" disabled>Start</button>
+    <p id="status">Loading…</p>
+    <p>
+      <small>
+        iOS test protocol (#223): hardware mute/ring switch OFF (WebAudio routes to the
+        ringer channel), volume up, not in low-power mode, screen unlocked. Serve over
+        HTTPS (AudioWorklet needs a secure context) — see the README for the tunnel.
+      </small>
+    </p>
+    <div id="log"></div>
+    <script src="./main.js"></script>
+  </body>
+</html>
