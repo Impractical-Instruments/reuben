@@ -39,13 +39,13 @@ use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, SupportedBufferSize};
+use reuben_core::engine::Engine;
 use reuben_core::message::Message;
 use reuben_core::AudioConfig;
 
 use crate::diagnostics::Diagnostics;
 use crate::osc::OscIn;
 use crate::profile::DeviceProfile;
-use reuben_core::engine::Engine;
 
 /// How often the periodic diagnostics logger wakes to check the counters (ADR-0038 §9). It only
 /// emits a line when something changed, so a healthy run stays quiet at this cadence regardless.
