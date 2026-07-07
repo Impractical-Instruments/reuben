@@ -39,9 +39,17 @@ class ReubenSpikeProcessor extends AudioWorkletProcessor {
         // The module's one import: raw UTF-8 bytes out of linear memory, shipped to the
         // main thread for decoding (TextDecoder isn't guaranteed in this global scope).
         log: (ptr, len) => {
-          const bytes = this.memory
-            ? new Uint8Array(this.memory.buffer, ptr, len).slice()
-            : new Uint8Array();
+          if (!this.memory) {
+            // Only reachable if a future toolchain emits a `start` section that logs
+            // during instantiation (none today); don't eat the event silently. Plain
+            // text, not bytes: TextEncoder isn't guaranteed in this scope either.
+            this.port.postMessage({
+              type: "log",
+              text: "<log call before memory was available>",
+            });
+            return;
+          }
+          const bytes = new Uint8Array(this.memory.buffer, ptr, len).slice();
           this.port.postMessage({ type: "log", bytes });
         },
       },

@@ -70,6 +70,9 @@ low-power mode, screen unlocked.
    synthesizes the ctor calls into every export, so registration happens on the first
    call into the module. `worklet.js` still tries both named hooks first
    (toolchain-portable), and `registry_count()` makes the verdict loud either way.
+   Corollary: a panic **inside a ctor** runs before `init` can install the panic hook,
+   so it reaches the page only as an opaque `RuntimeError: unreachable` (caught and
+   shown, but without the panic message).
 3. **Chromium silently refuses to deliver a structured-cloned `WebAssembly.Module` to a
    worklet** — it surfaces as `messageerror` (which nothing listens to by default), not
    as a throw at `postMessage`. So the main thread posts the raw **bytes** and the
@@ -81,7 +84,7 @@ low-power mode, screen unlocked.
    init is fully synchronous and the Start button is enabled by pre-staging, not by the
    worklet's `ready` message.
 5. **Real-browser render verified headlessly**: an `OfflineAudioContext` in Chromium
-   1228 drives the identical `worklet.js` + WASM path; both instruments render
+   141 drives the identical `worklet.js` + WASM path; both instruments render
    non-silent, finite stereo (vibrato rms 0.707, sequence rms 0.190 over 2 s).
    Realtime-device browsers (checkpoint 3) and the iPhone (checkpoint 4) remain the
    manual protocol above.

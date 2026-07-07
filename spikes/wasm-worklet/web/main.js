@@ -34,7 +34,7 @@ function appendLog(text) {
 function onWorkletMessage(e) {
   const msg = e.data;
   if (msg.type === "log") {
-    appendLog(`[wasm] ${decoder.decode(msg.bytes)}`);
+    appendLog(`[wasm] ${msg.bytes ? decoder.decode(msg.bytes) : msg.text}`);
   } else if (msg.type === "error") {
     const reason = msg.bytes ? `: ${decoder.decode(msg.bytes)}` : "";
     setStatus(`FAILED — ${msg.text}${reason}`, "bad");
@@ -120,7 +120,15 @@ async function prestage() {
 
 startBtn.addEventListener("click", async () => {
   // ONLY resume — everything else already happened at page load (see header comment).
-  await ctx.resume();
+  try {
+    await ctx.resume();
+  } catch (err) {
+    // resume() can reject (NotAllowedError/InvalidStateError, e.g. an interrupted iOS
+    // context); without this the tap does nothing and NO diagnostic reaches the page.
+    setStatus(`FAILED — ctx.resume(): ${err}`, "bad");
+    appendLog(`[page] ctx.resume() rejected: ${err}`);
+    return;
+  }
   if (ready) setStatus("Playing", "ok");
   appendLog(`[page] context resumed, state=${ctx.state}`);
 });

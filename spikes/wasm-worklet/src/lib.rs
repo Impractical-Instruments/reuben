@@ -13,7 +13,11 @@
 //! Failure is loud by design: on this target a panic is effectively `panic=abort` (a WASM
 //! trap that kills the processor and stops audio *silently*), so `init` is fully fallible
 //! (status + `error_ptr`/`error_len` message) and a custom panic hook ships the panic
-//! message out through the imported `log` *before* the trap.
+//! message out through the imported `log` *before* the trap. One known gap: the hook is
+//! installed as `init`'s first statement, but the static ctors run in every export's
+//! LLD-synthesized prologue — i.e. *before* anything in this module can run — so a panic
+//! **inside a ctor** still reaches the host only as an opaque `RuntimeError: unreachable`
+//! (caught and surfaced by worklet.js, but without the message). Unfixable in-module.
 
 use std::cell::UnsafeCell;
 
