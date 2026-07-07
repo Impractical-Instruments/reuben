@@ -126,7 +126,7 @@ voicer ─gate──────────────────────
   "interface": {
     "inputs":  { "in":   { "type": "f32_buffer" },
                  "tone": { "type": "f32_buffer", "default": 4000.0, "min": 20.0, "max": 20000.0,
-                           "curve": "exp", "unit": "Hz", "label": "Tone", "widget": "knob" } },
+                           "curve": "exp", "unit": "Hz", "label": "Tone", "widget": "radial" } },
     "outputs": { "out": { "from": "/verb.audio" } }
   }
   ```
@@ -137,7 +137,7 @@ voicer ─gate──────────────────────
   honored only when the graph is played at top level and **inert when nested** (ADR-0038 §3).
   The declared `Arg` type is enforced against every consumer wire by the ordinary wire check.
   (v1 documents that spell interface entries as `{ "target": "/node.port" }` still load — the
-  loader migrates them to pipes at parse — but author new patches in the pipe form.)
+  loader migrates them to pipes at parse — but author new **instruments** in the pipe form.)
 - A cyclic patch reference is a fatal error; a missing/unreadable child degrades to a warning
   (the node goes dark). Validate the child standalone too — it's a full instrument.
 

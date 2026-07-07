@@ -201,8 +201,9 @@ pub fn describe(registry: &Registry, which: Option<&str>) -> Result<Vec<Operator
 /// A nested instrument's synthesized boundary (ADR-0034 §4 / ADR-0038 §2), described **as if it
 /// were an Operator**: one [`PortInfo`] per `interface` name — an input pipe from its own declared
 /// type/range/default, an output pipe inheriting type and metadata from the internal port feeding
-/// it, both carrying the entry's presentational fields (label/unit/widget). This is the
-/// introspection view of the boundary face a `subpatch` node presents (P6, #121).
+/// it plus optional min/max range overrides (a subset of that port's range). Both carry the entry's
+/// presentational fields (label/unit/widget). This is the introspection view of the boundary face a
+/// `subpatch` node presents (P6, #121).
 #[derive(Debug, Serialize)]
 pub struct PatchBoundary {
     /// The document's `instrument` name.
@@ -261,8 +262,9 @@ impl PortInfo {
 /// Describe an instrument document's boundary the way a host instrument will see it (ADR-0034 §4 /
 /// ADR-0038 §2): load it through the real engine path (parsed once), let core's
 /// [`describe_boundary`] resolve each pipe (an input pipe from its own declared type/range, an
-/// output pipe inheriting from the port feeding it — both decorated with the entry's presentational
-/// fields), and present each port as an operator-style [`PortInfo`]. `kind` is the pipe's `Arg`
+/// output pipe inheriting from the port feeding it plus optional min/max range overrides — both
+/// decorated with the entry's presentational fields), and present each port as an operator-style
+/// [`PortInfo`]. `kind` is the pipe's `Arg`
 /// type — declared on an input pipe, the feeding port's on an output. An instrument with no
 /// `interface` yields empty port lists (it nests, but exposes nothing to wire).
 pub fn describe_patch(

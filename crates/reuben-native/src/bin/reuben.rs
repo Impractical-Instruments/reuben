@@ -261,8 +261,9 @@ fn cmd_describe(op: Option<&str>, json: bool, root: Option<PathBuf>) -> ExitCode
 
 /// `describe <patch.json>`: the nested-instrument boundary view — the `interface` pipes a host
 /// wires against (ADR-0038 §2): an input pipe's own declared type/range/default, an output pipe's
-/// type and metadata inherited from the internal port feeding it, both decorated by the entry's
-/// presentational fields (label/unit/widget).
+/// type and metadata inherited from the internal port feeding it plus optional min/max range
+/// overrides (a subset of that port's range), both decorated by the entry's presentational fields
+/// (label/unit/widget).
 fn cmd_describe_patch(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCode {
     let (instrument_json, resolver) = match read_instrument(path, root) {
         Ok(r) => r,
