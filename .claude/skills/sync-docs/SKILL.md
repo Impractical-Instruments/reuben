@@ -1,6 +1,6 @@
 ---
 name: sync-docs
-description: Bring reuben's living docs back in sync with the code after a feature lands. Sweeps ARCHITECTURE, README, and docs/agents/authoring.md against the current code + git diff, regenerates the instrument schema, and flags new domain terms. Use when a feature is implemented, before opening a PR, or when the user says "sync docs", "update the docs", "currentness pass", or "currency pass".
+description: Bring reuben's living docs back in sync with the code after a feature lands. Sweeps ARCHITECTURE, README, docs/agents/authoring.md, and the contract-inlining skills (patcher, control-surface, create-operator) against the current code + git diff, regenerates the instrument schema, and flags new domain terms. Use when a feature is implemented, before opening a PR, or when the user says "sync docs", "update the docs", "currentness pass", or "currency pass".
 ---
 
 # sync-docs
@@ -33,6 +33,14 @@ Run from the feature branch so the diff is meaningful.
      a row; note self-play vs needs-OSC), and Prerequisites if deps changed.
    - **docs/agents/authoring.md** — the operator list and the add-an-operator steps if the
      contract or registry changed.
+   - **`.claude/skills/*/SKILL.md`** — the skills that **inline** an engine contract and so
+     drift silently when it changes (the loader migrates old-shaped documents, so `validate`
+     keeps passing while the skill teaches the retired form). Sweep the three that duplicate a
+     contract: **patcher** (instrument/rig format rules — node `inputs`/`config`, the
+     `interface` pipe model), **control-surface** (interface/`control` exposure + format keys),
+     **create-operator** (the Operator contract — ports, `process`, registration). When a
+     format/contract change lands, check it against these, not just authoring.md. The other
+     skills don't inline a contract — skip them.
 
 3. **Regenerate the schema** (if any operator/param changed):
    `cargo run -p reuben-core --example gen_schema`, then commit
@@ -51,6 +59,7 @@ Run from the feature branch so the diff is meaningful.
 | Doc | Action |
 |-----|--------|
 | ARCHITECTURE.md, README.md, docs/agents/authoring.md | **edit** to match reality |
+| `.claude/skills/{patcher,control-surface,create-operator}/SKILL.md` | **edit** the inlined-contract sections to match reality; leave the other skills alone |
 | instrument schema | **regenerate** via gen_schema |
 | CONTEXT.md (glossary) | **flag** new terms → suggest /domain-modeling, don't auto-edit |
 | docs/adr/* | **never touch** — decisions, not status |

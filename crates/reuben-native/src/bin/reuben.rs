@@ -14,8 +14,9 @@
 //!
 //! - `reuben describe [op|patch.json] [--json]` — print the operator set, one operator's ports/
 //!   params/resource slots, or — given an instrument JSON path — that instrument's `interface`
-//!   boundary as a host sees it (ADR-0034 §4: types inherited from the inner ports,
-//!   presentational overrides applied). The introspection half of the Patcher skill (ADR-0020).
+//!   boundary as a host sees it (ADR-0034 §4 / ADR-0038 §2: an input pipe from its own declared
+//!   type/range, an output pipe inheriting from the port feeding it, both carrying the entry's
+//!   presentational fields). The introspection half of the Patcher skill (ADR-0020).
 //! - `reuben validate <path> [--json]` — load + plan an instrument with no audio device and
 //!   report structural/wiring errors. Exit 1 if invalid; warnings alone stay exit 0.
 //! - `reuben scaffold-operator --spec <path> [--json]` — generate a new Operator's Rust skeleton
@@ -258,8 +259,10 @@ fn cmd_describe(op: Option<&str>, json: bool, root: Option<PathBuf>) -> ExitCode
     ExitCode::SUCCESS
 }
 
-/// `describe <patch.json>`: the nested-instrument boundary view — the `interface` ports a host
-/// wires against, with metadata inherited from the inner ports and the entry overrides applied.
+/// `describe <patch.json>`: the nested-instrument boundary view — the `interface` pipes a host
+/// wires against (ADR-0038 §2): an input pipe's own declared type/range/default, an output pipe's
+/// type and metadata inherited from the internal port feeding it, both decorated by the entry's
+/// presentational fields (label/unit/widget).
 fn cmd_describe_patch(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCode {
     let (instrument_json, resolver) = match read_instrument(path, root) {
         Ok(r) => r,
