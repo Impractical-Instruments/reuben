@@ -1,10 +1,8 @@
 //! reuben-native — the removable native layer (ADR-0012).
 //!
 //! This crate is the seam where OS-specific I/O lives. It wraps the portable
-//! [`reuben_core`] engine with:
-//! - [`engine`] — an [`Engine`] that owns a Plan + Renderer and fills arbitrary-length
-//!   output buffers from a queue of incoming Messages (the bridge between the fixed
-//!   block-size core and a real-time audio callback).
+//! [`reuben_core`] embed surface ([`reuben_core::engine`] — construct, `queue_osc`,
+//! `fill`/`fill_duplex`, `drain_outbound`) with:
 //! - [`osc`] — decoding external OSC/UDP packets into core [`Message`](reuben_core::Message)s.
 //! - [`audio`] — a cpal output stream driving the engine live.
 //! - [`input`] — the cpal input stream (P5/#182, ADR-0038 §8/§9): a lock-free SPSC ring from
@@ -25,7 +23,6 @@
 pub mod audio;
 pub mod cli;
 pub mod diagnostics;
-pub mod engine;
 pub mod input;
 pub mod osc;
 pub mod profile;
@@ -33,7 +30,7 @@ pub mod resources;
 pub mod rigs;
 pub mod scaffold;
 
-pub use engine::Engine;
+pub use reuben_core::Engine;
 
 /// Re-export so embedders only depend on this crate.
 pub use reuben_core;

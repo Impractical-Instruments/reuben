@@ -1,25 +1,46 @@
 //! Engine — bridges the fixed block-size core to a real-time, arbitrary-length pull.
 //!
-//! A cpal callback asks for an arbitrary number of frames at unpredictable times; the
-//! core [`Renderer`] produces exactly `block_size` samples per call. [`Engine`] owns the
-//! Plan + Renderer and a small scratch block, rendering a fresh block whenever the
-//! scratch is drained. Incoming external Messages are queued and applied at the start of
-//! the next rendered block — **block-quantized by design**: their UDP arrival jitter
-//! dwarfs sample resolution, so a finer frame would be fake precision (see [`crate::osc`]).
-//! Sample-accurate timing comes from inside the graph (the Clock), not from this queue.
+//! A host audio callback (cpal, a WebAudio worklet quantum, a game engine's mix step) asks for
+//! an arbitrary number of frames at unpredictable times; the core [`Renderer`] produces exactly
+//! `block_size` samples per call. [`Engine`] owns the Plan + Renderer and a small scratch block,
+//! rendering a fresh block whenever the scratch is drained. Incoming external Messages are
+//! queued and applied at the start of the next rendered block — **block-quantized by design**:
+//! their arrival jitter (UDP, `postMessage`, …) dwarfs sample resolution, so a finer frame would
+//! be fake precision. Sample-accurate timing comes from inside the graph (the Clock), not from
+//! this queue.
+//!
+//! This module is the shared **embed surface**: every shell (native, web, game) constructs an
+//! Engine — usually via [`Engine::from_document`] — then drives `queue_osc` → `fill` /
+//! `fill_duplex` → `drain_outbound`. Protocol decode (UDP/OSC datagrams, worklet message
+//! buffers) stays in the shells; the Engine takes the already-flat primitive args.
 //!
 //! NOTE (RT-debt): [`Renderer::render_block`] is allocation-free, but [`Engine::fill`]'s
 //! message handoff (the `pending` Vec) still churns the heap when messages flow, so the
 //! audio callback isn't fully allocation-free yet. A lock-free, preallocated handoff is
 //! tracked for later.
 
-use reuben_core::message::Message;
-use reuben_core::plan::Plan;
-use reuben_core::render::Renderer;
+use crate::config::AudioConfig;
+use crate::format::{load_instrument, LoadError, LoadWarning};
+use crate::message::{Arg, Message};
+use crate::plan::{Plan, PlanError};
+use crate::registry::Registry;
+use crate::render::Renderer;
+use crate::resources::ResourceResolver;
+
+/// Why [`Engine::from_document`] failed: the document didn't load, or the loaded graph
+/// didn't instantiate.
+#[derive(Debug)]
+pub enum FromDocumentError {
+    /// The instrument document failed to parse/build (see [`LoadError`]).
+    Load(LoadError),
+    /// The loaded graph failed to instantiate into a [`Plan`] (see [`PlanError`]).
+    Plan(PlanError),
+}
 
 /// Owns a Plan + Renderer and serves **interleaved logical** audio one block at a time into
 /// arbitrary buffers. "Logical" = the instrument's master channels (ADR-0026); mapping those
-/// onto the real device's channel count is `audio.rs`'s job, not the engine's.
+/// onto the real device's channel count is the shell's job (native's `audio.rs`), not the
+/// engine's.
 pub struct Engine {
     plan: Plan,
     renderer: Renderer,
@@ -70,6 +91,22 @@ impl Engine {
         }
     }
 
+    /// Construct an engine straight from an instrument document: `load_instrument` →
+    /// [`Plan::instantiate`] → [`Engine::new`]. The one place this glue is written — every
+    /// shell (native, web, game) calls it instead of re-wiring the chain. Returns the load
+    /// warnings alongside the engine: resource problems are non-fatal (ADR-0016) but they are
+    /// authoring errors the shell must surface, not swallow.
+    pub fn from_document(
+        text: &str,
+        registry: &Registry,
+        resolver: &dyn ResourceResolver,
+        config: AudioConfig,
+    ) -> Result<(Self, Vec<LoadWarning>), FromDocumentError> {
+        let loaded = load_instrument(text, registry, resolver).map_err(FromDocumentError::Load)?;
+        let plan = Plan::instantiate(loaded.graph, config).map_err(FromDocumentError::Plan)?;
+        Ok((Self::new(plan), loaded.warnings))
+    }
+
     /// The core block size this engine renders in.
     pub fn block_size(&self) -> usize {
         self.plan.config.block_size
@@ -97,13 +134,15 @@ impl Engine {
         self.pending.push(msg);
     }
 
-    /// Queue an inbound OSC datagram (ADR-0030): convert its flat primitive args into the single
-    /// typed [`Message`] the destination port carries (driven by the port's Arg type), then queue
-    /// it. Dropped silently if the address routes to no node/port or the args don't fit — an
-    /// authoring error the boundary already tolerates. The conversion needs the Plan, which the
-    /// engine owns, so it lives here rather than in the address-blind OSC decode layer.
-    pub fn queue_osc(&mut self, osc: &crate::osc::OscIn) {
-        if let Some(msg) = self.plan.osc_in_message(&osc.address, &osc.args) {
+    /// Queue an inbound external message in **flat primitive form** (ADR-0030): an address plus
+    /// the flat `F32`/`I32`/`Str` args, however the shell decoded them (a UDP/OSC datagram, a
+    /// worklet control buffer). Converts them into the single typed [`Message`] the destination
+    /// port carries (driven by the port's Arg type), then queues it. Dropped silently if the
+    /// address routes to no node/port or the args don't fit — an authoring error the boundary
+    /// already tolerates. The conversion needs the Plan, which the engine owns, so it lives here
+    /// rather than in the address-blind decode layers.
+    pub fn queue_osc(&mut self, address: &str, args: &[Arg]) {
+        if let Some(msg) = self.plan.osc_in_message(address, args) {
             self.pending.push(msg);
         }
     }
@@ -209,21 +248,32 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::osc::OscIn;
-    use crate::rigs::default_rig;
-    use reuben_core::message::Arg;
-    use reuben_core::AudioConfig;
+    use crate::resources::MemoryResolver;
+
+    /// The default rig, loaded as data exactly like native's embedded copy (its voice
+    /// sub-patch resolved in-memory) — the engine tests drive the real document path.
+    const DEFAULT_JSON: &str = include_str!("../../../instruments/default.json");
+    const DEFAULT_VOICE_JSON: &str = include_str!("../../../instruments/voices/default-voice.json");
+
+    fn default_resolver() -> MemoryResolver {
+        let mut r = MemoryResolver::new();
+        r.insert_text("voices/default-voice.json", DEFAULT_VOICE_JSON);
+        r
+    }
+
+    fn default_engine(cfg: AudioConfig) -> Engine {
+        let (engine, warnings) =
+            Engine::from_document(DEFAULT_JSON, &Registry::builtin(), &default_resolver(), cfg)
+                .expect("default.json is a valid instrument");
+        assert!(warnings.is_empty(), "unexpected warnings: {warnings:?}");
+        engine
+    }
 
     fn engine_with_note() -> Engine {
-        let cfg = AudioConfig::new(48_000.0, 256);
-        let plan = Plan::instantiate(default_rig(), cfg).expect("instantiate");
-        let mut e = Engine::new(plan);
+        let mut e = default_engine(AudioConfig::new(48_000.0, 256));
         // Drive a note in through the real inbound boundary: flat OSC args -> typed `Arg::Note`,
         // driven by the voicer's note port type (ADR-0030).
-        e.queue_osc(&OscIn {
-            address: "/voicer/notes".into(),
-            args: vec![Arg::F32(69.0), Arg::F32(1.0)],
-        });
+        e.queue_osc("/voicer/notes", &[Arg::F32(69.0), Arg::F32(1.0)]);
         e
     }
 
@@ -239,6 +289,22 @@ mod tests {
         let mut out = vec![0.0f32; 48_000]; // ~0.5 s interleaved stereo, not a block multiple
         e.fill(&mut out);
         assert!(peak(&out) > 0.05, "engine produced near-silence");
+    }
+
+    #[test]
+    fn from_document_surfaces_load_and_plan_errors() {
+        let cfg = AudioConfig::new(48_000.0, 256);
+        let result = Engine::from_document(
+            "{ not json",
+            &Registry::builtin(),
+            &MemoryResolver::new(),
+            cfg,
+        );
+        match result {
+            Err(FromDocumentError::Load(_)) => {}
+            Err(other) => panic!("expected a load error, got {other:?}"),
+            Ok(_) => panic!("malformed document must not construct"),
+        }
     }
 
     #[test]
@@ -273,8 +339,8 @@ mod tests {
 
     /// A rig with a normal audio path (for a master tap) plus an `osc_out` sink at `/fb`.
     fn osc_out_plan() -> Plan {
-        use reuben_core::graph::Graph;
-        use reuben_core::operators::{OscOut, Oscillator, Output};
+        use crate::graph::Graph;
+        use crate::operators::{OscOut, Oscillator, Output};
         let mut g = Graph::new();
         let osc = g.add("/osc", Oscillator::new());
         let out = g.add("/out", Output::new());
@@ -291,10 +357,7 @@ mod tests {
         // pass-through (issue #141): a single primitive atom crosses the inbound boundary
         // verbatim and echoes out unchanged — the OSC loopback path.
         let mut e = Engine::new(osc_out_plan());
-        e.queue_osc(&OscIn {
-            address: "/fb/in".into(),
-            args: vec![Arg::F32(0.5)],
-        });
+        e.queue_osc("/fb/in", &[Arg::F32(0.5)]);
         let mut out = vec![0.0f32; e.block_size() * e.channels()];
         e.fill(&mut out);
 
@@ -314,10 +377,7 @@ mod tests {
         // pass-through input, and drains outbound with the string intact and the sink's node
         // address stamped — the end-to-end string loopback.
         let mut e = Engine::new(osc_out_plan());
-        e.queue_osc(&OscIn {
-            address: "/fb/in".into(),
-            args: vec![Arg::Str("hello".into())],
-        });
+        e.queue_osc("/fb/in", &[Arg::Str("hello".into())]);
         let mut out = vec![0.0f32; e.block_size() * e.channels()];
         e.fill(&mut out);
 
@@ -343,7 +403,7 @@ mod tests {
             { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/mic" } } }
           ]
         }"#;
-        let graph = reuben_core::load(MIC, &reuben_core::Registry::builtin()).expect("load");
+        let graph = crate::load(MIC, &Registry::builtin()).expect("load");
         let plan =
             Plan::instantiate(graph, AudioConfig::new(48_000.0, block_size)).expect("instantiate");
         Engine::new(plan)
