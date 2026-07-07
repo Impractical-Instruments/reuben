@@ -80,6 +80,20 @@ jobs:
       - name: Test
         run: cargo test --workspace --features reuben-core/bench
 
+      # Skill scripts that inline an engine contract ship their own Python tests (control-surface's
+      # `gen_surface.py` today); its live-engine boundary test runs `reuben describe` via `cargo
+      # run` to catch format drift (#233) instead of letting the skill rot silently. Runs after the
+      # cargo build above so that `cargo run` reuses compiled artifacts. Generic over the skills dir
+      # so a future skill's `test_*.py` is picked up without editing CI; each suite runs from its own
+      # dir because the tests import their script by bare module name.
+      - name: Skill tests (Python)
+        run: |
+          for d in .claude/skills/*/; do
+            if ls "$d"test_*.py >/dev/null 2>&1; then
+              echo "== $d ==" && (cd "$d" && python3 -m unittest)
+            fi
+          done
+
   windows:
     name: build + test (windows)
     runs-on: windows-latest
