@@ -14,7 +14,7 @@
 //!   **whole frames at a time** so the consumer never observes a torn frame.
 //! - **Consumer** ([`InputStage`], owned by the output callback): pops device-rate frames and
 //!   resamples them to the engine rate with a drift-servoed ratio, filling the interleaved
-//!   logical input block that [`crate::engine::Engine::fill_duplex`] consumes.
+//!   logical input block that [`reuben_core::engine::Engine::fill_duplex`] consumes.
 //!
 //! Both callbacks are RT-safe after startup: no allocation, no locks, no blocking — the ring
 //! is preallocated, the resampler's state is two frames, and every policy decision is
@@ -66,7 +66,7 @@
 //!
 //! - ring floor: [`RING_FLOOR_BLOCKS`] (= 2) core blocks — ~10.7 ms at the 256/48k defaults;
 //! - resampler lookahead: 1 input frame (~0.02 ms);
-//! - P3's input staging in [`crate::engine::Engine::fill_duplex`]: 1 core block (~5.3 ms).
+//! - P3's input staging in [`reuben_core::engine::Engine::fill_duplex`]: 1 core block (~5.3 ms).
 //!
 //! Total ≈ 3 core blocks (~16 ms at defaults) — modest, and dominated by deliberate safety
 //! margin: the floor must ride out the input device's own delivery granularity, and the

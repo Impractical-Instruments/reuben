@@ -37,6 +37,25 @@ pub enum FromDocumentError {
     Plan(PlanError),
 }
 
+impl std::fmt::Display for FromDocumentError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            FromDocumentError::Load(e) => write!(f, "load instrument: {e}"),
+            // PlanError has no Display of its own; its Debug form is the diagnostic.
+            FromDocumentError::Plan(e) => write!(f, "instantiate plan: {e:?}"),
+        }
+    }
+}
+
+impl std::error::Error for FromDocumentError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        match self {
+            FromDocumentError::Load(e) => Some(e),
+            FromDocumentError::Plan(_) => None,
+        }
+    }
+}
+
 /// Owns a Plan + Renderer and serves **interleaved logical** audio one block at a time into
 /// arbitrary buffers. "Logical" = the instrument's master channels (ADR-0026); mapping those
 /// onto the real device's channel count is the shell's job (native's `audio.rs`), not the
@@ -304,6 +323,25 @@ mod tests {
             Err(FromDocumentError::Load(_)) => {}
             Err(other) => panic!("expected a load error, got {other:?}"),
             Ok(_) => panic!("malformed document must not construct"),
+        }
+
+        // The Plan arm: a document that loads fine but whose graph cannot instantiate (a
+        // wire cycle with no explicit unit-delay).
+        const CYCLIC: &str = r#"{
+          "format_version": 2,
+          "instrument": "cycle",
+          "nodes": [
+            { "type": "add_f32_signal", "address": "/a", "inputs": { "a": { "from": "/b" } } },
+            { "type": "add_f32_signal", "address": "/b", "inputs": { "a": { "from": "/a" } } },
+            { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/a" } } }
+          ]
+        }"#;
+        let result =
+            Engine::from_document(CYCLIC, &Registry::builtin(), &MemoryResolver::new(), cfg);
+        match result {
+            Err(FromDocumentError::Plan(_)) => {}
+            Err(other) => panic!("expected a plan error, got {other:?}"),
+            Ok(_) => panic!("cyclic graph must not instantiate"),
         }
     }
 

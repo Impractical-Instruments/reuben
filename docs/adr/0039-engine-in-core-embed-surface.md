@@ -9,7 +9,7 @@ supplied by the P1 spike ([#223](https://github.com/Impractical-Instruments/reub
 `reuben-core` compiles to `wasm32-unknown-unknown` with zero changes). The future game shell
 ([#222](https://github.com/Impractical-Instruments/reuben/issues/222)) depends on this record.
 **Rides on** [ADR-0012](0012-boundary-and-threading.md) (portable core, removable native layer)
-and [ADR-0002](0002-rust-core-native-layer.md); **amends neither** — it moves one type across
+and [ADR-0002](0002-rust-core.md); **amends neither** — it moves one type across
 the line those ADRs drew, it does not move the line.
 
 ## Context
@@ -46,7 +46,8 @@ the cost of another workspace member, version, and docs surface.
 ### 2. `queue_osc` takes the flat primitive form directly
 
 The core signature is `queue_osc(&mut self, address: &str, args: &[Arg])` — the
-already-decoded **flat primitive form** of ADR-0030 (`F32`/`I32`/`Str`), which is what every
+already-decoded **flat primitive form** of
+[ADR-0030](0030-osc-as-all-data-one-message-type.md) (`F32`/`I32`/`Str`), which is what every
 shell's decode layer produces anyway (native's rosc datagrams, web's flat tagged control
 buffers). Native keeps its `OscIn` struct as the UDP-decode target and calls the core
 signature with `&osc.address, &osc.args`. Protocol decode stays in the shells; the
@@ -61,8 +62,8 @@ suffices.
 `Engine::from_document(text, registry, &resolver, config) -> Result<(Engine, Vec<LoadWarning>),
 FromDocumentError>` packages `load_instrument` → `Plan::instantiate` → `Engine::new`. Every
 shell calls it instead of re-wiring the chain. It returns the load warnings because resource
-problems are non-fatal (ADR-0016) but must be *surfaced* by every shell, not swallowed by the
-convenience; `FromDocumentError` keeps the load/instantiate distinction the two underlying
+problems are non-fatal ([ADR-0016](0016-sample-player-and-resource-store.md)) but must be
+*surfaced* by every shell, not swallowed by the convenience; `FromDocumentError` keeps the load/instantiate distinction the two underlying
 error types already draw.
 
 ### 4. What stays native
