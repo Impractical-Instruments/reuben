@@ -9,17 +9,19 @@
 //! fights `AudioWorkletGlobalScope` (P1 finding, #223).
 //!
 //! Layout: everything testable is plain host Rust — [`codec`] (the flat tagged control
-//! buffer), [`resolver`] (the fetch-on-miss in-memory [`ResourceResolver`]
-//! (reuben_core::resources::ResourceResolver)), [`decode`] (WAV bytes → `SampleBuffer`,
-//! hound-in-WASM), and [`shell`] (the whole lifecycle state machine). Only [`bridge`] — the
-//! `#[no_mangle]` shims and the `log` import — is `wasm32`-gated. `cargo test` on the host
-//! exercises the real logic; the dedicated CI job also builds the wasm artifact.
+//! buffer), [`resolver`] (the fetch-on-miss in-memory
+//! [`ResourceResolver`](reuben_core::resources::ResourceResolver)), [`decode`] (WAV bytes →
+//! `SampleBuffer`, hound-in-WASM), and [`shell`] (the whole lifecycle state machine). Only
+//! [`bridge`] — the `#[no_mangle]` shims and the `log` import — is `wasm32`-gated.
+//! `cargo test` on the host exercises the real logic; the dedicated CI job also builds the
+//! wasm artifact.
 //!
 //! The crate is deliberately **detached** from the repo workspace (own `[workspace]` table)
 //! so root `cargo test/clippy/fmt --workspace` never touch it; see `Cargo.toml`.
 //!
 //! The ES-module JS API (worklet processor, main-thread fetch-on-miss loader, control
-//! encoder) is co-located under `js/` and codes against [`bridge`]'s documented ABI.
+//! encoder) lands co-located under `js/` in the next PR of this tree, coding against
+//! [`bridge`]'s documented ABI.
 
 pub mod codec;
 pub mod decode;

@@ -124,7 +124,9 @@ impl ResourceResolver for WebResolver {
     /// filesystem, so this is pure string work.
     ///
     /// The base is the referrer's directory (the part left of its last `/`; a referrer with
-    /// no `/`, or no referrer at all, resolves from the root). Base and source are joined
+    /// no `/`, or no referrer at all, resolves from the root). A leading `/` in a source is
+    /// an empty segment and drops, so an "absolute" spelling resolves referrer-relative
+    /// like any other (repo instruments never use one). Base and source are joined
     /// and folded segment by segment: empty and `.` segments drop, `..` pops the segment
     /// stack. Popping past the root just drops the `..` — **deliberately clamped**: a key
     /// like `../../escape.wav` cannot name anything outside the asset root, so every

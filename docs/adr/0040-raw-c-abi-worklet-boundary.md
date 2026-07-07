@@ -36,7 +36,8 @@ boundary both ways and the findings were one-sided:
 `crates/reuben-web` is a `cdylib` of `#[no_mangle] extern "C"` exports over the embed
 surface, built with `cargo build --target wasm32-unknown-unknown --release`. No
 `wasm-bindgen`, no `wasm-pack`, no npm packaging (P4's concern). The ABI is documented in
-one place — `src/bridge.rs` — and the co-located ES-module JS codes against it. Data
+one place — `src/bridge.rs` — and the co-located ES-module JS (under the crate's `js/`)
+codes against it. Data
 crosses as `(ptr, len)` byte regions via `alloc`/`dealloc`; strings are UTF-8; audio is
 planar `f32` at fixed static offsets (a static's offset never moves, so the host fetches
 each pointer once and only re-wraps its `Float32Array` views per quantum — memory *growth*

@@ -26,8 +26,9 @@ pub fn decode_wav_bytes(bytes: &[u8]) -> Result<SampleBuffer, ResolveError> {
     }
     let sample_rate = spec.sample_rate as f32;
 
-    // De-interleave into one Vec per channel.
-    let mut planar: Vec<Vec<f32>> = vec![Vec::new(); channels];
+    // De-interleave into one Vec per channel, reserved up front (frame count is known).
+    let frames = reader.duration() as usize;
+    let mut planar: Vec<Vec<f32>> = vec![Vec::with_capacity(frames); channels];
     match spec.sample_format {
         hound::SampleFormat::Float => {
             for (i, s) in reader.samples::<f32>().enumerate() {

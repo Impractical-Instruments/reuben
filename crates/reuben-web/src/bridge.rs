@@ -38,6 +38,10 @@ use crate::shell::WebShell;
 extern "C" {
     /// Host diagnostics channel: UTF-8 bytes at `ptr..ptr+len`. The worklet posts them to
     /// the main thread; the Node harness prints them.
+    ///
+    /// **Host contract:** `log` must NOT call back into any export synchronously — it can
+    /// fire while the shell is mutably borrowed (construct warnings, the panic hook), so a
+    /// re-entrant export call would alias that borrow (UB). Copy the bytes out and return.
     fn log(ptr: *const u8, len: usize);
 }
 
@@ -86,15 +90,23 @@ fn ensure_panic_hook() {
 
 /// Allocate `len` bytes in linear memory for the host to write into (keys, document text,
 /// WAV bytes, control buffers). Returns null for `len == 0`. Pair with [`dealloc`].
+///
+/// Raw `std::alloc` rather than a round-trip through `Vec`: `Vec::from_raw_parts` requires
+/// the *exact* allocated capacity, which `Vec::with_capacity` only promises as a lower
+/// bound — this is a permanent ABI, so it leans on the allocator contract alone.
 #[no_mangle]
 pub extern "C" fn alloc(len: u32) -> *mut u8 {
     ensure_panic_hook();
     if len == 0 {
         return std::ptr::null_mut();
     }
-    let mut buf = Vec::<u8>::with_capacity(len as usize);
-    let ptr = buf.as_mut_ptr();
-    std::mem::forget(buf);
+    // Unwrap is fine: a u32 byte length can't overflow a u8 array layout on wasm32.
+    let layout = std::alloc::Layout::array::<u8>(len as usize).unwrap();
+    // SAFETY: layout is non-zero-sized (len > 0 checked above).
+    let ptr = unsafe { std::alloc::alloc(layout) };
+    if ptr.is_null() {
+        std::alloc::handle_alloc_error(layout);
+    }
     ptr
 }
 
@@ -107,7 +119,8 @@ pub unsafe extern "C" fn dealloc(ptr: *mut u8, len: u32) {
     if ptr.is_null() || len == 0 {
         return;
     }
-    drop(Vec::from_raw_parts(ptr, 0, len as usize));
+    let layout = std::alloc::Layout::array::<u8>(len as usize).unwrap();
+    std::alloc::dealloc(ptr, layout);
 }
 
 /// Read a `(ptr, len)` byte region. Null/empty yields an empty slice.
@@ -122,7 +135,9 @@ unsafe fn bytes<'a>(ptr: *const u8, len: u32) -> &'a [u8] {
 }
 
 /// Number of registered operators — the life-before-main probe (P1 checkpoint): `0` means
-/// `inventory` registration failed in this toolchain and nothing will load.
+/// `inventory` registration failed in this toolchain and nothing will load. The observed
+/// failure mode is *partial* (dropped codegen units, ADR-0040 §4), so a harness should
+/// compare against the expected full count, not just non-zero.
 #[no_mangle]
 pub extern "C" fn registry_count() -> u32 {
     ensure_panic_hook();

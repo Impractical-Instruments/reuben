@@ -94,16 +94,19 @@ impl WebShell {
 
     /// Stage the top-level instrument document (JSON text) for the next construct.
     pub fn set_document(&mut self, text: impl Into<String>) {
+        self.error.clear();
         self.document = Some(text.into());
     }
 
     /// Stage a text resource (voice/patch JSON) under its canonical root-relative key.
     pub fn stage_text(&mut self, key: &str, text: &str) {
+        self.error.clear();
         self.resolver.stage_text(key, text);
     }
 
     /// Stage a sample resource from raw fetched WAV bytes (decoded here, hound-in-WASM v1).
     pub fn stage_sample_wav(&mut self, key: &str, bytes: &[u8]) -> Result<(), String> {
+        self.error.clear();
         match decode_wav_bytes(bytes) {
             Ok(buf) => {
                 self.resolver.stage_sample(key, buf);
@@ -123,6 +126,11 @@ impl WebShell {
     /// recorded misses is deliberately **not** kept: the caller stages what was asked for and
     /// constructs again, and only a zero-miss load goes live. `log` receives the load
     /// warnings of a successful construct (they are authoring errors the shell must surface).
+    ///
+    /// Note this drops any live Engine up front — a construct attempt that ends in `Misses`
+    /// leaves the shell silent (render returns `false`) until a later attempt goes `Ready`.
+    /// Accepted P2 lifecycle: discovery runs on the main-thread instance, so the worklet
+    /// normally constructs exactly once per toy, from a complete bundle.
     pub fn construct(&mut self, sample_rate: f32, log: &mut dyn FnMut(&str)) -> ConstructStatus {
         self.engine = None;
         self.misses.clear();
@@ -480,6 +488,59 @@ mod tests {
             shell.error()
         );
         assert!(render_peak(&mut shell, 100) > 0.01, "metronome silent");
+    }
+
+    #[test]
+    fn more_than_two_logical_output_channels_is_refused_not_smeared() {
+        // The stereo-sub shape: output pipes binding logical channels 0/1/2 derive a
+        // 3-channel master, which the stereo worklet node can't carry (issue #224: OUT of
+        // the matrix). Construct must refuse with a readable reason, not channel-smear.
+        const THREE_OUT: &str = r#"{
+          "format_version": 2,
+          "instrument": "three_out",
+          "interface": {
+            "outputs": {
+              "l":   { "from": "/osc", "channel": 0 },
+              "r":   { "from": "/osc", "channel": 1 },
+              "sub": { "from": "/osc", "channel": 2 }
+            }
+          },
+          "nodes": [
+            { "type": "oscillator", "address": "/osc", "inputs": { "freq": 110.0 } }
+          ]
+        }"#;
+        let mut shell = WebShell::new();
+        shell.set_document(THREE_OUT);
+        assert_eq!(
+            shell.construct(48_000.0, &mut no_log()),
+            ConstructStatus::Failed
+        );
+        assert!(
+            shell.error().contains("logical output channels"),
+            "unexpected error: {}",
+            shell.error()
+        );
+    }
+
+    #[test]
+    fn has_input_render_on_an_inputless_instrument_is_the_plain_fill_path() {
+        // The worklet will happily hand mic input to a toy with no input pipes; render(true)
+        // must fall through to the no-input path, not misfeed the Engine.
+        let mut shell = WebShell::new();
+        shell.set_document(VIBRATO);
+        assert_eq!(
+            shell.construct(48_000.0, &mut no_log()),
+            ConstructStatus::Ready
+        );
+        assert_eq!(shell.input_channels(), 0);
+        shell.input_mut().fill(0.7);
+        let mut p = 0.0f32;
+        for _ in 0..40 {
+            assert!(shell.render(true));
+            assert!(shell.out().iter().all(|s| s.is_finite()));
+            p = p.max(peak(shell.out()));
+        }
+        assert!(p > 0.05, "vibrato should still sound through render(true)");
     }
 
     #[test]

@@ -19,7 +19,8 @@ license = "BSD-3-Clause"
 [lib]
 # Raw C-ABI cdylib, no wasm-bindgen (ADR-0040): bindgen's generated JS glue assumes a
 # Window/Worker global and fights AudioWorkletGlobalScope; the whole boundary here is a
-# handful of flat exports + one `log` import. rlib so `cargo test` can host-test the logic.
+# handful of flat exports + one `log` import. cdylib-only is still host-testable: the unit
+# test harness compiles the lib source straight into the test binary (no rlib needed).
 crate-type = ["cdylib"]
 
 [dependencies]
@@ -34,8 +35,12 @@ hound = "3"
 # CGU holding nothing but operator impls + their ctors gets silently dropped, and those
 # operators "don't exist" at runtime (observed: 36 of 53 registered; `oscillator` gone).
 # One CGU per crate makes reuben-core a single always-pulled object, so every ctor links.
-# The P1 spike dodged this by CGU-partitioning luck, not by construction.
+# The P1 spike dodged this by CGU-partitioning luck, not by construction. Pinned for BOTH
+# profiles: a debug wasm build is exposed to exactly the same silent drop.
 [profile.release]
+codegen-units = 1
+
+[profile.dev]
 codegen-units = 1
 
 # Detach from the root workspace (see header comment).
