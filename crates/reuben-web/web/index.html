@@ -65,6 +65,7 @@
       <option>nested-space</option>
       <option>mic-space</option>
       <option>granulator-demo</option>
+      <option>resonator-demo</option>
     </select>
     <button id="load" disabled>Load</button>
   </div>
@@ -80,7 +81,11 @@
     <input id="tempo" type="range" min="60" max="240" value="120" step="1" />
   </div>
 
-  <div id="status">Pre-staging…</div>
+  <!-- A Load clicked before Start can appear to stall on some browsers: a suspended
+       context may not run the worklet's message handler until resume() (P1 finding).
+       It self-recovers on Start; the status line below hints at it. -->
+  <div id="status">Pre-staging… (if a Load seems stuck, press Start — a suspended
+    context may not deliver worklet messages until resumed)</div>
   <pre id="log"></pre>
 
   <script type="module" src="./main.js"></script>

@@ -135,6 +135,12 @@ export async function createReubenEngine({
     const imports = {
       env: {
         log: (ptr, len) => {
+          // Guard: `log` can fire before instantiate returns (a panic in a start
+          // function) — a TypeError here would mask the real diagnostic.
+          if (!box.ex?.memory) {
+            log("[discovery] <log call before memory was available>");
+            return;
+          }
           log(`[discovery] ${decoder.decode(new Uint8Array(box.ex.memory.buffer, ptr, len))}`);
         },
       },
@@ -152,6 +158,9 @@ export async function createReubenEngine({
 
   let micStream = null;
   let micSource = null;
+  let micPending = null; // in-flight getUserMedia, so a double click can't leak a stream
+  let loading = false; // one load() at a time: the discovery instance is shared state
+  let destroyed = false;
 
   const engine = {
     context: ctx,
@@ -166,44 +175,54 @@ export async function createReubenEngine({
      * its construct. Resolves {channels, inputChannels, blockSize}.
      */
     async load(name) {
-      const docUrl = `${assetBase}/${name}.json`;
-      const docResp = await fetch(docUrl);
-      if (!docResp.ok) throw new Error(`fetch ${docUrl}: HTTP ${docResp.status}`);
-      const docText = await docResp.text();
-
-      // Discovery pass: loadInstrument stages each fetched resource into the
-      // discovery instance; the fetchResource callback also collects the bytes into
-      // the bundle map, so what reaches the worklet is exactly what construct needed.
-      const ex = await discoveryExports();
-      const bundle = new Map(); // key -> {kind, bytes}
+      // One at a time, guarded BEFORE the discovery instance is touched: two
+      // overlapping loads would satisfy each other's misses on the shared instance
+      // and each ship an incomplete bundle.
+      if (loading) throw new Error("a load is already in flight");
+      if (destroyed) throw new Error("engine was destroyed");
+      loading = true;
       try {
-        await loadInstrument(ex, docText, ctx.sampleRate, async (key, kind) => {
-          const url = `${assetBase}/${key}`;
-          const r = await fetch(url);
-          if (!r.ok) throw new Error(`fetch ${url}: HTTP ${r.status}`);
-          const bytes = new Uint8Array(await r.arrayBuffer());
-          bundle.set(key, { kind, bytes });
-          return bytes;
-        });
-      } finally {
-        // Keep the instance for reuse; drop its engine + staged bundle.
-        ex.destroy();
-      }
+        const docUrl = `${assetBase}/${name}.json`;
+        const docResp = await fetch(docUrl);
+        if (!docResp.ok) throw new Error(`fetch ${docUrl}: HTTP ${docResp.status}`);
+        const docText = await docResp.text();
 
-      // Ship the complete set. Keys and document are pre-encoded to UTF-8 bytes (the
-      // worklet has no TextEncoder); buffers are transferred, not copied.
-      const doc = encoder.encode(docText);
-      const entries = [...bundle].map(([key, { kind, bytes }]) => ({
-        key, // kept as a string for the worklet's error messages
-        keyBytes: encoder.encode(key),
-        kind,
-        bytes,
-      }));
-      const transfers = [doc.buffer];
-      for (const e of entries) transfers.push(e.keyBytes.buffer, e.bytes.buffer);
-      const reply = expectReply("ready");
-      node.port.postMessage({ type: "load", doc, bundle: entries }, transfers);
-      return reply;
+        // Discovery pass: loadInstrument stages each fetched resource into the
+        // discovery instance; the fetchResource callback also collects the bytes into
+        // the bundle map, so what reaches the worklet is exactly what construct needed.
+        const ex = await discoveryExports();
+        const bundle = new Map(); // key -> {kind, bytes}
+        try {
+          await loadInstrument(ex, docText, ctx.sampleRate, async (key, kind) => {
+            const url = `${assetBase}/${key}`;
+            const r = await fetch(url);
+            if (!r.ok) throw new Error(`fetch ${url}: HTTP ${r.status}`);
+            const bytes = new Uint8Array(await r.arrayBuffer());
+            bundle.set(key, { kind, bytes });
+            return bytes;
+          });
+        } finally {
+          // Keep the instance for reuse; drop its engine + staged bundle.
+          ex.destroy();
+        }
+
+        // Ship the complete set. Keys and document are pre-encoded to UTF-8 bytes (the
+        // worklet has no TextEncoder); buffers are transferred, not copied.
+        const doc = encoder.encode(docText);
+        const entries = [...bundle].map(([key, { kind, bytes }]) => ({
+          key, // kept as a string for the worklet's error messages
+          keyBytes: encoder.encode(key),
+          kind,
+          bytes,
+        }));
+        const transfers = [doc.buffer];
+        for (const e of entries) transfers.push(e.keyBytes.buffer, e.bytes.buffer);
+        const reply = expectReply("ready");
+        node.port.postMessage({ type: "load", doc, bundle: entries }, transfers);
+        return await reply;
+      } finally {
+        loading = false;
+      }
     },
 
     /** Encode one control message (codec.mjs) and post it to the worklet. */
@@ -215,31 +234,48 @@ export async function createReubenEngine({
     /** Ask for the microphone and wire it into the worklet node's input. */
     async enableMic() {
       if (micSource) return; // already live
+      if (micPending) return micPending; // a request is mid-flight; don't leak a 2nd stream
       if (!globalThis.navigator?.mediaDevices?.getUserMedia) {
         throw new Error("Microphone unavailable: getUserMedia is not supported here");
       }
-      let stream;
+      micPending = (async () => {
+        let stream;
+        try {
+          stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+        } catch (err) {
+          if (err && (err.name === "NotAllowedError" || err.name === "SecurityError")) {
+            throw new Error("Microphone permission denied — allow mic access and try again");
+          }
+          if (err && (err.name === "NotFoundError" || err.name === "OverconstrainedError")) {
+            throw new Error("No microphone found on this device");
+          }
+          throw new Error(`Microphone failed: ${err}`);
+        }
+        if (destroyed) {
+          // destroy() ran while we awaited the permission prompt; don't wire a corpse.
+          for (const track of stream.getTracks()) track.stop();
+          return;
+        }
+        micStream = stream;
+        micSource = ctx.createMediaStreamSource(stream);
+        micSource.connect(node);
+      })();
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      } catch (err) {
-        if (err && (err.name === "NotAllowedError" || err.name === "SecurityError")) {
-          throw new Error("Microphone permission denied — allow mic access and try again");
-        }
-        if (err && (err.name === "NotFoundError" || err.name === "OverconstrainedError")) {
-          throw new Error("No microphone found on this device");
-        }
-        throw new Error(`Microphone failed: ${err}`);
+        return await micPending;
+      } finally {
+        micPending = null;
       }
-      micStream = stream;
-      micSource = ctx.createMediaStreamSource(stream);
-      micSource.connect(node);
     },
 
     /**
      * Tear down: destroy the worklet's engine, disconnect nodes, stop mic tracks.
-     * Closes the AudioContext only if this module created it.
+     * Closes the AudioContext only if this module created it. Idempotent.
      */
     destroy() {
+      if (destroyed) return;
+      destroyed = true;
+      // A pending load can never be answered once the node is torn down.
+      settle("ready", new Error("engine destroyed"));
       node.port.postMessage({ type: "destroy" });
       if (micSource) {
         micSource.disconnect();
@@ -250,7 +286,7 @@ export async function createReubenEngine({
         micStream = null;
       }
       node.disconnect();
-      if (ownsContext) ctx.close();
+      if (ownsContext) ctx.close().catch(() => {});
     },
   };
 

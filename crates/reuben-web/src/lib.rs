@@ -20,8 +20,7 @@
 //! so root `cargo test/clippy/fmt --workspace` never touch it; see `Cargo.toml`.
 //!
 //! The ES-module JS API (worklet processor, main-thread fetch-on-miss loader, control
-//! encoder) lands co-located under `js/` in the next PR of this tree, coding against
-//! [`bridge`]'s documented ABI.
+//! encoder) is co-located under `js/` and codes against [`bridge`]'s documented ABI.
 
 pub mod codec;
 pub mod decode;

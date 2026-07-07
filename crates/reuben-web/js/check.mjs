@@ -51,6 +51,7 @@ const SELF_PLAYING = [
   "groovebox",
   "euclidean-drums",
   "granulator-demo", // bonus: exercises the second sample path (samples/testvoice.wav)
+  "resonator-demo", // bonus: clock-pinged resonator, not in the issue's 20 but it plays
 ];
 const NOTE_DRIVEN = [
   "default",

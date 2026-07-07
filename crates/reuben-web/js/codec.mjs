@@ -67,6 +67,11 @@ export function encodeControl(address, args = []) {
       typeof arg.i32 === "number" &&
       Number.isInteger(arg.i32)
     ) {
+      // Range-check here: DataView.setInt32 applies ToInt32 WRAPPING (2**31 would
+      // silently encode as -2147483648), and silent wire corruption is worse than a throw.
+      if (arg.i32 < -0x80000000 || arg.i32 > 0x7fffffff) {
+        throw new RangeError(`encodeControl: arg ${i} {i32: ${arg.i32}} is outside i32 range`);
+      }
       size += 1 + 4;
       return { tag: TAG_I32, num: arg.i32 };
     }

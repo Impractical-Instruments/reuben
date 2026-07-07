@@ -253,6 +253,15 @@ class ReubenEngineProcessor extends AudioWorkletProcessor {
     if (!this.engineReady || this.renderFailed) return true;
 
     const bs = this.blockSize;
+    // The engine block is pinned to a 128-frame quantum; a context created with a
+    // renderSizeHint can deliver other sizes. Fail loudly once instead of throwing a
+    // RangeError that kills the processor with no diagnosis.
+    const quantum = outputs[0]?.[0]?.length ?? bs;
+    if (quantum !== bs) {
+      this.renderFailed = true;
+      this.postError(`render quantum ${quantum} != engine block ${bs} (renderSizeHint?)`);
+      return true;
+    }
     let hasInput = 0;
     const input = inputs[0];
     if (this.inputChannels > 0 && input && input.length > 0 && input[0].length > 0) {
