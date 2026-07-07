@@ -40,12 +40,16 @@ Run the default synth — opens your default audio device and listens for OSC on
 `0.0.0.0:9000`:
 
 ```sh
-cargo run -p reuben-native --bin reuben -- play
+cargo reuben-play
 ```
 
-The `reuben` binary is subcommand-driven: `play` (live audio), `describe` (list operators),
-`validate` (load-check an instrument), `scaffold-operator` (new-operator skeleton). Add
-`--help` to any of them. Everything after `--` is passed to the binary.
+`cargo reuben-play` is a workspace alias (defined in [`.cargo/config.toml`](.cargo/config.toml))
+for `cargo run -p reuben-native --bin reuben -- play`; anything you add after it is passed to
+`play`. The `reuben` binary is subcommand-driven: `play` (live audio), `describe` (list
+operators), `validate` (load-check an instrument), `scaffold-operator` (new-operator skeleton).
+Add `--help` to any of them. The other subcommands have no alias — run them via
+`cargo run -p reuben-native --bin reuben -- <subcommand>` (everything after `--` is passed to
+the binary).
 
 `play` opens the default device by default; `play --io-map <file>` loads a **device profile**
 ([docs/device-profile.md](docs/device-profile.md)) to bind logical channels to a specific
@@ -65,7 +69,7 @@ Instruments are **data** — JSON files in [`instruments/`](instruments/). Load 
 passing its path to `play`:
 
 ```sh
-cargo run -p reuben-native --bin reuben -- play instruments/<name>.json
+cargo reuben-play instruments/<name>.json
 ```
 
 | Rig          | Plays on its own? | What it is                                                         |
@@ -139,7 +143,7 @@ A typical first session, by hand or by skill:
    ```sh
    cargo run -p reuben-native --bin reuben -- validate instruments/my-rig.json
    ```
-4. **Play it** with `play instruments/my-rig.json` (above).
+4. **Play it** with `cargo reuben-play instruments/my-rig.json` (above).
 5. **Play it on a tablet.** Annotate player-facing nodes with a `control` block and generate a
    [TouchOSC](https://hexler.net/touchosc) surface with the `control-surface` skill
    ([ADR-0018](docs/adr/0018-control-surface-generation.md)); `.tosc` layouts land in
