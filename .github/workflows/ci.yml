@@ -322,15 +322,43 @@ jobs:
         working-directory: web
         run: npx playwright install --with-deps chromium
 
-      # `npm run build` = stage (build wasm → discover → copy the 9 Toys' transitive assets)
-      # then `vite build`. A missing staged asset fails here loudly (no silent drift).
-      - name: Build app (wasm + staged assets + bundle)
+      # `npm run build` = stage (build wasm → discover → copy the 9 Toys' transitive assets +
+      # derive the PWA icon set) then `vite build` (bundle + vite-plugin-pwa: manifest, service
+      # worker, offline precache). A missing staged asset fails here loudly (no silent drift).
+      - name: Build app (wasm + staged assets + bundle + PWA)
         working-directory: web
         run: npm run build
 
-      # Boot the built app headless (vite preview, started by Playwright) and assert the
-      # pipeline is live: unlock → load groovebox → switch Toy, engine `running`, surface rendered.
-      - name: Playwright smoke
+      # Mobile-payload budget (issue #227, scope item 5): record the built wasm size (raw + gzip)
+      # and the total offline-precached payload each run, into the job summary. The bundled sample
+      # is just samples/blip.wav (~11 KiB), so nothing is lazy-loaded — this is the standing
+      # measurement that would flag it if the payload ever grows enough to warrant splitting.
+      - name: Report payload size
+        working-directory: web
+        run: |
+          wasm_raw=$(stat -c%s dist/reuben_web.wasm)
+          wasm_gz=$(gzip -c dist/reuben_web.wasm | wc -c)
+          payload=$(du -sb dist | cut -f1)
+          kib() { awk "BEGIN{printf \"%.1f\", $1/1024}"; }
+          {
+            echo "### Web player payload (issue #227 mobile budget)"
+            echo ""
+            echo "| Asset | Size |"
+            echo "| --- | --- |"
+            echo "| reuben_web.wasm (raw) | $(kib "$wasm_raw") KiB |"
+            echo "| reuben_web.wasm (gzip) | $(kib "$wasm_gz") KiB |"
+            echo "| total precached payload (dist) | $(kib "$payload") KiB |"
+            echo ""
+            echo "Bundled samples: \`samples/blip.wav\` only — no lazy-loading needed."
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # Boot the built app headless (vite preview, started by Playwright) and assert BOTH the
+      # pipeline is live (unlock → load groovebox → switch Toy, engine `running`, surface rendered)
+      # AND the PWA layer holds (issue #227): the service worker registers + controls the page, a
+      # cold offline reload boots and plays a Toy from precache, and Chrome reports the app
+      # installable. Lighthouse dropped its PWA category in v12, so installability is asserted via
+      # the DevTools protocol inside Playwright — the same signal, version-stable.
+      - name: Playwright smoke (pipeline + PWA installable/offline)
         working-directory: web
         run: npm run test:smoke
 

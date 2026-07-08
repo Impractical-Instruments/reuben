@@ -20,8 +20,9 @@
 // Playwright reruns); the build fails if that env is set but no artifact exists.
 
 import { spawnSync } from "node:child_process";
-import { access, copyFile, mkdir, readFile, rm } from "node:fs/promises";
+import { access, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
+import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -34,8 +35,20 @@ const CRATE = join(ROOT, "crates", "reuben-web");
 const WASM = join(CRATE, "target", "wasm32-unknown-unknown", "release", "reuben_web.wasm");
 const INSTRUMENTS = join(ROOT, "instruments");
 const SCHEMA = join(ROOT, "crates", "reuben-core", "schema", "instrument.schema.json");
+// The master PWA icon (issue #227 human prerequisite): a ≥512×512 square committed by a human.
+// @vite-pwa/assets-generator derives every icon size from it, but it resolves its output dir
+// relative to Vite's publicDir — so the source must live UNDER public/ or the generated icons
+// escape dist. We copy the committed master (src/assets/icon.png) into public/ here so the
+// generator (pwaAssets.image: 'public/icon.png' in vite.config.js) writes the derived sizes
+// straight into the built payload. public/ is build-owned + gitignored, so the copy is transient.
+const MASTER_ICON = join(WEB, "src", "assets", "icon.png");
 const PUBLIC = join(WEB, "public");
 const OUT_INSTRUMENTS = join(PUBLIC, "instruments");
+// Where the offline-precache list is written (issue #227, scope item 2). vite.config.js reads
+// this at build time and hands it to Workbox as `additionalManifestEntries`, so the SW precache
+// is generated from THIS script's transitive discovery — it cannot drift from what ships. Lives
+// outside public/ (build-owned, gitignored) so the SW never tries to precache its own list.
+const PRECACHE_MANIFEST = join(WEB, ".pwa-precache.json");
 
 const SAMPLE_RATE = 48000; // any rate enumerates the same resource set; construct() only needs one
 
@@ -124,6 +137,18 @@ async function main() {
   await copyFile(WASM, join(PUBLIC, "reuben_web.wasm"));
   await copyFile(SCHEMA, join(PUBLIC, "schema.json"));
 
+  // Stage the master PWA icon into public/ so the vite-plugin-pwa asset step can derive the icon
+  // set from it into the built payload (see MASTER_ICON). Fail loudly if the human prerequisite
+  // is missing, matching this script's no-silent-drift stance — the manifest would otherwise link
+  // icons that never got generated.
+  if (!(await exists(MASTER_ICON))) {
+    throw new Error(
+      `missing master PWA icon: web/src/assets/icon.png (issue #227 prerequisite)\n` +
+        "  add a square ≥512×512 PNG there; the icon set is derived from it at build.",
+    );
+  }
+  await copyFile(MASTER_ICON, join(PUBLIC, "icon.png"));
+
   const ex = await instantiate();
   for (const toy of toys) {
     const docPath = join(INSTRUMENTS, `${toy.id}.json`);
@@ -149,8 +174,35 @@ async function main() {
     );
   }
 
+  // --- 4. emit the offline-precache list (issue #227) -------------------------------------
+  //
+  // The SW's precache is generated HERE, off the exact set this script just staged — the wasm,
+  // the schema, every Toy document, and every transitive resource `copied` while discovering
+  // them. vite.config.js reads this file and hands it to Workbox verbatim, so the offline
+  // payload is definitionally the online payload: add a Toy and its resources are discovered,
+  // staged, AND precached in one pass; nothing can be shipped-but-not-cached or cached-but-not-
+  // shipped. Each entry carries a content revision so Workbox re-fetches only what changed.
+  //
+  // URLs are root-relative to the deploy (matching vite's `base: './'` and how main.js's
+  // asset() builds them). The app shell (hashed JS/CSS, index.html, icons, manifest) is NOT
+  // listed here — vite-plugin-pwa injects those into the precache from the build output itself;
+  // this list is only the public/ payload Vite copies verbatim and would otherwise miss.
+  const payloadUrls = [
+    "reuben_web.wasm",
+    "schema.json",
+    ...toys.map((t) => `instruments/${t.id}.json`),
+    ...[...copied].sort().map((key) => `instruments/${key}`),
+  ];
+  const entries = [];
+  for (const url of payloadUrls) {
+    const bytes = await readFile(join(PUBLIC, url));
+    entries.push({ url, revision: createHash("sha256").update(bytes).digest("hex").slice(0, 16) });
+  }
+  await writeFile(PRECACHE_MANIFEST, `${JSON.stringify(entries, null, 2)}\n`);
+
   console.log(
-    `[stage] done — ${toys.length} Toys, ${copied.size} unique resource(s), wasm + schema → web/public/`,
+    `[stage] done — ${toys.length} Toys, ${copied.size} unique resource(s), wasm + schema → web/public/` +
+      `; precache manifest: ${entries.length} entr${entries.length === 1 ? "y" : "ies"} → web/.pwa-precache.json`,
   );
 }
 

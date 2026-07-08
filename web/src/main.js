@@ -13,6 +13,7 @@
 // card. groovebox's assets are prefetched during the splash so that first pick is instant.
 
 import "./app.css";
+import { registerSW } from "virtual:pwa-register";
 import { createReubenEngine } from "../../crates/reuben-web/js/reuben-engine.mjs";
 import { buildSurface, loadParamMeta } from "../../crates/reuben-web/js/surface/widget-model.mjs";
 import { renderSurface, sendInitialDefaults } from "../../crates/reuben-web/js/surface/render.mjs";
@@ -315,6 +316,15 @@ window.reubenPlayer = {
   engineState: () => engine?.context.state ?? "none",
   toys: TOYS,
 };
+
+// Register the service worker (issue #227): precache the whole payload on first load so a cold,
+// offline, home-screen launch boots and plays. `immediate` registers now rather than waiting for
+// the window `load` event — the engine boot below is the heavy work, not the SW install, and an
+// early register means the payload is caching while the player reads the splash. `virtual:pwa-
+// register` is a build-time no-op under `vite dev` (SW disabled there); it's real under the built
+// app the Playwright smoke and Cloudflare serve. autoUpdate (vite.config) swaps in new revisions
+// silently, so there's no update-prompt callback to wire here.
+registerSW({ immediate: true });
 
 ensureEngine().catch((err) => console.error("[player] engine boot failed:", err));
 prefetchToy(DEFAULT_TOY);
