@@ -3,21 +3,18 @@ name: CI
 on:
   push:
     branches: [main]
-    # Docs-only changes can't affect the Rust build/test/perf gate — skip CI for them.
-    # `paths-ignore` skips only when EVERY changed file matches, so a mixed docs+code
-    # change still runs. Safe to skip silently: no ruleset requires these status checks
-    # (verified 2026-06-23) — a doc-only PR stays mergeable without a CI run.
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - LICENSE
   pull_request:
     # `ready_for_review` so converting a draft to ready triggers a run.
     types: [opened, synchronize, reopened, ready_for_review]
-    paths-ignore:
-      - "**/*.md"
-      - "docs/**"
-      - LICENSE
+
+# Path filtering is per-JOB, not workflow-level (see the `changes` job): each gate runs only when a
+# file that can move ITS outcome changed — code under test, test/bench DATA (instruments/), or the
+# infra that builds/runs it. The old workflow-level `paths-ignore` was removed so a partial or mixed
+# change routes to exactly the affected jobs instead of the all-or-nothing blanket skip. A change
+# that touches no gated path (docs-only, LICENSE, …) leaves every job Skipped and the PR mergeable —
+# safe because no ruleset requires these status checks (verified 2026-06-23). If that ever changes,
+# a filtered job's "Skipped" would read as an unmet required check: add an always-green aggregator
+# job and require THAT instead, rather than requiring the filtered jobs directly.
 
 # Cancel superseded runs on the same ref so the latest push wins and minutes aren't wasted —
 # EXCEPT pushes to main. Every main commit must get its own run so the perf gate records a history
@@ -32,11 +29,85 @@ permissions:
   contents: read
 
 jobs:
+  # Diff the change against the PR base (pull_request) or the before-SHA (push) and expose one
+  # boolean per downstream job, so each gate below runs only when a path it cares about changed.
+  # Seconds-long and always runs (even on drafts) — the expensive jobs it feeds carry the draft skip.
+  changes:
+    name: detect changed paths
+    runs-on: ubuntu-latest
+    outputs:
+      lockstep: ${{ steps.filter.outputs.lockstep }}
+      check: ${{ steps.filter.outputs.check }}
+      windows: ${{ steps.filter.outputs.windows }}
+      web: ${{ steps.filter.outputs.web }}
+      bench: ${{ steps.filter.outputs.bench }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            # Anchor: any change that can move the Rust workspace build/test/perf outcome. Shared by
+            # the three `--workspace` jobs (check, windows, bench) — every crate transitively depends
+            # on reuben-contract, so a `--workspace` gate has no sound per-crate split. instruments/ is
+            # test + bench DATA (include_str!/include_bytes! + fs-resolved fixtures), so it lives here;
+            # .cargo/config.toml sets the build's target-cpu (and perf-gate snapshots it); the workflow
+            # + the shared toolchain composite are the infra that runs every job.
+            _workspace: &workspace
+              - 'crates/reuben-contract/**'
+              - 'crates/reuben-macros/**'
+              - 'crates/reuben-core/**'
+              - 'crates/reuben-native/**'
+              - 'Cargo.toml'
+              - 'Cargo.lock'
+              - 'rust-toolchain.toml'
+              - '.cargo/config.toml'
+              - 'instruments/**'
+              - '.github/workflows/ci.yml'
+              - '.github/actions/setup-rust/**'
+            # Pure text check (ADR-0023): the pin, the two MSRV declarations it must equal (root
+            # workspace + the detached reuben-web), and its own script. Nothing else can red it.
+            lockstep:
+              - 'rust-toolchain.toml'
+              - 'Cargo.toml'
+              - 'crates/reuben-web/Cargo.toml'
+              - '.github/scripts/check-msrv-lockstep.sh'
+              - '.github/workflows/ci.yml'
+            # fmt + clippy + workspace test, PLUS the skill Python suites (control-surface today), so
+            # a skill-only change still re-runs its tests.
+            check:
+              - *workspace
+              - '.claude/skills/**'
+            windows:
+              - *workspace
+            # reuben-web is a DETACHED crate (its own [workspace]): its gate is its own build closure
+            # — itself + reuben-core + the crates reuben-core pulls (reuben-macros, reuben-contract) —
+            # and NOT reuben-native, which it never links. It renders instrument DATA in its host tests
+            # and Node matrix harness, so instruments/ counts. Its Cargo.lock lives under its own dir,
+            # already covered by `crates/reuben-web/**`.
+            web:
+              - 'crates/reuben-web/**'
+              - 'crates/reuben-core/**'
+              - 'crates/reuben-macros/**'
+              - 'crates/reuben-contract/**'
+              - 'instruments/**'
+              - '.cargo/config.toml'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/ci.yml'
+              - '.github/actions/setup-rust/**'
+            # The perf gate benches the same workspace closure; add its own gate script. .cargo/
+            # config.toml is already in the anchor (perf-gate.sh snapshots it into the baseline build).
+            bench:
+              - *workspace
+              - '.github/scripts/perf-gate.sh'
+
   lockstep:
     name: MSRV lockstep (toolchain == rust-version)
     runs-on: ubuntu-latest
-    # Same draft-skip as the other jobs. Pure text check — no toolchain, seconds to run.
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    needs: changes
+    # Same draft-skip as the other jobs, now AND'd with its path gate. Pure text check — no toolchain,
+    # seconds to run.
+    if: needs.changes.outputs.lockstep == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
     steps:
       - uses: actions/checkout@v4
       - name: Assert rust-toolchain.toml channel == Cargo.toml rust-version (ADR-0023)
@@ -45,8 +116,10 @@ jobs:
   check:
     name: fmt + clippy + test
     runs-on: ubuntu-latest
-    # Skip draft PRs; always run on push to main (which has no pull_request payload).
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    needs: changes
+    # Skip draft PRs; always run on push to main (which has no pull_request payload). Gated on a
+    # workspace-code or skill change.
+    if: needs.changes.outputs.check == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: 0 # faster, smaller cache on CI's cold builds
@@ -98,12 +171,13 @@ jobs:
   windows:
     name: build + test (windows)
     runs-on: windows-latest
-    # Same draft-skip as `check`. Proves the build + non-audio logic on Windows
-    # (ADR-0026): a headless runner can't init WASAPI, so audio out is verified by
+    needs: changes
+    # Same draft-skip as `check`, AND'd with the workspace path gate. Proves the build + non-audio
+    # logic on Windows (ADR-0026): a headless runner can't init WASAPI, so audio out is verified by
     # a manual smoke pass on real hardware — not here. fmt/clippy/lockstep are
     # platform-independent and stay ubuntu-only (`check`); no need to re-run them.
     # No ALSA install: cpal links WASAPI on Windows, and tests open no device.
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    if: needs.changes.outputs.windows == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: 0
@@ -129,12 +203,13 @@ jobs:
   web:
     name: reuben-web (host tests + wasm build)
     runs-on: ubuntu-latest
-    # Same draft-skip as `check`. The crate is deliberately detached from the root
-    # workspace (issue #224: own `[workspace]` table, path-dep on reuben-core), so the
-    # `check` job never touches it — this job is its whole gate: host tests exercise the
+    needs: changes
+    # Same draft-skip as `check`, AND'd with its build-closure path gate. The crate is deliberately
+    # detached from the root workspace (issue #224: own `[workspace]` table, path-dep on reuben-core),
+    # so the `check` job never touches it — this job is its whole gate: host tests exercise the
     # logic (codec/resolver/decode/shell), then the wasm32 build proves the C-ABI artifact
     # links. No ALSA: the web shell has no cpal.
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    if: needs.changes.outputs.web == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: 0
@@ -191,8 +266,10 @@ jobs:
   bench:
     name: perf gate (macro + micro Ir)
     runs-on: ubuntu-latest
-    # Same draft-skip as `check`. Runs in parallel — nobody waits on valgrind for fmt/test.
-    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    needs: changes
+    # Same draft-skip as `check`, AND'd with the workspace path gate. Runs in parallel — nobody waits
+    # on valgrind for fmt/test.
+    if: needs.changes.outputs.bench == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: 0
@@ -269,7 +346,9 @@ jobs:
   # Persist the benchmark trend (ADR-0019, layer 1). The ONLY job granted `contents: write`; the gate
   # above stays read-only. Records every main commit's absolute Ir to the `bench-history` orphan
   # branch (not main — no tree churn, no CI re-trigger). `needs: bench` + `always()` so the point is
-  # recorded even when the gate failed; never runs for PRs or forks.
+  # recorded even when the gate failed; never runs for PRs or forks. When `bench` is path-skipped
+  # (a main push that changed nothing it benches), this still runs but finds no artifact and the
+  # append script no-ops — correctly recording no new point, since no benched code moved.
   bench-history:
     name: persist bench history
     runs-on: ubuntu-latest
