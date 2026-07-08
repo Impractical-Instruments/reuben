@@ -1,0 +1,288 @@
+/* Shell chrome for the reuben web player (issue #226). Owns only the splash / launcher /
+   player frame — the control surface injects its own grid CSS (render.mjs, SURFACE_CSS). To
+   keep those controls (styled for a light ground) legible under a dark shell, the surface is
+   mounted on a light "console" panel regardless of the shell theme. */
+
+:root {
+  --bg: #0e0f13;
+  --bg-elev: #191b22;
+  --fg: #f4f5f7;
+  --fg-dim: #a2a6b0;
+  --accent: #2a7ad0;
+  --accent-bright: #4a97ea;
+  --border: #2a2d37;
+  --radius: 0.8rem;
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+
+body {
+  font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
+  background: var(--bg);
+  color: var(--fg);
+  -webkit-font-smoothing: antialiased;
+}
+
+#app {
+  min-height: 100%;
+  display: flex;
+  flex-direction: column;
+}
+
+/* --- wordmark + shared --- */
+
+.wordmark {
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  margin: 0;
+  font-size: clamp(2.4rem, 9vw, 4rem);
+  background: linear-gradient(120deg, var(--accent-bright), #b07adf);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+.wordmark.small {
+  font-size: clamp(1.4rem, 5vw, 1.9rem);
+}
+
+.cta {
+  font: inherit;
+  font-weight: 700;
+  font-size: 1.15rem;
+  color: #fff;
+  background: var(--accent);
+  border: none;
+  border-radius: 999px;
+  padding: 0.85rem 2.6rem;
+  cursor: pointer;
+  transition: background 0.15s ease, transform 0.08s ease;
+  box-shadow: 0 6px 24px rgba(42, 122, 208, 0.35);
+}
+.cta:hover:not(:disabled) {
+  background: var(--accent-bright);
+}
+.cta:active:not(:disabled) {
+  transform: translateY(1px);
+}
+.cta:disabled {
+  opacity: 0.6;
+  cursor: default;
+  box-shadow: none;
+}
+.cta.small {
+  font-size: 1rem;
+  padding: 0.55rem 1.6rem;
+}
+
+.info-link {
+  color: var(--fg-dim);
+  font-size: 0.85rem;
+  text-decoration: none;
+  border-bottom: 1px dotted currentColor;
+}
+.info-link:hover {
+  color: var(--fg);
+}
+
+/* --- splash --- */
+
+.splash {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 1.1rem;
+  text-align: center;
+  padding: 2rem 1.5rem calc(2rem + env(safe-area-inset-bottom));
+}
+.tagline {
+  color: var(--fg-dim);
+  font-size: 1.05rem;
+  margin: -0.4rem 0 0.6rem;
+}
+.splash-hint {
+  color: var(--fg-dim);
+  font-size: 0.9rem;
+  min-height: 1.2em;
+  margin: 0.2rem 0 0;
+}
+.splash-hint.error {
+  color: #ff8a8a;
+}
+
+/* --- launcher --- */
+
+.launcher {
+  flex: 1;
+  width: 100%;
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 1.5rem 1.25rem calc(2rem + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+}
+.launcher-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+}
+.launcher-sub {
+  color: var(--fg-dim);
+  margin: 0;
+}
+.toy-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
+  gap: 1rem;
+}
+.toy-card {
+  font: inherit;
+  text-align: left;
+  color: var(--fg);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.1rem 1.15rem 1rem;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+  min-height: 9rem;
+  transition: border-color 0.15s ease, transform 0.08s ease, background 0.15s ease;
+}
+.toy-card:hover {
+  border-color: var(--accent);
+  background: #1e2029;
+}
+.toy-card:active {
+  transform: translateY(1px);
+}
+.toy-title {
+  font-weight: 700;
+  font-size: 1.1rem;
+}
+.toy-blurb {
+  color: var(--fg-dim);
+  font-size: 0.85rem;
+  line-height: 1.35;
+  flex: 1;
+}
+.toy-badge {
+  align-self: flex-start;
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 0.2rem 0.5rem;
+  border-radius: 999px;
+}
+.toy-badge.self-playing {
+  color: #7ce0a8;
+  background: rgba(124, 224, 168, 0.12);
+}
+.toy-badge.tap-to-play {
+  color: #e0c67c;
+  background: rgba(224, 198, 124, 0.12);
+}
+
+/* --- player --- */
+
+.player {
+  flex: 1;
+  width: 100%;
+  max-width: 60rem;
+  margin: 0 auto;
+  padding: 1.25rem 1.25rem calc(2rem + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+}
+.player-head {
+  display: flex;
+  align-items: center;
+  gap: 0.9rem;
+  flex-wrap: wrap;
+}
+.back {
+  font: inherit;
+  font-weight: 600;
+  color: var(--fg);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.45rem 1rem;
+  cursor: pointer;
+}
+.back:hover {
+  border-color: var(--accent);
+}
+.player-title {
+  font-size: 1.4rem;
+  margin: 0;
+  flex: 1;
+}
+.player-status {
+  color: var(--fg-dim);
+  font-size: 0.9rem;
+  margin: 0;
+}
+.player-status.error {
+  color: #ff8a8a;
+}
+.player-body {
+  position: relative;
+}
+/* The light console the P3 surface mounts on — its injected CSS assumes a light ground. */
+.surface-mount:not(:empty) {
+  background: #fafafa;
+  color: #1a1a1a;
+  border-radius: var(--radius);
+  padding: 0.5rem 1rem 1rem;
+}
+
+/* --- loading skeleton (never a frozen blank while load() is in flight) --- */
+
+.skeleton {
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+}
+.skeleton-row {
+  height: 3rem;
+  border-radius: var(--radius);
+  background: linear-gradient(90deg, #191b22 25%, #23262f 50%, #191b22 75%);
+  background-size: 200% 100%;
+  animation: shimmer 1.3s ease-in-out infinite;
+}
+.skeleton-row:nth-child(2) {
+  width: 85%;
+}
+.skeleton-row:nth-child(3) {
+  width: 70%;
+}
+@keyframes shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .skeleton-row {
+    animation: none;
+  }
+}

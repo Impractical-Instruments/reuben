@@ -1,0 +1,18 @@
+{
+  "name": "reuben-web-player",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "description": "The reuben web player app (issue #226, P4): Toy launcher + shell over the reuben-web WASM engine and P3 auto-UI surface. Imports crates/reuben-web/js/ as the source of truth; owns only the launcher, the shell, and the build config (ADR-0041).",
+  "scripts": {
+    "stage": "node scripts/stage-assets.mjs",
+    "dev": "npm run stage && vite",
+    "build": "npm run stage && vite build",
+    "preview": "vite preview",
+    "test:smoke": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.49.1",
+    "vite": "^6.0.7"
+  }
+}

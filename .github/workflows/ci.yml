@@ -40,6 +40,7 @@ jobs:
       check: ${{ steps.filter.outputs.check }}
       windows: ${{ steps.filter.outputs.windows }}
       web: ${{ steps.filter.outputs.web }}
+      webapp: ${{ steps.filter.outputs.webapp }}
       bench: ${{ steps.filter.outputs.bench }}
     steps:
       - uses: actions/checkout@v4
@@ -86,6 +87,22 @@ jobs:
             # and Node matrix harness, so instruments/ counts. Its Cargo.lock lives under its own dir,
             # already covered by `crates/reuben-web/**`.
             web:
+              - 'crates/reuben-web/**'
+              - 'crates/reuben-core/**'
+              - 'crates/reuben-macros/**'
+              - 'crates/reuben-contract/**'
+              - 'instruments/**'
+              - '.cargo/config.toml'
+              - 'rust-toolchain.toml'
+              - '.github/workflows/ci.yml'
+              - '.github/actions/setup-rust/**'
+            # The /web player app (ADR-0041, issue #226): its build/smoke closure is the app
+            # itself PLUS everything the staging script pulls — the reuben-web wasm (built from
+            # reuben-core + its macro/contract deps), the instrument documents + transitive
+            # resources it stages, and the schema under reuben-core. Same engine closure as
+            # `web`, plus web/**.
+            webapp:
+              - 'web/**'
               - 'crates/reuben-web/**'
               - 'crates/reuben-core/**'
               - 'crates/reuben-macros/**'
@@ -262,6 +279,60 @@ jobs:
       # the runner's preinstalled Node — no browser, no npm install.
       - name: Node matrix harness
         run: node js/check.mjs
+
+  webapp:
+    name: web player app (build + Playwright smoke)
+    runs-on: ubuntu-latest
+    needs: changes
+    # Same draft-skip as the other jobs, AND'd with its build/smoke path gate. The /web app
+    # (ADR-0041) is verifiable WITHOUT any Cloudflare secrets — build the wasm, stage the
+    # discovered assets, `vite build`, then boot the built app headless and run the smoke.
+    # The deploy step (issue #226 PR3) is a separate workflow gated on maintainer-provisioned
+    # secrets; this job proves the app itself and merges on its own timeline.
+    if: needs.changes.outputs.webapp == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
+    env:
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+
+      # The staging script builds the release wasm (crates/reuben-web) — same pinned toolchain
+      # + wasm target as the `web` job. No ALSA: the web shell has no cpal.
+      - name: Setup pinned Rust toolchain
+        uses: ./.github/actions/setup-rust
+      - name: Add wasm32-unknown-unknown target
+        run: rustup target add wasm32-unknown-unknown
+      - name: Cache cargo registry + build
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/reuben-web
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Install app dependencies
+        working-directory: web
+        run: npm ci
+
+      # Install the Chromium the smoke drives (matched to the pinned @playwright/test), plus
+      # its OS deps. The app pins no browser download elsewhere, so this is the only fetch.
+      - name: Install Playwright Chromium
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+
+      # `npm run build` = stage (build wasm → discover → copy the 9 Toys' transitive assets)
+      # then `vite build`. A missing staged asset fails here loudly (no silent drift).
+      - name: Build app (wasm + staged assets + bundle)
+        working-directory: web
+        run: npm run build
+
+      # Boot the built app headless (vite preview, started by Playwright) and assert the
+      # pipeline is live: unlock → load groovebox → switch Toy, engine `running`, surface rendered.
+      - name: Playwright smoke
+        working-directory: web
+        run: npm run test:smoke
 
   bench:
     name: perf gate (macro + micro Ir)
