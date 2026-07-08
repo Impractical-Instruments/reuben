@@ -46,11 +46,18 @@ function ensureEngine() {
     enginePromise = createReubenEngine({
       assetBase: asset("instruments"),
       wasmUrl: asset("reuben_web.wasm"),
-    }).then((e) => {
-      e.onLog = (t) => console.log(t);
-      engine = e;
-      return e;
-    });
+    })
+      .then((e) => {
+        e.onLog = (t) => console.log(t);
+        engine = e;
+        return e;
+      })
+      .catch((err) => {
+        // Don't cache a rejection: a transient failure (fetch/compile/addModule) must let the
+        // splash "try again" actually re-attempt engine creation, not return the dead promise.
+        enginePromise = null;
+        throw err;
+      });
   }
   return enginePromise;
 }
@@ -258,24 +265,33 @@ async function openToy(toy) {
   } catch (err) {
     if (token !== loadToken) return;
     skeleton.remove();
+    // The error text lives on `status` (shown above the body); body holds only the retry
+    // affordance — no second copy of the message.
     status.classList.add("error");
     status.textContent = `Couldn't load ${toy.title} — ${err.message || err}.`;
     body.replaceChildren(
-      status.cloneNode(true),
       h("button", { class: "cta small", type: "button", onclick: () => openToy(toy) }, "Retry"),
     );
   }
 }
 
-// engine.load, but if it rejects with the in-flight guard, wait a beat and try once more.
-// Any other error propagates to openToy's catch (error + retry UI).
+// engine.load is one-at-a-time (its own `loading` guard). If a previous Toy's load is still
+// settling when the player switches, POLL until it frees rather than racing a single fixed
+// delay — a cold-cache discovery + worklet construct can take well over a frame, and a fixed
+// 50 ms retry would spuriously surface an error card while the pipeline is actually healthy.
+// The loadToken supersede logic in openToy still ensures only the newest pick renders; this
+// just guarantees the newest pick eventually loads. Bounded so a genuinely stuck load still
+// surfaces an error instead of hanging forever. Any non-guard error propagates immediately.
 async function loadWithRetry(e, id) {
-  try {
-    return await e.load(id);
-  } catch (err) {
-    if (!/load is already in flight/.test(err.message || "")) throw err;
-    await new Promise((r) => setTimeout(r, 50));
-    return e.load(id);
+  const deadline = Date.now() + 15_000;
+  for (;;) {
+    try {
+      return await e.load(id);
+    } catch (err) {
+      const inFlight = /load is already in flight/.test(err.message || "");
+      if (!inFlight || Date.now() >= deadline) throw err;
+      await new Promise((r) => setTimeout(r, 40));
+    }
   }
 }
 
