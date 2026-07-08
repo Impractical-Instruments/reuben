@@ -94,7 +94,6 @@ function find(root, pred) {
   }
   return null;
 }
-const isTag = (t) => (el) => el.tagName === t;
 
 // --- fixtures (real instruments + schema, parsed off disk — no wasm) ---------------------
 
