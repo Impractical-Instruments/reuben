@@ -1,7 +1,21 @@
 import { chromium, expect, test } from "@playwright/test";
 import { mkdtemp, rm } from "node:fs/promises";
+import { readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 import { join } from "node:path";
+
+// Derive the launcher grid size + default Toy from the manifest (as smoke.spec.js does), so
+// editing the Toy list doesn't break these PWA assertions. DEFAULT_TOY is the Toy the offline
+// test loads from cache; guard it against the manifest so a renamed default fails loudly here.
+const manifest = JSON.parse(
+  readFileSync(fileURLToPath(new URL("../toys.json", import.meta.url)), "utf8"),
+);
+const TOY_COUNT = manifest.toys.length;
+const DEFAULT_TOY = manifest.default;
+if (!manifest.toys.some((t) => t.id === DEFAULT_TOY)) {
+  throw new Error(`pwa test's default Toy "${DEFAULT_TOY}" is not in toys.json`);
+}
 
 // The reuben web player PWA smoke (issue #227, scope item 4). Proves the offline/installable
 // layer on the BUILT app (vite preview over dist/, which is the only build that emits a real
@@ -64,13 +78,13 @@ test("offline cold reload boots and plays a Toy entirely from cache", async ({ p
   // cache while offline.
   await page.locator("#start").click();
   await expect.poll(() => page.evaluate(() => window.reubenPlayer.screen())).toBe("launcher");
-  await expect(page.locator(".toy-card")).toHaveCount(9);
+  await expect(page.locator(".toy-card")).toHaveCount(TOY_COUNT);
   await expect.poll(() => page.evaluate(() => window.reubenPlayer.engineState())).toBe("running");
 
   // Load a Toy offline: its document + transitive voices + the schema all come from precache,
   // and the auto-UI surface renders — the payload is genuinely complete offline.
-  await page.locator('.toy-card[data-toy="groovebox"]').click();
-  await expect.poll(() => page.evaluate(() => window.reubenPlayer.toy())).toBe("groovebox");
+  await page.locator(`.toy-card[data-toy="${DEFAULT_TOY}"]`).click();
+  await expect.poll(() => page.evaluate(() => window.reubenPlayer.toy())).toBe(DEFAULT_TOY);
   await expect(page.locator(".surface-mount .surface-widget").first()).toBeVisible();
   expect(await page.evaluate(() => window.reubenPlayer.engineState())).toBe("running");
 

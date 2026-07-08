@@ -206,7 +206,7 @@ the whole instrument matrix headlessly. On top of that engine the `/web` player 
 payload is staged by a transitive-resource discovery script and deployed to Cloudflare Pages — and
 as of P5 ([#227](https://github.com/Impractical-Instruments/reuben/issues/227)) it is an
 installable, offline-capable PWA: a `vite-plugin-pwa` service worker precaches exactly that staged
-payload (wasm, the nine Toys' transitive resources, schema, derived icons), so a home-screen launch
+payload (wasm, every Toy's transitive resources, schema, derived icons), so a home-screen launch
 plays with the network off. Remaining rungs of the epic: share links (P6) and the SAB ring (P7).
 
 ## Going deeper

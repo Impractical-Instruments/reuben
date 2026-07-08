@@ -13,19 +13,27 @@ import { VitePWA } from "vite-plugin-pwa";
 // Cloudflare Pages, sub-path on a PR preview) — every fetch() uses import.meta.env.BASE_URL.
 
 // The offline-precache list (issue #227, scope item 2). stage-assets.mjs writes exactly what it
-// staged — the wasm, schema, the 9 Toy docs + their transitive voices/subpatches/samples — each
-// with a content revision, and we hand that verbatim to Workbox as additionalManifestEntries.
-// Precache is therefore GENERATED FROM the same transitive discovery that produces the payload:
-// it cannot ship an asset it didn't cache, or cache one it didn't ship. `npm run build`/`dev`
-// both run `stage` first, so this file exists; the fallback keeps a bare `vite`/`vite preview`
-// from throwing (it just precaches the app shell). These .wasm/.json/.wav URLs are deliberately
-// absent from workbox.globPatterns below, so the two lists never double-precache the same file.
+// staged — the wasm, schema, every Toy doc + its transitive voices/subpatches/samples — each with
+// a content revision, and we hand that verbatim to Workbox as additionalManifestEntries. Precache
+// is therefore GENERATED FROM the same transitive discovery that produces the payload: it cannot
+// ship an asset it didn't cache, or cache one it didn't ship. These .wasm/.json/.wav URLs are
+// deliberately absent from workbox.globPatterns below, so the two lists never double-precache the
+// same file.
+//
+// `npm run build`/`dev` both run `stage` first, so the file exists then. Only a MISSING file
+// (ENOENT) falls back to [] — the documented "bare `vite`/`vite preview` with no staging" case,
+// which precaches just the app shell. A present-but-corrupt list is a real build defect and
+// rethrows, rather than silently shipping a shell-only SW that offline-fails only at runtime.
 function precacheEntries() {
+  const path = resolve(import.meta.dirname, ".pwa-precache.json");
+  let raw;
   try {
-    return JSON.parse(readFileSync(resolve(import.meta.dirname, ".pwa-precache.json"), "utf8"));
-  } catch {
-    return [];
+    raw = readFileSync(path, "utf8");
+  } catch (err) {
+    if (err.code === "ENOENT") return [];
+    throw err;
   }
+  return JSON.parse(raw); // malformed JSON throws — a corrupt precache list must not build green
 }
 
 export default defineConfig({

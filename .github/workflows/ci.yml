@@ -330,15 +330,16 @@ jobs:
         run: npm run build
 
       # Mobile-payload budget (issue #227, scope item 5): record the built wasm size (raw + gzip)
-      # and the total offline-precached payload each run, into the job summary. The bundled sample
-      # is just samples/blip.wav (~11 KiB), so nothing is lazy-loaded — this is the standing
-      # measurement that would flag it if the payload ever grows enough to warrant splitting.
+      # and the total built bundle size each run, into the job summary. The bundled sample is just
+      # samples/blip.wav (~11 KiB), so nothing is lazy-loaded — this is the standing measurement
+      # that would flag it if the payload ever grows enough to warrant splitting. (dist is a superset
+      # of the precache: it also holds sw.js + workbox runtime and the unreferenced icon master.)
       - name: Report payload size
         working-directory: web
         run: |
           wasm_raw=$(stat -c%s dist/reuben_web.wasm)
           wasm_gz=$(gzip -c dist/reuben_web.wasm | wc -c)
-          payload=$(du -sb dist | cut -f1)
+          bundle=$(du -sb dist | cut -f1)
           kib() { awk "BEGIN{printf \"%.1f\", $1/1024}"; }
           {
             echo "### Web player payload (issue #227 mobile budget)"
@@ -347,7 +348,7 @@ jobs:
             echo "| --- | --- |"
             echo "| reuben_web.wasm (raw) | $(kib "$wasm_raw") KiB |"
             echo "| reuben_web.wasm (gzip) | $(kib "$wasm_gz") KiB |"
-            echo "| total precached payload (dist) | $(kib "$payload") KiB |"
+            echo "| total built bundle (dist) | $(kib "$bundle") KiB |"
             echo ""
             echo "Bundled samples: \`samples/blip.wav\` only — no lazy-loading needed."
           } >> "$GITHUB_STEP_SUMMARY"
