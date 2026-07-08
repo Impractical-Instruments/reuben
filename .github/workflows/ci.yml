@@ -287,8 +287,8 @@ jobs:
     # Same draft-skip as the other jobs, AND'd with its build/smoke path gate. The /web app
     # (ADR-0041) is verifiable WITHOUT any Cloudflare secrets — build the wasm, stage the
     # discovered assets, `vite build`, then boot the built app headless and run the smoke.
-    # The deploy step (issue #226 PR3) is a separate workflow gated on maintainer-provisioned
-    # secrets; this job proves the app itself and merges on its own timeline.
+    # On success it uploads web/dist so the `deploy-web` job below ships the EXACT artifact this
+    # job smoke-tested (build once, test, deploy the tested bytes) — see that job.
     if: needs.changes.outputs.webapp == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
     env:
       CARGO_TERM_COLOR: always
@@ -333,6 +333,114 @@ jobs:
       - name: Playwright smoke
         working-directory: web
         run: npm run test:smoke
+
+      # Publish the smoke-tested bundle for the `deploy-web` job to ship verbatim — no rebuild, so
+      # the bytes Cloudflare serves are exactly the ones the smoke exercised. Only reached when
+      # every step above passed (a failed build/smoke skips this and leaves no artifact, so
+      # `deploy-web` has nothing to ship). vite `base: './'` makes the bundle path-agnostic, so the
+      # same dist serves production (main) and preview (PR) — the prod/preview split is the
+      # deploy's `--branch` flag, not a rebuild. Short retention: it's consumed within the run.
+      - name: Upload built app (web/dist) for deploy
+        uses: actions/upload-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+          retention-days: 1
+          if-no-files-found: error
+
+  # Cloudflare Pages deploy for the /web player app (issue #226, P4). main → production, PR →
+  # a preview URL. `needs: webapp` makes this a build→test→deploy pipeline: if `webapp` fails
+  # (or is path-skipped because nothing web changed), this is skipped and NOTHING deploys; only
+  # a green build+smoke lets it run. It then ships the artifact `webapp` uploaded — it does NOT
+  # rebuild, so it deploys the exact bytes that were smoke-tested and runs no untrusted build
+  # step of its own (it only downloads a static bundle and runs the pinned wrangler-action).
+  #
+  # SELF-GATING: if the CLOUDFLARE_* secrets aren't set yet, the deploy steps SKIP and the job
+  # stays green (a notice explains how to enable it). So this is mergeable before the account
+  # side is ready, and deploys start automatically the moment the secrets land — no code change.
+  #
+  # The control channel is postMessage (not SharedArrayBuffer), so the app needs NO COOP/COEP
+  # cross-origin-isolation headers — keep it that way until P7 (#229). Nothing here sets them.
+  #
+  # SETUP (maintainer, one time):
+  #   1. Create the Cloudflare Pages project named exactly `CF_PROJECT` below, WITH its production
+  #      branch set to `main` (the production-vs-preview split below keys off it; Direct-Upload
+  #      projects have no dashboard control for the production branch and often default to
+  #      `production`, which would make a push to main deploy as a preview, never production). From
+  #      a terminal, in one shot:
+  #        npx wrangler pages project create reuben-web-player --production-branch main
+  #      If the project already exists (e.g. you created it in the dashboard), set the branch via
+  #      the API instead:
+  #        curl -X PATCH \
+  #          "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/reuben-web-player" \
+  #          -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+  #          --data '{"production_branch":"main"}'
+  #   2. Create an API token: My Profile → API Tokens → Create Token → **Custom token**, with the
+  #      permission "Account : Cloudflare Pages : Edit". (The "Edit Cloudflare Workers" template
+  #      does NOT include Pages and fails with an authorization error.)
+  #   3. Copy the Account ID (any domain's overview page, right sidebar; or Workers & Pages → the
+  #      account's overview).
+  #   4. Add two GitHub repo secrets (Settings → Secrets and variables → Actions):
+  #      CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID.
+  #   If you name the Pages project something other than `reuben-web-player`, change CF_PROJECT.
+  deploy-web:
+    name: Cloudflare Pages (production on main, preview on PR)
+    runs-on: ubuntu-latest
+    needs: webapp
+    # `needs: webapp` already gates on a green build+smoke (a failed or skipped webapp skips this
+    # too, and webapp itself carries the path + draft skips). No extra `if` needed here — the
+    # secret gate below decides deploy-vs-skip-green.
+    permissions:
+      contents: read
+      deployments: write # wrangler-action records a GitHub Deployment for the environment
+    env:
+      # The Cloudflare Pages project name — must match the project you created (see SETUP).
+      CF_PROJECT: reuben-web-player
+    steps:
+      # Gate on the secrets existing. Secrets can't be referenced in a job-level `if`, so read
+      # them from env here and expose a boolean the deploy steps hang off. Missing → skip green.
+      # Scoped to THIS step's env so only the gate check and the pinned wrangler-action deploy
+      # step ever see the token.
+      - name: Check Cloudflare configuration
+        id: gate
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ACCOUNT_ID" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Cloudflare deploy skipped::Set CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID and create the '$CF_PROJECT' Pages project to enable deploys (see the deploy-web job in .github/workflows/ci.yml)."
+          fi
+
+      # Pull the exact bundle `webapp` built and smoke-tested into web/dist — no checkout, no
+      # toolchain, no rebuild. download-artifact defaults to this run's artifacts.
+      - name: Download built app (web/dist)
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/download-artifact@v4
+        with:
+          name: web-dist
+          path: web/dist
+
+      # Deploy web/dist. --branch drives Cloudflare's production-vs-preview split: on a push to
+      # main the branch is `main` (the project's production branch, set at SETUP step 1) →
+      # production; on a PR it's the head branch → a preview URL. wrangler-action surfaces the
+      # deployment URL in its log and as a GitHub Deployment.
+      - name: Deploy to Cloudflare Pages
+        if: steps.gate.outputs.ready == 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Records the deploy as a GitHub Deployment (surfacing the preview URL in the PR),
+          # which is what the `deployments: write` permission above is for.
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          workingDirectory: web
+          command: >-
+            pages deploy dist
+            --project-name=${{ env.CF_PROJECT }}
+            --branch=${{ github.head_ref || github.ref_name }}
 
   bench:
     name: perf gate (macro + micro Ir)
