@@ -11,7 +11,7 @@
 //   3. copies the instrument schema (fader ranges/units for the surface) into public/.
 //
 // The discovery in step 2 is why this is a script and not a static file list: it asks the
-// real engine what each Toy references, so the payload is exactly the 9 docs + the voices/
+// real engine what each Toy references, so the payload is exactly the Toy docs + the voices/
 // subpatches + samples/blip.wav they actually pull, and nothing else (smallest payload,
 // the AC). A MISSING asset FAILS the build loudly (fetchResource throws ENOENT → non-zero
 // exit) — no silent drift between the manifest and what ships.

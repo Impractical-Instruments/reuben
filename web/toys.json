@@ -1,5 +1,5 @@
 {
-  "comment": "Launcher manifest (issue #226, scope item 2): the curated list of the 9 bundled Toys. Each entry's `id` is the instrument document name under instruments/<id>.json; `title`/`blurb` are player-facing (blurbs adapted from the README rig table); `kind` is self-playing (sounds on load) or tap-to-play (surfaces trigger widgets); `order` sets grid position. The staging script (scripts/stage-assets.mjs) stages exactly these Toys + their transitive resources into public/. Default Toy is groovebox (order 1) — its assets are prefetched at splash so the first pick is instant.",
+  "comment": "Launcher manifest (issue #226, scope item 2): the curated list of the bundled Toys. Each entry's `id` is the instrument document name under instruments/<id>.json; `title`/`blurb` are player-facing (blurbs adapted from the README rig table); `kind` is self-playing (sounds on load) or tap-to-play (surfaces trigger widgets); `order` sets grid position. The staging script (scripts/stage-assets.mjs) stages exactly these Toys + their transitive resources into public/. Default Toy is groovebox (order 1) — its assets are prefetched at splash so the first pick is instant.",
   "default": "groovebox",
   "toys": [
     {
