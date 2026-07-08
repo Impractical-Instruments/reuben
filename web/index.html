@@ -1,0 +1,25 @@
+<!doctype html>
+<!--
+  The reuben web player (issue #226, P4). The real player app — a Toy launcher + shell over
+  the reuben-web WASM engine (crates/reuben-web/js/reuben-engine.mjs) and the P3 auto-UI
+  surface (crates/reuben-web/js/surface/). Replaces crates/reuben-web/web/ (the P2 throwaway
+  harness). Vanilla JS + Vite, no framework (ADR-0041); src/main.js owns the splash → launcher
+  → player state machine, src/app.css the shell chrome (the surface injects its own grid CSS).
+-->
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+    <meta name="theme-color" content="#0e0f13" />
+    <meta
+      name="description"
+      content="reuben — open a URL, tap once, make music. A browser instrument built from composable operators."
+    />
+    <title>reuben — zero to music</title>
+  </head>
+  <body>
+    <!-- The whole app mounts here; main.js swaps the splash / launcher / player screens in. -->
+    <main id="app" aria-live="polite"></main>
+    <script type="module" src="./src/main.js"></script>
+  </body>
+</html>

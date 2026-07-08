@@ -1,6 +1,0 @@
-# Staged for local serving per the instructions in index.html — never committed.
-# (The root .gitignore's `!instruments/samples/*.wav` negation would otherwise
-# re-include copied sample files from a `cp -r` staging.)
-/instruments
-/schema.json
-*.wasm
