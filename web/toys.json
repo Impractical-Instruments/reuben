@@ -10,60 +10,25 @@
       "order": 1
     },
     {
-      "id": "vibrato",
-      "title": "Vibrato",
-      "blurb": "A self-playing drone with an LFO sweeping the pitch. Tweak the rate, depth, and center.",
-      "kind": "self-playing",
-      "order": 2
-    },
-    {
-      "id": "sequence",
-      "title": "Sequence",
-      "blurb": "A clock-driven step melody — the sequencer walks an 8-step degree pattern into the synth.",
-      "kind": "self-playing",
-      "order": 3
-    },
-    {
-      "id": "scale-demo",
-      "title": "Scale Demo",
-      "blurb": "The same step melody resolved through a tonal context in C minor — change the key and it re-spells live.",
-      "kind": "self-playing",
-      "order": 4
-    },
-    {
-      "id": "sampler-arp",
-      "title": "Sampler Arp",
-      "blurb": "A self-playing sample arpeggio — a clock-driven sequencer fires a blip through a major arpeggio.",
-      "kind": "self-playing",
-      "order": 5
-    },
-    {
-      "id": "djfilter-demo",
-      "title": "DJ Filter",
-      "blurb": "A self-playing saw arpeggio through a DJ-mixer filter knob — one bipolar control sweeps a low-pass down or a high-pass up.",
-      "kind": "self-playing",
-      "order": 6
-    },
-    {
-      "id": "metronome",
-      "title": "Metronome",
-      "blurb": "A click on every beat from the clock. Ride the tempo.",
-      "kind": "self-playing",
-      "order": 7
-    },
-    {
       "id": "chord-player",
       "title": "Chord Player",
       "blurb": "Tap and hold diatonic triad buttons (I–vii°). Chords re-spell live when you change key — a 12-voice pad.",
       "kind": "tap-to-play",
-      "order": 8
+      "order": 2
     },
     {
       "id": "strum-harp",
       "title": "Strum Harp",
       "blurb": "Drag to strum — the bar plucks a note each time it crosses a string. Strings stay in key through the tonal context.",
       "kind": "tap-to-play",
-      "order": 9
+      "order": 3
+    },
+    {
+      "id": "euclidean-drums",
+      "title": "Euclidean Drums",
+      "blurb": "A self-playing drum machine with knobs to change beat density.",
+      "kind": "self-playing",
+      "order": 4
     }
   ]
 }
