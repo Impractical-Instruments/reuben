@@ -86,6 +86,10 @@ export function loadParamMeta(schema) {
 
 // --- control resolution -----------------------------------------------------------------
 
+// The magnitude at/above which a schema range is the "unbounded passthrough" sentinel rather than
+// a usable fader range (an `m2s` `in` port is `[-1e6, 1e6]`). See the paramful guard in resolveControl.
+const UNBOUNDED = 1e6;
+
 /**
  * A node's literal `inputs[name]` as a finite number, else `fallback` (ADR-0028). A wire-ref
  * (`{from: ...}`), a boolean, or an Enum symbol (`"Gate"`) is not a numeric literal and falls
@@ -238,7 +242,23 @@ export function resolveControl(node, spec, meta) {
     // Per-spec overrides win over the inferred range/default.
     lo = Number(spec.min ?? lo);
     hi = Number(spec.max ?? hi);
-    dflt = Number(spec.default ?? dflt);
+
+    // Guard the ±1e6 "unbounded" sentinel on the PARAMFUL path too — the same trap CORRECTION #2
+    // handles for paramless Good Buttons. An `m2s`'s `in` port has no musical range (its range is
+    // whatever it feeds), so its schema range is the ±1e6 passthrough sentinel. A control that
+    // spells `param: "in"` with no min/max would inherit that — a silently unusable ±1,000,000
+    // fader. When BOTH ends are the sentinel (a genuinely large but one-sided range like m2s
+    // `rate` [0, 1e6] is left alone) and the spec supplied no explicit bound, fall back to [0, 1].
+    if (Math.abs(lo) >= UNBOUNDED && Math.abs(hi) >= UNBOUNDED) {
+      lo = 0;
+      hi = 1;
+    }
+
+    // Clamp the seeded default into [lo, hi]. Seeding from the authored instance literal can land
+    // a default BELOW the fader's own min when an instrument authors an out-of-range value
+    // (euclidean authors decay 0.0 while envelope.decay is [0.001, 5]); an unrepresentable default
+    // would fire a sub-floor initial() send and mismatch the slider seed. Clamp fixes both.
+    dflt = Math.min(hi, Math.max(lo, Number(spec.default ?? dflt)));
     c = { kind: "fader", label, widget, address, min: lo, max: hi, default: dflt, unit };
   }
 

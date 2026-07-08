@@ -34,6 +34,18 @@ const SCHEMA_URL = new URL(
 );
 const INSTRUMENTS_URL = new URL("../../../instruments/", import.meta.url);
 
+// The committed schema, parsed ONCE (it's the largest JSON in the tree): shared by the registry
+// pin (enum count) and the auto-UI surface build (loadParamMeta). A parse failure here aborts the
+// run loudly — the schema is committed and must be valid.
+const schema = JSON.parse(await readFile(SCHEMA_URL, "utf8"));
+
+// Two captured planar streams are identical iff same length and every sample equal.
+function streamsDiffer(a, b) {
+  if (a.length !== b.length) return true;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return true;
+  return false;
+}
+
 const SAMPLE_RATE = 48000;
 const BLOCK = 128; // asserted against block_size() below — JS never trusts its own copy
 const QUANTA = 750; // ~2 s at 128 frames / 48 kHz — enough for every clock to fire
@@ -196,13 +208,8 @@ console.log("\n=== registry pin ===");
   // the enum pins registry_count() to the committed operator set.
   let expected = null;
   let source = "schema $defs.node.properties.type.enum";
-  try {
-    const schema = JSON.parse(await readFile(SCHEMA_URL, "utf8"));
-    const variants = schema?.$defs?.node?.properties?.type?.enum;
-    if (Array.isArray(variants) && variants.length > 0) expected = variants.length;
-  } catch {
-    // fall through to the hardcoded pin below
-  }
+  const variants = schema?.$defs?.node?.properties?.type?.enum;
+  if (Array.isArray(variants) && variants.length > 0) expected = variants.length;
   if (expected === null) {
     // LOUD FALLBACK: the schema's shape changed and the enum count above came up empty.
     // 53 tracks Registry::builtin() as of 2026-07 — if this fires, fix the schema walk
@@ -275,16 +282,10 @@ try {
     base.rms > SILENCE_RMS && fast.rms > SILENCE_RMS,
     `both streams non-silent (rms ${base.rms.toFixed(5)} vs ${fast.rms.toFixed(5)})`,
   );
-  let identical = base.stream.length === fast.stream.length;
-  if (identical) {
-    for (let i = 0; i < base.stream.length; i++) {
-      if (base.stream[i] !== fast.stream[i]) {
-        identical = false;
-        break;
-      }
-    }
-  }
-  check(!identical, "tempo 180 stream differs from default-tempo stream");
+  check(
+    streamsDiffer(base.stream, fast.stream),
+    "tempo 180 stream differs from default-tempo stream",
+  );
 } catch (e) {
   check(false, `control check: ${e.message}`);
 } finally {
@@ -310,9 +311,9 @@ try {
 console.log("\n=== auto-UI generated-widget binding ===");
 
 // The surface is inferred from the parsed schema + instrument JSON, exactly as the worklet's UI
-// does — no engine needed to BUILD it (only to prove it routes).
-const surfaceSchema = JSON.parse(await readFile(SCHEMA_URL, "utf8"));
-const surfaceMeta = loadParamMeta(surfaceSchema);
+// does — no engine needed to BUILD it (only to prove it routes). The schema is parsed once at
+// module scope; loadParamMeta turns it into the per-type param metadata buildSurface needs.
+const surfaceMeta = loadParamMeta(schema);
 
 async function surfaceOf(name) {
   const doc = JSON.parse(await readFile(new URL(`${name}.json`, INSTRUMENTS_URL), "utf8"));
@@ -323,13 +324,6 @@ function widgetAt(widgets, address) {
   const w = widgets.find((x) => x.address === address);
   if (!w) throw new Error(`no generated widget addresses ${address}`);
   return w;
-}
-
-// Two captured planar streams are identical iff same length and every sample equal.
-function streamsDiffer(a, b) {
-  if (a.length !== b.length) return true;
-  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return true;
-  return false;
 }
 
 // Render the untouched base stream for `name` on a fresh construct, then destroy (the toy-switch

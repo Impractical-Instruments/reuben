@@ -312,3 +312,27 @@ test("resolveControl: paramful spec overrides win over schema metadata", () => {
     group: "kick",
   });
 });
+
+test("resolveControl: a paramful default below the fader's min is clamped into range", () => {
+  // euclidean authors decay 0.0 while envelope.decay is [0.001, 5]; the seeded default must not
+  // fall below the fader's own min (an unrepresentable default fires a sub-floor initial() send).
+  const { widgets } = surfaceOf("euclidean-drums");
+  const decays = widgets.filter((w) => w.address.endsWith("_env/decay"));
+  assert.strictEqual(decays.length, 4);
+  for (const w of decays) {
+    assert.strictEqual(w.min, paramMeta.envelope.decay.min); // 0.001
+    assert.strictEqual(w.default, w.min, `${w.address} default clamped up to its min`);
+    assert.ok(w.default >= w.min && w.default <= w.max);
+  }
+});
+
+test("resolveControl: paramful `in` with no min/max falls back to [0,1], not the ±1e6 sentinel", () => {
+  // The trap Correction #2 guards on the paramless path, now guarded on the paramful path too:
+  // an m2s `in` control that omits min/max must NOT inherit the unbounded ±1e6 schema range.
+  assert.deepStrictEqual(paramMeta.m2s.in, { min: -1e6, max: 1e6, default: 0, unit: "", curve: "Linear" });
+  const node = { type: "m2s", address: "/gain", inputs: { in: 0.5 } };
+  const c = resolveControl(node, { label: "Gain", param: "in" }, paramMeta);
+  assert.strictEqual(c.min, 0);
+  assert.strictEqual(c.max, 1);
+  assert.strictEqual(c.default, 0.5); // authored `in`, within the fallback range
+});

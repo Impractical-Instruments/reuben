@@ -111,9 +111,11 @@ function buildFader(doc, widget, engine) {
 
   // The widget's default is ALREADY in [min,max]; the slider works in [0,1], so seed its
   // position by inverting the scale. (emit/initial do the forward scale — we only invert
-  // here to place the thumb, never to send.)
+  // here to place the thumb, never to send.) Clamp to [0,1] defensively so a default that
+  // sits outside [min,max] can't push the thumb out of the slider's domain (the reference
+  // gen_surface.py:581 clamps the same way).
   const span = widget.max - widget.min;
-  const norm = span === 0 ? 0 : (widget.default - widget.min) / span;
+  const norm = span === 0 ? 0 : Math.max(0, Math.min(1, (widget.default - widget.min) / span));
   input.value = String(norm);
 
   const unit = widget.unit ? ` ${widget.unit}` : "";
