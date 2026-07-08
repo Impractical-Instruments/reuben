@@ -9,22 +9,43 @@
 //   cargo build --release --target wasm32-unknown-unknown
 //   cp target/wasm32-unknown-unknown/release/reuben_web.wasm js/
 //   ln -s ../../../instruments web/instruments
+//   ln -s ../../reuben-core/schema/instrument.schema.json web/schema.json
 //   python3 -m http.server -d .        ->  http://localhost:8000/web/
 
 import { createReubenEngine } from "../js/reuben-engine.mjs";
+import { buildSurface, loadParamMeta } from "../js/surface/infer.mjs";
+import { renderSurface, sendInitialDefaults } from "../js/surface/render.mjs";
 
 const el = (id) => document.getElementById(id);
 const startBtn = el("start");
 const loadBtn = el("load");
 const micBtn = el("mic");
-const noteBtn = el("note");
 const instrumentSel = el("instrument");
-const tempoSlider = el("tempo");
-const tempoValue = el("tempo-value");
 const statusEl = el("status");
 const logEl = el("log");
+const surfaceEl = el("surface");
 
 let engine = null;
+
+// The instrument schema drives fader ranges/units in buildSurface. Fetched once and cached
+// so switching toys doesn't refetch it (it's identical for every instrument). Served as the
+// ./schema.json symlink staged by the recipe atop index.html.
+let paramMetaPromise = null;
+function getParamMeta() {
+  if (!paramMetaPromise) {
+    paramMetaPromise = fetch("./schema.json")
+      .then((r) => {
+        if (!r.ok) throw new Error(`fetch ./schema.json: HTTP ${r.status}`);
+        return r.json();
+      })
+      .then(loadParamMeta)
+      .catch((err) => {
+        paramMetaPromise = null; // let a later Load retry the fetch
+        throw err;
+      });
+  }
+  return paramMetaPromise;
+}
 
 function setStatus(text, cls) {
   statusEl.textContent = text;
@@ -68,7 +89,6 @@ loadBtn.addEventListener("click", async () => {
   try {
     const info = await engine.load(name);
     micBtn.disabled = false;
-    noteBtn.disabled = false;
     setStatus(
       `${name} ready — ${info.channels} ch out, ${info.inputChannels} ch in, ` +
         `${info.blockSize}-frame blocks` +
@@ -76,6 +96,27 @@ loadBtn.addEventListener("click", async () => {
       "ok",
     );
     appendLog(`[page] loaded ${name}: ${JSON.stringify(info)}`);
+
+    // Auto-UI: fetch the instrument doc + the cached schema, infer the widget model, render
+    // it, then send the load-time defaults. sendInitialDefaults runs ONLY here — AFTER load()
+    // resolved (the worklet's `ready`), because a control sent before construct is dropped
+    // (see render.mjs). An instrument with no control blocks yields an empty surface, no crash.
+    try {
+      const [doc, paramMeta] = await Promise.all([
+        fetch(`./instruments/${name}.json`).then((r) => {
+          if (!r.ok) throw new Error(`fetch ./instruments/${name}.json: HTTP ${r.status}`);
+          return r.json();
+        }),
+        getParamMeta(),
+      ]);
+      const surface = buildSurface(doc, paramMeta);
+      renderSurface(surface, engine, surfaceEl);
+      sendInitialDefaults(surface, engine);
+      appendLog(`[page] surface: ${surface.widgets.length} widgets, ${surface.rows.length} rows`);
+    } catch (uiErr) {
+      // A surface failure must not mask a successful audio load — the instrument still plays.
+      appendLog(`[page] surface build failed: ${uiErr.stack || uiErr}`);
+    }
   } catch (err) {
     setStatus(`FAILED — load ${name}: ${err.message || err}`, "bad");
     appendLog(`[page] load failed: ${err.stack || err}`);
@@ -94,20 +135,6 @@ micBtn.addEventListener("click", async () => {
     setStatus(err.message, "bad");
     appendLog(`[page] mic: ${err.message}`);
   }
-});
-
-// Tempo slider -> /clock/tempo (bare number encodes as F32). Live on "input" so
-// dragging sweeps the clock on groovebox / metronome / euclidean-drums etc.
-tempoSlider.addEventListener("input", () => {
-  const bpm = Number(tempoSlider.value);
-  tempoValue.textContent = String(bpm);
-  if (engine) engine.send("/clock/tempo", [bpm]);
-});
-
-// Note button: A440 on, then off 300 ms later — /voicer/notes [note, gate].
-noteBtn.addEventListener("click", () => {
-  engine.send("/voicer/notes", [69, 1]);
-  setTimeout(() => engine.send("/voicer/notes", [69, 0]), 300);
 });
 
 prestage().catch((err) => {

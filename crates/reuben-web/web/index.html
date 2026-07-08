@@ -10,8 +10,13 @@
     cargo build --release --target wasm32-unknown-unknown
     cp target/wasm32-unknown-unknown/release/reuben_web.wasm js/
     ln -s ../../../instruments web/instruments     # or: cp -r ../../instruments web/
+    ln -s ../../reuben-core/schema/instrument.schema.json web/schema.json
     python3 -m http.server -d .
     # open http://localhost:8000/web/
+
+  The schema symlink feeds the auto-UI: main.js fetches ./schema.json once and
+  buildSurface()s a control surface for each loaded instrument. Both symlinks are
+  gitignored (see web/.gitignore) and re-created by this recipe, never committed.
 
   Serve from crates/reuben-web (-d .), NOT from web/: main.js imports ../js/ modules,
   which must be inside the served root. A real iPhone additionally needs a secure
@@ -31,7 +36,9 @@
     #status { margin: 0.75rem 0; font-weight: 600; }
     #status.ok { color: #2a7a2a; }
     #status.bad { color: #b02020; }
-    #tempo-value { font-variant-numeric: tabular-nums; min-width: 3ch; display: inline-block; }
+    /* The generated auto-UI mounts here; render.mjs injects its own grid styles into
+       <head>. This just gives the container breathing room within the harness. */
+    #surface { margin: 1rem 0; }
     #log {
       background: #f4f4f4; border: 1px solid #ccc; padding: 0.5rem;
       font-size: 0.8rem; white-space: pre-wrap; overflow-x: auto;
@@ -73,13 +80,12 @@
   <div class="row">
     <button id="start" disabled>Start</button>
     <button id="mic" disabled>Mic</button>
-    <button id="note" disabled>Note</button>
   </div>
 
-  <div class="row">
-    <label for="tempo">Tempo <span id="tempo-value">120</span> BPM</label>
-    <input id="tempo" type="range" min="60" max="240" value="120" step="1" />
-  </div>
+  <!-- The auto-generated control surface for the loaded instrument (issue #225). Built
+       by js/surface/render.mjs from buildSurface() — replaces the old hardcoded tempo
+       slider + Note button, which only fit a couple of instruments. -->
+  <div id="surface"></div>
 
   <!-- A Load clicked before Start can appear to stall on some browsers: a suspended
        context may not run the worklet's message handler until resume() (P1 finding).
