@@ -1,5 +1,13 @@
 # The v1 finish line: OSC-out, stereo, and a release workflow (V1.5 rescoped)
 
+> **Superseded in part by [ADR-0041](0041-web-player-app-in-repo.md).** The packaging
+> inference here — "a dedicated UI is out of scope for the project entirely… it belongs to a
+> consuming application (its own repo)" — is retired *for the web player*: that app lives
+> in-repo at `/web` (a monorepo consumer that still embeds the engine over a stable
+> boundary). The deeper claim this ADR rests on — reuben's **core/engine** stays headless,
+> its product surface is its I/O contract, not pixels — is unchanged and still governs
+> `reuben-core`/`reuben-native`. Only the "own repo" clause moves.
+
 ## Context
 
 [ROADMAP.md](../ROADMAP.md) listed V1.5 ("Reach & robustness") as the sole remaining v1 phase,
