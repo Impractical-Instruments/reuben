@@ -44,6 +44,10 @@ export const SURFACE_CSS = `
   grid-auto-flow: column; grid-auto-columns: minmax(1.6rem, 1fr);
   overflow-x: auto; gap: 0.25rem;
 }
+/* a group run (e.g. a drum channel's knobs) reads as one banded unit. */
+.surface-row.group-row {
+  padding: 0.4rem; border-radius: 0.6rem; background: rgba(127, 127, 127, 0.08);
+}
 .surface-widget {
   display: flex; flex-direction: column; gap: 0.25rem; align-items: stretch;
   padding: 0.4rem 0.5rem; border: 1px solid #ccc; border-radius: 0.5rem; min-width: 0;

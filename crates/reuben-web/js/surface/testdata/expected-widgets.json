@@ -696,7 +696,7 @@
         "address": "/kick_env/decay",
         "min": 0.0010000000474974513,
         "max": 5.0,
-        "default": 0.10000000149011612,
+        "default": 0.0,
         "unit": "s",
         "group": "kick"
       },
@@ -729,7 +729,7 @@
         "address": "/snare_eu/pulses",
         "min": 0.0,
         "max": 16.0,
-        "default": 4.0,
+        "default": 2.0,
         "unit": "pulses",
         "group": "snare"
       },
@@ -751,7 +751,7 @@
         "address": "/snare_eu/rotation",
         "min": 0.0,
         "max": 15.0,
-        "default": 0.0,
+        "default": 4.0,
         "unit": "steps",
         "group": "snare"
       },
@@ -762,7 +762,7 @@
         "address": "/snare_env/decay",
         "min": 0.0010000000474974513,
         "max": 5.0,
-        "default": 0.10000000149011612,
+        "default": 0.0,
         "unit": "s",
         "group": "snare"
       },
@@ -795,7 +795,7 @@
         "address": "/tom_eu/pulses",
         "min": 0.0,
         "max": 16.0,
-        "default": 4.0,
+        "default": 3.0,
         "unit": "pulses",
         "group": "tom"
       },
@@ -817,7 +817,7 @@
         "address": "/tom_eu/rotation",
         "min": 0.0,
         "max": 15.0,
-        "default": 0.0,
+        "default": 2.0,
         "unit": "steps",
         "group": "tom"
       },
@@ -828,7 +828,7 @@
         "address": "/tom_env/decay",
         "min": 0.0010000000474974513,
         "max": 5.0,
-        "default": 0.10000000149011612,
+        "default": 0.0,
         "unit": "s",
         "group": "tom"
       },
@@ -861,7 +861,7 @@
         "address": "/hat_eu/pulses",
         "min": 0.0,
         "max": 16.0,
-        "default": 4.0,
+        "default": 8.0,
         "unit": "pulses",
         "group": "hat"
       },
@@ -894,7 +894,7 @@
         "address": "/hat_env/decay",
         "min": 0.0010000000474974513,
         "max": 5.0,
-        "default": 0.10000000149011612,
+        "default": 0.0,
         "unit": "s",
         "group": "hat"
       },
@@ -968,7 +968,7 @@
         "address": "/clock/tempo",
         "min": 1.0,
         "max": 999.0,
-        "default": 120.0,
+        "default": 115.0,
         "unit": "BPM"
       },
       {
@@ -988,7 +988,7 @@
         "address": "/djfilter/resonance",
         "min": 0.0,
         "max": 1.0,
-        "default": 0.10000000149011612,
+        "default": 0.35,
         "unit": ""
       }
     ],

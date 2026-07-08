@@ -222,7 +222,15 @@ export function resolveControl(node, spec, meta) {
       }
       lo = pm.min;
       hi = pm.max;
-      dflt = pm.default;
+      // Seed the rest value from the node's AUTHORED instance literal when it has one, falling
+      // back to the schema default — so firing this default on load is a sonic no-op (issue #225:
+      // "a default equals the document literal ... so load is sonically a no-op"). The reference
+      // read the schema default unconditionally, which is fine for a passive TouchOSC fader but
+      // WRONG for the web path that fires initial() on load: it would retune every fader whose
+      // instrument authors a non-default value (euclidean's pulses/rotation/decay, djfilter's
+      // tempo/resonance) the moment the surface mounts. param-toggles and good-buttons already
+      // seed from the instance literal (nodeParam); this aligns paramful faders with them.
+      dflt = nodeParam(node, param, pm.default);
       unit = spec.unit ?? pm.unit;
       address = `${addr}/${param}`;
     }
