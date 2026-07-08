@@ -225,8 +225,9 @@ async function openToy(toy) {
     const e = await ensureEngine();
     // engine.load is one-at-a-time; if a previous Toy's load is still settling, await it out
     // by retrying once it frees. In practice the back→pick path is sequential, but a fast
-    // double-tap shouldn't throw "a load is already in flight" at the player.
-    const info = await loadWithRetry(e, toy.id);
+    // double-tap shouldn't throw "a load is already in flight" at the player. We await purely
+    // to sequence + surface errors; the {channels, blockSize} it resolves isn't needed here.
+    await loadWithRetry(e, toy.id);
     if (token !== loadToken) return; // superseded by a newer openToy — drop this render
 
     currentToy = toy.id;
