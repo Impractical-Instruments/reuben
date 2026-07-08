@@ -4,6 +4,11 @@
 # staging script (ADR-0041: /web owns only the launcher + shell + build config).
 /public/
 
+# Offline-precache list emitted by stage-assets.mjs (issue #227): the transitive-discovery
+# output vite.config.js hands to Workbox. Build-generated, never committed — same rationale
+# as public/ above.
+/.pwa-precache.json
+
 # Vite build output and Playwright artifacts.
 /dist/
 /test-results/

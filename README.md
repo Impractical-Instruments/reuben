@@ -201,8 +201,13 @@ workspace-detached crate — runs it in the browser as raw C-ABI WASM inside an 
 ([ADR-0040](docs/adr/0040-raw-c-abi-worklet-boundary.md)): fetch-on-miss resource staging, WAV
 decode in WASM, a flat tagged control channel, and mic input over the same duplex seam, with a
 co-located ES-module JS API (`crates/reuben-web/js/`) and a plain-Node CI harness that renders
-the whole instrument matrix headlessly. Engine-infrastructure only so far — the player UI, asset
-pipeline, and PWA are later rungs of the epic.
+the whole instrument matrix headlessly. On top of that engine the `/web` player app
+([ADR-0041](docs/adr/0041-web-player-app-in-repo.md)) is now live — a Toy launcher + shell whose
+payload is staged by a transitive-resource discovery script and deployed to Cloudflare Pages — and
+as of P5 ([#227](https://github.com/Impractical-Instruments/reuben/issues/227)) it is an
+installable, offline-capable PWA: a `vite-plugin-pwa` service worker precaches exactly that staged
+payload (wasm, every Toy's transitive resources, schema, derived icons), so a home-screen launch
+plays with the network off. Remaining rungs of the epic: share links (P6) and the SAB ring (P7).
 
 ## Going deeper
 
