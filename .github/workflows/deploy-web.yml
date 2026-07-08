@@ -1,0 +1,143 @@
+name: Deploy web player
+
+# Cloudflare Pages deploy for the /web player app (issue #226, P4 — PR3). main → production,
+# PR → a preview URL. Deliberately a SEPARATE workflow from ci.yml: it's the one piece gated
+# on maintainer-provisioned external setup (the Pages project + the CLOUDFLARE_* secrets), so
+# it's quarantined here where it can wait without blocking the app's own CI (the `webapp` job
+# in ci.yml verifies the app with no secrets).
+#
+# SELF-GATING: if the secrets aren't set yet, the job SKIPS the build + deploy and stays green
+# (a notice explains how to enable it). So this PR is mergeable before the account side is
+# ready, and the deploy starts working automatically the moment the secrets land — no code
+# change needed.
+#
+# The control channel is postMessage (not SharedArrayBuffer), so the app needs NO COOP/COEP
+# cross-origin-isolation headers — keep it that way until P7 (#229). Nothing here sets them.
+#
+# SETUP (maintainer, one time):
+#   1. Create the Cloudflare Pages project named exactly `CF_PROJECT` below, WITH its production
+#      branch set to `main` (the production-vs-preview split below keys off it; Direct-Upload
+#      projects have no dashboard control for the production branch and often default to
+#      `production`, which would make a push to main deploy as a preview, never production). From
+#      a terminal, in one shot:
+#        npx wrangler pages project create reuben-web-player --production-branch main
+#      If the project already exists (e.g. you created it in the dashboard), set the branch via
+#      the API instead:
+#        curl -X PATCH \
+#          "https://api.cloudflare.com/client/v4/accounts/$CLOUDFLARE_ACCOUNT_ID/pages/projects/reuben-web-player" \
+#          -H "Authorization: Bearer $CLOUDFLARE_API_TOKEN" -H "Content-Type: application/json" \
+#          --data '{"production_branch":"main"}'
+#   2. Create an API token: My Profile → API Tokens → Create Token → **Custom token**, with the
+#      permission "Account : Cloudflare Pages : Edit". (The "Edit Cloudflare Workers" template
+#      does NOT include Pages and fails with an authorization error.)
+#   3. Copy the Account ID (any domain's overview page, right sidebar; or Workers & Pages → the
+#      account's overview).
+#   4. Add two GitHub repo secrets (Settings → Secrets and variables → Actions):
+#      CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID.
+#   If you name the Pages project something other than `reuben-web-player`, change CF_PROJECT.
+
+on:
+  push:
+    branches: [main]
+    paths: &deploy_paths
+      - 'web/**'
+      - 'crates/reuben-web/**'
+      - 'crates/reuben-core/**'
+      - 'crates/reuben-macros/**'
+      - 'crates/reuben-contract/**'
+      - 'instruments/**'
+      # Build-infra parity with ci.yml's `webapp` closure: a toolchain / target-cpu / setup
+      # change moves the wasm output, so it should redeploy too.
+      - 'rust-toolchain.toml'
+      - '.cargo/config.toml'
+      - '.github/actions/setup-rust/**'
+      - '.github/workflows/deploy-web.yml'
+  pull_request:
+    # `ready_for_review` so converting a draft to ready fires a preview build (matches ci.yml).
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths: *deploy_paths
+
+# One deploy per ref; a newer push supersedes an in-flight preview build for the same branch.
+concurrency:
+  group: deploy-web-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  deployments: write # wrangler-action records a GitHub Deployment for the environment
+
+jobs:
+  deploy:
+    name: Cloudflare Pages (production on main, preview on PR)
+    runs-on: ubuntu-latest
+    # Skip draft PRs, matching ci.yml's convention; always run on push to main.
+    if: github.event_name == 'push' || github.event.pull_request.draft == false
+    env:
+      CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+      # The Cloudflare Pages project name — must match the project you created (see SETUP).
+      CF_PROJECT: reuben-web-player
+      CARGO_TERM_COLOR: always
+      CARGO_INCREMENTAL: 0
+    steps:
+      # Gate on the secrets existing. Secrets can't be referenced in a job-level `if`, so read
+      # them from env here and expose a boolean the deploy steps hang off. Missing → skip green.
+      - name: Check Cloudflare configuration
+        id: gate
+        run: |
+          if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ACCOUNT_ID" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Cloudflare deploy skipped::Set CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID and create the '$CF_PROJECT' Pages project to enable deploys (see .github/workflows/deploy-web.yml)."
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.ready == 'true'
+
+      # The staging script builds the release wasm in the detached reuben-web crate — same
+      # pinned toolchain + wasm target as ci.yml's web/webapp jobs.
+      - name: Setup pinned Rust toolchain
+        if: steps.gate.outputs.ready == 'true'
+        uses: ./.github/actions/setup-rust
+      - name: Add wasm32-unknown-unknown target
+        if: steps.gate.outputs.ready == 'true'
+        run: rustup target add wasm32-unknown-unknown
+      - name: Cache cargo registry + build
+        if: steps.gate.outputs.ready == 'true'
+        uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: crates/reuben-web
+
+      - name: Setup Node
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # npm ci + npm run build = stage (wasm + discovered assets) then vite build → web/dist.
+      - name: Build app (wasm + staged assets + bundle)
+        if: steps.gate.outputs.ready == 'true'
+        working-directory: web
+        run: |
+          npm ci
+          npm run build
+
+      # Deploy web/dist. --branch drives Cloudflare's production-vs-preview split: on a push to
+      # main the branch is `main` (the project's production branch, set at SETUP step 1) →
+      # production; on a PR it's the head branch → a preview URL. wrangler-action surfaces the
+      # deployment URL in its log and as a GitHub Deployment.
+      - name: Deploy to Cloudflare Pages
+        if: steps.gate.outputs.ready == 'true'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # Records the deploy as a GitHub Deployment (surfacing the preview URL in the PR),
+          # which is what the `deployments: write` permission above is for.
+          gitHubToken: ${{ secrets.GITHUB_TOKEN }}
+          workingDirectory: web
+          command: >-
+            pages deploy dist
+            --project-name=${{ env.CF_PROJECT }}
+            --branch=${{ github.head_ref || github.ref_name }}
