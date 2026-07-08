@@ -1,0 +1,1030 @@
+{
+  "groovebox": {
+    "widgets": [
+      {
+        "kind": "fader",
+        "label": "Tempo",
+        "widget": "fader",
+        "address": "/clock/tempo",
+        "min": 1.0,
+        "max": 999.0,
+        "default": 120.0,
+        "unit": "BPM"
+      },
+      {
+        "kind": "param-toggle",
+        "label": "K1",
+        "widget": "param-toggle",
+        "address": "/kick/step1",
+        "node": "/kick",
+        "default": 1.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "K2",
+        "widget": "param-toggle",
+        "address": "/kick/step2",
+        "node": "/kick",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "K3",
+        "widget": "param-toggle",
+        "address": "/kick/step3",
+        "node": "/kick",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "K4",
+        "widget": "param-toggle",
+        "address": "/kick/step4",
+        "node": "/kick",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "K5",
+        "widget": "param-toggle",
+        "address": "/kick/step5",
+        "node": "/kick",
+        "default": 1.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "K6",
+        "widget": "param-toggle",
+        "address": "/kick/step6",
+        "node": "/kick",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "K7",
+        "widget": "param-toggle",
+        "address": "/kick/step7",
+        "node": "/kick",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "K8",
+        "widget": "param-toggle",
+        "address": "/kick/step8",
+        "node": "/kick",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "K9",
+        "widget": "param-toggle",
+        "address": "/kick/step9",
+        "node": "/kick",
+        "default": 1.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "K10",
+        "widget": "param-toggle",
+        "address": "/kick/step10",
+        "node": "/kick",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "K11",
+        "widget": "param-toggle",
+        "address": "/kick/step11",
+        "node": "/kick",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "K12",
+        "widget": "param-toggle",
+        "address": "/kick/step12",
+        "node": "/kick",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "K13",
+        "widget": "param-toggle",
+        "address": "/kick/step13",
+        "node": "/kick",
+        "default": 1.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "K14",
+        "widget": "param-toggle",
+        "address": "/kick/step14",
+        "node": "/kick",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "K15",
+        "widget": "param-toggle",
+        "address": "/kick/step15",
+        "node": "/kick",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "K16",
+        "widget": "param-toggle",
+        "address": "/kick/step16",
+        "node": "/kick",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "S1",
+        "widget": "param-toggle",
+        "address": "/snare/step1",
+        "node": "/snare",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "S2",
+        "widget": "param-toggle",
+        "address": "/snare/step2",
+        "node": "/snare",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "S3",
+        "widget": "param-toggle",
+        "address": "/snare/step3",
+        "node": "/snare",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "S4",
+        "widget": "param-toggle",
+        "address": "/snare/step4",
+        "node": "/snare",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "S5",
+        "widget": "param-toggle",
+        "address": "/snare/step5",
+        "node": "/snare",
+        "default": 1.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "S6",
+        "widget": "param-toggle",
+        "address": "/snare/step6",
+        "node": "/snare",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "S7",
+        "widget": "param-toggle",
+        "address": "/snare/step7",
+        "node": "/snare",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "S8",
+        "widget": "param-toggle",
+        "address": "/snare/step8",
+        "node": "/snare",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "S9",
+        "widget": "param-toggle",
+        "address": "/snare/step9",
+        "node": "/snare",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "S10",
+        "widget": "param-toggle",
+        "address": "/snare/step10",
+        "node": "/snare",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "S11",
+        "widget": "param-toggle",
+        "address": "/snare/step11",
+        "node": "/snare",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "S12",
+        "widget": "param-toggle",
+        "address": "/snare/step12",
+        "node": "/snare",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "S13",
+        "widget": "param-toggle",
+        "address": "/snare/step13",
+        "node": "/snare",
+        "default": 1.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "S14",
+        "widget": "param-toggle",
+        "address": "/snare/step14",
+        "node": "/snare",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "S15",
+        "widget": "param-toggle",
+        "address": "/snare/step15",
+        "node": "/snare",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "S16",
+        "widget": "param-toggle",
+        "address": "/snare/step16",
+        "node": "/snare",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "H1",
+        "widget": "param-toggle",
+        "address": "/hat/step1",
+        "node": "/hat",
+        "default": 1.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "H2",
+        "widget": "param-toggle",
+        "address": "/hat/step2",
+        "node": "/hat",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "H3",
+        "widget": "param-toggle",
+        "address": "/hat/step3",
+        "node": "/hat",
+        "default": 1.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "H4",
+        "widget": "param-toggle",
+        "address": "/hat/step4",
+        "node": "/hat",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "H5",
+        "widget": "param-toggle",
+        "address": "/hat/step5",
+        "node": "/hat",
+        "default": 1.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "H6",
+        "widget": "param-toggle",
+        "address": "/hat/step6",
+        "node": "/hat",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "H7",
+        "widget": "param-toggle",
+        "address": "/hat/step7",
+        "node": "/hat",
+        "default": 1.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "H8",
+        "widget": "param-toggle",
+        "address": "/hat/step8",
+        "node": "/hat",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "H9",
+        "widget": "param-toggle",
+        "address": "/hat/step9",
+        "node": "/hat",
+        "default": 1.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "H10",
+        "widget": "param-toggle",
+        "address": "/hat/step10",
+        "node": "/hat",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "H11",
+        "widget": "param-toggle",
+        "address": "/hat/step11",
+        "node": "/hat",
+        "default": 1.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "H12",
+        "widget": "param-toggle",
+        "address": "/hat/step12",
+        "node": "/hat",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "H13",
+        "widget": "param-toggle",
+        "address": "/hat/step13",
+        "node": "/hat",
+        "default": 1.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "H14",
+        "widget": "param-toggle",
+        "address": "/hat/step14",
+        "node": "/hat",
+        "default": 0.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "H15",
+        "widget": "param-toggle",
+        "address": "/hat/step15",
+        "node": "/hat",
+        "default": 1.0
+      },
+      {
+        "kind": "param-toggle",
+        "label": "H16",
+        "widget": "param-toggle",
+        "address": "/hat/step16",
+        "node": "/hat",
+        "default": 0.0
+      },
+      {
+        "kind": "fader",
+        "label": "Kick Vol",
+        "widget": "fader",
+        "address": "/kick_vol/in",
+        "min": 0.0,
+        "max": 1.0,
+        "default": 0.7,
+        "unit": ""
+      },
+      {
+        "kind": "fader",
+        "label": "Snare Vol",
+        "widget": "fader",
+        "address": "/snare_vol/in",
+        "min": 0.0,
+        "max": 1.0,
+        "default": 0.5,
+        "unit": ""
+      },
+      {
+        "kind": "fader",
+        "label": "Hat Vol",
+        "widget": "fader",
+        "address": "/hat_vol/in",
+        "min": 0.0,
+        "max": 1.0,
+        "default": 0.35,
+        "unit": ""
+      },
+      {
+        "kind": "fader",
+        "label": "Tone",
+        "widget": "fader",
+        "address": "/tone/in",
+        "min": 0.0,
+        "max": 1.0,
+        "default": 0.8,
+        "unit": ""
+      }
+    ],
+    "rows": [
+      [
+        "/clock/tempo"
+      ],
+      [
+        "/kick/step1",
+        "/kick/step2",
+        "/kick/step3",
+        "/kick/step4",
+        "/kick/step5",
+        "/kick/step6",
+        "/kick/step7",
+        "/kick/step8",
+        "/kick/step9",
+        "/kick/step10",
+        "/kick/step11",
+        "/kick/step12",
+        "/kick/step13",
+        "/kick/step14",
+        "/kick/step15",
+        "/kick/step16"
+      ],
+      [
+        "/snare/step1",
+        "/snare/step2",
+        "/snare/step3",
+        "/snare/step4",
+        "/snare/step5",
+        "/snare/step6",
+        "/snare/step7",
+        "/snare/step8",
+        "/snare/step9",
+        "/snare/step10",
+        "/snare/step11",
+        "/snare/step12",
+        "/snare/step13",
+        "/snare/step14",
+        "/snare/step15",
+        "/snare/step16"
+      ],
+      [
+        "/hat/step1",
+        "/hat/step2",
+        "/hat/step3",
+        "/hat/step4",
+        "/hat/step5",
+        "/hat/step6",
+        "/hat/step7",
+        "/hat/step8",
+        "/hat/step9",
+        "/hat/step10",
+        "/hat/step11",
+        "/hat/step12",
+        "/hat/step13",
+        "/hat/step14",
+        "/hat/step15",
+        "/hat/step16"
+      ],
+      [
+        "/kick_vol/in",
+        "/snare_vol/in",
+        "/hat_vol/in",
+        "/tone/in"
+      ]
+    ]
+  },
+  "chord-player": {
+    "widgets": [
+      {
+        "kind": "chord-button",
+        "label": "I",
+        "widget": "chord-button",
+        "address": "/chord/set",
+        "degree": 0.0
+      },
+      {
+        "kind": "chord-button",
+        "label": "ii",
+        "widget": "chord-button",
+        "address": "/chord/set",
+        "degree": 1.0
+      },
+      {
+        "kind": "chord-button",
+        "label": "iii",
+        "widget": "chord-button",
+        "address": "/chord/set",
+        "degree": 2.0
+      },
+      {
+        "kind": "chord-button",
+        "label": "IV",
+        "widget": "chord-button",
+        "address": "/chord/set",
+        "degree": 3.0
+      },
+      {
+        "kind": "chord-button",
+        "label": "V",
+        "widget": "chord-button",
+        "address": "/chord/set",
+        "degree": 4.0
+      },
+      {
+        "kind": "chord-button",
+        "label": "vi",
+        "widget": "chord-button",
+        "address": "/chord/set",
+        "degree": 5.0
+      },
+      {
+        "kind": "chord-button",
+        "label": "vii",
+        "widget": "chord-button",
+        "address": "/chord/set",
+        "degree": 6.0
+      },
+      {
+        "kind": "fader",
+        "label": "Key",
+        "widget": "fader",
+        "address": "/harmony/root",
+        "min": 48.0,
+        "max": 72.0,
+        "default": 60.0,
+        "unit": "MIDI"
+      },
+      {
+        "kind": "fader",
+        "label": "Brightness",
+        "widget": "fader",
+        "address": "/brightness/in",
+        "min": 0.0,
+        "max": 1.0,
+        "default": 0.5,
+        "unit": "%"
+      }
+    ],
+    "rows": [
+      [
+        "/chord/set",
+        "/chord/set",
+        "/chord/set",
+        "/chord/set"
+      ],
+      [
+        "/chord/set",
+        "/chord/set",
+        "/chord/set",
+        "/harmony/root"
+      ],
+      [
+        "/brightness/in"
+      ]
+    ]
+  },
+  "strum-harp": {
+    "widgets": [
+      {
+        "kind": "fader",
+        "label": "Strum",
+        "widget": "fader",
+        "address": "/strum/position",
+        "min": 0.0,
+        "max": 1.0,
+        "default": 0.0,
+        "unit": ""
+      },
+      {
+        "kind": "fader",
+        "label": "Range",
+        "widget": "fader",
+        "address": "/strum/octaves",
+        "min": 1.0,
+        "max": 4.0,
+        "default": 1.0,
+        "unit": "oct"
+      },
+      {
+        "kind": "fader",
+        "label": "Key",
+        "widget": "fader",
+        "address": "/harmony/root",
+        "min": 48.0,
+        "max": 60.0,
+        "default": 60.0,
+        "unit": "MIDI"
+      },
+      {
+        "kind": "fader",
+        "label": "Brightness",
+        "widget": "fader",
+        "address": "/brightness/in",
+        "min": 0.0,
+        "max": 1.0,
+        "default": 0.6,
+        "unit": ""
+      }
+    ],
+    "rows": [
+      [
+        "/strum/position",
+        "/strum/octaves",
+        "/harmony/root",
+        "/brightness/in"
+      ]
+    ]
+  },
+  "euclidean-drums": {
+    "widgets": [
+      {
+        "kind": "fader",
+        "label": "Tempo",
+        "widget": "radial",
+        "address": "/clock/tempo",
+        "min": 1.0,
+        "max": 999.0,
+        "default": 120.0,
+        "unit": "BPM"
+      },
+      {
+        "kind": "fader",
+        "label": "Kick Pulses",
+        "widget": "radial",
+        "address": "/kick_eu/pulses",
+        "min": 0.0,
+        "max": 16.0,
+        "default": 4.0,
+        "unit": "pulses",
+        "group": "kick"
+      },
+      {
+        "kind": "fader",
+        "label": "Kick Steps",
+        "widget": "radial",
+        "address": "/kick_eu/steps",
+        "min": 1.0,
+        "max": 16.0,
+        "default": 16.0,
+        "unit": "steps",
+        "group": "kick"
+      },
+      {
+        "kind": "fader",
+        "label": "Kick Rotation",
+        "widget": "radial",
+        "address": "/kick_eu/rotation",
+        "min": 0.0,
+        "max": 15.0,
+        "default": 0.0,
+        "unit": "steps",
+        "group": "kick"
+      },
+      {
+        "kind": "fader",
+        "label": "Kick Decay",
+        "widget": "radial",
+        "address": "/kick_env/decay",
+        "min": 0.0010000000474974513,
+        "max": 5.0,
+        "default": 0.10000000149011612,
+        "unit": "s",
+        "group": "kick"
+      },
+      {
+        "kind": "fader",
+        "label": "Kick DJ Filter",
+        "widget": "radial",
+        "address": "/kick_filter/in",
+        "min": -1.0,
+        "max": 1.0,
+        "default": 0.0,
+        "unit": "",
+        "group": "kick"
+      },
+      {
+        "kind": "fader",
+        "label": "Kick Level",
+        "widget": "radial",
+        "address": "/kick_level/in",
+        "min": 0.0,
+        "max": 1.0,
+        "default": 0.85,
+        "unit": "",
+        "group": "kick"
+      },
+      {
+        "kind": "fader",
+        "label": "Snare Pulses",
+        "widget": "radial",
+        "address": "/snare_eu/pulses",
+        "min": 0.0,
+        "max": 16.0,
+        "default": 4.0,
+        "unit": "pulses",
+        "group": "snare"
+      },
+      {
+        "kind": "fader",
+        "label": "Snare Steps",
+        "widget": "radial",
+        "address": "/snare_eu/steps",
+        "min": 1.0,
+        "max": 16.0,
+        "default": 16.0,
+        "unit": "steps",
+        "group": "snare"
+      },
+      {
+        "kind": "fader",
+        "label": "Snare Rotation",
+        "widget": "radial",
+        "address": "/snare_eu/rotation",
+        "min": 0.0,
+        "max": 15.0,
+        "default": 0.0,
+        "unit": "steps",
+        "group": "snare"
+      },
+      {
+        "kind": "fader",
+        "label": "Snare Decay",
+        "widget": "radial",
+        "address": "/snare_env/decay",
+        "min": 0.0010000000474974513,
+        "max": 5.0,
+        "default": 0.10000000149011612,
+        "unit": "s",
+        "group": "snare"
+      },
+      {
+        "kind": "fader",
+        "label": "Snare DJ Filter",
+        "widget": "radial",
+        "address": "/snare_filter/in",
+        "min": -1.0,
+        "max": 1.0,
+        "default": 0.0,
+        "unit": "",
+        "group": "snare"
+      },
+      {
+        "kind": "fader",
+        "label": "Snare Level",
+        "widget": "radial",
+        "address": "/snare_level/in",
+        "min": 0.0,
+        "max": 1.0,
+        "default": 0.6,
+        "unit": "",
+        "group": "snare"
+      },
+      {
+        "kind": "fader",
+        "label": "Tom Pulses",
+        "widget": "radial",
+        "address": "/tom_eu/pulses",
+        "min": 0.0,
+        "max": 16.0,
+        "default": 4.0,
+        "unit": "pulses",
+        "group": "tom"
+      },
+      {
+        "kind": "fader",
+        "label": "Tom Steps",
+        "widget": "radial",
+        "address": "/tom_eu/steps",
+        "min": 1.0,
+        "max": 16.0,
+        "default": 16.0,
+        "unit": "steps",
+        "group": "tom"
+      },
+      {
+        "kind": "fader",
+        "label": "Tom Rotation",
+        "widget": "radial",
+        "address": "/tom_eu/rotation",
+        "min": 0.0,
+        "max": 15.0,
+        "default": 0.0,
+        "unit": "steps",
+        "group": "tom"
+      },
+      {
+        "kind": "fader",
+        "label": "Tom Decay",
+        "widget": "radial",
+        "address": "/tom_env/decay",
+        "min": 0.0010000000474974513,
+        "max": 5.0,
+        "default": 0.10000000149011612,
+        "unit": "s",
+        "group": "tom"
+      },
+      {
+        "kind": "fader",
+        "label": "Tom DJ Filter",
+        "widget": "radial",
+        "address": "/tom_filter/in",
+        "min": -1.0,
+        "max": 1.0,
+        "default": 0.0,
+        "unit": "",
+        "group": "tom"
+      },
+      {
+        "kind": "fader",
+        "label": "Tom Level",
+        "widget": "radial",
+        "address": "/tom_level/in",
+        "min": 0.0,
+        "max": 1.0,
+        "default": 0.6,
+        "unit": "",
+        "group": "tom"
+      },
+      {
+        "kind": "fader",
+        "label": "Hat Pulses",
+        "widget": "radial",
+        "address": "/hat_eu/pulses",
+        "min": 0.0,
+        "max": 16.0,
+        "default": 4.0,
+        "unit": "pulses",
+        "group": "hat"
+      },
+      {
+        "kind": "fader",
+        "label": "Hat Steps",
+        "widget": "radial",
+        "address": "/hat_eu/steps",
+        "min": 1.0,
+        "max": 16.0,
+        "default": 16.0,
+        "unit": "steps",
+        "group": "hat"
+      },
+      {
+        "kind": "fader",
+        "label": "Hat Rotation",
+        "widget": "radial",
+        "address": "/hat_eu/rotation",
+        "min": 0.0,
+        "max": 15.0,
+        "default": 0.0,
+        "unit": "steps",
+        "group": "hat"
+      },
+      {
+        "kind": "fader",
+        "label": "Hat Decay",
+        "widget": "radial",
+        "address": "/hat_env/decay",
+        "min": 0.0010000000474974513,
+        "max": 5.0,
+        "default": 0.10000000149011612,
+        "unit": "s",
+        "group": "hat"
+      },
+      {
+        "kind": "fader",
+        "label": "Hat DJ Filter",
+        "widget": "radial",
+        "address": "/hat_filter/in",
+        "min": -1.0,
+        "max": 1.0,
+        "default": 0.0,
+        "unit": "",
+        "group": "hat"
+      },
+      {
+        "kind": "fader",
+        "label": "Hat Level",
+        "widget": "radial",
+        "address": "/hat_level/in",
+        "min": 0.0,
+        "max": 1.0,
+        "default": 0.5,
+        "unit": "",
+        "group": "hat"
+      }
+    ],
+    "rows": [
+      [
+        "/clock/tempo"
+      ],
+      [
+        "/kick_eu/pulses",
+        "/kick_eu/steps",
+        "/kick_eu/rotation",
+        "/kick_env/decay",
+        "/kick_filter/in",
+        "/kick_level/in"
+      ],
+      [
+        "/snare_eu/pulses",
+        "/snare_eu/steps",
+        "/snare_eu/rotation",
+        "/snare_env/decay",
+        "/snare_filter/in",
+        "/snare_level/in"
+      ],
+      [
+        "/tom_eu/pulses",
+        "/tom_eu/steps",
+        "/tom_eu/rotation",
+        "/tom_env/decay",
+        "/tom_filter/in",
+        "/tom_level/in"
+      ],
+      [
+        "/hat_eu/pulses",
+        "/hat_eu/steps",
+        "/hat_eu/rotation",
+        "/hat_env/decay",
+        "/hat_filter/in",
+        "/hat_level/in"
+      ]
+    ]
+  },
+  "djfilter-demo": {
+    "widgets": [
+      {
+        "kind": "fader",
+        "label": "Tempo",
+        "widget": "fader",
+        "address": "/clock/tempo",
+        "min": 1.0,
+        "max": 999.0,
+        "default": 120.0,
+        "unit": "BPM"
+      },
+      {
+        "kind": "fader",
+        "label": "Filter",
+        "widget": "fader",
+        "address": "/filterpos/in",
+        "min": -1.0,
+        "max": 1.0,
+        "default": 0.0,
+        "unit": ""
+      },
+      {
+        "kind": "fader",
+        "label": "Resonance",
+        "widget": "fader",
+        "address": "/djfilter/resonance",
+        "min": 0.0,
+        "max": 1.0,
+        "default": 0.10000000149011612,
+        "unit": ""
+      }
+    ],
+    "rows": [
+      [
+        "/clock/tempo",
+        "/filterpos/in",
+        "/djfilter/resonance"
+      ]
+    ]
+  },
+  "good-button": {
+    "widgets": [
+      {
+        "kind": "note-toggle",
+        "label": "Play C",
+        "widget": "note-toggle",
+        "address": "/voicer/notes",
+        "note": 60.0
+      },
+      {
+        "kind": "fader",
+        "label": "Brightness",
+        "widget": "fader",
+        "address": "/brightness/in",
+        "min": 0.0,
+        "max": 1.0,
+        "default": 0.5,
+        "unit": ""
+      }
+    ],
+    "rows": [
+      [
+        "/voicer/notes",
+        "/brightness/in"
+      ]
+    ]
+  }
+}

@@ -69,7 +69,9 @@
       "control": [
         {
           "label": "Filter",
-          "param": "in"
+          "param": "in",
+          "min": -1.0,
+          "max": 1.0
         }
       ]
     },
