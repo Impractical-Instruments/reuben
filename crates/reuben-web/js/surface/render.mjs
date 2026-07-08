@@ -1,7 +1,7 @@
 // DOM renderer + engine binding for the reuben web player's auto-UI (issue #225).
 //
 // This is the ONLY module in js/surface/ that touches the DOM. The inference core
-// (infer.mjs) is pure and DOM-free; here we turn its widget model into on-screen
+// (widget-model.mjs) is pure and DOM-free; here we turn its widget model into on-screen
 // controls and wire each control's events back through `emit`/`initial` to
 // `engine.send()`. The renderer is a THIN shim: it never re-derives an address, a
 // range, or a scaling — every message it sends comes verbatim from `emit(widget, x)`
@@ -22,7 +22,7 @@
 // A user interaction can't beat that either — the surface isn't on screen until render,
 // and render is invoked post-ready in main.js.
 
-import { emit, initial } from "./infer.mjs";
+import { emit, initial } from "./widget-model.mjs";
 
 // --- styles ------------------------------------------------------------------------------
 
@@ -199,7 +199,7 @@ function buildWidget(doc, widget, engine) {
 
 // --- public API --------------------------------------------------------------------------
 
-// Row modifier class, mirroring layoutRows' three run kinds (see infer.mjs): a param-toggle
+// Row modifier class, mirroring layoutRows' three run kinds (see widget-model.mjs): a param-toggle
 // run is a step lane (16 cols, scrolls); a grouped run is a channel row; everything else is
 // the uniform auto-fit grid. Pure styling — layout truth already lives in surface.rows.
 function rowClass(row) {

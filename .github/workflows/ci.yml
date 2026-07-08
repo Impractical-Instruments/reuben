@@ -172,6 +172,12 @@ jobs:
       - name: Test (host)
         run: cargo test
 
+      # The auto-UI inference core + DOM renderer (issue #225) are pure ES modules — no wasm,
+      # no browser, no npm install. `node --test` runs infer.test.mjs (buildSurface vs the
+      # committed oracle) and render.test.mjs on the runner's preinstalled Node.
+      - name: Test (JS auto-UI unit tests)
+        run: node --test js/surface/*.test.mjs
+
       - name: Build .wasm (release)
         run: cargo build --release --target wasm32-unknown-unknown
 

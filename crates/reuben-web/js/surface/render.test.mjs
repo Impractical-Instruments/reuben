@@ -17,7 +17,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-import { loadParamMeta, buildSurface } from "./infer.mjs";
+import { loadParamMeta, buildSurface } from "./widget-model.mjs";
 import { renderSurface, sendInitialDefaults } from "./render.mjs";
 
 // --- minimal fake DOM --------------------------------------------------------------------

@@ -22,7 +22,7 @@
 //       address has no port and drops in resolve_port), and rests at the map's `in` value.
 //
 // The committed oracle (`testdata/expected-widgets.json`) is generated from the reference WITH
-// both corrections; `infer.test.mjs` deep-equals against it. Numbers flow straight from the
+// both corrections; `widget-model.test.mjs` deep-equals against it. Numbers flow straight from the
 // parsed schema/instrument JSON with no rounding, so the deep-equal is exact.
 
 // --- schema metadata --------------------------------------------------------------------
@@ -330,13 +330,26 @@ export function buildSurface(instrument, paramMeta) {
 
 // --- binding ----------------------------------------------------------------------------
 
+// CORRECTION #3 — a chord button's degree must ride the wire as an INTEGER, not a float.
+//   The `Note` OSC form (crates/reuben-core/src/vocab/pitch.rs) types an I32 arg as
+//   `Pitch::Degree` and an F32 arg as `Pitch::Absolute` (MIDI). `chord.rs` only spells chords
+//   for degree pitches — a non-degree note is silently dropped (chord.rs `pitch.degree() =>
+//   None => continue`). Bare JS numbers encode as F32 (codec.mjs), so `[degree, gate]` as two
+//   floats arrives as Absolute MIDI `degree` and produces NO SOUND. We mark the degree `{i32}`
+//   (codec.mjs's explicit integer form) so it lands as `Pitch::Degree`; the gate stays F32
+//   velocity. (The reference gen_surface.py has the same latent drift — it emits the degree as a
+//   FLOAT partial.) A note-toggle, by contrast, is a real absolute MIDI note and correctly stays
+//   F32. Degrees are integer-valued, so `Number.isInteger` in the codec is satisfied.
+const chordDegreeArg = (widget) => ({ i32: widget.degree });
+
 /**
  * The load-time default send for a widget, fired once after the engine is `ready` (ADR-0018).
  * Fader/radial default is ALREADY in [min, max], so it is sent RAW (not scaled); toggles rest at
- * gate 0. Args are bare JS numbers — codec.mjs encodes them as F32.
+ * gate 0. Args are bare JS numbers (codec.mjs encodes them as F32) except a chord degree, which
+ * is `{i32}` (see CORRECTION #3 above).
  *
  * @param {object} widget
- * @returns {{address: string, args: number[]}}
+ * @returns {{address: string, args: Array<number | {i32: number}>}}
  */
 export function initial(widget) {
   switch (widget.kind) {
@@ -347,7 +360,7 @@ export function initial(widget) {
     case "note-toggle":
       return { address: widget.address, args: [widget.note, 0] };
     case "chord-button":
-      return { address: widget.address, args: [widget.degree, 0] };
+      return { address: widget.address, args: [chordDegreeArg(widget), 0] };
     default:
       throw new Error(`initial: unknown widget kind ${JSON.stringify(widget.kind)}`);
   }
@@ -358,13 +371,13 @@ export function initial(widget) {
  * message to send. Used by BOTH render.mjs (on input) and check.mjs (to drive the engine).
  *   - fader / radial:  x in [0,1] is scaled into [min, max].
  *   - param-toggle:    x (0 or 1) is the payload, sent raw.
- *   - note-toggle:     `[note, x]` — constant note + gate x.
- *   - chord-button:    `[degree, x]` — constant scale degree + gate x.
- * Args are bare JS numbers — codec.mjs encodes them as F32.
+ *   - note-toggle:     `[note, x]` — constant absolute-MIDI note (F32) + gate x.
+ *   - chord-button:    `[{i32: degree}, x]` — constant scale degree (I32, see CORRECTION #3) + gate x.
+ * Args are bare JS numbers (codec.mjs encodes them as F32) except a chord degree, which is `{i32}`.
  *
  * @param {object} widget
  * @param {number} x - the widget's raw UI value.
- * @returns {{address: string, args: number[]}}
+ * @returns {{address: string, args: Array<number | {i32: number}>}}
  */
 export function emit(widget, x) {
   switch (widget.kind) {
@@ -375,7 +388,7 @@ export function emit(widget, x) {
     case "note-toggle":
       return { address: widget.address, args: [widget.note, x] };
     case "chord-button":
-      return { address: widget.address, args: [widget.degree, x] };
+      return { address: widget.address, args: [chordDegreeArg(widget), x] };
     default:
       throw new Error(`emit: unknown widget kind ${JSON.stringify(widget.kind)}`);
   }

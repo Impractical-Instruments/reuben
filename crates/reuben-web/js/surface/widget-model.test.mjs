@@ -9,7 +9,7 @@
 //   (2) DIRECT, human-legible assertions for both corrections + the tricky cases — the
 //       issue demands these be spelled out, not merely implied by a fixture diff.
 //
-// Run: `cd crates/reuben-web && node --test js/surface/infer.test.mjs`
+// Run: `cd crates/reuben-web && node --test js/surface/widget-model.test.mjs`
 
 import test from "node:test";
 import assert from "node:assert";
@@ -26,7 +26,7 @@ import {
   isGateStep,
   resolveControl,
   layoutRows,
-} from "./infer.mjs";
+} from "./widget-model.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -222,8 +222,10 @@ test("emit: param-toggle passes x raw; note/chord carry the constant + gate", ()
   const play = { kind: "note-toggle", widget: "note-toggle", address: "/voicer/notes", note: 60 };
   assert.deepStrictEqual(emit(play, 1), { address: "/voicer/notes", args: [60, 1] });
 
+  // CORRECTION #3: a chord degree rides the wire as an integer (Pitch::Degree), not an F32
+  // (Pitch::Absolute, which chord.rs drops); the gate stays a bare F32 velocity.
   const chord = { kind: "chord-button", widget: "chord-button", address: "/chord/set", degree: 4 };
-  assert.deepStrictEqual(emit(chord, 1), { address: "/chord/set", args: [4, 1] });
+  assert.deepStrictEqual(emit(chord, 1), { address: "/chord/set", args: [{ i32: 4 }, 1] });
 });
 
 test("initial: fader default is raw (unscaled); note/chord rest at gate 0", () => {
@@ -237,7 +239,7 @@ test("initial: fader default is raw (unscaled); note/chord rest at gate 0", () =
   assert.deepStrictEqual(initial(play), { address: "/voicer/notes", args: [60, 0] });
 
   const chord = { kind: "chord-button", widget: "chord-button", address: "/chord/set", degree: 4 };
-  assert.deepStrictEqual(initial(chord), { address: "/chord/set", args: [4, 0] });
+  assert.deepStrictEqual(initial(chord), { address: "/chord/set", args: [{ i32: 4 }, 0] });
 });
 
 // ---------------------------------------------------------------------------------------

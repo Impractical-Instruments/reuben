@@ -13,7 +13,7 @@
 //   python3 -m http.server -d .        ->  http://localhost:8000/web/
 
 import { createReubenEngine } from "../js/reuben-engine.mjs";
-import { buildSurface, loadParamMeta } from "../js/surface/infer.mjs";
+import { buildSurface, loadParamMeta } from "../js/surface/widget-model.mjs";
 import { renderSurface, sendInitialDefaults } from "../js/surface/render.mjs";
 
 const el = (id) => document.getElementById(id);
