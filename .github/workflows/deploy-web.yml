@@ -73,8 +73,6 @@ jobs:
     # Skip draft PRs, matching ci.yml's convention; always run on push to main.
     if: github.event_name == 'push' || github.event.pull_request.draft == false
     env:
-      CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
       # The Cloudflare Pages project name — must match the project you created (see SETUP).
       CF_PROJECT: reuben-web-player
       CARGO_TERM_COLOR: always
@@ -82,8 +80,17 @@ jobs:
     steps:
       # Gate on the secrets existing. Secrets can't be referenced in a job-level `if`, so read
       # them from env here and expose a boolean the deploy steps hang off. Missing → skip green.
+      #
+      # The secrets are scoped to THIS step's env (not the job's), so the untrusted build steps
+      # below (`npm ci` runs dependency lifecycle scripts; `npm run build` runs the repo build)
+      # never see the token. On a push to main or a same-repo PR the secrets are present, so a
+      # compromised npm dependency or a build-script change in a PR must not be able to read them
+      # from the environment — only the gate check and the pinned wrangler-action deploy step do.
       - name: Check Cloudflare configuration
         id: gate
+        env:
+          CF_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CF_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
         run: |
           if [ -n "$CF_API_TOKEN" ] && [ -n "$CF_ACCOUNT_ID" ]; then
             echo "ready=true" >> "$GITHUB_OUTPUT"
