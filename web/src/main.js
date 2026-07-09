@@ -15,8 +15,10 @@
 import "./app.css";
 import { registerSW } from "virtual:pwa-register";
 import { createReubenEngine } from "../../crates/reuben-web/js/reuben-engine.mjs";
-import { buildSurface, loadParamMeta } from "../../crates/reuben-web/js/surface/widget-model.mjs";
+import { buildSurface, loadParamMeta, initial } from "../../crates/reuben-web/js/surface/widget-model.mjs";
 import { renderSurface, sendInitialDefaults } from "../../crates/reuben-web/js/surface/render.mjs";
+import { encodeControl } from "../../crates/reuben-web/js/codec.mjs";
+import { decodeBundle, encodeBundle, ShareError } from "../../crates/reuben-web/js/share.mjs";
 import manifest from "../toys.json";
 
 const REPO_URL = "https://github.com/Impractical-Instruments/reuben";
@@ -38,6 +40,27 @@ let enginePromise = null; // in-flight (or settled) engine creation; awaited by 
 let paramMetaPromise = null; // the parsed schema → param metadata, fetched once and cached
 let loadToken = 0; // bumped per openToy so a stale in-flight load can't clobber a newer one
 let currentToy = null; // id of the Toy currently loaded on the engine (null before first)
+let currentInstrument = null; // document `instrument` name of the current player (Toy or link)
+let currentSurface = null; // the surface of the current player screen, read at Share time
+let currentBanner = null; // the launcher banner text (null = none), read by the test hook
+let currentShareBtn = null; // the current player's Share button, for its "Copied!" flash
+let currentShareSlot = null; // the current player's slot for the hand-copy fallback textarea
+let lastShareUrl = null; // the URL minted by the most recent Share (test hook)
+
+// The control JOURNAL: address -> the args last SENT for it (issue #228 Share). engine.send is
+// wrapped once (instrumentJournal) to record into this; it's CLEARED at the start of every load
+// so it reflects only the current instrument. Share diffs it against each widget's load-time
+// default to capture ONLY the controls the player moved (the sidecar snapshot).
+const journal = new Map();
+
+// err.code -> the dismissible banner copy (issue #228 failure taxonomy classes B–E′). The codec
+// switches on the code, never the message; main.js owns the user-facing strings here.
+const SHARE_ERROR_BANNER = {
+  future: "This link was made by a newer version of reuben.",
+  damaged: "This link is damaged.",
+  "too-large": "This link is too large.",
+  sample: "This instrument uses audio samples, which can't be shared as links yet.",
+};
 
 // Create the engine (adds the worklet module, fetches + compiles the wasm). Safe while the
 // context is still suspended — it never resumes; that's the Start gesture's job. Kicked off
@@ -163,7 +186,32 @@ function badgeText(kind) {
   return "tap to play";
 }
 
-function launcherScreen() {
+// A small, dismissible banner (issue #228): the landing surface for every share-link failure
+// (classes B–I). The ✕ removes it and clears the recorded text so the test hook reads null.
+function bannerElement(message) {
+  const dismiss = h(
+    "button",
+    {
+      class: "banner-dismiss",
+      type: "button",
+      "aria-label": "Dismiss",
+      onclick: () => {
+        currentBanner = null;
+        banner.remove();
+      },
+    },
+    "✕",
+  );
+  const banner = h(
+    "div",
+    { class: "banner", role: "alert" },
+    h("span", { class: "banner-text" }, message),
+    dismiss,
+  );
+  return banner;
+}
+
+function launcherScreen(bannerMessage) {
   const grid = h(
     "div",
     { class: "toy-grid" },
@@ -185,6 +233,7 @@ function launcherScreen() {
   return h(
     "section",
     { class: "launcher" },
+    bannerMessage ? bannerElement(bannerMessage) : null,
     h(
       "header",
       { class: "launcher-head" },
@@ -196,18 +245,33 @@ function launcherScreen() {
   );
 }
 
-function showLauncher() {
-  setScreen("launcher", launcherScreen());
+// Show the launcher, optionally carrying a dismissible banner. Every non-splash landing goes
+// through here — a Toy's back button, a link failure, a hashchange to empty — so the banner
+// state is owned in exactly one place.
+function showLauncher(bannerMessage) {
+  currentBanner = bannerMessage ?? null;
+  currentSurface = null;
+  currentShareBtn = null;
+  currentShareSlot = null;
+  setScreen("launcher", launcherScreen(currentBanner));
+}
+
+// "← Toys": clear the hash FIRST (so a reload from the launcher doesn't resurrect the shared
+// instrument — issue #228 hash lifecycle) then land on the launcher. replaceState does not fire
+// hashchange, so this can't re-boot a fragment.
+function backToLauncher() {
+  history.replaceState(null, "", location.pathname);
+  showLauncher();
 }
 
 // --- player -------------------------------------------------------------------------------
 
-// Open a Toy: show the player screen immediately (skeleton, never a frozen blank), load it on
-// the persistent engine, then mount its surface. A loadToken guards against a race where the
-// player taps back + opens another Toy while a load is still in flight — only the newest token
-// gets to render, and the engine's own one-load-at-a-time guard is respected by awaiting.
-async function openToy(toy) {
-  const token = ++loadToken;
+// Build the common player-screen chrome shared by a launcher-opened Toy and a fragment-booted
+// link: header (back, title, optional blurb, kind badge, Share), an empty share slot for the
+// hand-copy fallback, the status line, and a body with a loading skeleton over the surface mount.
+// Records the Share button + slot as the current player's so `doShare` (which reads live module
+// state, not a closure) targets exactly what's on screen. Returns the pieces the caller fills in.
+function buildPlayerScreen({ nameForData, title, blurb, kind }) {
   const surfaceEl = h("div", { class: "surface-mount" });
   const status = h("p", { class: "player-status" }, "Loading…");
   const skeleton = h(
@@ -219,23 +283,193 @@ async function openToy(toy) {
   );
   const body = h("div", { class: "player-body" }, skeleton, surfaceEl);
 
+  // Disabled until the surface is loaded: currentBundle() is only trustworthy post-load, and a
+  // click mid-load would share the PREVIOUS instrument's bundle.
+  const shareBtn = h("button", { class: "share", type: "button", disabled: "" }, "Share");
+  shareBtn.addEventListener("click", () => doShare());
+  const shareSlot = h("div", { class: "share-slot" });
+
+  const heading = h(
+    "div",
+    { class: "player-heading" },
+    h("h1", { class: "player-title" }, title),
+    blurb ? h("p", { class: "player-blurb" }, blurb) : null,
+  );
   const screen = h(
     "section",
-    { class: "player", dataset: { toy: toy.id } },
+    { class: "player", dataset: { toy: nameForData } },
     h(
       "header",
       { class: "player-head" },
-      h("button", { class: "back", type: "button", onclick: showLauncher }, "← Toys"),
-      h("h1", { class: "player-title" }, toy.title),
-      h("span", { class: `toy-badge ${toy.kind}` }, badgeText(toy.kind)),
+      h("button", { class: "back", type: "button", onclick: backToLauncher }, "← Toys"),
+      heading,
+      h("span", { class: `toy-badge ${kind}` }, badgeText(kind)),
+      shareBtn,
     ),
+    shareSlot,
     status,
     body,
   );
+
+  currentShareBtn = shareBtn;
+  currentShareSlot = shareSlot;
+  return { screen, surfaceEl, status, skeleton, body, shareBtn };
+}
+
+// Wrap engine.send ONCE so every control message is recorded into the journal (address -> args)
+// before being sent. Idempotent — a flag on the engine guards a second wrap across loads.
+function instrumentJournal(e) {
+  if (e.__journalWrapped) return;
+  e.__journalWrapped = true;
+  const original = e.send.bind(e);
+  e.send = (address, args = []) => {
+    journal.set(address, args);
+    return original(address, args);
+  };
+}
+
+// Deep-equal two control arg arrays (bare numbers and {i32} markers). Used to tell a moved
+// control from one still resting at its load-time default.
+function argsEqual(a, b) {
+  if (a === b) return true;
+  if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) {
+    const x = a[i];
+    const y = b[i];
+    if (typeof x === "object" && x !== null) {
+      if (typeof y !== "object" || y === null || x.i32 !== y.i32) return false;
+    } else if (x !== y) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// The control-state SIDECAR for Share: for every stored-state widget (fader/param-toggle — NOT
+// the held note/chord buttons, which carry no resting state) whose journalled args differ from
+// its load-time default, capture a verbatim encodeControl() buffer. So a link carries ONLY the
+// controls the player actually moved; an untouched instrument mints an empty snapshot.
+function captureSnapshot(surface) {
+  const snapshot = [];
+  for (const widget of surface.widgets ?? []) {
+    if (widget.kind !== "fader" && widget.kind !== "param-toggle") continue;
+    const moved = journal.get(widget.address);
+    if (!moved) continue;
+    if (argsEqual(moved, initial(widget).args)) continue;
+    snapshot.push(encodeControl(widget.address, moved));
+  }
+  return snapshot;
+}
+
+// The derived kind badge for a fragment-booted instrument (no toys.json entry to read it from):
+// a play surface (note/chord buttons) is tap-to-play; else a mic-taking instrument is live-input;
+// else it plays itself. Feeds the same badgeText/CSS the launcher Toys use.
+function deriveKind(surface, info) {
+  if (surface.widgets.some((w) => w.kind === "note-toggle" || w.kind === "chord-button")) {
+    return "tap-to-play";
+  }
+  if (info?.inputChannels > 0) return "live-input";
+  return "self-playing";
+}
+
+// Share the current player's instrument as a `#r1.…` link (issue #228). Mints a bundle from the
+// engine's retained document + resources plus the moved-control snapshot, persists it into the
+// hash via replaceState (NOT pushState — repeated Shares must not stack history; replaceState
+// also doesn't fire hashchange, so it won't re-boot), then runs the three-step share chain with
+// no dead end: Web Share → clipboard → a selected read-only textarea to hand-copy.
+async function doShare() {
+  if (!engine || !currentSurface) return;
+  const bundle = engine.currentBundle();
+  if (!bundle) return;
+
+  let fragment;
+  try {
+    fragment = await encodeBundle({
+      docText: bundle.docText,
+      resources: bundle.resources,
+      snapshot: captureSnapshot(currentSurface),
+    });
+  } catch (err) {
+    // encodeBundle can only fail on a sample or an over-cap bundle — neither is reachable for a
+    // shareable instrument on screen, but degrade to a visible note rather than a silent throw.
+    if (currentShareSlot) {
+      currentShareSlot.replaceChildren(
+        h("p", { class: "share-error" }, `Couldn't make a link — ${err.message || err}.`),
+      );
+    }
+    return;
+  }
+
+  const url = location.origin + location.pathname + "#" + fragment;
+  lastShareUrl = url;
+  history.replaceState(null, "", "#" + fragment);
+
+  // 1. Native share sheet (mobile). A user-cancelled share (AbortError) is quiet; any other
+  //    failure falls through to the clipboard rather than dead-ending.
+  if (navigator.canShare?.({ url })) {
+    try {
+      await navigator.share({ url });
+      return;
+    } catch (err) {
+      if (err?.name === "AbortError") return;
+    }
+  }
+  // 2. Clipboard.
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(url);
+      flashCopied();
+      return;
+    } catch {
+      // fall through to the hand-copy fallback
+    }
+  }
+  // 3. A selected read-only textarea — always copyable by hand.
+  showShareFallback(url);
+}
+
+// Flash "Copied!" on the Share button, then restore it.
+function flashCopied() {
+  const btn = currentShareBtn;
+  if (!btn) return;
+  btn.textContent = "Copied!";
+  setTimeout(() => {
+    if (currentShareBtn === btn) btn.textContent = "Share";
+  }, 1500);
+}
+
+// The no-clipboard fallback: a selected, read-only textarea holding the URL, so it can be copied
+// by hand even where the Clipboard API is unavailable.
+function showShareFallback(url) {
+  if (!currentShareSlot) return;
+  const field = h("textarea", { class: "share-fallback", readonly: "", rows: "2" });
+  field.value = url;
+  currentShareSlot.replaceChildren(
+    h("label", { class: "share-fallback-label" }, "Copy this link:"),
+    field,
+  );
+  field.focus();
+  field.select();
+}
+
+// Open a Toy: show the player screen immediately (skeleton, never a frozen blank), load it on
+// the persistent engine, then mount its surface. A loadToken guards against a race where the
+// player taps back + opens another Toy while a load is still in flight — only the newest token
+// gets to render, and the engine's own one-load-at-a-time guard is respected by awaiting.
+// Opening from the launcher does NOT write the hash (issue #228 hash lifecycle) — only Share does.
+async function openToy(toy) {
+  const token = ++loadToken;
+  journal.clear(); // reflect only the instrument about to load
+  const { screen, surfaceEl, status, skeleton, body, shareBtn } = buildPlayerScreen({
+    nameForData: toy.id,
+    title: toy.title,
+    kind: toy.kind,
+  });
   setScreen("player", screen);
 
   try {
     const e = await ensureEngine();
+    instrumentJournal(e);
     // engine.load is one-at-a-time; if a previous Toy's load is still settling, await it out
     // by retrying once it frees. In practice the back→pick path is sequential, but a fast
     // double-tap shouldn't throw "a load is already in flight" at the player. Its resolved
@@ -254,7 +488,9 @@ async function openToy(toy) {
     ]);
     if (token !== loadToken) return;
 
+    currentInstrument = doc.instrument;
     const surface = buildSurface(doc, paramMeta);
+    currentSurface = surface;
     renderSurface(surface, e, surfaceEl);
     // sendInitialDefaults ONLY after load() resolved (the worklet's `ready`): a control sent
     // before construct is dropped (render.mjs lifecycle note).
@@ -279,6 +515,7 @@ async function openToy(toy) {
           ? "Playing — tweak the controls."
           : "Playing.";
     status.classList.remove("error");
+    shareBtn.disabled = false; // bundle is now loaded — Share is safe
   } catch (err) {
     if (token !== loadToken) return;
     skeleton.remove();
@@ -351,6 +588,96 @@ function micControl(engine, status) {
   return wrap;
 }
 
+// --- fragment boot (share links, issue #228) ----------------------------------------------
+
+// A shared link (`#r1.…`) IS an instrument: decode it, then boot it on ONE tap (iOS needs the
+// gesture). decode needs no audio, so it runs at boot; a decode failure lands on the launcher
+// with the mapped banner (classes B–E′), never a splash the reader can't leave.
+async function fragmentBoot(hash) {
+  let bundle;
+  try {
+    bundle = await decodeBundle(hash);
+  } catch (err) {
+    const code = err instanceof ShareError ? err.code : null;
+    showLauncher(SHARE_ERROR_BANNER[code] ?? "This link is damaged.");
+    return;
+  }
+
+  // One Start/Play button — the single gesture that unlocks audio (ctx.resume) AND boots the
+  // instrument. loadBundle+render is wrapped so a bad document lands on the launcher, not here.
+  async function onPlay() {
+    start.disabled = true;
+    start.textContent = "Starting…";
+    try {
+      const e = await ensureEngine();
+      await e.context.resume();
+      journal.clear(); // reflect only the instrument about to boot
+      instrumentJournal(e);
+
+      const info = await e.loadBundle({ docText: bundle.docText, resources: bundle.resources });
+      const paramMeta = await getParamMeta();
+      // Safe to parse — loadBundle already parsed it (a JSON failure would have thrown above).
+      const doc = JSON.parse(bundle.docText);
+
+      currentToy = null;
+      currentInstrument = doc.instrument;
+      const surface = buildSurface(doc, paramMeta);
+      currentSurface = surface;
+      const kind = deriveKind(surface, info);
+
+      const { screen, surfaceEl, status, skeleton, body, shareBtn } = buildPlayerScreen({
+        nameForData: doc.instrument,
+        title: doc.instrument,
+        blurb: doc.doc,
+        kind,
+      });
+      setScreen("player", screen);
+
+      renderSurface(surface, e, surfaceEl);
+      // Defaults FIRST, then the snapshot overrides them: a moved control replayed verbatim from
+      // the link's sidecar wins over its load-time default.
+      sendInitialDefaults(surface, e);
+      for (const buf of bundle.snapshot) e.sendRaw(buf);
+
+      skeleton.remove();
+      document.body.dataset.state = e.context.state;
+
+      const takesInput = info?.inputChannels > 0;
+      if (takesInput) body.prepend(micControl(e, status));
+      status.textContent = takesInput
+        ? "Enable the microphone to play."
+        : kind === "tap-to-play"
+          ? "Ready — tap the buttons to play."
+          : surface.widgets.length
+            ? "Playing — tweak the controls."
+            : "Playing.";
+      status.classList.remove("error");
+      shareBtn.disabled = false;
+    } catch (err) {
+      // loadBundle failures map to the taxonomy: a share-shaped error (defensive) → its banner;
+      // a bundle miss (code "incomplete") → class I; anything else (invalid JSON / version /
+      // unknown operator, classes F/G/H) → the engine's VERBATIM message, shown as-is.
+      let message;
+      if (err instanceof ShareError) message = SHARE_ERROR_BANNER[err.code] ?? "This link is damaged.";
+      else if (err?.code === "incomplete") message = "This link is incomplete.";
+      else message = err?.message || String(err);
+      showLauncher(message);
+    }
+  }
+
+  const start = h("button", { class: "cta", id: "start", type: "button", onclick: onPlay }, "Play");
+  const hero = h(
+    "section",
+    { class: "splash boot-splash" },
+    h("h1", { class: "wordmark" }, "reuben"),
+    h("p", { class: "tagline" }, "Someone shared an instrument with you."),
+    start,
+    h("p", { class: "splash-hint" }, "Tap Play to hear it."),
+    infoLink(),
+  );
+  setScreen("splash", hero);
+}
+
 // --- shared bits --------------------------------------------------------------------------
 
 function infoLink() {
@@ -363,11 +690,15 @@ function infoLink() {
 
 // --- boot ---------------------------------------------------------------------------------
 
-// A tiny test surface for the Playwright smoke (issue #226 scope 7): current screen, loaded
-// Toy, and the live AudioContext state. Not load-bearing for the app itself.
+// A tiny test surface for the Playwright smoke (issue #226 scope 7) + share (issue #228):
+// current screen, loaded Toy, the live AudioContext state, the launcher banner text, the booted
+// instrument name (Toy card OR link), and the last Share URL. Not load-bearing for the app.
 window.reubenPlayer = {
   screen: () => document.body.dataset.screen,
   toy: () => currentToy,
+  instrument: () => currentInstrument,
+  banner: () => currentBanner,
+  shareUrl: () => lastShareUrl,
   engineState: () => engine?.context.state ?? "none",
   toys: TOYS,
 };
@@ -383,4 +714,22 @@ registerSW({ immediate: true });
 
 ensureEngine().catch((err) => console.error("[player] engine boot failed:", err));
 prefetchToy(DEFAULT_TOY);
-setScreen("splash", splashScreen());
+
+// Hash routing (issue #228). A `#r1.…` fragment IS a shared instrument → fragment boot, skipping
+// the launcher. Anything else (empty, `#about`) → the ordinary splash flow, SILENTLY (class A, no
+// banner). A `hashchange` fires when a link is PASTED/edited into an open tab (Share uses
+// history.replaceState, which does NOT fire it — so a Share can't re-boot): a fragment re-boots,
+// an empty hash shows the launcher.
+function isFragment(hash) {
+  return /^r\d+\./.test(hash);
+}
+
+window.addEventListener("hashchange", () => {
+  const hash = location.hash.slice(1);
+  if (isFragment(hash)) fragmentBoot(hash);
+  else showLauncher();
+});
+
+const bootHash = location.hash.slice(1);
+if (isFragment(bootHash)) fragmentBoot(bootHash);
+else setScreen("splash", splashScreen());
