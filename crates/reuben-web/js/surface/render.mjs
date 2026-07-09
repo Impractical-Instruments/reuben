@@ -44,6 +44,10 @@ export const SURFACE_CSS = `
   grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
 }
 .surface-row.step-lane {
+  /* reset the base row's auto-fit template: with it in place the first few steps land in
+     wide 7rem explicit tracks and the rest spill into narrow implicit ones — every step
+     must come from grid-auto-columns so the lane is uniform. */
+  grid-template-columns: none;
   grid-auto-flow: column; grid-auto-columns: minmax(1.6rem, 1fr);
   overflow-x: auto; gap: 0.3rem;
 }
