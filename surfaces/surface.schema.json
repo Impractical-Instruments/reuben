@@ -1,0 +1,100 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://impractical-instruments.github.io/reuben/surface.schema.json",
+  "title": "reuben surface doc",
+  "description": "A presentation-only control surface for a reuben instrument (ADR-0043). Controls bind interface input pipes by name; the pipe carries the quantity contract (type/min/max/default/unit/curve), the surface carries presentation (label/widget/group/order + optional narrower range). Hand-authored schema — the engine never reads surface docs.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["surface_version", "instrument", "controls"],
+  "properties": {
+    "surface_version": {
+      "description": "Surface-doc format version. Resolvers refuse a newer major they do not know.",
+      "type": "integer",
+      "const": 1
+    },
+    "instrument": {
+      "description": "Name of the instrument this surface presents; resolvers warn on mismatch with the loaded document.",
+      "type": "string",
+      "minLength": 1
+    },
+    "cols": {
+      "description": "Coarse layout hint: widgets per row (default 4).",
+      "type": "integer",
+      "minimum": 1
+    },
+    "controls": {
+      "description": "Ordered curated control list. Order is render order; adjacent same-group controls pack into one row. Several controls may bind the same pipe.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/control" }
+    }
+  },
+  "$defs": {
+    "control": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bind"],
+      "properties": {
+        "bind": {
+          "description": "Interface input pipe name (no leading slash). OSC address derives as /<bind>/in. A bind naming no pipe is a warning; the control is skipped.",
+          "type": "string",
+          "minLength": 1
+        },
+        "label": {
+          "description": "Display name; defaults to the pipe name.",
+          "type": "string"
+        },
+        "widget": {
+          "description": "Widget kind from the superset vocabulary. Defaults to the type-inferred widget for the bound pipe. Shipped: fader, radial, param-toggle, note-toggle, chord-button. Reserved (format-allowed, web-only, not yet built): xy-pad, grid, visualizer, keyboard. Targets skip kinds they cannot render, loudly.",
+          "type": "string",
+          "enum": [
+            "fader",
+            "radial",
+            "param-toggle",
+            "note-toggle",
+            "chord-button",
+            "xy-pad",
+            "grid",
+            "visualizer",
+            "keyboard"
+          ]
+        },
+        "group": {
+          "description": "Layout group; adjacent controls sharing a group pack into one row.",
+          "type": "string"
+        },
+        "min": {
+          "description": "Narrower presentation minimum (subset of the pipe's declared range; resolvers clamp and warn).",
+          "type": "number"
+        },
+        "max": {
+          "description": "Narrower presentation maximum (subset of the pipe's declared range; resolvers clamp and warn).",
+          "type": "number"
+        },
+        "note": {
+          "description": "note-toggle payload: note number the button plays (required for note-toggle).",
+          "type": "integer"
+        },
+        "velocity": {
+          "description": "note-toggle payload: press velocity (default 1.0).",
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        },
+        "degree": {
+          "description": "chord-button payload: scale degree the button plays (required for chord-button).",
+          "type": "integer"
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "widget": { "const": "note-toggle" } }, "required": ["widget"] },
+          "then": { "required": ["note"] }
+        },
+        {
+          "if": { "properties": { "widget": { "const": "chord-button" } }, "required": ["widget"] },
+          "then": { "required": ["degree"] }
+        }
+      ]
+    }
+  }
+}

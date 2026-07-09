@@ -1,5 +1,10 @@
 # ADR-0038: Interface pipes, logical channel binding, and the device layer
 
+> **Amended by [ADR-0043](0043-surface-docs-decouple-presentation-from-instruments.md).**
+> §2's "presentation metadata (label/widget/…) lives on entries" is narrowed: pipes keep the
+> quantity contract (`type`/`default`/`min`/`max`/`curve`/`unit`); `label`/`widget` move to
+> decoupled surface docs (format v3).
+
 ## Status
 
 Accepted (2026-07-04). Resolved in a grilling session — the design gate of the explicit

@@ -1,5 +1,9 @@
 # ADR-0041: The web player app lives in-repo at `/web`
 
+> **Amended by [ADR-0043](0043-surface-docs-decouple-presentation-from-instruments.md).**
+> The auto-UI renders from interface pipes + surface docs, not from ADR-0018's `control`
+> blocks (the "Rides on ADR-0018" line below is retired with them).
+
 ## Status
 
 Accepted (2026-07-08). The repo-shape decision of the web player epic
