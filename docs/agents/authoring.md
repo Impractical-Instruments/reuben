@@ -329,8 +329,8 @@ seam for the "agents author new Operators in Rust" goal ([ADR-0004](../adr/0004-
 
 ## The Instrument format (`crates/reuben-core/src/format.rs`)
 
-An Instrument is plain JSON data ([ADR-0028](../adr/0028-one-input-shape.md); **format v2**
-since [ADR-0038](../adr/0038-interface-pipes-and-the-device-layer.md)): `nodes` (operator
+An Instrument is plain JSON data ([ADR-0028](../adr/0028-one-input-shape.md); **format v3**
+since [ADR-0043](../adr/0043-surface-docs-decouple-presentation-from-instruments.md)): `nodes` (operator
 `type` + `address`, plus an `inputs` map, an optional `config` block, and optional `doc`) and
 an optional **`interface`** block — the graph's one boundary, everything that crosses its edge
 (see below). There is **no top-level `connections` array** and **no per-node `params` map**
@@ -376,8 +376,10 @@ target-pointing form (no entry points inward anymore):
   fan-out free. Because nothing is pointed at, **the entry declares its own `Arg` type** —
   `"type"`: `"f32_buffer"`, `"f32"`, `"note"`, `"harmony"`, or a vocab enum name — enforced
   against every consumer wire by the ordinary pass-2 wire check. A numeric pipe owns
-  engine-enforced `default`/`min`/`max`/`curve`, plus the same presentational metadata as any
-  boundary entry (`label`/`unit`/`widget`). A defaulted pipe unfed materializes its default —
+  engine-enforced `default`/`min`/`max`/`curve` plus a display `unit` — the pipe's whole
+  *quantity* contract; presentation (`label`/`widget`) lives in a surface doc, not on the pipe
+  ([ADR-0043](../adr/0043-surface-docs-decouple-presentation-from-instruments.md)). A
+  defaulted pipe unfed materializes its default —
   a knob at rest, message-drivable at **`/<name>/in`** over OSC; an unfed *bare* signal pipe
   renders silence (and warns at top level, where nothing can ever feed it).
 - An **output pipe is fed from an internal port**: `"main_l": { "from": "/pan.left" }`.
@@ -400,9 +402,9 @@ target-pointing form (no entry points inward anymore):
 "interface": {
   "inputs": {
     "in":   { "type": "f32_buffer" },
-    "mic":  { "type": "f32_buffer", "channel": 0, "label": "Mic" },
+    "mic":  { "type": "f32_buffer", "channel": 0 },
     "tone": { "type": "f32_buffer", "default": 4000.0, "min": 20.0, "max": 20000.0,
-              "curve": "exp", "unit": "Hz", "label": "Tone", "widget": "knob" }
+              "curve": "exp", "unit": "Hz" }
   },
   "outputs": {
     "main_l": { "from": "/pan.left",  "channel": 0 },
@@ -430,13 +432,17 @@ identity, so `a.json` and `./a.json` are one cycle-guard/dedup key. For embedded
 core's in-memory `MemoryResolver` serves patches and samples by exact key with no filesystem.
 A document may declare a `format_version` ([ADR-0036](../adr/0036-instrument-library-and-format-versioning.md));
 absent means 1, and a version newer than the engine understands refuses to load. The current
-version is **2** — ADR-0038's interface-pipe direction flip, the first breaking bump. A v1
-document keeps loading forever: the loader migrates it at parse (target-form `interface`
-entries flip to pipes + consumer wire-refs, deriving each pipe's type/range/default from the
+version is **3** — [ADR-0043](../adr/0043-surface-docs-decouple-presentation-from-instruments.md)'s
+presentation strip, the second breaking bump after ADR-0038's v2 interface-pipe direction
+flip. Old documents keep loading forever, migrated at parse: v1's target-form `interface`
+entries flip to pipes + consumer wire-refs (deriving each pipe's type/range/default from the
 old target port; the anonymous `outputs` array becomes named `interface.outputs` entries), and
-migrated-vs-native renders are **bit-identical** (asserted in
-`crates/reuben-core/tests/format_v2.rs`). Save writes v2 — a migrated document never saves
-back under its old number. To **save**, serialize
+a leftover per-node `control` block or pipe `label`/`widget` — v2's retired presentation — is
+**ignored with a `LoadWarning` naming it** (`DeprecatedControlBlock` /
+`DeprecatedPipePresentation`): never fatal, never silent, and sound is unaffected (the engine
+never read them; re-saving strips them). Migrated-vs-native renders are **bit-identical**
+(asserted in `crates/reuben-core/tests/format_v2.rs` and `format_v3.rs`). Save writes v3 — a
+migrated document never saves back under its old number. To **save**, serialize
 the `InstrumentDoc` (nested references survive); `InstrumentDoc::from_graph` is the explicit
 flatten/export path — a built graph's spliced subpatches appear as their inlined nodes.
 
@@ -447,8 +453,8 @@ voice patch declares its **`interface`** like any graph (pipes, ADR-0038): input
 (`freq`/`gate`) its internal nodes consume, output pipes (`audio`/`active`) fed from internal
 ports — so the host Voicer can drive and tap it through the boundary. Hosted this way, any
 `channel` binding on a voice's pipes is inert, exactly as for a nested subpatch.
-(`interface` is real wiring the engine type-checks, distinct
-from the engine-ignored `control` block.) See `instruments/default.json` + `instruments/voices/default-voice.json`.
+(`interface` is real wiring the engine type-checks — the contract a surface doc binds to,
+never surface metadata itself.) See `instruments/default.json` + `instruments/voices/default-voice.json`.
 
 ### Nesting: a `subpatch` node inlined at build ([ADR-0034](../adr/0034-instrument-nesting.md))
 
@@ -474,43 +480,48 @@ host's wiring feeds the pipe through the face; an unwired nested pipe falls back
 default (silence for a bare signal pipe) with a `LoadWarning` — a nest never reaches the hardware
 on its own.
 
-A pipe entry carries its **presentational metadata** alongside the declared type — `label`,
-`unit`, `widget`, and for numeric pipes the engine-enforced `default`/`min`/`max`/`curve`
-(ADR-0038 §2, reshaping ADR-0034 §4's per-field overrides: the entry now *owns* this metadata
-outright). It decorates how a boundary control *presents* — introspection today;
-control-surface generation is the intended next consumer (issue #153) — while the declared
-`type` is what flows (see `instruments/patches/space.json`):
+A pipe entry carries its **quantity contract** alongside the declared type — for numeric
+pipes the engine-enforced `default`/`min`/`max`/`curve` plus a display `unit` (ADR-0038 §2 as
+amended by [ADR-0043](../adr/0043-surface-docs-decouple-presentation-from-instruments.md):
+the entry owns this metadata outright, and `unit`/`curve` describe the *quantity*, so every
+surface of the instrument inherits them). Presentation — `label`, `widget`, grouping, order —
+lives apart in a **surface doc** (`surfaces/<name>.json`, schema
+`surfaces/surface.schema.json`) that binds pipes by name; the `control-surface` skill authors
+it, and the web player and TouchOSC emitter render from it. The declared `type` is what flows
+(see `instruments/patches/space.json`):
 
 ```json
 "interface": {
   "inputs": {
     "in":   { "type": "f32_buffer" },
     "tone": { "type": "f32_buffer", "default": 4000.0, "min": 20.0, "max": 20000.0,
-              "curve": "exp", "unit": "Hz", "label": "Tone", "widget": "knob" }
+              "curve": "exp", "unit": "Hz" }
   },
   "outputs": { "out": { "from": "/verb.audio" } }
 }
 ```
 
 `reuben describe <patch.json>` prints the boundary a host wires against — each pipe with its
-declared type, range, default, and presentation metadata.
+declared type, range, default, and unit.
 `instruments/patches/space.json` (nestable effect) + `instruments/nested-space.json` (host) are
 the worked pair; `instruments/mic-space.json` nests the same effect behind a live-input pipe.
 
-A node may also carry an optional **`control`** block
-([ADR-0018](../adr/0018-control-surface-generation.md)) — surface metadata marking it
-player-facing: a `label` (required) plus optional `unit`/`widget`/range, a `param` (to bind a
-specific input instead of the node address), or `widget: "note-toggle"` with a `note`/`port`.
-It is **opaque to the engine** — round-trips through load/save, never read at runtime; the
-[`control-surface` skill](../../.claude/skills/control-surface/SKILL.md) reads it to generate a
-TouchOSC surface. `instruments/good-button.json` is the worked example.
+The per-node **`control`** block ([ADR-0018](../adr/0018-control-surface-generation.md)) is
+**retired** ([ADR-0043](../adr/0043-surface-docs-decouple-presentation-from-instruments.md)):
+a v2 document (or a v3 one still carrying leftovers) parses, but the block is dropped with a
+`LoadWarning::DeprecatedControlBlock` — the engine never read it, so sound is unchanged, and
+re-saving strips it. Player-facing controls are **interface input pipes** now; their
+presentation lives in a surface doc read by the
+[`control-surface` skill](../../.claude/skills/control-surface/SKILL.md) and the web player
+(`instruments/good-button.json` + `surfaces/good-button.json` are the worked pair).
 
-## "Audio vs control" is tooling metadata, not a type
+## "Audio vs control" is boundary metadata, not a type
 
 Collapsing audio, CV, and control into one `f32_buffer` Signal means the engine treats every
 `f32_buffer` alike. The authoring *intent* — "this is an audio/CV cable" vs "this is a control knob" —
-that the control-surface generator and patcher care about survives as **optional tooling metadata**
-(next to `control`), never as a runtime type.
+that the surface resolvers and patcher care about lives at the **graph boundary** (a knob is an
+interface input pipe with a declared range and default; a surface doc binds it to a widget),
+never as a runtime type.
 
 ## Addressing
 

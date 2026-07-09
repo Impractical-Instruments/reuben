@@ -64,7 +64,7 @@ A standalone [[instrument]] a [[voicer]] hosts as one [[voice]] of its pool — 
 _Avoid_: voice graph, sub-instrument, voice template.
 
 **Interface**:
-An [[instrument]]'s engine-honored I/O boundary: named external ports — its **boundary ports** — mapped to internal Operator inputs/outputs, type-checked and wired by the engine. The structural counterpart to a curated control surface ([[address]]es) — real wiring, not surface metadata. A [[voice sub-patch]]'s `freq`/`gate`/`audio`/`active` boundary is the canonical case.
+An [[instrument]]'s engine-honored I/O boundary: named, typed **pipes** — an input pipe mints an address internal Operators consume; an output pipe is fed from an internal port — type-checked and wired by the engine. Real wiring carrying the quantity contract (type/default/range/curve/unit), never surface metadata: the one boundary a [[surface doc]] binds by name. A [[voice sub-patch]]'s `freq`/`gate`/`audio`/`active` boundary is the canonical case.
 _Avoid_: control surface, ports block.
 
 **Subpatch**:
@@ -80,8 +80,20 @@ The runtime nesting path: an Operator keeps each nested instance as its own [[pl
 _Avoid_: runtime nest, sub-plan path (informal).
 
 **Boundary face**:
-The synthesized port set a [[subpatch]] presents, computed at load from its child's [[interface]]: one port per interface name, [[arg]] type inherited from the inner port and never overridable, presentational metadata inherited and overridable per-field. A build-time and introspection artifact only — it dissolves with the node and never reaches [[render]].
+The synthesized port set a [[subpatch]] presents, computed at load from its child's [[interface]]: one port per interface name, each carrying the pipe's declared [[arg]] type and quantity contract (an output pipe inherits type from the internal port that feeds it); presentation lives in a [[surface doc]], never on the face. A build-time and introspection artifact only — it dissolves with the node and never reaches [[render]].
 _Avoid_: descriptor (the compile-time operator contract), synthesized ports (informal).
+
+**Surface doc**:
+A presentation-only JSON document (`surfaces/<name>.json`) binding an [[instrument]]'s [[interface]] input pipes to widgets by name — label, widget kind, grouping, order, optionally a narrower range. It carries no contract: the pipe owns the quantity, a resolver merges it at load (so surfaces never drift from the boundary), and with no doc a default surface derives from the pipes. Durable and editable; the `.tosc` layout is a disposable projection of it, and the web player renders it live.
+_Avoid_: control block (the retired inline per-node form), layout file, UI config, `.tosc` (a projection of the doc, not the doc).
+
+**Superset widget vocabulary**:
+The one shared set of widget names a [[surface doc]] may use — deliberately a superset of what any single target renders (shipped: fader, radial, param-toggle, note-toggle, chord-button; reserved: xy-pad, grid, visualizer, keyboard). Each target renders its subset and skips the rest loudly, so no target's ceiling caps another's.
+_Avoid_: widget list, control types, per-target vocabulary (the vocabulary is shared; only rendering is per-target).
+
+**Surface pipe promotion**:
+Rewriting a control that lived inline in the graph (a retired `control` block, a `map` instance literal) as a named [[interface]] input pipe carrying the quantity contract — giving a [[surface doc]] an honest, engine-validated name to bind. A graph edit, not a presentation edit; a sequencer's N steps promote to N ordinary pipes, no new machinery.
+_Avoid_: exposing a param (informal — say promotion), control migration, lane pipe (shelved future sugar, not this).
 
 **Pitch**:
 A symbolic value, modeled as `enum { Degree(i32), Absolute(f32) }` (no invalid states) — primarily a scale `Degree` within the active [[scale]], with `Absolute` float MIDI note (60.0 = middle C) available as a 12-TET coordinate. Symbolic only; a [[tuning]] resolves it to a frequency in Hz. A **Note** is `{ pitch: Pitch, velocity: f32 }` (velocity 0 = note-off).
@@ -104,7 +116,7 @@ The source of base musical timing — tempo, meter, position. A global default C
 _Avoid_: transport, master clock, conductor.
 
 **Good Button**:
-Both a principle and an artifact. *As principle*: every control is hard to make sound bad — energy in produces juicy musical feedback out, easy defaults always provided. *As artifact*: a curated, often mapped control on an [[instrument]]'s surface (e.g. one "brightness" knob fanned to filter cutoff + resonance, each over its own range) — built from composition (`map` Operators + Message fan-out), not a special type. A Good Button (artifact) embodies the Good Button (principle).
+Both a principle and an artifact. *As principle*: every control is hard to make sound bad — energy in produces juicy musical feedback out, easy defaults always provided. *As artifact*: a curated, often mapped control on an [[instrument]]'s surface (e.g. one "brightness" knob fanned to filter cutoff + resonance, each over its own range) — built from composition (`map` Operators + Message fan-out), not a special type, exposed to the player as an [[interface]] input pipe and presented by a [[surface doc]]. A Good Button (artifact) embodies the Good Button (principle).
 _Avoid_: meta param, meta-control, macro (all name the artifact — say Good Button).
 
 **Signal**:

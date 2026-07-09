@@ -99,9 +99,12 @@ cargo reuben-play instruments/<name>.json
 The rows marked **yes** make sound immediately — good for a first run with no OSC sender. Every
 node's inputs are live over OSC at its address (e.g. `/delay/time`).
 
-See **[docs/v1.4-control-surface-testing.md](docs/v1.4-control-surface-testing.md)** for a
-step-by-step walkthrough of playing an instrument from a phone/tablet via a generated
-TouchOSC layout (the `control-surface` skill).
+To play an instrument from a phone/tablet, project its **surface doc** (`surfaces/<name>.json`
+— the presentation layer over its interface pipes,
+[ADR-0043](docs/adr/0043-surface-docs-decouple-presentation-from-instruments.md)) to a
+TouchOSC layout with the `control-surface` skill; the web player renders the same doc live.
+(The v1.4-era walkthrough, [docs/v1.4-control-surface-testing.md](docs/v1.4-control-surface-testing.md),
+predates surface docs and is kept as history.)
 
 ### Offline (no audio device)
 
@@ -124,7 +127,7 @@ from the code.
 | Want to…                              | Ask Claude Code (skill)                       | Or do it by hand                                  |
 |---------------------------------------|-----------------------------------------------|---------------------------------------------------|
 | **Build / edit an instrument**        | "build a plucky bass" → **`patcher`**         | Edit JSON in `instruments/`, then `validate` it   |
-| **Make a TouchOSC control surface**   | "make a control surface for this" → **`control-surface`** | Add `control` blocks, hand-write the `.tosc` |
+| **Make / edit a control surface**     | "make a control surface for this" → **`control-surface`** | Author `surfaces/<name>.json`, then `gen_surface.py emit` |
 | **Add a new DSP operator (Rust)**     | "add a wavefolder operator" → **`create-operator`** | `scaffold-operator`, then implement `process`     |
 | **Sync the docs after a change**      | "sync the docs" → **`sync-docs`**             | Edit ARCHITECTURE/README by hand                  |
 
@@ -144,11 +147,13 @@ A typical first session, by hand or by skill:
    cargo run -p reuben-native --bin reuben -- validate instruments/my-rig.json
    ```
 4. **Play it** with `cargo reuben-play instruments/my-rig.json` (above).
-5. **Play it on a tablet.** Annotate player-facing nodes with a `control` block and generate a
-   [TouchOSC](https://hexler.net/touchosc) surface with the `control-surface` skill
-   ([ADR-0018](docs/adr/0018-control-surface-generation.md)); `.tosc` layouts land in
-   `control-surfaces/`. `control-surfaces/good-button.tosc` and `djfilter-demo.tosc` are worked
-   examples.
+5. **Play it on a tablet.** Player-facing controls are the instrument's `interface` input
+   pipes; presentation lives in a **surface doc** (`surfaces/<name>.json`,
+   [ADR-0043](docs/adr/0043-surface-docs-decouple-presentation-from-instruments.md)) — or is
+   auto-derived from the pipes when no doc exists. The `control-surface` skill authors the doc
+   and projects it to a [TouchOSC](https://hexler.net/touchosc) layout (`.tosc` files land in
+   `control-surfaces/`); the web player renders the same doc with no emit step.
+   `surfaces/good-button.json` and `surfaces/euclidean-drums.json` are worked examples.
 
 Need behavior no operator provides? That's a new **Operator** in Rust — `scaffold-operator`
 (or the `create-operator` skill) generates the skeleton and wires its registration
@@ -167,9 +172,10 @@ sub-patches (`instruments/voices/*.json`) rather than the now-removed Lane model
 General nesting ([ADR-0034](docs/adr/0034-instrument-nesting.md)) has landed end to end: a
 `subpatch` node references another instrument (cycle-guarded), inlines into the parent graph at
 build (zero runtime cost, internals still OSC-reachable under the node's address prefix), presents
-the child's `interface` as its ports — each entry declaring its own type and presentational
-metadata (label/unit/widget/range) since the ADR-0038 pipe flip, type-checked by the ordinary
-wire check — and
+the child's `interface` as its ports — each entry declaring its own type and quantity
+metadata (unit/range/default/curve) since the ADR-0038 pipe flip (presentation lives in a
+surface doc since format v3, [ADR-0043](docs/adr/0043-surface-docs-decouple-presentation-from-instruments.md)),
+type-checked by the ordinary wire check — and
 `reuben describe <patch.json>` introspects that boundary (`instruments/nested-space.json` is the
 worked example). The library resolution story (#122) has landed: a reference resolves relative
 to the document that names it (a library patch bundles its private sub-patches and samples next
@@ -206,8 +212,18 @@ the whole instrument matrix headlessly. On top of that engine the `/web` player 
 payload is staged by a transitive-resource discovery script and deployed to Cloudflare Pages — and
 as of P5 ([#227](https://github.com/Impractical-Instruments/reuben/issues/227)) it is an
 installable, offline-capable PWA: a `vite-plugin-pwa` service worker precaches exactly that staged
-payload (wasm, every Toy's transitive resources, schema, derived icons), so a home-screen launch
-plays with the network off. Remaining rungs of the epic: share links (P6) and the SAB ring (P7).
+payload (wasm, every Toy's transitive resources, surface docs, derived icons), so a home-screen
+launch plays with the network off. Share links landed as P6
+([ADR-0042](docs/adr/0042-share-links.md)): the ▶ play links in the rig table above encode a
+self-contained bundle (document + transitive text resources) into the URL fragment.
+**Format v3** ([ADR-0043](docs/adr/0043-surface-docs-decouple-presentation-from-instruments.md), #247)
+decoupled presentation from instruments: the per-node `control` block and pipe `label`/`widget`
+are retired (a v2 document keeps loading — leftovers are ignored with a `LoadWarning` naming
+each; sound is unaffected), an interface pipe carries only the quantity contract
+(`type`/`default`/`min`/`max`/`curve`/`unit`), and presentation lives in **surface docs**
+(`surfaces/*.json`) that the web player and the TouchOSC generator both render —
+`surfaces/<id>.web.json ?? surfaces/<id>.json ??` an auto-derived default from the pipes.
+Remaining rung of the epic: the SAB ring (P7).
 
 ## Going deeper
 

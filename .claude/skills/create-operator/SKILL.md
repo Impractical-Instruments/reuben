@@ -13,8 +13,8 @@ edit, ADR-0024). This skill authors that end-to-end (ADR-0021).
 
 First check it doesn't already exist: `reuben describe --json` lists every operator — a request is
 often a *patch* of existing ones (the `patcher` skill), not new Rust. This skill is only for
-behavior no operator provides. It does **not** build graphs (`patcher`), write `control` blocks
-(`control-surface`, ADR-0018), or edit the living docs (`sync-docs`). Its review mirror is
+behavior no operator provides. It does **not** build graphs (`patcher`), author surface docs
+(`control-surface`, ADR-0043), or edit the living docs (`sync-docs`). Its review mirror is
 [`rust-hot-path-review`](../rust-hot-path-review/SKILL.md) — run that over the diff to check the
 `process` you wrote stays RT-safe.
 
@@ -146,7 +146,7 @@ Run all `reuben`/`cargo` commands from the repo root.
 | Micro-bench workload (`bench_support.rs` + `micro_iai.rs`) | **register** the new op's `WORKLOADS`/`MICRO_IAI_KINDS`/`#[bench]` entries (part of the gate; CI's `check` job reds without it) |
 | `instrument.schema.json` | **regenerate** via `gen_schema` after the op lands (part of the gate) |
 | Instrument/Rig graphs | **never** — that is the `patcher` skill |
-| `control` blocks | **never** — that is the `control-surface` skill (ADR-0018) |
+| Surface docs (`surfaces/*.json`) | **never** — that is the `control-surface` skill (ADR-0043) |
 | ROADMAP / authoring.md / ARCHITECTURE / domain terms | **never inline** — hand to `sync-docs` |
 
 ## Report
