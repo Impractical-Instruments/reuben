@@ -45,9 +45,6 @@ const DIST = join(WEB, "dist");
 const ENGINE_JS = join(ROOT, "crates", "reuben-web", "js");
 const RAW_INSTRUMENTS = join(ROOT, "instruments");
 
-const DEFAULT_TOY = "groovebox"; // web/toys.json `default`
-const SAMPLE_INSTRUMENT = "granulator-demo"; // decode characterization (not a bundled Toy)
-
 // --- static server: mirrors the deploy (brotli Content-Encoding on compressible types, so a
 //     CDP network throttle sees production-like on-wire bytes; application/wasm; long routes). --
 const MIME = {
