@@ -67,6 +67,28 @@ test("denying the mic surfaces the engine copy and stays retryable", async ({ pa
   await expect(page.locator(".mic-enable")).toBeEnabled();
 });
 
+test("a device with no input surfaces the no-microphone copy", async ({ page }) => {
+  // The launch flags always supply a fake device, so device-absence can't come from the browser;
+  // simulate it at the getUserMedia boundary (a rejected NotFoundError, exactly what a real
+  // input-less device throws). enableMic() maps it to the finished "no microphone" copy, which
+  // the player surfaces through the same verbatim path as the denied case. addInitScript runs
+  // before the app's scripts on the openToy navigation, so the engine sees the stub.
+  await page.addInitScript(() => {
+    navigator.mediaDevices.getUserMedia = () =>
+      Promise.reject(new DOMException("Requested device not found", "NotFoundError"));
+  });
+  await openToy(page, MIC_TOY);
+
+  await page.locator(".mic-enable").click();
+
+  const status = page.locator(".player-status");
+  await expect(status).toHaveText("No microphone found on this device");
+  await expect(status).toHaveClass(/error/);
+  // A missing device is retryable too (plug one in, tap again).
+  await expect(page.locator(".mic-control")).toHaveAttribute("data-mic-state", "denied");
+  await expect(page.locator(".mic-enable")).toBeEnabled();
+});
+
 test("granting the mic takes the instrument live", async ({ page, context }) => {
   await context.grantPermissions(["microphone"]);
   await openToy(page, MIC_TOY);
