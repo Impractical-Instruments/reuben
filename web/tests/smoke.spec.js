@@ -17,9 +17,10 @@ const manifest = JSON.parse(
 const TOY_COUNT = manifest.toys.length;
 
 // The default Toy is loaded first; SWITCH_TOY is the second Toy the test tabs to. SWITCH_TOY
-// must be self-playing AND declare control blocks so its switched-in surface renders a widget
-// (line ~44). Guard both ids against the manifest so a Toy renamed/removed out from under the
-// test fails loudly here instead of as an opaque locator timeout below.
+// must be self-playing AND declare interface pipes (bound by its surface doc, or auto-derived
+// — ADR-0043) so its switched-in surface renders a widget (line ~44). Guard both ids against
+// the manifest so a Toy renamed/removed out from under the test fails loudly here instead of
+// as an opaque locator timeout below.
 const DEFAULT_TOY = manifest.default;
 const SWITCH_TOY = "euclidean-drums";
 for (const id of [DEFAULT_TOY, SWITCH_TOY]) {
@@ -57,7 +58,7 @@ test("boot → unlock → load default Toy → switch, on one persistent context
   expect(await page.evaluate(() => window.reubenPlayer.engineState())).toBe("running");
 
   // Switch to a second Toy WITHOUT re-unlocking: back to launcher, pick SWITCH_TOY (also
-  // self-playing, and it declares control blocks so the switched-in surface has widgets too).
+  // self-playing, and its interface pipes + surface doc give the switched-in surface widgets too).
   await page.locator(".back").click();
   await expect.poll(() => page.evaluate(() => window.reubenPlayer.screen())).toBe("launcher");
   await page.locator(`.toy-card[data-toy="${SWITCH_TOY}"]`).click();

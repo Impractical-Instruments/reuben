@@ -141,7 +141,9 @@ test("moving a control then Share round-trips the document and the moved control
   await page.locator("#start").click();
   await expect.poll(() => page.evaluate(() => window.reubenPlayer.screen())).toBe("player");
 
-  // Move the first fader (the /clock/tempo radial) to its maximum so its journalled value differs
+  // A fragment boot carries no surface doc, so the surface is auto-derived from the interface
+  // pipes (ADR-0043 §3): one fader per wireable pipe, declaration order — the first is the
+  // `tempo` pipe, addressed /tempo/in. Move it to its maximum so its journalled value differs
   // from the load-time default — the snapshot must then carry exactly this control.
   const fader = page.locator(".surface-mount input[type=range]").first();
   await expect(fader).toBeVisible();
@@ -164,7 +166,7 @@ test("moving a control then Share round-trips the document and the moved control
   // The sidecar carries the one control we moved, and no more.
   expect(decoded.snapshot.length).toBeGreaterThan(0);
   const addrs = decoded.snapshot.map(controlAddress);
-  expect(addrs).toContain("/clock/tempo");
+  expect(addrs).toContain("/tempo/in");
 });
 
 // --- AC 4: every failure class lands on the launcher with the right banner, no crash --------

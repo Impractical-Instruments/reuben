@@ -8,7 +8,9 @@
 //   2. drives the engine's OWN fetch-on-miss discovery (crates/reuben-web/js/loader.mjs,
 //      the exact loop the browser runs) over each manifest Toy to enumerate its TRANSITIVE
 //      resource keys, then copies exactly that set — no more — into public/instruments/;
-//   3. copies the instrument schema (fader ranges/units for the surface) into public/.
+//   3. copies the instrument surface docs (surfaces/*.json, ADR-0043 presentation layer)
+//      into public/surfaces/ so main.js's resolution order (surfaces/<id>.web.json ??
+//      surfaces/<id>.json ?? auto-derived) finds whatever exists for a Toy.
 //
 // The discovery in step 2 is why this is a script and not a static file list: it asks the
 // real engine what each Toy references, so the payload is exactly the Toy docs + the voices/
@@ -20,7 +22,7 @@
 // Playwright reruns); the build fails if that env is set but no artifact exists.
 
 import { spawnSync } from "node:child_process";
-import { access, copyFile, mkdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, copyFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
@@ -34,7 +36,7 @@ const ROOT = resolve(WEB, ".."); // repo root
 const CRATE = join(ROOT, "crates", "reuben-web");
 const WASM = join(CRATE, "target", "wasm32-unknown-unknown", "release", "reuben_web.wasm");
 const INSTRUMENTS = join(ROOT, "instruments");
-const SCHEMA = join(ROOT, "crates", "reuben-core", "schema", "instrument.schema.json");
+const SURFACES = join(ROOT, "surfaces");
 // The master PWA icon (issue #227 human prerequisite): a ≥512×512 square committed by a human.
 // @vite-pwa/assets-generator derives every icon size from it, but it resolves its output dir
 // relative to Vite's publicDir — so the source must live UNDER public/ or the generated icons
@@ -44,6 +46,7 @@ const SCHEMA = join(ROOT, "crates", "reuben-core", "schema", "instrument.schema.
 const MASTER_ICON = join(WEB, "src", "assets", "icon.png");
 const PUBLIC = join(WEB, "public");
 const OUT_INSTRUMENTS = join(PUBLIC, "instruments");
+const OUT_SURFACES = join(PUBLIC, "surfaces");
 // Where the offline-precache list is written (issue #227, scope item 2). vite.config.js reads
 // this at build time and hands it to Workbox as `additionalManifestEntries`, so the SW precache
 // is generated from THIS script's transitive discovery — it cannot drift from what ships. Lives
@@ -129,13 +132,31 @@ async function main() {
     );
   }
 
-  // Fresh public/instruments each run so a Toy removed from the manifest can't leave a stale
-  // asset behind (public/ is gitignored and fully build-owned).
+  // Fresh public/instruments + public/surfaces each run so a Toy removed from the manifest (or
+  // a deleted surface doc) can't leave a stale asset behind (public/ is gitignored, build-owned).
   await rm(OUT_INSTRUMENTS, { recursive: true, force: true });
   await mkdir(OUT_INSTRUMENTS, { recursive: true });
+  await rm(OUT_SURFACES, { recursive: true, force: true });
+  await mkdir(OUT_SURFACES, { recursive: true });
+  // schema.json is no longer part of the payload (ADR-0043 §4: the pipes carry the contract, so
+  // the player never fetches it) — scrub any copy left by a pre-#247 build so it can't ship.
+  await rm(join(PUBLIC, "schema.json"), { force: true });
 
   await copyFile(WASM, join(PUBLIC, "reuben_web.wasm"));
-  await copyFile(SCHEMA, join(PUBLIC, "schema.json"));
+
+  // --- 3. stage the surface docs (ADR-0043) ------------------------------------------------
+  //
+  // Every INSTRUMENT surface doc under surfaces/ ships (they're tiny, and staging them all
+  // keeps this script free of per-Toy wiring — main.js auto-discovers by id:
+  // surfaces/<id>.web.json ?? surfaces/<id>.json ?? auto-derived). surface.schema.json is
+  // authoring-time tooling the resolver never reads, so it stays out of the payload.
+  const surfaceDocs = (await readdir(SURFACES))
+    .filter((f) => f.endsWith(".json") && f !== "surface.schema.json")
+    .sort();
+  for (const f of surfaceDocs) {
+    await copyFile(join(SURFACES, f), join(OUT_SURFACES, f));
+  }
+  console.log(`[stage] surfaces: ${surfaceDocs.length} doc(s) (${surfaceDocs.join(", ")})`);
 
   // Stage the master PWA icon into public/ so the vite-plugin-pwa asset step can derive the icon
   // set from it into the built payload (see MASTER_ICON). Fail loudly if the human prerequisite
@@ -177,8 +198,8 @@ async function main() {
   // --- 4. emit the offline-precache list (issue #227) -------------------------------------
   //
   // The SW's precache is generated HERE, off the exact set this script just staged — the wasm,
-  // the schema, every Toy document, and every transitive resource `copied` while discovering
-  // them. vite.config.js reads this file and hands it to Workbox verbatim, so the offline
+  // every Toy document, every surface doc, and every transitive resource `copied` while
+  // discovering them. vite.config.js reads this file and hands it to Workbox verbatim, so the offline
   // payload is definitionally the online payload: add a Toy and its resources are discovered,
   // staged, AND precached in one pass; nothing can be shipped-but-not-cached or cached-but-not-
   // shipped. Each entry carries a content revision so Workbox re-fetches only what changed.
@@ -189,9 +210,9 @@ async function main() {
   // this list is only the public/ payload Vite copies verbatim and would otherwise miss.
   const payloadUrls = [
     "reuben_web.wasm",
-    "schema.json",
     ...toys.map((t) => `instruments/${t.id}.json`),
     ...[...copied].sort().map((key) => `instruments/${key}`),
+    ...surfaceDocs.map((f) => `surfaces/${f}`),
   ];
   const entries = [];
   for (const url of payloadUrls) {
@@ -201,7 +222,8 @@ async function main() {
   await writeFile(PRECACHE_MANIFEST, `${JSON.stringify(entries, null, 2)}\n`);
 
   console.log(
-    `[stage] done — ${toys.length} Toys, ${copied.size} unique resource(s), wasm + schema → web/public/` +
+    `[stage] done — ${toys.length} Toys, ${copied.size} unique resource(s), ` +
+      `${surfaceDocs.length} surface doc(s), wasm → web/public/` +
       `; precache manifest: ${entries.length} entr${entries.length === 1 ? "y" : "ies"} → web/.pwa-precache.json`,
   );
 }

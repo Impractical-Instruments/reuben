@@ -13,7 +13,8 @@ import { VitePWA } from "vite-plugin-pwa";
 // Cloudflare Pages, sub-path on a PR preview) — every fetch() uses import.meta.env.BASE_URL.
 
 // The offline-precache list (issue #227, scope item 2). stage-assets.mjs writes exactly what it
-// staged — the wasm, schema, every Toy doc + its transitive voices/subpatches/samples — each with
+// staged — the wasm, every Toy doc + its transitive voices/subpatches/samples, every surface
+// doc — each with
 // a content revision, and we hand that verbatim to Workbox as additionalManifestEntries. Precache
 // is therefore GENERATED FROM the same transitive discovery that produces the payload: it cannot
 // ship an asset it didn't cache, or cache one it didn't ship. These .wasm/.json/.wav URLs are

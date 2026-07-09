@@ -1,4 +1,4 @@
-# Build-generated staging target: the wasm, the schema, and the discovered instrument
+# Build-generated staging target: the wasm, the surface docs, and the discovered instrument
 # bundle are produced by scripts/stage-assets.mjs (npm run stage) from the workspace —
 # never committed, always regenerated. Keeping public/ out of git is the point of the
 # staging script (ADR-0041: /web owns only the launcher + shell + build config).
