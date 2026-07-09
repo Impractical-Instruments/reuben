@@ -222,6 +222,12 @@ console.log("\n=== registry pin ===");
     count > 0 && count === expected,
     `registry_count() = ${count}, expected ${expected} from ${source}`,
   );
+
+  // The format_version() export (issue #228) — the share-link boot path distinguishes an
+  // envelope/document from a newer engine by it. Tracks reuben_core::format::FORMAT_VERSION;
+  // bump the 2 only when the format version genuinely bumps (same convention as the count above).
+  const fv = ex.format_version();
+  check(fv === 2, `format_version() = ${fv}, expected 2 (reuben_core::format::FORMAT_VERSION)`);
 }
 
 // --- the instrument matrix on one persistent instance -------------------------------------

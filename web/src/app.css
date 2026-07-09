@@ -142,6 +142,36 @@ body {
   color: var(--fg-dim);
   margin: 0;
 }
+
+/* Dismissible banner (issue #228): the landing surface for a share-link failure. Small, sits
+   atop the launcher, an accent-tinted card with a ✕ to dismiss. */
+.banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.75rem;
+  padding: 0.7rem 0.9rem;
+  border-radius: var(--radius);
+  background: rgba(224, 138, 138, 0.12);
+  border: 1px solid rgba(224, 138, 138, 0.4);
+}
+.banner-text {
+  flex: 1;
+  font-size: 0.9rem;
+  line-height: 1.35;
+}
+.banner-dismiss {
+  font: inherit;
+  font-size: 0.9rem;
+  line-height: 1;
+  color: var(--fg-dim);
+  background: none;
+  border: none;
+  cursor: pointer;
+  padding: 0.1rem 0.3rem;
+}
+.banner-dismiss:hover {
+  color: var(--fg);
+}
 .toy-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(15rem, 1fr));
@@ -232,10 +262,72 @@ body {
 .back:hover {
   border-color: var(--accent);
 }
+.player-heading {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
 .player-title {
   font-size: 1.4rem;
   margin: 0;
-  flex: 1;
+}
+.player-blurb {
+  color: var(--fg-dim);
+  font-size: 0.85rem;
+  line-height: 1.35;
+  margin: 0;
+}
+
+/* Share button (issue #228): a compact outlined action in the player head, alongside the badge. */
+.share {
+  font: inherit;
+  font-weight: 600;
+  color: var(--fg);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 0.45rem 1.1rem;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.share:hover:not(:disabled) {
+  border-color: var(--accent);
+  background: #1e2029;
+}
+.share:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+
+/* The hand-copy fallback slot: shown only when neither Web Share nor the Clipboard API is
+   available. A selected read-only field the reader can copy from. */
+.share-slot:not(:empty) {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+}
+.share-fallback-label {
+  color: var(--fg-dim);
+  font-size: 0.8rem;
+}
+.share-fallback {
+  font: inherit;
+  font-size: 0.85rem;
+  width: 100%;
+  resize: none;
+  color: var(--fg);
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 0.5rem 0.6rem;
+  word-break: break-all;
+}
+.share-error {
+  color: #ff8a8a;
+  font-size: 0.85rem;
+  margin: 0;
 }
 .player-status {
   color: var(--fg-dim);
