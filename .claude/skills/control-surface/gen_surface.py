@@ -289,10 +289,12 @@ def boundary_controls(boundary: dict) -> list:
             continue  # a bare audio pipe (unranged) — not a fader
         lo, hi = float(port["min"]), float(port["max"])
         default = float(port["default"]) if port.get("default") is not None else lo
+        # `describe` carries no presentation since ADR-0043 (label/widget live in a surface
+        # doc) — labels here come from the one pinned default_label algorithm.
         controls.append({
             "kind": "fader",
-            "label": port.get("label") or str(name).replace("_", " ").title(),
-            "widget": port.get("widget") or "fader",
+            "label": default_label(str(name)),
+            "widget": "fader",
             "address": _osc_from_pipe(name),
             "min": lo, "max": hi, "default": default,
             "unit": port.get("unit", ""),

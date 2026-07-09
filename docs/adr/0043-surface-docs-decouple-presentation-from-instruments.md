@@ -129,7 +129,21 @@ The `control` block and pipe `label`/`widget` are a breaking shape change under 
   holds, e.g. good-button's `/brightness` m2s) follow ADR-0017's rename discipline as a
   JSON-structural sweep: every `{"from": ...}` ref re-pointed, `doc` prose flagged and
   updated. External OSC senders cannot be reached — the rename is **warned in the change
-  record** (this ADR and the PR), per ADR-0017's guard list.
+  record** (this ADR and the PR), per ADR-0017's guard list. The durable list of retired
+  external addresses from the one-shot rewrite (knob addresses like `/brightness/in`,
+  `/kick_filter/in`, `/kick_vol/in` are **unchanged** — the pipe re-mints them):
+
+  | Retired address | Send instead |
+  | --- | --- |
+  | `/clock/tempo` (groovebox, euclidean-drums, djfilter-demo) | `/tempo/in` |
+  | `/kick/step1..16`, `/snare/step1..16`, `/hat/step1..16` (groovebox) | `/kick_step1/in` … `/hat_step16/in` |
+  | `/voicer/notes` (good-button) | `/notes/in` |
+  | `/chord/set` (chord-player) | `/chord/in` |
+  | `/harmony/root` (chord-player, strum-harp) | `/key/in` |
+  | `/strum/position`, `/strum/octaves` (strum-harp) | `/strum/in`, `/octaves/in` |
+  | `/filterpos/in`, `/djfilter/resonance` (djfilter-demo) | `/filter/in`, `/resonance/in` |
+  | `/<ch>_eu/{pulses,steps,rotation}`, `/<ch>_env/decay` (euclidean-drums) | `/<ch>_pulses/in`, `/<ch>_steps/in`, `/<ch>_rotation/in`, `/<ch>_decay/in` |
+  | `/grain/{position,grain_size,pitch,density,spray,gain}` (granulator-demo) | `/position/in`, `/grain_size/in`, `/pitch/in`, `/density/in`, `/spray/in`, `/gain/in` |
 
 ### 8. One evolved skill: generate + edit
 

@@ -101,12 +101,32 @@ async function fetchSurfaceDoc(id) {
       const r = await fetch(asset(candidate));
       if (r.status === 404) continue; // no such surface doc — try the next candidate
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      return await r.json();
+      const doc = await r.json();
+      // The resolver hard-refuses an unknown surface_version; refusing HERE instead keeps
+      // the §5 fallthrough alive — an unusable .web.json must not shadow a valid .json.
+      if (doc?.surface_version !== 1) {
+        throw new Error(`unsupported surface_version ${doc?.surface_version}`);
+      }
+      return doc;
     } catch (err) {
       console.warn(`[player] surface doc ${candidate} unusable, falling through:`, err);
     }
   }
   return null;
+}
+
+// Resolve with the surface doc, degrading to the auto-derived default if the resolver
+// refuses it — a broken surface file must never kill a Toy that already loaded (the
+// fetchSurfaceDoc policy above, enforced at the last seam).
+function resolveSurfaceOrDefault(doc, surfaceDoc, name) {
+  if (surfaceDoc !== null) {
+    try {
+      return buildSurface(doc, surfaceDoc);
+    } catch (err) {
+      console.warn(`[player] surface doc for ${name} rejected, using the derived default:`, err);
+    }
+  }
+  return buildSurface(doc, null);
 }
 
 // Surface resolver warnings (skipped pipes, unknown binds, clamped ranges) surface ONCE per
@@ -514,7 +534,7 @@ async function openToy(toy) {
     if (token !== loadToken) return;
 
     currentInstrument = doc.instrument;
-    const surface = buildSurface(doc, surfaceDoc);
+    const surface = resolveSurfaceOrDefault(doc, surfaceDoc, toy.id);
     logSurfaceWarnings(toy.id, surface.warnings);
     currentSurface = surface;
     renderSurface(surface, e, surfaceEl);

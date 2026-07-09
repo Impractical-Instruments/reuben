@@ -571,7 +571,10 @@ class BoundaryTest(unittest.TestCase):
     BOUNDARY = {"inputs": [
         {"name": "freq", "kind": "signal", "default": 440.0, "min": 20.0, "max": 20000.0, "unit": "Hz", "curve": "exponential"},
         {"name": "gate", "kind": "value", "default": 0.0, "min": 0.0, "max": 1.0, "curve": "linear"},
-        {"name": "tone", "kind": "signal", "default": 4000.0, "min": 200.0, "max": 8000.0, "unit": "Hz", "curve": "exponential", "label": "Tone", "widget": "radial"},
+        # `label`/`widget` here are STALE keys a pre-ADR-0043 describe could emit — the
+        # boundary path must ignore them (presentation lives in a surface doc; describe no
+        # longer carries any). Kept in the fixture to guard against re-reading them.
+        {"name": "tone", "kind": "signal", "default": 4000.0, "min": 200.0, "max": 8000.0, "unit": "Hz", "curve": "exponential", "label": "Legacy", "widget": "radial"},
         {"name": "in", "kind": "signal"},
         {"name": "mode", "kind": "enum", "default": "lowpass", "variants": ["lowpass", "highpass"]},
     ]}
@@ -589,12 +592,15 @@ class BoundaryTest(unittest.TestCase):
     def test_declared_metadata_flows_through(self):
         freq = next(c for c in g.boundary_controls(self.BOUNDARY) if c["address"] == "/freq/in")
         self.assertEqual((freq["min"], freq["max"], freq["default"], freq["unit"]), (20.0, 20000.0, 440.0, "Hz"))
-        self.assertEqual(freq["label"], "Freq")   # no label -> titled from the pipe name
+        self.assertEqual(freq["label"], "Freq")   # the one pinned default_label algorithm
         self.assertEqual(freq["widget"], "fader")
 
-    def test_pipe_owned_presentation_wins(self):
+    def test_stale_describe_presentation_is_ignored(self):
+        # ADR-0043: describe carries no presentation; a stale `label`/`widget` key in a
+        # pre-captured describe view must not leak through (labels come from default_label,
+        # every boundary control is a plain fader).
         tone = next(c for c in g.boundary_controls(self.BOUNDARY) if c["address"] == "/tone/in")
-        self.assertEqual((tone["label"], tone["widget"]), ("Tone", "radial"))
+        self.assertEqual((tone["label"], tone["widget"]), ("Tone", "fader"))
         self.assertEqual((tone["min"], tone["max"]), (200.0, 8000.0))
 
     def test_non_fader_kinds_are_skipped(self):
@@ -611,8 +617,9 @@ class BoundaryTest(unittest.TestCase):
             scaling[osc.find("./path/partial/value").text] = (arg.find("scaleMin").text, arg.find("scaleMax").text)
         self.assertEqual(scaling["/freq/in"], ("20", "20000"))
         self.assertEqual(scaling["/tone/in"], ("200", "8000"))
-        # The pipe-owned radial widget renders a RADIAL, not a FADER, for that control.
-        self.assertIsNotNone(doc.find(".//node[@type='RADIAL']"))
+        # Every boundary control is a plain fader — radial (and every other widget kind)
+        # is surface-doc curation now, never a describe-carried hint.
+        self.assertIsNone(doc.find(".//node[@type='RADIAL']"))
 
 
 class LiveEngineBoundaryTest(unittest.TestCase):
