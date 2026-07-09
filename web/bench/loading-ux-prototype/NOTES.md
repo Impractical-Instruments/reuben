@@ -43,7 +43,17 @@ Five presentations of the *same* simulated load, contrastable across rig size
   built + unit-tested but **latent**. Sample rigs exist in `instruments/`
   (`sampler`, `sampler-arp`, `granulator-demo`) but are not bundled.
 
-## Verdict
+## Verdict (settled by the HITL session)
 
-TBD — a human-in-the-loop session runs the grilling and records the decision here + in the
-#253 spec. Do not delete this prototype until that decision is captured.
+Recorded in **[`SPEC.md`](./SPEC.md)** — the agent-ready implementation spec. Spine:
+1. Multi-sample (drum-kit) shape → per-sample progress + partial-success are load-bearing.
+2. Eager staging + prefetch (warm sample bytes on hover); no lazy redesign.
+3. Freeze fix: discovery stages a decode-deferred stub (new `stage_resource` kind 2 /
+   `shell.stage_sample_deferred`) so no WAV decodes on the main thread; decode happens once
+   in the worklet.
+4. One new boundary event: worklet `staged{k,total,key,status}` → `onProgress` callback.
+5. Progress UI = aggregate determinate bar (option C) + per-sample rows (option D).
+6. Partial-success: a single sample's fetch(404)/decode error is non-fatal (empty buffer,
+   ADR-0016); terminal states `ready` / `ready-with-issues` / `failed`.
+
+Do not delete this prototype until #253 is implemented.
