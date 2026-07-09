@@ -13,6 +13,7 @@
 // card. groovebox's assets are prefetched during the splash so that first pick is instant.
 
 import "./app.css";
+import iiBadge from "./assets/ii-badge.png";
 import { registerSW } from "virtual:pwa-register";
 import { createReubenEngine } from "../../crates/reuben-web/js/reuben-engine.mjs";
 import { buildSurface, loadParamMeta, initial } from "../../crates/reuben-web/js/surface/widget-model.mjs";
@@ -149,6 +150,7 @@ function splashScreen() {
   const hero = h(
     "section",
     { class: "splash" },
+    iiMark(),
     h("h1", { class: "wordmark" }, "reuben"),
     h("p", { class: "tagline" }, "Open a URL. Tap once. Make music."),
     start,
@@ -237,6 +239,7 @@ function launcherScreen(bannerMessage) {
     h(
       "header",
       { class: "launcher-head" },
+      iiMark(),
       h("h1", { class: "wordmark small" }, "reuben"),
       h("p", { class: "launcher-sub" }, "Pick a Toy."),
     ),
@@ -301,6 +304,7 @@ function buildPlayerScreen({ nameForData, title, blurb, kind }) {
     h(
       "header",
       { class: "player-head" },
+      iiMark(),
       h("button", { class: "back", type: "button", onclick: backToLauncher }, "← Toys"),
       heading,
       h("span", { class: `toy-badge ${kind}` }, badgeText(kind)),
@@ -667,6 +671,7 @@ async function fragmentBoot(hash) {
   const hero = h(
     "section",
     { class: "splash boot-splash" },
+    iiMark(),
     h("h1", { class: "wordmark" }, "reuben"),
     h("p", { class: "tagline" }, "Someone shared an instrument with you."),
     start,
@@ -683,6 +688,22 @@ function infoLink() {
     "a",
     { class: "info-link", href: REPO_URL, target: "_blank", rel: "noopener" },
     "What is this?",
+  );
+}
+
+// The persistent Impractical Instruments brand mark — the inked lightbulb-press badge, shown in
+// every screen's header (and top-left on the splash) so the maker's stamp is always present.
+function iiMark() {
+  return h(
+    "a",
+    {
+      class: "ii-mark",
+      href: "https://impracticalinstruments.com",
+      target: "_blank",
+      rel: "noopener",
+      "aria-label": "Impractical Instruments",
+    },
+    h("img", { src: iiBadge, alt: "Impractical Instruments", width: "40", height: "40" }),
   );
 }
 

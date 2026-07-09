@@ -69,10 +69,10 @@ export default defineConfig({
           "Open a URL, tap once, make music. A browser instrument built from composable operators.",
         // standalone = launched-from-home-screen opens chrome-less (the #227 install AC).
         display: "standalone",
-        // Both = the shell --bg (#0e0f13): the OS status bar / splash match the dark shell so the
-        // install + cold-launch reads as one surface, no white flash before the app paints.
-        theme_color: "#0e0f13",
-        background_color: "#0e0f13",
+        // Both = the storybook splash's sky ground (#6a9db1): the OS status bar / cold-launch
+        // splash match the first screen the player sees, so install + launch read as one surface.
+        theme_color: "#6a9db1",
+        background_color: "#6a9db1",
         // Relative so the installed scope follows wherever the path-agnostic bundle is served
         // (root on Cloudflare production, a preview subpath on a PR) — same rationale as base.
         start_url: ".",
@@ -87,7 +87,7 @@ export default defineConfig({
         // Workbox aborts the whole precache (add-to-cache-list-conflicting-entries). Likewise the
         // payload proper (wasm/json/wav) is owned by additionalManifestEntries and kept out of
         // these globs, so nothing is precached twice.
-        globPatterns: ["**/*.{js,css,html,svg,png,ico}"],
+        globPatterns: ["**/*.{js,css,html,svg,png,ico,woff2}"],
         // icon.png is the master the icon set is derived FROM (stage-assets copies it into
         // public/ for the generator); Vite copies it to dist too, but nothing references it —
         // the manifest + html use the derived pwa-*.png. Keep the raw master out of the precache.
