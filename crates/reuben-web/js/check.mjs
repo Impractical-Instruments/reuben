@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 
 import { encodeControl } from "./codec.mjs";
 import { writeBytes, readError, loadInstrument } from "./loader.mjs";
-import { loadParamMeta, buildSurface, emit } from "./surface/widget-model.mjs";
+import { buildSurface, emit } from "./surface/widget-model.mjs";
 
 const WASM_URL = new URL(
   "../target/wasm32-unknown-unknown/release/reuben_web.wasm",
@@ -33,10 +33,11 @@ const SCHEMA_URL = new URL(
   import.meta.url,
 );
 const INSTRUMENTS_URL = new URL("../../../instruments/", import.meta.url);
+const SURFACES_URL = new URL("../../../surfaces/", import.meta.url);
 
-// The committed schema, parsed ONCE (it's the largest JSON in the tree): shared by the registry
-// pin (enum count) and the auto-UI surface build (loadParamMeta). A parse failure here aborts the
-// run loudly — the schema is committed and must be valid.
+// The committed schema, parsed ONCE, feeds the registry-count pin ONLY — the surface path is
+// schema-free under ADR-0043 (the instrument's `interface` block carries the whole contract).
+// A parse failure here aborts the run loudly — the schema is committed and must be valid.
 const schema = JSON.parse(await readFile(SCHEMA_URL, "utf8"));
 
 // Two captured planar streams are identical iff same length and every sample equal.
@@ -225,9 +226,10 @@ console.log("\n=== registry pin ===");
 
   // The format_version() export (issue #228) — the share-link boot path distinguishes an
   // envelope/document from a newer engine by it. Tracks reuben_core::format::FORMAT_VERSION;
-  // bump the 2 only when the format version genuinely bumps (same convention as the count above).
+  // bump the 3 only when the format version genuinely bumps (same convention as the count
+  // above). v3 = ADR-0043: presentation stripped out of the instrument document.
   const fv = ex.format_version();
-  check(fv === 2, `format_version() = ${fv}, expected 2 (reuben_core::format::FORMAT_VERSION)`);
+  check(fv === 3, `format_version() = ${fv}, expected 3 (reuben_core::format::FORMAT_VERSION)`);
 }
 
 // --- the instrument matrix on one persistent instance -------------------------------------
@@ -267,17 +269,20 @@ for (const [name, cls] of matrix) {
   }
 }
 
-// --- control channel: /clock/tempo must change groovebox's audio --------------------------
+// --- control channel: the /tempo pipe must change groovebox's audio -----------------------
+//
+// ADR-0043: groovebox's tempo is an interface input pipe; players set /tempo/in (the clock's
+// own tempo port is wire-fed FROM the pipe, so the pipe address is the one that routes).
 
-console.log("\n=== control channel (groovebox /clock/tempo) ===");
+console.log("\n=== control channel (groovebox /tempo/in) ===");
 try {
   await loadByName("groovebox");
   const base = renderQuanta(QUANTA, { capture: true });
   ex.destroy();
 
   await loadByName("groovebox");
-  const rc = queueControlBytes(encodeControl("/clock/tempo", [180]));
-  check(rc === 0, "queue_control(/clock/tempo [180]) returns 0");
+  const rc = queueControlBytes(encodeControl("/tempo/in", [180]));
+  check(rc === 0, "queue_control(/tempo/in [180]) returns 0");
   const fast = renderQuanta(QUANTA, { capture: true });
 
   check(
@@ -298,32 +303,31 @@ try {
   ex.destroy();
 }
 
-// --- auto-UI generated-widget binding (#225) ---------------------------------------------
+// --- auto-UI generated-widget binding (#225 / #247) ---------------------------------------
 //
 // The pure model tests (surface/widget-model.test.mjs) prove buildSurface produces the right widget
 // SHAPES, but a pure test can't prove the emitted (address, args) actually ROUTE through the
-// live engine. This section is the guard that closes that gap: for each of the 6 auto-UI
-// instruments it builds the surface from the SAME schema + instrument JSON the browser uses,
-// picks ONE representative generated widget, drives it via emit() -> encodeControl() ->
-// queue_control, and asserts the generated address changed the audio — i.e. it survived
-// plan.rs::osc_in_message -> render.rs::resolve_port (an exact port-name match). The picks
-// collectively exercise every emitted address SHAPE: a fader (/node/param), the Good-Button
-// /node/in port, a param-toggle (/node/stepN), a note-toggle (/voicer/notes [note,gate]), and a
-// chord-button (/chord/set [degree,gate]). The engine driving reuses the tempo-check lifecycle:
-// render a base capture on a fresh construct, destroy, construct again, queue the widget's
-// message, render a driven capture — then assert both finite, the driven stream non-silent, and
-// the two streams differ.
+// live engine. This section is the guard that closes that gap: for each of the 6 surfaces it
+// builds the widgets from the SAME instrument + surface-doc JSON the browser uses (ADR-0043 —
+// pipes carry the contract, no schema involved), picks ONE representative resolved widget,
+// drives it via emit() -> encodeControl() -> queue_control, and asserts the resolved address
+// changed the audio — i.e. `/<pipe>/in` survived plan.rs::osc_in_message ->
+// render.rs::resolve_port (an exact port-name match). Every emitted address is a pipe's `in`
+// port now, so the picks instead cover every PAYLOAD shape: a scaled fader value, a 0/1
+// param-toggle, a note-toggle [note, velocity], a chord-button [{i32 degree}, gate], and a
+// dragged fader gesture. The engine driving reuses the tempo-check lifecycle: render a base
+// capture on a fresh construct, destroy, construct again, queue the widget's message, render
+// a driven capture — then assert both finite, the driven stream non-silent, and the two
+// streams differ.
 
 console.log("\n=== auto-UI generated-widget binding ===");
 
-// The surface is inferred from the parsed schema + instrument JSON, exactly as the worklet's UI
-// does — no engine needed to BUILD it (only to prove it routes). The schema is parsed once at
-// module scope; loadParamMeta turns it into the per-type param metadata buildSurface needs.
-const surfaceMeta = loadParamMeta(schema);
-
+// The surface is resolved from the parsed instrument + surface-doc JSON, exactly as the
+// worklet's UI does — no engine needed to BUILD it (only to prove it routes).
 async function surfaceOf(name) {
   const doc = JSON.parse(await readFile(new URL(`${name}.json`, INSTRUMENTS_URL), "utf8"));
-  return buildSurface(doc, surfaceMeta);
+  const surfaceDoc = JSON.parse(await readFile(new URL(`${name}.json`, SURFACES_URL), "utf8"));
+  return buildSurface(doc, surfaceDoc);
 }
 
 function widgetAt(widgets, address) {
@@ -375,42 +379,42 @@ async function bindingCheck(name, address, x) {
 }
 
 try {
-  // groovebox — a PARAM-TOGGLE step gate (/kick/step2). The step rests off; emit(w,1) sets it on,
-  // adding a kick hit to the self-playing pattern. Proves a /node/stepN param-toggle routes (this
-  // is CORRECTION #1: without gate_mode="Gate" detection the 48 steps would be degree faders).
-  await bindingCheck("groovebox", "/kick/step2", 1);
+  // groovebox — a PARAM-TOGGLE step gate (the kick_step2 pipe). The step rests off; emit(w,1)
+  // sets it on, adding a kick hit to the self-playing pattern. Proves a param-toggle's 0/1
+  // payload routes through a pipe's `in` port.
+  await bindingCheck("groovebox", "/kick_step2/in", 1);
 
-  // djfilter-demo — the Filter FADER (/filterpos/in), a /node/param fader. emit(w,1.0) drives the
+  // djfilter-demo — the Filter FADER (the bipolar [-1,1] filter pipe). emit(w,1.0) drives the
   // knob to +1 (full high-pass sweep), collapsing the master djfilter. Self-playing: base audible.
-  await bindingCheck("djfilter-demo", "/filterpos/in", 1.0);
+  await bindingCheck("djfilter-demo", "/filter/in", 1.0);
 
-  // euclidean-drums — a Good-Button-shaped /node/in knob (/kick_filter/in, an m2s `in` port, radial
-  // widget, bipolar [-1,1]). emit(w,1.0) sweeps the kick's per-channel djfilter to full high-pass,
-  // thinning the kit. Proves the /node/in address SHAPE routes on a self-playing kit.
+  // euclidean-drums — a RADIAL on the kick_filter pipe (bipolar [-1,1], from the PIPE's own
+  // declared range). emit(w,1.0) sweeps the kick's per-channel djfilter to full high-pass,
+  // thinning the kit. Proves a radial (kind fader) routes on a self-playing kit.
   await bindingCheck("euclidean-drums", "/kick_filter/in", 1.0);
 
-  // good-button — the Play NOTE-TOGGLE (/voicer/notes). emit(w,1) -> [60, 1] plays middle C on the
-  // otherwise-silent saw synth. NOTE-DRIVEN: base silent, driven non-silent. The note rides as an
-  // F32 (Note form: a float pitch = Pitch::Absolute MIDI) — exactly what a Good Button wants.
-  await bindingCheck("good-button", "/voicer/notes", 1);
+  // good-button — the Play NOTE-TOGGLE (the `notes` note pipe). emit(w,1) -> [60, 1] plays middle
+  // C on the otherwise-silent saw synth. NOTE-DRIVEN: base silent, driven non-silent. The note
+  // rides as an F32 (Note form: a float pitch = Pitch::Absolute MIDI) — exactly what it wants.
+  await bindingCheck("good-button", "/notes/in", 1);
 
-  // chord-player — a CHORD-BUTTON (/chord/set) tapping the I chord. NOTE-DRIVEN: base silent, driven
-  // non-silent. A scale DEGREE must ride as an I32: boundary.rs's Note OscForm reads an integer arg
-  // as Pitch::Degree and a float as Pitch::Absolute, and chord.rs drops non-degree notes (a held
-  // chord button only sounds when its root is a Degree). CORRECTION #3 makes emit() type the degree
-  // as {i32}, so driving the widget straight through emit() sounds the chord — this line is the guard
-  // that the fix routes (before it, a chord button sent a dropped Absolute note).
-  await bindingCheck("chord-player", "/chord/set", 1);
+  // chord-player — a CHORD-BUTTON (the `chord` note pipe) tapping the I chord. NOTE-DRIVEN: base
+  // silent, driven non-silent. A scale DEGREE must ride as an I32: boundary.rs's Note OscForm
+  // reads an integer arg as Pitch::Degree and a float as Pitch::Absolute, and chord.rs drops
+  // non-degree notes (a held chord button only sounds when its root is a Degree). emit() types
+  // the degree as {i32}, so driving the widget straight through emit() sounds the chord — this
+  // line is the guard that the typed payload routes.
+  await bindingCheck("chord-player", "/chord/in", 1);
 
-  // strum-harp — the Strum bar FADER (/strum/position). Strumming is a GESTURE: the strum op plucks
-  // a string each time the position crosses a band BETWEEN rendered blocks, so a single jump plucks
-  // nothing (verified) — it must be dragged. We emit()-drive a drag of positions 1/16..16/16 with a
-  // render between each (exactly as dragging the on-screen fader does), then capture the ringing
-  // aftermath. Proves /strum/position routes to audio.
+  // strum-harp — the Strum bar FADER (the strum pipe). Strumming is a GESTURE: the strum op
+  // plucks a string each time the position crosses a band BETWEEN rendered blocks, so a single
+  // jump plucks nothing (verified) — it must be dragged. We emit()-drive a drag of positions
+  // 1/16..16/16 with a render between each (exactly as dragging the on-screen fader does), then
+  // capture the ringing aftermath. Proves /strum/in routes to audio.
   {
     const name = "strum-harp";
     const { widgets } = await surfaceOf(name);
-    const widget = widgetAt(widgets, "/strum/position");
+    const widget = widgetAt(widgets, "/strum/in");
     const base = await baseStream(name);
     await loadByName(name);
     const DRAG = 16;
@@ -420,10 +424,10 @@ try {
       dragRc |= queueControlBytes(encodeControl(msg.address, msg.args));
       renderQuanta(8); // advance time so the smoothed position crosses string bands and plucks
     }
-    check(dragRc === 0, `${name}: queue_control(/strum/position drag) all return 0`);
+    check(dragRc === 0, `${name}: queue_control(/strum/in drag) all return 0`);
     const driven = renderQuanta(QUANTA, { capture: true });
     ex.destroy();
-    assertBinding(name, "/strum/position", base, driven);
+    assertBinding(name, "/strum/in", base, driven);
   }
 } catch (e) {
   check(false, `auto-UI binding: ${e.message}`);

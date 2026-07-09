@@ -1,5 +1,12 @@
 # Generated control surfaces: the `control` block, a `map` resting default, and a TouchOSC skill
 
+> **Superseded in part by [ADR-0043](0043-surface-docs-decouple-presentation-from-instruments.md).**
+> The `control` block, the `NodeDoc.control` passthrough, and the infer→write-back generator
+> workflow are retired: player-facing controls are interface input pipes (ADR-0038), and
+> presentation lives in a decoupled surface doc. The TouchOSC target choice, the `.tosc` emit
+> machinery, the `map.default` resting position, and the one-way/port-9000 connection story
+> survive under the new model.
+
 ## Context
 
 [ADR-0017](0017-playable-surface-and-control-domain.md) built the *playable surface* — the

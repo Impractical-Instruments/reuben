@@ -1,0 +1,8 @@
+{
+  "surface_version": 1,
+  "instrument": "good-button",
+  "controls": [
+    { "bind": "notes", "label": "Play C", "widget": "note-toggle", "note": 60 },
+    { "bind": "brightness", "label": "Brightness", "widget": "fader" }
+  ]
+}

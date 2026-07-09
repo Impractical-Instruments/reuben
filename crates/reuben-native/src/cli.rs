@@ -63,13 +63,6 @@ pub struct PortInfo {
     /// The ordered enum choices (ADR-0030); empty for non-enum ports.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<String>,
-    /// Display-name from an `interface` pipe entry (ADR-0034 §4 / ADR-0038). Only a boundary
-    /// port carries one — operator ports have no label.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    /// Widget hint from an `interface` pipe entry (ADR-0034 §4 / ADR-0018); boundary-only.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub widget: Option<String>,
     /// Boundary-only (ADR-0038 §3): the logical channel a signal pipe binds — the input channel
     /// an input pipe reads, or the master channel an output pipe feeds, when the instrument is
     /// played at top level. Omitted for unbound pipes and operator ports.
@@ -128,8 +121,6 @@ impl PortInfo {
             unit: String::new(),
             curve: None,
             variants: Vec::new(),
-            label: None,
-            widget: None,
             channel: None,
         };
         // Scalar control (ADR-0030): a materialized `f32` input owns its range/curve/default in `meta`.
@@ -252,8 +243,6 @@ impl PortInfo {
             unit: b.unit,
             curve: b.curve.map(|c| curve(c).to_string()),
             variants: b.variants,
-            label: b.label,
-            widget: b.widget,
             channel: b.channel,
         }
     }
@@ -263,8 +252,8 @@ impl PortInfo {
 /// ADR-0038 §2): load it through the real engine path (parsed once), let core's
 /// [`describe_boundary`] resolve each pipe (an input pipe from its own declared type/range, an
 /// output pipe inheriting from the port feeding it plus optional min/max range overrides — both
-/// decorated with the entry's presentational fields), and present each port as an operator-style
-/// [`PortInfo`]. `kind` is the pipe's `Arg`
+/// decorated with the entry's `unit`; presentation lives in a surface doc, ADR-0043), and
+/// present each port as an operator-style [`PortInfo`]. `kind` is the pipe's `Arg`
 /// type — declared on an input pipe, the feeding port's on an output. An instrument with no
 /// `interface` yields empty port lists (it nests, but exposes nothing to wire).
 pub fn describe_patch(

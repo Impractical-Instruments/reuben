@@ -1,0 +1,319 @@
+{
+  "surface_version": 1,
+  "instrument": "groovebox",
+  "controls": [
+    {
+      "bind": "tempo",
+      "label": "Tempo",
+      "widget": "fader"
+    },
+    {
+      "bind": "kick_step1",
+      "label": "K1",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step2",
+      "label": "K2",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step3",
+      "label": "K3",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step4",
+      "label": "K4",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step5",
+      "label": "K5",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step6",
+      "label": "K6",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step7",
+      "label": "K7",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step8",
+      "label": "K8",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step9",
+      "label": "K9",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step10",
+      "label": "K10",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step11",
+      "label": "K11",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step12",
+      "label": "K12",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step13",
+      "label": "K13",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step14",
+      "label": "K14",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step15",
+      "label": "K15",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step16",
+      "label": "K16",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "snare_step1",
+      "label": "S1",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step2",
+      "label": "S2",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step3",
+      "label": "S3",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step4",
+      "label": "S4",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step5",
+      "label": "S5",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step6",
+      "label": "S6",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step7",
+      "label": "S7",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step8",
+      "label": "S8",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step9",
+      "label": "S9",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step10",
+      "label": "S10",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step11",
+      "label": "S11",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step12",
+      "label": "S12",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step13",
+      "label": "S13",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step14",
+      "label": "S14",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step15",
+      "label": "S15",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step16",
+      "label": "S16",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "hat_step1",
+      "label": "H1",
+      "widget": "param-toggle",
+      "group": "hat"
+    },
+    {
+      "bind": "hat_step2",
+      "label": "H2",
+      "widget": "param-toggle",
+      "group": "hat"
+    },
+    {
+      "bind": "hat_step3",
+      "label": "H3",
+      "widget": "param-toggle",
+      "group": "hat"
+    },
+    {
+      "bind": "hat_step4",
+      "label": "H4",
+      "widget": "param-toggle",
+      "group": "hat"
+    },
+    {
+      "bind": "hat_step5",
+      "label": "H5",
+      "widget": "param-toggle",
+      "group": "hat"
+    },
+    {
+      "bind": "hat_step6",
+      "label": "H6",
+      "widget": "param-toggle",
+      "group": "hat"
+    },
+    {
+      "bind": "hat_step7",
+      "label": "H7",
+      "widget": "param-toggle",
+      "group": "hat"
+    },
+    {
+      "bind": "hat_step8",
+      "label": "H8",
+      "widget": "param-toggle",
+      "group": "hat"
+    },
+    {
+      "bind": "hat_step9",
+      "label": "H9",
+      "widget": "param-toggle",
+      "group": "hat"
+    },
+    {
+      "bind": "hat_step10",
+      "label": "H10",
+      "widget": "param-toggle",
+      "group": "hat"
+    },
+    {
+      "bind": "hat_step11",
+      "label": "H11",
+      "widget": "param-toggle",
+      "group": "hat"
+    },
+    {
+      "bind": "hat_step12",
+      "label": "H12",
+      "widget": "param-toggle",
+      "group": "hat"
+    },
+    {
+      "bind": "hat_step13",
+      "label": "H13",
+      "widget": "param-toggle",
+      "group": "hat"
+    },
+    {
+      "bind": "hat_step14",
+      "label": "H14",
+      "widget": "param-toggle",
+      "group": "hat"
+    },
+    {
+      "bind": "hat_step15",
+      "label": "H15",
+      "widget": "param-toggle",
+      "group": "hat"
+    },
+    {
+      "bind": "hat_step16",
+      "label": "H16",
+      "widget": "param-toggle",
+      "group": "hat"
+    },
+    {
+      "bind": "kick_vol",
+      "label": "Kick Vol",
+      "widget": "fader"
+    },
+    {
+      "bind": "snare_vol",
+      "label": "Snare Vol",
+      "widget": "fader"
+    },
+    {
+      "bind": "hat_vol",
+      "label": "Hat Vol",
+      "widget": "fader"
+    },
+    {
+      "bind": "tone",
+      "label": "Tone",
+      "widget": "fader"
+    }
+  ]
+}

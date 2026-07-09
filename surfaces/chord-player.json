@@ -1,0 +1,57 @@
+{
+  "surface_version": 1,
+  "instrument": "chord-player",
+  "controls": [
+    {
+      "bind": "chord",
+      "widget": "chord-button",
+      "degree": 0,
+      "label": "I"
+    },
+    {
+      "bind": "chord",
+      "widget": "chord-button",
+      "degree": 1,
+      "label": "ii"
+    },
+    {
+      "bind": "chord",
+      "widget": "chord-button",
+      "degree": 2,
+      "label": "iii"
+    },
+    {
+      "bind": "chord",
+      "widget": "chord-button",
+      "degree": 3,
+      "label": "IV"
+    },
+    {
+      "bind": "chord",
+      "widget": "chord-button",
+      "degree": 4,
+      "label": "V"
+    },
+    {
+      "bind": "chord",
+      "widget": "chord-button",
+      "degree": 5,
+      "label": "vi"
+    },
+    {
+      "bind": "chord",
+      "widget": "chord-button",
+      "degree": 6,
+      "label": "vii"
+    },
+    {
+      "bind": "key",
+      "label": "Key"
+    },
+    {
+      "bind": "brightness",
+      "label": "Brightness",
+      "widget": "fader"
+    }
+  ]
+}

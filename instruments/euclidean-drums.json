@@ -1,8 +1,177 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "instrument": "euclidean-drums",
-  "doc": "A self-playing 4-channel Euclidean rhythm machine (kick, snare, tom, hat). One shared clock (division=4 -> a 16th-note grid) drives four `euclid` generators; each spreads its `pulses` hits evenly across `steps` (with `rotation` to shift the phase) and emits a gate that fires that channel's drum voice. Every voice is synthesized from operators (no samples), gated straight off the euclid gate like the metronome -- kick = sine body + decaying pitch-drop, snare = noise + tonal ring, tom = a boomier higher kick, hat = highpassed noise tick. Per channel you get: Euclidean controls (steps/pulses/rotation), a DECAY knob (the amp envelope's decay -- on kick/tom it stretches both the tail and the pitch sweep), a bipolar DJ FILTER knob (-1 lowpass down .. 0 open .. +1 highpass up), and a LEVEL knob. The four channels sum through a master trim to the output. Ride tempo via /clock/tempo; reshape patterns via /<chan>_eu/pulses, /<chan>_eu/steps, /<chan>_eu/rotation; sweep tone via /<chan>_filter/in [-1..1]; set loudness via /<chan>_level/in [0..1]; set tail via /<chan>_env/decay.",
+  "doc": "A self-playing 4-channel Euclidean rhythm machine (kick, snare, tom, hat). One shared clock (division=4 -> a 16th-note grid) drives four `euclid` generators; each spreads its `pulses` hits evenly across `steps` (with `rotation` to shift the phase) and emits a gate that fires that channel's drum voice. Every voice is synthesized from operators (no samples), gated straight off the euclid gate like the metronome -- kick = sine body + decaying pitch-drop, snare = noise + tonal ring, tom = a boomier higher kick, hat = highpassed noise tick. Per channel you get: Euclidean controls (steps/pulses/rotation), a DECAY knob (the amp envelope's decay -- on kick/tom it stretches both the tail and the pitch sweep), a bipolar DJ FILTER knob (-1 lowpass down .. 0 open .. +1 highpass up), and a LEVEL knob. The four channels sum through a master trim to the output. Every knob is an interface input pipe (ADR-0043; presentation lives in surfaces/euclidean-drums.json): ride tempo via /tempo/in; reshape patterns via /<chan>_pulses/in, /<chan>_steps/in, /<chan>_rotation/in; sweep tone via /<chan>_filter/in [-1..1]; set loudness via /<chan>_level/in [0..1]; set tail via /<chan>_decay/in. The smoothed filter/level CVs live on the internal /<chan>_filter_cv and /<chan>_level_cv nodes. The four <chan>_decay pipes declare default 0.001 rather than the retired inline literal 0.0: the loader coerce-clamped that literal to the envelope's range floor, so 0.001 IS the old effective rest value (a pipe default outside its declared range is a load error) \u2014 bit-identity is asserted in format_v3_rewrite.rs.",
   "interface": {
+    "inputs": {
+      "tempo": {
+        "type": "f32",
+        "default": 120.0,
+        "min": 1.0,
+        "max": 999.0,
+        "unit": "BPM"
+      },
+      "kick_pulses": {
+        "type": "f32",
+        "default": 4.0,
+        "min": 0.0,
+        "max": 16.0,
+        "unit": "pulses"
+      },
+      "kick_steps": {
+        "type": "f32",
+        "default": 16.0,
+        "min": 1.0,
+        "max": 16.0,
+        "unit": "steps"
+      },
+      "kick_rotation": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 15.0,
+        "unit": "steps"
+      },
+      "kick_decay": {
+        "type": "f32",
+        "default": 0.001,
+        "min": 0.001,
+        "max": 5.0,
+        "unit": "s"
+      },
+      "kick_filter": {
+        "type": "f32",
+        "default": 0.0,
+        "min": -1.0,
+        "max": 1.0
+      },
+      "kick_level": {
+        "type": "f32",
+        "default": 0.85,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_pulses": {
+        "type": "f32",
+        "default": 2.0,
+        "min": 0.0,
+        "max": 16.0,
+        "unit": "pulses"
+      },
+      "snare_steps": {
+        "type": "f32",
+        "default": 16.0,
+        "min": 1.0,
+        "max": 16.0,
+        "unit": "steps"
+      },
+      "snare_rotation": {
+        "type": "f32",
+        "default": 4.0,
+        "min": 0.0,
+        "max": 15.0,
+        "unit": "steps"
+      },
+      "snare_decay": {
+        "type": "f32",
+        "default": 0.001,
+        "min": 0.001,
+        "max": 5.0,
+        "unit": "s"
+      },
+      "snare_filter": {
+        "type": "f32",
+        "default": 0.0,
+        "min": -1.0,
+        "max": 1.0
+      },
+      "snare_level": {
+        "type": "f32",
+        "default": 0.6,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "tom_pulses": {
+        "type": "f32",
+        "default": 3.0,
+        "min": 0.0,
+        "max": 16.0,
+        "unit": "pulses"
+      },
+      "tom_steps": {
+        "type": "f32",
+        "default": 16.0,
+        "min": 1.0,
+        "max": 16.0,
+        "unit": "steps"
+      },
+      "tom_rotation": {
+        "type": "f32",
+        "default": 2.0,
+        "min": 0.0,
+        "max": 15.0,
+        "unit": "steps"
+      },
+      "tom_decay": {
+        "type": "f32",
+        "default": 0.001,
+        "min": 0.001,
+        "max": 5.0,
+        "unit": "s"
+      },
+      "tom_filter": {
+        "type": "f32",
+        "default": 0.0,
+        "min": -1.0,
+        "max": 1.0
+      },
+      "tom_level": {
+        "type": "f32",
+        "default": 0.6,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "hat_pulses": {
+        "type": "f32",
+        "default": 8.0,
+        "min": 0.0,
+        "max": 16.0,
+        "unit": "pulses"
+      },
+      "hat_steps": {
+        "type": "f32",
+        "default": 16.0,
+        "min": 1.0,
+        "max": 16.0,
+        "unit": "steps"
+      },
+      "hat_rotation": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 15.0,
+        "unit": "steps"
+      },
+      "hat_decay": {
+        "type": "f32",
+        "default": 0.001,
+        "min": 0.001,
+        "max": 5.0,
+        "unit": "s"
+      },
+      "hat_filter": {
+        "type": "f32",
+        "default": 0.0,
+        "min": -1.0,
+        "max": 1.0
+      },
+      "hat_level": {
+        "type": "f32",
+        "default": 0.5,
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
     "outputs": {
       "out": {
         "from": "/out.audio"
@@ -13,15 +182,12 @@
     {
       "type": "clock",
       "address": "/clock",
-      "doc": "Shared timing. division=4 -> the gate pulses 4x per beat (a 16th-note grid) that clocks every euclid.",
+      "doc": "Shared timing. division=4 -> the gate pulses 4x per beat (a 16th-note grid) that clocks every euclid. tempo rides the /tempo pipe.",
       "inputs": {
         "division": 4.0,
-        "tempo": 120.0
-      },
-      "control": {
-        "label": "Tempo",
-        "param": "tempo",
-        "widget": "radial"
+        "tempo": {
+          "from": "/tempo"
+        }
       }
     },
     {
@@ -32,49 +198,31 @@
         "clock": {
           "from": "/clock.gate"
         },
-        "pulses": 4.0,
-        "rotation": 0.0,
-        "steps": 16.0
-      },
-      "control": [
-        {
-          "group": "kick",
-          "label": "Kick Pulses",
-          "param": "pulses",
-          "widget": "radial"
+        "pulses": {
+          "from": "/kick_pulses"
         },
-        {
-          "group": "kick",
-          "label": "Kick Steps",
-          "param": "steps",
-          "widget": "radial"
+        "rotation": {
+          "from": "/kick_rotation"
         },
-        {
-          "group": "kick",
-          "label": "Kick Rotation",
-          "param": "rotation",
-          "widget": "radial"
+        "steps": {
+          "from": "/kick_steps"
         }
-      ]
+      }
     },
     {
       "type": "envelope",
       "address": "/kick_env",
-      "doc": "Kick amp+pitch envelope, gated by the euclid pulse. `decay` is the DECAY control: longer = boomier tail AND longer pitch drop.",
+      "doc": "Kick amp+pitch envelope, gated by the euclid pulse. `decay` rides the /kick_decay pipe (the DECAY control): longer = boomier tail AND longer pitch drop.",
       "inputs": {
         "attack": 0.001,
-        "decay": 0.0,
+        "decay": {
+          "from": "/kick_decay"
+        },
         "gate": {
           "from": "/kick_eu.gate"
         },
         "release": 0.08,
         "sustain": 1.0
-      },
-      "control": {
-        "group": "kick",
-        "label": "Kick Decay",
-        "param": "decay",
-        "widget": "radial"
       }
     },
     {
@@ -155,21 +303,14 @@
     },
     {
       "type": "m2s",
-      "address": "/kick_filter",
-      "doc": "Kick DJ-filter position knob [-1..1], smoothed (zipper-free).",
+      "address": "/kick_filter_cv",
+      "doc": "Smooths the /kick_filter pipe (DJ-filter position, [-1..1]) into a zipper-free CV.",
       "inputs": {
-        "in": 0.0,
+        "in": {
+          "from": "/kick_filter"
+        },
         "mode": "Smooth",
         "time": 0.1
-      },
-      "control": {
-        "default": 0.0,
-        "group": "kick",
-        "label": "Kick DJ Filter",
-        "max": 1.0,
-        "min": -1.0,
-        "param": "in",
-        "widget": "radial"
       }
     },
     {
@@ -181,28 +322,21 @@
           "from": "/kick_vca"
         },
         "position": {
-          "from": "/kick_filter"
+          "from": "/kick_filter_cv"
         },
         "resonance": 0.25
       }
     },
     {
       "type": "m2s",
-      "address": "/kick_level",
-      "doc": "Kick LEVEL knob [0..1], smoothed into a CV.",
+      "address": "/kick_level_cv",
+      "doc": "Smooths the /kick_level pipe (LEVEL, [0..1]) into a CV.",
       "inputs": {
-        "in": 0.85,
+        "in": {
+          "from": "/kick_level"
+        },
         "mode": "Smooth",
         "time": 0.02
-      },
-      "control": {
-        "default": 0.85,
-        "group": "kick",
-        "label": "Kick Level",
-        "max": 1.0,
-        "min": 0.0,
-        "param": "in",
-        "widget": "radial"
       }
     },
     {
@@ -214,7 +348,7 @@
           "from": "/kick_dj"
         },
         "b": {
-          "from": "/kick_level"
+          "from": "/kick_level_cv"
         }
       }
     },
@@ -226,49 +360,31 @@
         "clock": {
           "from": "/clock.gate"
         },
-        "pulses": 2.0,
-        "rotation": 4.0,
-        "steps": 16.0
-      },
-      "control": [
-        {
-          "group": "snare",
-          "label": "Snare Pulses",
-          "param": "pulses",
-          "widget": "radial"
+        "pulses": {
+          "from": "/snare_pulses"
         },
-        {
-          "group": "snare",
-          "label": "Snare Steps",
-          "param": "steps",
-          "widget": "radial"
+        "rotation": {
+          "from": "/snare_rotation"
         },
-        {
-          "group": "snare",
-          "label": "Snare Rotation",
-          "param": "rotation",
-          "widget": "radial"
+        "steps": {
+          "from": "/snare_steps"
         }
-      ]
+      }
     },
     {
       "type": "envelope",
       "address": "/snare_env",
-      "doc": "Snare amp envelope, gated by the euclid pulse. `decay` is the DECAY control (snap length).",
+      "doc": "Snare amp envelope, gated by the euclid pulse. `decay` rides the /snare_decay pipe (the DECAY control, snap length).",
       "inputs": {
         "attack": 0.001,
-        "decay": 0.0,
+        "decay": {
+          "from": "/snare_decay"
+        },
         "gate": {
           "from": "/snare_eu.gate"
         },
         "release": 0.06,
         "sustain": 1.0
-      },
-      "control": {
-        "group": "snare",
-        "label": "Snare Decay",
-        "param": "decay",
-        "widget": "radial"
       }
     },
     {
@@ -346,21 +462,14 @@
     },
     {
       "type": "m2s",
-      "address": "/snare_filter",
-      "doc": "Snare DJ-filter position knob [-1..1], smoothed.",
+      "address": "/snare_filter_cv",
+      "doc": "Smooths the /snare_filter pipe (DJ-filter position, [-1..1]) into a zipper-free CV.",
       "inputs": {
-        "in": 0.0,
+        "in": {
+          "from": "/snare_filter"
+        },
         "mode": "Smooth",
         "time": 0.1
-      },
-      "control": {
-        "default": 0.0,
-        "group": "snare",
-        "label": "Snare DJ Filter",
-        "max": 1.0,
-        "min": -1.0,
-        "param": "in",
-        "widget": "radial"
       }
     },
     {
@@ -372,28 +481,21 @@
           "from": "/snare_mix"
         },
         "position": {
-          "from": "/snare_filter"
+          "from": "/snare_filter_cv"
         },
         "resonance": 0.25
       }
     },
     {
       "type": "m2s",
-      "address": "/snare_level",
-      "doc": "Snare LEVEL knob [0..1], smoothed into a CV.",
+      "address": "/snare_level_cv",
+      "doc": "Smooths the /snare_level pipe (LEVEL, [0..1]) into a CV.",
       "inputs": {
-        "in": 0.6,
+        "in": {
+          "from": "/snare_level"
+        },
         "mode": "Smooth",
         "time": 0.02
-      },
-      "control": {
-        "default": 0.6,
-        "group": "snare",
-        "label": "Snare Level",
-        "max": 1.0,
-        "min": 0.0,
-        "param": "in",
-        "widget": "radial"
       }
     },
     {
@@ -405,7 +507,7 @@
           "from": "/snare_dj"
         },
         "b": {
-          "from": "/snare_level"
+          "from": "/snare_level_cv"
         }
       }
     },
@@ -417,49 +519,31 @@
         "clock": {
           "from": "/clock.gate"
         },
-        "pulses": 3.0,
-        "rotation": 2.0,
-        "steps": 16.0
-      },
-      "control": [
-        {
-          "group": "tom",
-          "label": "Tom Pulses",
-          "param": "pulses",
-          "widget": "radial"
+        "pulses": {
+          "from": "/tom_pulses"
         },
-        {
-          "group": "tom",
-          "label": "Tom Steps",
-          "param": "steps",
-          "widget": "radial"
+        "rotation": {
+          "from": "/tom_rotation"
         },
-        {
-          "group": "tom",
-          "label": "Tom Rotation",
-          "param": "rotation",
-          "widget": "radial"
+        "steps": {
+          "from": "/tom_steps"
         }
-      ]
+      }
     },
     {
       "type": "envelope",
       "address": "/tom_env",
-      "doc": "Tom amp+pitch envelope, gated by the euclid pulse. `decay` is the DECAY control: longer = boomier tail AND longer pitch drop.",
+      "doc": "Tom amp+pitch envelope, gated by the euclid pulse. `decay` rides the /tom_decay pipe (the DECAY control): longer = boomier tail AND longer pitch drop.",
       "inputs": {
         "attack": 0.001,
-        "decay": 0.0,
+        "decay": {
+          "from": "/tom_decay"
+        },
         "gate": {
           "from": "/tom_eu.gate"
         },
         "release": 0.12,
         "sustain": 1.0
-      },
-      "control": {
-        "group": "tom",
-        "label": "Tom Decay",
-        "param": "decay",
-        "widget": "radial"
       }
     },
     {
@@ -540,21 +624,14 @@
     },
     {
       "type": "m2s",
-      "address": "/tom_filter",
-      "doc": "Tom DJ-filter position knob [-1..1], smoothed.",
+      "address": "/tom_filter_cv",
+      "doc": "Smooths the /tom_filter pipe (DJ-filter position, [-1..1]) into a zipper-free CV.",
       "inputs": {
-        "in": 0.0,
+        "in": {
+          "from": "/tom_filter"
+        },
         "mode": "Smooth",
         "time": 0.1
-      },
-      "control": {
-        "default": 0.0,
-        "group": "tom",
-        "label": "Tom DJ Filter",
-        "max": 1.0,
-        "min": -1.0,
-        "param": "in",
-        "widget": "radial"
       }
     },
     {
@@ -566,28 +643,21 @@
           "from": "/tom_vca"
         },
         "position": {
-          "from": "/tom_filter"
+          "from": "/tom_filter_cv"
         },
         "resonance": 0.25
       }
     },
     {
       "type": "m2s",
-      "address": "/tom_level",
-      "doc": "Tom LEVEL knob [0..1], smoothed into a CV.",
+      "address": "/tom_level_cv",
+      "doc": "Smooths the /tom_level pipe (LEVEL, [0..1]) into a CV.",
       "inputs": {
-        "in": 0.6,
+        "in": {
+          "from": "/tom_level"
+        },
         "mode": "Smooth",
         "time": 0.02
-      },
-      "control": {
-        "default": 0.6,
-        "group": "tom",
-        "label": "Tom Level",
-        "max": 1.0,
-        "min": 0.0,
-        "param": "in",
-        "widget": "radial"
       }
     },
     {
@@ -599,7 +669,7 @@
           "from": "/tom_dj"
         },
         "b": {
-          "from": "/tom_level"
+          "from": "/tom_level_cv"
         }
       }
     },
@@ -611,30 +681,16 @@
         "clock": {
           "from": "/clock.gate"
         },
-        "pulses": 8.0,
-        "rotation": 0.0,
-        "steps": 16.0
-      },
-      "control": [
-        {
-          "group": "hat",
-          "label": "Hat Pulses",
-          "param": "pulses",
-          "widget": "radial"
+        "pulses": {
+          "from": "/hat_pulses"
         },
-        {
-          "group": "hat",
-          "label": "Hat Steps",
-          "param": "steps",
-          "widget": "radial"
+        "rotation": {
+          "from": "/hat_rotation"
         },
-        {
-          "group": "hat",
-          "label": "Hat Rotation",
-          "param": "rotation",
-          "widget": "radial"
+        "steps": {
+          "from": "/hat_steps"
         }
-      ]
+      }
     },
     {
       "type": "noise",
@@ -657,21 +713,17 @@
     {
       "type": "envelope",
       "address": "/hat_env",
-      "doc": "Very short hat amp envelope, gated by the euclid pulse. `decay` is the DECAY control: short tick .. open hat.",
+      "doc": "Very short hat amp envelope, gated by the euclid pulse. `decay` rides the /hat_decay pipe (the DECAY control): short tick .. open hat.",
       "inputs": {
         "attack": 0.001,
-        "decay": 0.0,
+        "decay": {
+          "from": "/hat_decay"
+        },
         "gate": {
           "from": "/hat_eu.gate"
         },
         "release": 0.03,
         "sustain": 1.0
-      },
-      "control": {
-        "group": "hat",
-        "label": "Hat Decay",
-        "param": "decay",
-        "widget": "radial"
       }
     },
     {
@@ -699,21 +751,14 @@
     },
     {
       "type": "m2s",
-      "address": "/hat_filter",
-      "doc": "Hat DJ-filter position knob [-1..1], smoothed.",
+      "address": "/hat_filter_cv",
+      "doc": "Smooths the /hat_filter pipe (DJ-filter position, [-1..1]) into a zipper-free CV.",
       "inputs": {
-        "in": 0.0,
+        "in": {
+          "from": "/hat_filter"
+        },
         "mode": "Smooth",
         "time": 0.1
-      },
-      "control": {
-        "default": 0.0,
-        "group": "hat",
-        "label": "Hat DJ Filter",
-        "max": 1.0,
-        "min": -1.0,
-        "param": "in",
-        "widget": "radial"
       }
     },
     {
@@ -725,28 +770,21 @@
           "from": "/hat_vca"
         },
         "position": {
-          "from": "/hat_filter"
+          "from": "/hat_filter_cv"
         },
         "resonance": 0.25
       }
     },
     {
       "type": "m2s",
-      "address": "/hat_level",
-      "doc": "Hat LEVEL knob [0..1], smoothed into a CV.",
+      "address": "/hat_level_cv",
+      "doc": "Smooths the /hat_level pipe (LEVEL, [0..1]) into a CV.",
       "inputs": {
-        "in": 0.5,
+        "in": {
+          "from": "/hat_level"
+        },
         "mode": "Smooth",
         "time": 0.02
-      },
-      "control": {
-        "default": 0.5,
-        "group": "hat",
-        "label": "Hat Level",
-        "max": 1.0,
-        "min": 0.0,
-        "param": "in",
-        "widget": "radial"
       }
     },
     {
@@ -758,7 +796,7 @@
           "from": "/hat_dj"
         },
         "b": {
-          "from": "/hat_level"
+          "from": "/hat_level_cv"
         }
       }
     },

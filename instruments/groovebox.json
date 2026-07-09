@@ -1,13 +1,334 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "instrument": "groovebox",
-  "doc": "A free-running synthesized step-sequenced beatmaker (V1.3 Toy 1, ADR-0022/0032). Three lanes — kick, snare, hat — each a 16-step boolean gate sequencer (gate_mode=Gate) feeding a one-voice Voicer that hosts the lane's drum-synth voice patch (kick-voice / snare-voice / hat-voice, built entirely from operators, no samples). One shared clock at division=4 makes a 16th-note grid; the pattern loops forever, instant sound, no transport. Toggle steps with /kick/step1../kick/step16 (and /snare/*, /hat/*); each step is boolean on/off. Ride tempo with /clock/tempo, lane volumes with the /kick_vol/in /snare_vol/in /hat_vol/in knobs, and the overall tone with the /tone/in master-filter knob. Drums: kick = sine with a fast pitch-drop env; snare = noise + a tonal osc; hat = highpassed noise tick.",
+  "doc": "A free-running synthesized step-sequenced beatmaker (V1.3 Toy 1, ADR-0022/0032). Three lanes \u2014 kick, snare, hat \u2014 each a 16-step boolean gate sequencer (gate_mode=Gate) feeding a one-voice Voicer that hosts the lane's drum-synth voice patch (kick-voice / snare-voice / hat-voice, built entirely from operators, no samples). One shared clock at division=4 makes a 16th-note grid; the pattern loops forever, instant sound, no transport. Every player-facing control is an interface input pipe (ADR-0043): toggle steps with /kick_step1/in../kick_step16/in (and /snare_step*, /hat_step*); each step is boolean on/off. Ride tempo with /tempo/in, lane volumes with the /kick_vol/in /snare_vol/in /hat_vol/in knobs, and the overall tone with the /tone/in master-filter knob. Drums: kick = sine with a fast pitch-drop env; snare = noise + a tonal osc; hat = highpassed noise tick.",
   "resources": {
     "hat-voice": "voices/hat-voice.json",
     "kick-voice": "voices/kick-voice.json",
     "snare-voice": "voices/snare-voice.json"
   },
   "interface": {
+    "inputs": {
+      "hat_step1": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "hat_step10": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "hat_step11": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "hat_step12": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "hat_step13": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "hat_step14": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "hat_step15": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "hat_step16": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "hat_step2": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "hat_step3": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "hat_step4": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "hat_step5": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "hat_step6": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "hat_step7": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "hat_step8": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "hat_step9": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "hat_vol": {
+        "type": "f32",
+        "default": 0.35,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step1": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step10": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step11": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step12": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step13": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step14": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step15": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step16": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step2": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step3": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step4": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step5": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step6": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step7": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step8": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step9": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_vol": {
+        "type": "f32",
+        "default": 0.7,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step1": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step10": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step11": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step12": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step13": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step14": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step15": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step16": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step2": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step3": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step4": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step5": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step6": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step7": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step8": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step9": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_vol": {
+        "type": "f32",
+        "default": 0.5,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "tempo": {
+        "type": "f32",
+        "default": 120.0,
+        "min": 1.0,
+        "max": 999.0,
+        "unit": "BPM"
+      },
+      "tone": {
+        "type": "f32",
+        "default": 0.8,
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
     "outputs": {
       "out": {
         "from": "/out.audio"
@@ -21,11 +342,9 @@
       "doc": "Shared timing. division=4 -> the gate pulses 4x per beat (a 16th-note grid).",
       "inputs": {
         "division": 4.0,
-        "tempo": 120.0
-      },
-      "control": {
-        "label": "Tempo",
-        "param": "tempo"
+        "tempo": {
+          "from": "/tempo"
+        }
       }
     },
     {
@@ -39,121 +358,55 @@
         "gate_mode": "Gate",
         "length": 16.0,
         "pitch": 0.0,
-        "step1": 1.0,
-        "step10": 0.0,
-        "step11": 0.0,
-        "step12": 0.0,
-        "step13": 1.0,
-        "step14": 0.0,
-        "step15": 0.0,
-        "step16": 0.0,
-        "step2": 0.0,
-        "step3": 0.0,
-        "step4": 0.0,
-        "step5": 1.0,
-        "step6": 0.0,
-        "step7": 0.0,
-        "step8": 0.0,
-        "step9": 1.0
-      },
-      "control": [
-        {
-          "label": "K1",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step1"
+        "step1": {
+          "from": "/kick_step1"
         },
-        {
-          "label": "K2",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step2"
+        "step10": {
+          "from": "/kick_step10"
         },
-        {
-          "label": "K3",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step3"
+        "step11": {
+          "from": "/kick_step11"
         },
-        {
-          "label": "K4",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step4"
+        "step12": {
+          "from": "/kick_step12"
         },
-        {
-          "label": "K5",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step5"
+        "step13": {
+          "from": "/kick_step13"
         },
-        {
-          "label": "K6",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step6"
+        "step14": {
+          "from": "/kick_step14"
         },
-        {
-          "label": "K7",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step7"
+        "step15": {
+          "from": "/kick_step15"
         },
-        {
-          "label": "K8",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step8"
+        "step16": {
+          "from": "/kick_step16"
         },
-        {
-          "label": "K9",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step9"
+        "step2": {
+          "from": "/kick_step2"
         },
-        {
-          "label": "K10",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step10"
+        "step3": {
+          "from": "/kick_step3"
         },
-        {
-          "label": "K11",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step11"
+        "step4": {
+          "from": "/kick_step4"
         },
-        {
-          "label": "K12",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step12"
+        "step5": {
+          "from": "/kick_step5"
         },
-        {
-          "label": "K13",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step13"
+        "step6": {
+          "from": "/kick_step6"
         },
-        {
-          "label": "K14",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step14"
+        "step7": {
+          "from": "/kick_step7"
         },
-        {
-          "label": "K15",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step15"
+        "step8": {
+          "from": "/kick_step8"
         },
-        {
-          "label": "K16",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step16"
+        "step9": {
+          "from": "/kick_step9"
         }
-      ]
+      }
     },
     {
       "type": "sequencer",
@@ -166,121 +419,55 @@
         "gate_mode": "Gate",
         "length": 16.0,
         "pitch": 0.0,
-        "step1": 0.0,
-        "step10": 0.0,
-        "step11": 0.0,
-        "step12": 0.0,
-        "step13": 1.0,
-        "step14": 0.0,
-        "step15": 0.0,
-        "step16": 0.0,
-        "step2": 0.0,
-        "step3": 0.0,
-        "step4": 0.0,
-        "step5": 1.0,
-        "step6": 0.0,
-        "step7": 0.0,
-        "step8": 0.0,
-        "step9": 0.0
-      },
-      "control": [
-        {
-          "label": "S1",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step1"
+        "step1": {
+          "from": "/snare_step1"
         },
-        {
-          "label": "S2",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step2"
+        "step10": {
+          "from": "/snare_step10"
         },
-        {
-          "label": "S3",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step3"
+        "step11": {
+          "from": "/snare_step11"
         },
-        {
-          "label": "S4",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step4"
+        "step12": {
+          "from": "/snare_step12"
         },
-        {
-          "label": "S5",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step5"
+        "step13": {
+          "from": "/snare_step13"
         },
-        {
-          "label": "S6",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step6"
+        "step14": {
+          "from": "/snare_step14"
         },
-        {
-          "label": "S7",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step7"
+        "step15": {
+          "from": "/snare_step15"
         },
-        {
-          "label": "S8",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step8"
+        "step16": {
+          "from": "/snare_step16"
         },
-        {
-          "label": "S9",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step9"
+        "step2": {
+          "from": "/snare_step2"
         },
-        {
-          "label": "S10",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step10"
+        "step3": {
+          "from": "/snare_step3"
         },
-        {
-          "label": "S11",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step11"
+        "step4": {
+          "from": "/snare_step4"
         },
-        {
-          "label": "S12",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step12"
+        "step5": {
+          "from": "/snare_step5"
         },
-        {
-          "label": "S13",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step13"
+        "step6": {
+          "from": "/snare_step6"
         },
-        {
-          "label": "S14",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step14"
+        "step7": {
+          "from": "/snare_step7"
         },
-        {
-          "label": "S15",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step15"
+        "step8": {
+          "from": "/snare_step8"
         },
-        {
-          "label": "S16",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step16"
+        "step9": {
+          "from": "/snare_step9"
         }
-      ]
+      }
     },
     {
       "type": "sequencer",
@@ -293,121 +480,55 @@
         "gate_mode": "Gate",
         "length": 16.0,
         "pitch": 0.0,
-        "step1": 1.0,
-        "step10": 0.0,
-        "step11": 1.0,
-        "step12": 0.0,
-        "step13": 1.0,
-        "step14": 0.0,
-        "step15": 1.0,
-        "step16": 0.0,
-        "step2": 0.0,
-        "step3": 1.0,
-        "step4": 0.0,
-        "step5": 1.0,
-        "step6": 0.0,
-        "step7": 1.0,
-        "step8": 0.0,
-        "step9": 1.0
-      },
-      "control": [
-        {
-          "label": "H1",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step1"
+        "step1": {
+          "from": "/hat_step1"
         },
-        {
-          "label": "H2",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step2"
+        "step10": {
+          "from": "/hat_step10"
         },
-        {
-          "label": "H3",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step3"
+        "step11": {
+          "from": "/hat_step11"
         },
-        {
-          "label": "H4",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step4"
+        "step12": {
+          "from": "/hat_step12"
         },
-        {
-          "label": "H5",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step5"
+        "step13": {
+          "from": "/hat_step13"
         },
-        {
-          "label": "H6",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step6"
+        "step14": {
+          "from": "/hat_step14"
         },
-        {
-          "label": "H7",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step7"
+        "step15": {
+          "from": "/hat_step15"
         },
-        {
-          "label": "H8",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step8"
+        "step16": {
+          "from": "/hat_step16"
         },
-        {
-          "label": "H9",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step9"
+        "step2": {
+          "from": "/hat_step2"
         },
-        {
-          "label": "H10",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step10"
+        "step3": {
+          "from": "/hat_step3"
         },
-        {
-          "label": "H11",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step11"
+        "step4": {
+          "from": "/hat_step4"
         },
-        {
-          "label": "H12",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step12"
+        "step5": {
+          "from": "/hat_step5"
         },
-        {
-          "label": "H13",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step13"
+        "step6": {
+          "from": "/hat_step6"
         },
-        {
-          "label": "H14",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step14"
+        "step7": {
+          "from": "/hat_step7"
         },
-        {
-          "label": "H15",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step15"
+        "step8": {
+          "from": "/hat_step8"
         },
-        {
-          "label": "H16",
-          "max": 1.0,
-          "min": 0.0,
-          "param": "step16"
+        "step9": {
+          "from": "/hat_step9"
         }
-      ]
+      }
     },
     {
       "type": "voicer",
@@ -453,16 +574,14 @@
     },
     {
       "type": "m2s",
-      "address": "/kick_vol",
-      "doc": "Kick lane volume knob [0,1], smoothed into a CV (m2s = value->signal).",
+      "address": "/kick_vol_cv",
+      "doc": "Smooths the /kick_vol pipe (kick lane volume [0,1]) into a CV (m2s = value->signal).",
       "inputs": {
-        "in": 0.7,
+        "in": {
+          "from": "/kick_vol"
+        },
         "mode": "Smooth",
         "time": 0.02
-      },
-      "control": {
-        "label": "Kick Vol",
-        "widget": "fader"
       }
     },
     {
@@ -474,22 +593,20 @@
           "from": "/kick_v.audio"
         },
         "b": {
-          "from": "/kick_vol"
+          "from": "/kick_vol_cv"
         }
       }
     },
     {
       "type": "m2s",
-      "address": "/snare_vol",
-      "doc": "Snare lane volume knob [0,1], smoothed into a CV.",
+      "address": "/snare_vol_cv",
+      "doc": "Smooths the /snare_vol pipe (snare lane volume [0,1]) into a CV.",
       "inputs": {
-        "in": 0.5,
+        "in": {
+          "from": "/snare_vol"
+        },
         "mode": "Smooth",
         "time": 0.02
-      },
-      "control": {
-        "label": "Snare Vol",
-        "widget": "fader"
       }
     },
     {
@@ -501,22 +618,20 @@
           "from": "/snare_v.audio"
         },
         "b": {
-          "from": "/snare_vol"
+          "from": "/snare_vol_cv"
         }
       }
     },
     {
       "type": "m2s",
-      "address": "/hat_vol",
-      "doc": "Hat lane volume knob [0,1], smoothed into a CV.",
+      "address": "/hat_vol_cv",
+      "doc": "Smooths the /hat_vol pipe (hat lane volume [0,1]) into a CV.",
       "inputs": {
-        "in": 0.35,
+        "in": {
+          "from": "/hat_vol"
+        },
         "mode": "Smooth",
         "time": 0.02
-      },
-      "control": {
-        "label": "Hat Vol",
-        "widget": "fader"
       }
     },
     {
@@ -528,7 +643,7 @@
           "from": "/hat_v.audio"
         },
         "b": {
-          "from": "/hat_vol"
+          "from": "/hat_vol_cv"
         }
       }
     },
@@ -560,16 +675,14 @@
     },
     {
       "type": "m2s",
-      "address": "/tone",
-      "doc": "PUBLIC master-tone knob [0,1], smoothed into a CV (m2s = value->signal), then ranged into the master filter cutoff. Rests at 0.8.",
+      "address": "/tone_cv",
+      "doc": "Smooths the /tone pipe (master-tone knob [0,1], rests at 0.8) into a CV (m2s = value->signal), then ranged into the master filter cutoff.",
       "inputs": {
-        "in": 0.8,
+        "in": {
+          "from": "/tone"
+        },
         "mode": "Smooth",
         "time": 0.03
-      },
-      "control": {
-        "label": "Tone",
-        "widget": "fader"
       }
     },
     {
@@ -579,7 +692,7 @@
       "inputs": {
         "curve": "Exponential",
         "in": {
-          "from": "/tone"
+          "from": "/tone_cv"
         },
         "out_max": 16000.0,
         "out_min": 500.0

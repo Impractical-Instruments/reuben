@@ -1,0 +1,8 @@
+{
+  "surface_version": 1,
+  "instrument": "space",
+  "controls": [
+    { "bind": "space", "label": "Space", "widget": "fader" },
+    { "bind": "tone", "label": "Tone", "widget": "radial" }
+  ]
+}

@@ -185,12 +185,6 @@ fn print_ports(dir: &str, ps: &[reuben_native::cli::PortInfo]) {
         if !p.variants.is_empty() {
             s.push_str(&format!(" {{{}}}", p.variants.join(", ")));
         }
-        if let Some(l) = &p.label {
-            s.push_str(&format!(" \"{l}\""));
-        }
-        if let Some(w) = &p.widget {
-            s.push_str(&format!(" <{w}>"));
-        }
         if let Some(ch) = p.channel {
             s.push_str(&format!(" @channel {ch}"));
         }

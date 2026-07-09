@@ -33,8 +33,11 @@ use crate::resources::{ResolvedRefs, ResourceResolver, ResourceStore, SampleBuff
 
 /// The document format version this engine reads and writes (ADR-0036). **v2** (ADR-0038): the
 /// `interface` direction flip — inputs/outputs are named pipes; the target-pointing entry form
-/// and the top-level anonymous `outputs` block are v1-only, auto-migrated at parse.
-pub const FORMAT_VERSION: u32 = 2;
+/// and the top-level anonymous `outputs` block are v1-only, auto-migrated at parse. **v3**
+/// (ADR-0043): presentation decouples from the instrument — the per-node `control` block and
+/// `label`/`widget` on interface pipes retire; the loader drops leftovers with a
+/// [`LoadWarning`] naming each (ignore-with-warning, never fatal).
+pub const FORMAT_VERSION: u32 = 3;
 
 fn default_format_version() -> u32 {
     1
@@ -205,15 +208,18 @@ pub struct InputPipeDoc {
     /// Sweep-curve hint for a numeric pipe (`"lin"`/`"exp"`); defaults to linear.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curve: Option<CurveDoc>,
-    /// Display unit, e.g. `"Hz"` — presentational (the engine enforces only the range).
+    /// Display unit, e.g. `"Hz"` — describes the *quantity* (ADR-0043 §2), so it stays on the
+    /// pipe and every surface inherits it (the engine enforces only the range).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
-    /// Display name (the entry name itself is the wiring handle; this is UI-facing).
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
-    /// Widget hint for a generated control surface (ADR-0018), e.g. `"knob"`.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub widget: Option<String>,
+    /// **Retired** (ADR-0043): pipe display names live in a surface doc now. Deserialize-only
+    /// sink; [`normalize`](InstrumentDoc::normalize) drains it into a
+    /// [`LoadWarning::DeprecatedPipePresentation`] and save never writes it.
+    #[serde(default, skip_serializing)]
+    pub(crate) label: Option<String>,
+    /// **Retired** (ADR-0043): widget hints live in a surface doc now. See `label`.
+    #[serde(default, skip_serializing)]
+    pub(crate) widget: Option<String>,
 }
 
 /// One v2 `interface.outputs` entry (ADR-0038 §2): a named **output pipe** fed from an internal
@@ -230,12 +236,16 @@ pub struct OutputPipeDoc {
     /// Logical master output channel this pipe feeds (ADR-0026/0038); omitted = broadcast.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<usize>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub label: Option<String>,
+    /// **Retired** (ADR-0043): pipe display names live in a surface doc now. Deserialize-only
+    /// sink; [`normalize`](InstrumentDoc::normalize) drains it into a
+    /// [`LoadWarning::DeprecatedPipePresentation`] and save never writes it.
+    #[serde(default, skip_serializing)]
+    pub(crate) label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub widget: Option<String>,
+    /// **Retired** (ADR-0043): widget hints live in a surface doc now. See `label`.
+    #[serde(default, skip_serializing)]
+    pub(crate) widget: Option<String>,
     /// Presentational range-minimum override (subset of the feeding port's range, ADR-0034 §4).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min: Option<f64>,
@@ -386,13 +396,13 @@ pub struct NodeDoc {
     /// built graph is the explicit flatten/export path (ADR-0036).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch: Option<String>,
-    /// Public-control metadata for a generated control surface (ADR-0018): marks this node as
-    /// player-facing and carries display hints (`label`, optional `unit`/`widget`/range). The
-    /// engine never reads it — it is passed through opaquely so it survives load → round-trip →
-    /// re-serialize (serde would otherwise drop an unknown field, erasing it on `from_graph`).
-    /// A control-surface generator reads it; `None` means the node is internal plumbing.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub control: Option<serde_json::Value>,
+    /// **Retired** (ADR-0018, superseded by ADR-0043): the v2 per-node `control` block.
+    /// Deserialize-only sink so a v2 document (or a v3 one still carrying leftovers) parses
+    /// under `deny_unknown_fields`; [`normalize`](InstrumentDoc::normalize) drains it into a
+    /// [`LoadWarning::DeprecatedControlBlock`] and save never writes it — presentation lives
+    /// in a surface doc now.
+    #[serde(default, skip_serializing)]
+    pub(crate) control: Option<serde_json::Value>,
 }
 
 impl NodeDoc {
@@ -706,6 +716,15 @@ pub enum LoadWarning {
     /// still works when the same patch is played at top level, so this is a warning, not an
     /// error. Wrapped in [`Nested`](Self::Nested) with the hosting node.
     InertChannelBinding { name: String },
+    /// The node carried a retired v2 `control` block (ADR-0018, superseded by ADR-0043) — UI
+    /// metadata the engine never read. Ignored, never fatal: sound is unaffected; presentation
+    /// lives in a surface doc now. Re-saving the document strips it.
+    DeprecatedControlBlock { node: String },
+    /// The interface entry carried retired pipe presentation — `label`/`widget` (ADR-0038 §2
+    /// as amended by ADR-0043). Ignored, never fatal: the pipe keeps its quantity contract
+    /// (`type`/`default`/`min`/`max`/`curve`/`unit`); presentation lives in a surface doc now.
+    /// Re-saving the document strips it. `field` names which retired field was dropped.
+    DeprecatedPipePresentation { name: String, field: &'static str },
 }
 
 impl fmt::Display for LoadWarning {
@@ -747,6 +766,16 @@ impl fmt::Display for LoadWarning {
                 f,
                 "input pipe {name:?} binds a logical input channel, which is inert in a hosted \
                  voice — the host's edges feed a voice's pipes; unfed, it renders silence"
+            ),
+            LoadWarning::DeprecatedControlBlock { node } => write!(
+                f,
+                "node {node:?}: dropped retired `control` block (ADR-0043) — presentation \
+                 lives in a surface doc; re-saving writes it away"
+            ),
+            LoadWarning::DeprecatedPipePresentation { name, field } => write!(
+                f,
+                "interface entry {name:?}: dropped retired `{field}` (ADR-0043) — pipe \
+                 presentation lives in a surface doc; re-saving writes it away"
             ),
         }
     }
@@ -854,7 +883,7 @@ fn load_doc_guarded(
     // `outputs` block, target-pointing entries) must fail here exactly as it fails in
     // `from_json` — fail closed, not tap twice.
     let normalized;
-    let doc = if doc.format_version != FORMAT_VERSION {
+    let doc = if doc.format_version != FORMAT_VERSION || doc.carries_retired_presentation() {
         if doc.format_version > FORMAT_VERSION {
             return Err(LoadError::UnsupportedVersion {
                 found: doc.format_version,
@@ -866,7 +895,7 @@ fn load_doc_guarded(
         normalized = d;
         &normalized
     } else {
-        doc.check_v2_shape()?;
+        doc.check_pipe_shape()?;
         doc
     };
 
@@ -1234,19 +1263,72 @@ impl InstrumentDoc {
                 supported: FORMAT_VERSION,
             });
         }
-        if self.format_version < FORMAT_VERSION {
+        if self.format_version < 2 {
             migrate_v1(self, registry, resolver, ctx, referrer)?;
         } else {
-            self.check_v2_shape()?;
+            self.check_pipe_shape()?;
         }
+        // v2→v3 (ADR-0043 §7) is a pure strip, so it runs unconditionally: a v3-stamped
+        // document still carrying leftovers degrades identically (ignore-with-warning).
+        self.strip_retired_presentation();
         self.format_version = FORMAT_VERSION;
         Ok(())
     }
 
-    /// Refuse v1-only forms under a v2 stamp: a target-pointing `interface` entry or the
+    /// Whether any retired presentation carrier survived past a parse boundary — a
+    /// hand-deserialized document (`load_doc_guarded`) that still needs the ADR-0043 strip
+    /// even though its stamp is current.
+    fn carries_retired_presentation(&self) -> bool {
+        let pipe_presentation = self.interface.as_ref().is_some_and(|i| {
+            i.inputs
+                .values()
+                .chain(i.outputs.values())
+                .any(|e| match e {
+                    InterfaceEntry::Pipe(p) => p.label.is_some() || p.widget.is_some(),
+                    InterfaceEntry::Feed(f) => f.label.is_some() || f.widget.is_some(),
+                    _ => false,
+                })
+        });
+        self.nodes.iter().any(|n| n.control.is_some()) || pipe_presentation
+    }
+
+    /// ADR-0043 §7: drain the retired presentation carriers — a node's `control` block and
+    /// `label`/`widget` on interface pipes — into ignore-with-warning migration notes,
+    /// surfaced on the next build. Sound is unaffected (the engine never read them); save
+    /// writes the document clean.
+    fn strip_retired_presentation(&mut self) {
+        let mut warnings = Vec::new();
+        for node in &mut self.nodes {
+            if node.control.take().is_some() {
+                warnings.push(LoadWarning::DeprecatedControlBlock {
+                    node: node.address.clone(),
+                });
+            }
+        }
+        if let Some(iface) = &mut self.interface {
+            for (name, entry) in iface.inputs.iter_mut().chain(iface.outputs.iter_mut()) {
+                let (label, widget) = match entry {
+                    InterfaceEntry::Pipe(p) => (p.label.take(), p.widget.take()),
+                    InterfaceEntry::Feed(f) => (f.label.take(), f.widget.take()),
+                    _ => (None, None),
+                };
+                for (field, dropped) in [("label", label.is_some()), ("widget", widget.is_some())] {
+                    if dropped {
+                        warnings.push(LoadWarning::DeprecatedPipePresentation {
+                            name: name.clone(),
+                            field,
+                        });
+                    }
+                }
+            }
+        }
+        self.migration.warnings.extend(warnings);
+    }
+
+    /// Refuse v1-only forms under a v2+ stamp: a target-pointing `interface` entry or the
     /// anonymous top-level `outputs` block. Migration only runs for documents that *declare*
-    /// themselves older, so a v2 document must already speak pipes.
-    fn check_v2_shape(&self) -> Result<(), LoadError> {
+    /// themselves v1, so a v2/v3 document must already speak pipes.
+    fn check_pipe_shape(&self) -> Result<(), LoadError> {
         if !self.outputs.is_empty() {
             return Err(LoadError::AnonymousOutputs);
         }
@@ -3451,24 +3533,22 @@ mod tests {
     }
 
     #[test]
-    fn control_block_survives_doc_round_trip() {
-        // ADR-0018: `control` is opaque passthrough — the engine ignores it, but it must
-        // survive load -> re-serialize so a surface generator can read what it wrote.
+    fn control_block_is_drained_at_parse_and_never_saved() {
+        // ADR-0043: the retired `control` block parses (deny_unknown_fields would otherwise
+        // hard-fail a v2 document) but is drained at normalize — never read, never re-saved.
         let json = r#"{"instrument":"t",
             "nodes":[{"type":"map_f32_signal","address":"/brightness",
                       "control":{"label":"Brightness","widget":"fader","unit":"%"}}]}"#;
         let doc = InstrumentDoc::from_json(json, &reg()).expect("parse");
-        let ctl = doc.nodes[0]
-            .control
-            .as_ref()
-            .expect("control preserved on load");
-        assert_eq!(ctl["label"], "Brightness");
-        let reparsed = InstrumentDoc::from_json(&doc.to_json_pretty(), &reg()).expect("reparse");
-        assert_eq!(doc, reparsed, "control block must round-trip unchanged");
+        assert!(
+            doc.nodes[0].control.is_none(),
+            "normalize drains the retired control block"
+        );
+        assert!(!doc.to_json_pretty().contains("\"control\""));
     }
 
     #[test]
-    fn absent_format_version_is_v1_and_save_writes_v2() {
+    fn absent_format_version_is_v1_and_save_writes_current() {
         // Every pre-versioning document is a valid v1 (ADR-0036); it migrates at parse...
         let doc =
             InstrumentDoc::from_json(r#"{"instrument":"t","nodes":[]}"#, &reg()).expect("parse");
@@ -3476,7 +3556,7 @@ mod tests {
         // ...and saving stamps the current version explicitly (never the old number).
         let json = doc.to_json_pretty();
         assert!(
-            json.contains("\"format_version\": 2"),
+            json.contains("\"format_version\": 3"),
             "save must write the current version: {json}"
         );
     }
@@ -3494,7 +3574,7 @@ mod tests {
         )
         .expect("a below-current version parses");
         assert_eq!(doc.format_version, FORMAT_VERSION);
-        assert!(doc.to_json_pretty().contains("\"format_version\": 2"));
+        assert!(doc.to_json_pretty().contains("\"format_version\": 3"));
     }
 
     #[test]
@@ -3837,9 +3917,11 @@ mod tests {
         let iface = doc.interface.as_ref().unwrap();
         let pipe = iface.inputs["freq"].pipe().expect("migrated to a pipe");
         assert_eq!(pipe.ty, "f32_buffer");
-        assert_eq!(pipe.label.as_deref(), Some("Pitch"));
+        // v1's `label`/`widget` are retired presentation (ADR-0043): drained on the way to
+        // v3 with a DeprecatedPipePresentation warning. The quantity fields carry over.
+        assert_eq!(pipe.label, None);
+        assert_eq!(pipe.widget, None);
         assert_eq!(pipe.unit.as_deref(), Some("Hz"));
-        assert_eq!(pipe.widget.as_deref(), Some("knob"));
         // v1 min/max were display-only; the pipe carries the inner port's engine range.
         assert_eq!((pipe.min, pipe.max), (Some(20.0), Some(20_000.0)));
         assert_eq!(pipe.default, Some(PipeDefault::Number(440.0)));

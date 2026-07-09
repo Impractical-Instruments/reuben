@@ -1,165 +1,244 @@
 ---
 name: control-surface
-description: Generate a Hexler TouchOSC control surface (.tosc) for a reuben instrument, so you can play it from a phone or tablet over OSC. Infers player-facing controls, writes `control` blocks into the instrument, and emits the layout. Use when the user says "make a control surface", "generate a TouchOSC layout", "make a UI for this instrument", or wants to play an instrument from a touch controller.
+description: Author and edit a reuben surface doc (`surfaces/<name>.json`) — the durable presentation layer binding an instrument's interface pipes to widgets — and project it to a Hexler TouchOSC layout (.tosc) played over OSC. Use when the user says "make a control surface", "generate a TouchOSC layout", "make a UI for this instrument", "relabel/reorder/regroup the controls", "edit the surface", or wants to play an instrument from a phone or tablet.
 ---
 
 # control-surface
 
-A reuben instrument is a graph; a *control surface* is the curated set of player-facing knobs
-(ADR-0017's Good Buttons + a few musical params). This skill generates a Hexler **TouchOSC**
-layout (`.tosc`) that sends OSC straight to reuben's node addresses — the fastest path from a
-new instrument to a touchable UI. It is a **one-shot, disposable** generator (ADR-0018): the
-instrument JSON is the source of truth; regenerate when it changes.
+A playable surface is three layers owned by three files (ADR-0043):
 
-It is **not** an auto-UI system and **not** a round-trip editor — it emits a scratch surface to
-play with.
+| Layer | File | Carries | Lifecycle |
+|---|---|---|---|
+| **Contract** | the instrument's `interface.inputs` pipes | the *quantity*: `type` / `default` / `min` / `max` / `curve` / `unit` — engine-enforced against every consumer wire | edited by the **`patcher`** skill, never this one |
+| **Presentation** | `surfaces/<name>.json` (schema: `surfaces/surface.schema.json`) | `bind` / `label` / `widget` / `group`, selection + order, optional **narrower** `min`/`max` | **durable, editable** — this skill's source of truth |
+| **Projection** | `control-surfaces/<name>.tosc` | the TouchOSC rendering | **disposable** (ADR-0018's one-shot framing, now scoped to the `.tosc` only) — regenerate, never hand-edit |
 
-## Vocabulary (where each control's metadata comes from)
+Interface input pipes are the **one boundary** (ADR-0038/0043): a control bound to pipe `name`
+sends OSC to **`/<name>/in`** — the pipe node minted at `/<name>`, its `in` port — the same
+address `describe` reports. (That assumes the instrument plays at top level; nested under a host
+at `/h`, the same pipe is `/h/<name>/in`.) The resolver merges the pipe's contract at load, so
+the doc stores only the pipe *name*: change the pipe's range and every surface follows,
+drift-free. The web player consumes the same docs live (its JS resolver is this script's twin,
+pinned to identical output by a shared oracle) — editing a surface doc updates the web UI with
+no emit step; only the `.tosc` needs regenerating.
 
-| Control | OSC address the widget sends to | Range / unit / default |
-|---|---|---|
-| **Good Button** — a `map` whose input is not wired from another node | the node address, e.g. `/brightness` | the map's `in_min`/`in_max` instance inputs; default = `map`'s `default` |
-| **Direct input** — a settable numeric (`value`/`signal`) input on a node | `/<node>/<input>`, e.g. `/clock/tempo` or `/filter/cutoff` | the input's schema metadata (min/max/unit/default) |
+**Widget vocabulary** — a superset of what TouchOSC renders, so the web target is never capped:
 
-A numeric input — a held `f32` Value (`kind: "value"`, e.g. `/clock/tempo`) or a dense
-`f32_buffer` Signal (`kind: "signal"`, e.g. a filter's `cutoff`) — is now **directly
-controllable** over OSC at
-`/<node>/<input>` (ADR-0030) — no `map`/`m2s` front-end is required to reach it. A **Good Button**
-remains the right pattern for a *curated, ranged* player face (one knob fanned to several inputs
-over musical ranges), exactly as `good-button.json` does; a direct input is the raw,
-full-range alternative. `enum` inputs (filter `mode`, osc `waveform`) are settable too but aren't
-emitted as faders yet — they need a selector/toggle widget (out of scope today).
+- **Shipped** (both targets): `fader`, `radial` (rotary fader — same value/OSC model),
+  `param-toggle` (button sends its 0/1 straight to the pipe — gate steps), `note-toggle`
+  (sends `[note, gate]`, constant note so note-off matches; `velocity` rides along for the web
+  target), `chord-button` (sends `[degree, gate]` — a note pipe accepts a degree payload at the
+  same `/in` port).
+- **Reserved** (format-allowed, web-only, **not built**): `xy-pad`, `grid`, `visualizer`,
+  `keyboard`.
 
-### Interface pipes: the `interface` boundary *is* the surface
+**The TouchOSC skip table** — `emit` never fails silently; each dropped control gets one stderr
+warning naming it: a reserved/web-only/unknown `widget`; a `bind` naming no pipe; a message
+(`note`) pipe bound with no explicit widget (nothing inferable); a `note-toggle` missing `note`
+or `chord-button` missing `degree`. An out-of-range `min`/`max` override is *clamped* into the
+pipe range with a warning (the control is kept — the ADR-0034 §4 subset law). A
+`surface_version` other than 1 is a hard error; an instrument-name mismatch is a warning only.
 
-An instrument whose `interface.inputs` declares control **pipes** (ADR-0038 §2) already carries a
-curated boundary — each input pipe declares its own `Arg` type and **owns** its presentation
-metadata (label/unit/widget/min/max/curve/default). That boundary needs no hand-authored `control`
-blocks: it *is* the curated set. The `boundary` subcommand emits **one fader per wireable interface
-input pipe** straight from it.
+**Surface-doc resolution order** (per target `t`, today `touchosc` only):
+`surfaces/<stem>.<t>.json` ?? `surfaces/<stem>.json` ?? **auto-derived default** — one fader per
+wireable input pipe, declaration order; channel-bound pipes (device bindings), bare `f32_buffer`
+pipes (no range to scale into), and message/enum pipes are skipped with a warning naming each.
+Reach for a per-target file only when the control *set* genuinely diverges, not mere geometry.
 
-| Control | OSC address the widget sends to | Range / unit / default |
-|---|---|---|
-| **Boundary input pipe** — a name in `interface.inputs` | the pipe's `/<name>/in` port (ADR-0038: an input pipe mints its own address `/<name>` and takes control on its single `in` port; it fans out to every internal consumer, so the fader drives the pipe, not an inner port) | the pipe's own declared metadata from `describe --json` |
+## The surface doc
 
-Metadata comes from `reuben describe <instrument>.json --json` — each pipe reports its declared
-type, range, default, unit, curve, label, and widget, so the script re-implements nothing. Inputs
-the host can't drive from a fader are skipped: an **`enum`**/message/harmony pipe (needs a non-fader
-widget) and a **bare audio** pipe (a `signal` kind with no range to scale into). The address
-assumes the surfaced instrument is played at top level; nested under a host at `/h`, the same pipe
-is `/h/<name>/in`.
+`surfaces/good-button.json`, complete:
 
-## Workflow
+```json
+{
+  "surface_version": 1,
+  "instrument": "good-button",
+  "controls": [
+    { "bind": "notes", "label": "Play C", "widget": "note-toggle", "note": 60 },
+    { "bind": "brightness", "label": "Brightness", "widget": "fader" }
+  ]
+}
+```
 
-Run from the repo root. The script is `gen_surface.py` in this skill's directory.
+Semantics (full schema in `surfaces/surface.schema.json`):
 
-**Shortcut for an instrument with interface input pipes** (`interface.inputs` declares ranged
-control pipes, ADR-0038 §2): skip the infer/curate steps — the boundary is already the curated
-set. Just
-`python3 <skilldir>/gen_surface.py boundary instruments/<name>.json --host <host>`
-(runs `reuben describe --json` itself; pass `--reuben PATH` if the binary isn't under `target/`,
-or `--describe FILE` to feed pre-captured output). It writes `control-surfaces/<name>.tosc` with
-one fader per wireable input pipe. Then jump to step 5 (verify on device). Use the full
-`infer`→curate→`emit` flow below for an instrument with no control pipes, or when you want to
-hand-curate Good Buttons / toggles beyond the boundary.
+- `controls` order is render order; several controls may bind one pipe (chord-player puts 7
+  `chord-button`s on its one note pipe, degrees 0–6).
+- `label` defaults to the pipe name, underscores as spaces, each word's first letter uppercased
+  (`kick_step1` → "Kick Step1") — pinned so both resolvers agree byte-for-byte.
+- `widget` defaults to the type inference (`f32` or ranged `f32_buffer` → fader); a message pipe
+  has no inferable widget, so binding one requires an explicit widget.
+- `min`/`max` may only *narrow* the pipe range. The widget rests at the pipe `default` clamped
+  into the effective range; a pipe with no default rests at the floor.
+- `unit`/`curve` come from the **pipe only** — they describe the quantity, not one rendering.
+- `group` packs adjacent same-group controls into one row; `cols` (default 4) is widgets per row
+  for ungrouped controls.
 
-1. **Pick the instrument and host.** Ask which `instruments/*.json` and the host running reuben
-   (default `localhost`, port `9000`).
+## Workflows
 
-2. **Discover candidates** (read-only):
-   `python3 <skilldir>/gen_surface.py infer instruments/<name>.json`
-   This prints Good Buttons (high-confidence public controls) and every node param with
-   resolved address + metadata.
+Run from the repo root; the script is `gen_surface.py` in this skill's directory (`<skilldir>` =
+`.claude/skills/control-surface`).
 
-3. **Curate and annotate.** If the instrument has no `control` blocks yet, propose a tight set —
-   **Good Buttons first**, then only the params that are genuinely musical to play (tempo,
-   sequence steps, voice count); skip structural/internal params. Show the user the proposed
-   labels + ranges. **Also ask how the user wants the continuous (float) controls rendered —
-   linear `fader`s (default) or rotary `radial` knobs** (the choice applies to every fader-kind
-   control; toggles/buttons are unaffected). Get confirmation, then **write `control` blocks into
-   the instrument JSON with Edit** (preserve the file's inline-node formatting). Forms:
-   - Good Button: `"control": { "label": "Brightness", "unit": "%" }`
-   - one param: `"control": { "label": "Tempo", "param": "tempo" }`
-   - many params on one node: `"control": [ { "label": "Step 1", "param": "step1" }, ... ]`
-   - radial knob: `"control": { "label": "Decay", "widget": "radial", "param": "decay" }`
-   - play toggle: `"control": { "label": "Play C", "widget": "note-toggle", "port": "note", "note": 60 }`
-   `label` is required; `unit`/`widget`/`min`/`max`/`default`/`group` are optional (otherwise
-   inferred). `group` is a layout hint (any string): consecutive controls sharing it pack onto one
-   row — e.g. tag each drum channel's knobs `"group": "kick"` / `"snare"` / … to get one channel
-   per row (see *Layout notes*). `widget` ∈ `fader` (default), `radial`, `note-toggle`. A `radial` is a rotary knob —
-   identical value/OSC model to a `fader` (one `x` scaled to the control's range), just rendered
-   as a dial; use it for any continuous param when the user prefers knobs. A `note-toggle` plays
-   `<node>/<port> [note, gate]` with a constant `note` so note-off matches (TouchOSC can't share a
-   value between two controls without scripting, so a separate slider + gate isn't possible natively).
+### 1. Inspect the derived default (no doc yet)
 
-4. **Emit the surface:**
-   `python3 <skilldir>/gen_surface.py emit instruments/<name>.json --host <host>`
-   Writes `control-surfaces/<name>.tosc` (the repo's versioned, shareable surface dir;
-   override with `--out`). Faders and radials send real values (0..1 scaled to range) and init to
-   the resting default; the connection is one-way (surface → reuben). A `note-toggle` control emits
-   a toggle button that plays a fixed `note` through a message port, e.g. `/voicer/notes`.
+`python3 <skilldir>/gen_surface.py emit instruments/<name>.json` with no `surfaces/<stem>.json`
+present resolves the auto-derived default and tells you exactly what surfaced (control count) and
+what didn't (one warning per skipped pipe). For the *live-engine* view — metadata read from
+`reuben describe --json` rather than the instrument file, which doubles as the drift guard on the
+describe contract —
 
-5. **Open + verify on device.** Have the user open `control-surfaces/<name>.tosc` in TouchOSC,
-   set the OSC **connection host/port** to the machine running reuben, and play. The format is
-   confirmed against a real export (see *Format notes*), so this is a sanity check, not a
-   debugging round — but always confirm new control *kinds* (a widget type not yet exercised).
+```
+python3 <skilldir>/gen_surface.py boundary instruments/patches/space.json
+```
+
+(`boundary` runs the binary itself: `--reuben PATH` if it isn't under `target/`, or
+`--describe FILE` to feed pre-captured output. It emits one fader per wireable input pipe.)
+
+### 2. Scaffold a new `surfaces/<name>.json`
+
+Start from the derivation, not a blank file:
+
+```
+python3 - <<'EOF' > surfaces/<name>.json
+import json, sys
+sys.path.insert(0, ".claude/skills/control-surface")
+import gen_surface as g
+inst = json.load(open("instruments/<name>.json"))
+doc, warnings = g.derive_surface(inst, inst.get("instrument"))
+for w in warnings: print("warning:", w, file=sys.stderr)
+print(json.dumps(doc, indent=2))
+EOF
+```
+
+The warnings are your curation worklist: each skipped message pipe is a candidate for an explicit
+`note-toggle`/`chord-button` entry with its payload.
+
+### 3. Edit — the round-trip
+
+The doc is the durable source: edit it with Edit and re-emit. The moves, all plain JSON edits:
+
+- **relabel** — set `label`;
+- **reorder / curate** — reorder or delete `controls` entries (order is render order);
+- **group** — tag runs of controls with the same `group` string to give each logical unit its
+  own row (see *Layout notes*);
+- **narrow a range** — set `min`/`max` inside the pipe range (outside clamps, loudly);
+- **switch widgets** — e.g. `"widget": "radial"` for knobs (ask the user fader vs knob for the
+  continuous controls; the choice is per control now, not global);
+- **per-target variant** — copy the doc to `surfaces/<stem>.touchosc.json` and diverge; `emit`
+  prefers it for the TouchOSC target while the web target keeps reading `<stem>.json`
+  (its own variant is `<stem>.web.json`).
+
+Validate the edit against `surfaces/surface.schema.json` shape by re-emitting: the resolver's
+warnings name anything unresolvable.
+
+### 4. Project the `.tosc`
+
+```
+python3 <skilldir>/gen_surface.py emit instruments/<name>.json
+```
+
+Writes `control-surfaces/<stem>.tosc` (the repo's versioned, shareable surface dir; `--out`
+overrides). Other flags: `--surface FILE` to bypass the resolution order, `--cols N` (defaults
+to the doc's `cols`, else 4), `--host`/`--port` for the printed reminder. Output is
+**deterministic** — the same instrument + doc emits identical bytes, so regenerating a committed
+`.tosc` is always safe (an unchanged doc leaves `git status` clean). Read the stderr warnings
+against the skip table above: each names a control and why it was dropped; the emit still
+succeeds unless *nothing* resolved.
+
+### 5. Verify on device
+
+Have the user open `control-surfaces/<name>.tosc` in TouchOSC and set the OSC **connection
+host/port** to the machine running reuben (the connection is one-way, surface → reuben, port
+9000). The format is confirmed against a real export (see *Format notes*), so this is a sanity
+check — but always confirm a widget *kind* not exercised before.
+
+## Graph edits: delegate to `patcher`
+
+This skill **never edits the instrument graph** — not even `interface` pipes. Anything that
+changes the contract is the `patcher` skill's job; come back here once the pipe exists:
+
+- **promoting a control to a pipe** (a knob the surface wants but `interface.inputs` lacks);
+- **renaming** a pipe or node (then update `bind` here);
+- **rewiring**, or changing a pipe's `type`/`min`/`max`/`default`/`curve`/`unit`.
+
+## Worked example: good-button
+
+The contract, from `instruments/good-button.json` `interface.inputs`: `brightness`
+(`f32`, 0.0–1.0, default 0.5 — fans out internally to the master filter's cutoff + resonance)
+and `notes` (`note` — the play pipe). The committed presentation is the doc quoted above: a
+note-toggle playing MIDI 60 at `/notes/in`, a fader sweeping `/brightness/in`.
+
+A round-trip relabel:
+
+1. Edit `surfaces/good-button.json`: `"label": "Play C"` → `"label": "Play Middle C"`.
+2. `python3 <skilldir>/gen_surface.py emit instruments/good-button.json`
+   → `wrote control-surfaces/good-button.tosc — 2 control(s) from surfaces/good-button.json`.
+3. The new label is in the projection (the `.tosc` is zlib-compressed XML:
+   `zlib.decompress(open("control-surfaces/good-button.tosc","rb").read())` contains
+   `Play Middle C`). The instrument JSON is untouched throughout.
+
+And the default-derivation view: emitting a copy of the instrument under a stem with no
+`surfaces/` doc yields **1 control** (the `brightness` fader) plus
+`warning: default surface skips 'note' pipe 'notes' (a default surface cannot guess its
+payload)` — exactly the gap the committed doc curates with its explicit `note-toggle`.
 
 ## Format notes
 
 The emitter hand-builds the format (no external dep, `zlib`-compressed `lexml version="6"`),
-**cloned from a known-good editor export**: `fixtures/REUBEN_REF.tosc` (which carries one of each
-control kind the editor offers — FADER, RADIAL, BUTTON, LABEL, plus unused types). The test
-`FixtureMatchTest` asserts our per-control property keys still match that fixture, so format
-drift fails CI. If a future TouchOSC version changes the format, or you add a new widget type:
-rebuild the fixture in the editor (one of each control, distinctive values), replace
-`fixtures/REUBEN_REF.tosc`, add the type to `FixtureMatchTest`, and diff to update the property
-sets in `gen_surface.py` (note property key **order** must match the fixture — the test compares
-ordered lists).
+**cloned from a known-good editor export**: `fixtures/REUBEN_REF.tosc` (one of each control kind
+the editor offers — FADER, RADIAL, BUTTON, LABEL, plus unused types). `FixtureMatchTest` asserts
+our per-control property keys still match that fixture, so format drift fails CI. If a future
+TouchOSC version changes the format, or you add a new widget type: rebuild the fixture in the
+editor (one of each control, distinctive values), replace `fixtures/REUBEN_REF.tosc`, add the
+type to `FixtureMatchTest`, and diff to update the property sets in `gen_surface.py` (property
+key **order** must match the fixture — the test compares ordered lists).
 
 ## Layout notes (widget sizing)
 
-The grid is sized for **faders**: each control fills its full cell — a tall/wide rectangle. A
-**RADIAL renders a circle sized to its frame's bounding box**, so handing it the same wide, short
-fader cell makes the knob overflow into the neighbouring rows (and the lone control of a short
-last row, which a fader stretches full-width, becomes a giant circle). The emitter therefore boxes
-every radial into the largest **centred square** that fits its cell (`build_tosc`); `RadialTest`
-locks `w == h`. Keep this rule for any future circular/2-D control (XY pad, radar) — frame it
-square, don't let it fill a fader cell.
+The grid is sized for **faders**: each control fills its full cell. A **RADIAL renders a circle
+sized to its frame's bounding box**, so the emitter boxes every radial into the largest centred
+square that fits its cell (`RadialTest` locks `w == h`); keep that rule for any future
+circular/2-D control. Because the square is capped by cell *height*, a radial-heavy surface with
+many rows yields small knobs — **more columns = fewer rows = bigger knobs**: set the doc's `cols`
+(or pass `--cols`) to trade width for knob size (25 knobs at 4 cols are 68px; at 7 they grow to
+~130px).
 
-Because the square is capped by the cell's *height*, a radial-heavy surface with many rows yields
-small knobs (the vertical budget is split across all rows). Knobs are square and there's usually
-spare horizontal room, so **more columns = fewer rows = bigger knobs**: pass `--cols N` to `emit`
-to trade width for knob size (e.g. 25 knobs at `--cols 4` are 68px; at `--cols 7` they grow to
-~130px). Tune `--cols` to the channel/group structure when the params group naturally.
-
-**Grouping params onto rows.** For a channel-structured instrument, a uniform `--cols` grid splits
-a channel awkwardly across rows. Instead tag each logical group with a `group` string on its
-control specs (in declaration order): consecutive same-`group` controls become one full row
-(wrapping past `STEP_COLS`=16), and ungrouped controls flow into the `--cols` grid in between. The
-euclidean-drums surface uses this — tempo (ungrouped) on row 1, then the kick/snare/tom/hat knobs
-each `"group"`-tagged onto their own row, giving 5 even rows of square knobs. Group rows size to
-their own width, so a 6-knob channel row and a 1-knob tempo row still share the same knob size.
+**Grouping onto rows.** Consecutive controls sharing a `group` string become one full row
+(wrapping past 16), and ungrouped controls flow into the `cols` grid between them. Two uses in
+the committed docs: `surfaces/euclidean-drums.json` rows its radials one drum channel per
+`group` (kick/snare/tom/hat) with ungrouped tempo on its own row; `surfaces/groovebox.json` tags
+each 16-step `param-toggle` lane with its channel's `group`, so every lane lines up as one row —
+a lane is *identified* by its shared group, since steps are ordinary pipes now (ADR-0043 §6).
+Group rows size to their own width, so a 6-knob row and a 1-knob row share the same knob size.
 
 ## Run the tests
 
-`cd <skilldir> && python3 -m unittest` — covers metadata resolution, inference, OSC addressing,
-the zlib/XML round-trip, the structural match against `fixtures/REUBEN_REF.tosc`, and a
-**live-engine boundary test** that runs the real `reuben describe` (via `cargo run`, so it tracks
-current source) on `instruments/patches/space.json` and asserts the emitted pipe surface — this is
-the guard that fails on an ADR-0038-style interface-format flip instead of letting the boundary
-path rot silently. It skips (loudly) if `cargo` isn't on `PATH`.
+`cd <skilldir> && python3 -m unittest` — covers the pinned resolver semantics (default labels,
+widget inference, range clamping, the skip table), the derived default surface, the doc
+resolution order, layout, the zlib/XML round-trip, the structural match against
+`fixtures/REUBEN_REF.tosc`, the **cross-implementation oracle**
+(`crates/reuben-web/js/surface/testdata/expected-widgets.json` — both native resolvers, this one
+and the web player's JS twin, must resolve every committed instrument + surface doc to the same
+widget list; the JS side regenerates the fixture), and a **live-engine boundary test** that runs
+the real `reuben describe` (via `cargo run`, so it tracks current source) on
+`instruments/patches/space.json` — the guard that fails on an interface-format flip instead of
+letting the boundary path rot silently. It skips (loudly) if `cargo` isn't on `PATH`.
 
 ## Scope
 
 | Thing | Action |
 |---|---|
-| `control` blocks in the instrument JSON | **write** (curated, confirmed, via Edit) |
-| `.tosc` surface file | **emit** via `gen_surface.py emit` (control blocks) or `boundary` (a nested instrument's `interface`) |
-| instrument's `interface` input pipes | **read** via `describe --json`; never edit — a `boundary` surface authors no `control` blocks |
-| instrument graph / operators | **never edit** — surface metadata only |
-| two-way OSC feedback, grouped layouts | **out of scope** (ADR-0018 deferred) |
+| `surfaces/*.json` surface docs (+ per-target variants) | **author / edit** — the durable presentation source |
+| `control-surfaces/*.tosc` | **emit** via `gen_surface.py` — disposable projection; regenerate, never hand-edit |
+| instrument `interface` input pipes | **read** only — the contract this skill binds to |
+| instrument graph — promote a control to a pipe, rename, rewire, change a pipe's contract | **never** — delegate to the `patcher` skill |
+| web renderer (`crates/reuben-web/js/surface`) | **never edit** — it consumes the same docs; the shared oracle pins both resolvers |
+| two-way OSC feedback; reserved widgets (`xy-pad`, `grid`, `visualizer`, `keyboard`) | **out of scope** (format-allowed, not built) |
 
 ## Report
 
-End with: which instrument, the controls chosen (address + range), where the `.tosc` was
-written, the host/port to set in TouchOSC, and the explicit ask to verify it loads on device.
+End with: which instrument and which surface doc (authored, edited, per-target variant, or the
+derived default), the controls that resolved (bind + widget + range) and every skip warning with
+its reason, where the `.tosc` was written, the host/port to set in TouchOSC, the explicit ask to
+verify it loads on device — and, if the doc changed, the reminder that the web player picks the
+edit up with no emit step.

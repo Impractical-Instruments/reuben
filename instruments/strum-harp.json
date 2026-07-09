@@ -1,11 +1,37 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "instrument": "strum-harp",
-  "doc": "Toy 3 of 3 (V1.3 'The Toys', ADR-0022 §3 / ADR-0032): a drag-to-strum harp. One big fader is the strum bar — stream /strum/position [0..1] and the `strum` op plucks a note each time the position crosses a string boundary (both directions strum). Strings are scale degrees resolved through the tonal context, so an open full-diatonic scale reads as a harp glissando and stays in key. Each of the 8 voices is a hosted `strum-harp-voice` sub-patch (plucked saw -> percussive ADSR VCA); the voicer sums them and a brightness Good Button tones the mix through a master filter. Change the key live with /harmony/root (MIDI) or reshape the scale with /harmony/s0../harmony/s6. Sweep /brightness/in [0..1] to open the plucked tone (master filter cutoff + resonance). Set the string span with /strum/octaves [1..4].",
+  "doc": "Toy 3 of 3 (V1.3 'The Toys', ADR-0022 §3 / ADR-0032): a drag-to-strum harp. One big fader is the strum bar — stream /strum/in [0..1] (the `strum` interface pipe driving /strummer) and the `strum` op plucks a note each time the position crosses a string boundary (both directions strum). Strings are scale degrees resolved through the tonal context, so an open full-diatonic scale reads as a harp glissando and stays in key. Each of the 8 voices is a hosted `strum-harp-voice` sub-patch (plucked saw -> percussive ADSR VCA); the voicer sums them and a brightness Good Button tones the mix through a master filter. Change the key live with /key/in (MIDI 48..60) or reshape the scale with /harmony/s0../harmony/s6. Sweep /brightness/in [0..1] to open the plucked tone (master filter cutoff + resonance). Set the string span with /octaves/in [1..4].",
   "resources": {
     "strum-harp-voice": "voices/strum-harp-voice.json"
   },
   "interface": {
+    "inputs": {
+      "strum": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "octaves": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 1.0,
+        "max": 4.0
+      },
+      "key": {
+        "type": "f32",
+        "default": 60.0,
+        "min": 48.0,
+        "max": 60.0
+      },
+      "brightness": {
+        "type": "f32",
+        "default": 0.6,
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
     "outputs": {
       "out": {
         "from": "/out.audio"
@@ -15,33 +41,28 @@
   "nodes": [
     {
       "type": "strum",
-      "address": "/strum",
-      "doc": "PUBLIC strum bar. The fader's position (`position`, a held Value — ADR-0031) is the strum bar itself: send /strum/position [0..1] and each band crossing plucks a degree. Rests at 0.0 (bottom string) so no note fires at load. 8 strings over 1 octave by default; /strum/octaves widens the span.",
+      "address": "/strummer",
+      "doc": "The strum bar op. `position` (a held Value — ADR-0031) is the strum bar itself, fed by the `strum` interface pipe (/strum/in [0..1]); each band crossing plucks a degree. Rests at 0.0 (bottom string) so no note fires at load. 8 strings over 1 octave by default; the `octaves` pipe (/octaves/in) widens the span.",
       "inputs": {
-        "octaves": 1.0,
-        "position": 0.0,
+        "octaves": {
+          "from": "/octaves"
+        },
+        "position": {
+          "from": "/strum"
+        },
         "strings": 8.0,
         "velocity": 1.0
-      },
-      "control": [
-        {
-          "label": "Strum",
-          "param": "position",
-          "widget": "fader"
-        },
-        {
-          "label": "Range",
-          "param": "octaves"
-        }
-      ]
+      }
     },
     {
       "type": "harmony",
       "address": "/harmony",
-      "doc": "C major, 12-TET. The strum degrees resolve through this, so the harp is always in key; change /harmony/root to transpose, /harmony/s0..s6 to reshape the scale. The Key control steps the root across one octave (C3..C4).",
+      "doc": "C major, 12-TET. The strum degrees resolve through this, so the harp is always in key; the `key` pipe (/key/in, MIDI 48..60) steps the root across one octave (C3..C4) to transpose, /harmony/s0..s6 reshape the scale.",
       "inputs": {
         "degrees": 7.0,
-        "root": 60.0,
+        "root": {
+          "from": "/key"
+        },
         "s0": 0.0,
         "s1": 2.0,
         "s2": 4.0,
@@ -49,12 +70,6 @@
         "s4": 7.0,
         "s5": 9.0,
         "s6": 11.0
-      },
-      "control": {
-        "label": "Key",
-        "max": 60,
-        "min": 48,
-        "param": "root"
       }
     },
     {
@@ -69,7 +84,7 @@
           "from": "/harmony"
         },
         "notes": {
-          "from": "/strum"
+          "from": "/strummer"
         }
       },
       "voice": "strum-harp-voice"
@@ -101,16 +116,14 @@
     },
     {
       "type": "m2s",
-      "address": "/brightness",
-      "doc": "PUBLIC Good Button. The held knob value [0,1] smoothed into a CV Signal (an `m2s` is the value->signal converter), then fanned to the two ranged maps below. Send /brightness/in [0..1]. Rests at 0.6 so the plucks are bright at load.",
+      "address": "/brightness_cv",
+      "doc": "Brightness CV. The `brightness` pipe's held value [0,1] smoothed into a CV Signal (an `m2s` is the value->signal converter), then fanned to the two ranged maps below. Send /brightness/in [0..1]. Rests at 0.6 so the plucks are bright at load.",
       "inputs": {
-        "in": 0.6,
+        "in": {
+          "from": "/brightness"
+        },
         "mode": "Smooth",
         "time": 0.03
-      },
-      "control": {
-        "label": "Brightness",
-        "widget": "fader"
       }
     },
     {
@@ -120,7 +133,7 @@
       "inputs": {
         "curve": "Exponential",
         "in": {
-          "from": "/brightness"
+          "from": "/brightness_cv"
         },
         "out_max": 11000.0,
         "out_min": 600.0
@@ -132,7 +145,7 @@
       "doc": "brightness [0,1] -> resonance [0.1,0.7], linear.",
       "inputs": {
         "in": {
-          "from": "/brightness"
+          "from": "/brightness_cv"
         },
         "out_max": 0.7,
         "out_min": 0.1

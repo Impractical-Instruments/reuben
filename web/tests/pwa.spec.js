@@ -24,8 +24,8 @@ if (!manifest.toys.some((t) => t.id === DEFAULT_TOY)) {
 //
 //   1. the SW registers, activates, precaches the payload, and takes control of the page; a
 //      full cold reload with the network CUT still boots the app and plays a Toy — i.e. the
-//      precache (wired off stage-assets' transitive discovery) actually covers what the engine
-//      pulls: wasm, worklet, the Toy doc + its voices, the schema;
+//      precache (wired off stage-assets' transitive discovery) actually covers what the app
+//      pulls: wasm, worklet, the Toy doc + its voices, the surface doc;
 //   2. the app is installable — Chrome's own installability check (via CDP) reports no errors,
 //      and the manifest parses. (Lighthouse dropped its PWA category in v12, so this asserts
 //      the same signal Lighthouse used to, straight from the DevTools protocol.)
@@ -65,7 +65,9 @@ test("offline cold reload boots and plays a Toy entirely from cache", async ({ p
   await waitForServiceWorkerControl(page);
 
   // Cut the network. Everything from here — the shell reload, the wasm + worklet, the Toy doc,
-  // its voices, the schema — must be served from the SW precache or the app is not offline-safe.
+  // its voices, its surface doc — must be served from the SW precache or the app is not
+  // offline-safe. (The absent surfaces/<id>.web.json candidate isn't precached; that fetch
+  // fails offline and the resolver falls through to the precached surfaces/<id>.json.)
   await page.context().setOffline(true);
 
   // Cold reload with no network: the navigation itself is served from cache (precache +
@@ -81,8 +83,8 @@ test("offline cold reload boots and plays a Toy entirely from cache", async ({ p
   await expect(page.locator(".toy-card")).toHaveCount(TOY_COUNT);
   await expect.poll(() => page.evaluate(() => window.reubenPlayer.engineState())).toBe("running");
 
-  // Load a Toy offline: its document + transitive voices + the schema all come from precache,
-  // and the auto-UI surface renders — the payload is genuinely complete offline.
+  // Load a Toy offline: its document + transitive voices + its surface doc all come from
+  // precache, and the surface renders — the payload is genuinely complete offline.
   await page.locator(`.toy-card[data-toy="${DEFAULT_TOY}"]`).click();
   await expect.poll(() => page.evaluate(() => window.reubenPlayer.toy())).toBe(DEFAULT_TOY);
   await expect(page.locator(".surface-mount .surface-widget").first()).toBeVisible();

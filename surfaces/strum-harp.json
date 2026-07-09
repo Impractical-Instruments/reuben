@@ -1,0 +1,10 @@
+{
+  "surface_version": 1,
+  "instrument": "strum-harp",
+  "controls": [
+    { "bind": "strum", "label": "Strum", "widget": "fader" },
+    { "bind": "octaves", "label": "Range" },
+    { "bind": "key", "label": "Key" },
+    { "bind": "brightness", "label": "Brightness", "widget": "fader" }
+  ]
+}

@@ -227,7 +227,7 @@ fn chord_player_instrument_loads_and_makes_sound() {
     let mut r = Renderer::new(&plan);
     let mut buf = vec![0.0f32; CFG.block_size];
 
-    let press = Message::new("/chord/set", Note::new(Pitch::Degree(0), 1.0), 0);
+    let press = Message::new("/chord/in", Note::new(Pitch::Degree(0), 1.0), 0);
     let mut peak = 0.0f32;
     // ~2 s at 48k/256 — long enough for the 0.6 s attack to ramp.
     for _ in 0..400 {

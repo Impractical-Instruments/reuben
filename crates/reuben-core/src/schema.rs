@@ -179,9 +179,7 @@ pub fn generate(registry: &Registry) -> Value {
                     "min": { "type": "number", "description": "Engine-enforced range floor (numeric pipes; defaults to the type-wide bound)." },
                     "max": { "type": "number", "description": "Engine-enforced range ceiling (numeric pipes)." },
                     "curve": { "enum": ["lin", "exp"], "description": "Sweep-curve hint for a numeric pipe; defaults to lin." },
-                    "unit": { "type": "string" },
-                    "label": { "type": "string" },
-                    "widget": { "type": "string" }
+                    "unit": { "type": "string", "description": "Display unit describing the quantity (ADR-0043 §2) — every surface of the instrument inherits it." }
                 }
             },
             "outputPipe": {
@@ -192,9 +190,7 @@ pub fn generate(registry: &Registry) -> Value {
                 "properties": {
                     "from": { "type": "string", "description": "Internal \"/node.port\" (or sole-output \"/node\") wire-ref feeding this pipe." },
                     "channel": { "type": "integer", "minimum": 0, "maximum": 4095, "description": "Logical master output channel (signal pipes only); omitted = broadcast." },
-                    "label": { "type": "string" },
                     "unit": { "type": "string" },
-                    "widget": { "type": "string" },
                     "min": { "type": "number" },
                     "max": { "type": "number" }
                 }
@@ -230,34 +226,9 @@ pub fn generate(registry: &Registry) -> Value {
                     "patch": {
                         "type": "string",
                         "description": "Resource id into the document's `resources` table naming a nested instrument patch; only valid on a `subpatch` node (ADR-0034). At build the referenced patch is loaded and inlined: its nodes are spliced in under this node's address prefix, its `interface` becomes this node's ports, and the node dissolves."
-                    },
-                    "control": {
-                        "description": "Public-control metadata for a generated control surface (ADR-0018). One control spec, or an array of them for a multi-param node (e.g. a sequencer's steps).",
-                        "oneOf": [
-                            { "$ref": "#/$defs/controlSpec" },
-                            { "type": "array", "items": { "$ref": "#/$defs/controlSpec" } }
-                        ]
                     }
                 },
                 "allOf": branches
-            },
-            "controlSpec": {
-                "type": "object",
-                "description": "One player-facing control (ADR-0018); the engine ignores it. `label` is required. With no `param`, the widget binds to the node address (a `map` Good Button, range from its `in_min`/`in_max`); with a `param`, it binds to `/<node>/<param>` (range/`unit`/`default` from the param's metadata). `widget: \"note-toggle\"` emits a toggle that plays a fixed `note` (default 60) through a message `port` (default `notes`), e.g. a voicer's `/voicer/notes [note, gate]`. `widget: \"chord-button\"` (ADR-0022) emits a toggle that sends a fixed scale `degree` (default 0) through a message `port` (default `set`) as `[degree, gate]`, e.g. a chord op's `/chord/set [degree, gate]`. Any field may be overridden here.",
-                "required": ["label"],
-                "additionalProperties": false,
-                "properties": {
-                    "label": { "type": "string" },
-                    "param": { "type": "string" },
-                    "unit": { "type": "string" },
-                    "widget": { "type": "string" },
-                    "min": { "type": "number" },
-                    "max": { "type": "number" },
-                    "default": { "type": "number" },
-                    "port": { "type": "string" },
-                    "note": { "type": "number" },
-                    "degree": { "type": "number" }
-                }
             }
         }
     })

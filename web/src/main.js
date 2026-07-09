@@ -16,7 +16,7 @@ import "./app.css";
 import iiBadge from "./assets/ii-badge.png";
 import { registerSW } from "virtual:pwa-register";
 import { createReubenEngine } from "../../crates/reuben-web/js/reuben-engine.mjs";
-import { buildSurface, loadParamMeta, initial } from "../../crates/reuben-web/js/surface/widget-model.mjs";
+import { buildSurface, initial } from "../../crates/reuben-web/js/surface/widget-model.mjs";
 import { renderSurface, sendInitialDefaults } from "../../crates/reuben-web/js/surface/render.mjs";
 import { encodeControl } from "../../crates/reuben-web/js/codec.mjs";
 import { decodeBundle, encodeBundle, ShareError } from "../../crates/reuben-web/js/share.mjs";
@@ -38,7 +38,6 @@ const app = document.getElementById("app");
 
 let engine = null; // set once createReubenEngine resolves
 let enginePromise = null; // in-flight (or settled) engine creation; awaited by Start
-let paramMetaPromise = null; // the parsed schema → param metadata, fetched once and cached
 let loadToken = 0; // bumped per openToy so a stale in-flight load can't clobber a newer one
 let currentToy = null; // id of the Toy currently loaded on the engine (null before first)
 let currentInstrument = null; // document `instrument` name of the current player (Toy or link)
@@ -87,30 +86,62 @@ function ensureEngine() {
   return enginePromise;
 }
 
-// The instrument schema drives fader ranges/units in buildSurface. Identical for every Toy,
-// so fetch it once and cache the promise (a failure clears the cache so a retry re-fetches).
-function getParamMeta() {
-  if (!paramMetaPromise) {
-    paramMetaPromise = fetch(asset("schema.json"))
-      .then((r) => {
-        if (!r.ok) throw new Error(`fetch schema.json: HTTP ${r.status}`);
-        return r.json();
-      })
-      .then(loadParamMeta)
-      .catch((err) => {
-        paramMetaPromise = null;
-        throw err;
-      });
+// The ADR-0043 §5 resolution order for target `web`:
+//   surfaces/<id>.web.json ?? surfaces/<id>.json ?? null (⇒ buildSurface auto-derives from
+//   the instrument's interface pipes).
+// A 404 falls through to the next candidate SILENTLY — most Toys ship only the base doc, and a
+// doc-less Toy is fine by design. Any other failure (network drop, bad JSON) logs and also
+// falls through: a broken surface file degrades to the auto-derived default rather than
+// killing the load (dark-degrade, ADR-0016).
+const SURFACE_CANDIDATES = (id) => [`surfaces/${id}.web.json`, `surfaces/${id}.json`];
+
+async function fetchSurfaceDoc(id) {
+  for (const candidate of SURFACE_CANDIDATES(id)) {
+    try {
+      const r = await fetch(asset(candidate));
+      if (r.status === 404) continue; // no such surface doc — try the next candidate
+      if (!r.ok) throw new Error(`HTTP ${r.status}`);
+      const doc = await r.json();
+      // The resolver hard-refuses an unknown surface_version; refusing HERE instead keeps
+      // the §5 fallthrough alive — an unusable .web.json must not shadow a valid .json.
+      if (doc?.surface_version !== 1) {
+        throw new Error(`unsupported surface_version ${doc?.surface_version}`);
+      }
+      return doc;
+    } catch (err) {
+      console.warn(`[player] surface doc ${candidate} unusable, falling through:`, err);
+    }
   }
-  return paramMetaPromise;
+  return null;
 }
 
-// Warm the browser HTTP cache for a Toy's document + schema so the first engine.load(id) has
-// nothing to fetch over the wire (only the worklet round-trip). Best-effort: failures are
-// swallowed here and surfaced properly if the real load later hits them.
+// Resolve with the surface doc, degrading to the auto-derived default if the resolver
+// refuses it — a broken surface file must never kill a Toy that already loaded (the
+// fetchSurfaceDoc policy above, enforced at the last seam).
+function resolveSurfaceOrDefault(doc, surfaceDoc, name) {
+  if (surfaceDoc !== null) {
+    try {
+      return buildSurface(doc, surfaceDoc);
+    } catch (err) {
+      console.warn(`[player] surface doc for ${name} rejected, using the derived default:`, err);
+    }
+  }
+  return buildSurface(doc, null);
+}
+
+// Surface resolver warnings (skipped pipes, unknown binds, clamped ranges) surface ONCE per
+// load on the console — visible in devtools, never a crash (ADR-0043 dark-degrade).
+function logSurfaceWarnings(name, warnings) {
+  for (const w of warnings) console.warn(`[surface] ${name}: ${w}`);
+}
+
+// Warm the browser HTTP cache for a Toy's document + surface-doc candidates so the first
+// engine.load(id) has nothing to fetch over the wire (only the worklet round-trip).
+// Best-effort: failures (including the expected 404 on an absent candidate) are swallowed
+// here and handled properly by the real load's fetchSurfaceDoc.
 function prefetchToy(id) {
   fetch(asset(`instruments/${id}.json`)).catch(() => {});
-  getParamMeta().catch(() => {});
+  for (const candidate of SURFACE_CANDIDATES(id)) fetch(asset(candidate)).catch(() => {});
 }
 
 // --- screen plumbing ----------------------------------------------------------------------
@@ -493,17 +524,18 @@ async function openToy(toy) {
     if (token !== loadToken) return; // superseded by a newer openToy — drop this render
 
     currentToy = toy.id;
-    const [doc, paramMeta] = await Promise.all([
+    const [doc, surfaceDoc] = await Promise.all([
       fetch(asset(`instruments/${toy.id}.json`)).then((r) => {
         if (!r.ok) throw new Error(`fetch ${toy.id}.json: HTTP ${r.status}`);
         return r.json();
       }),
-      getParamMeta(),
+      fetchSurfaceDoc(toy.id),
     ]);
     if (token !== loadToken) return;
 
     currentInstrument = doc.instrument;
-    const surface = buildSurface(doc, paramMeta);
+    const surface = resolveSurfaceOrDefault(doc, surfaceDoc, toy.id);
+    logSurfaceWarnings(toy.id, surface.warnings);
     currentSurface = surface;
     renderSurface(surface, e, surfaceEl);
     // sendInitialDefaults ONLY after load() resolved (the worklet's `ready`): a control sent
@@ -623,13 +655,15 @@ async function fragmentBoot(hash) {
       instrumentJournal(e);
 
       const info = await e.loadBundle({ docText: bundle.docText, resources: bundle.resources });
-      const paramMeta = await getParamMeta();
       // Safe to parse — loadBundle already parsed it (a JSON failure would have thrown above).
       const doc = JSON.parse(bundle.docText);
 
       currentToy = null;
       currentInstrument = doc.instrument;
-      const surface = buildSurface(doc, paramMeta);
+      // A shared bundle carries no surface file — buildSurface(doc, null) auto-derives the
+      // default surface from the document's interface pipes (ADR-0043 §3).
+      const surface = buildSurface(doc, null);
+      logSurfaceWarnings(doc.instrument, surface.warnings);
       currentSurface = surface;
       const kind = deriveKind(surface, info);
 

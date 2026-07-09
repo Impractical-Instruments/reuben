@@ -12,8 +12,9 @@ different file types — this skill authors all three. It grounds itself on the 
 (`reuben describe`) and proves its work on the **real engine load path** (`reuben validate`) before
 finishing (ADR-0020).
 
-It does **not** author new Operators (that is Rust — the `create-operator` skill, ADR-0021), write
-`control` blocks (that is the `control-surface` skill, ADR-0018), or edit the schema/core.
+It does **not** author new Operators (that is Rust — the `create-operator` skill, ADR-0021), author
+surface docs (`surfaces/*.json` presentation — the `control-surface` skill, ADR-0043), or edit the
+schema/core.
 
 ## The loop: introspect → draft → validate → report
 
@@ -29,7 +30,7 @@ Run all `reuben` commands from the repo root.
      resource slots.
    - `cargo run -q -p reuben-native --bin reuben -- describe <patch.json> --json` — a nested
      instrument's **boundary** (ADR-0034/0038): its `interface` pipes as if they were operator
-     ports, each with its **declared** `Arg` type, range, default, and presentation metadata.
+     ports, each with its **declared** `Arg` type, range, default, and unit.
      This is what a `subpatch` node referencing that file exposes — wire against these names,
      never the child's internals.
    The schema at `crates/reuben-core/schema/instrument.schema.json` is the same data as a
@@ -118,15 +119,16 @@ voicer ─gate──────────────────────
   points inward anymore). An **input pipe** mints an address in the flat node namespace (entry
   `tone` → `/tone`) that internal nodes consume with an ordinary wire-ref, and — pointing at no
   inner port — **declares its own `type`** (`f32`, `f32_buffer`, `note`, `harmony`, or a vocab
-  enum name) plus the metadata it now **owns**: `default`/`min`/`max`/`curve`/`unit` (engine-
-  enforced for a numeric pipe) and `label`/`widget` (presentational). An **output pipe** is fed
-  **from** an internal port:
+  enum name) plus the quantity contract it now **owns**: `default`/`min`/`max`/`curve`/`unit`
+  (range engine-enforced for a numeric pipe). Presentation — `label`/`widget` — does **not**
+  belong on a pipe (ADR-0043): it lives in a surface doc (`surfaces/*.json`, the
+  `control-surface` skill's territory). An **output pipe** is fed **from** an internal port:
 
   ```json
   "interface": {
     "inputs":  { "in":   { "type": "f32_buffer" },
                  "tone": { "type": "f32_buffer", "default": 4000.0, "min": 20.0, "max": 20000.0,
-                           "curve": "exp", "unit": "Hz", "label": "Tone", "widget": "radial" } },
+                           "curve": "exp", "unit": "Hz" } },
     "outputs": { "out": { "from": "/verb.audio" } }
   }
   ```
@@ -153,8 +155,8 @@ cycle, advisory warning) and describe (list-all, one-op fields, unknown-op error
 
 | Thing | Action |
 |---|---|
-| Instrument/Rig graph — nodes, `inputs` (literals + wire-refs), `config`, outputs, resources | **author / edit** (validate before done) |
-| `control` blocks (player-facing UI metadata) | **never** — that is the `control-surface` skill |
+| Instrument/Rig graph — nodes, `inputs` (literals + wire-refs), `config`, `interface` pipes (including promoting a player-facing control to an input pipe), resources | **author / edit** (validate before done) |
+| Surface docs (`surfaces/*.json` — presentation binding pipes to widgets, ADR-0043) | **never** — that is the `control-surface` skill; it delegates graph edits back here |
 | New Operator types (Rust) | **never** — that is the `create-operator` skill (ADR-0021) |
 | `instrument.schema.json` / core crates | **never edit** — read the schema for grounding only |
 
@@ -162,5 +164,6 @@ cycle, advisory warning) and describe (list-all, one-op fields, unknown-op error
 
 End with: which instrument file, what was built or changed (nodes added/rewired, params set),
 the final `validate` result (`ok`, any warnings), and how to play it
-(`reuben play <file>`, the OSC address to send notes to). If you built a Good Button or other
-player-facing control, suggest the `control-surface` skill to generate a TouchOSC UI for it.
+(`reuben play <file>`, the OSC address to send notes to). If you built a Good Button or promoted
+a player-facing control to an interface pipe, suggest the `control-surface` skill to author its
+surface doc (the web player and TouchOSC render from it).

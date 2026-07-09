@@ -17,7 +17,7 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-import { loadParamMeta, buildSurface } from "./widget-model.mjs";
+import { buildSurface } from "./widget-model.mjs";
 import { renderSurface, sendInitialDefaults } from "./render.mjs";
 
 // --- minimal fake DOM --------------------------------------------------------------------
@@ -95,15 +95,15 @@ function find(root, pred) {
   return null;
 }
 
-// --- fixtures (real instruments + schema, parsed off disk — no wasm) ---------------------
+// --- fixtures (real instruments + surface docs, parsed off disk — no wasm, no schema) ----
 
 const here = dirname(fileURLToPath(import.meta.url));
-const SCHEMA_PATH = join(here, "../../../reuben-core/schema/instrument.schema.json");
 const INSTRUMENT_DIR = join(here, "../../../../instruments");
+const SURFACE_DIR = join(here, "../../../../surfaces");
 const readJson = (p) => JSON.parse(readFileSync(p, "utf8"));
 
-const paramMeta = loadParamMeta(readJson(SCHEMA_PATH));
-const surfaceOf = (name) => buildSurface(readJson(join(INSTRUMENT_DIR, `${name}.json`)), paramMeta);
+const surfaceOf = (name) =>
+  buildSurface(readJson(join(INSTRUMENT_DIR, `${name}.json`)), readJson(join(SURFACE_DIR, `${name}.json`)));
 
 // Tear the global stub down once, no matter which test installed it last.
 const restore = installFakeDocument();
@@ -125,13 +125,13 @@ test("good-button renders a note-toggle button + a fader, each bound through emi
   range.dispatch("input");
   assert.deepStrictEqual(engine.sends.at(-1), { address: "/brightness/in", args: [0.5] });
 
-  // The Play button (note-toggle -> /voicer/notes note 60): hold = [60,1], release = [60,0].
+  // The Play button (note-toggle -> the /notes pipe, note 60): hold = [60,1], release = [60,0].
   const play = find(container, (el) => el.tagName === "BUTTON" && el.textContent === "Play C");
   assert.ok(play, "a button was rendered for the Play C note-toggle");
   play.dispatch("pointerdown");
-  assert.deepStrictEqual(engine.sends.at(-1), { address: "/voicer/notes", args: [60, 1] });
+  assert.deepStrictEqual(engine.sends.at(-1), { address: "/notes/in", args: [60, 1] });
   play.dispatch("pointerup");
-  assert.deepStrictEqual(engine.sends.at(-1), { address: "/voicer/notes", args: [60, 0] });
+  assert.deepStrictEqual(engine.sends.at(-1), { address: "/notes/in", args: [60, 0] });
 });
 
 // -----------------------------------------------------------------------------------------
@@ -162,15 +162,15 @@ test("groovebox step-toggle click sends emit() on its param address", () => {
   const container = makeElement("div");
   renderSurface(surfaceOf("groovebox"), engine, container);
 
-  // /kick/step1 rests at default 1 (pressed); one click flips it off -> emit [0].
+  // The kick_step1 pipe rests at default 1 (pressed); one click flips it off -> emit [0].
   const step1 = container.children[1].children[0];
   step1.dispatch("click");
-  assert.deepStrictEqual(engine.sends.at(-1), { address: "/kick/step1", args: [0] });
+  assert.deepStrictEqual(engine.sends.at(-1), { address: "/kick_step1/in", args: [0] });
 
-  // /kick/step2 rests at default 0 (off); one click turns it on -> emit [1].
+  // The kick_step2 pipe rests at default 0 (off); one click turns it on -> emit [1].
   const step2 = container.children[1].children[1];
   step2.dispatch("click");
-  assert.deepStrictEqual(engine.sends.at(-1), { address: "/kick/step2", args: [1] });
+  assert.deepStrictEqual(engine.sends.at(-1), { address: "/kick_step2/in", args: [1] });
 });
 
 // -----------------------------------------------------------------------------------------
@@ -185,7 +185,7 @@ test("sendInitialDefaults(good-button) fires each widget's default exactly once"
   assert.strictEqual(engine.sends.length, 2);
   const byAddr = Object.fromEntries(engine.sends.map((s) => [s.address, s.args]));
   assert.deepStrictEqual(byAddr["/brightness/in"], [0.5]);
-  assert.deepStrictEqual(byAddr["/voicer/notes"], [60, 0]);
+  assert.deepStrictEqual(byAddr["/notes/in"], [60, 0]);
 });
 
 // -----------------------------------------------------------------------------------------
