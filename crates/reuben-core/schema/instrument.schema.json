@@ -1,45 +1,5 @@
 {
   "$defs": {
-    "controlSpec": {
-      "additionalProperties": false,
-      "description": "One player-facing control (ADR-0018); the engine ignores it. `label` is required. With no `param`, the widget binds to the node address (a `map` Good Button, range from its `in_min`/`in_max`); with a `param`, it binds to `/<node>/<param>` (range/`unit`/`default` from the param's metadata). `widget: \"note-toggle\"` emits a toggle that plays a fixed `note` (default 60) through a message `port` (default `notes`), e.g. a voicer's `/voicer/notes [note, gate]`. `widget: \"chord-button\"` (ADR-0022) emits a toggle that sends a fixed scale `degree` (default 0) through a message `port` (default `set`) as `[degree, gate]`, e.g. a chord op's `/chord/set [degree, gate]`. Any field may be overridden here.",
-      "properties": {
-        "default": {
-          "type": "number"
-        },
-        "degree": {
-          "type": "number"
-        },
-        "label": {
-          "type": "string"
-        },
-        "max": {
-          "type": "number"
-        },
-        "min": {
-          "type": "number"
-        },
-        "note": {
-          "type": "number"
-        },
-        "param": {
-          "type": "string"
-        },
-        "port": {
-          "type": "string"
-        },
-        "unit": {
-          "type": "string"
-        },
-        "widget": {
-          "type": "string"
-        }
-      },
-      "required": [
-        "label"
-      ],
-      "type": "object"
-    },
     "inputPipe": {
       "additionalProperties": false,
       "description": "One interface INPUT pipe (ADR-0038 §2): a named source in the flat namespace (`in` -> `/in`; a post-mint collision is a fatal duplicate address). It DECLARES its Arg type — nothing to inherit from — enforced against every consumer by the ordinary wire check. Numeric pipes may declare an engine-enforced default/min/max/curve (an unwired signal pipe materializes `default`; a bare one, silence). A SIGNAL pipe may bind a logical input `channel` (0..4095), honored only when the graph is played at top level (inert nested/hosted); while the channel is unsupplied the pipe falls back to its declared `default` and stays message-drivable. `channel` on a message pipe is a load error.",
@@ -68,9 +28,6 @@
             }
           ]
         },
-        "label": {
-          "type": "string"
-        },
         "max": {
           "description": "Engine-enforced range ceiling (numeric pipes).",
           "type": "number"
@@ -84,9 +41,7 @@
           "type": "string"
         },
         "unit": {
-          "type": "string"
-        },
-        "widget": {
+          "description": "Display unit describing the quantity (ADR-0043 §2) — every surface of the instrument inherits it.",
           "type": "string"
         }
       },
@@ -5632,20 +5587,6 @@
         "config": {
           "type": "object"
         },
-        "control": {
-          "description": "Public-control metadata for a generated control surface (ADR-0018). One control spec, or an array of them for a multi-param node (e.g. a sequencer's steps).",
-          "oneOf": [
-            {
-              "$ref": "#/$defs/controlSpec"
-            },
-            {
-              "items": {
-                "$ref": "#/$defs/controlSpec"
-              },
-              "type": "array"
-            }
-          ]
-        },
         "doc": {
           "type": "string"
         },
@@ -5738,9 +5679,6 @@
           "description": "Internal \"/node.port\" (or sole-output \"/node\") wire-ref feeding this pipe.",
           "type": "string"
         },
-        "label": {
-          "type": "string"
-        },
         "max": {
           "type": "number"
         },
@@ -5748,9 +5686,6 @@
           "type": "number"
         },
         "unit": {
-          "type": "string"
-        },
-        "widget": {
           "type": "string"
         }
       },

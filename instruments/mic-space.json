@@ -9,8 +9,7 @@
     "inputs": {
       "mic": {
         "type": "f32_buffer",
-        "channel": 0,
-        "label": "Mic"
+        "channel": 0
       }
     },
     "outputs": {

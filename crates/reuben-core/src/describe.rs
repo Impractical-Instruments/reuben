@@ -1,10 +1,11 @@
 //! Boundary introspection (ADR-0034 §4 / ADR-0038): describe a loaded instrument's `interface`
 //! as the operator-style port list a host wires against. An **input pipe** is described from
 //! its own declaration (the synthesized pipe descriptor carries the declared type, range, and
-//! default; the document entry carries the presentational fields); an **output pipe** inherits
-//! type and metadata from the internal port that feeds it, decorated by the entry's
-//! presentational overrides. This is the core-side construction every host — the CLI's
-//! `reuben describe`, a wasm or embedded embedder — reads instead of re-implementing the merge.
+//! default; the document entry carries `unit`); an **output pipe** inherits type and metadata
+//! from the internal port that feeds it, decorated by the entry's quantity overrides.
+//! Presentation (`label`/`widget`) is no longer part of the boundary — it lives in a surface
+//! doc (ADR-0043). This is the core-side construction every host — the CLI's `reuben
+//! describe`, a wasm or embedded embedder — reads instead of re-implementing the merge.
 
 use crate::descriptor::{Curve, PortType};
 use crate::format::{doc_value, widen_f32, DocValue, InstrumentDoc, InterfaceEntry, Loaded};
@@ -30,10 +31,6 @@ pub struct BoundaryPortDesc {
     pub curve: Option<Curve>,
     /// The ordered enum choices (ADR-0030); empty for non-enum ports.
     pub variants: Vec<String>,
-    /// Display-name from the entry; `None` when not set.
-    pub label: Option<String>,
-    /// Widget hint for a generated control surface (ADR-0018).
-    pub widget: Option<String>,
     /// Logical channel binding (ADR-0038 §3): the input channel a signal input pipe reads, or
     /// the master channel a signal output pipe feeds, when the graph plays at top level.
     pub channel: Option<usize>,
@@ -78,8 +75,6 @@ pub fn describe_boundary(doc: &InstrumentDoc, loaded: &Loaded) -> BoundaryDesc {
             unit: String::new(),
             curve: None,
             variants: Vec::new(),
-            label: None,
-            widget: None,
             channel: None,
         };
         // The port's own metadata: an input pipe's declared range/default (its descriptor was
@@ -112,22 +107,19 @@ pub fn describe_boundary(doc: &InstrumentDoc, loaded: &Loaded) -> BoundaryDesc {
                 desc.default = Some(doc_value(p, arg));
             }
         }
-        // Decorate with the entry's presentational fields — type/range/variants stay.
+        // Decorate with the entry's quantity fields (`unit`, output range overrides) —
+        // presentation (`label`/`widget`) lives in a surface doc since ADR-0043.
         let entries = doc
             .interface
             .as_ref()
             .map(|i| if output { &i.outputs } else { &i.inputs });
         match entries.and_then(|e| e.get(name)) {
             Some(InterfaceEntry::Pipe(p)) => {
-                desc.label = p.label.clone();
-                desc.widget = p.widget.clone();
                 if let Some(u) = &p.unit {
                     desc.unit = u.clone();
                 }
             }
             Some(InterfaceEntry::Feed(f)) => {
-                desc.label = f.label.clone();
-                desc.widget = f.widget.clone();
                 if let Some(u) = &f.unit {
                     desc.unit = u.clone();
                 }
@@ -194,7 +186,7 @@ mod tests {
         let b = boundary(
             r#"{"format_version":2,"instrument":"t","interface":{
                 "inputs":{"tone":{"type":"f32_buffer","default":4000,"min":200,"max":8000,
-                                  "curve":"exp","unit":"Hz","label":"Tone","widget":"knob"}},
+                                  "curve":"exp","unit":"Hz"}},
                 "outputs":{"out":{"from":"/filter.audio"}}},
             "nodes":[{"type":"filter","address":"/filter",
                       "inputs":{"cutoff":{"from":"/tone"}}}]}"#,
@@ -206,8 +198,6 @@ mod tests {
         assert_eq!((tone.min, tone.max), (Some(200.0), Some(8000.0)));
         assert_eq!(tone.unit, "Hz", "unit comes from the entry");
         assert_eq!(tone.curve, Some(Curve::Exponential));
-        assert_eq!(tone.label.as_deref(), Some("Tone"));
-        assert_eq!(tone.widget.as_deref(), Some("knob"));
         assert_eq!(b.outputs[0].name, "out");
         assert_eq!(
             b.outputs[0].ty,
@@ -244,7 +234,6 @@ mod tests {
         );
         assert_eq!(tone.unit, "Hz", "target port's unit carried over");
         assert_eq!(tone.curve, Some(Curve::Exponential));
-        assert_eq!(tone.label.as_deref(), Some("Tone"));
     }
 
     #[test]
