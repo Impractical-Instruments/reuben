@@ -1,5 +1,5 @@
 {
-  "comment": "Launcher manifest (issue #226, scope item 2): the curated list of the bundled Toys. Each entry's `id` is the instrument document name under instruments/<id>.json; `title`/`blurb` are player-facing (blurbs adapted from the README rig table); `kind` is self-playing (sounds on load) or tap-to-play (surfaces trigger widgets); `order` sets grid position. The staging script (scripts/stage-assets.mjs) stages exactly these Toys + their transitive resources into public/. Default Toy is groovebox (order 1) — its assets are prefetched at splash so the first pick is instant.",
+  "comment": "Launcher manifest (issue #226, scope item 2): the curated list of the bundled Toys. Each entry's `id` is the instrument document name under instruments/<id>.json; `title`/`blurb` are player-facing (blurbs adapted from the README rig table); `kind` is self-playing (sounds on load), tap-to-play (surfaces trigger widgets), or live-input (takes the mic — the player renders an Enable-microphone control, issue #248); `order` sets grid position. The staging script (scripts/stage-assets.mjs) stages exactly these Toys + their transitive resources into public/. Default Toy is groovebox (order 1) — its assets are prefetched at splash so the first pick is instant.",
   "default": "groovebox",
   "toys": [
     {
@@ -29,6 +29,13 @@
       "blurb": "A self-playing drum machine with knobs to change beat density.",
       "kind": "self-playing",
       "order": 4
+    },
+    {
+      "id": "mic-space",
+      "title": "Mic Space",
+      "blurb": "Your microphone through a tunable reverb — speak, sing, or play into it and hear yourself in a big room. Headphones required.",
+      "kind": "live-input",
+      "order": 5
     }
   ]
 }

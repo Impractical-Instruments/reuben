@@ -196,6 +196,10 @@ body {
   color: #e0c67c;
   background: rgba(224, 198, 124, 0.12);
 }
+.toy-badge.live-input {
+  color: #7cc6e0;
+  background: rgba(124, 198, 224, 0.12);
+}
 
 /* --- player --- */
 
@@ -243,6 +247,23 @@ body {
 }
 .player-body {
   position: relative;
+}
+/* The Enable-microphone affordance for input-taking Toys (issue #248): the button + its
+   feedback warning, above the (usually empty) surface for mic-space. */
+.mic-control {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.6rem;
+  margin-bottom: 1rem;
+}
+.mic-control[data-mic-state="live"] .mic-enable {
+  color: #7ce0a8;
+}
+.mic-note {
+  color: var(--fg-dim);
+  font-size: 0.85rem;
+  margin: 0;
 }
 /* The light console the P3 surface mounts on — its injected CSS assumes a light ground. */
 .surface-mount:not(:empty) {
