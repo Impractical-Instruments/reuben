@@ -25,7 +25,9 @@ export default defineConfig({
       use: {
         ...devices["Desktop Chrome"],
         // Headless has no audio device; allow the context to reach "running" without a
-        // hardware sink so the smoke can assert engine state after the Start gesture.
+        // hardware sink so the smoke can assert engine state after the Start gesture. (The mic
+        // tests, issue #248, don't need a fake device — they stub getUserMedia in-page, since
+        // headless Chromium's fake-audio support varies by build.)
         // PW_EXECUTABLE_PATH lets a runner with a pre-installed Chromium point at it instead
         // of a Playwright-managed download (CI leaves it unset and uses `playwright install`).
         launchOptions: {

@@ -154,6 +154,15 @@ function splashScreen() {
 
 // --- launcher -----------------------------------------------------------------------------
 
+// The label on a Toy's kind badge (launcher card + player head). Kept in one place so the
+// launcher and the player never disagree. "live-input" (issue #248) takes the mic — its player
+// screen renders an Enable-microphone control keyed on the load()'s inputChannels, not on this.
+function badgeText(kind) {
+  if (kind === "self-playing") return "self-playing";
+  if (kind === "live-input") return "live input";
+  return "tap to play";
+}
+
 function launcherScreen() {
   const grid = h(
     "div",
@@ -169,11 +178,7 @@ function launcherScreen() {
         },
         h("span", { class: "toy-title" }, toy.title),
         h("span", { class: "toy-blurb" }, toy.blurb),
-        h(
-          "span",
-          { class: `toy-badge ${toy.kind}` },
-          toy.kind === "self-playing" ? "self-playing" : "tap to play",
-        ),
+        h("span", { class: `toy-badge ${toy.kind}` }, badgeText(toy.kind)),
       ),
     ),
   );
@@ -222,7 +227,7 @@ async function openToy(toy) {
       { class: "player-head" },
       h("button", { class: "back", type: "button", onclick: showLauncher }, "← Toys"),
       h("h1", { class: "player-title" }, toy.title),
-      h("span", { class: `toy-badge ${toy.kind}` }, toy.kind === "self-playing" ? "self-playing" : "tap to play"),
+      h("span", { class: `toy-badge ${toy.kind}` }, badgeText(toy.kind)),
     ),
     status,
     body,
@@ -233,9 +238,10 @@ async function openToy(toy) {
     const e = await ensureEngine();
     // engine.load is one-at-a-time; if a previous Toy's load is still settling, await it out
     // by retrying once it frees. In practice the back→pick path is sequential, but a fast
-    // double-tap shouldn't throw "a load is already in flight" at the player. We await purely
-    // to sequence + surface errors; the {channels, blockSize} it resolves isn't needed here.
-    await loadWithRetry(e, toy.id);
+    // double-tap shouldn't throw "a load is already in flight" at the player. Its resolved
+    // {channels, inputChannels, blockSize} tells us whether this instrument takes live input
+    // (inputChannels > 0) — the mic affordance below is driven by that, not by toy.kind (#248).
+    const info = await loadWithRetry(e, toy.id);
     if (token !== loadToken) return; // superseded by a newer openToy — drop this render
 
     currentToy = toy.id;
@@ -256,8 +262,18 @@ async function openToy(toy) {
 
     skeleton.remove();
     document.body.dataset.state = e.context.state; // "running" — the smoke asserts on this
-    status.textContent =
-      toy.kind === "tap-to-play"
+
+    // An input-taking instrument (mic-space and any future duplex Toy) loads and renders but
+    // plays SILENCE until enableMic() wires a MediaStreamSource into the worklet (#248). Give
+    // it the Enable-microphone control — a real user gesture, the only thing iOS accepts for
+    // getUserMedia — instead of a "Playing." that lies. Keyed on the load()'s inputChannels so
+    // it's instrument-driven, not a per-Toy flag.
+    const takesInput = info?.inputChannels > 0;
+    if (takesInput) body.prepend(micControl(e, status));
+
+    status.textContent = takesInput
+      ? "Enable the microphone to play."
+      : toy.kind === "tap-to-play"
         ? "Ready — tap the buttons to play."
         : surface.widgets.length
           ? "Playing — tweak the controls."
@@ -294,6 +310,45 @@ async function loadWithRetry(e, id) {
       await new Promise((r) => setTimeout(r, 40));
     }
   }
+}
+
+// The Enable-microphone affordance for an input-taking Toy (#248). The whole permission flow
+// lives in engine.enableMic() (getUserMedia, worklet wiring, double-invocation + destroy-race
+// guards, and the finished user-facing error copy); this is only the button that calls it on a
+// user gesture and mirrors the outcome. State runs idle → live, or idle → denied (retryable) —
+// enableMic() is idempotent, so a live button is disabled and a denied one stays tappable. The
+// headphones note warns about feedback: mic-space is a mic through a reverb with no attenuation,
+// so it self-oscillates on a phone speaker the instant the mic goes live.
+function micControl(engine, status) {
+  const btn = h("button", { class: "mic-enable cta small", type: "button" }, "Enable microphone");
+  const note = h(
+    "p",
+    { class: "mic-note" },
+    "🎧 Use headphones — on a speaker this feeds back into the reverb immediately.",
+  );
+  const wrap = h("div", { class: "mic-control", dataset: { micState: "idle" } }, btn, note);
+
+  btn.addEventListener("click", async () => {
+    btn.disabled = true;
+    btn.textContent = "Enabling…";
+    try {
+      await engine.enableMic();
+      wrap.dataset.micState = "live";
+      btn.textContent = "Microphone live";
+      status.textContent = "Microphone live — play into it.";
+      status.classList.remove("error");
+    } catch (err) {
+      // Surface the engine's verbatim copy on the shared status slot (the same one load errors
+      // use); leave the button tappable so a denied prompt can be retried after granting access.
+      wrap.dataset.micState = "denied";
+      btn.disabled = false;
+      btn.textContent = "Enable microphone";
+      status.textContent = err.message || String(err);
+      status.classList.add("error");
+    }
+  });
+
+  return wrap;
 }
 
 // --- shared bits --------------------------------------------------------------------------
