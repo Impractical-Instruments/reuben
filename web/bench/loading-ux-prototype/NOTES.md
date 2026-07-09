@@ -40,7 +40,7 @@ Five presentations of the *same* simulated load, contrastable across rig size
   message handler — on the audio thread, but while `process()` is emitting silence.
 - **No shipping Toy carries samples** (`web/toys.json`: groovebox, chord-player,
   strum-harp, euclidean-drums, mic-space — none reference `.wav`). The path is fully
-  built + unit-tested but **latent**. Sample rigs exist in `instruments/`
+  built + unit-tested but **latent**. Sample-carrying instruments exist in `instruments/`
   (`sampler`, `sampler-arp`, `granulator-demo`) but are not bundled.
 
 ## Verdict (settled by the HITL session)

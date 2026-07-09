@@ -159,7 +159,7 @@ async function sampleDecode(name) {
   const t = T();
   await loadInstrument(ex, docText, ctx.sampleRate, async (key) => {
     const ft = T();
-    const b = new Uint8Array(await (await fetch("/raw-instruments/" + key).catch(() => null).then(r => r)).arrayBuffer());
+    const b = new Uint8Array(await (await fetch("/raw-instruments/" + key)).arrayBuffer());
     fetchMs += T() - ft; if (key.endsWith(".wav")) sampleBytes += b.length;
     return b;
   });
@@ -237,6 +237,11 @@ async function runScenario(label, cpuRate, netKey) {
   const page = await context.newPage();
   const cdp = await context.newCDPSession(page);
   await cdp.send("Network.enable");
+  // Cold cache by construction: disable the HTTP cache so every page.goto re-fetches every
+  // asset. (The static server sends no cache headers, so the runs were already cold — but this
+  // makes it guaranteed even against a cache-header-bearing server, so the README's "cold load
+  // each run" claim holds by construction, not by accident.)
+  await cdp.send("Network.setCacheDisabled", { cacheDisabled: true });
   await cdp.send("Network.emulateNetworkConditions", NET[netKey]);
   if (cpuRate > 1) await cdp.send("Emulation.setCPUThrottlingRate", { rate: cpuRate });
   const runs = [];
@@ -246,7 +251,7 @@ async function runScenario(label, cpuRate, netKey) {
     runs.push(r);
   }
   await context.close();
-  // Median across 3 cold runs (each a fresh context = cold cache).
+  // Median across 3 cold runs (HTTP cache disabled via CDP above, so each goto is a cold load).
   const med = (arr) => arr.slice().sort((a, b) => a - b)[Math.floor(arr.length / 2)];
   const pick = (path) => med(runs.map((r) => path.split(".").reduce((o, k) => o?.[k], r)));
   return {

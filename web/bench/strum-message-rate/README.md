@@ -43,8 +43,14 @@ Control-message rate vs. pointer-move cadence (2 s continuous drag; representati
 | ~1000 Hz — gaming mouse             | ~485            | ~580       |
 | unbounded — synthetic ceiling       | ~1400           | ~1900      |
 
-The `input` event is **not** frame-coalesced — it tracks the pointer-move rate — so the
-rate is set by pointing-device sample rate, not display refresh. Real target devices
+> Rows are labelled by **target** pointer cadence; the harness drove moves within ~1 % of each
+> (it reports `actual_move_hz`). Sustained msg/s runs ~55–65 % of the move rate because
+> consecutive moves that don't change the quantized `step=0.001` value (or coalesce within a
+> frame) emit no `input` event — so the message rate scales with, but sits below, the raw move rate.
+
+The `input` event is **not** frame-coalesced — its rate scales with the pointer-move rate
+(roughly half to two-thirds of it; see the note above) — so the ceiling is set by
+pointing-device sample rate, not display refresh. Real target devices
 ("whatever device you already have" — phones, tablets, laptops) sit at **~60–100 msg/s**.
 Only exotic high-poll gaming mice reach the hundreds; none of those are the target.
 
@@ -64,11 +70,13 @@ Per-message cost:
 ## Conclusion — NO-GO on the SAB ring (on current evidence)
 
 At realistic target-device pointer cadences the worst continuous strum emits only
-~60–100 control msg/s. The `postMessage` channel and the flagged `pending`-Vec churn both
-absorb that comfortably within the audio-render budget; nothing here justifies the SAB
-ring's cost (COOP/COEP cross-origin isolation, a real hosting/deploy constraint). Per the
-hard gate agreed while charting the P7 map, the ring is **ruled out of scope** and #257 is
-closed.
+~60–100 control msg/s. The `postMessage` channel carries that easily. The flagged `pending`-Vec
+churn is a real RT-safety debt whose removal is still owed — `process` must never allocate
+(AGENTS.md) — but at these rates it stays well under the audio-render budget, so paying it down
+is **not urgent**, and it does **not** justify the SAB ring's cost (COOP/COEP cross-origin
+isolation, a real hosting/deploy constraint). Per the hard gate agreed while charting the P7
+map, the ring is **ruled out of scope** and #257 is closed; the debt itself remains tracked at
+`engine.rs:17-19`.
 
 **Revisit only if** a future, denser gesture source changes the message rate — e.g. a
 multi-touch surface streaming several positional axes at once, or a control bound to raw
@@ -78,7 +86,11 @@ ring is back on the table.
 
 ## Not directly measured
 
-The audio-thread cost above is derived from the real Rust handoff code, not from observing
-live-audio xruns under a drag (booting the full WASM AudioWorklet headless and detecting
-underruns reliably is out of proportion to the decision). If the ring is ever reconsidered,
-an end-to-end xrun measurement under a sustained drag would be the confirming step.
+The NO-GO call rests on the **measured** message rate plus **analysis** of the handoff code —
+two of #252's three asks. The heap churn is derived analytically from reading the Rust (not
+benchmarked), and observable symptoms (artifacts, jank, underruns) are **not** observed here:
+booting the full WASM AudioWorklet headless and detecting underruns reliably is out of
+proportion to a no-go. Symptom observation is folded into the real-device confirmation
+([#262](https://github.com/Impractical-Instruments/reuben/issues/262)), keeping the evidence
+trail explicit. If the ring is ever reconsidered, an end-to-end xrun measurement under a
+sustained drag would be the confirming step.

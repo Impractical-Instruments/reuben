@@ -32,7 +32,8 @@ stance — measure the real code, not a model):
      dance), `audioWorklet.addModule`, and a discovery load split into its **network** (fetch
      docs) vs **CPU** (construct/stage/decode) halves. This is where "what dominates" is read.
   2. **End-to-end** — the real `createReubenEngine()` + `engine.load('groovebox')` +
-     `context.resume()`, wall-clocked (median of 3 cold runs, fresh context each = cold cache).
+     `context.resume()`, wall-clocked (median of 3 cold runs; the HTTP cache is disabled via CDP
+     `Network.setCacheDisabled`, so every run is a genuine cold load regardless of server headers).
   Both run under four conditions: **baseline** (dev host, local net) and an **emulated
   low-end-phone proxy** at 4× and 6× CPU throttle (`Emulation.setCPUThrottlingRate`) plus a
   slow-4G network profile (`Network.emulateNetworkConditions`, ~1.6 Mbps / 150 ms RTT).
@@ -66,7 +67,7 @@ Full `web/dist` payload (28 files), by category:
 | app-css | 1 | 5.5 | 1.7 | 1.5 |
 | html | 1 | 1.4 | 0.8 | 0.6 |
 | `schema.json` | 1 | 197.5 | 6.6 | 4.7 |
-| instrument assets (5 Toys, docs+voices+patch) | 11 | 56.8 | 13.3 | 11.5 |
+| instrument assets (5 Toys, docs + voices + subpatches) | 11 | 56.8 | 13.3 | 11.5 |
 | icons (PWA PNGs — not on the boot path) | 7 | 50.4 | 49.6 | 49.2 |
 | service worker | 3 | 22.8 | 8.6 | 7.7 |
 | manifest | 1 | 0.6 | 0.3 | 0.3 |
@@ -125,7 +126,7 @@ Held by the size table (`npm run build` prints gzip; brotli via this harness) an
 | App-shell JS (`index` chunk, brotli) | 10.5 KB | ≤ 16 KB | Catch bundle bloat before it competes with the WASM. |
 | Cold load nav→audio-ready, _emulated_ 6× CPU + slow-4G | ≈1.9 s | ≤ 2.5 s | **Proxy** ceiling; the real-device figure is HITL (below). |
 | Engine boot compute, 6× CPU, local net | 183 ms | ≤ 300 ms | CPU headroom for low-end; compile/instantiate must stay cheap. |
-| Sample-carrying Toy | n/a (none bundled) | decode ≤ 150 ms @ 6× CPU; sample fetch **must be lazy / off the first-audio path** | Decode is cheap; transfer is the cost — never block first audio on a sample download. |
+| Sample-carrying Toy | n/a (none bundled) | decode ≤ 150 ms @ 6× CPU; **decode off the first-audio path**, sample fetch **eager + prefetch-warmed, with visible progress** | Decode is cheap; transfer is the cost — warm samples via prefetch and show progress rather than freezing on a download (per [#253](https://github.com/Impractical-Instruments/reuben/issues/253) / SPEC.md §2.4; lazy fetch is out of scope per map [#251](https://github.com/Impractical-Instruments/reuben/issues/251)). |
 
 ## Candidate optimizations (evidence-grounded — each graduates to its own ticket)
 
@@ -148,11 +149,14 @@ Ordered by leverage. Each cites the measurement that justifies it.
    sequentially; on a 150 ms-RTT link `groovebox`'s 3 voices cost ≈508 ms of serial RTTs vs 17 ms
    CPU. `Promise.all` over one round's misses collapses them to ~one RTT. **Evidence:** timing
    table, discovery (fetch / cpu) column at slow-4G (508 / 17).
-4. **Lazy sample fetch + decode off the critical path.** For a sample-carrying Toy the sample
-   *transfer* dominates (≈3.2 s for a 614 KB wav on slow-4G) while decode CPU is cheap (~60 ms).
-   Fetch samples after first paint with visible progress; never block first audio on a download.
-   Pre-emptive (no bundled Toy pays it yet) and the same seam as #229's "graceful sample decode."
-   **Evidence:** `sample_decode` rows (fetch 3184 ms vs cpu 62 ms at slow-4G).
+4. **Sample loading UX — prefetch + visible progress, decode off the render path.** For a
+   sample-carrying Toy the sample *transfer* dominates (≈3.2 s for a 614 KB wav on slow-4G) while
+   decode CPU is cheap (~60 ms). The fix is the **eager + prefetch** loading design already spec'd
+   in [#253](https://github.com/Impractical-Instruments/reuben/issues/253) (SPEC.md §2.4): warm
+   sample bytes ahead of play and show determinate progress, so first audio is never blocked by —
+   nor the UI frozen on — a sample download; decode already stays off the render critical path.
+   (Lazy fetch is out of scope per map #251; no bundled Toy pays this yet.) **Evidence:**
+   `sample_decode` rows (fetch 3184 ms vs cpu 62 ms at slow-4G).
 5. **Code-split the non-first-paint app JS.** The `index` chunk (31.6 KB raw / 10.5 KB brotli)
    bundles engine + surface + share (`share.mjs`) + PWA registration into the shell; `share.mjs`
    and `workbox-window` aren't needed for first paint or first audio. Modest (~a few KB brotli) —

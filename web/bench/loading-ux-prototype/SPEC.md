@@ -16,7 +16,7 @@ Human decisions this spec encodes (settled in the HITL session):
 2. **Fetch = eager + prefetch.** Keep structurally-eager staging; warm sample bytes on
    idle/hover. No lazy redesign, no second construct round.
 3. **Freeze fix** — remove the redundant main-thread discovery-time decode.
-4. **One new boundary event** — per-sample `staged` progress from the worklet.
+4. **One new boundary message** — per-sample `staged` progress from the worklet.
 5. **Progress UI** — aggregate bar + per-sample rows.
 6. **Failure = partial-success** — one bad pad never sinks the rig.
 
@@ -79,16 +79,18 @@ idle ──▶ fetching ──▶ decoding ──▶ ready
 ```
 
 - `idle` → player screen shown, nothing fetched (or prefetch warming silently).
-- `fetching` → discovery loop running; **aggregate bar 0–70 %** = Σ received / Σ total bytes.
-- `decoding` → bundle shipped; **bar 70–100 %** = worklet `staged` count `k / total`.
+- `fetching` → discovery loop running; **aggregate bar `[0, FETCH_PORTION]`** = Σ received / Σ total bytes.
+- `decoding` → bundle shipped; **bar `[FETCH_PORTION, 1]`** = worklet `staged` count `k / total`.
 - **Terminal states:**
   - `ready` — every sample `ready`.
   - `ready-with-issues` — `1 ≤ failedSamples < totalSamples`; rig plays, failed pads silent.
   - `failed` — the document (or a **text/voice** resource) failed, **or** `failedSamples ==
     totalSamples` (every pad dead). No playable rig.
 
-Aggregate-bar byte math mirrors prototype option C: fetch is the first 70 %, decode the last
-30 %. If `content-length` is missing for a sample, fall back to per-sample-count progress for
+Aggregate-bar byte math mirrors prototype option C. The implementation defines **one** constant
+`FETCH_PORTION = 0.7` (fetch fills `[0, FETCH_PORTION]`, decode fills `[FETCH_PORTION, 1]`) and
+references it everywhere the split is needed, rather than hard-coding `0.7`/`0.3` in more than one
+place. If `content-length` is missing for a sample, fall back to per-sample-count progress for
 that segment (bar advances one notch per sample rather than per byte).
 
 ---
@@ -133,7 +135,7 @@ pub fn stage_sample_deferred(&mut self, key: &str) {
   discovery for free — a nice side win; its output set is unchanged because keys are
   identical.)
 
-### 2.2 Decision 4 — One new boundary event: per-sample `staged` progress
+### 2.2 Decision 4 — One new boundary message: per-sample `staged` progress
 
 **Producer — `crates/reuben-web/js/worklet.js::onLoad`** (the staging loop over `msg.bundle`,
 currently `:177-193`): after each `stage_resource`, post progress. Precise shape:
@@ -252,7 +254,7 @@ Two error classes are already distinguishable at the JS boundary:
 
 Realises prototype **C + D**. In `buildPlayerScreen` / `openToy`:
 - Replace the 3-row shimmer skeleton with a **loading panel**: an aggregate determinate
-  `.bar` (fetch 0–70 % by bytes, decode 70–100 % by staged count) + a **per-sample row list**
+  `.bar` (fetch `[0, FETCH_PORTION]` by bytes, decode `[FETCH_PORTION, 1]` by staged count; see §1.2) + a **per-sample row list**
   (name · phase dot · mini-bar), built from the miss set as samples are discovered.
 - Subscribe by passing `onProgress` into `e.load(id, { onProgress })`:
   - `phase:"fetch"` → advance that sample's row to `fetching`, update its mini-bar +
@@ -276,7 +278,7 @@ Realises prototype **C + D**. In `buildPlayerScreen` / `openToy`:
 1. **No main-thread decode.** Loading a sample rig performs **zero** WAV decodes on the main
    thread; the UI thread is never blocked on hound. (Discovery stages deferred stubs; the only
    decode is in the worklet.) *Never a frozen UI.*
-2. **Visible progress — multi-sample on a slow link.** A drum-kit rig (≥4 samples) on a
+2. **Visible progress — multi-sample on a slow link.** A drum-kit Toy (≥4 samples) on a
    throttled connection shows: per-sample rows transition `queued → fetching (byte %) →
    decoding → ready`, and the aggregate bar advances monotonically fetch→decode. No indefinite
    blank/spinner. *Visible progress.*
@@ -327,7 +329,7 @@ Realises prototype **C + D**. In `buildPlayerScreen` / `openToy`:
 
 ---
 
-## 5. Message-contract summary (the one new event)
+## 5. Message-contract summary (the one new message)
 
 | Message           | Direction        | Producer                | Consumer                       | Shape |
 |-------------------|------------------|-------------------------|--------------------------------|-------|
@@ -336,7 +338,7 @@ Realises prototype **C + D**. In `buildPlayerScreen` / `openToy`:
 | `onProgress` (cb) | main-internal    | `load()` fetch + `staged`| `web/src/main.js`             | `fetch` \| `decode` \| `settled` (see §2.2) |
 
 Fetch progress is main-side only (streamed `content-length` reads) — it does **not** cross the
-worklet boundary. Decode progress is the single new cross-boundary event.
+worklet boundary. Decode progress is the single new cross-boundary message.
 
 ---
 
