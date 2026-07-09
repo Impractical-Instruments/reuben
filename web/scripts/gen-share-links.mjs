@@ -262,25 +262,33 @@ function parseLinkDefs(readmeText) {
   return defs;
 }
 
+// DECODE-only, by design (issue #228): decode is deterministic even though deflate ENCODE is
+// not stable across zlib versions, so this compares each committed link's decoded document to
+// the file on disk WITHOUT running the engine. It needs only Node + share.mjs — no wasm, no
+// discovery — which is why CI can run it before (and independently of) the app build. A
+// regenerate-and-diff would instead break the day a zlib upgrade rewrote every encoding.
 async function checkMode() {
-  const ex = await instantiate();
   const readme = await readFile(README, "utf8");
-  const ids = parseRigIds(readme);
-  const { linked, excluded } = await discoverRigs(ex, ids);
-  const defs = parseLinkDefs(readme);
+  const defs = parseLinkDefs(readme); // id → fragment, from the generated definitions block
 
   const errors = [];
 
-  // 1. Every sample-free rig must have a link.
-  for (const { id } of linked) {
-    if (!defs.has(id)) errors.push(`sample-free rig \`${id}\` has no [${id}-link] definition`);
+  // 1. Text consistency: every `[▶ play][<id>-link]` reference in the table resolves to a
+  // definition, and every definition is referenced — no dangling or orphaned links. Pure text,
+  // no engine needed.
+  const referenced = new Set();
+  const refRe = /\[▶ play\]\[([a-z0-9-]+)-link\]/g;
+  let rm;
+  while ((rm = refRe.exec(readme)) !== null) {
+    referenced.add(rm[1]);
+    if (!defs.has(rm[1])) errors.push(`play-link reference [${rm[1]}-link] has no definition`);
   }
-  // 2. No sample-bearing rig should have a link (would be a mis-mint).
-  for (const { id } of excluded) {
-    if (defs.has(id)) errors.push(`sample-bearing rig \`${id}\` unexpectedly has a link`);
+  for (const id of defs.keys()) {
+    if (!referenced.has(id)) errors.push(`link definition [${id}-link] is never referenced`);
   }
 
-  // 3. Decode each link and compare its docText bytes to instruments/<id>.json on disk.
+  // 2. Decode each link and compare its docText bytes to instruments/<id>.json on disk — the
+  // staleness gate: an edited rig whose link wasn't regenerated fails here.
   const encoder = new TextEncoder();
   let checked = 0;
   for (const [id, fragment] of defs) {
@@ -315,8 +323,7 @@ async function checkMode() {
     process.exit(1);
   }
   console.log(
-    `[gen-share-links --check] OK — ${checked} link(s) decode to the on-disk rig documents; ` +
-      `${linked.length} sample-free rig(s) all have links.`,
+    `[gen-share-links --check] OK — ${checked} link(s) decode to their on-disk rig documents.`,
   );
 }
 

@@ -372,6 +372,16 @@ function deriveKind(surface, info) {
   return "self-playing";
 }
 
+// The player status line once an instrument is loaded and playing. Shared by both entry paths
+// (a Toy opened from the launcher and one booted from a link): a mic-taking instrument shows the
+// enable prompt (it's silent until the gesture); a tap-to-play surface prompts for taps; a
+// surface with faders invites tweaking; a bare self-playing patch just plays.
+function playingStatusText(takesInput, kind, hasWidgets) {
+  if (takesInput) return "Enable the microphone to play.";
+  if (kind === "tap-to-play") return "Ready — tap the buttons to play.";
+  return hasWidgets ? "Playing — tweak the controls." : "Playing.";
+}
+
 // Share the current player's instrument as a `#r1.…` link (issue #228). Mints a bundle from the
 // engine's retained document + resources plus the moved-control snapshot, persists it into the
 // hash via replaceState (NOT pushState — repeated Shares must not stack history; replaceState
@@ -507,13 +517,7 @@ async function openToy(toy) {
     const takesInput = info?.inputChannels > 0;
     if (takesInput) body.prepend(micControl(e, status));
 
-    status.textContent = takesInput
-      ? "Enable the microphone to play."
-      : toy.kind === "tap-to-play"
-        ? "Ready — tap the buttons to play."
-        : surface.widgets.length
-          ? "Playing — tweak the controls."
-          : "Playing.";
+    status.textContent = playingStatusText(takesInput, toy.kind, surface.widgets.length > 0);
     status.classList.remove("error");
     shareBtn.disabled = false; // bundle is now loaded — Share is safe
   } catch (err) {
@@ -644,13 +648,7 @@ async function fragmentBoot(hash) {
 
       const takesInput = info?.inputChannels > 0;
       if (takesInput) body.prepend(micControl(e, status));
-      status.textContent = takesInput
-        ? "Enable the microphone to play."
-        : kind === "tap-to-play"
-          ? "Ready — tap the buttons to play."
-          : surface.widgets.length
-            ? "Playing — tweak the controls."
-            : "Playing.";
+      status.textContent = playingStatusText(takesInput, kind, surface.widgets.length > 0);
       status.classList.remove("error");
       shareBtn.disabled = false;
     } catch (err) {

@@ -131,6 +131,12 @@ want sharing — deferred rather than shipped half-working.
   earns a link; the mic affordance ([#248](https://github.com/Impractical-Instruments/reuben/issues/248))
   is what keeps that link from booting a silent page. The link carries the patch; the mic
   permission belongs to the instrument, not the envelope.
+- **The README predicate is "sample-free *and* web-buildable", not just "sample-free".** The
+  generator excludes `stereo-sub` even though it carries no samples: it declares three output
+  channels and the worklet renders stereo (two), so a minted link could only ever fail to
+  construct. A link that cannot boot is worse than no link, so the generator drops it (logged at
+  generation) rather than committing a dead play-link. The refusal is web-engine-shaped, not
+  envelope-shaped — the envelope would carry `stereo-sub` fine; the *player* can't render it.
 
 ## Alternatives considered
 

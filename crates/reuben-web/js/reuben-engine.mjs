@@ -126,11 +126,11 @@ export async function createReubenEngine({
   // Transfer, don't copy: the compiled wasmModule above already owns its own copy.
   node.port.postMessage({ type: "module", bytes: wasmBytes }, [wasmBytes]);
 
-  // --- The reusable main-thread discovery instance (lazy, kept across loads). ---
+  // --- Main-thread instances of the shared module. ---
 
-  let discovery = null; // exports, once instantiated
-  async function discoveryExports() {
-    if (discovery) return discovery;
+  // Instantiate a new instance with the {env:{log}} import and run the ctor dance. `logPrefix`
+  // tags this instance's diagnostics ("discovery" | "fragment"); the caller owns caching.
+  async function instantiateExports(logPrefix) {
     const box = { ex: null };
     const imports = {
       env: {
@@ -138,10 +138,10 @@ export async function createReubenEngine({
           // Guard: `log` can fire before instantiate returns (a panic in a start
           // function) — a TypeError here would mask the real diagnostic.
           if (!box.ex?.memory) {
-            log("[discovery] <log call before memory was available>");
+            log(`[${logPrefix}] <log call before memory was available>`);
             return;
           }
-          log(`[discovery] ${decoder.decode(new Uint8Array(box.ex.memory.buffer, ptr, len))}`);
+          log(`[${logPrefix}] ${decoder.decode(new Uint8Array(box.ex.memory.buffer, ptr, len))}`);
         },
       },
     };
@@ -152,8 +152,14 @@ export async function createReubenEngine({
     // export, in which case neither hook exists).
     if (typeof ex._initialize === "function") ex._initialize();
     else if (typeof ex.__wasm_call_ctors === "function") ex.__wasm_call_ctors();
-    discovery = ex;
     return ex;
+  }
+
+  // The reusable main-thread discovery instance (lazy, kept across loads).
+  let discovery = null;
+  async function discoveryExports() {
+    if (!discovery) discovery = await instantiateExports("discovery");
+    return discovery;
   }
 
   // A FRESH, uncached instance — the fragment-boot path (loadBundle) instantiates one per boot
@@ -161,26 +167,9 @@ export async function createReubenEngine({
   // abort traps the instance and leaves the `static mut` shell in an arbitrary state the next
   // load() would inherit; and wasm linear memory never shrinks, so an envelope that balloons
   // memory before failing would leave the tab holding it for the session if it poisoned the
-  // reusable instance. Same imports + ctor dance as discoveryExports; just never stored.
-  async function freshExports() {
-    const box = { ex: null };
-    const imports = {
-      env: {
-        log: (ptr, len) => {
-          if (!box.ex?.memory) {
-            log("[fragment] <log call before memory was available>");
-            return;
-          }
-          log(`[fragment] ${decoder.decode(new Uint8Array(box.ex.memory.buffer, ptr, len))}`);
-        },
-      },
-    };
-    const instance = await WebAssembly.instantiate(wasmModule, imports);
-    const ex = instance.exports;
-    box.ex = ex;
-    if (typeof ex._initialize === "function") ex._initialize();
-    else if (typeof ex.__wasm_call_ctors === "function") ex.__wasm_call_ctors();
-    return ex;
+  // reusable instance.
+  function freshExports() {
+    return instantiateExports("fragment");
   }
 
   // Ship a fully-discovered bundle to the worklet and await its construct. Keys + document are
@@ -314,17 +303,6 @@ export async function createReubenEngine({
       } finally {
         loading = false;
       }
-    },
-
-    /**
-     * The document format version this engine reads/writes (the `format_version` C-ABI export).
-     * Lets the boot path tell an envelope/document from a NEWER engine apart from an unknown
-     * operator (issue #228). Read off the reusable discovery instance — a pure const, no shell
-     * state touched, safe to call any time.
-     */
-    async formatVersion() {
-      const ex = await discoveryExports();
-      return ex.format_version();
     },
 
     /**
