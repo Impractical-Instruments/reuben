@@ -7,8 +7,16 @@ import { expect, test } from "@playwright/test";
 // silently until something calls engine.enableMic(). The player renders an Enable-microphone
 // control for any instrument whose load() reports inputChannels > 0, and surfaces the engine's
 // verbatim permission copy on the shared .player-status. These tests drive that split — the
-// control appears for the input-taking Toy and NOT for a generator — and the denied path, all
-// against the real wasm with a Chromium fake device (no hardware, no real permission prompt).
+// control appears for the input-taking Toy and NOT for a generator — plus each enableMic()
+// outcome (denied / no device / live).
+//
+// getUserMedia is the one nondeterministic boundary here (ADR-0038 §10) and, worse, headless
+// Chromium's fake-device support varies by build (a real device isn't guaranteed and some
+// builds reject audio capture outright). So the outcome tests stub navigator.mediaDevices
+// .getUserMedia at that boundary — the exact seam ADR-0038 sanctions injecting at — rejecting
+// with the real DOMException names enableMic() maps, or resolving a real MediaStream synthesized
+// from Web Audio (no hardware). This exercises the whole enableMic() → player path and is
+// deterministic on any Chromium; nothing here needs a real mic.
 
 const manifest = JSON.parse(
   readFileSync(fileURLToPath(new URL("../toys.json", import.meta.url)), "utf8"),
@@ -21,6 +29,23 @@ for (const id of [MIC_TOY, GENERATOR_TOY]) {
   if (!manifest.toys.some((t) => t.id === id)) {
     throw new Error(`mic test references Toy "${id}" but it is not in toys.json`);
   }
+}
+
+// Replace getUserMedia before any app script runs (addInitScript fires on the openToy
+// navigation, ahead of main.js), so engine.enableMic() sees the stub. `mode` is one of the
+// keys below: a rejection with a specific DOMException name, or a resolved real MediaStream.
+async function stubGetUserMedia(page, mode) {
+  await page.addInitScript((m) => {
+    const reject = (name, message) => () => Promise.reject(new DOMException(message, name));
+    const stubs = {
+      // A real, live audio track with no device: a MediaStreamDestination's stream. enableMic()
+      // wires it through ctx.createMediaStreamSource, so it must be an actual MediaStream.
+      live: async () => new AudioContext().createMediaStreamDestination().stream,
+      denied: reject("NotAllowedError", "Permission denied"),
+      noDevice: reject("NotFoundError", "Requested device not found"),
+    };
+    navigator.mediaDevices.getUserMedia = stubs[m];
+  }, mode);
 }
 
 // Boot → Start (the audio unlock) → launcher → open the given Toy on the persistent engine.
@@ -51,10 +76,9 @@ test("a generator Toy shows no mic control", async ({ page }) => {
 });
 
 test("denying the mic surfaces the engine copy and stays retryable", async ({ page }) => {
-  // The context grants no 'microphone' permission, and the launch flags (playwright.config.js)
-  // are fake-device + --deny-permission-prompts: getUserMedia({audio}) hits a present device and
-  // an auto-denied prompt, rejecting NotAllowedError deterministically — no hardware, no dangling
-  // prompt — which enableMic() translates to the finished user-facing copy.
+  // getUserMedia rejects NotAllowedError (a real permission denial), which enableMic()
+  // translates to the finished user-facing copy.
+  await stubGetUserMedia(page, "denied");
   await openToy(page, MIC_TOY);
 
   await page.locator(".mic-enable").click();
@@ -68,15 +92,9 @@ test("denying the mic surfaces the engine copy and stays retryable", async ({ pa
 });
 
 test("a device with no input surfaces the no-microphone copy", async ({ page }) => {
-  // The launch flags always supply a fake device, so device-absence can't come from the browser;
-  // simulate it at the getUserMedia boundary (a rejected NotFoundError, exactly what a real
-  // input-less device throws). enableMic() maps it to the finished "no microphone" copy, which
-  // the player surfaces through the same verbatim path as the denied case. addInitScript runs
-  // before the app's scripts on the openToy navigation, so the engine sees the stub.
-  await page.addInitScript(() => {
-    navigator.mediaDevices.getUserMedia = () =>
-      Promise.reject(new DOMException("Requested device not found", "NotFoundError"));
-  });
+  // getUserMedia rejects NotFoundError, exactly what a device with no input throws; enableMic()
+  // maps it to the finished "no microphone" copy, surfaced through the same verbatim path.
+  await stubGetUserMedia(page, "noDevice");
   await openToy(page, MIC_TOY);
 
   await page.locator(".mic-enable").click();
@@ -89,8 +107,11 @@ test("a device with no input surfaces the no-microphone copy", async ({ page }) 
   await expect(page.locator(".mic-enable")).toBeEnabled();
 });
 
-test("granting the mic takes the instrument live", async ({ page, context }) => {
-  await context.grantPermissions(["microphone"]);
+test("granting the mic takes the instrument live", async ({ page }) => {
+  // getUserMedia resolves a real MediaStream (no device); enableMic() wires it and the control
+  // goes live. Audibility through the reverb can't be asserted headless — the engine's check.mjs
+  // duplex passthrough covers that; here we assert the player reflects the live state.
+  await stubGetUserMedia(page, "live");
   await openToy(page, MIC_TOY);
 
   await page.locator(".mic-enable").click();

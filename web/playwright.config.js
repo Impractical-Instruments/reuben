@@ -25,20 +25,13 @@ export default defineConfig({
       use: {
         ...devices["Desktop Chrome"],
         // Headless has no audio device; allow the context to reach "running" without a
-        // hardware sink so the smoke can assert engine state after the Start gesture.
-        // The mic tests (issue #248) need getUserMedia to resolve deterministically without
-        // hardware: --use-fake-device-for-media-stream supplies a synthetic mic (so a granted
-        // request goes live), and --deny-permission-prompts auto-denies an ungranted request
-        // (so the denied-path test gets NotAllowedError instead of a hung prompt). A test that
-        // wants the live path calls context.grantPermissions(['microphone']) to skip the prompt.
+        // hardware sink so the smoke can assert engine state after the Start gesture. (The mic
+        // tests, issue #248, don't need a fake device — they stub getUserMedia in-page, since
+        // headless Chromium's fake-audio support varies by build.)
         // PW_EXECUTABLE_PATH lets a runner with a pre-installed Chromium point at it instead
         // of a Playwright-managed download (CI leaves it unset and uses `playwright install`).
         launchOptions: {
-          args: [
-            "--autoplay-policy=no-user-gesture-required",
-            "--use-fake-device-for-media-stream",
-            "--deny-permission-prompts",
-          ],
+          args: ["--autoplay-policy=no-user-gesture-required"],
           ...(process.env.PW_EXECUTABLE_PATH
             ? { executablePath: process.env.PW_EXECUTABLE_PATH }
             : {}),
