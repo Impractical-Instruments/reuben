@@ -182,11 +182,19 @@ Committed schema: [`surfaces/surface.schema.json`](../../surfaces/surface.schema
 - `controls` (required, ordered array): the curated selection. Order is render order. Each:
   - `bind` (required): interface input pipe name. A bind naming no pipe is a warning; the
     control is skipped (dark-degrade, ADR-0016 philosophy).
-  - `label` (optional): display name; defaults to the pipe name.
-  - `widget` (optional): vocabulary kind; defaults to the §3 inference for the pipe type.
+  - `label` (optional): display name; defaults to the pipe name with underscores as spaces
+    and each word's first letter uppercased (`kick_step1` → "Kick Step1") — pinned so both
+    resolvers agree byte-for-byte.
+  - `widget` (optional): vocabulary kind; defaults to the §3 inference for the pipe type. A
+    message (`note`) pipe has no inferable widget — a control binding one without an explicit
+    widget is a warning + skip. A widget kind the target cannot render (the reserved names,
+    or an unknown) is skipped loudly by that target.
   - `group` (optional): adjacent same-group controls pack into one row (the grouped-row
     layout the auto-UI already has).
-  - `min` / `max` (optional): narrower presentation range, §2 subset law.
+  - `min` / `max` (optional): narrower presentation range, §2 subset law (an override
+    outside the pipe range clamps with a warning). The widget's rest value is the pipe
+    `default` clamped into the effective range; a pipe with no declared default rests at
+    the range floor.
   - Payload fields by widget: `note` (note-toggle, required, int note number) and optional
     `velocity` (default 1.0); `degree` (chord-button, required, int scale degree). Several
     controls may bind the same pipe (seven chord-buttons on one `note` pipe).

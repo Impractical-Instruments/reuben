@@ -1,13 +1,16 @@
-"""Tests for the control-surface generator (ADR-0018). Run: python3 -m unittest -v
+"""Tests for the control-surface generator (ADR-0043). Run: python3 -m unittest -v
 (from this directory, or `python3 -m unittest discover .claude/skills/control-surface`).
 
-These cover the deterministic half — metadata resolution, candidate inference, OSC addressing,
-and the zlib/XML round-trip. Whether the emitted .tosc *loads in TouchOSC* is the on-device
-verify step the skill calls out; it cannot be asserted here."""
+These cover the deterministic half — surface-doc resolution against interface pipes, the
+derived default surface, OSC addressing, layout, and the zlib/XML round-trip — plus the
+cross-implementation oracle shared with the web player's JS resolver. Whether the emitted
+.tosc *loads in TouchOSC* is the on-device verify step the skill calls out; it cannot be
+asserted here."""
 
 import json
 import shutil
 import subprocess
+import tempfile
 import unittest
 import zlib
 from pathlib import Path
@@ -19,116 +22,254 @@ import gen_surface as g
 # cloned from. The structural-match test below fails if our output drifts from this format.
 FIXTURE = Path(__file__).parent / "fixtures" / "REUBEN_REF.tosc"
 
-# A tiny schema in the committed ADR-0028 shape: each input is a `oneOf` of a number form (the
-# settable Float) and a wire-ref. One map (the Good Button workhorse) + a clock + a sequencer.
-def _num(minimum, maximum, default, desc):
-    return {"oneOf": [
-        {"type": "number", "minimum": minimum, "maximum": maximum, "default": default, "description": desc},
-        {"type": "object", "properties": {"from": {"type": "string"}}},
-    ]}
+REPO_ROOT = Path(__file__).resolve().parents[3]
 
-SCHEMA = {
-    "$defs": {"node": {"allOf": [
-        {"if": {"properties": {"type": {"const": "map"}}},
-         "then": {"properties": {"inputs": {"properties": {
-             "in_min": _num(-1e6, 1e6, 0.0, "unit: , curve: Linear"),
-             "in_max": _num(-1e6, 1e6, 1.0, "unit: , curve: Linear"),
-             "default": _num(-1e6, 1e6, 0.0, "unit: , curve: Linear"),
-         }}}}},
-        {"if": {"properties": {"type": {"const": "clock"}}},
-         "then": {"properties": {"inputs": {"properties": {
-             "tempo": _num(1.0, 999.0, 120.0, "unit: BPM, curve: Linear"),
-         }}}}},
-        {"if": {"properties": {"type": {"const": "sequencer"}}},
-         "then": {"properties": {"inputs": {"properties": {
-             "step1": _num(0.0, 1.0, 0.0, "unit: , curve: Linear"),
-             "step2": _num(0.0, 1.0, 0.0, "unit: , curve: Linear"),
-         }}}}},
-    ]}}
-}
-
-META = g.load_param_meta(SCHEMA)
-
-# A Good Button map (public, no wired input), a ranged map fed by it (plumbing, an `inputs`
-# wire-ref), and a clock with a tempo input.
+# A compact instrument in the ADR-0043 shape: presentation-free interface input pipes carrying
+# only the quantity contract (type/default/min/max/unit/curve, optional device `channel`).
+# Covers every pipe classification the resolver distinguishes: ranged f32s, note (message)
+# pipes, a ranged f32_buffer, a bare (rangeless) f32_buffer, and a channel-bound pipe.
 INSTRUMENT = {
+    "format_version": 3,
     "instrument": "t",
-    "nodes": [
-        {"type": "map", "address": "/brightness",
-         "inputs": {"in_min": 0.0, "in_max": 100.0, "default": 50.0},
-         "control": {"label": "Brightness", "unit": "%"}},
-        {"type": "map", "address": "/map_cutoff",
-         "inputs": {"in": {"from": "/brightness"}, "out_min": 400, "out_max": 12000}},
-        {"type": "clock", "address": "/clock",
-         "control": [{"label": "Tempo", "param": "tempo"}]},
-    ],
+    "interface": {
+        "inputs": {
+            "brightness": {"type": "f32", "default": 50.0, "min": 0.0, "max": 100.0, "unit": "%"},
+            "tempo": {"type": "f32", "default": 120.0, "min": 1.0, "max": 999.0, "unit": "BPM"},
+            "notes": {"type": "note"},
+            "chord": {"type": "note"},
+            "tone": {"type": "f32_buffer", "default": 4000.0, "min": 20.0, "max": 20000.0,
+                     "unit": "Hz", "curve": "exp"},
+            "in": {"type": "f32_buffer"},
+            "mic": {"type": "f32_buffer", "channel": 0},
+            "kick_step1": {"type": "f32", "default": 1.0, "min": 0.0, "max": 1.0},
+        },
+        "outputs": {"out": {"from": "/mix.out"}},
+    },
+    "nodes": [],
 }
 
 
-class MetaTest(unittest.TestCase):
-    def test_parses_unit_and_curve(self):
-        self.assertEqual(META["clock"]["tempo"]["unit"], "BPM")
-        self.assertEqual(META["map"]["in_max"]["default"], 1.0)
+def surface(*controls, **extra):
+    """A minimal valid surface doc around the given controls."""
+    doc = {"surface_version": 1, "instrument": "t", "controls": list(controls)}
+    doc.update(extra)
+    return doc
 
 
-class InferTest(unittest.TestCase):
-    def test_public_map_is_a_good_button(self):
-        cands = g.infer_candidates(INSTRUMENT, META)
-        addrs = [c["address"] for c in cands["good_buttons"]]
-        self.assertIn("/brightness", addrs)
-
-    def test_connected_map_is_excluded(self):
-        cands = g.infer_candidates(INSTRUMENT, META)
-        addrs = [c["address"] for c in cands["good_buttons"]]
-        self.assertNotIn("/map_cutoff", addrs, "a fed map is plumbing, not a public control")
-
-    def test_params_are_listed_with_metadata(self):
-        cands = g.infer_candidates(INSTRUMENT, META)
-        tempo = next(p for p in cands["params"] if p["address"] == "/clock/tempo")
-        self.assertEqual((tempo["min"], tempo["max"], tempo["unit"]), (1.0, 999.0, "BPM"))
+def resolve(*controls, instrument=INSTRUMENT, name="t", **extra):
+    return g.resolve_surface(instrument, surface(*controls, **extra), name)
 
 
-class ResolveTest(unittest.TestCase):
-    def test_good_button_binds_to_node_address_with_instance_range(self):
-        node = INSTRUMENT["nodes"][0]
-        r = g.resolve_control(node, {"label": "Brightness", "unit": "%"}, META)
-        self.assertEqual(r["osc_addr"], "/brightness")
-        self.assertEqual((r["min"], r["max"], r["default"]), (0.0, 100.0, 50.0))
-        self.assertEqual(r["unit"], "%")
+class DefaultLabelTest(unittest.TestCase):
+    """The pinned default-label algorithm: "_" -> " ", then uppercase each word's first char."""
 
-    def test_param_binds_to_node_slash_param_from_schema(self):
-        node = INSTRUMENT["nodes"][2]
-        r = g.resolve_control(node, {"label": "Tempo", "param": "tempo"}, META)
-        self.assertEqual(r["osc_addr"], "/clock/tempo")
-        self.assertEqual((r["min"], r["max"], r["default"]), (1.0, 999.0, 120.0))
-        self.assertEqual(r["unit"], "BPM")
+    def test_underscores_become_spaced_words(self):
+        self.assertEqual(g.default_label("kick_step1"), "Kick Step1")
+        self.assertEqual(g.default_label("kick_vol"), "Kick Vol")
+        self.assertEqual(g.default_label("tone"), "Tone")
 
-    def test_spec_overrides_win(self):
-        node = INSTRUMENT["nodes"][2]
-        r = g.resolve_control(node, {"label": "T", "param": "tempo", "max": 200, "default": 90}, META)
-        self.assertEqual((r["max"], r["default"]), (200.0, 90.0))
+    def test_is_not_python_str_title(self):
+        # str.title() also uppercases a letter FOLLOWING a digit ("mix2out" -> "Mix2Out");
+        # the pinned algorithm (shared with the JS twin) only touches word-initial characters.
+        self.assertEqual(g.default_label("mix2out"), "Mix2out")
+        self.assertNotEqual(g.default_label("mix2out"), "mix2out".title())
 
-    def test_object_and_array_control_both_collected(self):
-        controls = g.collect_controls(INSTRUMENT, META)
-        addrs = sorted(c["osc_addr"] for c in controls)
-        self.assertEqual(addrs, ["/brightness", "/clock/tempo"])
+    def test_rest_of_word_is_preserved(self):
+        self.assertEqual(g.default_label("djFilter_LFO"), "DjFilter LFO")
+
+
+class SurfaceResolveTest(unittest.TestCase):
+    """Surface-doc resolution (ADR-0043): the pipe carries the quantity, the control the
+    presentation; expected widgets are hand-written literals in the shared cross-impl shape."""
+
+    def test_fader_resolves_to_exact_widget_literal(self):
+        widgets, warnings = resolve({"bind": "tempo"})
+        self.assertEqual(warnings, [])
+        self.assertEqual(widgets, [{
+            "kind": "fader", "widget": "fader", "bind": "tempo", "address": "/tempo/in",
+            "label": "Tempo", "min": 1.0, "max": 999.0, "default": 120.0, "unit": "BPM",
+        }])
+
+    def test_ranged_buffer_pipe_carries_unit_and_curve_from_the_pipe(self):
+        widgets, warnings = resolve({"bind": "tone", "label": "Tone", "widget": "radial"})
+        self.assertEqual(warnings, [])
+        self.assertEqual(widgets, [{
+            "kind": "fader", "widget": "radial", "bind": "tone", "address": "/tone/in",
+            "label": "Tone", "min": 20.0, "max": 20000.0, "default": 4000.0,
+            "unit": "Hz", "curve": "exp",
+        }])
+
+    def test_param_toggle_resolves_with_pipe_range_and_default(self):
+        widgets, warnings = resolve(
+            {"bind": "kick_step1", "label": "K1", "widget": "param-toggle", "group": "kick"})
+        self.assertEqual(warnings, [])
+        self.assertEqual(widgets, [{
+            "kind": "param-toggle", "widget": "param-toggle", "bind": "kick_step1",
+            "address": "/kick_step1/in", "label": "K1", "group": "kick",
+            "min": 0.0, "max": 1.0, "default": 1.0,
+        }])
+
+    def test_note_toggle_payload_with_default_velocity(self):
+        widgets, warnings = resolve({"bind": "notes", "widget": "note-toggle", "note": 60})
+        self.assertEqual(warnings, [])
+        self.assertEqual(widgets, [{
+            "kind": "note-toggle", "widget": "note-toggle", "bind": "notes",
+            "address": "/notes/in", "label": "Notes", "note": 60, "velocity": 1.0,
+        }])
+
+    def test_note_toggle_explicit_velocity_carries(self):
+        widgets, _ = resolve({"bind": "notes", "widget": "note-toggle", "note": 62, "velocity": 0.5})
+        self.assertEqual((widgets[0]["note"], widgets[0]["velocity"]), (62, 0.5))
+
+    def test_chord_button_payload(self):
+        widgets, warnings = resolve(
+            {"bind": "chord", "widget": "chord-button", "degree": 3, "label": "IV"})
+        self.assertEqual(warnings, [])
+        self.assertEqual(widgets, [{
+            "kind": "chord-button", "widget": "chord-button", "bind": "chord",
+            "address": "/chord/in", "label": "IV", "degree": 3,
+        }])
+
+    def test_several_controls_may_bind_one_pipe(self):
+        widgets, warnings = resolve(
+            *[{"bind": "chord", "widget": "chord-button", "degree": d} for d in range(7)])
+        self.assertEqual(warnings, [])
+        self.assertEqual([w["degree"] for w in widgets], list(range(7)))
+        self.assertEqual({w["address"] for w in widgets}, {"/chord/in"})
+
+    def test_unknown_bind_warns_and_skips(self):
+        widgets, warnings = resolve({"bind": "ghost"}, {"bind": "tempo"})
+        self.assertEqual([w["bind"] for w in widgets], ["tempo"])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("surface control binds unknown pipe", warnings[0])
+        self.assertIn("ghost", warnings[0])
+
+    def test_reserved_and_unknown_widgets_skip_loudly(self):
+        # The TouchOSC skip table (ADR-0043 §5): reserved/web-only/unrecognized kinds are
+        # dropped with a warning naming each control, never silently.
+        widgets, warnings = resolve(
+            {"bind": "brightness", "widget": "xy-pad", "label": "Pad"},
+            {"bind": "brightness", "widget": "wobble", "label": "Wob"},
+            {"bind": "brightness", "label": "Brightness"})
+        self.assertEqual([w["label"] for w in widgets], ["Brightness"])
+        self.assertEqual(len(warnings), 2)
+        self.assertIn("Pad", warnings[0])
+        self.assertIn("xy-pad", warnings[0])
+        self.assertIn("Wob", warnings[1])
+        self.assertIn("wobble", warnings[1])
+
+    def test_message_pipe_with_no_widget_warns_and_skips(self):
+        widgets, warnings = resolve({"bind": "notes"})
+        self.assertEqual(widgets, [])
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("notes", warnings[0])
+
+    def test_out_of_range_override_clamps_into_pipe_range_and_warns(self):
+        widgets, warnings = resolve({"bind": "brightness", "min": -5.0, "max": 150.0})
+        self.assertEqual((widgets[0]["min"], widgets[0]["max"]), (0.0, 100.0))
+        self.assertEqual(len(warnings), 2, "one warning per out-of-range bound")
+        self.assertTrue(all("Brightness" in w for w in warnings))
+
+    def test_narrower_override_is_kept_without_warning(self):
+        widgets, warnings = resolve({"bind": "brightness", "min": 10.0, "max": 90.0})
+        self.assertEqual(warnings, [])
+        self.assertEqual((widgets[0]["min"], widgets[0]["max"]), (10.0, 90.0))
+        self.assertEqual(widgets[0]["default"], 50.0)
+
+    def test_pipe_default_clamps_into_the_effective_range(self):
+        # The pipe rests at 50; a narrowed [60, 90] presentation must rest at its own floor.
+        widgets, _ = resolve({"bind": "brightness", "min": 60.0, "max": 90.0})
+        self.assertEqual(widgets[0]["default"], 60.0)
+
+    def test_pipe_without_default_rests_at_min(self):
+        inst = {"instrument": "t2", "interface": {"inputs": {
+            "raw": {"type": "f32", "min": 2.0, "max": 8.0}}}}
+        widgets, _ = g.resolve_surface(inst, {
+            "surface_version": 1, "instrument": "t2",
+            "controls": [{"bind": "raw"}]}, "t2")
+        self.assertEqual(widgets[0]["default"], 2.0)
+
+    def test_default_label_is_applied_when_absent(self):
+        widgets, _ = resolve({"bind": "kick_step1", "widget": "param-toggle"})
+        self.assertEqual(widgets[0]["label"], "Kick Step1")
+
+    def test_radial_is_kind_fader_widget_radial(self):
+        widgets, _ = resolve({"bind": "tempo", "widget": "radial"})
+        self.assertEqual((widgets[0]["kind"], widgets[0]["widget"]), ("fader", "radial"))
+
+    def test_newer_surface_version_is_a_hard_error(self):
+        doc = surface({"bind": "tempo"})
+        doc["surface_version"] = 2
+        with self.assertRaises(SystemExit):
+            g.resolve_surface(INSTRUMENT, doc, "t")
+
+    def test_instrument_name_mismatch_is_a_warning_only(self):
+        doc = surface({"bind": "tempo"})
+        doc["instrument"] = "other"
+        widgets, warnings = g.resolve_surface(INSTRUMENT, doc, "t")
+        self.assertEqual(len(widgets), 1, "a mismatch must not drop the surface")
+        self.assertEqual(len(warnings), 1)
+        self.assertIn("other", warnings[0])
+
+
+class DefaultSurfaceTest(unittest.TestCase):
+    """The derived default surface (ADR-0043 §3): one fader per wireable input pipe, declaration
+    order; channel-bound, bare-audio, and message pipes are skipped with a warning naming each."""
+
+    def test_one_fader_per_wireable_pipe_in_declaration_order(self):
+        doc, _ = g.derive_surface(INSTRUMENT, "t")
+        self.assertEqual(doc["surface_version"], 1)
+        self.assertEqual(doc["instrument"], "t")
+        self.assertEqual(doc["controls"], [
+            {"bind": "brightness", "widget": "fader"},
+            {"bind": "tempo", "widget": "fader"},
+            {"bind": "tone", "widget": "fader"},
+            {"bind": "kick_step1", "widget": "fader"},
+        ])
+
+    def test_unwireable_pipes_are_skipped_with_a_warning_each(self):
+        _, warnings = g.derive_surface(INSTRUMENT, "t")
+        named = [w for pipe in ("notes", "chord", "in", "mic") for w in warnings if f"'{pipe}'" in w]
+        self.assertEqual(len(warnings), 4)
+        self.assertEqual(len(named), 4, f"each skipped pipe must be named: {warnings}")
+
+    def test_derived_surface_resolves_end_to_end(self):
+        doc, _ = g.derive_surface(INSTRUMENT, "t")
+        widgets, warnings = g.resolve_surface(INSTRUMENT, doc, "t")
+        self.assertEqual(warnings, [])
+        self.assertEqual([w["address"] for w in widgets],
+                         ["/brightness/in", "/tempo/in", "/tone/in", "/kick_step1/in"])
+        self.assertTrue(all(w["kind"] == "fader" and w["widget"] == "fader" for w in widgets))
+
+
+class SurfaceDocLookupTest(unittest.TestCase):
+    """File resolution order (ADR-0043 §5): <stem>.<target>.json ?? <stem>.json ?? None."""
+
+    def test_lookup_order(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            self.assertIsNone(g.find_surface_doc(root, "t"))
+            generic = root / "t.json"
+            generic.write_text("{}")
+            self.assertEqual(g.find_surface_doc(root, "t"), generic)
+            per_target = root / "t.touchosc.json"
+            per_target.write_text("{}")
+            self.assertEqual(g.find_surface_doc(root, "t"), per_target)
 
 
 class NoteToggleTest(unittest.TestCase):
-    # No explicit `port`, so this exercises the default — which must be the voicer's real
-    # `notes` input (routing matches the input port by name; `/voicer/note` would never land).
-    NODE = {"type": "voicer", "address": "/voicer",
-            "control": {"label": "Play C", "widget": "note-toggle", "note": 60}}
+    def widget(self):
+        widgets, _ = resolve({"bind": "notes", "label": "Play C", "widget": "note-toggle", "note": 60})
+        return widgets[0]
 
-    def test_resolves_to_node_port_address_and_note(self):
-        r = g.resolve_control(self.NODE, self.NODE["control"], META)
-        self.assertEqual(r["kind"], "note-toggle")
-        self.assertEqual(r["osc_addr"], "/voicer/notes")
-        self.assertEqual(r["note"], 60.0)
+    def test_resolves_to_pipe_in_address_and_note(self):
+        c = self.widget()
+        self.assertEqual(c["kind"], "note-toggle")
+        self.assertEqual(c["address"], "/notes/in")
+        self.assertEqual(c["note"], 60)
 
     def test_emits_a_toggle_button_with_constant_note_and_gate(self):
-        c = g.resolve_control(self.NODE, self.NODE["control"], META)
-        doc = ET.fromstring(zlib.decompress(g.build_tosc("t", [c], 1)))
+        doc = ET.fromstring(zlib.decompress(g.build_tosc("t", [self.widget()], 1)))
         btn = doc.find(".//node[@type='BUTTON']")
         self.assertIsNotNone(btn, "note-toggle must emit a BUTTON")
         btype = [p for p in btn.findall("./properties/property") if p.find("key").text == "buttonType"][0]
@@ -138,37 +279,41 @@ class NoteToggleTest(unittest.TestCase):
         self.assertEqual(args[0].find("value").text, "60")   # the fixed MIDI note
         self.assertEqual(args[1].find("type").text, "VALUE")
         self.assertEqual(args[1].find("value").text, "x")    # the gate
-        self.assertEqual(btn.find("./messages/osc/path/partial/value").text, "/voicer/notes")
+        self.assertEqual(btn.find("./messages/osc/path/partial/value").text, "/notes/in")
+
+
+# A groovebox-style instrument for the lane tests: 16 gate-step pipes + a tempo pipe.
+LANE_INSTRUMENT = {
+    "instrument": "gb",
+    "interface": {"inputs": dict(
+        [(f"kick_step{i}", {"type": "f32", "default": 1.0 if i in (1, 5) else 0.0,
+                            "min": 0.0, "max": 1.0}) for i in range(1, 17)]
+        + [("tempo", {"type": "f32", "default": 120.0, "min": 1.0, "max": 999.0, "unit": "BPM"})],
+    )},
+}
+
+
+def lane_surface(steps=16, group="kick", trailing_tempo=True):
+    controls = [{"bind": f"kick_step{i}", "label": f"K{i}", "widget": "param-toggle", "group": group}
+                for i in range(1, steps + 1)]
+    if trailing_tempo:
+        controls.append({"bind": "tempo", "label": "Tempo"})
+    return {"surface_version": 1, "instrument": "gb", "controls": controls}
 
 
 class ParamToggleTest(unittest.TestCase):
-    # A gate-mode sequencer lane: stepN are boolean on/off (ADR-0022), each carrying a control.
-    LANE = {"type": "sequencer", "address": "/kick",
-            "inputs": {"gate_mode": 1.0, "length": 16.0, "step1": 1.0, "step2": 0.0},
-            "control": [{"label": "K1", "param": "step1", "min": 0.0, "max": 1.0},
-                        {"label": "K2", "param": "step2", "min": 0.0, "max": 1.0}]}
+    def test_default_mirrors_the_pipe_resting_value(self):
+        widgets, _ = g.resolve_surface(LANE_INSTRUMENT, lane_surface(2, trailing_tempo=False), "gb")
+        self.assertEqual([w["default"] for w in widgets], [1.0, 0.0])
 
-    def test_gate_step_autodetected_as_toggle(self):
-        r = g.resolve_control(self.LANE, self.LANE["control"][0], META)
-        self.assertEqual(r["kind"], "param-toggle")
-        self.assertEqual(r["osc_addr"], "/kick/step1")
-        self.assertEqual(r["node"], "/kick")
-        self.assertEqual(r["default"], 1.0)   # mirrors the instrument's resting step value
-
-    def test_continuous_sequencer_step_stays_a_fader(self):
-        # gate_mode=0 -> stepN is a continuous degree, not a boolean; must remain a fader.
-        node = dict(self.LANE, inputs={"gate_mode": 0.0})
-        r = g.resolve_control(node, {"label": "K1", "param": "step1", "min": 0.0, "max": 1.0}, META)
-        self.assertEqual(r["kind"], "fader")
-
-    def test_emits_a_button_sending_x_to_the_param(self):
-        c = g.resolve_control(self.LANE, self.LANE["control"][0], META)
-        doc = ET.fromstring(zlib.decompress(g.build_tosc("t", [c], 4)))
+    def test_emits_a_button_sending_x_to_the_pipe(self):
+        widgets, _ = g.resolve_surface(LANE_INSTRUMENT, lane_surface(1, trailing_tempo=False), "gb")
+        doc = ET.fromstring(zlib.decompress(g.build_tosc("gb", widgets, 4)))
         btn = doc.find(".//node[@type='BUTTON']")
         self.assertIsNotNone(btn, "param-toggle must emit a BUTTON")
         btype = [p for p in btn.findall("./properties/property") if p.find("key").text == "buttonType"][0]
         self.assertEqual(btype.find("value").text, "2", "buttonType 2 = Toggle Press")
-        self.assertEqual(btn.find("./messages/osc/path/partial/value").text, "/kick/step1")
+        self.assertEqual(btn.find("./messages/osc/path/partial/value").text, "/kick_step1/in")
         args = btn.findall("./messages/osc/arguments/partial")
         self.assertEqual(len(args), 1, "the button's x IS the payload — no constant note")
         self.assertEqual(args[0].find("type").text, "VALUE")
@@ -176,14 +321,27 @@ class ParamToggleTest(unittest.TestCase):
 
     def test_lane_packs_into_one_full_width_row(self):
         # 16 steps + a trailing fader: the steps share one row of 16; the fader drops below.
-        controls = [g.resolve_control(
-            {"type": "sequencer", "address": "/kick", "inputs": {"gate_mode": 1.0}},
-            {"label": f"K{i}", "param": f"step{i}"}, META) for i in range(1, 17)]
-        controls.append(g.resolve_control(INSTRUMENT["nodes"][2], {"label": "Tempo", "param": "tempo"}, META))
-        rows = g.layout_rows(controls, cols=4)
+        widgets, _ = g.resolve_surface(LANE_INSTRUMENT, lane_surface(16), "gb")
+        rows = g.layout_rows(widgets, cols=4)
         self.assertEqual(len(rows[0]), 16, "all 16 lane steps share one row")
         self.assertTrue(all(c["kind"] == "param-toggle" for c in rows[0]))
         self.assertEqual([c["label"] for c in rows[-1]], ["Tempo"], "non-toggle controls grid below")
+
+    def test_adjacent_lanes_with_different_groups_get_their_own_rows(self):
+        # Steps are ordinary pipes now (ADR-0043 §6), so a lane is identified by its shared
+        # `group` hint — two back-to-back lanes must not merge into one run.
+        inst = {"instrument": "gb2", "interface": {"inputs": {
+            **{f"kick_step{i}": {"type": "f32", "default": 0.0, "min": 0.0, "max": 1.0} for i in (1, 2, 3)},
+            **{f"snare_step{i}": {"type": "f32", "default": 0.0, "min": 0.0, "max": 1.0} for i in (1, 2)},
+        }}}
+        controls = ([{"bind": f"kick_step{i}", "widget": "param-toggle", "group": "kick"} for i in (1, 2, 3)]
+                    + [{"bind": f"snare_step{i}", "widget": "param-toggle", "group": "snare"} for i in (1, 2)])
+        widgets, _ = g.resolve_surface(
+            inst, {"surface_version": 1, "instrument": "gb2", "controls": controls}, "gb2")
+        rows = g.layout_rows(widgets, cols=4)
+        self.assertEqual([[c["bind"] for c in row] for row in rows],
+                         [["kick_step1", "kick_step2", "kick_step3"],
+                          ["snare_step1", "snare_step2"]])
 
 
 class GroupLayoutTest(unittest.TestCase):
@@ -191,44 +349,39 @@ class GroupLayoutTest(unittest.TestCase):
     drum channel per row, with an ungrouped control (tempo) flowing into the grid on its own."""
 
     def test_groups_become_their_own_rows(self):
-        nodes = [
-            {"type": "clock", "address": "/clock", "control": {"label": "Tempo", "param": "tempo"}},
-            {"type": "clock", "address": "/k1", "control": {"label": "A", "param": "tempo", "group": "kick"}},
-            {"type": "clock", "address": "/k2", "control": {"label": "B", "param": "tempo", "group": "kick"}},
-            {"type": "clock", "address": "/k3", "control": {"label": "C", "param": "tempo", "group": "kick"}},
-            {"type": "clock", "address": "/s1", "control": {"label": "D", "param": "tempo", "group": "snare"}},
-            {"type": "clock", "address": "/s2", "control": {"label": "E", "param": "tempo", "group": "snare"}},
+        controls = [
+            {"bind": "tempo", "label": "Tempo"},
+            {"bind": "brightness", "label": "A", "group": "kick"},
+            {"bind": "brightness", "label": "B", "group": "kick"},
+            {"bind": "brightness", "label": "C", "group": "kick"},
+            {"bind": "tone", "label": "D", "group": "snare"},
+            {"bind": "tone", "label": "E", "group": "snare"},
         ]
-        controls = g.collect_controls({"instrument": "t", "nodes": nodes}, META)
-        rows = g.layout_rows(controls, cols=4)
+        widgets, warnings = resolve(*controls)
+        self.assertEqual(warnings, [])
+        rows = g.layout_rows(widgets, cols=4)
         labels = [[c["label"] for c in row] for row in rows]
         # Ungrouped tempo grids on its own row; each group is one full row, in declaration order.
         self.assertEqual(labels, [["Tempo"], ["A", "B", "C"], ["D", "E"]])
 
 
 class ChordButtonTest(unittest.TestCase):
-    """The V1.3 chord buttons (ADR-0022): a toggle whose payload is a custom `[degree, gate]`,
-    sent to the `chord` op's address. Same 2-arg button mechanism as note-toggle, but the
-    constant is a scale degree (the chord root), not an absolute MIDI note."""
+    """Chord buttons (ADR-0043 §1): a toggle whose payload is `[degree, gate]`, sent to the
+    bound note pipe's `/in` port (the OSC boundary converts the degree payload at a note port).
+    Same 2-arg button mechanism as note-toggle, but the constant is a scale degree."""
 
-    NODE = {"type": "chord", "address": "/chord",
-            "control": {"label": "IV", "widget": "chord-button", "port": "set", "degree": 3}}
+    def widget(self):
+        widgets, _ = resolve({"bind": "chord", "label": "IV", "widget": "chord-button", "degree": 3})
+        return widgets[0]
 
-    def test_resolves_to_node_port_address_and_degree(self):
-        r = g.resolve_control(self.NODE, self.NODE["control"], META)
-        self.assertEqual(r["kind"], "chord-button")
-        self.assertEqual(r["osc_addr"], "/chord/set")
-        self.assertEqual(r["degree"], 3.0)
-
-    def test_port_defaults_to_set(self):
-        node = {"type": "chord", "address": "/chord",
-                "control": {"label": "I", "widget": "chord-button", "degree": 0}}
-        r = g.resolve_control(node, node["control"], META)
-        self.assertEqual(r["osc_addr"], "/chord/set")
+    def test_resolves_to_pipe_in_address_and_degree(self):
+        c = self.widget()
+        self.assertEqual(c["kind"], "chord-button")
+        self.assertEqual(c["address"], "/chord/in")
+        self.assertEqual(c["degree"], 3)
 
     def test_emits_a_toggle_button_with_constant_degree_and_gate(self):
-        c = g.resolve_control(self.NODE, self.NODE["control"], META)
-        doc = ET.fromstring(zlib.decompress(g.build_tosc("t", [c], 1)))
+        doc = ET.fromstring(zlib.decompress(g.build_tosc("t", [self.widget()], 1)))
         btn = doc.find(".//node[@type='BUTTON']")
         self.assertIsNotNone(btn, "chord-button must emit a BUTTON")
         btype = [p for p in btn.findall("./properties/property") if p.find("key").text == "buttonType"][0]
@@ -238,20 +391,19 @@ class ChordButtonTest(unittest.TestCase):
         self.assertEqual(args[0].find("value").text, "3")    # the fixed chord-root degree
         self.assertEqual(args[1].find("type").text, "VALUE")
         self.assertEqual(args[1].find("value").text, "x")    # the gate
-        self.assertEqual(btn.find("./messages/osc/path/partial/value").text, "/chord/set")
+        self.assertEqual(btn.find("./messages/osc/path/partial/value").text, "/chord/in")
 
     def test_seven_chord_buttons_each_send_their_own_degree(self):
-        # The Chord-player surface: 7 buttons, root degrees 0..6 -> /chord/set.
-        nodes = [{"type": "chord", "address": "/chord",
-                  "control": [{"label": f"d{d}", "widget": "chord-button", "degree": d}
-                              for d in range(7)]}]
-        controls = g.collect_controls({"instrument": "cp", "nodes": nodes}, META)
-        self.assertEqual(len(controls), 7)
-        doc = ET.fromstring(zlib.decompress(g.build_tosc("cp", controls, 7)))
+        # The Chord-player surface: 7 buttons, root degrees 0..6, all on one note pipe.
+        widgets, _ = resolve(
+            *[{"bind": "chord", "label": f"d{d}", "widget": "chord-button", "degree": d}
+              for d in range(7)])
+        self.assertEqual(len(widgets), 7)
+        doc = ET.fromstring(zlib.decompress(g.build_tosc("cp", widgets, 7)))
         degrees = []
         for btn in doc.findall(".//node[@type='BUTTON']"):
             addr = btn.find("./messages/osc/path/partial/value").text
-            self.assertEqual(addr, "/chord/set", "all chord buttons hit one address")
+            self.assertEqual(addr, "/chord/in", "all chord buttons hit one pipe address")
             degrees.append(btn.findall("./messages/osc/arguments/partial")[0].find("value").text)
         self.assertEqual(degrees, ["0", "1", "2", "3", "4", "5", "6"])
 
@@ -260,8 +412,8 @@ class RadialTest(unittest.TestCase):
     """A `radial` widget is a rotary fader: same value/OSC model, a RADIAL node instead of FADER."""
 
     def test_radial_widget_emits_radial_node_with_fader_scaling(self):
-        node = INSTRUMENT["nodes"][2]  # the clock, with a tempo param
-        c = g.resolve_control(node, {"label": "Tempo", "param": "tempo", "widget": "radial"}, META)
+        widgets, _ = resolve({"bind": "tempo", "label": "Tempo", "widget": "radial"})
+        c = widgets[0]
         self.assertEqual(c["kind"], "fader")          # still resolves through the fader path
         self.assertEqual(c["widget"], "radial")
         doc = ET.fromstring(zlib.decompress(g.build_tosc("t", [c], 1)))
@@ -276,11 +428,10 @@ class RadialTest(unittest.TestCase):
         # A RADIAL draws a circle sized to its frame, so non-square frames overflow into
         # neighbouring cells. Every radial must get a square (w == h) frame, even in a wide row
         # or the lone control of a short last row (which a fader would stretch full-width).
-        nodes = [{"type": "clock", "address": f"/c{i}",
-                  "control": {"label": f"K{i}", "param": "tempo", "widget": "radial"}}
-                 for i in range(5)]  # 5 in a 4-col grid -> a full row of 4 + a lone 5th
-        controls = g.collect_controls({"instrument": "t", "nodes": nodes}, META)
-        doc = ET.fromstring(zlib.decompress(g.build_tosc("t", controls, 4)))
+        widgets, _ = resolve(
+            *[{"bind": "tempo", "label": f"K{i}", "widget": "radial"} for i in range(5)])
+        # 5 in a 4-col grid -> a full row of 4 + a lone 5th
+        doc = ET.fromstring(zlib.decompress(g.build_tosc("t", widgets, 4)))
         for rad in doc.findall(".//node[@type='RADIAL']"):
             f = [p for p in rad.findall("./properties/property") if p.find("key").text == "frame"][0]
             w, h = int(f.find("value/w").text), int(f.find("value/h").text)
@@ -289,8 +440,9 @@ class RadialTest(unittest.TestCase):
 
 class EmitTest(unittest.TestCase):
     def setUp(self):
-        controls = g.collect_controls(INSTRUMENT, META)
-        self.doc = ET.fromstring(zlib.decompress(g.build_tosc(INSTRUMENT["instrument"], controls, 4)))
+        self.widgets, _ = resolve({"bind": "brightness", "label": "Brightness"},
+                                  {"bind": "tempo", "label": "Tempo"})
+        self.doc = ET.fromstring(zlib.decompress(g.build_tosc("t", self.widgets, 4)))
 
     def test_round_trips_to_parseable_xml(self):
         # Matches the editor's export: lexml version 6.
@@ -299,14 +451,14 @@ class EmitTest(unittest.TestCase):
 
     def test_fader_addresses_and_scaling(self):
         # Partials use child elements (not attributes). The argument scaling maps x[0,1] to the
-        # control's real range, e.g. /clock/tempo -> [1,999].
+        # pipe's real range, at the pipe's own `/in` port (ADR-0043 §1).
         found = {}
         for osc in self.doc.findall(".//osc"):
             addr = osc.find("./path/partial/value").text
             arg = osc.find("./arguments/partial")
             found[addr] = (arg.find("scaleMin").text, arg.find("scaleMax").text)
-        self.assertEqual(found["/clock/tempo"], ("1", "999"))
-        self.assertEqual(found["/brightness"], ("0", "100"))
+        self.assertEqual(found["/tempo/in"], ("1", "999"))
+        self.assertEqual(found["/brightness/in"], ("0", "100"))
 
     def test_label_text_lives_in_values(self):
         # The bug that made labels read "Label": text is a <values> entry keyed `text`, not a
@@ -321,10 +473,88 @@ class EmitTest(unittest.TestCase):
         self.assertEqual(osc.find("receive").text, "0")
 
     def test_deterministic_bytes(self):
-        controls = g.collect_controls(INSTRUMENT, META)
-        a = g.build_tosc(INSTRUMENT["instrument"], controls, 4)
-        b = g.build_tosc(INSTRUMENT["instrument"], controls, 4)
+        a = g.build_tosc("t", self.widgets, 4)
+        b = g.build_tosc("t", self.widgets, 4)
         self.assertEqual(a, b, "same instrument must emit identical bytes")
+
+
+class EmitCliTest(unittest.TestCase):
+    """End-to-end `emit` through main(): explicit --surface, and the derived-default fallback."""
+
+    def test_emit_with_explicit_surface_doc(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            inst = root / "t.json"
+            inst.write_text(json.dumps(INSTRUMENT))
+            surf = root / "t.surface.json"
+            surf.write_text(json.dumps(surface({"bind": "tempo", "label": "Tempo"})))
+            out = root / "t.tosc"
+            rc = g.main(["emit", str(inst), "--surface", str(surf), "--out", str(out)])
+            self.assertEqual(rc, 0)
+            doc = ET.fromstring(zlib.decompress(out.read_bytes()))
+            addrs = [o.find("./path/partial/value").text for o in doc.findall(".//osc")]
+            self.assertEqual(addrs, ["/tempo/in"])
+
+    def test_emit_derives_the_default_surface_when_no_doc_exists(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            # A stem no committed surfaces/*.json matches, so the lookup falls through to derive.
+            inst = root / "zz-derived-default.json"
+            inst.write_text(json.dumps(INSTRUMENT))
+            out = root / "zz.tosc"
+            rc = g.main(["emit", str(inst), "--out", str(out)])
+            self.assertEqual(rc, 0)
+            doc = ET.fromstring(zlib.decompress(out.read_bytes()))
+            addrs = [o.find("./path/partial/value").text for o in doc.findall(".//osc")]
+            self.assertEqual(addrs, ["/brightness/in", "/tempo/in", "/tone/in", "/kick_step1/in"])
+
+
+# The shared cross-implementation oracle (ADR-0043 §9): the JS twin
+# (crates/reuben-web/js/surface/widget-model.mjs) regenerates this fixture from ITS resolver;
+# this suite must resolve the same instrument + surface doc to the same widget list and rows.
+ORACLE = REPO_ROOT / "crates" / "reuben-web" / "js" / "surface" / "testdata" / "expected-widgets.json"
+
+# The 8 committed instrument + surface-doc pairs the oracle covers.
+ORACLE_INSTRUMENTS = {
+    "chord-player": "instruments/chord-player.json",
+    "djfilter-demo": "instruments/djfilter-demo.json",
+    "euclidean-drums": "instruments/euclidean-drums.json",
+    "good-button": "instruments/good-button.json",
+    "granulator-demo": "instruments/granulator-demo.json",
+    "groovebox": "instruments/groovebox.json",
+    "strum-harp": "instruments/strum-harp.json",
+    "space": "instruments/patches/space.json",
+}
+
+
+@unittest.skipUnless(ORACLE.exists(),
+                     f"cross-implementation oracle {ORACLE} is absent — the JS twin "
+                     f"(widget-model.mjs) regenerates it; rerun once it lands")
+class CrossImplementationOracleTest(unittest.TestCase):
+    """Both native resolvers (this one and the JS twin) must resolve each committed
+    instrument + surface doc to the SAME widget list (parsed-JSON equality) and row layout."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.oracle = json.loads(ORACLE.read_text())
+
+    def test_oracle_covers_all_committed_pairs(self):
+        self.assertEqual(set(self.oracle), set(ORACLE_INSTRUMENTS))
+
+    def test_resolver_matches_js_oracle(self):
+        for name, inst_rel in ORACLE_INSTRUMENTS.items():
+            with self.subTest(instrument=name):
+                instrument = json.loads((REPO_ROOT / inst_rel).read_text())
+                doc = json.loads((REPO_ROOT / "surfaces" / f"{name}.json").read_text())
+                widgets, warnings = g.resolve_surface(instrument, doc, name)
+                self.assertEqual(warnings, [], "committed pairs must resolve cleanly")
+                expected = self.oracle[name]
+                self.assertEqual(widgets, expected["widgets"])
+                rows = [[w["address"] for w in row]
+                        for row in g.layout_rows(widgets, doc.get("cols", g.DEFAULT_COLS))]
+                expected_rows = [[w["address"] if isinstance(w, dict) else w for w in row]
+                                 for row in expected["rows"]]
+                self.assertEqual(rows, expected_rows)
 
 
 class BoundaryTest(unittest.TestCase):
@@ -352,18 +582,18 @@ class BoundaryTest(unittest.TestCase):
 
     def test_one_fader_per_wireable_input(self):
         controls = g.boundary_controls(self.BOUNDARY)
-        by_addr = {c["osc_addr"]: c for c in controls}
+        by_addr = {c["address"]: c for c in controls}
         # freq, gate, tone are wireable; `in` (bare audio, no range) and `mode` (enum) are dropped.
         self.assertEqual(set(by_addr), {"/freq/in", "/gate/in", "/tone/in"})
 
     def test_declared_metadata_flows_through(self):
-        freq = next(c for c in g.boundary_controls(self.BOUNDARY) if c["osc_addr"] == "/freq/in")
+        freq = next(c for c in g.boundary_controls(self.BOUNDARY) if c["address"] == "/freq/in")
         self.assertEqual((freq["min"], freq["max"], freq["default"], freq["unit"]), (20.0, 20000.0, 440.0, "Hz"))
         self.assertEqual(freq["label"], "Freq")   # no label -> titled from the pipe name
         self.assertEqual(freq["widget"], "fader")
 
     def test_pipe_owned_presentation_wins(self):
-        tone = next(c for c in g.boundary_controls(self.BOUNDARY) if c["osc_addr"] == "/tone/in")
+        tone = next(c for c in g.boundary_controls(self.BOUNDARY) if c["address"] == "/tone/in")
         self.assertEqual((tone["label"], tone["widget"]), ("Tone", "radial"))
         self.assertEqual((tone["min"], tone["max"]), (200.0, 8000.0))
 
@@ -390,7 +620,7 @@ class LiveEngineBoundaryTest(unittest.TestCase):
     above feeds `boundary_controls` a describe view *we* wrote, so it stays green even if the real
     `describe --json` shape flips under it — exactly the blind spot that let issue #233 rot (the
     interface `target`→pipe direction flip, ADR-0038, silently retired the v1 shape this script
-    hand-decoded). This test runs the real `reuben describe` on the committed v2 instrument
+    hand-decoded). This test runs the real `reuben describe` on the committed v3 instrument
     `instruments/patches/space.json` and asserts the surface, so a future breaking format change
     breaks *here* instead of drifting silently.
 
@@ -435,7 +665,7 @@ class LiveEngineBoundaryTest(unittest.TestCase):
         return json.loads(proc.stdout)
 
     def test_live_describe_surfaces_v2_pipe_addresses(self):
-        by_addr = {c["osc_addr"]: c for c in g.boundary_controls(self._live_describe())}
+        by_addr = {c["address"]: c for c in g.boundary_controls(self._live_describe())}
         # The two regressions #233 fixed, asserted against *real* engine output:
         #  - non-empty (v1-decoding produced zero controls on a v2 doc), and
         #  - addressed by the pipe's own `/<name>/in` port (ADR-0038), not a v1 inner target.
@@ -466,7 +696,7 @@ class LiveEngineBoundaryTest(unittest.TestCase):
         self.assertEqual(build.returncode, 0, f"cargo build failed:\n{build.stderr}")
         reuben_bin = g.find_reuben(Path(g.__file__), None)
         self.assertNotEqual(reuben_bin, "reuben", "find_reuben should locate the freshly built binary")
-        by_addr = {c["osc_addr"] for c in g.boundary_controls(g.run_describe(reuben_bin, self.SPACE))}
+        by_addr = {c["address"] for c in g.boundary_controls(g.run_describe(reuben_bin, self.SPACE))}
         self.assertEqual(by_addr, {"/space/in", "/tone/in"})
 
 
@@ -478,16 +708,12 @@ class FixtureMatchTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         cls.ref = ET.fromstring(zlib.decompress(FIXTURE.read_bytes()))
-        # An instrument exercising every control kind: fader, radial, note-toggle (button), label.
-        inst = {"instrument": "fix", "nodes": [
-            {"type": "clock", "address": "/clock", "control": {"label": "Tempo", "param": "tempo"}},
-            {"type": "clock", "address": "/clock2",
-             "control": {"label": "Tempo2", "param": "tempo", "widget": "radial"}},
-            {"type": "voicer", "address": "/voicer",
-             "control": {"label": "Play", "widget": "note-toggle", "note": 60}},
-        ]}
-        controls = g.collect_controls(inst, META)
-        cls.mine = ET.fromstring(zlib.decompress(g.build_tosc(inst["instrument"], controls, 2)))
+        # A surface exercising every control kind: fader, radial, note-toggle (button), label.
+        widgets, _ = resolve(
+            {"bind": "tempo", "label": "Tempo"},
+            {"bind": "tone", "label": "Tone", "widget": "radial"},
+            {"bind": "notes", "label": "Play", "widget": "note-toggle", "note": 60})
+        cls.mine = ET.fromstring(zlib.decompress(g.build_tosc("fix", widgets, 2)))
 
     def _keys(self, doc, ctype):
         n = doc.find(f".//node[@type='{ctype}']")

@@ -3,496 +3,641 @@
     "widgets": [
       {
         "kind": "fader",
-        "label": "Tempo",
         "widget": "fader",
-        "address": "/clock/tempo",
-        "min": 1.0,
-        "max": 999.0,
-        "default": 120.0,
+        "bind": "tempo",
+        "address": "/tempo/in",
+        "label": "Tempo",
+        "min": 1,
+        "max": 999,
+        "default": 120,
         "unit": "BPM"
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "kick_step1",
+        "address": "/kick_step1/in",
         "label": "K1",
-        "widget": "param-toggle",
-        "address": "/kick/step1",
-        "node": "/kick",
-        "default": 1.0
+        "group": "kick",
+        "min": 0,
+        "max": 1,
+        "default": 1
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "kick_step2",
+        "address": "/kick_step2/in",
         "label": "K2",
-        "widget": "param-toggle",
-        "address": "/kick/step2",
-        "node": "/kick",
-        "default": 0.0
+        "group": "kick",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "kick_step3",
+        "address": "/kick_step3/in",
         "label": "K3",
-        "widget": "param-toggle",
-        "address": "/kick/step3",
-        "node": "/kick",
-        "default": 0.0
+        "group": "kick",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "kick_step4",
+        "address": "/kick_step4/in",
         "label": "K4",
-        "widget": "param-toggle",
-        "address": "/kick/step4",
-        "node": "/kick",
-        "default": 0.0
+        "group": "kick",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "kick_step5",
+        "address": "/kick_step5/in",
         "label": "K5",
-        "widget": "param-toggle",
-        "address": "/kick/step5",
-        "node": "/kick",
-        "default": 1.0
+        "group": "kick",
+        "min": 0,
+        "max": 1,
+        "default": 1
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "kick_step6",
+        "address": "/kick_step6/in",
         "label": "K6",
-        "widget": "param-toggle",
-        "address": "/kick/step6",
-        "node": "/kick",
-        "default": 0.0
+        "group": "kick",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "kick_step7",
+        "address": "/kick_step7/in",
         "label": "K7",
-        "widget": "param-toggle",
-        "address": "/kick/step7",
-        "node": "/kick",
-        "default": 0.0
+        "group": "kick",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "kick_step8",
+        "address": "/kick_step8/in",
         "label": "K8",
-        "widget": "param-toggle",
-        "address": "/kick/step8",
-        "node": "/kick",
-        "default": 0.0
+        "group": "kick",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "kick_step9",
+        "address": "/kick_step9/in",
         "label": "K9",
-        "widget": "param-toggle",
-        "address": "/kick/step9",
-        "node": "/kick",
-        "default": 1.0
+        "group": "kick",
+        "min": 0,
+        "max": 1,
+        "default": 1
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "kick_step10",
+        "address": "/kick_step10/in",
         "label": "K10",
-        "widget": "param-toggle",
-        "address": "/kick/step10",
-        "node": "/kick",
-        "default": 0.0
+        "group": "kick",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "kick_step11",
+        "address": "/kick_step11/in",
         "label": "K11",
-        "widget": "param-toggle",
-        "address": "/kick/step11",
-        "node": "/kick",
-        "default": 0.0
+        "group": "kick",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "kick_step12",
+        "address": "/kick_step12/in",
         "label": "K12",
-        "widget": "param-toggle",
-        "address": "/kick/step12",
-        "node": "/kick",
-        "default": 0.0
+        "group": "kick",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "kick_step13",
+        "address": "/kick_step13/in",
         "label": "K13",
-        "widget": "param-toggle",
-        "address": "/kick/step13",
-        "node": "/kick",
-        "default": 1.0
+        "group": "kick",
+        "min": 0,
+        "max": 1,
+        "default": 1
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "kick_step14",
+        "address": "/kick_step14/in",
         "label": "K14",
-        "widget": "param-toggle",
-        "address": "/kick/step14",
-        "node": "/kick",
-        "default": 0.0
+        "group": "kick",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "kick_step15",
+        "address": "/kick_step15/in",
         "label": "K15",
-        "widget": "param-toggle",
-        "address": "/kick/step15",
-        "node": "/kick",
-        "default": 0.0
+        "group": "kick",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "kick_step16",
+        "address": "/kick_step16/in",
         "label": "K16",
-        "widget": "param-toggle",
-        "address": "/kick/step16",
-        "node": "/kick",
-        "default": 0.0
+        "group": "kick",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "snare_step1",
+        "address": "/snare_step1/in",
         "label": "S1",
-        "widget": "param-toggle",
-        "address": "/snare/step1",
-        "node": "/snare",
-        "default": 0.0
+        "group": "snare",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "snare_step2",
+        "address": "/snare_step2/in",
         "label": "S2",
-        "widget": "param-toggle",
-        "address": "/snare/step2",
-        "node": "/snare",
-        "default": 0.0
+        "group": "snare",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "snare_step3",
+        "address": "/snare_step3/in",
         "label": "S3",
-        "widget": "param-toggle",
-        "address": "/snare/step3",
-        "node": "/snare",
-        "default": 0.0
+        "group": "snare",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "snare_step4",
+        "address": "/snare_step4/in",
         "label": "S4",
-        "widget": "param-toggle",
-        "address": "/snare/step4",
-        "node": "/snare",
-        "default": 0.0
+        "group": "snare",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "snare_step5",
+        "address": "/snare_step5/in",
         "label": "S5",
-        "widget": "param-toggle",
-        "address": "/snare/step5",
-        "node": "/snare",
-        "default": 1.0
+        "group": "snare",
+        "min": 0,
+        "max": 1,
+        "default": 1
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "snare_step6",
+        "address": "/snare_step6/in",
         "label": "S6",
-        "widget": "param-toggle",
-        "address": "/snare/step6",
-        "node": "/snare",
-        "default": 0.0
+        "group": "snare",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "snare_step7",
+        "address": "/snare_step7/in",
         "label": "S7",
-        "widget": "param-toggle",
-        "address": "/snare/step7",
-        "node": "/snare",
-        "default": 0.0
+        "group": "snare",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "snare_step8",
+        "address": "/snare_step8/in",
         "label": "S8",
-        "widget": "param-toggle",
-        "address": "/snare/step8",
-        "node": "/snare",
-        "default": 0.0
+        "group": "snare",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "snare_step9",
+        "address": "/snare_step9/in",
         "label": "S9",
-        "widget": "param-toggle",
-        "address": "/snare/step9",
-        "node": "/snare",
-        "default": 0.0
+        "group": "snare",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "snare_step10",
+        "address": "/snare_step10/in",
         "label": "S10",
-        "widget": "param-toggle",
-        "address": "/snare/step10",
-        "node": "/snare",
-        "default": 0.0
+        "group": "snare",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "snare_step11",
+        "address": "/snare_step11/in",
         "label": "S11",
-        "widget": "param-toggle",
-        "address": "/snare/step11",
-        "node": "/snare",
-        "default": 0.0
+        "group": "snare",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "snare_step12",
+        "address": "/snare_step12/in",
         "label": "S12",
-        "widget": "param-toggle",
-        "address": "/snare/step12",
-        "node": "/snare",
-        "default": 0.0
+        "group": "snare",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "snare_step13",
+        "address": "/snare_step13/in",
         "label": "S13",
-        "widget": "param-toggle",
-        "address": "/snare/step13",
-        "node": "/snare",
-        "default": 1.0
+        "group": "snare",
+        "min": 0,
+        "max": 1,
+        "default": 1
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "snare_step14",
+        "address": "/snare_step14/in",
         "label": "S14",
-        "widget": "param-toggle",
-        "address": "/snare/step14",
-        "node": "/snare",
-        "default": 0.0
+        "group": "snare",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "snare_step15",
+        "address": "/snare_step15/in",
         "label": "S15",
-        "widget": "param-toggle",
-        "address": "/snare/step15",
-        "node": "/snare",
-        "default": 0.0
+        "group": "snare",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "snare_step16",
+        "address": "/snare_step16/in",
         "label": "S16",
-        "widget": "param-toggle",
-        "address": "/snare/step16",
-        "node": "/snare",
-        "default": 0.0
+        "group": "snare",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "hat_step1",
+        "address": "/hat_step1/in",
         "label": "H1",
-        "widget": "param-toggle",
-        "address": "/hat/step1",
-        "node": "/hat",
-        "default": 1.0
+        "group": "hat",
+        "min": 0,
+        "max": 1,
+        "default": 1
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "hat_step2",
+        "address": "/hat_step2/in",
         "label": "H2",
-        "widget": "param-toggle",
-        "address": "/hat/step2",
-        "node": "/hat",
-        "default": 0.0
+        "group": "hat",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "hat_step3",
+        "address": "/hat_step3/in",
         "label": "H3",
-        "widget": "param-toggle",
-        "address": "/hat/step3",
-        "node": "/hat",
-        "default": 1.0
+        "group": "hat",
+        "min": 0,
+        "max": 1,
+        "default": 1
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "hat_step4",
+        "address": "/hat_step4/in",
         "label": "H4",
-        "widget": "param-toggle",
-        "address": "/hat/step4",
-        "node": "/hat",
-        "default": 0.0
+        "group": "hat",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "hat_step5",
+        "address": "/hat_step5/in",
         "label": "H5",
-        "widget": "param-toggle",
-        "address": "/hat/step5",
-        "node": "/hat",
-        "default": 1.0
+        "group": "hat",
+        "min": 0,
+        "max": 1,
+        "default": 1
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "hat_step6",
+        "address": "/hat_step6/in",
         "label": "H6",
-        "widget": "param-toggle",
-        "address": "/hat/step6",
-        "node": "/hat",
-        "default": 0.0
+        "group": "hat",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "hat_step7",
+        "address": "/hat_step7/in",
         "label": "H7",
-        "widget": "param-toggle",
-        "address": "/hat/step7",
-        "node": "/hat",
-        "default": 1.0
+        "group": "hat",
+        "min": 0,
+        "max": 1,
+        "default": 1
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "hat_step8",
+        "address": "/hat_step8/in",
         "label": "H8",
-        "widget": "param-toggle",
-        "address": "/hat/step8",
-        "node": "/hat",
-        "default": 0.0
+        "group": "hat",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "hat_step9",
+        "address": "/hat_step9/in",
         "label": "H9",
-        "widget": "param-toggle",
-        "address": "/hat/step9",
-        "node": "/hat",
-        "default": 1.0
+        "group": "hat",
+        "min": 0,
+        "max": 1,
+        "default": 1
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "hat_step10",
+        "address": "/hat_step10/in",
         "label": "H10",
-        "widget": "param-toggle",
-        "address": "/hat/step10",
-        "node": "/hat",
-        "default": 0.0
+        "group": "hat",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "hat_step11",
+        "address": "/hat_step11/in",
         "label": "H11",
-        "widget": "param-toggle",
-        "address": "/hat/step11",
-        "node": "/hat",
-        "default": 1.0
+        "group": "hat",
+        "min": 0,
+        "max": 1,
+        "default": 1
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "hat_step12",
+        "address": "/hat_step12/in",
         "label": "H12",
-        "widget": "param-toggle",
-        "address": "/hat/step12",
-        "node": "/hat",
-        "default": 0.0
+        "group": "hat",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "hat_step13",
+        "address": "/hat_step13/in",
         "label": "H13",
-        "widget": "param-toggle",
-        "address": "/hat/step13",
-        "node": "/hat",
-        "default": 1.0
+        "group": "hat",
+        "min": 0,
+        "max": 1,
+        "default": 1
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "hat_step14",
+        "address": "/hat_step14/in",
         "label": "H14",
-        "widget": "param-toggle",
-        "address": "/hat/step14",
-        "node": "/hat",
-        "default": 0.0
+        "group": "hat",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "param-toggle",
+        "widget": "param-toggle",
+        "bind": "hat_step15",
+        "address": "/hat_step15/in",
         "label": "H15",
-        "widget": "param-toggle",
-        "address": "/hat/step15",
-        "node": "/hat",
-        "default": 1.0
+        "group": "hat",
+        "min": 0,
+        "max": 1,
+        "default": 1
       },
       {
         "kind": "param-toggle",
-        "label": "H16",
         "widget": "param-toggle",
-        "address": "/hat/step16",
-        "node": "/hat",
-        "default": 0.0
+        "bind": "hat_step16",
+        "address": "/hat_step16/in",
+        "label": "H16",
+        "group": "hat",
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "fader",
-        "label": "Kick Vol",
         "widget": "fader",
+        "bind": "kick_vol",
         "address": "/kick_vol/in",
-        "min": 0.0,
-        "max": 1.0,
-        "default": 0.7,
-        "unit": ""
+        "label": "Kick Vol",
+        "min": 0,
+        "max": 1,
+        "default": 0.7
       },
       {
         "kind": "fader",
-        "label": "Snare Vol",
         "widget": "fader",
+        "bind": "snare_vol",
         "address": "/snare_vol/in",
-        "min": 0.0,
-        "max": 1.0,
-        "default": 0.5,
-        "unit": ""
+        "label": "Snare Vol",
+        "min": 0,
+        "max": 1,
+        "default": 0.5
       },
       {
         "kind": "fader",
-        "label": "Hat Vol",
         "widget": "fader",
+        "bind": "hat_vol",
         "address": "/hat_vol/in",
-        "min": 0.0,
-        "max": 1.0,
-        "default": 0.35,
-        "unit": ""
+        "label": "Hat Vol",
+        "min": 0,
+        "max": 1,
+        "default": 0.35
       },
       {
         "kind": "fader",
-        "label": "Tone",
         "widget": "fader",
+        "bind": "tone",
         "address": "/tone/in",
-        "min": 0.0,
-        "max": 1.0,
-        "default": 0.8,
-        "unit": ""
+        "label": "Tone",
+        "min": 0,
+        "max": 1,
+        "default": 0.8
       }
     ],
     "rows": [
       [
-        "/clock/tempo"
+        "/tempo/in"
       ],
       [
-        "/kick/step1",
-        "/kick/step2",
-        "/kick/step3",
-        "/kick/step4",
-        "/kick/step5",
-        "/kick/step6",
-        "/kick/step7",
-        "/kick/step8",
-        "/kick/step9",
-        "/kick/step10",
-        "/kick/step11",
-        "/kick/step12",
-        "/kick/step13",
-        "/kick/step14",
-        "/kick/step15",
-        "/kick/step16"
+        "/kick_step1/in",
+        "/kick_step2/in",
+        "/kick_step3/in",
+        "/kick_step4/in",
+        "/kick_step5/in",
+        "/kick_step6/in",
+        "/kick_step7/in",
+        "/kick_step8/in",
+        "/kick_step9/in",
+        "/kick_step10/in",
+        "/kick_step11/in",
+        "/kick_step12/in",
+        "/kick_step13/in",
+        "/kick_step14/in",
+        "/kick_step15/in",
+        "/kick_step16/in"
       ],
       [
-        "/snare/step1",
-        "/snare/step2",
-        "/snare/step3",
-        "/snare/step4",
-        "/snare/step5",
-        "/snare/step6",
-        "/snare/step7",
-        "/snare/step8",
-        "/snare/step9",
-        "/snare/step10",
-        "/snare/step11",
-        "/snare/step12",
-        "/snare/step13",
-        "/snare/step14",
-        "/snare/step15",
-        "/snare/step16"
+        "/snare_step1/in",
+        "/snare_step2/in",
+        "/snare_step3/in",
+        "/snare_step4/in",
+        "/snare_step5/in",
+        "/snare_step6/in",
+        "/snare_step7/in",
+        "/snare_step8/in",
+        "/snare_step9/in",
+        "/snare_step10/in",
+        "/snare_step11/in",
+        "/snare_step12/in",
+        "/snare_step13/in",
+        "/snare_step14/in",
+        "/snare_step15/in",
+        "/snare_step16/in"
       ],
       [
-        "/hat/step1",
-        "/hat/step2",
-        "/hat/step3",
-        "/hat/step4",
-        "/hat/step5",
-        "/hat/step6",
-        "/hat/step7",
-        "/hat/step8",
-        "/hat/step9",
-        "/hat/step10",
-        "/hat/step11",
-        "/hat/step12",
-        "/hat/step13",
-        "/hat/step14",
-        "/hat/step15",
-        "/hat/step16"
+        "/hat_step1/in",
+        "/hat_step2/in",
+        "/hat_step3/in",
+        "/hat_step4/in",
+        "/hat_step5/in",
+        "/hat_step6/in",
+        "/hat_step7/in",
+        "/hat_step8/in",
+        "/hat_step9/in",
+        "/hat_step10/in",
+        "/hat_step11/in",
+        "/hat_step12/in",
+        "/hat_step13/in",
+        "/hat_step14/in",
+        "/hat_step15/in",
+        "/hat_step16/in"
       ],
       [
         "/kick_vol/in",
@@ -506,86 +651,94 @@
     "widgets": [
       {
         "kind": "chord-button",
+        "widget": "chord-button",
+        "bind": "chord",
+        "address": "/chord/in",
         "label": "I",
-        "widget": "chord-button",
-        "address": "/chord/set",
-        "degree": 0.0
+        "degree": 0
       },
       {
         "kind": "chord-button",
+        "widget": "chord-button",
+        "bind": "chord",
+        "address": "/chord/in",
         "label": "ii",
-        "widget": "chord-button",
-        "address": "/chord/set",
-        "degree": 1.0
+        "degree": 1
       },
       {
         "kind": "chord-button",
+        "widget": "chord-button",
+        "bind": "chord",
+        "address": "/chord/in",
         "label": "iii",
-        "widget": "chord-button",
-        "address": "/chord/set",
-        "degree": 2.0
+        "degree": 2
       },
       {
         "kind": "chord-button",
+        "widget": "chord-button",
+        "bind": "chord",
+        "address": "/chord/in",
         "label": "IV",
-        "widget": "chord-button",
-        "address": "/chord/set",
-        "degree": 3.0
+        "degree": 3
       },
       {
         "kind": "chord-button",
+        "widget": "chord-button",
+        "bind": "chord",
+        "address": "/chord/in",
         "label": "V",
-        "widget": "chord-button",
-        "address": "/chord/set",
-        "degree": 4.0
+        "degree": 4
       },
       {
         "kind": "chord-button",
+        "widget": "chord-button",
+        "bind": "chord",
+        "address": "/chord/in",
         "label": "vi",
-        "widget": "chord-button",
-        "address": "/chord/set",
-        "degree": 5.0
+        "degree": 5
       },
       {
         "kind": "chord-button",
-        "label": "vii",
         "widget": "chord-button",
-        "address": "/chord/set",
-        "degree": 6.0
+        "bind": "chord",
+        "address": "/chord/in",
+        "label": "vii",
+        "degree": 6
       },
       {
         "kind": "fader",
+        "widget": "fader",
+        "bind": "key",
+        "address": "/key/in",
         "label": "Key",
-        "widget": "fader",
-        "address": "/harmony/root",
-        "min": 48.0,
-        "max": 72.0,
-        "default": 60.0,
-        "unit": "MIDI"
+        "min": 48,
+        "max": 72,
+        "default": 60
       },
       {
         "kind": "fader",
-        "label": "Brightness",
         "widget": "fader",
+        "bind": "brightness",
         "address": "/brightness/in",
-        "min": 0.0,
-        "max": 1.0,
+        "label": "Brightness",
+        "min": 0,
+        "max": 1,
         "default": 0.5,
         "unit": "%"
       }
     ],
     "rows": [
       [
-        "/chord/set",
-        "/chord/set",
-        "/chord/set",
-        "/chord/set"
+        "/chord/in",
+        "/chord/in",
+        "/chord/in",
+        "/chord/in"
       ],
       [
-        "/chord/set",
-        "/chord/set",
-        "/chord/set",
-        "/harmony/root"
+        "/chord/in",
+        "/chord/in",
+        "/chord/in",
+        "/key/in"
       ],
       [
         "/brightness/in"
@@ -596,50 +749,50 @@
     "widgets": [
       {
         "kind": "fader",
+        "widget": "fader",
+        "bind": "strum",
+        "address": "/strum/in",
         "label": "Strum",
-        "widget": "fader",
-        "address": "/strum/position",
-        "min": 0.0,
-        "max": 1.0,
-        "default": 0.0,
-        "unit": ""
+        "min": 0,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "fader",
+        "widget": "fader",
+        "bind": "octaves",
+        "address": "/octaves/in",
         "label": "Range",
-        "widget": "fader",
-        "address": "/strum/octaves",
-        "min": 1.0,
-        "max": 4.0,
-        "default": 1.0,
-        "unit": "oct"
+        "min": 1,
+        "max": 4,
+        "default": 1
       },
       {
         "kind": "fader",
+        "widget": "fader",
+        "bind": "key",
+        "address": "/key/in",
         "label": "Key",
-        "widget": "fader",
-        "address": "/harmony/root",
-        "min": 48.0,
-        "max": 60.0,
-        "default": 60.0,
-        "unit": "MIDI"
+        "min": 48,
+        "max": 60,
+        "default": 60
       },
       {
         "kind": "fader",
-        "label": "Brightness",
         "widget": "fader",
+        "bind": "brightness",
         "address": "/brightness/in",
-        "min": 0.0,
-        "max": 1.0,
-        "default": 0.6,
-        "unit": ""
+        "label": "Brightness",
+        "min": 0,
+        "max": 1,
+        "default": 0.6
       }
     ],
     "rows": [
       [
-        "/strum/position",
-        "/strum/octaves",
-        "/harmony/root",
+        "/strum/in",
+        "/octaves/in",
+        "/key/in",
         "/brightness/in"
       ]
     ]
@@ -648,312 +801,329 @@
     "widgets": [
       {
         "kind": "fader",
-        "label": "Tempo",
         "widget": "radial",
-        "address": "/clock/tempo",
-        "min": 1.0,
-        "max": 999.0,
-        "default": 120.0,
+        "bind": "tempo",
+        "address": "/tempo/in",
+        "label": "Tempo",
+        "min": 1,
+        "max": 999,
+        "default": 120,
         "unit": "BPM"
       },
       {
         "kind": "fader",
+        "widget": "radial",
+        "bind": "kick_pulses",
+        "address": "/kick_pulses/in",
         "label": "Kick Pulses",
-        "widget": "radial",
-        "address": "/kick_eu/pulses",
-        "min": 0.0,
-        "max": 16.0,
-        "default": 4.0,
-        "unit": "pulses",
-        "group": "kick"
+        "group": "kick",
+        "min": 0,
+        "max": 16,
+        "default": 4,
+        "unit": "pulses"
       },
       {
         "kind": "fader",
+        "widget": "radial",
+        "bind": "kick_steps",
+        "address": "/kick_steps/in",
         "label": "Kick Steps",
-        "widget": "radial",
-        "address": "/kick_eu/steps",
-        "min": 1.0,
-        "max": 16.0,
-        "default": 16.0,
-        "unit": "steps",
-        "group": "kick"
+        "group": "kick",
+        "min": 1,
+        "max": 16,
+        "default": 16,
+        "unit": "steps"
       },
       {
         "kind": "fader",
+        "widget": "radial",
+        "bind": "kick_rotation",
+        "address": "/kick_rotation/in",
         "label": "Kick Rotation",
-        "widget": "radial",
-        "address": "/kick_eu/rotation",
-        "min": 0.0,
-        "max": 15.0,
-        "default": 0.0,
-        "unit": "steps",
-        "group": "kick"
+        "group": "kick",
+        "min": 0,
+        "max": 15,
+        "default": 0,
+        "unit": "steps"
       },
       {
         "kind": "fader",
+        "widget": "radial",
+        "bind": "kick_decay",
+        "address": "/kick_decay/in",
         "label": "Kick Decay",
-        "widget": "radial",
-        "address": "/kick_env/decay",
-        "min": 0.0010000000474974513,
-        "max": 5.0,
-        "default": 0.0010000000474974513,
-        "unit": "s",
-        "group": "kick"
+        "group": "kick",
+        "min": 0.001,
+        "max": 5,
+        "default": 0.001,
+        "unit": "s"
       },
       {
         "kind": "fader",
-        "label": "Kick DJ Filter",
         "widget": "radial",
+        "bind": "kick_filter",
         "address": "/kick_filter/in",
-        "min": -1.0,
-        "max": 1.0,
-        "default": 0.0,
-        "unit": "",
-        "group": "kick"
+        "label": "Kick DJ Filter",
+        "group": "kick",
+        "min": -1,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "fader",
-        "label": "Kick Level",
         "widget": "radial",
+        "bind": "kick_level",
         "address": "/kick_level/in",
-        "min": 0.0,
-        "max": 1.0,
-        "default": 0.85,
-        "unit": "",
-        "group": "kick"
+        "label": "Kick Level",
+        "group": "kick",
+        "min": 0,
+        "max": 1,
+        "default": 0.85
       },
       {
         "kind": "fader",
+        "widget": "radial",
+        "bind": "snare_pulses",
+        "address": "/snare_pulses/in",
         "label": "Snare Pulses",
-        "widget": "radial",
-        "address": "/snare_eu/pulses",
-        "min": 0.0,
-        "max": 16.0,
-        "default": 2.0,
-        "unit": "pulses",
-        "group": "snare"
+        "group": "snare",
+        "min": 0,
+        "max": 16,
+        "default": 2,
+        "unit": "pulses"
       },
       {
         "kind": "fader",
+        "widget": "radial",
+        "bind": "snare_steps",
+        "address": "/snare_steps/in",
         "label": "Snare Steps",
-        "widget": "radial",
-        "address": "/snare_eu/steps",
-        "min": 1.0,
-        "max": 16.0,
-        "default": 16.0,
-        "unit": "steps",
-        "group": "snare"
+        "group": "snare",
+        "min": 1,
+        "max": 16,
+        "default": 16,
+        "unit": "steps"
       },
       {
         "kind": "fader",
+        "widget": "radial",
+        "bind": "snare_rotation",
+        "address": "/snare_rotation/in",
         "label": "Snare Rotation",
-        "widget": "radial",
-        "address": "/snare_eu/rotation",
-        "min": 0.0,
-        "max": 15.0,
-        "default": 4.0,
-        "unit": "steps",
-        "group": "snare"
+        "group": "snare",
+        "min": 0,
+        "max": 15,
+        "default": 4,
+        "unit": "steps"
       },
       {
         "kind": "fader",
+        "widget": "radial",
+        "bind": "snare_decay",
+        "address": "/snare_decay/in",
         "label": "Snare Decay",
-        "widget": "radial",
-        "address": "/snare_env/decay",
-        "min": 0.0010000000474974513,
-        "max": 5.0,
-        "default": 0.0010000000474974513,
-        "unit": "s",
-        "group": "snare"
+        "group": "snare",
+        "min": 0.001,
+        "max": 5,
+        "default": 0.001,
+        "unit": "s"
       },
       {
         "kind": "fader",
-        "label": "Snare DJ Filter",
         "widget": "radial",
+        "bind": "snare_filter",
         "address": "/snare_filter/in",
-        "min": -1.0,
-        "max": 1.0,
-        "default": 0.0,
-        "unit": "",
-        "group": "snare"
+        "label": "Snare DJ Filter",
+        "group": "snare",
+        "min": -1,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "fader",
-        "label": "Snare Level",
         "widget": "radial",
+        "bind": "snare_level",
         "address": "/snare_level/in",
-        "min": 0.0,
-        "max": 1.0,
-        "default": 0.6,
-        "unit": "",
-        "group": "snare"
+        "label": "Snare Level",
+        "group": "snare",
+        "min": 0,
+        "max": 1,
+        "default": 0.6
       },
       {
         "kind": "fader",
+        "widget": "radial",
+        "bind": "tom_pulses",
+        "address": "/tom_pulses/in",
         "label": "Tom Pulses",
-        "widget": "radial",
-        "address": "/tom_eu/pulses",
-        "min": 0.0,
-        "max": 16.0,
-        "default": 3.0,
-        "unit": "pulses",
-        "group": "tom"
+        "group": "tom",
+        "min": 0,
+        "max": 16,
+        "default": 3,
+        "unit": "pulses"
       },
       {
         "kind": "fader",
+        "widget": "radial",
+        "bind": "tom_steps",
+        "address": "/tom_steps/in",
         "label": "Tom Steps",
-        "widget": "radial",
-        "address": "/tom_eu/steps",
-        "min": 1.0,
-        "max": 16.0,
-        "default": 16.0,
-        "unit": "steps",
-        "group": "tom"
+        "group": "tom",
+        "min": 1,
+        "max": 16,
+        "default": 16,
+        "unit": "steps"
       },
       {
         "kind": "fader",
+        "widget": "radial",
+        "bind": "tom_rotation",
+        "address": "/tom_rotation/in",
         "label": "Tom Rotation",
-        "widget": "radial",
-        "address": "/tom_eu/rotation",
-        "min": 0.0,
-        "max": 15.0,
-        "default": 2.0,
-        "unit": "steps",
-        "group": "tom"
+        "group": "tom",
+        "min": 0,
+        "max": 15,
+        "default": 2,
+        "unit": "steps"
       },
       {
         "kind": "fader",
+        "widget": "radial",
+        "bind": "tom_decay",
+        "address": "/tom_decay/in",
         "label": "Tom Decay",
-        "widget": "radial",
-        "address": "/tom_env/decay",
-        "min": 0.0010000000474974513,
-        "max": 5.0,
-        "default": 0.0010000000474974513,
-        "unit": "s",
-        "group": "tom"
+        "group": "tom",
+        "min": 0.001,
+        "max": 5,
+        "default": 0.001,
+        "unit": "s"
       },
       {
         "kind": "fader",
-        "label": "Tom DJ Filter",
         "widget": "radial",
+        "bind": "tom_filter",
         "address": "/tom_filter/in",
-        "min": -1.0,
-        "max": 1.0,
-        "default": 0.0,
-        "unit": "",
-        "group": "tom"
+        "label": "Tom DJ Filter",
+        "group": "tom",
+        "min": -1,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "fader",
-        "label": "Tom Level",
         "widget": "radial",
+        "bind": "tom_level",
         "address": "/tom_level/in",
-        "min": 0.0,
-        "max": 1.0,
-        "default": 0.6,
-        "unit": "",
-        "group": "tom"
+        "label": "Tom Level",
+        "group": "tom",
+        "min": 0,
+        "max": 1,
+        "default": 0.6
       },
       {
         "kind": "fader",
+        "widget": "radial",
+        "bind": "hat_pulses",
+        "address": "/hat_pulses/in",
         "label": "Hat Pulses",
-        "widget": "radial",
-        "address": "/hat_eu/pulses",
-        "min": 0.0,
-        "max": 16.0,
-        "default": 8.0,
-        "unit": "pulses",
-        "group": "hat"
+        "group": "hat",
+        "min": 0,
+        "max": 16,
+        "default": 8,
+        "unit": "pulses"
       },
       {
         "kind": "fader",
+        "widget": "radial",
+        "bind": "hat_steps",
+        "address": "/hat_steps/in",
         "label": "Hat Steps",
-        "widget": "radial",
-        "address": "/hat_eu/steps",
-        "min": 1.0,
-        "max": 16.0,
-        "default": 16.0,
-        "unit": "steps",
-        "group": "hat"
+        "group": "hat",
+        "min": 1,
+        "max": 16,
+        "default": 16,
+        "unit": "steps"
       },
       {
         "kind": "fader",
+        "widget": "radial",
+        "bind": "hat_rotation",
+        "address": "/hat_rotation/in",
         "label": "Hat Rotation",
-        "widget": "radial",
-        "address": "/hat_eu/rotation",
-        "min": 0.0,
-        "max": 15.0,
-        "default": 0.0,
-        "unit": "steps",
-        "group": "hat"
+        "group": "hat",
+        "min": 0,
+        "max": 15,
+        "default": 0,
+        "unit": "steps"
       },
       {
         "kind": "fader",
+        "widget": "radial",
+        "bind": "hat_decay",
+        "address": "/hat_decay/in",
         "label": "Hat Decay",
-        "widget": "radial",
-        "address": "/hat_env/decay",
-        "min": 0.0010000000474974513,
-        "max": 5.0,
-        "default": 0.0010000000474974513,
-        "unit": "s",
-        "group": "hat"
+        "group": "hat",
+        "min": 0.001,
+        "max": 5,
+        "default": 0.001,
+        "unit": "s"
       },
       {
         "kind": "fader",
-        "label": "Hat DJ Filter",
         "widget": "radial",
+        "bind": "hat_filter",
         "address": "/hat_filter/in",
-        "min": -1.0,
-        "max": 1.0,
-        "default": 0.0,
-        "unit": "",
-        "group": "hat"
+        "label": "Hat DJ Filter",
+        "group": "hat",
+        "min": -1,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "fader",
-        "label": "Hat Level",
         "widget": "radial",
+        "bind": "hat_level",
         "address": "/hat_level/in",
-        "min": 0.0,
-        "max": 1.0,
-        "default": 0.5,
-        "unit": "",
-        "group": "hat"
+        "label": "Hat Level",
+        "group": "hat",
+        "min": 0,
+        "max": 1,
+        "default": 0.5
       }
     ],
     "rows": [
       [
-        "/clock/tempo"
+        "/tempo/in"
       ],
       [
-        "/kick_eu/pulses",
-        "/kick_eu/steps",
-        "/kick_eu/rotation",
-        "/kick_env/decay",
+        "/kick_pulses/in",
+        "/kick_steps/in",
+        "/kick_rotation/in",
+        "/kick_decay/in",
         "/kick_filter/in",
         "/kick_level/in"
       ],
       [
-        "/snare_eu/pulses",
-        "/snare_eu/steps",
-        "/snare_eu/rotation",
-        "/snare_env/decay",
+        "/snare_pulses/in",
+        "/snare_steps/in",
+        "/snare_rotation/in",
+        "/snare_decay/in",
         "/snare_filter/in",
         "/snare_level/in"
       ],
       [
-        "/tom_eu/pulses",
-        "/tom_eu/steps",
-        "/tom_eu/rotation",
-        "/tom_env/decay",
+        "/tom_pulses/in",
+        "/tom_steps/in",
+        "/tom_rotation/in",
+        "/tom_decay/in",
         "/tom_filter/in",
         "/tom_level/in"
       ],
       [
-        "/hat_eu/pulses",
-        "/hat_eu/steps",
-        "/hat_eu/rotation",
-        "/hat_env/decay",
+        "/hat_pulses/in",
+        "/hat_steps/in",
+        "/hat_rotation/in",
+        "/hat_decay/in",
         "/hat_filter/in",
         "/hat_level/in"
       ]
@@ -963,40 +1133,41 @@
     "widgets": [
       {
         "kind": "fader",
-        "label": "Tempo",
         "widget": "fader",
-        "address": "/clock/tempo",
-        "min": 1.0,
-        "max": 999.0,
-        "default": 115.0,
+        "bind": "tempo",
+        "address": "/tempo/in",
+        "label": "Tempo",
+        "min": 1,
+        "max": 999,
+        "default": 115,
         "unit": "BPM"
       },
       {
         "kind": "fader",
-        "label": "Filter",
         "widget": "fader",
-        "address": "/filterpos/in",
-        "min": -1.0,
-        "max": 1.0,
-        "default": 0.0,
-        "unit": ""
+        "bind": "filter",
+        "address": "/filter/in",
+        "label": "Filter",
+        "min": -1,
+        "max": 1,
+        "default": 0
       },
       {
         "kind": "fader",
-        "label": "Resonance",
         "widget": "fader",
-        "address": "/djfilter/resonance",
-        "min": 0.0,
-        "max": 1.0,
-        "default": 0.35,
-        "unit": ""
+        "bind": "resonance",
+        "address": "/resonance/in",
+        "label": "Resonance",
+        "min": 0,
+        "max": 1,
+        "default": 0.35
       }
     ],
     "rows": [
       [
-        "/clock/tempo",
-        "/filterpos/in",
-        "/djfilter/resonance"
+        "/tempo/in",
+        "/filter/in",
+        "/resonance/in"
       ]
     ]
   },
@@ -1004,26 +1175,141 @@
     "widgets": [
       {
         "kind": "note-toggle",
-        "label": "Play C",
         "widget": "note-toggle",
-        "address": "/voicer/notes",
-        "note": 60.0
+        "bind": "notes",
+        "address": "/notes/in",
+        "label": "Play C",
+        "note": 60,
+        "velocity": 1
       },
       {
         "kind": "fader",
-        "label": "Brightness",
         "widget": "fader",
+        "bind": "brightness",
         "address": "/brightness/in",
-        "min": 0.0,
-        "max": 1.0,
-        "default": 0.5,
-        "unit": ""
+        "label": "Brightness",
+        "min": 0,
+        "max": 1,
+        "default": 0.5
       }
     ],
     "rows": [
       [
-        "/voicer/notes",
+        "/notes/in",
         "/brightness/in"
+      ]
+    ]
+  },
+  "granulator-demo": {
+    "widgets": [
+      {
+        "kind": "fader",
+        "widget": "radial",
+        "bind": "position",
+        "address": "/position/in",
+        "label": "Position",
+        "min": 0,
+        "max": 1,
+        "default": 0.25
+      },
+      {
+        "kind": "fader",
+        "widget": "radial",
+        "bind": "grain_size",
+        "address": "/grain_size/in",
+        "label": "Grain Size",
+        "min": 5,
+        "max": 500,
+        "default": 120,
+        "unit": "ms"
+      },
+      {
+        "kind": "fader",
+        "widget": "radial",
+        "bind": "pitch",
+        "address": "/pitch/in",
+        "label": "Pitch",
+        "min": -24,
+        "max": 24,
+        "default": -5,
+        "unit": "st"
+      },
+      {
+        "kind": "fader",
+        "widget": "radial",
+        "bind": "density",
+        "address": "/density/in",
+        "label": "Density",
+        "min": 1,
+        "max": 200,
+        "default": 30,
+        "unit": "Hz",
+        "curve": "exp"
+      },
+      {
+        "kind": "fader",
+        "widget": "radial",
+        "bind": "spray",
+        "address": "/spray/in",
+        "label": "Spray",
+        "min": 0,
+        "max": 1000,
+        "default": 50,
+        "unit": "ms"
+      },
+      {
+        "kind": "fader",
+        "widget": "radial",
+        "bind": "gain",
+        "address": "/gain/in",
+        "label": "Gain",
+        "min": 0,
+        "max": 4,
+        "default": 1
+      }
+    ],
+    "rows": [
+      [
+        "/position/in",
+        "/grain_size/in",
+        "/pitch/in",
+        "/density/in"
+      ],
+      [
+        "/spray/in",
+        "/gain/in"
+      ]
+    ]
+  },
+  "space": {
+    "widgets": [
+      {
+        "kind": "fader",
+        "widget": "fader",
+        "bind": "space",
+        "address": "/space/in",
+        "label": "Space",
+        "min": 0,
+        "max": 1,
+        "default": 0.35
+      },
+      {
+        "kind": "fader",
+        "widget": "radial",
+        "bind": "tone",
+        "address": "/tone/in",
+        "label": "Tone",
+        "min": 20,
+        "max": 20000,
+        "default": 4000,
+        "unit": "Hz",
+        "curve": "exp"
+      }
+    ],
+    "rows": [
+      [
+        "/space/in",
+        "/tone/in"
       ]
     ]
   }
