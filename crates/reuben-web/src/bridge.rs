@@ -144,6 +144,18 @@ pub extern "C" fn registry_count() -> u32 {
     reuben_core::Registry::builtin().entries().count() as u32
 }
 
+/// The document format version this engine reads/writes ([`reuben_core::format::FORMAT_VERSION`]).
+///
+/// Exported so JS (share-links, ADR issue #228) can tell "this envelope came from a *newer*
+/// engine" (its embedded `format_version` exceeds ours) apart from an ordinary load failure like
+/// an unknown operator — a version gate, decided against a plain integer instead of by
+/// string-matching a Rust `Display` impl. Pure const read, so no `ensure_panic_hook()` (matches
+/// [`block_size`]).
+#[no_mangle]
+pub extern "C" fn format_version() -> u32 {
+    reuben_core::format::FORMAT_VERSION
+}
+
 /// Stage the top-level instrument document (UTF-8 JSON). `0` ok, `1` bad UTF-8.
 ///
 /// # Safety

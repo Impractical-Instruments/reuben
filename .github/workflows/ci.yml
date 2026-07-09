@@ -266,9 +266,10 @@ jobs:
 
       # The auto-UI inference core + DOM renderer (issue #225) are pure ES modules — no wasm,
       # no browser, no npm install. `node --test` runs widget-model.test.mjs (buildSurface vs the
-      # committed oracle) and render.test.mjs on the runner's preinstalled Node.
-      - name: Test (JS auto-UI unit tests)
-        run: node --test js/surface/*.test.mjs
+      # committed oracle) and render.test.mjs on the runner's preinstalled Node. share.test.mjs
+      # (issue #228) is the share-link envelope codec — also pure, also no wasm/browser.
+      - name: Test (JS auto-UI + share-codec unit tests)
+        run: node --test js/surface/*.test.mjs js/share.test.mjs
 
       - name: Build .wasm (release)
         run: cargo build --release --target wasm32-unknown-unknown
@@ -311,6 +312,16 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: 22
+
+      # README share-link staleness gate (issue #228): extract every committed `#r1.…` play-link,
+      # DECODE it, and assert its document bytes equal instruments/<id>.json on disk. Decode is
+      # deterministic even though deflate ENCODE output is not stable across zlib versions, so this
+      # catches a silently-stale link (someone edits an instrument but not the README) without a
+      # regenerate-and-diff that a zlib bump would break. Needs only Node + share.mjs — no build,
+      # no npm deps — so it runs before the heavy install/build and fails fast.
+      - name: README share-link decode-and-compare (issue #228)
+        working-directory: web
+        run: node scripts/gen-share-links.mjs --check
 
       - name: Install app dependencies
         working-directory: web

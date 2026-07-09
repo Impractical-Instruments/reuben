@@ -156,11 +156,65 @@ export async function createReubenEngine({
     return ex;
   }
 
+  // A FRESH, uncached instance — the fragment-boot path (loadBundle) instantiates one per boot
+  // and discards it, rather than reusing `discovery`. Two reasons (issue #228 boot path): a Rust
+  // abort traps the instance and leaves the `static mut` shell in an arbitrary state the next
+  // load() would inherit; and wasm linear memory never shrinks, so an envelope that balloons
+  // memory before failing would leave the tab holding it for the session if it poisoned the
+  // reusable instance. Same imports + ctor dance as discoveryExports; just never stored.
+  async function freshExports() {
+    const box = { ex: null };
+    const imports = {
+      env: {
+        log: (ptr, len) => {
+          if (!box.ex?.memory) {
+            log("[fragment] <log call before memory was available>");
+            return;
+          }
+          log(`[fragment] ${decoder.decode(new Uint8Array(box.ex.memory.buffer, ptr, len))}`);
+        },
+      },
+    };
+    const instance = await WebAssembly.instantiate(wasmModule, imports);
+    const ex = instance.exports;
+    box.ex = ex;
+    if (typeof ex._initialize === "function") ex._initialize();
+    else if (typeof ex.__wasm_call_ctors === "function") ex.__wasm_call_ctors();
+    return ex;
+  }
+
+  // Ship a fully-discovered bundle to the worklet and await its construct. Keys + document are
+  // pre-encoded to UTF-8 bytes (the worklet has no TextEncoder); every buffer is transferred,
+  // not copied. Shared by load() (fetch-backed discovery) and loadBundle() (bundle-backed).
+  async function shipBundle(docText, bundle) {
+    // Retain a copy for Share (issue #228): the transfer below DETACHES the originals, so snapshot
+    // the document + resource bytes now, before they leave. Bundles are small (< 25 KB for the
+    // largest rig), so a copy per load is cheap and makes Share work uniformly for a Toy opened
+    // from the launcher and one booted from a link.
+    lastLoaded = {
+      docText,
+      resources: [...bundle].map(([key, { kind, bytes }]) => ({ key, kind, bytes: bytes.slice() })),
+    };
+    const doc = encoder.encode(docText);
+    const entries = [...bundle].map(([key, { kind, bytes }]) => ({
+      key, // kept as a string for the worklet's error messages
+      keyBytes: encoder.encode(key),
+      kind,
+      bytes,
+    }));
+    const transfers = [doc.buffer];
+    for (const e of entries) transfers.push(e.keyBytes.buffer, e.bytes.buffer);
+    const reply = expectReply("ready");
+    node.port.postMessage({ type: "load", doc, bundle: entries }, transfers);
+    return await reply;
+  }
+
   let micStream = null;
   let micSource = null;
   let micPending = null; // in-flight getUserMedia, so a double click can't leak a stream
   let loading = false; // one load() at a time: the discovery instance is shared state
   let destroyed = false;
+  let lastLoaded = null; // {docText, resources:[{key,kind,bytes}]} of the last load, for Share
 
   const engine = {
     context: ctx,
@@ -206,29 +260,99 @@ export async function createReubenEngine({
           ex.destroy();
         }
 
-        // Ship the complete set. Keys and document are pre-encoded to UTF-8 bytes (the
-        // worklet has no TextEncoder); buffers are transferred, not copied.
-        const doc = encoder.encode(docText);
-        const entries = [...bundle].map(([key, { kind, bytes }]) => ({
-          key, // kept as a string for the worklet's error messages
-          keyBytes: encoder.encode(key),
-          kind,
-          bytes,
-        }));
-        const transfers = [doc.buffer];
-        for (const e of entries) transfers.push(e.keyBytes.buffer, e.bytes.buffer);
-        const reply = expectReply("ready");
-        node.port.postMessage({ type: "load", doc, bundle: entries }, transfers);
-        return await reply;
+        // Ship the complete set to the worklet and await construct.
+        return await shipBundle(docText, bundle);
       } finally {
         loading = false;
       }
+    },
+
+    /**
+     * Boot from a pre-resolved bundle (issue #228 fragment boot): a document plus every resource
+     * it references, decoded from a share link. Discovery runs on a FRESH instance (see
+     * freshExports) that is discarded when this returns — success or failure. The bundle-backed
+     * fetchResource NEVER falls back to the network: a miss is a hard failure (ADR-0042, decision
+     * 1) surfaced as an error with `code: "incomplete"` (the caller maps it to failure class I).
+     * A structural/version/JSON failure surfaces the engine's verbatim message (classes F/G/H).
+     * Resolves the same {channels, inputChannels, blockSize} as load().
+     *
+     * @param {object} args
+     * @param {string} args.docText - the top-level document, verbatim from the link.
+     * @param {Map<string,{kind:number,bytes:Uint8Array}>|Array<{key:string,kind:number,bytes:Uint8Array}>} [args.resources]
+     */
+    async loadBundle({ docText, resources }) {
+      if (loading) throw new Error("a load is already in flight");
+      if (destroyed) throw new Error("engine was destroyed");
+      loading = true;
+      try {
+        const supplied =
+          resources instanceof Map
+            ? resources
+            : new Map((resources ?? []).map((r) => [r.key, { kind: r.kind, bytes: r.bytes }]));
+
+        // Fresh instance, discarded on failure (never the reused discovery instance).
+        const ex = await freshExports();
+        const bundle = new Map();
+        try {
+          await loadInstrument(ex, docText, ctx.sampleRate, async (key) => {
+            const hit = supplied.get(key);
+            if (!hit) {
+              // A bundle miss is terminal — an origin fetch would make a broken link appear to
+              // work on the one host that serves the missing file and 404 everywhere else.
+              throw Object.assign(new Error(`bundle is missing resource: ${key}`), {
+                code: "incomplete",
+              });
+            }
+            bundle.set(key, { kind: hit.kind, bytes: hit.bytes });
+            return hit.bytes;
+          });
+        } finally {
+          ex.destroy(); // drop the fresh instance's engine + staged bundle; the instance is discarded
+        }
+
+        return await shipBundle(docText, bundle);
+      } finally {
+        loading = false;
+      }
+    },
+
+    /**
+     * The document format version this engine reads/writes (the `format_version` C-ABI export).
+     * Lets the boot path tell an envelope/document from a NEWER engine apart from an unknown
+     * operator (issue #228). Read off the reusable discovery instance — a pure const, no shell
+     * state touched, safe to call any time.
+     */
+    async formatVersion() {
+      const ex = await discoveryExports();
+      return ex.format_version();
+    },
+
+    /**
+     * The bundle most recently loaded — `{docText, resources: [{key, kind, bytes}]}` — or null
+     * before the first load. The document + resource bytes are retained copies (the originals
+     * were transferred to the worklet), so Share (issue #228) can re-encode them into a link
+     * without re-running discovery, whether the instrument came from a Toy card or a fragment.
+     */
+    currentBundle() {
+      return lastLoaded;
     },
 
     /** Encode one control message (codec.mjs) and post it to the worklet. */
     send(address, args = []) {
       const buffer = encodeControl(address, args);
       node.port.postMessage({ type: "control", buffer }, [buffer.buffer]);
+    },
+
+    /**
+     * Post a PRE-ENCODED control buffer verbatim — a snapshot entry replayed from a share link
+     * (issue #228). It is already an encodeControl() buffer, so this skips re-encoding and puts
+     * the exact bytes the worklet consumes on the wire. Copied before transfer so the caller's
+     * snapshot array isn't detached.
+     */
+    sendRaw(buffer) {
+      const bytes = buffer instanceof Uint8Array ? buffer : new Uint8Array(buffer);
+      const copy = bytes.slice();
+      node.port.postMessage({ type: "control", buffer: copy }, [copy.buffer]);
     },
 
     /** Ask for the microphone and wire it into the worklet node's input. */
