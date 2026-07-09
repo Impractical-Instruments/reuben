@@ -1,0 +1,155 @@
+{
+  "surface_version": 1,
+  "instrument": "euclidean-drums",
+  "controls": [
+    {
+      "bind": "tempo",
+      "label": "Tempo",
+      "widget": "radial"
+    },
+    {
+      "bind": "kick_pulses",
+      "label": "Kick Pulses",
+      "widget": "radial",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_steps",
+      "label": "Kick Steps",
+      "widget": "radial",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_rotation",
+      "label": "Kick Rotation",
+      "widget": "radial",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_decay",
+      "label": "Kick Decay",
+      "widget": "radial",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_filter",
+      "label": "Kick DJ Filter",
+      "widget": "radial",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_level",
+      "label": "Kick Level",
+      "widget": "radial",
+      "group": "kick"
+    },
+    {
+      "bind": "snare_pulses",
+      "label": "Snare Pulses",
+      "widget": "radial",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_steps",
+      "label": "Snare Steps",
+      "widget": "radial",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_rotation",
+      "label": "Snare Rotation",
+      "widget": "radial",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_decay",
+      "label": "Snare Decay",
+      "widget": "radial",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_filter",
+      "label": "Snare DJ Filter",
+      "widget": "radial",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_level",
+      "label": "Snare Level",
+      "widget": "radial",
+      "group": "snare"
+    },
+    {
+      "bind": "tom_pulses",
+      "label": "Tom Pulses",
+      "widget": "radial",
+      "group": "tom"
+    },
+    {
+      "bind": "tom_steps",
+      "label": "Tom Steps",
+      "widget": "radial",
+      "group": "tom"
+    },
+    {
+      "bind": "tom_rotation",
+      "label": "Tom Rotation",
+      "widget": "radial",
+      "group": "tom"
+    },
+    {
+      "bind": "tom_decay",
+      "label": "Tom Decay",
+      "widget": "radial",
+      "group": "tom"
+    },
+    {
+      "bind": "tom_filter",
+      "label": "Tom DJ Filter",
+      "widget": "radial",
+      "group": "tom"
+    },
+    {
+      "bind": "tom_level",
+      "label": "Tom Level",
+      "widget": "radial",
+      "group": "tom"
+    },
+    {
+      "bind": "hat_pulses",
+      "label": "Hat Pulses",
+      "widget": "radial",
+      "group": "hat"
+    },
+    {
+      "bind": "hat_steps",
+      "label": "Hat Steps",
+      "widget": "radial",
+      "group": "hat"
+    },
+    {
+      "bind": "hat_rotation",
+      "label": "Hat Rotation",
+      "widget": "radial",
+      "group": "hat"
+    },
+    {
+      "bind": "hat_decay",
+      "label": "Hat Decay",
+      "widget": "radial",
+      "group": "hat"
+    },
+    {
+      "bind": "hat_filter",
+      "label": "Hat DJ Filter",
+      "widget": "radial",
+      "group": "hat"
+    },
+    {
+      "bind": "hat_level",
+      "label": "Hat Level",
+      "widget": "radial",
+      "group": "hat"
+    }
+  ]
+}

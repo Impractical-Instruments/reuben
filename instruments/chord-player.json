@@ -1,11 +1,29 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "instrument": "chord-player",
-  "doc": "V1.3 Toy 2 — the Chord player (ADR-0022/0032). Seven buttons play the diatonic triads I–vii° of the current key: tap-and-hold sustains a chord, release stops it. Each button sends /chord/set [degree, gate] (a chord-root scale degree + gate); the `chord` op stacks scale-relative thirds and emits `degree` notes, which the voicer resolves through the tonal context — so held and tapped chords RE-SPELL LIVE when you change the key (send /harmony/root [48..72]). Each of the 12 voices is a hosted `chord-player-voice` sub-patch (saw -> slow-attack ADSR VCA); the voicer sums them and a 'brightness' Good Button (/brightness/in [0..1]) tones the mix through a master filter. Polyphonic: 12 voices cover four held seventh chords.",
+  "doc": "V1.3 Toy 2 — the Chord player (ADR-0022/0032; ADR-0043 pipes). Seven buttons play the diatonic triads I–vii° of the current key: tap-and-hold sustains a chord, release stops it. Each button sends the `chord` pipe (/chord/in) [degree, gate] (a chord-root scale degree + gate); the `chord` op at /triads stacks scale-relative thirds and emits `degree` notes, which the voicer resolves through the tonal context — so held and tapped chords RE-SPELL LIVE when you change the key (send the `key` pipe, /key/in [48..72]). Each of the 12 voices is a hosted `chord-player-voice` sub-patch (saw -> slow-attack ADSR VCA); the voicer sums them and a `brightness` pipe (/brightness/in [0..1]) tones the mix through a master filter. Polyphonic: 12 voices cover four held seventh chords. Presentation lives in surfaces/chord-player.json.",
   "resources": {
     "chord-player-voice": "voices/chord-player-voice.json"
   },
   "interface": {
+    "inputs": {
+      "brightness": {
+        "type": "f32",
+        "default": 0.5,
+        "min": 0.0,
+        "max": 1.0,
+        "unit": "%"
+      },
+      "chord": {
+        "type": "note"
+      },
+      "key": {
+        "type": "f32",
+        "default": 60.0,
+        "min": 48.0,
+        "max": 72.0
+      }
+    },
     "outputs": {
       "out": {
         "from": "/out.audio"
@@ -15,71 +33,29 @@
   "nodes": [
     {
       "type": "chord",
-      "address": "/chord",
-      "doc": "Tap-to-harmony: /chord/set [degree, gate] -> stacked-thirds `degree` notes. `size` 3 = triad (default), 4 = seventh. No harmony input — the voicer resolves degrees, so chords re-spell on key change. The 7 chord buttons each send a fixed root degree 0..6 (I–vii°) via the chord-button widget.",
+      "address": "/triads",
+      "doc": "Tap-to-harmony: the `chord` pipe (/chord/in) [degree, gate] -> stacked-thirds `degree` notes. `size` 3 = triad (default), 4 = seventh. No harmony input — the voicer resolves degrees, so chords re-spell on key change. The surface doc's 7 chord-buttons each send a fixed root degree 0..6 (I–vii°) through the pipe.",
       "inputs": {
+        "set": {
+          "from": "/chord"
+        },
         "size": 3.0
-      },
-      "control": [
-        {
-          "degree": 0,
-          "label": "I",
-          "port": "set",
-          "widget": "chord-button"
-        },
-        {
-          "degree": 1,
-          "label": "ii",
-          "port": "set",
-          "widget": "chord-button"
-        },
-        {
-          "degree": 2,
-          "label": "iii",
-          "port": "set",
-          "widget": "chord-button"
-        },
-        {
-          "degree": 3,
-          "label": "IV",
-          "port": "set",
-          "widget": "chord-button"
-        },
-        {
-          "degree": 4,
-          "label": "V",
-          "port": "set",
-          "widget": "chord-button"
-        },
-        {
-          "degree": 5,
-          "label": "vi",
-          "port": "set",
-          "widget": "chord-button"
-        },
-        {
-          "degree": 6,
-          "label": "vii",
-          "port": "set",
-          "widget": "chord-button"
-        }
-      ]
+      }
     },
     {
       "type": "harmony",
       "address": "/harmony",
-      "doc": "The tonal context the voicer resolves degrees against. KEY SELECTOR: send /harmony/root [48..72] (MIDI tonic) to transpose; held & tapped chords re-spell live. Default C major.",
-      "control": {
-        "label": "Key",
-        "max": 72.0,
-        "min": 48.0,
-        "param": "root"
+      "doc": "The tonal context the voicer resolves degrees against. KEY SELECTOR: the `key` pipe (/key/in [48..72], MIDI tonic) drives `root` to transpose; held & tapped chords re-spell live. Default C major.",
+      "inputs": {
+        "root": {
+          "from": "/key"
+        }
       }
     },
     {
       "type": "voicer",
       "address": "/voicer",
-      "doc": "Hosts 12 chord-player-voice sub-patches. Degree notes from /chord re-spell through /harmony; the voicer resolves + allocates them across the voices and sums their audio. 12 voices = four held seventh chords.",
+      "doc": "Hosts 12 chord-player-voice sub-patches. Degree notes from /triads re-spell through /harmony; the voicer resolves + allocates them across the voices and sums their audio. 12 voices = four held seventh chords.",
       "config": {
         "voices": 12.0
       },
@@ -88,7 +64,7 @@
           "from": "/harmony"
         },
         "notes": {
-          "from": "/chord"
+          "from": "/triads"
         }
       },
       "voice": "chord-player-voice"
@@ -138,17 +114,14 @@
     },
     {
       "type": "m2s",
-      "address": "/brightness",
-      "doc": "PUBLIC Good Button. The held knob value [0,1] smoothed into a CV Signal (an `m2s` is the value->signal converter), then ranged into the master filter cutoff. Send /brightness/in [0..1]. Rests at 0.5 (ADR-0018).",
+      "address": "/brightness_cv",
+      "doc": "The PUBLIC `brightness` pipe's held value [0,1] (send /brightness/in) smoothed into a CV Signal (an `m2s` is the value->signal converter), then ranged into the master filter cutoff. The pipe rests at 0.5.",
       "inputs": {
-        "in": 0.5,
+        "in": {
+          "from": "/brightness"
+        },
         "mode": "Smooth",
         "time": 0.03
-      },
-      "control": {
-        "label": "Brightness",
-        "unit": "%",
-        "widget": "fader"
       }
     },
     {
@@ -158,7 +131,7 @@
       "inputs": {
         "curve": "Exponential",
         "in": {
-          "from": "/brightness"
+          "from": "/brightness_cv"
         },
         "out_max": 9000.0,
         "out_min": 300.0

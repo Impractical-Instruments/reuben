@@ -1,5 +1,5 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "instrument": "mic-space",
   "doc": "Live-input demo (ADR-0038): a top-level input pipe bound to logical input channel 0 feeds the nested `space` patch (instruments/patches/space.json) — one file showing both halves of the pipe model. `mic` is an interface input pipe: it mints /mic in the node namespace and, because this graph is played at top level, its `channel: 0` binding reads logical input channel 0 (your default input device's first channel; remap with `play --io-map`, docs/device-profile.md). The subpatch consumes it as an ordinary wire (`{\"from\": \"/mic\"}`) — inside the nest, space.json's own `in` pipe is fed through the synthesized face, never by a magic hardware reach (ADR-0038 §3). The broadcast output pipe (`channel` omitted) sends the wet signal to both stereo channels. Play it: `reuben play instruments/mic-space.json` with any input device present (an instrument that binds input channels fails fast when no input device exists — ADR-0038 §7) and speak/play into the mic; watch the feedback level. Shape live over OSC: /space/tone/in (cutoff, Hz), /space/space/in (reverb mix, 0..1). Live input is a sanctioned nondeterministic boundary (ADR-0038 §10) — offline render injects known buffers instead.",
   "resources": {

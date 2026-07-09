@@ -1,32 +1,11 @@
 {
-  "format_version": 3,
+  "format_version": 2,
   "instrument": "djfilter-demo",
-  "doc": "A self-playing saw arpeggio through the DJ-mixer `djfilter` knob (ADR-0032). The Clock's beat gate drives a sequencer (a major arpeggio) into a 4-voice Voicer; each of the 4 voices is a hosted `djfilter-demo-voice` sub-patch (saw -> plucky ADSR VCA). The voicer sums them and the star — one bipolar filter knob — sweeps the master djfilter. The playable boundary is three interface pipes (ADR-0043): `filter` feeds the `/filterpos` m2s (the value->signal converter; rests at North = 0, smoothed so turning it is zipper-free) wired straight into the master djfilter's Signal `position`. Send /filter/in [-1..1]: 0 = open/no filter, negative (CCW) sweeps a low-pass down, positive (CW) sweeps a high-pass up. Set tempo via /tempo/in, resonance via /resonance/in; edit the line via /sequencer/step1../sequencer/step8.",
+  "doc": "A self-playing saw arpeggio through the DJ-mixer `djfilter` knob (ADR-0032). The Clock's beat gate drives a sequencer (a major arpeggio) into a 4-voice Voicer; each of the 4 voices is a hosted `djfilter-demo-voice` sub-patch (saw -> plucky ADSR VCA). The voicer sums them and the star — one bipolar filter knob — sweeps the master djfilter. The knob `/filterpos` is an `m2s` (the value->signal converter; rests at North = 0, smoothed so turning it is zipper-free) wired straight into the master djfilter's Signal `position`. Send /filterpos/in [-1..1]: 0 = open/no filter, negative (CCW) sweeps a low-pass down, positive (CW) sweeps a high-pass up. Set tempo via /clock/tempo; edit the line via /sequencer/step1../sequencer/step8.",
   "resources": {
     "djfilter-demo-voice": "voices/djfilter-demo-voice.json"
   },
   "interface": {
-    "inputs": {
-      "filter": {
-        "type": "f32",
-        "default": 0.0,
-        "min": -1.0,
-        "max": 1.0
-      },
-      "resonance": {
-        "type": "f32",
-        "default": 0.35,
-        "min": 0.0,
-        "max": 1.0
-      },
-      "tempo": {
-        "type": "f32",
-        "default": 115.0,
-        "min": 1.0,
-        "max": 999.0,
-        "unit": "BPM"
-      }
-    },
     "outputs": {
       "out": {
         "from": "/out.audio"
@@ -39,9 +18,11 @@
       "address": "/clock",
       "doc": "Beat phasor + beat gate.",
       "inputs": {
-        "tempo": {
-          "from": "/tempo"
-        }
+        "tempo": 115.0
+      },
+      "control": {
+        "label": "Tempo",
+        "param": "tempo"
       }
     },
     {
@@ -81,12 +62,18 @@
       "type": "m2s",
       "address": "/filterpos",
       "inputs": {
-        "in": {
-          "from": "/filter"
-        },
+        "in": 0.0,
         "mode": "Smooth",
         "time": 0.1
-      }
+      },
+      "control": [
+        {
+          "label": "Filter",
+          "param": "in",
+          "min": -1.0,
+          "max": 1.0
+        }
+      ]
     },
     {
       "type": "djfilter",
@@ -99,10 +86,14 @@
         "position": {
           "from": "/filterpos.out"
         },
-        "resonance": {
-          "from": "/resonance"
+        "resonance": 0.35
+      },
+      "control": [
+        {
+          "label": "Resonance",
+          "param": "resonance"
         }
-      }
+      ]
     },
     {
       "type": "output",

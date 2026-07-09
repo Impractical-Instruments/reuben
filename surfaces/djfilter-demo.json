@@ -1,0 +1,9 @@
+{
+  "surface_version": 1,
+  "instrument": "djfilter-demo",
+  "controls": [
+    { "bind": "tempo", "label": "Tempo" },
+    { "bind": "filter", "label": "Filter" },
+    { "bind": "resonance", "label": "Resonance" }
+  ]
+}
