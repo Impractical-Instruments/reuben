@@ -30,40 +30,47 @@ import { emit, initial } from "./widget-model.mjs";
 // each row is a grid whose columns auto-fit to the viewport, so the same surface reads on
 // phone / tablet / desktop. A 16-button step lane keeps 16 columns and scrolls horizontally
 // on a narrow screen rather than squashing; a grouped channel row wraps the same way.
+// Retinted to the Impractical Instruments "storybook" language (see web/src/app.css): inked
+// widgets on paper, flat paper shadows, a persimmon "on" fill. Colors are hardcoded (not CSS
+// vars) so the surface stays self-styling wherever it mounts, with or without the shell's tokens.
 export const SURFACE_CSS = `
 .reuben-surface { display: flex; flex-direction: column; gap: 0.75rem; margin: 1rem 0; }
 .reuben-surface:empty::after {
   content: "Self-playing instrument — no player controls.";
-  color: #888; font-size: 0.9rem; font-style: italic;
+  color: #6b6b6b; font-size: 0.95rem; font-style: italic;
 }
 .surface-row {
-  display: grid; gap: 0.5rem;
+  display: grid; gap: 0.6rem;
   grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
 }
 .surface-row.step-lane {
   grid-auto-flow: column; grid-auto-columns: minmax(1.6rem, 1fr);
-  overflow-x: auto; gap: 0.25rem;
+  overflow-x: auto; gap: 0.3rem;
 }
-/* a group run (e.g. a drum channel's knobs) reads as one banded unit. */
+/* a group run (e.g. a drum channel's knobs) reads as one banded unit — a butter-tinted card. */
 .surface-row.group-row {
-  padding: 0.4rem; border-radius: 0.6rem; background: rgba(127, 127, 127, 0.08);
+  padding: 0.5rem; border-radius: 10px; background: rgba(255, 240, 168, 0.4);
+  border: 2px solid #1a1a1a;
 }
 .surface-widget {
   display: flex; flex-direction: column; gap: 0.25rem; align-items: stretch;
-  padding: 0.4rem 0.5rem; border: 1px solid #ccc; border-radius: 0.5rem; min-width: 0;
+  padding: 0.45rem 0.55rem; border: 2px solid #1a1a1a; border-radius: 8px; min-width: 0;
+  background: #ffffff; box-shadow: 2px 2px 0 #1a1a1a;
 }
-.surface-widget .surface-label { font-size: 0.8rem; font-weight: 600; }
+.surface-widget .surface-label { font-size: 0.8rem; font-weight: 700; color: #1a1a1a; }
 .surface-widget .surface-value {
-  font-size: 0.75rem; color: #555; font-variant-numeric: tabular-nums;
+  font-size: 0.75rem; color: #6b6b6b; font-variant-numeric: tabular-nums;
 }
-.surface-widget.fader input, .surface-widget.radial input { width: 100%; }
+.surface-widget.fader input, .surface-widget.radial input { width: 100%; accent-color: #cb4211; }
 /* radials read as knobs: a compact, centered slider distinct from the wide fader. */
 .surface-widget.radial { align-items: center; }
 .surface-widget.radial input { max-width: 5rem; }
 button.surface-widget {
-  cursor: pointer; font: inherit; text-align: center; background: #f4f4f4;
+  cursor: pointer; font: inherit; text-align: center; background: #ffffff;
+  transition: transform 0.06s ease, box-shadow 0.06s ease;
 }
-button.surface-widget.on { background: #2a7ad0; color: #fff; border-color: #1c5aa0; }
+button.surface-widget:active { transform: translate(1px, 1px); box-shadow: 1px 1px 0 #1a1a1a; }
+button.surface-widget.on { background: #cb4211; color: #ffffff; border-color: #1a1a1a; }
 button.surface-widget.step-cell { padding: 0.5rem 0.2rem; font-size: 0.7rem; }
 `;
 
