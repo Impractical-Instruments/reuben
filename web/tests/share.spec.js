@@ -34,6 +34,13 @@ const readFixture = (rel) =>
 // Frozen under tests/fixtures/ (vibrato left the library in the cull): the minimal share
 // payload — self-playing, no resources, no controls.
 const VIBRATO_DOC = readFixture("vibrato.json");
+
+// The launcher manifest (the smoke.spec idiom): a shared stock Toy must show ITS short
+// player-facing blurb, never the document's agent-facing `doc` text.
+const MANIFEST = JSON.parse(
+  readFileSync(fileURLToPath(new URL("../toys.json", import.meta.url)), "utf8"),
+);
+const GROOVEBOX_BLURB = MANIFEST.toys.find((t) => t.id === "groovebox").blurb;
 const EUCLIDEAN_DOC = readInstrument("euclidean-drums.json"); // self-playing, faders, no resources
 const GROOVEBOX_DOC = readInstrument("groovebox.json"); // self-playing, three voice resources
 
@@ -87,6 +94,9 @@ test("a shared vibrato link boots and plays after one tap", async ({ page }) => 
   // controlless drone, so we assert the surface rendered, not a specific widget).
   await expect.poll(() => page.evaluate(() => window.reubenPlayer.engineState())).toBe("running");
   await expect(page.locator(".surface-mount")).toHaveClass(/reuben-surface/);
+  // Not a launcher Toy → no blurb at all; the document's agent-facing `doc` text must never
+  // stand in as player copy.
+  await expect(page.locator(".player-blurb")).toHaveCount(0);
 
   expect(errors, `no uncaught page errors: ${errors.join("; ")}`).toEqual([]);
 });
@@ -222,6 +232,9 @@ test("a groovebox link with an embedded surface renders the launcher's exact UI,
   expect(linkWidgets).toEqual(launcherWidgets);
   await expect(page.locator(".surface-mount .step-lane")).toHaveCount(3); // kick/snare/hat lanes
   await expect(page.locator(".surface-mount .step-cell")).toHaveCount(48);
+  // A shared stock Toy shows its manifest blurb — the short player copy — not the document's
+  // agent-facing `doc` text.
+  await expect(page.locator(".player-blurb")).toHaveText(GROOVEBOX_BLURB);
   expect(
     surfaceFetches,
     `resolved from the embedded surface without fetching, saw: ${surfaceFetches.join(", ")}`,

@@ -717,10 +717,15 @@ async function fragmentBoot(hash) {
       );
       const kind = deriveKind(surface, info);
 
+      // A shared instrument that IS a launcher Toy reuses its manifest title/blurb — the
+      // short, player-facing copy the launcher cards show. An unknown/custom instrument gets
+      // title only: the document's `doc` field is the agent-facing spec (ADR refs, pipe
+      // addresses), never player copy.
+      const toy = TOYS.find((t) => t.id === doc.instrument);
       const { screen, surfaceEl, status, skeleton, body, shareBtn } = buildPlayerScreen({
         nameForData: doc.instrument,
-        title: doc.instrument,
-        blurb: doc.doc,
+        title: toy?.title ?? doc.instrument,
+        blurb: toy?.blurb,
         kind,
       });
       setScreen("player", screen);
