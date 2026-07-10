@@ -170,7 +170,7 @@ test("class E — an extension section over the per-section cap is damaged, not 
   const out = new Uint8Array(tlv.length + 1 + 4);
   out.set(tlv, 0);
   out[tlv.length] = 1;
-  new DataView(out.buffer).setUint32(tlv.length + 1, CAPS.PER_RESOURCE_BYTES + 1, true);
+  new DataView(out.buffer).setUint32(tlv.length + 1, CAPS.PER_SECTION_BYTES + 1, true);
   await expectCode(decodeBundle(await forge(out)), "damaged");
 });
 

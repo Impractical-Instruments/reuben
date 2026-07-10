@@ -34,6 +34,27 @@ const RENDERED_WIDGETS = new Set(["fader", "radial", "param-toggle", "note-toggl
 // radial) behaves as kind "fader" — a continuous value scaled into [min, max].
 const TOGGLE_KINDS = new Set(["param-toggle", "note-toggle", "chord-button"]);
 
+// The value-backed kinds: widgets with a resting value (min/max/default) that the journal,
+// the share sidecar, and applySnapshotDefaults all operate on. The hold kinds (note-toggle,
+// chord-button) carry no resting state and never appear in a snapshot.
+export const VALUE_KINDS = new Set(["fader", "param-toggle"]);
+
+// The ADR-0043 §5 file-resolution candidates for the web target, most specific first:
+// surfaces/<id>.web.json ?? surfaces/<id>.json (?? auto-derive, the caller's fallthrough).
+// Root-relative strings — the player feeds them to fetch via its asset base, the README link
+// generator joins them to the repo root. One owner so the two consumers cannot drift.
+export const SURFACE_CANDIDATES = (id) => [`surfaces/${id}.web.json`, `surfaces/${id}.json`];
+
+// The one version predicate for a parsed surface doc (throw-or-return). Callers choose the
+// failure policy — the player warns and falls through to its next candidate (dark-degrade),
+// the generator lets the throw kill the mint (a committed link must never carry a broken doc).
+export function validateSurfaceDoc(doc) {
+  if (doc?.surface_version !== 1) {
+    throw new Error(`unsupported surface_version ${doc?.surface_version}`);
+  }
+  return doc;
+}
+
 // --- pipes ---------------------------------------------------------------------------------
 
 /**
@@ -341,7 +362,7 @@ export function buildSurface(instrumentDoc, surfaceDoc = null) {
 export function applySnapshotDefaults(surface, entries) {
   const byAddress = new Map();
   for (const w of surface.widgets) {
-    if (w.kind !== "fader" && w.kind !== "param-toggle") continue;
+    if (!VALUE_KINDS.has(w.kind)) continue;
     const list = byAddress.get(w.address);
     if (list) list.push(w);
     else byAddress.set(w.address, [w]);

@@ -183,7 +183,9 @@ real skip rule.
 
 Fragment-boot surface resolution order (the ADR-0043 §5 order, share target):
 **embedded section ?? `surfaces/<instrument>.web.json` ?? `surfaces/<instrument>.json` ??
-auto-derived**, every rung dark-degrading (ADR-0016). The middle rungs fetch from the
+auto-derived**, every rung dark-degrading (ADR-0016) — where "every rung" includes an
+embedded doc that parses but is then refused by the resolver: it falls to the origin rungs
+rather than shadowing them (pinned by an E2E in `web/tests/share.spec.js`). The middle rungs fetch from the
 origin — which §1 forbids for *resources* — and that is not a contradiction: a missing
 resource changes what the link *plays* (terminal, class I), while a missing surface only
 changes what it *looks like* (degrade to auto-derive, never a banner). The rung also

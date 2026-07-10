@@ -25,6 +25,8 @@ import {
   layoutRows,
   initial,
   emit,
+  SURFACE_CANDIDATES,
+  validateSurfaceDoc,
 } from "./widget-model.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -616,4 +618,24 @@ test("applySnapshotDefaults: only value-backed widgets participate (a chord-butt
   const chords = surface.widgets.filter((x) => x.kind === "chord-button");
   applySnapshotDefaults(surface, [{ address: "/chord/in", args: [1] }]);
   assert.ok(chords.every((x) => !("default" in x)), "chord-buttons still carry no default");
+});
+
+// ---------------------------------------------------------------------------------------
+// (2j) The shared resolution-order/validation exports — pinned so the player and the README
+// link generator (its two consumers) cannot drift from ADR-0043 §5.
+// ---------------------------------------------------------------------------------------
+
+test("SURFACE_CANDIDATES: web override first, then the base doc, root-relative", () => {
+  assert.deepStrictEqual(SURFACE_CANDIDATES("groovebox"), [
+    "surfaces/groovebox.web.json",
+    "surfaces/groovebox.json",
+  ]);
+});
+
+test("validateSurfaceDoc: returns a version-1 doc, throws on anything else", () => {
+  const ok = { surface_version: 1, instrument: "x", controls: [] };
+  assert.strictEqual(validateSurfaceDoc(ok), ok);
+  for (const bad of [{ surface_version: 2 }, {}, null, undefined]) {
+    assert.throws(() => validateSurfaceDoc(bad), /surface_version/);
+  }
 });

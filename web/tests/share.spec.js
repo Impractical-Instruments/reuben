@@ -229,6 +229,37 @@ test("a groovebox link with an embedded surface renders the launcher's exact UI,
   expect(errors, `no uncaught page errors: ${errors.join("; ")}`).toEqual([]);
 });
 
+test("a resolver-refused embedded surface falls to the origin rung, not to fader soup", async ({
+  page,
+}) => {
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+
+  // This surface PARSES (valid JSON, surface_version 1) but the resolver refuses it
+  // (`controls` is not an array), so the parse rung takes it and the resolve fails — the
+  // ladder must then try the origin (ADR-0042 A2: every rung dark-degrades, including
+  // resolver rejection), landing on the curated surfaces/groovebox.json.
+  const fragment = await encodeBundle({
+    docText: GROOVEBOX_DOC,
+    resources: GROOVEBOX_RESOURCES,
+    surfaceText: JSON.stringify({ surface_version: 1, instrument: "groovebox", controls: 42 }),
+  });
+  await startFragmentBoot(page, fragment);
+  await expect(page.locator("#start")).toBeVisible();
+  const surfaceFetches = [];
+  page.on("request", (r) => {
+    if (r.url().includes("/surfaces/")) surfaceFetches.push(r.url());
+  });
+  await page.locator("#start").click();
+  await expect.poll(() => page.evaluate(() => window.reubenPlayer.instrument())).toBe("groovebox");
+
+  await expect(page.locator(".surface-mount .step-lane")).toHaveCount(3);
+  await expect(page.locator(".surface-mount .step-cell")).toHaveCount(48);
+  // The origin rung actually ran — the rung transition, not a lucky embedded resolve.
+  expect(surfaceFetches.length, "the ladder fell through to an origin surface fetch").toBeGreaterThan(0);
+  expect(errors, `no uncaught page errors: ${errors.join("; ")}`).toEqual([]);
+});
+
 test("back-compat — a surface-less (pre-amendment) groovebox link upgrades to the curated UI via the origin", async ({
   page,
 }) => {

@@ -35,6 +35,10 @@ import { fileURLToPath } from "node:url";
 
 import { loadInstrument } from "../../crates/reuben-web/js/loader.mjs";
 import { encodeBundle, decodeBundle, CAPS } from "../../crates/reuben-web/js/share.mjs";
+import {
+  SURFACE_CANDIDATES,
+  validateSurfaceDoc,
+} from "../../crates/reuben-web/js/surface/widget-model.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url)); // web/scripts
 const WEB = resolve(HERE, ".."); // web
@@ -42,7 +46,6 @@ const ROOT = resolve(WEB, ".."); // repo root
 const CRATE = join(ROOT, "crates", "reuben-web");
 const WASM = join(CRATE, "target", "wasm32-unknown-unknown", "release", "reuben_web.wasm");
 const INSTRUMENTS = join(ROOT, "instruments");
-const SURFACES = join(ROOT, "surfaces");
 const README = join(ROOT, "README.md");
 
 const SAMPLE_RATE = 48000; // any rate enumerates the same resource set; construct() only needs one
@@ -101,18 +104,16 @@ async function instantiate() {
 
 // --- surface resolution ------------------------------------------------------------------
 
-// The ADR-0043 §5 resolution order for the share target, read from disk: the web override
-// first, then the base doc, else null (the receiver auto-derives). Unlike the player's
+// The ADR-0043 §5 resolution order for the share target, read from disk. The candidate order
+// and the surface_version predicate are SHARED with the player (widget-model.mjs) so the two
+// JS consumers cannot drift; what differs is the failure policy — unlike the player's
 // dark-degrade, a surface file that exists but doesn't parse or declares an unknown
-// surface_version THROWS — the generator must never commit a link carrying a broken surface.
+// surface_version THROWS here: the generator must never commit a link carrying a broken surface.
 async function resolveSurfaceText(id) {
-  for (const candidate of [join(SURFACES, `${id}.web.json`), join(SURFACES, `${id}.json`)]) {
+  for (const candidate of SURFACE_CANDIDATES(id).map((rel) => join(ROOT, rel))) {
     if (!(await exists(candidate))) continue;
     const text = await readFile(candidate, "utf8");
-    const doc = JSON.parse(text); // a syntax error throws with the JSON.parse message
-    if (doc?.surface_version !== 1) {
-      throw new Error(`${candidate} declares surface_version ${doc?.surface_version}; expected 1`);
-    }
+    validateSurfaceDoc(JSON.parse(text)); // a syntax/version error throws and kills the mint
     return text;
   }
   return null;

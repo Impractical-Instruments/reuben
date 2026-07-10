@@ -20,6 +20,9 @@ import {
   applySnapshotDefaults,
   buildSurface,
   initial,
+  SURFACE_CANDIDATES,
+  validateSurfaceDoc,
+  VALUE_KINDS,
 } from "../../crates/reuben-web/js/surface/widget-model.mjs";
 import { renderSurface, sendInitialDefaults } from "../../crates/reuben-web/js/surface/render.mjs";
 import { decodeControl, encodeControl } from "../../crates/reuben-web/js/codec.mjs";
@@ -91,27 +94,17 @@ function ensureEngine() {
   return enginePromise;
 }
 
-// The ADR-0043 §5 resolution order for target `web`:
-//   surfaces/<id>.web.json ?? surfaces/<id>.json ?? null (⇒ buildSurface auto-derives from
-//   the instrument's interface pipes).
-// A 404 falls through to the next candidate SILENTLY — most Toys ship only the base doc, and a
-// doc-less Toy is fine by design. Any other failure (network drop, bad JSON) logs and also
-// falls through: a broken surface file degrades to the auto-derived default rather than
-// killing the load (dark-degrade, ADR-0016).
-const SURFACE_CANDIDATES = (id) => [`surfaces/${id}.web.json`, `surfaces/${id}.json`];
-
-// The resolver hard-refuses an unknown surface_version; refusing at PARSE instead keeps the
-// fallthroughs alive — an unusable .web.json must not shadow a valid .json, and an unusable
-// embedded surface must not shadow the origin's.
-function validateSurfaceDoc(doc) {
-  if (doc?.surface_version !== 1) {
-    throw new Error(`unsupported surface_version ${doc?.surface_version}`);
-  }
-  return doc;
-}
-
+// Surface resolution (the ADR-0043 §5 order for target `web`): SURFACE_CANDIDATES and the
+// validateSurfaceDoc version predicate are shared with the README link generator via
+// widget-model.mjs — one owner of the candidate order. validateSurfaceDoc refuses at PARSE
+// (not resolve) to keep the fallthroughs alive: an unusable .web.json must not shadow a valid
+// .json, and an unusable embedded surface must not shadow the origin's.
+//
 // Returns {doc, text} — the parsed doc plus its verbatim text, kept so Share can embed the
 // surface byte-for-byte into the link (ADR-0042 amendment) — or null when no candidate works.
+// A 404 falls through to the next candidate SILENTLY — most Toys ship only the base doc, and a
+// doc-less Toy is fine by design. Any other failure (network drop, bad JSON) logs and also
+// falls through: a broken surface file degrades rather than killing the load (ADR-0016).
 async function fetchSurfaceDoc(id) {
   for (const candidate of SURFACE_CANDIDATES(id)) {
     try {
@@ -139,20 +132,26 @@ function parseEmbeddedSurface(surfaceText) {
   }
 }
 
-// Resolve with the surface entry ({doc, text} | null), degrading to the auto-derived default
-// if the resolver refuses it — a broken surface file must never kill a Toy that already loaded
-// (the fetchSurfaceDoc policy above, enforced at the last seam). Returns {surface, surfaceText}:
-// surfaceText is non-null ONLY when the curated doc actually took, so Share never embeds a doc
-// the player isn't showing.
-function resolveSurfaceOrDefault(doc, entry, name) {
-  if (entry != null) {
-    try {
-      return { surface: buildSurface(doc, entry.doc), surfaceText: entry.text };
-    } catch (err) {
-      console.warn(`[player] surface doc for ${name} rejected, using the derived default:`, err);
-    }
+// One resolution rung: try the surface entry ({doc, text} | null) against the resolver.
+// Returns {surface, surfaceText} when the curated doc actually took — so Share never embeds a
+// doc the player isn't showing — or null (warn) when there is no entry or the resolver refuses
+// it, letting the CALLER decide what the next rung is (fragmentBoot walks the ADR-0042 A2
+// ladder; resolveSurfaceOrDefault drops straight to the derived default).
+function tryResolveSurface(doc, entry, name) {
+  if (entry == null) return null;
+  try {
+    return { surface: buildSurface(doc, entry.doc), surfaceText: entry.text };
+  } catch (err) {
+    console.warn(`[player] surface doc for ${name} rejected, trying the next rung:`, err);
+    return null;
   }
-  return { surface: buildSurface(doc, null), surfaceText: null };
+}
+
+// Resolve with the surface entry, degrading to the auto-derived default if the resolver
+// refuses it — a broken surface file must never kill a Toy that already loaded (the
+// fetchSurfaceDoc policy above, enforced at the last seam).
+function resolveSurfaceOrDefault(doc, entry, name) {
+  return tryResolveSurface(doc, entry, name) ?? { surface: buildSurface(doc, null), surfaceText: null };
 }
 
 // Surface resolver warnings (skipped pipes, unknown binds, clamped ranges) surface ONCE per
@@ -414,7 +413,7 @@ function argsEqual(a, b) {
 function captureSnapshot(surface) {
   const snapshot = [];
   for (const widget of surface.widgets ?? []) {
-    if (widget.kind !== "fader" && widget.kind !== "param-toggle") continue;
+    if (!VALUE_KINDS.has(widget.kind)) continue;
     const moved = journal.get(widget.address);
     if (!moved) continue;
     if (argsEqual(moved, initial(widget).args)) continue;
@@ -689,11 +688,16 @@ async function fragmentBoot(hash) {
 
       currentToy = null;
       currentInstrument = doc.instrument;
-      // Surface resolution for a link (ADR-0043 §5, share target): the bundle's embedded
-      // surface ?? the origin's surfaces/<instrument>.json (upgrades links minted before
-      // surfaces travelled) ?? the auto-derived default. Every rung dark-degrades.
-      const entry = parseEmbeddedSurface(bundle.surfaceText) ?? (await fetchSurfaceDoc(doc.instrument));
-      const { surface, surfaceText } = resolveSurfaceOrDefault(doc, entry, doc.instrument);
+      // Surface resolution for a link (ADR-0042 A2 / ADR-0043 §5, share target): the bundle's
+      // embedded surface ?? the origin's surfaces/<instrument>.web.json ?? surfaces/
+      // <instrument>.json (the origin rungs upgrade links minted before surfaces travelled)
+      // ?? the auto-derived default. Every rung dark-degrades — including an embedded doc the
+      // RESOLVER refuses (not just a parse failure), which falls to the origin rungs rather
+      // than shadowing them. `??=` short-circuits, so the origin fetch only runs when needed.
+      let resolved = tryResolveSurface(doc, parseEmbeddedSurface(bundle.surfaceText), doc.instrument);
+      resolved ??= tryResolveSurface(doc, await fetchSurfaceDoc(doc.instrument), doc.instrument);
+      resolved ??= { surface: buildSurface(doc, null), surfaceText: null };
+      const { surface, surfaceText } = resolved;
       logSurfaceWarnings(doc.instrument, surface.warnings);
       currentSurface = surface;
       currentSurfaceDocText = surfaceText;

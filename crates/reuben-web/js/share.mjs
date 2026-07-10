@@ -76,6 +76,9 @@ export const CAPS = {
   RESOURCE_COUNT: 64,
   /** Bytes in one resource — bounded by the 1 MB total, but named so a failure blames a key. */
   PER_RESOURCE_BYTES: 256 * 1024,
+  /** Bytes in one trailing extension section (e.g. the surface doc) — same guardrail scale as
+   *  a resource, but its own name: a section is not a resource and a failure blames a tag. */
+  PER_SECTION_BYTES: 256 * 1024,
 };
 
 /** A resource kind that this envelope refuses to carry (WAV samples). */
@@ -437,7 +440,7 @@ export async function decodeBundle(fragment) {
     pos += 1;
     const len = readU32(view, pos);
     pos += 4;
-    if (len > CAPS.PER_RESOURCE_BYTES) {
+    if (len > CAPS.PER_SECTION_BYTES) {
       throw new ShareError("damaged", `extension section (tag ${tag}) is ${len} bytes, over the per-section cap`);
     }
     const data = readBytes(payload, pos, len);
