@@ -212,6 +212,9 @@ impl<'a> Io<'a> {
     /// returns a [`MsgWriter`] for a sparse Value output. Demoted to a `pub(crate)` primitive
     /// (ADR-0037): operator code writes via [`Io::write`] + the contract's typed handle; the one
     /// in-crate special case is the `osc_out` sink's undeclared emit port.
+    // Orphaned by the handle migration (issue #216) — its last production caller (`osc_out`) now
+    // writes through a handle, leaving only the `new_io_api` tests; the fold commit deletes it.
+    #[allow(dead_code)]
     pub(crate) fn output<T: IoOutput<'a>>(&mut self, port: usize) -> T::Out<'_> {
         T::write(self, port)
     }
@@ -220,8 +223,9 @@ impl<'a> Io<'a> {
 /// A **typed input handle** (ADR-0037): the contract macro emits one `In` const per input port.
 /// The [`form`] marker `F` *is* the port's declared form — it fixes what [`Io::read`] returns —
 /// and `default` carries the declared descriptor default, applied as the held-read fallback (so
-/// the contract's `default` and the read fallback are one datum). Constructed only by
-/// `operator_contract!`; operator code just names the const.
+/// the contract's `default` and the read fallback are one datum). Normally constructed by
+/// `operator_contract!` (operator code just names the const); the in-crate special cases with no
+/// contract to emit consts — the loader-built interface pipe (ADR-0038) — build handles inline.
 pub struct In<F: form::InForm> {
     index: usize,
     default: F::Default,
@@ -230,7 +234,9 @@ pub struct In<F: form::InForm> {
 
 impl<F: form::InForm> In<F> {
     /// Build a handle for input `index` with the port's declared `default` (`()` for forms with
-    /// no scalar default — events and raw pass-throughs). Called from macro-emitted consts.
+    /// no scalar default — events and raw pass-throughs). Called from macro-emitted consts, and
+    /// inline by the loader-built pipe (ADR-0038), whose descriptor is synthesized per
+    /// `interface.inputs` entry rather than contract-declared.
     pub const fn new(index: usize, default: F::Default) -> Self {
         Self {
             index,
@@ -272,7 +278,9 @@ pub struct Out<F> {
 }
 
 impl<F> Out<F> {
-    /// Build a handle for output `index`. Called from macro-emitted consts.
+    /// Build a handle for output `index`. Called from macro-emitted consts, and inline by the
+    /// in-crate special cases with no contract-emitted const: the loader-built pipe (ADR-0038)
+    /// and the `osc_out` sink's undeclared tap port.
     pub const fn new(index: usize) -> Self {
         Self {
             index,
@@ -467,6 +475,9 @@ pub mod form {
 /// The write side of [`Io::output`] (ADR-0031): each payload type maps to one output form. `&mut
 /// [f32]` ⇒ the dense Signal buffer to fill; `f32` ⇒ a [`MsgWriter`] for sparse Value writes. The
 /// `Out<'io>` GAT carries the per-call mutable borrow of the `Io`.
+// Orphaned by the handle migration (issue #216) — reached only through `Io::output` above, which
+// now has no production caller; the fold commit deletes the whole primitive layer.
+#[allow(dead_code)]
 pub(crate) trait IoOutput<'a>: Sized {
     /// What `io.output::<Self>(port)` returns, borrowing the `Io` for `'io`.
     type Out<'io>
@@ -788,17 +799,6 @@ mod new_io_api {
         assert_eq!(bare.input::<f32>(0), None);
     }
 
-    /// `input::<T>` reads a held vocab Value too — an enum (`FilterMode`) decodes from its latched
-    /// `Arg` the same way a scalar does. The held arm spans every `FromArg` Value type.
-    #[test]
-    fn input_reads_a_held_enum_value() {
-        use crate::vocab::FilterMode;
-        let latch = [Arg::from(FilterMode::Bp)];
-        let io =
-            Io::new(48_000.0, 1, [None], std::iter::empty::<&mut [f32]>()).with_latched(&latch);
-        assert_eq!(io.input::<FilterMode>(0), Some(FilterMode::Bp));
-    }
-
     /// `input::<Note>` iterates the sparse Event stream on a port, each decoded + frame-stamped —
     /// the new spelling of `stream::<Note>`. The `Note` type selects the Event form.
     #[test]
@@ -1113,6 +1113,71 @@ mod typed_handles {
         assert_eq!(sink[0].port, 0);
         assert_eq!(sink[1].port, 1);
         assert_eq!(sink[2].port, 1);
+    }
+
+    /// Build an `Io` with only an emit sink attached — the fixture for the writer-semantics
+    /// slices below.
+    fn emitting_io(sink: &mut Vec<Emit>, frame_offset: usize) -> Io<'_> {
+        Io::new(
+            48_000.0,
+            8,
+            std::iter::empty::<Option<&[f32]>>(),
+            std::iter::empty::<&mut [f32]>(),
+        )
+        .with_emit(sink, frame_offset)
+    }
+
+    /// A held write is **last-write-wins per frame**: two `set`s at the same frame collapse to
+    /// the later value — a single Message at that frame, not two competing ones.
+    #[test]
+    fn write_held_is_last_write_wins_per_frame() {
+        const ACTIVE: Out<Held<f32>> = Out::new(0);
+        let mut sink = Vec::new();
+        {
+            let mut io = emitting_io(&mut sink, 0);
+            let mut w = io.write(ACTIVE);
+            w.set(5, 1.0);
+            w.set(5, 2.0); // same frame → overrides
+        }
+        assert_eq!(sink.len(), 1);
+        assert_eq!(sink[0].frame, 5);
+        assert_eq!(sink[0].arg, Arg::F32(2.0));
+    }
+
+    /// The segment frame offset is added to a held write's frame, so an operator works in
+    /// segment-relative time while the engine sees block-absolute frames.
+    #[test]
+    fn write_held_adds_the_segment_frame_offset() {
+        const ACTIVE: Out<Held<f32>> = Out::new(0);
+        let mut sink = Vec::new();
+        emitting_io(&mut sink, 100).write(ACTIVE).set(2, 1.0);
+        assert_eq!(sink[0].frame, 102);
+    }
+
+    /// The Event writer adds the segment frame offset too, exactly like the held writer.
+    #[test]
+    fn write_event_adds_the_segment_frame_offset() {
+        const NOTES: Out<Event<Note>> = Out::new(0);
+        let mut sink = Vec::new();
+        emitting_io(&mut sink, 100)
+            .write(NOTES)
+            .emit(2, Note::new(Pitch::from_midi(60.0), 1.0));
+        assert_eq!(sink[0].frame, 102);
+    }
+
+    /// A held `Harmony` write dedups like any other held Value — publishing the same Harmony
+    /// twice changes nothing downstream, so the second `set` emits nothing.
+    #[test]
+    fn write_held_harmony_dedups() {
+        const CTX: Out<Held<Harmony>> = Out::new(0);
+        let mut sink = Vec::new();
+        {
+            let mut io = emitting_io(&mut sink, 0);
+            let mut w = io.write(CTX);
+            w.set(0, Harmony::default()); // emits
+            w.set(4, Harmony::default()); // unchanged → deduped
+        }
+        assert_eq!(sink.len(), 1);
     }
 
     /// `io.varying` accepts a typed handle or a bare index (computed-port loops).

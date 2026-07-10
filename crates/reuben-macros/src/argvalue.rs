@@ -9,10 +9,11 @@
 //! - **unit enums** (`SnapTarget`, `GateMode`) type-erase to the **single** `Arg::Enum(index)`
 //!   variant — `From`/`TryFrom`/`FromArg` pack and unpack the bare index — *plus* the
 //!   Enum-over-OSC table (`VARIANTS` / `DEFAULT_INDEX` / `from_index` / `to_index` / `from_symbol`
-//!   / `resolve_arg`), an `enum_meta()` that builds the descriptor's [`EnumMeta`] from the same
-//!   tokens (so the type and its metadata cannot drift), and a held-Value `IoInput` impl so the
-//!   enum self-registers its `io.input::<E>()` read. Type identity lives in the port, never the
-//!   value — so adding an enum names no central engine site.
+//!   / `resolve_arg`), and an `enum_meta()` that builds the descriptor's [`EnumMeta`] from the
+//!   same tokens (so the type and its metadata cannot drift). The held read needs no per-enum
+//!   glue: the engine's blanket `Held<T>` form impl covers any `FromArg + Copy` type. Type
+//!   identity lives in the port, never the value — so adding an enum names no central engine
+//!   site.
 //!
 //! The OSC flat-multi-arg conversion for structs (`Note ↔ /note pitch vel`) is not derived
 //! here: the type hand-implements `OscArg` beside its definition and self-registers the
@@ -145,16 +146,6 @@ fn expand_enum(ast: &DeriveInput, data: &syn::DataEnum) -> TokenStream {
                 <Self as ::core::convert::TryFrom<&::reuben_core::message::Arg>>::try_from(arg).ok()
             }
         }
-
-        // The held-Value [`IoInput`] arm, derive-generated so every enum self-registers its
-        // `io.input::<E>(port)` read without an entry in the engine's central `impl_input_held!`
-        // list (the former bleed site). Routes through the one private-`latched` accessor.
-        impl<'a> ::reuben_core::operator::IoInput<'a> for #name {
-            type Out = ::core::option::Option<#name>;
-            fn read(io: &::reuben_core::operator::Io<'a>, port: usize) -> ::core::option::Option<#name> {
-                io.input_held(port)
-            }
-        }
     };
 
     quote! {
@@ -259,12 +250,10 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("Arg :: Enum (i) =>"), "{out}");
-        // And self-registers its held-Value read so no central `impl_input_held!` entry is needed.
-        assert!(
-            out.contains("impl < 'a > :: reuben_core :: operator :: IoInput"),
-            "{out}"
-        );
-        assert!(out.contains("io . input_held (port)"), "{out}");
+        // No per-enum read glue: every enum's held read is covered by reuben-core's blanket
+        // `InForm for Held<T>` impl, so the derive emits no `IoInput` impl.
+        assert!(!out.contains("IoInput"), "{out}");
+        assert!(!out.contains("input_held"), "{out}");
     }
 
     #[test]

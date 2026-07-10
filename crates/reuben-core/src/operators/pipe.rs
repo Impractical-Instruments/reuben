@@ -25,7 +25,8 @@
 
 use crate::descriptor::{Descriptor, Port};
 use crate::message::Arg;
-use crate::operator::{EventWriter, Io, MsgWriter, Operator};
+use crate::operator::form::{Raw, SignalF32};
+use crate::operator::{EventWriter, In, Io, MsgWriter, Operator, Out};
 use crate::plan::PortKind;
 
 /// The interface pipe (see module docs): a loader-built pass-through node whose descriptor is
@@ -63,10 +64,11 @@ impl Operator for Pipe {
         match self.kind {
             PortKind::Signal => {
                 // Buffer-presence invariant (ADR-0037): the input is always a dense length-n
-                // buffer (wired share, or materialized default/silence), so `copy_from_slice`
-                // asserts the equal-length invariant instead of zip-truncating around a breach.
-                let src = io.input::<&[f32]>(0);
-                io.output::<&mut [f32]>(0).copy_from_slice(src);
+                // buffer (wired share, or materialized default/silence) — the handle read
+                // debug-asserts it — so `copy_from_slice` asserts the equal-length invariant
+                // instead of zip-truncating around a breach.
+                let src = io.read(In::<SignalF32>::new(0, 0.0));
+                io.write(Out::<SignalF32>::new(0)).copy_from_slice(src);
             }
             PortKind::Value => {
                 // Forward the held latch, type-erased: the pipe's declared type already
@@ -81,10 +83,12 @@ impl Operator for Pipe {
                 }
             }
             PortKind::Event => {
-                let events = io.stream(0);
+                // Read the stream raw (type-erased, like the Value arm's latch read): the
+                // declared type already routed the events, so each Arg re-emits undecoded.
+                let events = io.read(In::<Raw>::new(0, ()));
                 let mut w = EventWriter::on(io, 0);
-                for e in events {
-                    w.emit(e.frame, e.arg.clone());
+                for s in events {
+                    w.emit(s.frame, s.payload.clone());
                 }
             }
         }
