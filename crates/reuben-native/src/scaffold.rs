@@ -283,10 +283,11 @@ fn render_macro_ports(ports: &[PortSpec]) -> String {
 /// The `{ LO..=HI, default D, "unit", curve }` block of a meta-carrying port, in macro grammar —
 /// shared by the `f32` and `f32_buffer { .. }` arms of [`render_macro_port`].
 fn render_f32_meta(m: &F32Meta) -> String {
-    let curve = if m.curve == Curve::Exponential {
-        "exp"
-    } else {
-        "lin"
+    // Exhaustive, so a future `Curve` variant is a compile error here rather than silently
+    // rendering as `lin`.
+    let curve = match m.curve {
+        Curve::Exponential => "exp",
+        Curve::Linear => "lin",
     };
     format!(
         "{{ {:?}..={:?}, default {:?}, {:?}, {} }}",

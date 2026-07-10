@@ -40,7 +40,7 @@ pub const NUMBER_MAX: f32 = 1_000_000.0;
 pub enum Curve {
     #[default]
     Linear,
-    /// Perceptually-even for frequency-like params.
+    /// Perceptually-even for frequency-like controls.
     Exponential,
 }
 
@@ -149,41 +149,26 @@ impl TryFrom<PortSpecFlat> for PortSpec {
     type Error = String;
 
     /// Fold the flat wire fields into the payload-carrying [`PortTy`], rejecting every
-    /// shape mismatch the old `validate_port` caught — same guarantees, earlier seam.
+    /// shape mismatch the old `validate_port` caught — same guarantees and the same precedence
+    /// (unknown type first, then a missing block, then strays), earlier seam.
     fn try_from(flat: PortSpecFlat) -> Result<Self, String> {
         let PortSpecFlat {
             name,
             ty,
-            f32,
-            i32,
-            vocab,
+            mut f32,
+            mut i32,
+            mut vocab,
         } = flat;
-        // Strays first: a meta/vocab block on a type that doesn't take it is rejected no matter
-        // what the type otherwise requires.
-        if f32.is_some() && !matches!(ty.as_str(), "f32" | "f32_buffer") {
-            return Err(format!(
-                "port {name:?}: only a `f32` or `f32_buffer` port carries a {{ .. }} meta block"
-            ));
-        }
-        if i32.is_some() && ty != "i32" {
-            return Err(format!(
-                "port {name:?}: only an `i32` port carries an integer {{ .. }} meta block"
-            ));
-        }
-        if vocab.is_some() && ty != "enum" {
-            return Err(format!(
-                "port {name:?}: only an `enum` port names a vocab type"
-            ));
-        }
+        // Each arm takes the block(s) its type consumes; whatever is left afterwards is a stray.
         let ty = match ty.as_str() {
-            "f32_buffer" => PortTy::F32Buffer(f32),
-            "f32" => PortTy::F32(f32.ok_or_else(|| {
+            "f32_buffer" => PortTy::F32Buffer(f32.take()),
+            "f32" => PortTy::F32(f32.take().ok_or_else(|| {
                 format!("port {name:?}: a `f32` port needs a {{ .. }} meta block")
             })?),
-            "i32" => PortTy::I32(i32.ok_or_else(|| {
+            "i32" => PortTy::I32(i32.take().ok_or_else(|| {
                 format!("port {name:?}: an `i32` port needs a {{ .. }} meta block")
             })?),
-            "enum" => PortTy::Enum(vocab.ok_or_else(|| {
+            "enum" => PortTy::Enum(vocab.take().ok_or_else(|| {
                 format!(
                     "port {name:?}: an `enum` port must name its vocab type, e.g. `enum(FilterMode)`"
                 )
@@ -197,6 +182,21 @@ impl TryFrom<PortSpecFlat> for PortSpec {
                 ))
             }
         };
+        if f32.is_some() {
+            return Err(format!(
+                "port {name:?}: only a `f32` or `f32_buffer` port carries a {{ .. }} meta block"
+            ));
+        }
+        if i32.is_some() {
+            return Err(format!(
+                "port {name:?}: only an `i32` port carries an integer {{ .. }} meta block"
+            ));
+        }
+        if vocab.is_some() {
+            return Err(format!(
+                "port {name:?}: only an `enum` port names a vocab type"
+            ));
+        }
         Ok(PortSpec { name, ty })
     }
 }
@@ -279,43 +279,33 @@ fn is_ident(name: &str) -> bool {
 /// here — the payload-carrying [`PortTy`] makes a shape mismatch unrepresentable (issue #217),
 /// rejected at the macro's parse or the scaffold JSON's deserialize.
 fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractError> {
-    let range = |m: &F32Meta| -> Result<(), ContractError> {
-        if m.min > m.max {
+    // One range rule for both numeric metas — `f32` and `i32` share the check and the message
+    // shape, differing only in the scalar type.
+    fn range<T: PartialOrd + Copy + std::fmt::Display>(
+        at: Locus,
+        label: &str,
+        name: &str,
+        (min, max, default): (T, T, T),
+    ) -> Result<(), ContractError> {
+        if min > max {
             return Err(ContractError::new(
                 at,
-                format!("{label} {:?}: min {} > max {}", p.name, m.min, m.max),
+                format!("{label} {name:?}: min {min} > max {max}"),
             ));
         }
-        if m.default < m.min || m.default > m.max {
+        if default < min || default > max {
             return Err(ContractError::new(
                 at,
-                format!(
-                    "{label} {:?}: default {} outside [{}, {}]",
-                    p.name, m.default, m.min, m.max
-                ),
+                format!("{label} {name:?}: default {default} outside [{min}, {max}]"),
             ));
         }
         Ok(())
-    };
+    }
     match &p.ty {
-        PortTy::F32(m) | PortTy::F32Buffer(Some(m)) => range(m)?,
-        PortTy::I32(m) => {
-            if m.min > m.max {
-                return Err(ContractError::new(
-                    at,
-                    format!("{label} {:?}: min {} > max {}", p.name, m.min, m.max),
-                ));
-            }
-            if m.default < m.min || m.default > m.max {
-                return Err(ContractError::new(
-                    at,
-                    format!(
-                        "{label} {:?}: default {} outside [{}, {}]",
-                        p.name, m.default, m.min, m.max
-                    ),
-                ));
-            }
+        PortTy::F32(m) | PortTy::F32Buffer(Some(m)) => {
+            range(at, label, &p.name, (m.min, m.max, m.default))?
         }
+        PortTy::I32(m) => range(at, label, &p.name, (m.min, m.max, m.default))?,
         PortTy::Enum(v) => {
             if !is_ident(v) {
                 return Err(ContractError::new(
@@ -488,6 +478,12 @@ mod tests {
             msg.contains("f32_buffer") && msg.contains("harmony"),
             "{msg}"
         );
+        // Precedence matches the old validator: an unknown type wins over a stray meta block —
+        // the type is the more fundamental mistake.
+        let both = de_err(
+            r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"audio","f32":{"min":0,"max":1,"default":0}} ] }"#,
+        );
+        assert!(both.contains("must be one of"), "{both}");
     }
 
     #[test]
