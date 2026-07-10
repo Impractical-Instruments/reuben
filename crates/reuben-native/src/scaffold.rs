@@ -17,7 +17,7 @@ use std::path::Path;
 use std::process::Command;
 
 use reuben_contract::naming::{screaming, struct_name};
-use reuben_contract::{validate, Curve, OperatorSpec, PortSpec};
+use reuben_contract::{validate, Curve, F32Meta, OperatorSpec, PortSpec, PortTy};
 use serde::Serialize;
 
 /// The current contents of the registration file the scaffold must edit (`operators/mod.rs`).
@@ -171,7 +171,7 @@ fn signal_output_consts(spec: &OperatorSpec) -> Vec<String> {
         .iter()
         // Only a `f32_buffer` output carries a per-sample buffer the silence stub zeroes (ADR-0030);
         // `note`/`harmony`/`enum`/`f32` outputs do not.
-        .filter(|p| p.ty == "f32_buffer")
+        .filter(|p| matches!(p.ty, PortTy::F32Buffer(_)))
         .map(|p| format!("OUT_{}", screaming(&p.name)))
         .collect()
 }
@@ -280,40 +280,42 @@ fn render_macro_ports(ports: &[PortSpec]) -> String {
         .join(", ")
 }
 
-/// One port in the macro grammar — see [`render_macro_ports`].
+/// The `{ LO..=HI, default D, "unit", curve }` block of a meta-carrying port, in macro grammar —
+/// shared by the `f32` and `f32_buffer { .. }` arms of [`render_macro_port`].
+fn render_f32_meta(m: &F32Meta) -> String {
+    let curve = if m.curve == Curve::Exponential {
+        "exp"
+    } else {
+        "lin"
+    };
+    format!(
+        "{{ {:?}..={:?}, default {:?}, {:?}, {} }}",
+        m.min, m.max, m.default, m.unit, curve
+    )
+}
+
+/// One port in the macro grammar — see [`render_macro_ports`]. Exhaustive over the shared
+/// [`PortTy`] (issue #217). (The stringly-era renderer fell a meta-carrying `f32_buffer`
+/// through the bare-type arm, silently dropping its declared default/range from the generated
+/// contract; the enum's payload makes that unrepresentable.)
 fn render_macro_port(p: &PortSpec) -> String {
-    match p.ty.as_str() {
+    match &p.ty {
         // A materialized scalar control carries its `{ .. }` meta.
-        "f32" => match &p.f32 {
-            None => format!("{}: f32", p.name),
-            Some(m) => {
-                let curve = if m.curve == Curve::Exponential {
-                    "exp"
-                } else {
-                    "lin"
-                };
-                format!(
-                    "{}: f32 {{ {:?}..={:?}, default {:?}, {:?}, {} }}",
-                    p.name, m.min, m.max, m.default, m.unit, curve
-                )
-            }
-        },
+        PortTy::F32(m) => format!("{}: f32 {}", p.name, render_f32_meta(m)),
+        // A signal port with a scalar default + knob range (ADR-0031 decision (a)).
+        PortTy::F32Buffer(Some(m)) => format!("{}: f32_buffer {}", p.name, render_f32_meta(m)),
+        PortTy::F32Buffer(None) => format!("{}: f32_buffer", p.name),
         // A bounded integer control / constant carries its integer `{ .. }` meta (ADR-0035).
-        "i32" => match &p.i32 {
-            None => format!("{}: i32", p.name),
-            Some(m) => format!(
-                "{}: i32 {{ {}..={}, default {} }}",
-                p.name, m.min, m.max, m.default
-            ),
-        },
-        // A held vocab enum names its shared vocab type.
-        "enum" => format!(
-            "{}: enum({})",
-            p.name,
-            p.vocab.as_deref().unwrap_or_default()
+        PortTy::I32(m) => format!(
+            "{}: i32 {{ {}..={}, default {} }}",
+            p.name, m.min, m.max, m.default
         ),
-        // `f32_buffer` / `note` / `harmony` / `arg` need no extra syntax.
-        ty => format!("{}: {}", p.name, ty),
+        // A held vocab enum names its shared vocab type.
+        PortTy::Enum(vocab) => format!("{}: enum({})", p.name, vocab),
+        // `note` / `harmony` / `arg` need no extra syntax.
+        PortTy::Note => format!("{}: note", p.name),
+        PortTy::Harmony => format!("{}: harmony", p.name),
+        PortTy::Arg => format!("{}: arg", p.name),
     }
 }
 
@@ -615,10 +617,12 @@ mod tests {
 
     #[test]
     fn rejects_bad_port_type_and_curve() {
+        // Both now fail at the JSON parse (issue #217): the port type and the curve are enums,
+        // so `run_scaffold`'s deserialize rejects them before `validate()` ever runs.
         let bad_type = r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"audio"} ] }"#;
-        assert!(scaffold_err(bad_type).contains("type"));
-        // A bad curve now fails at the JSON parse (issue #217): the curve axis is an enum, so
-        // `run_scaffold`'s deserialize rejects it before `validate()` ever runs.
+        let e = serde_json::from_str::<OperatorSpec>(bad_type)
+            .expect_err("unknown port type must fail at deserialize");
+        assert!(e.to_string().contains("type"), "{e}");
         let bad_curve = r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"f32","f32":{"min":0,"max":1,"default":0,"curve":"log"}} ] }"#;
         let e = serde_json::from_str::<OperatorSpec>(bad_curve)
             .expect_err("unknown curve must fail at deserialize");

@@ -3,25 +3,18 @@
 //! no spans, just data, so the index arithmetic (the old `scaffold::port_consts` hand-logic) is
 //! computed **once** here and unit-tested directly.
 
-use reuben_contract::{naming, F32Meta, I32Meta, OperatorSpec, PortSpec};
+use reuben_contract::{naming, OperatorSpec, PortSpec, PortTy};
 
 /// One resolved port: its index const (`IN_FREQ`), ordinal, source name, and its
 /// [`Arg`](reuben_core::message::Arg) type (ADR-0030). Ports number **sequentially** within
-/// inputs/outputs (declaration order). `f32` carries its shared contract [`F32Meta`] (issue
-/// #217 — no model-side meta copy); `enum` carries the shared `vocab` type name.
+/// inputs/outputs (declaration order). The type is the shared payload-carrying [`PortTy`]
+/// (issue #217): a `f32` port's meta and an `enum` port's vocab name ride inside it.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PortModel {
     pub const_name: String,
     pub ordinal: usize,
     pub name: String,
-    /// The port [`Arg`](reuben_core::message::Arg) type: `f32_buffer` | `f32` | `i32` | `enum` |
-    /// `note` | `harmony` | `arg`.
-    pub ty: String,
-    pub f32: Option<F32Meta>,
-    /// The `i32 { .. }` meta, for `i32` ports / constants (ADR-0035).
-    pub i32: Option<I32Meta>,
-    /// The shared `vocab` enum type name, for `enum` ports.
-    pub vocab: Option<String>,
+    pub ty: PortTy,
 }
 
 /// A fully-resolved operator contract, ready to render to tokens.
@@ -48,9 +41,6 @@ fn port_models(ports: &[PortSpec], prefix: &str) -> Vec<PortModel> {
             ordinal: idx,
             name: p.name.clone(),
             ty: p.ty.clone(),
-            f32: p.f32.clone(),
-            i32: p.i32.clone(),
-            vocab: p.vocab.clone(),
         })
         .collect()
 }
@@ -121,8 +111,11 @@ mod tests {
         ));
         assert_eq!(m.constants[0].const_name, "C_VOICES");
         assert_eq!(m.constants[0].ordinal, 0);
-        assert_eq!(m.constants[0].ty, "i32");
-        assert_eq!(m.constants[0].i32.as_ref().map(|m| m.default), Some(8));
+        assert!(
+            matches!(&m.constants[0].ty, PortTy::I32(meta) if meta.default == 8),
+            "{:?}",
+            m.constants[0].ty
+        );
     }
 
     // The full filter port vocabulary: f32_buffer, f32-with-meta, enum naming its vocab type.
@@ -134,18 +127,22 @@ mod tests {
                              {"name":"cutoff","ty":"f32","f32":{"min":20,"max":20000,"default":1000,"unit":"Hz","curve":"exponential"}},
                              {"name":"mode","ty":"enum","vocab":"FilterMode"} ] }"#,
         ));
-        assert_eq!(
-            (m.inputs[0].const_name.as_str(), m.inputs[0].ty.as_str()),
-            ("IN_AUDIO", "f32_buffer")
-        );
+        assert_eq!(m.inputs[0].const_name.as_str(), "IN_AUDIO");
+        assert!(matches!(m.inputs[0].ty, PortTy::F32Buffer(None)));
         assert_eq!(
             (m.inputs[2].const_name.as_str(), m.inputs[2].ordinal),
             ("IN_MODE", 2)
         );
-        assert_eq!(m.inputs[1].ty, "f32");
-        assert_eq!(m.inputs[1].f32.as_ref().map(|f| f.default), Some(1000.0));
-        assert_eq!(m.inputs[2].ty, "enum");
-        assert_eq!(m.inputs[2].vocab.as_deref(), Some("FilterMode"));
+        assert!(
+            matches!(&m.inputs[1].ty, PortTy::F32(meta) if meta.default == 1000.0),
+            "{:?}",
+            m.inputs[1].ty
+        );
+        assert!(
+            matches!(&m.inputs[2].ty, PortTy::Enum(v) if v == "FilterMode"),
+            "{:?}",
+            m.inputs[2].ty
+        );
     }
 
     // f32 control inputs keep their curve + unit metadata through the model (the successor to the
@@ -161,13 +158,11 @@ mod tests {
         assert_eq!(m.inputs.len(), 2);
         assert_eq!(m.inputs[1].const_name, "IN_AMP");
         assert_eq!(m.inputs[1].ordinal, 1);
-        assert_eq!(
-            m.inputs[0].f32.as_ref().map(|f| f.curve),
-            Some(reuben_contract::Curve::Exponential)
-        );
-        assert_eq!(
-            m.inputs[0].f32.as_ref().map(|f| f.unit.as_str()),
-            Some("Hz")
+        assert!(
+            matches!(&m.inputs[0].ty,
+                PortTy::F32(meta) if meta.curve == reuben_contract::Curve::Exponential && meta.unit == "Hz"),
+            "{:?}",
+            m.inputs[0].ty
         );
     }
 }
