@@ -6,11 +6,16 @@
 //! under `tests/fixtures/pre-v3/`; voice/patch refs resolve against the live `instruments/`
 //! tree (voices are not rewritten). This is the format_v2.rs shipped-corpus discipline.
 //!
+//! The corpus is "shipped instruments still sonically identical to their pre-v3 snapshots".
+//! An instrument **exits** the guard when its sound is later evolved on purpose — the premise
+//! ("the live file is a pure presentation rewrite of this snapshot") stops holding and no
+//! honest fixture can restore it (a back-ported v2 doc would be a fabrication, not a
+//! snapshot). First exit: groovebox, when its master chain gained the saturator + DJ filter +
+//! volume knob (PR #266). The v2→v3 *loader migration* stays covered by the remaining rows.
+//!
 //! Pipe naming (pinned here; the rewrite implements to it): the pipe keeps the *public*
 //! control name; an internal node colliding with a minted pipe address is renamed
 //! (ADR-0017's discipline, applied as a JSON-structural ref sweep):
-//! - groovebox: `tempo`, `kick_step1..16` / `snare_step1..16` / `hat_step1..16`,
-//!   `kick_vol`/`snare_vol`/`hat_vol` (m2s nodes → `/*_vol_cv`), `tone` (→ `/tone_cv`)
 //! - euclidean-drums: `tempo`, per channel (kick/snare/tom/hat): `<ch>_pulses`, `<ch>_steps`,
 //!   `<ch>_rotation`, `<ch>_decay`, `<ch>_filter` (m2s → `/<ch>_filter_cv`), `<ch>_level`
 //!   (m2s → `/<ch>_level_cv`)
@@ -163,23 +168,6 @@ struct Rewrite {
 }
 
 const REWRITES: &[Rewrite] = &[
-    Rewrite {
-        name: "groovebox",
-        fixture: include_str!("fixtures/pre-v3/groovebox.json"),
-        blocks: BLOCKS,
-        pre: |b| match b {
-            5 => vec![f32_msg("/kick/step2", 1.0, 13)],
-            12 => vec![f32_msg("/clock/tempo", 140.0, 40)],
-            20 => vec![f32_msg("/kick_vol/in", 0.4, 7), f32_msg("/tone/in", 0.9, 7)],
-            _ => Vec::new(),
-        },
-        post: |b| match b {
-            5 => vec![f32_msg("/kick_step2/in", 1.0, 13)],
-            12 => vec![f32_msg("/tempo/in", 140.0, 40)],
-            20 => vec![f32_msg("/kick_vol/in", 0.4, 7), f32_msg("/tone/in", 0.9, 7)],
-            _ => Vec::new(),
-        },
-    },
     Rewrite {
         name: "euclidean-drums",
         fixture: include_str!("fixtures/pre-v3/euclidean-drums.json"),
@@ -367,11 +355,6 @@ fn assert_rewritten(name: &str) {
         shipped(&file).contains("\"format_version\": 3"),
         "{name}: rewritten doc is stamped v3"
     );
-}
-
-#[test]
-fn groovebox_rewrite_renders_bit_identical() {
-    assert_rewritten("groovebox");
 }
 
 #[test]
