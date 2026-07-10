@@ -573,12 +573,34 @@
       {
         "kind": "fader",
         "widget": "fader",
+        "bind": "drive",
+        "address": "/drive/in",
+        "label": "Drive",
+        "min": 1,
+        "max": 30,
+        "default": 3,
+        "unit": "x",
+        "curve": "exp"
+      },
+      {
+        "kind": "fader",
+        "widget": "fader",
         "bind": "tone",
         "address": "/tone/in",
         "label": "Tone",
         "min": 0,
         "max": 1,
-        "default": 0.8
+        "default": 0.5
+      },
+      {
+        "kind": "fader",
+        "widget": "fader",
+        "bind": "volume",
+        "address": "/volume/in",
+        "label": "Volume",
+        "min": 0,
+        "max": 1,
+        "default": 0.5
       }
     ],
     "rows": [
@@ -643,7 +665,11 @@
         "/kick_vol/in",
         "/snare_vol/in",
         "/hat_vol/in",
-        "/tone/in"
+        "/drive/in"
+      ],
+      [
+        "/tone/in",
+        "/volume/in"
       ]
     ]
   },

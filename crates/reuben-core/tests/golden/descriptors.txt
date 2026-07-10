@@ -228,6 +228,12 @@ operator sample
   in[5] f32 channel min=-1.0 max=31.0 default=-1.0 unit="" curve=linear
   out[0] f32_buffer audio
   resource[0] sample
+operator saturator
+  in[0] f32_buffer audio
+  in[1] f32_buffer drive min=1.0 max=30.0 default=2.5 unit="x" curve=exponential
+  in[2] f32_buffer warmth min=0.0 max=1.0 default=0.4 unit="" curve=linear
+  in[3] f32 level min=0.0 max=2.0 default=1.0 unit="x" curve=linear
+  out[0] f32_buffer audio
 operator sequencer
   in[0] f32 clock min=0.0 max=1.0 default=0.0 unit="" curve=linear
   in[1] f32 length min=1.0 max=16.0 default=8.0 unit="steps" curve=linear

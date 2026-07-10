@@ -47,6 +47,10 @@ pub enum Recipe {
     /// operator whose `process` does real work every sample without a trigger (oscillators,
     /// filters, math, the LFO, the clock, …).
     Default,
+    /// `Default`, plus the `audio` input held at a constant 0.5 — for shapers whose per-sample
+    /// cost is dominated by a transcendental on the input (the saturator's tanh has a libm
+    /// early-out at 0.0, so a silent bench underreports).
+    Audio,
     /// `Default`, plus the `gate` input held high — a rising edge at block 0 opens the envelope so
     /// its attack/decay/sustain math runs (an ungated envelope idles at zero).
     Gate,
@@ -141,6 +145,7 @@ pub const WORKLOADS: &[Workload] = &[
     w("resonator", Recipe::Gate),
     w("reverb", Recipe::Default),
     w("sample", Recipe::Sample),
+    w("saturator", Recipe::Audio),
     w("sequencer", Recipe::Clocked),
     w("snap", Recipe::Notes),
     w("strum", Recipe::Position),
@@ -207,6 +212,7 @@ pub const MICRO_IAI_KINDS: &[&str] = &[
     "resonator",
     "reverb",
     "sample",
+    "saturator",
     "sequencer",
     "snap",
     "strum",
@@ -335,6 +341,7 @@ impl OpHarness {
 fn apply_recipe(driver: &mut OpDriver, desc: &Descriptor, recipe: Recipe) {
     match recipe {
         Recipe::Default => {}
+        Recipe::Audio => set_const(driver, desc, "audio", 0.5),
         Recipe::Gate => set_const(driver, desc, "gate", 1.0),
         Recipe::Clocked => drive_clock(driver, desc, "clock"),
         Recipe::Sample => {

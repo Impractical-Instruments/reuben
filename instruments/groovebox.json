@@ -1,7 +1,7 @@
 {
   "format_version": 3,
   "instrument": "groovebox",
-  "doc": "A free-running synthesized step-sequenced beatmaker (V1.3 Toy 1, ADR-0022/0032). Three lanes \u2014 kick, snare, hat \u2014 each a 16-step boolean gate sequencer (gate_mode=Gate) feeding a one-voice Voicer that hosts the lane's drum-synth voice patch (kick-voice / snare-voice / hat-voice, built entirely from operators, no samples). One shared clock at division=4 makes a 16th-note grid; the pattern loops forever, instant sound, no transport. Every player-facing control is an interface input pipe (ADR-0043): toggle steps with /kick_step1/in../kick_step16/in (and /snare_step*, /hat_step*); each step is boolean on/off. Ride tempo with /tempo/in, lane volumes with the /kick_vol/in /snare_vol/in /hat_vol/in knobs, and the overall tone with the /tone/in master-filter knob. Drums: kick = sine with a fast pitch-drop env; snare = noise + a tonal osc; hat = highpassed noise tick.",
+  "doc": "A free-running synthesized step-sequenced beatmaker (V1.3 Toy 1, ADR-0022/0032). Three lanes \u2014 kick, snare, hat \u2014 each a 16-step boolean gate sequencer (gate_mode=Gate) feeding a one-voice Voicer that hosts the lane's drum-synth voice patch (kick-voice / snare-voice / hat-voice, built entirely from operators, no samples). One shared clock at division=4 makes a 16th-note grid; the pattern loops forever, instant sound, no transport. Every player-facing control is an interface input pipe (ADR-0043): toggle steps with /kick_step1/in../kick_step16/in (and /snare_step*, /hat_step*); each step is boolean on/off. Ride tempo with /tempo/in, lane volumes with the /kick_vol/in /snare_vol/in /hat_vol/in knobs, sweep the whole kit with the /tone/in DJ-filter knob (0.5 rests neutral; below sweeps the lowpass closed, above thins into the highpass), and set the master level with the /volume/in knob (default 0.5 = -6 dB). The drum mix is glued by a saturator ahead of the master DJ filter; its /drive/in knob (1..30, rests at 3) rides the glue from barely-on warmth to full squash. Drums: kick = sine with a fast pitch-drop env; snare = noise + a tonal osc; hat = highpassed noise tick.",
   "resources": {
     "hat-voice": "voices/hat-voice.json",
     "kick-voice": "voices/kick-voice.json",
@@ -9,6 +9,14 @@
   },
   "interface": {
     "inputs": {
+      "drive": {
+        "type": "f32",
+        "default": 3.0,
+        "min": 1.0,
+        "max": 30.0,
+        "curve": "exp",
+        "unit": "x"
+      },
       "hat_step1": {
         "type": "f32",
         "default": 1.0,
@@ -324,7 +332,13 @@
       },
       "tone": {
         "type": "f32",
-        "default": 0.8,
+        "default": 0.5,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "volume": {
+        "type": "f32",
+        "default": 0.5,
         "min": 0.0,
         "max": 1.0
       }
@@ -675,8 +689,34 @@
     },
     {
       "type": "m2s",
+      "address": "/drive_cv",
+      "doc": "Smooths the /drive pipe (saturator drive [1,30], rests at 3) into a CV.",
+      "inputs": {
+        "in": {
+          "from": "/drive"
+        },
+        "mode": "Smooth",
+        "time": 0.02
+      }
+    },
+    {
+      "type": "saturator",
+      "address": "/sat",
+      "doc": "Warm tanh glue on the full drum mix; peak-normalized, so overlapping hits squash instead of clipping (retires the old constant headroom trim). Drive rides the /drive knob.",
+      "inputs": {
+        "audio": {
+          "from": "/mix"
+        },
+        "drive": {
+          "from": "/drive_cv"
+        },
+        "warmth": 0.5
+      }
+    },
+    {
+      "type": "m2s",
       "address": "/tone_cv",
-      "doc": "Smooths the /tone pipe (master-tone knob [0,1], rests at 0.8) into a CV (m2s = value->signal), then ranged into the master filter cutoff.",
+      "doc": "Smooths the /tone pipe (master DJ-filter knob [0,1], rests at 0.5 = neutral) into a CV (m2s = value->signal), then ranged into the DJ filter position.",
       "inputs": {
         "in": {
           "from": "/tone"
@@ -687,48 +727,52 @@
     },
     {
       "type": "map_f32_signal",
-      "address": "/cutoff_map",
-      "doc": "tone [0,1] -> cutoff [500,16000] Hz, exponential.",
+      "address": "/pos_map",
+      "doc": "tone [0,1] -> DJ position [-1,1]: 0.5 = neutral, below sweeps the lowpass, above the highpass.",
       "inputs": {
-        "curve": "Exponential",
+        "curve": "Linear",
         "in": {
           "from": "/tone_cv"
         },
-        "out_max": 16000.0,
-        "out_min": 500.0
+        "out_max": 1.0,
+        "out_min": -1.0
       }
     },
     {
-      "type": "filter",
+      "type": "djfilter",
       "address": "/master",
-      "doc": "Master lowpass to tone the whole kit; cutoff driven by the Tone knob.",
+      "doc": "Master DJ filter over the saturated kit; one knob sweeps lowpass (left) to highpass (right), neutral at center.",
       "inputs": {
         "audio": {
-          "from": "/mix"
+          "from": "/sat"
         },
-        "cutoff": {
-          "from": "/cutoff_map"
+        "position": {
+          "from": "/pos_map"
         }
       }
     },
     {
       "type": "m2s",
-      "address": "/trim_cv",
-      "doc": "Constant master trim (headroom so overlapping hits don't clip).",
+      "address": "/volume_cv",
+      "doc": "Smooths the /volume pipe (main volume knob [0,1], rests at 0.5 = -6 dB) into a CV.",
       "inputs": {
-        "in": 0.7
+        "in": {
+          "from": "/volume"
+        },
+        "mode": "Smooth",
+        "time": 0.02
       }
     },
     {
       "type": "mul_f32_signal",
-      "address": "/trim",
-      "doc": "master audio * trim CV -> headroom.",
+      "address": "/vol",
+      "doc": "master audio * main volume CV -> final level.",
       "inputs": {
         "a": {
           "from": "/master"
         },
         "b": {
-          "from": "/trim_cv"
+          "from": "/volume_cv"
         }
       }
     },
@@ -737,7 +781,7 @@
       "address": "/out",
       "inputs": {
         "audio": {
-          "from": "/trim"
+          "from": "/vol"
         }
       }
     }

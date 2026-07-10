@@ -4492,6 +4492,122 @@
           "if": {
             "properties": {
               "type": {
+                "const": "saturator"
+              }
+            },
+            "required": [
+              "type"
+            ]
+          },
+          "then": {
+            "properties": {
+              "config": {
+                "additionalProperties": false,
+                "properties": {},
+                "type": "object"
+              },
+              "inputs": {
+                "additionalProperties": false,
+                "properties": {
+                  "audio": {
+                    "oneOf": [
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "drive": {
+                    "oneOf": [
+                      {
+                        "default": 2.5,
+                        "description": "unit: x, curve: Exponential",
+                        "maximum": 30.0,
+                        "minimum": 1.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "level": {
+                    "oneOf": [
+                      {
+                        "default": 1.0,
+                        "description": "unit: x, curve: Linear",
+                        "maximum": 2.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  },
+                  "warmth": {
+                    "oneOf": [
+                      {
+                        "default": 0.4000000059604645,
+                        "description": "unit: , curve: Linear",
+                        "maximum": 1.0,
+                        "minimum": 0.0,
+                        "type": "number"
+                      },
+                      {
+                        "additionalProperties": false,
+                        "description": "Wire-ref to a source output: \"/node.port\", or \"/node\" when it has one output.",
+                        "properties": {
+                          "from": {
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "from"
+                        ],
+                        "type": "object"
+                      }
+                    ]
+                  }
+                },
+                "type": "object"
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "type": {
                 "const": "sequencer"
               }
             },
@@ -5648,6 +5764,7 @@
             "resonator",
             "reverb",
             "sample",
+            "saturator",
             "sequencer",
             "snap",
             "strum",
