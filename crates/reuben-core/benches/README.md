@@ -2,8 +2,9 @@
 
 Two layers measuring the same `render_block` workload (ADR-0019). Both drive the fixed,
 deterministic schedule in [`common/mod.rs`](common/mod.rs): 1 s of audio (375 × 128 @ 48 kHz),
-a four-note chord on at frame 0, off at 0.5 s, across four instruments — `reverb`, `echo`,
-`auto-filter`, `sampler-arp`.
+a four-note chord on at frame 0, off at 0.5 s, across five instruments — `reverb`, `echo`,
+`auto-filter`, `sampler-arp`, `autotune`. The instrument documents are bench-owned frozen
+fixtures under [`fixtures/`](fixtures/), not library instruments.
 
 ## Local — wall-clock (criterion)
 

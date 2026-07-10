@@ -10,14 +10,14 @@ use reuben_core::vocab::pitch::{Note, Pitch};
 use reuben_core::{load_instrument, AudioConfig, Registry};
 use reuben_native::resources::FsResolver;
 
-/// Absolute path to the workspace `instruments/` directory, independent of test CWD.
-fn instruments_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../instruments")
+/// Absolute path to this crate's frozen test fixtures, independent of test CWD.
+fn fixtures_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
 #[test]
 fn sampler_loads_resolves_wav_and_plays_a_note() {
-    let dir = instruments_dir();
+    let dir = fixtures_dir();
     let json = std::fs::read_to_string(dir.join("sampler.json")).expect("read sampler.json");
     let resolver = FsResolver::new(&dir);
 
@@ -62,7 +62,7 @@ fn sampler_loads_resolves_wav_and_plays_a_note() {
 fn sampler_arp_self_plays_a_sequenced_arpeggio() {
     // The clock-driven rig needs no external notes: the sequencer emits a major arpeggio
     // into the Voicer, whose gate edges fire the sample. Just render and listen for sound.
-    let dir = instruments_dir();
+    let dir = fixtures_dir();
     let json =
         std::fs::read_to_string(dir.join("sampler-arp.json")).expect("read sampler-arp.json");
     let resolver = FsResolver::new(&dir);
@@ -143,7 +143,7 @@ fn missing_sample_warns_but_still_loads() {
       ],
       "outputs": [ {"node":"/out","port":"audio"} ]
     }"#;
-    let resolver = GhostVoiceResolver(FsResolver::new(instruments_dir()));
+    let resolver = GhostVoiceResolver(FsResolver::new(fixtures_dir()));
     let loaded = load_instrument(json, &Registry::builtin(), &resolver).expect("loads anyway");
     assert_eq!(loaded.warnings.len(), 1, "expected one resolve warning");
 

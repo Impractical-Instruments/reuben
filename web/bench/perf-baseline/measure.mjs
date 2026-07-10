@@ -24,7 +24,7 @@
 // Sample decode: NO bundled Toy carries a .wav (the five in web/toys.json synthesize their
 // audio), so decode is off the current critical path. To characterize it anyway (a future
 // sample-carrying Toy would pay it), a separate pass loads `granulator-demo` (testvoice.wav,
-// ~614 KB) straight from the repo's instruments/ and times its construct.
+// ~614 KB) from this harness's frozen payload in web/bench/fixtures/ and times its construct.
 //
 // Run:  cd web && npm run build            # produce dist/ (needs the release wasm staged)
 //       CHROMIUM_PATH=/path/to/chrome node bench/perf-baseline/measure.mjs
@@ -43,7 +43,7 @@ const WEB = resolve(HERE, "../..");                   // web
 const ROOT = resolve(WEB, "..");                      // repo root
 const DIST = join(WEB, "dist");
 const ENGINE_JS = join(ROOT, "crates", "reuben-web", "js");
-const RAW_INSTRUMENTS = join(ROOT, "instruments");
+const BENCH_FIXTURES = resolve(HERE, "../fixtures"); // web/bench/fixtures (decode payload)
 
 // --- static server: mirrors the deploy (brotli Content-Encoding on compressible types, so a
 //     CDP network throttle sees production-like on-wire bytes; application/wasm; long routes). --
@@ -74,7 +74,7 @@ function encoded(path, raw, enc) {
 const ROUTES = [
   ["/engine/", ENGINE_JS],           // the real ES modules (source of truth, ADR-0041)
   ["/instruments/", join(DIST, "instruments")], // staged bundled-Toy payload
-  ["/raw-instruments/", RAW_INSTRUMENTS],        // repo instruments (decode characterization)
+  ["/raw-instruments/", BENCH_FIXTURES],         // frozen wav-carrying doc (decode characterization)
   ["/", DIST],                        // wasm, schema.json, index.html, app assets
 ];
 
@@ -147,7 +147,7 @@ async function endToEnd(toy) {
   return m;
 }
 
-// Sample-decode characterization: load a wav-carrying instrument straight from repo instruments/.
+// Sample-decode characterization: load a wav-carrying instrument from web/bench/fixtures/.
 async function sampleDecode(name) {
   const bytes = await (await fetch("/reuben_web.wasm")).arrayBuffer();
   const mod = await WebAssembly.compile(bytes);
@@ -211,7 +211,7 @@ const server = createServer(async (req, res) => {
 
 // Warm the brotli cache for the heavy assets up front so no measured request pays the
 // one-time compression cost as phantom fetch latency.
-for (const f of ["reuben_web.wasm", "schema.json"]) {
+for (const f of ["reuben_web.wasm"]) {
   encoded(join(DIST, f), await readFile(join(DIST, f)), "br");
 }
 

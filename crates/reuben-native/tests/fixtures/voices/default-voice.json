@@ -1,0 +1,96 @@
+{
+  "format_version": 2,
+  "instrument": "default-voice",
+  "doc": "Default subtractive voice patch (ADR-0032). One monophonic synth voice: a held freq drives the oscillator, a held gate the envelope. Hosted N times by a `voicer`; also loads + plays standalone for testing. interface: freq/gate in, audio/active out.",
+  "interface": {
+    "inputs": {
+      "freq": {
+        "type": "f32_buffer",
+        "default": 440.0,
+        "min": 20.0,
+        "max": 20000.0,
+        "curve": "exp",
+        "unit": "Hz"
+      },
+      "gate": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "outputs": {
+      "active": {
+        "from": "/env.active"
+      },
+      "audio": {
+        "from": "/out.audio"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "type": "oscillator",
+      "address": "/osc",
+      "doc": "Oscillator; freq driven by the voice's interface freq input.",
+      "inputs": {
+        "freq": {
+          "from": "/freq"
+        }
+      }
+    },
+    {
+      "type": "filter",
+      "address": "/filter",
+      "doc": "Gentle lowpass.",
+      "inputs": {
+        "audio": {
+          "from": "/osc"
+        },
+        "cutoff": 3000.0
+      }
+    },
+    {
+      "type": "envelope",
+      "address": "/env",
+      "doc": "ADSR contour generator; gate driven by the voice's interface gate input.",
+      "inputs": {
+        "gate": {
+          "from": "/gate"
+        }
+      }
+    },
+    {
+      "type": "power_f32_signal",
+      "address": "/env_curve",
+      "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
+      "inputs": {
+        "x": {
+          "from": "/env.cv"
+        }
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/env_vca",
+      "doc": "VCA: audio * shaped envelope CV.",
+      "inputs": {
+        "a": {
+          "from": "/filter"
+        },
+        "b": {
+          "from": "/env_curve"
+        }
+      }
+    },
+    {
+      "type": "output",
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/env_vca"
+        }
+      }
+    }
+  ]
+}

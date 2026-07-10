@@ -47,14 +47,16 @@ Reach for a per-target file only when the control *set* genuinely diverges, not 
 
 ## The surface doc
 
-`surfaces/good-button.json`, complete:
+`surfaces/strum-harp.json`, complete:
 
 ```json
 {
   "surface_version": 1,
-  "instrument": "good-button",
+  "instrument": "strum-harp",
   "controls": [
-    { "bind": "notes", "label": "Play C", "widget": "note-toggle", "note": 60 },
+    { "bind": "strum", "label": "Strum", "widget": "fader" },
+    { "bind": "octaves", "label": "Range" },
+    { "bind": "key", "label": "Key" },
     { "bind": "brightness", "label": "Brightness", "widget": "fader" }
   ]
 }
@@ -161,26 +163,27 @@ changes the contract is the `patcher` skill's job; come back here once the pipe 
 - **renaming** a pipe or node (then update `bind` here);
 - **rewiring**, or changing a pipe's `type`/`min`/`max`/`default`/`curve`/`unit`.
 
-## Worked example: good-button
+## Worked example: strum-harp
 
-The contract, from `instruments/good-button.json` `interface.inputs`: `brightness`
-(`f32`, 0.0–1.0, default 0.5 — fans out internally to the master filter's cutoff + resonance)
-and `notes` (`note` — the play pipe). The committed presentation is the doc quoted above: a
-note-toggle playing MIDI 60 at `/notes/in`, a fader sweeping `/brightness/in`.
+The contract, from `instruments/strum-harp.json` `interface.inputs`: four `f32` pipes —
+`strum` (0–1, the drag bar), `octaves` (1–4), `key` (48–60), `brightness` (0–1). The committed
+presentation is the doc quoted above: four faders, two of them relabelled (`octaves` → "Range",
+`key` → "Key").
 
 A round-trip relabel:
 
-1. Edit `surfaces/good-button.json`: `"label": "Play C"` → `"label": "Play Middle C"`.
-2. `python3 <skilldir>/gen_surface.py emit instruments/good-button.json`
-   → `wrote control-surfaces/good-button.tosc — 2 control(s) from surfaces/good-button.json`.
+1. Edit `surfaces/strum-harp.json`: `"label": "Range"` → `"label": "Octaves"`.
+2. `python3 <skilldir>/gen_surface.py emit instruments/strum-harp.json`
+   → `wrote control-surfaces/strum-harp.tosc — 4 control(s) from surfaces/strum-harp.json`.
 3. The new label is in the projection (the `.tosc` is zlib-compressed XML:
-   `zlib.decompress(open("control-surfaces/good-button.tosc","rb").read())` contains
-   `Play Middle C`). The instrument JSON is untouched throughout.
+   `zlib.decompress(open("control-surfaces/strum-harp.tosc","rb").read())` contains
+   `Octaves`). The instrument JSON is untouched throughout.
 
-And the default-derivation view: emitting a copy of the instrument under a stem with no
-`surfaces/` doc yields **1 control** (the `brightness` fader) plus
-`warning: default surface skips 'note' pipe 'notes' (a default surface cannot guess its
-payload)` — exactly the gap the committed doc curates with its explicit `note-toggle`.
+And the default-derivation view, where the curation gap shows: emitting a copy of
+`chord-player.json` under a stem with no `surfaces/` doc yields **2 control(s)** (the `key` and
+`brightness` faders) plus `warning: default surface skips 'note' pipe 'chord' (a default
+surface cannot guess its payload)` — exactly the gap the committed doc curates with its seven
+explicit `chord-button`s.
 
 ## Format notes
 

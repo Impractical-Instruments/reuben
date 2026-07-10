@@ -37,7 +37,7 @@ Run all `reuben` commands from the repo root.
    document shape; `describe` is the per-operator view.
 
 2. **Draft the graph.** Start from a **canonical recipe** (below) or an existing
-   `instruments/*.json` (e.g. `good-button.json`) rather than a blank file. The format (ADR-0030):
+   `instruments/*.json` (e.g. `chord-player.json`) rather than a blank file. The format (ADR-0030):
    each node carries an **`inputs`** map and an optional **`config`** block — there is **no
    top-level `connections` array** and **no per-node `params` map**. Honour the rules the loader
    enforces (so step 3 passes first try):
@@ -78,7 +78,7 @@ Run all `reuben` commands from the repo root.
 
 ## Canonical recipes
 
-**Basic playable voice** (saw → filter → ADSR → out), the spine of `good-button.json`:
+**Basic playable voice** (osc → filter → ADSR → out), the spine of `instruments/voices/default-voice.json`:
 
 ```
 voicer ─freq→ oscillator ─audio→ filter ─audio→ envelope ─audio→ output
@@ -92,14 +92,15 @@ voicer ─gate──────────────────────
   OSC (`/filter/cutoff 1500`). `mode` is an `enum` (`"mode": "Hp"`). A **Good Button** is still a
   nicety for a curated player control — `map`(public) → `map`(ranged) → filter input, optionally
   with an `m2s`/`slew` shaper for zipper-free smoothing — but it is no longer *required* to reach a
-  `signal` input. See `good-button.json` for the worked fan-out.
+  `signal` input. See `chord-player.json`'s brightness chain (`m2s` → `map` → filter cutoff)
+  for the worked fan-out.
 - Play it: `reuben play <file>` then send `/voicer/notes [60, 1]` (note-on) / `[60, 0]` (off).
 
 **Self-playing** (no external notes): add a `clock` + `sequencer` feeding the voicer, as in
-`instruments/sampler-arp.json`.
+`instruments/groovebox.json` (one sequencer per drum on a shared clock).
 
 **Nesting an instrument as a node** (ADR-0034) — the worked pair is
-`instruments/patches/space.json` (the nestable child) + `instruments/nested-space.json` (the host):
+`instruments/patches/space.json` (the nestable child) + `instruments/mic-space.json` (the host):
 
 - **Host side**: add the child to `resources` and reference it from a `subpatch` node's `patch`
   field. The node's ports are the child's `interface` names — `describe <patch.json>` first, then

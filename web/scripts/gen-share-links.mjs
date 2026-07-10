@@ -24,8 +24,8 @@
 // discovery reports any resource with kind===1 (a WAV sample). This is the identical discovery
 // stage-assets.mjs performs and the identical kind that share.mjs's encodeBundle refuses at mint
 // (KIND_SAMPLE=1, the WAV trust boundary, ADR-0042 decision 3): generator and codec share one
-// predicate and cannot drift. sampler/sampler-arp pull samples/blip.wav → excluded; mic-space
-// takes live mic input (an input pipe, not a resource) → sample-free → included.
+// predicate and cannot drift. A wav-pulling rig would be excluded (none is in the table today);
+// mic-space takes live mic input (an input pipe, not a resource) → sample-free → included.
 
 import { access, readFile, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";

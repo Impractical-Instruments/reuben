@@ -1,0 +1,58 @@
+{
+  "format_version": 2,
+  "instrument": "autotune",
+  "doc": "Play any pitch; hear the nearest scale tone (ADR-0032). External absolute notes at /snap/notes [midi, vel] are quantized to the tonal context by a snap operator, which emits scale degrees into the Voicer (the 'always in key' good-button); each note plays on a hosted `autotune-voice` sub-patch. Set the key/scale on /harmony/root, /harmony/s0../harmony/s6, /harmony/degrees; set snap behaviour with /snap/target (0 Scale, 1 Chord, 2 ChordThenScale) and /snap/direction (0 Nearest, 1 Up, 2 Down). Both the snap and the Voicer read the same context, so changing key re-tunes held notes live.",
+  "resources": {
+    "autotune-voice": "voices/autotune-voice.json"
+  },
+  "interface": {
+    "outputs": {
+      "out": {
+        "from": "/out.audio"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "type": "harmony",
+      "address": "/harmony",
+      "doc": "C major, 12-TET (default scale)."
+    },
+    {
+      "type": "snap",
+      "address": "/snap",
+      "doc": "Absolute note -> nearest in-scale degree.",
+      "inputs": {
+        "harmony": {
+          "from": "/harmony"
+        }
+      }
+    },
+    {
+      "type": "voicer",
+      "address": "/voicer",
+      "doc": "Degrees -> Hz via the tonal context, played on hosted autotune-voice sub-patches.",
+      "config": {
+        "voices": 6.0
+      },
+      "inputs": {
+        "harmony": {
+          "from": "/harmony"
+        },
+        "notes": {
+          "from": "/snap"
+        }
+      },
+      "voice": "autotune-voice"
+    },
+    {
+      "type": "output",
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/voicer.audio"
+        }
+      }
+    }
+  ]
+}

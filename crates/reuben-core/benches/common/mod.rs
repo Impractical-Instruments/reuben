@@ -29,7 +29,8 @@ const CHORD: [f32; 4] = [60.0, 64.0, 67.0, 72.0];
 /// Note-off at 0.5 s — exercises gate-on, sustain, *and* the release tail.
 const NOTE_OFF_SAMPLE: usize = SAMPLE_RATE as usize / 2;
 
-/// A benched instrument: its name, its shipped JSON, and the OSC address external note-on/off
+/// A benched instrument: its name, its frozen JSON (a bench-owned fixture under
+/// `benches/fixtures/`, not a library instrument), and the OSC address external note-on/off
 /// Messages enter on. The address differs per graph — most take notes straight at the Voicer
 /// (`/voicer/notes`), but the tonal `autotune` graph feeds its quantizer first (`/snap/notes`),
 /// which resolves and forwards degrees to the Voicer.
@@ -39,36 +40,36 @@ struct Fixture {
     note_addr: &'static str,
 }
 
-/// The benched instruments, each a real shipped JSON. Curated to span the heavy operator families
-/// with no redundancy: reverb (comb/allpass banks), echo (delay feedback), auto-filter (the
-/// lfo + m2s + math modulation stack), sampler-arp (sample + clock + sequencer, the non-oscillator
-/// path), and autotune — the tonal-context path (harmony → snap → voicer), which exercises the
-/// `hz`/`snap`/`chord_tone` resolver and context-driven block-slicing nothing else here touches
-/// (#30, ADR-0013/0019).
+/// The benched instruments, frozen under `benches/fixtures/`. Curated to span the heavy operator
+/// families with no redundancy: reverb (comb/allpass banks), echo (delay feedback), auto-filter
+/// (the lfo + m2s + math modulation stack), sampler-arp (sample + clock + sequencer, the
+/// non-oscillator path), and autotune — the tonal-context path (harmony → snap → voicer), which
+/// exercises the `hz`/`snap`/`chord_tone` resolver and context-driven block-slicing nothing else
+/// here touches (#30, ADR-0013/0019).
 const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "reverb",
-        json: include_str!("../../../../instruments/reverb.json"),
+        json: include_str!("../fixtures/reverb.json"),
         note_addr: "/voicer/notes",
     },
     Fixture {
         name: "echo",
-        json: include_str!("../../../../instruments/echo.json"),
+        json: include_str!("../fixtures/echo.json"),
         note_addr: "/voicer/notes",
     },
     Fixture {
         name: "auto-filter",
-        json: include_str!("../../../../instruments/auto-filter.json"),
+        json: include_str!("../fixtures/auto-filter.json"),
         note_addr: "/voicer/notes",
     },
     Fixture {
         name: "sampler-arp",
-        json: include_str!("../../../../instruments/sampler-arp.json"),
+        json: include_str!("../fixtures/sampler-arp.json"),
         note_addr: "/voicer/notes",
     },
     Fixture {
         name: "autotune",
-        json: include_str!("../../../../instruments/autotune.json"),
+        json: include_str!("../fixtures/autotune.json"),
         note_addr: "/snap/notes",
     },
 ];
@@ -122,16 +123,16 @@ pub struct BenchState {
     out: Vec<f32>,
 }
 
-/// Resolves a fixture's resources from the repo `instruments/` dir, so voices *bind* and the bench
+/// Resolves a fixture's resources from `benches/fixtures/`, so voices *bind* and the bench
 /// renders the real hosted-voice workload (#102) — not the degraded empty-voicer path `load()` gives.
 /// `resolve_text` reads a voice patch's JSON (ADR-0032 §2); `resolve` decodes a WAV (mirrors
 /// `reuben-native`'s `FsResolver`, using the `hound` dev-dependency) so `sampler-arp`'s sample player
 /// reads real data instead of idling on an empty buffer. Setup-only IO — the timed `render` reads
 /// none of it — and the decoded bytes are fixed, so iai instruction counts stay byte-stable (ADR-0019).
-struct InstrumentsDir;
-impl ResourceResolver for InstrumentsDir {
+struct FixturesDir;
+impl ResourceResolver for FixturesDir {
     fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
-        let path = format!("{}/../../instruments/{source}", env!("CARGO_MANIFEST_DIR"));
+        let path = format!("{}/benches/fixtures/{source}", env!("CARGO_MANIFEST_DIR"));
         let mut reader = hound::WavReader::open(&path)
             .map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))?;
         let spec = reader.spec();
@@ -158,12 +159,12 @@ impl ResourceResolver for InstrumentsDir {
     }
 
     fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
-        let path = format!("{}/../../instruments/{source}", env!("CARGO_MANIFEST_DIR"));
+        let path = format!("{}/benches/fixtures/{source}", env!("CARGO_MANIFEST_DIR"));
         std::fs::read_to_string(&path).map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))
     }
 
     /// Per-document rebase, like `reuben-native`'s `FsResolver`: identity keys stay
-    /// `instruments/`-relative, and a nested patch's own references (e.g. a voice's
+    /// fixture-root-relative, and a nested patch's own references (e.g. a voice's
     /// `../samples/blip.wav`) resolve next to *it*, lexically normalized.
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
         let mut out: Vec<&str> = referrer
@@ -191,7 +192,7 @@ impl ResourceResolver for InstrumentsDir {
 pub fn build_state(name: &str) -> BenchState {
     let fx = fixture(name);
     let loaded =
-        load_instrument(fx.json, &Registry::builtin(), &InstrumentsDir).expect("fixture loads");
+        load_instrument(fx.json, &Registry::builtin(), &FixturesDir).expect("fixture loads");
     // The bug this fixes (#102) was invisible because nothing checked the workload was real: a
     // resource that fails to resolve degrades to silence + a warning, not an error. Treat any
     // warning as fatal so the bench can't silently fall back to the empty workload again.

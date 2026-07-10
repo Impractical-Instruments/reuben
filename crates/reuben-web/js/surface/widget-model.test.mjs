@@ -31,15 +31,12 @@ const readJson = (p) => JSON.parse(readFileSync(p, "utf8"));
 
 const oracle = readJson(ORACLE_PATH);
 
-// The 8 committed instrument + surface pairs (space's document lives under patches/).
+// The 5 committed instrument + surface pairs (space's document lives under patches/).
 const PAIRS = {
   groovebox: "groovebox.json",
   "chord-player": "chord-player.json",
   "strum-harp": "strum-harp.json",
   "euclidean-drums": "euclidean-drums.json",
-  "djfilter-demo": "djfilter-demo.json",
-  "good-button": "good-button.json",
-  "granulator-demo": "granulator-demo.json",
   space: "patches/space.json",
 };
 
@@ -68,15 +65,12 @@ for (const name of Object.keys(PAIRS)) {
 }
 
 // Guard the fixture's own shape so a silently-truncated oracle can't make the diff pass.
-test("oracle covers exactly the eight pairs with the documented counts", () => {
+test("oracle covers exactly the five pairs with the documented counts", () => {
   assert.deepStrictEqual(Object.keys(oracle).sort(), Object.keys(PAIRS).sort());
   assert.strictEqual(oracle.groovebox.widgets.length, 55);
   assert.strictEqual(oracle["chord-player"].widgets.length, 9);
   assert.strictEqual(oracle["strum-harp"].widgets.length, 4);
   assert.strictEqual(oracle["euclidean-drums"].widgets.length, 25);
-  assert.strictEqual(oracle["djfilter-demo"].widgets.length, 3);
-  assert.strictEqual(oracle["good-button"].widgets.length, 2);
-  assert.strictEqual(oracle["granulator-demo"].widgets.length, 6);
   assert.strictEqual(oracle.space.widgets.length, 2);
 });
 
@@ -120,37 +114,33 @@ test("groovebox: a gate step is a param-toggle backed by its own pipe", () => {
   });
 });
 
-test("good-button: Play C is a note-toggle on /notes/in carrying note 60, velocity 1", () => {
-  const { widgets } = surfaceOf("good-button");
-  const play = widgets.find((w) => w.bind === "notes");
-  assert.deepStrictEqual(play, {
-    kind: "note-toggle",
-    widget: "note-toggle",
-    bind: "notes",
-    address: "/notes/in",
-    label: "Play C",
-    note: 60,
-    velocity: 1,
-  });
+// (Formerly asserted on good-button, culled from the library; the note pipe + note-toggle
+// contract is pinned on an inline pair instead — no surviving Toy declares an absolute-note pipe.)
+test("a note pipe resolves to a note-toggle whose emit carries [note, velocity]", () => {
+  const inst = {
+    instrument: "one-note",
+    interface: { inputs: { notes: { type: "note" } } },
+  };
+  const doc = {
+    surface_version: 1,
+    instrument: "one-note",
+    controls: [{ bind: "notes", label: "Play C", widget: "note-toggle", note: 60 }],
+  };
+  const { widgets } = buildSurface(inst, doc);
+  assert.deepStrictEqual(widgets, [
+    {
+      kind: "note-toggle",
+      widget: "note-toggle",
+      bind: "notes",
+      address: "/notes/in",
+      label: "Play C",
+      note: 60,
+      velocity: 1,
+    },
+  ]);
   // The note-on carries [note, velocity]; the note-off the same note at gate 0.
-  assert.deepStrictEqual(emit(play, 1), { address: "/notes/in", args: [60, 1] });
-  assert.deepStrictEqual(emit(play, 0), { address: "/notes/in", args: [60, 0] });
-});
-
-test("good-button: Brightness fader binds the brightness pipe on /brightness/in", () => {
-  const { widgets } = surfaceOf("good-button");
-  const brightness = widgets.find((w) => w.bind === "brightness");
-  // interface.inputs.brightness: f32, default 0.5, min 0, max 1 (no unit, no curve).
-  assert.deepStrictEqual(brightness, {
-    kind: "fader",
-    widget: "fader",
-    bind: "brightness",
-    address: "/brightness/in",
-    label: "Brightness",
-    min: 0,
-    max: 1,
-    default: 0.5,
-  });
+  assert.deepStrictEqual(emit(widgets[0], 1), { address: "/notes/in", args: [60, 1] });
+  assert.deepStrictEqual(emit(widgets[0], 0), { address: "/notes/in", args: [60, 0] });
 });
 
 test("chord-player: 7 chord-buttons share the one chord pipe with degrees 0..6", () => {
@@ -191,11 +181,24 @@ test("euclidean-drums: radial widgets resolve to kind fader; pipe unit/curve rid
   });
 });
 
-test("granulator-demo: density fader inherits the pipe's exp curve and Hz unit", () => {
-  const { widgets } = surfaceOf("granulator-demo");
-  const density = widgets.find((w) => w.bind === "density");
-  // interface.inputs.density: f32, default 30, min 1, max 200, curve exp, unit Hz.
-  assert.deepStrictEqual(density, {
+// (Formerly asserted on granulator-demo, culled from the library; no surviving pipe declares
+// a curve, so curve/unit inheritance is pinned on an inline pair.)
+test("a fader inherits the pipe's exp curve and Hz unit", () => {
+  const inst = {
+    instrument: "grains",
+    interface: {
+      inputs: {
+        density: { type: "f32", default: 30, min: 1, max: 200, curve: "exp", unit: "Hz" },
+      },
+    },
+  };
+  const doc = {
+    surface_version: 1,
+    instrument: "grains",
+    controls: [{ bind: "density", label: "Density", widget: "radial" }],
+  };
+  const { widgets } = buildSurface(inst, doc);
+  assert.deepStrictEqual(widgets[0], {
     kind: "fader",
     widget: "radial",
     bind: "density",

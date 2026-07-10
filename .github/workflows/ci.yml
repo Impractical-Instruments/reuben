@@ -341,10 +341,10 @@ jobs:
         run: npm run build
 
       # Mobile-payload budget (issue #227, scope item 5): record the built wasm size (raw + gzip)
-      # and the total built bundle size each run, into the job summary. The bundled sample is just
-      # samples/blip.wav (~11 KiB), so nothing is lazy-loaded — this is the standing measurement
-      # that would flag it if the payload ever grows enough to warrant splitting. (dist is a superset
-      # of the precache: it also holds sw.js + workbox runtime and the unreferenced icon master.)
+      # and the total built bundle size each run, into the job summary. No bundled Toy carries a
+      # sample, so nothing is lazy-loaded — this is the standing measurement that would flag it if
+      # the payload ever grows enough to warrant splitting. (dist is a superset of the precache:
+      # it also holds sw.js + workbox runtime and the unreferenced icon master.)
       - name: Report payload size
         working-directory: web
         run: |
@@ -361,7 +361,7 @@ jobs:
             echo "| reuben_web.wasm (gzip) | $(kib "$wasm_gz") KiB |"
             echo "| total built bundle (dist) | $(kib "$bundle") KiB |"
             echo ""
-            echo "Bundled samples: \`samples/blip.wav\` only — no lazy-loading needed."
+            echo "Bundled samples: none (every Toy synthesizes its audio) — no lazy-loading needed."
           } >> "$GITHUB_STEP_SUMMARY"
 
       # Boot the built app headless (vite preview, started by Playwright) and assert BOTH the

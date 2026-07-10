@@ -12,17 +12,17 @@ use reuben_core::vocab::harmony::Harmony;
 use reuben_core::vocab::pitch::{Note, Pitch};
 use reuben_core::{load_instrument, AudioConfig, Registry};
 
-const SCALE_DEMO: &str = include_str!("../../../instruments/scale-demo.json");
-const AUTOTUNE: &str = include_str!("../../../instruments/autotune.json");
+const SCALE_DEMO: &str = include_str!("fixtures/scale-demo.json");
+const AUTOTUNE: &str = include_str!("fixtures/autotune.json");
 
-/// Resolves each rig's `voice` instrument-resource (ADR-0032) from the repo `instruments/` dir.
+/// Resolves each rig's `voice` instrument-resource (ADR-0032) from the frozen `tests/fixtures/` tree.
 struct InstrumentsDir;
 impl ResourceResolver for InstrumentsDir {
     fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
         Err(ResolveError::NotFound(source.to_string()))
     }
     fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
-        let path = format!("{}/../../instruments/{source}", env!("CARGO_MANIFEST_DIR"));
+        let path = format!("{}/tests/fixtures/{source}", env!("CARGO_MANIFEST_DIR"));
         std::fs::read_to_string(&path).map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))
     }
 }

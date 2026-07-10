@@ -413,10 +413,11 @@ target-pointing form (no entry points inward anymore):
 }
 ```
 
-Worked examples: `instruments/patches/space.json` (a nestable effect's typed pipes),
-`instruments/mic-space.json` (a channel-bound live-input pipe feeding a nested patch),
-`instruments/stereo-sub.json` + `instruments/stereo-sub.io-map.json` (three bound output
-channels + the device profile that maps them), `instruments/stereo-autopan.json` (stereo
+Worked examples: `instruments/patches/space.json` (a nestable effect's typed pipes) and
+`instruments/mic-space.json` (a channel-bound live-input pipe feeding a nested patch). The
+multichannel-output demos left the library in the cull and live on as frozen test fixtures:
+`crates/reuben-native/tests/fixtures/stereo-sub.json` + `stereo-sub.io-map.json` (three bound
+output channels + the device profile that maps them) and `stereo-autopan.json` (stereo
 channel-pinned outputs).
 
 A document may also carry a top-level `resources` table (logical id → source path) that
@@ -424,7 +425,8 @@ resource-bearing nodes reference by a `sample` field
 ([ADR-0016](../adr/0016-sample-player-and-resource-store.md)). Resolving + decoding those needs a
 `ResourceResolver`, so use `format::load_instrument(json, registry, resolver)` — it returns the
 `Graph` plus any non-fatal `LoadWarning`s (a missing/undecodable sample degrades to silence).
-`instruments/sampler.json` is the worked example; `reuben-native` supplies a filesystem WAV resolver.
+`crates/reuben-native/tests/fixtures/sampler.json` is the worked example (frozen as a test
+fixture since the library cull); `reuben-native` supplies a filesystem WAV resolver.
 A source path resolves **relative to the document that names it** (a nested patch's own resources
 live next to *it*, not next to the top-level instrument), falling back to a configurable library
 root (`reuben --instrument-root <DIR>` or `REUBEN_INSTRUMENT_ROOT`); the resolver canonicalizes
@@ -503,8 +505,8 @@ it, and the web player and TouchOSC emitter render from it. The declared `type` 
 
 `reuben describe <patch.json>` prints the boundary a host wires against — each pipe with its
 declared type, range, default, and unit.
-`instruments/patches/space.json` (nestable effect) + `instruments/nested-space.json` (host) are
-the worked pair; `instruments/mic-space.json` nests the same effect behind a live-input pipe.
+`instruments/patches/space.json` (nestable effect) + `instruments/mic-space.json` (its host,
+behind a live-input pipe) are the worked pair.
 
 The per-node **`control`** block ([ADR-0018](../adr/0018-control-surface-generation.md)) is
 **retired** ([ADR-0043](../adr/0043-surface-docs-decouple-presentation-from-instruments.md)):
@@ -513,7 +515,7 @@ a v2 document (or a v3 one still carrying leftovers) parses, but the block is dr
 re-saving strips it. Player-facing controls are **interface input pipes** now; their
 presentation lives in a surface doc read by the
 [`control-surface` skill](../../.claude/skills/control-surface/SKILL.md) and the web player
-(`instruments/good-button.json` + `surfaces/good-button.json` are the worked pair).
+(`instruments/groovebox.json` + `surfaces/groovebox.json` are the worked pair).
 
 ## "Audio vs control" is boundary metadata, not a type
 

@@ -25,8 +25,12 @@ const readInstrument = (rel) =>
   readFileSync(fileURLToPath(new URL(`../../instruments/${rel}`, import.meta.url)), "utf8");
 const readInstrumentBytes = (rel) =>
   new Uint8Array(readFileSync(fileURLToPath(new URL(`../../instruments/${rel}`, import.meta.url))));
+const readFixture = (rel) =>
+  readFileSync(fileURLToPath(new URL(`./fixtures/${rel}`, import.meta.url)), "utf8");
 
-const VIBRATO_DOC = readInstrument("vibrato.json"); // self-playing, no resources, no controls
+// Frozen under tests/fixtures/ (vibrato left the library in the cull): the minimal share
+// payload — self-playing, no resources, no controls.
+const VIBRATO_DOC = readFixture("vibrato.json");
 const EUCLIDEAN_DOC = readInstrument("euclidean-drums.json"); // self-playing, faders, no resources
 const GROOVEBOX_DOC = readInstrument("groovebox.json"); // self-playing, three voice resources
 

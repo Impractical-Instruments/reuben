@@ -110,13 +110,32 @@ const restore = installFakeDocument();
 after(restore);
 
 // -----------------------------------------------------------------------------------------
-// good-button: a note-toggle + a fader; assert the binding routes through emit().
+// A note-toggle + a fader; assert the binding routes through emit(). (Formerly asserted on
+// good-button, culled from the library; the pair is inline — same two widget shapes.)
 // -----------------------------------------------------------------------------------------
 
-test("good-button renders a note-toggle button + a fader, each bound through emit()", () => {
+const ONE_NOTE_INSTRUMENT = {
+  instrument: "one-note",
+  interface: {
+    inputs: {
+      brightness: { type: "f32", default: 0.5, min: 0, max: 1 },
+      notes: { type: "note" },
+    },
+  },
+};
+const ONE_NOTE_SURFACE = {
+  surface_version: 1,
+  instrument: "one-note",
+  controls: [
+    { bind: "notes", label: "Play C", widget: "note-toggle", note: 60 },
+    { bind: "brightness", label: "Brightness", widget: "fader" },
+  ],
+};
+
+test("a note-toggle button + a fader render, each bound through emit()", () => {
   const engine = makeEngine();
   const container = makeElement("div");
-  renderSurface(surfaceOf("good-button"), engine, container);
+  renderSurface(buildSurface(ONE_NOTE_INSTRUMENT, ONE_NOTE_SURFACE), engine, container);
 
   // The fader (Brightness -> /brightness/in): dispatch an input at slider value 0.5.
   const range = find(container, (el) => el.tagName === "INPUT" && el.attrs.type === "range");
@@ -178,9 +197,9 @@ test("groovebox step-toggle click sends emit() on its param address", () => {
 // sendInitialDefaults: one default send per widget, post-ready (see render.mjs lifecycle).
 // -----------------------------------------------------------------------------------------
 
-test("sendInitialDefaults(good-button) fires each widget's default exactly once", () => {
+test("sendInitialDefaults fires each widget's default exactly once", () => {
   const engine = makeEngine();
-  sendInitialDefaults(surfaceOf("good-button"), engine);
+  sendInitialDefaults(buildSurface(ONE_NOTE_INSTRUMENT, ONE_NOTE_SURFACE), engine);
 
   // Two widgets: note-toggle (resting gate 0) and the Brightness fader (raw default 0.5).
   assert.strictEqual(engine.sends.length, 2);
