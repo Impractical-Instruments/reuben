@@ -121,9 +121,15 @@ Run all `reuben`/`cargo` commands from the repo root.
 ```
 
 - **`ty`** (ADR-0030) ∈ `f32_buffer` | `f32` | `i32` | `enum` | `note` | `harmony` | `arg` — the port's `Arg` type. A
-  `f32_buffer` port is a dense audio/CV Signal (no settable default). A `f32` port is a held Value and
+  `f32_buffer` port is a dense audio/CV Signal (no settable default *in the spec* — see the
+  Signal-with-default bullet below). A `f32` port is a held Value and
   adds `"f32": { min, max, default, unit, curve }` for its materialized default; `curve` ∈ `linear` |
   `exponential` (default linear), `unit` defaults `""`.
+- A **Signal input with a scalar default** (ADR-0031 — knob-set it materializes as a held buffer,
+  an LFO/envelope wires straight in; `filter.cutoff`, `saturator.drive`) can't carry its `{ .. }`
+  meta in the spec JSON: declare it as a bare `f32_buffer`, scaffold, then hand-add the meta to the
+  generated `operator_contract!` line — e.g. `drive: f32_buffer { 1.0..=30.0, default 2.5, "x", exp }`.
+  The macro grammar supports it; this is the one intended post-scaffold contract edit.
 - An **`enum` port** names its shared *vocab* enum in `"vocab": "Waveform"` (PascalCase) — the
   descriptor reads its variants and `#[default]` from `Waveform::enum_meta`. The vocab type must
   already exist in `crates/reuben-core/src/vocab/`; if it's new, define it there, `#[derive(ArgValue)]`,
@@ -131,7 +137,8 @@ Run all `reuben`/`cargo` commands from the repo root.
   need no extra fields.
 - The generated `IN_*`/`OUT_*`/`P_*` index consts follow declaration order — the scaffold renders
   the contract in `operator_contract!` grammar, so a `f32_buffer`/`f32 { .. }`/`enum(VocabType)` spec
-  lands as the real port declaration, no Stage-B retyping.
+  lands as the real port declaration, no Stage-B retyping (sole exception: adding `{ .. }` meta to a
+  Signal-with-default port, above).
 - A **`Constant`** (ADR-0035) is a `PortSpec` in the top-level `constants` array — e.g.
   `"constants": [{ "name": "voices", "ty": "i32", "i32": { "min": 1, "max": 32, "default": 8 } }]` —
   the instantiate-time value that sizes the voice pool (the loader routes it to the patch's
