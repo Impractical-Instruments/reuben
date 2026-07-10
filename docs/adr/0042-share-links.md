@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted (2026-07-09). The share-link decision of the web player epic
+Accepted (2026-07-09). Amended 2026-07-10: the envelope optionally carries the resolved
+surface doc as a tagged trailing extension section (see Amendment below), fixing the
+link-vs-launcher UI divergence introduced when [ADR-0043](0043-surface-docs-decouple-presentation-from-instruments.md)
+landed after this record. The share-link decision of the web player epic
 ([#151](https://github.com/Impractical-Instruments/reuben/issues/151), P6:
 [#228](https://github.com/Impractical-Instruments/reuben/issues/228)) — settled while building
 P6, which puts a play-link on every sample-free Toy in the README rig table. **Rides on**
@@ -153,3 +156,49 @@ want sharing — deferred rather than shipped half-working.
   decompression that a from-the-future or truncated link makes fail (§4).
 - **QR codes now.** Rejected: byte-mode caps below the common link size; a path that silently
   drops `groovebox` is worse than none.
+
+## Amendment (2026-07-10): the surface doc travels as a tagged trailing extension section
+
+Shipped one day after acceptance, [ADR-0043](0043-surface-docs-decouple-presentation-from-instruments.md)
+moved presentation out of instruments into `surfaces/*.json` — which this envelope did not
+carry, so a fragment boot always auto-derived its UI (one fader per pipe) while the launcher
+rendered the curated surface. A shared groovebox opened as ~55 anonymous faders instead of
+its three step lanes: same sound, unrecognizable UI. Three decisions close that gap.
+
+### A1. Extension sections extend `r1.` — no version bump
+
+After the snapshot section, the payload may carry **tagged trailing sections**: `u8 tag`,
+`u32 byte_len`, payload. Tag 1 is the resolved surface doc (UTF-8 JSON, verbatim); unknown
+tags are **skipped**; duplicates are last-wins; a length past the buffer is `damaged`; a
+bundle with no sections is byte-identical to a day-one bundle. This stays inside `r1.`
+deliberately: the day-one decoder read three positional sections and returned without
+checking for trailing bytes, so appended sections are invisible to every player already
+shipped — an old player opening a new link degrades to exactly its old behavior (auto-derive)
+instead of hard-refusing with the "newer version" banner that an `r2.` bump would force on
+stale PWA-cached clients. That accidental tolerance is now a pinned contract (share.test.mjs
+forges day-one layouts and unknown tags), and the tag byte gives the next optional field a
+real skip rule.
+
+### A2. PRESENTATION may fall back to the origin; SOUND may not
+
+Fragment-boot surface resolution order (the ADR-0043 §5 order, share target):
+**embedded section ?? `surfaces/<instrument>.web.json` ?? `surfaces/<instrument>.json` ??
+auto-derived**, every rung dark-degrading (ADR-0016) — where "every rung" includes an
+embedded doc that parses but is then refused by the resolver: it falls to the origin rungs
+rather than shadowing them (pinned by an E2E in `web/tests/share.spec.js`). The middle rungs fetch from the
+origin — which §1 forbids for *resources* — and that is not a contradiction: a missing
+resource changes what the link *plays* (terminal, class I), while a missing surface only
+changes what it *looks like* (degrade to auto-derive, never a banner). The rung also
+retroactively upgrades every link minted before this amendment. The generator embeds the
+surface (groovebox: 5459 B of the 16 KB cap, +~700 over surface-less), so committed links
+never depend on the rung; `--check` gates the embedded surface against disk byte-for-byte,
+presence included.
+
+### A3. The sidecar seeds the widgets it replays
+
+The snapshot always replayed into the *engine* verbatim but never into the *widgets* —
+invisible under 55 anonymous faders, a lie under curated step toggles (the pattern plays,
+the cells sit dark). At fragment boot each sidecar entry is decoded (`decodeControl`, the
+new JS inverse of `encodeControl`) and folded into its widget's `default` before render
+(`applySnapshotDefaults`), clamped like any pipe default. The verbatim `sendRaw` replay
+stays the authority on what plays; the fold only makes the visuals agree with it.

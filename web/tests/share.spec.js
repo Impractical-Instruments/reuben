@@ -9,6 +9,7 @@ import {
   ENVELOPE_PREFIX,
   CAPS,
 } from "../../crates/reuben-web/js/share.mjs";
+import { encodeControl } from "../../crates/reuben-web/js/codec.mjs";
 
 // Share-link coverage (issue #228): the web player boots a whole instrument out of a `#r1.…` URL
 // fragment — no origin fetch, one tap to sound — and every malformed link lands the reader on the
@@ -25,12 +26,21 @@ const readInstrument = (rel) =>
   readFileSync(fileURLToPath(new URL(`../../instruments/${rel}`, import.meta.url)), "utf8");
 const readInstrumentBytes = (rel) =>
   new Uint8Array(readFileSync(fileURLToPath(new URL(`../../instruments/${rel}`, import.meta.url))));
+const readSurface = (rel) =>
+  readFileSync(fileURLToPath(new URL(`../../surfaces/${rel}`, import.meta.url)), "utf8");
 const readFixture = (rel) =>
   readFileSync(fileURLToPath(new URL(`./fixtures/${rel}`, import.meta.url)), "utf8");
 
 // Frozen under tests/fixtures/ (vibrato left the library in the cull): the minimal share
 // payload — self-playing, no resources, no controls.
 const VIBRATO_DOC = readFixture("vibrato.json");
+
+// The launcher manifest (the smoke.spec idiom): a shared stock Toy must show ITS short
+// player-facing blurb, never the document's agent-facing `doc` text.
+const MANIFEST = JSON.parse(
+  readFileSync(fileURLToPath(new URL("../toys.json", import.meta.url)), "utf8"),
+);
+const GROOVEBOX_BLURB = MANIFEST.toys.find((t) => t.id === "groovebox").blurb;
 const EUCLIDEAN_DOC = readInstrument("euclidean-drums.json"); // self-playing, faders, no resources
 const GROOVEBOX_DOC = readInstrument("groovebox.json"); // self-playing, three voice resources
 
@@ -84,6 +94,9 @@ test("a shared vibrato link boots and plays after one tap", async ({ page }) => 
   // controlless drone, so we assert the surface rendered, not a specific widget).
   await expect.poll(() => page.evaluate(() => window.reubenPlayer.engineState())).toBe("running");
   await expect(page.locator(".surface-mount")).toHaveClass(/reuben-surface/);
+  // Not a launcher Toy → no blurb at all; the document's agent-facing `doc` text must never
+  // stand in as player copy.
+  await expect(page.locator(".player-blurb")).toHaveCount(0);
 
   expect(errors, `no uncaught page errors: ${errors.join("; ")}`).toEqual([]);
 });
@@ -145,10 +158,11 @@ test("moving a control then Share round-trips the document and the moved control
   await page.locator("#start").click();
   await expect.poll(() => page.evaluate(() => window.reubenPlayer.screen())).toBe("player");
 
-  // A fragment boot carries no surface doc, so the surface is auto-derived from the interface
-  // pipes (ADR-0043 §3): one fader per wireable pipe, declaration order — the first is the
-  // `tempo` pipe, addressed /tempo/in. Move it to its maximum so its journalled value differs
-  // from the load-time default — the snapshot must then carry exactly this control.
+  // This link was minted WITHOUT a surface, so the boot resolves one by the share-target
+  // order (ADR-0043 §5): embedded ?? origin's surfaces/<instrument> ?? auto-derived. Here
+  // the origin serves surfaces/euclidean-drums.json, whose first control is Tempo bound to
+  // the `tempo` pipe, addressed /tempo/in. Move it to its maximum so its journalled value
+  // differs from the load-time default — the snapshot must then carry exactly this control.
   const fader = page.locator(".surface-mount input[type=range]").first();
   await expect(fader).toBeVisible();
   await fader.evaluate((el) => {
@@ -171,6 +185,140 @@ test("moving a control then Share round-trips the document and the moved control
   expect(decoded.snapshot.length).toBeGreaterThan(0);
   const addrs = decoded.snapshot.map(controlAddress);
   expect(addrs).toContain("/tempo/in");
+  // The re-minted link carries the surface the player showed — the one the fragment boot
+  // re-resolved from the origin — so a share OF a share keeps the curated UI verbatim.
+  expect(decoded.surfaceText).toBe(readSurface("euclidean-drums.json"));
+});
+
+// --- surface travel: a link renders the SAME curated UI as the launcher --------------------
+
+const GROOVEBOX_SURFACE = readSurface("groovebox.json");
+
+test("a groovebox link with an embedded surface renders the launcher's exact UI, fetching no surfaces/", async ({
+  page,
+}) => {
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+
+  // 1. The reference: open groovebox from the launcher (the smoke idiom) and read its
+  // resolved widget list — the curated surfaces/groovebox.json UI.
+  await page.goto("/");
+  await page.locator("#start").click();
+  await page.locator('.toy-card[data-toy="groovebox"]').click();
+  await expect.poll(() => page.evaluate(() => window.reubenPlayer.toy())).toBe("groovebox");
+  const launcherWidgets = await page.evaluate(() => window.reubenPlayer.surface());
+  expect(launcherWidgets.length).toBe(55); // 48 step toggles + 7 faders
+
+  // 2. The link: same document + resources, surface EMBEDDED. Record surface fetches only
+  // from the splash onward — the app speculatively prefetches the default Toy's surface at
+  // boot (prefetchToy), which is unrelated to how the fragment resolves its own.
+  const fragment = await encodeBundle({
+    docText: GROOVEBOX_DOC,
+    resources: GROOVEBOX_RESOURCES,
+    surfaceText: GROOVEBOX_SURFACE,
+  });
+  await startFragmentBoot(page, fragment);
+  await expect(page.locator("#start")).toBeVisible();
+  const surfaceFetches = [];
+  page.on("request", (r) => {
+    if (r.url().includes("/surfaces/")) surfaceFetches.push(r.url());
+  });
+  await page.locator("#start").click();
+  await expect.poll(() => page.evaluate(() => window.reubenPlayer.instrument())).toBe("groovebox");
+
+  // The fragment boot resolved the IDENTICAL widget model from the embedded surface —
+  // origin-independently (no surfaces/ fetch) — and the DOM shows the step-sequencer shape.
+  const linkWidgets = await page.evaluate(() => window.reubenPlayer.surface());
+  expect(linkWidgets).toEqual(launcherWidgets);
+  await expect(page.locator(".surface-mount .step-lane")).toHaveCount(3); // kick/snare/hat lanes
+  await expect(page.locator(".surface-mount .step-cell")).toHaveCount(48);
+  // A shared stock Toy shows its manifest blurb — the short player copy — not the document's
+  // agent-facing `doc` text.
+  await expect(page.locator(".player-blurb")).toHaveText(GROOVEBOX_BLURB);
+  expect(
+    surfaceFetches,
+    `resolved from the embedded surface without fetching, saw: ${surfaceFetches.join(", ")}`,
+  ).toEqual([]);
+  expect(errors, `no uncaught page errors: ${errors.join("; ")}`).toEqual([]);
+});
+
+test("a resolver-refused embedded surface falls to the origin rung, not to fader soup", async ({
+  page,
+}) => {
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+
+  // This surface PARSES (valid JSON, surface_version 1) but the resolver refuses it
+  // (`controls` is not an array), so the parse rung takes it and the resolve fails — the
+  // ladder must then try the origin (ADR-0042 A2: every rung dark-degrades, including
+  // resolver rejection), landing on the curated surfaces/groovebox.json.
+  const fragment = await encodeBundle({
+    docText: GROOVEBOX_DOC,
+    resources: GROOVEBOX_RESOURCES,
+    surfaceText: JSON.stringify({ surface_version: 1, instrument: "groovebox", controls: 42 }),
+  });
+  await startFragmentBoot(page, fragment);
+  await expect(page.locator("#start")).toBeVisible();
+  const surfaceFetches = [];
+  page.on("request", (r) => {
+    if (r.url().includes("/surfaces/")) surfaceFetches.push(r.url());
+  });
+  await page.locator("#start").click();
+  await expect.poll(() => page.evaluate(() => window.reubenPlayer.instrument())).toBe("groovebox");
+
+  await expect(page.locator(".surface-mount .step-lane")).toHaveCount(3);
+  await expect(page.locator(".surface-mount .step-cell")).toHaveCount(48);
+  // The origin rung actually ran — the rung transition, not a lucky embedded resolve.
+  expect(surfaceFetches.length, "the ladder fell through to an origin surface fetch").toBeGreaterThan(0);
+  expect(errors, `no uncaught page errors: ${errors.join("; ")}`).toEqual([]);
+});
+
+test("back-compat — a surface-less (pre-amendment) groovebox link upgrades to the curated UI via the origin", async ({
+  page,
+}) => {
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+
+  // Minted exactly as the day-one player did: no surface section at all. The receiver's
+  // fallback rung fetches surfaces/groovebox.json from the origin, so every link shared
+  // before surfaces travelled still gains the curated UI (never fader soup).
+  const fragment = await encodeBundle({ docText: GROOVEBOX_DOC, resources: GROOVEBOX_RESOURCES });
+  await startFragmentBoot(page, fragment);
+  await page.locator("#start").click();
+  await expect.poll(() => page.evaluate(() => window.reubenPlayer.instrument())).toBe("groovebox");
+
+  await expect(page.locator(".surface-mount .step-lane")).toHaveCount(3);
+  await expect(page.locator(".surface-mount .step-cell")).toHaveCount(48);
+  expect(errors, `no uncaught page errors: ${errors.join("; ")}`).toEqual([]);
+});
+
+test("a link's snapshot lights the widgets it replays — the toggles show the shared pattern", async ({
+  page,
+}) => {
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+
+  // hat_step2 rests OFF in the stock document (interface.inputs.hat_step2 default 0, surface
+  // label H2). A link whose sidecar turns it ON must boot with that step-cell pressed — the
+  // widgets show the pattern the engine is playing, not the stock defaults.
+  const fragment = await encodeBundle({
+    docText: GROOVEBOX_DOC,
+    resources: GROOVEBOX_RESOURCES,
+    surfaceText: GROOVEBOX_SURFACE,
+    snapshot: [encodeControl("/hat_step2/in", [1])],
+  });
+  await startFragmentBoot(page, fragment);
+  await page.locator("#start").click();
+  await expect.poll(() => page.evaluate(() => window.reubenPlayer.instrument())).toBe("groovebox");
+
+  const h2 = page.locator(".step-cell").filter({ hasText: /^H2$/ });
+  await expect(h2).toHaveAttribute("aria-pressed", "true");
+  // A neighbouring step the snapshot did NOT touch keeps its stock rest state (H4 is off too).
+  await expect(page.locator(".step-cell").filter({ hasText: /^H4$/ })).toHaveAttribute(
+    "aria-pressed",
+    "false",
+  );
+  expect(errors, `no uncaught page errors: ${errors.join("; ")}`).toEqual([]);
 });
 
 // --- AC 4: every failure class lands on the launcher with the right banner, no crash --------

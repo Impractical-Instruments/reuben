@@ -34,6 +34,27 @@ const RENDERED_WIDGETS = new Set(["fader", "radial", "param-toggle", "note-toggl
 // radial) behaves as kind "fader" — a continuous value scaled into [min, max].
 const TOGGLE_KINDS = new Set(["param-toggle", "note-toggle", "chord-button"]);
 
+// The value-backed kinds: widgets with a resting value (min/max/default) that the journal,
+// the share sidecar, and applySnapshotDefaults all operate on. The hold kinds (note-toggle,
+// chord-button) carry no resting state and never appear in a snapshot.
+export const VALUE_KINDS = new Set(["fader", "param-toggle"]);
+
+// The ADR-0043 §5 file-resolution candidates for the web target, most specific first:
+// surfaces/<id>.web.json ?? surfaces/<id>.json (?? auto-derive, the caller's fallthrough).
+// Root-relative strings — the player feeds them to fetch via its asset base, the README link
+// generator joins them to the repo root. One owner so the two consumers cannot drift.
+export const SURFACE_CANDIDATES = (id) => [`surfaces/${id}.web.json`, `surfaces/${id}.json`];
+
+// The one version predicate for a parsed surface doc (throw-or-return). Callers choose the
+// failure policy — the player warns and falls through to its next candidate (dark-degrade),
+// the generator lets the throw kill the mint (a committed link must never carry a broken doc).
+export function validateSurfaceDoc(doc) {
+  if (doc?.surface_version !== 1) {
+    throw new Error(`unsupported surface_version ${doc?.surface_version}`);
+  }
+  return doc;
+}
+
 // --- pipes ---------------------------------------------------------------------------------
 
 /**
@@ -321,6 +342,38 @@ export function resolveSurface(instrumentDoc, surfaceDoc = null) {
  */
 export function buildSurface(instrumentDoc, surfaceDoc = null) {
   return resolveSurface(instrumentDoc, surfaceDoc);
+}
+
+/**
+ * Fold a replayed control snapshot into a resolved surface's rest values, so the widgets
+ * render showing the state they will be playing (share links, ADR-0042): each decoded
+ * sidecar entry whose address matches a value-backed widget overrides that widget's
+ * `default`, clamped into its range exactly as a pipe default is. Mutates the surface in
+ * place, BEFORE renderSurface — the widgets seed their visuals from `default`, and
+ * sendInitialDefaults/captureSnapshot then treat the replayed value as the rest baseline.
+ * Entries addressing nothing on the surface, and args that aren't a bare finite number
+ * (a fader/param-toggle only ever journals one raw F32), are ignored — the verbatim
+ * engine replay stays the authority on what actually plays.
+ *
+ * @param {{widgets: object[]}} surface - from buildSurface().
+ * @param {Array<{address: string, args: Array<number | string | {i32: number}>}>} entries
+ *   decoded sidecar messages (codec.mjs decodeControl over each snapshot buffer).
+ */
+export function applySnapshotDefaults(surface, entries) {
+  const byAddress = new Map();
+  for (const w of surface.widgets) {
+    if (!VALUE_KINDS.has(w.kind)) continue;
+    const list = byAddress.get(w.address);
+    if (list) list.push(w);
+    else byAddress.set(w.address, [w]);
+  }
+  for (const { address, args } of entries) {
+    const v = args?.[0];
+    if (typeof v !== "number" || !Number.isFinite(v)) continue;
+    for (const w of byAddress.get(address) ?? []) {
+      w.default = clamp(v, w.min, w.max);
+    }
+  }
 }
 
 // --- binding ----------------------------------------------------------------------------

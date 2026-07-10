@@ -43,6 +43,17 @@
 //                   u32 data_len, [u8] data
 //   u32            snapshot count
 //     per entry:   u32 buf_len, [u8]   — a verbatim encodeControl() buffer
+//   [extension sections, zero or more, to end of payload]
+//     per section: u8 tag, u32 byte_len, [u8] payload
+//       tag 1 (EXT_SURFACE): the resolved surface doc, UTF-8 JSON text, verbatim
+//       unknown tag:         skipped (byte_len bytes) — the forward-compat rule
+//
+// EXTENSION SECTIONS stay inside `r1.`: decoders MUST skip unknown trailing tags, and MUST
+// tolerate the sections' absence entirely (the day-one r1 decoder read the three positional
+// sections and ignored anything after them, so appended sections are invisible to it — this
+// rule formalizes that tolerance). Duplicate tags: last one wins. A section whose declared
+// length runs past the buffer is "damaged" like any other truncation. Sections are emitted
+// only when non-empty, so a bundle without them is byte-identical to a day-one bundle.
 //
 // Every u32 length above is attacker-controlled. readU32/readBytes validate against the
 // remaining buffer before allocating, the caps below bound the totals, and decompression is
@@ -65,10 +76,17 @@ export const CAPS = {
   RESOURCE_COUNT: 64,
   /** Bytes in one resource — bounded by the 1 MB total, but named so a failure blames a key. */
   PER_RESOURCE_BYTES: 256 * 1024,
+  /** Bytes in one trailing extension section (e.g. the surface doc) — same guardrail scale as
+   *  a resource, but its own name: a section is not a resource and a failure blames a tag. */
+  PER_SECTION_BYTES: 256 * 1024,
 };
 
 /** A resource kind that this envelope refuses to carry (WAV samples). */
 const KIND_SAMPLE = 1;
+
+/** Extension-section tag: the resolved surface doc (UTF-8 JSON text), so the curated UI
+ *  travels with the link instead of the receiver auto-deriving fader soup (ADR-0042 amendment). */
+const EXT_SURFACE = 1;
 
 /**
  * A decode/encode failure carrying a `code` that main.js maps onto the A–I banner copy —
@@ -239,16 +257,23 @@ function normalizeResources(resources) {
  * @param {string} bundle.docText - the top-level instrument document, carried verbatim.
  * @param {Map<string,{kind:number,bytes:Uint8Array}>|Array<{key:string,kind:number,bytes:Uint8Array}>} [bundle.resources]
  * @param {Uint8Array[]} [bundle.snapshot] - verbatim encodeControl() buffers (the sidecar).
+ * @param {string|null} [bundle.surfaceText] - the resolved surface doc, carried verbatim in an
+ *   EXT_SURFACE trailing section; omitted entirely when null (auto-derived surfaces embed
+ *   nothing — the receiver re-derives identically).
  * @returns {Promise<string>} the `r1.…` fragment.
  * @throws {ShareError} code "sample" if any resource is kind=1; "too-large" if the fragment
  *   exceeds the 16 KB cap.
  */
-export async function encodeBundle({ docText, resources, snapshot } = {}) {
+export async function encodeBundle({ docText, resources, snapshot, surfaceText } = {}) {
   if (typeof docText !== "string") {
     throw new TypeError("encodeBundle: docText must be a string");
   }
+  if (surfaceText != null && typeof surfaceText !== "string") {
+    throw new TypeError("encodeBundle: surfaceText must be a string or null");
+  }
   const res = normalizeResources(resources);
   const snaps = snapshot ?? [];
+  const surfaceBytes = surfaceText != null ? encoder.encode(surfaceText) : null;
 
   const docBytes = encoder.encode(docText);
   const resParts = res.map((r) => {
@@ -267,6 +292,7 @@ export async function encodeBundle({ docText, resources, snapshot } = {}) {
   for (const p of resParts) size += 4 + p.keyBytes.length + 1 + 4 + p.data.length;
   size += 4;
   for (const s of snaps) size += 4 + s.length;
+  if (surfaceBytes) size += 1 + 4 + surfaceBytes.length;
 
   const out = new Uint8Array(size);
   const view = new DataView(out.buffer);
@@ -300,6 +326,14 @@ export async function encodeBundle({ docText, resources, snapshot } = {}) {
     pos += s.length;
   }
 
+  if (surfaceBytes) {
+    out[pos++] = EXT_SURFACE;
+    view.setUint32(pos, surfaceBytes.length, true);
+    pos += 4;
+    out.set(surfaceBytes, pos);
+    pos += surfaceBytes.length;
+  }
+
   const compressed = await deflateRaw(out);
   const fragment = ENVELOPE_PREFIX + toBase64Url(compressed);
   if (fragment.length > CAPS.FRAGMENT_BYTES) {
@@ -316,11 +350,12 @@ export async function encodeBundle({ docText, resources, snapshot } = {}) {
 /**
  * Decode a `r1.…` fragment (a leading `#`, as in location.hash, is tolerated) back into a
  * bundle. Does NOT parse the document — it returns docText verbatim, so a JSON or version
- * failure is the caller's (the engine's message, failure classes F/G/H). This layer owns only
- * the envelope: version, base64, deflate, and the bounds-checked TLV.
+ * failure is the caller's (the engine's message, failure classes F/G/H). The same layering
+ * applies to surfaceText: this layer hands back the section's text verbatim (or null when
+ * absent); surface JSON/version validity is the caller's problem, exactly like docText.
  *
  * @param {string} fragment
- * @returns {Promise<{docText:string, resources:Array<{key:string,kind:number,bytes:Uint8Array}>, snapshot:Uint8Array[]}>}
+ * @returns {Promise<{docText:string, resources:Array<{key:string,kind:number,bytes:Uint8Array}>, snapshot:Uint8Array[], surfaceText:string|null}>}
  * @throws {ShareError} with a `code` for each failure class (see ShareError).
  */
 export async function decodeBundle(fragment) {
@@ -397,5 +432,21 @@ export async function decodeBundle(fragment) {
     snapshot.push(buf.slice());
   }
 
-  return { docText, resources, snapshot };
+  // Extension sections run to the end of the payload: skip unknown tags (forward compat),
+  // last duplicate wins. readU8/readU32/readBytes already turn a lying length into "damaged".
+  let surfaceText = null;
+  while (pos < payload.byteLength) {
+    const tag = readU8(view, pos);
+    pos += 1;
+    const len = readU32(view, pos);
+    pos += 4;
+    if (len > CAPS.PER_SECTION_BYTES) {
+      throw new ShareError("damaged", `extension section (tag ${tag}) is ${len} bytes, over the per-section cap`);
+    }
+    const data = readBytes(payload, pos, len);
+    pos += len;
+    if (tag === EXT_SURFACE) surfaceText = decoder.decode(data);
+  }
+
+  return { docText, resources, snapshot, surfaceText };
 }

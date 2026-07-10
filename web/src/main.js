@@ -16,9 +16,16 @@ import "./app.css";
 import iiBadge from "./assets/ii-badge.png";
 import { registerSW } from "virtual:pwa-register";
 import { createReubenEngine } from "../../crates/reuben-web/js/reuben-engine.mjs";
-import { buildSurface, initial } from "../../crates/reuben-web/js/surface/widget-model.mjs";
+import {
+  applySnapshotDefaults,
+  buildSurface,
+  initial,
+  SURFACE_CANDIDATES,
+  validateSurfaceDoc,
+  VALUE_KINDS,
+} from "../../crates/reuben-web/js/surface/widget-model.mjs";
 import { renderSurface, sendInitialDefaults } from "../../crates/reuben-web/js/surface/render.mjs";
-import { encodeControl } from "../../crates/reuben-web/js/codec.mjs";
+import { decodeControl, encodeControl } from "../../crates/reuben-web/js/codec.mjs";
 import { decodeBundle, encodeBundle, ShareError } from "../../crates/reuben-web/js/share.mjs";
 import manifest from "../toys.json";
 
@@ -42,6 +49,7 @@ let loadToken = 0; // bumped per openToy so a stale in-flight load can't clobber
 let currentToy = null; // id of the Toy currently loaded on the engine (null before first)
 let currentInstrument = null; // document `instrument` name of the current player (Toy or link)
 let currentSurface = null; // the surface of the current player screen, read at Share time
+let currentSurfaceDocText = null; // the curated surface doc's verbatim text (null = auto-derived), embedded at Share time
 let currentBanner = null; // the launcher banner text (null = none), read by the test hook
 let currentShareBtn = null; // the current player's Share button, for its "Copied!" flash
 let currentShareSlot = null; // the current player's slot for the hand-copy fallback textarea
@@ -86,28 +94,25 @@ function ensureEngine() {
   return enginePromise;
 }
 
-// The ADR-0043 §5 resolution order for target `web`:
-//   surfaces/<id>.web.json ?? surfaces/<id>.json ?? null (⇒ buildSurface auto-derives from
-//   the instrument's interface pipes).
+// Surface resolution (the ADR-0043 §5 order for target `web`): SURFACE_CANDIDATES and the
+// validateSurfaceDoc version predicate are shared with the README link generator via
+// widget-model.mjs — one owner of the candidate order. validateSurfaceDoc refuses at PARSE
+// (not resolve) to keep the fallthroughs alive: an unusable .web.json must not shadow a valid
+// .json, and an unusable embedded surface must not shadow the origin's.
+//
+// Returns {doc, text} — the parsed doc plus its verbatim text, kept so Share can embed the
+// surface byte-for-byte into the link (ADR-0042 amendment) — or null when no candidate works.
 // A 404 falls through to the next candidate SILENTLY — most Toys ship only the base doc, and a
 // doc-less Toy is fine by design. Any other failure (network drop, bad JSON) logs and also
-// falls through: a broken surface file degrades to the auto-derived default rather than
-// killing the load (dark-degrade, ADR-0016).
-const SURFACE_CANDIDATES = (id) => [`surfaces/${id}.web.json`, `surfaces/${id}.json`];
-
+// falls through: a broken surface file degrades rather than killing the load (ADR-0016).
 async function fetchSurfaceDoc(id) {
   for (const candidate of SURFACE_CANDIDATES(id)) {
     try {
       const r = await fetch(asset(candidate));
       if (r.status === 404) continue; // no such surface doc — try the next candidate
       if (!r.ok) throw new Error(`HTTP ${r.status}`);
-      const doc = await r.json();
-      // The resolver hard-refuses an unknown surface_version; refusing HERE instead keeps
-      // the §5 fallthrough alive — an unusable .web.json must not shadow a valid .json.
-      if (doc?.surface_version !== 1) {
-        throw new Error(`unsupported surface_version ${doc?.surface_version}`);
-      }
-      return doc;
+      const text = await r.text();
+      return { doc: validateSurfaceDoc(JSON.parse(text)), text };
     } catch (err) {
       console.warn(`[player] surface doc ${candidate} unusable, falling through:`, err);
     }
@@ -115,18 +120,38 @@ async function fetchSurfaceDoc(id) {
   return null;
 }
 
-// Resolve with the surface doc, degrading to the auto-derived default if the resolver
+// A bundle's embedded surface text → {doc, text}, or null when absent/unusable (warn and fall
+// through to the next resolution rung — the same dark-degrade policy as fetchSurfaceDoc).
+function parseEmbeddedSurface(surfaceText) {
+  if (surfaceText == null) return null;
+  try {
+    return { doc: validateSurfaceDoc(JSON.parse(surfaceText)), text: surfaceText };
+  } catch (err) {
+    console.warn("[player] embedded surface doc unusable, falling through:", err);
+    return null;
+  }
+}
+
+// One resolution rung: try the surface entry ({doc, text} | null) against the resolver.
+// Returns {surface, surfaceText} when the curated doc actually took — so Share never embeds a
+// doc the player isn't showing — or null (warn) when there is no entry or the resolver refuses
+// it, letting the CALLER decide what the next rung is (fragmentBoot walks the ADR-0042 A2
+// ladder; resolveSurfaceOrDefault drops straight to the derived default).
+function tryResolveSurface(doc, entry, name) {
+  if (entry == null) return null;
+  try {
+    return { surface: buildSurface(doc, entry.doc), surfaceText: entry.text };
+  } catch (err) {
+    console.warn(`[player] surface doc for ${name} rejected, trying the next rung:`, err);
+    return null;
+  }
+}
+
+// Resolve with the surface entry, degrading to the auto-derived default if the resolver
 // refuses it — a broken surface file must never kill a Toy that already loaded (the
 // fetchSurfaceDoc policy above, enforced at the last seam).
-function resolveSurfaceOrDefault(doc, surfaceDoc, name) {
-  if (surfaceDoc !== null) {
-    try {
-      return buildSurface(doc, surfaceDoc);
-    } catch (err) {
-      console.warn(`[player] surface doc for ${name} rejected, using the derived default:`, err);
-    }
-  }
-  return buildSurface(doc, null);
+function resolveSurfaceOrDefault(doc, entry, name) {
+  return tryResolveSurface(doc, entry, name) ?? { surface: buildSurface(doc, null), surfaceText: null };
 }
 
 // Surface resolver warnings (skipped pipes, unknown binds, clamped ranges) surface ONCE per
@@ -285,6 +310,7 @@ function launcherScreen(bannerMessage) {
 function showLauncher(bannerMessage) {
   currentBanner = bannerMessage ?? null;
   currentSurface = null;
+  currentSurfaceDocText = null;
   currentShareBtn = null;
   currentShareSlot = null;
   setScreen("launcher", launcherScreen(currentBanner));
@@ -387,7 +413,7 @@ function argsEqual(a, b) {
 function captureSnapshot(surface) {
   const snapshot = [];
   for (const widget of surface.widgets ?? []) {
-    if (widget.kind !== "fader" && widget.kind !== "param-toggle") continue;
+    if (!VALUE_KINDS.has(widget.kind)) continue;
     const moved = journal.get(widget.address);
     if (!moved) continue;
     if (argsEqual(moved, initial(widget).args)) continue;
@@ -433,6 +459,7 @@ async function doShare() {
       docText: bundle.docText,
       resources: bundle.resources,
       snapshot: captureSnapshot(currentSurface),
+      surfaceText: currentSurfaceDocText,
     });
   } catch (err) {
     // encodeBundle can only fail on a sample or an over-cap bundle — neither is reachable for a
@@ -524,7 +551,7 @@ async function openToy(toy) {
     if (token !== loadToken) return; // superseded by a newer openToy — drop this render
 
     currentToy = toy.id;
-    const [doc, surfaceDoc] = await Promise.all([
+    const [doc, surfaceEntry] = await Promise.all([
       fetch(asset(`instruments/${toy.id}.json`)).then((r) => {
         if (!r.ok) throw new Error(`fetch ${toy.id}.json: HTTP ${r.status}`);
         return r.json();
@@ -534,9 +561,10 @@ async function openToy(toy) {
     if (token !== loadToken) return;
 
     currentInstrument = doc.instrument;
-    const surface = resolveSurfaceOrDefault(doc, surfaceDoc, toy.id);
+    const { surface, surfaceText } = resolveSurfaceOrDefault(doc, surfaceEntry, toy.id);
     logSurfaceWarnings(toy.id, surface.warnings);
     currentSurface = surface;
+    currentSurfaceDocText = surfaceText;
     renderSurface(surface, e, surfaceEl);
     // sendInitialDefaults ONLY after load() resolved (the worklet's `ready`): a control sent
     // before construct is dropped (render.mjs lifecycle note).
@@ -660,17 +688,44 @@ async function fragmentBoot(hash) {
 
       currentToy = null;
       currentInstrument = doc.instrument;
-      // A shared bundle carries no surface file — buildSurface(doc, null) auto-derives the
-      // default surface from the document's interface pipes (ADR-0043 §3).
-      const surface = buildSurface(doc, null);
+      // Surface resolution for a link (ADR-0042 A2 / ADR-0043 §5, share target): the bundle's
+      // embedded surface ?? the origin's surfaces/<instrument>.web.json ?? surfaces/
+      // <instrument>.json (the origin rungs upgrade links minted before surfaces travelled)
+      // ?? the auto-derived default. Every rung dark-degrades — including an embedded doc the
+      // RESOLVER refuses (not just a parse failure), which falls to the origin rungs rather
+      // than shadowing them. `??=` short-circuits, so the origin fetch only runs when needed.
+      let resolved = tryResolveSurface(doc, parseEmbeddedSurface(bundle.surfaceText), doc.instrument);
+      resolved ??= tryResolveSurface(doc, await fetchSurfaceDoc(doc.instrument), doc.instrument);
+      resolved ??= { surface: buildSurface(doc, null), surfaceText: null };
+      const { surface, surfaceText } = resolved;
       logSurfaceWarnings(doc.instrument, surface.warnings);
       currentSurface = surface;
+      currentSurfaceDocText = surfaceText;
+      // Fold the sidecar into the widgets' rest values BEFORE rendering, so the surface shows
+      // the state it will be playing (a shared step pattern lights its toggles). A buffer the
+      // decoder can't read is skipped — the verbatim engine replay below stays the authority.
+      applySnapshotDefaults(
+        surface,
+        bundle.snapshot.flatMap((buf) => {
+          try {
+            return [decodeControl(buf)];
+          } catch (err) {
+            console.warn("[player] undecodable snapshot entry, widgets may not reflect it:", err);
+            return [];
+          }
+        }),
+      );
       const kind = deriveKind(surface, info);
 
+      // A shared instrument that IS a launcher Toy reuses its manifest title/blurb — the
+      // short, player-facing copy the launcher cards show. An unknown/custom instrument gets
+      // title only: the document's `doc` field is the agent-facing spec (ADR refs, pipe
+      // addresses), never player copy.
+      const toy = TOYS.find((t) => t.id === doc.instrument);
       const { screen, surfaceEl, status, skeleton, body, shareBtn } = buildPlayerScreen({
         nameForData: doc.instrument,
-        title: doc.instrument,
-        blurb: doc.doc,
+        title: toy?.title ?? doc.instrument,
+        blurb: toy?.blurb,
         kind,
       });
       setScreen("player", screen);
@@ -753,6 +808,8 @@ window.reubenPlayer = {
   banner: () => currentBanner,
   shareUrl: () => lastShareUrl,
   engineState: () => engine?.context.state ?? "none",
+  // The resolved widget list (kind/widget/bind per widget), for launcher-vs-link parity checks.
+  surface: () => currentSurface?.widgets.map(({ kind, widget, bind }) => ({ kind, widget, bind })) ?? null,
   toys: TOYS,
 };
 
