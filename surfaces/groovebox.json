@@ -314,6 +314,11 @@
       "bind": "tone",
       "label": "Tone",
       "widget": "fader"
+    },
+    {
+      "bind": "volume",
+      "label": "Volume",
+      "widget": "fader"
     }
   ]
 }

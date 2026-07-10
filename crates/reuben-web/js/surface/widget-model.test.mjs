@@ -70,7 +70,7 @@ for (const name of Object.keys(PAIRS)) {
 // Guard the fixture's own shape so a silently-truncated oracle can't make the diff pass.
 test("oracle covers exactly the eight pairs with the documented counts", () => {
   assert.deepStrictEqual(Object.keys(oracle).sort(), Object.keys(PAIRS).sort());
-  assert.strictEqual(oracle.groovebox.widgets.length, 53);
+  assert.strictEqual(oracle.groovebox.widgets.length, 54);
   assert.strictEqual(oracle["chord-player"].widgets.length, 9);
   assert.strictEqual(oracle["strum-harp"].widgets.length, 4);
   assert.strictEqual(oracle["euclidean-drums"].widgets.length, 25);
