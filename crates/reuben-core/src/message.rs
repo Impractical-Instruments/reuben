@@ -133,8 +133,8 @@ pub enum Arg {
     /// Any **vocab enum** value, type-erased to its bare variant **index** (ADR-0030). One
     /// variant for *every* enum: type identity lives in the port descriptor's
     /// [`EnumMeta`](crate::descriptor::EnumMeta), never in the value — so adding an enum touches
-    /// no central engine site. The operator names the concrete type at the read
-    /// (`io.input::<FilterMode>()` → `FilterMode::from_index`), and port-authority guarantees a
+    /// no central engine site. The operator names the concrete type in its handle's form
+    /// (`io.read` on an `In<Held<FilterMode>>` → `FilterMode::from_index`), and port-authority guarantees a
     /// latch slot only ever holds its own port's enum, so a bare index cannot mis-decode.
     Enum(u32),
 
@@ -178,7 +178,7 @@ impl From<i32> for Arg {
 // `#[derive(ArgValue)]` on each vocab type (ADR-0030); they are not written here.
 
 /// Decode a borrowed [`Arg`] into an operator's requested payload type — the read side of the
-/// typed I/O API (`io.input::<T>`, ADR-0030). One trait spans every payload an
+/// typed handle read (`io.read`, ADR-0037). One trait spans every payload an
 /// operator reads: the OSC primitives (`f32`/`i32`/`&str`), the dense [`Buffer`](Arg::F32Buffer) as a
 /// borrowed `&[f32]`, and the shared *vocab* concrete types (whose impl `#[derive(ArgValue)]`
 /// generates, delegating to their `TryFrom<&Arg>`).
@@ -310,7 +310,7 @@ pub struct Emit {
 /// reference to the one [`Arg`], and a segment-relative frame. The Render loop builds these in
 /// place (no allocation), keeping Render realtime-safe while delivering events.
 ///
-/// This is the raw delivered form; the typed read API (`io.input::<Note>`) decodes the borrowed
+/// This is the raw delivered form; the Event handle read (`io.read` on an `In<Event<Note>>`) decodes the borrowed
 /// `Arg` into the operator's requested payload type. Carries **no address** (ADR-0031 step 7): a
 /// delivered event is identified by the input port it lands on (the wired connection), not a name.
 #[derive(Debug, Clone, Copy)]

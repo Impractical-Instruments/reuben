@@ -13,7 +13,9 @@ always a buffer underneath"** / static-read-view / always-materialize decisions 
 the **"all numeric operands are materialized `Float`"** rule of
 [ADR-0029](0029-math-family-dense-float-one-file-per-op.md). Builds on — does **not** retract —
 0030's foundation: one `Message = { address, frame, Arg }`, one closed `Arg`, one per-port ZOH
-latch, `Signal` = a Message whose `Arg` is a `Buffer`.
+latch, `Signal` = a Message whose `Arg` is a `Buffer`. **Read/write verbs deleted 2026-07-10**
+(issue #216) — folded into [ADR-0037](0037-typed-port-handles.md)'s typed handles; see
+[Revision](#revision-2026-07-10).
 
 ## Revision (2026-06-27)
 
@@ -30,6 +32,17 @@ Signal input; hard-error a Signal into a Value input). No solver, no tags, no su
 Math/shaper ops ship as **explicit per-form variants** (value-math and signal-math nodes) rather
 than one node that adapts. The sections below are written to the revised model; the
 [Considered alternatives](#considered-alternatives) record propagation as the rejected path.
+
+## Revision (2026-07-10)
+
+Issue #216 deleted the two return-type-dispatched verbs — `io.input::<T>` / `io.output::<T>`, this
+ADR's read/write API, later demoted to `pub(crate)` primitives by
+[ADR-0037](0037-typed-port-handles.md) — folding them into the typed-handle `form` impls that had
+become their only remaining callers: each impl now reads the private `Io` state directly, one
+dispatch per form. The decision's substance is untouched — the three declared forms, the local
+per-wire check, Value→Signal materialization, `MsgWriter` semantics, and addresslessness all stand;
+only the verb spelling is gone. Operator code reads `io.read(IN_X)` and writes `io.write(OUT_X)`
+per ADR-0037, so the API examples in the [Decision](#decision) below are the historical spelling.
 
 ## Context
 

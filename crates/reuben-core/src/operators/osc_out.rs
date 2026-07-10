@@ -15,7 +15,8 @@
 //! needs the deferred Signal→Message sampler (ADR-0017); v1 OSC-out does not.
 //!
 //! - input 0: `in` (`arg` — the type-agnostic pass-through, issue #141) — values to send out. The
-//!   sink forwards **any** [`Arg`] verbatim: a `Note`, a scalar echo, a vocab enum, a string —
+//!   sink forwards **any** [`Arg`](crate::message::Arg) verbatim: a `Note`, a scalar echo, a
+//!   vocab enum, a string —
 //!   whatever Message-domain source is wired in. The type-driven expansion to the flat OSC form
 //!   happens past the boundary ([`osc_out_args`](crate::boundary::osc_out_args)); legality is
 //!   capability-keyed ([`has_osc_form`](crate::boundary::has_osc_form)), so a no-OSC-form source
@@ -30,8 +31,8 @@
 //!   address is stamped on drain.
 
 use crate::descriptor::Descriptor;
-use crate::message::Arg;
-use crate::operator::{Io, Operator};
+use crate::operator::form::Raw;
+use crate::operator::{Io, Operator, Out};
 
 // Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 // `OscOut` -> type_name "osc_out" (snake_case, required by the contract validator — the wire name
@@ -39,6 +40,10 @@ use crate::operator::{Io, Operator};
 crate::operator_contract!(OscOut {
     inputs: { in: arg },
 });
+
+// The sink emits on an *undeclared* output port (index 0 — outbound taps drain by node, not by
+// wired edge), so no contract-emitted handle exists; this local one is its stand-in.
+const OUT_TAP: Out<Raw> = Out::new(0);
 
 #[derive(Default)]
 pub struct OscOut;
@@ -64,10 +69,7 @@ impl Operator for OscOut {
         // bump, never a heap clone. `frame` is segment-relative; the writer adds the segment
         // offset so the tap sees block-absolute frames.
         for ev in io.read(IN_IN) {
-            // The one sanctioned use of the `io.output` primitive (ADR-0037): the sink emits on
-            // an *undeclared* output port (index 0 — outbound taps drain by node, not by wired
-            // edge), so there is no contract handle to write through.
-            io.output::<Arg>(0).emit(ev.frame, ev.payload.clone());
+            io.write(OUT_TAP).emit(ev.frame, ev.payload.clone());
         }
     }
 
@@ -81,6 +83,7 @@ crate::register_operator!(OscOut);
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::message::Arg;
     use crate::op_driver::OpDriver;
     use crate::vocab::pitch::{Note, Pitch};
     use crate::vocab::FilterMode;

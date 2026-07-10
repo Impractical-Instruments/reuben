@@ -7,7 +7,7 @@
 
 /// What a port carries — **the port's [`Arg`](crate::message::Arg) type** (ADR-0030). Replaces
 /// the retired `Shape`: delivery and read-style are no longer a declared axis, they follow from
-/// the Arg type plus the read verb (`io.input::<Note>` / `io.input::<T>`). One variant per `Arg` *family*; a
+/// the Arg type plus the handle's form (`io.read` on an `Event<Note>` / `Held<T>` handle). One variant per `Arg` *family*; a
 /// vocab type names itself by its Arg variant (`Vocab { name: "Note", .. }` ↔ `Arg::Note`), which
 /// keeps this enum from re-enumerating every vocab type as the central `Arg` already does.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -49,8 +49,8 @@ pub enum PortType {
     /// A **type-agnostic pass-through** (issue #141): the port carries *any*
     /// [`Arg`](crate::message::Arg), committing to no vocab type. Classified as an
     /// [Event](crate::plan::PortKind::Event) stream, so routing delivers the raw `Arg` unlatched
-    /// and uncoerced; the operator reads it via `io.input::<&Arg>` and re-emits via
-    /// `io.output::<Arg>`. The form the `osc_out` boundary sink's input takes, so any
+    /// and uncoerced; the operator reads and re-emits it through `Raw` handles (`io.read` on an
+    /// `In<Raw>`, `io.write` on an `Out<Raw>`). The form the `osc_out` boundary sink's input takes, so any
     /// Message-domain value (a scalar echo, a vocab enum, a `Note`) can reach the wire and the
     /// type-driven expansion happens at the boundary ([`osc_out_args`](crate::boundary::osc_out_args)).
     /// **Input-only** (the contract validator fails an `arg` output/constant closed), and legal
@@ -182,7 +182,7 @@ pub struct Port {
 
 impl Port {
     /// A dense per-sample signal port (audio) — [`PortType::F32Buffer`]. The audio-passthrough input
-    /// (no owned default) and the per-sample output an operator fills with `io.output::<&mut [f32]>`.
+    /// (no owned default) and the per-sample output an operator fills via `io.write` on a Signal handle.
     /// Replaces the legacy bare `signal` carrier.
     pub const fn f32_buffer(name: &'static str) -> Self {
         Self {

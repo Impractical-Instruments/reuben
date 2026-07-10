@@ -233,7 +233,8 @@ impl Operator for Filter {
   `Port::harmony`).
 - **`name: arg`** — a **type-agnostic pass-through** (issue #141): carries *any* `Arg` as a raw
   Event stream (`Port::arg`), read via its `In<Raw>` handle (`io.read(IN)` yields undecoded
-  `&Arg` payloads) and re-emitted via the `io.output::<Arg>` primitive.
+  `&Arg` payloads) and re-emitted through the sink's local `Out<Raw>` tap handle
+  (`io.write(OUT_TAP)` in `osc_out.rs`).
   **Input-only**, and only for a **pure carrier** — an operator that treats the payload as opaque
   (forward, buffer, drop) and never interprets it; the wired *source* port is the type authority.
   Legality is capability-keyed: any Event or Value source whose type has an **external OSC form**
