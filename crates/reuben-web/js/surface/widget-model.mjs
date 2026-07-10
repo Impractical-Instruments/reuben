@@ -323,6 +323,38 @@ export function buildSurface(instrumentDoc, surfaceDoc = null) {
   return resolveSurface(instrumentDoc, surfaceDoc);
 }
 
+/**
+ * Fold a replayed control snapshot into a resolved surface's rest values, so the widgets
+ * render showing the state they will be playing (share links, ADR-0042): each decoded
+ * sidecar entry whose address matches a value-backed widget overrides that widget's
+ * `default`, clamped into its range exactly as a pipe default is. Mutates the surface in
+ * place, BEFORE renderSurface — the widgets seed their visuals from `default`, and
+ * sendInitialDefaults/captureSnapshot then treat the replayed value as the rest baseline.
+ * Entries addressing nothing on the surface, and args that aren't a bare finite number
+ * (a fader/param-toggle only ever journals one raw F32), are ignored — the verbatim
+ * engine replay stays the authority on what actually plays.
+ *
+ * @param {{widgets: object[]}} surface - from buildSurface().
+ * @param {Array<{address: string, args: Array<number | string | {i32: number}>}>} entries
+ *   decoded sidecar messages (codec.mjs decodeControl over each snapshot buffer).
+ */
+export function applySnapshotDefaults(surface, entries) {
+  const byAddress = new Map();
+  for (const w of surface.widgets) {
+    if (w.kind !== "fader" && w.kind !== "param-toggle") continue;
+    const list = byAddress.get(w.address);
+    if (list) list.push(w);
+    else byAddress.set(w.address, [w]);
+  }
+  for (const { address, args } of entries) {
+    const v = args?.[0];
+    if (typeof v !== "number" || !Number.isFinite(v)) continue;
+    for (const w of byAddress.get(address) ?? []) {
+      w.default = clamp(v, w.min, w.max);
+    }
+  }
+}
+
 // --- binding ----------------------------------------------------------------------------
 
 // A chord button's degree must ride the wire as an INTEGER, not a float: the `Note` OSC form

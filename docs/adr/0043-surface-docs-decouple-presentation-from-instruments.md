@@ -100,6 +100,10 @@ One shared surface format + one resolver semantics, projected to two targets:
   `surfaces/<instrument>.<t>.json` ?? `surfaces/<instrument>.json` ?? auto-derived (§3).
   A per-target file is reached for only when the control *set* genuinely diverges, not merely
   the geometry.
+- **Share-link boot** prepends one rung (ADR-0042 amendment): the bundle's *embedded*
+  surface ?? `surfaces/<instrument>.web.json` ?? `surfaces/<instrument>.json` ?? auto-derived.
+  The instrument name here comes from the shared document itself, and the origin rungs are
+  permitted for presentation only — resources stay bundle-only (ADR-0042 §1).
 
 ### 6. Array/lane controls are ordinary pipes
 

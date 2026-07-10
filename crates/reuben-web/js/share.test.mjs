@@ -46,6 +46,7 @@ test("doc-only bundle round-trips byte-identically", async () => {
   assert.strictEqual(out.docText, DOC);
   assert.deepStrictEqual(out.resources, []);
   assert.deepStrictEqual(out.snapshot, []);
+  assert.strictEqual(out.surfaceText, null);
 });
 
 test("decode tolerates a leading # (location.hash form)", async () => {
@@ -81,6 +82,96 @@ test("snapshot buffers round-trip verbatim (the control-state sidecar)", async (
   assert.strictEqual(out.snapshot.length, 2);
   assert.ok(bytesEqual(out.snapshot[0], snapshot[0]));
   assert.ok(bytesEqual(out.snapshot[1], snapshot[1]));
+});
+
+// --- extension sections: the surface doc travels as a tagged trailing section --------------
+
+const SURFACE = JSON.stringify({
+  surface_version: 1,
+  instrument: "vibrato",
+  controls: [{ bind: "depth", widget: "fader" }],
+});
+
+test("surfaceText round-trips verbatim alongside resources and a snapshot", async () => {
+  const resources = [{ key: "voices/a.json", kind: 0, bytes: enc.encode("{}") }];
+  const snapshot = [new Uint8Array([1, 2, 3])];
+  const out = await decodeBundle(
+    await encodeBundle({ docText: DOC, resources, snapshot, surfaceText: SURFACE }),
+  );
+  assert.strictEqual(out.surfaceText, SURFACE);
+  assert.strictEqual(out.docText, DOC);
+  assert.strictEqual(out.resources.length, 1);
+  assert.strictEqual(out.snapshot.length, 1);
+});
+
+test("a surface-less bundle stays byte-identical to a day-one bundle (no empty section)", async () => {
+  const withNull = await encodeBundle({ docText: DOC, surfaceText: null });
+  const without = await encodeBundle({ docText: DOC });
+  assert.strictEqual(withNull, without);
+});
+
+// Craft a full valid DAY-ONE-layout TLV (doc + 0 resources + 0 snapshots, nothing after) —
+// the exact bytes an old player minted. The new decoder must read it with surfaceText null:
+// this is the back-compat pin for every link shared before surfaces travelled.
+function dayOneTlv(docBytes) {
+  const tlv = new Uint8Array(4 + docBytes.length + 4 + 4);
+  const v = new DataView(tlv.buffer);
+  let p = 0;
+  v.setUint32(p, docBytes.length, true); p += 4;
+  tlv.set(docBytes, p); p += docBytes.length;
+  v.setUint32(p, 0, true); p += 4; // resource count
+  v.setUint32(p, 0, true); // snapshot count
+  return tlv;
+}
+
+test("back-compat — a day-one-layout bundle (no trailing sections) decodes with surfaceText null", async () => {
+  const out = await decodeBundle(await forge(dayOneTlv(enc.encode(DOC))));
+  assert.strictEqual(out.docText, DOC);
+  assert.strictEqual(out.surfaceText, null);
+});
+
+// Append one extension section (u8 tag, u32 len, payload) to a TLV.
+function withSection(tlv, tag, payload) {
+  const out = new Uint8Array(tlv.length + 1 + 4 + payload.length);
+  out.set(tlv, 0);
+  let p = tlv.length;
+  out[p++] = tag;
+  new DataView(out.buffer).setUint32(p, payload.length, true);
+  p += 4;
+  out.set(payload, p);
+  return out;
+}
+
+test("forward-compat — an unknown trailing tag is skipped; a surface after it still reads", async () => {
+  let tlv = dayOneTlv(enc.encode(DOC));
+  tlv = withSection(tlv, 99, enc.encode("mystery bytes from the future"));
+  tlv = withSection(tlv, 1, enc.encode(SURFACE));
+  const out = await decodeBundle(await forge(tlv));
+  assert.strictEqual(out.surfaceText, SURFACE);
+});
+
+test("duplicate surface sections — the last one wins", async () => {
+  let tlv = dayOneTlv(enc.encode(DOC));
+  tlv = withSection(tlv, 1, enc.encode("{}"));
+  tlv = withSection(tlv, 1, enc.encode(SURFACE));
+  const out = await decodeBundle(await forge(tlv));
+  assert.strictEqual(out.surfaceText, SURFACE);
+});
+
+test("class E — a truncated extension section (declared longer than present) is damaged", async () => {
+  let tlv = dayOneTlv(enc.encode(DOC));
+  tlv = withSection(tlv, 1, enc.encode(SURFACE));
+  await expectCode(decodeBundle(await forge(tlv.subarray(0, tlv.length - 3))), "damaged");
+});
+
+test("class E — an extension section over the per-section cap is damaged, not allocated", async () => {
+  // Declare a section bigger than the cap with no body — the cap check fires before readBytes.
+  const tlv = dayOneTlv(enc.encode(DOC));
+  const out = new Uint8Array(tlv.length + 1 + 4);
+  out.set(tlv, 0);
+  out[tlv.length] = 1;
+  new DataView(out.buffer).setUint32(tlv.length + 1, CAPS.PER_RESOURCE_BYTES + 1, true);
+  await expectCode(decodeBundle(await forge(out)), "damaged");
 });
 
 // --- adversarial: a fragment from a text message is untrusted input -----------------------

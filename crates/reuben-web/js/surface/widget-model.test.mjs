@@ -18,7 +18,14 @@ import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 
-import { buildSurface, resolveSurface, layoutRows, initial, emit } from "./widget-model.mjs";
+import {
+  applySnapshotDefaults,
+  buildSurface,
+  resolveSurface,
+  layoutRows,
+  initial,
+  emit,
+} from "./widget-model.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -562,4 +569,51 @@ test("layoutRows: a lane longer than 16 wraps at STEP_COLS; the plain grid wraps
     grid.map((r) => r.length),
     [2, 2, 1],
   );
+});
+
+// ---------------------------------------------------------------------------------------
+// (2i) applySnapshotDefaults — a replayed sidecar becomes the widgets' rest values.
+// ---------------------------------------------------------------------------------------
+
+test("applySnapshotDefaults: matched entries override defaults; the rest are untouched", () => {
+  const surface = surfaceOf("groovebox");
+  const w = (bind) => surface.widgets.find((x) => x.bind === bind);
+  // Hand-transcribed rest values (see 2a/2b above): tempo 120, kick_step1 on, kick_step2 off.
+  assert.strictEqual(w("tempo").default, 120);
+  assert.strictEqual(w("kick_step1").default, 1);
+
+  applySnapshotDefaults(surface, [
+    { address: "/tempo/in", args: [180] },
+    { address: "/kick_step1/in", args: [0] }, // shared pattern turned this step OFF
+  ]);
+  assert.strictEqual(w("tempo").default, 180);
+  assert.strictEqual(w("kick_step1").default, 0);
+  assert.strictEqual(w("volume").default, surfaceOf("groovebox").widgets.find((x) => x.bind === "volume").default);
+});
+
+test("applySnapshotDefaults: values clamp into the widget's range, like a pipe default", () => {
+  const surface = surfaceOf("groovebox");
+  applySnapshotDefaults(surface, [{ address: "/tempo/in", args: [5000] }]);
+  // tempo pipe: min 1, max 999.
+  assert.strictEqual(surface.widgets.find((x) => x.bind === "tempo").default, 999);
+});
+
+test("applySnapshotDefaults: unknown addresses and non-numeric args are ignored", () => {
+  const surface = surfaceOf("groovebox");
+  const before = surface.widgets.map((x) => x.default);
+  applySnapshotDefaults(surface, [
+    { address: "/no_such_pipe/in", args: [1] },
+    { address: "/tempo/in", args: ["fast"] },
+    { address: "/tempo/in", args: [{ i32: 3 }] },
+    { address: "/tempo/in", args: [] },
+    { address: "/tempo/in", args: [NaN] },
+  ]);
+  assert.deepStrictEqual(surface.widgets.map((x) => x.default), before);
+});
+
+test("applySnapshotDefaults: only value-backed widgets participate (a chord-button has no rest value)", () => {
+  const surface = surfaceOf("chord-player");
+  const chords = surface.widgets.filter((x) => x.kind === "chord-button");
+  applySnapshotDefaults(surface, [{ address: "/chord/in", args: [1] }]);
+  assert.ok(chords.every((x) => !("default" in x)), "chord-buttons still carry no default");
 });

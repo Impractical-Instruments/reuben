@@ -14,7 +14,8 @@
 //       README.md in place — a ▶ play link per row + a generated reference-definitions block.
 //   (check)           node scripts/gen-share-links.mjs --check
 //       Extract every `#r1.…` from README.md, decodeBundle each, and assert the decoded docText
-//       equals instruments/<id>.json on disk. DECODE-only (deflate output is not byte-stable
+//       equals instruments/<id>.json on disk (and the embedded surface equals the resolved
+//       surfaces/<id> doc, presence included). DECODE-only (deflate output is not byte-stable
 //       across zlib versions, so we never re-encode-and-compare) — this catches a rig document
 //       edited after its link was minted, which would otherwise silently play the OLD bytes.
 //       Exits non-zero on any mismatch or a sample-free rig missing its link. Doubles as an
@@ -41,6 +42,7 @@ const ROOT = resolve(WEB, ".."); // repo root
 const CRATE = join(ROOT, "crates", "reuben-web");
 const WASM = join(CRATE, "target", "wasm32-unknown-unknown", "release", "reuben_web.wasm");
 const INSTRUMENTS = join(ROOT, "instruments");
+const SURFACES = join(ROOT, "surfaces");
 const README = join(ROOT, "README.md");
 
 const SAMPLE_RATE = 48000; // any rate enumerates the same resource set; construct() only needs one
@@ -95,6 +97,25 @@ async function instantiate() {
   if (typeof ex._initialize === "function") ex._initialize();
   else if (typeof ex.__wasm_call_ctors === "function") ex.__wasm_call_ctors();
   return ex;
+}
+
+// --- surface resolution ------------------------------------------------------------------
+
+// The ADR-0043 §5 resolution order for the share target, read from disk: the web override
+// first, then the base doc, else null (the receiver auto-derives). Unlike the player's
+// dark-degrade, a surface file that exists but doesn't parse or declares an unknown
+// surface_version THROWS — the generator must never commit a link carrying a broken surface.
+async function resolveSurfaceText(id) {
+  for (const candidate of [join(SURFACES, `${id}.web.json`), join(SURFACES, `${id}.json`)]) {
+    if (!(await exists(candidate))) continue;
+    const text = await readFile(candidate, "utf8");
+    const doc = JSON.parse(text); // a syntax error throws with the JSON.parse message
+    if (doc?.surface_version !== 1) {
+      throw new Error(`${candidate} declares surface_version ${doc?.surface_version}; expected 1`);
+    }
+    return text;
+  }
+  return null;
 }
 
 // --- rig table parsing -------------------------------------------------------------------
@@ -204,12 +225,14 @@ async function writeMode() {
   const ids = parseRigIds(readme);
   const { linked, excluded } = await discoverRigs(ex, ids);
 
-  // Mint a link per sample-free rig (NO snapshot — README links are pristine defaults).
+  // Mint a link per sample-free rig (NO snapshot — README links are pristine defaults; the
+  // curated surface travels when one exists, so the link renders the same UI as the launcher).
   const links = [];
   for (const { id, docText, resources } of linked) {
-    const fragment = await encodeBundle({ docText, resources });
+    const surfaceText = await resolveSurfaceText(id);
+    const fragment = await encodeBundle({ docText, resources, surfaceText });
     const url = `${ORIGIN}/#${fragment}`;
-    links.push({ id, url, fragment, resourceCount: resources.length });
+    links.push({ id, url, fragment, resourceCount: resources.length, hasSurface: surfaceText != null });
   }
 
   // Rewrite: strip old generated block, refresh play links in the table, append the new block.
@@ -221,10 +244,11 @@ async function writeMode() {
   // Report.
   console.log(`[gen-share-links] origin: ${ORIGIN}`);
   console.log(`[gen-share-links] linked ${links.length} sample-free rig(s):`);
-  for (const { id, fragment, resourceCount } of links) {
+  for (const { id, fragment, resourceCount, hasSurface } of links) {
     console.log(
       `  ${id.padEnd(18)} ${String(fragment.length).padStart(5)} B  ` +
-        `(${resourceCount} text resource${resourceCount === 1 ? "" : "s"})`,
+        `(${resourceCount} text resource${resourceCount === 1 ? "" : "s"}` +
+        `${hasSurface ? ", curated surface" : ""})`,
     );
   }
   console.log(`[gen-share-links] excluded ${excluded.length} rig(s):`);
@@ -314,6 +338,31 @@ async function checkMode() {
           `(${onDisk.length} B) — the rig was edited after its link was minted; regenerate.`,
       );
     }
+
+    // 3. Surface staleness, same shape as the docText gate: the link's embedded surface must
+    // byte-match the on-disk resolved surface — including PRESENCE in both directions, so a
+    // newly added (or deleted) surface doc without a regenerated link fails here.
+    let onDiskSurface;
+    try {
+      onDiskSurface = await resolveSurfaceText(id);
+    } catch (e) {
+      errors.push(`surface doc for \`${id}\` is unusable: ${e.message}`);
+      continue;
+    }
+    if (decoded.surfaceText == null && onDiskSurface != null) {
+      errors.push(
+        `link \`${id}\` carries no surface but surfaces/ resolves one on disk — regenerate.`,
+      );
+    } else if (decoded.surfaceText != null && onDiskSurface == null) {
+      errors.push(
+        `link \`${id}\` carries a surface but surfaces/ resolves none on disk — regenerate.`,
+      );
+    } else if (decoded.surfaceText !== onDiskSurface) {
+      errors.push(
+        `link \`${id}\` surface != the on-disk resolved surface doc — ` +
+          `the surface was edited after its link was minted; regenerate.`,
+      );
+    }
     checked++;
   }
 
@@ -323,7 +372,7 @@ async function checkMode() {
     process.exit(1);
   }
   console.log(
-    `[gen-share-links --check] OK — ${checked} link(s) decode to their on-disk rig documents.`,
+    `[gen-share-links --check] OK — ${checked} link(s) decode to their on-disk rig documents and surfaces.`,
   );
 }
 

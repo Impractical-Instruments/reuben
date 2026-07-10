@@ -30,6 +30,7 @@ export const TAG_I32 = 1;
 export const TAG_STR = 2;
 
 const encoder = new TextEncoder();
+const decoder = new TextDecoder();
 
 /**
  * Encode one control message into a control-channel v1 buffer.
@@ -114,4 +115,70 @@ export function encodeControl(address, args = []) {
   }
 
   return out;
+}
+
+/**
+ * Decode one control-channel v1 buffer back into { address, args } — the inverse of
+ * encodeControl, using the same arg mapping (F32 -> bare number, I32 -> {i32: n},
+ * Str -> string). The Rust `decode_control` stays the engine-side consumer; this decoder
+ * exists for the share-link sidecar, whose snapshot entries are verbatim encodeControl()
+ * buffers that the player needs to read back to seed widget state.
+ *
+ * @param {Uint8Array} bytes
+ * @returns {{address: string, args: Array<number | string | {i32: number}>}}
+ * @throws {TypeError|RangeError} on a malformed buffer (truncation, unknown tag).
+ */
+export function decodeControl(bytes) {
+  if (!(bytes instanceof Uint8Array)) {
+    throw new TypeError("decodeControl: bytes must be a Uint8Array");
+  }
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  let pos = 0;
+  const need = (n, what) => {
+    if (pos + n > bytes.byteLength) {
+      throw new RangeError(`decodeControl: truncated buffer — ${what} runs past the end`);
+    }
+  };
+
+  need(4, "address length");
+  const addrLen = view.getUint32(pos, true);
+  pos += 4;
+  need(addrLen, "address bytes");
+  const address = decoder.decode(bytes.subarray(pos, pos + addrLen));
+  pos += addrLen;
+
+  need(4, "arg count");
+  const argCount = view.getUint32(pos, true);
+  pos += 4;
+
+  const args = [];
+  for (let i = 0; i < argCount; i++) {
+    need(1, `arg ${i} tag`);
+    const tag = bytes[pos++];
+    switch (tag) {
+      case TAG_F32:
+        need(4, `arg ${i} f32 payload`);
+        args.push(view.getFloat32(pos, true));
+        pos += 4;
+        break;
+      case TAG_I32:
+        need(4, `arg ${i} i32 payload`);
+        args.push({ i32: view.getInt32(pos, true) });
+        pos += 4;
+        break;
+      case TAG_STR: {
+        need(4, `arg ${i} string length`);
+        const len = view.getUint32(pos, true);
+        pos += 4;
+        need(len, `arg ${i} string bytes`);
+        args.push(decoder.decode(bytes.subarray(pos, pos + len)));
+        pos += len;
+        break;
+      }
+      default:
+        throw new TypeError(`decodeControl: arg ${i} has unknown tag ${tag}`);
+    }
+  }
+
+  return { address, args };
 }
