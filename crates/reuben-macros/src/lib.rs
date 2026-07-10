@@ -150,7 +150,7 @@ fn curve_tokens(c: Curve) -> TokenStream {
 /// (`arg` maps to `Raw`; the validator rejects `arg` *outputs*, so [`output_handle`] never reaches
 /// that arm.) Exhaustive over [`PortTy`] — no unreachable fallback arm (issue #217).
 fn port_form(p: &model::PortModel) -> TokenStream {
-    match &p.ty {
+    match &p.spec.ty {
         PortTy::F32Buffer(_) => quote! { SignalF32 },
         PortTy::F32(_) => quote! { Held<f32> },
         PortTy::I32(_) => quote! { Held<i32> },
@@ -172,7 +172,7 @@ fn input_handle(p: &model::PortModel) -> TokenStream {
     let ident = Ident::new(&p.const_name, Span::call_site());
     let idx = proc_macro2::Literal::usize_unsuffixed(p.ordinal);
     let form = port_form(p);
-    let default = match &p.ty {
+    let default = match &p.spec.ty {
         // A Signal handle carries the declared scalar default as data (a bare audio buffer's is
         // 0.0 — literally what an unwired bare input materializes, the buffer-presence invariant).
         PortTy::F32Buffer(m) => {
@@ -248,11 +248,11 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
             ports
                 .iter()
                 .map(|p| {
-                    let name = &p.name;
+                    let name = &p.spec.name;
                     // Exhaustive over [`PortTy`] with the payload in hand — the stringly-era
                     // `expect("validate() guarantees…")` calls and the unreachable
                     // `compile_error!` fallback are gone (issue #217).
-                    match &p.ty {
+                    match &p.spec.ty {
                         // A dense per-sample signal — `Port::f32_buffer`, or `f32_buffer_meta`
                         // when it carries a scalar default + knob (ADR-0031 decision (a)).
                         PortTy::F32Buffer(None) => {

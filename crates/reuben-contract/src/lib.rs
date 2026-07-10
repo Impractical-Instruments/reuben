@@ -122,7 +122,7 @@ const PORT_TY_WORDS: [&str; 7] = ["f32_buffer", "f32", "i32", "enum", "note", "h
 /// `{"name":"cutoff","ty":"f32","f32":{..}}` — via [`PortSpecFlat`]: a shape-invalid port (an
 /// unknown `ty`, a missing or stray meta block, a stray key) fails at parse time with the
 /// reason in the error text, before [`validate`] ever runs.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(try_from = "PortSpecFlat")]
 pub struct PortSpec {
     pub name: String,

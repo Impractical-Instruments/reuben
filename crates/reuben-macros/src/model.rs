@@ -3,18 +3,17 @@
 //! no spans, just data, so the index arithmetic (the old `scaffold::port_consts` hand-logic) is
 //! computed **once** here and unit-tested directly.
 
-use reuben_contract::{naming, OperatorSpec, PortSpec, PortTy};
+use reuben_contract::{naming, OperatorSpec, PortSpec};
 
-/// One resolved port: its index const (`IN_FREQ`), ordinal, source name, and its
-/// [`Arg`](reuben_core::message::Arg) type (ADR-0030). Ports number **sequentially** within
-/// inputs/outputs (declaration order). The type is the shared payload-carrying [`PortTy`]
-/// (issue #217): a `f32` port's meta and an `enum` port's vocab name ride inside it.
+/// One resolved port: its index const (`IN_FREQ`), its ordinal, and the declared [`PortSpec`]
+/// carried through **unchanged** (issue #217) — the model layer holds only what it computes
+/// (naming + indexing); the port itself has one home. Ports number **sequentially** within
+/// inputs/outputs (declaration order).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PortModel {
     pub const_name: String,
     pub ordinal: usize,
-    pub name: String,
-    pub ty: PortTy,
+    pub spec: PortSpec,
 }
 
 /// A fully-resolved operator contract, ready to render to tokens.
@@ -39,8 +38,7 @@ fn port_models(ports: &[PortSpec], prefix: &str) -> Vec<PortModel> {
         .map(|(idx, p)| PortModel {
             const_name: format!("{prefix}_{}", naming::screaming(&p.name)),
             ordinal: idx,
-            name: p.name.clone(),
-            ty: p.ty.clone(),
+            spec: p.clone(),
         })
         .collect()
 }
@@ -60,6 +58,7 @@ pub fn build(spec: &OperatorSpec) -> ContractModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reuben_contract::PortTy;
 
     fn spec(json: &str) -> OperatorSpec {
         serde_json::from_str(json).expect("valid spec")
@@ -112,9 +111,9 @@ mod tests {
         assert_eq!(m.constants[0].const_name, "C_VOICES");
         assert_eq!(m.constants[0].ordinal, 0);
         assert!(
-            matches!(&m.constants[0].ty, PortTy::I32(meta) if meta.default == 8),
+            matches!(&m.constants[0].spec.ty, PortTy::I32(meta) if meta.default == 8),
             "{:?}",
-            m.constants[0].ty
+            m.constants[0].spec.ty
         );
     }
 
@@ -128,20 +127,20 @@ mod tests {
                              {"name":"mode","ty":"enum","vocab":"FilterMode"} ] }"#,
         ));
         assert_eq!(m.inputs[0].const_name.as_str(), "IN_AUDIO");
-        assert!(matches!(m.inputs[0].ty, PortTy::F32Buffer(None)));
+        assert!(matches!(m.inputs[0].spec.ty, PortTy::F32Buffer(None)));
         assert_eq!(
             (m.inputs[2].const_name.as_str(), m.inputs[2].ordinal),
             ("IN_MODE", 2)
         );
         assert!(
-            matches!(&m.inputs[1].ty, PortTy::F32(meta) if meta.default == 1000.0),
+            matches!(&m.inputs[1].spec.ty, PortTy::F32(meta) if meta.default == 1000.0),
             "{:?}",
-            m.inputs[1].ty
+            m.inputs[1].spec.ty
         );
         assert!(
-            matches!(&m.inputs[2].ty, PortTy::Enum(v) if v == "FilterMode"),
+            matches!(&m.inputs[2].spec.ty, PortTy::Enum(v) if v == "FilterMode"),
             "{:?}",
-            m.inputs[2].ty
+            m.inputs[2].spec.ty
         );
     }
 
@@ -159,10 +158,10 @@ mod tests {
         assert_eq!(m.inputs[1].const_name, "IN_AMP");
         assert_eq!(m.inputs[1].ordinal, 1);
         assert!(
-            matches!(&m.inputs[0].ty,
+            matches!(&m.inputs[0].spec.ty,
                 PortTy::F32(meta) if meta.curve == reuben_contract::Curve::Exponential && meta.unit == "Hz"),
             "{:?}",
-            m.inputs[0].ty
+            m.inputs[0].spec.ty
         );
     }
 }
