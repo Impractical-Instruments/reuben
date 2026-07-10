@@ -680,8 +680,8 @@ mod typed_handles {
         assert_eq!(bare.read(CTX), Harmony::default());
     }
 
-    /// `io.read` on an `In<Event<Note>>` iterates the port's frame-stamped events, exactly like
-    /// the `io.input::<Note>` primitive it lowers to.
+    /// `io.read` on an `In<Event<Note>>` iterates the port's frame-stamped events, each decoded
+    /// to `Note`.
     #[test]
     fn read_event_stream_iterates_notes() {
         const NOTES: In<Event<Note>> = In::new(0, ());

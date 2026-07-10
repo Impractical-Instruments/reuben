@@ -4,9 +4,9 @@
 //! Messages are routed to its input ports by the port's [`PortKind`](crate::plan::PortKind):
 //! a **Value** control (scalar / enum / `Harmony`) drives **block-slicing** (the block is split
 //! at its change frames so [`Operator::process`] always sees a constant held value, read via
-//! `io.input::<T>`); an **Event** (`Note`) is delivered as a zero-copy [`Event`] on its port
-//! (read via `io.input::<Note>`); a **Signal** [`Buffer`] input fed by a scalar is **materialized** ZOH
-//! into its arena buffer (read via `io.input::<&[f32]>`).
+//! `io.read` on a `Held<T>` handle); an **Event** (`Note`) is delivered as a zero-copy [`Event`]
+//! on its port (read via an `Event<Note>` handle); a **Signal** [`Buffer`] input fed by a scalar
+//! is **materialized** ZOH into its arena buffer (read via a `SignalF32` handle).
 //!
 //! Polyphony is hosted inside the Voicer (N voice sub-plans summed), not fanned out across the
 //! engine — the retired Lane model (ADR-0032).
@@ -740,8 +740,8 @@ fn process_node(
         }
         target[cursor..block_size].fill(v);
         // Persist the end-of-block value as the next block's ZOH (ADR-0030): `latch` is the single
-        // source of truth — the materialized buffer is the sample-accurate path, the latch the
-        // `io.input::<T>` read. A Buffer port carries no meaningful held value, so the write is ignored there.
+        // source of truth — the materialized buffer is the sample-accurate path, the latch what a
+        // held-handle `io.read` sees. A Buffer port carries no meaningful held value, so the write is ignored there.
         node.latch[port] = Arg::F32(v);
         node.varying[port] = true;
         node.materialize_clean[k] = false;
@@ -777,7 +777,7 @@ fn process_node(
         }
 
         // Apply Held changes landing at this segment's start: update the per-port latch, read via
-        // `io.input::<T>` (ADR-0030). Persists across blocks (the latch is next block's frame-0 baseline).
+        // `io.read` on a `Held<T>` handle (ADR-0030). Persists across blocks (the latch is next block's frame-0 baseline).
         // Last-write-wins on equal frames.
         for (f, port, arg) in route.held.iter() {
             if *f == seg_start {

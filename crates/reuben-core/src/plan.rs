@@ -7,7 +7,7 @@
 //! Lane model is gone (ADR-0032).
 //!
 //! The seven former carriers collapse to one model (ADR-0030): every input port has a held
-//! [`Arg`] **latch** (the ZOH value `io.input::<T>` reads), Buffer inputs additionally carry a dense
+//! [`Arg`] **latch** (the ZOH value a held-handle `io.read` sees), Buffer inputs additionally carry a dense
 //! arena buffer, and every output port either owns arena buffers (a Buffer/signal output) or
 //! routes emitted Messages to downstream input ports (a message output). The old context-arena /
 //! enum-latch / param lanes and the separate `msg_targets` / `ctx_targets` routing are unified.
@@ -25,11 +25,11 @@ use crate::vocab::harmony::Harmony;
 /// from the graph:
 ///
 /// - **Signal** — a dense per-sample buffer ([`Buffer`](PortType::F32Buffer) audio), read via
-///   `io.input::<&[f32]>`.
+///   `io.read` on a `SignalF32` handle.
 /// - **Value** — a latched single value (scalar / enum / `Harmony`): its last value is held (ZOH)
-///   and read via `io.input::<T>`; a mid-block change block-slices so it is constant per `process` call.
-/// - **Event** — an unlatched multi-valued stream (`Note`), delivered frame-stamped via `io.input::<Note>`
-///   and *not* sliced.
+///   and read via a `Held<T>` handle; a mid-block change block-slices so it is constant per `process` call.
+/// - **Event** — an unlatched multi-valued stream (`Note`), delivered frame-stamped via an `Event<Note>`
+///   handle and *not* sliced.
 ///
 /// The two sparse forms fall out of two axes — *latched?* and *single-valued?*: Value is latched ∧
 /// single, Event is unlatched ∧ multi. The other two combinations are nonsense, so the set is
@@ -85,7 +85,7 @@ fn seed_latch(p: &Port, port: usize, value_overrides: &[(usize, Arg)]) -> Arg {
         PortType::Vocab { name, .. } if *name == "Harmony" => Arg::Harmony(Harmony::default()),
         PortType::I32 { meta } => Arg::I32(meta.as_ref().map(|m| m.default).unwrap_or(0)),
         PortType::Str => Arg::Str("".into()),
-        // Note (stream) / Buffer (dense): no held value — a placeholder `io.input::<T>` never decodes.
+        // Note (stream) / Buffer (dense): no held value — a placeholder a held-handle read never decodes.
         _ => Arg::F32(0.0),
     }
 }
@@ -124,7 +124,7 @@ pub struct PlanNode {
     /// [`crate::render::render_plan`]'s tap copy, consumed (reset) by `process_node`. Always
     /// all-`false` for a plan with no channel-bound pipes — the common case pays one branch.
     pub materialize_device_fed: Vec<bool>,
-    /// The held [`Arg`] latch per input port (ADR-0030) — the unified ZOH value `io.input::<T>` reads,
+    /// The held [`Arg`] latch per input port (ADR-0030) — the unified ZOH value a `Held<T>` handle's `io.read` sees,
     /// collapsing the former Harmony / enum / param lanes into one. Length = input count; seeded
     /// from each input's default / author override, `Copy`-normalized, carried across blocks. Render
     /// block-slices Held ports at change frames and updates the slot there.
@@ -134,13 +134,13 @@ pub struct PlanNode {
     /// (`false` ⇒ held unchanged this block).
     pub varying: Vec<bool>,
     /// For each **signal (Buffer) output** port — in signal-output ordinal order — its arena
-    /// buffer index (a one-element `Vec`). [`crate::operator::Io::output`] (`<&mut [f32]>`) indexes
+    /// buffer index (a one-element `Vec`). [`crate::operator::Io::write`] on a Signal handle indexes
     /// this by the all-outputs port index the contract macro emits, which equals the signal ordinal
     /// **only when signal outputs precede message outputs in the declaration** (the invariant every
     /// operator holds; e.g. `envelope` declares `cv` before `active`).
     pub outputs: Vec<Vec<usize>>,
     /// Message-edge routing (ADR-0014, ADR-0030, ADR-0032): indexed by **all-outputs port index**
-    /// (the index [`crate::operator::Io::output`] passes; `emit.port` is that index). A signal output
+    /// (the index an `Out` handle carries into [`crate::operator::Io::write`]; `emit.port` is that index). A signal output
     /// has an empty slot; a message output carries the `(dst node, dst input port)` pairs its
     /// emissions are delivered to. Full-index (not compacted to message ordinals) so an operator can
     /// interleave a signal output and a message output (`envelope.cv` + `envelope.active`). Unifies
@@ -462,8 +462,8 @@ impl Plan {
                 }
             }
 
-            // Signal (Buffer) outputs, in signal-output ordinal order — the index `io.output::<&mut [f32]>`
-            // uses.
+            // Signal (Buffer) outputs, in signal-output ordinal order — the index a Signal write
+            // handle (`io.write` on an `Out<SignalF32>`) uses.
             let outputs: Vec<Vec<usize>> = descriptor
                 .outputs
                 .iter()
@@ -472,9 +472,9 @@ impl Plan {
                 .map(|(port, _)| out_buffers[*key][port].clone())
                 .collect();
 
-            // Message-edge targets, indexed by **all-outputs port index** — the index
-            // [`crate::operator::Io::output`] passes (the contract macro numbers outputs sequentially
-            // across kinds, ADR-0030; `emit.port` is that index). A signal (`F32Buffer`) output never
+            // Message-edge targets, indexed by **all-outputs port index** — the index an `Out`
+            // handle carries into [`crate::operator::Io::write`] (the contract macro numbers outputs
+            // sequentially across kinds, ADR-0030; `emit.port` is that index). A signal (`F32Buffer`) output never
             // emits Messages, so its slot is empty; a message output carries the `(dst node, dst input
             // port)` pairs wired to it. Indexing by the full output index (not a compacted
             // message-ordinal) is what lets an operator interleave a signal output and a message

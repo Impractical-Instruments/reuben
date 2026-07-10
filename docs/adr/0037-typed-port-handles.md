@@ -4,6 +4,12 @@
 
 Accepted (issue #164).
 
+**Update (2026-07-10, issue #216):** the `pub(crate)` primitives this ADR demoted —
+`Io::input`/`Io::output` and the `IoInput`/`IoOutput` traits — are since deleted outright; the
+`form` impls absorbed them (each reads the private `Io` state directly, one dispatch per form), and
+the "one sanctioned production use" (`osc_out`'s undeclared emit port) now writes through a local
+inline `Out<Raw>` handle. No primitive layer remains beneath `io.read`/`io.write`.
+
 Extends [ADR-0031](0031-float-resolves-to-value-or-signal-by-wiring.md) ("the form is the type" →
 **"the form is the port"**) and amends [ADR-0030](0030-osc-as-all-data-one-message-type.md)'s
 materialization (a new engine invariant). Builds on
