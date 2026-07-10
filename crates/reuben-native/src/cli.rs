@@ -5,7 +5,7 @@
 //! over [`Registry`] + JSON so they test through real load/plan code paths, not a process.
 
 use reuben_core::descriptor::{Curve, Descriptor, Port, PortType};
-use reuben_core::format::{DocValue, InstrumentDoc, LoadError};
+use reuben_core::format::{DocValue, LoadError, NormalizedDoc};
 use reuben_core::plan::Plan;
 use reuben_core::resources::ResourceResolver;
 use reuben_core::{
@@ -261,17 +261,17 @@ pub fn describe_patch(
     registry: &Registry,
     resolver: &dyn ResourceResolver,
 ) -> Result<PatchBoundary, String> {
-    // Parse WITH the resolver (the same way `play` does): a v1 entry re-exporting a nested
-    // child's boundary port migrates to the child's real pipe type; the resolver-less
-    // `from_json` would fall back to `"f32"` and this description would diverge from what the
+    // Mint WITH the resolver (the same way `play` does): a v1 entry re-exporting a nested
+    // child's boundary port migrates to the child's real pipe type; a resolver-less mint
+    // would fall back to `"f32"` and this description would diverge from what the
     // engine actually loads.
     let doc =
-        InstrumentDoc::from_json_with(json, registry, Some(resolver)).map_err(|e| e.to_string())?;
+        NormalizedDoc::from_json(json, registry, Some(resolver)).map_err(|e| e.to_string())?;
     let loaded = load_instrument_doc(&doc, registry, resolver).map_err(|e| e.to_string())?;
     let b = describe_boundary(&doc, &loaded);
 
     Ok(PatchBoundary {
-        instrument: doc.instrument,
+        instrument: doc.into_inner().instrument,
         inputs: b.inputs.into_iter().map(PortInfo::from_boundary).collect(),
         outputs: b.outputs.into_iter().map(PortInfo::from_boundary).collect(),
         dark_inputs: b.dark_inputs,

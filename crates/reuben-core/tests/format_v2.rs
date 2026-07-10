@@ -33,7 +33,7 @@ use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
 use reuben_core::resources::{MemoryResolver, ResolveError, ResourceResolver, SampleBuffer};
 use reuben_core::vocab::pitch::{Note, Pitch};
-use reuben_core::{load_instrument, AudioConfig, InstrumentDoc, Registry};
+use reuben_core::{load_instrument, AudioConfig, NormalizedDoc, Registry};
 
 const BLOCK: usize = 128;
 const BLOCKS: usize = 40;
@@ -233,8 +233,8 @@ fn migration_produces_exactly_the_native_v2_document() {
         (SPACE_V1, SPACE_V2, "space"),
         (SENDER_V1, SENDER_V2, "sender"),
     ] {
-        let migrated = InstrumentDoc::from_json(v1, &reg).expect("migrate v1");
-        let native = InstrumentDoc::from_json(v2, &reg).expect("parse v2");
+        let migrated = NormalizedDoc::from_json(v1, &reg, None).expect("migrate v1");
+        let native = NormalizedDoc::from_json(v2, &reg, None).expect("parse v2");
         assert_eq!(migrated, native, "{what}: migrated doc != native v2 doc");
     }
 }
@@ -445,7 +445,7 @@ fn duplicate_v1_taps_stay_duplicated() {
       "nodes": [ { "type": "oscillator", "address": "/osc" } ]
     }"#;
     let reg = Registry::builtin();
-    let migrated = InstrumentDoc::from_json(DUP_V1, &reg).expect("migrate");
+    let migrated = NormalizedDoc::from_json(DUP_V1, &reg, None).expect("migrate");
     let iface = migrated.interface.as_ref().expect("interface");
     assert_eq!(
         iface.outputs.keys().collect::<Vec<_>>(),
@@ -493,8 +493,8 @@ fn pinned_taps_claim_a_same_port_boundary_entry_instead_of_doubling() {
       "nodes": [ { "type": "oscillator", "address": "/osc" } ]
     }"#;
     let reg = Registry::builtin();
-    let migrated = InstrumentDoc::from_json(PINNED_V1, &reg).expect("migrate");
-    let native = InstrumentDoc::from_json(PINNED_V2, &reg).expect("parse");
+    let migrated = NormalizedDoc::from_json(PINNED_V1, &reg, None).expect("migrate");
+    let native = NormalizedDoc::from_json(PINNED_V2, &reg, None).expect("parse");
     assert_eq!(migrated, native, "the entry claims the ch-0 tap");
 
     let none = MemoryResolver::new();

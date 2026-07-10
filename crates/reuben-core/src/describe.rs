@@ -161,7 +161,7 @@ pub fn describe_boundary(doc: &InstrumentDoc, loaded: &Loaded) -> BoundaryDesc {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::format::load_instrument_doc;
+    use crate::format::{load_instrument_doc, NormalizedDoc};
     use crate::registry::Registry;
     use crate::resources::{ResolveError, ResourceResolver, SampleBuffer};
 
@@ -174,7 +174,7 @@ mod tests {
     }
 
     fn boundary(json: &str) -> BoundaryDesc {
-        let doc = InstrumentDoc::from_json(json, &Registry::builtin()).expect("parse");
+        let doc = NormalizedDoc::from_json(json, &Registry::builtin(), None).expect("parse");
         let loaded = load_instrument_doc(&doc, &Registry::builtin(), &NoResources).expect("load");
         describe_boundary(&doc, &loaded)
     }
