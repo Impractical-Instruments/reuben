@@ -143,8 +143,8 @@ test("groovebox lays out the 3 step lanes as their own 16-cell rows", () => {
   const container = makeElement("div");
   renderSurface(surfaceOf("groovebox"), engine, container);
 
-  // Rows: [tempo(1), kick(16), snare(16), hat(16), 4 faders, volume(1)] — 6 rows total
-  // (5 master faders wrap the 4-col grid: vols + tone, then volume).
+  // Rows: [tempo(1), kick(16), snare(16), hat(16), 4 faders, 2 faders] — 6 rows total
+  // (6 master faders wrap the 4-col grid: vols + drive, then tone + volume).
   assert.strictEqual(container.children.length, 6, "6 layout rows");
   const lanes = [1, 2, 3]; // kick / snare / hat
   for (const i of lanes) {
