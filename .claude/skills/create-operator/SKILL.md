@@ -138,7 +138,7 @@ Run all `reuben`/`cargo` commands from the repo root.
 - The generated `IN_*`/`OUT_*`/`P_*` index consts follow declaration order — the scaffold renders
   the contract in `operator_contract!` grammar, so a `f32_buffer`/`f32 { .. }`/`enum(VocabType)` spec
   lands as the real port declaration, no Stage-B retyping (sole exception: adding `{ .. }` meta to a
-  Signal-with-default port, above).
+  Signal-with-default input, above).
 - A **`Constant`** (ADR-0035) is a `PortSpec` in the top-level `constants` array — e.g.
   `"constants": [{ "name": "voices", "ty": "i32", "i32": { "min": 1, "max": 32, "default": 8 } }]` —
   the instantiate-time value that sizes the voice pool (the loader routes it to the patch's

@@ -27,13 +27,28 @@ use crate::operator::{Io, Operator};
 
 // Single-source contract (ADR-0025): one declaration -> IN_/OUT_/C_ consts + Descriptor, no drift.
 crate::operator_contract!(Saturator {
-    type_name: "saturator",
     inputs: { audio: f32_buffer,
               drive: f32_buffer { 1.0..=30.0, default 2.5, "x", exp },
               warmth: f32_buffer { 0.0..=1.0, default 0.4, "", lin },
               level: f32 { 0.0..=2.0, default 1.0, "x", lin } },
     outputs: { audio: f32_buffer },
 });
+
+// Named mirrors of the contract ranges above, for `process`'s runtime clamps. The
+// `operator_contract!` grammar takes only numeric literals (and the handles it plants carry no
+// min/max), so the declaration can't reference these consts — keep the two in lockstep.
+/// `drive`'s declared range floor (mirrors the contract).
+const DRIVE_MIN: f32 = 1.0;
+/// `drive`'s declared range ceiling (mirrors the contract).
+const DRIVE_MAX: f32 = 30.0;
+/// `warmth`'s declared range floor (mirrors the contract).
+const WARMTH_MIN: f32 = 0.0;
+/// `warmth`'s declared range ceiling (mirrors the contract).
+const WARMTH_MAX: f32 = 1.0;
+/// `level`'s declared range floor (mirrors the contract).
+const LEVEL_MIN: f32 = 0.0;
+/// `level`'s declared range ceiling (mirrors the contract).
+const LEVEL_MAX: f32 = 2.0;
 
 /// Corner frequency of the post-shaper DC blocker — low enough to leave bass untouched, high
 /// enough to drain the warmth term's offset within tens of milliseconds.
@@ -68,7 +83,7 @@ impl Operator for Saturator {
         } else {
             0.0
         };
-        let level = io.read(IN_LEVEL).clamp(0.0, 2.0);
+        let level = io.read(IN_LEVEL).clamp(LEVEL_MIN, LEVEL_MAX);
 
         // Resolve every slice once, outside the loop (the ADR-0037 handle re-derivation cost —
         // same hoist as the filter). All are exactly `n` frames (buffer-presence invariant).
@@ -87,10 +102,10 @@ impl Operator for Saturator {
         for i in 0..n {
             if drive[i] != last_drive {
                 last_drive = drive[i];
-                d = drive[i].clamp(1.0, 30.0);
+                d = drive[i].clamp(DRIVE_MIN, DRIVE_MAX);
                 inv = 1.0 / d.tanh();
             }
-            let w = warmth[i].clamp(0.0, 1.0);
+            let w = warmth[i].clamp(WARMTH_MIN, WARMTH_MAX);
             // Peak-normalized tanh drive: full-scale peaks stay near ±1 at any drive.
             let s = (d * audio[i]).tanh() * inv;
             // Even-harmonic warmth on the *shaped* signal (see module docs): monotonic for any
