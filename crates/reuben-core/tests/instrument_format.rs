@@ -9,14 +9,14 @@ use reuben_core::vocab::pitch::{Note, Pitch};
 use reuben_core::{load, load_instrument, AudioConfig, Graph, InstrumentDoc, Registry};
 
 const DEFAULT_JSON: &str = include_str!("../../../instruments/default.json");
-const SAMPLER_VOICE_JSON: &str = include_str!("../../../instruments/voices/sampler-voice.json");
-const METRONOME_JSON: &str = include_str!("../../../instruments/metronome.json");
-const SEQUENCE_JSON: &str = include_str!("../../../instruments/sequence.json");
-const GOOD_BUTTON_JSON: &str = include_str!("../../../instruments/good-button.json");
-const AUTO_FILTER_JSON: &str = include_str!("../../../instruments/auto-filter.json");
+const SAMPLER_VOICE_JSON: &str = include_str!("fixtures/voices/sampler-voice.json");
+const METRONOME_JSON: &str = include_str!("fixtures/metronome.json");
+const SEQUENCE_JSON: &str = include_str!("fixtures/sequence.json");
+const GOOD_BUTTON_JSON: &str = include_str!("fixtures/good-button.json");
+const AUTO_FILTER_JSON: &str = include_str!("fixtures/auto-filter.json");
 const COMMITTED_SCHEMA: &str = include_str!("../schema/instrument.schema.json");
 
-/// A filesystem resolver rooted at the repo `instruments/` dir, so an instrument-resource (`voice`)
+/// A filesystem resolver rooted at the frozen `tests/fixtures/` tree, so an instrument-resource (`voice`)
 /// reference (ADR-0032) resolves to its on-disk voice patch. Samples aren't needed by the patches
 /// these tests load, so `resolve` is a stub.
 struct InstrumentsDir;
@@ -26,7 +26,7 @@ impl ResourceResolver for InstrumentsDir {
         Err(ResolveError::NotFound(source.to_string()))
     }
     fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
-        let path = format!("{}/../../instruments/{source}", env!("CARGO_MANIFEST_DIR"));
+        let path = format!("{}/tests/fixtures/{source}", env!("CARGO_MANIFEST_DIR"));
         std::fs::read_to_string(&path).map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))
     }
 }

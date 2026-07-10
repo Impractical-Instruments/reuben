@@ -297,11 +297,11 @@ mod tests {
     use super::*;
     use crate::resolver::ResourceKind;
 
-    const VIBRATO: &str = include_str!("../../../instruments/vibrato.json");
-    const METRONOME: &str = include_str!("../../../instruments/metronome.json");
-    const SAMPLER: &str = include_str!("../../../instruments/sampler.json");
-    const SAMPLER_VOICE: &str = include_str!("../../../instruments/voices/sampler-voice.json");
-    const BLIP_WAV: &[u8] = include_bytes!("../../../instruments/samples/blip.wav");
+    const VIBRATO: &str = include_str!("../tests/fixtures/vibrato.json");
+    const METRONOME: &str = include_str!("../tests/fixtures/metronome.json");
+    const SAMPLER: &str = include_str!("../tests/fixtures/sampler.json");
+    const SAMPLER_VOICE: &str = include_str!("../tests/fixtures/voices/sampler-voice.json");
+    const BLIP_WAV: &[u8] = include_bytes!("../tests/fixtures/samples/blip.wav");
 
     fn no_log() -> impl FnMut(&str) {
         |_: &str| {}

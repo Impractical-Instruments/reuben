@@ -22,7 +22,7 @@ use reuben_core::{load_instrument, AudioConfig, Graph, Registry};
 
 const DEFAULT_JSON: &str = include_str!("../../../instruments/default.json");
 
-/// A filesystem resolver rooted at the repo `instruments/` dir, so `default.json`'s `voice`
+/// A filesystem resolver rooted at the frozen `tests/fixtures/` tree, so `default.json`'s `voice`
 /// instrument-resource (ADR-0032) resolves to its on-disk voice patch.
 struct InstrumentsDir;
 
@@ -31,7 +31,7 @@ impl ResourceResolver for InstrumentsDir {
         Err(ResolveError::NotFound(source.to_string()))
     }
     fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
-        let path = format!("{}/../../instruments/{source}", env!("CARGO_MANIFEST_DIR"));
+        let path = format!("{}/tests/fixtures/{source}", env!("CARGO_MANIFEST_DIR"));
         std::fs::read_to_string(&path).map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))
     }
 }
@@ -257,7 +257,7 @@ fn render_block_is_allocation_free_after_warmup() {
     // internal emission fan-out (note → Voicer retrigger → hosted-voice attack/release) staying
     // allocation-free once every pool has grown to steady capacity.
     let graph = load_instrument(
-        include_str!("../../../instruments/sequence.json"),
+        include_str!("fixtures/sequence.json"),
         &Registry::builtin(),
         &InstrumentsDir,
     )

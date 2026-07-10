@@ -184,8 +184,8 @@ mod tests {
     /// The repo's sampler instrument and its voice patch — the real nested-reference shape
     /// the fetch-on-miss loop exists for (top doc -> `voices/sampler-voice.json` ->
     /// `../samples/blip.wav`).
-    const SAMPLER_JSON: &str = include_str!("../../../instruments/sampler.json");
-    const VOICE_JSON: &str = include_str!("../../../instruments/voices/sampler-voice.json");
+    const SAMPLER_JSON: &str = include_str!("../tests/fixtures/sampler.json");
+    const VOICE_JSON: &str = include_str!("../tests/fixtures/voices/sampler-voice.json");
 
     fn miss(key: &str, kind: ResourceKind) -> Miss {
         Miss {

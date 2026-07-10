@@ -52,33 +52,18 @@ const BLOCK = 128; // asserted against block_size() below — JS never trusts it
 const QUANTA = 750; // ~2 s at 128 frames / 48 kHz — enough for every clock to fire
 const SILENCE_RMS = 1e-4;
 
-// The instrument matrix (#224). SELF_PLAYING must render non-silent audio unprompted;
-// NOTE_DRIVEN only has to load and render finitely (nothing plays a note in CI);
-// DUPLEX gets deterministic synthetic input and must pass it through audibly.
+// The instrument matrix (#224): the whole curated library — the five bundled Toys plus the
+// default rig. SELF_PLAYING must render non-silent audio unprompted; NOTE_DRIVEN only has to
+// load and render finitely (nothing plays a note in CI); DUPLEX gets deterministic synthetic
+// input and must pass it through audibly.
 const SELF_PLAYING = [
-  "metronome",
-  "vibrato",
-  "sequence",
-  "scale-demo",
-  "sampler-arp",
-  "djfilter-demo",
   "groovebox",
   "euclidean-drums",
-  "granulator-demo", // bonus: exercises the second sample path (samples/testvoice.wav)
-  "resonator-demo", // bonus: clock-pinged resonator, not in the issue's 20 but it plays
 ];
 const NOTE_DRIVEN = [
   "default",
-  "echo",
-  "reverb",
-  "autotune",
-  "sampler",
-  "good-button",
-  "auto-filter",
   "chord-player",
   "strum-harp",
-  "stereo-autopan",
-  "nested-space",
 ];
 const DUPLEX = ["mic-space"];
 
@@ -128,7 +113,7 @@ check(true, "module instantiates with imports {env: {log}}");
 
 async function fetchResource(key) {
   // Disk stand-in for `fetch(assetBase + key)`: canonical keys are root-relative
-  // (e.g. "voices/kick-voice.json", "patches/space.json", "samples/testvoice.wav").
+  // (e.g. "voices/kick-voice.json", "patches/space.json").
   const buf = await readFile(new URL(key, INSTRUMENTS_URL));
   return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
 }
@@ -313,9 +298,10 @@ try {
 // drives it via emit() -> encodeControl() -> queue_control, and asserts the resolved address
 // changed the audio — i.e. `/<pipe>/in` survived plan.rs::osc_in_message ->
 // render.rs::resolve_port (an exact port-name match). Every emitted address is a pipe's `in`
-// port now, so the picks instead cover every PAYLOAD shape: a scaled fader value, a 0/1
-// param-toggle, a note-toggle [note, velocity], a chord-button [{i32 degree}, gate], and a
-// dragged fader gesture. The engine driving reuses the tempo-check lifecycle: render a base
+// port now, so the picks instead cover every PAYLOAD shape a bundled Toy exposes: a scaled
+// fader value, a 0/1 param-toggle, a chord-button [{i32 degree}, gate], and a dragged fader
+// gesture. (The absolute-note toggle payload lost its host when good-button left the library
+// in the cull — no surviving Toy declares an absolute-note pipe.) The engine driving reuses the tempo-check lifecycle: render a base
 // capture on a fresh construct, destroy, construct again, queue the widget's message, render
 // a driven capture — then assert both finite, the driven stream non-silent, and the two
 // streams differ.
@@ -384,19 +370,10 @@ try {
   // payload routes through a pipe's `in` port.
   await bindingCheck("groovebox", "/kick_step2/in", 1);
 
-  // djfilter-demo — the Filter FADER (the bipolar [-1,1] filter pipe). emit(w,1.0) drives the
-  // knob to +1 (full high-pass sweep), collapsing the master djfilter. Self-playing: base audible.
-  await bindingCheck("djfilter-demo", "/filter/in", 1.0);
-
   // euclidean-drums — a RADIAL on the kick_filter pipe (bipolar [-1,1], from the PIPE's own
   // declared range). emit(w,1.0) sweeps the kick's per-channel djfilter to full high-pass,
   // thinning the kit. Proves a radial (kind fader) routes on a self-playing kit.
   await bindingCheck("euclidean-drums", "/kick_filter/in", 1.0);
-
-  // good-button — the Play NOTE-TOGGLE (the `notes` note pipe). emit(w,1) -> [60, 1] plays middle
-  // C on the otherwise-silent saw synth. NOTE-DRIVEN: base silent, driven non-silent. The note
-  // rides as an F32 (Note form: a float pitch = Pitch::Absolute MIDI) — exactly what it wants.
-  await bindingCheck("good-button", "/notes/in", 1);
 
   // chord-player — a CHORD-BUTTON (the `chord` note pipe) tapping the I chord. NOTE-DRIVEN: base
   // silent, driven non-silent. A scale DEGREE must ride as an I32: boundary.rs's Note OscForm

@@ -514,13 +514,10 @@ class EmitCliTest(unittest.TestCase):
 # this suite must resolve the same instrument + surface doc to the same widget list and rows.
 ORACLE = REPO_ROOT / "crates" / "reuben-web" / "js" / "surface" / "testdata" / "expected-widgets.json"
 
-# The 8 committed instrument + surface-doc pairs the oracle covers.
+# The 5 committed instrument + surface-doc pairs the oracle covers.
 ORACLE_INSTRUMENTS = {
     "chord-player": "instruments/chord-player.json",
-    "djfilter-demo": "instruments/djfilter-demo.json",
     "euclidean-drums": "instruments/euclidean-drums.json",
-    "good-button": "instruments/good-button.json",
-    "granulator-demo": "instruments/granulator-demo.json",
     "groovebox": "instruments/groovebox.json",
     "strum-harp": "instruments/strum-harp.json",
     "space": "instruments/patches/space.json",

@@ -1,4 +1,4 @@
-//! End-to-end stereo proof on the shipped example (ADR-0026): load `stereo-autopan.json`,
+//! End-to-end stereo proof on a frozen fixture (ADR-0026): load `stereo-autopan.json`,
 //! play a note, and confirm the engine serves two interleaved channels whose content differs
 //! over time (the LFO is sweeping the voice across the field).
 
@@ -9,18 +9,18 @@ use reuben_core::{load_instrument, AudioConfig, Message, Plan};
 use reuben_native::resources::FsResolver;
 use reuben_native::Engine;
 
-fn instruments_dir() -> PathBuf {
-    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../instruments")
+fn fixtures_dir() -> PathBuf {
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
 }
 
 #[test]
 fn stereo_autopan_plays_in_motion_across_two_channels() {
-    let json = std::fs::read_to_string(instruments_dir().join("stereo-autopan.json"))
+    let json = std::fs::read_to_string(fixtures_dir().join("stereo-autopan.json"))
         .expect("read stereo-autopan.json");
     let graph = load_instrument(
         &json,
         &reuben_core::Registry::builtin(),
-        &FsResolver::new(instruments_dir()),
+        &FsResolver::new(fixtures_dir()),
     )
     .expect("load")
     .graph;

@@ -76,7 +76,10 @@ SRC=(
 )
 # Version-locked fixtures the harness embeds via `include_str!`. Swapped with `src/` so each
 # side reads JSON valid for its own engine (see header). Space-separated list of pathspecs.
+# The macro workload froze into benches/fixtures/ at the library cull; that dir is swapped too
+# (guarded — see swap_tree), while the harness code in `benches/` stays deliberately unswapped.
 FIXTURES="instruments"
+BENCH_FIXTURES="crates/${PKG}/benches/fixtures"
 # Build config swapped with `src/` so a codegen-config perf change is A/B'd, not applied to both
 # sides (see header). Codegen only — never the toolchain or lockfile. Space-separated pathspecs.
 BUILD_CONFIG=".cargo/config.toml"
@@ -107,7 +110,16 @@ run_bench() { local bench="$1"; shift; cargo bench -p "$PKG" --features "$FEATUR
 # Swap the baseline snapshot — source closure + fixtures + build config, together — to ref $1
 # ("$BASE_SHA" for the baseline run, "HEAD" to restore the PR tree). One definition of the swap set so
 # the four call sites can't drift; the bench harness (`benches/`) is deliberately NOT in it (header).
-swap_tree() { git checkout "$1" -- "${SRC[@]}" $FIXTURES $BUILD_CONFIG; }
+# benches/fixtures/ (the frozen macro workload) IS swapped, but only when the target ref carries the
+# dir — a baseline predating the library cull has no such path, and an unguarded pathspec would
+# abort under `set -e`. When the ref lacks it, HEAD's copy stays in place: those fixture bytes are
+# the pre-cull instruments/ documents verbatim, valid for the older engine.
+swap_tree() {
+  git checkout "$1" -- "${SRC[@]}" $FIXTURES $BUILD_CONFIG
+  if git cat-file -e "$1:$BENCH_FIXTURES" 2>/dev/null; then
+    git checkout "$1" -- "$BENCH_FIXTURES"
+  fi
+}
 
 # Accumulates one consolidated row per benched case ("| layer | case | Ir Δ% | icon |") across both
 # layers, emitted as a single at-a-glance table after all layers run (see end of file).

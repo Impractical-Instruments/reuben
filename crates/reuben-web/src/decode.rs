@@ -100,11 +100,11 @@ mod tests {
         for (name, bytes) in [
             (
                 "blip.wav",
-                &include_bytes!("../../../instruments/samples/blip.wav")[..],
+                &include_bytes!("../tests/fixtures/samples/blip.wav")[..],
             ),
             (
                 "testvoice.wav",
-                &include_bytes!("../../../instruments/samples/testvoice.wav")[..],
+                &include_bytes!("../../../web/bench/fixtures/samples/testvoice.wav")[..],
             ),
         ] {
             let buf = decode_wav_bytes(bytes).unwrap_or_else(|e| panic!("{name}: {e}"));

@@ -1,0 +1,60 @@
+{
+  "format_version": 3,
+  "instrument": "space",
+  "doc": "Nestable tone + space send effect (ADR-0034/0038): a lowpass into a Freeverb, exposed through interface pipes so a host patch uses it as one node. Boundary: `in` (audio), `tone` (a swept cutoff pipe), `space` (the reverb-mix Value pipe) in; `out` (audio, fed from the reverb) out. Display labels/widgets live in a surface doc, not on pipes (ADR-0043). Each input pipe declares its own type and engine-enforced range (ADR-0038 \u00a72) \u2014 `tone` keeps the filter cutoff's full 20..20000 Hz range, matching what the v1 boundary enforced; consumers wire from it (`{\"from\": \"/tone\"}`).",
+  "interface": {
+    "inputs": {
+      "in": {
+        "type": "f32_buffer"
+      },
+      "space": {
+        "type": "f32",
+        "default": 0.35,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "tone": {
+        "type": "f32_buffer",
+        "default": 4000.0,
+        "min": 20.0,
+        "max": 20000.0,
+        "curve": "exp",
+        "unit": "Hz"
+      }
+    },
+    "outputs": {
+      "out": {
+        "from": "/verb.audio"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "type": "filter",
+      "address": "/filter",
+      "doc": "Tone control: gentle lowpass ahead of the reverb.",
+      "inputs": {
+        "audio": {
+          "from": "/in"
+        },
+        "cutoff": {
+          "from": "/tone"
+        }
+      }
+    },
+    {
+      "type": "reverb",
+      "address": "/verb",
+      "doc": "Freeverb tail; `mix` is the boundary's `space` input.",
+      "inputs": {
+        "audio": {
+          "from": "/filter.audio"
+        },
+        "mix": {
+          "from": "/space"
+        },
+        "room": 0.7
+      }
+    }
+  ]
+}

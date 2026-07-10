@@ -21,12 +21,11 @@
 //!   (m2s → `/<ch>_level_cv`)
 //! - chord-player: `chord` (note pipe; chord node → `/triads`), `key`, `brightness`
 //!   (m2s → `/brightness_cv`)
-//! - good-button: `notes` (note pipe), `brightness` (m2s → `/brightness_cv`)
 //! - strum-harp: `strum` (strum node → `/strummer`), `octaves`, `key`, `brightness`
 //!   (m2s → `/brightness_cv`)
-//! - djfilter-demo: `tempo`, `filter` (feeds `/filterpos.in`), `resonance`
-//! - granulator-demo: `position`, `grain_size`, `pitch`, `density`, `spray` (+ `gain` iff the
-//!   granulator operator declares it)
+//!
+//! (good-button, djfilter-demo, and granulator-demo were covered here until the library cull
+//! removed them; the rewrite path stays pinned by the four surviving Toys.)
 
 use reuben_core::format::LoadWarning;
 use reuben_core::message::{Arg, Message};
@@ -39,8 +38,9 @@ use reuben_core::{load_instrument, AudioConfig, Registry};
 const BLOCK: usize = 128;
 const BLOCKS: usize = 40;
 
-/// Text resources from the live `instruments/` tree; samples synthesized in memory so the
-/// granulator renders audibly (a real wav decode belongs to reuben-native, not core tests).
+/// Text resources from the live `instruments/` tree; samples synthesized in memory (the
+/// surviving corpus is sample-free, but a future wav-carrying Toy renders audibly for free —
+/// a real wav decode belongs to reuben-native, not core tests).
 struct InstrumentsDir;
 impl ResourceResolver for InstrumentsDir {
     fn resolve(&self, _source: &str) -> Result<SampleBuffer, ResolveError> {
@@ -139,14 +139,6 @@ fn f32_msg(addr: &str, v: f32, frame: usize) -> Message {
     Message::new(addr, Arg::F32(v), frame)
 }
 
-fn note_msg(addr: &str, midi: f32, vel: f32, frame: usize) -> Message {
-    Message::new(
-        addr,
-        Arg::Note(Note::new(Pitch::Absolute(midi), vel)),
-        frame,
-    )
-}
-
 fn degree_msg(addr: &str, degree: i32, vel: f32, frame: usize) -> Message {
     Message::new(
         addr,
@@ -219,23 +211,6 @@ const REWRITES: &[Rewrite] = &[
         },
     },
     Rewrite {
-        name: "good-button",
-        fixture: include_str!("fixtures/pre-v3/good-button.json"),
-        blocks: BLOCKS,
-        pre: |b| match b {
-            1 => vec![note_msg("/voicer/notes", 60.0, 1.0, 17)],
-            8 => vec![f32_msg("/brightness/in", 0.9, 25)],
-            16 => vec![note_msg("/voicer/notes", 60.0, 0.0, 5)],
-            _ => Vec::new(),
-        },
-        post: |b| match b {
-            1 => vec![note_msg("/notes/in", 60.0, 1.0, 17)],
-            8 => vec![f32_msg("/brightness/in", 0.9, 25)],
-            16 => vec![note_msg("/notes/in", 60.0, 0.0, 5)],
-            _ => Vec::new(),
-        },
-    },
-    Rewrite {
         name: "strum-harp",
         fixture: include_str!("fixtures/pre-v3/strum-harp.json"),
         blocks: BLOCKS,
@@ -265,50 +240,6 @@ const REWRITES: &[Rewrite] = &[
             14 => vec![
                 f32_msg("/strum/in", 0.6, 20),
                 f32_msg("/brightness/in", 0.7, 20),
-            ],
-            _ => Vec::new(),
-        },
-    },
-    Rewrite {
-        name: "djfilter-demo",
-        fixture: include_str!("fixtures/pre-v3/djfilter-demo.json"),
-        blocks: BLOCKS,
-        pre: |b| match b {
-            3 => vec![f32_msg("/filterpos/in", -0.7, 33)],
-            11 => vec![f32_msg("/djfilter/resonance", 0.8, 90)],
-            18 => vec![
-                f32_msg("/clock/tempo", 132.0, 12),
-                f32_msg("/filterpos/in", 0.6, 12),
-            ],
-            _ => Vec::new(),
-        },
-        post: |b| match b {
-            3 => vec![f32_msg("/filter/in", -0.7, 33)],
-            11 => vec![f32_msg("/resonance/in", 0.8, 90)],
-            18 => vec![
-                f32_msg("/tempo/in", 132.0, 12),
-                f32_msg("/filter/in", 0.6, 12),
-            ],
-            _ => Vec::new(),
-        },
-    },
-    Rewrite {
-        name: "granulator-demo",
-        fixture: include_str!("fixtures/pre-v3/granulator-demo.json"),
-        blocks: BLOCKS,
-        pre: |b| match b {
-            3 => vec![f32_msg("/grain/position", 0.25, 44)],
-            12 => vec![
-                f32_msg("/grain/density", 24.0, 70),
-                f32_msg("/grain/spray", 0.1, 70),
-            ],
-            _ => Vec::new(),
-        },
-        post: |b| match b {
-            3 => vec![f32_msg("/position/in", 0.25, 44)],
-            12 => vec![
-                f32_msg("/density/in", 24.0, 70),
-                f32_msg("/spray/in", 0.1, 70),
             ],
             _ => Vec::new(),
         },
@@ -368,21 +299,6 @@ fn chord_player_rewrite_renders_bit_identical() {
 }
 
 #[test]
-fn good_button_rewrite_renders_bit_identical() {
-    assert_rewritten("good-button");
-}
-
-#[test]
 fn strum_harp_rewrite_renders_bit_identical() {
     assert_rewritten("strum-harp");
-}
-
-#[test]
-fn djfilter_demo_rewrite_renders_bit_identical() {
-    assert_rewritten("djfilter-demo");
-}
-
-#[test]
-fn granulator_demo_rewrite_renders_bit_identical() {
-    assert_rewritten("granulator-demo");
 }

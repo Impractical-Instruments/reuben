@@ -1,7 +1,7 @@
 {
   "format_version": 2,
-  "instrument": "echo-voice",
-  "doc": "Voice patch for echo.json (ADR-0032). One monophonic subtractive synth voice: a held freq drives the oscillator, a held gate the envelope; gentle static lowpass. Hosted N times by the rig's `voicer`, which sums the dry voices before the master feedback delay. interface: freq/gate in, audio/active out.",
+  "instrument": "default-voice",
+  "doc": "Default subtractive voice patch (ADR-0032). One monophonic synth voice: a held freq drives the oscillator, a held gate the envelope. Hosted N times by a `voicer`; also loads + plays standalone for testing. interface: freq/gate in, audio/active out.",
   "interface": {
     "inputs": {
       "freq": {
@@ -53,6 +53,7 @@
     {
       "type": "envelope",
       "address": "/env",
+      "doc": "ADSR contour generator; gate driven by the voice's interface gate input.",
       "inputs": {
         "gate": {
           "from": "/gate"

@@ -23,9 +23,6 @@ const PAIRS = [
   ["chord-player", "instruments/chord-player.json"],
   ["strum-harp", "instruments/strum-harp.json"],
   ["euclidean-drums", "instruments/euclidean-drums.json"],
-  ["djfilter-demo", "instruments/djfilter-demo.json"],
-  ["good-button", "instruments/good-button.json"],
-  ["granulator-demo", "instruments/granulator-demo.json"],
   ["space", "instruments/patches/space.json"],
 ];
 

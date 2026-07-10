@@ -108,7 +108,7 @@ human Start tap (that's a gesture-latency, not a load cost).
   link `groovebox`'s 3 tiny voice JSONs cost **≈508 ms of serialized RTTs** vs **17 ms** of CPU.
 - **Sample decode is not on the bundled critical path.** None of the five `toys.json` Toys carry
   a `.wav` (they synthesize their audio), so first-audio decode cost is **zero** today.
-  Characterized separately on `granulator-demo` (a non-bundled instrument, `testvoice.wav`
+  Characterized separately on `granulator-demo` (a frozen harness payload under `web/bench/fixtures/`, `testvoice.wav`
   ≈614 KB): decode **CPU is cheap** (8 ms baseline → 62–69 ms at 6× throttle), but the sample
   **transfer dominates** — ≈3.2 s to fetch the wav on slow-4G, and audio is ~incompressible
   (brotli barely helps). A future sample-carrying Toy pays transfer, not decode.

@@ -19,10 +19,11 @@
 //!   an `osc_out` (outbound) and a Value interface output (captured);
 //! - migration-loss shapes (aliased entries, internally-wired targets, minted-address
 //!   collisions, dotted entry names) load with pointed warnings, never fatally, never silently;
-//! - a **shipped-document corpus**: the v1 originals of three representative shipped
-//!   instruments (embedded verbatim from git history) against the rewritten v2 files on disk.
+//! - a **frozen-document corpus**: the v1 originals of three representative instruments
+//!   (embedded verbatim from git history) against their rewritten v2 forms, frozen under
+//!   `tests/fixtures/` since the library cull.
 //!
-//! This is the ADR-0026 discipline the shipped-instrument rewrite rides on: the shipped suite
+//! This is the ADR-0026 discipline the instrument rewrite rode on: the library suite
 //! (first_sound, groovebox, stereo_pan, …) keeps asserting behavior on the rewritten v2 files,
 //! and this file pins v1 ≡ v2 at the sample/message level.
 
@@ -903,8 +904,9 @@ fn message_path_through_a_migrated_value_pipe_is_bit_identical() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Shipped-document corpus (review #189 F7): v1 originals from git history vs the rewritten v2
-// files on disk. Coverage: three representative families — a Voicer rig with a master effect
+// Frozen-document corpus (review #189 F7): v1 originals from git history vs their rewritten v2
+// forms, frozen under `tests/fixtures/` (they were library instruments until the library cull;
+// migration inputs must not track live files). Coverage: three representative families — a Voicer rig with a master effect
 // and an anonymous broadcast tap (reverb), a channel-pinned stereo rig (stereo-autopan), and
 // the nesting + presentational-range chain (nested-space → patches/space.json). Sample-backed
 // documents (sampler*, granulator, …) are excluded: their fidelity rides on the same machinery
@@ -912,22 +914,22 @@ fn message_path_through_a_migrated_value_pipe_is_bit_identical() {
 // (ResourceStore binding) are format-version-independent.
 // ---------------------------------------------------------------------------------------------
 
-/// Resolves nested refs from the repo `instruments/` dir (the v2 side reads what ships).
-struct InstrumentsDir;
-impl ResourceResolver for InstrumentsDir {
+/// Resolves nested refs from the frozen `tests/fixtures/` tree (the v2 side of the corpus).
+struct FixturesDir;
+impl ResourceResolver for FixturesDir {
     fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
         Err(ResolveError::NotFound(source.to_string()))
     }
     fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
-        let path = format!("{}/../../instruments/{source}", env!("CARGO_MANIFEST_DIR"));
+        let path = format!("{}/tests/fixtures/{source}", env!("CARGO_MANIFEST_DIR"));
         std::fs::read_to_string(&path).map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))
     }
 }
 
-fn shipped(name: &str) -> String {
-    InstrumentsDir
+fn frozen_v2(name: &str) -> String {
+    FixturesDir
         .resolve_text(name)
-        .unwrap_or_else(|e| panic!("read shipped {name}: {e}"))
+        .unwrap_or_else(|e| panic!("read frozen v2 {name}: {e}"))
 }
 
 // The v1 originals, verbatim from git history (pre-rewrite tip 9d03457, `git show
@@ -1045,42 +1047,42 @@ const V1_DEFAULT_VOICE: &str = r#"{
 }"#;
 
 #[test]
-fn shipped_reverb_renders_bit_identical_to_its_v1_original() {
+fn frozen_reverb_renders_bit_identical_to_its_v1_original() {
     let mut v1 = MemoryResolver::new();
     v1.insert_text("voices/reverb-voice.json", V1_REVERB_VOICE);
     let a = render(V1_REVERB, &v1, voicer_messages);
-    let b = render(&shipped("reverb.json"), &InstrumentsDir, voicer_messages);
+    let b = render(&frozen_v2("reverb.json"), &FixturesDir, voicer_messages);
     assert_nonsilent(&a, "reverb");
-    assert_bit_identical(&a, &b, "shipped reverb.json vs its v1 original");
+    assert_bit_identical(&a, &b, "frozen reverb.json vs its v1 original");
 }
 
 #[test]
-fn shipped_stereo_autopan_renders_bit_identical_to_its_v1_original() {
+fn frozen_stereo_autopan_renders_bit_identical_to_its_v1_original() {
     let mut v1 = MemoryResolver::new();
     v1.insert_text("voices/autopan-voice.json", V1_AUTOPAN_VOICE);
     let a = render(V1_STEREO_AUTOPAN, &v1, voicer_messages);
     let b = render(
-        &shipped("stereo-autopan.json"),
-        &InstrumentsDir,
+        &frozen_v2("stereo-autopan.json"),
+        &FixturesDir,
         voicer_messages,
     );
     assert_nonsilent(&a, "stereo-autopan");
     assert_eq!(a.channels.len(), 2);
     assert_ne!(a.channels[0], a.channels[1], "the pan actually pans");
-    assert_bit_identical(&a, &b, "shipped stereo-autopan.json vs its v1 original");
+    assert_bit_identical(&a, &b, "frozen stereo-autopan.json vs its v1 original");
 }
 
 #[test]
-fn shipped_nested_space_renders_bit_identical_to_its_v1_original() {
+fn frozen_nested_space_renders_bit_identical_to_its_v1_original() {
     let mut v1 = MemoryResolver::new();
     v1.insert_text("voices/default-voice.json", V1_DEFAULT_VOICE);
     v1.insert_text("patches/space.json", V1_SPACE_PATCH);
     let a = render(V1_NESTED_SPACE, &v1, voicer_messages);
     let b = render(
-        &shipped("nested-space.json"),
-        &InstrumentsDir,
+        &frozen_v2("nested-space.json"),
+        &FixturesDir,
         voicer_messages,
     );
     assert_nonsilent(&a, "nested-space");
-    assert_bit_identical(&a, &b, "shipped nested-space.json vs its v1 original");
+    assert_bit_identical(&a, &b, "frozen nested-space.json vs its v1 original");
 }

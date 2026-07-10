@@ -1,0 +1,65 @@
+{
+  "format_version": 2,
+  "instrument": "sampler-arp",
+  "doc": "A self-playing sample arpeggio (ADR-0032). The Clock's beat gate drives a sequencer that emits scale degrees — a major arpeggio (degrees 0 2 4 7 4 2 = root, third, fifth, octave, fifth, third) — one per beat into a Voicer, which resolves each degree to Hz through the default C-major/12-TET tonal context. Each of the 4 voices is a hosted `sampler-voice` sub-patch whose held freq + gate fire the 'blip' sample (recorded pitch MIDI 57, ~220 Hz); pitch shifts the playback rate. Set tempo via /clock/tempo; edit the line via /sequencer/step1../sequencer/step6 and /sequencer/length; play in another key by adding a harmony op (see scale-demo.json).",
+  "resources": {
+    "sampler-voice": "voices/sampler-voice.json"
+  },
+  "interface": {
+    "outputs": {
+      "out": {
+        "from": "/out.audio"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "type": "clock",
+      "address": "/clock",
+      "doc": "Beat phasor + beat gate.",
+      "inputs": {
+        "tempo": 132.0
+      }
+    },
+    {
+      "type": "sequencer",
+      "address": "/sequencer",
+      "doc": "Walks a major arpeggio one step per beat -> degree Messages.",
+      "inputs": {
+        "clock": {
+          "from": "/clock.gate"
+        },
+        "length": 6.0,
+        "step1": 0.0,
+        "step2": 2.0,
+        "step3": 4.0,
+        "step4": 7.0,
+        "step5": 4.0,
+        "step6": 2.0
+      }
+    },
+    {
+      "type": "voicer",
+      "address": "/voicer",
+      "doc": "Hosts 4 sampler-voice sub-patches; resolves each degree to Hz and allocates it across the voices, summing their audio.",
+      "config": {
+        "voices": 4.0
+      },
+      "inputs": {
+        "notes": {
+          "from": "/sequencer"
+        }
+      },
+      "voice": "sampler-voice"
+    },
+    {
+      "type": "output",
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/voicer.audio"
+        }
+      }
+    }
+  ]
+}

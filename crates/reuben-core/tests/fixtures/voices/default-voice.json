@@ -1,7 +1,7 @@
 {
   "format_version": 2,
-  "instrument": "djfilter-demo-voice",
-  "doc": "Voice patch for djfilter-demo.json (ADR-0032). One monophonic plucky saw voice: a held freq drives the oscillator, a held gate the plucky ADSR. NO djfilter here — the bipolar filter knob drives a single master djfilter on the summed mix (host post-mix), so the voice is just osc -> env VCA. interface: freq/gate in, audio/active out.",
+  "instrument": "default-voice",
+  "doc": "Default subtractive voice patch (ADR-0032). One monophonic synth voice: a held freq drives the oscillator, a held gate the envelope. Hosted N times by a `voicer`; also loads + plays standalone for testing. interface: freq/gate in, audio/active out.",
   "interface": {
     "inputs": {
       "freq": {
@@ -32,26 +32,32 @@
     {
       "type": "oscillator",
       "address": "/osc",
-      "doc": "Saw tone (rich harmonics for the master filter to chew).",
+      "doc": "Oscillator; freq driven by the voice's interface freq input.",
       "inputs": {
         "freq": {
           "from": "/freq"
+        }
+      }
+    },
+    {
+      "type": "filter",
+      "address": "/filter",
+      "doc": "Gentle lowpass.",
+      "inputs": {
+        "audio": {
+          "from": "/osc"
         },
-        "waveform": "Saw"
+        "cutoff": 3000.0
       }
     },
     {
       "type": "envelope",
       "address": "/env",
-      "doc": "Plucky ADSR envelope (linear CV), gated per step.",
+      "doc": "ADSR contour generator; gate driven by the voice's interface gate input.",
       "inputs": {
-        "attack": 0.01,
-        "decay": 0.15,
         "gate": {
           "from": "/gate"
-        },
-        "release": 0.2,
-        "sustain": 0.5
+        }
       }
     },
     {
@@ -67,10 +73,10 @@
     {
       "type": "mul_f32_signal",
       "address": "/env_vca",
-      "doc": "VCA: saw * shaped envelope CV.",
+      "doc": "VCA: audio * shaped envelope CV.",
       "inputs": {
         "a": {
-          "from": "/osc"
+          "from": "/filter"
         },
         "b": {
           "from": "/env_curve"
