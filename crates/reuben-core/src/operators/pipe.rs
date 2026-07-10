@@ -66,7 +66,9 @@ impl Operator for Pipe {
                 // Buffer-presence invariant (ADR-0037): the input is always a dense length-n
                 // buffer (wired share, or materialized default/silence) — the handle read
                 // debug-asserts it — so `copy_from_slice` asserts the equal-length invariant
-                // instead of zip-truncating around a breach.
+                // instead of zip-truncating around a breach. The handle's `0.0` default is
+                // therefore inert — an unfed pipe gets the plan-materialized default/silence,
+                // never this literal.
                 let src = io.read(In::<SignalF32>::new(0, 0.0));
                 io.write(Out::<SignalF32>::new(0)).copy_from_slice(src);
             }

@@ -8,7 +8,9 @@ Accepted (issue #164).
 `Io::input`/`Io::output` and the `IoInput`/`IoOutput` traits — are since deleted outright; the
 `form` impls absorbed them (each reads the private `Io` state directly, one dispatch per form), and
 the "one sanctioned production use" (`osc_out`'s undeclared emit port) now writes through a local
-inline `Out<Raw>` handle. No primitive layer remains beneath `io.read`/`io.write`.
+inline `Out<Raw>` handle. No type-dispatched verb layer remains beneath `io.read`/`io.write`; what
+survives type-erased is `Io::latch_arg` plus the `MsgWriter::on`/`EventWriter::on` constructors —
+the interface pipe's seam ([ADR-0038](0038-interface-pipes-and-the-device-layer.md)).
 
 Extends [ADR-0031](0031-float-resolves-to-value-or-signal-by-wiring.md) ("the form is the type" →
 **"the form is the port"**) and amends [ADR-0030](0030-osc-as-all-data-one-message-type.md)'s

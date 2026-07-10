@@ -681,17 +681,27 @@ mod typed_handles {
     }
 
     /// `io.read` on an `In<Event<Note>>` iterates the port's frame-stamped events, each decoded
-    /// to `Note`.
+    /// to `Note` — the payloads decode, not just the frames.
     #[test]
     fn read_event_stream_iterates_notes() {
         const NOTES: In<Event<Note>> = In::new(0, ());
         let n0 = Arg::Note(Note::new(Pitch::from_midi(60.0), 1.0));
-        let events = [crate::message::Event { arg: &n0, frame: 5 }];
+        let n1 = Arg::Note(Note::new(Pitch::from_midi(64.0), 0.5));
+        let events = [
+            crate::message::Event { arg: &n0, frame: 0 },
+            crate::message::Event {
+                arg: &n1,
+                frame: 32,
+            },
+        ];
         let streams: [&[crate::message::Event]; 1] = [&events];
         let io =
             Io::new(48_000.0, 64, [None], std::iter::empty::<&mut [f32]>()).with_streams(&streams);
-        let got: Vec<_> = io.read(NOTES).map(|s| s.frame).collect();
-        assert_eq!(got, vec![5]);
+        let got: Vec<_> = io
+            .read(NOTES)
+            .map(|s| (s.frame, s.payload.pitch.midi()))
+            .collect();
+        assert_eq!(got, vec![(0, Some(60.0)), (32, Some(64.0))]);
     }
 
     /// `io.read` on an `In<Raw>` yields the raw, undecoded `&Arg` payloads — the `osc_out`
@@ -743,15 +753,18 @@ mod typed_handles {
             let mut w = io.write(ACTIVE);
             w.set(0, 1.0); // emits
             w.set(4, 1.0); // deduped
+            w.set(6, 2.0); // changed → emits
             let mut e = io.write(NOTES);
             let n = Note::new(Pitch::Degree(0), 1.0);
             e.emit(2, n); // appends
             e.emit(2, n); // appends again (no dedup for events)
         }
-        assert_eq!(sink.len(), 3);
+        assert_eq!(sink.len(), 4);
         assert_eq!(sink[0].port, 0);
-        assert_eq!(sink[1].port, 1);
+        assert_eq!(sink[1].port, 0);
+        assert_eq!(sink[1].arg, Arg::F32(2.0)); // the changed value got through the dedup
         assert_eq!(sink[2].port, 1);
+        assert_eq!(sink[3].port, 1);
     }
 
     /// Build an `Io` with only an emit sink attached — the fixture for the writer-semantics
