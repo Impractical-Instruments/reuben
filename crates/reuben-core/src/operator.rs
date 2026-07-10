@@ -22,10 +22,11 @@
 //!   `io.write(OUT_NOTES)` on an `Out<Event<Note>>` → an [`EventWriter`].
 //!
 //! A wrong-form read no longer compiles: the handle *is* the declared form, so
-//! `io.read(IN_FREQ)` cannot return an event stream for a Signal port. The former
-//! type-dispatched verbs [`Io::input`] / [`Io::output`] (ADR-0031) remain as the `pub(crate)`
-//! primitives the handle forms lower to — reached directly only by in-crate special cases (the
-//! `osc_out` sink's undeclared emit port, unit tests over hand-built `Io`s).
+//! `io.read(IN_FREQ)` cannot return an event stream for a Signal port. Each [`form`] impl reads
+//! the private `Io` state directly — one dispatch per form (issue #216 folded ADR-0031's former
+//! `Io::input`/`Io::output` primitives into the impls that were their only callers). The one
+//! type-erased held read left is [`Io::latch_arg`], the interface pipe's forwarding seam
+//! (ADR-0038).
 
 use std::sync::Arc;
 
@@ -38,7 +39,7 @@ use crate::message::{Arg, Emit, Event, FromArg};
 use crate::plan::PlanError;
 use crate::resources::{ResolvedRefs, ResourceStore};
 
-/// A typed, frame-stamped payload yielded by an [`Io::input`] event stream — one decoded Message on a port
+/// A typed, frame-stamped payload yielded by an [`EventStream`] — one decoded Message on a port
 /// (ADR-0030). `frame` is segment-relative; `payload` is the Message's [`Arg`] decoded to the
 /// requested `T` via [`FromArg`].
 #[derive(Debug, Clone, Copy)]
@@ -62,17 +63,18 @@ pub struct Io<'a> {
     frames: usize,
     /// Dense per-sample buffer per **input** port (a wired [`Buffer`](Arg::F32Buffer) source or a
     /// materialized [`F32`](crate::descriptor::PortType::F32) control), or `None` for a port with
-    /// no buffer form. Read per-sample via [`Io::input`].
+    /// no buffer form. Read per-sample via [`Io::read`] on a Signal handle.
     inputs: SmallVec<[Option<&'a [f32]>; 20]>,
     outputs: SmallVec<[&'a mut [f32]; 2]>,
     /// The held (ZOH) [`Arg`] per **input** port — the unified per-port latch (ADR-0030),
     /// collapsing the former Harmony / enum / param lanes. In input-port order; `Copy`-normalized
-    /// and constant for this (sub)block (the engine block-slices at held-value changes). Read via
-    /// [`Io::input`]; empty when unattached, so the held read then reports `None`.
+    /// and constant for this (sub)block (the engine block-slices at held-value changes). Touched
+    /// only through [`Io::latch_arg`]; empty when unattached, so a held read then falls back to
+    /// the handle's declared default.
     latched: &'a [Arg],
     /// The sparse [`Event`]s per **input** port this (sub)block, frames segment-relative
-    /// (ADR-0030). In input-port order; zero-copy views borrowed from the Render loop. Read via
-    /// [`Io::input`]; empty when unattached.
+    /// (ADR-0030). In input-port order; zero-copy views borrowed from the Render loop. Touched
+    /// only through [`Io::stream`]; empty when unattached.
     streams: &'a [&'a [Event<'a>]],
     /// Sink for Messages this call emits (ADR-0014, ADR-0030), or `None` when unattached. The former
     /// harmony-publish and outbound sinks fold into this: a context/`osc_out` node simply emits to
@@ -112,14 +114,14 @@ impl<'a> Io<'a> {
     }
 
     /// Attach the per-input held [`Arg`] latch for this segment (ADR-0030). In input-port order;
-    /// read by [`Io::input`]. Unattached ⇒ the held read reports `None`.
+    /// read through [`Io::latch_arg`]. Unattached ⇒ a held read falls back to its default.
     pub(crate) fn with_latched(mut self, latched: &'a [Arg]) -> Self {
         self.latched = latched;
         self
     }
 
     /// Attach the per-input [`Event`] streams for this (sub)block (ADR-0030). In input-port order;
-    /// read by [`Io::input`]. Unattached ⇒ the event read is empty.
+    /// read through [`Io::stream`]. Unattached ⇒ the event read is empty.
     pub(crate) fn with_streams(mut self, streams: &'a [&'a [Event<'a>]]) -> Self {
         self.streams = streams;
         self
@@ -133,7 +135,7 @@ impl<'a> Io<'a> {
     }
 
     /// Attach the emit sink and segment frame offset. Messages written via
-    /// [`Io::output`] are collected into `buf` with `frame_offset` added.
+    /// [`Io::write`] are collected into `buf` with `frame_offset` added.
     pub(crate) fn with_emit(mut self, buf: &'a mut Vec<Emit>, frame_offset: usize) -> Self {
         self.emit = Some(buf);
         self.frame_offset = frame_offset;
@@ -161,8 +163,8 @@ impl<'a> Io<'a> {
     /// **Read an input through its typed handle** (ADR-0037). The handle's [`form`] marker fixes
     /// the return shape (see the module docs) and its stored default is the held-read fallback,
     /// so the declared contract default is the read default by construction. This is the one
-    /// read verb operator code uses; it lowers to the same latch / stream / buffer state as the
-    /// [`Io::input`] primitive.
+    /// read verb operator code uses; each form impl reads the latch / stream / buffer state
+    /// directly — one dispatch per form.
     pub fn read<F: form::InForm>(&self, port: In<F>) -> F::Read<'a> {
         F::read(self, port.index, port.default)
     }
@@ -174,49 +176,19 @@ impl<'a> Io<'a> {
         F::write(self, port.index)
     }
 
-    /// **Read an input port, dispatched by the payload type `T`** (ADR-0031). `T` *is* the port's
-    /// form: `io.input::<&[f32]>(p)` reads a Signal buffer, `io.input::<f32>(p)` (or an enum /
-    /// `Harmony`) the held Value, `io.input::<Note>(p)` the Event stream. Demoted to a
-    /// `pub(crate)` primitive (ADR-0037): operator code reads via [`Io::read`] + the contract's
-    /// typed handle; only in-crate special cases (hand-built `Io` tests) reach this directly.
-    pub(crate) fn input<T: IoInput<'a>>(&self, port: usize) -> T::Out {
-        T::read(self, port)
-    }
-
-    /// Decode the held [`Arg`] latched on `port` into `T` (the held-Value read). The shared body of
-    /// every [`IoInput`] held arm — the manual `impl_input_held!` types (`f32`, `Harmony`) and the
-    /// `#[derive(ArgValue)]`-generated enum impls both route here, so the private `latched` field is
-    /// touched in exactly one place. `None` if the port is unlatched or holds the wrong family.
-    pub(crate) fn input_held<T: FromArg<'a>>(&self, port: usize) -> Option<T> {
-        self.latched.get(port).and_then(T::from_arg)
-    }
-
-    /// The raw held [`Arg`] latched on `port`, undecoded — the type-erased twin of
-    /// [`Io::input_held`]. In-crate only: the interface **pipe** (ADR-0038) forwards whatever
-    /// Value its declared type latched (`f32`, an enum's concrete variant, a `Harmony`) without
-    /// naming a concrete Rust type, so it reads the latch as the `Arg` it already is.
+    /// The raw held [`Arg`] latched on `port`, undecoded — the **single touch point** of the
+    /// private `latched` state. [`form::Held`]'s read decodes through it; the interface **pipe**
+    /// (ADR-0038) calls it directly, forwarding whatever Value its declared type latched (`f32`,
+    /// an enum's concrete variant, a `Harmony`) without naming a concrete Rust type.
     pub(crate) fn latch_arg(&self, port: usize) -> Option<&'a Arg> {
         self.latched.get(port)
     }
 
-    /// The routed [`Event`] slice for `port`, or an empty slice if the port has no stream. The
-    /// shared source of the empty-stream fallback behind every Event read (the [`form::Event`] /
-    /// [`form::Raw`] handles and the `Note` / `&Arg` [`IoInput`] arms), so the private `streams`
-    /// field is touched in exactly one place.
-    pub(crate) fn stream(&self, port: usize) -> &'a [Event<'a>] {
+    /// The routed [`Event`] slice for `port`, or an empty slice if the port has no stream — the
+    /// **single touch point** of the private `streams` state, behind the [`form::Event`] /
+    /// [`form::Raw`] reads.
+    fn stream(&self, port: usize) -> &'a [Event<'a>] {
         self.streams.get(port).copied().unwrap_or(&[])
-    }
-
-    /// **Write an output port, dispatched by the payload type `T`** (ADR-0031). `io.output::<&mut
-    /// [f32]>(p)` borrows this node's dense Signal buffer to fill in place; `io.output::<f32>(p)`
-    /// returns a [`MsgWriter`] for a sparse Value output. Demoted to a `pub(crate)` primitive
-    /// (ADR-0037): operator code writes via [`Io::write`] + the contract's typed handle; the one
-    /// in-crate special case is the `osc_out` sink's undeclared emit port.
-    // Orphaned by the handle migration (issue #216) — its last production caller (`osc_out`) now
-    // writes through a handle, leaving only the `new_io_api` tests; the fold commit deletes it.
-    #[allow(dead_code)]
-    pub(crate) fn output<T: IoOutput<'a>>(&mut self, port: usize) -> T::Out<'_> {
-        T::write(self, port)
     }
 }
 
@@ -373,8 +345,7 @@ pub mod form {
     }
 
     /// The write half of a form marker: what [`Io::write`](super::Io::write) returns for a
-    /// handle of this form. The `'io` lifetime carries the per-call mutable borrow of the `Io`
-    /// (like [`IoOutput`](super::IoOutput)'s GAT).
+    /// handle of this form. The `'io` lifetime carries the per-call mutable borrow of the `Io`.
     pub trait OutForm {
         /// What `io.write(handle)` returns, borrowing the `Io` for `'io`.
         type Write<'io, 'a>
@@ -388,7 +359,7 @@ pub mod form {
         type Default = f32;
         type Read<'a> = &'a [f32];
         fn read<'a>(io: &Io<'a>, index: usize, _default: f32) -> &'a [f32] {
-            let buf = io.input::<&'a [f32]>(index);
+            let buf = io.inputs.get(index).copied().flatten().unwrap_or(&[]);
             // The buffer-presence invariant (ADR-0037): the engine hands every declared
             // f32_buffer input a dense buffer of exactly `frames` samples (unwired bare inputs
             // materialize silence), so `io.read(SIG)[i]` is safe by construction. A hand-built
@@ -409,7 +380,7 @@ pub mod form {
         type Default = T;
         type Read<'a> = T;
         fn read<'a>(io: &Io<'a>, index: usize, default: T) -> T {
-            io.input_held(index).unwrap_or(default)
+            io.latch_arg(index).and_then(T::from_arg).unwrap_or(default)
         }
     }
 
@@ -472,78 +443,8 @@ pub mod form {
     }
 }
 
-/// The write side of [`Io::output`] (ADR-0031): each payload type maps to one output form. `&mut
-/// [f32]` ⇒ the dense Signal buffer to fill; `f32` ⇒ a [`MsgWriter`] for sparse Value writes. The
-/// `Out<'io>` GAT carries the per-call mutable borrow of the `Io`.
-// Orphaned by the handle migration (issue #216) — reached only through `Io::output` above, which
-// now has no production caller; the fold commit deletes the whole primitive layer.
-#[allow(dead_code)]
-pub(crate) trait IoOutput<'a>: Sized {
-    /// What `io.output::<Self>(port)` returns, borrowing the `Io` for `'io`.
-    type Out<'io>
-    where
-        'a: 'io;
-    /// Open `port` of `io` for writing in this type's form.
-    fn write<'io>(io: &'io mut Io<'a>, port: usize) -> Self::Out<'io>;
-}
-
-impl<'a> IoOutput<'a> for &'a mut [f32] {
-    type Out<'io>
-        = &'io mut [f32]
-    where
-        'a: 'io;
-    fn write<'io>(io: &'io mut Io<'a>, port: usize) -> &'io mut [f32] {
-        &mut io.outputs[port][..]
-    }
-}
-
-impl<'a> IoOutput<'a> for f32 {
-    type Out<'io>
-        = MsgWriter<'io>
-    where
-        'a: 'io;
-    fn write<'io>(io: &'io mut Io<'a>, port: usize) -> MsgWriter<'io> {
-        MsgWriter::on(io, port)
-    }
-}
-
-impl<'a> IoOutput<'a> for crate::vocab::Harmony {
-    // A held `Harmony` is a single Value, so it reuses [`MsgWriter`] — dedup + last-write-wins are
-    // the right semantics (publishing the same Harmony twice changes nothing downstream).
-    type Out<'io>
-        = MsgWriter<'io>
-    where
-        'a: 'io;
-    fn write<'io>(io: &'io mut Io<'a>, port: usize) -> MsgWriter<'io> {
-        MsgWriter::on(io, port)
-    }
-}
-
-impl<'a> IoOutput<'a> for crate::vocab::pitch::Note {
-    // An Event output is append-only — [`EventWriter`], not [`MsgWriter`].
-    type Out<'io>
-        = EventWriter<'io>
-    where
-        'a: 'io;
-    fn write<'io>(io: &'io mut Io<'a>, port: usize) -> EventWriter<'io> {
-        EventWriter::on(io, port)
-    }
-}
-
-impl<'a> IoOutput<'a> for Arg {
-    // A raw, type-erased Event write (issue #141): re-emit any `Arg` verbatim, append-only —
-    // the pass-through half of `io.input::<&Arg>`, used by the `osc_out` boundary sink.
-    type Out<'io>
-        = EventWriter<'io>
-    where
-        'a: 'io;
-    fn write<'io>(io: &'io mut Io<'a>, port: usize) -> EventWriter<'io> {
-        EventWriter::on(io, port)
-    }
-}
-
-/// A handle for **sparse Value writes** on one output port, returned by `io.output::<f32>(port)`
-/// (ADR-0031). Lowers to today's `Emit → Event → latch`. [`set`](MsgWriter::set) is **deduped** (a
+/// A handle for **sparse Value writes** on one output port, returned by [`Io::write`] on a held
+/// handle (ADR-0031/0037). Lowers to today's `Emit → Event → latch`. [`set`](MsgWriter::set) is **deduped** (a
 /// no-op change emits nothing, so the wire stays genuinely sparse), **last-write-wins per frame**,
 /// and **addressless** (internal wires route by connection). The dedup baseline is writer-local for
 /// now — a fresh handle starts with no prior value, so the first `set` of a block always emits; the
@@ -559,7 +460,8 @@ pub struct MsgWriter<'io> {
 
 impl<'io> MsgWriter<'io> {
     /// Open a writer on `io`'s output `port` — the shared lowering behind every held-Value
-    /// write (`io.write` via [`form::Held`], and the `io.output` primitive's held arms).
+    /// write: [`Io::write`] via [`form::Held`], and the interface pipe's direct forward, whose
+    /// dedup baseline is cross-block operator state (ADR-0038).
     pub(crate) fn on<'a>(io: &'io mut Io<'a>, port: usize) -> Self {
         MsgWriter {
             sink: io.emit.as_deref_mut(),
@@ -594,8 +496,8 @@ impl MsgWriter<'_> {
     }
 }
 
-/// A handle for **Event writes** on one output port, returned by `io.output::<Note>(port)`
-/// (ADR-0031). Unlike [`MsgWriter`], it is **append-only**: every [`emit`](EventWriter::emit) pushes
+/// A handle for **Event writes** on one output port, returned by [`Io::write`] on an Event or
+/// Raw handle (ADR-0031/0037). Unlike [`MsgWriter`], it is **append-only**: every [`emit`](EventWriter::emit) pushes
 /// a distinct Message — no dedup, no last-write-wins — so a chord's many notes at a single frame all
 /// survive and a re-press of the same note is a real second event. Addressless (internal wires route
 /// by connection); lowers to today's `Emit → Event`. Replaces the old `emit` verb for events.
@@ -607,8 +509,9 @@ pub struct EventWriter<'io> {
 }
 
 impl<'io> EventWriter<'io> {
-    /// Open a writer on `io`'s output `port` — the shared lowering behind every Event write
-    /// (`io.write` via [`form::Event`]/[`form::Raw`], and the `io.output` primitive's event arms).
+    /// Open a writer on `io`'s output `port` — the shared lowering behind every Event write:
+    /// [`Io::write`] via [`form::Event`]/[`form::Raw`], and the interface pipe's event re-emit
+    /// (ADR-0038).
     pub(crate) fn on<'a>(io: &'io mut Io<'a>, port: usize) -> Self {
         EventWriter {
             sink: io.emit.as_deref_mut(),
@@ -632,45 +535,9 @@ impl EventWriter<'_> {
     }
 }
 
-/// The read side of [`Io::input`] (ADR-0031): each payload type maps to exactly one port form and
-/// one return shape. `&[f32]` ⇒ a Signal buffer slice; a scalar / enum / `Harmony` ⇒ the held
-/// Value as `Option<T>`; `Note` ⇒ an Event iterator. Resolved at monomorphization, so the call site
-/// names a type, never branches on a form.
-pub(crate) trait IoInput<'a>: Sized {
-    /// What `io.input::<Self>(port)` returns.
-    type Out;
-    /// Read `port` from `io` in this type's form.
-    fn read(io: &Io<'a>, port: usize) -> Self::Out;
-}
-
-impl<'a> IoInput<'a> for &'a [f32] {
-    type Out = &'a [f32];
-    fn read(io: &Io<'a>, port: usize) -> &'a [f32] {
-        io.inputs.get(port).copied().flatten().unwrap_or(&[])
-    }
-}
-
-/// The held-Value arm of [`IoInput`]: a scalar / `Harmony` decodes from its latched [`Arg`] to
-/// `Option<Self>`. One arm per type (a blanket `impl<T: FromArg>` would collide with the `&[f32]`
-/// Signal and `Note` Event arms). Only the two non-enum held types live here; every vocab **enum**
-/// generates its own `IoInput` from `#[derive(ArgValue)]` (routing through [`Io::input_held`] all
-/// the same), so adding an enum touches no central site.
-macro_rules! impl_input_held {
-    ($($t:ty),* $(,)?) => {$(
-        impl<'a> IoInput<'a> for $t {
-            type Out = Option<$t>;
-            fn read(io: &Io<'a>, port: usize) -> Option<$t> {
-                io.input_held(port)
-            }
-        }
-    )*};
-}
-
-impl_input_held!(f32, crate::vocab::Harmony);
-
-/// The Event-stream arm of [`IoInput`], returned by `io.input::<Note>(port)`: a no-alloc iterator
-/// over a port's sparse [`Event`]s, each decoded to `T` and frame-stamped ([`Stamped`]). A *named*
-/// type (not `impl Iterator`) so it can be the trait's associated `Out`.
+/// What [`Io::read`] returns for an Event or Raw handle: a no-alloc iterator over a port's
+/// sparse [`Event`]s, each decoded to `T` and frame-stamped ([`Stamped`]). A *named* type (not
+/// `impl Iterator`) so it can be a form's associated `Read` type.
 pub struct EventStream<'a, T> {
     events: std::slice::Iter<'a, Event<'a>>,
     _marker: std::marker::PhantomData<T>,
@@ -678,7 +545,7 @@ pub struct EventStream<'a, T> {
 
 impl<'a, T> EventStream<'a, T> {
     /// A stream over a port's routed events — the shared lowering behind every Event read
-    /// (`io.read` via [`form::Event`]/[`form::Raw`], and the `io.input` primitive's event arms).
+    /// ([`Io::read`] via [`form::Event`]/[`form::Raw`]).
     pub(crate) fn over(events: &'a [Event<'a>]) -> Self {
         EventStream {
             events: events.iter(),
@@ -699,24 +566,6 @@ impl<'a, T: FromArg<'a>> Iterator for EventStream<'a, T> {
             }
         }
         None
-    }
-}
-
-impl<'a> IoInput<'a> for crate::vocab::pitch::Note {
-    type Out = EventStream<'a, crate::vocab::pitch::Note>;
-    fn read(io: &Io<'a>, port: usize) -> Self::Out {
-        EventStream::over(io.stream(port))
-    }
-}
-
-/// The raw-Event arm of [`IoInput`], returned by `io.input::<&Arg>(port)`: the port's sparse
-/// Events with their payloads **undecoded** — the type-agnostic read behind a pass-through
-/// [`Arg`](crate::descriptor::PortType::Arg) port (issue #141). `&Arg`'s [`FromArg`] is the
-/// identity, so every routed event survives regardless of its Arg family.
-impl<'a> IoInput<'a> for &'a Arg {
-    type Out = EventStream<'a, &'a Arg>;
-    fn read(io: &Io<'a>, port: usize) -> Self::Out {
-        EventStream::over(io.stream(port))
     }
 }
 
@@ -766,220 +615,10 @@ pub trait Operator: Send {
 }
 
 #[cfg(test)]
-mod new_io_api {
-    //! ADR-0031 step 3 — the two return-type-dispatched verbs `io.input::<T>` / `io.output::<T>`,
-    //! built test-first additively alongside the old verbs. `T` *is* the form: `&[f32]` ⇒ Signal,
-    //! a scalar/enum/`Harmony` ⇒ Value (held), `Note` ⇒ Event.
-    use super::*;
-
-    /// Tracer bullet: `input::<&[f32]>` reads the dense per-sample buffer on a Signal input —
-    /// the new spelling of the old `signal` verb, dispatched purely by the `&[f32]` type.
-    #[test]
-    fn input_reads_a_signal_buffer_slice() {
-        let buf = [1.0_f32, 2.0, 3.0];
-        let io = Io::new(
-            48_000.0,
-            3,
-            [Some(&buf[..])],
-            std::iter::empty::<&mut [f32]>(),
-        );
-        assert_eq!(io.input::<&[f32]>(0), &buf[..]);
-    }
-
-    /// `input::<f32>` reads the held (ZOH) Value from the latch as `Option<f32>` — the new spelling
-    /// of `last::<f32>`. Dispatched by the scalar type, not a verb.
-    #[test]
-    fn input_reads_a_held_scalar_value() {
-        let latch = [Arg::F32(440.0)];
-        let io =
-            Io::new(48_000.0, 1, [None], std::iter::empty::<&mut [f32]>()).with_latched(&latch);
-        assert_eq!(io.input::<f32>(0), Some(440.0));
-        // An unlatched port reports absence.
-        let bare = Io::new(48_000.0, 1, [None], std::iter::empty::<&mut [f32]>());
-        assert_eq!(bare.input::<f32>(0), None);
-    }
-
-    /// `input::<Note>` iterates the sparse Event stream on a port, each decoded + frame-stamped —
-    /// the new spelling of `stream::<Note>`. The `Note` type selects the Event form.
-    #[test]
-    fn input_iterates_an_event_stream() {
-        use crate::vocab::pitch::{Note, Pitch};
-        let n0 = Arg::Note(Note::new(Pitch::from_midi(60.0), 1.0));
-        let n1 = Arg::Note(Note::new(Pitch::from_midi(64.0), 0.5));
-        let events = [
-            Event { arg: &n0, frame: 0 },
-            Event {
-                arg: &n1,
-                frame: 32,
-            },
-        ];
-        let streams: [&[Event]; 1] = [&events];
-        let io =
-            Io::new(48_000.0, 64, [None], std::iter::empty::<&mut [f32]>()).with_streams(&streams);
-        let got: Vec<_> = io
-            .input::<Note>(0)
-            .map(|s| (s.frame, s.payload.pitch.midi()))
-            .collect();
-        assert_eq!(got, vec![(0, Some(60.0)), (32, Some(64.0))]);
-    }
-
-    /// `output::<&mut [f32]>` hands back this node's own dense output buffer to fill in place — the
-    /// new spelling of `signal_mut`. The `&mut [f32]` type selects the Signal-write form.
-    #[test]
-    fn output_writes_a_signal_buffer() {
-        let mut buf = [0.0_f32; 4];
-        {
-            let mut io = Io::new(
-                48_000.0,
-                4,
-                std::iter::empty::<Option<&[f32]>>(),
-                [&mut buf[..]],
-            );
-            io.output::<&mut [f32]>(0)
-                .copy_from_slice(&[1.0, 2.0, 3.0, 4.0]);
-        }
-        assert_eq!(buf, [1.0, 2.0, 3.0, 4.0]);
-    }
-
-    /// Build an `Io` with only an emit sink attached — the fixture for the `output::<f32>` /
-    /// `MsgWriter` slices.
-    fn emitting_io(sink: &mut Vec<Emit>, frame_offset: usize) -> Io<'_> {
-        Io::new(
-            48_000.0,
-            8,
-            std::iter::empty::<Option<&[f32]>>(),
-            std::iter::empty::<&mut [f32]>(),
-        )
-        .with_emit(sink, frame_offset)
-    }
-
-    /// `output::<f32>(port).set(frame, v)` emits one Message on that port at that frame — addressless
-    /// (the internal wire routes by connection, not name; ADR-0031).
-    #[test]
-    fn output_value_set_emits_one_addressless_message() {
-        let mut sink = Vec::new();
-        emitting_io(&mut sink, 0).output::<f32>(0).set(2, 1.0);
-        assert_eq!(sink.len(), 1);
-        assert_eq!(sink[0].port, 0);
-        assert_eq!(sink[0].frame, 2);
-        assert_eq!(sink[0].arg, Arg::F32(1.0));
-        // Addresslessness is now type-enforced — `Emit` has no address field (ADR-0031 step 7).
-    }
-
-    /// Dedup: a `set` whose value equals the last one this handle wrote emits nothing — the held
-    /// value is unchanged, so the wire stays genuinely sparse.
-    #[test]
-    fn output_value_set_dedups_unchanged_writes() {
-        let mut sink = Vec::new();
-        {
-            let mut io = emitting_io(&mut sink, 0);
-            let mut w = io.output::<f32>(0);
-            w.set(0, 1.0); // emits
-            w.set(4, 1.0); // unchanged → dropped
-            w.set(6, 2.0); // changed → emits
-        }
-        let got: Vec<_> = sink
-            .iter()
-            .map(|e| (e.frame, e.arg.as_f32().unwrap()))
-            .collect();
-        assert_eq!(got, vec![(0, 1.0), (6, 2.0)]);
-    }
-
-    /// Last-write-wins per frame: two writes at the same frame collapse to the later value (a single
-    /// Message at that frame), not two competing Messages.
-    #[test]
-    fn output_value_set_is_last_write_wins_per_frame() {
-        let mut sink = Vec::new();
-        {
-            let mut io = emitting_io(&mut sink, 0);
-            let mut w = io.output::<f32>(0);
-            w.set(5, 1.0);
-            w.set(5, 2.0); // same frame → overrides
-        }
-        assert_eq!(sink.len(), 1);
-        assert_eq!(sink[0].frame, 5);
-        assert_eq!(sink[0].arg, Arg::F32(2.0));
-    }
-
-    /// The segment frame offset is added to the written frame, so an operator works in
-    /// segment-relative time while the engine sees block-absolute frames (matches the old `emit`).
-    #[test]
-    fn output_value_set_adds_the_segment_frame_offset() {
-        let mut sink = Vec::new();
-        emitting_io(&mut sink, 100).output::<f32>(0).set(2, 1.0);
-        assert_eq!(sink[0].frame, 102);
-    }
-
-    /// `output::<Note>(port).emit(frame, note)` pushes one Event Message on that port — addressless
-    /// (internal wires route by connection; ADR-0031), the new spelling of `emit` for events.
-    #[test]
-    fn output_event_emit_pushes_one_addressless_message() {
-        use crate::vocab::pitch::{Note, Pitch};
-        let mut sink = Vec::new();
-        emitting_io(&mut sink, 0)
-            .output::<Note>(0)
-            .emit(2, Note::new(Pitch::from_midi(60.0), 1.0));
-        assert_eq!(sink.len(), 1);
-        assert_eq!(sink[0].port, 0);
-        assert_eq!(sink[0].frame, 2);
-        assert_eq!(
-            sink[0].arg,
-            Arg::Note(Note::new(Pitch::from_midi(60.0), 1.0))
-        );
-        // Addresslessness is now type-enforced — `Emit` has no address field (ADR-0031 step 7).
-    }
-
-    /// An Event writer is **append-only** — unlike `MsgWriter`, repeated equal payloads are NOT
-    /// deduped and same-frame writes are NOT collapsed (a chord lands many notes at one frame).
-    #[test]
-    fn output_event_emit_appends_without_dedup_or_last_write_wins() {
-        use crate::vocab::pitch::{Note, Pitch};
-        let mut sink = Vec::new();
-        {
-            let mut io = emitting_io(&mut sink, 0);
-            let mut w = io.output::<Note>(0);
-            // Two chord tones at the SAME frame — both must survive (no last-write-wins).
-            w.emit(0, Note::new(Pitch::Degree(0), 1.0));
-            w.emit(0, Note::new(Pitch::Degree(2), 1.0));
-            // The same payload again — must NOT dedup (re-press is a real second event).
-            w.emit(4, Note::new(Pitch::Degree(0), 1.0));
-            w.emit(4, Note::new(Pitch::Degree(0), 1.0));
-        }
-        assert_eq!(sink.len(), 4);
-    }
-
-    /// The Event writer adds the segment frame offset, exactly like the old `emit` and `MsgWriter`.
-    #[test]
-    fn output_event_emit_adds_the_segment_frame_offset() {
-        use crate::vocab::pitch::{Note, Pitch};
-        let mut sink = Vec::new();
-        emitting_io(&mut sink, 100)
-            .output::<Note>(0)
-            .emit(2, Note::new(Pitch::from_midi(60.0), 1.0));
-        assert_eq!(sink[0].frame, 102);
-    }
-
-    /// A held `Harmony` output reuses `MsgWriter` (`output::<Harmony>(port).set(...)`): dedup +
-    /// last-write-wins are the right semantics for a single held Value.
-    #[test]
-    fn output_harmony_uses_msgwriter_dedup() {
-        use crate::vocab::Harmony;
-        let mut sink = Vec::new();
-        {
-            let mut io = emitting_io(&mut sink, 0);
-            let mut w = io.output::<Harmony>(0);
-            w.set(0, Harmony::default()); // emits
-            w.set(4, Harmony::default()); // unchanged → deduped
-        }
-        assert_eq!(sink.len(), 1);
-    }
-}
-
-#[cfg(test)]
 mod typed_handles {
     //! ADR-0037 — the handle verbs `io.read(port)` / `io.write(port)`: the [`form`] marker in the
     //! handle's type fixes the shape, the handle's stored default is the held-read fallback, and
-    //! both lower to the same `Io` state as the `pub(crate)` primitives.
+    //! each form impl reads the `Io` state directly (issue #216 — one dispatch per form).
     use super::form::{Event, Held, Raw, SignalF32};
     use super::*;
     use crate::vocab::pitch::{Note, Pitch};
