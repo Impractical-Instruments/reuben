@@ -3,31 +3,12 @@
 //! no spans, just data, so the index arithmetic (the old `scaffold::port_consts` hand-logic) is
 //! computed **once** here and unit-tested directly.
 
-use reuben_contract::{naming, OperatorSpec, PortSpec};
-
-/// The resolved `f32 { .. }` meta on a `f32` port (ADR-0030), curve normalised to
-/// `"linear"`/`"exponential"`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct F32Model {
-    pub min: f32,
-    pub max: f32,
-    pub default: f32,
-    pub unit: String,
-    pub curve: String,
-}
-
-/// The resolved `i32 { .. }` meta on an `i32` port / constant (ADR-0035).
-#[derive(Debug, Clone, PartialEq)]
-pub struct I32Model {
-    pub min: i32,
-    pub max: i32,
-    pub default: i32,
-}
+use reuben_contract::{naming, F32Meta, I32Meta, OperatorSpec, PortSpec};
 
 /// One resolved port: its index const (`IN_FREQ`), ordinal, source name, and its
 /// [`Arg`](reuben_core::message::Arg) type (ADR-0030). Ports number **sequentially** within
-/// inputs/outputs (declaration order). `f32` carries its [`F32Model`]; `enum` carries the
-/// shared `vocab` type name.
+/// inputs/outputs (declaration order). `f32` carries its shared contract [`F32Meta`] (issue
+/// #217 — no model-side meta copy); `enum` carries the shared `vocab` type name.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PortModel {
     pub const_name: String,
@@ -36,9 +17,9 @@ pub struct PortModel {
     /// The port [`Arg`](reuben_core::message::Arg) type: `f32_buffer` | `f32` | `i32` | `enum` |
     /// `note` | `harmony` | `arg`.
     pub ty: String,
-    pub f32: Option<F32Model>,
-    /// The resolved `i32 { .. }` meta, for `i32` ports / constants (ADR-0035).
-    pub i32: Option<I32Model>,
+    pub f32: Option<F32Meta>,
+    /// The `i32 { .. }` meta, for `i32` ports / constants (ADR-0035).
+    pub i32: Option<I32Meta>,
     /// The shared `vocab` enum type name, for `enum` ports.
     pub vocab: Option<String>,
 }
@@ -67,25 +48,15 @@ fn port_models(ports: &[PortSpec], prefix: &str) -> Vec<PortModel> {
             ordinal: idx,
             name: p.name.clone(),
             ty: p.ty.clone(),
-            f32: p.f32.as_ref().map(|m| F32Model {
-                min: m.min,
-                max: m.max,
-                default: m.default,
-                unit: m.unit.clone(),
-                curve: m.curve.clone(),
-            }),
-            i32: p.i32.as_ref().map(|m| I32Model {
-                min: m.min,
-                max: m.max,
-                default: m.default,
-            }),
+            f32: p.f32.clone(),
+            i32: p.i32.clone(),
             vocab: p.vocab.clone(),
         })
         .collect()
 }
 
 /// Resolve a validated spec into its const/ordinal model. Assumes the spec already passed
-/// [`reuben_contract::validate`] (the macro validates first); curve strings are taken verbatim.
+/// [`reuben_contract::validate`] (the macro validates first).
 pub fn build(spec: &OperatorSpec) -> ContractModel {
     ContractModel {
         type_name: spec.type_name.clone(),
@@ -191,8 +162,8 @@ mod tests {
         assert_eq!(m.inputs[1].const_name, "IN_AMP");
         assert_eq!(m.inputs[1].ordinal, 1);
         assert_eq!(
-            m.inputs[0].f32.as_ref().map(|f| f.curve.as_str()),
-            Some("exponential")
+            m.inputs[0].f32.as_ref().map(|f| f.curve),
+            Some(reuben_contract::Curve::Exponential)
         );
         assert_eq!(
             m.inputs[0].f32.as_ref().map(|f| f.unit.as_str()),

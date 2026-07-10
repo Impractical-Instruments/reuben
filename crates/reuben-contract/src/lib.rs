@@ -31,27 +31,57 @@ pub const NUMBER_MIN: f32 = -1_000_000.0;
 /// The upper half of the type-wide default range. See [`NUMBER_MIN`].
 pub const NUMBER_MAX: f32 = 1_000_000.0;
 
+/// How a control responds across its range — the good-button curve. The **one** definition of
+/// the curve axis (issue #217): the macro grammar's `lin`/`exp` keywords, the scaffold JSON's
+/// `"linear"`/`"exponential"` strings, and the runtime descriptor all resolve to this enum, so an
+/// unknown curve is unrepresentable past the parse/deserialize boundary.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Curve {
+    #[default]
+    Linear,
+    /// Perceptually-even for frequency-like params.
+    Exponential,
+}
+
 /// The `{ min, max, default, unit, curve }` block on a `f32` port (ADR-0030): its unwired
 /// default, range, and display metadata. Required on a `f32` port (a bare per-sample wire is
-/// `f32_buffer`, not `f32`).
-#[derive(Debug, Clone, Deserialize)]
+/// `f32_buffer`, not `f32`). The **one** definition (issue #217): the macro AST, the model layer,
+/// and the runtime descriptor all use this type — the owning
+/// [`Port`](reuben_core::descriptor::Port) carries the name, so a control's name lives in
+/// exactly one place.
+#[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct F32Meta {
     pub min: f32,
     pub max: f32,
     pub default: f32,
+    /// Display unit, e.g. "Hz", "dB", "s".
     #[serde(default)]
     pub unit: String,
-    #[serde(default = "default_curve")]
-    pub curve: String,
+    #[serde(default)]
+    pub curve: Curve,
+}
+
+impl F32Meta {
+    pub fn clamp(&self, v: f32) -> f32 {
+        v.clamp(self.min, self.max)
+    }
 }
 
 /// The `{ min, max, default }` block on an `i32` port (ADR-0035): a bounded integer control /
-/// constant (a count like `voices`). No unit/curve — a count is not a swept knob.
-#[derive(Debug, Clone, Deserialize)]
+/// constant (a count like `voices`). No unit/curve — a count is not a swept knob. Like
+/// [`F32Meta`], the one definition (issue #217), nameless: the owning port carries the name.
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct I32Meta {
     pub min: i32,
     pub max: i32,
     pub default: i32,
+}
+
+impl I32Meta {
+    pub fn clamp(&self, v: i32) -> i32 {
+        v.clamp(self.min, self.max)
+    }
 }
 
 /// A port in the contract — carrying one [`Arg`](reuben_core::message::Arg) type (ADR-0030),
@@ -77,10 +107,6 @@ pub struct PortSpec {
     /// `"FilterMode"`); the descriptor reads its `VARIANTS`/default from `Type::enum_meta(name)`.
     #[serde(default)]
     pub vocab: Option<String>,
-}
-
-fn default_curve() -> String {
-    "linear".to_string()
 }
 
 /// The contract for an Operator — one declaration of its ports, instantiate-time
@@ -217,15 +243,8 @@ fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractErr
                     ),
                 ));
             }
-            if !matches!(m.curve.as_str(), "linear" | "exponential") {
-                return Err(ContractError::new(
-                    at,
-                    format!(
-                        "{label} {:?}: curve {:?} must be \"linear\" or \"exponential\"",
-                        p.name, m.curve
-                    ),
-                ));
-            }
+            // No curve check: [`Curve`] is an enum, so a bad curve is unrepresentable here —
+            // rejected at the macro's parse or the scaffold JSON's deserialize (issue #217).
         }
         (_, Some(_)) => {
             return Err(ContractError::new(
@@ -531,22 +550,35 @@ mod tests {
         assert!(oob.message.contains("outside"), "{}", oob.message);
     }
 
-    // An f32/f32_buffer meta whose curve string is neither "linear" nor "exponential" is
-    // rejected. The scaffold path deserializes PortSpec from JSON, where curve is an arbitrary
-    // string — the macro's parse-time `lin`/`exp` keyword check never runs there, so this
-    // validate() branch is that path's only guard.
+    // The curve axis is an enum (issue #217): a curve that is neither "linear" nor
+    // "exponential" is unrepresentable, so the scaffold's JSON path fails at deserialize time
+    // (the macro's `lin`/`exp` keywords map to [`Curve`] at parse and never reach here).
     #[test]
-    fn rejects_unknown_curve_string() {
-        let e = err(
+    fn unknown_curve_fails_to_deserialize() {
+        let e = serde_json::from_str::<OperatorSpec>(
             r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"f32","f32":{"min":0,"max":1,"default":0,"curve":"log"}} ] }"#,
+        )
+        .expect_err("unknown curve must fail at deserialize");
+        let msg = e.to_string();
+        assert!(
+            msg.contains("linear") && msg.contains("exponential"),
+            "error must name the legal curves: {msg}"
         );
-        assert_eq!(e.locus, Locus::Input(0));
-        assert!(e.message.contains("curve"), "{}", e.message);
-        // `f32_buffer` shares the same meta branch (ADR-0031 decision (a)).
-        let buf = err(
-            r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"f32_buffer","f32":{"min":0,"max":1,"default":0,"curve":"log"}} ] }"#,
+    }
+
+    // The deserialized curve is the enum, with an omitted curve defaulting to linear — the same
+    // default the macro grammar applies to an omitted curve keyword.
+    #[test]
+    fn curve_deserializes_to_the_enum_and_defaults_linear() {
+        let s = spec(
+            r#"{ "type_name": "x", "inputs": [
+                 {"name":"a","ty":"f32","f32":{"min":0,"max":1,"default":0,"curve":"exponential"}},
+                 {"name":"b","ty":"f32","f32":{"min":0,"max":1,"default":0}} ] }"#,
         );
-        assert!(buf.message.contains("curve"), "{}", buf.message);
+        assert_eq!(s.inputs[0].f32.as_ref().unwrap().curve, Curve::Exponential);
+        assert_eq!(s.inputs[1].f32.as_ref().unwrap().curve, Curve::Linear);
+        // An omitted unit is the empty string.
+        assert_eq!(s.inputs[1].f32.as_ref().unwrap().unit, "");
     }
 
     #[test]

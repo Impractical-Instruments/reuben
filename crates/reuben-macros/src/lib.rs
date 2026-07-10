@@ -26,7 +26,9 @@ mod number_op;
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use reuben_contract::{naming, ContractError, F32Meta, I32Meta, Locus, OperatorSpec, PortSpec};
+use reuben_contract::{
+    naming, ContractError, Curve, F32Meta, I32Meta, Locus, OperatorSpec, PortSpec,
+};
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::{braced, parenthesized, Error, Ident, Lit, LitStr, Token};
@@ -69,34 +71,19 @@ fn expand(input: TokenStream) -> TokenStream {
 
 // --- Parsed AST (spans retained so validation errors point at the offending token) ---
 
-/// The `f32 { LO..=HI, default D, "unit", curve }` block (ADR-0030). `unit`/`curve` are
-/// optional; an omitted curve defaults to `linear`.
-struct F32MetaAst {
-    min: f32,
-    max: f32,
-    default: f32,
-    unit: String,
-    curve: String,
-}
-
-/// The `i32 { LO..=HI, default D }` block (ADR-0035) — a bounded integer control / constant.
-struct I32MetaAst {
-    min: i32,
-    max: i32,
-    default: i32,
-}
-
-/// How a port is declared — its [`Arg`] type (ADR-0030).
+/// How a port is declared — its [`Arg`] type (ADR-0030). The `f32 { .. }`/`i32 { .. }` meta
+/// blocks parse straight into the shared contract metas (issue #217): there is no AST-side
+/// meta copy to plumb field-by-field.
 enum PortTypeAst {
     /// `name: f32_buffer` — a dense per-sample signal (audio / control buffer). An optional
     /// `{ .. }` meta block (ADR-0031 decision (a)) gives a Signal port a scalar default + knob
     /// range (`oscillator.freq`, `filter.cutoff`): unwired/knob-set it materializes from the
     /// default, yet a Signal source still wires straight in.
-    F32Buffer(Option<F32MetaAst>),
+    F32Buffer(Option<F32Meta>),
     /// `name: f32 { .. }` — a materialized scalar control with its default/range meta.
-    F32(F32MetaAst),
+    F32(F32Meta),
     /// `name: i32 { .. }` — a bounded integer control / constant (ADR-0035).
-    I32(I32MetaAst),
+    I32(I32Meta),
     /// `name: enum(VocabType)` — a held vocab enum, naming its shared `vocab` type.
     Enum(Ident),
     /// `name: note` — a `Note` event port.
@@ -133,24 +120,10 @@ impl ContractInput {
         let ports = |ps: &[PortAst]| {
             ps.iter()
                 .map(|p| {
-                    let f32_meta = |m: &F32MetaAst| F32Meta {
-                        min: m.min,
-                        max: m.max,
-                        default: m.default,
-                        unit: m.unit.clone(),
-                        curve: m.curve.clone(),
-                    };
-                    let i32_meta = |m: &I32MetaAst| I32Meta {
-                        min: m.min,
-                        max: m.max,
-                        default: m.default,
-                    };
                     let (ty, f32, i32, vocab) = match &p.ty {
-                        PortTypeAst::F32Buffer(m) => {
-                            ("f32_buffer", m.as_ref().map(f32_meta), None, None)
-                        }
-                        PortTypeAst::F32(m) => ("f32", Some(f32_meta(m)), None, None),
-                        PortTypeAst::I32(m) => ("i32", None, Some(i32_meta(m)), None),
+                        PortTypeAst::F32Buffer(m) => ("f32_buffer", m.clone(), None, None),
+                        PortTypeAst::F32(m) => ("f32", Some(m.clone()), None, None),
+                        PortTypeAst::I32(m) => ("i32", None, Some(m.clone()), None),
                         PortTypeAst::Enum(t) => ("enum", None, None, Some(t.to_string())),
                         PortTypeAst::Note => ("note", None, None, None),
                         PortTypeAst::Harmony => ("harmony", None, None, None),
@@ -193,6 +166,15 @@ impl ContractInput {
     /// Render the resolved model to the const block + inherent `fn contract()`.
     fn render(&self, model: &ContractModel) -> TokenStream {
         render_contract(&self.struct_ident, model)
+    }
+}
+
+/// The emitted `::reuben_core::descriptor::Curve::*` path for a declared [`Curve`] — the runtime
+/// descriptor re-exports the contract's enum, so the variant maps one-to-one.
+fn curve_tokens(c: Curve) -> TokenStream {
+    match c {
+        Curve::Linear => quote! { ::reuben_core::descriptor::Curve::Linear },
+        Curve::Exponential => quote! { ::reuben_core::descriptor::Curve::Exponential },
     }
 }
 
@@ -309,17 +291,13 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
                             None => quote! { ::reuben_core::descriptor::Port::f32_buffer(#name) },
                             Some(m) => {
                                 let (min, max, default, unit) = (m.min, m.max, m.default, &m.unit);
-                                let curve = if m.curve == "exponential" {
-                                    quote! { ::reuben_core::descriptor::Curve::Exponential }
-                                } else {
-                                    quote! { ::reuben_core::descriptor::Curve::Linear }
-                                };
+                                let curve = curve_tokens(m.curve);
                                 quote! {
                                     ::reuben_core::descriptor::Port::f32_buffer_meta(
                                         #name,
                                         ::reuben_core::descriptor::F32Meta {
                                             min: #min, max: #max,
-                                            default: #default, unit: #unit, curve: #curve,
+                                            default: #default, unit: #unit.into(), curve: #curve,
                                         }
                                     )
                                 }
@@ -335,17 +313,13 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
                         "f32" => {
                             let m = p.f32.as_ref().expect("validate() guarantees f32 meta");
                             let (min, max, default, unit) = (m.min, m.max, m.default, &m.unit);
-                            let curve = if m.curve == "exponential" {
-                                quote! { ::reuben_core::descriptor::Curve::Exponential }
-                            } else {
-                                quote! { ::reuben_core::descriptor::Curve::Linear }
-                            };
+                            let curve = curve_tokens(m.curve);
                             quote! {
                                 ::reuben_core::descriptor::Port::f32(
                                     #name,
                                     ::reuben_core::descriptor::F32Meta {
                                         min: #min, max: #max,
-                                        default: #default, unit: #unit, curve: #curve,
+                                        default: #default, unit: #unit.into(), curve: #curve,
                                     }
                                 )
                             }
@@ -356,8 +330,9 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
                             let (min, max, default) = (m.min, m.max, m.default);
                             quote! {
                                 ::reuben_core::descriptor::Port::i32(
+                                    #name,
                                     ::reuben_core::descriptor::I32Meta {
-                                        name: #name, min: #min, max: #max, default: #default,
+                                        min: #min, max: #max, default: #default,
                                     }
                                 )
                             }
@@ -505,8 +480,9 @@ fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
 /// `curve` are each optional (an omitted curve defaults to `linear`), unlike the all-required
 /// legacy `params` block. A range endpoint may be the `min`/`max` sentinel (the type-wide `±1e6`
 /// bound), and `default` may be `default max` / `default min` (the port's own range edge) — so the
-/// sentinel is never a raw literal (issue #127).
-fn parse_f32_meta(input: ParseStream) -> syn::Result<F32MetaAst> {
+/// sentinel is never a raw literal (issue #127). Parses straight into the shared contract
+/// [`F32Meta`] (issue #217).
+fn parse_f32_meta(input: ParseStream) -> syn::Result<F32Meta> {
     let meta;
     braced!(meta in input);
 
@@ -522,7 +498,7 @@ fn parse_f32_meta(input: ParseStream) -> syn::Result<F32MetaAst> {
     let default = parse_default_value(&meta, min, max)?;
 
     let mut unit = String::new();
-    let mut curve = "linear".to_string();
+    let mut curve = Curve::Linear;
     // Optional `, "unit"` then optional `, curve` — either may be omitted.
     if meta.peek(Token![,]) {
         meta.parse::<Token![,]>()?;
@@ -544,7 +520,7 @@ fn parse_f32_meta(input: ParseStream) -> syn::Result<F32MetaAst> {
     if !meta.is_empty() {
         return Err(meta.error("unexpected tokens in `f32 { .. }` meta"));
     }
-    Ok(F32MetaAst {
+    Ok(F32Meta {
         min,
         max,
         default,
@@ -553,12 +529,13 @@ fn parse_f32_meta(input: ParseStream) -> syn::Result<F32MetaAst> {
     })
 }
 
-/// `lin`/`linear` → `"linear"`, `exp`/`exponential` → `"exponential"`; anything else is an error.
-fn parse_curve_ident(input: ParseStream) -> syn::Result<String> {
+/// `lin`/`linear` → [`Curve::Linear`], `exp`/`exponential` → [`Curve::Exponential`]; anything
+/// else is an error — a bad curve never survives the parse (issue #217).
+fn parse_curve_ident(input: ParseStream) -> syn::Result<Curve> {
     let curve_ident: Ident = input.parse()?;
     match curve_ident.to_string().as_str() {
-        "lin" | "linear" => Ok("linear".to_string()),
-        "exp" | "exponential" => Ok("exponential".to_string()),
+        "lin" | "linear" => Ok(Curve::Linear),
+        "exp" | "exponential" => Ok(Curve::Exponential),
         other => Err(Error::new(
             curve_ident.span(),
             format!("curve must be `lin` or `exp`, got `{other}`"),
@@ -567,8 +544,9 @@ fn parse_curve_ident(input: ParseStream) -> syn::Result<String> {
 }
 
 /// `{ LO..=HI, default D }` — the meta on an `i32 { .. }` port / constant (ADR-0035). Integer
-/// bounds + default; no unit/curve (a count is not a swept knob).
-fn parse_i32_meta(input: ParseStream) -> syn::Result<I32MetaAst> {
+/// bounds + default; no unit/curve (a count is not a swept knob). Parses straight into the
+/// shared contract [`I32Meta`] (issue #217).
+fn parse_i32_meta(input: ParseStream) -> syn::Result<I32Meta> {
     let meta;
     braced!(meta in input);
 
@@ -588,7 +566,7 @@ fn parse_i32_meta(input: ParseStream) -> syn::Result<I32MetaAst> {
     if !meta.is_empty() {
         return Err(meta.error("unexpected tokens in `i32 { .. }` meta"));
     }
-    Ok(I32MetaAst { min, max, default })
+    Ok(I32Meta { min, max, default })
 }
 
 /// A signed integer literal (an `i32` port's bounds/default may be negative).

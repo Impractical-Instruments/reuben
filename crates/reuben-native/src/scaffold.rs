@@ -17,7 +17,7 @@ use std::path::Path;
 use std::process::Command;
 
 use reuben_contract::naming::{screaming, struct_name};
-use reuben_contract::{validate, OperatorSpec, PortSpec};
+use reuben_contract::{validate, Curve, OperatorSpec, PortSpec};
 use serde::Serialize;
 
 /// The current contents of the registration file the scaffold must edit (`operators/mod.rs`).
@@ -287,7 +287,7 @@ fn render_macro_port(p: &PortSpec) -> String {
         "f32" => match &p.f32 {
             None => format!("{}: f32", p.name),
             Some(m) => {
-                let curve = if m.curve == "exponential" {
+                let curve = if m.curve == Curve::Exponential {
                     "exp"
                 } else {
                     "lin"
@@ -617,8 +617,16 @@ mod tests {
     fn rejects_bad_port_type_and_curve() {
         let bad_type = r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"audio"} ] }"#;
         assert!(scaffold_err(bad_type).contains("type"));
+        // A bad curve now fails at the JSON parse (issue #217): the curve axis is an enum, so
+        // `run_scaffold`'s deserialize rejects it before `validate()` ever runs.
         let bad_curve = r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"f32","f32":{"min":0,"max":1,"default":0,"curve":"log"}} ] }"#;
-        assert!(scaffold_err(bad_curve).contains("curve"));
+        let e = serde_json::from_str::<OperatorSpec>(bad_curve)
+            .expect_err("unknown curve must fail at deserialize");
+        let msg = e.to_string();
+        assert!(
+            msg.contains("linear") && msg.contains("exponential"),
+            "error must name the legal curves: {msg}"
+        );
     }
 
     #[test]

@@ -32,7 +32,7 @@
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use reuben_contract::{naming, F32Meta, OperatorSpec, PortSpec, NUMBER_MAX, NUMBER_MIN};
+use reuben_contract::{naming, Curve, F32Meta, OperatorSpec, PortSpec, NUMBER_MAX, NUMBER_MIN};
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::{braced, bracketed, parenthesized, Error, Ident, Path, Token};
@@ -182,7 +182,7 @@ impl NumberOpInput {
             max,
             default,
             unit: String::new(),
-            curve: "linear".to_string(),
+            curve: Curve::Linear,
         };
         let inputs = self
             .inputs
