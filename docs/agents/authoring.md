@@ -328,7 +328,7 @@ it never silently snaps to the default.
 Embedders can add their own types without touching the core via `Registry::register` — the
 seam for the "agents author new Operators in Rust" goal ([ADR-0004](../adr/0004-ai-authorability-first-class.md)).
 
-## The Instrument format (`crates/reuben-core/src/format.rs`)
+## The Instrument format (`crates/reuben-core/src/format/`)
 
 An Instrument is plain JSON data ([ADR-0028](../adr/0028-one-input-shape.md); **format v3**
 since [ADR-0043](../adr/0043-surface-docs-decouple-presentation-from-instruments.md)): `nodes` (operator

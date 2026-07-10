@@ -1,4 +1,5 @@
-//! Instrument format — the JSON canonical document (ADR-0004, ADR-0028; **v2**, ADR-0038).
+//! Instrument format — the JSON canonical document (ADR-0004, ADR-0028; **v2**, ADR-0038;
+//! **v3**, ADR-0043).
 //!
 //! An instrument is plain data: a list of operator `nodes`, each carrying one `inputs` map
 //! (ADR-0028) and an optional `config` block, plus an `interface` block of named boundary
@@ -217,7 +218,7 @@ pub struct InputPipeDoc {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
     /// **Retired** (ADR-0043): pipe display names live in a surface doc now. Deserialize-only
-    /// sink; [`normalize`](InstrumentDoc::normalize) drains it into a
+    /// sink; the [`NormalizedDoc`] mint drains it into a
     /// [`LoadWarning::DeprecatedPipePresentation`] and save never writes it.
     #[serde(default, skip_serializing)]
     pub(crate) label: Option<String>,
@@ -241,7 +242,7 @@ pub struct OutputPipeDoc {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<usize>,
     /// **Retired** (ADR-0043): pipe display names live in a surface doc now. Deserialize-only
-    /// sink; [`normalize`](InstrumentDoc::normalize) drains it into a
+    /// sink; the [`NormalizedDoc`] mint drains it into a
     /// [`LoadWarning::DeprecatedPipePresentation`] and save never writes it.
     #[serde(default, skip_serializing)]
     pub(crate) label: Option<String>,
@@ -402,7 +403,7 @@ pub struct NodeDoc {
     pub patch: Option<String>,
     /// **Retired** (ADR-0018, superseded by ADR-0043): the v2 per-node `control` block.
     /// Deserialize-only sink so a v2 document (or a v3 one still carrying leftovers) parses
-    /// under `deny_unknown_fields`; [`normalize`](InstrumentDoc::normalize) drains it into a
+    /// under `deny_unknown_fields`; the [`NormalizedDoc`] mint drains it into a
     /// [`LoadWarning::DeprecatedControlBlock`] and save never writes it — presentation lives
     /// in a surface doc now.
     #[serde(default, skip_serializing)]
@@ -821,7 +822,7 @@ struct LoadCtx {
     samples: BTreeMap<String, Arc<SampleBuffer>>,
     /// Parsed (normalized) child-document cache, keyed by canonical id: a child source is read
     /// and parsed **once** per load, however many re-exported v1 entries
-    /// ([`normalize::child_input_pipe`](NormalizedDoc)) or `subpatch` nodes reference it.
+    /// (the migration's child re-export arm) or `subpatch` nodes reference it.
     /// Typed [`NormalizedDoc`] so recursive child parses carry the mint's invariant too.
     /// Successes only — a resolve/parse failure is re-surfaced per referencing site so each
     /// keeps its own warning (the `samples` policy).
