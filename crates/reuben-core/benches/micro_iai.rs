@@ -87,6 +87,7 @@ fn setup(kind: &str) -> Option<OpHarness> {
 #[bench::resonator(args = ("resonator",), setup = setup)]
 #[bench::reverb(args = ("reverb",), setup = setup)]
 #[bench::sample(args = ("sample",), setup = setup)]
+#[bench::saturator(args = ("saturator",), setup = setup)]
 #[bench::sequencer(args = ("sequencer",), setup = setup)]
 #[bench::snap(args = ("snap",), setup = setup)]
 #[bench::strum(args = ("strum",), setup = setup)]
