@@ -5,6 +5,12 @@
 //! bad), of serialization, of connection type-checking, and of AI grounding. Run 2
 //! generates the JSON schema from these descriptors.
 
+// The scalar-control metadata types are owned by `reuben-contract` (issue #217): one
+// `F32Meta`/`I32Meta`/`Curve` definition shared by the contract spec, the macro, and this
+// runtime descriptor. Re-exported here so the macro-emitted path
+// `::reuben_core::descriptor::F32Meta` and every in-crate `descriptor::` consumer keep working.
+pub use reuben_contract::{Curve, F32Meta, I32Meta};
+
 /// What a port carries — **the port's [`Arg`](crate::message::Arg) type** (ADR-0030). Replaces
 /// the retired `Shape`: delivery and read-style are no longer a declared axis, they follow from
 /// the Arg type plus the handle's form (`io.read` on an `Event<Note>` / `Held<T>` handle). One variant per `Arg` *family*; a
@@ -257,9 +263,10 @@ impl Port {
     /// A bounded scalar **integer** port (ADR-0035) carrying its range + default in [`I32Meta`].
     /// Today the form a plan-time [`Constant`](Descriptor::constants) count takes (the voicer's
     /// `voices` pool size); a settable integer whose value rides the wire as [`Arg::I32`].
-    pub fn i32(meta: I32Meta) -> Self {
+    /// Parallel to [`f32`](Self::f32): the port owns its name, the meta is nameless (#213).
+    pub fn i32(name: &'static str, meta: I32Meta) -> Self {
         Self {
-            name: meta.name,
+            name,
             ty: PortType::I32 { meta: Some(meta) },
             meta: None,
         }
@@ -334,50 +341,6 @@ pub struct ResourceSlot {
 impl ResourceSlot {
     pub const fn new(name: &'static str) -> Self {
         Self { name }
-    }
-}
-
-/// How a control responds across its range — the good-button curve.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Curve {
-    Linear,
-    /// Perceptually-even for frequency-like params.
-    Exponential,
-}
-
-/// Rich metadata for one scalar control — enough to render a good-button control and to
-/// ground an AI author. Nameless: the owning [`Port`] carries the name (mirroring the
-/// contract-side `F32Meta`), so a control's name lives in exactly one place.
-#[derive(Debug, Clone)]
-pub struct F32Meta {
-    pub min: f32,
-    pub max: f32,
-    pub default: f32,
-    /// Display unit, e.g. "Hz", "dB", "s".
-    pub unit: &'static str,
-    pub curve: Curve,
-}
-
-impl F32Meta {
-    pub fn clamp(&self, v: f32) -> f32 {
-        v.clamp(self.min, self.max)
-    }
-}
-
-/// Metadata for a bounded **integer** control / constant (ADR-0035) — the integer sibling of
-/// [`F32Meta`], for a discrete count like a voice-pool size. No `unit`/`curve`: a count is not a
-/// swept knob, so it carries no response curve, only its inclusive range and default.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct I32Meta {
-    pub name: &'static str,
-    pub min: i32,
-    pub max: i32,
-    pub default: i32,
-}
-
-impl I32Meta {
-    pub fn clamp(&self, v: i32) -> i32 {
-        v.clamp(self.min, self.max)
     }
 }
 

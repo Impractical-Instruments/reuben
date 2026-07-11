@@ -251,7 +251,7 @@ mod tests {
                 min: -1.0,
                 max: 1.0,
                 default: 0.0,
-                unit: "",
+                unit: String::new(),
                 curve: Curve::Linear,
             },
         );

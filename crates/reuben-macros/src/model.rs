@@ -5,42 +5,15 @@
 
 use reuben_contract::{naming, OperatorSpec, PortSpec};
 
-/// The resolved `f32 { .. }` meta on a `f32` port (ADR-0030), curve normalised to
-/// `"linear"`/`"exponential"`.
-#[derive(Debug, Clone, PartialEq)]
-pub struct F32Model {
-    pub min: f32,
-    pub max: f32,
-    pub default: f32,
-    pub unit: String,
-    pub curve: String,
-}
-
-/// The resolved `i32 { .. }` meta on an `i32` port / constant (ADR-0035).
-#[derive(Debug, Clone, PartialEq)]
-pub struct I32Model {
-    pub min: i32,
-    pub max: i32,
-    pub default: i32,
-}
-
-/// One resolved port: its index const (`IN_FREQ`), ordinal, source name, and its
-/// [`Arg`](reuben_core::message::Arg) type (ADR-0030). Ports number **sequentially** within
-/// inputs/outputs (declaration order). `f32` carries its [`F32Model`]; `enum` carries the
-/// shared `vocab` type name.
+/// One resolved port: its index const (`IN_FREQ`), its ordinal, and the declared [`PortSpec`]
+/// carried through **unchanged** (issue #217) — the model layer holds only what it computes
+/// (naming + indexing); the port itself has one home. Ports number **sequentially** within
+/// inputs/outputs (declaration order).
 #[derive(Debug, Clone, PartialEq)]
 pub struct PortModel {
     pub const_name: String,
     pub ordinal: usize,
-    pub name: String,
-    /// The port [`Arg`](reuben_core::message::Arg) type: `f32_buffer` | `f32` | `i32` | `enum` |
-    /// `note` | `harmony` | `arg`.
-    pub ty: String,
-    pub f32: Option<F32Model>,
-    /// The resolved `i32 { .. }` meta, for `i32` ports / constants (ADR-0035).
-    pub i32: Option<I32Model>,
-    /// The shared `vocab` enum type name, for `enum` ports.
-    pub vocab: Option<String>,
+    pub spec: PortSpec,
 }
 
 /// A fully-resolved operator contract, ready to render to tokens.
@@ -65,27 +38,13 @@ fn port_models(ports: &[PortSpec], prefix: &str) -> Vec<PortModel> {
         .map(|(idx, p)| PortModel {
             const_name: format!("{prefix}_{}", naming::screaming(&p.name)),
             ordinal: idx,
-            name: p.name.clone(),
-            ty: p.ty.clone(),
-            f32: p.f32.as_ref().map(|m| F32Model {
-                min: m.min,
-                max: m.max,
-                default: m.default,
-                unit: m.unit.clone(),
-                curve: m.curve.clone(),
-            }),
-            i32: p.i32.as_ref().map(|m| I32Model {
-                min: m.min,
-                max: m.max,
-                default: m.default,
-            }),
-            vocab: p.vocab.clone(),
+            spec: p.clone(),
         })
         .collect()
 }
 
 /// Resolve a validated spec into its const/ordinal model. Assumes the spec already passed
-/// [`reuben_contract::validate`] (the macro validates first); curve strings are taken verbatim.
+/// [`reuben_contract::validate`] (the macro validates first).
 pub fn build(spec: &OperatorSpec) -> ContractModel {
     ContractModel {
         type_name: spec.type_name.clone(),
@@ -99,6 +58,7 @@ pub fn build(spec: &OperatorSpec) -> ContractModel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use reuben_contract::PortTy;
 
     fn spec(json: &str) -> OperatorSpec {
         serde_json::from_str(json).expect("valid spec")
@@ -150,8 +110,11 @@ mod tests {
         ));
         assert_eq!(m.constants[0].const_name, "C_VOICES");
         assert_eq!(m.constants[0].ordinal, 0);
-        assert_eq!(m.constants[0].ty, "i32");
-        assert_eq!(m.constants[0].i32.as_ref().map(|m| m.default), Some(8));
+        assert!(
+            matches!(&m.constants[0].spec.ty, PortTy::I32(meta) if meta.default == 8),
+            "{:?}",
+            m.constants[0].spec.ty
+        );
     }
 
     // The full filter port vocabulary: f32_buffer, f32-with-meta, enum naming its vocab type.
@@ -163,18 +126,22 @@ mod tests {
                              {"name":"cutoff","ty":"f32","f32":{"min":20,"max":20000,"default":1000,"unit":"Hz","curve":"exponential"}},
                              {"name":"mode","ty":"enum","vocab":"FilterMode"} ] }"#,
         ));
-        assert_eq!(
-            (m.inputs[0].const_name.as_str(), m.inputs[0].ty.as_str()),
-            ("IN_AUDIO", "f32_buffer")
-        );
+        assert_eq!(m.inputs[0].const_name.as_str(), "IN_AUDIO");
+        assert!(matches!(m.inputs[0].spec.ty, PortTy::F32Buffer(None)));
         assert_eq!(
             (m.inputs[2].const_name.as_str(), m.inputs[2].ordinal),
             ("IN_MODE", 2)
         );
-        assert_eq!(m.inputs[1].ty, "f32");
-        assert_eq!(m.inputs[1].f32.as_ref().map(|f| f.default), Some(1000.0));
-        assert_eq!(m.inputs[2].ty, "enum");
-        assert_eq!(m.inputs[2].vocab.as_deref(), Some("FilterMode"));
+        assert!(
+            matches!(&m.inputs[1].spec.ty, PortTy::F32(meta) if meta.default == 1000.0),
+            "{:?}",
+            m.inputs[1].spec.ty
+        );
+        assert!(
+            matches!(&m.inputs[2].spec.ty, PortTy::Enum(v) if v == "FilterMode"),
+            "{:?}",
+            m.inputs[2].spec.ty
+        );
     }
 
     // f32 control inputs keep their curve + unit metadata through the model (the successor to the
@@ -190,13 +157,11 @@ mod tests {
         assert_eq!(m.inputs.len(), 2);
         assert_eq!(m.inputs[1].const_name, "IN_AMP");
         assert_eq!(m.inputs[1].ordinal, 1);
-        assert_eq!(
-            m.inputs[0].f32.as_ref().map(|f| f.curve.as_str()),
-            Some("exponential")
-        );
-        assert_eq!(
-            m.inputs[0].f32.as_ref().map(|f| f.unit.as_str()),
-            Some("Hz")
+        assert!(
+            matches!(&m.inputs[0].spec.ty,
+                PortTy::F32(meta) if meta.curve == reuben_contract::Curve::Exponential && meta.unit == "Hz"),
+            "{:?}",
+            m.inputs[0].spec.ty
         );
     }
 }

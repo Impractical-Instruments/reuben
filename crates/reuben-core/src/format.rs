@@ -3122,9 +3122,8 @@ fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortK
             min,
             max,
             default,
-            // `unit` is presentational and document-owned (F32Meta's is `&'static str`);
-            // describe reads it from the entry.
-            unit: "",
+            // `unit` is presentational and document-owned; describe reads it from the entry.
+            unit: String::new(),
             curve: pipe.curve.map(Curve::from).unwrap_or(Curve::Linear),
         })
     };

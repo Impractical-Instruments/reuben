@@ -32,7 +32,9 @@
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
-use reuben_contract::{naming, F32Meta, OperatorSpec, PortSpec, NUMBER_MAX, NUMBER_MIN};
+use reuben_contract::{
+    naming, Curve, F32Meta, OperatorSpec, PortSpec, PortTy, NUMBER_MAX, NUMBER_MIN,
+};
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
 use syn::{braced, bracketed, parenthesized, Error, Ident, Path, Token};
@@ -182,34 +184,25 @@ impl NumberOpInput {
             max,
             default,
             unit: String::new(),
-            curve: "linear".to_string(),
+            curve: Curve::Linear,
         };
         let inputs = self
             .inputs
             .iter()
-            .map(|op| match &op.kind {
-                OperandKind::Number { min, max, default } => {
-                    let (ty, f32) = match carrier {
+            .map(|op| {
+                let ty = match &op.kind {
+                    OperandKind::Number { min, max, default } => match carrier {
                         // Signal: a per-sample buffer carrying its scalar default + knob range.
-                        Carrier::Signal => ("f32_buffer", Some(num_meta(*min, *max, *default))),
-                        Carrier::Value => ("f32", Some(num_meta(*min, *max, *default))),
-                    };
-                    PortSpec {
-                        name: op.name.to_string(),
-                        ty: ty.to_string(),
-                        f32,
-                        i32: None,
-                        vocab: None,
-                    }
-                }
-                // Enum modes are held regardless of carrier.
-                OperandKind::Enum(vocab) => PortSpec {
+                        Carrier::Signal => PortTy::F32Buffer(Some(num_meta(*min, *max, *default))),
+                        Carrier::Value => PortTy::F32(num_meta(*min, *max, *default)),
+                    },
+                    // Enum modes are held regardless of carrier.
+                    OperandKind::Enum(vocab) => PortTy::Enum(vocab.to_string()),
+                };
+                PortSpec {
                     name: op.name.to_string(),
-                    ty: "enum".to_string(),
-                    f32: None,
-                    i32: None,
-                    vocab: Some(vocab.to_string()),
-                },
+                    ty,
+                }
             })
             .collect();
         let output = match carrier {
@@ -217,17 +210,11 @@ impl NumberOpInput {
             // type-wide range so an unwired downstream still materialises a sane default.
             Carrier::Signal => PortSpec {
                 name: self.output.to_string(),
-                ty: "f32_buffer".to_string(),
-                f32: None,
-                i32: None,
-                vocab: None,
+                ty: PortTy::F32Buffer(None),
             },
             Carrier::Value => PortSpec {
                 name: self.output.to_string(),
-                ty: "f32".to_string(),
-                f32: Some(num_meta(NUMBER_MIN, NUMBER_MAX, 0.0)),
-                i32: None,
-                vocab: None,
+                ty: PortTy::F32(num_meta(NUMBER_MIN, NUMBER_MAX, 0.0)),
             },
         };
         OperatorSpec {
