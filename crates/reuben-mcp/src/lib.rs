@@ -22,15 +22,19 @@
 //!   (#315). Until that lands, the [`EngineProbe`] seam is filled by [`UnreachableProbe`], so every
 //!   engine tool deterministically exercises the fail-fast path (ADR-0044 §2, ADR-0048 §3).
 
+use std::path::Path;
+
 use rmcp::handler::server::tool::ToolRouter;
-use rmcp::handler::server::wrapper::{Json, Parameters};
+use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
     CallToolResult, ContentBlock, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo,
 };
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt};
 
-use reuben_core::{Diag, Report};
-use serde::Deserialize;
+use reuben_core::introspect::{OperatorInfo, PatchBoundary};
+use reuben_core::{Registry, Report};
+use reuben_native::resources::FsResolver;
+use serde::{Deserialize, Serialize};
 
 /// The eight-tool surface (ADR-0048 §1), in the ADR's roster order. The authority for the exact
 /// spellings advertised over `tools/list`; the integration test asserts the wire surface matches.
@@ -91,6 +95,15 @@ pub struct DescribeOperatorsParams {
     /// Restrict to one operator type; omit to list every registered operator.
     #[serde(default)]
     pub name: Option<String>,
+}
+
+/// Output for `describe_operators` (ADR-0048 §5): the operator set wrapped in `{ operators }`, so
+/// the tool's `outputSchema` is an object (MCP requires an object root) whose one field is the
+/// list mirroring [`reuben_core::introspect::describe`].
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct DescribeOperatorsOutput {
+    /// One entry per registered operator (or the single filtered one), in registry order.
+    pub operators: Vec<OperatorInfo>,
 }
 
 /// Input for the read-only document tools `describe_instrument` and `validate` (ADR-0048 §2):
@@ -178,52 +191,89 @@ impl ReubenServer {
 
     // --- Pure tools: always available (ADR-0044 §2) --------------------------------------------
 
-    /// List the operator set (ADR-0048 §5). Stub: #318 delegates to
-    /// [`reuben_core::introspect::describe`] and returns `{ operators: OperatorInfo[] }`.
+    /// List the operator set (ADR-0048 §§1,5): delegates to [`reuben_core::introspect::describe`]
+    /// and returns `{ operators: OperatorInfo[] }`, mirroring its `Option<&str>` filter exactly.
+    /// Engine-free — always available (ADR-0044 §2). An unknown `name` is a can't-do-the-job error
+    /// (ADR-0048 §5): there is no such operator to describe.
     #[tool(
         name = "describe_operators",
-        description = "List the registered operators and their ports/params, optionally filtered by name."
+        description = "List the registered operators and their ports/params, optionally filtered by name.",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<DescribeOperatorsOutput>()
+            .expect("DescribeOperatorsOutput is an object schema")
     )]
     async fn describe_operators(
         &self,
-        Parameters(_params): Parameters<DescribeOperatorsParams>,
+        Parameters(params): Parameters<DescribeOperatorsParams>,
     ) -> Result<CallToolResult, McpError> {
-        Ok(stub("describe_operators"))
+        let registry = Registry::builtin();
+        match reuben_core::introspect::describe(&registry, params.name.as_deref()) {
+            Ok(operators) => {
+                let summary = describe_operators_summary(&operators);
+                structured_ok(&DescribeOperatorsOutput { operators }, summary)
+            }
+            // ADR-0048 §5: an unknown name is isError, not an empty deliverable.
+            Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
+        }
     }
 
-    /// Describe an instrument document's boundary as a host will see it (ADR-0048 §5). Stub: #318
-    /// delegates to [`reuben_core::introspect::describe_patch`] and returns a `PatchBoundary`.
+    /// Describe an instrument document's boundary as a host instrument will see it (ADR-0048 §5):
+    /// resolves the one-of `path`/`document` (ADR-0048 §2), then delegates to
+    /// [`reuben_core::introspect::describe_patch`] over a stat-only resolver and returns a
+    /// [`PatchBoundary`]. Engine-free — always available (ADR-0044 §2). A document that fails to
+    /// load has no boundary to describe, so it is isError pointing at `validate` (ADR-0048 §3).
     #[tool(
         name = "describe_instrument",
-        description = "Describe an instrument document's boundary (inputs/outputs) as a host instrument sees it."
+        description = "Describe an instrument document's boundary (inputs/outputs) as a host instrument sees it.",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<PatchBoundary>()
+            .expect("PatchBoundary is an object schema")
     )]
     async fn describe_instrument(
         &self,
-        Parameters(_params): Parameters<DocumentParams>,
+        Parameters(params): Parameters<DocumentParams>,
     ) -> Result<CallToolResult, McpError> {
-        Ok(stub("describe_instrument"))
+        let (json, resolver) = match load_document(&params) {
+            Ok(loaded) => loaded,
+            Err(err) => return Ok(err),
+        };
+        let registry = Registry::builtin();
+        match reuben_core::introspect::describe_patch(&json, &registry, &resolver) {
+            Ok(boundary) => {
+                let summary = describe_instrument_summary(&boundary);
+                structured_ok(&boundary, summary)
+            }
+            // ADR-0048 §3 corollary: no boundary to describe — direct the user to `validate`.
+            Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                "{message}\n\nThe document could not be loaded, so there is no boundary to \
+                 describe. Run `validate` for the full report of errors and warnings."
+            ))])),
+        }
     }
 
-    /// Validate an instrument document through the engine's own load/instantiate path (ADR-0048
-    /// §5). Stub returning an inert [`Report`]: it proves the reuben-core contract type is
-    /// schema-derivable here (the `schemars` fence), so #318 gets the `outputSchema` for free by
-    /// delegating to [`reuben_core::introspect::validate`].
+    /// Validate an instrument document through the engine's own load + instantiate path (ADR-0048
+    /// §5): resolves the one-of `path`/`document` (ADR-0048 §2), then delegates to
+    /// [`reuben_core::introspect::validate`] over a stat-only resolver (no audio decode).
+    /// Engine-free — always available (ADR-0044 §2). Error-layer discipline (ADR-0048 §3): a
+    /// *failing* validation is an ordinary result carrying `{ ok: false, errors, warnings }` — the
+    /// tool worked; only the can't-do-the-job cases (bad one-of, unreadable path) are isError.
     #[tool(
         name = "validate",
-        description = "Validate an instrument document (load + instantiate); returns a report of errors and warnings."
+        description = "Validate an instrument document (load + instantiate); returns a report of errors and warnings.",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<Report>()
+            .expect("Report is an object schema")
     )]
-    async fn validate(&self, Parameters(_params): Parameters<DocumentParams>) -> Json<Report> {
-        Json(Report {
-            ok: false,
-            errors: vec![Diag {
-                node: None,
-                port: None,
-                message: "validate is a stub in the M1 skeleton; the real load/instantiate path \
-                          lands with #318 (reuben_core::introspect::validate)"
-                    .to_string(),
-            }],
-            warnings: Vec::new(),
-        })
+    async fn validate(
+        &self,
+        Parameters(params): Parameters<DocumentParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let (json, resolver) = match load_document(&params) {
+            Ok(loaded) => loaded,
+            Err(err) => return Ok(err),
+        };
+        let registry = Registry::builtin();
+        let report = reuben_core::introspect::validate(&json, &registry, &resolver);
+        let summary = validate_summary(&report);
+        // Ordinary result even when `report.ok` is false: a report is the tool working (ADR-0048 §3).
+        structured_ok(&report, summary)
     }
 
     // --- Engine tools: fail fast when the engine is unreachable (ADR-0048 §3) ------------------
@@ -334,12 +384,109 @@ impl ServerHandler for ReubenServer {
     }
 }
 
-/// The placeholder result a pure-tool stub returns until #318 fills the body. An ordinary
+/// The placeholder result an engine-tool stub returns until #318 fills the body. An ordinary
 /// (non-error) result: the stub "worked", it just has nothing real to report yet.
 fn stub(tool: &str) -> CallToolResult {
     CallToolResult::success(vec![ContentBlock::text(format!(
         "{tool}: not yet implemented in the M1 skeleton (see #318)."
     ))])
+}
+
+/// Build an ordinary (non-error) result carrying BOTH a structured payload and a human-readable
+/// text block (ADR-0048 §3). The structured content is what the model acts on; the text is the
+/// gloss for a human reading the transcript. A serialization failure is a genuine internal fault,
+/// so it surfaces as a protocol error rather than an `isError` deliverable.
+fn structured_ok<T: Serialize>(value: &T, summary: String) -> Result<CallToolResult, McpError> {
+    let structured = serde_json::to_value(value).map_err(|e| {
+        McpError::internal_error(format!("failed to serialize tool output: {e}"), None)
+    })?;
+    let mut result = CallToolResult::structured(structured);
+    // `structured` seeds `content` with a raw JSON dump; replace it with the human summary.
+    result.content = vec![ContentBlock::text(summary)];
+    Ok(result)
+}
+
+/// The isError result for a can't-do-the-job document-loading failure (ADR-0048 §3): an ambiguous
+/// or missing one-of, or an unreadable path. `isError` tells the model to act on the guidance
+/// rather than treat the payload as a deliverable.
+fn cannot_load(message: impl Into<String>) -> CallToolResult {
+    CallToolResult::error(vec![ContentBlock::text(message.into())])
+}
+
+/// Resolve a [`DocumentParams`] one-of into the instrument JSON plus a stat-only [`FsResolver`]
+/// (ADR-0048 §2, ADR-0045 §4). Exactly one of `path`/`document` is required. `Ok` carries the JSON
+/// text and a resolver rooted for nested references; `Err` is the ready-to-return `isError` result
+/// for a bad one-of or an unreadable path — the can't-do-the-job cases (ADR-0048 §3).
+fn load_document(params: &DocumentParams) -> Result<(String, FsResolver), CallToolResult> {
+    match (&params.path, &params.document) {
+        (Some(_), Some(_)) => Err(cannot_load(
+            "provide exactly one of `path` or `document`, not both",
+        )),
+        (None, None) => Err(cannot_load("provide exactly one of `path` or `document`")),
+        (Some(path), None) => {
+            let path = Path::new(path);
+            let json = std::fs::read_to_string(path).map_err(|e| {
+                cannot_load(format!(
+                    "could not read instrument path {}: {e}",
+                    path.display()
+                ))
+            })?;
+            // Root at the file's directory (sibling-first, library-root fallback), stat-only so
+            // introspection reports port metadata without decoding any referenced audio.
+            Ok((json, FsResolver::for_instrument(path).stat_only()))
+        }
+        (None, Some(document)) => {
+            let json = serde_json::to_string(document).map_err(|e| {
+                cannot_load(format!("inline `document` is not serializable JSON: {e}"))
+            })?;
+            // Anchor nested references at `resolve_from`, defaulting to the sidecar cwd; stat-only
+            // for the same reason as the path branch (ADR-0048 §2).
+            let base = params.resolve_from.as_deref().unwrap_or(".");
+            Ok((json, FsResolver::new(base).stat_only()))
+        }
+    }
+}
+
+/// One-line human gloss of an operator listing: a single operator's port counts, or the roster.
+fn describe_operators_summary(operators: &[OperatorInfo]) -> String {
+    match operators {
+        [one] => format!(
+            "{}: {} input(s), {} output(s)",
+            one.type_name,
+            one.inputs.len(),
+            one.outputs.len()
+        ),
+        many => {
+            let names: Vec<&str> = many.iter().map(|o| o.type_name.as_str()).collect();
+            format!("{} operators: {}", many.len(), names.join(", "))
+        }
+    }
+}
+
+/// One-line human gloss of a described instrument boundary.
+fn describe_instrument_summary(boundary: &PatchBoundary) -> String {
+    format!(
+        "{}: {} boundary input(s), {} output(s)",
+        boundary.instrument,
+        boundary.inputs.len(),
+        boundary.outputs.len()
+    )
+}
+
+/// One-line human gloss of a validation report.
+fn validate_summary(report: &Report) -> String {
+    if report.ok {
+        match report.warnings.len() {
+            0 => "valid".to_string(),
+            n => format!("valid ({n} warning(s))"),
+        }
+    } else {
+        format!(
+            "invalid: {} error(s), {} warning(s)",
+            report.errors.len(),
+            report.warnings.len()
+        )
+    }
 }
 
 /// Serve the MCP protocol over stdio until the client closes the connection (ADR-0044 §1). The
