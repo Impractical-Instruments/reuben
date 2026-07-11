@@ -25,4 +25,4 @@ pub use mailbox::{
 };
 pub use manifest::{build_manifest, Manifest, MigrationTable, NodeIdentity};
 pub use swap::{Coordinator, InstallBundle, RenderSide};
-pub use wire::{DiagnosticsReport, DocSource, Request, Response};
+pub use wire::{DiagnosticsReport, DocSource, Request, Response, DEFAULT_STRUCTURE_ADDR};

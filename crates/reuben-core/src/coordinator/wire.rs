@@ -14,6 +14,14 @@ use serde::{Deserialize, Serialize};
 
 use crate::contract::SwapReport;
 
+/// The structure channel's default loopback bind/target (ADR-0046 §8): `127.0.0.1` only —
+/// structure edits are more powerful than OSC control, so unlike OSC's `0.0.0.0:9000` this
+/// channel must never be network-exposed. The concrete port is epic-level detail; a fixed
+/// default suffices for M1. Shared here — next to the wire types both ends serialize — so the
+/// reuben-native server (`reuben play`) and the reuben-mcp client bind and dial the *same*
+/// address and can never drift; a taken port is non-fatal on the server side (see `play`).
+pub const DEFAULT_STRUCTURE_ADDR: &str = "127.0.0.1:9124";
+
 /// Where a swap's document comes from (ADR-0046 §8: accepted **by value or by path**, both
 /// resolver-loaded engine-side; ADR-0045 §4 deliberately left both branches open, and the
 /// channel keeps both — which to *expose* is the tool surface's call, ADR-0048 §2). Field
@@ -200,6 +208,19 @@ mod tests {
         );
         let back = Request::from_ndjson(&line).expect("parses back");
         assert_eq!(&back, req);
+    }
+
+    #[test]
+    fn default_structure_addr_is_loopback_9124() {
+        // The shared bind/dial address (ADR-0046 §8): loopback-only and the fixed M1 port. This
+        // one const is the single source both the reuben-native server and the reuben-mcp client
+        // reference, so they can never drift; the literal is pinned here so an accidental edit is
+        // a red test, not a silent server/client mismatch.
+        assert_eq!(DEFAULT_STRUCTURE_ADDR, "127.0.0.1:9124");
+        assert!(
+            DEFAULT_STRUCTURE_ADDR.starts_with("127.0.0.1:"),
+            "the structure channel must stay loopback-only: {DEFAULT_STRUCTURE_ADDR}"
+        );
     }
 
     #[test]

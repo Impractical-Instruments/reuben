@@ -18,9 +18,10 @@
 //!   contract types (already schema-derivable here via the `schemars` fence — proven by
 //!   [`ReubenServer::validate`]).
 //! - `send` → [`reuben_native::osc::encode`] over the OSC/UDP boundary.
-//! - engine liveness → the structure-channel `ping` (ADR-0046 §8), owned by the MCP client ticket
-//!   (#315). Until that lands, the [`EngineProbe`] seam is filled by [`UnreachableProbe`], so every
-//!   engine tool deterministically exercises the fail-fast path (ADR-0044 §2, ADR-0048 §3).
+//! - engine liveness → the structure-channel `ping` (ADR-0046 §8). The MCP client ticket (#315)
+//!   fills the [`EngineProbe`] seam with the real [`PingProbe`] (connect + `ping` succeeds ⇒
+//!   reachable); [`UnreachableProbe`] remains as the deterministic down-engine seam the unit tests
+//!   drive to exercise the fail-fast path (ADR-0044 §2, ADR-0048 §3).
 
 use std::path::Path;
 
@@ -38,6 +39,9 @@ use reuben_core::introspect::{OperatorInfo, PatchBoundary};
 use reuben_core::{schema, Registry, Report};
 use reuben_native::resources::FsResolver;
 use serde::{Deserialize, Serialize};
+
+mod client;
+pub use client::{DocumentSnapshot, PingProbe, StructureClient, StructureError, SwapOutcome};
 
 /// The eight-tool surface (ADR-0048 §1), in the ADR's roster order. The authority for the exact
 /// spellings advertised over `tools/list`; the integration test asserts the wire surface matches.
@@ -106,17 +110,17 @@ fn instrument_schema_json() -> String {
 }
 
 /// The engine-liveness seam (ADR-0044 §2). The real probe is the structure-channel `ping`
-/// (ADR-0046 §8), owned by the MCP client ticket **#315** — deliberately NOT implemented here, so
-/// this ticket does not build the structure channel. A tool that needs the engine probes through
-/// this trait and fails fast when it reports the engine down.
+/// (ADR-0046 §8), implemented by [`PingProbe`] in this crate's client module (#315). A tool that
+/// needs the engine probes through this trait and fails fast when it reports the engine down; the
+/// trait stays the seam so tests can drive both branches without a socket.
 pub trait EngineProbe: Send + Sync {
     /// Whether a live `reuben play` is reachable over the structure channel right now.
     fn is_reachable(&self) -> bool;
 }
 
-/// The M1 placeholder probe: the engine is always reported unreachable, because the real
-/// structure-channel client (#315) does not exist yet. Every engine tool therefore returns the
-/// fail-fast "start `reuben play`" result until #315 lands.
+/// A probe that always reports the engine unreachable. Since #315 landed the real [`PingProbe`],
+/// this is no longer the default — it survives as the deterministic down-engine seam the unit
+/// tests drive to exercise the fail-fast path without standing up a server.
 pub struct UnreachableProbe;
 
 impl EngineProbe for UnreachableProbe {
@@ -209,9 +213,12 @@ pub struct ReubenServer {
 
 #[tool_router]
 impl ReubenServer {
-    /// A server backed by the M1 [`UnreachableProbe`] (no structure-channel client yet, #315).
+    /// A server backed by the real [`PingProbe`] on the shared default structure address
+    /// (`reuben_core::coordinator::DEFAULT_STRUCTURE_ADDR`): engine reachability is a live
+    /// structure-channel `ping` (ADR-0044 §2). The binary's composition root (`main`) may inject a
+    /// probe explicitly via [`with_probe`](Self::with_probe); this is the sensible default.
     pub fn new() -> Self {
-        Self::with_probe(Box::new(UnreachableProbe))
+        Self::with_probe(Box::new(PingProbe::default()))
     }
 
     /// A server with an explicit liveness probe — the seam #315 fills, and the seam the unit
@@ -597,9 +604,13 @@ fn validate_summary(report: &Report) -> String {
 }
 
 /// Serve the MCP protocol over stdio until the client closes the connection (ADR-0044 §1). The
-/// current_thread runtime is built by `main`; this is the async body it drives.
-pub async fn serve_stdio() -> Result<(), Box<dyn std::error::Error>> {
-    let service = ReubenServer::new().serve(rmcp::transport::stdio()).await?;
+/// current_thread runtime is built by `main`; this is the async body it drives. `main` injects the
+/// engine-liveness probe (the real [`PingProbe`] in the shipping binary), so the composition root
+/// stays in `main` and tests can serve with a fake probe.
+pub async fn serve_stdio(probe: Box<dyn EngineProbe>) -> Result<(), Box<dyn std::error::Error>> {
+    let service = ReubenServer::with_probe(probe)
+        .serve(rmcp::transport::stdio())
+        .await?;
     service.waiting().await?;
     Ok(())
 }
