@@ -1,4 +1,10 @@
-# ADR-0047: MCP tool surface and contracts
+# ADR-0048: MCP tool surface and contracts
+
+> Renumbered from 0047 (2026-07-11) — that number was already held by
+> [0047-normalization-is-a-type.md](0047-normalization-is-a-type.md). External references dated
+> 2026-07-10/11 (map [#270](https://github.com/Impractical-Instruments/reuben/issues/270), ticket
+> [MCP/E #275](https://github.com/Impractical-Instruments/reuben/issues/275)) may still say
+> ADR-0047 for this document.
 
 ## Status
 

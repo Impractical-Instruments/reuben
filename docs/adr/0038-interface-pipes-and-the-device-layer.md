@@ -247,7 +247,7 @@ recorded in the P5 PR.
 - All three are surfaced as **counters through one shared diagnostics surface** (P6,
   [#183](https://github.com/Impractical-Instruments/reuben/issues/183)): periodic/exit
   logging now; an OSC diagnostic endpoint explicitly later. *(Amended by
-  [ADR-0047](0047-mcp-tool-surface-and-contracts.md) §6: the deferred endpoint is the MCP
+  [ADR-0048](0048-mcp-tool-surface-and-contracts.md) §6: the deferred endpoint is the MCP
   `get_diagnostics` tool over the structure channel, not OSC.)*
 - **No configurability and no recovery mode** (no block-skipping, no degraded render).
   reuben's job on an xrun is to *know and say*, not to improvise. Configurability only if a
