@@ -44,11 +44,12 @@ use reuben_native::{audio, osc, scaffold, structure};
 
 const BLOCK_SIZE: usize = 256;
 const OSC_BIND: &str = "0.0.0.0:9000";
-/// The structure channel's default loopback bind (ADR-0046 §8): `127.0.0.1` only — structure
-/// edits are more powerful than OSC control, so unlike OSC's `0.0.0.0:9000` this must never be
-/// network-exposed. The concrete port is epic-level detail; a fixed default suffices for M1
-/// (the MCP sidecar targets the same one), and a taken port is non-fatal (see `play`).
-const STRUCTURE_BIND: &str = "127.0.0.1:9124";
+/// The structure channel's default loopback bind (ADR-0046 §8), hoisted to a shared const in
+/// `reuben_core::coordinator` so this server and the reuben-mcp client dial the *same* address
+/// and can never drift. `127.0.0.1` only — structure edits are more powerful than OSC control,
+/// so unlike OSC's `0.0.0.0:9000` this must never be network-exposed; a taken port is non-fatal
+/// (see `play`).
+use reuben_core::coordinator::DEFAULT_STRUCTURE_ADDR as STRUCTURE_BIND;
 
 #[derive(Parser)]
 #[command(name = "reuben", about = "Play and author reuben instruments.")]
