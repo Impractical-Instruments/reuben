@@ -37,8 +37,20 @@ The static parallel execution schedule — topologically ordered and clustered f
 _Avoid_: schedule, graph image, compiled graph.
 
 **Swap**:
-The single runtime transition that changes the running graph: instantiate a new [[plan]] off the audio thread, atomically install it at a block boundary, migrate surviving Operators' state (matched by stable identity), and reclaim the old Plan. The first Swap installs over the empty Plan, so there is no separate cold-start path. "Instantiate" is the construction sub-step of a Swap.
+The single runtime transition that changes the running graph: instantiate a new [[plan]] off the audio thread, atomically install it at a block boundary, migrate [[survivor]]s' state, and reclaim the old Plan. The first Swap installs over the empty Plan, so there is no separate cold-start path. "Instantiate" is the construction sub-step of a Swap.
 _Avoid_: hot-swap (describes how, not the phase), re-plan, recompile, reload.
+
+**Survivor**:
+A node whose state crosses a [[swap]]: present in both the outgoing and incoming [[plan]] with the same fully-qualified [[address]], the same Operator type, and the same instantiate-time identity (its config and the content of everything it resolved — resources, hosted sub-documents). Anything else about it — wiring, params, neighbors — may change without breaking survivorship.
+_Avoid_: carried node, kept node, matched node.
+
+**Restart-swap**:
+The M1 interim [[swap]]: stop the audio streams, rebuild the engine from the document, reopen. Audibly rude by design — a gap, every node cold — and replaced in M2 by the real Swap machinery behind the same contract.
+_Avoid_: reload, hot restart.
+
+**Structure channel**:
+The local request/response channel between a client (the MCP sidecar) and the engine process — the only path to the [[coordinator]]. Carries structure ops ([[swap]]), document reads, diagnostics, and liveness; distinct from the fire-and-forget OSC control plane, which never carries structure.
+_Avoid_: control channel (that is OSC), admin port, command socket.
 
 **Render**:
 Executing the current [[plan]] per block on the audio thread — hard realtime, allocation-free. Playing notes and turning knobs happen here against already-allocated resources.
