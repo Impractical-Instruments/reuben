@@ -26,6 +26,14 @@
 //! 5. Toy switch: `destroy()`, then stage + construct the next instrument on the same
 //!    instance.
 //!
+//! Orthogonal to the render lifecycle, three **authoring-introspection** exports (issue #352,
+//! ADR-0052 §2) answer the in-page tool layer's contracts over [`reuben_core::introspect`],
+//! reusing the exact contract types the native lane serializes (§5). They need no live Engine:
+//! `describe_operators(name_ptr, name_len)` / `describe_instrument(doc_ptr, doc_len)` return
+//! `0` (read `report_ptr`/`report_len`) or `1` (read `error_ptr`/`error_len`); `validate(doc_ptr,
+//! doc_len)` returns `0` whenever a report was produced — including a `{ok:false}` report, since
+//! a failed validation is a successful call (ADR-0048 §3) — and `1` only on bad UTF-8.
+//!
 //! Panics trap on `wasm32-unknown-unknown`; a hook ships the message through `log` first
 //! (installed at every entry point — but a panic inside a static ctor predates any hook and
 //! surfaces only as an opaque `RuntimeError`, the known P1 gap).
@@ -330,4 +338,87 @@ pub extern "C" fn error_ptr() -> *const u8 {
 #[no_mangle]
 pub extern "C" fn error_len() -> u32 {
     shell().error().len() as u32
+}
+
+/// Describe the operator set (ADR-0052 §2), over [`reuben_core::introspect::describe`] — the
+/// `describe_operators` tool contract. `name_len == 0` lists every registered operator;
+/// otherwise `name_ptr..name_ptr+name_len` is the UTF-8 operator type name to describe. `0` =
+/// ok, read the `{ operators: OperatorInfo[] }` JSON via [`report_ptr`]/[`report_len`]; `1` =
+/// error (unknown type, or a name that isn't UTF-8), read [`error_ptr`]/[`error_len`].
+///
+/// # Safety
+/// `name_ptr..name_ptr+name_len` must be a live host-written region, or `name_len == 0`.
+#[no_mangle]
+pub unsafe extern "C" fn describe_operators(name_ptr: *const u8, name_len: u32) -> i32 {
+    let which = if name_len == 0 {
+        None
+    } else {
+        match std::str::from_utf8(bytes(name_ptr, name_len)) {
+            Ok(name) => Some(name),
+            Err(_) => {
+                log_str("describe_operators: name not UTF-8");
+                return 1;
+            }
+        }
+    };
+    if shell().describe_operators(which) {
+        0
+    } else {
+        1
+    }
+}
+
+/// Describe an instrument document's boundary (ADR-0052 §2), over
+/// [`reuben_core::introspect::describe_patch`] — the `describe_instrument` tool contract.
+/// `doc_ptr..doc_ptr+doc_len` is the UTF-8 instrument JSON. `0` = ok, read the `PatchBoundary`
+/// JSON via [`report_ptr`]/[`report_len`]; `1` = error (bad UTF-8, or a document that fails to
+/// load — `isError` per ADR-0048 §3), read [`error_ptr`]/[`error_len`].
+///
+/// # Safety
+/// `doc_ptr..doc_ptr+doc_len` must be a live host-written region.
+#[no_mangle]
+pub unsafe extern "C" fn describe_instrument(doc_ptr: *const u8, doc_len: u32) -> i32 {
+    let Ok(text) = std::str::from_utf8(bytes(doc_ptr, doc_len)) else {
+        log_str("describe_instrument: document not UTF-8");
+        return 1;
+    };
+    if shell().describe_instrument(text) {
+        0
+    } else {
+        1
+    }
+}
+
+/// Validate an instrument document (ADR-0052 §2), over
+/// [`reuben_core::introspect::validate`] — the `validate` tool contract.
+/// `doc_ptr..doc_ptr+doc_len` is the UTF-8 instrument JSON. `0` = a report was produced: read
+/// the [`reuben_core::Report`] JSON via [`report_ptr`]/[`report_len`], **including a
+/// `{ ok: false }` report — a failed validation is a successful call (ADR-0048 §3)**. `1` = bad
+/// UTF-8 (the one call-level failure), read [`error_ptr`]/[`error_len`].
+///
+/// # Safety
+/// `doc_ptr..doc_ptr+doc_len` must be a live host-written region.
+#[no_mangle]
+pub unsafe extern "C" fn validate(doc_ptr: *const u8, doc_len: u32) -> i32 {
+    let Ok(text) = std::str::from_utf8(bytes(doc_ptr, doc_len)) else {
+        log_str("validate: document not UTF-8");
+        return 1;
+    };
+    shell().validate(text);
+    0
+}
+
+/// UTF-8 pointer of the last introspection report (empty when the last call produced none).
+/// The JSON shape depends on which export ran: `{ operators: OperatorInfo[] }`
+/// ([`describe_operators`]), a `PatchBoundary` ([`describe_instrument`]), or a
+/// [`reuben_core::Report`] ([`validate`]).
+#[no_mangle]
+pub extern "C" fn report_ptr() -> *const u8 {
+    shell().report().as_ptr()
+}
+
+/// Byte length of the last introspection report.
+#[no_mangle]
+pub extern "C" fn report_len() -> u32 {
+    shell().report().len() as u32
 }

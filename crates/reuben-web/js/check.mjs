@@ -21,7 +21,7 @@ import { readFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 
 import { encodeControl } from "./codec.mjs";
-import { writeBytes, readError, loadInstrument } from "./loader.mjs";
+import { writeBytes, readError, readReport, loadInstrument } from "./loader.mjs";
 import { buildSurface, emit } from "./surface/widget-model.mjs";
 
 const WASM_URL = new URL(
@@ -215,6 +215,154 @@ console.log("\n=== registry pin ===");
   // above). v3 = ADR-0043: presentation stripped out of the instrument document.
   const fv = ex.format_version();
   check(fv === 3, `format_version() = ${fv}, expected 3 (reuben_core::format::FORMAT_VERSION)`);
+}
+
+// --- authoring exports (introspection) ---------------------------------------------------
+//
+// ADR-0052 §2: the three introspection contracts as new wasm exports over
+// reuben_core::introspect — the in-page tool layer's anchors, reusing the exact OS-free
+// contract types the native lane serializes (§5: one schema, two doors). Stateless over the
+// module — no live engine needed. describe_* return 0 = ok (read the report) / 1 = error (read
+// the error); validate returns 0 whenever a report was produced (a {ok:false} report is a
+// SUCCESSFUL call, ADR-0048 §3), 1 only on bad UTF-8.
+
+console.log("\n=== authoring exports (introspection) ===");
+{
+  // Write `text` into linear memory, call the export, free the buffer, return the rc.
+  const callDoc = (fn, text) => {
+    const bytes = encoder.encode(text);
+    const ptr = writeBytes(ex, bytes);
+    const rc = fn(ptr, bytes.length);
+    ex.dealloc(ptr, bytes.length);
+    return rc;
+  };
+  const parseReport = () => JSON.parse(readReport(ex));
+
+  // A minimal self-contained instrument (no external resources): oscillator -> output.
+  const GOOD_DOC = JSON.stringify({
+    format_version: 3,
+    instrument: "probe",
+    interface: { outputs: { out: { from: "/out.audio" } } },
+    nodes: [
+      { type: "oscillator", address: "/osc", inputs: { freq: 220.0 } },
+      { type: "output", address: "/out", inputs: { audio: { from: "/osc" } } },
+    ],
+  });
+  // Same shape with an unknown operator type at /osc (typo) — validation fails, localized.
+  const BROKEN_DOC = JSON.stringify({
+    format_version: 3,
+    instrument: "probe",
+    nodes: [{ type: "oscilllator", address: "/osc" }],
+    outputs: [],
+  });
+
+  // describe_operators(all): name_len 0 lists the whole registry.
+  {
+    const rc = ex.describe_operators(0, 0);
+    let ops = null;
+    try {
+      ops = parseReport().operators;
+    } catch {}
+    const names = Array.isArray(ops) ? ops.map((o) => o.type_name) : [];
+    check(
+      rc === 0 &&
+        Array.isArray(ops) &&
+        ops.length === ex.registry_count() &&
+        ["oscillator", "filter", "voicer"].every((n) => names.includes(n)),
+      `describe_operators(all) rc=${rc}: ${names.length} ops == registry_count ${ex.registry_count()}, includes osc/filter/voicer`,
+    );
+  }
+
+  // describe_operators("oscillator"): exactly one op, with a freq input.
+  {
+    const rc = callDoc(ex.describe_operators, "oscillator");
+    let ops = null;
+    try {
+      ops = parseReport().operators;
+    } catch {}
+    const one = Array.isArray(ops) && ops.length === 1 ? ops[0] : null;
+    check(
+      rc === 0 &&
+        one &&
+        one.type_name === "oscillator" &&
+        one.inputs.some((p) => p.name === "freq"),
+      `describe_operators("oscillator") rc=${rc}: one op, type_name oscillator, has freq input`,
+    );
+  }
+
+  // describe_operators("nope"): isError, and the error names the missing type.
+  {
+    const rc = callDoc(ex.describe_operators, "nope");
+    const err = readError(ex);
+    check(
+      rc === 1 && err.includes("nope"),
+      `describe_operators("nope") rc=${rc} (isError), error names it: "${err}"`,
+    );
+  }
+
+  // describe_instrument(good doc): PatchBoundary names the document's instrument.
+  {
+    const rc = callDoc(ex.describe_instrument, GOOD_DOC);
+    let boundary = null;
+    try {
+      boundary = parseReport();
+    } catch {}
+    check(
+      rc === 0 && boundary && boundary.instrument === "probe",
+      `describe_instrument(good) rc=${rc}: boundary.instrument === "probe"`,
+    );
+  }
+
+  // describe_instrument(bad json): isError, error non-empty.
+  {
+    const rc = callDoc(ex.describe_instrument, "{ not json");
+    const err = readError(ex);
+    check(
+      rc === 1 && err.length > 0,
+      `describe_instrument("{ not json") rc=${rc} (isError): "${err}"`,
+    );
+  }
+
+  // validate(good doc): rc 0, a clean report.
+  {
+    const rc = callDoc(ex.validate, GOOD_DOC);
+    let report = null;
+    try {
+      report = parseReport();
+    } catch {}
+    check(
+      rc === 0 &&
+        report &&
+        report.ok === true &&
+        Array.isArray(report.errors) &&
+        report.errors.length === 0 &&
+        Array.isArray(report.warnings) &&
+        report.warnings.length === 0,
+      `validate(good) rc=${rc}: {ok:true, errors:[], warnings:[]}`,
+    );
+  }
+
+  // validate(broken doc): rc 0 (NOT a throw/1 — a failed validation is a successful call,
+  // ADR-0048 §3), report ok:false with a diag localizing the offending node.
+  {
+    const rc = callDoc(ex.validate, BROKEN_DOC);
+    let report = null;
+    try {
+      report = parseReport();
+    } catch {}
+    check(
+      rc === 0 &&
+        report &&
+        report.ok === false &&
+        Array.isArray(report.errors) &&
+        report.errors.length >= 1 &&
+        report.errors[0].node === "/osc",
+      `validate(broken) rc=${rc}: {ok:false}, errors[0].node === "/osc" (${report ? report.errors.length : 0} error(s))`,
+    );
+  }
+
+  // Leave a clean slate for the instrument matrix (no staged doc/resources leaked).
+  ex.destroy();
 }
 
 // --- the instrument matrix on one persistent instance -------------------------------------
