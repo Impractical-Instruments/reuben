@@ -572,7 +572,10 @@ jobs:
   # Skipped upstream is a pass. Deliberately NOT in `needs`: `deploy-web` and `bench-history` are
   # post-merge side-effects (deploy/persist), not merge gates.
   ci-passed:
-    name: CI passed (aggregate gate)
+    # This `name` is the exact string the `dev` ruleset requires as a status check (GitHub matches
+    # required checks by a job's `name`, not its id) — keep it equal to `ci-passed` so the ruleset,
+    # this workflow, CONTRIBUTING, and ADR-0055 all refer to the check by one name.
+    name: ci-passed
     runs-on: ubuntu-latest
     needs: [changes, lockstep, check, windows, web, webapp, bench]
     if: always()
