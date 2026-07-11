@@ -76,7 +76,9 @@ block, ~5ms) is discarded, and its pending control Messages are dropped: ADR-004
 defines un-folded `send` tweaks as clobbered at Swap, and a typed Message minted against the
 old Plan's port types may not be valid against the new one. Audible-rudeness policy
 (fade/crossfade) is MCP/G's decision on top of this mechanism, which leaves it room: the
-shell may briefly hold both Engines if MCP/G wants a crossfade.
+shell may briefly hold both Engines if MCP/G wants a crossfade. *(Resolved by
+[ADR-0050](0050-swap-sonic-rudeness-ramp.md): a fixed master-gain ramp — begin the ramp at
+the callback top, install at zero, ramp up; no second Engine is held.)*
 
 **Considered and rejected:** *core-block-boundary precision* (mailbox awareness inside
 `Engine::fill`'s hot loop, for a ≤5ms difference the rudeness policy papers over anyway);
