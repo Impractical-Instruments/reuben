@@ -13,6 +13,10 @@ description = "Portable, OS-free realtime core for reuben: graph, plan, render."
 # `required-features = ["bench"]`, and CI runs the micro layer + its forcing-function test with
 # `--features bench` (locally: `cargo reuben-core-bench`, see .cargo/config.toml).
 bench = []
+# Derives `schemars::JsonSchema` on the contract types (src/contract.rs) so rmcp can emit
+# each MCP tool's `outputSchema` (ADR-0048 §4/§5). Default-off: only reuben-mcp turns it on;
+# the play/CLI build never compiles schemars (ADR-0044 §3 fencing).
+schemars = ["dep:schemars"]
 
 [dependencies]
 slotmap.workspace = true
@@ -20,6 +24,7 @@ smallvec.workspace = true
 num-traits.workspace = true
 serde.workspace = true
 serde_json.workspace = true
+schemars = { workspace = true, optional = true }
 inventory.workspace = true
 # The operator_contract! macro: single-sources each operator's index consts + Descriptor (ADR-0025).
 reuben-macros = { path = "../reuben-macros" }
