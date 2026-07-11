@@ -26,13 +26,14 @@
 //! 5. Toy switch: `destroy()`, then stage + construct the next instrument on the same
 //!    instance.
 //!
-//! Orthogonal to the render lifecycle, three **authoring-introspection** exports (issue #352,
-//! ADR-0052 §2) answer the in-page tool layer's contracts over [`reuben_core::introspect`],
-//! reusing the exact contract types the native lane serializes (§5). They need no live Engine:
-//! `describe_operators(name_ptr, name_len)` / `describe_instrument(doc_ptr, doc_len)` return
-//! `0` (read `report_ptr`/`report_len`) or `1` (read `error_ptr`/`error_len`); `validate(doc_ptr,
-//! doc_len)` returns `0` whenever a report was produced — including a `{ok:false}` report, since
-//! a failed validation is a successful call (ADR-0048 §3) — and `1` only on bad UTF-8.
+//! Orthogonal to the render lifecycle, four **authoring-introspection** exports (issues #352,
+//! #353, ADR-0052 §2) answer the in-page tool layer's contracts over [`reuben_core::introspect`]
+//! and [`reuben_core::content_hash`], reusing the exact contract types the native lane serializes
+//! (§5). They need no live Engine: `describe_operators(name_ptr, name_len)` /
+//! `describe_instrument(doc_ptr, doc_len)` / `content_hash(doc_ptr, doc_len)` return `0` (read
+//! `report_ptr`/`report_len`) or `1` (read `error_ptr`/`error_len`); `validate(doc_ptr, doc_len)`
+//! returns `0` whenever a report was produced — including a `{ok:false}` report, since a failed
+//! validation is a successful call (ADR-0048 §3) — and `1` only on bad UTF-8.
 //!
 //! Panics trap on `wasm32-unknown-unknown`; a hook ships the message through `log` first
 //! (installed at every entry point — but a panic inside a static ctor predates any hook and
@@ -408,10 +409,33 @@ pub unsafe extern "C" fn validate(doc_ptr: *const u8, doc_len: u32) -> i32 {
     0
 }
 
+/// Hash a document's content identity (issue #353, ADR-0052 §3), over
+/// [`reuben_core::content_hash`] — the `content_hash` token the in-page `swap` and
+/// `get_current_instrument` contracts carry. `doc_ptr..doc_ptr+doc_len` is the UTF-8 instrument
+/// JSON. `0` = ok, read the opaque hash token (a string, not JSON) via
+/// [`report_ptr`]/[`report_len`]; `1` = error (bad UTF-8, or a document that fails to
+/// normalize), read [`error_ptr`]/[`error_len`].
+///
+/// # Safety
+/// `doc_ptr..doc_ptr+doc_len` must be a live host-written region.
+#[no_mangle]
+pub unsafe extern "C" fn content_hash(doc_ptr: *const u8, doc_len: u32) -> i32 {
+    let Ok(text) = std::str::from_utf8(bytes(doc_ptr, doc_len)) else {
+        log_str("content_hash: document not UTF-8");
+        return 1;
+    };
+    if shell().content_hash(text) {
+        0
+    } else {
+        1
+    }
+}
+
 /// UTF-8 pointer of the last introspection report (empty when the last call produced none).
 /// The JSON shape depends on which export ran: `{ operators: OperatorInfo[] }`
-/// ([`describe_operators`]), a `PatchBoundary` ([`describe_instrument`]), or a
-/// [`reuben_core::Report`] ([`validate`]).
+/// ([`describe_operators`]), a `PatchBoundary` ([`describe_instrument`]), a
+/// [`reuben_core::Report`] ([`validate`]), or the opaque `content_hash` token
+/// ([`content_hash`], a plain string — not JSON).
 #[no_mangle]
 pub extern "C" fn report_ptr() -> *const u8 {
     shell().report().as_ptr()

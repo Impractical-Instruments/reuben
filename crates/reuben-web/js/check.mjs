@@ -22,6 +22,7 @@ import { fileURLToPath } from "node:url";
 
 import { encodeControl } from "./codec.mjs";
 import { writeBytes, readError, readReport, loadInstrument } from "./loader.mjs";
+import { wasmIntrospect } from "./tools.mjs";
 import { buildSurface, emit } from "./surface/widget-model.mjs";
 
 const WASM_URL = new URL(
@@ -359,6 +360,130 @@ console.log("\n=== authoring exports (introspection) ===");
         report.errors[0].node === "/osc",
       `validate(broken) rc=${rc}: {ok:false}, errors[0].node === "/osc" (${report ? report.errors.length : 0} error(s))`,
     );
+  }
+
+  // Leave a clean slate for the instrument matrix (no staged doc/resources leaked).
+  ex.destroy();
+}
+
+// --- content_hash + the wasmIntrospect adapter (issue #353) -------------------------------
+//
+// ADR-0052 §3/§5: the fourth authoring export (content_hash) plus the JS adapter
+// (tools.mjs wasmIntrospect) the in-page tool layer binds. content_hash mints an opaque,
+// stable token over a document's canonical bytes — byte-identical to native's (§5). This drives
+// describe_operators / describe_instrument / validate THROUGH the adapter too, proving
+// wasmIntrospect wraps the real exports. The engine-bound tools (send/swap/…) need a real
+// AudioWorklet, so they stay covered by tools.test.mjs with fakes — no worklet is spun here.
+
+console.log("\n=== content_hash + wasmIntrospect adapter ===");
+{
+  const introspect = wasmIntrospect(ex);
+
+  // A minimal self-contained instrument (no external resources): oscillator -> output.
+  const GOOD_DOC = JSON.stringify({
+    format_version: 3,
+    instrument: "probe",
+    interface: { outputs: { out: { from: "/out.audio" } } },
+    nodes: [
+      { type: "oscillator", address: "/osc", inputs: { freq: 220.0 } },
+      { type: "output", address: "/out", inputs: { audio: { from: "/osc" } } },
+    ],
+  });
+  // Same document with one changed node (the oscillator's freq).
+  const CHANGED_DOC = GOOD_DOC.replace("220", "440");
+
+  // content_hash: a non-empty token, stable across an equal doc, different on a changed node.
+  {
+    const h1 = introspect.contentHash(GOOD_DOC);
+    const h2 = introspect.contentHash(GOOD_DOC);
+    const h3 = introspect.contentHash(CHANGED_DOC);
+    check(
+      typeof h1 === "string" && h1.length > 0 && h1 === h2 && h1 !== h3,
+      `contentHash "${h1}": non-empty, stable (==), differs on a changed node (!= "${h3}")`,
+    );
+  }
+
+  // describe_operators through the adapter: the whole registry, and one named op with a freq input.
+  {
+    const all = introspect.describeOperators();
+    const osc = introspect.describeOperators("oscillator");
+    check(
+      Array.isArray(all) &&
+        all.length === ex.registry_count() &&
+        Array.isArray(osc) &&
+        osc.length === 1 &&
+        osc[0].type_name === "oscillator" &&
+        osc[0].inputs.some((p) => p.name === "freq"),
+      `wasmIntrospect.describeOperators: ${all.length} ops == registry_count, "oscillator" has a freq input`,
+    );
+  }
+
+  // describe_operators("nope") through the adapter THROWS (the isError mapping).
+  {
+    let threw = false;
+    try {
+      introspect.describeOperators("nope");
+    } catch {
+      threw = true;
+    }
+    check(threw, `wasmIntrospect.describeOperators("nope") throws (isError)`);
+  }
+
+  // describe_instrument through the adapter: the PatchBoundary names the document's instrument.
+  {
+    const boundary = introspect.describeInstrument(GOOD_DOC);
+    check(
+      boundary && boundary.instrument === "probe",
+      `wasmIntrospect.describeInstrument(good): boundary.instrument === "probe"`,
+    );
+  }
+
+  // validate through the adapter: a good doc reports ok:true (and does NOT throw).
+  {
+    const report = introspect.validate(GOOD_DOC);
+    check(
+      report && report.ok === true && Array.isArray(report.errors) && report.errors.length === 0,
+      `wasmIntrospect.validate(good): {ok:true, errors:[]}`,
+    );
+  }
+
+  // validate through the adapter: a BROKEN doc returns {ok:false} with a localized Diag[] and
+  // does NOT throw — the load-bearing "a failed validation is a successful call" (ADR-0048 §3),
+  // driven end-to-end through the REAL adapter (not just the fake in tools.test.mjs).
+  {
+    const BROKEN_DOC = JSON.stringify({
+      format_version: 3,
+      instrument: "probe",
+      nodes: [{ type: "oscilllator", address: "/osc" }],
+      outputs: [],
+    });
+    let report = null;
+    let threw = false;
+    try {
+      report = introspect.validate(BROKEN_DOC);
+    } catch {
+      threw = true;
+    }
+    check(
+      !threw &&
+        report &&
+        report.ok === false &&
+        Array.isArray(report.errors) &&
+        report.errors.length >= 1 &&
+        report.errors[0].node === "/osc",
+      `wasmIntrospect.validate(broken): {ok:false}, errors[0].node "/osc", NO throw (ADR-0048 §3)`,
+    );
+  }
+
+  // describe_instrument through the adapter: a doc that fails to load THROWS (the isError mapping).
+  {
+    let threw = false;
+    try {
+      introspect.describeInstrument("{ not json");
+    } catch {
+      threw = true;
+    }
+    check(threw, `wasmIntrospect.describeInstrument("{ not json") throws (isError)`);
   }
 
   // Leave a clean slate for the instrument matrix (no staged doc/resources leaked).
