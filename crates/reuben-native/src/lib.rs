@@ -11,6 +11,8 @@
 //! - [`diagnostics`] — the shared xrun/ring counter surface (ADR-0038 §9) and its periodic
 //!   stderr logging; [`audio`] feeds it output-deadline misses, [`input`] feeds it input-ring
 //!   underruns, overruns, and producer-backstop drops.
+//! - [`structure`] — the loopback-TCP/NDJSON structure channel (ADR-0046 §8): a std thread in
+//!   `reuben play` answering `ping`/`get_document`/`get_diagnostics` for the MCP sidecar.
 //! - [`resources`] — a filesystem + WAV [`ResourceResolver`](reuben_core::resources::ResourceResolver)
 //!   decoding sample data for the sample player (ADR-0016).
 //! - [`rigs`] — ready-made instrument graphs (the default playable rig for now).
@@ -29,6 +31,7 @@ pub mod profile;
 pub mod resources;
 pub mod rigs;
 pub mod scaffold;
+pub mod structure;
 
 pub use reuben_core::Engine;
 

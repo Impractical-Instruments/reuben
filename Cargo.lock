@@ -1245,6 +1245,7 @@ dependencies = [
  "clap",
  "cpal",
  "hound",
+ "libc",
  "reuben-contract",
  "reuben-core",
  "rosc",

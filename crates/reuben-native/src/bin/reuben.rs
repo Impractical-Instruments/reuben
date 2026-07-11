@@ -27,21 +27,28 @@ use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::mpsc;
+use std::sync::Arc;
 use std::thread;
 
 use clap::{Parser, Subcommand};
 
 use reuben_core::boundary;
 use reuben_core::message::Message;
-use reuben_core::{Engine, Registry};
+use reuben_core::resources::ResourceResolver;
+use reuben_core::{Engine, NormalizedDoc, Registry};
 use reuben_native::cli::{describe, describe_patch, validate};
 use reuben_native::profile::DeviceProfile;
 use reuben_native::resources::FsResolver;
 use reuben_native::rigs::DEFAULT_JSON;
-use reuben_native::{audio, osc, scaffold};
+use reuben_native::{audio, osc, scaffold, structure};
 
 const BLOCK_SIZE: usize = 256;
 const OSC_BIND: &str = "0.0.0.0:9000";
+/// The structure channel's default loopback bind (ADR-0046 §8): `127.0.0.1` only — structure
+/// edits are more powerful than OSC control, so unlike OSC's `0.0.0.0:9000` this must never be
+/// network-exposed. The concrete port is epic-level detail; a fixed default suffices for M1
+/// (the MCP sidecar targets the same one), and a taken port is non-fatal (see `play`).
+const STRUCTURE_BIND: &str = "127.0.0.1:9124";
 
 #[derive(Parser)]
 #[command(name = "reuben", about = "Play and author reuben instruments.")]
@@ -470,12 +477,24 @@ fn play(
         }
     };
 
-    // `_diagnostics` is the shared xrun/ring counter surface (ADR-0038 §9) — both the output
+    // The retained canonical document for the structure channel's `get_document` (ADR-0046 §7):
+    // normalize once here, off any audio thread. This is the *same* normalization the engine
+    // build below performs (`Engine::from_document` → `load_instrument` mints the same
+    // `NormalizedDoc`), so what `get_document` reports is exactly what is playing. Minting here
+    // borrows the json/resolver before `audio::start` re-borrows them for `make_engine`.
+    let canonical = NormalizedDoc::from_json(
+        &instrument_json,
+        &Registry::builtin(),
+        Some(&resolver as &dyn ResourceResolver),
+    )
+    .unwrap_or_else(|e| panic!("normalize instrument: {e}"));
+
+    // `diagnostics` is the shared xrun/ring counter surface (ADR-0038 §9) — both the output
     // callback and the input stream (P5/#182) feed it, and `audio::start` is already logging
-    // it periodically to stderr. `_streams` holds the live cpal stream(s): output always,
+    // it periodically to stderr. `streams` holds the live cpal stream(s): output always,
     // plus the input stream when the played instrument binds input channels; dropping it
-    // stops audio, so it lives until the park loop below.
-    let (_streams, _diagnostics) = audio::start(rx, BLOCK_SIZE, osc_out_tx, &profile, |cfg| {
+    // stops audio, so it lives until the shutdown teardown below.
+    let (streams, diagnostics) = audio::start(rx, BLOCK_SIZE, osc_out_tx, &profile, |cfg| {
         println!(
             "audio out @ {} Hz, block {}",
             cfg.sample_rate, cfg.block_size
@@ -492,12 +511,91 @@ fn play(
     })
     .unwrap_or_else(|e| panic!("start audio: {e}"));
 
+    // The structure channel (ADR-0046 §8): a loopback-TCP/NDJSON server answering the MCP
+    // sidecar's ping/get_document/get_diagnostics off a dedicated std thread (no async runtime —
+    // ADR-0044 §3 keeps reuben-native tokio-free). It reads the retained doc and snapshots the
+    // shared diagnostics; it never touches the engine. Non-fatal: audio is the primary function,
+    // so a taken port disables the channel with a warning rather than killing playback (the user
+    // owns the engine, ADR-0044 §2).
+    let structure_state = structure::StructureState::from_doc(&canonical, Arc::clone(&diagnostics));
+    let structure_server = match structure::StructureServer::bind(STRUCTURE_BIND, structure_state) {
+        Ok(server) => {
+            println!("structure channel on {}", server.local_addr());
+            Some(server)
+        }
+        Err(e) => {
+            eprintln!(
+                "warning: structure channel unavailable on {STRUCTURE_BIND} ({e}); MCP structure \
+                 ops (get_document/get_diagnostics) are disabled this run"
+            );
+            None
+        }
+    };
+
+    // Clean shutdown (ADR-0044 §2 Consequences), replacing the old `loop { thread::park() }`: a
+    // SIGINT/SIGTERM handler signals this channel; the main thread blocks until then, then tears
+    // down in order — stop the structure channel (joining its threads), stop audio (dropping the
+    // streams stops the callback), and flush one final diagnostics snapshot to stderr (§9's
+    // exit-time logging, the hook `log_snapshot` was always meant to serve).
+    let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
+    install_shutdown_handler(shutdown_tx.clone());
+
     println!("playing — Ctrl-C to quit.");
-    // Keep the process (and thus the audio stream) alive.
-    loop {
-        thread::park();
+    // Blocks until a signal wakes us. (On non-unix no handler is installed; we hold `shutdown_tx`
+    // past this line so `recv` can't return spuriously on a dropped sender.)
+    let _ = shutdown_rx.recv();
+    println!("shutting down…");
+
+    if let Some(server) = structure_server {
+        server.shutdown();
     }
+    drop(streams);
+    reuben_native::diagnostics::log_snapshot(&diagnostics.snapshot());
+    drop(shutdown_tx);
 }
+
+/// Install the SIGINT/SIGTERM → shutdown bridge (unix). `std` has no signal API, so this uses
+/// `libc` (already in the tree, not async — ADR-0044 §3's tokio fence is untouched). The signal
+/// handler itself only stores into an atomic (all that is async-signal-safe); a small watcher
+/// thread bridges that atomic to `tx`, so the blocked main thread wakes without the handler ever
+/// touching a channel or lock.
+#[cfg(unix)]
+fn install_shutdown_handler(tx: mpsc::Sender<()>) {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::time::Duration;
+
+    static SIGNALED: AtomicBool = AtomicBool::new(false);
+
+    extern "C" fn on_signal(_sig: libc::c_int) {
+        SIGNALED.store(true, Ordering::SeqCst);
+    }
+
+    // SAFETY: `on_signal` is async-signal-safe (a single atomic store, nothing else), and this
+    // one-time install runs at startup before any signal can race a second registration.
+    unsafe {
+        libc::signal(
+            libc::SIGINT,
+            on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t,
+        );
+        libc::signal(
+            libc::SIGTERM,
+            on_signal as extern "C" fn(libc::c_int) as libc::sighandler_t,
+        );
+    }
+    thread::spawn(move || loop {
+        if SIGNALED.load(Ordering::SeqCst) {
+            let _ = tx.send(());
+            break;
+        }
+        thread::sleep(Duration::from_millis(100));
+    });
+}
+
+/// Non-unix fallback: no portable `std` signal facility, so Ctrl-C keeps the OS default
+/// (terminate). Clean shutdown off unix is a follow-up — `play`'s M1 persona is a unix checkout
+/// and a terminal (ADR-0044 §2). `tx` is dropped, but `play` holds the other sender.
+#[cfg(not(unix))]
+fn install_shutdown_handler(_tx: mpsc::Sender<()>) {}
 
 #[cfg(test)]
 mod tests {
