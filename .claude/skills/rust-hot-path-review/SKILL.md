@@ -10,8 +10,8 @@ hot path, toward idiom on the cold path. **Silence everywhere else.** It is *not
 linter: naming, error handling, API shape, and every other mechanical idiom are **deferred to clippy
 (`-D warnings`) and the global `/code-review` skill**. It is the review mirror of the
 [`create-operator`](../create-operator/SKILL.md) authoring skill, and references the canonical RT
-rules at [authoring.md#rt-safe-render](../../docs/agents/authoring.md#rt-safe-render) — read that
-anchor for the *why*; this skill is the *how-to-spot-it*.
+rules at [operator-dev.md#rt-safe-render](../../docs/agents/operator-dev.md#rt-safe-render) — read
+that anchor for the *why*; this skill is the *how-to-spot-it*.
 
 ## Run it
 
@@ -57,8 +57,9 @@ These are **defects, not opinions** — they glitch or crash the audio thread. E
   safe Rust was the bottleneck. The core has **zero `unsafe`** today; keep it that way unless a number
   says otherwise.
 - **Determinism** (one-line scan, not this skill's chapter — see
-  [authoring.md#rt-safe-render](../../docs/agents/authoring.md#rt-safe-render)): `HashMap`/`HashSet`
-  iteration order, `Instant::now`, unseeded `rand`, threads racing on render output.
+  [the guide's invariants](../../docs/agents/authoring.md#invariants-you-must-not-break)):
+  `HashMap`/`HashSet` iteration order, `Instant::now`, unseeded `rand`, threads racing on
+  render output.
 
 **Defend, don't flag, RT-correct un-idiom.** `std::mem::take` buffer swaps, preallocated scratch
 `Vec`s reused via `drain(..)`, `SmallVec<[_; 8]>` inline capacity (all in `render.rs`) are *correct* —
