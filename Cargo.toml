@@ -5,6 +5,7 @@ members = [
     "crates/reuben-macros",
     "crates/reuben-core",
     "crates/reuben-native",
+    "crates/reuben-mcp",
 ]
 
 [workspace.package]
@@ -46,6 +47,13 @@ clap = { version = "4", features = ["derive"] }
 # Lock-free SPSC ring between the input callback and the render thread (ADR-0038 §8 — the
 # primitive ADR-0002 anticipated). Wait-free push/pop, no locks, no allocation after creation.
 rtrb = "0.3"
+# MCP sidecar ONLY (reuben-mcp) — the ~34-package rmcp/tokio tree is fenced out of every other
+# workspace member (ADR-0044 §3/§5). `default-features = false` here keeps the network stack off;
+# reuben-mcp enables exactly `server`, `macros`, `transport-io` (stdio) and no HTTP/reqwest
+# transport. reuben-mcp is the first workspace member allowed an async runtime.
+rmcp = { version = "2", default-features = false }
+# current_thread runtime, sync/rt/time/io-std only — no `net`, so no mio/OS reactor (ADR-0044 §5).
+tokio = { version = "1", default-features = false }
 
 # Benchmark profile: pin a single codegen unit so operator codegen is deterministic (ADR-0019).
 # With the default 16 CGUs, adding cold source to reuben-core repartitions LLVM's codegen units
