@@ -1,5 +1,12 @@
 # ADR-0047: Normalization is a type — `NormalizedDoc` mints once at the gate
 
+> Renumbered from 0044 (2026-07-11) — that number stayed with
+> [0044-mcp-stdio-sidecar.md](0044-mcp-stdio-sidecar.md), which reached main first. External
+> references dated 2026-07-10/11 (the grilling decisions on issue
+> [#215](https://github.com/Impractical-Instruments/reuben/issues/215), PR
+> [#283](https://github.com/Impractical-Instruments/reuben/pull/283)) may still say ADR-0044
+> for this document.
+
 ## Status
 
 Accepted (2026-07-10). Resolved in a grilling session on
