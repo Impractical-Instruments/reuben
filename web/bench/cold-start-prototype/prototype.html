@@ -1,0 +1,349 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>reuben — web-chat cold-start UX prototype (THROWAWAY, #300)</title>
+<style>
+  /* THROWAWAY prototype for wayfinder Web-chat UX/B (#300, map #298).
+     Answers: what does a first-timer non-musician see on the cold-start screen —
+     a gallery of example instruments, a prompt box with example prompts, or both;
+     and how does picking a starter seed the first chat turn.
+
+     Open this file directly in a browser. Nothing here ships. No engine, no audio —
+     the "playing" instrument and the agent reply are faked. Fonts fall back to the
+     storybook stack's system substitutes (real app loads Luckiest Guy / Besley /
+     Courier Prime woff2). Vocabulary is locked to Web-chat UX/A (#299):
+     "instrument", "example instruments", "controls", "update" — never "Toy". */
+
+  :root {
+    --ii-yellow: #fff200;
+    --turquoise: #70e0e5;
+    --sky: #6a9db1;
+    --butter: #fff0a8;
+    --string: #ec6060;
+    --fern: #849b5d;
+    --persimmon: #cb4211;
+    --ink: #1a1a1a;
+    --paper: #ffffff;
+    --paper-warm: #fbf7ee;
+
+    --font-display: "Luckiest Guy", "Arial Black", sans-serif;
+    --font-body: "Besley", "Georgia", serif;
+    --font-mono: "Courier Prime", "Courier New", Courier, monospace;
+    --font-hand: "Schoolbell", "Comic Sans MS", cursive;
+
+    --radius-wobble-sm: 125px 10px 110px 10px / 10px 110px 10px 125px;
+    --border-ink: 3px solid var(--ink);
+    --border-ink-thin: 2px solid var(--ink);
+    --shadow-paper: 4px 4px 0 var(--ink);
+    --shadow-paper-sm: 2px 2px 0 var(--ink);
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    font-family: var(--font-body);
+    font-size: 1.0625rem;
+    line-height: 1.6;
+    background: var(--paper);
+    color: var(--ink);
+    -webkit-font-smoothing: antialiased;
+    padding-bottom: 4.5rem; /* room for the floating switcher */
+  }
+
+  /* --- throwaway banner --- */
+  .throwaway {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 50;
+    background: var(--string); color: var(--ink);
+    font-family: var(--font-mono); font-weight: 700; font-size: 0.72rem;
+    letter-spacing: 0.06em; text-transform: uppercase;
+    padding: 0.35rem 1rem; text-align: center;
+    border-bottom: var(--border-ink-thin);
+  }
+
+  .stage { max-width: 62rem; margin: 0 auto; padding: 3rem 1.25rem 1.5rem; }
+
+  /* --- shared header --- */
+  .head { display: flex; align-items: baseline; gap: 0.9rem; flex-wrap: wrap; margin-bottom: 0.4rem; }
+  .wordmark {
+    font-family: var(--font-display); font-weight: 400; letter-spacing: 0.01em;
+    margin: 0; font-size: clamp(1.9rem, 6vw, 2.5rem); line-height: 0.9;
+    text-shadow: 4px 4px 0 rgba(0,0,0,0.14);
+  }
+  .kicker {
+    font-family: var(--font-mono); font-weight: 700; font-size: 0.75rem;
+    letter-spacing: 0.16em; text-transform: uppercase; color: var(--persimmon); margin: 0;
+  }
+  .lede { font-size: 1.12rem; max-width: 42ch; margin: 0.2rem 0 1.6rem; }
+  .lede .hand { font-family: var(--font-hand); color: var(--persimmon); font-size: 1.25rem; }
+
+  .section-label {
+    font-family: var(--font-mono); font-weight: 700; font-size: 0.72rem;
+    letter-spacing: 0.16em; text-transform: uppercase; color: var(--persimmon);
+    display: flex; align-items: center; gap: 0.75rem; margin: 0 0 1rem;
+  }
+  .section-label::after { content: ""; flex: 1; height: 2px; background: var(--ink); opacity: 0.18; }
+
+  /* --- example-instrument gallery --- */
+  .gallery {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(14rem, 1fr)); gap: 1.3rem;
+  }
+  .card {
+    font: inherit; text-align: left; color: var(--ink); background: var(--paper);
+    border: var(--border-ink); border-radius: var(--radius-wobble-sm); box-shadow: var(--shadow-paper);
+    padding: 1.1rem 1.1rem 1rem; cursor: pointer; display: flex; flex-direction: column; gap: 0.5rem;
+    min-height: 9rem; transition: transform 0.08s ease, box-shadow 0.08s ease;
+  }
+  .card:hover { transform: translate(-2px,-2px); box-shadow: 8px 8px 0 var(--turquoise); }
+  .card:active { transform: translate(2px,2px); box-shadow: 2px 2px 0 var(--turquoise); }
+  .card-title {
+    font-family: var(--font-display); font-weight: 400; text-transform: uppercase;
+    letter-spacing: 0.01em; font-size: 1.25rem; line-height: 1.02;
+  }
+  .card-blurb { font-size: 0.92rem; line-height: 1.4; flex: 1; }
+  .badge {
+    align-self: flex-start; font-family: var(--font-mono); font-weight: 700; font-size: 0.62rem;
+    letter-spacing: 0.08em; text-transform: uppercase; color: var(--ink);
+    padding: 0.22rem 0.55rem 0.16rem; border: var(--border-ink-thin); border-radius: 999px;
+    box-shadow: var(--shadow-paper-sm);
+  }
+  .badge.self-playing { background: var(--fern); }
+  .badge.tap-to-play { background: var(--butter); }
+  .badge.live-input { background: var(--turquoise); }
+  .card.mini { min-height: 0; padding: 0.75rem 0.9rem; flex-direction: row; align-items: center; gap: 0.6rem; }
+  .card.mini .card-title { font-size: 0.98rem; }
+  .card.mini .card-blurb, .card.mini .badge { display: none; }
+
+  /* --- prompt box --- */
+  .prompt-wrap { max-width: 40rem; }
+  .prompt-box {
+    display: flex; align-items: center; gap: 0.6rem; background: var(--paper);
+    border: var(--border-ink); border-radius: var(--radius-wobble-sm); box-shadow: var(--shadow-paper);
+    padding: 0.6rem 0.6rem 0.6rem 1.1rem;
+  }
+  .prompt-box.big { padding: 1rem 1rem 1rem 1.4rem; }
+  .prompt-box input {
+    flex: 1; font: inherit; font-size: 1.05rem; border: none; background: none; color: var(--ink);
+    outline: none;
+  }
+  .prompt-box.big input { font-size: 1.2rem; }
+  .prompt-box input::placeholder { color: rgba(26,26,26,0.5); }
+  .go {
+    font-family: var(--font-display); text-transform: uppercase; letter-spacing: 0.03em;
+    font-size: 1rem; color: var(--ink); background: var(--ii-yellow); border: var(--border-ink);
+    border-radius: var(--radius-wobble-sm); box-shadow: 4px 4px 0 var(--turquoise);
+    padding: 0.5rem 1.2rem 0.35rem; cursor: pointer; white-space: nowrap;
+    transition: transform 0.08s ease, box-shadow 0.08s ease;
+  }
+  .go:hover { transform: translate(-2px,-2px); box-shadow: 6px 6px 0 var(--turquoise); }
+  .go:active { transform: translate(2px,2px); box-shadow: 2px 2px 0 var(--turquoise); }
+
+  .examples { display: flex; flex-wrap: wrap; gap: 0.6rem; margin-top: 1rem; }
+  .chip {
+    font: inherit; font-size: 0.92rem; cursor: pointer; color: var(--ink); background: var(--paper-warm);
+    border: var(--border-ink-thin); border-radius: 999px; box-shadow: var(--shadow-paper-sm);
+    padding: 0.35rem 0.9rem; transition: transform 0.08s ease, box-shadow 0.08s ease;
+  }
+  .chip::before { content: "\201C"; opacity: 0.5; }
+  .chip::after { content: "\201D"; opacity: 0.5; }
+  .chip:hover { transform: translate(-1px,-1px); box-shadow: 3px 3px 0 var(--turquoise); }
+
+  /* --- two-door layout --- */
+  .doors { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+  .door {
+    border: var(--border-ink); border-radius: var(--radius-wobble-sm); box-shadow: var(--shadow-paper);
+    padding: 1.3rem; background: var(--paper);
+  }
+  .door.tinted { background: var(--paper-warm); }
+  .door h3 {
+    font-family: var(--font-display); text-transform: uppercase; letter-spacing: 0.01em;
+    font-size: 1.35rem; margin: 0 0 0.2rem;
+  }
+  .door p.sub { margin: 0 0 1rem; font-size: 0.95rem; color: rgba(26,26,26,0.75); }
+  .door .gallery { grid-template-columns: 1fr; gap: 0.7rem; }
+  @media (max-width: 46rem) { .doors { grid-template-columns: 1fr; } }
+
+  .footnote {
+    font-family: var(--font-hand); color: var(--persimmon); font-size: 1.1rem;
+    margin: 1.6rem 0 0; text-align: center;
+  }
+
+  /* --- seeded-chat state (the "picked a starter" moment) --- */
+  .seed-stage { max-width: 46rem; }
+  .now-playing {
+    display: flex; align-items: center; gap: 0.9rem; background: var(--sky); color: var(--paper);
+    border: var(--border-ink); border-radius: var(--radius-wobble-sm); box-shadow: var(--shadow-paper);
+    padding: 1rem 1.2rem; margin-bottom: 1.2rem;
+  }
+  .now-playing .dot {
+    width: 0.9rem; height: 0.9rem; border-radius: 50%; background: var(--ii-yellow);
+    border: 2px solid var(--ink); flex: none; animation: pulse 1.1s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100% { transform: scale(1); } 50% { transform: scale(1.35); } }
+  .now-playing .np-title { font-family: var(--font-display); font-size: 1.2rem; text-shadow: 3px 3px 0 rgba(0,0,0,0.35); }
+  .now-playing .np-sub { font-size: 0.9rem; opacity: 0.9; }
+  .chat { display: flex; flex-direction: column; gap: 0.8rem; }
+  .bubble {
+    border: var(--border-ink-thin); border-radius: var(--radius-wobble-sm); padding: 0.8rem 1rem;
+    max-width: 85%; box-shadow: var(--shadow-paper-sm);
+  }
+  .bubble.agent { background: var(--paper); align-self: flex-start; }
+  .bubble.user { background: var(--butter); align-self: flex-end; }
+  .bubble .who { font-family: var(--font-mono); font-weight: 700; font-size: 0.62rem; letter-spacing: 0.1em; text-transform: uppercase; color: var(--persimmon); display: block; margin-bottom: 0.25rem; }
+  .quick { display: flex; flex-wrap: wrap; gap: 0.5rem; margin-top: 0.3rem; }
+  .seed-note {
+    font-family: var(--font-mono); font-size: 0.72rem; letter-spacing: 0.04em; color: rgba(26,26,26,0.55);
+    border-top: 2px dashed rgba(26,26,26,0.2); margin-top: 1.6rem; padding-top: 0.8rem;
+  }
+  .back {
+    font-family: var(--font-mono); font-size: 0.75rem; letter-spacing: 0.06em; text-transform: uppercase;
+    color: var(--persimmon); background: none; border: none; cursor: pointer; padding: 0; margin-bottom: 1rem;
+  }
+
+  /* --- floating variant switcher --- */
+  .switcher {
+    position: fixed; bottom: 0; left: 0; right: 0; z-index: 60;
+    display: flex; gap: 0.5rem; justify-content: center; align-items: center; flex-wrap: wrap;
+    background: var(--ink); color: var(--paper); padding: 0.6rem 1rem;
+    font-family: var(--font-mono); font-size: 0.8rem;
+  }
+  .switcher b { color: var(--turquoise); letter-spacing: 0.08em; margin-right: 0.3rem; }
+  .switcher a {
+    color: var(--paper); text-decoration: none; padding: 0.3rem 0.8rem; border: 1px solid rgba(255,255,255,0.35);
+    border-radius: 4px;
+  }
+  .switcher a.on { background: var(--ii-yellow); color: var(--ink); border-color: var(--ii-yellow); font-weight: 700; }
+  .switcher .hint { opacity: 0.6; width: 100%; text-align: center; font-size: 0.68rem; margin-top: 0.2rem; }
+</style>
+</head>
+<body>
+<div class="throwaway">Throwaway prototype · Web-chat UX/B cold start · #300 · nothing here ships</div>
+<div id="stage"></div>
+
+<nav class="switcher">
+  <b>COLD START</b>
+  <a href="?v=gallery" data-v="gallery">A · Gallery-first</a>
+  <a href="?v=prompt" data-v="prompt">B · Prompt-first</a>
+  <a href="?v=both" data-v="both">C · Two doors</a>
+  <span class="hint">Click any example instrument or example prompt to see the seeded first chat turn. Back link returns to cold start.</span>
+</nav>
+
+<script>
+// Raw material from web/toys.json (blurbs lightly re-voiced toward A's sensory-first register).
+const INSTRUMENTS = [
+  { id: "groovebox",     title: "Groovebox",      blurb: "A drum beat that plays itself — kick, snare, hats. Toggle the steps, ride the speed.", kind: "self-playing" },
+  { id: "chord-player",  title: "Chord Player",   blurb: "Tap and hold the buttons for big warm chords. Change the mood and they follow.", kind: "tap-to-play" },
+  { id: "strum-harp",    title: "Strum Harp",     blurb: "Drag across to strum — every string rings out in tune.", kind: "tap-to-play" },
+  { id: "euclidean-drums", title: "Euclidean Drums", blurb: "A self-playing beat with knobs to make it busier or sparser.", kind: "self-playing" },
+  { id: "mic-space",     title: "Mic Space",      blurb: "Your voice in a huge echoing room. Headphones on.", kind: "live-input" },
+];
+
+// Example prompts — Suno-style fill-in seeds, sensory-first, no music jargon (per A).
+const PROMPTS = [
+  "a dreamy pad that sounds like floating",
+  "a punchy beat I can tap out with my thumbs",
+  "a warm bass that follows my finger",
+  "twinkly bells that get brighter as they go up",
+  "a spooky drone for a dark room",
+];
+
+const KIND_LABEL = { "self-playing": "plays itself", "tap-to-play": "tap to play", "live-input": "uses your mic" };
+
+const stage = document.getElementById("stage");
+const params = new URLSearchParams(location.search);
+const variant = params.get("v") || "gallery";
+const seed = params.get("seed"); // "inst:<id>" or "prompt:<n>"
+
+// mark active switcher tab
+document.querySelectorAll(".switcher a").forEach(a => { if (a.dataset.v === variant) a.classList.add("on"); });
+
+function card(inst, mini) {
+  return `<button class="card${mini ? " mini" : ""}" onclick="pick('inst:${inst.id}')">
+    <span class="card-title">${inst.title}</span>
+    <span class="card-blurb">${inst.blurb}</span>
+    <span class="badge ${inst.kind}">${KIND_LABEL[inst.kind]}</span>
+  </button>`;
+}
+function galleryHTML(mini) { return `<div class="gallery">${INSTRUMENTS.map(i => card(i, mini)).join("")}</div>`; }
+function chipsHTML() { return `<div class="examples">${PROMPTS.map((p,n) => `<button class="chip" onclick="pick('prompt:${n}')">${p}</button>`).join("")}</div>`; }
+function promptBox(big) {
+  return `<div class="prompt-wrap"><div class="prompt-box${big ? " big" : ""}">
+    <input placeholder="Describe an instrument you want to play…" onkeydown="if(event.key==='Enter')pick('prompt:free')" />
+    <button class="go" onclick="pick('prompt:free')">Make it</button>
+  </div>${chipsHTML()}</div>`;
+}
+
+function header(lede) {
+  return `<div class="head"><h1 class="wordmark">reuben</h1><p class="kicker">make an instrument by describing it</p></div>
+    <p class="lede">${lede}</p>`;
+}
+
+const VARIANTS = {
+  // A — gallery of example instruments front and center; a describe-your-own bar underneath.
+  gallery: () => header(`Start with something that already makes sound, then <span class="hand">change it by talking to it.</span>`)
+    + `<p class="section-label">Example instruments — tap one to start</p>${galleryHTML(false)}`
+    + `<p class="section-label" style="margin-top:2rem">…or describe your own</p>${promptBox(false)}`,
+
+  // B — prompt box is the hero, seeded with example prompts; instruments demoted to a strip.
+  prompt: () => header(`Tell reuben what you want to hear and it builds you an instrument to play. <span class="hand">No music gear, no words you don't know.</span>`)
+    + `${promptBox(true)}`
+    + `<p class="section-label" style="margin-top:2.4rem">Not sure? Start from an example instead</p>${galleryHTML(true)}`,
+
+  // C — two equal doors: pick a made one vs. describe your own.
+  both: () => header(`Two ways in — <span class="hand">pick one and you're playing in seconds.</span>`)
+    + `<div class="doors">
+        <div class="door tinted"><h3>Start from an example</h3><p class="sub">A ready-made instrument you can play right away, then reshape.</p>${galleryHTML(false)}</div>
+        <div class="door"><h3>Describe your own</h3><p class="sub">Say what you want to hear — reuben builds it.</p>${promptBox(false)}</div>
+      </div>`
+    + `<p class="footnote">↑ same destination — a playable instrument you can then update by talking to it.</p>`,
+};
+
+// The seeded first chat turn — the third part of the question: how picking a starter
+// seeds turn one. Layout here is deliberately placeholder; the chat/controls spine is
+// Web-chat UX/C's (#301) call, NOT this ticket's. This only shows what turn ONE says.
+function seedView() {
+  const [kind, ref] = seed.split(":");
+  let npTitle, npSub, agentMsg, userMsg = null, quick;
+  if (kind === "inst") {
+    const inst = INSTRUMENTS.find(i => i.id === ref) || INSTRUMENTS[0];
+    npTitle = inst.title;
+    npSub = "playing now · " + KIND_LABEL[inst.kind];
+    agentMsg = `Here's <b>${inst.title}</b> — it's playing now. Want to change how it sounds? Just tell me.`;
+    quick = ["make it faster", "make it darker", "add a bassline", "what can I change?"];
+  } else {
+    const text = ref === "free" ? "a warm, dreamy instrument" : PROMPTS[+ref];
+    npTitle = "your instrument";
+    npSub = "building…";
+    userMsg = text;
+    agentMsg = `On it — building you <b>“${text}.”</b> Give me a second… <br><span style="opacity:0.7">(then: it starts playing, and I'll tell you what you can change.)</span>`;
+    quick = ["make it warmer", "make it faster", "add an echo"];
+  }
+  return `<div class="stage seed-stage">
+    <button class="back" onclick="location.search='?v=${variant}'">← back to cold start</button>
+    <div class="now-playing"><span class="dot"></span><div><div class="np-title">${npTitle}</div><div class="np-sub">${npSub}</div></div></div>
+    <div class="chat">
+      ${userMsg ? `<div class="bubble user"><span class="who">you</span>${userMsg}</div>` : ""}
+      <div class="bubble agent"><span class="who">reuben</span>${agentMsg}
+        <div class="quick">${quick.map(q => `<button class="chip" style="background:#fff">${q}</button>`).join("")}</div>
+      </div>
+    </div>
+    <p class="seed-note">SEED PATH — variant "${variant}", starter "${seed}". This shows only the FIRST chat turn the pick produces.
+      Where the chat sits relative to the instrument's controls is Web-chat UX/C (#301, the keystone), not this ticket.</p>
+  </div>`;
+}
+
+if (seed) {
+  stage.innerHTML = seedView();
+} else {
+  stage.className = "stage";
+  stage.innerHTML = VARIANTS[variant] ? VARIANTS[variant]() : VARIANTS.gallery();
+}
+
+function pick(s) {
+  const p = new URLSearchParams(location.search);
+  p.set("v", variant); p.set("seed", s);
+  location.search = p.toString();
+}
+</script>
+</body>
+</html>
