@@ -57,6 +57,16 @@ pub struct Coordinator {
     manifest: Manifest,
     /// The Coordinator-side install/retire mailbox endpoint (ADR-0046 §2).
     mailbox: CoordinatorMailbox<InstallBundle>,
+    /// The currently-installed engine's logical output channel count ([`Engine::channels`]). The
+    /// engine itself has crossed into the mailbox, but the native shell still needs this logical
+    /// geometry to rebuild the device output map off-thread against the retained device channel
+    /// count (ADR-0046 §6). A *logical* count — not the device's — so recording it here keeps the
+    /// Coordinator device-free (ADR-0046 §7).
+    installed_channels: usize,
+    /// The currently-installed engine's logical input channel count ([`Engine::input_channels`]).
+    /// The native shell reads it to decide the input dark-degrade warning (ADR-0038 §7): an engine
+    /// that binds input channels no open stream provides degrades to silence with a loud warning.
+    installed_input_channels: usize,
 }
 
 impl Coordinator {
@@ -74,6 +84,10 @@ impl Coordinator {
         let doc = NormalizedDoc::from_json(doc_json, &registry, Some(&*resolver))
             .map_err(FromDocumentError::Load)?;
         let (engine, manifest, warnings) = build_engine(&doc, &registry, &*resolver, config)?;
+        // Record the initial engine's logical geometry before it moves into the RenderSide (ADR-0046
+        // §6/§7): the native shell reads it to build the first device output map.
+        let installed_channels = engine.channels();
+        let installed_input_channels = engine.input_channels();
         let (mailbox, render_mailbox) = swap_pair::<InstallBundle>();
         let coordinator = Coordinator {
             registry,
@@ -82,6 +96,8 @@ impl Coordinator {
             doc,
             manifest,
             mailbox,
+            installed_channels,
+            installed_input_channels,
         };
         let render_side = RenderSide {
             engine,
@@ -100,6 +116,21 @@ impl Coordinator {
     /// from here.
     pub fn document(&self) -> &NormalizedDoc {
         &self.doc
+    }
+
+    /// The currently-installed engine's logical output channel count ([`Engine::channels`]). The
+    /// native shell reads it to rebuild the device output map off-thread against the retained device
+    /// channel count after a swap (ADR-0046 §6) — a *logical* count, so the Coordinator stays
+    /// device-free (§7).
+    pub fn installed_channels(&self) -> usize {
+        self.installed_channels
+    }
+
+    /// The currently-installed engine's logical input channel count ([`Engine::input_channels`]).
+    /// The native shell reads it to raise the input dark-degrade warning (ADR-0038 §7/§9) when a
+    /// swapped-in engine binds input channels no open stream provides.
+    pub fn installed_input_channels(&self) -> usize {
+        self.installed_input_channels
     }
 
     /// Validate + build a whole new Engine off-thread, precompute the migration table, fill the
@@ -153,6 +184,12 @@ impl Coordinator {
                 }
             };
 
+        // The new engine's logical geometry, captured before it is boxed into the mailbox — the
+        // native shell reads it back (via the installed-geometry accessors) to rebuild the device
+        // output map off-thread (ADR-0046 §6) and to compute the input dark-degrade warning (§7).
+        let new_channels = engine.channels();
+        let new_input_channels = engine.input_channels();
+
         // Precompute the migration table + diff (the edit always wins, ADR-0046 §5).
         let (migration, diff) = self.manifest.diff(&new_manifest);
 
@@ -176,6 +213,8 @@ impl Coordinator {
         let content_hash = content_hash(&new_doc);
         self.doc = new_doc;
         self.manifest = new_manifest;
+        self.installed_channels = new_channels;
+        self.installed_input_channels = new_input_channels;
 
         SwapReport {
             report: Report {
@@ -594,6 +633,60 @@ mod tests {
             coord.installed_hash(),
             installed,
             "the swap advanced the doc"
+        );
+    }
+
+    /// A minimal instrument that binds logical input channel 0 (ADR-0038 §3): `input_channels`
+    /// becomes 1. No resources, so a bare [`MemoryResolver`] loads it. Used to prove the
+    /// installed-geometry accessors advance across a swap.
+    const MIC_PASSTHRU: &str = r#"{ "format_version": 3, "instrument": "mic-passthru",
+        "interface": {
+            "inputs": { "mic": { "type": "f32_buffer", "channel": 0 } },
+            "outputs": { "out": { "from": "/mic" } } },
+        "nodes": [] }"#;
+
+    #[test]
+    fn installed_channels_reflect_the_installed_engine_geometry() {
+        // The native shell reads these to build the device output map off-thread (ADR-0046 §6) and
+        // to compute the input dark-degrade warning (ADR-0038 §7): both need the *currently
+        // installed* engine's logical channel geometry, which the Coordinator holds even though the
+        // engine itself has crossed into the mailbox.
+        let (mut coord, side, _w) = Coordinator::install_initial(
+            &envelope_doc("/env"),
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            cfg(),
+        )
+        .expect("initial install");
+        // The accessors match the engine the same install produced (independent source of truth: the
+        // engine's own accessors), and the base rig binds no input.
+        assert_eq!(coord.installed_channels(), side.engine.channels());
+        assert_eq!(
+            coord.installed_input_channels(),
+            side.engine.input_channels()
+        );
+        assert_eq!(
+            coord.installed_input_channels(),
+            0,
+            "the base rig binds no input"
+        );
+
+        // A successful swap to an input-binding document advances the reported geometry.
+        let report = coord.swap_document(MIC_PASSTHRU, None);
+        assert!(report.report.ok, "swap should succeed: {:?}", report.report);
+        assert_eq!(
+            coord.installed_input_channels(),
+            1,
+            "the swapped-in rig binds logical input channel 0"
+        );
+
+        // A rejected swap leaves the geometry unchanged (it names what keeps playing).
+        let rejected = coord.swap_document("{ not json", None);
+        assert!(!rejected.report.ok);
+        assert_eq!(
+            coord.installed_input_channels(),
+            1,
+            "a rejected swap does not advance the installed geometry"
         );
     }
 

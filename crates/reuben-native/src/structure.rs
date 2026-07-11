@@ -6,189 +6,166 @@
 //! [`Response`] per [`Request`] in order. A thread in `reuben play` owns it; the client lives
 //! in `reuben-mcp`. Zero new dependencies beyond std, cross-platform, netcat-debuggable.
 //!
-//! M1 wires all four verbs:
+//! M2 (#323) flips the `swap` verb from M1's stop-the-world restart onto the
+//! [`Coordinator`](reuben_core::coordinator::Coordinator)/mailbox path (ADR-0046 §10: *same
+//! verb, machinery-only replacement*). The four verbs:
 //! - [`Request::Ping`] → [`Response::Pong`] — liveness of the channel itself (ADR-0044 §2).
-//! - [`Request::GetDocument`] → the retained canonical document + its
+//! - [`Request::GetDocument`] → the Coordinator's canonical document + its
 //!   [`content_hash`](reuben_core::content_hash) (ADR-0046 §7/§9). It changes only when a
 //!   [`Request::Swap`] installs a new document.
 //! - [`Request::GetDiagnostics`] → a [`DiagnosticsReport`] built from a live [`Snapshot`] of
 //!   the [`Diagnostics`] `audio::start` owns (ADR-0038 §9 / ADR-0048 §6). **RT-safety:** the
-//!   snapshot is [`Diagnostics::snapshot`]'s four `Relaxed` atomic loads into an owned copy —
-//!   the query thread never forces the audio callback to synchronize.
-//! - [`Request::Swap`] → a **restart-swap** (ADR-0046 §10): validate the new document through
-//!   the single loader authority (ADR-0045 §3), and on success stop-the-world restart the
-//!   audio streams and retain the new document. The validate → report → doc/hash-update →
-//!   `expect` arbitration all live here on the server thread and are device-independent; the
-//!   actual stream teardown/reopen is delegated to an injected [`SwapInstaller`] (`play`
-//!   supplies the real one, a test supplies a no-op), so the swap **logic** is exercised
-//!   headlessly (ADR-0053 §4).
+//!   snapshot is [`Diagnostics::snapshot`]'s `Relaxed` atomic loads into an owned copy — the
+//!   query thread never forces the audio callback to synchronize.
+//! - [`Request::Swap`] → a **mailbox swap** (ADR-0046 §§1–7): [`Coordinator::swap_document`]
+//!   validates + builds a whole new Engine off-thread, fills the install mailbox, and returns a
+//!   real [`SwapReport`] with survivor/reset stats. The RT callback drains the mailbox and
+//!   box-transplants the survivors gaplessly (ADR-0050's ramp) — **no stream teardown**; the
+//!   streams are fixed at `play` start (ADR-0046 §6). This server thread then reclaims the
+//!   retired Engine off-thread (ADR-0009), and publishes the freshly-validated device output map
+//!   for the new engine through the injected [`RenderConfigPublisher`] seam. A swapped-in engine
+//!   binding input channels no open stream provides **dark-degrades to silence** with a loud
+//!   swap-report warning (ADR-0038 §7/§9), never an error or a crash.
+//!
+//! The Coordinator is single-writer (ADR-0046 §7): the structure server holds it behind one
+//! [`Mutex`] so concurrent connections serialize, and the whole `expect`-compare → swap →
+//! publish → reclaim runs as one critical section (a correct compare-and-swap, ADR-0046 §9).
 //!
 //! reuben-native stays **tokio-free** (ADR-0044 §3 fence): the server is a dedicated std
 //! thread doing blocking line I/O, never an async runtime.
 
-use std::collections::BTreeSet;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
-use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
-use serde_json::Value;
-
-use reuben_core::coordinator::{DiagnosticsReport, DocSource, Request, Response};
-use reuben_core::introspect::validate;
-use reuben_core::resources::ResourceResolver;
-use reuben_core::{content_hash, Diag, DiffSummary, NormalizedDoc, Registry, SwapReport};
+use reuben_core::coordinator::{Coordinator, DiagnosticsReport, DocSource, Request, Response};
+use reuben_core::{Diag, SwapReport};
 
 use crate::diagnostics::{Diagnostics, Snapshot};
-use crate::resources::FsResolver;
 
 /// How long the accept loop sleeps between polls of its shutdown flag while idle. The listener
 /// is non-blocking so the loop can observe [`StructureServer::shutdown`] without a client ever
 /// connecting; this cadence is the shutdown latency, not a hot path (never the audio thread).
 const ACCEPT_POLL: Duration = Duration::from_millis(50);
 
-/// The device-side effect of a validated swap (ADR-0046 §10 stop-the-world restart): stop the
-/// live cpal streams and reopen against the new document.
+/// How long a swap waits for the RT callback to drain the install mailbox and post the retired
+/// Engine back before giving up the off-thread reclaim (ADR-0046 §2 "engine isn't consuming
+/// swaps; is audio running?"). With a live callback the retiree comes home in one master-gain
+/// ramp (~20ms, ADR-0050); this bound only bites when audio has genuinely stopped — the swap has
+/// already committed, so a timeout just defers the free to the next swap's opportunistic reclaim.
+const SWAP_RECLAIM_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// Publish the render-side config for a freshly-installed engine and report any dark-degrade
+/// warnings (ADR-0046 §6, ADR-0038 §7/§9) — the **native device seam** of the M2 swap.
 ///
-/// This is the **device seam**. The handler ([`handle_swap`]) does everything device-free —
-/// arbitration, validation, report shaping, doc/hash install — and calls `restart` only once
-/// the document has passed the loader authority (retain-prior: a validation failure never
-/// reaches here, so the old engine keeps playing). `play` injects the real restart (drop the
-/// old [`Streams`](crate::audio::Streams), `audio::start` the new); a test injects a no-op, so
-/// the swap **logic** runs with no audio device (ADR-0053 §4).
+/// After [`Coordinator::swap_document`] commits, this rebuilds the device **output map**
+/// off-thread against the *retained* device channel count (streams are fixed at `play` start,
+/// ADR-0046 §6) and ships it across the render mailbox to the RT callback, so the callback
+/// installs Engine + map together. It also decides the **input dark-degrade**: a swapped-in
+/// engine that binds input channels no open stream provides degrades to silence, and this returns
+/// the loud swap-report warning (§9 know-and-say) — not an error, not a crash.
 ///
-/// `Send + Sync` because a connection-handler thread calls it. A returned `Err(message)` is a
-/// **device/stream fault** (the document already validated) surfaced as a channel-level
-/// [`Response::Error`] (ADR-0048 §3).
-pub trait SwapInstaller: Send + Sync {
-    /// Restart audio onto the validated `json` (resolved through `resolver`). Called on a
-    /// connection-handler thread; the real implementation forwards to `play`'s owning thread,
-    /// which is the single owner of every cpal `Stream` (see the module note on race-freedom).
-    fn restart(&self, json: &str, resolver: FsResolver) -> Result<(), String>;
+/// `play` wires the production implementation (the native map mailbox, in `audio.rs`); a headless
+/// test uses [`HeadlessRenderConfig`], which builds no map (there is no device) but still computes
+/// the dark-degrade warning from the retained geometry, so the swap **logic** — including the
+/// warning — is exercised with no cpal device (ADR-0053 §4).
+///
+/// `Send + Sync` because a connection-handler thread calls it (under the Coordinator lock).
+pub trait RenderConfigPublisher: Send + Sync {
+    /// Publish the render config for the just-installed engine with `logical` output channels and
+    /// `input_channels` input channels, and return any dark-degrade warnings to fold into the
+    /// [`SwapReport`].
+    fn publish(&self, logical: usize, input_channels: usize) -> Vec<Diag>;
 }
 
-/// The default installer for a state built without [`with_installer`](StructureState::with_installer):
-/// it performs no device restart and reports success, so the swap *logic* (validate → report,
-/// doc/hash update, `expect` arbitration) runs headlessly — the device-independent seam the
-/// integration and unit tests drive (ADR-0053 §4). Production always overrides it.
-struct NoopInstaller;
+/// The default [`RenderConfigPublisher`] for a headless [`StructureState`] (ADR-0053 §4): no
+/// device, so no output map is built or shipped, but the **input dark-degrade** warning is still
+/// computed from the retained input-stream geometry — the device-independent half the integration
+/// and unit tests drive. `opened_input_channels` is how many logical input channels the input
+/// stream that opened at `play` start provides (`0` = output-only, no input stream). Production
+/// overrides this with the real native map publisher.
+pub struct HeadlessRenderConfig {
+    /// Logical input channels the play-start input stream provides; `0` for an output-only stream.
+    pub opened_input_channels: usize,
+}
 
-impl SwapInstaller for NoopInstaller {
-    fn restart(&self, _json: &str, _resolver: FsResolver) -> Result<(), String> {
-        Ok(())
+impl RenderConfigPublisher for HeadlessRenderConfig {
+    fn publish(&self, _logical: usize, input_channels: usize) -> Vec<Diag> {
+        dark_degrade_warning(input_channels, self.opened_input_channels)
     }
 }
 
-/// A swappable pointer to the live [`Diagnostics`] surface. A restart-swap opens a fresh
-/// [`Streams`](crate::audio::Streams) with a fresh `Diagnostics` (that is `audio::start`'s
-/// contract); [`replace`](Self::replace) points this handle at the new counters so
-/// `get_diagnostics` tracks the current session rather than the retired one. Cold path only —
-/// the structure thread reads it, never the audio callback.
-#[derive(Clone)]
-pub struct DiagnosticsHandle(Arc<Mutex<Arc<Diagnostics>>>);
-
-impl DiagnosticsHandle {
-    /// Wrap the initial session's counters.
-    pub fn new(diagnostics: Arc<Diagnostics>) -> Self {
-        Self(Arc::new(Mutex::new(diagnostics)))
+/// The input dark-degrade warning (ADR-0038 §7/§9), shared by the headless and production
+/// publishers so the two can't drift. A swapped-in engine wanting `input_channels` logical input
+/// channels while the open input stream provides `opened_input_channels`: any shortfall (the
+/// output-only-stream case is `opened == 0`) means some bound input pipes have no live stream and
+/// **dark-degrade to silence** — a loud warning, never an error (the engine stays silent-but-alive;
+/// a device-topology change needs a `play` restart, ADR-0046 §6). Matched geometry is silent.
+pub(crate) fn dark_degrade_warning(
+    input_channels: usize,
+    opened_input_channels: usize,
+) -> Vec<Diag> {
+    if input_channels > 0 && input_channels != opened_input_channels {
+        vec![Diag {
+            node: None,
+            port: None,
+            message: format!(
+                "swapped-in instrument binds {input_channels} input channel(s) but the open input \
+                 stream provides {opened_input_channels} (fixed at `play` start, ADR-0046 §6); the \
+                 unmatched input pipes dark-degrade to silence (ADR-0038 §7). The engine stays \
+                 alive and silent; restart `play` with a matching input-binding instrument to \
+                 capture live input."
+            ),
+        }]
+    } else {
+        Vec::new()
     }
-
-    /// The current session's counters (a cheap `Arc` clone under a cold lock).
-    pub fn current(&self) -> Arc<Diagnostics> {
-        Arc::clone(&self.0.lock().expect("diagnostics handle poisoned"))
-    }
-
-    /// Point the handle at a new session's counters after a restart-swap.
-    pub fn replace(&self, diagnostics: Arc<Diagnostics>) {
-        *self.0.lock().expect("diagnostics handle poisoned") = diagnostics;
-    }
-}
-
-/// The retained canonical document + its content hash (ADR-0046 §7/§9), behind one lock so the
-/// `expect`-compare and the install are a single atomic critical section (a correct
-/// compare-and-swap) and concurrent swaps can't interleave.
-struct Canonical {
-    document: Value,
-    content_hash: String,
-}
-
-/// Resolver anchoring for a swap's document (ADR-0046 §8). A by-value document resolves its
-/// resource paths against `base_dir` (the directory the *initial* instrument loaded from); a
-/// by-path document anchors at its own file's directory (like `read_instrument`). Both fall
-/// back to `root` (the library instrument-root) when set.
-struct ResolveConfig {
-    base_dir: PathBuf,
-    root: Option<PathBuf>,
 }
 
 /// Everything the structure server answers with, cheap to clone (`Arc`-backed) so every
 /// connection-handler thread holds its own handle.
 ///
-/// The canonical document + hash are **mutable** now (behind a lock): `swap` replaces them
-/// (ADR-0046 §10), and every `get_document` / `expect` reads the current pair. The diagnostics
-/// handle points at the live counter surface; a restart-swap re-points it. The `installer` is
-/// the device seam (see [`SwapInstaller`]); `resolve` anchors a swapped document's resources.
+/// The [`Coordinator`] behind one [`Mutex`] is the single writer of graph structure (ADR-0046
+/// §7): it owns the canonical document + hash (`swap` advances them, `get_document`/`expect` read
+/// them) and the install mailbox. The `render_config` seam publishes the device output map + the
+/// dark-degrade warning after each swap; `diagnostics` is the live counter surface the callback
+/// feeds (fixed at `play` start — M2 never reopens streams, so it never re-points).
 #[derive(Clone)]
 pub struct StructureState {
-    canonical: Arc<Mutex<Canonical>>,
-    diagnostics: DiagnosticsHandle,
-    installer: Arc<dyn SwapInstaller>,
-    resolve: Arc<ResolveConfig>,
+    coordinator: Arc<Mutex<Coordinator>>,
+    diagnostics: Arc<Diagnostics>,
+    render_config: Arc<dyn RenderConfigPublisher>,
 }
 
 impl StructureState {
-    /// Retain a pre-serialized document + hash alongside the live diagnostics. The document is
-    /// the canonical instrument as a JSON value; `content_hash` is its
-    /// [`content_hash`](reuben_core::content_hash) token (ADR-0046 §9). Built with a no-op
-    /// [`SwapInstaller`] and a `.`-anchored resolver — production wires the real device restart
-    /// with [`with_installer`](Self::with_installer) and the real anchoring with
-    /// [`with_resolve`](Self::with_resolve).
-    pub fn new(document: Value, content_hash: String, diagnostics: Arc<Diagnostics>) -> Self {
+    /// Wrap a [`Coordinator`] `play` (or a test) built with [`Coordinator::install_initial`],
+    /// alongside the live [`Diagnostics`] surface. Built with the headless [`HeadlessRenderConfig`]
+    /// (output-only: any input-binding swap dark-degrades) — production wires the real native map
+    /// publisher with [`with_render_config`](Self::with_render_config).
+    pub fn from_coordinator(coordinator: Coordinator, diagnostics: Arc<Diagnostics>) -> Self {
         Self {
-            canonical: Arc::new(Mutex::new(Canonical {
-                document,
-                content_hash,
-            })),
-            diagnostics: DiagnosticsHandle::new(diagnostics),
-            installer: Arc::new(NoopInstaller),
-            resolve: Arc::new(ResolveConfig {
-                base_dir: PathBuf::from("."),
-                root: None,
+            coordinator: Arc::new(Mutex::new(coordinator)),
+            diagnostics,
+            render_config: Arc::new(HeadlessRenderConfig {
+                opened_input_channels: 0,
             }),
         }
     }
 
-    /// Retain the canonical [`NormalizedDoc`] `play` loaded: serialize it once to a JSON value
-    /// and compute its content hash here. The value serialized is the same
-    /// [`InstrumentDoc`](reuben_core::InstrumentDoc) the hash is taken over, so the pair a
-    /// client reads is self-consistent (ADR-0046 §9).
-    pub fn from_doc(doc: &NormalizedDoc, diagnostics: Arc<Diagnostics>) -> Self {
-        let document =
-            serde_json::to_value(&**doc).expect("canonical instrument document serializes to JSON");
-        Self::new(document, content_hash(doc), diagnostics)
-    }
-
-    /// Wire the real device restart (`play`'s owning-thread installer). Without this a swap
-    /// updates the retained document but restarts no audio (the headless test seam).
-    pub fn with_installer(mut self, installer: Arc<dyn SwapInstaller>) -> Self {
-        self.installer = installer;
+    /// Wire the production render-config seam (`play`'s native map publisher). Without this a swap
+    /// updates the installed document + reclaims the retiree but ships no output map and reports
+    /// the headless dark-degrade warning (the test seam).
+    pub fn with_render_config(mut self, render_config: Arc<dyn RenderConfigPublisher>) -> Self {
+        self.render_config = render_config;
         self
     }
 
-    /// Anchor a swapped document's resource resolution (ADR-0046 §8): `base_dir` for by-value
-    /// documents, `root` as the library-root fallback for both.
-    pub fn with_resolve(mut self, base_dir: PathBuf, root: Option<PathBuf>) -> Self {
-        self.resolve = Arc::new(ResolveConfig { base_dir, root });
-        self
-    }
-
-    /// The swappable diagnostics handle, so `play`'s owning thread can re-point it at a fresh
-    /// session's counters after a restart-swap.
-    pub fn diagnostics_handle(&self) -> DiagnosticsHandle {
-        self.diagnostics.clone()
+    /// The live diagnostics surface, so `play` can flush a final exit-time snapshot (ADR-0038 §9).
+    pub fn diagnostics(&self) -> Arc<Diagnostics> {
+        Arc::clone(&self.diagnostics)
     }
 }
 
@@ -227,15 +204,22 @@ fn dispatch(state: &StructureState, line: &str) -> Response {
     match Request::from_ndjson(line) {
         Ok(Request::Ping) => Response::Pong,
         Ok(Request::GetDocument) => {
-            let canonical = state.canonical.lock().expect("canonical mutex poisoned");
+            // The Coordinator owns the canonical document (ADR-0046 §7); serialize it + its hash
+            // under the lock so `get_document` never sees a half-installed pair.
+            let coordinator = state
+                .coordinator
+                .lock()
+                .expect("coordinator mutex poisoned");
+            let document = serde_json::to_value(&**coordinator.document())
+                .expect("canonical instrument document serializes to JSON");
             Response::Document {
-                document: canonical.document.clone(),
-                content_hash: canonical.content_hash.clone(),
+                document,
+                content_hash: coordinator.installed_hash(),
             }
         }
-        // RT-safe read: four `Relaxed` loads into an owned copy off this (non-audio) thread.
+        // RT-safe read: `Relaxed` loads into an owned copy off this (non-audio) thread.
         Ok(Request::GetDiagnostics) => {
-            Response::Diagnostics(diagnostics_report(&state.diagnostics.current().snapshot()))
+            Response::Diagnostics(diagnostics_report(&state.diagnostics.snapshot()))
         }
         Ok(Request::Swap { source, expect }) => handle_swap(state, source, expect),
         Err(e) => Response::Error {
@@ -244,169 +228,122 @@ fn dispatch(state: &StructureState, line: &str) -> Response {
     }
 }
 
-/// The restart-swap install path (ADR-0046 §10), device-free up to the [`SwapInstaller`] call.
+/// The M2 mailbox-swap install path (ADR-0046 §§1–10), device-free up to the
+/// [`RenderConfigPublisher`] call. Everything runs under the Coordinator lock so the
+/// `expect`-compare and the swap are one atomic critical section (ADR-0046 §9's compare-and-swap)
+/// — concurrent swaps from multiple connections serialize, and neither `get_document` nor another
+/// swap sees a half-installed document. In order:
 ///
-/// The whole swap runs under the canonical lock so the `expect`-compare and the install are one
-/// atomic critical section (ADR-0046 §9's compare-and-swap) — concurrent swaps from multiple
-/// connections serialize, and neither `get_document` nor another swap sees a half-installed
-/// pair. In order:
-///
-/// 1. **Arbitration** (ADR-0046 §9 / ADR-0044 §4): a stale `expect` rejects with the real
-///    installed hash as [`Response::Conflict`] and does **not** restart. Absent `expect` is
-///    last-write-wins.
-/// 2. **Resolve** the [`DocSource`] to `(json, resolver)` — inline JSON, or a file read + a
-///    resolver anchored at its directory (ADR-0046 §8). A read failure is a rejected
-///    [`SwapReport`] (no install, prior retained), not a channel `Error`.
-/// 3. **Validate** through the single loader authority (ADR-0045 §3). Any load/plan error
-///    aborts with `ok: false`, the errors, and the **prior** hash — the old engine keeps
-///    playing (retain-prior, ADR-0046 §10). Warnings pass through (ADR-0016).
-/// 4. **Install**: hand the validated document to the device seam ([`SwapInstaller::restart`]).
-///    A failure here is post-validation, i.e. a device/stream fault — a channel `Error`, with
-///    the prior doc/hash left intact.
-/// 5. **Commit** the new document + hash so `get_document` and a later `expect` see it, and
-///    answer with the success [`SwapReport`] — `survived: 0` under M1's all-cold restart
-///    (ADR-0046 §10), the diff naming what reset/added/removed.
+/// 1. **Resolve** the [`DocSource`] to its JSON text — inline JSON re-serialized, or a file read
+///    (ADR-0046 §8). Resources resolve through the Coordinator's own resolver (anchored at `play`
+///    start). A read failure is a rejected [`SwapReport`] (no install, prior retained), not a
+///    channel `Error`.
+/// 2. **Arbitration** (ADR-0046 §9): a stale `expect` rejects with the real installed hash as
+///    [`Response::Conflict`] and does **not** swap. Absent `expect` is last-write-wins. Done here
+///    (not inside `swap_document`) so the wire keeps M1's distinct `Conflict` response shape.
+/// 3. **Swap**: [`Coordinator::swap_document`] validates + builds a whole new Engine off-thread,
+///    fills the install mailbox, and returns the real [`SwapReport`] (survivor/reset stats). A
+///    load/plan error aborts with `ok: false` and the prior hash — the old engine keeps playing
+///    (retain-prior, ADR-0046 §10). The RT callback installs it gaplessly at the next ramp.
+/// 4. **Publish** the render config: rebuild the device output map off-thread for the new engine's
+///    geometry and ship it across the render mailbox; fold any input dark-degrade warning (ADR-0038
+///    §7/§9) into the report.
+/// 5. **Reclaim** the retired Engine off-thread (ADR-0009 deferred free), clearing the mailbox for
+///    the next swap.
 fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>) -> Response {
-    let mut canonical = state.canonical.lock().expect("canonical mutex poisoned");
+    // 1. Resolve the source to JSON text. A read failure is a domain rejection (no install).
+    let json = match resolve_source(source) {
+        Ok(json) => json,
+        Err(message) => return rejected_swap(&state.coordinator, message),
+    };
 
-    // 1. Optimistic-concurrency guard.
+    let mut coordinator = state
+        .coordinator
+        .lock()
+        .expect("coordinator mutex poisoned");
+
+    // 2. Optimistic-concurrency guard (ADR-0046 §9): a stale expect is a Conflict, no swap.
     if let Some(expected) = &expect {
-        if expected != &canonical.content_hash {
+        let actual = coordinator.installed_hash();
+        if expected != &actual {
             return Response::Conflict {
                 expected: expected.clone(),
-                actual: canonical.content_hash.clone(),
+                actual,
             };
         }
     }
 
-    // 2. Resolve the source. A read failure is a domain rejection (no install, prior retained).
-    let (json, resolver) = match resolve_source(&state.resolve, source) {
-        Ok(pair) => pair,
-        Err(message) => {
-            return Response::SwapReport(SwapReport {
-                report: reuben_core::Report {
-                    ok: false,
-                    errors: vec![Diag {
-                        node: None,
-                        port: None,
-                        message,
-                    }],
-                    warnings: Vec::new(),
-                },
-                content_hash: canonical.content_hash.clone(),
-                diff: None,
-            });
-        }
-    };
+    // 3. Swap via the mailbox. `expect` is already honored above, so pass `None`.
+    let mut report = coordinator.swap_document(&json, None);
+    if report.report.ok {
+        // 4. Publish the new engine's device output map + fold the dark-degrade warning.
+        let logical = coordinator.installed_channels();
+        let input_channels = coordinator.installed_input_channels();
+        report
+            .report
+            .warnings
+            .extend(state.render_config.publish(logical, input_channels));
 
-    // 3. Validate (load + plan). Retain-prior on any error.
-    let report = validate(&json, &Registry::builtin(), &resolver);
-    if !report.ok {
-        return Response::SwapReport(SwapReport {
-            report,
-            content_hash: canonical.content_hash.clone(),
-            diff: None,
-        });
+        // 5. Reclaim the retired Engine off-thread (this structure thread, never the callback).
+        reclaim_retired_engine(&mut coordinator);
     }
+    Response::SwapReport(report)
+}
 
-    // The document validated: mint its canonical form for the new hash + serialized value.
-    // `from_json` is load-only and just succeeded inside `validate`, so this cannot fail; a
-    // defensive channel `Error` keeps the one-response invariant if it somehow does.
-    let new_doc = match NormalizedDoc::from_json(
-        &json,
-        &Registry::builtin(),
-        Some(&resolver as &dyn ResourceResolver),
-    ) {
-        Ok(doc) => doc,
-        Err(e) => {
-            return Response::Error {
-                message: format!("normalize swapped document: {e}"),
-            }
-        }
-    };
-    let new_hash = content_hash(&new_doc);
-    let new_value =
-        serde_json::to_value(&*new_doc).expect("canonical instrument document serializes to JSON");
-    let diff = restart_diff(&canonical.document, &new_value);
-
-    // 4. Install onto the device (stop-the-world restart). Only reached post-validation, so a
-    //    failure is a device/stream fault — surfaced as a channel Error, prior doc/hash intact.
-    if let Err(message) = state.installer.restart(&json, resolver) {
-        return Response::Error { message };
-    }
-
-    // 5. Commit.
-    canonical.document = new_value;
-    canonical.content_hash = new_hash.clone();
+/// A rejected swap that never reached [`Coordinator::swap_document`] (a source read failure):
+/// `ok: false`, the message, no diff, and the still-installed hash — the report names what keeps
+/// playing (ADR-0046 §10 retain-prior).
+fn rejected_swap(coordinator: &Arc<Mutex<Coordinator>>, message: String) -> Response {
+    let content_hash = coordinator
+        .lock()
+        .expect("coordinator mutex poisoned")
+        .installed_hash();
     Response::SwapReport(SwapReport {
-        report,
-        content_hash: new_hash,
-        diff: Some(diff),
+        report: reuben_core::Report {
+            ok: false,
+            errors: vec![Diag {
+                node: None,
+                port: None,
+                message,
+            }],
+            warnings: Vec::new(),
+        },
+        content_hash,
+        diff: None,
     })
 }
 
-/// Resolve a [`DocSource`] to its JSON text and a resolver anchored per ADR-0046 §8: a by-value
-/// document reads inline JSON against the retained `base_dir`; a by-path document reads the file
-/// and anchors at its own directory (mirroring `read_instrument`). Both apply the library-root
-/// fallback when configured. A read/serialize failure is returned as a human message the caller
-/// turns into a rejected swap.
-fn resolve_source(
-    resolve: &ResolveConfig,
-    source: DocSource,
-) -> Result<(String, FsResolver), String> {
+/// Reclaim the retired [`InstallBundle`](reuben_core::coordinator::InstallBundle) the RT callback
+/// posted back and **drop it here, off the audio thread** — ADR-0009's deferred free. Blocks up to
+/// [`SWAP_RECLAIM_TIMEOUT`] polling the retire slot with a 1ms back-off (the caller supplies the
+/// clock; core is OS-free). A timeout is not fatal: the swap already committed, so it just leaves
+/// the retiree in flight for the next swap's opportunistic reclaim (ADR-0046 §2) — the "audio isn't
+/// consuming swaps" case.
+fn reclaim_retired_engine(coordinator: &mut Coordinator) {
+    let deadline = Instant::now() + SWAP_RECLAIM_TIMEOUT;
+    match coordinator.reclaim(|| {
+        std::thread::sleep(Duration::from_millis(1));
+        Instant::now() >= deadline
+    }) {
+        // Dropping the reclaimed bundle frees the retired Engine here, off the render thread.
+        Ok(retiree) => drop(retiree),
+        Err(_) => { /* audio not consuming yet; the next swap or shutdown reclaims it */ }
+    }
+}
+
+/// Resolve a [`DocSource`] to its JSON text (ADR-0046 §8): inline JSON re-serialized to a string,
+/// or a file read. Resource paths inside the document resolve through the Coordinator's own
+/// resolver (anchored at `play` start against the initial instrument's directory + the library
+/// root) — M2 does not re-anchor per swap source. A read/serialize failure is returned as a human
+/// message the caller turns into a rejected swap.
+fn resolve_source(source: DocSource) -> Result<String, String> {
     match source {
-        DocSource::Document(value) => {
-            let json = serde_json::to_string(&value)
-                .map_err(|e| format!("serialize inline swap document: {e}"))?;
-            let mut resolver = FsResolver::new(&resolve.base_dir);
-            if let Some(root) = &resolve.root {
-                resolver = resolver.with_root(root);
-            }
-            Ok((json, resolver))
-        }
+        DocSource::Document(value) => serde_json::to_string(&value)
+            .map_err(|e| format!("serialize inline swap document: {e}")),
         DocSource::Path(path) => {
-            let path = Path::new(&path);
-            let json = std::fs::read_to_string(path)
-                .map_err(|e| format!("read {}: {e}", path.display()))?;
-            let mut resolver = FsResolver::for_instrument(path);
-            if let Some(root) = &resolve.root {
-                resolver = resolver.with_root(root);
-            }
-            Ok((json, resolver))
+            std::fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}", path = path))
         }
     }
-}
-
-/// The M1 restart-swap [`DiffSummary`] (ADR-0046 §10): every node is cold, so `survived` is
-/// always `0`. Node addresses present in **both** documents are `state_reset` (they exist but
-/// their state was thrown away by the restart), new-only addresses are `added`, and old-only
-/// addresses are `removed` — the whole-document re-emission accidents ADR-0048 §5 wants an
-/// author to catch. M2 fills real survivor stats behind this unchanged shape.
-fn restart_diff(old: &Value, new: &Value) -> DiffSummary {
-    let old_addrs = node_addresses(old);
-    let new_addrs = node_addresses(new);
-    DiffSummary {
-        survived: 0,
-        state_reset: old_addrs.intersection(&new_addrs).cloned().collect(),
-        added: new_addrs.difference(&old_addrs).cloned().collect(),
-        removed: old_addrs.difference(&new_addrs).cloned().collect(),
-    }
-}
-
-/// The set of top-level node addresses in a serialized instrument document — the keys the M1
-/// diff compares. A [`BTreeSet`] so the diff lists come out sorted and deduped; a document with
-/// no `nodes` array (or malformed entries) contributes none.
-fn node_addresses(doc: &Value) -> BTreeSet<String> {
-    doc.get("nodes")
-        .and_then(Value::as_array)
-        .map(|nodes| {
-            nodes
-                .iter()
-                .filter_map(|n| n.get("address").and_then(Value::as_str))
-                .map(str::to_string)
-                .collect()
-        })
-        .unwrap_or_default()
 }
 
 /// A running loopback structure server: a std thread accepting connections, one handler thread
@@ -551,69 +488,112 @@ fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<Ato
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reuben_core::coordinator::DocSource;
-    use reuben_core::Registry;
+    use reuben_core::coordinator::{RenderSide, RenderSlot};
+    use reuben_core::resources::MemoryResolver;
+    use reuben_core::{AudioConfig, Registry};
+    use std::sync::atomic::AtomicBool;
 
-    fn doc() -> NormalizedDoc {
-        NormalizedDoc::from_json(
-            r#"{"format_version":3,"instrument":"t",
-                "interface":{"outputs":{"out":{"from":"/osc.audio"}}},
-                "nodes":[{"type":"oscillator","address":"/osc"}]}"#,
-            &Registry::builtin(),
-            None,
+    fn cfg() -> AudioConfig {
+        AudioConfig::new(48_000.0, 128)
+    }
+
+    /// A minimal output-only rig to swap *from*: one oscillator through a master output.
+    const BASE_DOC: &str = r#"{"format_version":3,"instrument":"t",
+        "interface":{"outputs":{"out":{"from":"/osc.audio"}}},
+        "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
+
+    /// A held envelope whose CV is the master output (rings at sustain) — a swap to the identical
+    /// document keeps `/env` + `/out` survivors, so the real diff carries `survived: 2` (impossible
+    /// under M1's all-cold restart), the load-bearing proof the mailbox migration ran.
+    fn envelope_doc(env_addr: &str) -> String {
+        format!(
+            r#"{{ "format_version": 3, "instrument": "eg",
+                 "interface": {{ "outputs": {{ "out": {{ "from": "/out.audio" }} }} }},
+                 "nodes": [
+                   {{ "type": "envelope", "address": "{env_addr}",
+                      "inputs": {{ "gate": 1.0, "attack": 0.5, "decay": 0.01,
+                                   "sustain": 0.8, "release": 0.5 }} }},
+                   {{ "type": "output", "address": "/out",
+                      "inputs": {{ "audio": {{ "from": "{env_addr}.cv" }} }} }} ] }}"#
         )
-        .expect("test instrument normalizes")
     }
 
-    fn state(diagnostics: Arc<Diagnostics>) -> StructureState {
-        StructureState::from_doc(&doc(), diagnostics)
-    }
-
-    /// A second valid instrument to swap to — a distinct graph (adds an explicit `/out` node and
-    /// a different name) that both loads and plans, so a successful swap visibly changes
-    /// `get_document` and the content hash.
-    const SWAP_TARGET: &str = r#"{
-        "format_version": 3,
-        "instrument": "swapped-rig",
-        "interface": { "outputs": { "main": { "from": "/out.audio" } } },
-        "nodes": [
-            { "type": "oscillator", "address": "/osc", "inputs": { "freq": 330.0 } },
-            { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/osc.audio" } } }
-        ]
-    }"#;
+    /// A minimal instrument that binds logical input channel 0 (ADR-0038 §3): the swapped-in engine
+    /// wants live input, which an output-only stream can't provide — the dark-degrade case.
+    const MIC_PASSTHRU: &str = r#"{ "format_version": 3, "instrument": "mic-passthru",
+        "interface": {
+            "inputs": { "mic": { "type": "f32_buffer", "channel": 0 } },
+            "outputs": { "out": { "from": "/mic" } } },
+        "nodes": [] }"#;
 
     /// A document that fails to load — an unknown operator type — so validation rejects it.
     const BAD_DOC: &str = r#"{"format_version":3,"instrument":"bad",
         "nodes":[{"type":"no_such_operator","address":"/x"}]}"#;
 
-    /// A [`SwapInstaller`] that records each restart's document (so a test can assert the device
-    /// side was — or was not — reached) and can be told to fail (a simulated post-validation
-    /// device fault).
-    #[derive(Default)]
-    struct RecordingInstaller {
-        calls: Mutex<Vec<String>>,
-        fail: Option<String>,
+    /// A background "fake audio callback" (ADR-0053 §4): it owns the [`RenderSlot`] the real cpal
+    /// callback would and drives it in a loop, draining the install mailbox, running the master-gain
+    /// ramp, box-transplanting survivors, and posting retirees — so a Coordinator-driven swap
+    /// installs **via the mailbox** and its `reclaim` completes, all with no audio device. Rendering
+    /// the *logical* master directly (no device output map — that is the human ritual's half) is
+    /// enough to make the swap real end-to-end.
+    struct FakeCallback {
+        stop: Arc<AtomicBool>,
+        handle: Option<JoinHandle<()>>,
     }
 
-    impl SwapInstaller for RecordingInstaller {
-        fn restart(&self, json: &str, _resolver: FsResolver) -> Result<(), String> {
-            self.calls.lock().unwrap().push(json.to_string());
-            match &self.fail {
-                Some(message) => Err(message.clone()),
-                None => Ok(()),
+    impl FakeCallback {
+        fn spawn(side: RenderSide) -> Self {
+            let stop = Arc::new(AtomicBool::new(false));
+            let stop_thread = Arc::clone(&stop);
+            let handle = std::thread::spawn(move || {
+                let mut slot = RenderSlot::new(side);
+                let mut buf = vec![0.0f32; 128 * slot.channels().max(1)];
+                while !stop_thread.load(Ordering::SeqCst) {
+                    let ch = slot.channels().max(1);
+                    if buf.len() != 128 * ch {
+                        buf.resize(128 * ch, 0.0);
+                    }
+                    slot.fill(&mut buf);
+                    // Pace the loop like a device would; fast enough that a swap's ramp completes in
+                    // a few ms, slow enough not to spin a core.
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+                // The slot (and its Engine + mailbox) drops here, off any RT thread.
+            });
+            Self {
+                stop,
+                handle: Some(handle),
+            }
+        }
+
+        fn stop(mut self) {
+            self.stop.store(true, Ordering::SeqCst);
+            if let Some(handle) = self.handle.take() {
+                let _ = handle.join();
             }
         }
     }
 
-    /// The base state to swap from (the minimal `doc()` rig) plus the recording installer and the
-    /// base document's content hash.
-    fn swap_fixture() -> (StructureState, Arc<RecordingInstaller>, String) {
-        let base = doc();
-        let base_hash = content_hash(&base);
-        let installer = Arc::new(RecordingInstaller::default());
-        let state =
-            StructureState::from_doc(&base, Diagnostics::new()).with_installer(installer.clone());
-        (state, installer, base_hash)
+    /// A Coordinator-backed [`StructureState`] with a live [`FakeCallback`] draining its mailbox,
+    /// plus the base document's content hash. `opened_input_channels` sets the headless render
+    /// config's input-stream geometry (`0` = output-only, so an input-binding swap dark-degrades).
+    fn swap_fixture(
+        base: &str,
+        opened_input_channels: usize,
+    ) -> (StructureState, FakeCallback, String) {
+        let (coordinator, side, _warnings) = Coordinator::install_initial(
+            base,
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            cfg(),
+        )
+        .expect("initial install");
+        let base_hash = coordinator.installed_hash();
+        let state = StructureState::from_coordinator(coordinator, Diagnostics::new())
+            .with_render_config(Arc::new(HeadlessRenderConfig {
+                opened_input_channels,
+            }));
+        (state, FakeCallback::spawn(side), base_hash)
     }
 
     fn swap_by_value(target: &str, expect: Option<String>) -> Request {
@@ -623,17 +603,10 @@ mod tests {
         }
     }
 
-    fn target_hash() -> String {
-        content_hash(
-            &NormalizedDoc::from_json(SWAP_TARGET, &Registry::builtin(), None).expect("mint"),
-        )
-    }
-
     #[test]
     fn diagnostics_report_maps_every_counter_field_for_field() {
         // Distinct values per counter so a mis-wire (mapping overruns to underruns, say) is
-        // caught — equal values would let a swapped pair pass. Frame counts are deliberately
-        // different magnitudes; the xrun count is an event count.
+        // caught — equal values would let a swapped pair pass.
         let d = Diagnostics::new();
         d.record_output_xrun();
         d.record_output_xrun();
@@ -650,41 +623,45 @@ mod tests {
 
     #[test]
     fn ping_is_answered_with_pong() {
-        let resp = dispatch(&state(Diagnostics::new()), &Request::Ping.to_ndjson());
-        assert_eq!(resp, Response::Pong);
+        let (state, cb, _) = swap_fixture(BASE_DOC, 0);
+        assert_eq!(dispatch(&state, &Request::Ping.to_ndjson()), Response::Pong);
+        cb.stop();
     }
 
     #[test]
-    fn get_document_returns_the_retained_doc_and_its_hash() {
-        let doc = doc();
-        let resp = dispatch(
-            &StructureState::from_doc(&doc, Diagnostics::new()),
-            &Request::GetDocument.to_ndjson(),
-        );
-        match resp {
+    fn get_document_returns_the_coordinators_doc_and_hash() {
+        let (state, cb, base_hash) = swap_fixture(BASE_DOC, 0);
+        match dispatch(&state, &Request::GetDocument.to_ndjson()) {
             Response::Document {
                 document,
                 content_hash: hash,
             } => {
-                assert_eq!(document, serde_json::to_value(&*doc).unwrap());
-                assert_eq!(hash, content_hash(&doc));
                 assert_eq!(document["instrument"], serde_json::json!("t"));
+                assert_eq!(hash, base_hash);
             }
             other => panic!("expected Document, got {other:?}"),
         }
+        cb.stop();
     }
 
     #[test]
     fn get_diagnostics_reads_the_live_counters() {
+        let (coordinator, side, _w) = Coordinator::install_initial(
+            BASE_DOC,
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            cfg(),
+        )
+        .expect("install");
         let diagnostics = Diagnostics::new();
-        let state = state(Arc::clone(&diagnostics));
+        let state = StructureState::from_coordinator(coordinator, Arc::clone(&diagnostics));
+        let cb = FakeCallback::spawn(side);
         // Fresh: zeroed.
         assert_eq!(
             dispatch(&state, &Request::GetDiagnostics.to_ndjson()),
             Response::Diagnostics(DiagnosticsReport::default())
         );
-        // A later bump is visible on the next query — proving the Arc is read, not a frozen
-        // copy taken at construction.
+        // A later bump is visible — the live Arc is read, not a frozen copy.
         diagnostics.record_output_xrun();
         assert_eq!(
             dispatch(&state, &Request::GetDiagnostics.to_ndjson()),
@@ -693,82 +670,104 @@ mod tests {
                 ..DiagnosticsReport::default()
             })
         );
+        cb.stop();
     }
 
     #[test]
-    fn swap_by_value_installs_validates_and_updates_the_document() {
-        let (state, installer, base_hash) = swap_fixture();
-        match dispatch(&state, &swap_by_value(SWAP_TARGET, None).to_ndjson()) {
+    fn swap_installs_via_the_mailbox_with_real_survivor_stats() {
+        // The heart of M2 (ADR-0046 §§5,10): a swap to the identical envelope document keeps both
+        // nodes survivors, so the real migration diff carries `survived: 2` — impossible under M1's
+        // all-cold restart (which hard-codes `survived: 0`). The swap installed via the mailbox (the
+        // FakeCallback drained it; `reclaim` completing is the proof), no stream teardown involved.
+        let base = envelope_doc("/env");
+        let (state, cb, base_hash) = swap_fixture(&base, 0);
+
+        match dispatch(&state, &swap_by_value(&base, None).to_ndjson()) {
             Response::SwapReport(report) => {
                 assert!(report.report.ok, "a valid document installs: {report:?}");
-                assert_eq!(
-                    report.content_hash,
-                    target_hash(),
-                    "the installed hash is the new doc's"
-                );
                 let diff = report.diff.expect("a successful swap carries a diff");
-                assert_eq!(diff.survived, 0, "M1 restart is all-cold (ADR-0046 §10)");
-                // `/osc` exists in both docs → state_reset; `/out` is new → added.
-                assert!(
-                    diff.state_reset.contains(&"/osc".to_string()),
-                    "diff: {diff:?}"
+                assert_eq!(
+                    diff.survived, 2,
+                    "both nodes survive an identical-document swap (real migration): {diff:?}"
                 );
-                assert!(diff.added.contains(&"/out".to_string()), "diff: {diff:?}");
-                assert!(diff.removed.is_empty(), "diff: {diff:?}");
+                // Same document -> same hash; the report names what is now playing.
+                assert_eq!(report.content_hash, base_hash);
             }
             other => panic!("expected SwapReport, got {other:?}"),
         }
-        // The device restart was invoked exactly once, with the swapped document.
-        assert_eq!(installer.calls.lock().unwrap().len(), 1);
-        assert_ne!(
-            target_hash(),
-            base_hash,
-            "the swap actually changed the document"
-        );
-
-        // get_document now returns the new doc + its hash.
-        match dispatch(&state, &Request::GetDocument.to_ndjson()) {
-            Response::Document {
-                document,
-                content_hash: hash,
-            } => {
-                assert_eq!(document["instrument"], serde_json::json!("swapped-rig"));
-                assert_eq!(hash, target_hash());
-            }
-            other => panic!("expected Document, got {other:?}"),
-        }
+        cb.stop();
     }
 
     #[test]
-    fn swap_by_path_reads_the_file_and_installs() {
-        let (state, installer, _) = swap_fixture();
-        let path =
-            std::env::temp_dir().join(format!("reuben_swap_target_{}.json", std::process::id()));
-        std::fs::write(&path, SWAP_TARGET).expect("write swap target");
-
-        let req = Request::Swap {
-            source: DocSource::Path(path.display().to_string()),
-            expect: None,
-        };
-        match dispatch(&state, &req.to_ndjson()) {
+    fn swap_to_a_renamed_node_resets_it_and_reports_a_smaller_survivor_count() {
+        // The reset half: renaming the envelope makes it a remove+add, so only `/out` survives —
+        // `survived: 1`, with `/env` removed and `/eg` added. Real survivor semantics from the
+        // manifest diff, not M1's blanket zero.
+        let (state, cb, _base_hash) = swap_fixture(&envelope_doc("/env"), 0);
+        match dispatch(
+            &state,
+            &swap_by_value(&envelope_doc("/eg"), None).to_ndjson(),
+        ) {
             Response::SwapReport(report) => {
-                assert!(report.report.ok, "a valid file installs: {report:?}")
+                assert!(report.report.ok, "{report:?}");
+                let diff = report.diff.expect("diff");
+                assert_eq!(diff.survived, 1, "only /out survives a rename: {diff:?}");
+                assert!(diff.removed.contains(&"/env".to_string()), "{diff:?}");
+                assert!(diff.added.contains(&"/eg".to_string()), "{diff:?}");
             }
             other => panic!("expected SwapReport, got {other:?}"),
         }
-        assert_eq!(installer.calls.lock().unwrap().len(), 1);
-        match dispatch(&state, &Request::GetDocument.to_ndjson()) {
-            Response::Document { document, .. } => {
-                assert_eq!(document["instrument"], serde_json::json!("swapped-rig"))
+        cb.stop();
+    }
+
+    #[test]
+    fn back_to_back_swaps_both_install_proving_off_thread_reclaim() {
+        // One swap in flight (ADR-0046 §2): a second swap can only install once the first's retiree
+        // has come home and been reclaimed. Both succeeding is the behavioral proof the mailbox +
+        // off-thread reclaim cycle actually turned over — the M2 mechanism, not a restart.
+        let (state, cb, _) = swap_fixture(&envelope_doc("/env"), 0);
+        for target in [
+            envelope_doc("/env"),
+            envelope_doc("/eg"),
+            envelope_doc("/env"),
+        ] {
+            match dispatch(&state, &swap_by_value(&target, None).to_ndjson()) {
+                Response::SwapReport(report) => assert!(report.report.ok, "{report:?}"),
+                other => panic!("expected SwapReport, got {other:?}"),
             }
-            other => panic!("expected Document, got {other:?}"),
         }
-        let _ = std::fs::remove_file(&path);
+        cb.stop();
+    }
+
+    #[test]
+    fn input_binding_swap_onto_output_only_stream_dark_degrades_with_a_warning() {
+        // ADR-0038 §7/§9: the initial rig is output-only (`opened_input_channels: 0`). A swap to an
+        // instrument that binds an input channel installs and stays silent-but-alive — a loud
+        // swap-report WARNING, never an error or a crash.
+        let (state, cb, _) = swap_fixture(BASE_DOC, 0);
+        match dispatch(&state, &swap_by_value(MIC_PASSTHRU, None).to_ndjson()) {
+            Response::SwapReport(report) => {
+                assert!(
+                    report.report.ok,
+                    "dark-degrade is not an error — the engine stays alive: {report:?}"
+                );
+                assert!(
+                    report
+                        .report
+                        .warnings
+                        .iter()
+                        .any(|w| w.message.contains("dark-degrade")),
+                    "the swap report carries the loud dark-degrade warning: {report:?}"
+                );
+            }
+            other => panic!("expected SwapReport, got {other:?}"),
+        }
+        cb.stop();
     }
 
     #[test]
     fn swap_of_a_bad_document_reports_errors_and_retains_prior() {
-        let (state, installer, base_hash) = swap_fixture();
+        let (state, cb, base_hash) = swap_fixture(BASE_DOC, 0);
         match dispatch(&state, &swap_by_value(BAD_DOC, None).to_ndjson()) {
             Response::SwapReport(report) => {
                 assert!(!report.report.ok, "a bad document does not install");
@@ -784,23 +783,20 @@ mod tests {
             }
             other => panic!("expected SwapReport, got {other:?}"),
         }
-        // Retain-prior: the device restart was never invoked, and get_document is unchanged.
-        assert!(
-            installer.calls.lock().unwrap().is_empty(),
-            "a bad document must not restart audio"
-        );
+        // get_document is unchanged.
         match dispatch(&state, &Request::GetDocument.to_ndjson()) {
             Response::Document {
                 content_hash: hash, ..
             } => assert_eq!(hash, base_hash),
             other => panic!("expected Document, got {other:?}"),
         }
+        cb.stop();
     }
 
     #[test]
-    fn swap_with_a_stale_expect_conflicts_and_does_not_restart() {
-        let (state, installer, base_hash) = swap_fixture();
-        let req = swap_by_value(SWAP_TARGET, Some("0badc0de0badc0de".to_string()));
+    fn swap_with_a_stale_expect_conflicts_and_does_not_install() {
+        let (state, cb, base_hash) = swap_fixture(BASE_DOC, 0);
+        let req = swap_by_value(&envelope_doc("/env"), Some("0badc0de0badc0de".to_string()));
         match dispatch(&state, &req.to_ndjson()) {
             Response::Conflict { expected, actual } => {
                 assert_eq!(expected, "0badc0de0badc0de");
@@ -808,70 +804,58 @@ mod tests {
             }
             other => panic!("expected Conflict, got {other:?}"),
         }
-        assert!(
-            installer.calls.lock().unwrap().is_empty(),
-            "a conflict must not restart audio"
-        );
-    }
-
-    #[test]
-    fn swap_with_a_matching_expect_succeeds() {
-        let (state, installer, base_hash) = swap_fixture();
-        match dispatch(
-            &state,
-            &swap_by_value(SWAP_TARGET, Some(base_hash)).to_ndjson(),
-        ) {
-            Response::SwapReport(report) => assert!(report.report.ok),
-            other => panic!("expected SwapReport, got {other:?}"),
-        }
-        assert_eq!(installer.calls.lock().unwrap().len(), 1);
-    }
-
-    #[test]
-    fn a_successful_swap_updates_the_hash_for_a_later_expect() {
-        let (state, _installer, base_hash) = swap_fixture();
-        dispatch(&state, &swap_by_value(SWAP_TARGET, None).to_ndjson());
-        let new_hash = target_hash();
-        assert_ne!(new_hash, base_hash);
-
-        // The old hash is now stale — a swap guarded by it conflicts with the *new* installed hash.
-        match dispatch(
-            &state,
-            &swap_by_value(SWAP_TARGET, Some(base_hash)).to_ndjson(),
-        ) {
-            Response::Conflict { actual, .. } => assert_eq!(actual, new_hash),
-            other => panic!("a stale expect must conflict, got {other:?}"),
-        }
-    }
-
-    #[test]
-    fn a_device_fault_during_reopen_is_a_channel_error_with_prior_retained() {
-        let base = doc();
-        let base_hash = content_hash(&base);
-        let installer = Arc::new(RecordingInstaller {
-            calls: Mutex::new(Vec::new()),
-            fail: Some("reopen audio after swap: no default output device".to_string()),
-        });
-        let state = StructureState::from_doc(&base, Diagnostics::new()).with_installer(installer);
-        match dispatch(&state, &swap_by_value(SWAP_TARGET, None).to_ndjson()) {
-            // Post-validation device fault → channel Error (ADR-0048 §3), not a SwapReport.
-            Response::Error { message } => assert!(message.contains("no default output device")),
-            other => panic!("a device fault must be a channel Error, got {other:?}"),
-        }
-        // The install failed after validation, so the prior doc/hash are left intact.
+        // The installed document is unchanged.
         match dispatch(&state, &Request::GetDocument.to_ndjson()) {
             Response::Document {
                 content_hash: hash, ..
             } => assert_eq!(hash, base_hash),
             other => panic!("expected Document, got {other:?}"),
         }
+        cb.stop();
+    }
+
+    #[test]
+    fn swap_with_a_matching_expect_succeeds() {
+        let (state, cb, base_hash) = swap_fixture(BASE_DOC, 0);
+        match dispatch(
+            &state,
+            &swap_by_value(&envelope_doc("/env"), Some(base_hash)).to_ndjson(),
+        ) {
+            Response::SwapReport(report) => assert!(report.report.ok, "{report:?}"),
+            other => panic!("expected SwapReport, got {other:?}"),
+        }
+        cb.stop();
     }
 
     #[test]
     fn an_unreadable_line_is_a_channel_error() {
-        match dispatch(&state(Diagnostics::new()), "{not json}\n") {
+        let (state, cb, _) = swap_fixture(BASE_DOC, 0);
+        match dispatch(&state, "{not json}\n") {
             Response::Error { message } => assert!(message.contains("unreadable request")),
             other => panic!("a malformed request must return Error, got {other:?}"),
         }
+        cb.stop();
+    }
+
+    #[test]
+    fn dark_degrade_warning_fires_only_on_unmatched_input_geometry() {
+        // The pure rule (ADR-0038 §7): no warning when the engine needs no input or the stream
+        // matches; a warning on any shortfall (output-only stream, or a topology change).
+        assert!(
+            dark_degrade_warning(0, 0).is_empty(),
+            "no input, no warning"
+        );
+        assert!(
+            dark_degrade_warning(2, 2).is_empty(),
+            "matched geometry is silent"
+        );
+        assert!(
+            !dark_degrade_warning(1, 0).is_empty(),
+            "input onto output-only stream warns"
+        );
+        assert!(
+            !dark_degrade_warning(3, 2).is_empty(),
+            "a wider input than the stream warns"
+        );
     }
 }
