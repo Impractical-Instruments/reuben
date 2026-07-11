@@ -9,7 +9,11 @@ An Operator is one unit of DSP — authored **single-Voice** (one mono stream; p
 Voicer hosting voice sub-patches, ADR-0010/0032) as a Rust file in [`crates/reuben-core/src/operators/`](../../crates/reuben-core/src/operators):
 index consts, a state struct, and `impl Operator` (`descriptor` / `process` / `spawn`), declared in
 `operators/mod.rs` and self-registered by its own `register_operator!` line (no central list to
-edit, ADR-0024). This skill authors that end-to-end (ADR-0021).
+edit, ADR-0024). This skill authors that end-to-end (ADR-0021). The **canonical
+operator-development contract** — the trait, the `operator_contract!` macro, registration,
+`OpDriver`, the RT-safety rules — lives in
+[docs/agents/operator-dev.md](../../docs/agents/operator-dev.md); this skill is the workflow
+that drives it, not a second copy of it.
 
 First check it doesn't already exist: `reuben describe --json` lists every operator — a request is
 often a *patch* of existing ones (the `patcher` skill), not new Rust. This skill is only for
@@ -25,10 +29,10 @@ Run all `reuben`/`cargo` commands from the repo root.
 1. **Align on the contract.** The descriptor is frozen at scaffold time and the rig builder wires
    against its port/param **indices** — getting it wrong is expensive. If the operator is at all
    underspecified, **invoke the `grilling` skill** to pin: each input/output by its **`Arg` type**
-   (ADR-0030) — `f32_buffer` (a dense per-sample Signal), `f32` (a held Value number; add
-   `{ min..max, default, unit, lin|exp }` for its materialized default), `enum(VocabType)` (a
-   live-switchable choice naming a shared *vocab* enum), or `note`/`harmony` for a `Note`/`Harmony`
-   port — plus any **`Constant`** (instantiate-time `config`, e.g. `voices`), and — critically —
+   and form — `f32_buffer`, `f32` (with `{ min..max, default, unit, lin|exp }`),
+   `enum(VocabType)`, `note`/`harmony`; the type system is canonical in the
+   [guide's type-system section](../../docs/agents/authoring.md#type-system) — plus any
+   **`Constant`** (instantiate-time `config`, e.g. `voices`), and — critically —
    **the DSP behavior and its test oracle: "how will we know it's right?"** Use
    `domain-modeling` for naming. Skip the interview only when the user hands a precise contract.
 
@@ -45,35 +49,13 @@ Run all `reuben`/`cargo` commands from the repo root.
    `bind` / `render` / `output` / `emits`, addressing ports by the generated `IN_*` / `OUT_*`
    consts — and assert observable output), then write the DSP to pass. **Copy the structure of
    [`lfo.rs`](../../crates/reuben-core/src/operators/lfo.rs)** — a clean stateful operator with
-   `OpDriver` continuity/spawn tests. Honour the **realtime authoring contract**:
-   - `process` runs on the **hot** path — it must not allocate, lock, block, or panic. The
-     canonical hot/cold boundary + RT rules live in
-     [authoring.md#rt-safe-render](../../docs/agents/authoring.md#rt-safe-render) (single
-     source); the operator-specific contract follows.
-   - **Single-Voice**: write one mono stream. Polyphony is not your concern — the Voicer hosts N
-     voice sub-patches and sums them (ADR-0032).
-   - **Read each input through its typed handle** (ADR-0037) — `io.read(IN_X)`; the handle's
-     form (fixed by the contract declaration) selects the read shape, so a wrong-form read does
-     not compile:
-     - **Signal (`f32_buffer`)** → `io.read(IN) -> &[f32]` — per-sample DSP, also the
-       materialized buffer of a Value wired into a Signal input. **Always exactly `io.frames()`
-       long** (the buffer-presence invariant) — index `io.read(IN)[i]` directly, no
-       `.get(i).unwrap_or(..)` guard; `io.varying(IN)` lets a const-folding op skip recompute on
-       a held block.
-     - **held Value (`f32`)** → `io.read(IN) -> f32` — a block-rate scalar, defaulted to the
-       contract's declared default (never restate the default in `process`).
-     - **enum** → `io.read(IN) -> MyVocabEnum` — a real Rust enum, not an index; defaults to the
-       type's `#[default]` variant.
-     - **`Harmony`** → `io.read(IN) -> Harmony`; **`Note`** → `io.read(IN)` (an iterator of
-       `Stamped<Note>` — `.frame`, `.payload`).
-   - **Write outputs through their handles** — Signal → `io.write(OUT) -> &mut [f32]`; a `Note`
-     via `io.write(OUT)` (`.emit(frame, note)`, append-only); a held `f32`/`Harmony` via
-     `io.write(OUT)` (`.set(frame, v)`, dedup + last-write-wins).
-   - **Persistent state carries across blocks** — keep phase/filter state in the struct; use `f64`
-     for a phase accumulator so it doesn't drift (lfo/clock).
-   - **`spawn`** resets per-voice state but **carries any resource binding forward** (ADR-0016).
-   - The **typed `IN_*`/`OUT_*` handles are the contract** downstream nodes reference — don't
-     renumber casually.
+   `OpDriver` continuity/spawn tests. The **contract you are writing against** is canonical in
+   [docs/agents/operator-dev.md](../../docs/agents/operator-dev.md) — read it before writing
+   DSP rather than recalling it from here: single-Voice authoring, the typed-handle read/write
+   shapes (ADR-0037), state-across-blocks and `spawn` semantics, and the RT rules — `process`
+   runs on the **hot** path and must not allocate, lock, block, or panic (the hot/cold boundary
+   and hot-path totality live at
+   [operator-dev.md#rt-safe-render](../../docs/agents/operator-dev.md#rt-safe-render)).
 
 4. **Close the gate** — `validate` can't prove DSP is correct, so the gate is richer than the
    patcher's. In order:
@@ -154,7 +136,7 @@ Run all `reuben`/`cargo` commands from the repo root.
 | `instrument.schema.json` | **regenerate** via `gen_schema` after the op lands (part of the gate) |
 | Instrument/Rig graphs | **never** — that is the `patcher` skill |
 | Surface docs (`surfaces/*.json`) | **never** — that is the `control-surface` skill (ADR-0043) |
-| ROADMAP / authoring.md / ARCHITECTURE / domain terms | **never inline** — hand to `sync-docs` |
+| authoring.md / operator-dev.md / ARCHITECTURE / README / domain terms | **never inline** — hand to `sync-docs` |
 
 ## Report
 

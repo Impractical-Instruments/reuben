@@ -43,7 +43,8 @@ Prefer LSP over Grep/Glob for code navigation:
 
 ## Guides
 
-- **[Authoring](docs/agents/authoring.md)** — operator trait, descriptor macro, adding an operator, JSON format.
+- **[Authoring](docs/agents/authoring.md)** — the instrument-authoring guide: JSON format, type system + wiring, addressing, the authoring loop.
+- **[Operator dev](docs/agents/operator-dev.md)** — operator trait, descriptor macro, adding an operator, RT-safety rules.
 - **[Domain docs](docs/agents/domain.md)** — read CONTEXT.md + relevant ADRs before exploring.
 - **[Issue tracker](docs/agents/issue-tracker.md)** — GitHub Issues via `gh`; external PRs are not a triage surface.
 - **[Triage labels](docs/agents/triage-labels.md)** — needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix.

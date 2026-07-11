@@ -37,31 +37,12 @@ Run all `reuben` commands from the repo root.
    document shape; `describe` is the per-operator view.
 
 2. **Draft the graph.** Start from a **canonical recipe** (below) or an existing
-   `instruments/*.json` (e.g. `chord-player.json`) rather than a blank file. The format (ADR-0030):
-   each node carries an **`inputs`** map and an optional **`config`** block — there is **no
-   top-level `connections` array** and **no per-node `params` map**. Honour the rules the loader
-   enforces (so step 3 passes first try):
-   - **Every node** has a unique `address` and a registered `type`.
-   - **An `inputs` value is a literal or a wire-ref.** A literal sets a numeric (`value`/`signal`) default
-     (`"cutoff": 1500`) or an `enum` by symbol (`"mode": "Hp"`). A wire-ref connects an upstream
-     output: `"audio": { "from": "/osc.audio" }`, or the sole-output sugar `{ "from": "/osc" }`
-     when the source has exactly one output. `"cutoff": 1500` and `"cutoff": {"from":"/lfo"}` target
-     the same slot.
-   - **A wire must join matching Arg types.** `value`→`value`, `signal`→`signal`,
-     `message`→`message`, `harmony`→`harmony`. A numeric wired into a `message` input (or a
-     symbol into an audio input) is a `TypeMismatch` error. The two numeric kinds are one wiring
-     family with exactly one implicit bridge (ADR-0031): a `value` source into a `signal` input
-     ZOH-materializes (a constant `cutoff` still works). The reverse — a `signal` source into a
-     `value` input, e.g. an envelope's `cv` into a gate — is a **hard plan error**: there is no
-     implicit sample-and-hold, and the explicit sig→val converter ops don't exist yet. There is
-     **no Message-vs-Signal carrier** anymore: a `value` or `signal` input takes a literal, a
-     wire, OR live OSC directly — you do **not** need a `map`→`m2s` front-end just to drive a
-     filter's `cutoff`.
-   - **`Constant`s go in `config`, not `inputs`.** Today that's the Voicer's `voices`
-     (`"config": { "voices": 8 }`). Putting it in `inputs` is a `ConstantInInputs` error.
-   - Out-of-range numeric literals are clamped; an unknown `enum` symbol or out-of-range index is
-     an error (it never snaps to a default).
-   - A node needing a sample names a `sample` id present in the top-level `resources` table.
+   `instruments/*.json` (e.g. `chord-player.json`) rather than a blank file. The format rules
+   the loader enforces — node `inputs` (literals vs wire-refs) and `config`, the wire-form
+   rules and their one implicit coercion, `Constant`s, `interface` pipes, `resources` — are
+   the **authoring guide's** content, not this skill's: read
+   [docs/agents/authoring.md](../../docs/agents/authoring.md) (served to MCP clients as
+   `reuben://guide/authoring`) and draft against it so step 3 passes first try.
 
 3. **Validate — loop until `ok`.**
    `cargo run -q -p reuben-native --bin reuben -- validate <path> --json`
