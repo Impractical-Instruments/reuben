@@ -38,7 +38,7 @@ pub struct Node {
     /// save, never `inputs`.
     pub constant_overrides: Vec<(usize, Arg)>,
     /// The logical `sample` resource id (ADR-0016) this node referenced in its document, retained so
-    /// [`InstrumentDoc::from_graph`](crate::format::InstrumentDoc::from_graph) can round-trip it on
+    /// [`NormalizedDoc::from_graph`](crate::format::NormalizedDoc::from_graph) can round-trip it on
     /// save. `None` unless the node declared a `sample` slot and named an id. The *decoded bytes* are
     /// bound out-of-band and do not round-trip; only this id does.
     pub sample_id: Option<String>,
@@ -106,7 +106,7 @@ pub struct Graph {
     /// historical mono fan). Summed into the rendered output.
     pub outputs: Vec<(NodeKey, usize, Option<usize>)>,
     /// The resolved `interface` boundary (ADR-0032), empty unless declared. Set by the loader's
-    /// [`build`](crate::format::InstrumentDoc::build) after nodes/wires resolve.
+    /// [`build`](crate::format::NormalizedDoc::build) after nodes/wires resolve.
     pub interface: Interface,
     /// Derived **logical input width** (ADR-0038 §3): max bound input channel + 1 across this
     /// graph's own input pipes, `0` when none binds a channel — a patch that uses no inputs pays

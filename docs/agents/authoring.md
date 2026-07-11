@@ -328,7 +328,7 @@ it never silently snaps to the default.
 Embedders can add their own types without touching the core via `Registry::register` — the
 seam for the "agents author new Operators in Rust" goal ([ADR-0004](../adr/0004-ai-authorability-first-class.md)).
 
-## The Instrument format (`crates/reuben-core/src/format.rs`)
+## The Instrument format (`crates/reuben-core/src/format/`)
 
 An Instrument is plain JSON data ([ADR-0028](../adr/0028-one-input-shape.md); **format v3**
 since [ADR-0043](../adr/0043-surface-docs-decouple-presentation-from-instruments.md)): `nodes` (operator
@@ -445,8 +445,14 @@ a leftover per-node `control` block or pipe `label`/`widget` — v2's retired pr
 `DeprecatedPipePresentation`): never fatal, never silent, and sound is unaffected (the engine
 never read them; re-saving strips them). Migrated-vs-native renders are **bit-identical**
 (asserted in `crates/reuben-core/tests/format_v2.rs` and `format_v3.rs`). Save writes v3 — a
-migrated document never saves back under its old number. To **save**, serialize
-the `InstrumentDoc` (nested references survive); `InstrumentDoc::from_graph` is the explicit
+migrated document never saves back under its old number. The whole normalize pipeline —
+version gate, migrations, stamp — lives in `format/normalize.rs` behind the **`NormalizedDoc`**
+type ([ADR-0044](../adr/0044-normalization-is-a-type.md)): `NormalizedDoc::from_json` is the
+one mint (a hand-deserialized `InstrumentDoc` enters via `NormalizedDoc::from_doc`), building a
+`Graph` is `NormalizedDoc::build`, so a document past the gate is current-shaped and migrated
+exactly once — held by the compiler, not re-checks. To **save**, serialize
+the `InstrumentDoc` (nested references survive; a `NormalizedDoc` derefs to one, or take
+`into_inner()`); `NormalizedDoc::from_graph` is the explicit
 flatten/export path — a built graph's spliced subpatches appear as their inlined nodes.
 
 A Voicer node references a **voice sub-patch** the same way, by a **`voice`** field naming a standalone

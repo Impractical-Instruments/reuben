@@ -12,7 +12,7 @@ use reuben_core::message::Message;
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
 use reuben_core::resources::{ResolveError, ResourceResolver, SampleBuffer};
-use reuben_core::{load_instrument, AudioConfig, InstrumentDoc, Registry};
+use reuben_core::{load_instrument, AudioConfig, NormalizedDoc, Registry};
 
 const BLOCK: usize = 128;
 const BLOCKS: usize = 20;
@@ -140,7 +140,7 @@ fn v2_control_block_is_ignored_with_a_warning_and_save_strips_it() {
         loaded.warnings
     );
 
-    let doc = InstrumentDoc::from_json(V2_WITH_CONTROL, &Registry::builtin()).expect("parse");
+    let doc = NormalizedDoc::from_json(V2_WITH_CONTROL, &Registry::builtin(), None).expect("parse");
     let saved = doc.to_json_pretty();
     assert!(
         !saved.contains("\"control\""),
@@ -217,8 +217,8 @@ fn v2_pipe_label_and_widget_are_ignored_with_warnings_and_save_strips_them() {
         );
     }
 
-    let doc =
-        InstrumentDoc::from_json(V2_WITH_PIPE_PRESENTATION, &Registry::builtin()).expect("parse");
+    let doc = NormalizedDoc::from_json(V2_WITH_PIPE_PRESENTATION, &Registry::builtin(), None)
+        .expect("parse");
     let saved = doc.to_json_pretty();
     assert!(
         !saved.contains("\"label\"") && !saved.contains("\"widget\""),
@@ -255,7 +255,7 @@ fn v3_stamped_doc_with_leftovers_degrades_identically() {
         "expected the same DeprecatedControlBlock warning under a v3 stamp, got: {:?}",
         loaded.warnings
     );
-    let doc = InstrumentDoc::from_json(&v3, &Registry::builtin()).expect("parse");
+    let doc = NormalizedDoc::from_json(&v3, &Registry::builtin(), None).expect("parse");
     assert!(!doc.to_json_pretty().contains("\"control\""));
 }
 
@@ -267,7 +267,7 @@ fn v1_doc_migrates_through_to_v3_and_save_writes_v3() {
         "inputs":{"tone":{"target":"/filter.cutoff","label":"Tone"}},
         "outputs":{"out":"/filter.audio"}},
     "nodes":[{"type":"filter","address":"/filter","inputs":{"cutoff":4000.0}}]}"#;
-    let doc = InstrumentDoc::from_json(v1, &Registry::builtin()).expect("v1 keeps loading");
+    let doc = NormalizedDoc::from_json(v1, &Registry::builtin(), None).expect("v1 keeps loading");
     let saved = doc.to_json_pretty();
     assert!(
         saved.contains("\"format_version\": 3"),

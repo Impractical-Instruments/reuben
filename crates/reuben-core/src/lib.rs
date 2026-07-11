@@ -54,7 +54,7 @@ pub use descriptor::Descriptor;
 pub use engine::{Engine, FromDocumentError};
 pub use format::{
     load, load_instrument, load_instrument_doc, resolve_instrument, DocValue, InstrumentDoc,
-    InterfaceDoc, LoadError, LoadWarning, Loaded,
+    InterfaceDoc, LoadError, LoadWarning, Loaded, NormalizedDoc,
 };
 pub use graph::{Graph, Interface, NodeKey};
 pub use message::{Arg, Message};

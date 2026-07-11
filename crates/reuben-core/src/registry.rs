@@ -88,7 +88,7 @@ impl Registry {
     ///
     /// Panics on the reserved name `"pipe"`: interface pipes are **loader-built** (ADR-0038 §2
     /// — declared through `interface.inputs` entries, never as document nodes), and save
-    /// (`InstrumentDoc::from_graph`) identifies pipe nodes by that type name — a registered
+    /// (`NormalizedDoc::from_graph`) identifies pipe nodes by that type name — a registered
     /// `"pipe"` operator's nodes would silently vanish on save. Fail loudly at registration
     /// (a programming error in the embedder, not a document error).
     pub fn register(&mut self, make: fn() -> Box<dyn Operator>, descriptor: Descriptor) {

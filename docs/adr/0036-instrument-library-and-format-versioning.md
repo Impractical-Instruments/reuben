@@ -1,5 +1,11 @@
 # ADR-0036: Instrument library — resolution identity, search path, save source of truth, and format versioning
 
+> **Amended by [ADR-0044](0044-normalization-is-a-type.md).** §4's parse-boundary gate is now
+> held by a type: `NormalizedDoc` mints once in `format/normalize.rs` (gate + migrate + strip +
+> stamp), `build` and the load paths accept it by type, and the "load path re-checks the
+> version" defensive re-run this section describes is deleted — a raw `Deserialize`d document
+> enters via `NormalizedDoc::from_doc` instead.
+
 ## Status
 
 Accepted (2026-07-02). Resolved in a grilling session — the design half of nesting **P7**
