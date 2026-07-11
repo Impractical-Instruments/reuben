@@ -1,13 +1,17 @@
 //! Realtime-safety invariant: once warmed up, `Renderer::render_block` performs **zero**
 //! heap allocation — neither while sustaining a held note nor while delivering note
-//! messages (events are zero-copy views). A process-global counting allocator makes any
-//! allocation on the audio path observable.
+//! messages (events are zero-copy views). A counting allocator makes any allocation on
+//! the audio path observable.
 //!
-//! This file is its own test binary with a single test, so no sibling test runs
-//! concurrently to perturb the global allocation counter.
+//! This file is its own test binary with a single test. Counting is armed per-thread by
+//! the shared [`rt_alloc`] harness — each measured window arms this thread only around
+//! the render loop under test — so an allocation on a libtest harness thread cannot
+//! interleave into a window and perturb the count under parallel load.
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+mod rt_alloc;
+
+use rt_alloc::{measure, Counting};
+
 use std::sync::Arc;
 
 use reuben_core::message::{Arg, Message};
@@ -33,26 +37,6 @@ impl ResourceResolver for InstrumentsDir {
     fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
         let path = format!("{}/tests/fixtures/{source}", env!("CARGO_MANIFEST_DIR"));
         std::fs::read_to_string(&path).map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))
-    }
-}
-
-/// Number of `alloc`/`realloc` calls since process start.
-static ALLOCS: AtomicUsize = AtomicUsize::new(0);
-
-/// System allocator that counts allocations and reallocations (i.e. heap growth).
-struct Counting;
-
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
-        System.alloc(layout)
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        System.dealloc(ptr, layout)
-    }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
-        System.realloc(ptr, layout, new_size)
     }
 }
 
@@ -89,20 +73,22 @@ fn render_block_is_allocation_free_after_warmup() {
     }
 
     // Steady state: a held note with no new messages must not allocate.
-    let before = ALLOCS.load(Ordering::Relaxed);
-    for _ in 0..1000 {
-        r.render_block(&mut plan, &[], &mut out);
-    }
-    let held = ALLOCS.load(Ordering::Relaxed) - before;
+    let held = measure(|| {
+        for _ in 0..1000 {
+            r.render_block(&mut plan, &[], &mut out);
+        }
+    })
+    .allocs;
     assert_eq!(held, 0, "held-note render allocated {held} time(s)");
 
     // Message-bearing blocks must also not allocate — events are zero-copy views onto the caller's
     // Messages, and the Voicer reuses its per-voice message buffer (no per-block String alloc).
-    let before = ALLOCS.load(Ordering::Relaxed);
-    for _ in 0..100 {
-        r.render_block(&mut plan, &note_on, &mut out);
-    }
-    let with_msgs = ALLOCS.load(Ordering::Relaxed) - before;
+    let with_msgs = measure(|| {
+        for _ in 0..100 {
+            r.render_block(&mut plan, &note_on, &mut out);
+        }
+    })
+    .allocs;
     assert_eq!(
         with_msgs, 0,
         "message-bearing render allocated {with_msgs} time(s)"
@@ -147,22 +133,24 @@ fn render_block_is_allocation_free_after_warmup() {
     }
 
     // Steady state: a sounding/parked one-shot with no new messages must not allocate.
-    let before = ALLOCS.load(Ordering::Relaxed);
-    for _ in 0..1000 {
-        r.render_block(&mut plan, &[], &mut out);
-    }
-    let sample_held = ALLOCS.load(Ordering::Relaxed) - before;
+    let sample_held = measure(|| {
+        for _ in 0..1000 {
+            r.render_block(&mut plan, &[], &mut out);
+        }
+    })
+    .allocs;
     assert_eq!(
         sample_held, 0,
         "sample rig steady-state allocated {sample_held} time(s)"
     );
 
     // Retriggering every block (gate rising edges) must also be allocation-free.
-    let before = ALLOCS.load(Ordering::Relaxed);
-    for _ in 0..100 {
-        r.render_block(&mut plan, &trigger, &mut out);
-    }
-    let sample_retrig = ALLOCS.load(Ordering::Relaxed) - before;
+    let sample_retrig = measure(|| {
+        for _ in 0..100 {
+            r.render_block(&mut plan, &trigger, &mut out);
+        }
+    })
+    .allocs;
     assert_eq!(
         sample_retrig, 0,
         "retriggering sample render allocated {sample_retrig} time(s)"
@@ -202,11 +190,12 @@ fn render_block_is_allocation_free_after_warmup() {
     for _ in 0..16 {
         r.render_block(&mut plan, &[], &mut out);
     }
-    let before = ALLOCS.load(Ordering::Relaxed);
-    for _ in 0..1000 {
-        r.render_block(&mut plan, &[], &mut out);
-    }
-    let nested_held = ALLOCS.load(Ordering::Relaxed) - before;
+    let nested_held = measure(|| {
+        for _ in 0..1000 {
+            r.render_block(&mut plan, &[], &mut out);
+        }
+    })
+    .allocs;
     assert_eq!(
         nested_held, 0,
         "nested-instrument steady-state allocated {nested_held} time(s)"
@@ -238,11 +227,12 @@ fn render_block_is_allocation_free_after_warmup() {
     for _ in 0..16 {
         r.render_block_multi(&mut plan, &[], &inputs, &mut master, &mut outbound);
     }
-    let before = ALLOCS.load(Ordering::Relaxed);
-    for _ in 0..1000 {
-        r.render_block_multi(&mut plan, &[], &inputs, &mut master, &mut outbound);
-    }
-    let input_held = ALLOCS.load(Ordering::Relaxed) - before;
+    let input_held = measure(|| {
+        for _ in 0..1000 {
+            r.render_block_multi(&mut plan, &[], &inputs, &mut master, &mut outbound);
+        }
+    })
+    .allocs;
     assert_eq!(
         input_held, 0,
         "input-master render allocated {input_held} time(s)"
@@ -282,11 +272,12 @@ fn render_block_is_allocation_free_after_warmup() {
 
     // Steady state: another 800 blocks — multiple beats, so note emissions, event routing, and
     // voice retriggers all happen *inside* the measured window — must not allocate.
-    let before = ALLOCS.load(Ordering::Relaxed);
-    for _ in 0..800 {
-        r.render_block(&mut plan, &[], &mut out);
-    }
-    let sequenced = ALLOCS.load(Ordering::Relaxed) - before;
+    let sequenced = measure(|| {
+        for _ in 0..800 {
+            r.render_block(&mut plan, &[], &mut out);
+        }
+    })
+    .allocs;
     assert_eq!(
         sequenced, 0,
         "sequenced-rig steady-state render allocated {sequenced} time(s)"
