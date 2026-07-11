@@ -9,11 +9,20 @@
 //! migration table, `swap_document`) lands in later tickets on top of these primitives.
 //!
 //! Like the rest of reuben-core, this module is OS-free: no clock, no threads, no I/O.
+//!
+//! ADR-0046's M2 pieces live here on top of the primitives: [`manifest`] (the installed-Plan
+//! manifest, the survivor-key fingerprint, and the migration table, §§4,5) and [`swap`] (the
+//! passive [`Coordinator`] struct, §7 — `swap_document` builds a whole new Engine off-thread,
+//! precomputes the migration table, and fills the install mailbox; single-writer via `&mut self`).
 
 pub mod mailbox;
+pub mod manifest;
+pub mod swap;
 pub mod wire;
 
 pub use mailbox::{
     swap_pair, CoordinatorMailbox, ReclaimError, RenderMailbox, SwapInFlight, SwapTimeout,
 };
+pub use manifest::{build_manifest, Manifest, MigrationTable, NodeIdentity};
+pub use swap::{Coordinator, InstallBundle, RenderSide};
 pub use wire::{DiagnosticsReport, DocSource, Request, Response};

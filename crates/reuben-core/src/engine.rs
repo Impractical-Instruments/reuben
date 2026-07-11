@@ -173,6 +173,30 @@ impl Engine {
         self.outbound.drain(..)
     }
 
+    /// Transplant survivor operator boxes from a `retiring` Engine into this (freshly built) one,
+    /// per a precomputed migration table (ADR-0046 §4). Each `(old_index, new_index)` pair moves
+    /// the surviving box — its operator instance *is* its state (ADR-0046 §4), including a voicer's
+    /// hosted voice sub-plans — from `retiring.nodes[old_index]` into `self.nodes[new_index]`; the
+    /// displaced cold box lands in `retiring` and frees off-thread with it. The new Plan's wiring
+    /// and latches (which live in the PlanNode, not the box) stay this Engine's, so a survivor
+    /// re-reads its inputs from the *new* document (ADR-0045 §2). The survivor key
+    /// ([`crate::coordinator::manifest`]) guarantees each pair shares operator type + instantiate-
+    /// time identity, so the transplanted box's internal layout matches its new Plan node.
+    ///
+    /// **RT-safe:** a bounded loop of [`std::mem::swap`] over `Vec<Box<dyn Operator>>` — pointer
+    /// swaps only, no allocation, no drop, no lock. This is the transplant the render-side install
+    /// slot (ticket #321) runs at the callback top; it is exposed here because the primitive
+    /// touches Engine internals, while the migration *table* (which pairs, computed how) is owned
+    /// by the Coordinator side.
+    pub fn transplant_survivors(&mut self, retiring: &mut Engine, pairs: &[(usize, usize)]) {
+        for &(old_index, new_index) in pairs {
+            std::mem::swap(
+                &mut retiring.plan.nodes[old_index].ops,
+                &mut self.plan.nodes[new_index].ops,
+            );
+        }
+    }
+
     /// Fill `out` with **interleaved logical** samples, rendering core blocks as needed.
     /// `out.len()` must be a multiple of [`Engine::channels`]; frame `f`, channel `c` lands at
     /// `out[f * channels + c]`. The no-input convenience: an instrument's bound input pipes
