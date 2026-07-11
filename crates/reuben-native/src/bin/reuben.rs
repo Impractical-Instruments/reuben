@@ -251,6 +251,18 @@ fn cmd_describe(op: Option<&str>, json: bool, root: Option<PathBuf>) -> ExitCode
     ExitCode::SUCCESS
 }
 
+/// One diagnostic on stderr, the loader's localization in brackets when it named one:
+/// `error [/osc freq]: …` / `warning [/voicer]: …` / `error: …`. Errors and warnings share
+/// this shape — warnings are localized Diags too (ADR-0048 §4).
+fn print_diag(level: &str, d: &reuben_core::contract::Diag) {
+    match (&d.node, &d.port) {
+        (Some(n), Some(p)) => eprintln!("{level} [{n} {p}]: {}", d.message),
+        (Some(n), None) => eprintln!("{level} [{n}]: {}", d.message),
+        (None, Some(p)) => eprintln!("{level} [{p}]: {}", d.message),
+        (None, None) => eprintln!("{level}: {}", d.message),
+    }
+}
+
 /// `describe <patch.json>`: the nested-instrument boundary view — the `interface` pipes a host
 /// wires against (ADR-0038 §2): an input pipe's own declared type/range/default, an output pipe's
 /// type and metadata inherited from the internal port feeding it plus optional min/max range
@@ -287,7 +299,7 @@ fn cmd_describe_patch(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCod
     }
 
     for w in &boundary.warnings {
-        eprintln!("warning: {w}");
+        print_diag("warning", w);
     }
     println!("{} (instrument boundary)", boundary.instrument);
     if boundary.is_empty() {
@@ -324,14 +336,10 @@ fn cmd_validate(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCode {
         );
     } else {
         for e in &report.errors {
-            match (&e.node, &e.port) {
-                (Some(n), Some(p)) => eprintln!("error [{n} {p}]: {}", e.message),
-                (Some(n), None) => eprintln!("error [{n}]: {}", e.message),
-                _ => eprintln!("error: {}", e.message),
-            }
+            print_diag("error", e);
         }
         for w in &report.warnings {
-            eprintln!("warning: {w}");
+            print_diag("warning", w);
         }
         if report.ok {
             println!("ok ({} warning(s))", report.warnings.len());

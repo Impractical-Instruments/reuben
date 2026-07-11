@@ -180,6 +180,14 @@ fn validate_treats_a_missing_resource_as_advisory_not_invalid() {
         "the unresolved sample should warn: {:?}",
         report.warnings
     );
+    // ADR-0048 §4 warning-promotion: warnings are Diags, localized like errors, so the agent
+    // jumps to the offending node for a warning exactly as for an error.
+    assert_eq!(
+        report.warnings[0].node.as_deref(),
+        Some("/voicer"),
+        "the warning should localize the node: {:?}",
+        report.warnings
+    );
 }
 
 #[test]

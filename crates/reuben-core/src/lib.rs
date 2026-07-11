@@ -29,6 +29,7 @@ pub mod op_driver;
 
 pub mod boundary;
 pub mod config;
+pub mod contract;
 pub mod describe;
 pub mod descriptor;
 pub mod dsp;
@@ -49,6 +50,7 @@ pub mod vocab;
 pub mod wavetable;
 
 pub use config::AudioConfig;
+pub use contract::{content_hash, Diag, DiffSummary, Report, SwapReport};
 pub use describe::{describe_boundary, BoundaryDesc, BoundaryPortDesc};
 pub use descriptor::Descriptor;
 pub use engine::{Engine, FromDocumentError};

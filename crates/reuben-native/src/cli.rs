@@ -4,8 +4,9 @@
 //! These back the `reuben describe` / `reuben validate` subcommands but are pure functions
 //! over [`Registry`] + JSON so they test through real load/plan code paths, not a process.
 
+use reuben_core::contract::{Diag, Report};
 use reuben_core::descriptor::{Curve, Descriptor, Port, PortType};
-use reuben_core::format::{DocValue, LoadError, NormalizedDoc};
+use reuben_core::format::{DocValue, NormalizedDoc};
 use reuben_core::plan::Plan;
 use reuben_core::resources::ResourceResolver;
 use reuben_core::{
@@ -207,9 +208,11 @@ pub struct PatchBoundary {
     pub dark_inputs: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dark_outputs: Vec<String>,
-    /// Non-fatal load warnings (unresolved resources etc.), advisory as in `validate`.
+    /// Non-fatal load warnings (unresolved resources etc.), advisory as in `validate` and
+    /// localized the same way (ADR-0048 §4): each carries the offending node when the loader
+    /// named one.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub warnings: Vec<String>,
+    pub warnings: Vec<Diag>,
 }
 
 impl PatchBoundary {
@@ -276,75 +279,19 @@ pub fn describe_patch(
         outputs: b.outputs.into_iter().map(PortInfo::from_boundary).collect(),
         dark_inputs: b.dark_inputs,
         dark_outputs: b.dark_outputs,
-        warnings: loaded.warnings.iter().map(|w| w.to_string()).collect(),
+        warnings: loaded.warnings.iter().map(Diag::from_warning).collect(),
     })
-}
-
-/// One validation problem, with the offending node/port when the loader localized it.
-#[derive(Debug, Serialize)]
-pub struct Diag {
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub node: Option<String>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub port: Option<String>,
-    pub message: String,
-}
-
-impl Diag {
-    /// Carry the loader's human message verbatim, but pull the node/port the loader already
-    /// localized into structured fields so an agent can jump straight to the offending node.
-    fn from_load(e: &LoadError) -> Self {
-        let (node, port) = match e {
-            LoadError::UnknownType { address, .. } => (Some(address.clone()), None),
-            LoadError::DuplicateAddress(a) | LoadError::UnknownNode(a) => (Some(a.clone()), None),
-            LoadError::UnknownPort { node, port } => (Some(node.clone()), Some(port.clone())),
-            LoadError::UnknownInput { node, input } => (Some(node.clone()), Some(input.clone())),
-            LoadError::BadInputValue { node, input, .. } => {
-                (Some(node.clone()), Some(input.clone()))
-            }
-            LoadError::UnknownConfig { node, .. }
-            | LoadError::ConstantInInputs { node, .. }
-            | LoadError::AmbiguousWire { node, .. }
-            | LoadError::UnknownResource { node, .. } => (Some(node.clone()), None),
-            // A boundary-named problem: the offending "node" is the interface entry itself.
-            LoadError::InterfaceOverride { name, .. } | LoadError::InterfacePipe { name, .. } => {
-                (None, Some(name.clone()))
-            }
-            LoadError::TypeMismatch { .. }
-            | LoadError::Json(_)
-            | LoadError::CyclicResource { .. }
-            | LoadError::UnsupportedVersion { .. }
-            | LoadError::AnonymousOutputs => (None, None),
-        };
-        Diag {
-            node,
-            port,
-            message: e.to_string(),
-        }
-    }
-}
-
-/// Outcome of validating an instrument: loadable + cycle-free means `ok`. Resource problems
-/// are advisory `warnings` (ADR-0016) and do not flip `ok`.
-#[derive(Debug, Serialize)]
-pub struct ValidateReport {
-    pub ok: bool,
-    pub errors: Vec<Diag>,
-    pub warnings: Vec<String>,
 }
 
 /// Validate an instrument the same way the engine would build it — full load (structural +
 /// wiring + kind-checking) plus a `Plan::instantiate` to catch cycles — but with a synthetic
-/// [`AudioConfig`], so no audio device is opened and nothing renders.
-pub fn validate(
-    json: &str,
-    registry: &Registry,
-    resolver: &dyn ResourceResolver,
-) -> ValidateReport {
+/// [`AudioConfig`], so no audio device is opened and nothing renders. The result is the
+/// contract [`Report`] every conversational door serializes (ADR-0048 §§4–5, ADR-0052 §5).
+pub fn validate(json: &str, registry: &Registry, resolver: &dyn ResourceResolver) -> Report {
     let loaded = match load_instrument(json, registry, resolver) {
         Ok(l) => l,
         Err(e) => {
-            return ValidateReport {
+            return Report {
                 ok: false,
                 errors: vec![Diag::from_load(&e)],
                 warnings: Vec::new(),
@@ -352,15 +299,15 @@ pub fn validate(
         }
     };
 
-    let warnings = loaded.warnings.iter().map(|w| w.to_string()).collect();
+    let warnings = loaded.warnings.iter().map(Diag::from_warning).collect();
 
     match Plan::instantiate(loaded.graph, AudioConfig::default()) {
-        Ok(_) => ValidateReport {
+        Ok(_) => Report {
             ok: true,
             errors: Vec::new(),
             warnings,
         },
-        Err(reuben_core::plan::PlanError::Cycle) => ValidateReport {
+        Err(reuben_core::plan::PlanError::Cycle) => Report {
             ok: false,
             errors: vec![Diag {
                 node: None,
@@ -369,7 +316,7 @@ pub fn validate(
             }],
             warnings,
         },
-        Err(reuben_core::plan::PlanError::FormMismatch { src, dst, reason }) => ValidateReport {
+        Err(reuben_core::plan::PlanError::FormMismatch { src, dst, reason }) => Report {
             ok: false,
             errors: vec![Diag {
                 node: None,
