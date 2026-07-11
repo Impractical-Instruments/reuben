@@ -631,7 +631,10 @@ enum MainCommand {
         resolver: FsResolver,
         reply: mpsc::Sender<Result<(), String>>,
     },
-    /// Stop serving and begin teardown.
+    /// Stop serving and begin teardown. Only constructed by the `#[cfg(unix)]` signal-handler
+    /// bridge; on non-unix there is no signal path, so the variant is intentionally unconstructed
+    /// (the process exits via the OS default on Ctrl-C).
+    #[cfg_attr(not(unix), allow(dead_code))]
     Shutdown,
 }
 
