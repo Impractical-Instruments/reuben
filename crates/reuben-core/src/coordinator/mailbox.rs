@@ -270,6 +270,20 @@ impl<T: Send> CoordinatorMailbox<T> {
 }
 
 impl<T: Send> RenderMailbox<T> {
+    /// Whether an install is waiting to be drained — a plain `Acquire` load, no RMW, no
+    /// alloc/free/lock (RT-safe).
+    ///
+    /// The install slot ramp (ADR-0050 §2) "sees the pending Engine in the install slot
+    /// but does not consume it immediately": the render side peeks with this to *begin*
+    /// the master-gain down-ramp, then drains with [`take_install`](Self::take_install)
+    /// only when the ramp reaches zero. Peeking (a load) rather than draining (a `swap`)
+    /// on the steady-state miss keeps the empty callback from stealing the install slot's
+    /// cache line from the Coordinator on every poll — the same reason
+    /// [`try_reclaim`](CoordinatorMailbox::try_reclaim) peeks the retire slot first.
+    pub fn has_install(&self) -> bool {
+        self.shared.install.is_occupied()
+    }
+
     /// Drain the install slot (RT-safe: one atomic swap, no alloc/free/lock).
     ///
     /// `Acquire` pairs with the Coordinator's `Release` publish. `Box::from_raw` is a
