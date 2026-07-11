@@ -150,3 +150,4 @@ The MVP is a headless "it makes a sound" spine: the portable-core / native-crate
 - [0047 — Normalization is a type: `NormalizedDoc` mints once at the gate](adr/0047-normalization-is-a-type.md)
 - [0048 — MCP tool surface and contracts: eight tools, path-or-value transport, failed validation is a successful call](adr/0048-mcp-tool-surface-and-contracts.md)
 - [0049 — No resource bytes over MCP: samples ride the filesystem convention](adr/0049-no-resource-bytes-over-mcp.md)
+- [0050 — Swap sonic-rudeness policy: a fixed master-gain ramp around install](adr/0050-swap-sonic-rudeness-ramp.md)
