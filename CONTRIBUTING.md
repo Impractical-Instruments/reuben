@@ -38,3 +38,27 @@ The pinned version and the MSRV are kept **in lockstep** (see
 Two spots, one conceptual change. The `lockstep` CI job fails the build if they don't match,
 so a forgotten second edit is caught immediately. CI then verifies the new floor for free (it builds on
 the pinned toolchain, which equals the MSRV).
+
+## Branching & release flow
+
+The repo runs a two-branch model (see [ADR-0055](./docs/adr/0055-dev-staging-branch-strategy.md)):
+
+- **`dev`** is the default, long-lived integration branch. **Open every PR against `dev`.**
+- Pushing to `dev` runs the full CI suite and deploys the **staging** app at
+  <https://dev.reuben-web-player.pages.dev>. Per-PR previews are unchanged — each PR still gets its
+  own ephemeral preview URL.
+- **`main` is production and ships by promotion, never by a direct merge.** Run the manual
+  **[Promote dev to main](./.github/workflows/promote.yml)** workflow (Actions → *Promote dev to
+  main* → Run workflow). It fast-forwards `main` to `dev` and the resulting push deploys production.
+
+**Never commit or push directly to `main`.** A commit on `main` that isn't from `dev` diverges the
+two branches and breaks the fast-forward promotion until `main` is merged back into `dev`. If a
+hotfix ever *must* land on `main` directly, immediately reconcile with `git checkout dev && git merge
+main` so `dev → main` stays fast-forwardable.
+
+After the default branch switched to `dev`, run this once locally so `origin/HEAD` — and
+`scripts/clean-merged-branches.sh`, which auto-targets the default branch — follow it:
+
+```sh
+git remote set-head origin -a
+```

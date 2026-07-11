@@ -1,0 +1,58 @@
+name: Promote dev to main (production)
+
+# Production ships by PROMOTION, not by a merge button. This manually-dispatched workflow
+# fast-forwards `main` to `dev` (a true `git merge --ff-only`, preserving SHAs so the two
+# long-lived branches never diverge — no GitHub merge button does a true ff) and pushes with a
+# GitHub App token. The App token, not GITHUB_TOKEN, does the write for two reasons: `main`'s
+# ruleset restricts pushes to the App's bypass entry, and a GITHUB_TOKEN-authored push does NOT
+# trigger downstream workflows — so the `push: [main]` CI → production deploy would silently never
+# fire. See ADR-0055 for the full rationale and the maintainer setup this depends on.
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read # the App token, not GITHUB_TOKEN, does the write
+
+jobs:
+  promote:
+    name: Fast-forward main to dev
+    runs-on: ubuntu-latest
+    steps:
+      # Fail loud and early with the fix if the promotion App isn't provisioned, instead of a
+      # confusing token-mint error two steps down.
+      - name: Check promotion App secrets are present
+        env:
+          APP_ID: ${{ secrets.PROMOTE_APP_ID }}
+          APP_KEY: ${{ secrets.PROMOTE_APP_PRIVATE_KEY }}
+        run: |
+          if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
+            echo "::error title=Promotion App not configured::Set PROMOTE_APP_ID and PROMOTE_APP_PRIVATE_KEY repo secrets (see ADR-0055) and add the App to main's ruleset bypass list."
+            exit 1
+          fi
+
+      - name: Mint GitHub App token
+        id: app-token
+        uses: actions/create-github-app-token@v1
+        with:
+          app-id: ${{ secrets.PROMOTE_APP_ID }}
+          private-key: ${{ secrets.PROMOTE_APP_PRIVATE_KEY }}
+
+      # Check out with the App token so the later push is authored by the App (bypasses main's
+      # push-restriction AND triggers the downstream main-push CI). fetch-depth: 0 for the ff merge.
+      - name: Checkout with the App token
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+          token: ${{ steps.app-token.outputs.token }}
+
+      - name: Fast-forward main to dev and push
+        run: |
+          git fetch origin main dev
+          git checkout main
+          if ! git merge --ff-only origin/dev; then
+            echo "::error title=Cannot fast-forward::main has diverged from dev (likely a direct commit/hotfix on main). Merge main back into dev (git merge main) to restore fast-forwardability, then retry."
+            exit 1
+          fi
+          git push origin HEAD:main
