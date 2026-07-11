@@ -27,12 +27,15 @@ use std::path::Path;
 use rmcp::handler::server::tool::ToolRouter;
 use rmcp::handler::server::wrapper::Parameters;
 use rmcp::model::{
-    CallToolResult, ContentBlock, Implementation, ProtocolVersion, ServerCapabilities, ServerInfo,
+    CallToolResult, ContentBlock, Implementation, ListResourcesResult, PaginatedRequestParams,
+    ProtocolVersion, ReadResourceRequestParams, ReadResourceResult, Resource, ResourceContents,
+    ServerCapabilities, ServerInfo,
 };
+use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt};
 
 use reuben_core::introspect::{OperatorInfo, PatchBoundary};
-use reuben_core::{Registry, Report};
+use reuben_core::{schema, Registry, Report};
 use reuben_native::resources::FsResolver;
 use serde::{Deserialize, Serialize};
 
@@ -54,12 +57,53 @@ pub const TOOL_NAMES: [&str; 8] = [
 pub const ENGINE_UNREACHABLE_GUIDANCE: &str =
     "The reuben engine is not reachable. Start it in another terminal with `reuben play`, then retry.";
 
-/// Placeholder server `instructions` (ADR-0048 §7). The one-paragraph authoring gist — the
-/// document is truth; `send` to try, doc-edit + `swap` to keep; start `reuben play` first — is
-/// single-sourced against the skills by the resources ticket (#319), which replaces this text.
-const INSTRUCTIONS_PLACEHOLDER: &str =
-    "reuben authoring sidecar (M1 skeleton). Placeholder instructions — the authoring workflow \
-     text is filled in by the resources ticket (#319).";
+/// The `reuben://schema/instrument` resource URI (ADR-0048 §7): the instrument JSON Schema,
+/// generated live from the registry so it cannot drift. The authority for the URI advertised over
+/// `resources/list`; the integration test asserts the wire surface matches.
+pub const SCHEMA_RESOURCE_URI: &str = "reuben://schema/instrument";
+
+/// The `reuben://guide/authoring` resource URI (ADR-0048 §7): `docs/agents/authoring.md`, read
+/// from the checkout at request time (ADR-0051 §4).
+pub const GUIDE_RESOURCE_URI: &str = "reuben://guide/authoring";
+
+/// The MIME type advertised for [`SCHEMA_RESOURCE_URI`]. The body is a JSON Schema document; we
+/// serve it as `application/json` — the universally parseable form MCP clients special-case — not
+/// the narrower `application/schema+json` (ADR-0048 §7 fixes the URI, and leaves the MIME open).
+pub const SCHEMA_RESOURCE_MIME: &str = "application/json";
+
+/// The MIME type advertised for [`GUIDE_RESOURCE_URI`]: the authoring guide is CommonMark prose.
+pub const GUIDE_RESOURCE_MIME: &str = "text/markdown";
+
+/// The server `instructions` (ADR-0048 §7): the one-breath authoring gist. It carries the workflow
+/// semantics — the document is durable truth; `send` to audition, doc-edit + `swap` to keep; start
+/// `reuben play` first — and *points* at `reuben://guide/authoring` rather than restating the
+/// contract (gist-and-point, ADR-0051 §4). The finalized prose is single-sourced by the
+/// content-pass (#311); this is the real-but-refinable surface text.
+const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is the durable \
+     truth; keep it in sync with the sound. Start `reuben play` in another terminal first — the \
+     engine tools (`send`, `swap`, `get_current_instrument`, `get_diagnostics`) fail fast until it \
+     is reachable. The loop: `send` OSC to audition a change (ephemeral — clobbered at the next \
+     swap), then edit the document and `swap` to make it durable. Read `reuben://guide/authoring` \
+     for the type system, wiring rules, instrument format, and the authoring loop; \
+     `reuben://schema/instrument` is the live instrument JSON Schema.";
+
+/// Absolute path to the authoring guide (`docs/agents/authoring.md`), anchored at build time to
+/// this crate's manifest dir (workspace-root-relative). The file is READ AT REQUEST TIME — never
+/// `include_str!` — so a sidecar built yesterday still serves today's guide (ADR-0051 §4); only the
+/// path is compile-time, valid in the checkout the sidecar is built and run from (the MVP persona,
+/// ADR-0044). Matches the repo convention for locating workspace files (`CARGO_MANIFEST_DIR`).
+const AUTHORING_GUIDE_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../docs/agents/authoring.md"
+);
+
+/// The instrument JSON Schema served at [`SCHEMA_RESOURCE_URI`], generated LIVE from the builtin
+/// registry (ADR-0048 §7) so it can never drift from the operator set — and in the exact pretty
+/// form committed to `crates/reuben-core/schema/instrument.schema.json`, so the served schema and
+/// the committed copy stay byte-identical (guarded by `read_schema_resource_matches_committed`).
+fn instrument_schema_json() -> String {
+    schema::generate_pretty(&Registry::builtin())
+}
 
 /// The engine-liveness seam (ADR-0044 §2). The real probe is the structure-channel `ping`
 /// (ADR-0046 §8), owned by the MCP client ticket **#315** — deliberately NOT implemented here, so
@@ -368,9 +412,9 @@ impl Default for ReubenServer {
 impl ServerHandler for ReubenServer {
     /// Declare the `tools` and `resources` capabilities and the `instructions` field (ADR-0048
     /// §7). Providing `get_info` ourselves is what lets us add `resources` beside the tool
-    /// router's `tools`; the static resource set (`reuben://schema/instrument`,
-    /// `reuben://guide/authoring`) and the final instruction prose are the resources ticket's
-    /// (#319) — this skeleton only declares the surface.
+    /// router's `tools`; the `resources` capability is a **static** set — no subscribe/listChanged
+    /// (ADR-0048 §7) — served by [`list_resources`](Self::list_resources) /
+    /// [`read_resource`](Self::read_resource).
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
         info.protocol_version = ProtocolVersion::LATEST;
@@ -379,8 +423,71 @@ impl ServerHandler for ReubenServer {
             .enable_resources()
             .build();
         info.server_info = Implementation::new("reuben-mcp", env!("CARGO_PKG_VERSION"));
-        info.instructions = Some(INSTRUCTIONS_PLACEHOLDER.to_string());
+        info.instructions = Some(INSTRUCTIONS.to_string());
         info
+    }
+
+    /// The static resource set (ADR-0048 §7): the live instrument schema and the authoring guide.
+    /// No `subscribe`/`listChanged` — the capability builder declares neither, and this list never
+    /// changes over a session, so there is no cursor to page.
+    async fn list_resources(
+        &self,
+        _request: Option<PaginatedRequestParams>,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ListResourcesResult, McpError> {
+        Ok(ListResourcesResult::with_all_items(vec![
+            Resource::new(SCHEMA_RESOURCE_URI, "instrument schema")
+                .with_title("Instrument JSON Schema")
+                .with_description(
+                    "The JSON Schema (draft 2020-12) for reuben instrument documents, generated \
+                     live from the operator registry so it can never drift from the operator set.",
+                )
+                .with_mime_type(SCHEMA_RESOURCE_MIME),
+            Resource::new(GUIDE_RESOURCE_URI, "authoring guide")
+                .with_title("Instrument authoring guide")
+                .with_description(
+                    "docs/agents/authoring.md — the type system and wiring rules, the instrument \
+                     format, addressing, and the try-then-commit authoring loop.",
+                )
+                .with_mime_type(GUIDE_RESOURCE_MIME),
+        ]))
+    }
+
+    /// Read one static resource (ADR-0048 §7), served from the checkout at request time (ADR-0051
+    /// §4): the schema is generated live from the registry, the guide is read from disk — never
+    /// `include_str!`, so a sidecar built yesterday still serves today's content. An unknown URI is
+    /// `resource_not_found`.
+    async fn read_resource(
+        &self,
+        request: ReadResourceRequestParams,
+        _context: RequestContext<RoleServer>,
+    ) -> Result<ReadResourceResult, McpError> {
+        let uri = request.uri.as_str();
+        let contents = match uri {
+            SCHEMA_RESOURCE_URI => ResourceContents::text(instrument_schema_json(), uri)
+                .with_mime_type(SCHEMA_RESOURCE_MIME),
+            GUIDE_RESOURCE_URI => {
+                let guide = std::fs::read_to_string(AUTHORING_GUIDE_PATH).map_err(|e| {
+                    McpError::internal_error(
+                        format!(
+                            "failed to read the authoring guide at {AUTHORING_GUIDE_PATH}: {e}"
+                        ),
+                        None,
+                    )
+                })?;
+                ResourceContents::text(guide, uri).with_mime_type(GUIDE_RESOURCE_MIME)
+            }
+            other => {
+                return Err(McpError::resource_not_found(
+                    format!(
+                        "unknown resource `{other}`; this server serves {SCHEMA_RESOURCE_URI} and \
+                         {GUIDE_RESOURCE_URI}"
+                    ),
+                    None,
+                ))
+            }
+        };
+        Ok(ReadResourceResult::new(vec![contents]))
     }
 }
 
