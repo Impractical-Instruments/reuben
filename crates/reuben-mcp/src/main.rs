@@ -5,7 +5,7 @@
 //!
 //! This is the composition root: it injects the real engine channel — an [`EngineLink`] dialing
 //! the shared `reuben_core::coordinator::DEFAULT_STRUCTURE_ADDR` over the structure channel (#315)
-//! and `reuben_mcp::DEFAULT_OSC_ADDR` for OSC control — so the engine tools reach a live
+//! and `reuben_mcp::default_osc_addr` for OSC control — so the engine tools reach a live
 //! `reuben play` and fail fast only when it is genuinely unreachable (ADR-0044 §2). The structure
 //! channel is blocking `std::net`, so it needs no tokio `net`/reactor feature; the fence stays intact.
 

@@ -30,4 +30,6 @@ pub use mailbox::{
 pub use manifest::{build_manifest, Manifest, MigrationTable, NodeIdentity};
 pub use slot::RenderSlot;
 pub use swap::{Coordinator, InstallBundle, RenderSide};
-pub use wire::{DiagnosticsReport, DocSource, Request, Response, DEFAULT_STRUCTURE_ADDR};
+pub use wire::{
+    DiagnosticsReport, DocSource, Request, Response, DEFAULT_OSC_PORT, DEFAULT_STRUCTURE_ADDR,
+};
