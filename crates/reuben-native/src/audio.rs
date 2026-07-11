@@ -52,7 +52,7 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, SupportedBufferSize};
 use reuben_core::coordinator::{
-    swap_pair, Coordinator, CoordinatorMailbox, RenderMailbox, RenderSide, RenderSlot,
+    swap_pair, Coordinator, CoordinatorMailbox, RenderMailbox, RenderSide, RenderSlot, SwapInFlight,
 };
 use reuben_core::format::LoadWarning;
 use reuben_core::message::Message;
@@ -66,6 +66,14 @@ use crate::structure::{dark_degrade_warning, RenderConfigPublisher};
 /// How often the periodic diagnostics logger wakes to check the counters (ADR-0038 §9). It only
 /// emits a line when something changed, so a healthy run stays quiet at this cadence regardless.
 const DIAGNOSTICS_LOG_INTERVAL: Duration = Duration::from_secs(5);
+
+/// How long [`NativeRenderConfig::publish`] polls to install a swap's output map before giving up
+/// (B1). The map mailbox is one-in-flight (ADR-0046 §2): install is refused until the *previous*
+/// swap's displaced map has come home, which the live render callback posts within ~one master-gain
+/// ramp (ADR-0050). This bound only bites when audio has genuinely stopped — and even then
+/// [`apply_output_map`]'s total read keeps a stale-width map safe. Generous, matching the structure
+/// channel's engine-reclaim bound.
+const RENDER_CONFIG_INSTALL_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Things that can go wrong opening the audio stream.
 #[derive(Debug)]
@@ -274,7 +282,7 @@ where
     // Input opens ONLY when the *initial* played instrument binds input channels (ADR-0038 §3/P5);
     // its width is fixed for the session. A later swap that binds input while no matching stream is
     // open dark-degrades (the callback feeds `&[]`); the warning rode the swap report.
-    let opened_input_channels = if in_channels > 0 { in_channels } else { 0 };
+    let opened_input_channels = in_channels;
     let (input_stream, mut input_stage) = if in_channels > 0 {
         let (stream, stage) = crate::input::open_input(
             &host,
@@ -511,16 +519,35 @@ impl RenderConfigPublisher for NativeRenderConfig {
         // Build the new engine's device output map off-thread, validated against the retained
         // device channel count (ADR-0046 §6).
         let map = build_output_map(&self.output_map, logical, self.device_channels);
-        let cfg = Box::new(RenderConfig { map, logical });
+        let mut cfg = Box::new(RenderConfig { map, logical });
         {
             let mut mailbox = self.mailbox.lock().expect("render config mailbox poisoned");
-            // Reclaim the previously-displaced map (the callback posted it back after promoting the
-            // last one) and free it here, off the render thread — then ship the new one.
-            let _ = mailbox.try_reclaim();
-            if mailbox.install(cfg).is_err() {
-                // The prior map's retiree is not home yet (the callback has not promoted it) — rare,
-                // and the map is only stale when the logical width changed. The rejected box drops
-                // here, off the audio thread; the old map keeps working and the next swap retries.
+            // Ship the new map, and **never drop it** (B1). A dropped map desyncs the two mailboxes:
+            // the engine advances to the new width while the callback's active map stays at the old
+            // one, and `apply_output_map` is then handed a stale-width map. The map mailbox is
+            // one-in-flight (ADR-0046 §2), so `install` is refused until the *previous* swap's
+            // displaced map has come home — which the live render callback posts at that swap's
+            // promote (within ~one ramp). This call runs *before* the structure thread's engine
+            // reclaim that proves the callback is consuming, so poll reclaim+install to a bounded
+            // deadline rather than dropping: the retiree arrives promptly, and the map is guaranteed
+            // installed before the swap returns, so the callback promotes it the moment the engine
+            // reaches the new width (no desync window). A timeout only bites if audio has genuinely
+            // stopped, and even then `apply_output_map`'s total read keeps the stale map safe.
+            let deadline = Instant::now() + RENDER_CONFIG_INSTALL_TIMEOUT;
+            loop {
+                let _ = mailbox.try_reclaim();
+                match mailbox.install(cfg) {
+                    Ok(()) => break,
+                    Err(SwapInFlight { rejected }) => {
+                        cfg = rejected;
+                        if Instant::now() >= deadline {
+                            // Audio isn't consuming maps; drop this update (off the audio thread).
+                            // The old map keeps working and `apply_output_map`'s total read is safe.
+                            break;
+                        }
+                        std::thread::sleep(Duration::from_millis(1));
+                    }
+                }
             }
         }
         // The input dark-degrade decision is native geometry too (ADR-0038 §7/§9).
@@ -837,6 +864,15 @@ pub(crate) fn for_each_duplicate_target(
 /// `Explicit` zeros every device channel the map doesn't target (ADR-0038 §7's degrade-to-silence)
 /// and then copies each validated `(logical, device)` pair. Allocation-free: `pairs`/`mapped` are
 /// built once at stream setup, never in the render callback.
+///
+/// **Total by construction (RT-safety).** The Explicit read is `logical_frame.get(l)`, not
+/// `logical_frame[l]`, so a momentary width disagreement between the active map and the buffer
+/// (`l >= logical_frame.len()`) degrades to a benign zero-fed device channel instead of an
+/// out-of-bounds **panic on the render thread** — the same totality the `Identity` arm's
+/// `map_frame` already has. The map/buffer widths are kept in lockstep by [`OutputMapSlot`] +
+/// [`NativeRenderConfig::publish`] (map install can never be dropped while the engine advances), so
+/// this fallback is defense-in-depth, only ever reachable in the ramp-ducked transition of a
+/// width-changing swap.
 fn apply_output_map(map: &OutputMap, logical_frame: &[f32], device_frame: &mut [f32]) {
     match map {
         OutputMap::Identity => map_frame(logical_frame, device_frame),
@@ -847,7 +883,7 @@ fn apply_output_map(map: &OutputMap, logical_frame: &[f32], device_frame: &mut [
                 }
             }
             for &(l, d) in pairs {
-                device_frame[d] = logical_frame[l];
+                device_frame[d] = logical_frame.get(l).copied().unwrap_or(0.0);
             }
         }
     }
@@ -1177,6 +1213,138 @@ mod tests {
         assert!(
             coord.try_reclaim().is_some(),
             "the same-width map promoted immediately and the old one was posted for off-thread free"
+        );
+    }
+
+    /// An instrument whose logical output width is `max_channel + 1` (ADR-0038 §3, floor 2): one
+    /// oscillator broadcast to logical channels 0 and `max_channel`. `width_doc(1)` is 2 wide,
+    /// `width_doc(3)` is 4 wide — distinct docs the Coordinator swaps between.
+    fn width_doc(max_channel: usize) -> String {
+        format!(
+            r#"{{ "format_version": 3, "instrument": "w",
+                 "interface": {{ "outputs": {{
+                    "a": {{ "from": "/osc.audio", "channel": 0 }},
+                    "b": {{ "from": "/osc.audio", "channel": {max_channel} }} }} }},
+                 "nodes": [ {{ "type": "oscillator", "address": "/osc" }} ] }}"#
+        )
+    }
+
+    #[test]
+    fn back_to_back_width_changing_swaps_keep_the_output_map_in_lockstep() {
+        // Regression for B1: a real `NativeRenderConfig` shipping maps across the render mailbox to
+        // an `OutputMapSlot`-driven fake callback (the real callback structure, not the map-less
+        // `RenderSlot::fill` fake), fired through two consecutive *width-changing* swaps — a widen
+        // (2→4) then a narrow (4→2) — with a device `output.map` referencing logical channel 3.
+        //
+        // The narrowing swap's map drops that channel-3 pair; if `publish` were allowed to drop the
+        // map while the previous one is still in flight (the pre-fix bug), the callback's active map
+        // would stay 4-wide while the engine/buffer narrowed to 2, and `apply_output_map` would read
+        // `logical_frame[3]` on a 2-wide frame — an out-of-bounds panic on the render thread (or,
+        // with the total read, a stale-width misroute). The fake callback flags any block where the
+        // active map width disagrees with the live engine width. With the fix (publish never drops;
+        // total `apply_output_map`) there is no desync and no panic.
+        use reuben_core::resources::MemoryResolver;
+        use reuben_core::Registry;
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+
+        let device_channels = 6usize;
+        let mut profile_map = BTreeMap::new();
+        profile_map.insert(0usize, 0usize);
+        profile_map.insert(3usize, 3usize); // valid only when the logical width exceeds 3
+
+        let (mut coordinator, side, _w) = Coordinator::install_initial(
+            &width_doc(1),
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            AudioConfig::new(48_000.0, 128),
+        )
+        .expect("initial install");
+        let init_logical = coordinator.installed_channels();
+        assert_eq!(
+            init_logical, 2,
+            "the initial rig is 2 logical channels wide"
+        );
+
+        let (map_coord, map_render) = swap_pair::<RenderConfig>();
+        let publisher = NativeRenderConfig {
+            mailbox: Mutex::new(map_coord),
+            device_channels,
+            output_map: profile_map.clone(),
+            opened_input_channels: 0,
+        };
+        let initial_map = build_output_map(&profile_map, init_logical, device_channels);
+        let map_slot = OutputMapSlot::new(
+            map_render,
+            Box::new(RenderConfig {
+                map: initial_map,
+                logical: init_logical,
+            }),
+        );
+
+        // The fake audio callback: the real per-block structure (sync → fill → apply), flagging a
+        // desync whenever the active map width ever disagrees with the live engine width.
+        let stop = Arc::new(AtomicBool::new(false));
+        let desync = Arc::new(AtomicBool::new(false));
+        let blocks = Arc::new(AtomicUsize::new(0));
+        let cb = {
+            let (stop, desync, blocks) =
+                (Arc::clone(&stop), Arc::clone(&desync), Arc::clone(&blocks));
+            std::thread::spawn(move || {
+                let mut slot = RenderSlot::new(side);
+                let mut map_slot = map_slot;
+                let mut device = vec![0.0f32; 64 * device_channels];
+                while !stop.load(Ordering::SeqCst) {
+                    let logical = slot.channels();
+                    map_slot.sync(logical);
+                    if map_slot.active_logical() != logical {
+                        desync.store(true, Ordering::SeqCst);
+                    }
+                    let mut buf = vec![0.0f32; 64 * logical];
+                    slot.fill(&mut buf);
+                    for (frame, dst) in device.chunks_mut(device_channels).enumerate() {
+                        let src = &buf[frame * logical..frame * logical + logical];
+                        // Would OOB-panic on the render thread without the total read (part a).
+                        apply_output_map(map_slot.map(), src, dst);
+                    }
+                    blocks.fetch_add(1, Ordering::SeqCst);
+                    std::thread::sleep(Duration::from_millis(2)); // widen the race window
+                }
+            })
+        };
+
+        // `handle_swap`'s order: swap_document → publish (never drops the map) → reclaim engine.
+        let commit = |coordinator: &mut Coordinator, json: &str, want_width: usize| {
+            let report = coordinator.swap_document(json, None);
+            assert!(report.report.ok, "swap should install: {:?}", report.report);
+            let logical = coordinator.installed_channels();
+            assert_eq!(
+                logical, want_width,
+                "swap changed the logical width as intended"
+            );
+            let _ = publisher.publish(logical, coordinator.installed_input_channels());
+            let deadline = Instant::now() + Duration::from_secs(2);
+            let _ = coordinator.reclaim(|| {
+                std::thread::sleep(Duration::from_millis(1));
+                Instant::now() >= deadline
+            });
+        };
+
+        commit(&mut coordinator, &width_doc(3), 4); // widen 2 → 4
+        commit(&mut coordinator, &width_doc(1), 2); // narrow 4 → 2 (drops the channel-3 map pair)
+
+        // Let the callback settle onto the final width, then stop and join (off-thread drop).
+        std::thread::sleep(Duration::from_millis(60));
+        stop.store(true, Ordering::SeqCst);
+        cb.join().expect("callback thread joined");
+
+        assert!(
+            blocks.load(Ordering::SeqCst) > 0,
+            "the callback actually rendered"
+        );
+        assert!(
+            !desync.load(Ordering::SeqCst),
+            "the device output map stayed in lockstep with the engine width across two \
+             width-changing swaps (B1) — no dropped map, no stale-width apply"
         );
     }
 }

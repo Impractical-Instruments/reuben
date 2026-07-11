@@ -276,7 +276,12 @@ fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>
     // 3. Swap via the mailbox. `expect` is already honored above, so pass `None`.
     let mut report = coordinator.swap_document(&json, None);
     if report.report.ok {
-        // 4. Publish the new engine's device output map + fold the dark-degrade warning.
+        // 4. Publish the new engine's device output map + fold the dark-degrade warning — BEFORE the
+        //    engine reclaim (B1). `publish` fills the output-map mailbox (never dropping the map),
+        //    so the map is in flight *before* the callback installs the new engine; the callback
+        //    then promotes it the moment the engine reaches the new width, keeping the two mailboxes
+        //    in lockstep with no desync window. Publishing after the reclaim would leave a block
+        //    where the engine has widened but its map has not arrived yet.
         let logical = coordinator.installed_channels();
         let input_channels = coordinator.installed_input_channels();
         report
@@ -284,7 +289,9 @@ fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>
             .warnings
             .extend(state.render_config.publish(logical, input_channels));
 
-        // 5. Reclaim the retired Engine off-thread (this structure thread, never the callback).
+        // 5. Reclaim the retired Engine off-thread (this structure thread, never the callback). This
+        //    also proves the callback is consuming — the retiree comes home at the ramp
+        //    zero-crossing — so `publish`'s bounded install poll above can never wedge.
         reclaim_retired_engine(&mut coordinator);
     }
     Response::SwapReport(report)
@@ -332,10 +339,19 @@ fn reclaim_retired_engine(coordinator: &mut Coordinator) {
 }
 
 /// Resolve a [`DocSource`] to its JSON text (ADR-0046 §8): inline JSON re-serialized to a string,
-/// or a file read. Resource paths inside the document resolve through the Coordinator's own
-/// resolver (anchored at `play` start against the initial instrument's directory + the library
-/// root) — M2 does not re-anchor per swap source. A read/serialize failure is returned as a human
-/// message the caller turns into a rejected swap.
+/// or a file read. Resource paths inside the document resolve through **the Coordinator's own
+/// resolver**, anchored once at `play` start against the initial instrument's directory + the
+/// library root.
+///
+/// **Behavior change from M1 (sanctioned by ADR-0046 §7).** M1 re-anchored a by-*path* swap at the
+/// swapped file's own directory (`FsResolver::for_instrument`). ADR-0046 §7 gives the Coordinator a
+/// single owned resolver ("owns the Registry handle, the resolver, …"), and M2's `swap_document`
+/// uses exactly that one resolver — so M2 does **not** re-anchor per swap source. By-*value* swaps
+/// (the MCP primary flow) are unchanged: their resources always resolved against the play-start
+/// anchor. A by-*path* swap's *relative* resources now resolve against that anchor + the library
+/// root rather than the file's own directory; an unresolvable one dark-degrades to a `LoadWarning`
+/// (or, if structurally required, a clean `ok:false` reject), never a crash. A read/serialize
+/// failure here is a human message the caller turns into a rejected swap.
 fn resolve_source(source: DocSource) -> Result<String, String> {
     match source {
         DocSource::Document(value) => serde_json::to_string(&value)
