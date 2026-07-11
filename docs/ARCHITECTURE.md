@@ -146,5 +146,6 @@ The MVP is a headless "it makes a sound" spine: the portable-core / native-crate
 - [0043 — Surface docs: presentation decoupled from instruments, pipes as the one boundary](adr/0043-surface-docs-decouple-presentation-from-instruments.md)
 - [0044 — MCP server is a stdio sidecar; the engine stays user-owned](adr/0044-mcp-stdio-sidecar.md)
 - [0045 — Whole-document edit contract; Swap survivors match on address + type](adr/0045-whole-document-edit-contract.md)
-- 0046 — *reserved:* Coordinator & Swap engine design (MCP/D, [#274](https://github.com/Impractical-Instruments/reuben/issues/274)); the ADR file lands with the MCP epic
+- [0046 — Coordinator & Swap: whole-Engine swap unit, mailbox install, box-transplant migration](adr/0046-coordinator-swap-engine-unit.md)
 - [0047 — Normalization is a type: `NormalizedDoc` mints once at the gate](adr/0047-normalization-is-a-type.md)
+- [0048 — MCP tool surface and contracts: eight tools, path-or-value transport, failed validation is a successful call](adr/0048-mcp-tool-surface-and-contracts.md)
