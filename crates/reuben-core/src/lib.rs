@@ -36,6 +36,7 @@ pub mod dsp;
 pub mod engine;
 pub mod format;
 pub mod graph;
+pub mod introspect;
 pub mod message;
 pub mod operator;
 pub mod operators;
