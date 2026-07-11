@@ -43,10 +43,23 @@ fn retiree_rides_the_retire_slot_back() {
     render
         .post_retiree(Box::new("old engine"))
         .expect("retire slot is empty by the one-in-flight discipline");
+
+    // Defensive branch: a second post before the Coordinator reclaims must be refused,
+    // handing the payload straight back. The occupied retire slot is left untouched —
+    // nothing is dropped or leaked — so the first retiree still rides home intact.
+    let bounced = render
+        .post_retiree(Box::new("double post"))
+        .expect_err("retire slot is occupied: the second post must be refused");
+    assert_eq!(
+        *bounced, "double post",
+        "the refused payload is handed back untouched"
+    );
+
     drop(incoming);
 
-    // The Coordinator gets exactly the retiree back — the deferred free happens on its
-    // thread (ADR-0009 reclaim), never on the render side.
+    // The Coordinator gets exactly the retiree back — the *first* post's payload, proving
+    // the refused double-post neither clobbered the slot nor was silently dropped. The
+    // deferred free happens on its thread (ADR-0009 reclaim), never on the render side.
     assert_eq!(coordinator.try_reclaim().as_deref(), Some(&"old engine"));
     assert!(
         coordinator.try_reclaim().is_none(),
@@ -196,7 +209,8 @@ fn swaps_cross_threads_exactly_once_in_order() {
 }
 
 /// Tearing the pair down mid-swap must not leak: a payload still sitting in either
-/// slot is freed when the endpoints drop (teardown is a Coordinator-side, non-RT act).
+/// slot is freed when the endpoints drop. That free is why `RenderMailbox` requires
+/// off-thread teardown (it happens after the stream stops, never on the render thread).
 #[test]
 fn occupied_slots_free_their_payload_on_teardown() {
     use std::sync::atomic::{AtomicUsize, Ordering};
