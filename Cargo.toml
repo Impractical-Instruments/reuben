@@ -46,3 +46,14 @@ clap = { version = "4", features = ["derive"] }
 # Lock-free SPSC ring between the input callback and the render thread (ADR-0038 §8 — the
 # primitive ADR-0002 anticipated). Wait-free push/pop, no locks, no allocation after creation.
 rtrb = "0.3"
+
+# Benchmark profile: pin a single codegen unit so operator codegen is deterministic (ADR-0019).
+# With the default 16 CGUs, adding cold source to reuben-core repartitions LLVM's codegen units
+# and re-rolls register allocation / instruction selection for each operator's vtable-dispatched
+# `process` — swinging its callgrind Ir ±13% with ZERO change in actual work (identical Dr/Dw
+# traffic, identical fmodf call counts). That fooled the micro_iai Ir gate into false regressions
+# on any PR that merely grows the crate. codegen-units = 1 makes per-operator codegen invariant to
+# crate size, so the gate measures real work, not CGU-partition luck. Bench profile ONLY — release
+# stays at the default so shipped binaries keep parallel codegen (production perf is unaffected).
+[profile.bench]
+codegen-units = 1
