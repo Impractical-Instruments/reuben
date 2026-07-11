@@ -1,1 +1,1 @@
-{"reply":"swap_report","ok":true,"errors":[],"warnings":[],"content_hash":"6972f0341e038cf0","diff":{"survived":0,"state_reset":["/out"],"added":["/sub"],"removed":["/osc"]}}
+{"reply":"swap_report","ok":true,"errors":[],"warnings":[],"content_hash":"6972f0341e038cf0","diff":{"survived":1,"state_reset":[],"added":["/sub"],"removed":["/osc"]}}
