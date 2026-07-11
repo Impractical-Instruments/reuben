@@ -149,3 +149,4 @@ The MVP is a headless "it makes a sound" spine: the portable-core / native-crate
 - [0046 — Coordinator & Swap: whole-Engine swap unit, mailbox install, box-transplant migration](adr/0046-coordinator-swap-engine-unit.md)
 - [0047 — Normalization is a type: `NormalizedDoc` mints once at the gate](adr/0047-normalization-is-a-type.md)
 - [0048 — MCP tool surface and contracts: eight tools, path-or-value transport, failed validation is a successful call](adr/0048-mcp-tool-surface-and-contracts.md)
+- [0049 — No resource bytes over MCP: samples ride the filesystem convention](adr/0049-no-resource-bytes-over-mcp.md)
