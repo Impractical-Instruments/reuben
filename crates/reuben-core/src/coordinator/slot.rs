@@ -102,6 +102,13 @@ impl MasterGainRamp {
 /// The production RT-side install slot (ADR-0046 §7). Built from the [`RenderSide`] a
 /// [`Coordinator`](super::swap::Coordinator) hands out, it is what the shell's audio callback drives
 /// each block. See the module docs for the per-callback contract.
+///
+/// **RT-safety requirement (drop off-thread).** Like the [`RenderMailbox`] it owns (see that type's
+/// doc), a `RenderSlot` must not be dropped on the render thread. Its destructor frees the live
+/// [`Engine`], the mailbox (and any payload still sitting in a slot), and the `stranded_retiree` box
+/// if one is riding — all heap frees the audio thread may never do (ADR-0012). In practice this is
+/// moot: the callback holds the slot for the life of the stream and it is torn down only after the
+/// stream stops, off-thread, where any free is a non-RT act (deferred free, ADR-0009).
 pub struct RenderSlot {
     engine: Engine,
     mailbox: RenderMailbox<InstallBundle>,
@@ -220,6 +227,12 @@ impl RenderSlot {
         let frames = out.len() / ch.max(1);
         let edge = self.ramp.edge;
 
+        // KNOWN LIMITATION (to be resolved by #323's `drain_outbound` wiring): each `render_segment`
+        // is a fresh `Engine::fill_duplex`, which clears the Engine's outbound. When one callback
+        // runs two segments on the *same* (post-install) Engine — an up→steady transition — the
+        // steady segment's fill clears the up segment's outbound OSC, dropping it. This is a
+        // segmentation artifact, distinct from ADR-0046 §3's deliberate install-time discard of the
+        // retiring Engine's outbound.
         let mut f = 0;
         while f < frames {
             match self.ramp.phase {
@@ -319,7 +332,15 @@ fn render_segment(
     if input.is_empty() {
         engine.fill_duplex(&[], out_sub);
     } else {
-        engine.fill_duplex(&input[f * in_ch..(f + seg) * in_ch], out_sub);
+        // Clamp the slice to what actually arrived. A short (capture-underrun) `input` would
+        // otherwise panic on `&input[..(f + seg) * in_ch]` — a slice-out-of-range on the render
+        // thread. Engine's per-frame `input.get().unwrap_or(0.0)` stages the missing tail as zeros,
+        // the same dark-degrade (ADR-0038 §7) the steady-state fast path already gets. `min` keeps
+        // the bounds total; full-width and empty inputs are unchanged, and a branchless `cmp` adds
+        // no cost the steady-state fast path pays (this is the ramp path only).
+        let end = ((f + seg) * in_ch).min(input.len());
+        let start = (f * in_ch).min(end);
+        engine.fill_duplex(&input[start..end], out_sub);
     }
 }
 

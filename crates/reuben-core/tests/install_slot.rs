@@ -38,6 +38,19 @@ fn envelope_doc(env_addr: &str) -> String {
     )
 }
 
+/// A one-pipe mic passthrough bound to logical input channel 0 (ADR-0038 §3): the rendered output
+/// *is* the logical input (one core block later), so a duplex `fill_duplex` drives real input into
+/// the render path — the fixture for the short-input dark-degrade regression below.
+fn mic_doc() -> String {
+    r#"{ "format_version": 3, "instrument": "mic_through",
+         "interface": {
+           "inputs":  { "mic": { "type": "f32_buffer", "channel": 0 } },
+           "outputs": { "main": { "from": "/out.audio" } } },
+         "nodes": [
+           { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/mic" } } } ] }"#
+        .to_string()
+}
+
 /// Build a Coordinator + production RenderSlot for `doc`.
 fn setup(doc: &str) -> (Coordinator, RenderSlot) {
     let (coord, side, _w) = Coordinator::install_initial(
@@ -184,4 +197,60 @@ fn a_non_survivor_is_cut_at_master_zero_and_stays_silent() {
         recovered < 0.15 && recovered < 0.3 * sustain,
         "a reset node stays cold after the cut: recovered {recovered} vs sustain {sustain}"
     );
+}
+
+#[test]
+fn a_short_duplex_input_dark_degrades_instead_of_panicking_during_the_ramp() {
+    // REGRESSION (adversarial hot-path review): the ramp path renders the buffer in phase-bounded
+    // segments, slicing `input` per segment. A SHORT-but-nonempty duplex `input` — a capture
+    // underrun — must NOT panic on that slice on the render thread; it must dark-degrade (stage the
+    // missing tail as zeros, ADR-0038 §7), exactly as the steady-state fast path already does via
+    // Engine's per-frame `input.get().unwrap_or(0.0)`. Before the clamp fix this panicked with
+    // slice-end-out-of-range inside `render_segment` while a swap's ramp was in flight.
+    let (mut coord, mut slot) = setup(&mic_doc());
+    let ch = slot.channels();
+    let in_ch = slot.input_channels();
+    assert_eq!(
+        in_ch, 1,
+        "mic passthrough declares one logical input channel"
+    );
+
+    // Arm a swap so the very next fill runs the master-gain ramp (down → install-at-zero → up).
+    let report = coord.swap_document(&mic_doc(), None);
+    assert!(report.report.ok, "swap should install: {:?}", report.report);
+
+    let edge = slot.ramp_edge_frames();
+    let span = 3 * edge; // down (edge) + up (edge) + steady tail (edge): the whole ramp in one call
+    let mut out = vec![0.0f32; span * ch];
+
+    // Feed input for only the down edge; the up edge + steady tail have NO input (the underrun).
+    // `edge` frames is short (< `span`) yet lands exactly on a segment boundary, so every rendered
+    // segment sees either a full or an empty input slice — never a wrong-width one that the Engine's
+    // debug_assert would (rightly) flag. Without the clamp, the up segment's `&input[edge..2*edge]`
+    // slice is out of range and panics.
+    let fed_frames = edge;
+    assert!(fed_frames < span, "input is genuinely short of the buffer");
+    let input: Vec<f32> = (0..fed_frames * in_ch)
+        .map(|i| ((i % 89) as f32 / 89.0) - 0.5) // an audible, nonzero test signal
+        .collect();
+
+    // The load-bearing assertion: this call must return, not unwind across the (would-be) FFI seam.
+    slot.fill_duplex(&input, &mut out);
+
+    assert!(!slot.is_ramping(), "the ramp completed within the buffer");
+    assert!(
+        out.iter().all(|s| s.is_finite()),
+        "a short duplex input must render finite samples, never NaN/garbage"
+    );
+    // Dark-degrade proof: after the ramp (gain == 1) and well past where the fed input drained
+    // (one core block of duplex latency), the missing-input tail renders as exact silence — zeros
+    // for the frames Engine staged from `input.get().unwrap_or(0.0)`, not stale or garbage samples.
+    let tail_start = 2 * edge + slot.block_size();
+    for f in tail_start..span {
+        assert_eq!(
+            frame_mag(&out, ch, f),
+            0.0,
+            "missing-input tail must dark-degrade to silence at frame {f}"
+        );
+    }
 }
