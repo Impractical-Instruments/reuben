@@ -51,6 +51,18 @@ use crate::diagnostics::{Diagnostics, Snapshot};
 /// connecting; this cadence is the shutdown latency, not a hot path (never the audio thread).
 const ACCEPT_POLL: Duration = Duration::from_millis(50);
 
+/// How long a connection handler's read blocks before waking to re-check its shutdown flag. A
+/// [`shutdown`](StructureServer::shutdown) does **not** interrupt a `read` already blocked on a
+/// socket on Windows (unlike Unix, where the accept thread's `shutdown(Shutdown::Both)` unblocks
+/// the peer's `read_line`); a blocked recv there strands the handler until an OS-level connection
+/// timeout (~2 min), so every connection torn down while a client is still attached pays that.
+/// A read timeout makes the wait self-interrupting on every platform: the handler polls the flag
+/// on each timeout instead of trusting a cross-thread wake. On a stream socket a timeout only
+/// fires with *no* bytes available (a partial line would have returned immediately), so it never
+/// splits a request — the framing the blocking read gave us is preserved. This cadence is the
+/// per-connection shutdown latency, not a hot path (never the audio thread).
+const READ_POLL: Duration = Duration::from_millis(250);
+
 /// How long a swap waits for the RT callback to drain the install mailbox and post the retired
 /// Engine back before giving up the off-thread reclaim (ADR-0046 §2 "engine isn't consuming
 /// swaps; is audio running?"). With a live callback the retiree comes home in one master-gain
@@ -468,6 +480,12 @@ fn accept_loop(listener: TcpListener, state: StructureState, shutdown: Arc<Atomi
 /// reads keep the framing exact; a blank line is framing noise, not a request, so it draws no
 /// response.
 fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<AtomicBool>) {
+    // Time-bound each read so the handler wakes to observe `shutdown` itself, rather than
+    // depending on the accept thread's `shutdown(Shutdown::Both)` to unblock it — a wake that
+    // does not reach a blocked recv on Windows (see [`READ_POLL`]). A timeout on a stream socket
+    // fires only when no bytes are waiting, so it never truncates a request mid-line; a request
+    // that spans reads accumulates in `line` across the loop until its terminating newline.
+    let _ = stream.set_read_timeout(Some(READ_POLL));
     let mut writer = match stream.try_clone() {
         Ok(w) => w,
         // Can't split the socket into independent read/write halves; nothing to serve on.
@@ -476,26 +494,38 @@ fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<Ato
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     loop {
-        line.clear();
+        if shutdown.load(Ordering::SeqCst) {
+            break;
+        }
         match reader.read_line(&mut line) {
             // EOF: client closed, or a shutdown `Shutdown::Both` woke us.
             Ok(0) => break,
+            // A complete line (`read_line` returns on the newline). Dispatch, then reset the buffer.
             Ok(_) => {
                 if shutdown.load(Ordering::SeqCst) {
                     break;
                 }
-                if line.trim().is_empty() {
-                    continue;
+                if !line.trim().is_empty() {
+                    let response = dispatch(&state, &line);
+                    if writer.write_all(response.to_ndjson().as_bytes()).is_err() {
+                        break;
+                    }
+                    if writer.flush().is_err() {
+                        break;
+                    }
                 }
-                let response = dispatch(&state, &line);
-                if writer.write_all(response.to_ndjson().as_bytes()).is_err() {
-                    break;
-                }
-                if writer.flush().is_err() {
-                    break;
-                }
+                line.clear();
             }
-            // A read error (including the socket shutdown that wakes us) ends the connection.
+            // The read timeout fired with no full line yet: loop to re-check `shutdown`, keeping
+            // any partial bytes already read in `line` (`read_line` leaves them on error) so the
+            // next read resumes the same request. This is the poll that makes shutdown prompt.
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut =>
+            {
+                continue;
+            }
+            // A real read error ends the connection.
             Err(_) => break,
         }
     }
