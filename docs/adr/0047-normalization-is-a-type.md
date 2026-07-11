@@ -1,4 +1,4 @@
-# ADR-0044: Normalization is a type — `NormalizedDoc` mints once at the gate
+# ADR-0047: Normalization is a type — `NormalizedDoc` mints once at the gate
 
 ## Status
 

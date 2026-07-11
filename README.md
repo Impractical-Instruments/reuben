@@ -176,7 +176,7 @@ tests with no filesystem. Documents carry a `format_version` (absent means 1; a 
 document refuses to load with a clear message) and the document is the save source of truth —
 `NormalizedDoc::from_graph` is the explicit flatten/export path
 ([ADR-0036](docs/adr/0036-instrument-library-and-format-versioning.md), as amended by
-[ADR-0044](docs/adr/0044-normalization-is-a-type.md): the version gate and the parse-time
+[ADR-0047](docs/adr/0047-normalization-is-a-type.md): the version gate and the parse-time
 migrations live in `format/normalize.rs` behind the `NormalizedDoc` type, minted only by
 `NormalizedDoc::from_json` — so "migrated exactly once" is compiler-enforced, not re-checked).
 The I/O-mapping epic ([ADR-0038](docs/adr/0038-interface-pipes-and-the-device-layer.md), #185) has

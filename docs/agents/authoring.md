@@ -447,7 +447,7 @@ never read them; re-saving strips them). Migrated-vs-native renders are **bit-id
 (asserted in `crates/reuben-core/tests/format_v2.rs` and `format_v3.rs`). Save writes v3 — a
 migrated document never saves back under its old number. The whole normalize pipeline —
 version gate, migrations, stamp — lives in `format/normalize.rs` behind the **`NormalizedDoc`**
-type ([ADR-0044](../adr/0044-normalization-is-a-type.md)): `NormalizedDoc::from_json` is the
+type ([ADR-0047](../adr/0047-normalization-is-a-type.md)): `NormalizedDoc::from_json` is the
 one mint (a hand-deserialized `InstrumentDoc` enters via `NormalizedDoc::from_doc`), building a
 `Graph` is `NormalizedDoc::build`, so a document past the gate is current-shaped and migrated
 exactly once — held by the compiler, not re-checks. To **save**, serialize

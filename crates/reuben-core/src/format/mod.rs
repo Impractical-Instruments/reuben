@@ -846,7 +846,7 @@ pub fn load_instrument(
 /// caller that needs both the document (e.g. for its `interface` overrides,
 /// [`crate::describe::describe_boundary`]) and the built graph, without re-parsing the JSON.
 /// Takes [`NormalizedDoc`] by type: the version gate and migration ran exactly once at the
-/// mint (ADR-0044), so this path has nothing to re-check — a host holding a raw
+/// mint (ADR-0047), so this path has nothing to re-check — a host holding a raw
 /// [`InstrumentDoc`] enters via [`NormalizedDoc::from_doc`].
 pub fn load_instrument_doc(
     doc: &NormalizedDoc,
@@ -877,7 +877,7 @@ fn load_instrument_guarded(
 /// [`load_instrument_guarded`] from an already-minted document — the subpatch pass parses a
 /// shared child source once and loads it per referencing node through this. The old defensive
 /// re-normalize that lived here is gone: [`NormalizedDoc`] *is* the proof the gate + migration
-/// already ran (ADR-0044), so a gate-bypassing document cannot reach this path by construction.
+/// already ran (ADR-0047), so a gate-bypassing document cannot reach this path by construction.
 fn load_doc_guarded(
     doc: &NormalizedDoc,
     registry: &Registry,
@@ -1209,7 +1209,7 @@ impl InstrumentDoc {
         let mut warnings = Vec::new();
         // No anonymous-`outputs` re-check here: every route to this build starts from a
         // [`NormalizedDoc`], whose mint migrated the block away (v1) or refused it under a
-        // v2+ stamp (`check_pipe_shape`) — the invariant is carried by the type (ADR-0044).
+        // v2+ stamp (`check_pipe_shape`) — the invariant is carried by the type (ADR-0047).
         debug_assert!(
             self.outputs.is_empty(),
             "a normalized document carries no anonymous outputs"

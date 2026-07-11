@@ -1,4 +1,4 @@
-//! The one normalization seam (ADR-0044): **gate + migrate + strip + stamp**, behind
+//! The one normalization seam (ADR-0047): **gate + migrate + strip + stamp**, behind
 //! [`NormalizedDoc`] — a document proven current-shaped. The version gate refuses the future,
 //! the v1→v2 migration engine flips target-form `interface` entries into pipes (ADR-0038 §5),
 //! the v2→v3 strip drains retired presentation (ADR-0043 §7), and the stamp writes the current
@@ -13,7 +13,7 @@ use super::*;
 /// mintable solely by this module ([`from_json`](Self::from_json) for text,
 /// [`from_doc`](Self::from_doc) for a hand-deserialized [`InstrumentDoc`],
 /// [`from_graph`](Self::from_graph) for a built graph), so normalization runs exactly once per
-/// document (ADR-0044). Read access is by [`Deref`](std::ops::Deref); there is deliberately no
+/// document (ADR-0047). Read access is by [`Deref`](std::ops::Deref); there is deliberately no
 /// `DerefMut` — the data model can still represent v1-only shapes, so mutation exits via
 /// [`into_inner`](Self::into_inner) and re-enters through the gate.
 ///
@@ -86,7 +86,7 @@ impl NormalizedDoc {
         Self::normalize(doc, registry, resolver, ctx, referrer)
     }
 
-    /// Gate + migrate + strip + stamp (ADR-0036 §4, held by this type per ADR-0044). The
+    /// Gate + migrate + strip + stamp (ADR-0036 §4, held by this type per ADR-0047). The
     /// version gate lives at the mint so every load path — top-level, voice, subpatch, raw doc
     /// — refuses a too-new document before touching its shape; an older version migrates to
     /// current here; a current-version document is shape-checked (no v1 forms may hide under a
