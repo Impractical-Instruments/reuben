@@ -57,8 +57,9 @@ These are **defects, not opinions** — they glitch or crash the audio thread. E
   safe Rust was the bottleneck. The core has **zero `unsafe`** today; keep it that way unless a number
   says otherwise.
 - **Determinism** (one-line scan, not this skill's chapter — see
-  [authoring.md#invariants-you-must-not-break](../../docs/agents/authoring.md#invariants-you-must-not-break)): `HashMap`/`HashSet`
-  iteration order, `Instant::now`, unseeded `rand`, threads racing on render output.
+  [the guide's invariants](../../docs/agents/authoring.md#invariants-you-must-not-break)):
+  `HashMap`/`HashSet` iteration order, `Instant::now`, unseeded `rand`, threads racing on
+  render output.
 
 **Defend, don't flag, RT-correct un-idiom.** `std::mem::take` buffer swaps, preallocated scratch
 `Vec`s reused via `drain(..)`, `SmallVec<[_; 8]>` inline capacity (all in `render.rs`) are *correct* —

@@ -122,9 +122,11 @@ Each wire is checked **locally** at Instantiate against the two ports' forms (`c
 - **`Value → Signal`** is the **one implicit coercion**: the held Value materializes (ZOH) into a
   buffer at the Signal input, a mid-block change written at its frame (sample-accurate, one
   `process()`). This is the canonical `voice.freq`(Value) → `osc.freq`(`f32_buffer`) bridge.
-- **`Signal → Value`** is a **hard error** — there is no implicit sample-and-hold; wire an explicit
-  converter (an envelope follower / quantizer). Into an enum Value it's equally illegal (an enum
-  takes a discrete choice, not a per-sample signal).
+- **`Signal → Value`** is a **hard error** — there is no implicit sample-and-hold, and the
+  explicit converter that would bridge it (an envelope follower / quantizer) **doesn't ship
+  yet**: reshape the graph so the consumer reads a Signal, or shape on the Value side (the
+  `m2s` gap-filling modes, below). Into an enum Value it's equally illegal (an enum takes a
+  discrete choice, not a per-sample signal).
 - **`Event` mismatched** against a Signal/Value is an error (needs an explicit latch / change-detect).
 
 Every cross-*type* crossing still needs an operator: `f32 → enum` is a quantizer; `f32 → Note` is a
@@ -176,7 +178,10 @@ Each entry in a node's **`inputs`** map is one of:
 
 `format::load` resolves types via a `Registry`, applies literals/config, resolves wire-refs to
 edges (checking `Arg` types), and returns a `Graph`. Loading is an authoring step — portable core,
-never the audio thread. Errors are specific: `UnknownInput`, `BadInputValue`, `TypeMismatch`,
+never the audio thread. Every node needs a registered `type` and a unique `address` — a
+duplicate is the fatal `DuplicateAddress`. An out-of-range numeric literal — an input default
+or a `config` constant — is **clamped** into the port's declared range, never a load error.
+Other errors are specific: `UnknownInput`, `BadInputValue`, `TypeMismatch`,
 `ConstantInInputs` (a `Constant` placed in `inputs`), `UnknownConfig`, `AmbiguousWire`. See
 `instruments/*.json` for worked examples.
 

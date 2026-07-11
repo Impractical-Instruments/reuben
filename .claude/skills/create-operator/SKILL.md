@@ -31,8 +31,10 @@ Run all `reuben`/`cargo` commands from the repo root.
    underspecified, **invoke the `grilling` skill** to pin: each input/output by its **`Arg` type**
    and form — `f32_buffer`, `f32` (with `{ min..max, default, unit, lin|exp }`),
    `enum(VocabType)`, `note`/`harmony`; the type system is canonical in the
-   [guide's type-system section](../../docs/agents/authoring.md#type-system) — plus any
-   **`Constant`** (instantiate-time `config`, e.g. `voices`), and — critically —
+   [guide's type-system section](../../docs/agents/authoring.md#type-system), the macro
+   declaration grammar in
+   [operator-dev.md#descriptor-macro](../../docs/agents/operator-dev.md#descriptor-macro) —
+   plus any **`Constant`** (instantiate-time `config`, e.g. `voices`), and — critically —
    **the DSP behavior and its test oracle: "how will we know it's right?"** Use
    `domain-modeling` for naming. Skip the interview only when the user hands a precise contract.
 
@@ -85,8 +87,8 @@ Run all `reuben`/`cargo` commands from the repo root.
       written oracle — **not that it sounds right.** When behavior is subjective, recommend an
       ear-check: `patcher` a tiny instrument around it, then `reuben play`.
 
-5. **Hand off the prose.** New ROADMAP/authoring/ARCHITECTURE lines and domain terms are the
-   `sync-docs` skill's job — don't inline them here.
+5. **Hand off the prose.** New authoring.md/operator-dev.md/ARCHITECTURE/README lines and
+   domain terms are the `sync-docs` skill's job — don't inline them here.
 
 ## The contract spec
 

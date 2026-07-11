@@ -48,29 +48,23 @@ path.
 - **`descriptor()`** — see below. The single source of an operator's ports and metadata.
 - **`process(io)`** — the only realtime path. **Allocation-free.** Read inputs, write outputs
   through the `Io` view, by the contract's typed handles (ADR-0037) — the handle's form decides
-  the shape; a wrong-form access does not compile:
-  - `io.read(IN) -> &[f32]` on an `In<SignalF32>` — read a **`f32_buffer`** (Signal) input, or the
-    materialized buffer of a Value source wired into it. Exactly `io.frames()` samples, always
-    (buffer-presence invariant) — index directly. `io.varying(IN)` is the change hint.
-    `io.write(OUT) -> &mut [f32]` fills a `f32_buffer` output in place.
-  - `io.read(IN) -> f32` on an `In<Held<f32>>` — read a held **`f32`** Value (the block-rate scalar
-    view, a clock's `tempo`, a gate edge), defaulted to the contract default the handle carries.
-    An enum handle (`In<Held<Waveform>>`) reads the real *vocab* type, constant for the
-    (sub)block: `io.read(IN_WAVEFORM) == Waveform::Saw`. No `enum_index`/`from_index` on the hot
-    path. `io.write(OUT) -> MsgWriter` writes a held Value: `.set(frame, v)` is deduped (an
-    unchanged value emits nothing) + last-write-wins per frame.
-  - `io.read(IN) -> EventStream<Note>` on an `In<Event<Note>>` — read **`Note`** events (Voicer,
-    sequencer): a zero-copy iterator of `Stamped<Note>` (`.frame` segment-relative, `.payload` the
-    decoded `Note`). `io.write(OUT) -> EventWriter` writes events: `.emit(frame, payload)` is
-    **append-only** (no dedup, no last-write-wins — a chord's tones at one frame all survive).
-    Internal wires are **addressless** — routed by connection, not name
-    ([ADR-0014](../adr/0014-internal-message-graph.md), ADR-0031 step 7). See `sequencer.rs` /
-    `snap.rs`.
-  - `io.read(IN) -> Harmony` on an `In<Held<Harmony>>` — read the latched tonal **`Harmony`**
-    (key/scale/chord + resolver `hz`/`snap`/`chord_tone`), constant for the (sub)block, default
-    C-major/12-TET when unwired. A `harmony` Operator writes the other side via
-    `io.write(OUT_HARMONY) -> MsgWriter` (a Harmony is a held Value, dedup+LWW is correct).
-    The Voicer and `snap.rs` read it; `harmony.rs` emits it.
+  the read/write shape, and a wrong-form access does not compile. The per-form read/write
+  shapes — the buffer-presence invariant and `io.varying`, held reads defaulted by the handle,
+  an enum read as the real vocab type, `Harmony`'s default, `EventStream<Note>`/`Stamped<Note>`
+  — live once, in the guide's type-system table
+  ([authoring.md#type-system](authoring.md#type-system)); read them there. What the table
+  doesn't carry, because only an operator author sees it:
+  - **Writer semantics differ by form.** A held Value/`Harmony` write (`io.write(OUT) ->
+    MsgWriter`, `.set(frame, v)`) is **deduped + last-write-wins** per frame — an unchanged
+    value emits nothing. An Event write (`io.write(OUT) -> EventWriter`, `.emit(frame,
+    payload)`) is **append-only** — no dedup, no LWW: a chord's tones at one frame all
+    survive. A Signal write (`io.write(OUT) -> &mut [f32]`) fills the buffer in place.
+  - **No `enum_index`/`from_index` on the hot path** — an enum handle reads the real vocab
+    type directly (`io.read(IN_WAVEFORM) == Waveform::Saw`), constant for the (sub)block.
+  - **Internal wires are addressless** — routed by connection, not name
+    ([ADR-0014](../adr/0014-internal-message-graph.md), ADR-0031 step 7). Exemplars:
+    `sequencer.rs` / `snap.rs` for `Note` events; the Voicer and `snap.rs` read `Harmony`,
+    `harmony.rs` emits it.
 - **`spawn()`** — usually `Box::new(Self::new())`. Resets per-Voice state only. A resource-bearing
   operator carries its binding (the `Arc<ResourceStore>` + resolved handle) forward while resetting
   playback state, so every Voice shares the decoded data — see `sample.rs`.
@@ -82,6 +76,7 @@ path.
 State that must persist across blocks lives on the struct (e.g. an oscillator's phase). Hold an
 accumulating phase in `f64` so it doesn't drift over a long session (see `lfo.rs`).
 
+<a id="descriptor-macro"></a>
 ## The Descriptor (`crates/reuben-core/src/descriptor.rs`)
 
 An operator's self-description, separate from `process` — the seat of "good button",
@@ -249,14 +244,13 @@ single-writer boundary — live in the guide's
 [Invariants you must not break](authoring.md#invariants-you-must-not-break). Two of them land
 directly on the code you write here:
 
-- **Determinism** binds `process` like everything else: no wall-clock, no RNG without a
-  seeded, plan-owned source (the guide carries the full invariant, including the sanctioned
-  live-input boundary).
-- <a id="rt-safe-render"></a>**RT-safe Render** — `render_block` is allocation-free after
-  warmup, asserted by `crates/reuben-core/tests/rt_safe.rs`. Code that runs on the audio
-  render thread(s) — the **hot** path — must not allocate, lock, or block, and must not
-  panic. All scratch is preallocated and reused (including the materialize buffers for
-  `Value → Signal` edges and the Voicer's per-voice sub-`Plan` arenas); routed events are zero-copy.
+- **Determinism** binds `process` like everything else — check the guide's bullet before
+  reaching for a clock or a random source.
+- <a id="rt-safe-render"></a>**RT-safe Render** — the invariant's normative statement and its
+  enforcing test live in the guide's bullet; `process` sits squarely inside it. How it lands
+  on an operator author: all scratch is preallocated and reused (including the materialize
+  buffers for `Value → Signal` edges and the Voicer's per-voice sub-`Plan` arenas); routed
+  events are zero-copy.
   - **The hot/cold boundary** is the audio render thread, not a file or type. **Hot** = any
     code reachable from a `fn process` body (plus the per-block render path —
     `render_block`/`render_into`/`process_node` — and the message drain/route that runs on
