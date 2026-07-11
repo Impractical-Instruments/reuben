@@ -52,6 +52,10 @@ _Avoid_: reload, hot restart.
 The local request/response channel between a client (the MCP sidecar) and the engine process — the only path to the [[coordinator]]. Carries structure ops ([[swap]]), document reads, diagnostics, and liveness; distinct from the fire-and-forget OSC control plane, which never carries structure.
 _Avoid_: control channel (that is OSC), admin port, command socket.
 
+**Gist-and-point**:
+The posture for prose at a secondary surface (the MCP server's `instructions` and tool descriptions, a skill's workflow steps): never restate the canonical contract — carry the one-breath gist and point at the one doc that holds the rules (the authoring guide, served as `reuben://guide/authoring`). Duplication is a drift pair; a pointer can't drift.
+_Avoid_: duplicate-then-sync (the sweep is a backstop, not the mechanism), summary copy.
+
 **Render**:
 Executing the current [[plan]] per block on the audio thread — hard realtime, allocation-free. Playing notes and turning knobs happen here against already-allocated resources.
 _Avoid_: block time, process, audio callback (the callback is the host of Render, not Render itself).
