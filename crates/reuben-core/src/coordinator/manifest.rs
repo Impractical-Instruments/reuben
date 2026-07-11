@@ -485,6 +485,22 @@ mod tests {
         )
     }
 
+    /// A bare envelope whose `attack` — a pure runtime `inputs` param — a caller varies. The
+    /// envelope has no `config` and resolves nothing, so `attack` is entirely outside the
+    /// instantiate-time fingerprint (ADR-0045 §2): changing it must leave the fingerprint equal.
+    fn envelope_doc(attack: f32) -> String {
+        format!(
+            r#"{{ "format_version": 3, "instrument": "eg",
+                 "interface": {{ "outputs": {{ "out": {{ "from": "/out.audio" }} }} }},
+                 "nodes": [
+                   {{ "type": "envelope", "address": "/env",
+                      "inputs": {{ "gate": 1.0, "attack": {attack}, "decay": 0.01,
+                                   "sustain": 0.8, "release": 0.5 }} }},
+                   {{ "type": "output", "address": "/out",
+                      "inputs": {{ "audio": {{ "from": "/env.cv" }} }} }} ] }}"#
+        )
+    }
+
     /// A sample player bound to `kick.wav` (the resolved-bytes case, ADR-0016).
     const SAMPLE_DOC: &str = r#"{ "format_version": 3, "instrument": "samp",
         "resources": { "kick": "kick.wav" },
@@ -552,6 +568,33 @@ mod tests {
         );
         // A node the constant did not touch is unchanged — the reset is scoped to the edit.
         assert_eq!(fingerprint(&four, "/out"), fingerprint(&eight, "/out"));
+    }
+
+    #[test]
+    fn changed_runtime_input_keeps_the_fingerprint() {
+        // The survivor half of the asymmetry (ADR-0045 §2 / ADR-0046 §5), the exact counterpart to
+        // `changed_config_constant_changes_the_fingerprint`: the fingerprint covers only
+        // instantiate-time inputs (`config` + resolved content), never a node's runtime `inputs`.
+        // Two documents identical but for the envelope's `attack` — a pure runtime param — must
+        // fingerprint node-for-node equal, so the edited node stays a survivor (its box transplants
+        // and the new Plan's latch supplies the new value; the edit is not undone).
+        let resolver = MemoryResolver::new();
+        let slow = envelope_doc(0.5);
+        let fast = envelope_doc(0.05);
+        assert_ne!(slow, fast, "the two documents really differ in the param");
+        let a = manifest_for(&slow, &resolver);
+        let b = manifest_for(&fast, &resolver);
+        assert!(
+            fingerprint(&a, "/env").is_some(),
+            "the envelope is fingerprinted"
+        );
+        assert_eq!(
+            fingerprint(&a, "/env"),
+            fingerprint(&b, "/env"),
+            "a changed runtime input must NOT change the fingerprint"
+        );
+        // The untouched node matches too — nothing about the edit perturbs any fingerprint.
+        assert_eq!(fingerprint(&a, "/out"), fingerprint(&b, "/out"));
     }
 
     #[test]

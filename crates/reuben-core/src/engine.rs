@@ -190,6 +190,10 @@ impl Engine {
     /// by the Coordinator side.
     pub fn transplant_survivors(&mut self, retiring: &mut Engine, pairs: &[(usize, usize)]) {
         for &(old_index, new_index) in pairs {
+            debug_assert!(
+                old_index < retiring.plan.nodes.len() && new_index < self.plan.nodes.len(),
+                "migration table index out of range — mispaired table/engine"
+            );
             std::mem::swap(
                 &mut retiring.plan.nodes[old_index].ops,
                 &mut self.plan.nodes[new_index].ops,
