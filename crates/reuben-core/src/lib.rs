@@ -30,6 +30,7 @@ pub mod op_driver;
 pub mod boundary;
 pub mod config;
 pub mod contract;
+pub mod coordinator;
 pub mod describe;
 pub mod descriptor;
 pub mod dsp;
