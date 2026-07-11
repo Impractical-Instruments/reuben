@@ -32,7 +32,7 @@ use reuben_core::coordinator::{
 };
 use reuben_core::SwapReport;
 
-use crate::{EngineProbe, ENGINE_UNREACHABLE_GUIDANCE};
+use crate::ENGINE_UNREACHABLE_GUIDANCE;
 
 /// How long to wait for the loopback connect before declaring the engine unreachable. Loopback
 /// connects resolve in well under a millisecond when a server is up; this ceiling only bounds the
@@ -69,7 +69,7 @@ impl StructureError {
     }
 
     /// Whether this is the unreachable-engine case — the branch the fail-fast guidance is for, and
-    /// the branch [`PingProbe`] treats as "engine down".
+    /// the branch an engine tool maps to the "start `reuben play`" result (act-then-map, #318).
     pub fn is_unreachable(&self) -> bool {
         matches!(self, StructureError::Unreachable(_))
     }
@@ -152,7 +152,8 @@ impl StructureClient {
     }
 
     /// Liveness (ADR-0046 §8): `Ok(())` iff the channel answered [`Response::Pong`]. This is what
-    /// [`PingProbe`] consults for engine reachability.
+    /// [`EngineLink`](crate::EngineLink) consults for engine reachability (`engine_status`, and the
+    /// probe-first `send`).
     pub fn ping(&self) -> Result<(), StructureError> {
         match self.exchange(&Request::Ping)? {
             Response::Pong => Ok(()),
@@ -263,40 +264,6 @@ impl Default for StructureClient {
 /// The wrong-response-variant protocol error, spelled once so every verb reports it the same way.
 fn unexpected(verb: &str, want: &str, got: &Response) -> StructureError {
     StructureError::Protocol(format!("{verb} expected {want}, got {got:?}"))
-}
-
-/// The real [`EngineProbe`] (ADR-0044 §2): engine reachability is a structure-channel `ping`
-/// (ADR-0046 §8) — connect + `ping` succeeds ⇒ reachable; a refused connect or a timeout ⇒
-/// unreachable. This replaces the skeleton's placeholder `UnreachableProbe` as the server's real
-/// liveness seam, so `engine_status` reports true reachability and the engine tools fail fast only
-/// when the engine is genuinely down.
-#[derive(Debug, Clone)]
-pub struct PingProbe {
-    client: StructureClient,
-}
-
-impl PingProbe {
-    /// A probe pinging the engine at `addr`.
-    pub fn new(addr: impl Into<String>) -> Self {
-        Self {
-            client: StructureClient::new(addr),
-        }
-    }
-}
-
-impl Default for PingProbe {
-    /// A probe targeting the shared [`DEFAULT_STRUCTURE_ADDR`] — the running sidecar's default.
-    fn default() -> Self {
-        Self {
-            client: StructureClient::default(),
-        }
-    }
-}
-
-impl EngineProbe for PingProbe {
-    fn is_reachable(&self) -> bool {
-        self.client.ping().is_ok()
-    }
 }
 
 #[cfg(test)]
