@@ -1,0 +1,1 @@
+{"reply":"document","document":{"format_version":3,"instrument":"m1-canned","interface":{"outputs":{"main":{"from":"/out.audio"}}},"nodes":[{"address":"/osc","inputs":{"freq":110.0},"type":"oscillator"},{"address":"/out","inputs":{"audio":{"from":"/osc.audio"}},"type":"output"}]},"content_hash":"ef4dfdaf2753ff91"}
