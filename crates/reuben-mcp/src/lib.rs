@@ -393,6 +393,43 @@ mod tests {
     }
 
     #[test]
+    fn engine_status_is_not_iserror_when_engine_unreachable() {
+        // ADR-0048 §5: engine_status answers "reachable?", so it is NEVER isError — even on a dead
+        // engine it reports the down state as its deliverable instead of fail-fasting like the
+        // engine tools do. Driven through the same UnreachableProbe seam as
+        // `engine_unreachable_is_iserror`; the tool is async, so drive it on a current-thread
+        // runtime (the only rt feature this crate enables).
+        let server = ReubenServer::with_probe(Box::new(UnreachableProbe));
+        let result = tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("current-thread runtime")
+            .block_on(server.engine_status())
+            .expect("engine_status is infallible");
+
+        assert_ne!(
+            result.is_error,
+            Some(true),
+            "engine_status must not fail-fast on a dead engine: {result:?}"
+        );
+
+        let structured = result
+            .structured_content
+            .as_ref()
+            .expect("engine_status returns a structured payload");
+        assert_eq!(
+            structured["reachable"].as_bool(),
+            Some(false),
+            "engine_status must report the engine unreachable: {structured}"
+        );
+        assert!(
+            structured["guidance"]
+                .as_str()
+                .is_some_and(|g| g.contains("reuben play")),
+            "the down-engine payload must carry the `reuben play` guidance: {structured}"
+        );
+    }
+
+    #[test]
     fn reachable_engine_passes_the_guard() {
         // The other branch of the seam: a live engine lets the tool proceed to its real work.
         let server = ReubenServer::with_probe(Box::new(ReachableProbe));
