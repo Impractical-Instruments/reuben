@@ -54,6 +54,10 @@ rtrb = "0.3"
 rmcp = { version = "2", default-features = false }
 # current_thread runtime, sync/rt/time/io-std only — no `net`, so no mio/OS reactor (ADR-0044 §5).
 tokio = { version = "1", default-features = false }
+# Unix SIGINT/SIGTERM handler for `reuben play`'s clean shutdown (ADR-0044 §2 Consequences):
+# std has no signal API. Already in the tree transitively (via cpal); not an async dependency,
+# so it does not touch ADR-0044 §3's tokio fence. reuben-native takes it only on `cfg(unix)`.
+libc = "0.2"
 
 # Benchmark profile: pin a single codegen unit so operator codegen is deterministic (ADR-0019).
 # With the default 16 CGUs, adding cold source to reuben-core repartitions LLVM's codegen units

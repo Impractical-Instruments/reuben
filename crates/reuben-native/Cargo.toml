@@ -20,6 +20,11 @@ serde.workspace = true
 serde_json.workspace = true
 clap.workspace = true
 
+# SIGINT/SIGTERM handler for `play`'s clean shutdown (ADR-0044 §2). Unix-only: `play`'s dev
+# persona is a checkout + a terminal (ADR-0044 §2); non-unix keeps the OS default Ctrl-C.
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
 [dev-dependencies]
 approx.workspace = true
 
