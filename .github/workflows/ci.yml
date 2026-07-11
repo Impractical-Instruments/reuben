@@ -59,6 +59,7 @@ jobs:
               - 'crates/reuben-macros/**'
               - 'crates/reuben-core/**'
               - 'crates/reuben-native/**'
+              - 'crates/reuben-mcp/**'
               - 'Cargo.toml'
               - 'Cargo.lock'
               - 'rust-toolchain.toml'
