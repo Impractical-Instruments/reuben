@@ -1,0 +1,514 @@
+<!doctype html>
+<!--
+  THROWAWAY PROTOTYPE — Web-chat UX/D (#302), map #298.
+  Question: how does the UI render (a) the agent's "thinking" state and
+  (b) the reshape diff-summary, on C's spine (surface top/center, chat input
+  pinned bottom, transcript a collapsible upward sheet)?
+
+  Fake timing, no engine, no real swap. Mounts three STRUCTURALLY DIFFERENT
+  treatments of the same scripted reshape, switchable via ?variant= or the
+  floating bar at the bottom-right. Delete once #302's decision folds into
+  the H (#306) spec.
+
+  The three variants disagree about WHERE the change is narrated:
+    A — surface-loud / chat-whisper  (reverse-Lovable, controls animate; chat = one plain line)
+    B — change-card in transcript / surface echoes on hover  (v0-style plan → structured list)
+    C — spatial annotation overlay / no list  (transient badges pinned to the moved controls)
+
+  Same scripted reshape in all three: on the "Warm Pad", the user types
+  "make it darker and add a shimmer" → thinking → restart blip → diff lands:
+    • Tone (cutoff)  CHANGED  (brighter → darker)
+    • Shimmer        ADDED
+  A second scripted reshape ("drop the wobble") demonstrates a REMOVED control.
+
+  VERDICT (see NOTES.md): the winner is an A+B HYBRID — surface highlight (from A) +
+  a persistent, scannable change-card in the transcript (from B), the two linked; the
+  thinking state is B's streaming-plan-that-resolves-into-the-card. C's spatial badges
+  and pure-A's chat-whisper were not chosen. All three variants are kept here only as the
+  comparison record for the #302 decision.
+-->
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Reshape diff-summary treatments — UX/D prototype</title>
+<style>
+  :root {
+    --bg: #0e1014;
+    --panel: #171a21;
+    --panel-2: #1e222b;
+    --ink: #e8ebf2;
+    --ink-dim: #9aa3b2;
+    --line: #2a2f3a;
+    --accent: #7aa2ff;
+    --add: #4ec98a;
+    --change: #f0b84a;
+    --remove: #ef6b6b;
+    --radius: 14px;
+    color-scheme: dark;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; height: 100%; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font: 15px/1.5 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+    display: flex;
+    justify-content: center;
+  }
+
+  /* ---- C's spine: one responsive column, surface top, input pinned bottom ---- */
+  .app {
+    width: 100%;
+    max-width: 40rem;
+    height: 100dvh;
+    display: flex;
+    flex-direction: column;
+    position: relative;
+    border-left: 1px solid var(--line);
+    border-right: 1px solid var(--line);
+    background: linear-gradient(180deg, #0e1014, #0b0d11);
+  }
+  .topbar {
+    padding: 12px 18px;
+    display: flex;
+    align-items: baseline;
+    gap: 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  .topbar .name { font-weight: 650; letter-spacing: .2px; }
+  .topbar .kind { color: var(--ink-dim); font-size: 13px; }
+  .topbar .playing {
+    margin-left: auto; font-size: 12px; color: var(--add);
+    display: inline-flex; align-items: center; gap: 6px;
+  }
+  .topbar .playing::before {
+    content: ""; width: 8px; height: 8px; border-radius: 50%;
+    background: var(--add); box-shadow: 0 0 10px var(--add);
+    animation: pulse 1.6s ease-in-out infinite;
+  }
+  @keyframes pulse { 0%,100%{opacity:.4} 50%{opacity:1} }
+
+  /* ---- the surface: the always-on product (C role #2) ---- */
+  .surface {
+    flex: 1;
+    padding: 22px 18px 8px;
+    overflow-y: auto;
+    position: relative;
+  }
+  .surface-title { font-size: 12px; text-transform: uppercase; letter-spacing: .12em; color: var(--ink-dim); margin: 0 2px 14px; }
+  .controls { display: grid; grid-template-columns: repeat(2, 1fr); gap: 14px; position: relative; }
+  .control {
+    background: var(--panel);
+    border: 1px solid var(--line);
+    border-radius: var(--radius);
+    padding: 14px 15px;
+    position: relative;
+    transition: transform .35s ease, opacity .35s ease, border-color .5s ease, box-shadow .5s ease;
+  }
+  .control .lbl { font-size: 13px; color: var(--ink-dim); margin-bottom: 10px; display: flex; justify-content: space-between; }
+  .control .val { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .track { height: 6px; background: var(--panel-2); border-radius: 4px; position: relative; }
+  .fill { position: absolute; left: 0; top: 0; bottom: 0; border-radius: 4px; background: linear-gradient(90deg, #3a5cbf, var(--accent)); transition: width .6s cubic-bezier(.2,.7,.2,1); }
+
+  /* diff animation states (shared vocabulary; variants opt in differently) */
+  .control.added { animation: addIn .6s ease both; }
+  @keyframes addIn { from { opacity: 0; transform: translateY(8px) scale(.96); } to { opacity: 1; transform: none; } }
+  .control.removing { animation: removeOut .5s ease both; }
+  @keyframes removeOut { to { opacity: 0; transform: scale(.9); height: 0; padding-top:0; padding-bottom:0; margin:0; } }
+  .glow-add    { border-color: var(--add) !important;    box-shadow: 0 0 0 1px var(--add), 0 0 22px -6px var(--add); }
+  .glow-change { border-color: var(--change) !important; box-shadow: 0 0 0 1px var(--change), 0 0 22px -6px var(--change); }
+  .glow-remove { border-color: var(--remove) !important; box-shadow: 0 0 0 1px var(--remove), 0 0 22px -6px var(--remove); }
+  .glow-echo   { border-color: var(--accent) !important; box-shadow: 0 0 0 1px var(--accent), 0 0 22px -6px var(--accent); }
+
+  /* ---- thinking-state overlay (Variant A + C reuse a surface shimmer) ---- */
+  .surface.thinking::after {
+    content: "";
+    position: absolute; inset: 0;
+    background: linear-gradient(110deg, transparent 20%, rgba(122,162,255,.10) 50%, transparent 80%);
+    background-size: 220% 100%;
+    animation: sweep 1.15s linear infinite;
+    pointer-events: none;
+  }
+  @keyframes sweep { from { background-position: 120% 0; } to { background-position: -120% 0; } }
+
+  /* ---- transcript sheet: expands UPWARD, collapsible (C spine #3, #7) ---- */
+  .transcript {
+    border-top: 1px solid var(--line);
+    background: var(--panel);
+    max-height: 46dvh;
+    overflow-y: auto;
+    padding: 12px 16px;
+    transition: max-height .3s ease, padding .3s ease;
+  }
+  .transcript.collapsed { max-height: 0; padding-top: 0; padding-bottom: 0; overflow: hidden; }
+  .msg { margin: 10px 0; display: flex; gap: 9px; }
+  .msg .who { font-size: 11px; text-transform: uppercase; letter-spacing: .1em; color: var(--ink-dim); width: 46px; flex: none; padding-top: 2px; }
+  .msg .body { flex: 1; }
+  .msg.user .body { color: var(--ink); }
+  .msg.reuben .body { color: #cdd4e2; }
+  .ghost { color: var(--ink-dim); font-style: italic; display: inline-flex; align-items: center; gap: 8px; }
+  .dots { display: inline-flex; gap: 3px; }
+  .dots i { width: 5px; height: 5px; border-radius: 50%; background: var(--ink-dim); animation: blink 1s infinite; }
+  .dots i:nth-child(2){ animation-delay:.2s } .dots i:nth-child(3){ animation-delay:.4s }
+  @keyframes blink { 0%,100%{opacity:.25} 50%{opacity:1} }
+
+  /* ---- Variant B: structured change-card ---- */
+  .change-card {
+    border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2);
+    padding: 4px 4px; margin-top: 6px; overflow: hidden;
+  }
+  .change-card .plan { padding: 9px 12px; color: var(--ink-dim); font-size: 13px; border-bottom: 1px solid var(--line); }
+  .change-row {
+    display: flex; align-items: center; gap: 10px; padding: 9px 12px; cursor: pointer; border-radius: 9px;
+    transition: background .15s;
+  }
+  .change-row:hover { background: rgba(122,162,255,.08); }
+  .change-row .tag {
+    width: 20px; height: 20px; border-radius: 6px; flex: none; display: grid; place-items: center;
+    font-size: 13px; font-weight: 700;
+  }
+  .tag.a { background: rgba(78,201,138,.15); color: var(--add); }
+  .tag.c { background: rgba(240,184,74,.15); color: var(--change); }
+  .tag.r { background: rgba(239,107,107,.15); color: var(--remove); }
+  .change-row .txt { flex: 1; }
+  .change-row .txt small { color: var(--ink-dim); }
+  .restart-note { color: var(--ink-dim); font-size: 12px; padding: 6px 12px 2px; display: flex; gap: 6px; align-items: center; }
+
+  /* ---- Variant C: spatial annotation badges ---- */
+  .annot {
+    position: absolute; z-index: 5; pointer-events: none;
+    font-size: 12px; font-weight: 650; padding: 4px 9px; border-radius: 999px;
+    white-space: nowrap; transform: translate(-50%, -120%);
+    animation: annotIn .35s ease both, annotOut .5s ease 3.6s both;
+    box-shadow: 0 6px 18px -6px rgba(0,0,0,.7);
+  }
+  .annot.a { background: var(--add); color: #06210f; }
+  .annot.c { background: var(--change); color: #241a02; }
+  .annot.r { background: var(--remove); color: #2a0808; }
+  @keyframes annotIn { from { opacity: 0; transform: translate(-50%,-90%) scale(.85);} to { opacity:1; } }
+  @keyframes annotOut { to { opacity: 0; transform: translate(-50%,-150%); } }
+  .ghost-slot {
+    border: 1.5px dashed var(--accent); border-radius: var(--radius); opacity: .5;
+    display: grid; place-items: center; color: var(--accent); font-size: 13px; min-height: 74px;
+    animation: pulseGhost 1s ease-in-out infinite;
+  }
+  @keyframes pulseGhost { 0%,100%{opacity:.3} 50%{opacity:.6} }
+
+  /* ---- input line: pinned bottom, always visible (C spine #3) ---- */
+  .inputbar {
+    border-top: 1px solid var(--line); padding: 12px 14px;
+    display: flex; gap: 10px; align-items: center; background: #0c0e12;
+  }
+  .inputbar .caret { color: var(--ink-dim); }
+  .inputbar input {
+    flex: 1; background: var(--panel); border: 1px solid var(--line); color: var(--ink);
+    border-radius: 11px; padding: 11px 13px; font: inherit; outline: none;
+  }
+  .inputbar input:focus { border-color: var(--accent); }
+  .inputbar button {
+    background: var(--accent); color: #0a1024; border: none; border-radius: 11px;
+    padding: 11px 16px; font: inherit; font-weight: 650; cursor: pointer;
+  }
+  .inputbar button:disabled { opacity: .4; cursor: default; }
+  .collapse-toggle {
+    position: absolute; right: 14px; bottom: 74px; z-index: 6;
+    background: var(--panel-2); border: 1px solid var(--line); color: var(--ink-dim);
+    border-radius: 999px; padding: 5px 12px; font-size: 12px; cursor: pointer;
+  }
+
+  /* ---- floating variant switcher (prototype chrome; not part of the design) ---- */
+  .switcher {
+    position: fixed; right: 16px; bottom: 16px; z-index: 50;
+    background: #000; border: 1px solid #444; border-radius: 999px;
+    display: flex; align-items: center; gap: 6px; padding: 6px 8px;
+    box-shadow: 0 8px 30px -8px #000; font-size: 13px;
+  }
+  .switcher button { background: #222; color: #fff; border: 1px solid #555; border-radius: 999px; width: 28px; height: 28px; cursor: pointer; }
+  .switcher .label { min-width: 190px; text-align: center; color: #fff; }
+  .replay { position: fixed; left: 16px; bottom: 16px; z-index: 50; background: #1c2333; color: #cdd6ee; border: 1px solid #34406b; border-radius: 10px; padding: 8px 12px; cursor: pointer; font-size: 13px; }
+</style>
+
+<div class="app" id="app">
+  <div class="topbar">
+    <span class="name">Warm Pad</span>
+    <span class="kind">instrument</span>
+    <span class="playing">playing</span>
+  </div>
+
+  <div class="surface" id="surface">
+    <p class="surface-title">Controls</p>
+    <div class="controls" id="controls"></div>
+  </div>
+
+  <button class="collapse-toggle" id="collapseToggle">▾ transcript</button>
+
+  <div class="transcript" id="transcript"></div>
+
+  <div class="inputbar">
+    <span class="caret">›</span>
+    <input id="input" placeholder="Describe a change… (e.g. make it darker)" />
+    <button id="send">Send</button>
+  </div>
+</div>
+
+<button class="replay" id="replay">↻ Replay demo</button>
+<div class="switcher">
+  <button id="prev">‹</button>
+  <span class="label" id="vlabel">A</span>
+  <button id="next">›</button>
+</div>
+
+<script>
+// ------------------------------------------------------------------ model
+// A tiny fake "Warm Pad" surface. Node identity is the key (C spine #6):
+// survivors hold position, added animate in, removed animate out.
+const BASE = [
+  { id: "tone",    label: "Tone",       value: "bright",  pct: 78 },
+  { id: "warmth",  label: "Warmth",     value: "42%",     pct: 42 },
+  { id: "attack",  label: "Attack",     value: "slow",    pct: 30 },
+  { id: "wobble",  label: "Wobble",     value: "gentle",  pct: 55 },
+];
+let controls = clone(BASE);
+function clone(a){ return a.map(c => ({...c})); }
+
+const surfaceEl = document.getElementById("surface");
+const controlsEl = document.getElementById("controls");
+const transcriptEl = document.getElementById("transcript");
+const inputEl = document.getElementById("input");
+const sendEl = document.getElementById("send");
+
+function renderControls() {
+  controlsEl.innerHTML = "";
+  for (const c of controls) {
+    const el = document.createElement("div");
+    el.className = "control";
+    el.dataset.id = c.id;
+    el.innerHTML = `<div class="lbl"><span>${c.label}</span><span class="val">${c.value}</span></div>
+      <div class="track"><div class="fill" style="width:${c.pct}%"></div></div>`;
+    controlsEl.appendChild(el);
+  }
+}
+function ctrlEl(id){ return controlsEl.querySelector(`[data-id="${id}"]`); }
+
+function addMsg(who, html, cls="") {
+  const m = document.createElement("div");
+  m.className = "msg " + (who === "you" ? "user" : "reuben") + " " + cls;
+  m.innerHTML = `<div class="who">${who}</div><div class="body">${html}</div>`;
+  transcriptEl.appendChild(m);
+  transcriptEl.scrollTop = transcriptEl.scrollHeight;
+  ensureExpanded();
+  return m;
+}
+function ensureExpanded(){ transcriptEl.classList.remove("collapsed"); syncToggle(); }
+
+// ------------------------------------------------------------------ variants
+let VARIANT = new URLSearchParams(location.search).get("variant") || "A";
+const NAMES = { A: "A — Surface-loud, chat whispers", B: "B — Change-card in transcript", C: "C — Spatial annotation overlay" };
+
+const wait = ms => new Promise(r => setTimeout(r, ms));
+
+// Scripted reshape #1: darker + shimmer (change + add)
+async function reshapeDarkerShimmer() {
+  const prompt = "make it darker and add a shimmer";
+  await runReshape(prompt, {
+    plan: "Lowering the tone and adding a shimmer voice…",
+    reply: "Done — cozier now, with a touch of sparkle on top.",
+    replyWhisper: "Darkened the tone and added a shimmer.",
+    changes: [
+      { kind: "change", id: "tone", label: "Tone", from: "bright", to: "darker", pct: 34, note: "brighter → darker" },
+      { kind: "add", id: "shimmer", label: "Shimmer", value: "on", pct: 60, note: "new voice up top" },
+    ],
+  });
+}
+// Scripted reshape #2: drop the wobble (remove)
+async function reshapeDropWobble() {
+  await runReshape("drop the wobble", {
+    plan: "Removing the wobble…",
+    reply: "Steadier now — the wobble's gone.",
+    replyWhisper: "Removed the wobble.",
+    changes: [ { kind: "remove", id: "wobble", label: "Wobble", note: "removed" } ],
+  });
+}
+
+async function runReshape(prompt, spec) {
+  setBusy(true);
+  addMsg("you", escapeHtml(prompt));
+
+  // ---- THINKING STATE ----
+  if (VARIANT === "A") {
+    surfaceEl.classList.add("thinking");
+    var ghost = addMsg("reuben", `<span class="ghost">reshaping <span class="dots"><i></i><i></i><i></i></span></span>`);
+    await wait(1600);
+    ghost.remove();
+  } else if (VARIANT === "B") {
+    // v0-style: stream a plan into a card that will become the change list
+    var card = addMsg("reuben", `<div class="change-card"><div class="plan"><span class="ghost">${spec.plan} <span class="dots"><i></i><i></i><i></i></span></span></div></div>`);
+    await wait(1700);
+  } else { // C
+    surfaceEl.classList.add("thinking");
+    // ghost-slot preview for an added control (materialize the shape)
+    var ghostSlot = null;
+    const adding = spec.changes.find(c => c.kind === "add");
+    if (adding) {
+      ghostSlot = document.createElement("div");
+      ghostSlot.className = "ghost-slot";
+      ghostSlot.textContent = "…" ;
+      controlsEl.appendChild(ghostSlot);
+    }
+    await wait(1600);
+    if (ghostSlot) ghostSlot.remove();
+  }
+
+  // ---- THE RESTART BLIP (F's problem; every web reshape restarts — shown minimally) ----
+  surfaceEl.classList.remove("thinking");
+  await restartBlip();
+
+  // ---- APPLY the structural diff to the model ----
+  applyChanges(spec.changes);
+
+  // ---- RENDER the diff-summary, per variant ----
+  if (VARIANT === "A") renderDiffA(spec);
+  else if (VARIANT === "B") renderDiffB(spec, card);
+  else renderDiffC(spec);
+
+  setBusy(false);
+}
+
+function applyChanges(changes) {
+  for (const ch of changes) {
+    if (ch.kind === "add") controls.push({ id: ch.id, label: ch.label, value: ch.value, pct: ch.pct, _new: true });
+    else if (ch.kind === "change") { const c = controls.find(x=>x.id===ch.id); if (c){ c.value = ch.to; c.pct = ch.pct; } }
+    else if (ch.kind === "remove") { /* handled in render for the animation */ }
+  }
+}
+
+// A: surface-LOUD, chat WHISPER — controls glow/animate, transcript = one plain line
+function renderDiffA(spec) {
+  renderControls();
+  for (const ch of spec.changes) {
+    const el = ctrlEl(ch.id);
+    if (ch.kind === "add" && el) { el.classList.add("added","glow-add"); }
+    if (ch.kind === "change" && el) { el.classList.add("glow-change"); }
+    if (ch.kind === "remove") {
+      // find it (still in model until animation completes)
+      const c = controls.find(x=>x.id===ch.id);
+      const rmEl = ctrlEl(ch.id);
+      if (rmEl) { rmEl.classList.add("glow-remove","removing"); setTimeout(()=>{ controls = controls.filter(x=>x.id!==ch.id); renderControls(); }, 480); }
+    }
+  }
+  setTimeout(()=> document.querySelectorAll(".glow-add,.glow-change").forEach(e=>e.classList.remove("glow-add","glow-change")), 2600);
+  addMsg("reuben", escapeHtml(spec.replyWhisper));
+}
+
+// B: structured change-CARD in transcript, surface ECHOES on hover
+function renderDiffB(spec, card) {
+  // strip the removed ones after a beat; add/change stay
+  handleRemovals(spec);
+  renderControls();
+  const rows = spec.changes.map(ch => {
+    const t = ch.kind === "add" ? "a" : ch.kind === "change" ? "c" : "r";
+    const sym = ch.kind === "add" ? "＋" : ch.kind === "change" ? "~" : "−";
+    const verb = ch.kind === "add" ? "Added" : ch.kind === "change" ? "Changed" : "Removed";
+    return `<div class="change-row" data-id="${ch.id}">
+      <span class="tag ${t}">${sym}</span>
+      <span class="txt"><strong>${verb} ${ch.label}</strong><br><small>${ch.note}</small></span>
+    </div>`;
+  }).join("");
+  card.querySelector(".body").innerHTML =
+    `${escapeHtml(spec.reply)}
+     <div class="change-card">${rows}
+       <div class="restart-note">↻ the sound restarted to apply this <span title="F's job">(honesty — see F)</span></div>
+     </div>`;
+  // hover a row → echo-highlight the control on the surface
+  card.querySelectorAll(".change-row").forEach(row => {
+    const el = ctrlEl(row.dataset.id);
+    row.addEventListener("mouseenter", () => el && el.classList.add("glow-echo"));
+    row.addEventListener("mouseleave", () => el && el.classList.remove("glow-echo"));
+  });
+}
+
+// C: spatial annotation OVERLAY — transient badges pinned to controls, no list
+function renderDiffC(spec) {
+  // render add/change first (removals need their old position for the badge)
+  const removals = spec.changes.filter(c=>c.kind==="remove");
+  const others = spec.changes.filter(c=>c.kind!=="remove");
+  renderControls();
+  for (const ch of others) {
+    const el = ctrlEl(ch.id);
+    if (!el) continue;
+    if (ch.kind === "add") el.classList.add("added");
+    annotate(el, ch.kind === "add" ? "a" : "c", ch.kind === "add" ? "new ✨" : "darker ↓");
+  }
+  // removals: badge at old spot, then fade the control out
+  for (const ch of removals) {
+    const el = ctrlEl(ch.id);
+    if (el) { annotate(el, "r", "removed"); el.classList.add("removing"); }
+    setTimeout(()=>{ controls = controls.filter(x=>x.id!==ch.id); renderControls(); }, 500);
+  }
+  addMsg("reuben", escapeHtml(spec.reply)); // conversational only, no diff
+}
+
+function annotate(el, cls, text) {
+  const b = document.createElement("div");
+  b.className = "annot " + cls;
+  b.textContent = text;
+  surfaceEl.appendChild(b);
+  const r = el.getBoundingClientRect(), s = surfaceEl.getBoundingClientRect();
+  b.style.left = (r.left - s.left + r.width/2) + "px";
+  b.style.top = (r.top - s.top + surfaceEl.scrollTop) + "px";
+  setTimeout(()=> b.remove(), 4300);
+}
+
+function handleRemovals(spec) {
+  const rm = spec.changes.filter(c=>c.kind==="remove").map(c=>c.id);
+  if (rm.length) controls = controls.filter(c=>!rm.includes(c.id));
+}
+
+// a tiny visual "the sound restarted" blip on the playing dot (F owns the real honesty)
+async function restartBlip() {
+  const dot = document.querySelector(".playing");
+  dot.style.color = "#f0b84a"; dot.textContent = "restarting…";
+  await wait(260);
+  dot.style.color = ""; dot.textContent = "playing";
+}
+
+function setBusy(b) { sendEl.disabled = b; inputEl.disabled = b; }
+function escapeHtml(s){ return s.replace(/[&<>]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[c])); }
+
+// ------------------------------------------------------------------ wiring
+let step = 0;
+async function nextDemoStep() {
+  if (step === 0) { await reshapeDarkerShimmer(); step = 1; }
+  else if (step === 1) { await reshapeDropWobble(); step = 2; }
+  else resetDemo();
+}
+function resetDemo() {
+  controls = clone(BASE); step = 0;
+  transcriptEl.innerHTML = "";
+  renderControls();
+  addMsg("reuben", "Warm Pad's playing. Try “make it darker and add a shimmer”, then Send. Or hit ↻ Replay.");
+}
+
+sendEl.addEventListener("click", () => { if (!sendEl.disabled) { inputEl.value=""; nextDemoStep(); } });
+inputEl.addEventListener("keydown", e => { if (e.key === "Enter" && !sendEl.disabled) { inputEl.value=""; nextDemoStep(); } });
+document.getElementById("replay").addEventListener("click", () => { resetDemo(); setTimeout(nextDemoStep, 250); });
+
+// collapse toggle (C spine #3)
+const toggle = document.getElementById("collapseToggle");
+function syncToggle(){ toggle.textContent = transcriptEl.classList.contains("collapsed") ? "▴ transcript" : "▾ transcript"; }
+toggle.addEventListener("click", () => { transcriptEl.classList.toggle("collapsed"); syncToggle(); });
+
+// variant switcher
+const order = ["A","B","C"];
+function setVariant(v){ VARIANT=v; document.getElementById("vlabel").textContent = NAMES[v]; const u=new URL(location); u.searchParams.set("variant",v); history.replaceState({},"",u); resetDemo(); }
+document.getElementById("prev").onclick = () => setVariant(order[(order.indexOf(VARIANT)+2)%3]);
+document.getElementById("next").onclick = () => setVariant(order[(order.indexOf(VARIANT)+1)%3]);
+window.addEventListener("keydown", e => {
+  if (document.activeElement === inputEl) return;
+  if (e.key === "ArrowLeft") document.getElementById("prev").click();
+  if (e.key === "ArrowRight") document.getElementById("next").click();
+});
+
+// boot
+document.getElementById("vlabel").textContent = NAMES[VARIANT];
+resetDemo();
+</script>
