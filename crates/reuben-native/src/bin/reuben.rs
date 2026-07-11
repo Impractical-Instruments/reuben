@@ -27,7 +27,7 @@ use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
 use std::process::ExitCode;
 use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread;
 
 use clap::{Parser, Subcommand};
@@ -388,7 +388,13 @@ fn play(
         None => DeviceProfile::default(),
     };
 
-    let (tx, rx) = mpsc::channel();
+    // The OSC-in channel feeding the audio callback. A restart-swap (ADR-0046 §10) drops the old
+    // streams — and with them the callback that owned the old receiver — so each session needs a
+    // fresh receiver. `osc_sink` is the *swappable* sender the UDP thread forwards through:
+    // `AudioSession::restart` re-points it at the new session's channel, so notes keep flowing
+    // across a swap. Locking it is on the (cold) UDP thread, never the audio callback.
+    let (osc_tx, osc_rx) = mpsc::channel::<osc::OscIn>();
+    let osc_sink = Arc::new(Mutex::new(osc_tx));
 
     // Log incoming/outgoing OSC only when asked: this runs on the I/O paths, and the stdout
     // lock would add latency/jitter if it fired on every message while playing. Off by
@@ -431,12 +437,15 @@ fn play(
         out_tx
     });
 
-    // OSC/UDP receiver thread: decode datagrams and forward Messages to the audio thread.
+    // OSC/UDP receiver thread: decode datagrams and forward Messages to the audio thread through
+    // the swappable `osc_sink`. This thread outlives any single audio session — a swap only
+    // re-points the sink — so the UDP socket and port binding survive restarts.
     let socket = UdpSocket::bind(OSC_BIND).expect("bind OSC socket");
     println!("OSC-in listening on {OSC_BIND}  (send /voicer/notes [midi, gate])");
     if !log_osc {
         println!("  (set REUBEN_LOG_OSC=1 to log received OSC)");
     }
+    let udp_sink = Arc::clone(&osc_sink);
     thread::spawn(move || {
         let mut buf = [0u8; 1024];
         loop {
@@ -447,7 +456,10 @@ fn play(
                             if log_osc {
                                 println!("recv {} {:?}", m.address, m.args.as_slice());
                             }
-                            let _ = tx.send(m);
+                            // Forward to the *current* session's receiver. A send error means a
+                            // swap is mid-flight (the old receiver dropped, the new one not yet
+                            // installed); the datagram is dropped, consistent with the ~100ms gap.
+                            let _ = udp_sink.lock().expect("osc sink poisoned").send(m);
                         }
                     }
                     Err(e) => eprintln!("OSC decode error: {e}"),
@@ -462,11 +474,20 @@ fn play(
 
     // Instrument source: a path argument, else the embedded default. Resource paths (sample
     // files) resolve relative to the instrument file's directory; the embedded default has
-    // none, so it roots at the current directory.
-    let (instrument_json, resolver) = match path {
+    // none, so it roots at the current directory. `base_dir`/`root_for_resolve` are retained so a
+    // by-value swap (ADR-0046 §8) anchors its resource resolution the same way the initial
+    // instrument did (a by-path swap re-anchors at its own file, like `read_instrument`).
+    let root_for_resolve = root.clone();
+    let (instrument_json, resolver, base_dir) = match path {
         Some(path) => {
             println!("instrument: {}", path.display());
-            read_instrument(&path, root).unwrap_or_else(|e| panic!("{e}"))
+            let base_dir = path
+                .parent()
+                .filter(|p| !p.as_os_str().is_empty())
+                .map(Path::to_path_buf)
+                .unwrap_or_else(|| PathBuf::from("."));
+            let (json, resolver) = read_instrument(&path, root).unwrap_or_else(|e| panic!("{e}"));
+            (json, resolver, base_dir)
         }
         None => {
             println!("instrument: <default> (pass a path to load your own)");
@@ -474,7 +495,7 @@ fn play(
                 Some(root) => FsResolver::new(".").with_root(root),
                 None => FsResolver::new("."),
             };
-            (DEFAULT_JSON.to_string(), resolver)
+            (DEFAULT_JSON.to_string(), resolver, PathBuf::from("."))
         }
     };
 
@@ -494,31 +515,48 @@ fn play(
     // callback and the input stream (P5/#182) feed it, and `audio::start` is already logging
     // it periodically to stderr. `streams` holds the live cpal stream(s): output always,
     // plus the input stream when the played instrument binds input channels; dropping it
-    // stops audio, so it lives until the shutdown teardown below.
-    let (streams, diagnostics) = audio::start(rx, BLOCK_SIZE, osc_out_tx, &profile, |cfg| {
-        println!(
-            "audio out @ {} Hz, block {}",
-            cfg.sample_rate, cfg.block_size
-        );
-        let (engine, warnings) =
-            Engine::from_document(&instrument_json, &Registry::builtin(), &resolver, cfg)
-                .expect("load instrument");
-        // Resource problems are non-fatal (ADR-0016): the rig still plays, but the user must
-        // see them — they are authoring errors.
-        for w in &warnings {
-            eprintln!("warning: {w}");
-        }
-        engine
-    })
-    .unwrap_or_else(|e| panic!("start audio: {e}"));
+    // stops audio. Both are handed to the `AudioSession` below, which owns them across restarts.
+    let (streams, diagnostics) =
+        audio::start(osc_rx, BLOCK_SIZE, osc_out_tx.clone(), &profile, |cfg| {
+            println!(
+                "audio out @ {} Hz, block {}",
+                cfg.sample_rate, cfg.block_size
+            );
+            let (engine, warnings) =
+                Engine::from_document(&instrument_json, &Registry::builtin(), &resolver, cfg)
+                    .expect("load instrument");
+            // Resource problems are non-fatal (ADR-0016): the rig still plays, but the user must
+            // see them — they are authoring errors.
+            for w in &warnings {
+                eprintln!("warning: {w}");
+            }
+            engine
+        })
+        .unwrap_or_else(|e| panic!("start audio: {e}"));
 
     // The structure channel (ADR-0046 §8): a loopback-TCP/NDJSON server answering the MCP
-    // sidecar's ping/get_document/get_diagnostics off a dedicated std thread (no async runtime —
-    // ADR-0044 §3 keeps reuben-native tokio-free). It reads the retained doc and snapshots the
-    // shared diagnostics; it never touches the engine. Non-fatal: audio is the primary function,
-    // so a taken port disables the channel with a warning rather than killing playback (the user
-    // owns the engine, ADR-0044 §2).
-    let structure_state = structure::StructureState::from_doc(&canonical, Arc::clone(&diagnostics));
+    // sidecar's ping/get_document/get_diagnostics/swap off a dedicated std thread (no async
+    // runtime — ADR-0044 §3 keeps reuben-native tokio-free). It reads the retained doc and
+    // snapshots the shared diagnostics; the swap verb (ADR-0046 §10) forwards its validated
+    // install to this thread through the command channel below (`MainThreadInstaller`), the sole
+    // owner of every cpal `Stream`. Non-fatal: audio is the primary function, so a taken port
+    // disables the channel with a warning rather than killing playback (ADR-0044 §2).
+    let mut structure_state = structure::StructureState::from_doc(&canonical, diagnostics);
+    // Share the state's diagnostics handle with the session so a restart re-points it (the state
+    // reads the *current* session's counters).
+    let diagnostics_handle = structure_state.diagnostics_handle();
+
+    // The restart-swap command channel: connection-handler threads send `Swap`, the signal
+    // bridge sends `Shutdown`, and this (owning) thread processes both serially. Keeping all
+    // stream lifecycle on this one thread is what makes the swap race-free (see `AudioSession`).
+    let (main_tx, main_rx) = mpsc::channel::<MainCommand>();
+    let installer = Arc::new(MainThreadInstaller {
+        tx: main_tx.clone(),
+    });
+    structure_state = structure_state
+        .with_installer(installer)
+        .with_resolve(base_dir, root_for_resolve);
+
     let structure_server = match structure::StructureServer::bind(STRUCTURE_BIND, structure_state) {
         Ok(server) => {
             println!("structure channel on {}", server.local_addr());
@@ -527,41 +565,170 @@ fn play(
         Err(e) => {
             eprintln!(
                 "warning: structure channel unavailable on {STRUCTURE_BIND} ({e}); MCP structure \
-                 ops (get_document/get_diagnostics) are disabled this run"
+                 ops (get_document/get_diagnostics/swap) are disabled this run"
             );
             None
         }
     };
 
+    let mut session = AudioSession {
+        streams: Some(streams),
+        block_size: BLOCK_SIZE,
+        profile,
+        osc_out: osc_out_tx,
+        osc_sink,
+        diagnostics: diagnostics_handle.clone(),
+    };
+
     // Clean shutdown (ADR-0044 §2 Consequences), replacing the old `loop { thread::park() }`: a
-    // SIGINT/SIGTERM handler signals this channel; the main thread blocks until then, then tears
-    // down in order — stop the structure channel (joining its threads), stop audio (dropping the
-    // streams stops the callback), and flush one final diagnostics snapshot to stderr (§9's
-    // exit-time logging, the hook `log_snapshot` was always meant to serve).
-    let (shutdown_tx, shutdown_rx) = mpsc::channel::<()>();
-    install_shutdown_handler(shutdown_tx.clone());
+    // SIGINT/SIGTERM handler sends `Shutdown` on the command channel; this thread blocks on that
+    // channel serving swaps until then, then tears down in order — stop the structure channel
+    // (joining its threads), stop audio (dropping the session's streams stops the callback), and
+    // flush one final diagnostics snapshot to stderr (ADR-0038 §9's exit-time logging).
+    install_shutdown_handler(main_tx.clone());
 
     println!("playing — Ctrl-C to quit.");
-    // Blocks until a signal wakes us. (On non-unix no handler is installed; we hold `shutdown_tx`
-    // past this line so `recv` can't return spuriously on a dropped sender.)
-    let _ = shutdown_rx.recv();
+    // Serve restart-swaps until a signal (or all senders dropping) wakes us. Every swap runs on
+    // THIS thread — drop the old streams, reopen — so no two audio callbacks are ever live at
+    // once and the retired engine is freed here, off the audio path.
+    while let Ok(command) = main_rx.recv() {
+        match command {
+            MainCommand::Swap {
+                json,
+                resolver,
+                reply,
+            } => {
+                let outcome = session.restart(&json, resolver);
+                let _ = reply.send(outcome);
+            }
+            MainCommand::Shutdown => break,
+        }
+    }
     println!("shutting down…");
 
+    // Drop the command receiver before joining the structure threads: any connection handler
+    // blocked waiting on an in-flight swap reply is unblocked (its reply sender drops with the
+    // queued command), so `shutdown()` can join it instead of hanging.
+    drop(main_rx);
     if let Some(server) = structure_server {
         server.shutdown();
     }
-    drop(streams);
-    reuben_native::diagnostics::log_snapshot(&diagnostics.snapshot());
-    drop(shutdown_tx);
+    drop(session);
+    reuben_native::diagnostics::log_snapshot(&diagnostics_handle.current().snapshot());
+}
+
+/// A command to `play`'s owning thread — the single owner of every cpal [`audio::Streams`] (the
+/// invariant that makes restart-swap race-free). A connection-handler thread sends [`Swap`]; the
+/// signal bridge sends [`Shutdown`].
+///
+/// [`Swap`]: MainCommand::Swap
+/// [`Shutdown`]: MainCommand::Shutdown
+enum MainCommand {
+    /// Install a validated document (ADR-0046 §10): the owning thread restarts audio onto it and
+    /// replies with the outcome (`Ok`, or a device-fault message).
+    Swap {
+        json: String,
+        resolver: FsResolver,
+        reply: mpsc::Sender<Result<(), String>>,
+    },
+    /// Stop serving and begin teardown. Only constructed by the `#[cfg(unix)]` signal-handler
+    /// bridge; on non-unix there is no signal path, so the variant is intentionally unconstructed
+    /// (the process exits via the OS default on Ctrl-C).
+    #[cfg_attr(not(unix), allow(dead_code))]
+    Shutdown,
+}
+
+/// The production [`SwapInstaller`](structure::SwapInstaller): the device seam ADR-0046 §10's
+/// restart hangs off. A connection-handler thread (which has already validated the document —
+/// retain-prior lives in the handler) hands it to `play`'s owning thread and blocks on the
+/// outcome. The handler thread never touches a cpal `Stream`; only the owning thread does, which
+/// is why no two callbacks can be live at once.
+struct MainThreadInstaller {
+    tx: mpsc::Sender<MainCommand>,
+}
+
+impl structure::SwapInstaller for MainThreadInstaller {
+    fn restart(&self, json: &str, resolver: FsResolver) -> Result<(), String> {
+        let (reply, outcome) = mpsc::channel();
+        self.tx
+            .send(MainCommand::Swap {
+                json: json.to_string(),
+                resolver,
+                reply,
+            })
+            .map_err(|_| "audio owner has shut down; cannot swap".to_string())?;
+        outcome
+            .recv()
+            .map_err(|_| "audio owner dropped the swap without replying".to_string())?
+    }
+}
+
+/// `play`'s live audio, restartable in place on the owning thread (ADR-0046 §10). Holds the
+/// reusable rebuild inputs — block size, device profile, the OSC-out sink, the swappable OSC-in
+/// sender, and the diagnostics handle — so a swap tears down the current [`audio::Streams`] and
+/// reopens without re-deriving them.
+struct AudioSession {
+    /// The live streams, `None` only transiently between drop-old and start-new inside
+    /// [`restart`](Self::restart), or after a device fault leaves the session down.
+    streams: Option<audio::Streams>,
+    block_size: usize,
+    profile: DeviceProfile,
+    /// The OSC-out sink (ADR-0026), cloned into each `audio::start` — the encoder thread behind
+    /// it outlives any single session.
+    osc_out: Option<mpsc::Sender<Message>>,
+    /// The swappable OSC-in sender the UDP thread forwards through; a restart re-points it at the
+    /// new session's channel so notes keep flowing across a swap.
+    osc_sink: Arc<Mutex<mpsc::Sender<osc::OscIn>>>,
+    /// The structure channel's diagnostics handle; a restart re-points it at the new session's
+    /// counters (ADR-0038 §9) so `get_diagnostics` tracks the current engine.
+    diagnostics: structure::DiagnosticsHandle,
+}
+
+impl AudioSession {
+    /// Stop-the-world restart onto the already-validated `json`, resolved through `resolver`
+    /// (ADR-0046 §10). Drops the old streams **first** — which stops the old cpal callback and
+    /// frees the old Engine on this thread — so there is never a moment with two live callbacks
+    /// or a use-after-free of the retired engine, then reopens. A device fault leaves the session
+    /// down (stay-down) and is surfaced to the caller; a validation failure never reaches here
+    /// (retain-prior is the handler's job — the old streams would still be playing).
+    fn restart(&mut self, json: &str, resolver: FsResolver) -> Result<(), String> {
+        // 1. Stop the old callback and free the old engine BEFORE anything new exists.
+        self.streams = None;
+        // 2. Fresh OSC-in channel; re-point the UDP forwarder so the new engine receives notes
+        //    (the old receiver died with the old streams above).
+        let (osc_tx, osc_rx) = mpsc::channel();
+        *self.osc_sink.lock().expect("osc sink poisoned") = osc_tx;
+        // 3. Reopen. The document already passed the loader authority on the handler thread, and
+        //    load/plan validity is rate-independent, so `Engine::from_document` cannot fail here;
+        //    the `expect` records that invariant.
+        let osc_out = self.osc_out.clone();
+        let result = audio::start(osc_rx, self.block_size, osc_out, &self.profile, |cfg| {
+            let (engine, warnings) =
+                Engine::from_document(json, &Registry::builtin(), &resolver, cfg)
+                    .expect("swap document validated before install");
+            for w in &warnings {
+                eprintln!("warning: {w}");
+            }
+            engine
+        });
+        match result {
+            Ok((streams, diagnostics)) => {
+                self.diagnostics.replace(diagnostics);
+                self.streams = Some(streams);
+                Ok(())
+            }
+            Err(e) => Err(format!("reopen audio after swap: {e}")),
+        }
+    }
 }
 
 /// Install the SIGINT/SIGTERM → shutdown bridge (unix). `std` has no signal API, so this uses
 /// `libc` (already in the tree, not async — ADR-0044 §3's tokio fence is untouched). The signal
 /// handler itself only stores into an atomic (all that is async-signal-safe); a small watcher
-/// thread bridges that atomic to `tx`, so the blocked main thread wakes without the handler ever
-/// touching a channel or lock.
+/// thread bridges that atomic to a [`MainCommand::Shutdown`] on `tx`, so the owning thread's
+/// swap-serving loop wakes without the handler ever touching a channel or lock.
 #[cfg(unix)]
-fn install_shutdown_handler(tx: mpsc::Sender<()>) {
+fn install_shutdown_handler(tx: mpsc::Sender<MainCommand>) {
     use std::sync::atomic::{AtomicBool, Ordering};
     use std::time::Duration;
 
@@ -585,7 +752,7 @@ fn install_shutdown_handler(tx: mpsc::Sender<()>) {
     }
     thread::spawn(move || loop {
         if SIGNALED.load(Ordering::SeqCst) {
-            let _ = tx.send(());
+            let _ = tx.send(MainCommand::Shutdown);
             break;
         }
         thread::sleep(Duration::from_millis(100));
@@ -596,7 +763,7 @@ fn install_shutdown_handler(tx: mpsc::Sender<()>) {
 /// (terminate). Clean shutdown off unix is a follow-up — `play`'s M1 persona is a unix checkout
 /// and a terminal (ADR-0044 §2). `tx` is dropped, but `play` holds the other sender.
 #[cfg(not(unix))]
-fn install_shutdown_handler(_tx: mpsc::Sender<()>) {}
+fn install_shutdown_handler(_tx: mpsc::Sender<MainCommand>) {}
 
 #[cfg(test)]
 mod tests {

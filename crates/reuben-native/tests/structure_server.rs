@@ -4,9 +4,15 @@
 //! (`127.0.0.1:0`, OS-assigned, so parallel CI jobs never collide), then drives a plain
 //! `TcpStream` client speaking NDJSON.
 //!
-//! Two behaviors under test:
+//! Behaviors under test:
 //! - the three non-mutating verbs answer over the wire (pong; the default doc + its hash; a
 //!   zeroed snapshot at startup), one framed response per request, in order;
+//! - the **`swap`** verb (ADR-0046 §10) installs a new document over the wire — by value and by
+//!   path — with `get_document` then reporting the new doc + hash; a bad document reports errors
+//!   with no install; `expect` arbitration (ADR-0046 §9) conflicts on a stale hash and proceeds
+//!   on a matching one. The harness runs with the default no-op installer (ADR-0053 §4), so the
+//!   swap **logic** is exercised end-to-end over TCP with no cpal device (there is none in CI);
+//!   the actual stream teardown/reopen is a scripted human test (`docs/mcp-swap-ritual.md`).
 //! - the server **shuts down cleanly** — every thread joined — even with an idle client still
 //!   connected, the joinable stop that replaces `play`'s park-forever loop.
 
@@ -187,25 +193,202 @@ fn get_diagnostics_reflects_live_counter_bumps() {
     server.shutdown();
 }
 
+/// A second valid instrument to swap the running rig to (ADR-0046 §10). Device-free: the harness
+/// state carries the default no-op installer (ADR-0053 §4), so a swap over the wire runs the full
+/// install *logic* — validate → SwapReport → doc/hash update — with no cpal device.
+const SWAP_TARGET: &str = r#"{
+    "format_version": 3,
+    "instrument": "swapped-rig",
+    "interface": { "outputs": { "main": { "from": "/out.audio" } } },
+    "nodes": [
+        { "type": "oscillator", "address": "/osc", "inputs": { "freq": 330.0 } },
+        { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/osc.audio" } } }
+    ]
+}"#;
+
+/// The content hash a `swap` to [`SWAP_TARGET`] installs — minted the same way `play` mints it,
+/// so the test's expectation is an independent computation of what the server should report.
+fn target_hash() -> String {
+    content_hash(
+        &NormalizedDoc::from_json(SWAP_TARGET, &Registry::builtin(), None)
+            .expect("swap target normalizes"),
+    )
+}
+
+fn send(writer: &mut impl Write, req: &Request) {
+    writer
+        .write_all(req.to_ndjson().as_bytes())
+        .expect("send request");
+}
+
 #[test]
-fn swap_is_answered_but_not_installed() {
+fn swap_by_value_over_the_wire_installs_and_get_document_reflects_it() {
+    let (state, _, base_hash) = default_rig_state(Diagnostics::new());
+    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let client = TcpStream::connect(server.local_addr()).expect("connect");
+    let mut writer = client.try_clone().unwrap();
+    let mut reader = BufReader::new(client);
+
+    let target: serde_json::Value = serde_json::from_str(SWAP_TARGET).unwrap();
+    send(
+        &mut writer,
+        &Request::Swap {
+            source: DocSource::Document(target),
+            expect: None,
+        },
+    );
+    match read_response(&mut reader) {
+        Response::SwapReport(report) => {
+            assert!(report.report.ok, "a valid document installs: {report:?}");
+            assert_eq!(report.content_hash, target_hash());
+            let diff = report.diff.expect("a successful swap carries a diff");
+            assert_eq!(diff.survived, 0, "M1 restart is all-cold (ADR-0046 §10)");
+        }
+        other => panic!("expected SwapReport, got {other:?}"),
+    }
+
+    // get_document now returns the swapped-in doc + its new hash, not the default rig.
+    send(&mut writer, &Request::GetDocument);
+    match read_response(&mut reader) {
+        Response::Document {
+            document,
+            content_hash: hash,
+        } => {
+            assert_eq!(document["instrument"], serde_json::json!("swapped-rig"));
+            assert_eq!(hash, target_hash());
+            assert_ne!(hash, base_hash, "the swap changed the installed document");
+        }
+        other => panic!("expected Document, got {other:?}"),
+    }
+
+    server.shutdown();
+}
+
+#[test]
+fn swap_by_path_over_the_wire_installs() {
     let (state, _, _) = default_rig_state(Diagnostics::new());
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
     let mut reader = BufReader::new(client);
 
-    let req = Request::Swap {
-        source: DocSource::Path("instruments/warm-pad.json".to_string()),
-        expect: None,
-    };
-    writer.write_all(req.to_ndjson().as_bytes()).unwrap();
+    let path = std::env::temp_dir().join(format!("reuben_swap_wire_{}.json", std::process::id()));
+    std::fs::write(&path, SWAP_TARGET).expect("write swap target");
+    send(
+        &mut writer,
+        &Request::Swap {
+            source: DocSource::Path(path.display().to_string()),
+            expect: None,
+        },
+    );
     match read_response(&mut reader) {
-        Response::Error { message } => assert!(
-            message.contains("not yet implemented"),
-            "swap is a not-yet-implemented Error in M1: {message:?}"
-        ),
-        other => panic!("swap must return Error in M1, got {other:?}"),
+        Response::SwapReport(report) => {
+            assert!(report.report.ok, "a valid file installs: {report:?}")
+        }
+        other => panic!("expected SwapReport, got {other:?}"),
+    }
+    send(&mut writer, &Request::GetDocument);
+    match read_response(&mut reader) {
+        Response::Document { document, .. } => {
+            assert_eq!(document["instrument"], serde_json::json!("swapped-rig"))
+        }
+        other => panic!("expected Document, got {other:?}"),
+    }
+    let _ = std::fs::remove_file(&path);
+
+    server.shutdown();
+}
+
+#[test]
+fn swap_of_a_bad_document_over_the_wire_reports_errors_without_installing() {
+    let (state, expected_doc, base_hash) = default_rig_state(Diagnostics::new());
+    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let client = TcpStream::connect(server.local_addr()).expect("connect");
+    let mut writer = client.try_clone().unwrap();
+    let mut reader = BufReader::new(client);
+
+    let bad: serde_json::Value = serde_json::json!({
+        "format_version": 3,
+        "instrument": "bad",
+        "nodes": [ { "type": "no_such_operator", "address": "/x" } ]
+    });
+    send(
+        &mut writer,
+        &Request::Swap {
+            source: DocSource::Document(bad),
+            expect: None,
+        },
+    );
+    match read_response(&mut reader) {
+        Response::SwapReport(report) => {
+            assert!(!report.report.ok, "a bad document must not install");
+            assert!(
+                !report.report.errors.is_empty(),
+                "the failure names its cause"
+            );
+            assert_eq!(
+                report.content_hash, base_hash,
+                "the prior hash still names what plays"
+            );
+            assert!(report.diff.is_none(), "a rejected swap has no diff");
+        }
+        other => panic!("expected SwapReport, got {other:?}"),
+    }
+
+    // Retain-prior: get_document still returns the original default rig.
+    send(&mut writer, &Request::GetDocument);
+    match read_response(&mut reader) {
+        Response::Document {
+            document,
+            content_hash: hash,
+        } => {
+            assert_eq!(document, expected_doc, "the default rig keeps playing");
+            assert_eq!(hash, base_hash);
+        }
+        other => panic!("expected Document, got {other:?}"),
+    }
+
+    server.shutdown();
+}
+
+#[test]
+fn swap_expect_arbitration_conflicts_then_proceeds_over_the_wire() {
+    let (state, _, base_hash) = default_rig_state(Diagnostics::new());
+    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let client = TcpStream::connect(server.local_addr()).expect("connect");
+    let mut writer = client.try_clone().unwrap();
+    let mut reader = BufReader::new(client);
+
+    // A stale expect rejects with the real installed hash — nothing installs (ADR-0046 §9).
+    let target: serde_json::Value = serde_json::from_str(SWAP_TARGET).unwrap();
+    send(
+        &mut writer,
+        &Request::Swap {
+            source: DocSource::Document(target.clone()),
+            expect: Some("0badc0de0badc0de".to_string()),
+        },
+    );
+    match read_response(&mut reader) {
+        Response::Conflict { expected, actual } => {
+            assert_eq!(expected, "0badc0de0badc0de");
+            assert_eq!(actual, base_hash, "conflict names the real installed hash");
+        }
+        other => panic!("expected Conflict, got {other:?}"),
+    }
+
+    // The matching expect (the real installed hash) proceeds.
+    send(
+        &mut writer,
+        &Request::Swap {
+            source: DocSource::Document(target),
+            expect: Some(base_hash),
+        },
+    );
+    match read_response(&mut reader) {
+        Response::SwapReport(report) => {
+            assert!(report.report.ok, "matching expect installs: {report:?}")
+        }
+        other => panic!("expected SwapReport, got {other:?}"),
     }
 
     server.shutdown();
