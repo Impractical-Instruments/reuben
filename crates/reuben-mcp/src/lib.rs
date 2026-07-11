@@ -5,23 +5,25 @@
 //! member allowed an async runtime: rmcp + tokio live here and nowhere else, fenced out of every
 //! other member so the play/CLI/web builds stay std-only (ADR-0044 §3/§5).
 //!
-//! # M1 skeleton scope (#313)
+//! # Tool surface (ADR-0048 §1)
 //!
-//! This module stands up the server shape: a [`ServerHandler`] declaring the `tools` and
-//! `resources` capabilities plus an `instructions` field, and a tool router with all **eight**
-//! tools (ADR-0048 §1) registered as **stubs**. The tool bodies proper land with the tool ticket
-//! (#318); the resource set and the final `instructions` prose land with the resources ticket
-//! (#319). Downstream wiring the stubs reference:
+//! A [`ServerHandler`] declaring the `tools` and `resources` capabilities plus an `instructions`
+//! field, and a tool router with all **eight** tools (ADR-0048 §1). The three pure tools
+//! (`describe_operators`/`describe_instrument`/`validate`, #316) descend to
+//! [`reuben_core::introspect`] over a [`reuben_native::resources::FsResolver`]; the five engine
+//! tools (`send`/`engine_status`/`swap`/`get_current_instrument`/`get_diagnostics`, #318) reach a
+//! user-owned `reuben play` through the [`EngineChannel`] seam:
 //!
-//! - pure tools → [`reuben_core::introspect`] (`describe`/`describe_patch`/`validate`) over a
-//!   [`reuben_native::resources::FsResolver`], returning the [`reuben_core::Report`]/`PatchBoundary`
-//!   contract types (already schema-derivable here via the `schemars` fence — proven by
-//!   [`ReubenServer::validate`]).
-//! - `send` → [`reuben_native::osc::encode`] over the OSC/UDP boundary.
-//! - engine liveness → the structure-channel `ping` (ADR-0046 §8). The MCP client ticket (#315)
-//!   fills the [`EngineProbe`] seam with the real [`PingProbe`] (connect + `ping` succeeds ⇒
-//!   reachable); [`UnreachableProbe`] remains as the deterministic down-engine seam the unit tests
-//!   drive to exercise the fail-fast path (ADR-0044 §2, ADR-0048 §3).
+//! - `send` → [`reuben_native::osc::encode`] over the OSC/UDP control path (probe-first liveness,
+//!   ADR-0048 §5).
+//! - `engine_status`/`swap`/`get_current_instrument`/`get_diagnostics` → the structure channel's
+//!   four verbs (ADR-0046 §8), via [`StructureClient`] behind [`EngineLink`].
+//!
+//! Error-layer discipline (ADR-0048 §3): a failing validation or a rejected swap is an ORDINARY
+//! result — the tool worked; `isError` is reserved for the can't-do-the-job cases (an unreachable
+//! engine, a bad one-of, an unknown operator). `engine_status` is never `isError` — answering
+//! "reachable?" is its job. The four engine-reading/mutating tools use ACT-THEN-MAP: run the real
+//! exchange and map [`StructureError::is_unreachable`] to the fail-fast result, no separate probe.
 
 use std::path::Path;
 
@@ -35,13 +37,16 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt};
 
+use reuben_core::coordinator::{DiagnosticsReport, DocSource};
 use reuben_core::introspect::{OperatorInfo, PatchBoundary};
-use reuben_core::{schema, Registry, Report};
+use reuben_core::{schema, Arg, Registry, Report, SwapReport};
 use reuben_native::resources::FsResolver;
 use serde::{Deserialize, Serialize};
 
 mod client;
-pub use client::{DocumentSnapshot, PingProbe, StructureClient, StructureError, SwapOutcome};
+mod engine;
+pub use client::{DocumentSnapshot, StructureClient, StructureError, SwapOutcome};
+pub use engine::{EngineChannel, EngineLink, DEFAULT_OSC_ADDR};
 
 /// The eight-tool surface (ADR-0048 §1), in the ADR's roster order. The authority for the exact
 /// spellings advertised over `tools/list`; the integration test asserts the wire surface matches.
@@ -109,26 +114,6 @@ fn instrument_schema_json() -> String {
     schema::generate_pretty(&Registry::builtin())
 }
 
-/// The engine-liveness seam (ADR-0044 §2). The real probe is the structure-channel `ping`
-/// (ADR-0046 §8), implemented by [`PingProbe`] in this crate's client module (#315). A tool that
-/// needs the engine probes through this trait and fails fast when it reports the engine down; the
-/// trait stays the seam so tests can drive both branches without a socket.
-pub trait EngineProbe: Send + Sync {
-    /// Whether a live `reuben play` is reachable over the structure channel right now.
-    fn is_reachable(&self) -> bool;
-}
-
-/// A probe that always reports the engine unreachable. Since #315 landed the real [`PingProbe`],
-/// this is no longer the default — it survives as the deterministic down-engine seam the unit
-/// tests drive to exercise the fail-fast path without standing up a server.
-pub struct UnreachableProbe;
-
-impl EngineProbe for UnreachableProbe {
-    fn is_reachable(&self) -> bool {
-        false
-    }
-}
-
 /// The fail-fast result for an unreachable engine (ADR-0044 §2, ADR-0048 §3): `isError: true`
 /// carrying the "start `reuben play`" guidance. `isError` tells the model the call could not do
 /// its job and to act on the guidance rather than treat the payload as a deliverable.
@@ -181,11 +166,13 @@ pub struct OscSendMessage {
     pub args: Vec<serde_json::Value>,
 }
 
-/// Input for `send` (ADR-0048 §5): a batch of at least one OSC message (the natural authoring
-/// gesture is multi-control). Emptiness is rejected by the tool body (#318).
+/// Input for `send` (ADR-0048 §5): a batch of **at least one** OSC message (the natural authoring
+/// gesture is multi-control). The `length(min = 1)` puts `minItems: 1` in the advertised input
+/// schema; the tool body rejects an empty batch too, for a client that skips schema validation.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SendParams {
-    /// The OSC messages to dispatch, in order.
+    /// The OSC messages to dispatch, in order (at least one).
+    #[schemars(length(min = 1))]
     pub messages: Vec<OscSendMessage>,
 }
 
@@ -200,43 +187,142 @@ pub struct SwapParams {
     pub expect: Option<String>,
 }
 
-/// The reuben MCP server: the eight-tool router plus the engine-liveness seam.
+/// Output for `send` (ADR-0048 §5): how many OSC datagrams were dispatched. The count is
+/// "left the socket", not "received" — UDP promises neither delivery nor application receipt.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct SendOutput {
+    /// The number of OSC messages dispatched to the engine.
+    pub sent: usize,
+}
+
+/// The endpoints `engine_status` reports (ADR-0048 §5): the loopback structure channel and the
+/// OSC control plane the sidecar talks to.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct StatusEndpoints {
+    /// The structure channel address (`ping`/`swap`/`get_document`/`get_diagnostics`).
+    pub structure: String,
+    /// The OSC control endpoint `send` dispatches to.
+    pub osc: String,
+}
+
+/// The sidecar identity `engine_status` reports (ADR-0048 §5): its own version and the instrument
+/// `format_version` it supports (ADR-0048 §4 keeps `format_version` here, out of per-call reports).
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct SidecarInfo {
+    /// The reuben-mcp crate version.
+    pub version: String,
+    /// The instrument document `format_version` this sidecar loads (`reuben_core::format`).
+    pub format_version: u32,
+}
+
+/// Output for `engine_status` (ADR-0048 §5). **Never `isError`** for a dead engine — `reachable`
+/// and the `guidance` (present only when unreachable) ARE the deliverable.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct EngineStatusOutput {
+    /// Whether a live `reuben play` answered `ping` on the structure channel.
+    pub reachable: bool,
+    /// The structure and OSC endpoints this sidecar talks to.
+    pub endpoints: StatusEndpoints,
+    /// The sidecar's own identity.
+    pub sidecar: SidecarInfo,
+    /// The "start `reuben play`" guidance — present only when the engine is unreachable.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub guidance: Option<String>,
+}
+
+/// The `expect`-guard miss a [`SwapToolOutput`] carries (ADR-0046 §9): re-serialized field-for-
+/// field from the channel's conflict so the model reconciles by re-reading, not by threading state.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct SwapConflict {
+    /// The hash the client asserted was installed.
+    pub expected: String,
+    /// The hash actually still playing — re-read via `get_current_instrument` to reconcile.
+    pub actual: String,
+}
+
+/// Output for `swap` (ADR-0048 §§5,8): the shared [`SwapReport`] shape (ok, errors, warnings,
+/// content_hash, and on success the diff summary) plus, on an `expect`-guard miss, `conflict`.
+/// One `outputSchema` spans the install, validation-failure, and guard-miss cases; the flattened
+/// [`SwapReport`] is the same serde type the structure channel serializes (ADR-0048 §8, no drift).
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct SwapToolOutput {
+    /// The install report: `ok`, `errors`, `warnings`, the installed (or still-playing) content
+    /// hash, and — on a successful install only — the diff summary.
+    #[serde(flatten)]
+    pub report: SwapReport,
+    /// Present only on an `expect`-guard miss (ADR-0046 §9): nothing was installed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<SwapConflict>,
+}
+
+impl SwapToolOutput {
+    /// The engine processed the swap (success or `ok: false` load failure): the report is the whole
+    /// story, no conflict.
+    fn installed(report: SwapReport) -> Self {
+        Self {
+            report,
+            conflict: None,
+        }
+    }
+
+    /// The `expect` guard missed (ADR-0046 §9): nothing installed, so `ok: false` with no diff; the
+    /// `content_hash` names what keeps playing (the conflict's `actual`), and `conflict` carries
+    /// both hashes field-for-field for the model to reconcile.
+    fn conflict(expected: String, actual: String) -> Self {
+        Self {
+            report: SwapReport {
+                report: Report {
+                    ok: false,
+                    errors: vec![],
+                    warnings: vec![],
+                },
+                content_hash: actual.clone(),
+                diff: None,
+            },
+            conflict: Some(SwapConflict { expected, actual }),
+        }
+    }
+}
+
+/// Output for `get_current_instrument` (ADR-0048 §5): the Coordinator's canonical installed
+/// document (raw JSON — the engine is the single validation authority) and its content hash.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct CurrentInstrumentOutput {
+    /// The document the engine is currently playing.
+    pub document: serde_json::Value,
+    /// Its content hash — the token a later `swap`'s `expect` guard compares (ADR-0046 §9).
+    pub content_hash: String,
+}
+
+/// The reuben MCP server: the eight-tool router plus the engine channel seam.
 ///
 /// Pure tools (`describe_operators`, `describe_instrument`, `validate`) are always available;
-/// engine tools (`send`, `swap`, `get_current_instrument`, `get_diagnostics`) fail fast when
-/// [`EngineProbe`] reports the engine down. `engine_status` answers "reachable?" and so is never
-/// itself an error (ADR-0048 §5).
+/// the engine tools (`send`, `swap`, `get_current_instrument`, `get_diagnostics`) reach a
+/// user-owned `reuben play` through [`EngineChannel`] and fail fast when it is unreachable.
+/// `engine_status` answers "reachable?" and so is never itself an error (ADR-0048 §5).
 pub struct ReubenServer {
     tool_router: ToolRouter<ReubenServer>,
-    probe: Box<dyn EngineProbe>,
+    channel: Box<dyn EngineChannel>,
 }
 
 #[tool_router]
 impl ReubenServer {
-    /// A server backed by the real [`PingProbe`] on the shared default structure address
-    /// (`reuben_core::coordinator::DEFAULT_STRUCTURE_ADDR`): engine reachability is a live
-    /// structure-channel `ping` (ADR-0044 §2). The binary's composition root (`main`) may inject a
-    /// probe explicitly via [`with_probe`](Self::with_probe); this is the sensible default.
+    /// A server backed by the shipping [`EngineLink`] on the shared default endpoints
+    /// (`reuben_core::coordinator::DEFAULT_STRUCTURE_ADDR` and [`DEFAULT_OSC_ADDR`]): the engine
+    /// tools reach a live `reuben play` over the real structure channel + OSC (ADR-0044 §2). The
+    /// binary's composition root (`main`) injects the channel via [`with_channel`](Self::with_channel);
+    /// this is the sensible default.
     pub fn new() -> Self {
-        Self::with_probe(Box::new(PingProbe::default()))
+        Self::with_channel(Box::new(EngineLink::default()))
     }
 
-    /// A server with an explicit liveness probe — the seam #315 fills, and the seam the unit
-    /// tests drive to exercise both the reachable and unreachable branches.
-    pub fn with_probe(probe: Box<dyn EngineProbe>) -> Self {
+    /// A server with an explicit engine channel — the seam the unit tests drive with an in-memory
+    /// fake to exercise every engine-tool branch (reachable, unreachable, conflict) without a
+    /// socket.
+    pub fn with_channel(channel: Box<dyn EngineChannel>) -> Self {
         Self {
             tool_router: Self::tool_router(),
-            probe,
-        }
-    }
-
-    /// Fail-fast guard for engine-dependent tools (ADR-0044 §2, ADR-0048 §3). `Ok(())` when the
-    /// engine is reachable; otherwise the [`engine_unreachable`] result to return to the client.
-    fn require_engine(&self) -> Result<(), CallToolResult> {
-        if self.probe.is_reachable() {
-            Ok(())
-        } else {
-            Err(engine_unreachable())
+            channel,
         }
     }
 
@@ -327,85 +413,211 @@ impl ReubenServer {
         structured_ok(&report, summary)
     }
 
-    // --- Engine tools: fail fast when the engine is unreachable (ADR-0048 §3) ------------------
+    // --- Engine tools: reach a user-owned `reuben play` through the channel seam ----------------
 
-    /// Dispatch a batch of OSC control messages (ADR-0048 §5). Probe-first: engine unreachable ⇒
-    /// `isError`. Stub: #318 encodes via [`reuben_native::osc::encode`] and returns `{ sent: N }`.
+    /// Dispatch a batch of OSC control messages (ADR-0048 §5). Probe-first (UDP is silent about a
+    /// dead port): every datagram is encoded and validated first, then the structure channel is
+    /// pinged, then the batch is sent; an unreachable engine ⇒ `isError`.
     #[tool(
         name = "send",
-        description = "Send a batch of OSC control messages to the running engine (ephemeral audition; clobbered at the next swap)."
+        description = "Send a batch of OSC control messages to audition a change on the running engine. \
+                       Ephemeral by design (ADR-0045 §5): these values live in render state only and are \
+                       CLOBBERED at the next swap — fold any you want to keep into the instrument document \
+                       and swap. The ack means the engine was reachable and the datagrams were dispatched; \
+                       UDP promises neither delivery nor receipt. Fails fast if no engine is reachable.",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<SendOutput>()
+            .expect("SendOutput is an object schema")
     )]
     async fn send(
         &self,
-        Parameters(_params): Parameters<SendParams>,
+        Parameters(params): Parameters<SendParams>,
     ) -> Result<CallToolResult, McpError> {
-        if let Err(unreachable) = self.require_engine() {
-            return Ok(unreachable);
+        // Reject an empty batch even though the input schema declares minItems:1 — belt-and-braces
+        // against a client that skips schema validation (ADR-0048 §5: min 1).
+        if params.messages.is_empty() {
+            return Ok(CallToolResult::error(vec![ContentBlock::text(
+                "`send` requires at least one OSC message.".to_string(),
+            )]));
         }
-        Ok(stub("send"))
+        // Encode every datagram first: a bad address or argument is a can't-do-the-job error
+        // (ADR-0048 §3), caught before any dispatch and even when the engine is down.
+        let mut datagrams = Vec::with_capacity(params.messages.len());
+        for (i, message) in params.messages.iter().enumerate() {
+            let args = match osc_args_from_json(&message.args) {
+                Ok(args) => args,
+                Err(why) => {
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                        "message {i} (`{}`) has an unsupported argument: {why}",
+                        message.address
+                    ))]))
+                }
+            };
+            match reuben_native::osc::encode(&message.address, &args) {
+                Ok(bytes) => datagrams.push(bytes),
+                Err(why) => {
+                    return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                        "message {i} (`{}`) could not be encoded as OSC: {why}",
+                        message.address
+                    ))]))
+                }
+            }
+        }
+        // Probe-first (ADR-0048 §5): confirm liveness on the structure channel before dispatching,
+        // since UDP would swallow a dead port silently. Any ping failure ⇒ the fail-fast result.
+        if self.channel.ping().is_err() {
+            return Ok(engine_unreachable());
+        }
+        match self.channel.send_osc(&datagrams) {
+            Ok(sent) => structured_ok(
+                &SendOutput { sent },
+                format!("dispatched {sent} OSC message(s) to the engine"),
+            ),
+            Err(why) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                "the engine is reachable but the OSC datagrams could not be dispatched: {why}"
+            ))])),
+        }
     }
 
     /// Liveness probe exposed as a tool (ADR-0048 §5). **Never `isError` for a dead engine** —
-    /// answering "reachable?" is its job; `guidance` appears when the engine is down. #318 fills
-    /// `endpoints` and `sidecar { version, format_version }` from the structure-channel `ping`.
+    /// answering "reachable?" is its job; `guidance` appears when the engine is down. Wraps the
+    /// structure-channel `ping` (ADR-0046 §8) and reports the endpoints and sidecar identity.
     #[tool(
         name = "engine_status",
-        description = "Report whether the reuben engine is reachable; returns guidance to start it when it is not."
+        description = "Report whether the reuben engine is reachable, with the structure/OSC endpoints and the \
+                       sidecar version + supported instrument format_version. Never an error — a dead engine is \
+                       reported as reachable:false with guidance to start it.",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<EngineStatusOutput>()
+            .expect("EngineStatusOutput is an object schema")
     )]
     async fn engine_status(&self) -> Result<CallToolResult, McpError> {
-        let reachable = self.probe.is_reachable();
-        let guidance = if reachable {
-            serde_json::Value::Null
-        } else {
-            serde_json::Value::String(ENGINE_UNREACHABLE_GUIDANCE.to_string())
+        let reachable = self.channel.ping().is_ok();
+        let output = EngineStatusOutput {
+            reachable,
+            endpoints: StatusEndpoints {
+                structure: self.channel.structure_endpoint(),
+                osc: self.channel.osc_endpoint(),
+            },
+            sidecar: SidecarInfo {
+                version: env!("CARGO_PKG_VERSION").to_string(),
+                format_version: reuben_core::format::FORMAT_VERSION,
+            },
+            guidance: if reachable {
+                None
+            } else {
+                Some(ENGINE_UNREACHABLE_GUIDANCE.to_string())
+            },
         };
-        Ok(CallToolResult::structured(serde_json::json!({
-            "reachable": reachable,
-            "guidance": guidance,
-        })))
+        let summary = if reachable {
+            format!("engine reachable on {}", output.endpoints.structure)
+        } else {
+            "engine not reachable — start `reuben play`".to_string()
+        };
+        // NEVER isError (ADR-0048 §5): the reachable/guidance payload IS the deliverable.
+        structured_ok(&output, summary)
     }
 
-    /// Install an instrument document (restart-swap in M1, ADR-0046 §10) (ADR-0048 §5). Engine
-    /// unreachable ⇒ `isError`. Stub: #318 forwards over the structure channel and returns a
-    /// [`reuben_core::SwapReport`].
+    /// Install an instrument document from disk (ADR-0048 §5). Path-only (ADR-0048 §2 — you can
+    /// only install what exists on disk). Act-then-map: an unreachable engine ⇒ `isError`; an
+    /// `ok: false` load report or an `expect` conflict is an ORDINARY result (the guard guarding,
+    /// not the tool failing, ADR-0048 §3).
     #[tool(
         name = "swap",
-        description = "Install an instrument document as the playing engine (M1 restart-swap: ~100ms gap, every node cold)."
+        description = "Install an instrument document from disk as the playing engine (path-only). In M1 this is a \
+                       restart-swap (ADR-0046 §10): a ~100ms silent gap, every node rebuilt cold, so the diff \
+                       reports survived:0. Returns the validation report + content_hash + (on success) a diff \
+                       summary; ok:false installs nothing and the old sound keeps playing. Pass `expect` (a \
+                       content_hash) to guard against a stale swap — a mismatch returns a conflict, no install.",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<SwapToolOutput>()
+            .expect("SwapToolOutput is an object schema")
     )]
     async fn swap(
         &self,
-        Parameters(_params): Parameters<SwapParams>,
+        Parameters(params): Parameters<SwapParams>,
     ) -> Result<CallToolResult, McpError> {
-        if let Err(unreachable) = self.require_engine() {
-            return Ok(unreachable);
+        match self
+            .channel
+            .swap(DocSource::Path(params.path), params.expect)
+        {
+            // An install report — success OR ok:false load failure — is an ORDINARY result: the
+            // channel worked, the report is the deliverable (ADR-0048 §3).
+            Ok(SwapOutcome::Installed(report)) => {
+                let summary = swap_summary(&report);
+                structured_ok(&SwapToolOutput::installed(report), summary)
+            }
+            // An `expect`-guard miss is the guard guarding, not the tool failing (ADR-0048 §3):
+            // nothing installed, ordinary result carrying the conflict to reconcile (ADR-0046 §9).
+            Ok(SwapOutcome::Conflict { expected, actual }) => {
+                let summary = format!(
+                    "swap rejected by the expect guard: the engine is playing {actual}, not the \
+                     expected {expected} — re-read with get_current_instrument and reconcile"
+                );
+                structured_ok(&SwapToolOutput::conflict(expected, actual), summary)
+            }
+            Err(why) if why.is_unreachable() => Ok(engine_unreachable()),
+            // The engine answered, but not with a domain report (a channel-level fault): the tool
+            // could not do its job (ADR-0048 §3).
+            Err(why) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                "the swap could not be completed: {why}"
+            ))])),
         }
-        Ok(stub("swap"))
     }
 
-    /// Read the canonical installed document (ADR-0048 §5). Engine unreachable ⇒ `isError`. Stub:
-    /// #318 forwards the structure-channel `get_document` and returns `{ document, content_hash }`.
+    /// Read the canonical installed document (ADR-0048 §5). Act-then-map: an unreachable engine ⇒
+    /// `isError`. Forwards the structure-channel `get_document` and returns `{ document, content_hash }`.
     #[tool(
         name = "get_current_instrument",
-        description = "Return the document the engine is currently playing, with its content hash."
+        description = "Return the document the engine is currently playing, with its content hash (the token a \
+                       later swap's `expect` guard compares). Fails fast if no engine is reachable.",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<CurrentInstrumentOutput>()
+            .expect("CurrentInstrumentOutput is an object schema")
     )]
     async fn get_current_instrument(&self) -> Result<CallToolResult, McpError> {
-        if let Err(unreachable) = self.require_engine() {
-            return Ok(unreachable);
+        match self.channel.get_document() {
+            Ok(snapshot) => {
+                let summary = format!(
+                    "current instrument (content_hash {})",
+                    snapshot.content_hash
+                );
+                let output = CurrentInstrumentOutput {
+                    document: snapshot.document,
+                    content_hash: snapshot.content_hash,
+                };
+                structured_ok(&output, summary)
+            }
+            Err(why) if why.is_unreachable() => Ok(engine_unreachable()),
+            Err(why) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                "could not read the current instrument: {why}"
+            ))])),
         }
-        Ok(stub("get_current_instrument"))
     }
 
-    /// Read the engine diagnostics counters (ADR-0048 §5/§6). Engine unreachable ⇒ `isError`.
-    /// Stub: #318 forwards the structure-channel `get_diagnostics` and returns the four counters.
+    /// Read the engine diagnostics counters (ADR-0048 §5/§6). Act-then-map: an unreachable engine ⇒
+    /// `isError`. Forwards the structure-channel `get_diagnostics` and returns the four counters.
     #[tool(
         name = "get_diagnostics",
-        description = "Return the engine's running diagnostics counters (xruns and input-ring drops) since start."
+        description = "Return the engine's running diagnostics counters since start: output_xruns (events) plus \
+                       input_ring underruns/overruns/producer_drops (frames). Fails fast if no engine is reachable.",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<DiagnosticsReport>()
+            .expect("DiagnosticsReport is an object schema")
     )]
     async fn get_diagnostics(&self) -> Result<CallToolResult, McpError> {
-        if let Err(unreachable) = self.require_engine() {
-            return Ok(unreachable);
+        match self.channel.get_diagnostics() {
+            Ok(report) => {
+                let summary = format!(
+                    "output_xruns={} input_ring_underruns={} input_ring_overruns={} \
+                     input_ring_producer_drops={}",
+                    report.output_xruns,
+                    report.input_ring_underruns,
+                    report.input_ring_overruns,
+                    report.input_ring_producer_drops
+                );
+                structured_ok(&report, summary)
+            }
+            Err(why) if why.is_unreachable() => Ok(engine_unreachable()),
+            Err(why) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                "could not read the engine diagnostics: {why}"
+            ))])),
         }
-        Ok(stub("get_diagnostics"))
     }
 }
 
@@ -498,12 +710,55 @@ impl ServerHandler for ReubenServer {
     }
 }
 
-/// The placeholder result an engine-tool stub returns until #318 fills the body. An ordinary
-/// (non-error) result: the stub "worked", it just has nothing real to report yet.
-fn stub(tool: &str) -> CallToolResult {
-    CallToolResult::success(vec![ContentBlock::text(format!(
-        "{tool}: not yet implemented in the M1 skeleton (see #318)."
-    ))])
+/// Convert a `send` message's JSON args into the flat primitive [`Arg`]s the OSC encoder packs
+/// (ADR-0048 §5: args are `number | string`). An integer within `i32` range maps to `Arg::I32`,
+/// any other number to `Arg::F32`, a string to `Arg::Str`; the engine re-types each against the
+/// destination port at its boundary (dest-port-type-driven, [`reuben_native::osc::encode`]'s
+/// contract). A non-number/non-string arg is a can't-do-the-job error naming the offending value.
+fn osc_args_from_json(args: &[serde_json::Value]) -> Result<Vec<Arg>, String> {
+    args.iter()
+        .map(|value| match value {
+            serde_json::Value::String(s) => Ok(Arg::Str(s.as_str().into())),
+            serde_json::Value::Number(n) => {
+                if let Some(i) = n.as_i64() {
+                    if let Ok(i) = i32::try_from(i) {
+                        return Ok(Arg::I32(i));
+                    }
+                }
+                match n.as_f64() {
+                    Some(f) => Ok(Arg::F32(f as f32)),
+                    None => Err(format!("number {value} is out of range for OSC")),
+                }
+            }
+            other => Err(format!(
+                "{other} is not an OSC argument (expected a number or a string)"
+            )),
+        })
+        .collect()
+}
+
+/// One-line human gloss of a swap outcome: what installed (with diff counts) or why nothing did.
+fn swap_summary(report: &SwapReport) -> String {
+    if report.report.ok {
+        match &report.diff {
+            Some(diff) => format!(
+                "swapped (content_hash {}): {} survived, {} state-reset, {} added, {} removed",
+                report.content_hash,
+                diff.survived,
+                diff.state_reset.len(),
+                diff.added.len(),
+                diff.removed.len()
+            ),
+            None => format!("swapped (content_hash {})", report.content_hash),
+        }
+    } else {
+        format!(
+            "swap rejected: {} error(s), {} warning(s) — nothing installed; {} keeps playing",
+            report.report.errors.len(),
+            report.report.warnings.len(),
+            report.content_hash
+        )
+    }
 }
 
 /// Build an ordinary (non-error) result carrying BOTH a structured payload and a human-readable
@@ -605,10 +860,12 @@ fn validate_summary(report: &Report) -> String {
 
 /// Serve the MCP protocol over stdio until the client closes the connection (ADR-0044 §1). The
 /// current_thread runtime is built by `main`; this is the async body it drives. `main` injects the
-/// engine-liveness probe (the real [`PingProbe`] in the shipping binary), so the composition root
-/// stays in `main` and tests can serve with a fake probe.
-pub async fn serve_stdio(probe: Box<dyn EngineProbe>) -> Result<(), Box<dyn std::error::Error>> {
-    let service = ReubenServer::with_probe(probe)
+/// engine channel (the real [`EngineLink`] in the shipping binary), so the composition root stays
+/// in `main` and tests can serve with a fake channel.
+pub async fn serve_stdio(
+    channel: Box<dyn EngineChannel>,
+) -> Result<(), Box<dyn std::error::Error>> {
+    let service = ReubenServer::with_channel(channel)
         .serve(rmcp::transport::stdio())
         .await?;
     service.waiting().await?;
@@ -619,13 +876,109 @@ pub async fn serve_stdio(probe: Box<dyn EngineProbe>) -> Result<(), Box<dyn std:
 mod tests {
     use super::*;
 
-    /// A probe that reports the engine live — the branch #315's real structure-channel client
-    /// takes when `ping` succeeds.
-    struct ReachableProbe;
-    impl EngineProbe for ReachableProbe {
-        fn is_reachable(&self) -> bool {
-            true
+    /// An in-memory [`EngineChannel`] the engine-tool unit tests inject to exercise every branch
+    /// (reachable, unreachable, conflict, install) without a live `reuben play` or a socket. Each
+    /// structure verb returns its configured outcome, or the fail-fast [`StructureError::Unreachable`]
+    /// when none is configured — modelling a down engine per verb; `ping` reports `ping_ok`.
+    struct FakeEngine {
+        ping_ok: bool,
+        swap: Option<SwapOutcome>,
+        document: Option<DocumentSnapshot>,
+        diagnostics: Option<DiagnosticsReport>,
+    }
+
+    impl FakeEngine {
+        /// A reachable engine with no verb outcomes configured yet.
+        fn reachable() -> Self {
+            Self {
+                ping_ok: true,
+                swap: None,
+                document: None,
+                diagnostics: None,
+            }
         }
+
+        /// A down engine: `ping` fails and every structure verb is unreachable.
+        fn unreachable() -> Self {
+            Self {
+                ping_ok: false,
+                swap: None,
+                document: None,
+                diagnostics: None,
+            }
+        }
+
+        fn with_swap(mut self, outcome: SwapOutcome) -> Self {
+            self.swap = Some(outcome);
+            self
+        }
+
+        fn with_document(mut self, snapshot: DocumentSnapshot) -> Self {
+            self.document = Some(snapshot);
+            self
+        }
+
+        fn with_diagnostics(mut self, report: DiagnosticsReport) -> Self {
+            self.diagnostics = Some(report);
+            self
+        }
+    }
+
+    /// The fail-fast error a fake verb returns when its outcome is unconfigured — the same
+    /// unreachable case the real client raises on a dead engine (ADR-0044 §2).
+    fn down() -> StructureError {
+        StructureError::Unreachable(ENGINE_UNREACHABLE_GUIDANCE.to_string())
+    }
+
+    impl EngineChannel for FakeEngine {
+        fn ping(&self) -> Result<(), StructureError> {
+            if self.ping_ok {
+                Ok(())
+            } else {
+                Err(down())
+            }
+        }
+
+        fn swap(
+            &self,
+            _source: DocSource,
+            _expect: Option<String>,
+        ) -> Result<SwapOutcome, StructureError> {
+            self.swap.clone().ok_or_else(down)
+        }
+
+        fn get_document(&self) -> Result<DocumentSnapshot, StructureError> {
+            self.document.clone().ok_or_else(down)
+        }
+
+        fn get_diagnostics(&self) -> Result<DiagnosticsReport, StructureError> {
+            self.diagnostics.ok_or_else(down)
+        }
+
+        fn send_osc(&self, datagrams: &[Vec<u8>]) -> std::io::Result<usize> {
+            Ok(datagrams.len())
+        }
+
+        fn structure_endpoint(&self) -> String {
+            "127.0.0.1:9124".to_string()
+        }
+
+        fn osc_endpoint(&self) -> String {
+            "127.0.0.1:9000".to_string()
+        }
+    }
+
+    /// Drive an async tool body on the current-thread runtime (the only rt feature this crate enables).
+    fn block_on<F: std::future::Future>(future: F) -> F::Output {
+        tokio::runtime::Builder::new_current_thread()
+            .build()
+            .expect("current-thread runtime")
+            .block_on(future)
+    }
+
+    /// A server whose engine tools reach the given fake channel.
+    fn server_with(fake: FakeEngine) -> ReubenServer {
+        ReubenServer::with_channel(Box::new(fake))
     }
 
     /// Pull the first text block out of a result's content, for asserting on guidance text.
@@ -638,70 +991,351 @@ mod tests {
     }
 
     #[test]
-    fn engine_unreachable_is_iserror() {
-        // ADR-0044 §2 / ADR-0048 §3: an engine tool on a down engine returns isError:true carrying
-        // the actionable "start `reuben play`" guidance — driven through the real seam.
-        let server = ReubenServer::with_probe(Box::new(UnreachableProbe));
-        let guard = server
-            .require_engine()
-            .expect_err("an unreachable engine must fail the guard");
-
+    fn swap_result_serializes_report_hash_and_diff() {
+        // ADR-0048 §§5,8: a successful swap serializes as the shared SwapReport shape —
+        // { ok, errors, warnings, content_hash, diff } — with no `conflict` key. The tool output
+        // FLATTENS the contract SwapReport, so the tool's structuredContent and the structure
+        // channel's response are the same serde type and cannot drift.
+        let report = SwapReport {
+            report: Report {
+                ok: true,
+                errors: vec![],
+                warnings: vec![],
+            },
+            content_hash: "00c0ffee".to_string(),
+            diff: Some(reuben_core::DiffSummary {
+                survived: 0,
+                state_reset: vec!["/osc".to_string()],
+                added: vec!["/delay".to_string()],
+                removed: vec![],
+            }),
+        };
+        let v = serde_json::to_value(SwapToolOutput::installed(report)).expect("serialize");
         assert_eq!(
-            guard.is_error,
-            Some(true),
-            "the guard result must be isError"
+            v,
+            serde_json::json!({
+                "ok": true,
+                "errors": [],
+                "warnings": [],
+                "content_hash": "00c0ffee",
+                "diff": {
+                    "survived": 0,
+                    "state_reset": ["/osc"],
+                    "added": ["/delay"],
+                    "removed": []
+                }
+            })
         );
         assert!(
-            first_text(&guard).contains("reuben play"),
-            "the guidance must name the fix: {guard:?}"
+            v.as_object().is_some_and(|o| !o.contains_key("conflict")),
+            "a clean install omits the conflict key: {v}"
         );
     }
 
     #[test]
-    fn engine_status_is_not_iserror_when_engine_unreachable() {
+    fn engine_status_dead_engine_is_not_iserror_and_has_guidance() {
         // ADR-0048 §5: engine_status answers "reachable?", so it is NEVER isError — even on a dead
-        // engine it reports the down state as its deliverable instead of fail-fasting like the
-        // engine tools do. Driven through the same UnreachableProbe seam as
-        // `engine_unreachable_is_iserror`; the tool is async, so drive it on a current-thread
-        // runtime (the only rt feature this crate enables).
-        let server = ReubenServer::with_probe(Box::new(UnreachableProbe));
-        let result = tokio::runtime::Builder::new_current_thread()
-            .build()
-            .expect("current-thread runtime")
-            .block_on(server.engine_status())
+        // engine it reports the down state (reachable:false + guidance) as its deliverable, with the
+        // endpoints and sidecar identity still filled in.
+        let result = block_on(server_with(FakeEngine::unreachable()).engine_status())
             .expect("engine_status is infallible");
-
         assert_ne!(
             result.is_error,
             Some(true),
             "engine_status must not fail-fast on a dead engine: {result:?}"
         );
-
-        let structured = result
+        let s = result
             .structured_content
             .as_ref()
             .expect("engine_status returns a structured payload");
         assert_eq!(
-            structured["reachable"].as_bool(),
+            s["reachable"].as_bool(),
             Some(false),
-            "engine_status must report the engine unreachable: {structured}"
+            "a dead engine reads as reachable:false: {s}"
         );
         assert!(
-            structured["guidance"]
+            s["guidance"]
                 .as_str()
                 .is_some_and(|g| g.contains("reuben play")),
-            "the down-engine payload must carry the `reuben play` guidance: {structured}"
+            "the down-engine payload carries the `reuben play` guidance: {s}"
+        );
+        assert!(
+            s["endpoints"]["structure"].is_string() && s["endpoints"]["osc"].is_string(),
+            "the endpoints are reported even when down: {s}"
+        );
+        assert_eq!(
+            s["sidecar"]["format_version"],
+            serde_json::json!(reuben_core::format::FORMAT_VERSION),
+            "the sidecar reports the supported instrument format_version: {s}"
         );
     }
 
     #[test]
-    fn reachable_engine_passes_the_guard() {
-        // The other branch of the seam: a live engine lets the tool proceed to its real work.
-        let server = ReubenServer::with_probe(Box::new(ReachableProbe));
+    fn engine_status_reachable_reports_true_and_omits_guidance() {
+        // The live branch: reachable:true and no guidance key (guidance appears only when down).
+        let result = block_on(server_with(FakeEngine::reachable()).engine_status())
+            .expect("engine_status is infallible");
+        assert_ne!(result.is_error, Some(true));
+        let s = result
+            .structured_content
+            .as_ref()
+            .expect("structured payload");
+        assert_eq!(s["reachable"].as_bool(), Some(true));
         assert!(
-            server.require_engine().is_ok(),
-            "a reachable engine must pass the fail-fast guard"
+            s.as_object().is_some_and(|o| !o.contains_key("guidance")),
+            "a reachable engine omits guidance: {s}"
         );
+    }
+
+    #[test]
+    fn send_rejects_empty_messages() {
+        // (a) The advertised input schema declares minItems:1 (ADR-0048 §5: min 1).
+        let router_server = ReubenServer::new();
+        let send = router_server
+            .tool_router
+            .list_all()
+            .into_iter()
+            .find(|t| t.name == "send")
+            .expect("send is registered");
+        let schema = serde_json::to_value(&send.input_schema).expect("input schema to value");
+        assert_eq!(
+            schema["properties"]["messages"]["minItems"],
+            serde_json::json!(1),
+            "send's input schema must require at least one message: {schema}"
+        );
+        // (b) The body rejects an empty batch as isError, for a client that skips schema validation.
+        let result = block_on(
+            server_with(FakeEngine::reachable()).send(Parameters(SendParams { messages: vec![] })),
+        )
+        .expect("send returns a result");
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "an empty batch must be isError: {result:?}"
+        );
+    }
+
+    #[test]
+    fn get_current_instrument_unreachable_is_iserror() {
+        // ADR-0048 §3: a document read against a down engine is a can't-do-the-job isError carrying
+        // the "start `reuben play`" guidance (act-then-map on get_document).
+        let result = block_on(server_with(FakeEngine::unreachable()).get_current_instrument())
+            .expect("returns a result");
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "an unreachable engine must be isError: {result:?}"
+        );
+        assert!(
+            first_text(&result).contains("reuben play"),
+            "the guidance must name the fix: {result:?}"
+        );
+    }
+
+    #[test]
+    fn swap_expect_mismatch_returns_conflict_no_install() {
+        // ADR-0046 §9 / ADR-0048 §3: an expect-guard miss is an ORDINARY result (the guard
+        // guarding, not the tool failing), NOT isError; nothing is installed (ok:false, no diff),
+        // and the conflict names both hashes field-for-field so the model reconciles.
+        let fake = FakeEngine::reachable().with_swap(SwapOutcome::Conflict {
+            expected: "0badc0de".to_string(),
+            actual: "00c0ffee".to_string(),
+        });
+        let result = block_on(server_with(fake).swap(Parameters(SwapParams {
+            path: "instruments/pad.json".to_string(),
+            expect: Some("0badc0de".to_string()),
+        })))
+        .expect("swap returns a result");
+        assert_ne!(
+            result.is_error,
+            Some(true),
+            "a conflict is a reconcilable outcome, not isError: {result:?}"
+        );
+        let s = result
+            .structured_content
+            .as_ref()
+            .expect("structured payload");
+        assert_eq!(
+            s["ok"],
+            serde_json::json!(false),
+            "an expect miss installs nothing ⇒ ok:false: {s}"
+        );
+        assert!(
+            s.as_object().is_some_and(|o| !o.contains_key("diff")),
+            "a rejected swap has no diff to report: {s}"
+        );
+        assert_eq!(s["conflict"]["expected"], serde_json::json!("0badc0de"));
+        assert_eq!(s["conflict"]["actual"], serde_json::json!("00c0ffee"));
+    }
+
+    #[test]
+    fn m1_swap_diff_reports_survived_zero() {
+        // ADR-0046 §10: M1 is restart-swap — every node rebuilt cold — so a successful swap's diff
+        // reports survived:0 honestly. The tool relays the channel's report unchanged.
+        let report = SwapReport {
+            report: Report {
+                ok: true,
+                errors: vec![],
+                warnings: vec![],
+            },
+            content_hash: "00c0ffee".to_string(),
+            diff: Some(reuben_core::DiffSummary {
+                survived: 0,
+                state_reset: vec!["/osc".to_string()],
+                added: vec![],
+                removed: vec![],
+            }),
+        };
+        let fake = FakeEngine::reachable().with_swap(SwapOutcome::Installed(report));
+        let result = block_on(server_with(fake).swap(Parameters(SwapParams {
+            path: "instruments/pad.json".to_string(),
+            expect: None,
+        })))
+        .expect("swap returns a result");
+        assert_ne!(
+            result.is_error,
+            Some(true),
+            "a successful swap is an ordinary result: {result:?}"
+        );
+        let s = result
+            .structured_content
+            .as_ref()
+            .expect("structured payload");
+        assert_eq!(s["ok"], serde_json::json!(true));
+        assert_eq!(
+            s["diff"]["survived"],
+            serde_json::json!(0),
+            "M1 restart-swap reports survived:0: {s}"
+        );
+    }
+
+    #[test]
+    fn swap_unreachable_is_iserror() {
+        // Act-then-map on the mutating verb: a down engine is the fail-fast isError.
+        let result = block_on(server_with(FakeEngine::unreachable()).swap(Parameters(
+            SwapParams {
+                path: "instruments/pad.json".to_string(),
+                expect: None,
+            },
+        )))
+        .expect("swap returns a result");
+        assert_eq!(result.is_error, Some(true));
+        assert!(first_text(&result).contains("reuben play"));
+    }
+
+    #[test]
+    fn send_dispatches_all_messages_when_reachable() {
+        // A reachable send encodes every message and reports the count dispatched (ADR-0048 §5).
+        let params = SendParams {
+            messages: vec![
+                OscSendMessage {
+                    address: "/voice1/cutoff".to_string(),
+                    args: vec![serde_json::json!(1200.0)],
+                },
+                OscSendMessage {
+                    address: "/voice1/notes".to_string(),
+                    args: vec![serde_json::json!(69), serde_json::json!(1)],
+                },
+            ],
+        };
+        let result = block_on(server_with(FakeEngine::reachable()).send(Parameters(params)))
+            .expect("result");
+        assert_ne!(
+            result.is_error,
+            Some(true),
+            "a reachable send is an ordinary result: {result:?}"
+        );
+        assert_eq!(
+            result
+                .structured_content
+                .as_ref()
+                .expect("structured payload")["sent"],
+            serde_json::json!(2)
+        );
+    }
+
+    #[test]
+    fn send_unreachable_is_iserror() {
+        // Probe-first (ADR-0048 §5): datagrams encode fine, but a down engine fails the ping.
+        let params = SendParams {
+            messages: vec![OscSendMessage {
+                address: "/voice1/cutoff".to_string(),
+                args: vec![serde_json::json!(1.0)],
+            }],
+        };
+        let result = block_on(server_with(FakeEngine::unreachable()).send(Parameters(params)))
+            .expect("result");
+        assert_eq!(result.is_error, Some(true));
+        assert!(first_text(&result).contains("reuben play"));
+    }
+
+    #[test]
+    fn send_rejects_a_non_scalar_argument() {
+        // ADR-0048 §3/§5: args are number | string; a nested array is a can't-do-the-job error,
+        // caught before any dispatch (and without needing the engine).
+        let params = SendParams {
+            messages: vec![OscSendMessage {
+                address: "/voice1/cutoff".to_string(),
+                args: vec![serde_json::json!([1, 2, 3])],
+            }],
+        };
+        let result = block_on(server_with(FakeEngine::reachable()).send(Parameters(params)))
+            .expect("result");
+        assert_eq!(
+            result.is_error,
+            Some(true),
+            "an unsupported argument must be isError: {result:?}"
+        );
+    }
+
+    #[test]
+    fn get_current_instrument_returns_document_and_hash() {
+        let doc = serde_json::json!({ "format_version": 3, "instrument": "warm", "nodes": [] });
+        let snapshot = DocumentSnapshot {
+            document: doc.clone(),
+            content_hash: "00c0ffee".to_string(),
+        };
+        let result = block_on(
+            server_with(FakeEngine::reachable().with_document(snapshot)).get_current_instrument(),
+        )
+        .expect("result");
+        assert_ne!(result.is_error, Some(true));
+        let s = result
+            .structured_content
+            .as_ref()
+            .expect("structured payload");
+        assert_eq!(s["content_hash"], serde_json::json!("00c0ffee"));
+        assert_eq!(s["document"]["instrument"], serde_json::json!("warm"));
+    }
+
+    #[test]
+    fn get_diagnostics_returns_the_four_counters() {
+        let report = DiagnosticsReport {
+            output_xruns: 2,
+            input_ring_underruns: 480,
+            input_ring_overruns: 0,
+            input_ring_producer_drops: 96,
+        };
+        let result = block_on(
+            server_with(FakeEngine::reachable().with_diagnostics(report)).get_diagnostics(),
+        )
+        .expect("result");
+        assert_ne!(result.is_error, Some(true));
+        let s = result
+            .structured_content
+            .as_ref()
+            .expect("structured payload");
+        assert_eq!(s["output_xruns"], serde_json::json!(2));
+        assert_eq!(s["input_ring_underruns"], serde_json::json!(480));
+        assert_eq!(s["input_ring_producer_drops"], serde_json::json!(96));
+    }
+
+    #[test]
+    fn get_diagnostics_unreachable_is_iserror() {
+        let result =
+            block_on(server_with(FakeEngine::unreachable()).get_diagnostics()).expect("result");
+        assert_eq!(result.is_error, Some(true));
+        assert!(first_text(&result).contains("reuben play"));
     }
 
     #[test]

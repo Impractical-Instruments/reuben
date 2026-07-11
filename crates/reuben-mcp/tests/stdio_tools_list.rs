@@ -87,3 +87,31 @@ fn advertises_all_eight_tools_over_stdio() {
         "tools/list must advertise exactly the eight-tool roster, got: {advertised:?}"
     );
 }
+
+#[test]
+fn every_tool_advertises_an_output_schema() {
+    // ADR-0048 §3: every tool declares an `outputSchema` (rmcp derives it from the contract types
+    // via schemars). Asserting all eight over the wire also proves the shim STARTS — the five
+    // engine tools' `schema_for_output` calls run at router construction, so a schema that failed
+    // to derive would panic the binary before it could answer this request.
+    let out = drive_tools_list();
+    let response = out
+        .lines()
+        .filter_map(|line| serde_json::from_str::<serde_json::Value>(line).ok())
+        .find(|msg| msg.get("id") == Some(&serde_json::json!(2)))
+        .unwrap_or_else(|| panic!("no tools/list response (id 2) in shim output:\n{out}"));
+    let tools = response["result"]["tools"]
+        .as_array()
+        .unwrap_or_else(|| panic!("tools/list result missing a tools array:\n{response}"));
+
+    for name in reuben_mcp::TOOL_NAMES {
+        let tool = tools
+            .iter()
+            .find(|t| t["name"] == serde_json::json!(name))
+            .unwrap_or_else(|| panic!("tools/list missing `{name}`"));
+        assert!(
+            tool["outputSchema"].is_object(),
+            "`{name}` must advertise an outputSchema: {tool}"
+        );
+    }
+}

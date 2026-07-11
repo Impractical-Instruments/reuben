@@ -15,7 +15,7 @@ use std::time::Duration;
 use reuben_core::coordinator::{DiagnosticsReport, DocSource, Request, Response};
 use reuben_core::{Diag, DiffSummary, Report, SwapReport};
 
-use reuben_mcp::{DocumentSnapshot, EngineProbe, PingProbe, StructureClient, SwapOutcome};
+use reuben_mcp::{DocumentSnapshot, EngineChannel, EngineLink, StructureClient, SwapOutcome};
 
 /// A running loopback NDJSON stub: the address the client dials, plus a receiver of every request
 /// the stub parsed off the wire (so a test can assert the client sent the *right* envelope — e.g.
@@ -295,26 +295,29 @@ fn wedged_server_read_times_out_instead_of_hanging() {
 }
 
 #[test]
-fn ping_probe_reports_reachable_only_when_ping_succeeds() {
-    // The EngineProbe the server's fail-fast guard consults (ADR-0044 §2): connect + ping succeeds
-    // => reachable; a dead port => unreachable. This is the real probe wired into `ReubenServer`.
+fn engine_link_pings_reachable_only_when_the_engine_answers() {
+    // The reachability the engine tools consult (ADR-0044 §2): EngineLink.ping() succeeds against a
+    // live ping-answering engine and fails (unreachable) against a dead port. This is the real seam
+    // wired into `ReubenServer` — `engine_status` and the probe-first `send` read it, and the four
+    // structure-channel tools act-then-map its unreachable case.
     let live = spawn_stub(|req| match req {
         Request::Ping => Response::Pong,
         _ => Response::Error {
             message: "no".to_string(),
         },
     });
-    let reachable = PingProbe::new(live.addr.to_string());
+    let link = EngineLink::new(live.addr.to_string(), "127.0.0.1:9000");
     assert!(
-        within(Duration::from_secs(5), "probe live", move || reachable
-            .is_reachable()),
+        within(Duration::from_secs(5), "link live", move || link
+            .ping()
+            .is_ok()),
         "a live ping-answering engine must read as reachable"
     );
 
-    let dead = PingProbe::new(dead_addr());
+    let dead = EngineLink::new(dead_addr(), "127.0.0.1:9000");
+    let err = within(Duration::from_secs(5), "link dead", move || dead.ping());
     assert!(
-        !within(Duration::from_secs(5), "probe dead", move || dead
-            .is_reachable()),
+        err.is_err_and(|e| e.is_unreachable()),
         "a dead port must read as unreachable"
     );
 }
