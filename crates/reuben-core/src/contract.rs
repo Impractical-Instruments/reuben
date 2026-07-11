@@ -16,7 +16,9 @@ use crate::format::{LoadError, LoadWarning, NormalizedDoc};
 /// [`to_json_pretty`](crate::format::InstrumentDoc::to_json_pretty) bytes — the exact bytes
 /// a save writes — so two equal [`NormalizedDoc`]s hash equal regardless of how their source
 /// text was formatted. Every `SwapReport`/`get_document` response carries it; a swap's
-/// `expect` guard compares it; a future store may dedup by it (ADR-0052 §3).
+/// `expect` guard compares it; a future store may dedup by it (ADR-0052 §3) — but a store
+/// deduping by it must byte-verify: the hash is not cryptographic, so equal tokens are a
+/// candidate match, not proof of identical content.
 ///
 /// The string is an **opaque token**: compare it for equality, never parse it. The algorithm
 /// is deliberately unspecified in the contract (ADR-0046 leaves the mechanism epic-level) and

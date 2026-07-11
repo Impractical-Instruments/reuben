@@ -251,11 +251,6 @@ fn cmd_describe(op: Option<&str>, json: bool, root: Option<PathBuf>) -> ExitCode
     ExitCode::SUCCESS
 }
 
-/// `describe <patch.json>`: the nested-instrument boundary view — the `interface` pipes a host
-/// wires against (ADR-0038 §2): an input pipe's own declared type/range/default, an output pipe's
-/// type and metadata inherited from the internal port feeding it plus optional min/max range
-/// overrides (a subset of that port's range), both decorated by the entry's presentational fields
-/// (label/unit/widget).
 /// One diagnostic on stderr, the loader's localization in brackets when it named one:
 /// `error [/osc freq]: …` / `warning [/voicer]: …` / `error: …`. Errors and warnings share
 /// this shape — warnings are localized Diags too (ADR-0048 §4).
@@ -268,6 +263,11 @@ fn print_diag(level: &str, d: &reuben_core::contract::Diag) {
     }
 }
 
+/// `describe <patch.json>`: the nested-instrument boundary view — the `interface` pipes a host
+/// wires against (ADR-0038 §2): an input pipe's own declared type/range/default, an output pipe's
+/// type and metadata inherited from the internal port feeding it plus optional min/max range
+/// overrides (a subset of that port's range), both decorated by the entry's presentational fields
+/// (label/unit/widget).
 fn cmd_describe_patch(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCode {
     let (instrument_json, resolver) = match read_instrument(path, root) {
         Ok(r) => r,
