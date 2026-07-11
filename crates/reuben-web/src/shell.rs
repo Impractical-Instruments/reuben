@@ -16,6 +16,7 @@
 //! (issue #224).
 
 use reuben_core::engine::{Engine, FromDocumentError};
+use reuben_core::format::NormalizedDoc;
 use reuben_core::introspect::{describe, describe_patch, validate as validate_doc};
 use reuben_core::{AudioConfig, Registry};
 
@@ -287,6 +288,33 @@ impl WebShell {
         // Serializing a Report is infallible in practice; empty-string on the impossible path
         // keeps this method panic-free without inventing a call-level error.
         self.report = serde_json::to_string(&report).unwrap_or_default();
+    }
+
+    /// Hash a document's content identity (issue #353, ADR-0052 §3), over
+    /// [`reuben_core::content_hash`] — the `content_hash` the in-page `swap` and
+    /// `get_current_instrument` contracts carry. Normalizes the document (the same
+    /// [`NormalizedDoc`] path the native lane hashes) and hashes its canonical bytes, so the
+    /// token is byte-identical to native's for equal content (ADR-0052 §5: one algorithm, two
+    /// doors). On success the report holds the opaque hash token and this returns `true`; a
+    /// document that fails to normalize sets [`error`](Self::error) and returns `false`. The
+    /// resolver's misses are drained so a staged-resource stat here never pollutes a later
+    /// construct's discovery list (as `validate`/`describe_instrument` do).
+    pub fn content_hash(&mut self, json: &str) -> bool {
+        self.error.clear();
+        self.report.clear();
+        let result = NormalizedDoc::from_json(json, &Registry::builtin(), Some(&self.resolver));
+        // Drain: a normalization miss must not leak into the next construct's miss-list.
+        let _ = self.resolver.take_misses();
+        match result {
+            Ok(doc) => {
+                self.report = reuben_core::content_hash(&doc);
+                true
+            }
+            Err(e) => {
+                self.error = e.to_string();
+                false
+            }
+        }
     }
 
     /// Queue one control message from a flat tagged buffer (the worklet's `postMessage`
@@ -834,6 +862,73 @@ mod tests {
             "staged resources stat clean: {:?}",
             report.warnings
         );
+    }
+
+    // --- content_hash (issue #353, ADR-0052 §3): the fourth authoring export the in-page
+    // `swap`/`get_current_instrument` contracts carry — over reuben_core::content_hash, so the
+    // token is byte-identical to what the native lane mints (ADR-0052 §5). ------------------
+
+    const HASHME: &str = r#"{ "format_version": 3, "instrument": "hashme",
+      "interface": { "outputs": { "out": { "from": "/out.audio" } } },
+      "nodes": [
+        { "type": "oscillator", "address": "/osc", "inputs": { "freq": 220.0 } },
+        { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/osc" } } }
+      ] }"#;
+
+    #[test]
+    fn content_hash_is_stable_and_equal_for_an_equal_doc() {
+        let mut shell = WebShell::new();
+        assert!(shell.content_hash(HASHME), "hash HASHME: {}", shell.error());
+        let first = shell.report().to_string();
+        assert!(!first.is_empty(), "hash is a non-empty token");
+        assert!(shell.error().is_empty(), "an ok hash leaves no error");
+
+        // Same doc again -> same token (stable).
+        assert!(shell.content_hash(HASHME));
+        assert_eq!(shell.report(), first, "equal doc hashes equal");
+
+        // Reformatted-but-equal doc (extra whitespace) -> same token: the hash is over the
+        // canonical bytes, not the source text (ADR-0046 §9).
+        let reformatted = format!("  {}\n\n", HASHME.replace('\n', "  "));
+        assert!(shell.content_hash(&reformatted));
+        assert_eq!(
+            shell.report(),
+            first,
+            "canonicalization: whitespace does not change the hash"
+        );
+    }
+
+    #[test]
+    fn content_hash_differs_on_a_changed_node() {
+        let changed = HASHME.replace("\"freq\": 220.0", "\"freq\": 440.0");
+        let mut shell = WebShell::new();
+        assert!(shell.content_hash(HASHME));
+        let before = shell.report().to_string();
+        assert!(shell.content_hash(&changed));
+        assert_ne!(shell.report(), before, "a changed node changes the hash");
+    }
+
+    #[test]
+    fn content_hash_of_an_unparseable_doc_is_an_error_with_no_report() {
+        let mut shell = WebShell::new();
+        assert!(!shell.content_hash("{ not json"));
+        assert!(
+            !shell.error().is_empty(),
+            "a doc that fails to parse sets an error"
+        );
+        assert!(shell.report().is_empty(), "no report on an errored hash");
+    }
+
+    #[test]
+    fn content_hash_byte_equals_the_native_contract() {
+        // The #353 drift guard (ADR-0052 §5, one algorithm two doors): the browser-minted
+        // token equals hashing the native NormalizedDoc directly.
+        let native = reuben_core::content_hash(
+            &NormalizedDoc::from_json(HASHME, &Registry::builtin(), None).unwrap(),
+        );
+        let mut shell = WebShell::new();
+        assert!(shell.content_hash(HASHME));
+        assert_eq!(shell.report(), native, "content_hash bytes match native");
     }
 
     #[test]
