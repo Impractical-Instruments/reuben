@@ -1,0 +1,1 @@
+{"reply":"swap_report","ok":false,"errors":[{"node":"/x","message":"node /x: unknown operator type \"no_such_operator\""}],"warnings":[],"content_hash":"ef4dfdaf2753ff91"}

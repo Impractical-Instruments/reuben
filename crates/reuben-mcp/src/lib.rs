@@ -46,7 +46,7 @@ use serde::{Deserialize, Serialize};
 mod client;
 mod engine;
 pub use client::{DocumentSnapshot, StructureClient, StructureError, SwapOutcome};
-pub use engine::{EngineChannel, EngineLink, DEFAULT_OSC_ADDR};
+pub use engine::{default_osc_addr, EngineChannel, EngineLink};
 
 /// The eight-tool surface (ADR-0048 §1), in the ADR's roster order. The authority for the exact
 /// spellings advertised over `tools/list`; the integration test asserts the wire surface matches.
@@ -308,7 +308,7 @@ pub struct ReubenServer {
 #[tool_router]
 impl ReubenServer {
     /// A server backed by the shipping [`EngineLink`] on the shared default endpoints
-    /// (`reuben_core::coordinator::DEFAULT_STRUCTURE_ADDR` and [`DEFAULT_OSC_ADDR`]): the engine
+    /// (`reuben_core::coordinator::DEFAULT_STRUCTURE_ADDR` and [`default_osc_addr`]): the engine
     /// tools reach a live `reuben play` over the real structure channel + OSC (ADR-0044 §2). The
     /// binary's composition root (`main`) injects the channel via [`with_channel`](Self::with_channel);
     /// this is the sensible default.

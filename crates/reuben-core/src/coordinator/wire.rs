@@ -22,6 +22,15 @@ use crate::contract::SwapReport;
 /// address and can never drift; a taken port is non-fatal on the server side (see `play`).
 pub const DEFAULT_STRUCTURE_ADDR: &str = "127.0.0.1:9124";
 
+/// The default UDP port for the engine's OSC-in control plane (ADR-0044). The single source of
+/// truth for the port `reuben play` binds and the reuben-mcp sidecar dials, so the two can never
+/// drift on it. Only the *port* is shared: the engine binds it on `0.0.0.0` (all interfaces) while
+/// the host-sharing sidecar dials it on `127.0.0.1`, so each side composes its own `host:port`
+/// from this one const — unlike the structure channel above, whose full loopback address is fixed.
+/// Kept next to [`DEFAULT_STRUCTURE_ADDR`] as the other endpoint the sidecar and engine must agree
+/// on; a bare `u16` carries no dependency, so reuben-core stays OS-free (ADR-0044 §3).
+pub const DEFAULT_OSC_PORT: u16 = 9000;
+
 /// Where a swap's document comes from (ADR-0046 §8: accepted **by value or by path**, both
 /// resolver-loaded engine-side; ADR-0045 §4 deliberately left both branches open, and the
 /// channel keeps both — which to *expose* is the tool surface's call, ADR-0048 §2). Field

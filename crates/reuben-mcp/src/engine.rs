@@ -17,15 +17,22 @@
 
 use std::net::UdpSocket;
 
-use reuben_core::coordinator::{DiagnosticsReport, DocSource, DEFAULT_STRUCTURE_ADDR};
+use reuben_core::coordinator::{
+    DiagnosticsReport, DocSource, DEFAULT_OSC_PORT, DEFAULT_STRUCTURE_ADDR,
+};
 
 use crate::client::{DocumentSnapshot, StructureClient, StructureError, SwapOutcome};
 
-/// The engine's OSC-in endpoint the sidecar dispatches `send` datagrams to. `reuben play` binds
-/// OSC-in on `0.0.0.0:9000`; the sidecar and engine share a host (the MVP persona, ADR-0044), so
-/// the loopback `127.0.0.1:9000` reaches it. Structure edits ride the separate, loopback-only
-/// structure channel ([`DEFAULT_STRUCTURE_ADDR`]) — this is the OSC control plane, not that.
-pub const DEFAULT_OSC_ADDR: &str = "127.0.0.1:9000";
+/// The engine's OSC-in endpoint the sidecar dispatches `send` datagrams to, composed from the
+/// shared [`DEFAULT_OSC_PORT`]. `reuben play` binds OSC-in on `0.0.0.0:<port>`; the sidecar and
+/// engine share a host (the MVP persona, ADR-0044), so dialing `127.0.0.1:<port>` reaches it. Only
+/// the port is shared with the binary — the host differs per end — so both derive their address
+/// from the one `DEFAULT_OSC_PORT` const and can never drift on it. Structure edits ride the
+/// separate, loopback-only structure channel ([`DEFAULT_STRUCTURE_ADDR`]) — this is the OSC control
+/// plane, not that.
+pub fn default_osc_addr() -> String {
+    format!("127.0.0.1:{DEFAULT_OSC_PORT}")
+}
 
 /// The engine-facing seam every engine tool drives (ADR-0044 §2). The shipping impl is
 /// [`EngineLink`]; the unit tests inject an in-memory fake so the tool bodies are exercised
@@ -77,10 +84,10 @@ impl EngineLink {
 }
 
 impl Default for EngineLink {
-    /// A link targeting the shared [`DEFAULT_STRUCTURE_ADDR`] and [`DEFAULT_OSC_ADDR`] — the same
+    /// A link targeting the shared [`DEFAULT_STRUCTURE_ADDR`] and [`default_osc_addr`] — the same
     /// endpoints `reuben play` binds, so the sidecar and engine can never drift.
     fn default() -> Self {
-        Self::new(DEFAULT_STRUCTURE_ADDR, DEFAULT_OSC_ADDR)
+        Self::new(DEFAULT_STRUCTURE_ADDR, default_osc_addr())
     }
 }
 

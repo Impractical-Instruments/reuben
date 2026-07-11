@@ -1,0 +1,22 @@
+{
+  "format_version": 3,
+  "instrument": "m1-device-gap-swap",
+  "doc": "The fixed second document for the M1 restart-swap device-gap ritual (docs/mcp-swap-ritual.md, ADR-0053 §4). A deliberately, obviously different sound from bass.json — a pure 220 Hz (A3) sine, an octave-plus up from the 55 Hz saw drone — so when it replaces the bass over the structure channel the ~100 ms restart gap and the switch to the new timbre are unmistakable by ear. Self-contained (no resources) so the swap target never drifts against the instrument library.",
+  "nodes": [
+    {
+      "type": "oscillator",
+      "address": "/tone",
+      "inputs": { "freq": 220.0, "waveform": "Sine" }
+    },
+    {
+      "type": "output",
+      "address": "/out",
+      "inputs": { "audio": { "from": "/tone.audio" } }
+    }
+  ],
+  "interface": {
+    "outputs": {
+      "main": { "from": "/out.audio" }
+    }
+  }
+}

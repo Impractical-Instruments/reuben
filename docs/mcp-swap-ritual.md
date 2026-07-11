@@ -13,6 +13,16 @@ verified here, by ear, on real hardware.
 This ritual is **scripted** (ADR-0053 §6): fixed commands, one perceptual judgment. It is not an
 unscripted "go check it works."
 
+> **Fixed, library-independent fixtures.** The steps below play the built-in default rig and swap
+> to library instruments (`instruments/euclidean-drums.json`) — both fine, both checked in. For a
+> run that is fully self-contained and pinned against drift, a fixed minimal pair lives with the M1
+> harness: play `crates/reuben-native/tests/fixtures/m1/bass.json` (an always-on saw bass) and swap
+> to `crates/reuben-native/tests/fixtures/m1/device-gap-swap.json` (a pure sine, obviously
+> different) — substitute those for the `play` target in step 1 and the swap source in step 3. Both
+> are guarded by `cargo test -p reuben-native --test m1_fixtures`. See
+> `crates/reuben-native/tests/fixtures/m1/README.md` for the whole M1 verification harness (this
+> device-gap ritual, the golden live-server test, and the #220 demo bar).
+
 ## What you're verifying
 
 1. A `swap` over the structure channel replaces the running instrument **without restarting

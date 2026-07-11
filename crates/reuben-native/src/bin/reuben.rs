@@ -43,13 +43,12 @@ use reuben_native::rigs::DEFAULT_JSON;
 use reuben_native::{audio, osc, scaffold, structure};
 
 const BLOCK_SIZE: usize = 256;
-const OSC_BIND: &str = "0.0.0.0:9000";
 /// The structure channel's default loopback bind (ADR-0046 §8), hoisted to a shared const in
 /// `reuben_core::coordinator` so this server and the reuben-mcp client dial the *same* address
 /// and can never drift. `127.0.0.1` only — structure edits are more powerful than OSC control,
 /// so unlike OSC's `0.0.0.0:9000` this must never be network-exposed; a taken port is non-fatal
 /// (see `play`).
-use reuben_core::coordinator::DEFAULT_STRUCTURE_ADDR as STRUCTURE_BIND;
+use reuben_core::coordinator::{DEFAULT_OSC_PORT, DEFAULT_STRUCTURE_ADDR as STRUCTURE_BIND};
 
 #[derive(Parser)]
 #[command(name = "reuben", about = "Play and author reuben instruments.")]
@@ -440,8 +439,11 @@ fn play(
     // OSC/UDP receiver thread: decode datagrams and forward Messages to the audio thread through
     // the swappable `osc_sink`. This thread outlives any single audio session — a swap only
     // re-points the sink — so the UDP socket and port binding survive restarts.
-    let socket = UdpSocket::bind(OSC_BIND).expect("bind OSC socket");
-    println!("OSC-in listening on {OSC_BIND}  (send /voicer/notes [midi, gate])");
+    // Host `0.0.0.0` (all interfaces) + the port shared with the reuben-mcp sidecar's dial target,
+    // derived from the one `DEFAULT_OSC_PORT` const so the two can never drift on it (ADR-0044).
+    let osc_bind = format!("0.0.0.0:{DEFAULT_OSC_PORT}");
+    let socket = UdpSocket::bind(&osc_bind).expect("bind OSC socket");
+    println!("OSC-in listening on {osc_bind}  (send /voicer/notes [midi, gate])");
     if !log_osc {
         println!("  (set REUBEN_LOG_OSC=1 to log received OSC)");
     }
