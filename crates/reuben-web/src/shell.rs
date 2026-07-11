@@ -16,6 +16,7 @@
 //! (issue #224).
 
 use reuben_core::engine::{Engine, FromDocumentError};
+use reuben_core::introspect::{describe, describe_patch, validate as validate_doc};
 use reuben_core::{AudioConfig, Registry};
 
 use crate::codec::decode_control;
@@ -61,6 +62,11 @@ pub struct WebShell {
     misses: Vec<Miss>,
     /// Why the last operation failed — the bridge exposes it via `error_ptr`/`error_len`.
     error: String,
+    /// The last authoring-introspection result (issue #352, ADR-0052 §2), serialized JSON —
+    /// `{ operators }` (describe_operators), a `PatchBoundary` (describe_instrument), or the
+    /// contract `Report` (validate). The bridge exposes it via `report_ptr`/`report_len`,
+    /// mirroring `error`.
+    report: String,
     /// One rendered quantum, planar: `out[ch * BLOCK + f]`, [`MAX_CHANNELS`] wide.
     out: [f32; MAX_CHANNELS * BLOCK],
     /// One quantum of staged input, planar: `input[ch * BLOCK + f]` — the worklet writes
@@ -85,6 +91,7 @@ impl WebShell {
             engine: None,
             misses: Vec::new(),
             error: String::new(),
+            report: String::new(),
             out: [0.0; MAX_CHANNELS * BLOCK],
             input: [0.0; MAX_INPUT_CHANNELS * BLOCK],
             scratch_out: [0.0; MAX_CHANNELS * BLOCK],
@@ -201,6 +208,87 @@ impl WebShell {
         &self.error
     }
 
+    /// The last authoring-introspection result as serialized JSON (empty when the last call
+    /// produced none — e.g. an errored `describe_*`). The bridge exposes it via
+    /// `report_ptr`/`report_len`.
+    pub fn report(&self) -> &str {
+        &self.report
+    }
+
+    /// Serialize `value` into the report buffer and return `true`; on a serialize failure
+    /// (infallible in practice for these plain view types) record it as an error and return
+    /// `false`. Factors the `describe_*` success path out of its two callers so the
+    /// serialize-or-error idiom lives in one place.
+    fn store_report(&mut self, serialized: serde_json::Result<String>, label: &str) -> bool {
+        match serialized {
+            Ok(json) => {
+                self.report = json;
+                true
+            }
+            Err(e) => {
+                self.error = format!("serialize {label}: {e}");
+                false
+            }
+        }
+    }
+
+    /// Describe the operator set (ADR-0052 §2), over [`describe`]: `None` lists every
+    /// registered operator, `Some(name)` just that one. On success the report holds
+    /// `{ "operators": OperatorInfo[] }` (the `describe_operators` tool contract, ADR-0048 §5)
+    /// and this returns `true`; an unknown type sets [`error`](Self::error) and returns `false`.
+    pub fn describe_operators(&mut self, which: Option<&str>) -> bool {
+        self.error.clear();
+        self.report.clear();
+        match describe(&Registry::builtin(), which) {
+            Ok(ops) => {
+                let json = serde_json::to_string(&serde_json::json!({ "operators": ops }));
+                self.store_report(json, "operators")
+            }
+            Err(e) => {
+                self.error = e;
+                false
+            }
+        }
+    }
+
+    /// Describe an instrument document's boundary (ADR-0052 §2), over [`describe_patch`]. On
+    /// success the report holds the `PatchBoundary` JSON (the `describe_instrument` contract)
+    /// and this returns `true`; a document that fails to load sets [`error`](Self::error) and
+    /// returns `false` (a load failure is `isError`, ADR-0048 §3). Either way the resolver's
+    /// misses are drained so introspection never pollutes a later construct's discovery list.
+    pub fn describe_instrument(&mut self, json: &str) -> bool {
+        self.error.clear();
+        self.report.clear();
+        let result = describe_patch(json, &Registry::builtin(), &self.resolver);
+        // Drain: an introspection miss must not leak into the next construct's miss-list.
+        let _ = self.resolver.take_misses();
+        match result {
+            Ok(boundary) => self.store_report(serde_json::to_string(&boundary), "boundary"),
+            Err(e) => {
+                self.error = e;
+                false
+            }
+        }
+    }
+
+    /// Validate an instrument document (ADR-0052 §2), over [`validate_doc`]. This **always**
+    /// produces a report — even a `{ ok: false }` one — and never sets [`error`](Self::error):
+    /// a failed validation is a successful call (ADR-0048 §3). The contract [`Report`] JSON
+    /// (ADR-0048 §4) lands in the report buffer, the exact type the native lane serializes
+    /// (ADR-0052 §5). The resolver's misses are drained so a staged-resource stat during
+    /// validation never pollutes a later construct's discovery list.
+    ///
+    /// [`Report`]: reuben_core::Report
+    pub fn validate(&mut self, json: &str) {
+        self.error.clear();
+        self.report.clear();
+        let report = validate_doc(json, &Registry::builtin(), &self.resolver);
+        let _ = self.resolver.take_misses();
+        // Serializing a Report is infallible in practice; empty-string on the impossible path
+        // keeps this method panic-free without inventing a call-level error.
+        self.report = serde_json::to_string(&report).unwrap_or_default();
+    }
+
     /// Queue one control message from a flat tagged buffer (the worklet's `postMessage`
     /// payload; see [`crate::codec`]). Returns `Err` with the diagnostic on a malformed
     /// buffer or when no Engine is live — control-channel drift should be loud in the log,
@@ -287,6 +375,7 @@ impl WebShell {
         self.resolver.clear();
         self.misses.clear();
         self.error.clear();
+        self.report.clear();
         self.out = [0.0; MAX_CHANNELS * BLOCK];
         self.input = [0.0; MAX_INPUT_CHANNELS * BLOCK];
     }
@@ -575,5 +664,209 @@ mod tests {
         assert!(shell.queue_control(&[1, 2, 3]).is_err());
         // Bad WAV bytes.
         assert!(shell.stage_sample_wav("x.wav", b"junk").is_err());
+    }
+
+    // --- authoring introspection (issue #352, ADR-0052 §2): describe_operators /
+    // describe_instrument / validate, over reuben_core::introspect — the exact OS-free
+    // contract types the native lane serializes (§5: one schema, two doors). ---------------
+
+    #[test]
+    fn describe_operators_all_lists_the_registry() {
+        let mut shell = WebShell::new();
+        assert!(
+            shell.describe_operators(None),
+            "describe all: {}",
+            shell.error()
+        );
+        let v: serde_json::Value = serde_json::from_str(shell.report()).expect("report is JSON");
+        let ops = v["operators"].as_array().expect("operators is an array");
+        let names: Vec<&str> = ops
+            .iter()
+            .map(|o| o["type_name"].as_str().unwrap())
+            .collect();
+        for expected in ["oscillator", "filter", "voicer"] {
+            assert!(names.contains(&expected), "missing {expected} in {names:?}");
+        }
+        assert!(shell.error().is_empty(), "ok call leaves no error");
+    }
+
+    #[test]
+    fn describe_operators_one_returns_a_single_op_with_its_ports() {
+        let mut shell = WebShell::new();
+        assert!(shell.describe_operators(Some("oscillator")));
+        let v: serde_json::Value = serde_json::from_str(shell.report()).unwrap();
+        let ops = v["operators"].as_array().unwrap();
+        assert_eq!(ops.len(), 1, "one named op");
+        assert_eq!(ops[0]["type_name"], serde_json::json!("oscillator"));
+        assert!(
+            ops[0]["inputs"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|p| p["name"] == serde_json::json!("freq")),
+            "oscillator surfaces a freq input: {}",
+            shell.report()
+        );
+    }
+
+    #[test]
+    fn describe_operators_unknown_is_an_error_with_no_report() {
+        let mut shell = WebShell::new();
+        assert!(!shell.describe_operators(Some("nope")));
+        assert!(
+            shell.error().contains("nope"),
+            "error names the missing type: {}",
+            shell.error()
+        );
+        assert!(shell.report().is_empty(), "no report on an errored call");
+    }
+
+    #[test]
+    fn describe_instrument_surfaces_the_boundary() {
+        let mut shell = WebShell::new();
+        assert!(
+            shell.describe_instrument(VIBRATO),
+            "vibrato: {}",
+            shell.error()
+        );
+        let v: serde_json::Value = serde_json::from_str(shell.report()).unwrap();
+        assert_eq!(
+            v["instrument"],
+            serde_json::json!("vibrato"),
+            "boundary names the document's instrument"
+        );
+        assert!(shell.error().is_empty());
+    }
+
+    #[test]
+    fn describe_instrument_bad_json_is_an_error() {
+        let mut shell = WebShell::new();
+        assert!(!shell.describe_instrument("{ not json"));
+        assert!(
+            !shell.error().is_empty(),
+            "a doc that fails to load is isError"
+        );
+        assert!(shell.report().is_empty(), "no report on an errored call");
+    }
+
+    #[test]
+    fn validate_a_good_document_reports_ok() {
+        let mut shell = WebShell::new();
+        shell.validate(VIBRATO);
+        let report: reuben_core::Report =
+            serde_json::from_str(shell.report()).expect("report deserializes as the native type");
+        assert!(report.ok, "vibrato should validate: {:?}", report.errors);
+        assert!(report.errors.is_empty(), "no errors: {:?}", report.errors);
+        assert!(
+            shell.error().is_empty(),
+            "a validation is never a call-level error"
+        );
+    }
+
+    #[test]
+    fn validate_a_broken_document_is_a_successful_call_reporting_ok_false() {
+        // ADR-0048 §3: a failed validation is a SUCCESSFUL call — it produces a report
+        // (even `{ok:false}`), never a call-level error.
+        const BROKEN: &str = r#"{ "instrument": "typo",
+          "nodes": [ { "type": "oscilllator", "address": "/osc" } ], "outputs": [] }"#;
+        let mut shell = WebShell::new();
+        shell.validate(BROKEN);
+        // Drift guard (ADR-0052 §5, "one schema, two doors" made executable): the
+        // browser-serialized bytes deserialize cleanly into the native contract type.
+        let report: reuben_core::Report =
+            serde_json::from_str(shell.report()).expect("one schema, two doors");
+        assert!(!report.ok, "unknown operator fails validation");
+        assert!(!report.errors.is_empty(), "at least one diag");
+        assert_eq!(
+            report.errors[0].node.as_deref(),
+            Some("/osc"),
+            "the diag localizes the offending node: {:?}",
+            report.errors[0]
+        );
+        assert!(
+            shell.error().is_empty(),
+            "validate never sets error, even on ok:false"
+        );
+    }
+
+    #[test]
+    fn introspection_does_not_pollute_a_later_construct_miss_list() {
+        // describe_instrument/validate drain the resolver's misses so a subsequent construct's
+        // discovery miss-list stays exact — no leaked introspection miss.
+        const GHOST: &str = r#"{ "format_version": 3, "instrument": "ghost",
+          "resources": { "v": "voices/nope.json" },
+          "nodes": [
+            { "type": "voicer", "address": "/voicer", "voice": "v", "config": { "voices": 1 } },
+            { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/voicer.audio" } } }
+          ],
+          "outputs": [ { "node": "/out", "port": "audio" } ] }"#;
+        let mut shell = WebShell::new();
+        shell.validate(GHOST); // records then drains a miss for voices/nope.json
+        let _ = shell.describe_instrument(GHOST); // ditto
+
+        // The sampler's own discovery must report exactly its own first miss.
+        shell.set_document(SAMPLER);
+        assert_eq!(
+            shell.construct(48_000.0, &mut no_log()),
+            ConstructStatus::Misses
+        );
+        assert_eq!(shell.misses().len(), 1, "exactly the sampler's own miss");
+        assert_eq!(shell.misses()[0].key, "voices/sampler-voice.json");
+    }
+
+    #[test]
+    fn validate_stats_staged_resources_and_reports_clean() {
+        // Spec #352: "validate includes the staged-resource stat." The positive path — once the
+        // referenced resources are staged, validate stats them as resolved and reports
+        // warning-clean (the unstaged/miss path is
+        // introspection_does_not_pollute_a_later_construct_miss_list above).
+        let mut shell = WebShell::new();
+        shell.stage_text("voices/sampler-voice.json", SAMPLER_VOICE);
+        shell
+            .stage_sample_wav("samples/blip.wav", BLIP_WAV)
+            .expect("blip decodes");
+        shell.validate(SAMPLER);
+        let report: reuben_core::Report =
+            serde_json::from_str(shell.report()).expect("one schema, two doors");
+        assert!(report.ok, "sampler validates: {:?}", report.errors);
+        assert!(
+            report.warnings.is_empty(),
+            "staged resources stat clean: {:?}",
+            report.warnings
+        );
+    }
+
+    #[test]
+    fn web_serialization_byte_equals_the_native_contract_for_all_three() {
+        // The #352 drift guard, literal (ADR-0052 §5, one schema two doors): the
+        // browser-serialized bytes equal serializing the native contract types directly.
+        // Self-contained inputs, so the resolver choice cannot diverge the result.
+        let reg = Registry::builtin();
+        let resolver = WebResolver::new();
+
+        let mut shell = WebShell::new();
+        assert!(shell.describe_operators(None));
+        let native = serde_json::to_string(
+            &serde_json::json!({ "operators": describe(&reg, None).unwrap() }),
+        )
+        .unwrap();
+        assert_eq!(
+            shell.report(),
+            native,
+            "describe_operators bytes match native"
+        );
+
+        assert!(shell.describe_instrument(VIBRATO));
+        let native =
+            serde_json::to_string(&describe_patch(VIBRATO, &reg, &resolver).unwrap()).unwrap();
+        assert_eq!(
+            shell.report(),
+            native,
+            "describe_instrument bytes match native"
+        );
+
+        shell.validate(VIBRATO);
+        let native = serde_json::to_string(&validate_doc(VIBRATO, &reg, &resolver)).unwrap();
+        assert_eq!(shell.report(), native, "validate bytes match native");
     }
 }

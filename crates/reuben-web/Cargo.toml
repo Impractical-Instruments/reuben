@@ -28,6 +28,12 @@ reuben-core = { path = "../reuben-core" }
 # WAV decode from in-memory bytes (issue #224: hound-in-WASM v1) — the same decoder the
 # native shell uses, behind the same ResourceResolver seam.
 hound = "3"
+# Serialize the introspection reports the authoring C-ABI exports carry (issue #352,
+# ADR-0052 §2): `{ operators }`, PatchBoundary, and the contract `Report` — the exact
+# reuben-core types the native lane serializes. Pinned literally (this crate is detached
+# from the workspace, so `.workspace = true` can't reach it); builds for
+# wasm32-unknown-unknown.
+serde_json = "1"
 
 # LOAD-BEARING: one codegen unit per crate. Operator registration is compile-time
 # self-registration (`inventory`, ADR-0024): each operator plants a ctor in its own object

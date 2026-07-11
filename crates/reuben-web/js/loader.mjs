@@ -44,6 +44,21 @@ export function readError(ex) {
 }
 
 /**
+ * Read the shell's last authoring-introspection report (empty string when the last call
+ * produced none — e.g. an errored describe_*). The JSON shape depends on the export that ran:
+ * `{ operators }` (describe_operators), a PatchBoundary (describe_instrument), or a Report
+ * (validate) — the exact reuben-core contract types the native lane serializes (ADR-0052 §5).
+ *
+ * @param {WebAssembly.Exports} ex
+ * @returns {string}
+ */
+export function readReport(ex) {
+  const len = ex.report_len();
+  if (len === 0) return "";
+  return decoder.decode(new Uint8Array(ex.memory.buffer, ex.report_ptr(), len));
+}
+
+/**
  * Read the misses recorded by the last construct attempt.
  *
  * @param {WebAssembly.Exports} ex

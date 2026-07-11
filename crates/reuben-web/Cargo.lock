@@ -99,6 +99,7 @@ version = "0.0.0"
 dependencies = [
  "hound",
  "reuben-core",
+ "serde_json",
 ]
 
 [[package]]
