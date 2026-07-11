@@ -1,0 +1,37 @@
+[package]
+name = "reuben-mcp"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "MCP stdio sidecar for reuben: exposes the eight authoring tools over the Model Context Protocol (ADR-0044/0048)."
+
+# Both a bin (the shim the MCP client spawns per conversation) and a lib, so the server logic
+# and the engine-liveness seam are unit-testable in-process while the integration test spawns
+# the real binary over stdio.
+[lib]
+name = "reuben_mcp"
+path = "src/lib.rs"
+
+[[bin]]
+name = "reuben-mcp"
+path = "src/main.rs"
+
+[dependencies]
+# Pure introspection + the contract serde types (ADR-0044 §3, ADR-0048 §4/§5). The `schemars`
+# feature is ON here (and ONLY here) so rmcp can derive each tool's `outputSchema` from the
+# reuben-core contract types; the play/CLI build keeps schemars fenced out (ADR-0044 §3).
+reuben-core = { path = "../reuben-core", features = ["schemars"] }
+# The OSC encoder (`osc::encode`) and filesystem resource resolver (`resources::FsResolver`) the
+# engine tools will use once the structure-channel client (#315) and the tool bodies (#318) land.
+reuben-native = { path = "../reuben-native" }
+# stdio server only: `server` + `macros` for the tool router, `transport-io` for the stdio pipe.
+# No HTTP/reqwest/streamable-http transport — the network stack stays out (ADR-0044 §5).
+rmcp = { workspace = true, features = ["server", "macros", "transport-io"] }
+# current_thread async runtime; the exact feature set ADR-0044 §5 measured as sufficient.
+tokio = { workspace = true, features = ["sync", "rt", "time", "io-std"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+# JSON Schema derive for the tool input/output types — the same schemars the contract types use.
+schemars = { workspace = true }
