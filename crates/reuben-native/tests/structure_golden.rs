@@ -7,27 +7,34 @@
 //! changed hash or diff — reds CI the way descriptor drift already does.
 //!
 //! It starts the **real** structure-channel server in-process ([`StructureServer::bind`] on an
-//! ephemeral `127.0.0.1:0` port) — everything `reuben play` wires up except the cpal device,
-//! since the channel is device-free ([`StructureState::from_doc`] carries the default no-op
-//! installer, ADR-0053 §4) — connects a raw [`TcpStream`] client, and drives all four verbs
-//! (`ping` / `swap` / `get_document` / `get_diagnostics`) against a **canned document**. Every
-//! response is captured off the wire, its framing asserted (one newline-terminated line), its
-//! contract invariant checked, and its raw bytes pinned as a golden fixture.
+//! ephemeral `127.0.0.1:0` port) — everything `reuben play` wires up except the cpal device.
+//! M2 (#323) drives the swap through the real Coordinator/mailbox path; a background **fake audio
+//! callback** owns the [`RenderSlot`] and drains that mailbox (ADR-0053 §4), so a swap installs via
+//! the mailbox and its off-thread reclaim completes with no device. A raw [`TcpStream`] client
+//! drives all four verbs (`ping` / `swap` / `get_document` / `get_diagnostics`) against a **canned
+//! document**; every response is captured off the wire, its framing asserted, its contract invariant
+//! checked, and its raw bytes pinned as a golden fixture.
 //!
-//! The M1 `swap`-verb contract is covered headlessly here: a validation **success** (`ok:true`,
-//! `survived:0` — M1 restart is all-cold, ADR-0046 §10), a validation **failure** (an ordinary
-//! `SwapReport` with `ok:false`, *not* a transport error, ADR-0048 §3), and the `expect`
-//! **conflict** path (`Conflict{expected, actual}`, ADR-0046 §9). The describe/validate contract
-//! is covered by `cargo test -p reuben-native --test cli`; the device-level teardown/gap is the
-//! scripted human ritual `docs/mcp-swap-ritual.md` (ADR-0053 §4). To re-bless after a deliberate
-//! wire change: `REUBEN_BLESS=1 cargo test -p reuben-native --test structure_golden`.
+//! The M2 `swap`-verb contract is covered headlessly here: a validation **success** (`ok:true` with
+//! **real** survivor stats — the `/osc`→`/sub` rename keeps `/out` a survivor, so `survived:1`, not
+//! M1's blanket `0`), a validation **failure** (an ordinary `SwapReport` with `ok:false`, *not* a
+//! transport error, ADR-0048 §3), and the `expect` **conflict** path (`Conflict{expected, actual}`,
+//! ADR-0046 §9). The device-level gapless swap is the scripted human ritual
+//! `docs/rituals/m2-swap-ramp-duck.md`. To re-bless after a deliberate wire change:
+//! `REUBEN_BLESS=1 cargo test -p reuben-native --test structure_golden`.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::thread::JoinHandle;
+use std::time::Duration;
 
-use reuben_core::coordinator::{DocSource, Request, Response};
-use reuben_core::{NormalizedDoc, Registry};
+use reuben_core::coordinator::{Coordinator, DocSource, Request, Response};
+use reuben_core::coordinator::{RenderSide, RenderSlot};
+use reuben_core::resources::MemoryResolver;
+use reuben_core::{AudioConfig, Registry};
 use reuben_native::diagnostics::Diagnostics;
 use reuben_native::structure::{StructureServer, StructureState};
 
@@ -46,9 +53,10 @@ const CANNED: &str = r#"{
 }"#;
 
 /// The fixed document a successful `swap` installs — a 55 Hz oscillator (`/sub`) through the same
-/// `/out`. Deliberately *renames* the oscillator (`/osc` → `/sub`) so the restart diff exercises
-/// all three buckets: `/out` is in both docs (`state_reset`), `/sub` is new (`added`), `/osc` is
-/// gone (`removed`) — the whole-document re-emission accidents ADR-0048 §5 wants surfaced.
+/// `/out`. Deliberately *renames* the oscillator (`/osc` → `/sub`) so the **real** migration diff
+/// exercises all three buckets: `/out` matches on address + type + fingerprint → **survivor**,
+/// `/sub` is new (`added`), `/osc` is gone (`removed`) — real survivor stats (ADR-0046 §5), the
+/// whole-document re-emission accidents ADR-0048 §5 wants surfaced.
 const SWAP_TARGET: &str = r#"{
     "format_version": 3,
     "instrument": "m1-swapped",
@@ -72,6 +80,44 @@ const BAD_DOC: &str = r#"{
 /// matches the canned document's real hash, so the swap is rejected with a `Conflict` that names
 /// the real installed hash and installs nothing (ADR-0046 §9).
 const STALE_EXPECT: &str = "0badc0de0badc0de";
+
+/// A background "fake audio callback" (ADR-0053 §4): owns the [`RenderSlot`] the real cpal callback
+/// would and drives it in a loop, draining the install mailbox — so a swap installs via the mailbox
+/// and the Coordinator's off-thread `reclaim` completes, with no audio device.
+struct FakeCallback {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl FakeCallback {
+    fn spawn(side: RenderSide) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = Arc::clone(&stop);
+        let handle = std::thread::spawn(move || {
+            let mut slot = RenderSlot::new(side);
+            let mut buf = vec![0.0f32; 128 * slot.channels().max(1)];
+            while !stop_thread.load(Ordering::SeqCst) {
+                let ch = slot.channels().max(1);
+                if buf.len() != 128 * ch {
+                    buf.resize(128 * ch, 0.0);
+                }
+                slot.fill(&mut buf);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+        });
+        Self {
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    fn stop(mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
 
 /// Absolute path to a golden fixture under this crate's `tests/golden/` tree.
 fn golden_path(name: &str) -> PathBuf {
@@ -105,13 +151,19 @@ fn assert_golden(name: &str, actual: &str) {
     );
 }
 
-/// Mint the canned starting [`StructureState`] the server serves — built exactly as `play`
-/// builds it (`from_doc` serializes the `NormalizedDoc` and mints its `content_hash`), with the
-/// default no-op installer so the swap logic runs headlessly (ADR-0053 §4).
-fn canned_state() -> StructureState {
-    let doc = NormalizedDoc::from_json(CANNED, &Registry::builtin(), None)
-        .expect("the canned document normalizes");
-    StructureState::from_doc(&doc, Diagnostics::new())
+/// Build the canned starting [`StructureState`] the server serves — a real [`Coordinator`] over
+/// the canned document (exactly as `play` builds it, ADR-0046 §7) — plus the [`FakeCallback`]
+/// draining its mailbox so a swap installs via the mailbox headlessly (ADR-0053 §4).
+fn canned_wired() -> (StructureState, FakeCallback) {
+    let (coordinator, side, _warnings) = Coordinator::install_initial(
+        CANNED,
+        Registry::builtin(),
+        Box::new(MemoryResolver::new()),
+        AudioConfig::new(48_000.0, 128),
+    )
+    .expect("the canned document installs");
+    let state = StructureState::from_coordinator(coordinator, Diagnostics::new());
+    (state, FakeCallback::spawn(side))
 }
 
 fn send(writer: &mut impl Write, req: &Request) {
@@ -160,8 +212,8 @@ fn exchange(
 /// pinned bytes stay the canned doc — and the one committing swap runs last.
 #[test]
 fn live_server_wire_responses_match_golden() {
-    let server =
-        StructureServer::bind("127.0.0.1:0", canned_state()).expect("bind loopback structure port");
+    let (state, callback) = canned_wired();
+    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind loopback structure port");
     assert!(
         server.local_addr().ip().is_loopback(),
         "structure channel is loopback-only"
@@ -230,8 +282,9 @@ fn live_server_wire_responses_match_golden() {
     }
     assert_golden("swap_conflict.ndjson", &raw);
 
-    // swap the whole document -> SUCCESS: ok:true, the new content hash, and a diff with
-    // survived:0 (M1 restart is all-cold, ADR-0046 §10). This one commits.
+    // swap the whole document -> SUCCESS via the mailbox: ok:true, the new content hash, and a diff
+    // with **real** survivor stats — `/out` survives the `/osc`→`/sub` rename, so `survived:1`
+    // (ADR-0046 §5), not M1's blanket `0`. This one commits.
     let (raw, resp) = exchange(
         &mut writer,
         &mut reader,
@@ -247,11 +300,18 @@ fn live_server_wire_responses_match_golden() {
                 .diff
                 .as_ref()
                 .expect("a successful swap carries a diff");
-            assert_eq!(diff.survived, 0, "M1 restart is all-cold (ADR-0046 §10)");
+            assert_eq!(
+                diff.survived, 1,
+                "the mailbox swap keeps /out a survivor across the /osc->/sub rename (ADR-0046 §5)"
+            );
+            assert_eq!(diff.removed, vec!["/osc".to_string()], "diff: {diff:?}");
+            assert_eq!(diff.added, vec!["/sub".to_string()], "diff: {diff:?}");
+            assert!(diff.state_reset.is_empty(), "diff: {diff:?}");
         }
         other => panic!("expected SwapReport, got {other:?}"),
     }
     assert_golden("swap_success.ndjson", &raw);
 
     server.shutdown();
+    callback.stop();
 }

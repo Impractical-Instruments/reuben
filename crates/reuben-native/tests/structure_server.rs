@@ -1,57 +1,135 @@
-//! Integration: the structure channel (ADR-0046 §8) end-to-end over a real loopback TCP
-//! socket. Starts a [`StructureServer`] on the built-in default rig — everything `reuben play`
+//! Integration: the M2 structure channel (ADR-0046 §8) end-to-end over a real loopback TCP
+//! socket. Starts a [`StructureServer`] wired to a real [`Coordinator`] — everything `reuben play`
 //! wires up except the cpal device (there is none in CI) — binds an **ephemeral** port
 //! (`127.0.0.1:0`, OS-assigned, so parallel CI jobs never collide), then drives a plain
 //! `TcpStream` client speaking NDJSON.
 //!
+//! The device half is stood in for by a **fake audio callback** (ADR-0053 §4): a background thread
+//! owning the [`RenderSlot`] the real cpal callback would, driving it in a loop so a swap installs
+//! **via the install mailbox** (not a stream restart) and the Coordinator's off-thread `reclaim`
+//! completes — all with no audio device. The audible/device-gap half stays a scripted human test
+//! (`docs/rituals/m2-swap-ramp-duck.md`).
+//!
 //! Behaviors under test:
-//! - the three non-mutating verbs answer over the wire (pong; the default doc + its hash; a
-//!   zeroed snapshot at startup), one framed response per request, in order;
-//! - the **`swap`** verb (ADR-0046 §10) installs a new document over the wire — by value and by
-//!   path — with `get_document` then reporting the new doc + hash; a bad document reports errors
-//!   with no install; `expect` arbitration (ADR-0046 §9) conflicts on a stale hash and proceeds
-//!   on a matching one. The harness runs with the default no-op installer (ADR-0053 §4), so the
-//!   swap **logic** is exercised end-to-end over TCP with no cpal device (there is none in CI);
-//!   the actual stream teardown/reopen is a scripted human test (`docs/mcp-swap-ritual.md`).
-//! - the server **shuts down cleanly** — every thread joined — even with an idle client still
-//!   connected, the joinable stop that replaces `play`'s park-forever loop.
+//! - the three non-mutating verbs answer over the wire, one framed response per request, in order;
+//! - the **`swap`** verb (ADR-0046 §§1–10) installs a new document over the wire **via the
+//!   mailbox** — `get_document` then reports the new doc + hash, and the [`SwapReport`] carries
+//!   **real** survivor stats (`survived: 2` for an identical-document swap — impossible under M1's
+//!   all-cold restart, which hard-codes `survived: 0`);
+//! - an **input-binding swap onto an output-only stream** dark-degrades to silence with a loud
+//!   warning and stays alive (ADR-0038 §7/§9) — not an error, not a crash;
+//! - `expect` arbitration (ADR-0046 §9) conflicts on a stale hash and proceeds on a matching one;
+//!   a bad document reports errors with no install;
+//! - the server **shuts down cleanly** — every thread joined — even with an idle client connected.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
+use std::thread::JoinHandle;
 use std::time::Duration;
 
-use reuben_core::coordinator::{DiagnosticsReport, DocSource, Request, Response};
-use reuben_core::{content_hash, NormalizedDoc, Registry};
+use reuben_core::coordinator::{Coordinator, DiagnosticsReport, DocSource, Request, Response};
+use reuben_core::coordinator::{RenderSide, RenderSlot};
+use reuben_core::resources::MemoryResolver;
+use reuben_core::{content_hash, AudioConfig, NormalizedDoc, Registry};
 use reuben_native::diagnostics::Diagnostics;
-use reuben_native::resources::FsResolver;
-use reuben_native::rigs::DEFAULT_JSON;
-use reuben_native::structure::{StructureServer, StructureState};
+use reuben_native::structure::{HeadlessRenderConfig, StructureServer, StructureState};
 
-/// The canonical default-rig document and hash a fresh `play` would retain, plus a
-/// [`StructureState`] over the given diagnostics. Built exactly as `play` builds it — the same
-/// normalization (`Engine::from_document` mints the same doc), so the expected value here is
-/// what a real engine would report.
-fn default_rig_state(diagnostics: Arc<Diagnostics>) -> (StructureState, serde_json::Value, String) {
-    let resolver = FsResolver::new(".");
-    let doc = NormalizedDoc::from_json(
-        DEFAULT_JSON,
-        &Registry::builtin(),
-        Some(&resolver as &dyn reuben_core::resources::ResourceResolver),
-    )
-    .expect("the default rig normalizes");
-    let expected_doc = serde_json::to_value(&*doc).expect("canonical doc serializes");
-    let expected_hash = content_hash(&doc);
-    (
-        StructureState::from_doc(&doc, diagnostics),
-        expected_doc,
-        expected_hash,
+fn cfg() -> AudioConfig {
+    AudioConfig::new(48_000.0, 128)
+}
+
+/// A minimal output-only rig: one oscillator through a master output. Self-contained (no
+/// resources), so a bare [`MemoryResolver`] loads it.
+const BASE_DOC: &str = r#"{"format_version":3,"instrument":"t",
+    "interface":{"outputs":{"out":{"from":"/osc.audio"}}},
+    "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
+
+/// A held envelope whose CV is the master output. Two nodes (`/env`, `/out`); a swap to the
+/// identical document keeps both survivors, so the real migration diff carries `survived: 2`.
+fn envelope_doc(env_addr: &str) -> String {
+    format!(
+        r#"{{ "format_version": 3, "instrument": "eg",
+             "interface": {{ "outputs": {{ "out": {{ "from": "/out.audio" }} }} }},
+             "nodes": [
+               {{ "type": "envelope", "address": "{env_addr}",
+                  "inputs": {{ "gate": 1.0, "attack": 0.5, "decay": 0.01,
+                               "sustain": 0.8, "release": 0.5 }} }},
+               {{ "type": "output", "address": "/out",
+                  "inputs": {{ "audio": {{ "from": "{env_addr}.cv" }} }} }} ] }}"#
     )
 }
 
-/// Read one newline-framed [`Response`] off the wire, asserting the framing (ADR-0046 §8: one
-/// JSON object per line, newline-terminated).
+/// A minimal instrument binding logical input channel 0 (ADR-0038 §3) — live input an output-only
+/// stream can't provide, the dark-degrade case.
+const MIC_PASSTHRU: &str = r#"{ "format_version": 3, "instrument": "mic-passthru",
+    "interface": {
+        "inputs": { "mic": { "type": "f32_buffer", "channel": 0 } },
+        "outputs": { "out": { "from": "/mic" } } },
+    "nodes": [] }"#;
+
+/// A background "fake audio callback": owns the [`RenderSlot`] the real cpal callback would and
+/// drives it in a loop, draining the install mailbox, running the master-gain ramp, transplanting
+/// survivors, and posting retirees — so a Coordinator-driven swap installs via the mailbox and its
+/// `reclaim` completes, with no audio device.
+struct FakeCallback {
+    stop: Arc<AtomicBool>,
+    handle: Option<JoinHandle<()>>,
+}
+
+impl FakeCallback {
+    fn spawn(side: RenderSide) -> Self {
+        let stop = Arc::new(AtomicBool::new(false));
+        let stop_thread = Arc::clone(&stop);
+        let handle = std::thread::spawn(move || {
+            let mut slot = RenderSlot::new(side);
+            let mut buf = vec![0.0f32; 128 * slot.channels().max(1)];
+            while !stop_thread.load(Ordering::SeqCst) {
+                let ch = slot.channels().max(1);
+                if buf.len() != 128 * ch {
+                    buf.resize(128 * ch, 0.0);
+                }
+                slot.fill(&mut buf);
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            // The slot (Engine + mailbox) drops here, off any RT thread.
+        });
+        Self {
+            stop,
+            handle: Some(handle),
+        }
+    }
+
+    fn stop(mut self) {
+        self.stop.store(true, Ordering::SeqCst);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+}
+
+/// A Coordinator-backed [`StructureState`] over `doc`, a live [`FakeCallback`] draining its mailbox,
+/// and the base document's content hash. `opened_input_channels` is the headless render config's
+/// input-stream geometry (`0` = output-only, so an input-binding swap dark-degrades).
+fn wired(doc: &str, opened_input_channels: usize) -> (StructureState, FakeCallback, String) {
+    let (coordinator, side, _warnings) = Coordinator::install_initial(
+        doc,
+        Registry::builtin(),
+        Box::new(MemoryResolver::new()),
+        cfg(),
+    )
+    .expect("initial install");
+    let base_hash = coordinator.installed_hash();
+    let state = StructureState::from_coordinator(coordinator, Diagnostics::new())
+        .with_render_config(Arc::new(HeadlessRenderConfig {
+            opened_input_channels,
+        }));
+    (state, FakeCallback::spawn(side), base_hash)
+}
+
+/// Read one newline-framed [`Response`] off the wire, asserting the framing (ADR-0046 §8).
 fn read_response(reader: &mut impl BufRead) -> Response {
     let mut line = String::new();
     let n = reader.read_line(&mut line).expect("read a response line");
@@ -68,8 +146,13 @@ fn read_response(reader: &mut impl BufRead) -> Response {
     Response::from_ndjson(&line).expect("a response parses as JSON")
 }
 
-/// Run `f` on a helper thread and fail if it does not finish within `secs` — a hang assertion,
-/// so a shutdown that never joins fails the test loudly instead of stalling the suite.
+fn send(writer: &mut impl Write, req: &Request) {
+    writer
+        .write_all(req.to_ndjson().as_bytes())
+        .expect("send request");
+}
+
+/// Run `f` on a helper thread and fail if it does not finish within `secs` — a hang assertion.
 fn within<F: FnOnce() + Send + 'static>(secs: u64, f: F) {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -82,10 +165,13 @@ fn within<F: FnOnce() + Send + 'static>(secs: u64, f: F) {
     );
 }
 
+fn expected_hash(doc: &str) -> String {
+    content_hash(&NormalizedDoc::from_json(doc, &Registry::builtin(), None).expect("mint"))
+}
+
 #[test]
 fn serves_the_three_verbs_over_loopback_ndjson_in_order() {
-    let diagnostics = Diagnostics::new();
-    let (state, expected_doc, expected_hash) = default_rig_state(Arc::clone(&diagnostics));
+    let (state, cb, base_hash) = wired(BASE_DOC, 0);
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind loopback structure port");
     let addr = server.local_addr();
     assert!(
@@ -97,27 +183,17 @@ fn serves_the_three_verbs_over_loopback_ndjson_in_order() {
     let mut writer = client.try_clone().expect("clone client for writing");
     let mut reader = BufReader::new(client);
 
-    // ping -> Pong (the channel proves itself alive, ADR-0044 §2).
-    writer
-        .write_all(Request::Ping.to_ndjson().as_bytes())
-        .unwrap();
+    send(&mut writer, &Request::Ping);
     assert_eq!(read_response(&mut reader), Response::Pong);
 
-    // get_document -> the retained canonical default rig + its content hash (ADR-0046 §7/§9).
-    writer
-        .write_all(Request::GetDocument.to_ndjson().as_bytes())
-        .unwrap();
+    send(&mut writer, &Request::GetDocument);
     match read_response(&mut reader) {
         Response::Document {
             document,
             content_hash: hash,
         } => {
-            assert_eq!(
-                document, expected_doc,
-                "the served doc is the canonical default rig"
-            );
-            assert_eq!(hash, expected_hash, "and carries its content hash");
-            assert_eq!(document["instrument"], serde_json::json!("default"));
+            assert_eq!(document["instrument"], serde_json::json!("t"));
+            assert_eq!(hash, base_hash, "the served doc carries its content hash");
             assert_eq!(
                 document["format_version"],
                 serde_json::json!(3),
@@ -127,30 +203,26 @@ fn serves_the_three_verbs_over_loopback_ndjson_in_order() {
         other => panic!("expected Document, got {other:?}"),
     }
 
-    // get_diagnostics -> a zeroed snapshot at startup (ADR-0038 §9 / ADR-0048 §6).
-    writer
-        .write_all(Request::GetDiagnostics.to_ndjson().as_bytes())
-        .unwrap();
+    send(&mut writer, &Request::GetDiagnostics);
     assert_eq!(
         read_response(&mut reader),
         Response::Diagnostics(DiagnosticsReport::default())
     );
 
     server.shutdown();
+    cb.stop();
 }
 
 #[test]
 fn responses_come_back_one_per_request_in_pipelined_order() {
-    // ADR-0046 §8: one response per request, in order. Pipeline three requests before reading
-    // any reply, then assert the replies arrive matched to the request order.
-    let (state, _, _) = default_rig_state(Diagnostics::new());
+    let (state, cb, _) = wired(BASE_DOC, 0);
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
     let mut reader = BufReader::new(client);
 
     for req in [Request::GetDiagnostics, Request::Ping, Request::GetDocument] {
-        writer.write_all(req.to_ndjson().as_bytes()).unwrap();
+        send(&mut writer, &req);
     }
     assert!(matches!(
         read_response(&mut reader),
@@ -163,14 +235,22 @@ fn responses_come_back_one_per_request_in_pipelined_order() {
     ));
 
     server.shutdown();
+    cb.stop();
 }
 
 #[test]
 fn get_diagnostics_reflects_live_counter_bumps() {
-    // The endpoint reads the live Arc audio::start owns, not a copy frozen at startup: a
-    // counter bumped after the server started is visible on the next query.
+    // The endpoint reads the live Arc audio::start owns, not a copy frozen at startup.
+    let (coordinator, side, _w) = Coordinator::install_initial(
+        BASE_DOC,
+        Registry::builtin(),
+        Box::new(MemoryResolver::new()),
+        cfg(),
+    )
+    .expect("install");
     let diagnostics = Diagnostics::new();
-    let (state, _, _) = default_rig_state(Arc::clone(&diagnostics));
+    let state = StructureState::from_coordinator(coordinator, Arc::clone(&diagnostics));
+    let cb = FakeCallback::spawn(side);
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
@@ -178,9 +258,7 @@ fn get_diagnostics_reflects_live_counter_bumps() {
 
     diagnostics.record_output_xrun();
     diagnostics.record_input_ring_underrun_frames(7);
-    writer
-        .write_all(Request::GetDiagnostics.to_ndjson().as_bytes())
-        .unwrap();
+    send(&mut writer, &Request::GetDiagnostics);
     assert_eq!(
         read_response(&mut reader),
         Response::Diagnostics(DiagnosticsReport {
@@ -191,45 +269,23 @@ fn get_diagnostics_reflects_live_counter_bumps() {
     );
 
     server.shutdown();
-}
-
-/// A second valid instrument to swap the running rig to (ADR-0046 §10). Device-free: the harness
-/// state carries the default no-op installer (ADR-0053 §4), so a swap over the wire runs the full
-/// install *logic* — validate → SwapReport → doc/hash update — with no cpal device.
-const SWAP_TARGET: &str = r#"{
-    "format_version": 3,
-    "instrument": "swapped-rig",
-    "interface": { "outputs": { "main": { "from": "/out.audio" } } },
-    "nodes": [
-        { "type": "oscillator", "address": "/osc", "inputs": { "freq": 330.0 } },
-        { "type": "output", "address": "/out", "inputs": { "audio": { "from": "/osc.audio" } } }
-    ]
-}"#;
-
-/// The content hash a `swap` to [`SWAP_TARGET`] installs — minted the same way `play` mints it,
-/// so the test's expectation is an independent computation of what the server should report.
-fn target_hash() -> String {
-    content_hash(
-        &NormalizedDoc::from_json(SWAP_TARGET, &Registry::builtin(), None)
-            .expect("swap target normalizes"),
-    )
-}
-
-fn send(writer: &mut impl Write, req: &Request) {
-    writer
-        .write_all(req.to_ndjson().as_bytes())
-        .expect("send request");
+    cb.stop();
 }
 
 #[test]
-fn swap_by_value_over_the_wire_installs_and_get_document_reflects_it() {
-    let (state, _, base_hash) = default_rig_state(Diagnostics::new());
+fn swap_over_the_wire_installs_via_the_mailbox_with_real_survivor_stats() {
+    // The heart of M2: a swap to the identical envelope document installs over the wire through the
+    // mailbox — the FakeCallback drains it (its `reclaim` completing is the proof, and no
+    // SwapInstaller/stream restart exists to invoke) — and the real diff carries `survived: 2`
+    // (both nodes), impossible under M1's all-cold restart. `get_document` then reports the new doc.
+    let base = envelope_doc("/env");
+    let (state, cb, base_hash) = wired(&base, 0);
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
     let mut reader = BufReader::new(client);
 
-    let target: serde_json::Value = serde_json::from_str(SWAP_TARGET).unwrap();
+    let target: serde_json::Value = serde_json::from_str(&base).unwrap();
     send(
         &mut writer,
         &Request::Swap {
@@ -240,40 +296,63 @@ fn swap_by_value_over_the_wire_installs_and_get_document_reflects_it() {
     match read_response(&mut reader) {
         Response::SwapReport(report) => {
             assert!(report.report.ok, "a valid document installs: {report:?}");
-            assert_eq!(report.content_hash, target_hash());
             let diff = report.diff.expect("a successful swap carries a diff");
-            assert_eq!(diff.survived, 0, "M1 restart is all-cold (ADR-0046 §10)");
+            assert_eq!(
+                diff.survived, 2,
+                "both nodes survive an identical-document swap (real migration): {diff:?}"
+            );
+            assert_eq!(report.content_hash, base_hash, "same doc -> same hash");
         }
         other => panic!("expected SwapReport, got {other:?}"),
     }
 
-    // get_document now returns the swapped-in doc + its new hash, not the default rig.
+    // A second, renamed swap: only `/out` survives — proves back-to-back swaps turn over through
+    // the mailbox (the first's retiree was reclaimed) with real, changing survivor stats.
+    send(
+        &mut writer,
+        &Request::Swap {
+            source: DocSource::Document(serde_json::from_str(&envelope_doc("/eg")).unwrap()),
+            expect: None,
+        },
+    );
+    match read_response(&mut reader) {
+        Response::SwapReport(report) => {
+            assert!(report.report.ok, "{report:?}");
+            let diff = report.diff.expect("diff");
+            assert_eq!(diff.survived, 1, "only /out survives a rename: {diff:?}");
+        }
+        other => panic!("expected SwapReport, got {other:?}"),
+    }
+
+    // get_document reflects the last installed document.
     send(&mut writer, &Request::GetDocument);
     match read_response(&mut reader) {
         Response::Document {
             document,
             content_hash: hash,
         } => {
-            assert_eq!(document["instrument"], serde_json::json!("swapped-rig"));
-            assert_eq!(hash, target_hash());
+            assert_eq!(document["instrument"], serde_json::json!("eg"));
+            assert_eq!(hash, expected_hash(&envelope_doc("/eg")));
             assert_ne!(hash, base_hash, "the swap changed the installed document");
         }
         other => panic!("expected Document, got {other:?}"),
     }
 
     server.shutdown();
+    cb.stop();
 }
 
 #[test]
 fn swap_by_path_over_the_wire_installs() {
-    let (state, _, _) = default_rig_state(Diagnostics::new());
+    let base = envelope_doc("/env");
+    let (state, cb, _) = wired(&base, 0);
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
     let mut reader = BufReader::new(client);
 
     let path = std::env::temp_dir().join(format!("reuben_swap_wire_{}.json", std::process::id()));
-    std::fs::write(&path, SWAP_TARGET).expect("write swap target");
+    std::fs::write(&path, envelope_doc("/eg")).expect("write swap target");
     send(
         &mut writer,
         &Request::Swap {
@@ -290,18 +369,68 @@ fn swap_by_path_over_the_wire_installs() {
     send(&mut writer, &Request::GetDocument);
     match read_response(&mut reader) {
         Response::Document { document, .. } => {
-            assert_eq!(document["instrument"], serde_json::json!("swapped-rig"))
+            assert_eq!(document["instrument"], serde_json::json!("eg"))
         }
         other => panic!("expected Document, got {other:?}"),
     }
     let _ = std::fs::remove_file(&path);
 
     server.shutdown();
+    cb.stop();
+}
+
+#[test]
+fn input_binding_swap_over_the_wire_dark_degrades_and_stays_alive() {
+    // ADR-0038 §7/§9: the initial rig is output-only (no input stream). A swap to an instrument
+    // that binds an input channel installs and stays silent-but-alive — a loud swap-report WARNING,
+    // never an error or a crash. The FakeCallback keeps rendering (the process stays alive).
+    let (state, cb, _) = wired(BASE_DOC, 0);
+    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let client = TcpStream::connect(server.local_addr()).expect("connect");
+    let mut writer = client.try_clone().unwrap();
+    let mut reader = BufReader::new(client);
+
+    send(
+        &mut writer,
+        &Request::Swap {
+            source: DocSource::Document(serde_json::from_str(MIC_PASSTHRU).unwrap()),
+            expect: None,
+        },
+    );
+    match read_response(&mut reader) {
+        Response::SwapReport(report) => {
+            assert!(
+                report.report.ok,
+                "dark-degrade is not an error — the engine stays alive: {report:?}"
+            );
+            assert!(
+                report
+                    .report
+                    .warnings
+                    .iter()
+                    .any(|w| w.message.contains("dark-degrade")),
+                "the swap report carries the loud dark-degrade warning: {report:?}"
+            );
+        }
+        other => panic!("expected SwapReport, got {other:?}"),
+    }
+
+    // Still alive afterward: the channel answers, and the mic doc is what's installed.
+    send(&mut writer, &Request::GetDocument);
+    match read_response(&mut reader) {
+        Response::Document { document, .. } => {
+            assert_eq!(document["instrument"], serde_json::json!("mic-passthru"))
+        }
+        other => panic!("expected Document, got {other:?}"),
+    }
+
+    server.shutdown();
+    cb.stop();
 }
 
 #[test]
 fn swap_of_a_bad_document_over_the_wire_reports_errors_without_installing() {
-    let (state, expected_doc, base_hash) = default_rig_state(Diagnostics::new());
+    let (state, cb, base_hash) = wired(BASE_DOC, 0);
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
@@ -334,33 +463,30 @@ fn swap_of_a_bad_document_over_the_wire_reports_errors_without_installing() {
         }
         other => panic!("expected SwapReport, got {other:?}"),
     }
-
-    // Retain-prior: get_document still returns the original default rig.
+    // Retain-prior: get_document still returns the original rig.
     send(&mut writer, &Request::GetDocument);
     match read_response(&mut reader) {
         Response::Document {
-            document,
-            content_hash: hash,
-        } => {
-            assert_eq!(document, expected_doc, "the default rig keeps playing");
-            assert_eq!(hash, base_hash);
-        }
+            content_hash: hash, ..
+        } => assert_eq!(hash, base_hash),
         other => panic!("expected Document, got {other:?}"),
     }
 
     server.shutdown();
+    cb.stop();
 }
 
 #[test]
 fn swap_expect_arbitration_conflicts_then_proceeds_over_the_wire() {
-    let (state, _, base_hash) = default_rig_state(Diagnostics::new());
+    let base = envelope_doc("/env");
+    let (state, cb, base_hash) = wired(&base, 0);
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
     let mut reader = BufReader::new(client);
 
     // A stale expect rejects with the real installed hash — nothing installs (ADR-0046 §9).
-    let target: serde_json::Value = serde_json::from_str(SWAP_TARGET).unwrap();
+    let target: serde_json::Value = serde_json::from_str(&envelope_doc("/eg")).unwrap();
     send(
         &mut writer,
         &Request::Swap {
@@ -392,23 +518,21 @@ fn swap_expect_arbitration_conflicts_then_proceeds_over_the_wire() {
     }
 
     server.shutdown();
+    cb.stop();
 }
 
 #[test]
 fn shuts_down_cleanly_with_an_idle_client_still_connected() {
-    // The behavioral shutdown proof: a handler blocked on `read_line` for an idle client must
-    // not keep the server alive. `shutdown()` joins every thread; if it can't, `within` fails
-    // the test rather than hanging the suite — the park-forever hang this ticket removes.
-    let diagnostics = Diagnostics::new();
-    let (state, _, _) = default_rig_state(Arc::clone(&diagnostics));
+    // A handler blocked on `read_line` for an idle client must not keep the server alive.
+    let (state, cb, _) = wired(BASE_DOC, 0);
+    let diagnostics = state.diagnostics();
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
-    // Connect and leave it idle: the handler thread is now parked in a blocking read.
     let _idle = TcpStream::connect(server.local_addr()).expect("connect");
 
     within(10, move || {
         server.shutdown();
-        // The final exit-time snapshot flush `play` performs (ADR-0038 §9) — part of the same
-        // teardown, exercised here so the whole clean-shutdown sequence is covered off-audio.
+        // The final exit-time snapshot flush `play` performs (ADR-0038 §9).
         reuben_native::diagnostics::log_snapshot(&diagnostics.snapshot());
     });
+    cb.stop();
 }

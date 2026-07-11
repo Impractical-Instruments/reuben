@@ -13,24 +13,28 @@ ringing straight through the up-ramp (edit-while-playing); the transport never a
 
 ---
 
-## Precondition — gated on #323
+## Status — LIVE as of #323
 
-As of #321 the master-gain ramp lives in `reuben_core::coordinator::RenderSlot`, but the **native
-shell does not drive it yet**: `reuben play`'s structure channel still answers `swap` with
-"unimplemented" (`crates/reuben-native/src/structure.rs`). **This ritual becomes runnable once #323
-flips the native `swap` verb onto the mailbox/slot path** (`RenderSlot::fill` in the audio callback,
-`Coordinator::swap_document` on the channel thread).
+**This is now the live M2 gapless-swap ritual.** #323 flipped `reuben play`'s `swap` verb onto the
+mailbox/slot path: the cpal callback drives `reuben_core::coordinator::RenderSlot::fill_duplex`
+(which runs ADR-0050's ramp and box-transplants survivors) and the structure channel drives
+`Coordinator::swap_document` off-thread. There is **no stream teardown** on a swap and the ~100ms M1
+gap is gone (that path is deleted) — the swap is a ~20ms duck, not a silence. Run the ritual below.
 
-Until then you can only hear the automated proof indirectly:
+The headless half is proven in CI (no device needed) by:
 
 ```sh
 # The ramp envelope + survivor ring-through, asserted on the rendered buffer (no device):
 cargo test -p reuben-core --test install_slot
 # Zero heap alloc/free across a full swap callback (own binary; run isolated):
 cargo test -p reuben-core --test install_slot_rt_safe -- --test-threads=1
+# The live-server swap-over-the-wire path: installs via the mailbox, real survivor stats,
+# input dark-degrade — everything but the audible gap (there is no device in CI):
+cargo test -p reuben-native --test structure_server
 ```
 
-When #323 has landed, run the ritual below.
+This ritual is the **perceptual** half CI cannot judge: whether the duck *sounds* right and the swap
+is truly gapless on real hardware.
 
 ---
 
