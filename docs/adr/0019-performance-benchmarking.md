@@ -138,3 +138,29 @@ is best-effort: a dashboard bug never loses the data point.
 - **Promoting the 3% warn to a machine-enforced annotation** — currently best-effort from the
   summary JSON; harden once a real CI run confirms the 0.16 schema path.
 - **Marking `bench` a required check** — after a bake-in period.
+
+## Amendment (2026-07-11): benchmarks are measured at `codegen-units = 1`
+
+The `micro_iai` layer fired **false regressions on any PR that merely added cold source to
+reuben-core** — code the benched operator never calls. Root cause: reuben-core built at the
+default 16 codegen units, so growing the crate repartitions LLVM's CGUs and re-rolls register
+allocation / instruction selection for each operator's vtable-dispatched `process`. That moved a
+single operator's callgrind `Ir` by ±13% with **zero** change in actual work — proven by identical
+`Dr`/`Dw` memory traffic and identical `fmodf` call counts across the swing. The gate was reading
+codegen-partition luck, not the render path.
+
+The fix pins **`codegen-units = 1` for `[profile.bench]`** (root `Cargo.toml`), making per-operator
+codegen invariant to crate size. Under CGU=1 the false deltas collapse to exactly 0.00%
+symmetrically (the worst offender went from +13.04% **FAIL** to 0.00%), while **real** regressions —
+an added alloc or clone in the per-sample loop, an accidental O(n²), any genuine extra work — are
+CGU-invariant and still fire. De-noising the measurement does **not** blind the gate; it removes a
+variance source orthogonal to the thing being measured.
+
+This is a **fixed measurement methodology**, not a perf lever under test. Unlike `.cargo/config.toml`
+(which [`perf-gate.sh`](../../.github/scripts/perf-gate.sh) A/B-swaps with `src/` so a codegen-config
+change is measured on both refs), the bench profile lives in the root `Cargo.toml`, which the gate
+does **not** swap — so `codegen-units = 1` applies identically to the baseline and HEAD builds of
+every comparison. That uniformity is the point: it holds codegen determinism constant on both sides
+rather than letting it drift with crate size. `[profile.release]` is deliberately left at the
+default — production/shipped binaries keep parallel codegen, so this has **zero** runtime impact
+outside the bench harness.
