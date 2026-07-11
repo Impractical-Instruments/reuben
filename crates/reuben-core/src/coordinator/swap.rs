@@ -312,6 +312,21 @@ mod tests {
         )
     }
 
+    /// The same `/env` envelope as [`envelope_doc`], with only `attack` — a runtime `inputs` param
+    /// (never part of the instantiate-time fingerprint) — as what a caller varies.
+    fn envelope_doc_attack(attack: f32) -> String {
+        format!(
+            r#"{{ "format_version": 3, "instrument": "eg",
+                 "interface": {{ "outputs": {{ "out": {{ "from": "/out.audio" }} }} }},
+                 "nodes": [
+                   {{ "type": "envelope", "address": "/env",
+                      "inputs": {{ "gate": 1.0, "attack": {attack}, "decay": 0.01,
+                                   "sustain": 0.8, "release": 0.5 }} }},
+                   {{ "type": "output", "address": "/out",
+                      "inputs": {{ "audio": {{ "from": "/env.cv" }} }} }} ] }}"#
+        )
+    }
+
     #[test]
     fn a_survivor_keeps_state_a_reset_starts_fresh() {
         // The behavioral heart of ADR-0046 §5. Warm the envelope to its sustain level, then swap.
@@ -370,6 +385,43 @@ mod tests {
         assert!(
             reset < 0.1,
             "a renamed (reset) envelope restarts from zero: peak {reset}"
+        );
+    }
+
+    #[test]
+    fn a_changed_runtime_param_leaves_the_survivor_ringing() {
+        // The load-bearing survivor half of the asymmetry (ADR-0045 §2 / ADR-0046 §5): a runtime
+        // `inputs` param is NOT part of the survivor key, so editing one leaves the node a survivor
+        // — the box (with its warmed state) transplants and the new Plan's latch supplies the new
+        // value. Warm the envelope to sustain, then swap to a document that differs ONLY in `attack`
+        // (a pure runtime param, inert while the gate is held): the transplanted box keeps its held
+        // level, so it is still ringing at sustain on the first post-swap block. The counterpart to
+        // `a_survivor_keeps_state_a_reset_starts_fresh` — here the edited node must NOT reset.
+        let (mut coord, side, _w) = Coordinator::install_initial(
+            &envelope_doc_attack(0.5),
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            cfg(),
+        )
+        .expect("initial install");
+        let mut rig = RenderRig::new(side);
+        rig.render_peak(48_000); // ~1s: past attack+decay, sitting at sustain
+
+        let report = coord.swap_document(&envelope_doc_attack(0.05), None);
+        assert!(report.report.ok, "swap should succeed: {:?}", report.report);
+        // Only a runtime param moved: both nodes survive (neither fingerprint changed).
+        assert_eq!(
+            report.diff.as_ref().unwrap().survived,
+            2,
+            "a runtime param edit resets nothing"
+        );
+        rig.poll_install();
+        coord.try_reclaim();
+        let ringing = rig.render_peak(128);
+
+        assert!(
+            ringing > 0.6,
+            "a survivor keeps ringing at sustain across a runtime param edit: peak {ringing}"
         );
     }
 
