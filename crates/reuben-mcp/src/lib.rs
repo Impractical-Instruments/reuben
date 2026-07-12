@@ -96,15 +96,40 @@ const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is
      for the type system, wiring rules, instrument format, and the authoring loop; \
      `reuben://schema/instrument` is the live instrument JSON Schema.";
 
-/// Absolute path to the authoring guide (`docs/agents/authoring.md`), anchored at build time to
-/// this crate's manifest dir (workspace-root-relative). The file is READ AT REQUEST TIME — never
-/// `include_str!` — so a sidecar built yesterday still serves today's guide (ADR-0051 §4); only the
-/// path is compile-time, valid in the checkout the sidecar is built and run from (the MVP persona,
-/// ADR-0044). Matches the repo convention for locating workspace files (`CARGO_MANIFEST_DIR`).
+/// Default absolute path to the authoring guide (`docs/agents/authoring.md`), anchored at build
+/// time to this crate's manifest dir (workspace-root-relative). The file is READ AT REQUEST TIME —
+/// never `include_str!` — so a sidecar built yesterday still serves today's guide (ADR-0051 §4);
+/// only the path is compile-time, valid in the checkout the sidecar is built and run from (the MVP
+/// persona, ADR-0044). Matches the repo convention for locating workspace files
+/// (`CARGO_MANIFEST_DIR`). A deploy that runs the sidecar *outside* that checkout overrides it with
+/// [`AUTHORING_GUIDE_ENV`] (see [`resolve_guide_path`]).
 const AUTHORING_GUIDE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../docs/agents/authoring.md"
 );
+
+/// Env override for the authoring-guide path: point the `reuben://guide/authoring` resource at an
+/// explicit file for a **non-checkout deploy** — a shipped sidecar binary whose compile-time
+/// [`AUTHORING_GUIDE_PATH`] points into a build checkout that need not exist where it runs
+/// (ADR-0051 §4). Unset keeps the compile-time default. Mirrors the `REUBEN_INSTRUMENT_ROOT`
+/// convention (a `REUBEN_*` path override resolved from the environment).
+pub const AUTHORING_GUIDE_ENV: &str = "REUBEN_AUTHORING_GUIDE";
+
+/// Resolve the filesystem path to serve the authoring guide from: the [`AUTHORING_GUIDE_ENV`]
+/// override when set, else the compile-time [`AUTHORING_GUIDE_PATH`]. Pure over the already-read
+/// env value so it is unit-testable without mutating (and racing on) the process environment; the
+/// live read happens once in [`authoring_guide_path`].
+fn resolve_guide_path(env_override: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    env_override
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(AUTHORING_GUIDE_PATH))
+}
+
+/// The path the guide resource is served from this request: [`resolve_guide_path`] over the live
+/// [`AUTHORING_GUIDE_ENV`] value.
+fn authoring_guide_path() -> std::path::PathBuf {
+    resolve_guide_path(std::env::var_os(AUTHORING_GUIDE_ENV))
+}
 
 /// The instrument JSON Schema served at [`SCHEMA_RESOURCE_URI`], generated LIVE from the builtin
 /// registry (ADR-0048 §7) so it can never drift from the operator set — and in the exact pretty
@@ -672,9 +697,10 @@ impl ServerHandler for ReubenServer {
         ]))
     }
 
-    /// Read one static resource (ADR-0048 §7), served from the checkout at request time (ADR-0051
-    /// §4): the schema is generated live from the registry, the guide is read from disk — never
-    /// `include_str!`, so a sidecar built yesterday still serves today's content. An unknown URI is
+    /// Read one static resource (ADR-0048 §7), served at request time (ADR-0051 §4): the schema is
+    /// generated live from the registry, the guide is read from disk — never `include_str!`, so a
+    /// sidecar built yesterday still serves today's content — at [`authoring_guide_path`] (the
+    /// [`AUTHORING_GUIDE_ENV`] override, else the compile-time checkout path). An unknown URI is
     /// `resource_not_found`.
     async fn read_resource(
         &self,
@@ -686,10 +712,12 @@ impl ServerHandler for ReubenServer {
             SCHEMA_RESOURCE_URI => ResourceContents::text(instrument_schema_json(), uri)
                 .with_mime_type(SCHEMA_RESOURCE_MIME),
             GUIDE_RESOURCE_URI => {
-                let guide = std::fs::read_to_string(AUTHORING_GUIDE_PATH).map_err(|e| {
+                let path = authoring_guide_path();
+                let guide = std::fs::read_to_string(&path).map_err(|e| {
                     McpError::internal_error(
                         format!(
-                            "failed to read the authoring guide at {AUTHORING_GUIDE_PATH}: {e}"
+                            "failed to read the authoring guide at {}: {e}",
+                            path.display()
                         ),
                         None,
                     )
@@ -988,6 +1016,24 @@ mod tests {
             .iter()
             .find_map(|block| block.as_text().map(|t| t.text.clone()))
             .expect("result carries a text content block")
+    }
+
+    #[test]
+    fn guide_path_prefers_the_env_override_then_the_checkout_default() {
+        // #374 tightening: a non-checkout deploy points REUBEN_AUTHORING_GUIDE at an explicit file;
+        // unset falls back to the compile-time checkout path (ADR-0051 §4). Tested over the pure
+        // resolver so it never mutates (and races on) the process environment — sibling tests read
+        // the live guide concurrently.
+        assert_eq!(
+            resolve_guide_path(Some(std::ffi::OsString::from("/opt/reuben/authoring.md"))),
+            std::path::PathBuf::from("/opt/reuben/authoring.md"),
+            "an explicit override wins for a non-checkout deploy"
+        );
+        assert_eq!(
+            resolve_guide_path(None),
+            std::path::PathBuf::from(AUTHORING_GUIDE_PATH),
+            "unset falls back to the compile-time checkout default"
+        );
     }
 
     #[test]

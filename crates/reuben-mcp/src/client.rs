@@ -44,6 +44,13 @@ const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 /// engine surfaces as a fail-fast rather than a stalled tool call.
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
+/// The read budget for `ping` specifically. A pong is **immediate** — the structure server answers
+/// `Ping` with `Pong` doing no work (ADR-0046 §8), unlike a `swap`'s off-thread engine rebuild — so
+/// the liveness probe (`engine_status`, and the probe-first `send`) need not inherit the generous
+/// [`DEFAULT_READ_TIMEOUT`]: a wedged engine surfaces as unreachable ~5× sooner. Still comfortably
+/// above loopback + scheduler jitter, so a live-but-momentarily-busy engine is never misjudged dead.
+const DEFAULT_PING_READ_TIMEOUT: Duration = Duration::from_secs(1);
+
 /// A failed structure-channel exchange. [`Unreachable`](Self::Unreachable) is the fail-fast case
 /// (ADR-0044 §2) — connect/timeout/I/O died — and its message names the fix; the other two are the
 /// channel answering but unusably: [`Channel`](Self::Channel) is a server-sent [`Response::Error`]
@@ -124,6 +131,9 @@ pub struct StructureClient {
     addr: String,
     connect_timeout: Duration,
     read_timeout: Duration,
+    /// The tighter read budget `ping` uses (its pong is immediate) — never longer than the general
+    /// `read_timeout`, and capped at [`DEFAULT_PING_READ_TIMEOUT`]. See [`Self::ping`].
+    ping_read_timeout: Duration,
 }
 
 impl StructureClient {
@@ -143,6 +153,10 @@ impl StructureClient {
             addr: addr.into(),
             connect_timeout,
             read_timeout,
+            // The pong is immediate, so `ping` uses the tighter of the two budgets: never longer
+            // than a caller's explicit read timeout (a deliberately tiny one still wins — the
+            // wedged-server test relies on that), but capped at the ping default when it's generous.
+            ping_read_timeout: read_timeout.min(DEFAULT_PING_READ_TIMEOUT),
         }
     }
 
@@ -155,7 +169,9 @@ impl StructureClient {
     /// [`EngineLink`](crate::EngineLink) consults for engine reachability (`engine_status`, and the
     /// probe-first `send`).
     pub fn ping(&self) -> Result<(), StructureError> {
-        match self.exchange(&Request::Ping)? {
+        // The pong is immediate, so bound this exchange by the tighter `ping_read_timeout` rather
+        // than the general read budget a swap earns — a wedged engine fails fast (ADR-0044 §2).
+        match self.exchange_with(&Request::Ping, self.ping_read_timeout)? {
             Response::Pong => Ok(()),
             other => Err(unexpected("ping", "pong", &other)),
         }
@@ -204,11 +220,23 @@ impl StructureClient {
         }
     }
 
-    /// One request → one response over a fresh connection (ADR-0046 §8's framing). Connect, then
-    /// read/write timeouts, bound the whole exchange so neither a dead nor a wedged engine can
-    /// hang the caller; any I/O or timeout failure is the fail-fast [`StructureError::Unreachable`]
-    /// (ADR-0044 §2).
+    /// One request → one response over a fresh connection (ADR-0046 §8's framing), bounded by the
+    /// general [`read_timeout`](Self::read_timeout) — the budget every verb but `ping` uses (a real
+    /// swap's off-thread rebuild earns it). `ping` calls [`exchange_with`](Self::exchange_with)
+    /// directly with its tighter budget.
     fn exchange(&self, request: &Request) -> Result<Response, StructureError> {
+        self.exchange_with(request, self.read_timeout)
+    }
+
+    /// [`exchange`](Self::exchange), but with an explicit read/write budget for this one call — so
+    /// `ping` can fail fast on its immediate pong without loosening (or tightening) the general
+    /// budget the other verbs share. Connect is always bounded by [`connect_timeout`](Self::connect_timeout);
+    /// any I/O or timeout failure is the fail-fast [`StructureError::Unreachable`] (ADR-0044 §2).
+    fn exchange_with(
+        &self,
+        request: &Request,
+        read_timeout: Duration,
+    ) -> Result<Response, StructureError> {
         // Resolve to a concrete SocketAddr — connect_timeout needs one (and is what bounds the
         // connect; a plain `connect` could block far longer than our budget).
         let addr = self
@@ -223,10 +251,10 @@ impl StructureClient {
         let stream = TcpStream::connect_timeout(&addr, self.connect_timeout)
             .map_err(StructureError::unreachable)?;
         stream
-            .set_read_timeout(Some(self.read_timeout))
+            .set_read_timeout(Some(read_timeout))
             .map_err(StructureError::unreachable)?;
         stream
-            .set_write_timeout(Some(self.read_timeout))
+            .set_write_timeout(Some(read_timeout))
             .map_err(StructureError::unreachable)?;
         let _ = stream.set_nodelay(true);
 

@@ -164,6 +164,40 @@ fn read_authoring_guide_is_nonempty_markdown() {
     );
 }
 
+#[test]
+fn read_unknown_resource_is_a_resource_not_found_error() {
+    // ADR-0048 §7: an unknown resource URI is `resource_not_found` — not a silent empty read, not a
+    // panic. Drives the `other =>` arm of `read_resource` (otherwise untested) over the real stdio
+    // JSON-RPC boundary and asserts a protocol error, naming the URIs the server does serve.
+    let request = r#"{"jsonrpc":"2.0","id":7,"method":"resources/read","params":{"uri":"reuben://does/not/exist"}}"#;
+    let out = drive(&[request]);
+    let response = response_with_id(&out, 7);
+    assert!(
+        response.get("result").is_none(),
+        "an unknown URI must not return a result: {response}"
+    );
+    let error = response.get("error").unwrap_or_else(|| {
+        panic!("an unknown resource URI must surface a JSON-RPC error: {response}")
+    });
+    // MCP's resource-not-found code (JSON-RPC application range), and a message that both names the
+    // offending URI and points at what IS served — so the agent can correct the request.
+    assert_eq!(
+        error["code"],
+        serde_json::json!(-32002),
+        "resource-not-found uses the MCP resource_not_found code: {response}"
+    );
+    let message = error["message"].as_str().unwrap_or("");
+    assert!(
+        message.contains("reuben://does/not/exist"),
+        "the error should name the unknown URI: {response}"
+    );
+    assert!(
+        message.contains(reuben_mcp::GUIDE_RESOURCE_URI)
+            && message.contains(reuben_mcp::SCHEMA_RESOURCE_URI),
+        "the error should point at the URIs the server does serve: {response}"
+    );
+}
+
 /// Drift guard (#319): the schema SERVED over `reuben://schema/instrument` must equal the committed
 /// `crates/reuben-core/schema/instrument.schema.json` byte-for-byte. The served copy is generated
 /// live from the registry, so if an operator change makes the two diverge this fails — forcing
