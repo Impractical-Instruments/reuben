@@ -58,7 +58,19 @@ long-run escape hatch when free quota is exhausted — but **v1 builds the proxy
 in *some* surface, which is engine/toolchain vocabulary the lexicon (§1) retired, and it needs a
 key-entry surface, secret storage the account-free lane has nowhere to put, and a second
 client-side agent path — a meaningfully separate effort in a non-chat register. Recording the
-tiered target here lets the ceiling (§3) be designed as the future BYO seam without building it now.
+tiered target here lets the ceiling (§5) be designed as the future BYO seam without building it now.
+
+**What "your own key" is — an Anthropic API account, not a Claude.ai subscription.** BYO means the
+user brings their own **Claude Developer Platform** key (`console.anthropic.com` — a distinct account
+with its own token billing, used via the `x-api-key` header the proxy already sends,
+`crates/reuben-web/proxy/relay.mjs`). A **Claude.ai subscription** (Pro/Max) is a *different product*:
+it grants the Claude apps and Claude Code, mints **no** API key, and cannot authenticate the Messages
+API here — a subscriber has nothing to bring. (A subscription-scoped OAuth path to the Messages API
+technically exists for Anthropic's own first-party tooling, but its tokens are short-lived and its
+third-party use is unsupported — not a foundation to build BYO on.) This sharpens the tier's shape:
+the BYO audience is the narrow, more-technical slice who hold or will create an API account, **not**
+the play-first persona (§0.1) — so BYO is an escape hatch for power users, never a cost-shift for the
+mass free tier, and the free-proxy economics (§5) stay the load-bearing lever.
 
 **Considered and rejected — as the v1 front door:** the **client-side baked key** (no wall, but
 un-defensible — scraped from the bundle, billed to us, no chokepoint; effectively the abuse magnet
@@ -193,4 +205,10 @@ Separate from this design decision:
 - Create and fund an **Anthropic account**; store its key as a **server-side secret**.
 - Provision a **Turnstile-class invisible challenge** for the abuse escalation layer (§5).
 - Build the **BYO lane** (§1): key-entry chrome, key storage, the client-side agent path, and a
-  non-chat-register wording pass — the tier's second half, deferred from v1.
+  non-chat-register wording pass — the tier's second half, deferred from v1. Two constraints from
+  §1's "what your own key is" clarification: the wording pass points the user at **creating an
+  Anthropic API key** (an API account, not a "log in with Claude" subscription flow); and a
+  sub-decision to settle at build time is whether the user's key calls Anthropic **directly from the
+  browser** (the key stays client-side — a CORS/exposure surface) or still flows **through the
+  proxy** (which then holds a user credential — a trust/liability shift from the v1 posture where the
+  proxy never sees a user key).
