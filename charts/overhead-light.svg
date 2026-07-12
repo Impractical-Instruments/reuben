@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="340" viewBox="0 0 880 340" role="img" aria-label="Per-node engine overhead">
+<rect width="880" height="340" rx="6" fill="#fcfcfb"/>
+<text x="64" y="24" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="14" font-weight="600" fill="#0b0b0b">Per-node engine overhead</text>
+<text x="64" y="41" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#52514e">callgrind instructions of a case that is ~pure engine stepping cost, gated like any operator. Axis zoomed.</text>
+<line x1="64" y1="268.7" x2="730" y2="268.7" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="272.2" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">520</text>
+<line x1="64" y1="190.4" x2="730" y2="190.4" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="193.9" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">540</text>
+<line x1="64" y1="112.0" x2="730" y2="112.0" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="115.5" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">560</text>
+<text x="56" y="46" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" fill="#898781">Ir (k)</text>
+<line x1="64" y1="306" x2="730" y2="306" stroke="#c3c2b7" stroke-width="1"/>
+<text x="64.0" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-12</text>
+<circle cx="64.0" cy="73.2" r="2.5" fill="#2a78d6"/>
+<circle cx="64.0" cy="73.2" r="6" fill="#fcfcfb"/>
+<circle cx="64.0" cy="73.2" r="4" fill="#2a78d6"/>
+<circle cx="64.0" cy="288.8" r="2.5" fill="#1baf7a"/>
+<circle cx="64.0" cy="288.8" r="6" fill="#fcfcfb"/>
+<circle cx="64.0" cy="288.8" r="4" fill="#1baf7a"/>
+<circle cx="79.0" cy="69.7" r="3.5" fill="#2a78d6"/>
+<text x="87.0" y="73.2" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">overhead</text>
+<text x="87.0" y="85.2" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">570k</text>
+<circle cx="79.0" cy="285.3" r="3.5" fill="#1baf7a"/>
+<text x="87.0" y="288.8" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">proxy (abs_f32_value)</text>
+<text x="87.0" y="300.8" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">515k</text>
+</svg>
