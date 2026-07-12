@@ -466,6 +466,20 @@ fn accept_loop(listener: TcpListener, state: StructureState, shutdown: Arc<Atomi
             // shutdown flag on the next turn rather than spin.
             Err(_) => std::thread::sleep(ACCEPT_POLL),
         }
+
+        // Reap completed handlers during normal operation so this vector stays bounded.
+        let mut i = 0;
+        while i < handlers.len() {
+            if handlers[i].0.is_finished() {
+                let (handle, wake) = handlers.remove(i);
+                if let Some(wake) = wake {
+                    let _ = wake.shutdown(Shutdown::Both);
+                }
+                let _ = handle.join();
+            } else {
+                i += 1;
+            }
+        }
     }
     for (handle, wake) in handlers {
         if let Some(wake) = wake {
