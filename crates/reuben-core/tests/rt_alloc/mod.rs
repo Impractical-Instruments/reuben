@@ -26,14 +26,13 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::sync::atomic::{AtomicUsize, Ordering};
-
-/// Number of `alloc`/`realloc` calls counted while a thread was armed.
-pub static ALLOCS: AtomicUsize = AtomicUsize::new(0);
-/// Number of `dealloc` calls counted while a thread was armed.
-pub static FREES: AtomicUsize = AtomicUsize::new(0);
+use std::thread::LocalKey;
 
 thread_local! {
+    /// Number of `alloc`/`realloc` calls counted on this thread while it was armed.
+    static ALLOCS: Cell<usize> = const { Cell::new(0) };
+    /// Number of `dealloc` calls counted on this thread while it was armed.
+    static FREES: Cell<usize> = const { Cell::new(0) };
     /// Whether *this* thread is currently measuring. `const`-initialised and
     /// destructor-free, so `with` inside the allocator is allocation-free (no lazy
     /// init) and cannot panic during thread teardown.
@@ -45,6 +44,14 @@ fn armed() -> bool {
     ARMED.with(Cell::get)
 }
 
+/// Add one to a thread-local counter. Shared by the armed `alloc`/`realloc`/`dealloc`
+/// paths; `#[inline]` and destructor-free like [`armed`], so it stays allocation-free
+/// inside the allocator.
+#[inline]
+fn bump(counter: &'static LocalKey<Cell<usize>>) {
+    counter.with(|c| c.set(c.get() + 1));
+}
+
 /// System allocator that counts allocations, reallocations, and frees — but only those
 /// made on a thread that is currently armed (see [`measure`]). Free-counting matters for
 /// the mailbox contract, which forbids the render side to *drop* a payload, not just to
@@ -54,19 +61,19 @@ pub struct Counting;
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if armed() {
-            ALLOCS.fetch_add(1, Ordering::Relaxed);
+            bump(&ALLOCS);
         }
         System.alloc(layout)
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if armed() {
-            FREES.fetch_add(1, Ordering::Relaxed);
+            bump(&FREES);
         }
         System.dealloc(ptr, layout)
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         if armed() {
-            ALLOCS.fetch_add(1, Ordering::Relaxed);
+            bump(&ALLOCS);
         }
         System.realloc(ptr, layout, new_size)
     }
@@ -103,14 +110,14 @@ impl Drop for Armed {
 /// returned counts reflect only what `f` itself did. Arm exactly the measured ops (put
 /// warm-up and setup *outside* the closure); disarming is automatic, panic included.
 pub fn measure(f: impl FnOnce()) -> Counts {
-    let allocs_before = ALLOCS.load(Ordering::Relaxed);
-    let frees_before = FREES.load(Ordering::Relaxed);
+    let allocs_before = ALLOCS.with(Cell::get);
+    let frees_before = FREES.with(Cell::get);
     {
         let _armed = Armed::new();
         f();
     }
     Counts {
-        allocs: ALLOCS.load(Ordering::Relaxed) - allocs_before,
-        frees: FREES.load(Ordering::Relaxed) - frees_before,
+        allocs: ALLOCS.with(Cell::get) - allocs_before,
+        frees: FREES.with(Cell::get) - frees_before,
     }
 }
