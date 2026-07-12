@@ -1,4 +1,8 @@
 import { expect, test } from "@playwright/test";
+// The forbidden lexicon (spec §1 / M1 lexicon gate) — imported from its ONE source of truth in
+// change-card.js rather than re-declared here, so the spine and change-card specs cannot drift
+// (finding 4). Whole-word, case-insensitive — so "port" never trips on "important".
+import { FORBIDDEN_LEXICON as FORBIDDEN } from "../src/chat/change-card.js";
 
 // The co-presence spine spec (issue #355 verification, spec §3). A scripted RESPONSIVE pass at a
 // PHONE and a DESKTOP width, all with the chat flag opted in via `?chat=1` (chat/flag.js). Boots
@@ -17,12 +21,6 @@ import { expect, test } from "@playwright/test";
 const PHONE = { width: 390, height: 844 };
 const DESKTOP = { width: 1280, height: 800 };
 
-// The forbidden lexicon (spec §1 / M1 lexicon gate): engine words that must NEVER surface in any
-// chat-chrome string. Whole-word, case-insensitive — so "port" never trips on "important".
-const FORBIDDEN = [
-  "operator", "input", "output", "port", "patch", "wire", "swap", "plan", "address",
-  "coordinator", "voicer", "voice", "survivor", "rig", "tuning", "param", "widget", "surface",
-];
 
 // Boot the built app into the spine at `viewport`, opting the flag in with `?chat=1`. The chat
 // flag routes Start into the gallery-first cold start (spec §2, issue #357) rather than straight
