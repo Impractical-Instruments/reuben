@@ -54,18 +54,28 @@ What stays **human** are the two perceptual halves no automated gate should stan
 
 ## Setup
 
-You need speakers or headphones (this ritual is about sound) and the built web player. The in-page
-agent host is whatever the deployment wires up (ADR-0052 §1 names it a separate question); for a
-local pass, run the app the way CI serves it — the built `dist/` over `vite preview`.
+You need speakers or headphones (this ritual is about sound), the built web player, and — since
+the loop is now wired to a real model (issue #397) — **a reachable agent host**. For a local pass,
+serve the built `dist/` behind the proxy Pages Function (`web/functions/api/chat.js`) with
+`wrangler pages dev`, binding your Anthropic key into the Function's server env. The key lives only
+in the wrangler process — never in `dist`, never in the bundle (ADR-0054 §1).
 
 ```sh
 cd web
 npm ci
 npm run build
-npm run preview            # serves the built app, prints a http://localhost:4173 URL
+# Serve dist + the /api/chat Function, mapping your dev key into the Function's binding.
+# (Use whatever env var holds your key; the Function reads ANTHROPIC_API_KEY.)
+npx wrangler pages dev dist --binding ANTHROPIC_API_KEY=$ANTHROPIC_API_KEY_REUBEN_DEV
+# → prints a http://localhost:8788 URL
 ```
 
-Open the printed URL with the chat flag on: **`http://localhost:4173/?chat=1`** (`chat/flag.js`).
+Open the printed URL with the chat flag on: **`http://localhost:8788/?chat=1`** (`chat/flag.js`).
+
+> Without a key the Function self-gates to `503` (ADR-0054 §5): the app still runs, but a reshape
+> collapses to the §5.3 terminal line ("I lost the thread…") instead of driving a real edit. If you
+> see that on every turn, the key binding didn't take. (`vite preview` serves no Function at all, so
+> `/api/chat` 404s there — use `wrangler pages dev` for this ritual, not `npm run preview`.)
 
 ## Run
 

@@ -326,6 +326,26 @@ export async function createReubenEngine({
       return lastLoaded;
     },
 
+    /**
+     * The shared main-thread DISCOVERY wasm instance's exports (bridge.rs C-ABI), instantiated on
+     * demand and cached. The in-page chat agent's tool layer (js/chat-host.mjs) builds its
+     * introspection adapter (js/tools.mjs `wasmIntrospect`) over THIS instance, so
+     * describe_operators / describe_instrument / validate / content_hash run against the same
+     * shared module the fetch-on-miss discovery loop uses — one instance, no drift with what the
+     * player actually loads.
+     *
+     * Safe to call during a reshape turn: the four authoring exports are stateless single-shot
+     * (writeBytes → call → dealloc; loader.mjs re-wraps memory views per call), and a `swap`'s
+     * install goes through `loadBundle`, which uses a FRESH instance (never this reused discovery
+     * one) — so introspection here can never collide with an install. Instantiates the discovery
+     * instance if nothing has loaded yet, so introspection works before the first pick too.
+     *
+     * @returns {Promise<WebAssembly.Exports>} the discovery instance's live exports.
+     */
+    async wasmExports() {
+      return discoveryExports();
+    },
+
     /** Encode one control message (codec.mjs) and post it to the worklet. */
     send(address, args = []) {
       const buffer = encodeControl(address, args);

@@ -3,6 +3,10 @@ import { expect, test } from "@playwright/test";
 // change-card.js rather than re-declared here, so the spine and change-card specs cannot drift
 // (finding 4). Whole-word, case-insensitive — so "port" never trips on "important".
 import { FORBIDDEN_LEXICON as FORBIDDEN } from "../src/chat/change-card.js";
+// The deterministic agent-transport stub (issue #397): the real onReshapeSubmit loop now replaces
+// spine.js's mock turn, so a turn that must be OBSERVED mid-flight is driven through the stub, held
+// open, then released — no key, no network.
+import { installChatStub, setTurn } from "./chat-stub.js";
 
 // The co-presence spine spec (issue #355 verification, spec §3). A scripted RESPONSIVE pass at a
 // PHONE and a DESKTOP width, all with the chat flag opted in via `?chat=1` (chat/flag.js). Boots
@@ -142,7 +146,11 @@ test("submitting the reshape form clears the input, records the turn, and settle
   const errors = [];
   page.on("pageerror", (e) => errors.push(e.message));
 
+  await installChatStub(page);
   await bootSpine(page, DESKTOP);
+  // Hold the turn open so its in-flight window is observable (a real turn against the stub would
+  // otherwise resolve within a tick); the action is a no-op so nothing on the surface changes.
+  await setTurn(page, { hold: true, action: { type: "none" } });
 
   const input = page.locator(".reshape-input");
   await input.fill("make it warmer");
@@ -158,7 +166,8 @@ test("submitting the reshape form clears the input, records the turn, and settle
     "make it warmer",
   );
 
-  // ...then the mock turn auto-settles back to idle (no freeze — spec §3.4).
+  // ...then, once the loop completes, it settles back to idle (no freeze — spec §3.4).
+  await setTurn(page, { hold: false });
   await expect(page.locator(".spine")).toHaveAttribute("data-turn", "idle", { timeout: 3000 });
 
   expect(errors, `no uncaught page errors: ${errors.join("; ")}`).toEqual([]);

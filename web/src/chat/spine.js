@@ -305,16 +305,19 @@ export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [], du
       // BOTH resolve paths below share it: the param-only live sweep runs it immediately, the
       // structural re-strike runs it AT the duck's trough (co-timed with the sound drop, §6.2.1).
       //
-      // GLOW ONLY (finding 3 / §4.1 "a changed control sweeps its value"): this fires the
-      // node-identity GLOW, not the value re-render — we do not call `board.update(...)`. The
-      // structural diff carries node addresses, not the reshaped widget's new value, so there is
-      // nothing to sweep the control TO yet. The value-sweep half of §4.1 lands with the #354
-      // agent-loop wiring, which delivers the fresh widget set alongside the diff (the seam at
-      // main.js:859): at that point this also re-renders the touched controls through `board.update`
-      // and the "changed" glow doubles as the value-sweep. Until then it is honestly glow-only.
-      function commit() {
+      // §4.1 VALUE-SWEEP ("a changed control sweeps its value"): `sweep` is the optional thunk the
+      // live agent loop (#397) supplies alongside the diff — it re-renders the fresh widget set onto
+      // the touched controls (structural: the re-resolved surface from the new document; param: the
+      // sent value folded into the widget's `default`) via `board.update`, so the "changed" glow now
+      // doubles as the control moving to its new position. It runs INSIDE commit, so for a structural
+      // re-strike it lands AT the duck's trough with the sound drop (§6.2.1), never after the sound
+      // returns; before highlightDiff so the diff-driven node-identity glow lands on the swept cells.
+      // A crafted-envelope driver (the change-card / re-strike specs) passes no sweep and the commit
+      // stays honestly glow-only — the pre-#397 behavior, unchanged.
+      function commit(sweep) {
         env.resolve();
         card.update();
+        sweep?.();
         board.highlightDiff(env.turn.diff);
         // A landed reshape diverges the instrument (spec §7.4/§7.7) — the Keep gesture (#359) wires
         // this to flip any prior keep stale + arm the leave-guard. Fires for BOTH the param-only
@@ -352,10 +355,12 @@ export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [], du
         // §6.1 PARAMETER-ONLY path: a live sweep, NO gap, no phase reset — the existing #358 behavior.
         // The routing (param-only → `send`) is the agent's (#356); this renders it as the
         // magnitude-appropriate live control move. A param-only reshape NEVER carries a restart line
-        // (spec §6.4: nothing restarted) — `honesty` is deliberately not accepted here.
-        resolve(diff) {
+        // (spec §6.4: nothing restarted) — `honesty` is deliberately not accepted here. `sweep` (#397)
+        // is the optional §4.1 value-sweep thunk: the sent value re-rendered onto its control, run
+        // immediately inside commit (no duck — a param move is live, not a restart).
+        resolve(diff, { sweep } = {}) {
           if (diff) env.setDiff(diff);
-          commit();
+          commit(sweep);
           return env.turn;
         },
 
@@ -374,15 +379,17 @@ export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [], du
         // honesty line, and simply commit (build-and-be-ready). `honesty` renders the first-run-only
         // restart line the ENVELOPE already gates once/session (#356 attaches it; we only render the
         // slot #358 reserved — never re-implement the gate). Resolves when the duck completes.
-        async restrike(diff, honesty, { sounding = true } = {}) {
+        async restrike(diff, honesty, { sounding = true, sweep } = {}) {
           if (diff) env.setDiff(diff);
           if (!sounding) {
-            commit(); // build-and-be-ready: no duck, no playhead reset, no restart line (§6.4)
+            commit(sweep); // build-and-be-ready: no duck, no playhead reset, no restart line (§6.4)
             return env.turn;
           }
           await runDuck(() => {
             if (typeof honesty === "string" && honesty) env.turn.restartHonesty = honesty;
-            commit(); // the co-timed cause: card + surface land exactly as the sound drops (§6.2.1)
+            // the co-timed cause: card + surface (incl. the §4.1 value-sweep) land exactly as the
+            // sound drops (§6.2.1) — sweep runs inside commit, AT the trough, never after sound returns
+            commit(sweep);
             transport.restrike(); // replay-from-top: the playhead visibly returns to start (§6.2.2)
           });
           return env.turn;

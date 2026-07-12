@@ -33,6 +33,25 @@ import { chatEnabled } from "./chat/flag.js";
 import { createSpine } from "./chat/spine.js";
 import { nodeOfControl } from "./chat/board.js";
 import { createKeep } from "./chat/keep.js";
+import { createChatHost, DEFAULT_CHAT_ENDPOINT } from "../../crates/reuben-web/js/chat-host.mjs";
+import { runReshapeTurn } from "./chat/reshape.js";
+
+// The hosted-proxy endpoint the in-page agent talks to (ADR-0054 §2; the seam #397 wires). Same
+// origin by default (`/api/chat`, the web/functions Pages Function), overridable at build for a
+// preview that points at a separately-deployed relay. The key lives ONLY server-side there — never
+// here (ADR-0054 §1). With no relay reachable the transport throws and the loop collapses to §5.3.
+const CHAT_ENDPOINT = import.meta.env?.VITE_REUBEN_CHAT_ENDPOINT || DEFAULT_CHAT_ENDPOINT;
+
+// §5.3 terminal-failure copy for a RESHAPE (the prior sound is KEPT): a host/transport drop, a
+// proxy 5xx, or an exhausted repair collapses to one warm, lexicon-clean line — the host reason is
+// never exposed (§5.1). A first-creation terminal failure lands at the gallery instead
+// (firstCreationTerminalFailure), because there is no prior sound to keep.
+const RESHAPE_TERMINAL_FAIL_LINE = "I lost the thread there — want to try that again?";
+
+// §5.3 terminal-failure copy for a describe → GENERATE turn when a scaffold is already playing: the
+// build didn't land, but the starting bed is kept so the user isn't dropped into silence.
+const GENERATE_TERMINAL_FAIL_LINE =
+  "I couldn't shape that just now — here's a starting point to play with. Tell me what to change.";
 
 const REPO_URL = "https://github.com/Impractical-Instruments/reuben";
 
@@ -813,7 +832,7 @@ function micControl(engine, status) {
 // resolves (spec §2.3/§2.4 both promise an immediate turn one). `onReady(spine, {id, title})`
 // fires once the instrument has actually loaded and rendered — for content that can only be
 // known then (a describe-path's "here's what it made" landing line).
-async function openSpine({ toyId, arrival = "picked", seed = [], onReady } = {}) {
+async function openSpine({ toyId, arrival = "picked", seed = [], onReady, generate } = {}) {
   const token = ++loadToken;
   journal.clear(); // reflect only the instrument about to load
   // Wire the live engine's declicked duck (spec §6.2.4, issue #360) into the spine's re-strike. The
@@ -828,10 +847,78 @@ async function openSpine({ toyId, arrival = "picked", seed = [], onReady } = {})
   // instrument + making any prior keep stale (spec §7.4/§7.7). currentKeep is read live by that
   // closure, so it's safe that the control is assigned just below.
   const keep = createKeep({ onKeep: keepCurrent });
+
+  // The in-page agent host (issue #397) is assembled AFTER the engine loads (it needs the live
+  // worklet + the discovery wasm exports), but the spine — and thus `onReshapeSubmit` — is built
+  // now, before that. So the real reshape handler awaits this promise, resolved once the host is up
+  // (or to null if assembly fails / the engine never came). ONE host per spine session: the §6.4
+  // restart-honesty gate is session-scoped, so a fresh host per turn would re-arm the once/session
+  // line — createChatHost is called exactly once below.
+  let resolveHost;
+  const chatHostReady = new Promise((r) => {
+    resolveHost = r;
+  });
+
+  // Re-resolve the surface from the engine's CURRENT (post-swap) document — the structural
+  // value-sweep's fresh widget set (§4.1). An agent-built document has no surface-doc file, so it
+  // resolves to the default surface (buildSurface). Also refreshes the shell's currentSurface /
+  // currentInstrument so the board readout, Keep, and the next turn all build on the new instrument.
+  const resolveWidgetsFromEngine = () => {
+    const b = currentSpineEngine?.currentBundle();
+    if (!b?.docText) return null;
+    let doc;
+    try {
+      doc = JSON.parse(b.docText);
+    } catch {
+      return null;
+    }
+    const { surface } = resolveSurfaceOrDefault(doc, null, currentToy);
+    logSurfaceWarnings(currentToy, surface.warnings);
+    currentSurface = surface;
+    if (doc.instrument) currentInstrument = doc.instrument;
+    return surface.widgets;
+  };
+
+  // The ONE real reshape handler (spec §4/§5/§6): replaces spine.js's mock turn. Fires the live
+  // agent loop and routes its resolved envelope into the change-card (chat/reshape.js). One turn at
+  // a time — a network-bound loop; a double-submit while a turn is in flight is dropped.
+  const onReshapeSubmit = async (text, api) => {
+    if (api.turnInFlight()) return;
+    // Accept the turn INSTANTLY (spec §3.4 — controls stay live, the turn reads as taken at once):
+    // echo the user's line + raise the in-flight stripe synchronously, BEFORE awaiting the host, so
+    // the UI never looks frozen while the network loop spins up. The driver re-raises the stripe and
+    // lowers it in its finally; `pushUserLine: false` because the echo already landed here.
+    api.transcript.push({ role: "you", text });
+    api.setTurnInFlight(true);
+    const host = await chatHostReady;
+    if (!host) {
+      // Host never came up (load failed / assembly threw). Clear the stripe; the load branch spoke.
+      api.setTurnInFlight(false);
+      return;
+    }
+    await runReshapeTurn({
+      text,
+      api,
+      host,
+      engine: currentSpineEngine,
+      resolveWidgets: resolveWidgetsFromEngine,
+      currentWidgets: () => currentSurface?.widgets ?? [],
+      onWidgets: (widgets) => {
+        if (currentSurface) currentSurface = { ...currentSurface, widgets };
+      },
+      onTerminalFailure: (err) => {
+        console.error("[spine] reshape turn failed:", err);
+        api.chatReply({ text: RESHAPE_TERMINAL_FAIL_LINE });
+      },
+      pushUserLine: false,
+    });
+  };
+
   const spine = createSpine({
     arrival,
     seed,
     duck,
+    onReshapeSubmit,
     onReshapeCommit: () => currentKeep?.markDiverged(),
   });
   currentSpine = spine;
@@ -874,6 +961,19 @@ async function openSpine({ toyId, arrival = "picked", seed = [], onReady } = {})
     logSurfaceWarnings(id, surface.warnings);
     currentSurface = surface;
     currentSpineEngine = e;
+    // Assemble the in-page agent host against the live engine (issue #397) and release the reshape
+    // handler's gate. Best-effort: an assembly throw (or a later unreachable relay) collapses the
+    // reshape driver to §5.3; resolving to null makes a submit a clean no-op rather than a hang.
+    // TEST SEAM (issue #397 verification): a spec installs `globalThis.__REUBEN_CHAT_TRANSPORT__` (a
+    // transport `(messages) => Promise<AsyncIterable<event>>`) to drive the REAL onReshapeSubmit /
+    // generate loop deterministically — no key, no network — scripting the model's stream + tool-use
+    // per turn. Undefined in production, where createChatHost falls back to the hosted proxy.
+    createChatHost({ engine: e, endpoint: CHAT_ENDPOINT, transport: globalThis.__REUBEN_CHAT_TRANSPORT__ })
+      .then((host) => resolveHost(host))
+      .catch((err) => {
+        console.error("[spine] chat host assembly failed:", err);
+        resolveHost(null);
+      });
     // Render the controls into the node-identity board, then fire the load-time defaults AFTER
     // load() resolved (the render.mjs lifecycle) exactly as the player does.
     spine.board.update(surface.widgets, e);
@@ -892,11 +992,48 @@ async function openSpine({ toyId, arrival = "picked", seed = [], onReady } = {})
 
     const toy = TOYS.find((t) => t.id === id);
     onReady?.(spine, { id, title: toy?.title ?? currentInstrument, kind: toy?.kind });
+
+    // The describe → GENERATE turn (spec §2.4, issue #397): the user's words drive a REAL
+    // first-instrument generation. The scaffold loaded above gave an immediate playable bed; now the
+    // live agent reshapes it toward the description, streaming its plan into a change-card and landing
+    // the model's OWN sensory line — the honesty gate holds (it may only claim what it actually
+    // built), so there is no crafted "here's what it made" stub. `pushUserLine: false` because the
+    // describe text is already seeded as turn one (§2.4). A terminal failure here has NO prior sound
+    // to keep, so it lands back at the gallery (§5.3, firstCreationTerminalFailure) — not a chat line.
+    if (generate) {
+      const host = await chatHostReady;
+      if (token !== loadToken) return; // superseded while the host came up — drop the generate
+      if (host) {
+        await runReshapeTurn({
+          text: generate,
+          api: spine,
+          host,
+          engine: currentSpineEngine,
+          resolveWidgets: resolveWidgetsFromEngine,
+          currentWidgets: () => currentSurface?.widgets ?? [],
+          onWidgets: (widgets) => {
+            if (currentSurface) currentSurface = { ...currentSurface, widgets };
+          },
+          onTerminalFailure: (err) => {
+            // A scaffold (toyId, above) is already playing, so a failed generate KEEPS it (§5.3's
+            // "keep the prior sound") rather than bouncing to the gallery — the user stays in the
+            // spine with a playable bed and a warm nudge. The gallery-bounce (firstCreationTerminal-
+            // Failure) is reserved for a true nothing-playing first creation.
+            console.error("[spine] first-creation generate failed:", err);
+            spine.chatReply({ text: GENERATE_TERMINAL_FAIL_LINE });
+          },
+          pushUserLine: false,
+        });
+      }
+    }
   } catch (err) {
     if (token !== loadToken) return;
     // The full failure taxonomy is the ambiguity/failure ticket's (spec §5, #303); the engine
     // reason is NEVER shown to the user (spec §5.1). Log it, show a neutral lexicon-clean line.
     console.error("[spine] instrument load failed:", err);
+    // The engine never came up, so no agent host will either — release the reshape handler's gate to
+    // null so a submit is a clean no-op rather than an await that never settles (issue #397).
+    resolveHost(null);
     spine.transcript.push({
       role: "reuben",
       text: "Something went wrong starting the sound. Give it another try in a moment.",
@@ -933,30 +1070,23 @@ function pickToy(toy) {
 }
 
 // Describe-path → echo → build → play → land (spec §2.4): the user's words become their first
-// chat message immediately (`seed`, so the echo doesn't wait on the engine), reuben "builds" it,
-// it starts playing, then reuben closes the turn by naming what it made + inviting a next change
+// chat message immediately (`seed`, so the echo doesn't wait on the engine), the live agent BUILDS
+// it, it starts playing, then reuben closes the turn by naming what it made + inviting a next change
 // — symmetric with `pickToy`'s landing. Lands EXPANDED (arrival "made", spec §3.3): the user was
 // just talking, so the transcript stays open.
 //
-// SCOPE (issue #357): real text → NEW-instrument generation needs the agent host wired
-// end-to-end (#354's agent-host.mjs + #356's system prompt + #358's change-card renderer) — none
-// of that is wired into the browser yet (this ticket wires the SCREEN + the launcher→player
-// continuity, not the agent). So this is a SEAM: it "builds" by loading the default Toy (today's
-// closest thing to a first playable instrument). The landing line MUST NOT claim it built what
-// the user described (the honesty gate) — until the agent lands, it can't. So it names what's
-// actually playing and frames it as a starting point, kind-aware and lexicon-clean. Swap the body
-// of this function for a real agent call once the loop is wired in.
+// WIRED (issue #397): the seam #350 left is closed — the describe text is now a REAL first-instrument
+// generation turn. `openSpine` loads DEFAULT_TOY as an immediate playable scaffold, then runs the
+// live agent (`generate: text`) to reshape it toward the description, streaming the plan into a
+// change-card and landing the MODEL's own sensory line. The honesty gate is now the model's to keep
+// (the system prompt, #356), not a crafted stub: it may only claim what it actually built. A terminal
+// failure lands back at the gallery (§5.3), because a first creation has no prior sound to keep.
 function submitDescribe(text) {
   return openSpine({
     toyId: DEFAULT_TOY,
     arrival: "made",
     seed: [{ role: "you", text }],
-    onReady: (spine, { title, kind }) => {
-      spine.transcript.push({
-        role: "reuben",
-        text: `To get you started, ${greetingLead(title, kind)}. Tell me what to change.`,
-      });
-    },
+    generate: text,
   });
 }
 
