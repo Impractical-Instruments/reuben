@@ -1,30 +1,35 @@
-// live-eval.mjs — NON-BLOCKING live smoke of the streaming loop against real Sonnet-5 (issue #354),
-// extended (issue #356) into a small live BEHAVIORAL battery — the one place any of #356's
-// Verification criteria can be checked against what a real model actually does, rather than a
-// scripted transport we authored ourselves (js/agent-policy-eval.test.mjs, the merge-gating half,
-// can only prove the plumbing carries the policy — it cannot prove Sonnet-5 obeys it).
+// live-eval.mjs — NON-BLOCKING live smoke of the streaming loop against real Sonnet-5 (issue #354).
 //
-// This is NOT a merge gate. It is run by the self-gated `web-chat-live-eval` CI job, which skips
-// green when `secrets.ANTHROPIC_API_KEY` is absent (mirroring the `deploy-web` job's shape), and
-// is deliberately excluded from `ci-passed`'s needs — a real regression here should still show
-// red in the job's own log, but never blocks a merge on live-model variance.
+// This is the ONE CI job that spends real Anthropic tokens (ADR-0054 §5), so it holds ONLY what a
+// mock cannot stand in for: the real relay → Sonnet-5 → SSE → in-page tool layer path, driven
+// end-to-end. Everything DETERMINISTIC is already covered — with no tokens — by the mock-transport
+// tests in the `web` job, and re-checking it against a live model buys nothing but spend:
+//   - the loop's tool dispatch + incremental streaming — js/agent-host.test.mjs
+//   - send-vs-swap routing + verbatim chip posting     — js/agent-policy-eval.test.mjs (ROUTING_BATTERY)
+//   - the once-per-session restart-honesty latch (§6.4) — js/agent-host.test.mjs ("restart-honesty
+//     gating"): it is a plain closure flag in agent-host.mjs (`restartHonestyGiven`), so "at most one
+//     line per session" holds BY CONSTRUCTION and is proven there exactly-once, ordered, plus the
+//     install-into-silence edge — a live ≤1 re-check is structurally incapable of adding signal.
+// So this file was slimmed from a four-turn behavioral battery down to the single turn that
+// genuinely requires a live model. Do NOT re-add turns to "restore coverage" — the coverage lives
+// in the mock tests above; extra live turns only raise the token bill.
 //
-// Session shape: ONE host (one conversation) carries three turns, so register/restart state is
-// genuinely session-scoped exactly like production:
-//   1. an explicit tool-use smoke (unchanged from #354) — proves the plumbing still carries a turn.
-//   2. a plain parameter-style ask ("make it brighter") — should read as a live, no-restart update.
-//   3. a structural ask ("add a delay") — should restart, and AT MOST ONE turn in the whole
-//      session may carry the restart-honesty line (§6.4), whichever turn actually first restarts
-//      already-playing sound.
-// Hard assertions: the loop resolves, streams, and drives at least one tool through the layer; and
-// the once-per-session restart-honesty gate (§6.4) — at most one turn carries the line. Soft (logged,
-// not asserted): the forbidden-word scan (§1) — a leak is WARNED, never failed, since real-model
-// language hardening is deferred to #362's acceptance bar (the hard §1 gate lives at the DOM,
-// tripsLexicon); plus which tool ran per turn and the plan text itself, for the human tone read-through.
+// NOT a merge gate. Run by the self-gated `web-chat-live-eval` CI job, which skips green when
+// `secrets.ANTHROPIC_API_KEY` is absent (mirroring `deploy-web`), and is excluded from `ci-passed`'s
+// needs — a regression here shows red in the job's own log but never blocks a merge on live variance.
+//
+// The single turn: one explicit ask drives the real model through the whole loop — read → send →
+// swap → one-sentence reply (~4 rounds). Because the loop re-sends the accumulated history +
+// tool_result blocks on every round, this one turn also proves the real API accepts follow-up
+// requests carrying tool results (the "second request" failure relay.mjs' thinking note warns of).
+// Hard assertions: the turn resolves, streams tokens, and drives at least one tool through the layer.
+// Soft (logged, never fails): the forbidden-word scan (§1) — a real-model word-choice leak is WARNED,
+// not failed, since the HARD lexicon gate lives at the DOM (tripsLexicon) and language hardening is
+// deferred to #362. It stays because a live model's narration is the one thing a mock can't observe.
 //
 // Run: `ANTHROPIC_API_KEY=… node js/live-eval.mjs` (from crates/reuben-web).
-// Exit 0 = pass or skip (no key); exit 1 = a genuine live-loop failure or the restart-honesty gate
-// over-firing (a forbidden-word leak is a logged warning, not an exit-1 condition).
+// Exit 0 = pass or skip (no key); exit 1 = a genuine live-loop failure (a forbidden-word leak is a
+// logged warning, not an exit-1 condition).
 
 import { readFileSync } from "node:fs";
 
@@ -114,66 +119,42 @@ async function main() {
 
   // The asserted path is get_current_instrument → send → swap → one-sentence reply (~4 rounds); 6
   // leaves slack for model variance while capping the loop's round count (and thus its output-token
-  // bill — output is ~5x input) well under the old 10. Hitting the cap still resolves the turn
-  // (agent-host.mjs), so the lenient assertions below hold either way.
+  // bill — output is ~5x input). Hitting the cap still resolves the turn (agent-host.mjs), so the
+  // lenient assertions below hold either way.
   const host = createAgentHost({ toolLayer, transport, transcript, maxRounds: 6 });
 
-  const turns = [];
-  async function runTurn(label, text) {
-    const resolved = await host.send(text);
-    const toolNames = resolved.toolLog.map((t) => t.name);
-    console.log(`[live-eval] [${label}] model=${model} status=${resolved.status} tools=[${toolNames.join(", ")}]`);
-    console.log(`[live-eval] [${label}] plan: ${resolved.plan.slice(0, 300)}`);
-    if (resolved.restartHonesty) console.log(`[live-eval] [${label}] restartHonesty: "${resolved.restartHonesty}"`);
-    turns.push({ label, resolved });
-    return resolved;
-  }
-
-  // Turn 1: an explicit ask that should drive tool-use even without the #356 authoring policy
-  // (the original #354 plumbing smoke — kept so a regression in the loop itself still shows here).
-  const smoke = await runTurn(
-    "plumbing-smoke",
+  // The single live turn: an explicit ask that drives the real model through the whole loop — read,
+  // audition via send, make it permanent via swap, then narrate in one sentence. This is the ONE
+  // thing a mock can't stand in for. The loop re-sends the accumulated history + tool_result blocks
+  // on every round, so this turn also proves the real API accepts follow-up requests with tool
+  // results — no separate multi-turn session is needed to exercise that.
+  const smoke = await host.send(
     "You have tools to inspect and reshape a live sound. Call get_current_instrument to read " +
       "what's playing, then use send to audition a brighter cutoff, then swap to make a small " +
       "change permanent. Do it now with the tools, then tell me in one sentence.",
   );
+  const toolNames = smoke.toolLog.map((t) => t.name);
+  console.log(`[live-eval] model=${model} status=${smoke.status} tools=[${toolNames.join(", ")}]`);
+  console.log(`[live-eval] plan: ${smoke.plan.slice(0, 300)}`);
+
   assert(smoke.status === "resolved", "the live turn must resolve");
   assert(transcript.deltas.length > 0, "the live turn must stream tokens");
   assert(smoke.toolLog.length > 0, "the live loop must drive at least one tool through the layer");
 
-  // Turn 2: a plain parameter-style ask — §6.1's routing policy, unprompted (no tool named).
-  await runTurn("parameter-ask", "make it a bit brighter");
-
-  // Turn 3: a structural ask — should restart; exercises §6.4's honesty-line gate.
-  await runTurn("structural-ask", "add a slow, wobbly delay");
-
-  // Soft (a): scan every turn's plan for a forbidden engine word (§1) across the session.
-  const leaks = turns.flatMap(({ label, resolved }) =>
-    scanForbiddenTerms(resolved.plan).map((term) => `${label}: "${term}" in "${resolved.plan.slice(0, 200)}"`),
-  );
-  // Forbidden-word leaks are a WARNING, not a failure. The real model's narration is a
-  // best-effort, probabilistic surface; the HARD lexicon gate lives at the DOM (tripsLexicon).
-  // Real-model language hardening is deferred to #362's acceptance bar, so we surface leaks
-  // loudly in the log (a regression stays visible) but never fail the job on live-model variance.
+  // Soft (logged, never fails): scan the real model's plan for engine vocabulary (§1). A leak is a
+  // WARNING, not a failure — the HARD lexicon gate lives at the DOM (tripsLexicon) and real-model
+  // language hardening is deferred to #362's acceptance bar. Kept because a live model's word choice
+  // is the one thing a mock can't observe; everything deterministic is owned by the mock tests.
+  const leaks = scanForbiddenTerms(smoke.plan);
   if (leaks.length > 0) {
     console.warn(
-      `[live-eval] WARN: forbidden word(s) leaked to the user — non-fatal, language hardening deferred to #362:\n${leaks.join("\n")}`,
+      `[live-eval] WARN: forbidden word(s) leaked to the user — non-fatal, language hardening ` +
+        `deferred to #362: ${leaks.join(", ")} in "${smoke.plan.slice(0, 200)}"`,
     );
+  } else {
+    console.log("[live-eval] forbidden-word scan: clean");
   }
 
-  // Hard assertion (e): the once-per-session restart-honesty gate — at most one turn carries it.
-  const restartTurns = turns.filter(({ resolved }) => resolved.restartHonesty).map(({ label }) => label);
-  assert(
-    restartTurns.length <= 1,
-    `more than one turn carried the restart-honesty line this session: ${restartTurns.join(", ")}`,
-  );
-
-  console.log(
-    leaks.length === 0
-      ? `[live-eval] forbidden-word scan: clean across ${turns.length} turns`
-      : `[live-eval] forbidden-word scan: ${leaks.length} leak(s) across ${turns.length} turns (warning only)`,
-  );
-  console.log(`[live-eval] restart-honesty line fired on: ${restartTurns.join(", ") || "(no structural restart this session)"}`);
   console.log("[live-eval] PASS");
 }
 
