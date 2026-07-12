@@ -63,6 +63,31 @@ test("with a key: declares system + tools + model + stream, and passes the SSE t
   // Turning it on is #356's tuning call (ADR-0054 §4). A regression that drops this reds here
   // before it ever reaches the (non-blocking) live smoke.
   assert.deepStrictEqual(sent.thinking, { type: "disabled" });
+  // A top-level cache_control breakpoint realizes ADR-0054 §3's "caches perfectly": the tools +
+  // system prefix is re-read at ~0.1x on every round of the reshape loop instead of re-billed in
+  // full. Regressing this silently re-inflates the per-turn token bill (browser loop AND CI's live
+  // smoke), so it reds here before it costs anything.
+  assert.deepStrictEqual(sent.cache_control, { type: "ephemeral" });
+});
+
+test("cacheControl: null omits the breakpoint (A/B / disable escape hatch)", async () => {
+  let captured;
+  const fakeFetch = async (url, init) => {
+    captured = { init };
+    return new Response('data: {"type":"message_stop"}\n\n', {
+      status: 200,
+      headers: { "content-type": "text/event-stream" },
+    });
+  };
+  const relay = createRelay({
+    apiKey: "sk-test",
+    systemPrompt: "s",
+    tools: TOOLS,
+    cacheControl: null,
+    fetchImpl: fakeFetch,
+  });
+  await relay({ messages: [{ role: "user", content: "hi" }] });
+  assert.ok(!("cache_control" in JSON.parse(captured.init.body)));
 });
 
 test("an upstream network failure → 502, never throws (ADR-0054 §6)", async () => {

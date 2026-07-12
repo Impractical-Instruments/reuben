@@ -73,7 +73,17 @@ async function main() {
   const toolLayer = createToolLayer({ engine, introspect: fakeIntrospect });
   const transcript = stubTranscript();
 
-  const relay = createRelay({ apiKey, systemPrompt: SYSTEM_PROMPT_PLACEHOLDER, tools: artifact.tools, model });
+  // Cost caps for the non-blocking smoke (this job is billed to us): `maxTokens` is a plumbing
+  // smoke, not a real reshape, so 2048 is ample for a tool call + one sentence while bounding a
+  // runaway generation — the production default (8192) stays put in relay.mjs. Caching (relay.mjs'
+  // cacheControl default) makes the re-sent prefix cheap across rounds.
+  const relay = createRelay({
+    apiKey,
+    systemPrompt: SYSTEM_PROMPT_PLACEHOLDER,
+    tools: artifact.tools,
+    model,
+    maxTokens: 2048,
+  });
   const transport = async (messages) => {
     const res = await relay({ messages });
     if (!res.ok) {
@@ -86,7 +96,11 @@ async function main() {
     return sseEvents(res);
   };
 
-  const host = createAgentHost({ toolLayer, transport, transcript, maxRounds: 10 });
+  // The asserted path is get_current_instrument → send → swap → one-sentence reply (~4 rounds); 6
+  // leaves slack for model variance while capping the loop's round count (and thus its output-token
+  // bill — output is ~5x input) well under the old 10. Hitting the cap still resolves the turn
+  // (agent-host.mjs), so the lenient assertions below hold either way.
+  const host = createAgentHost({ toolLayer, transport, transcript, maxRounds: 6 });
 
   // An explicit ask that should drive tool-use even without the #356 authoring policy.
   const resolved = await host.send(
