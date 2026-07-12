@@ -27,5 +27,11 @@ pub mod decode;
 pub mod resolver;
 pub mod shell;
 
+// The web-chat agent tool-schema artifact generator (issue #354, ADR-0054 §3). HOST-ONLY: it is
+// consumed off-line by the proxy + the JS layer via the committed `js/tool-schemas.generated.json`,
+// never called from the worklet, so it stays out of the wasm payload (issue #227 mobile budget).
+#[cfg(not(target_arch = "wasm32"))]
+pub mod tool_schema;
+
 #[cfg(target_arch = "wasm32")]
 mod bridge;
