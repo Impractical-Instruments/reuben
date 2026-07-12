@@ -75,6 +75,16 @@ function nextTurnId() {
 }
 
 /**
+ * F's CONTENT for D's reserved `restartHonesty` slot (issue #356, spec §6.4): the one light,
+ * positive framing line the FIRST structural restart of an already-playing sound gets in a
+ * session — "wordless on every repeat" after. `agent-host.mjs` is the session-scoped gate (once
+ * per `createAgentHost` instance, and only when a swap's `restarted` flag says something was
+ * genuinely already playing — js/tools.mjs). Deliberately register-neutral (no jargon either
+ * pairing needs to swap out) so it never needs to branch on §8's plain/theory-aware state.
+ */
+export const RESTART_HONESTY_LINE = "Here's the new version, from the top.";
+
+/**
  * A user turn: plain text, already resolved (the human's input needs no streaming/diff).
  * @param {string} text
  * @returns {AgentTurn}
@@ -103,6 +113,7 @@ export function userTurn(text) {
  *   appendPlan: (text: string) => void,
  *   recordTool: (inv: ToolInvocation) => void,
  *   setDiff: (diff: StructuralDiff) => void,
+ *   setRestartHonesty: (line: string) => void,
  *   resolve: () => AgentTurn,
  * }}
  */
@@ -132,6 +143,11 @@ export function assistantTurn() {
     // Attach the resolved structural diff from a swap (spec §4.6). Last swap in a turn wins.
     setDiff(diff) {
       turn.diff = diff;
+    },
+    // Attach F's restart-honesty line (spec §6.4) — set by agent-host.mjs at most once per
+    // session, only on a genuine first restart of already-playing sound.
+    setRestartHonesty(line) {
+      turn.restartHonesty = line;
     },
     // thinking → resolved-in-place (§4.2). Returns the frozen turn for the transcript.
     resolve() {

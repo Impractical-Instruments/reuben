@@ -232,3 +232,103 @@ test("streaming renders INCREMENTALLY — multiple deltas, not one final blob (�
   );
   assert.strictEqual(resolved.plan, tokens.join(""));
 });
+
+// --- restart-honesty gating (issue #356, spec §6.4) --------------------------------------
+
+test("the FIRST genuine restart of already-playing sound in a session carries F's line; the second does not (§6.4)", async () => {
+  // Bundle starts loaded (BEFORE_DOC): every swap below restarts an ALREADY-PLAYING sound, so
+  // `restarted` is true both times — only the ONCE-PER-SESSION gate should tell them apart.
+  const engine = makeEngine({ bundle: bundleOf(BEFORE_DOC) });
+  const toolLayer = createToolLayer({ engine, introspect: makeIntrospect() });
+
+  const swapRound = (id, doc) => [
+    msgStart,
+    textStart(0),
+    textDelta(0, "Updating."),
+    blockStop(0),
+    toolStartInline(1, id, "swap", { document: doc }),
+    blockStop(1),
+    stopReason("tool_use"),
+    msgStop,
+  ];
+  const landRound = [msgStart, textStart(0), textDelta(0, "Done."), blockStop(0), stopReason("end_turn"), msgStop];
+
+  // One host = one session (agent-host.mjs's `restartHonestyGiven` closure). Two `send()` calls
+  // on the SAME instance, each with a structural swap that genuinely restarts playing sound.
+  const host = createAgentHost({
+    toolLayer,
+    transport: mockTransport([swapRound("tu-1", BEFORE_DOC), landRound, swapRound("tu-2", AFTER_DOC), landRound]),
+    transcript: stubTranscript(),
+  });
+
+  const firstTurn = await host.send("bring back the old layer");
+  assert.strictEqual(
+    firstTurn.restartHonesty,
+    "Here's the new version, from the top.",
+    "the session's first genuine restart carries the line",
+  );
+
+  const secondTurn = await host.send("add the layer again");
+  assert.strictEqual(secondTurn.restartHonesty, null, "the session's second restart stays wordless (§6.4)");
+});
+
+// Unlike `makeEngine` (a STATIC fake — `currentBundle()` never reflects a prior `loadBundle`,
+// fine for the single-swap-per-test cases above), this scenario needs the SECOND swap to see the
+// FIRST swap's install — so this local fake actually tracks state, mirroring the real engine.
+function makeStatefulEngine({ bundle = null, contextState = "running", hasNode = true } = {}) {
+  const calls = { send: [], loadBundle: [] };
+  let current = bundle;
+  return {
+    context: { state: contextState },
+    node: hasNode ? {} : null,
+    send(address, args) {
+      calls.send.push({ address, args });
+    },
+    async loadBundle(arg) {
+      calls.loadBundle.push(arg);
+      current = { docText: arg.docText, resources: arg.resources ?? [] };
+    },
+    currentBundle() {
+      return current;
+    },
+    _calls: calls,
+  };
+}
+
+test("a first install into silence never carries the line, and doesn't spend the once-per-session slot", async () => {
+  const engine = makeStatefulEngine({ bundle: null }); // nothing loaded yet
+  const toolLayer = createToolLayer({ engine, introspect: makeIntrospect() });
+
+  const swapRound = (id, doc) => [
+    msgStart,
+    textStart(0),
+    textDelta(0, "Building."),
+    blockStop(0),
+    toolStartInline(1, id, "swap", { document: doc }),
+    blockStop(1),
+    stopReason("tool_use"),
+    msgStop,
+  ];
+  const landRound = [msgStart, textStart(0), textDelta(0, "Ready."), blockStop(0), stopReason("end_turn"), msgStop];
+
+  const host = createAgentHost({
+    toolLayer,
+    transport: mockTransport([
+      swapRound("tu-a", BEFORE_DOC), // first creation: nothing was sounding -> no restart to be honest about
+      landRound,
+      swapRound("tu-b", AFTER_DOC), // NOW something is playing -> this IS the session's first restart
+      landRound,
+    ]),
+    transcript: stubTranscript(),
+  });
+
+  const created = await host.send("make me a pad");
+  assert.strictEqual(created.restartHonesty, null, "first install into silence carries no line (§6.4)");
+
+  const reshaped = await host.send("add a layer");
+  assert.strictEqual(
+    reshaped.restartHonesty,
+    "Here's the new version, from the top.",
+    "the slot was NOT spent by the silent first install, so this genuine restart still gets it",
+  );
+});

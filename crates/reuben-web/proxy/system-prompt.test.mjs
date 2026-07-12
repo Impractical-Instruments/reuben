@@ -1,0 +1,158 @@
+// Unit tests for the authoring-policy system prompt (issue #356) — a PROMPT LINT, not a model
+// eval. This file cannot prove a live model obeys the prompt (there is no live LLM access on the
+// merge-gating path); it proves the prompt TEXT actually states every rule #356's scope commits to,
+// so a future edit can't silently drop a policy clause. Behavioral proof against a real model is
+// `js/live-eval.mjs` (non-blocking, self-gated on ANTHROPIC_API_KEY); behavioral proof against the
+// REAL loop/tool-layer/turn-envelope over a scripted mock model is `js/agent-policy-eval.test.mjs`.
+//
+// Run: `cd crates/reuben-web && node --test proxy/system-prompt.test.mjs`
+
+import test from "node:test";
+import assert from "node:assert";
+
+import { SYSTEM_PROMPT, FORBIDDEN_TERMS, PLAIN_THEORY_PAIRS, scanForbiddenTerms } from "./system-prompt.mjs";
+import { RESTART_HONESTY_LINE } from "../js/agent-turn.mjs";
+
+test("the prompt is non-empty and self-identifies the assistant", () => {
+  assert.strictEqual(typeof SYSTEM_PROMPT, "string");
+  assert.ok(SYSTEM_PROMPT.length > 200, "a bare placeholder is no longer acceptable (issue #356)");
+  assert.match(SYSTEM_PROMPT, /reuben/i);
+});
+
+test("every forbidden term (spec §1) is explicitly named as forbidden in the prompt", () => {
+  for (const term of FORBIDDEN_TERMS) {
+    assert.ok(
+      SYSTEM_PROMPT.toLowerCase().includes(term.toLowerCase()),
+      `the prompt must instruct against "${term}"`,
+    );
+  }
+});
+
+test("the prompt states the never-say rule is about what reaches the USER, not the agent's own reasoning", () => {
+  assert.match(SYSTEM_PROMPT, /never say/i);
+  assert.match(SYSTEM_PROMPT, /reach(es)? the (person|user)/i);
+});
+
+test("the prompt carries every §1.2 plain/theory-aware pair", () => {
+  for (const pair of PLAIN_THEORY_PAIRS) {
+    assert.ok(SYSTEM_PROMPT.includes(pair.plain), `missing plain term for ${pair.dimension}`);
+    assert.ok(SYSTEM_PROMPT.includes(pair.theory), `missing theory-aware term for ${pair.dimension}`);
+  }
+});
+
+test("the prompt states the mirror rule (§1.2)", () => {
+  assert.match(SYSTEM_PROMPT, /mirror/i);
+});
+
+test("the prompt states the register ratchet: default plain, bump on unprompted theory vocabulary, never demote, never ask (§8)", () => {
+  assert.match(SYSTEM_PROMPT, /plain.*(default|start)/is);
+  assert.match(SYSTEM_PROMPT, /unprompted/i);
+  assert.match(SYSTEM_PROMPT, /never demote/i);
+  assert.match(SYSTEM_PROMPT, /never ask/i);
+  assert.match(SYSTEM_PROMPT, /echo.*doesn.t count|doesn.t count/is);
+  assert.match(SYSTEM_PROMPT, /session/i);
+});
+
+test("the prompt states send-vs-swap routing without naming send/swap to the user (§6.1)", () => {
+  // The routing guidance must exist...
+  assert.match(SYSTEM_PROMPT, /restart/i);
+  assert.match(SYSTEM_PROMPT, /no gap/i);
+  // ...but the "how to talk about it" framing must say the split is invisible, never explained.
+  assert.match(SYSTEM_PROMPT, /never (tell|explain).{0,80}(which|took|path)/is);
+});
+
+test("the prompt instructs validating a document before installing it (§5.1 case 3 habit)", () => {
+  assert.match(SYSTEM_PROMPT, /valid.*before/is);
+});
+
+test("the prompt describes the streaming-plan-then-landing narration contract (§4.2/§4.5)", () => {
+  assert.match(SYSTEM_PROMPT, /before.{0,40}(your )?tool/is);
+  assert.match(SYSTEM_PROMPT, /sensory/i);
+});
+
+test("the prompt states that every STREAMED sentence is user-facing verbatim — no tool-narration, even in working-notes asides (§4.2; host-level counterpart #385)", () => {
+  // The host appends all streamed model text to the user-facing plan (spec §4.2), so the model's
+  // inter-tool reasoning asides ("let me check the shape…") reach the user just like its final
+  // caption. The prompt must say so and forbid narrating tool mechanics / leaking engine words in
+  // those asides. Deterministic host-level enforcement is #385; this lint only guards the prompt
+  // rule from silently regressing.
+  assert.match(SYSTEM_PROMPT, /shown to the person verbatim/i);
+  assert.match(SYSTEM_PROMPT, /no backstage channel/i);
+  assert.match(SYSTEM_PROMPT, /aside/i);
+});
+
+test("the prompt covers both turn-one shapes: describe-path echo/build/land and gallery-pick chips-verbatim (§2.3/§2.4)", () => {
+  assert.match(SYSTEM_PROMPT, /verbatim/i);
+  assert.match(SYSTEM_PROMPT, /next/i);
+});
+
+test("the prompt names the automatic, once-only first-restart framing without asking the model to author it per-turn (§6.4)", () => {
+  assert.match(SYSTEM_PROMPT, /first.{0,20}restart|restart.{0,20}first/is);
+  assert.match(SYSTEM_PROMPT, /automatic/i);
+});
+
+// The §1 forbidden-word gate is the epic's crown jewel: NOTHING on the never-say list may ever reach
+// the user, in any inflection. The matcher must (a) flag every stem plus every inflection English
+// actually produces — including the e-final forms the old `stem + optional {s,es,ing,ed}` regex
+// silently under-blocked ("wire"→"wiring"/"wired", "voice"→"voicing"/"voiced") and the gerund
+// consonant-doubling forms ("swap"→"swapping") — and (b) NEVER trip on an unrelated word that merely
+// shares a stem's leading letters ("right"→rig, "planet"→plan, "portamento"→port, "wireless"→wire).
+const MUST_FLAG = [
+  "swap", "swaps", "swapping", "swapped",
+  "port", "ports", "porting", "ported",
+  "patch", "patches", "patched", "patching",
+  "wire", "wires", "wired", "wiring",
+  "voice", "voices", "voiced", "voicing",
+  "surface", "surfaces", "surfaced", "surfacing",
+  "rig", "rigs", "rigged", "rigging",
+  "plan", "plans", "planned", "planning",
+  "voicer", "voicers",
+  "node", "nodes",
+  "param", "params",
+  "operator",
+];
+
+const MUST_NOT_FLAG = [
+  "right", "bright", "planet", "planetarium", "portamento", "rigid", "voicemail", "wireless",
+  "the right amount", "the whole planet", "portamento glide",
+];
+
+// Sanity-check that the matrix anchors on stems that are ACTUALLY forbidden (guards against a future
+// list edit quietly making a MUST_FLAG case vacuous).
+test("forbidden-word matrix anchors on stems that are genuinely in FORBIDDEN_TERMS", () => {
+  for (const stem of ["wire", "voice", "surface", "patch", "port", "swap", "rig", "plan", "param", "node", "voicer", "operator"]) {
+    assert.ok(FORBIDDEN_TERMS.includes(stem), `matrix anchor "${stem}" is missing from FORBIDDEN_TERMS`);
+  }
+});
+
+for (const s of MUST_FLAG) {
+  test(`scanForbiddenTerms (§1 gate) FLAGS the inflection "${s}"`, () => {
+    assert.ok(scanForbiddenTerms(s).length > 0, `"${s}" must be caught by the forbidden-word gate`);
+  });
+}
+
+for (const s of MUST_NOT_FLAG) {
+  test(`scanForbiddenTerms (§1 gate) does NOT flag the clean phrase "${s}"`, () => {
+    assert.deepStrictEqual(scanForbiddenTerms(s), [], `false positive on: "${s}"`);
+  });
+}
+
+test("scanForbiddenTerms returns the matched stems in FORBIDDEN_TERMS order, inside real sentences", () => {
+  assert.deepStrictEqual(scanForbiddenTerms("swapping the sound"), ["swap"]);
+  assert.deepStrictEqual(scanForbiddenTerms("two ports"), ["port"]);
+  assert.deepStrictEqual(scanForbiddenTerms("patched it"), ["patch"]);
+  assert.deepStrictEqual(scanForbiddenTerms("wired up the voicing"), ["wire", "voice"]);
+  assert.deepStrictEqual(scanForbiddenTerms("a bare operator here"), ["operator"]);
+  assert.deepStrictEqual(scanForbiddenTerms("the node and the wire"), ["wire", "node"]);
+});
+
+test("RESTART_HONESTY_LINE (agent-turn.mjs) is non-empty and jargon-free — safe at either register (§6.4 'inherits register')", () => {
+  assert.strictEqual(typeof RESTART_HONESTY_LINE, "string");
+  assert.ok(RESTART_HONESTY_LINE.length > 0);
+  for (const term of FORBIDDEN_TERMS) {
+    assert.ok(
+      !RESTART_HONESTY_LINE.toLowerCase().includes(term.toLowerCase()),
+      `the restart-honesty line must not contain the forbidden term "${term}"`,
+    );
+  }
+});

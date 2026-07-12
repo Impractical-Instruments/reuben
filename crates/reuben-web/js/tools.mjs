@@ -180,7 +180,22 @@ export function createToolLayer({ engine, introspect }) {
       // survived: 0 ALWAYS (restart-swap; ADR-0052 §2). `d` is {added, removed, changed}; no
       // state_reset key — degenerate on web, deliberately not computed (#353) — the web diff IS
       // the structural node-identity diff.
-      return { ...report, content_hash: newHash, diff: { survived: 0, ...d } };
+      //
+      // `restarted`: true iff a bundle was ALREADY loaded before this install (beforeText
+      // non-null) AND audio was actually running — a genuine SONIC restart, distinct both from a
+      // first install into silence and from a change made while paused. Spec §6.4 scopes the
+      // once-per-session re-strike line to "only when the instrument is actively playing": a user
+      // who suspends the AudioContext (nothing sounding) with a bundle still loaded and then makes
+      // a structural change has no restart to be honest about. This is the signal agent-host.mjs
+      // (#356) uses to gate that line; the AudioContext state is the same "is anything sounding?"
+      // handle `reachable`/engine_status already read.
+      const playing = engine.context?.state === "running";
+      return {
+        ...report,
+        content_hash: newHash,
+        diff: { survived: 0, ...d },
+        restarted: beforeText !== null && playing,
+      };
     },
 
     /**

@@ -21,7 +21,7 @@
 // from — NOT to the user (failure UX is M2). A `{ok:false}` validate/swap is the tool WORKING and
 // flows back as an ordinary result.
 
-import { userTurn, assistantTurn, stubTranscript } from "./agent-turn.mjs";
+import { userTurn, assistantTurn, stubTranscript, RESTART_HONESTY_LINE } from "./agent-turn.mjs";
 
 /**
  * Parse a proxied SSE Response body (ADR-0054 §2's straight-through stream) into the Anthropic
@@ -171,6 +171,10 @@ async function consumeStream(stream, builder, transcript) {
  */
 export function createAgentHost({ toolLayer, transport, transcript = stubTranscript(), maxRounds = 8 }) {
   const messages = [];
+  // Session-scoped gate for spec §6.4's first-run re-strike line: one AgentHost instance IS one
+  // session, so a plain closure flag is the whole mechanism — flips true the first time a swap
+  // genuinely restarts already-playing sound (js/tools.mjs `restarted`), stays wordless after.
+  let restartHonestyGiven = false;
 
   /**
    * Run one user turn to resolution: stream, dispatch tools, feed results, repeat, resolve.
@@ -209,6 +213,14 @@ export function createAgentHost({ toolLayer, transport, transcript = stubTranscr
           inv.result = result;
           // A successful swap carries the structural diff the card renders (spec §4.6).
           if (tu.name === "swap" && result && result.diff) builder.setDiff(result.diff);
+          // F's content for D's reserved slot (spec §6.4): the FIRST genuine restart of
+          // already-playing sound this session gets one light framing line; every one after is
+          // wordless. `restarted` (js/tools.mjs) is false for a first install into silence
+          // (nothing to be honest about, §6.4's consequence), so that case never trips this.
+          if (tu.name === "swap" && result && result.restarted && !restartHonestyGiven) {
+            builder.setRestartHonesty(RESTART_HONESTY_LINE);
+            restartHonestyGiven = true;
+          }
           toolResults.push({
             type: "tool_result",
             tool_use_id: tu.id,

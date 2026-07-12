@@ -100,7 +100,10 @@ pub fn generate() -> Value {
             "name": "validate",
             "description": "Validate an instrument document (load + instantiate) and return a \
                             report of errors and warnings. A failing validation is a SUCCESSFUL \
-                            result carrying `{ok:false, errors, warnings}` — not an error.",
+                            result carrying `{ok:false, errors, warnings}` — not an error. Call \
+                            this on a proposed document BEFORE `swap`: catch problems while the \
+                            currently-installed sound is still playing, and repair silently \
+                            within your turn rather than swapping a broken document.",
             "input_schema": {
                 "type": "object",
                 "properties": { "document": document_input("to validate") },
@@ -113,7 +116,10 @@ pub fn generate() -> Value {
             "description": "Dispatch a batch of control messages to audition a change on the live \
                             engine WITHOUT reshaping the document (ADR-0048 §5). Ephemeral: these \
                             values live in render state only and are clobbered at the next swap. \
-                            At least one message is required.",
+                            At least one message is required. PREFER THIS over `swap` whenever the \
+                            request only needs new VALUES on nodes/ports that already exist — it \
+                            updates live, with no gap and no restart. Reach for `swap` only when \
+                            the change needs a different graph shape (add/remove/rewire).",
             "input_schema": {
                 "type": "object",
                 "properties": {
@@ -147,10 +153,15 @@ pub fn generate() -> Value {
             "name": "swap",
             "description": "Install an instrument document BY VALUE as the playing engine (ADR-0052 \
                             §2). This is a restart-swap: every node is rebuilt cold, so the diff \
-                            reports survived:0. Returns the validation report + content_hash + (on \
-                            success) a structural node-identity diff. An `ok:false` report installs \
-                            nothing and the old sound keeps playing. Pass `expect` (a content_hash) \
-                            to guard against a stale swap — a mismatch returns a conflict, no install.",
+                            reports survived:0 and the currently-playing sound audibly restarts. \
+                            RESERVE THIS for changes that need a different graph shape \
+                            (add/remove/rewire a node) — route a same-shape, values-only change \
+                            through `send` instead, which stays live with no restart. Call \
+                            `validate` on the document first and fix what it flags before calling \
+                            this. Returns the validation report + content_hash + (on success) a \
+                            structural node-identity diff. An `ok:false` report installs nothing and \
+                            the old sound keeps playing. Pass `expect` (a content_hash) to guard \
+                            against a stale swap — a mismatch returns a conflict, no install.",
             "input_schema": {
                 "type": "object",
                 "properties": {

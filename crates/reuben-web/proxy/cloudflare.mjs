@@ -11,7 +11,7 @@
 // escalation (Turnstile-class challenge, §5) are ready-for-human follow-ups (ADR-0054 §7).
 
 import { createRelay, MODEL_DEFAULT } from "./relay.mjs";
-import { SYSTEM_PROMPT_PLACEHOLDER } from "./system-prompt.mjs";
+import { SYSTEM_PROMPT } from "./system-prompt.mjs";
 // The generated tool-schema artifact (ADR-0054 §3) — declared to the model verbatim; the in-page
 // layer executes the same names. esbuild/wrangler bundles this JSON import at deploy time.
 import artifact from "../js/tool-schemas.generated.json" with { type: "json" };
@@ -42,7 +42,7 @@ export async function onRequestPost(context) {
 
   const relay = createRelay({
     apiKey: env.ANTHROPIC_API_KEY,
-    systemPrompt: SYSTEM_PROMPT_PLACEHOLDER,
+    systemPrompt: SYSTEM_PROMPT,
     tools: artifact.tools,
     model: env.REUBEN_CHAT_MODEL || MODEL_DEFAULT,
   });

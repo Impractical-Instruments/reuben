@@ -17,7 +17,7 @@ execute in the page against the live worklet (`js/tools.mjs`, `js/agent-host.mjs
 | --- | --- |
 | `relay.mjs` | **Portable core.** `createRelay({ apiKey, systemPrompt, tools, model, fetchImpl })` → a handler that takes the parsed browser body `{messages}` and returns a streaming `Response`. Runtime-agnostic; unit-tested against a mock upstream (`relay.test.mjs`). |
 | `cloudflare.mjs` | **Cloudflare Pages Functions adapter.** Reads `env.ANTHROPIC_API_KEY`, injects the generated tool schemas, delegates to `createRelay`. |
-| `system-prompt.mjs` | **Bare placeholder** system prompt. The authoring policy (lexicon, register, tool guidance) is issue #356 — it replaces this string. |
+| `system-prompt.mjs` | The **authoring policy** (issue #356): the §1 lexicon, §8 register, §6.1 send-vs-swap routing, §4.2 narration contract, §2.3/§2.4 turn-one shapes, §6.4 first-run re-strike line — the model-facing `SYSTEM_PROMPT` string, plus the shared `FORBIDDEN_TERMS`/`scanForbiddenTerms` the eval harness scans with. |
 | `../js/tool-schemas.generated.json` | The **generated** tool-schema artifact (ADR-0054 §3), consumed by BOTH this proxy (declares to the model) and the in-page layer (executes). Regenerate with `cargo run --example gen_tool_schemas`. |
 
 ## Model
@@ -63,5 +63,13 @@ Nothing is provisioned by this ticket. The relay is runnable and self-gates gree
 
 - Merge-gating: `node --test proxy/relay.test.mjs` (from `crates/reuben-web`) — deterministic,
   no key, mock upstream. Runs in the `web` CI job.
+- Merge-gating policy eval (issue #356): `node --test proxy/system-prompt.test.mjs
+  js/agent-policy-eval.test.mjs` — asserts the prompt text covers every §1/§8/§6.1/§6.4 rule, and
+  runs a battery of scripted (mock-model) user turns through the REAL loop/tool-layer/turn-envelope
+  asserting no forbidden word ever appears, chips post verbatim, and the first-restart-only line
+  fires once per session. This proves the plumbing carries the policy; it cannot prove a live model
+  obeys the prompt — that's the live smoke below.
 - Live smoke (non-blocking, self-gated on `secrets.ANTHROPIC_API_KEY`): the `web-chat-live-eval`
-  CI job runs `node js/live-eval.mjs` against real Sonnet-5.
+  CI job runs `node js/live-eval.mjs` against real Sonnet-5, now including a short live session that
+  scans every streamed turn for a forbidden word and checks the first-restart line fires at most
+  once.

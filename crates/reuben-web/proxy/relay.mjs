@@ -37,8 +37,8 @@ function jsonResponse(status, body) {
  *
  * @param {object} cfg
  * @param {string|undefined} cfg.apiKey - ANTHROPIC_API_KEY (server env). Absent ⇒ every call 503s.
- * @param {string} cfg.systemPrompt - the model-facing system prompt (a bare placeholder in M1; the
- *   authoring policy is issue #356). Server-authoritative + cache-stable (ADR-0054 §2/§3).
+ * @param {string} cfg.systemPrompt - the model-facing system prompt (the issue #356 authoring
+ *   policy, proxy/system-prompt.mjs). Server-authoritative + cache-stable (ADR-0054 §2/§3).
  * @param {Array<{name:string,description:string,input_schema:object}>} cfg.tools - the generated
  *   tool schemas (`js/tool-schemas.generated.json` → `.tools`). Declared to the model verbatim.
  * @param {string} [cfg.model] - the Sonnet-5-tier model id (config; ADR-0054 §4).
