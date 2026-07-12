@@ -30,8 +30,26 @@ pub mod shell;
 // The web-chat agent tool-schema artifact generator (issue #354, ADR-0054 §3). HOST-ONLY: it is
 // consumed off-line by the proxy + the JS layer via the committed `js/tool-schemas.generated.json`,
 // never called from the worklet, so it stays out of the wasm payload (issue #227 mobile budget).
+//
+// SAFE-REMOVAL GUARD (WX-3, issue #417): the Phase-3 extraction (WX-14) deletes this module from
+// the public crate, and that deletion must not touch the wasm build. Two mechanisms keep that
+// provably true, both enforced automatically — see the `host_only_guard` tests below:
+//   1. The `#[cfg(not(target_arch = "wasm32"))]` gate means the module is ABSENT from every wasm
+//      build. CI's `cargo build --target wasm32-unknown-unknown` therefore already links the exact
+//      artifact WX-14 will ship, with zero `tool_schema` in it — removing the `pub mod` line below
+//      changes nothing for that target.
+//   2. Because the module does not exist on wasm, any reference to `crate::tool_schema` from a
+//      wasm-reachable path ([`bridge`] or the target-agnostic [`shell`]) is a wasm COMPILE ERROR;
+//      CI builds and clippies the wasm target, so runtime coupling cannot land unnoticed.
+// The only host-side reachers are the `gen_tool_schemas` example (a host binary) and this module's
+// own staleness test — never the C-ABI surface.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tool_schema;
+
+// The host-only safe-removal guard for [`tool_schema`] (WX-3, issue #417). Plain `cargo test`
+// assertions — they run on the host, alongside CI's wasm build which is the ultimate backstop.
+#[cfg(test)]
+mod host_only_guard;
 
 #[cfg(target_arch = "wasm32")]
 mod bridge;
