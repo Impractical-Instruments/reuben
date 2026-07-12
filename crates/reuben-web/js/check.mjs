@@ -22,7 +22,7 @@ import { fileURLToPath } from "node:url";
 
 import { encodeControl } from "./codec.mjs";
 import { writeBytes, readError, readReport, loadInstrument } from "./loader.mjs";
-import { wasmIntrospect } from "./tools.mjs";
+import { wasmIntrospect } from "./introspect.mjs";
 import { buildSurface, emit } from "./surface/widget-model.mjs";
 
 const WASM_URL = new URL(
@@ -369,7 +369,7 @@ console.log("\n=== authoring exports (introspection) ===");
 // --- content_hash + the wasmIntrospect adapter (issue #353) -------------------------------
 //
 // ADR-0052 §3/§5: the fourth authoring export (content_hash) plus the JS adapter
-// (tools.mjs wasmIntrospect) the in-page tool layer binds. content_hash mints an opaque,
+// (introspect.mjs wasmIntrospect) the in-page tool layer binds. content_hash mints an opaque,
 // stable token over a document's canonical bytes — byte-identical to native's (§5). This drives
 // describe_operators / describe_instrument / validate THROUGH the adapter too, proving
 // wasmIntrospect wraps the real exports. The engine-bound tools (send/swap/…) need a real

@@ -3,75 +3,18 @@
 // schema, two doors"), over the existing C-ABI worklet + engine API. This is a CONSUMER of the
 // eight contracts and nothing else.
 //
-// Two exports:
-//   - wasmIntrospect(ex): the real adapter over a wasm exports instance, using loader.mjs's
-//     memory-view helpers — the four stateless authoring exports (describe_operators,
-//     describe_instrument, validate, content_hash).
+// One export:
 //   - createToolLayer({ engine, introspect }): the eight contract tools, keyed by their EXACT
 //     snake_case names (the names M1's agent schemas use). Engine-bound tools (send/swap/
 //     engine_status/get_current_instrument) speak to js/reuben-engine.mjs; the authoring tools
-//     delegate to `introspect` (a wasmIntrospect in production, a fake in tests).
+//     delegate to `introspect` (a wasmIntrospect from introspect.mjs in production, a fake in
+//     tests).
 //
 // Error-layer discipline (ADR-0048 §3): a tool throws ONLY when it "could not do its job"
 // (isError) — an unknown operator, a document that fails to load, an unreachable engine. A
 // {ok:false} validate/swap report is the tool WORKING and is returned, never thrown.
 
-import { writeBytes, readError, readReport } from "./loader.mjs";
 import { structuralDiff } from "./diff.mjs";
-
-const encoder = new TextEncoder();
-
-/**
- * Build the real introspection adapter over a live wasm exports instance (bridge.rs's C-ABI).
- * Each call writes the input into linear memory, invokes the export, and reads the result via
- * the loader.mjs helpers (which re-wrap memory views after every call — growth detaches old
- * views; ADR-0040 §3). The returned adapter is the `introspect` createToolLayer expects.
- *
- * @param {WebAssembly.Exports} ex - a live module instance's exports
- * @returns {{describeOperators: (name?: string) => object[],
- *            describeInstrument: (docText: string) => object,
- *            validate: (docText: string) => object,
- *            contentHash: (docText: string) => string}}
- */
-export function wasmIntrospect(ex) {
-  // Write `text` into linear memory, call the (ptr,len) export, free the buffer, return the rc.
-  // Used for both document and operator-name inputs — anything the export takes as (ptr,len).
-  const callWithText = (fn, text) => {
-    const bytes = encoder.encode(text);
-    const ptr = writeBytes(ex, bytes);
-    const rc = fn(ptr, bytes.length);
-    ex.dealloc(ptr, bytes.length);
-    return rc;
-  };
-  return {
-    describeOperators(name) {
-      // Absent name ⇒ call with (0, 0): name_len 0 lists the whole registry (bridge.rs).
-      const rc =
-        name == null || name === ""
-          ? ex.describe_operators(0, 0)
-          : callWithText(ex.describe_operators, name);
-      if (rc !== 0) throw new Error(readError(ex) || "describe_operators failed");
-      return JSON.parse(readReport(ex)).operators;
-    },
-    describeInstrument(docText) {
-      const rc = callWithText(ex.describe_instrument, docText);
-      if (rc !== 0) throw new Error(readError(ex) || "describe_instrument failed");
-      return JSON.parse(readReport(ex));
-    },
-    validate(docText) {
-      // rc 1 is the one call-level failure (bad UTF-8, unexpected); rc 0 always carries a
-      // Report — INCLUDING {ok:false}, which is a successful call (ADR-0048 §3), never a throw.
-      const rc = callWithText(ex.validate, docText);
-      if (rc === 1) throw new Error(readError(ex) || "validate failed (bad UTF-8)");
-      return JSON.parse(readReport(ex));
-    },
-    contentHash(docText) {
-      const rc = callWithText(ex.content_hash, docText);
-      if (rc !== 0) throw new Error(readError(ex) || "content_hash failed");
-      return readReport(ex); // the opaque token, a plain string (not JSON)
-    },
-  };
-}
 
 /**
  * Build the eight-contract tool layer over an engine (reuben-engine.mjs) and an introspection
@@ -81,7 +24,8 @@ export function wasmIntrospect(ex) {
  * @param {object} deps
  * @param {import("./reuben-engine.mjs")} deps.engine - a live reuben engine (send, loadBundle,
  *   currentBundle, context, node)
- * @param {ReturnType<typeof wasmIntrospect>} deps.introspect - the authoring adapter
+ * @param {ReturnType<typeof import("./introspect.mjs").wasmIntrospect>} deps.introspect - the
+ *   authoring adapter (a wasmIntrospect from introspect.mjs in production, a fake in tests)
  * @returns {object} the tool layer, keyed by ADR-0048 contract name
  */
 export function createToolLayer({ engine, introspect }) {
