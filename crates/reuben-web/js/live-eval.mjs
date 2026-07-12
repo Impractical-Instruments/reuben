@@ -76,7 +76,13 @@ async function main() {
   const relay = createRelay({ apiKey, systemPrompt: SYSTEM_PROMPT_PLACEHOLDER, tools: artifact.tools, model });
   const transport = async (messages) => {
     const res = await relay({ messages });
-    if (!res.ok) throw new Error(`relay responded ${res.status}`);
+    if (!res.ok) {
+      // Surface the upstream error body (the Anthropic {type:"error", error:{...}} payload the
+      // relay passes straight through) so a non-2xx names the exact failing field in the
+      // non-blocking live-eval CI log — not just a bare status code.
+      const body = await res.text().catch(() => "");
+      throw new Error(`relay responded ${res.status}: ${body.slice(0, 900)}`);
+    }
     return sseEvents(res);
   };
 
