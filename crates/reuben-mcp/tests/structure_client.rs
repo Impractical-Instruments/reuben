@@ -10,7 +10,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener};
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use reuben_core::coordinator::{DiagnosticsReport, DocSource, Request, Response};
 use reuben_core::{Diag, DiffSummary, Report, SwapReport};
@@ -293,6 +293,44 @@ fn wedged_server_read_times_out_instead_of_hanging() {
     assert!(
         err.to_string().contains("reuben play"),
         "a read timeout is still an unreachable-engine failure: {err}"
+    );
+}
+
+#[test]
+fn ping_fails_fast_even_when_the_general_read_budget_is_generous() {
+    // #374 tightening: a `ping`'s pong is immediate, so the liveness probe must not inherit the
+    // generous read budget a real swap earns. Wedge a server, hand the client a deliberately huge
+    // general read timeout, and assert `ping` still returns on its own tight budget — otherwise a
+    // hung engine would stall `engine_status` and the probe-first `send` for the full read timeout.
+    let listener = TcpListener::bind("127.0.0.1:0").expect("bind wedged stub");
+    let addr = listener.local_addr().expect("wedged addr");
+    thread::spawn(move || {
+        let mut held = Vec::new();
+        for stream in listener.incoming() {
+            match stream {
+                Ok(s) => held.push(s),
+                Err(_) => break,
+            }
+        }
+    });
+    // General read timeout is 10s; the ping budget is capped far below it (DEFAULT_PING_READ_TIMEOUT).
+    let client = StructureClient::with_timeouts(
+        addr.to_string(),
+        Duration::from_millis(500),
+        Duration::from_secs(10),
+    );
+    // The 6s watchdog is comfortably above the ping budget but far below the 10s general timeout, so
+    // a ping that wrongly inherited the general budget trips it; the elapsed assertion pins it sharp.
+    let elapsed = within(Duration::from_secs(6), "tight ping", move || {
+        let start = Instant::now();
+        client
+            .ping()
+            .expect_err("a wedged server must time out, not hang");
+        start.elapsed()
+    });
+    assert!(
+        elapsed < Duration::from_secs(3),
+        "ping must fail on its own tight budget, not the 10s general read timeout: took {elapsed:?}"
     );
 }
 
