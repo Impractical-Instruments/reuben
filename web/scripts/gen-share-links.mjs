@@ -31,14 +31,7 @@
 import { access, readFile, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
-import { loadInstrument } from "../../crates/reuben-web/js/loader.mjs";
-import { encodeBundle, decodeBundle, CAPS } from "../../crates/reuben-web/js/share.mjs";
-import {
-  SURFACE_CANDIDATES,
-  validateSurfaceDoc,
-} from "../../crates/reuben-web/js/surface/widget-model.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url)); // web/scripts
 const WEB = resolve(HERE, ".."); // web
@@ -57,6 +50,15 @@ const WASM = join(CRATE, "target", "wasm32-unknown-unknown", "release", "reuben_
 const INSTRUMENTS = stagingRoot("INSTRUMENTS", "instruments");
 const SURFACES = stagingRoot("SURFACES", "surfaces");
 const README = join(ROOT, "README.md");
+
+// The engine JS (loader/share/surface) ships from the SAME crate as the wasm, so it's loaded from
+// CRATE too (not fixed relative imports) — a CRATE override retargets the codec + discovery
+// alongside the binary. Default CRATE resolves to ../../crates/reuben-web, so these are the
+// previous static imports unchanged.
+const engineImport = (rel) => import(pathToFileURL(join(CRATE, "js", rel)).href);
+const { loadInstrument } = await engineImport("loader.mjs");
+const { encodeBundle, decodeBundle, CAPS } = await engineImport("share.mjs");
+const { SURFACE_CANDIDATES, validateSurfaceDoc } = await engineImport("surface/widget-model.mjs");
 
 const SAMPLE_RATE = 48000; // any rate enumerates the same resource set; construct() only needs one
 

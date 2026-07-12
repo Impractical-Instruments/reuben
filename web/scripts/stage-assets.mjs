@@ -26,9 +26,7 @@ import { access, copyFile, mkdir, readdir, readFile, rm, writeFile } from "node:
 import { constants } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
-import { loadInstrument } from "../../crates/reuben-web/js/loader.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url)); // web/scripts
 const WEB = resolve(HERE, ".."); // web
@@ -45,6 +43,11 @@ const CRATE = stagingRoot("CRATE", "crates", "reuben-web");
 const WASM = join(CRATE, "target", "wasm32-unknown-unknown", "release", "reuben_web.wasm");
 const INSTRUMENTS = stagingRoot("INSTRUMENTS", "instruments");
 const SURFACES = stagingRoot("SURFACES", "surfaces");
+
+// The engine JS ships from the SAME crate as the wasm, so it's loaded from CRATE too (not a fixed
+// relative import) — a CRATE override retargets discovery's loader alongside the binary. Default
+// CRATE resolves to ../../crates/reuben-web, so this is the previous static import unchanged.
+const { loadInstrument } = await import(pathToFileURL(join(CRATE, "js", "loader.mjs")).href);
 // The master PWA icon (issue #227 human prerequisite): a ≥512×512 square committed by a human.
 // @vite-pwa/assets-generator derives every icon size from it, but it resolves its output dir
 // relative to Vite's publicDir — so the source must live UNDER public/ or the generated icons
