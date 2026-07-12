@@ -90,7 +90,14 @@ jobs:
             # and Node matrix harness, so instruments/ counts. Its Cargo.lock lives under its own dir,
             # already covered by `crates/reuben-web/**`.
             web:
-              - 'crates/reuben-web/**'
+              # `**/!(*.md)` excludes markdown from the reuben-web tree via a POSITIVE extglob —
+              # docs (the proxy README, KEY-ROTATION.md) are not a build input (no .md is
+              # include_str!'d), so a docs-only edit here leaves this gate Skipped. Exclusion must
+              # live inside the pattern: dorny/paths-filter OR-combines patterns (.some) and gives
+              # `!` no special meaning, so a trailing `!*.md` would NOT subtract. A mixed code+docs
+              # change still fires on the non-.md file. (Other trees below are Rust crates / JSON
+              # data where docs don't live; the workspace anchor is intentionally left untouched.)
+              - 'crates/reuben-web/**/!(*.md)'
               - 'crates/reuben-core/**'
               - 'crates/reuben-macros/**'
               - 'crates/reuben-contract/**'
@@ -115,14 +122,17 @@ jobs:
               - 'crates/reuben-web/js/tools.mjs'
               - 'crates/reuben-web/js/tool-schemas.generated.json'
               - 'crates/reuben-web/js/live-eval.mjs'
-              - 'crates/reuben-web/proxy/**'
-              # ...minus the proxy files that CANNOT move the live smoke, so a no-risk edit
-              # doesn't spend real tokens (ADR-0054 §5): the mock-gated unit tests, the README,
-              # and cloudflare.mjs — the eval builds its own relay via createRelay() and imports
-              # only relay.mjs + system-prompt.mjs, so it never exercises the Cloudflare adapter.
-              - '!crates/reuben-web/proxy/**/*.test.mjs'
-              - '!crates/reuben-web/proxy/**/*.md'
-              - '!crates/reuben-web/proxy/cloudflare.mjs'
+              # From proxy/ the eval imports ONLY these two (createRelay + SYSTEM_PROMPT); nothing
+              # else there can move the live smoke, so they are listed POSITIVELY rather than as
+              # `proxy/**` minus exclusions. WHY not negation: dorny/paths-filter OR-combines a
+              # filter's patterns (.some) and gives `!` no special meaning, so a trailing
+              # `!...*.md`/`!cloudflare.mjs` does NOT subtract — it silently no-ops. Under the old
+              # `proxy/**` + `!*.md` form a docs-only edit under proxy/ still matched `proxy/**` and
+              # FIRED this paid job (ADR-0054 §5 — real tokens). Enumerating the real inputs excludes
+              # the README, KEY-ROTATION.md, cloudflare.mjs (never imported), and the *.test.mjs
+              # unit tests by construction. Add a file here if the eval's proxy import graph grows.
+              - 'crates/reuben-web/proxy/relay.mjs'
+              - 'crates/reuben-web/proxy/system-prompt.mjs'
               # Deliberately NOT '.github/workflows/ci.yml': listing it re-ran this paid job on
               # EVERY unrelated CI edit (a bench tweak, a deploy step, a fmt job). A change to
               # THIS job's own wiring is re-validated by the post-merge dev run instead, so the
@@ -133,8 +143,12 @@ jobs:
             # resources it stages, and the schema under reuben-core. Same engine closure as
             # `web`, plus web/**.
             webapp:
-              - 'web/**'
-              - 'crates/reuben-web/**'
+              # `**/!(*.md)` excludes markdown from the app + reuben-web trees via a POSITIVE
+              # extglob (docs are not a build/smoke input). Exclusion must live inside the pattern:
+              # dorny OR-combines patterns (.some) and gives `!` no special meaning, so a trailing
+              # `!*.md` would NOT subtract. A mixed code+docs change still fires on the non-.md file.
+              - 'web/**/!(*.md)'
+              - 'crates/reuben-web/**/!(*.md)'
               - 'crates/reuben-core/**'
               - 'crates/reuben-macros/**'
               - 'crates/reuben-contract/**'
