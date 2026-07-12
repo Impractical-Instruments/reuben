@@ -435,6 +435,17 @@ impl Drop for StructureServer {
     }
 }
 
+/// Wake a handler's blocked read (a socket `shutdown` on the clone unblocks its `read_line`) and
+/// join it. Best-effort and idempotent: waking an already-finished handler is a harmless no-op and
+/// joining it returns at once, so this serves both the mid-run reap (already finished) and the
+/// shutdown drain (still live) — one shape, so the two sites can't drift.
+fn wake_and_join(handle: JoinHandle<()>, wake: Option<TcpStream>) {
+    if let Some(wake) = wake {
+        let _ = wake.shutdown(Shutdown::Both);
+    }
+    let _ = handle.join();
+}
+
 /// The accept thread: poll the non-blocking listener until the shutdown flag flips, spawning a
 /// blocking handler per connection. On shutdown, wake each live handler (a socket `shutdown`
 /// unblocks its `read_line`) and join it, so no idle client keeps the process alive — the exact
@@ -472,20 +483,14 @@ fn accept_loop(listener: TcpListener, state: StructureState, shutdown: Arc<Atomi
         while i < handlers.len() {
             if handlers[i].0.is_finished() {
                 let (handle, wake) = handlers.remove(i);
-                if let Some(wake) = wake {
-                    let _ = wake.shutdown(Shutdown::Both);
-                }
-                let _ = handle.join();
+                wake_and_join(handle, wake);
             } else {
                 i += 1;
             }
         }
     }
     for (handle, wake) in handlers {
-        if let Some(wake) = wake {
-            let _ = wake.shutdown(Shutdown::Both);
-        }
-        let _ = handle.join();
+        wake_and_join(handle, wake);
     }
 }
 
@@ -916,6 +921,10 @@ mod tests {
         assert!(
             !dark_degrade_warning(3, 2).is_empty(),
             "a wider input than the stream warns"
+        );
+        assert!(
+            dark_degrade_warning(1, 2).is_empty(),
+            "a stream wider than the input is a surplus, not a shortfall — silent"
         );
     }
 }
