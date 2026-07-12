@@ -32,6 +32,7 @@ import { h } from "./dom.js";
 import { chatEnabled } from "./chat/flag.js";
 import { createSpine } from "./chat/spine.js";
 import { nodeOfControl } from "./chat/board.js";
+import { createKeep } from "./chat/keep.js";
 
 const REPO_URL = "https://github.com/Impractical-Instruments/reuben";
 
@@ -60,6 +61,7 @@ let currentShareSlot = null; // the current player's slot for the hand-copy fall
 let lastShareUrl = null; // the URL minted by the most recent Share (test hook)
 let currentSpine = null; // the co-presence spine handle when the chat flag routes there (#355)
 let currentSpineEngine = null; // the engine the current spine's board is bound to (test hook)
+let currentKeep = null; // the current spine's Keep control + ephemerality state machine (#359, spec §7)
 
 // The control JOURNAL: address -> the args last SENT for it (issue #228 Share). engine.send is
 // wrapped once (instrumentJournal) to record into this; it's CLEARED at the start of every load
@@ -586,6 +588,60 @@ async function doShare() {
   showShareFallback(url);
 }
 
+// THE KEEP GESTURE's mint (spec §7.6, issue #359): the ADR-0042 share codec re-presented as a
+// save. Invoked ONLY from the Keep control's tap (a real user gesture, so the clipboard write is
+// permitted — spec §7.8). Mints the SAME `#r1.…` bundle `doShare` does (document + resources + the
+// moved-control sidecar + the curated surface), writes it to `location.hash` via replaceState so a
+// RELOAD restores the instrument and bookmarking becomes a store the persona understands, AND
+// copies the link. ONE snapshot write — live re-encoding as-you-play stays deferred (§7.6). Returns
+// `{url, copied}` for the confirm, or null when there's nothing to keep. NOTE the intentional
+// reuse: this is byte-for-byte the codec path §7.1 frames as "your save + sharing rides along."
+async function keepCurrent() {
+  if (!engine || !currentSurface) return null;
+  const bundle = engine.currentBundle();
+  if (!bundle) return null;
+
+  const fragment = await encodeBundle({
+    docText: bundle.docText,
+    resources: bundle.resources,
+    snapshot: captureSnapshot(currentSurface),
+    surfaceText: currentSurfaceDocText,
+  });
+  const url = location.origin + location.pathname + "#" + fragment;
+  lastShareUrl = url;
+  // replaceState (NOT pushState): repeated keeps must not stack history, and it does NOT fire
+  // hashchange, so writing the hash can't re-boot the page mid-session (issue #228 hash lifecycle).
+  history.replaceState(null, "", "#" + fragment);
+
+  // Copy the link. The tap is the gesture the Clipboard API requires (spec §7.8); where it's absent
+  // the Keep control shows a hand-copy field instead (the `copied:false` branch).
+  let copied = false;
+  if (navigator.clipboard?.writeText) {
+    try {
+      await navigator.clipboard.writeText(url);
+      copied = true;
+    } catch {
+      // fall through — the confirm carries a hand-copy field
+    }
+  }
+  return { url, copied };
+}
+
+// The agent POINTS to Keep (spec §7.8, issue #359): when the user asks about saving/sharing in
+// chat, reuben answers in ONE lexicon-clean line and PULSES the Keep control so the eye goes to it
+// — it mints NOTHING (the browser requires the user's own tap for the clipboard; the agent directs,
+// never performs). This is the "save asked in chat pulses the control rather than the agent minting
+// a link" behavior. The agent loop that DETECTS the save-intent is #356/#354's (not wired into the
+// browser yet); this is the mechanism it drives, exposed as a seam (test hook `askToSave`).
+function pointToKeepFromChat() {
+  if (!currentSpine || !currentKeep) return;
+  currentSpine.transcript.push({
+    role: "reuben",
+    text: "Your link is your save — tap Keep down there to hold onto this, then bookmark the page or paste the link to share.",
+  });
+  currentKeep.pointToKeep();
+}
+
 // Flash "Copied!" on the Share button, then restore it.
 function flashCopied() {
   const btn = currentShareBtn;
@@ -767,10 +823,29 @@ async function openSpine({ toyId, arrival = "picked", seed = [], onReady } = {})
   // same, this just hands it the real audio fade once one exists.
   const duck = (atSilence) =>
     engine ? engine.restrikeDuck(atSilence) : Promise.resolve(atSilence?.());
-  const spine = createSpine({ arrival, seed, duck });
+  // The Keep control (spec §7, issue #359) — created BEFORE the spine so the divergence seam can
+  // notify it. `onReshapeCommit` fires whenever a reshape lands (spine.js commit()), diverging the
+  // instrument + making any prior keep stale (spec §7.4/§7.7). currentKeep is read live by that
+  // closure, so it's safe that the control is assigned just below.
+  const keep = createKeep({ onKeep: keepCurrent });
+  const spine = createSpine({
+    arrival,
+    seed,
+    duck,
+    onReshapeCommit: () => currentKeep?.markDiverged(),
+  });
   currentSpine = spine;
+  currentKeep = keep;
   currentSurface = null;
   currentSpineEngine = null;
+  // Mount Keep into the bottom-chrome slot the spine left open (spec §7.3): by the pinned input,
+  // always visible whether the transcript sheet is expanded or collapsed, thumb-reachable.
+  spine.keepSlot.replaceChildren(keep.el);
+  // The describe-your-own path (arrival "made") builds the user's OWN instrument — diverged from the
+  // start, un-re-findable, so the leave-guard arms immediately + the first-divergence pulse fires
+  // (spec §7.4/§7.5). A gallery pick (arrival "picked") is re-findable and stays un-diverged until a
+  // reshape lands, so it does NOT mark divergence here.
+  if (arrival === "made") keep.markDiverged();
   setScreen("spine", spine.screen);
   exposeSpineTestHook(spine);
 
@@ -907,6 +982,34 @@ function exposeSpineTestHook(spine) {
     endMockTurn: () => spine.endMockTurn(),
     boardNodes: () => spine.board.nodes(),
     keepSlotPresent: () => !!spine.screen.querySelector('[data-slot="keep"]'),
+
+    // --- the keep gesture (spec §7, issue #359 — THE SHIP GATE) ------------------------------
+    // Ship-gate criterion (chat/flag.js): the loop is not shippable until Keep is PRESENT AND WIRED.
+    // `keepWired` proves both — a real Keep button lives in the reserved bottom-chrome slot (§7.3).
+    keepWired: () => !!spine.screen.querySelector('[data-slot="keep"] .keep-btn'),
+    // The persistent state the chip reports (spec §7.2): "Not kept yet" → "Kept ✓".
+    keepState: () => spine.screen.querySelector('[data-slot="keep"] .keep-state')?.textContent ?? null,
+    keepIsKept: () => currentKeep?.isKept() ?? null,
+    keepDiverged: () => currentKeep?.isDiverged() ?? null,
+    // The one-time first-divergence pulse (§7.5) + the agent's point-to-Keep pulse (§7.8): the count
+    // increments once per pulse, so "pulses exactly once on first divergence" is observable.
+    keepPulseCount: () => currentKeep?.pulseCount() ?? null,
+    // Tap Keep the way the user does (async: writes the hash + copies the link). Returns the promise
+    // so a spec can await the mint before asserting the hash / kept state.
+    tapKeep: () => currentKeep?.keep(),
+    // The leave-guard predicate (§7.4): armed ONLY on diverged, un-re-findable, unkept work.
+    leaveGuardArmed: () => currentKeep?.leaveGuardArmed() ?? false,
+    // The leave-guard as actually WIRED: dispatch a cancelable beforeunload and report whether the
+    // page's handler cancelled it (the navigate-away prompt). Proves the guard is hooked, not just
+    // its internal predicate.
+    leaveGuardBlocks: () => {
+      const ev = new Event("beforeunload", { cancelable: true });
+      window.dispatchEvent(ev);
+      return ev.defaultPrevented;
+    },
+    // The agent points to Keep (spec §7.8): "save asked in chat" pulses the control + drops a chat
+    // line, minting NO link. The seam #356/#354's real loop drives; a spec calls it directly.
+    askToSave: () => pointToKeepFromChat(),
     // The Enable-microphone affordance a live-input pick mounts (#248/#357) — present ONLY when
     // the loaded instrument takes the mic, so its absence for other kinds is meaningful.
     micEnablePresent: () => !!spine.screen.querySelector('[data-slot="mic"] .mic-enable'),
@@ -1158,6 +1261,19 @@ window.reubenPlayer = {
 // app the Playwright smoke and Cloudflare serve. autoUpdate (vite.config) swaps in new revisions
 // silently, so there's no update-prompt callback to wire here.
 registerSW({ immediate: true });
+
+// THE KEEP LEAVE-GUARD (spec §7.4, issue #359): the loss-side safety net. ONE beforeunload handler
+// for the whole session, consulting the CURRENT spine's Keep state at fire time — it prompts only
+// when there is diverged (described-own or reshaped), un-re-findable, UNKEPT work. An untouched
+// gallery pick is re-findable (still in the gallery) → never armed → navigates away clean. Setting
+// returnValue is what makes the browser show its native "leave?" prompt; `preventDefault` is the
+// modern signal. Registered once so no spine can leak a stale guard.
+window.addEventListener("beforeunload", (e) => {
+  if (currentKeep?.leaveGuardArmed()) {
+    e.preventDefault();
+    e.returnValue = ""; // legacy browsers require a set returnValue to show the prompt
+  }
+});
 
 ensureEngine().catch((err) => console.error("[player] engine boot failed:", err));
 prefetchToy(DEFAULT_TOY);
