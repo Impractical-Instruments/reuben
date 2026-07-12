@@ -30,7 +30,7 @@
 
 import { access, readFile, writeFile } from "node:fs/promises";
 import { constants } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import { loadInstrument } from "../../crates/reuben-web/js/loader.mjs";
@@ -43,9 +43,19 @@ import {
 const HERE = dirname(fileURLToPath(import.meta.url)); // web/scripts
 const WEB = resolve(HERE, ".."); // web
 const ROOT = resolve(WEB, ".."); // repo root
-const CRATE = join(ROOT, "crates", "reuben-web");
+
+// Staging roots (issue #416), shared with stage-assets.mjs: env-overridable so the private repo
+// (which consumes this repo as a git submodule at engine/, epic #414) can point them at
+// engine/crates/reuben-web, engine/instruments, and engine/surfaces; unset, they resolve to the
+// in-tree monorepo defaults so behavior here is unchanged. A relative override resolves against
+// the repo root; an absolute one is used verbatim. (README stays repo-root-relative — it's the
+// output this generator rewrites, not a staging input.)
+const stagingRoot = (name, ...defaults) =>
+  process.env[name] ? resolve(ROOT, process.env[name]) : join(ROOT, ...defaults);
+const CRATE = stagingRoot("CRATE", "crates", "reuben-web");
 const WASM = join(CRATE, "target", "wasm32-unknown-unknown", "release", "reuben_web.wasm");
-const INSTRUMENTS = join(ROOT, "instruments");
+const INSTRUMENTS = stagingRoot("INSTRUMENTS", "instruments");
+const SURFACES = stagingRoot("SURFACES", "surfaces");
 const README = join(ROOT, "README.md");
 
 const SAMPLE_RATE = 48000; // any rate enumerates the same resource set; construct() only needs one
@@ -110,7 +120,9 @@ async function instantiate() {
 // dark-degrade, a surface file that exists but doesn't parse or declares an unknown
 // surface_version THROWS here: the generator must never commit a link carrying a broken surface.
 async function resolveSurfaceText(id) {
-  for (const candidate of SURFACE_CANDIDATES(id).map((rel) => join(ROOT, rel))) {
+  // SURFACE_CANDIDATES yields `surfaces/<id>.web.json` / `surfaces/<id>.json`; rebase each onto the
+  // (possibly overridden) SURFACES root by basename so an env override reaches surface resolution too.
+  for (const candidate of SURFACE_CANDIDATES(id).map((rel) => join(SURFACES, basename(rel)))) {
     if (!(await exists(candidate))) continue;
     const text = await readFile(candidate, "utf8");
     validateSurfaceDoc(JSON.parse(text)); // a syntax/version error throws and kills the mint
