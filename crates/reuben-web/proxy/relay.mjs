@@ -53,6 +53,14 @@ export function createRelay({
   tools,
   model = MODEL_DEFAULT,
   maxTokens = 8192,
+  // Sonnet-5 runs adaptive thinking ON by default (ADR-0054 §4 makes thinking/effort a config /
+  // deferred-tuning lever, not an architecture constant). M1 is plumbing-only, so default it OFF:
+  // an emitted `thinking` block must be echoed back unchanged (its `thinking` field + `signature`)
+  // on the next round, which the browser loop (agent-host.mjs `consumeStream`) does not yet
+  // assemble — leaving it on 400s the SECOND request with
+  // `messages.N.content.0.thinking.thinking: Field required`. Turning adaptive thinking on is the
+  // authoring-policy ticket's call (#356), paired there with thinking-block round-tripping.
+  thinking = { type: "disabled" },
   fetchImpl = fetch,
   anthropicUrl = ANTHROPIC_URL,
 }) {
@@ -79,6 +87,7 @@ export function createRelay({
     const upstreamBody = {
       model,
       max_tokens: maxTokens,
+      thinking,
       system: systemPrompt,
       tools,
       stream: true,

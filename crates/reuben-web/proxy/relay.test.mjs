@@ -58,6 +58,11 @@ test("with a key: declares system + tools + model + stream, and passes the SSE t
   assert.strictEqual(sent.stream, true);
   assert.deepStrictEqual(sent.tools, TOOLS, "declares the generated tool schemas verbatim (§3)");
   assert.deepStrictEqual(sent.messages, [{ role: "user", content: "hi" }]);
+  // M1 defaults thinking OFF: Sonnet-5's default-on adaptive thinking emits `thinking` blocks the
+  // browser loop can't yet round-trip (400 `…thinking.thinking: Field required` on round 2).
+  // Turning it on is #356's tuning call (ADR-0054 §4). A regression that drops this reds here
+  // before it ever reaches the (non-blocking) live smoke.
+  assert.deepStrictEqual(sent.thinking, { type: "disabled" });
 });
 
 test("an upstream network failure → 502, never throws (ADR-0054 §6)", async () => {
