@@ -10,7 +10,7 @@
 import test from "node:test";
 import assert from "node:assert";
 
-import { SYSTEM_PROMPT, FORBIDDEN_TERMS, PLAIN_THEORY_PAIRS } from "./system-prompt.mjs";
+import { SYSTEM_PROMPT, FORBIDDEN_TERMS, PLAIN_THEORY_PAIRS, scanForbiddenTerms } from "./system-prompt.mjs";
 import { RESTART_HONESTY_LINE } from "../js/agent-turn.mjs";
 
 test("the prompt is non-empty and self-identifies the assistant", () => {
@@ -78,6 +78,24 @@ test("the prompt covers both turn-one shapes: describe-path echo/build/land and 
 test("the prompt names the automatic, once-only first-restart framing without asking the model to author it per-turn (§6.4)", () => {
   assert.match(SYSTEM_PROMPT, /first.{0,20}restart|restart.{0,20}first/is);
   assert.match(SYSTEM_PROMPT, /automatic/i);
+});
+
+test("scanForbiddenTerms (§1 gate) bounds the word END: unrelated words that merely start with a stem don't trip, but real inflections do", () => {
+  // NOT flagged — the stem is a prefix of a different word (over-match the old leading-only
+  // boundary produced): "right"→rig, "planet"→plan, "portamento"→port.
+  for (const clean of ["the right amount", "the whole planet", "portamento glide"]) {
+    assert.deepStrictEqual(scanForbiddenTerms(clean), [], `false positive on: "${clean}"`);
+  }
+
+  // STILL flagged — genuine inflections (incl. gerund consonant-doubling) must keep tripping the
+  // gate; the §1 forbidden-word gate errs safe.
+  assert.deepStrictEqual(scanForbiddenTerms("swapping the sound"), ["swap"]);
+  assert.deepStrictEqual(scanForbiddenTerms("two ports"), ["port"]);
+  assert.deepStrictEqual(scanForbiddenTerms("patched it"), ["patch"]);
+
+  // Raw forbidden terms, unadorned, still trip.
+  assert.deepStrictEqual(scanForbiddenTerms("a bare operator here"), ["operator"]);
+  assert.deepStrictEqual(scanForbiddenTerms("the node and the wire"), ["wire", "node"]);
 });
 
 test("RESTART_HONESTY_LINE (agent-turn.mjs) is non-empty and jargon-free — safe at either register (§6.4 'inherits register')", () => {

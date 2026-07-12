@@ -8,11 +8,12 @@
 // (proxy/relay.mjs takes `systemPrompt` as a plain string; the proxy is the sole seam that declares
 // it, ADR-0054 §2).
 //
-// `FORBIDDEN_TERMS` / `PLAIN_THEORY_PAIRS` / `RESTART_HONESTY_LINE` are exported (not just baked
-// into the prompt string) so the eval harness (js/agent-policy-eval.test.mjs,
-// proxy/system-prompt.test.mjs) and the live smoke (js/live-eval.mjs) scan against the SAME source
-// of truth the prompt text is generated from — no second hand-copy to drift (the repo's "one
-// source, many doors" habit, ADR-0052 §5 / ADR-0054 §3).
+// `FORBIDDEN_TERMS` / `PLAIN_THEORY_PAIRS` are exported (not just baked into the prompt string) so
+// the eval harness (js/agent-policy-eval.test.mjs, proxy/system-prompt.test.mjs) and the live
+// smoke (js/live-eval.mjs) scan against the SAME source of truth the prompt text is generated from
+// — no second hand-copy to drift (the repo's "one source, many doors" habit, ADR-0052 §5 /
+// ADR-0054 §3). The `RESTART_HONESTY_LINE` the §6.4 tests share lives in js/agent-turn.mjs (the
+// turn envelope owns it), not here.
 
 // The spec §1 forbidden engine-word list, verbatim, PLUS two terms the spec's prose makes equally
 // forbidden without listing literally: "parameter" (§6.1: naming "parameter vs graph" would leak
@@ -57,9 +58,20 @@ export function scanForbiddenTerms(text) {
   const hay = String(text ?? "");
   const hits = [];
   for (const term of FORBIDDEN_TERMS) {
-    const pattern = term.includes(" ")
-      ? new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i")
-      : new RegExp(`\\b${term}`, "i");
+    let pattern;
+    if (term.includes(" ")) {
+      // Literal multi-word phrases match as substrings.
+      pattern = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
+    } else {
+      // Match the stem plus common inflectional suffixes, bounded at BOTH ends. A leading-only
+      // boundary over-matched the word END ("right"→rig, "planet"→plan, "portamento"→port); a
+      // naive `\bterm\b` would under-match legit inflections ("ports", "swapping"). So: stem +
+      // an optional doubled final consonant (gerund/past doubling, "swap"→"swapping") + an
+      // optional {s,es,ing,ed} suffix + a trailing boundary. Inflections still trip; unrelated
+      // words that merely start with the stem do not.
+      const last = term.slice(-1);
+      pattern = new RegExp(`\\b${term}${last}?(?:s|es|ing|ed)?\\b`, "i");
+    }
     if (pattern.test(hay)) hits.push(term);
   }
   return hits;
@@ -80,15 +92,6 @@ export const PLAIN_THEORY_PAIRS = [
 
 // Freely used at any register tier (§1.2) — a layperson already owns these words.
 export const FREE_AT_ANY_TIER = ["note", "beat", "reverb", "echo", "distortion", "louder/quieter", "higher/lower"];
-
-// Hidden reuben music-model concepts and their plain shadow (§1.2) — the internal name is never
-// said; only the shadow surfaces, and tuning doesn't surface at all.
-export const HIDDEN_MODEL_SHADOWS = [
-  { hidden: "Pitch (Degree/Absolute)", shadow: "higher / lower" },
-  { hidden: "Harmony bus", shadow: "key / mood" },
-  { hidden: "Voice/Voicer (how many notes at once)", shadow: "how many notes at once" },
-  { hidden: "Tuning", shadow: null }, // hidden entirely — 12-TET default is invisible
-];
 
 function neverSayList() {
   return FORBIDDEN_TERMS.map((t) => `"${t}"`).join(", ");

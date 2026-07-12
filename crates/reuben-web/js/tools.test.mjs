@@ -235,6 +235,27 @@ test("swap from nothing loaded: beforeText null → installedHash empty, before 
   assert.deepStrictEqual(out.diff.removed, []);
 });
 
+test("swap while SUSPENDED with a bundle loaded is not a restart — §6.4 gates on actively playing, not merely loaded", async () => {
+  // A bundle is loaded, but the AudioContext is suspended (paused): nothing is sounding. A
+  // structural change here must NOT set `restarted` — there is no sonic restart to be honest
+  // about, so the once-per-session slot is not burned.
+  const suspended = createToolLayer({
+    engine: makeEngine({ bundle: bundleOf(BEFORE_DOC), contextState: "suspended" }),
+    introspect: makeIntrospect(),
+  });
+  const paused = await suspended.swap({ document: AFTER_DOC });
+  assert.strictEqual(paused.ok, true);
+  assert.strictEqual(paused.restarted, false, "loaded-but-suspended structural change is not a restart (#356, §6.4)");
+
+  // The same change while RUNNING is a genuine restart (the honesty case).
+  const running = createToolLayer({
+    engine: makeEngine({ bundle: bundleOf(BEFORE_DOC), contextState: "running" }),
+    introspect: makeIntrospect(),
+  });
+  const live = await running.swap({ document: AFTER_DOC });
+  assert.strictEqual(live.restarted, true, "loaded-and-running structural change IS a restart (#356, §6.4)");
+});
+
 // --- engine_status / get_current_instrument / get_diagnostics ---------------------------
 
 test("engine_status reflects the AudioContext state and reachability", () => {
