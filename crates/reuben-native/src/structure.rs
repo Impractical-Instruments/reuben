@@ -120,7 +120,7 @@ pub(crate) fn dark_degrade_warning(
     input_channels: usize,
     opened_input_channels: usize,
 ) -> Vec<Diag> {
-    if input_channels > 0 && input_channels != opened_input_channels {
+    if input_channels > opened_input_channels {
         vec![Diag {
             node: None,
             port: None,
