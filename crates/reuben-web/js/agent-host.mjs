@@ -144,11 +144,16 @@ async function consumeStream(stream, builder, transcript) {
     }
   }
 
-  const content = blocks.filter(Boolean).map((b) => {
-    if (b.type === "tool_use") return { type: "tool_use", id: b.id, name: b.name, input: b.input };
-    if (b.type === "text") return { type: "text", text: b.text };
-    return b;
-  });
+  const content = blocks
+    .filter(Boolean)
+    .map((b) => {
+      if (b.type === "tool_use") return { type: "tool_use", id: b.id, name: b.name, input: b.input };
+      if (b.type === "text") return { type: "text", text: b.text };
+      return b;
+    })
+    // The Messages API rejects an empty text block; a text block that opened but never streamed a
+    // delta (text === "") must not go back upstream in the assistant turn.
+    .filter((b) => !(b.type === "text" && b.text === ""));
   return { content, stopReason };
 }
 
@@ -180,13 +185,17 @@ export function createAgentHost({ toolLayer, transport, transcript = stubTranscr
     const builder = assistantTurn();
     transcript.onTurnStart(builder.turn);
 
+    let truncated = true; // flipped false when the turn resolves within the round budget
     for (let round = 0; round < maxRounds; round += 1) {
       const stream = await transport(messages);
       const { content, stopReason } = await consumeStream(stream, builder, transcript);
       messages.push({ role: "assistant", content });
 
       const toolUses = content.filter((b) => b.type === "tool_use");
-      if (stopReason !== "tool_use" || toolUses.length === 0) break; // resolved
+      if (stopReason !== "tool_use" || toolUses.length === 0) {
+        truncated = false;
+        break; // resolved
+      }
 
       // Dispatch every tool_use into the in-page layer and collect ALL results in ONE user turn
       // (the tool-result protocol requires one result per tool_use id, together).
@@ -222,6 +231,15 @@ export function createAgentHost({ toolLayer, transport, transcript = stubTranscr
       messages.push({ role: "user", content: toolResults });
     }
 
+    if (truncated) {
+      // Hit the round budget with tools still pending (network-bound loop safety bound). We resolve
+      // the turn so the sound isn't left broken; `failed` stays reserved for M2's §5.3 taxonomy.
+      console.warn(
+        `[reuben-agent-host] turn ${builder.turn.id} hit maxRounds (${maxRounds}) with tools still ` +
+          "pending — resolving anyway (terminal-failure UX is M2, §5.3).",
+      );
+    }
+
     const resolved = builder.resolve();
     transcript.onTurnResolved(resolved);
     return resolved;
@@ -229,8 +247,9 @@ export function createAgentHost({ toolLayer, transport, transcript = stubTranscr
 
   return {
     send,
+    // A shallow copy so a caller can inspect the history without mutating the loop's internal state.
     get messages() {
-      return messages;
+      return messages.slice();
     },
   };
 }

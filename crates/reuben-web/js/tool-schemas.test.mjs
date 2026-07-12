@@ -75,6 +75,38 @@ test("declared required fields match the shapes the tool bodies read (js/tools.m
   assert.ok(!("path" in swapProps), "web swap is by-value (ADR-0052 §2), never path-based");
 });
 
+test("nested wrapper shapes stay pinned to what the tool bodies read (a rename can't drift silently)", () => {
+  // The roster + the core instrument schema are locked elsewhere; these hand-authored JS-only
+  // by-value wrappers (no core serde type) are the residual drift risk. Pin their nested internals
+  // to exactly what createToolLayer (js/tools.mjs) consumes, so a nested rename reds this test.
+  const byName = Object.fromEntries(artifact.tools.map((t) => [t.name, t]));
+
+  // send reads { messages: [{ address, args = [] }] } — a non-empty batch of {address, args}.
+  const send = byName.send.input_schema;
+  assert.strictEqual(send.properties.messages.type, "array");
+  assert.strictEqual(send.properties.messages.minItems, 1, "send requires a non-empty batch");
+  const msg = send.properties.messages.items;
+  assert.strictEqual(msg.type, "object");
+  assert.deepStrictEqual(Object.keys(msg.properties).sort(), ["address", "args"]);
+  assert.strictEqual(msg.properties.address.type, "string");
+  assert.strictEqual(msg.properties.args.type, "array");
+  assert.deepStrictEqual(msg.required, ["address"], "address required, args optional (defaults [])");
+
+  // swap reads { document, resources?, expect? } — document object, resources array, expect string.
+  const swap = byName.swap.input_schema;
+  assert.strictEqual(swap.properties.document.type, "object");
+  assert.strictEqual(swap.properties.resources.type, "array");
+  assert.strictEqual(swap.properties.resources.items.type, "object");
+  assert.strictEqual(swap.properties.expect.type, "string");
+
+  // describe_operators reads { name? } — an optional string filter.
+  assert.strictEqual(byName.describe_operators.input_schema.properties.name.type, "string");
+
+  // describe_instrument / validate read { document } — an object.
+  assert.strictEqual(byName.describe_instrument.input_schema.properties.document.type, "object");
+  assert.strictEqual(byName.validate.input_schema.properties.document.type, "object");
+});
+
 test("the artifact carries the core-generated instrument schema + the Sonnet-5 default", () => {
   assert.strictEqual(artifact.instrument_schema.title, "reuben instrument");
   assert.strictEqual(artifact.model_default, "claude-sonnet-5");

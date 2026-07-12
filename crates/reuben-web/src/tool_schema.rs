@@ -60,11 +60,13 @@ fn document_input(role: &str) -> Value {
 pub fn generate() -> Value {
     let instrument_schema = schema::generate(&Registry::builtin());
 
-    // The eight ADR-0048 contracts, in the roster order the native lane fixes (reuben-mcp's
-    // TOOL_NAMES). `input_schema` is the EXECUTED shape from `createToolLayer` (js/tools.mjs):
-    // web `swap`/`describe_instrument`/`validate` take a document BY VALUE (ADR-0052 §2), not the
-    // native path-based inputs. Descriptions are model-facing (never user-visible), so they speak
-    // engine vocabulary — the spec §1 lexicon gate governs only user-facing copy.
+    // The eight ADR-0048 contracts, in the ADR-0052 §2 / spec §0.2 table order (…send, swap,
+    // engine_status…). Array order is irrelevant to the model, and both no-drift tests sort before
+    // comparing, so this is presentation only. `input_schema` is the EXECUTED shape from
+    // `createToolLayer` (js/tools.mjs): web `swap`/`describe_instrument`/`validate` take a document
+    // BY VALUE (ADR-0052 §2), not the native path-based inputs. Descriptions are model-facing
+    // (never user-visible), so they speak engine vocabulary — the spec §1 lexicon gate governs only
+    // user-facing copy.
     let tools = json!([
         {
             "name": "describe_operators",
