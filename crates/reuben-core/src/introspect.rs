@@ -292,6 +292,17 @@ pub fn describe_patch(
     })
 }
 
+/// Split a `"{node.address}.{port}"` wire-ref — the shape [`PlanError::FormMismatch`] carries in
+/// its `src`/`dst` — into the structured `(node, port)` a [`Diag`] localizes on (ADR-0048 §4).
+/// Node addresses carry no `.`, so the last `.` separates node from port (the same rule as
+/// `format`'s `parse_wire`); a bare node ref with no port degrades to node-only.
+fn localize_wire_ref(reference: &str) -> (Option<String>, Option<String>) {
+    match reference.rsplit_once('.') {
+        Some((node, port)) => (Some(node.to_string()), Some(port.to_string())),
+        None => (Some(reference.to_string()), None),
+    }
+}
+
 /// Validate an instrument the same way the engine would build it — full load (structural +
 /// wiring + kind-checking) plus a `Plan::instantiate` to catch cycles — but with a synthetic
 /// [`AudioConfig`], so no audio device is opened and nothing renders. The result is the
@@ -325,15 +336,29 @@ pub fn validate(json: &str, registry: &Registry, resolver: &dyn ResourceResolver
             }],
             warnings,
         },
-        Err(PlanError::FormMismatch { src, dst, reason }) => Report {
-            ok: false,
-            errors: vec![Diag {
-                node: None,
-                port: None,
-                message: format!("wire {src} → {dst}: {reason}"),
-            }],
-            warnings,
-        },
+        Err(PlanError::FormMismatch { src, dst, reason }) => {
+            // Localize to the destination endpoint (ADR-0048 §4): a form mismatch is rejected at
+            // the *input* port that can't accept the source's form (Signal→Value, Event→Signal,
+            // …), so `dst` is the node an agent must go fix — exactly as every `LoadError` with a
+            // known input localizes to its node.
+            //
+            // This arm is a **defensive backstop**: the load-time wiring check (`format`'s
+            // `compatible` gate, ADR-0034 §5) rejects every *reachable* form/type mismatch first,
+            // in boundary terms, before `Plan::instantiate` ever runs its form check — see
+            // `mistyped_boundary_wire_fails_at_load_not_at_instantiate`. So `validate` only reaches
+            // here if some future path hands `instantiate` a form-mismatched graph that skipped
+            // load. It still localizes like every other Diag if it ever does.
+            let (node, port) = localize_wire_ref(&dst);
+            Report {
+                ok: false,
+                errors: vec![Diag {
+                    node,
+                    port,
+                    message: format!("wire {src} → {dst}: {reason}"),
+                }],
+                warnings,
+            }
+        }
     }
 }
 
@@ -455,6 +480,29 @@ mod tests {
             report.errors[0].message.contains("cycle"),
             "message should mention the cycle: {}",
             report.errors[0].message
+        );
+    }
+
+    #[test]
+    fn localize_wire_ref_splits_the_offending_node_and_port() {
+        // The FormMismatch backstop localizes its Diag by splitting the `dst` wire-ref (ADR-0048
+        // §4). A load-shadowed arm has no reachable document to drive it (every form mismatch is a
+        // load-time TypeMismatch first — `mistyped_boundary_wire_fails_at_load_not_at_instantiate`
+        // in `format`), so the localization logic is pinned here on the pure split it performs.
+        assert_eq!(
+            localize_wire_ref("/lfo.rate"),
+            (Some("/lfo".to_string()), Some("rate".to_string())),
+            "a plain node.port ref splits into node + port"
+        );
+        assert_eq!(
+            localize_wire_ref("/sub/inner.freq"),
+            (Some("/sub/inner".to_string()), Some("freq".to_string())),
+            "slashes belong to the node address; only the last `.` splits"
+        );
+        assert_eq!(
+            localize_wire_ref("/osc"),
+            (Some("/osc".to_string()), None),
+            "a bare node ref with no port degrades to node-only"
         );
     }
 
