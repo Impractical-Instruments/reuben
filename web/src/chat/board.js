@@ -72,8 +72,10 @@ function makeCell(widget, engine, uid) {
 // structural diff (js/diff.mjs keys on `node.address`, e.g. "/cutoff"); this board keys each cell on
 // the CONTROL/pipe address (`widget.address`, e.g. "/cutoff/in" — the granularity note atop this
 // file). So a diff node address must be resolved to the cell(s) it backs before it can highlight one.
-// A control's node is its address minus the trailing "/<port>" segment.
-function nodeOfControl(controlAddr) {
+// A control's node is its address minus the trailing "/<port>" segment. Exported so the shell's
+// `controlNodes` test hook (main.js) derives the node the SAME way, instead of re-inventing the
+// strip with an inline regex (finding 5 — one derivation, one source of truth).
+export function nodeOfControl(controlAddr) {
   const cut = controlAddr.lastIndexOf("/");
   return cut > 0 ? controlAddr.slice(0, cut) : controlAddr;
 }

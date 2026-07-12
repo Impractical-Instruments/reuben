@@ -1,4 +1,8 @@
 import { expect, test } from "@playwright/test";
+// The forbidden lexicon (spec §1 / M1 lexicon gate) — imported from its ONE source of truth in
+// change-card.js rather than re-declared, so the gate the card enforces and the gate the test
+// asserts can never drift (finding 4). Whole-word, case-insensitive.
+import { FORBIDDEN_LEXICON as FORBIDDEN } from "../src/chat/change-card.js";
 
 // The change-card + surface-highlights spec (issue #358 verification, spec §4). Boots the BUILT app
 // into the co-presence spine (the same `?chat=1` → gallery → pick path spine.spec.js uses), then
@@ -13,13 +17,6 @@ import { expect, test } from "@playwright/test";
 //   7. NO forbidden engine word in any card row / chrome, even from an engine-ish node name (§4.5).
 
 const DESKTOP = { width: 1280, height: 800 };
-
-// The forbidden lexicon (spec §1 / M1 lexicon gate) — kept in lockstep with spine.spec.js FORBIDDEN
-// and change-card.js FORBIDDEN_LEXICON. Whole-word, case-insensitive.
-const FORBIDDEN = [
-  "operator", "input", "output", "port", "patch", "wire", "swap", "plan", "address",
-  "coordinator", "voicer", "voice", "survivor", "rig", "tuning", "param", "widget", "surface",
-];
 
 // Boot into the spine (arrival "picked" → tap the first gallery card), sheet EXPANDED so the card
 // and its rows are visible + hoverable. Returns once a control has rendered on the board.
@@ -54,8 +51,9 @@ test("a parameter reshape shows a card row and sweeps its control on the surface
   await page.evaluate(() => window.reubenChat.reshapeAppendPlan("Lowering the tone a touch"));
   await page.evaluate((n) => window.reubenChat.reshapeResolve({ changed: [n], added: [], removed: [] }), node);
 
-  // Transcript half: exactly one sensory row for the change.
-  await expect.poll(() => page.evaluate(() => window.reubenChat.cardRows())).toHaveLength(1);
+  // Transcript half: exactly one sensory row for the change, reading as a PURE-GENERIC phrase by
+  // change kind (§4.5) — never the node address title-cased (findings 1+2: no engine/theory name).
+  await expect.poll(() => page.evaluate(() => window.reubenChat.cardRows())).toEqual(["Reshaped a control"]);
   // Surface half: the reshape swept THIS control, keyed on node identity.
   const swept = await page.evaluate(() => window.reubenChat.lastHighlight());
   expect(swept.changed).toContain(node);
@@ -81,9 +79,10 @@ test("a structural reshape pulses an added control, animates a removed one out, 
     { add: addNode, remove: removeNode },
   );
 
-  // Two rows: one added, one removed.
+  // Two rows: one added, one removed — each a PURE-GENERIC sensory phrase by change kind (§4.5),
+  // never the node address (findings 1+2). Added leads, removed last (the §4.1 order).
   const rows = await page.evaluate(() => window.reubenChat.cardRows());
-  expect(rows).toHaveLength(2);
+  expect(rows).toEqual(["Added a new layer", "Removed a layer"]);
   // Surface half: the added control pulsed in, the removed one animated out (and left the board).
   const hi = await page.evaluate(() => window.reubenChat.lastHighlight());
   expect(hi.added).toContain(addNode);
@@ -140,8 +139,9 @@ test("a no-knob change shows a row and fires no surface echo", async ({ page }) 
     window.reubenChat.reshapeResolve({ added: ["/deep-space-reverb"], changed: [], removed: [] }),
   );
 
-  // The card is the complete record: the row is present...
-  expect(await page.evaluate(() => window.reubenChat.cardRows())).toHaveLength(1);
+  // The card is the complete record: the row is present, reading as the PURE-GENERIC added phrase —
+  // NOT the node address "/deep-space-reverb" title-cased (findings 1+2: no address ever surfaces).
+  expect(await page.evaluate(() => window.reubenChat.cardRows())).toEqual(["Added a new layer"]);
   // ...marked as backing no control...
   await expect(page.locator('.tx-card-row[data-knob="false"]')).toHaveCount(1);
   // ...and no control was highlighted on the surface (nothing to echo).
@@ -173,10 +173,11 @@ test("a big diff (>5 changes) collapses to a headline with an expandable show-al
   expect(await page.evaluate(() => window.reubenChat.cardRowsExpanded())).toBe(false);
   await expect(page.locator(".tx-card-showall")).toBeVisible();
 
-  // Expanding reveals every row.
+  // Expanding reveals every row — each a PURE-GENERIC "changed" phrase (§4.5), never a node address
+  // like "/a".."/f" title-cased (findings 1+2).
   await page.locator(".tx-card-showall").click();
   expect(await page.evaluate(() => window.reubenChat.cardRowsExpanded())).toBe(true);
-  expect(await page.evaluate(() => window.reubenChat.cardRows())).toHaveLength(6);
+  expect(await page.evaluate(() => window.reubenChat.cardRows())).toEqual(Array(6).fill("Reshaped a control"));
 
   expect(errors, `no uncaught page errors: ${errors.join("; ")}`).toEqual([]);
 });
@@ -214,8 +215,10 @@ test("lexicon gate: no forbidden engine word in a card, even from an engine-ish 
 }) => {
   await bootSpine(page);
 
-  // A diff mixing a clean sensory name (renders "…Shimmer") with node names that ARE forbidden words
-  // ("/wire", "/tuning") — the sensory mapping must DROP those to a neutral noun, never leak them.
+  // A diff whose node names ARE forbidden words ("/wire", "/tuning", "/note-voice") plus a name
+  // that would ALSO be engine/theory vocabulary if title-cased ("/shimmer"). Under the pure-generic
+  // fallback (findings 1+2) NONE of these addresses ever becomes user-visible text — the rows read
+  // as generic sensory phrases by change kind, so no node/operator/theory name can reach a row.
   await page.evaluate(() => window.reubenChat.reshapeBegin());
   await page.evaluate(() => window.reubenChat.reshapeAppendPlan("Softening the edges, adding a shimmer"));
   await page.evaluate(() =>
@@ -231,6 +234,18 @@ test("lexicon gate: no forbidden engine word in a card, even from an engine-ish 
     const hit = new RegExp(`\\b${word}\\b`, "i").test(cardText);
     expect(hit, `forbidden word "${word}" found in card:\n${cardText}`).toBe(false);
   }
-  // The clean name still surfaced (the gate blocks only the engine-ish ones).
-  expect(cardText).toContain("Shimmer");
+  // Every row is a pure-generic phrase by change kind — the node addresses never surface, so a name
+  // like "Shimmer" (a title-cased "/shimmer") does NOT leak into a row either (spec §4.5: rows must
+  // never show node/operator names; the real "Added Shimmer" copy is agent-supplied, not synthesized).
+  expect(await page.evaluate(() => window.reubenChat.cardRows())).toEqual([
+    "Added a new layer",
+    "Reshaped a control",
+    "Reshaped a control",
+    "Removed a layer",
+  ]);
+  // No node name — clean OR engine-ish — appears anywhere in the card chrome (the plan's own lowercase
+  // "shimmer" prose is agent copy, distinct from a synthesized "Shimmer" label, which must not exist).
+  for (const leaked of ["Shimmer", "Wire", "Tuning", "Note Voice"]) {
+    expect(cardText.includes(leaked), `node name "${leaked}" leaked into card:\n${cardText}`).toBe(false);
+  }
 });

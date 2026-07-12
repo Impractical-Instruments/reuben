@@ -21,10 +21,18 @@
 // SENSORY-ONLY (spec §4.5): the card IS the translation layer from the node-addressed diff to §1's
 // sound/intent vocabulary. Rows must be forbidden-word-clean (the epic's lexicon gate). We do NOT
 // have the agent's live per-change prose yet (its loop is not wired into the browser — the same
-// un-wired seam #357 left at main.js:859), so each row is synthesized from the diff through a clean
-// sensory mapping, and `agentCopy` is the LABELED SEAM where the agent's own row sentence will
-// arrive once the loop lands: when present it is rendered verbatim (still gated), otherwise we
-// synthesize. Swap the synthesis for the agent's copy at that seam; the card shape does not move.
+// un-wired seam #357 left at main.js:859), so each row falls back to a PURE-GENERIC sensory phrase
+// keyed only on the change kind (added / changed / removed). We NEVER derive a user-visible label
+// from the node address: title-casing "/cutoff" → "Cutoff" or "/note-voice" → "Note Voice" just
+// leaks the engine/theory vocabulary that address names (§1.2 — filter → "brightness", not
+// "cutoff"), and the §1 structural lexicon does not even list the DSP/theory terms the real toys
+// use, so a title-cased address would sail past it. `agentCopy` is the LABELED SEAM where the
+// agent's own row sentence arrives once the loop lands: when present it renders verbatim (still
+// lexicon-gated), otherwise we fall back to the generic phrase. The spec's "Added Shimmer" example
+// is agent-supplied copy — NOT something to synthesize from an address — so generic-until-agentCopy
+// is the correct §4.5 behavior. Swap the generic phrase for the agent's copy at that seam; the card
+// shape does not move. The raw node address still rides in the row's data-node attribute (not
+// user-visible) so the surface echo can resolve it to a control.
 
 import { h } from "../dom.js";
 
@@ -40,44 +48,35 @@ export const FORBIDDEN_LEXICON = [
 ];
 const FORBIDDEN_RE = FORBIDDEN_LEXICON.map((w) => new RegExp(`\\b${w}\\b`, "i"));
 
-// True if `text` trips the forbidden lexicon (any whole-word hit). Used to gate a synthesized label.
+// True if `text` trips the forbidden lexicon (any whole-word hit). Gates the `agentCopy` seam: an
+// agent row sentence that somehow carries an engine/theory word is dropped to the generic phrase
+// rather than shown. (The synthesized fallback needs no gating — it is generic by construction.)
 function tripsLexicon(text) {
   return FORBIDDEN_RE.some((re) => re.test(text));
 }
 
-// Clean a diff NODE address ("/cutoff", "/shimmer") into a sensory label ("Cutoff", "Shimmer"),
-// mirroring the spec's own "Added Shimmer" example (§4.5): strip the leading slash, humanize the
-// separators, title-case. GATED: a name that reads as an engine word (e.g. a raw operator/pipe
-// name that trips the lexicon) returns null so the caller falls back to a neutral noun — we never
-// leak an engine name as a "sensory" label. (When the agent copy seam is wired, this is the
-// fallback path only.)
-export function sensoryLabel(nodeAddress) {
-  if (typeof nodeAddress !== "string") return null;
-  const cleaned = nodeAddress
-    .replace(/^\/+/, "")
-    .replace(/[/_-]+/g, " ")
-    .trim()
-    .replace(/\b\w/g, (c) => c.toUpperCase());
-  if (!cleaned || tripsLexicon(cleaned)) return null;
-  return cleaned;
-}
-
-// Synthesize one sensory row sentence for a change (spec §4.5). `bucket` is "added" | "changed" |
-// "removed"; `agentCopy` is the SEAM — the agent's own sensory line for this change once the loop
-// is wired (rendered verbatim when present). Absent that, we build a clean line from the gated
-// label, degrading to a neutral noun when the label is engine-ish or empty. Every branch is
-// forbidden-word-clean by construction.
+// The one sensory row sentence for a change (spec §4.5). `bucket` is "added" | "changed" |
+// "removed"; `nodeAddress` is the diff's node address — kept in the signature because it is the
+// row's identity for the surface echo (it rides in data-node), but it is DELIBERATELY never turned
+// into user-visible text: an address names engine/theory vocabulary, and the §1 gate does not even
+// list the DSP terms the real toys use, so title-casing it would leak "Cutoff" / "Autopan" / "Env
+// Vca" straight into a row (findings 1+2). `agentCopy` is the SEAM: the agent's own sensory line
+// once its loop is wired, rendered verbatim WHEN it is lexicon-clean. Absent (or unclean) agent
+// copy, the row is a PURE-GENERIC sensory phrase keyed only on the change kind — forbidden-word
+// clean by construction, and free of any node/operator/theory name.
+// eslint-disable-next-line no-unused-vars -- nodeAddress documents the row identity seam (data-node)
 export function describeChange(bucket, nodeAddress, agentCopy) {
-  if (typeof agentCopy === "string" && agentCopy.trim()) return agentCopy.trim();
-  const label = sensoryLabel(nodeAddress);
+  if (typeof agentCopy === "string" && agentCopy.trim() && !tripsLexicon(agentCopy)) {
+    return agentCopy.trim();
+  }
   switch (bucket) {
     case "added":
-      return label ? `Added ${label}` : "Added a new layer";
+      return "Added a new layer";
     case "removed":
-      return label ? `Removed ${label}` : "Removed a layer";
+      return "Removed a layer";
     case "changed":
     default:
-      return label ? `Reshaped ${label}` : "Reshaped the sound";
+      return "Reshaped a control";
   }
 }
 

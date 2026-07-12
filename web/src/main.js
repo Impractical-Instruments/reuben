@@ -31,6 +31,7 @@ import manifest from "../toys.json";
 import { h } from "./dom.js";
 import { chatEnabled } from "./chat/flag.js";
 import { createSpine } from "./chat/spine.js";
+import { nodeOfControl } from "./chat/board.js";
 
 const REPO_URL = "https://github.com/Impractical-Instruments/reuben";
 
@@ -921,8 +922,7 @@ function exposeSpineTestHook(spine) {
     // The NODE addresses the current board's controls back (control "/cutoff/in" → node "/cutoff").
     // A test picks a REAL one so a crafted diff's highlight lands on an on-screen control (the live
     // surface sweep), and a made-up one to exercise the no-knob path (§4.3).
-    controlNodes: () =>
-      spine.board.nodes().map((n) => n.control.replace(/\/[^/]*$/, "")),
+    controlNodes: () => spine.board.nodes().map((n) => nodeOfControl(n.control)),
 
     // Drive one change-card through its lifecycle (spec §4.2): begin (thinking) → appendPlan (stream)
     // → resolve (rows + surface highlight). Id-based so a Playwright test can step it across

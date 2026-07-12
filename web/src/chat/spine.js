@@ -252,6 +252,16 @@ export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [] } =
           card.update();
           // The surface half of the A+B hybrid (§4.1): animate the touched controls keyed on node
           // identity. The card (transcript half) and this (surface half) are the two linked views.
+          //
+          // GLOW ONLY (finding 3 / §4.1 "a changed control sweeps its value"): this fires the
+          // node-identity GLOW, but NOT the value re-render — we intentionally do not call
+          // `board.update(...)` here. The structural diff carries node addresses, not the reshaped
+          // widget's new value, so there is nothing to sweep the control TO yet. The value-sweep half
+          // of §4.1 lands with the #354 agent-loop wiring, which delivers the fresh widget set
+          // alongside the diff (the same seam noted at main.js:859 / beginReshapeCard above): at that
+          // point `resolve` also re-renders the touched controls through `board.update`, and the
+          // "changed" glow doubles as the value-sweep cue. Until then this is honestly glow-only — we
+          // do not invent a value to sweep, and no test asserts a value-sweep that does not happen.
           board.highlightDiff(env.turn.diff);
           return env.turn;
         },
