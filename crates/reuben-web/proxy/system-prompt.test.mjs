@@ -80,20 +80,57 @@ test("the prompt names the automatic, once-only first-restart framing without as
   assert.match(SYSTEM_PROMPT, /automatic/i);
 });
 
-test("scanForbiddenTerms (§1 gate) bounds the word END: unrelated words that merely start with a stem don't trip, but real inflections do", () => {
-  // NOT flagged — the stem is a prefix of a different word (over-match the old leading-only
-  // boundary produced): "right"→rig, "planet"→plan, "portamento"→port.
-  for (const clean of ["the right amount", "the whole planet", "portamento glide"]) {
-    assert.deepStrictEqual(scanForbiddenTerms(clean), [], `false positive on: "${clean}"`);
-  }
+// The §1 forbidden-word gate is the epic's crown jewel: NOTHING on the never-say list may ever reach
+// the user, in any inflection. The matcher must (a) flag every stem plus every inflection English
+// actually produces — including the e-final forms the old `stem + optional {s,es,ing,ed}` regex
+// silently under-blocked ("wire"→"wiring"/"wired", "voice"→"voicing"/"voiced") and the gerund
+// consonant-doubling forms ("swap"→"swapping") — and (b) NEVER trip on an unrelated word that merely
+// shares a stem's leading letters ("right"→rig, "planet"→plan, "portamento"→port, "wireless"→wire).
+const MUST_FLAG = [
+  "swap", "swaps", "swapping", "swapped",
+  "port", "ports", "porting", "ported",
+  "patch", "patches", "patched", "patching",
+  "wire", "wires", "wired", "wiring",
+  "voice", "voices", "voiced", "voicing",
+  "surface", "surfaces", "surfaced", "surfacing",
+  "rig", "rigs", "rigged", "rigging",
+  "plan", "plans", "planned", "planning",
+  "voicer", "voicers",
+  "node", "nodes",
+  "param", "params",
+  "operator",
+];
 
-  // STILL flagged — genuine inflections (incl. gerund consonant-doubling) must keep tripping the
-  // gate; the §1 forbidden-word gate errs safe.
+const MUST_NOT_FLAG = [
+  "right", "bright", "planet", "planetarium", "portamento", "rigid", "voicemail", "wireless",
+  "the right amount", "the whole planet", "portamento glide",
+];
+
+// Sanity-check that the matrix anchors on stems that are ACTUALLY forbidden (guards against a future
+// list edit quietly making a MUST_FLAG case vacuous).
+test("forbidden-word matrix anchors on stems that are genuinely in FORBIDDEN_TERMS", () => {
+  for (const stem of ["wire", "voice", "surface", "patch", "port", "swap", "rig", "plan", "param", "node", "voicer", "operator"]) {
+    assert.ok(FORBIDDEN_TERMS.includes(stem), `matrix anchor "${stem}" is missing from FORBIDDEN_TERMS`);
+  }
+});
+
+for (const s of MUST_FLAG) {
+  test(`scanForbiddenTerms (§1 gate) FLAGS the inflection "${s}"`, () => {
+    assert.ok(scanForbiddenTerms(s).length > 0, `"${s}" must be caught by the forbidden-word gate`);
+  });
+}
+
+for (const s of MUST_NOT_FLAG) {
+  test(`scanForbiddenTerms (§1 gate) does NOT flag the clean phrase "${s}"`, () => {
+    assert.deepStrictEqual(scanForbiddenTerms(s), [], `false positive on: "${s}"`);
+  });
+}
+
+test("scanForbiddenTerms returns the matched stems in FORBIDDEN_TERMS order, inside real sentences", () => {
   assert.deepStrictEqual(scanForbiddenTerms("swapping the sound"), ["swap"]);
   assert.deepStrictEqual(scanForbiddenTerms("two ports"), ["port"]);
   assert.deepStrictEqual(scanForbiddenTerms("patched it"), ["patch"]);
-
-  // Raw forbidden terms, unadorned, still trip.
+  assert.deepStrictEqual(scanForbiddenTerms("wired up the voicing"), ["wire", "voice"]);
   assert.deepStrictEqual(scanForbiddenTerms("a bare operator here"), ["operator"]);
   assert.deepStrictEqual(scanForbiddenTerms("the node and the wire"), ["wire", "node"]);
 });

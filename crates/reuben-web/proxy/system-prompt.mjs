@@ -18,9 +18,10 @@
 // The spec §1 forbidden engine-word list, verbatim, PLUS two terms the spec's prose makes equally
 // forbidden without listing literally: "parameter" (§6.1: naming "parameter vs graph" would leak
 // the engine graph exactly like "param" would) and "node" (§4.5: card rows are "never node/operator
-// names"). Each entry is the word'S STEM — the scanner matches case-insensitively from the start of
-// the word (so "Operators", "ported", "wired", "swapped", "voicing" etc. all still trip it), except
-// the two literal multi-word phrases which match as substrings.
+// names"). Each entry is the word'S STEM — the scanner matches it case-insensitively, bounded at
+// both word ends, plus the inflections English actually produces (so "Operators", "ported",
+// "wired"/"wiring", "swapped"/"swapping", "voiced"/"voicing" etc. all still trip it), except the two
+// literal multi-word phrases which match as substrings.
 export const FORBIDDEN_TERMS = [
   "operator",
   "input",
@@ -58,23 +59,58 @@ export function scanForbiddenTerms(text) {
   const hay = String(text ?? "");
   const hits = [];
   for (const term of FORBIDDEN_TERMS) {
-    let pattern;
-    if (term.includes(" ")) {
-      // Literal multi-word phrases match as substrings.
-      pattern = new RegExp(term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&"), "i");
-    } else {
-      // Match the stem plus common inflectional suffixes, bounded at BOTH ends. A leading-only
-      // boundary over-matched the word END ("right"→rig, "planet"→plan, "portamento"→port); a
-      // naive `\bterm\b` would under-match legit inflections ("ports", "swapping"). So: stem +
-      // an optional doubled final consonant (gerund/past doubling, "swap"→"swapping") + an
-      // optional {s,es,ing,ed} suffix + a trailing boundary. Inflections still trip; unrelated
-      // words that merely start with the stem do not.
-      const last = term.slice(-1);
-      pattern = new RegExp(`\\b${term}${last}?(?:s|es|ing|ed)?\\b`, "i");
-    }
-    if (pattern.test(hay)) hits.push(term);
+    if (forbiddenTermPattern(term).test(hay)) hits.push(term);
   }
   return hits;
+}
+
+const isVowel = (c) => /[aeiou]/i.test(c);
+const vowelCount = (s) => (s.match(/[aeiou]/gi) ?? []).length;
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * Build the case-insensitive matcher for one forbidden stem. The gate must catch every inflection
+ * English actually produces while never tripping on an unrelated word that merely shares the stem's
+ * letters — so every alternative is bounded by `\b` at BOTH ends, and the suffix set is derived from
+ * the stem's SHAPE rather than blindly appended (the old `stem + optional {s,es,ing,ed}` under-blocked
+ * e-final stems, which drop the `e` before `-ing` and take a bare `-d`: "wire"→"wiring"/"wired").
+ *
+ * Three shapes, keyed off the stem itself:
+ *  - e-final ("wire", "voice", "surface", "node"): stem, stem+s, stem+d, and (e elided)+{ing,ed}.
+ *      wire → wire | wires | wired | wiring
+ *  - monosyllabic CVC that doubles its final consonant ("swap", "plan", "rig"): stem, +s, and
+ *    +{ed,ing} over an OPTIONAL doubled final consonant.
+ *      swap → swap | swaps | swapped | swapping
+ *  - plain (everything else — "port", "patch", "operator", "param", "voicer"): stem + optional
+ *    {s,es,ing,ed}.
+ *      port → port | ports | porting | ported
+ *
+ * @param {string} term a FORBIDDEN_TERMS entry.
+ * @returns {RegExp}
+ */
+function forbiddenTermPattern(term) {
+  // Literal multi-word phrases ("good button", "interface pipe") match as substrings.
+  if (term.includes(" ")) return new RegExp(escapeRe(term), "i");
+
+  const last = term.slice(-1);
+  let body;
+  if (term.length >= 2 && last === "e") {
+    // e-final: bare stem takes +s / +d; the `e` elides before the syllabic suffixes +ing / +ed.
+    body = `(?:${escapeRe(term)}(?:s|d)?|${escapeRe(term.slice(0, -1))}(?:ing|ed))`;
+  } else if (
+    term.length >= 3 &&
+    vowelCount(term) === 1 &&
+    !isVowel(last) &&
+    isVowel(term.slice(-2, -1)) &&
+    !isVowel(term.slice(-3, -2))
+  ) {
+    // Monosyllabic consonant-vowel-consonant: the final consonant may double before +ed / +ing.
+    body = `${escapeRe(term)}(?:s|${escapeRe(last)}?(?:ed|ing))?`;
+  } else {
+    // Plain stem: append the regular inflections directly.
+    body = `${escapeRe(term)}(?:s|es|ing|ed)?`;
+  }
+  return new RegExp(`\\b${body}\\b`, "i");
 }
 
 // The spec §1.2 sensory<->theory pairs. `plain` is what the chat leads with by default; `theory`
