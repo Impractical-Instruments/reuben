@@ -770,7 +770,10 @@ async function openSpine({ toyId, arrival = "picked", seed = [], onReady } = {})
     const e = await ensureEngine();
     instrumentJournal(e);
     const id = toyId ?? DEFAULT_TOY;
-    await loadWithRetry(e, id);
+    // The resolved {channels, inputChannels, blockSize} tells us whether this instrument takes
+    // live input (inputChannels > 0) — the mic affordance below is driven by that, not by a
+    // per-Toy flag, exactly as the player does (#248).
+    const info = await loadWithRetry(e, id);
     if (token !== loadToken) return; // superseded by a newer navigation — drop this render
     currentToy = id;
 
@@ -789,16 +792,23 @@ async function openSpine({ toyId, arrival = "picked", seed = [], onReady } = {})
     currentSurface = surface;
     currentSpineEngine = e;
     // Render the controls into the node-identity board, then fire the load-time defaults AFTER
-    // load() resolved (the render.mjs lifecycle) exactly as the player does. An input-taking
-    // instrument's mic gesture is the player's affordance, not the spine's, and every gallery
-    // Toy is self-playing or tap-to-play (mic-space aside — its pick lands silent same as the
-    // player until a future mic affordance lands on the spine, out of this ticket's scope).
+    // load() resolved (the render.mjs lifecycle) exactly as the player does.
     spine.board.update(surface.widgets, e);
     sendInitialDefaults(surface, e);
     document.body.dataset.state = e.context.state; // "running" — the spec asserts on this
 
+    // A live-input Toy (Mic Space) loads and renders but plays SILENCE until the user enables the
+    // mic on a gesture (#248). Its pick MUST surface the enable control — otherwise the pick is a
+    // silent dead end and the greeting's "enable the microphone to play" points at nothing. Mount
+    // the SAME micControl the player uses into the spine's mic slot, keyed on inputChannels (not a
+    // per-Toy flag), with a small status line for the live/denied feedback the control writes.
+    if (info?.inputChannels > 0) {
+      const micStatus = h("p", { class: "spine-mic-status" });
+      spine.micSlot.replaceChildren(micControl(e, micStatus), micStatus);
+    }
+
     const toy = TOYS.find((t) => t.id === id);
-    onReady?.(spine, { id, title: toy?.title ?? currentInstrument });
+    onReady?.(spine, { id, title: toy?.title ?? currentInstrument, kind: toy?.kind });
   } catch (err) {
     if (token !== loadToken) return;
     // The full failure taxonomy is the ambiguity/failure ticket's (spec §5, #303); the engine
@@ -811,15 +821,29 @@ async function openSpine({ toyId, arrival = "picked", seed = [], onReady } = {})
   }
 }
 
-// Gallery pick → proactive turn one (spec §2.3): starts the Toy playing and opens the spine with
-// a short greeting naming what's playing + the Toy's authored chips (or greeting-only when
+// The lead clause of a pick's proactive turn one, kind-aware so it NEVER claims a state that
+// isn't real (the epic's honesty gate). Mirrors the player's per-kind split (playingStatusText):
+// a self-playing Toy IS emitting sound; a tap-to-play Toy is silent until a button is tapped; a
+// live-input (mic) Toy makes NO sound at all until the mic is enabled on a gesture. Sensory-only,
+// forbidden-word-clean. `kind` comes from the Toy manifest (self-playing | tap-to-play |
+// live-input); an unknown/absent kind degrades to the self-playing lead.
+function greetingLead(title, kind) {
+  if (kind === "live-input") return `${title}'s ready — enable the microphone to play`;
+  if (kind === "tap-to-play") return `${title}'s ready — tap the buttons to play`;
+  return `${title}'s playing`;
+}
+
+// Gallery pick → proactive turn one (spec §2.3): starts the Toy (self-playing sounds immediately;
+// tap-to-play waits for a tap; live-input waits for the mic) and opens the spine with a short,
+// kind-aware greeting that names it honestly + the Toy's authored chips (or greeting-only when
 // `chips` is absent/empty — tailored-or-nothing, no generic filler, §I). Lands COLLAPSED-to-bar
 // (arrival "picked", spec §3.3) — a newcomer just picked something to PLAY, not to talk about.
 function pickToy(toy) {
   const chips = toy.chips ?? [];
+  const lead = greetingLead(toy.title, toy.kind);
   const greeting = chips.length
-    ? `${toy.title}'s playing. Tell me what to change — or try one of these:`
-    : `${toy.title}'s playing. Tell me what to change.`;
+    ? `${lead}. Tell me what to change — or try one of these:`
+    : `${lead}. Tell me what to change.`;
   const seed = [{ role: "reuben", text: greeting }];
   if (chips.length) seed.push({ role: "reuben", kind: "chips", chips });
   return openSpine({ toyId: toy.id, arrival: "picked", seed });
@@ -835,17 +859,19 @@ function pickToy(toy) {
 // end-to-end (#354's agent-host.mjs + #356's system prompt + #358's change-card renderer) — none
 // of that is wired into the browser yet (this ticket wires the SCREEN + the launcher→player
 // continuity, not the agent). So this is a SEAM: it "builds" by loading the default Toy (today's
-// closest thing to a first playable instrument) and lands with a generic, lexicon-clean line.
-// Swap the body of this function for a real agent call once the loop is wired in.
+// closest thing to a first playable instrument). The landing line MUST NOT claim it built what
+// the user described (the honesty gate) — until the agent lands, it can't. So it names what's
+// actually playing and frames it as a starting point, kind-aware and lexicon-clean. Swap the body
+// of this function for a real agent call once the loop is wired in.
 function submitDescribe(text) {
   return openSpine({
     toyId: DEFAULT_TOY,
     arrival: "made",
     seed: [{ role: "you", text }],
-    onReady: (spine, { title }) => {
+    onReady: (spine, { title, kind }) => {
       spine.transcript.push({
         role: "reuben",
-        text: `Here it is — ${title}'s playing. Tell me what to change next.`,
+        text: `To get you started, ${greetingLead(title, kind)}. Tell me what to change.`,
       });
     },
   });
@@ -869,6 +895,9 @@ function exposeSpineTestHook(spine) {
     endMockTurn: () => spine.endMockTurn(),
     boardNodes: () => spine.board.nodes(),
     keepSlotPresent: () => !!spine.screen.querySelector('[data-slot="keep"]'),
+    // The Enable-microphone affordance a live-input pick mounts (#248/#357) — present ONLY when
+    // the loaded instrument takes the mic, so its absence for other kinds is meaningful.
+    micEnablePresent: () => !!spine.screen.querySelector('[data-slot="mic"] .mic-enable'),
     // Identity-preserving re-render: the SAME nodes in a DIFFERENT input order. Survivors hold
     // position (spec §3.6), so the board order MUST be unchanged after this.
     reshapePreserveIdentity: () => {

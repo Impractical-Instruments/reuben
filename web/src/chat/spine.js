@@ -149,7 +149,13 @@ export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [] } =
   const dock = h("div", { class: "spine-dock" }, sheet, chrome);
 
   // --- the surface region (spec §3.7): owns TOP / CENTER at every width -----------------------
-  const surfaceRegion = h("div", { class: "spine-surface" }, board.el);
+  // A named, empty mount ABOVE the board for the Enable-microphone affordance (#248/#357): a
+  // live-input Toy (Mic Space) is SILENT until the user grants the mic on a gesture, so its pick
+  // must surface an enable control here — mounted by the caller (main.js `openSpine`) keyed on the
+  // instrument's inputChannels, exactly as the player does. Stays EMPTY for self-playing /
+  // tap-to-play Toys. Kept a bare container (like `keepSlot`) so the spine owns no mic logic.
+  const micSlot = h("div", { class: "spine-mic", dataset: { slot: "mic" } });
+  const surfaceRegion = h("div", { class: "spine-surface" }, micSlot, board.el);
 
   const screen = h(
     "section",
@@ -199,6 +205,7 @@ export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [] } =
     board,
     transcript,
     keepSlot,
+    micSlot,
 
     // Turn lifecycle (mock; #354 owns the real one).
     setTurnInFlight,

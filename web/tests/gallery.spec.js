@@ -10,7 +10,11 @@ import { expect, test } from "@playwright/test";
 //   3. a chip tap posts its exact string as a user turn — and re-typing it does the same (§2.3's
 //      "what you said is what happened");
 //   4. a Toy with no `chips` yields a greeting-only turn one, no generic filler (§I);
-//   5. the describe bar routes free text into the build path and lands EXPANDED (§2.4/§3.3).
+//   5. the describe bar routes free text into the build path and lands EXPANDED (§2.4/§3.3);
+//   6. a live-input pick (Mic Space) surfaces the Enable-microphone control and greets it
+//      honestly — no false "playing" claim (the epic's honesty gate, "one tap → playing sound");
+//   7. the pick greeting is kind-aware: only a self-playing Toy announces sound; tap-to-play and
+//      live-input do not (the honesty gate again — never claim a state that doesn't exist).
 
 const manifest = JSON.parse(
   readFileSync(fileURLToPath(new URL("../toys.json", import.meta.url)), "utf8"),
@@ -134,6 +138,81 @@ test("a Toy with no chips yields a greeting-only turn one (tailored-or-nothing)"
   // No filler inviting a tap that doesn't exist.
   await expect(greeting).not.toContainText("try one of these");
   await expect(page.locator(".tx-chips")).toHaveCount(0);
+
+  expect(errors, `no uncaught page errors: ${errors.join("; ")}`).toEqual([]);
+});
+
+// --- 6. a live-input pick is NOT a silent dead end: mic control + honest greeting (§2.1/honesty)
+// The epic's honesty gate: user-facing copy must never claim a state that doesn't exist. A
+// live-input Toy (Mic Space) makes NO sound until the mic is enabled on a gesture, so its pick
+// must (a) surface an enable control — otherwise "one tap → playing sound" has no reachable sound —
+// and (b) greet it honestly, pointing at the mic rather than announcing it's playing.
+test("picking a live-input Toy surfaces the mic-enable control and never claims sound", async ({
+  page,
+}) => {
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+
+  const micToy = TOYS_IN_ORDER.find((t) => t.kind === "live-input");
+  expect(micToy, "fixture assumption: a live-input Toy exists").toBeTruthy();
+
+  await bootGallery(page);
+  await page.locator(`.toy-card[data-toy="${micToy.id}"]`).click();
+
+  await expect.poll(() => page.evaluate(() => window.reubenChat?.screen())).toBe("spine");
+  // The pick is NOT a silent dead end — the Enable-microphone affordance is mounted and visible.
+  await expect(page.locator('[data-slot="mic"] .mic-enable')).toBeVisible();
+  expect(await page.evaluate(() => window.reubenChat.micEnablePresent())).toBe(true);
+
+  await page.evaluate(() => window.reubenChat.toggleSheet(true));
+  const greeting = page.locator('.transcript .tx-entry[data-role="reuben"] .tx-text').first();
+  await expect(greeting).toContainText(micToy.title);
+  // Honesty gate: a mic Toy is silent until the mic is enabled, so the greeting must NOT announce
+  // it's "playing" — it must point at the microphone instead.
+  await expect(greeting).not.toContainText("playing");
+  await expect(greeting).toContainText("microphone");
+
+  expect(errors, `no uncaught page errors: ${errors.join("; ")}`).toEqual([]);
+});
+
+// --- 7. the pick greeting is kind-aware (honesty gate) ----------------------------------------
+// One uniform "…'s playing" greeting lied for tap-to-play (silent until a tap) and live-input
+// (silent until the mic). The greeting lead must differ by kind: self-playing announces sound;
+// tap-to-play and live-input do not. Drive `pickToy` directly with a real id + kind but NO chips,
+// isolating the greeting lead from the chip row.
+test("the pick greeting is kind-aware and only self-playing announces sound", async ({ page }) => {
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+
+  await bootGallery(page);
+
+  const cases = [
+    { kind: "self-playing", claimsSound: true },
+    { kind: "tap-to-play", claimsSound: false },
+    { kind: "live-input", claimsSound: false },
+  ];
+
+  for (const { kind, claimsSound } of cases) {
+    const toy = TOYS_IN_ORDER.find((t) => t.kind === kind);
+    expect(toy, `fixture assumption: a ${kind} Toy exists`).toBeTruthy();
+
+    await page.evaluate(
+      (t) => window.reubenPlayer.pickToy(t),
+      { id: toy.id, title: toy.title, kind: toy.kind },
+    );
+    await expect.poll(() => page.evaluate(() => window.reubenChat?.screen())).toBe("spine");
+    await page.evaluate(() => window.reubenChat.toggleSheet(true));
+
+    const greeting = page.locator('.transcript .tx-entry[data-role="reuben"] .tx-text').first();
+    await expect(greeting, `${kind} greeting names the Toy`).toContainText(toy.title);
+    if (claimsSound) {
+      await expect(greeting, `${kind} greeting announces sound`).toContainText("playing");
+    } else {
+      await expect(greeting, `${kind} greeting must not claim it's playing`).not.toContainText(
+        "playing",
+      );
+    }
+  }
 
   expect(errors, `no uncaught page errors: ${errors.join("; ")}`).toEqual([]);
 });

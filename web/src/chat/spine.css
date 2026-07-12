@@ -29,6 +29,24 @@
   padding: calc(1rem + env(safe-area-inset-top)) 1rem 8rem;
 }
 
+/* The Enable-microphone mount for a live-input Toy (#248/#357). Empty for every other kind, so it
+   takes no space until Mic Space's pick fills it; the control itself is styled in app.css. */
+.spine-mic {
+  max-width: 60rem;
+  margin: 0 auto 1rem;
+}
+.spine-mic:empty {
+  display: none;
+}
+.spine-mic-status {
+  margin: 0.4rem 0 0;
+  font-family: var(--font-hand);
+  color: var(--ink);
+}
+.spine-mic-status.error {
+  color: var(--string);
+}
+
 /* The node-identity board (chat/board.js): a uniform reflowing grid — survivors hold their slot,
    added cells append + animate in, removed cells animate out (spec §3.6). */
 .surface-board {
