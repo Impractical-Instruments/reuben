@@ -17,13 +17,14 @@ on:
 # because a Skipped filtered job reads to a ruleset as an unmet "expected but missing" required check.
 
 # Cancel superseded runs on the same ref so the latest push wins and minutes aren't wasted —
-# EXCEPT pushes to main. Every main commit must get its own run so the perf gate records a history
-# point for each (ADR-0019, layer 1); cancelling an in-progress or queued main run punches a hole in
-# the trend on rapid pushes/merges. So main pushes get a SHA-unique group (nothing to cancel against)
-# with cancellation off; PR and branch runs keep per-ref grouping and still cancel superseded runs.
+# EXCEPT pushes to main and dev. Every commit on those two branches must get its own run so the perf
+# gate records a history point for each (ADR-0019, layer 1) — main to the `bench-history` branch, dev
+# to `bench-history-dev`; cancelling an in-progress or queued run punches a hole in the trend on rapid
+# pushes/merges. So main and dev pushes get a SHA-unique group (nothing to cancel against) with
+# cancellation off; PR and other branch runs keep per-ref grouping and still cancel superseded runs.
 concurrency:
-  group: ci-${{ github.ref }}${{ github.ref == 'refs/heads/main' && format('-{0}', github.sha) || '' }}
-  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+  group: ci-${{ github.ref }}${{ (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') && format('-{0}', github.sha) || '' }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' && github.ref != 'refs/heads/dev' }}
 
 permissions:
   contents: read
@@ -724,16 +725,18 @@ jobs:
           echo "All required jobs passed or were skipped."
 
   # Persist the benchmark trend (ADR-0019, layer 1). The ONLY job granted `contents: write`; the gate
-  # above stays read-only. Records every main commit's absolute Ir to the `bench-history` orphan
-  # branch (not main — no tree churn, no CI re-trigger). `needs: bench` + `always()` so the point is
-  # recorded even when the gate failed; never runs for PRs or forks. When `bench` is path-skipped
-  # (a main push that changed nothing it benches), this still runs but finds no artifact and the
-  # append script no-ops — correctly recording no new point, since no benched code moved.
+  # above stays read-only. Records each commit's absolute Ir to a per-branch orphan branch: main to
+  # `bench-history`, dev to `bench-history-dev` (never main/dev themselves — no tree churn, no CI
+  # re-trigger). The two trends are fully isolated, so watching dev's trend before promoting to main
+  # never touches main's series. `needs: bench` + `always()` so the point is recorded even when the
+  # gate failed; never runs for PRs or forks. When `bench` is path-skipped (a push that changed
+  # nothing it benches), this still runs but finds no artifact and the append script no-ops —
+  # correctly recording no new point, since no benched code moved.
   bench-history:
     name: persist bench history
     runs-on: ubuntu-latest
     needs: bench
-    if: ${{ always() && github.event_name == 'push' && github.ref == 'refs/heads/main' }}
+    if: ${{ always() && github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev') }}
     permissions:
       contents: write
     steps:
@@ -744,7 +747,11 @@ jobs:
           name: bench-history-record
           path: _bench_rec
         continue-on-error: true # no artifact (harness didn't run) => append script no-ops
+      # Route to the branch's own orphan trend: dev -> bench-history-dev, everything else (main) ->
+      # bench-history. The label is the human name the dashboard prints in its copy.
       - name: Append to bench-history branch
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: ./.github/scripts/bench-history-append.sh _bench_rec/bench-history-record.jsonl
+          HIST_BRANCH: ${{ github.ref == 'refs/heads/dev' && 'bench-history-dev' || 'bench-history' }}
+          HIST_LABEL: ${{ github.ref == 'refs/heads/dev' && 'dev' || 'main' }}
+        run: ./.github/scripts/bench-history-append.sh _bench_rec/bench-history-record.jsonl "$HIST_BRANCH" "$HIST_LABEL"

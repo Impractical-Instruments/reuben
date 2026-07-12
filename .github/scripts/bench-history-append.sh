@@ -1,18 +1,20 @@
 #!/usr/bin/env bash
-# Append per-commit benchmark instruction counts to the `bench-history` branch (ADR-0019, layer 1).
+# Append per-commit benchmark instruction counts to a per-branch orphan trend (ADR-0019, layer 1).
 #
 # The perf gate compares each commit to its parent and then discards the numbers — they live only in
 # the job's step summary, which ages out. This script persists HEAD's absolute Ir per benched case,
 # so a cross-commit trend is one command away:
 #
-#     git show bench-history:bench-history.jsonl
+#     git show bench-history:bench-history.jsonl        # main's trend
+#     git show bench-history-dev:bench-history.jsonl    # dev's trend
 #
 # It also re-renders the dashboard (layer 2, bench-dashboard.py) — a README.md + SVG charts
 # committed beside the JSONL, so browsing the branch on GitHub *is* the trend view.
 #
-# It runs ONLY on direct pushes to main, in a dedicated job whose token is the single `contents:
-# write` grant in CI; the gate job itself stays `contents: read` (ADR-0019). The history lives on an
-# orphan branch, not main, so main's tree never churns and recording never re-triggers CI.
+# It runs ONLY on direct pushes to main and dev, in a dedicated job whose token is the single
+# `contents: write` grant in CI; the gate job itself stays `contents: read` (ADR-0019). Each source
+# branch keeps its own isolated orphan trend (main -> bench-history, dev -> bench-history-dev), so
+# main's and dev's series never mix, and neither the source branches' trees nor CI are re-triggered.
 #
 # Input: the JSONL record perf-gate.sh harvested (one {sha,commit_sha,date,run_id,layer,case,ir}
 # object per case). Empty or absent input is a deliberate no-op — e.g. a commit whose bench harness
@@ -20,11 +22,16 @@
 # not a fabricated point.
 #
 # Arg 1: path to the record JSONL.
+# Arg 2: target orphan branch (default `bench-history`).
+# Arg 3: human branch label the dashboard prints in its copy (default `main`).
 # Env:   GITHUB_TOKEN (contents:write), GITHUB_REPOSITORY (owner/repo), GITHUB_SHA.
 set -euo pipefail
 
-REC="${1:?usage: bench-history-append.sh <record.jsonl>}"
-BRANCH="bench-history"
+REC="${1:?usage: bench-history-append.sh <record.jsonl> [branch] [label]}"
+BRANCH="${2:-bench-history}"
+LABEL="${3:-main}"
+# Same filename on every trend branch, so the `git show <branch>:bench-history.jsonl` command and the
+# dashboard's reader are identical regardless of which branch's series is being appended.
 FILE="bench-history.jsonl"
 DASHBOARD="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/bench-dashboard.py"
 
@@ -63,7 +70,7 @@ for attempt in 1 2 3 4 5; do
   # path by path (a first-ever run has neither in the index; checkout of a missing path fails
   # alone without blocking the other).
   rm -rf README.md charts
-  if ! python3 "$DASHBOARD" "$FILE" .; then
+  if ! python3 "$DASHBOARD" "$FILE" . "$LABEL"; then
     echo "WARNING: dashboard render failed — restoring the previous dashboard, appending data only." >&2
     rm -rf README.md charts
     for p in README.md charts; do git checkout -q -- "$p" 2>/dev/null || true; done
