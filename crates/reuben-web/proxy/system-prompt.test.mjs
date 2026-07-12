@@ -91,6 +91,55 @@ test("the prompt names the automatic, once-only first-restart framing without as
   assert.match(SYSTEM_PROMPT, /automatic/i);
 });
 
+// --- §5 ambiguity & failure taxonomy (issue #361) ------------------------------------------
+// A PROMPT LINT: proves the four §5.1 cases are each stated in the prompt text so a later edit
+// can't silently drop one. Behavioral proof of the loop-level cases (silent {ok:false} repair,
+// exhausted collapse) is js/agent-failure-eval.test.mjs; of the UI containers (reading line, alt
+// chips, chat-only "nearest thing"), web/tests/failure.spec.js.
+
+test("the prompt frames the ONE failure shape: engine reasons/gaps/diagnostics stay internal (§5)", () => {
+  // Only ambiguity acts; everything about WHY stays internal — the user meets sound + intent only.
+  assert.match(SYSTEM_PROMPT, /never (show|expose|tell|reveal).{0,80}(reason|why|engine|diagnostic)/is);
+});
+
+test("the prompt states case 1 — ambiguous but actionable: act on the best reading, then offer alternatives (§5.1)", () => {
+  assert.match(SYSTEM_PROMPT, /ambiguous/i);
+  // Act-then-react: make the change now rather than stalling on a question...
+  assert.match(SYSTEM_PROMPT, /(most likely|best) reading|best[- ]effort/i);
+  // ...surface how you read it + 1-2 tappable alternative readings.
+  assert.match(SYSTEM_PROMPT, /how (i|you) read it/i);
+  assert.match(SYSTEM_PROMPT, /alternativ/i);
+});
+
+test("the prompt states case 2 — unsatisfiable: nearest thing, engine reason never shown, sound unchanged (§5.1)", () => {
+  assert.match(SYSTEM_PROMPT, /nearest/i);
+  // The engine reason is never exposed — reframe via the capability surface.
+  assert.match(SYSTEM_PROMPT, /can.?t/i);
+  // It is a plain reply — the sound does not change on an unsatisfiable ask.
+  assert.match(SYSTEM_PROMPT, /(don.?t|do not|never) change the sound|sound (stays )?unchanged|leave the sound/is);
+});
+
+test("the prompt states case 3 — validation failure is repaired silently; the user never sees a diagnostic (§5.1)", () => {
+  assert.match(SYSTEM_PROMPT, /(repair|correct|fix).{0,40}(silently|quietly|within)/is);
+  assert.match(SYSTEM_PROMPT, /never sees?.{0,40}(diagnostic|report|reason)|user never sees/is);
+});
+
+test("the prompt states case 4 — empty/off-topic/gibberish → gentle re-orient with starters, never scold (§5.1)", () => {
+  assert.match(SYSTEM_PROMPT, /off[- ]topic/i);
+  assert.match(SYSTEM_PROMPT, /re-?orient|starter|nudge/i);
+  // The off-topic light redirect the spec calls out verbatim.
+  assert.match(SYSTEM_PROMPT, /i make sounds/i);
+});
+
+test("the §5 failure section is itself forbidden-word clean (the copy the model is told to emit) (§1)", () => {
+  // The prompt necessarily NAMES the never-say words to forbid them (tested above), so we can't scan
+  // the whole prompt. Instead: the illustrative user-facing lines the §5 section tells the model to
+  // SAY must be clean. Pull the quoted "i make sounds…" redirect and assert it carries no engine word.
+  const m = SYSTEM_PROMPT.match(/I make sounds[^"”\n]*/i);
+  assert.ok(m, "the off-topic redirect line is present to scan");
+  assert.deepStrictEqual(scanForbiddenTerms(m[0]), [], `the off-topic redirect line leaked an engine word: "${m[0]}"`);
+});
+
 // The §1 forbidden-word gate is the epic's crown jewel: NOTHING on the never-say list may ever reach
 // the user, in any inflection. The matcher must (a) flag every stem plus every inflection English
 // actually produces — including the e-final forms the old `stem + optional {s,es,ing,ed}` regex

@@ -51,7 +51,10 @@ const FORBIDDEN_RE = FORBIDDEN_LEXICON.map((w) => new RegExp(`\\b${w}\\b`, "i"))
 // True if `text` trips the forbidden lexicon (any whole-word hit). Gates the `agentCopy` seam: an
 // agent row sentence that somehow carries an engine/theory word is dropped to the generic phrase
 // rather than shown. (The synthesized fallback needs no gating — it is generic by construction.)
-function tripsLexicon(text) {
+// Exported so the plain chat-turn path (chat/spine.js `chatReply`, issue #361) drops a tripping
+// line/chip through the SAME gate the card uses — the §1 lexicon is an acceptance gate in EVERY
+// state (happy path, failure, thinking, keep), not the card alone.
+export function tripsLexicon(text) {
   return FORBIDDEN_RE.some((re) => re.test(text));
 }
 
@@ -108,9 +111,12 @@ export const COLLAPSE_THRESHOLD = 5;
  * @param {import("../../../crates/reuben-web/js/agent-turn.mjs").AgentTurn} turn - the live envelope.
  * @param {{cellsForNode: (a: string) => Element[], echoNode: (a: string) => void,
  *          clearEchoNode: (a: string) => void}} board - the surface board's echo bridge.
+ * @param {{onAlternative?: (alt: {id: string, label: string}) => void}} [opts] - case 1's
+ *   alternative-interpretation chip tap (spec §5.1): a tap re-reshapes toward the other reading.
+ *   Wired by the spine to `submitTurn(alt.label)` — the same verbatim-post path a typed line takes.
  * @returns {{el: HTMLElement, turn: object, update: () => void}}
  */
-export function createChangeCard(turn, board) {
+export function createChangeCard(turn, board, { onAlternative } = {}) {
   // The persistent card node (spec §4.2 "the same object"). `data-card-state` mirrors the envelope
   // status so the spine + tests can observe thinking → resolved on ONE element.
   const el = h("div", {
@@ -204,6 +210,43 @@ export function createChangeCard(turn, board) {
       }
       // rows.length === 0 → a resolved turn that touched no node (e.g. a pure re-audition): the plan
       // line alone is the record. No empty rows list.
+
+      // §5.1 case 1 — ambiguous but actionable: the best-effort change already played (the rows +
+      // surface glow above); here we surface HOW the guess was read + the tappable other-readings.
+      // Both ride this card (spec §5.2: a change happened, so it is a change-card, not a chat turn).
+      // The reading line is the agent's own sensory prose — lexicon-gated like `agentCopy`, dropped
+      // if it somehow carries an engine word rather than shown unclean.
+      if (typeof turn.reading === "string" && turn.reading.trim() && !tripsLexicon(turn.reading)) {
+        el.appendChild(h("p", { class: "tx-card-reading" }, turn.reading.trim()));
+      }
+      // The alternative-interpretation chips (spec §5.1): 1-2 tappable other-readings. Each posts its
+      // label VERBATIM as the next turn (the §2.3 chip contract) — a wrong guess is one tap from
+      // fixed, no typing. A label that trips the lexicon is dropped, never shown unclean.
+      // At most TWO chips (spec §5.1 "1–2 tappable alternative-interpretation chips"): cap AFTER the
+      // lexicon filter so two clean readings survive even if an earlier one tripped and was dropped.
+      const alts = (turn.alternatives ?? [])
+        .filter((a) => a && typeof a.label === "string" && a.label.trim() && !tripsLexicon(a.label))
+        .slice(0, 2);
+      if (alts.length > 0) {
+        el.appendChild(
+          h(
+            "div",
+            { class: "tx-card-alts tx-chips" },
+            alts.map((alt) =>
+              h(
+                "button",
+                {
+                  class: "tx-chip tx-alt-chip",
+                  type: "button",
+                  dataset: { altId: alt.id ?? "" },
+                  onclick: () => onAlternative?.(alt),
+                },
+                alt.label.trim(),
+              ),
+            ),
+          ),
+        );
+      }
     }
 
     // §4.7: the restart-honesty slot is RESERVED at the card foot and rendered only if the envelope

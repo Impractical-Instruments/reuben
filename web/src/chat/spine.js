@@ -26,7 +26,7 @@ import "./spine.css";
 import { h } from "../dom.js";
 import { createBoard } from "./board.js";
 import { createTranscript } from "./transcript.js";
-import { createChangeCard } from "./change-card.js";
+import { createChangeCard, tripsLexicon } from "./change-card.js";
 import { assistantTurn } from "../../../crates/reuben-web/js/agent-turn.mjs";
 
 // The arrival-default transcript state (spec §3.3): land EXPANDED when the user MADE an
@@ -293,7 +293,12 @@ export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [], du
     // seam a crafted envelope pushes through (mirrors main.js:859's un-wired seam).
     beginReshapeCard() {
       const env = assistantTurn();
-      const card = createChangeCard(env.turn, board);
+      // §5.1 case 1: a tapped alternative-interpretation chip re-reshapes toward the other reading —
+      // it posts its label VERBATIM through the SAME submit path a typed line takes (spec §2.3), so
+      // a wrong guess is one tap from fixed. Identical contract to a turn-one quick-change chip.
+      const card = createChangeCard(env.turn, board, {
+        onAlternative: (alt) => submitTurn(alt.label),
+      });
       transcript.push({ kind: "change-card", card });
 
       // The card-commit + surface-animate half of a landed reshape (spec §4.1/§4.6). Factored out so
@@ -322,6 +327,25 @@ export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [], du
         turn: env.turn,
         appendPlan(text) {
           env.appendPlan(text);
+          card.update();
+        },
+
+        // §5.1 case 1 seam: attach the "how I read it" preface + the alternative-interpretation
+        // chips BEFORE resolving, so they land on the same resolved card the best-effort change
+        // does. Repaint in place (§4.2) so a driver can set them incrementally, like the plan.
+        setReading(text) {
+          env.setReading(text);
+          card.update();
+        },
+        setAlternatives(alts) {
+          env.setAlternatives(alts);
+          card.update();
+        },
+        // §5.1 case 3 seam: record a tool round-trip's provenance (including a {ok:false} report
+        // the agent repairs from) onto the envelope's INTERNAL toolLog. Never rendered — the card
+        // has no Diag surface, so a Diag can ride here and still never reach the DOM (ADR-0048 §3).
+        recordTool(inv) {
+          env.recordTool(inv);
           card.update();
         },
 
@@ -364,6 +388,29 @@ export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [], du
           return env.turn;
         },
       };
+    },
+
+    // --- the plain chat-turn container (spec §5.2, issue #361) ------------------------------
+    // A reuben reply that is NOT a change-card: unsatisfiable's "nearest thing" (case 2), the
+    // empty/off-topic re-orient (case 4), and a reshape terminal failure that KEEPS the prior sound
+    // (case 3 exhausted / §5.3). The container rule (§5.2): NO surface change ⇒ NO change-card — it
+    // is a chat turn. So this pushes a plain reuben line + optional tappable chips (the nearest move
+    // as an action, or the starter directions) and TOUCHES NEITHER the board NOR the transport — the
+    // sound is left exactly as it was. The chips flow through the SAME verbatim submitTurn path a
+    // typed line or a turn-one chip takes (spec §2.3).
+    //
+    // LEXICON GATE (§1): the forbidden-word list is an acceptance gate in EVERY state, not the
+    // change-card alone — so the reply line and each chip label pass through the SAME `tripsLexicon`
+    // drop the card rows use. A tripping line/chip is DROPPED rather than rendered unclean (never
+    // shown with a leaked engine word); clean content renders unchanged.
+    chatReply({ text, chips = [] } = {}) {
+      if (text && !tripsLexicon(text)) transcript.push({ role: "reuben", text });
+      const cleanChips = (Array.isArray(chips) ? chips : []).filter(
+        (c) => typeof c === "string" && c.trim() && !tripsLexicon(c),
+      );
+      if (cleanChips.length) {
+        transcript.push({ role: "reuben", kind: "chips", chips: cleanChips });
+      }
     },
 
     // Sheet.

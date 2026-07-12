@@ -62,6 +62,9 @@
  * @property {string} plan
  * @property {StructuralDiff|null} diff
  * @property {string[]} caveats
+ * @property {string|null} reading      The "how I read it" sensory preface for an ambiguous
+ *                                      best-effort reshape (spec §5.1 case 1). null when the ask
+ *                                      was unambiguous. Rides D's change-card above the alt chips.
  * @property {AlternativeChip[]} alternatives
  * @property {string|null} restartHonesty
  * @property {ToolInvocation[]} toolLog
@@ -97,6 +100,7 @@ export function userTurn(text) {
     plan: text,
     diff: null,
     caveats: [],
+    reading: null,
     alternatives: [],
     restartHonesty: null,
     toolLog: [],
@@ -126,6 +130,7 @@ export function assistantTurn() {
     plan: "",
     diff: null,
     caveats: [],
+    reading: null,
     alternatives: [],
     restartHonesty: null,
     toolLog: [],
@@ -143,6 +148,17 @@ export function assistantTurn() {
     // Attach the resolved structural diff from a swap (spec §4.6). Last swap in a turn wins.
     setDiff(diff) {
       turn.diff = diff;
+    },
+    // Attach case 1's "how I read it" sensory preface (spec §5.1) — the one-line reading the
+    // best-effort guess is surfaced under, above the alternative chips on D's change-card.
+    setReading(text) {
+      turn.reading = text;
+    },
+    // Attach case 1's alternative-interpretation chips (spec §5.1): 1-2 tappable other-readings a
+    // single tap re-reshapes toward. Each is {id, label}; the UI posts `label` verbatim as the next
+    // turn (the §2.3 chip contract), so a wrong guess is one tap from fixed.
+    setAlternatives(alts) {
+      turn.alternatives = alts;
     },
     // Attach F's restart-honesty line (spec §6.4) — set by agent-host.mjs at most once per
     // session, only on a genuine first restart of already-playing sound.
