@@ -964,7 +964,7 @@ mod tests {
         }
 
         fn osc_endpoint(&self) -> String {
-            "127.0.0.1:9000".to_string()
+            default_osc_addr()
         }
     }
 
