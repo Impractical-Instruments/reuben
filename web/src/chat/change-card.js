@@ -51,7 +51,10 @@ const FORBIDDEN_RE = FORBIDDEN_LEXICON.map((w) => new RegExp(`\\b${w}\\b`, "i"))
 // True if `text` trips the forbidden lexicon (any whole-word hit). Gates the `agentCopy` seam: an
 // agent row sentence that somehow carries an engine/theory word is dropped to the generic phrase
 // rather than shown. (The synthesized fallback needs no gating — it is generic by construction.)
-function tripsLexicon(text) {
+// Exported so the plain chat-turn path (chat/spine.js `chatReply`, issue #361) drops a tripping
+// line/chip through the SAME gate the card uses — the §1 lexicon is an acceptance gate in EVERY
+// state (happy path, failure, thinking, keep), not the card alone.
+export function tripsLexicon(text) {
   return FORBIDDEN_RE.some((re) => re.test(text));
 }
 
@@ -219,9 +222,11 @@ export function createChangeCard(turn, board, { onAlternative } = {}) {
       // The alternative-interpretation chips (spec §5.1): 1-2 tappable other-readings. Each posts its
       // label VERBATIM as the next turn (the §2.3 chip contract) — a wrong guess is one tap from
       // fixed, no typing. A label that trips the lexicon is dropped, never shown unclean.
-      const alts = (turn.alternatives ?? []).filter(
-        (a) => a && typeof a.label === "string" && a.label.trim() && !tripsLexicon(a.label),
-      );
+      // At most TWO chips (spec §5.1 "1–2 tappable alternative-interpretation chips"): cap AFTER the
+      // lexicon filter so two clean readings survive even if an earlier one tripped and was dropped.
+      const alts = (turn.alternatives ?? [])
+        .filter((a) => a && typeof a.label === "string" && a.label.trim() && !tripsLexicon(a.label))
+        .slice(0, 2);
       if (alts.length > 0) {
         el.appendChild(
           h(

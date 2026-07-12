@@ -125,7 +125,10 @@ const toolRound = (narration, id, name, input) => [
 
 // --- case 3: {ok:false} → silent self-correction; the user never sees a Diag ---------------
 
-test("case 3: a {ok:false} swap is repaired WITHIN the turn — only the good document installs", async () => {
+// The shared arrange for the silent-repair scenario: the model attempts the WRONG document (validate
+// {ok:false}), silently repairs to the GOOD document (installs), then lands the turn. Returns the
+// live engine (for install-count assertions) and the resolved turn.
+async function arrangeSilentRepair() {
   const engine = makeEngine({ bundle: bundleOf(BEFORE_DOC) });
   const toolLayer = createToolLayer({ engine, introspect: makeIntrospect() });
   const transport = mockTransport([
@@ -137,8 +140,12 @@ test("case 3: a {ok:false} swap is repaired WITHIN the turn — only the good do
     textOnlyRound("Added a bright shimmer over the top."),
   ]);
   const host = createAgentHost({ toolLayer, transport, transcript: stubTranscript() });
-
   const resolved = await host.send("add a shimmer");
+  return { engine, resolved };
+}
+
+test("case 3: a {ok:false} swap is repaired WITHIN the turn — only the good document installs", async () => {
+  const { engine, resolved } = await arrangeSilentRepair();
 
   // {ok:false} installs NOTHING (ADR-0048 §5) — only the repaired document reached the engine.
   assert.strictEqual(engine._calls.loadBundle.length, 1, "exactly one install — the {ok:false} attempt installed nothing");
@@ -156,16 +163,7 @@ test("case 3: a {ok:false} swap is repaired WITHIN the turn — only the good do
 });
 
 test("case 3: no Diag (node/port/message) ever reaches the user-facing plan", async () => {
-  const engine = makeEngine({ bundle: bundleOf(BEFORE_DOC) });
-  const toolLayer = createToolLayer({ engine, introspect: makeIntrospect() });
-  const transport = mockTransport([
-    toolRound("Adding a touch of shimmer.", "tu-1", "swap", { document: BAD_DOC }),
-    toolRound("Getting the shimmer just right.", "tu-2", "swap", { document: GOOD_DOC }),
-    textOnlyRound("Added a bright shimmer over the top."),
-  ]);
-  const host = createAgentHost({ toolLayer, transport, transcript: stubTranscript() });
-
-  const resolved = await host.send("add a shimmer");
+  const { resolved } = await arrangeSilentRepair();
 
   // The Diag[] is agent-internal fuel: it rides the toolLog (provenance) but NONE of its text — the
   // node address, the port, or the message — may appear in what the user reads.

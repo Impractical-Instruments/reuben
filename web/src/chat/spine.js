@@ -26,7 +26,7 @@ import "./spine.css";
 import { h } from "../dom.js";
 import { createBoard } from "./board.js";
 import { createTranscript } from "./transcript.js";
-import { createChangeCard } from "./change-card.js";
+import { createChangeCard, tripsLexicon } from "./change-card.js";
 import { assistantTurn } from "../../../crates/reuben-web/js/agent-turn.mjs";
 
 // The arrival-default transcript state (spec §3.3): land EXPANDED when the user MADE an
@@ -388,10 +388,18 @@ export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [], du
     // as an action, or the starter directions) and TOUCHES NEITHER the board NOR the transport — the
     // sound is left exactly as it was. The chips flow through the SAME verbatim submitTurn path a
     // typed line or a turn-one chip takes (spec §2.3).
+    //
+    // LEXICON GATE (§1): the forbidden-word list is an acceptance gate in EVERY state, not the
+    // change-card alone — so the reply line and each chip label pass through the SAME `tripsLexicon`
+    // drop the card rows use. A tripping line/chip is DROPPED rather than rendered unclean (never
+    // shown with a leaked engine word); clean content renders unchanged.
     chatReply({ text, chips = [] } = {}) {
-      if (text) transcript.push({ role: "reuben", text });
-      if (Array.isArray(chips) && chips.length) {
-        transcript.push({ role: "reuben", kind: "chips", chips });
+      if (text && !tripsLexicon(text)) transcript.push({ role: "reuben", text });
+      const cleanChips = (Array.isArray(chips) ? chips : []).filter(
+        (c) => typeof c === "string" && c.trim() && !tripsLexicon(c),
+      );
+      if (cleanChips.length) {
+        transcript.push({ role: "reuben", kind: "chips", chips: cleanChips });
       }
     },
 

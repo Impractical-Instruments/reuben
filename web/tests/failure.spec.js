@@ -68,10 +68,13 @@ test("an ambiguous turn plays a best-effort change, shows a 'how I read it' line
   await page.evaluate(() =>
     window.reubenChat.reshapeSetReading("I read 'warmer' as a rounder, mellower tone."),
   );
+  // Feed THREE readings — the card caps at 2 (spec §5.1 "1–2 tappable alternative-interpretation
+  // chips"), so the third must not render.
   await page.evaluate(() =>
     window.reubenChat.reshapeSetAlternatives([
       { id: "fade", label: "more of a slow fade-in" },
       { id: "room", label: "cozier, roomier space" },
+      { id: "third", label: "a little more bite" },
     ]),
   );
   await page.evaluate((n) => window.reubenChat.reshapeResolve({ changed: [n], added: [], removed: [] }), node);
@@ -85,11 +88,10 @@ test("an ambiguous turn plays a best-effort change, shows a 'how I read it' line
   expect(reading).toContain("warmer");
   assertLexiconClean(reading, "the reading line");
 
-  // 1–2 tappable alternative-interpretation chips (§5.1).
+  // Exactly TWO tappable alternative-interpretation chips — the third fed reading is capped off (§5.1).
   const alts = await page.evaluate(() => window.reubenChat.cardAlternatives());
-  expect(alts.length).toBeGreaterThanOrEqual(1);
-  expect(alts.length).toBeLessThanOrEqual(2);
-  expect(alts).toContain("more of a slow fade-in");
+  expect(alts).toEqual(["more of a slow fade-in", "cozier, roomier space"]);
+  expect(alts).not.toContain("a little more bite");
 
   // A chip tap re-reshapes toward the OTHER reading — posts its label VERBATIM as the user's turn
   // (spec §2.3 / §5.1: a wrong guess is one tap from fixed, no typing).
@@ -147,6 +149,34 @@ test("an unsatisfiable ask is a chat-only 'nearest thing' with a tappable action
       hasText: "make the lead breathier and reedy",
     }),
   ).toHaveCount(1);
+
+  expect(errors, `no uncaught page errors: ${errors.join("; ")}`).toEqual([]);
+});
+
+// --- 2b. the chat-turn path is lexicon-gated in EVERY state (spec §1) --------------------------
+test("a chat-turn carrying a forbidden engine word does not leak it to the DOM", async ({ page }) => {
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+
+  await bootSpine(page);
+
+  // A reply line + a chip label each carrying a forbidden engine word ("wire", "patch"). The §1
+  // gate is an acceptance gate in every state, not the change-card alone — the tripping line and
+  // chip must be DROPPED, never rendered unclean. A clean chip alongside still renders.
+  await page.evaluate(() =>
+    window.reubenChat.chatReply({
+      text: "I re-wired the patch for you.",
+      chips: ["swap the operator", "make it brighter"],
+    }),
+  );
+
+  // No forbidden word anywhere in the chat chrome.
+  assertLexiconClean(await chatChrome(page), "the lexicon-gated chat turn");
+  // The tripping line was dropped (not rendered), and only the clean chip survived.
+  const dockText = await chatChrome(page);
+  expect(dockText.includes("re-wired")).toBe(false);
+  await expect(page.locator('.transcript .tx-chip', { hasText: "make it brighter" })).toHaveCount(1);
+  await expect(page.locator('.transcript .tx-chip', { hasText: "swap the operator" })).toHaveCount(0);
 
   expect(errors, `no uncaught page errors: ${errors.join("; ")}`).toEqual([]);
 });
@@ -244,11 +274,12 @@ test("a reshape terminal failure keeps the prior sound: a plain chat turn, no ca
   const boardBefore = await page.evaluate(() => window.reubenChat.boardNodes());
   const restrikeBefore = await page.evaluate(() => window.reubenChat.transportRestrikeSeq());
 
-  // Exhausted → collapse into the "can't" shape (§5.1 case 3 → §5.3): a plain line, no card. The
-  // prior sound keeps playing (ADR-0048 §5: {ok:false} installs nothing).
+  // Exhausted → collapse into case 2's "can't" shape (§5.1 case 3 → §5.3): a plain line PLUS the
+  // nearest move as a tappable action, no card. The prior sound keeps playing (ADR-0048 §5).
   await page.evaluate(() =>
     window.reubenChat.chatReply({
       text: "I couldn't make that change stick — the sound's still going as it was.",
+      chips: ["make it a touch brighter instead"],
     }),
   );
 
@@ -259,6 +290,8 @@ test("a reshape terminal failure keeps the prior sound: a plain chat turn, no ca
   await expect(page.locator('.transcript .tx-entry[data-role="reuben"] .tx-text').last()).toContainText(
     "still going",
   );
+  // The nearest move renders as a tappable action (case 2's shape) — scope to the LAST chips row.
+  await expect(page.locator(".transcript .tx-chips-entry").last().locator(".tx-chip")).toHaveCount(1);
   assertLexiconClean(await chatChrome(page), "the reshape terminal-failure turn");
 
   expect(errors, `no uncaught page errors: ${errors.join("; ")}`).toEqual([]);
