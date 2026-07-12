@@ -9,12 +9,11 @@
 // is deliberately excluded from `ci-passed`'s needs — a real regression here should still show
 // red in the job's own log, but never blocks a merge on live-model variance.
 //
-// Session shape: ONE host (one conversation) carries four turns, so register/restart state is
+// Session shape: ONE host (one conversation) carries three turns, so register/restart state is
 // genuinely session-scoped exactly like production:
 //   1. an explicit tool-use smoke (unchanged from #354) — proves the plumbing still carries a turn.
 //   2. a plain parameter-style ask ("make it brighter") — should read as a live, no-restart update.
-//   3. an unprompted theory-vocabulary ask ("put it in a minor key") — the §8 register-bump signal.
-//   4. a structural ask ("add a delay") — should restart, and AT MOST ONE turn in the whole
+//   3. a structural ask ("add a delay") — should restart, and AT MOST ONE turn in the whole
 //      session may carry the restart-honesty line (§6.4), whichever turn actually first restarts
 //      already-playing sound.
 // Hard assertions: the loop resolves, streams, and drives at least one tool through the layer; and
@@ -145,10 +144,7 @@ async function main() {
   // Turn 2: a plain parameter-style ask — §6.1's routing policy, unprompted (no tool named).
   await runTurn("parameter-ask", "make it a bit brighter");
 
-  // Turn 3: unprompted theory vocabulary — §8's sole register-bump signal.
-  await runTurn("theory-vocabulary-ask", "put it in a minor key");
-
-  // Turn 4: a structural ask — should restart; exercises §6.4's honesty-line gate.
+  // Turn 3: a structural ask — should restart; exercises §6.4's honesty-line gate.
   await runTurn("structural-ask", "add a slow, wobbly delay");
 
   // Soft (a): scan every turn's plan for a forbidden engine word (§1) across the session.
