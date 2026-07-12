@@ -50,7 +50,8 @@ The app already deploys to Cloudflare Pages (`deploy-web` in `.github/workflows/
 
 2. **Set the secret** (Pages project → Settings → Environment variables, encrypted):
    `ANTHROPIC_API_KEY` (and optionally `REUBEN_CHAT_MODEL`). Until it is set the Function self-gates
-   to `503`, exactly like `deploy-web` self-gates without the Cloudflare secrets.
+   to `503`, exactly like `deploy-web` self-gates without the Cloudflare secrets. Rotating this key
+   later — how, who, cadence — is written up in [`KEY-ROTATION.md`](KEY-ROTATION.md).
 
 3. **Abuse floor (ADR-0054 §5 / §7 — ready-for-human follow-up, NOT built here).** Add the
    origin/Referer allow-list, per-IP token bucket, and short-lived signed session token in
