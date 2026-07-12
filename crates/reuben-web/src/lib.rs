@@ -30,8 +30,19 @@ pub mod shell;
 // The web-chat agent tool-schema artifact generator (issue #354, ADR-0054 §3). HOST-ONLY: it is
 // consumed off-line by the proxy + the JS layer via the committed `js/tool-schemas.generated.json`,
 // never called from the worklet, so it stays out of the wasm payload (issue #227 mobile budget).
+//
+// SAFE-REMOVAL GUARD (WX-3, issue #417): the Phase-3 extraction (WX-14) deletes this module from
+// the public crate, and that deletion must not touch the wasm build. The `#[cfg]` below keeps it
+// out of every wasm build; the `host_only_guard` tests keep that true by construction. See that
+// module for the full argument — the reachers stay host-only (the `gen_tool_schemas` example + the
+// staleness test), never the wasm-reachable surface.
 #[cfg(not(target_arch = "wasm32"))]
 pub mod tool_schema;
+
+// The host-only safe-removal guard for [`tool_schema`] (WX-3, issue #417). Plain `cargo test`
+// assertions — they run on the host, alongside CI's wasm build which is the ultimate backstop.
+#[cfg(test)]
+mod host_only_guard;
 
 #[cfg(target_arch = "wasm32")]
 mod bridge;
