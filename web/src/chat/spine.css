@@ -1,0 +1,257 @@
+/* chat/spine.css — the co-presence spine layout (spec §3.7, issue #355). ONE responsive layout,
+   phone → desktop: the surface owns the top/center; the reshape input is pinned to the bottom;
+   the transcript is an upward collapsible sheet that partially occludes the LOWER surface when
+   open (never a full-screen takeover — spec §3.1). Retinted to the same Impractical Instruments
+   storybook language as app.css (inked borders, flat paper shadows, the ported design tokens),
+   so the chat experience reads as one surface with the shell it is flagged into. */
+
+/* The spine fills the viewport so the input can pin to its true bottom edge (thumb-reachable on a
+   phone). The dock is absolutely bottom-anchored, so the surface region can own the WHOLE area
+   and the sheet overlays its lower part when expanded (occlusion, not a reflow). */
+.spine {
+  position: relative;
+  flex: 1 1 auto;
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
+  background: var(--paper);
+  color: var(--ink);
+}
+
+/* --- surface region: TOP / CENTER at every width (spec §3.7) -------------------------------- */
+
+.spine-surface {
+  position: absolute;
+  inset: 0;
+  overflow-y: auto;
+  /* Room at the foot so surface content can scroll clear of the collapsed dock rather than hide
+     permanently behind it; the expanded sheet then overlays the lower surface deliberately. */
+  padding: calc(1rem + env(safe-area-inset-top)) 1rem 8rem;
+}
+
+/* The node-identity board (chat/board.js): a uniform reflowing grid — survivors hold their slot,
+   added cells append + animate in, removed cells animate out (spec §3.6). */
+.surface-board {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(7rem, 1fr));
+  gap: 0.6rem;
+  width: 100%;
+  max-width: 60rem;
+  margin: 0 auto;
+}
+.board-cell {
+  min-width: 0;
+}
+/* Each cell IS the render.mjs container (renderSurface adds `.reuben-surface` to it and injects
+   SURFACE_CSS); drop that class's block margin so the grid gap is the only spacing. */
+.board-cell.reuben-surface {
+  margin: 0;
+}
+.board-cell[data-board-state="entering"] {
+  animation: cell-in 0.24s ease both;
+}
+.board-cell[data-board-state="exiting"] {
+  animation: cell-out 0.22s ease forwards;
+  pointer-events: none;
+}
+.board-cell[data-board-state="changed"] {
+  animation: cell-glow 0.6s ease;
+}
+@keyframes cell-in {
+  from {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes cell-out {
+  to {
+    opacity: 0;
+    transform: scale(0.92);
+  }
+}
+@keyframes cell-glow {
+  50% {
+    box-shadow: 0 0 0 3px var(--turquoise);
+  }
+}
+
+/* --- the bottom-anchored dock: transcript sheet + pinned chrome ----------------------------- */
+
+/* bottom:0 pins the dock's foot; as the transcript grows the dock's TOP rises — so the sheet
+   expands UPWARD over the lower surface (spec §3.7). */
+.spine-dock {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* column-reverse: the toggle handle stays first in DOM (keyboard order) but paints at the sheet's
+   BOTTOM edge, with the transcript panel above it, expanding up. */
+.spine-sheet {
+  display: flex;
+  flex-direction: column-reverse;
+  background: var(--paper);
+}
+
+.sheet-handle {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.45rem;
+  width: 100%;
+  padding: 0.45rem 1rem;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.68rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: var(--butter);
+  border: none;
+  border-top: var(--border-ink);
+  cursor: pointer;
+}
+.sheet-chevron {
+  display: inline-block;
+  transition: transform 0.2s ease;
+}
+.spine-sheet[data-expanded="true"] .sheet-chevron {
+  transform: rotate(180deg);
+}
+
+/* The transcript collapses to zero (only the handle shows) and expands to a CAPPED height — never
+   a full-screen takeover (spec §3.1). dvh keeps the cap honest on a phone. */
+.transcript {
+  overflow-y: auto;
+  max-height: 0;
+  opacity: 0;
+  padding: 0 1rem;
+  background: var(--paper);
+  border-top: var(--border-ink);
+  transition: max-height 0.25s ease, opacity 0.2s ease, padding 0.25s ease;
+}
+.spine-sheet[data-expanded="true"] .transcript {
+  max-height: min(48dvh, 22rem);
+  opacity: 1;
+  padding: 0.8rem 1rem;
+}
+
+.tx-entry {
+  margin: 0 0 0.75rem;
+}
+.tx-role {
+  display: block;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.62rem;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--persimmon);
+}
+.tx-entry[data-role="you"] .tx-role {
+  color: var(--sky);
+}
+.tx-text {
+  margin: 0.1rem 0 0;
+  font-size: 0.98rem;
+  line-height: 1.4;
+}
+
+/* --- chrome: the ALWAYS-visible pinned input + the empty Keep slot (M2) --------------------- */
+
+.spine-chrome {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.6rem 1rem calc(0.6rem + env(safe-area-inset-bottom));
+  background: var(--paper);
+  border-top: var(--border-ink);
+}
+/* A thin working stripe while a turn is in flight (spec §3.4) — PURELY the co-presence cue; it
+   never disables the input or the board below it. */
+.spine[data-turn="in-flight"] .spine-chrome::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 3px;
+  background: linear-gradient(90deg, transparent, var(--turquoise), transparent);
+  background-size: 40% 100%;
+  animation: turn-stripe 1.1s linear infinite;
+}
+@keyframes turn-stripe {
+  from {
+    background-position: -40% 0;
+  }
+  to {
+    background-position: 140% 0;
+  }
+}
+
+/* The bottom-chrome slot the Keep control (M2, spec §7.3) fills — present + labeled by data-slot,
+   but EMPTY here, so it takes no space until the Keep ticket mounts into it. */
+.keep-slot:empty {
+  display: none;
+}
+
+.reshape {
+  display: flex;
+  flex: 1;
+  gap: 0.5rem;
+  align-items: center;
+}
+.reshape-input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 1rem;
+  color: var(--ink);
+  background: var(--paper);
+  border: var(--border-ink-thin);
+  border-radius: var(--radius-wobble-sm);
+  padding: 0.55rem 0.8rem;
+}
+.reshape-input:focus {
+  outline: none;
+  box-shadow: var(--shadow-paper-sm);
+}
+.reshape-send {
+  flex: none;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.85rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: var(--ii-yellow);
+  border: var(--border-ink-thin);
+  border-radius: var(--radius-wobble-sm);
+  box-shadow: var(--shadow-paper-sm);
+  padding: 0.55rem 1rem 0.45rem;
+  cursor: pointer;
+  transition: transform 0.08s ease, box-shadow 0.08s ease;
+}
+.reshape-send:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 4px 4px 0 var(--turquoise);
+}
+.reshape-send:active {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--turquoise);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .board-cell[data-board-state],
+  .spine[data-turn="in-flight"] .spine-chrome::before {
+    animation: none;
+  }
+}

@@ -28,6 +28,9 @@ import { renderSurface, sendInitialDefaults } from "../../crates/reuben-web/js/s
 import { decodeControl, encodeControl } from "../../crates/reuben-web/js/codec.mjs";
 import { decodeBundle, encodeBundle, ShareError } from "../../crates/reuben-web/js/share.mjs";
 import manifest from "../toys.json";
+import { h } from "./dom.js";
+import { chatEnabled } from "./chat/flag.js";
+import { createSpine } from "./chat/spine.js";
 
 const REPO_URL = "https://github.com/Impractical-Instruments/reuben";
 
@@ -54,6 +57,8 @@ let currentBanner = null; // the launcher banner text (null = none), read by the
 let currentShareBtn = null; // the current player's Share button, for its "Copied!" flash
 let currentShareSlot = null; // the current player's slot for the hand-copy fallback textarea
 let lastShareUrl = null; // the URL minted by the most recent Share (test hook)
+let currentSpine = null; // the co-presence spine handle when the chat flag routes there (#355)
+let currentSpineEngine = null; // the engine the current spine's board is bound to (test hook)
 
 // The control JOURNAL: address -> the args last SENT for it (issue #228 Share). engine.send is
 // wrapped once (instrumentJournal) to record into this; it's CLEARED at the start of every load
@@ -179,20 +184,8 @@ function setScreen(name, node) {
   app.replaceChildren(node);
 }
 
-function h(tag, props = {}, ...children) {
-  const el = document.createElement(tag);
-  for (const [k, v] of Object.entries(props)) {
-    if (k === "class") el.className = v;
-    else if (k === "dataset") Object.assign(el.dataset, v);
-    else if (k.startsWith("on") && typeof v === "function") el.addEventListener(k.slice(2), v);
-    else if (v != null) el.setAttribute(k, v);
-  }
-  for (const c of children.flat()) {
-    if (c == null) continue;
-    el.append(c.nodeType ? c : document.createTextNode(String(c)));
-  }
-  return el;
-}
+// The vanilla-DOM `h()` element helper now lives in ./dom.js so the chat module (chat/*) and the
+// shell build their DOM through the ONE helper (imported above). Behavior is identical.
 
 // --- splash -------------------------------------------------------------------------------
 
@@ -221,7 +214,11 @@ function splashScreen() {
       const e = await ensureEngine();
       // The unlock: resume() alone, on the user gesture. Everything heavy already happened.
       await e.context.resume();
-      showLauncher();
+      // Ship gate (spec §7 / ADR-0052 §3): when the chat flag is OFF (the default) this is the
+      // unchanged launcher flow; when ON, the same unlock gesture boots into the co-presence
+      // spine (spec §3, issue #355) instead. One flag, checked in one place (chat/flag.js).
+      if (chatEnabled()) openSpine();
+      else showLauncher();
     } catch (err) {
       start.disabled = false;
       start.textContent = "Start";
@@ -654,6 +651,105 @@ function micControl(engine, status) {
   });
 
   return wrap;
+}
+
+// --- spine (chat authoring, issue #355) ---------------------------------------------------
+
+// Open the co-presence spine (spec §3), reached ONLY when the chat flag is on (chat/flag.js);
+// the OFF path never calls this. It loads an instrument onto the persistent engine and renders
+// its controls into the spine's node-identity board (spec §3.6), then mounts the spine.
+//
+// For M1 it loads the DEFAULT toy — the minimal "picked one to play" arrival; the cold-start
+// gallery + describe path (#357) will choose which instrument and which arrival. The arrival
+// default (spec §3.3) is overridable via `?arrival=made|picked` so the scripted responsive pass
+// can exercise both landing states. Reuses the SAME engine-load + surface-resolution path as
+// openToy, so the board binds the real, engine-wired controls (never a re-derived copy).
+async function openSpine() {
+  const token = ++loadToken;
+  journal.clear(); // reflect only the instrument about to load
+  const arrival =
+    new URLSearchParams(location.search).get("arrival") === "made" ? "made" : "picked";
+  const spine = createSpine({ arrival });
+  currentSpine = spine;
+  currentSurface = null;
+  currentSpineEngine = null;
+  setScreen("spine", spine.screen);
+  exposeSpineTestHook(spine);
+
+  try {
+    const e = await ensureEngine();
+    instrumentJournal(e);
+    const id = DEFAULT_TOY;
+    await loadWithRetry(e, id);
+    if (token !== loadToken) return; // superseded by a newer navigation — drop this render
+    currentToy = id;
+
+    const [doc, surfaceEntry] = await Promise.all([
+      fetch(asset(`instruments/${id}.json`)).then((r) => {
+        if (!r.ok) throw new Error(`fetch ${id}.json: HTTP ${r.status}`);
+        return r.json();
+      }),
+      fetchSurfaceDoc(id),
+    ]);
+    if (token !== loadToken) return;
+
+    currentInstrument = doc.instrument;
+    const { surface } = resolveSurfaceOrDefault(doc, surfaceEntry, id);
+    logSurfaceWarnings(id, surface.warnings);
+    currentSurface = surface;
+    currentSpineEngine = e;
+    // Render the controls into the node-identity board, then fire the load-time defaults AFTER
+    // load() resolved (the render.mjs lifecycle) exactly as the player does. An input-taking
+    // instrument's mic gesture is the player's affordance, not the spine's, and DEFAULT_TOY is
+    // self-playing, so no mic control is needed here.
+    spine.board.update(surface.widgets, e);
+    sendInitialDefaults(surface, e);
+    document.body.dataset.state = e.context.state; // "running" — the spec asserts on this
+  } catch (err) {
+    if (token !== loadToken) return;
+    // The full failure taxonomy is the ambiguity/failure ticket's (spec §5, #303); the engine
+    // reason is NEVER shown to the user (spec §5.1). Log it, show a neutral lexicon-clean line.
+    console.error("[spine] instrument load failed:", err);
+    spine.transcript.push({
+      role: "reuben",
+      text: "Something went wrong starting the sound. Give it another try in a moment.",
+    });
+  }
+}
+
+// The Playwright test surface for the spine (issue #355 verification) — analogous to
+// window.reubenPlayer. Exposes the arrival state, the sheet + turn controls, the node-identity
+// board readout, and the two re-render paths the node-identity test contrasts: an identity-
+// preserving reshape (positions MUST stay stable) versus the fresh-sort anti-pattern (positions
+// MUST move). Not load-bearing for the app. A deterministic reversal stands in for a "shuffle" —
+// for any surface with ≥2 controls a reversed order is guaranteed different from the original.
+function exposeSpineTestHook(spine) {
+  const reversedWidgets = () => [...(currentSurface?.widgets ?? [])].reverse();
+  window.reubenChat = {
+    screen: () => document.body.dataset.screen,
+    arrival: () => spine.screen.dataset.arrival,
+    sheetExpanded: () => spine.sheetExpanded(),
+    toggleSheet: (force) => spine.toggleSheet(force),
+    turnInFlight: () => spine.turnInFlight(),
+    beginMockTurn: (t) => spine.beginMockTurn(t ?? "make it brighter"),
+    endMockTurn: () => spine.endMockTurn(),
+    boardNodes: () => spine.board.nodes(),
+    keepSlotPresent: () => !!spine.screen.querySelector('[data-slot="keep"]'),
+    // Identity-preserving re-render: the SAME nodes in a DIFFERENT input order. Survivors hold
+    // position (spec §3.6), so the board order MUST be unchanged after this.
+    reshapePreserveIdentity: () => {
+      if (currentSurface && currentSpineEngine) {
+        spine.board.update(reversedWidgets(), currentSpineEngine);
+      }
+    },
+    // The negative control: the fresh-sort anti-pattern §3.6 forbids. Positions follow the
+    // (reversed) input, so the board order MUST change — proving the stability assertion has teeth.
+    resortRebuild: () => {
+      if (currentSurface && currentSpineEngine) {
+        spine.board.__resortRebuild(reversedWidgets(), currentSpineEngine);
+      }
+    },
+  };
 }
 
 // --- fragment boot (share links, issue #228) ----------------------------------------------
