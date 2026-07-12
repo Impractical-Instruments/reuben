@@ -8,7 +8,7 @@ no way to measure its cost and nothing to stop a change from silently making it 
 goal grilled down to a narrow one: **catch *major* regressions** in the render path, cheaply,
 without a flaky gate that cries wolf.
 
-Three facts framed the tree:
+Three facts framed the decision:
 
 - **CI already exists** ([`ci.yml`](../../.github/workflows/ci.yml)) — one `check` job
   (fmt + clippy + test) on `ubuntu-latest`, a *shared* runner. Wall-clock timing there
