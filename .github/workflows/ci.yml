@@ -116,7 +116,17 @@ jobs:
               - 'crates/reuben-web/js/tool-schemas.generated.json'
               - 'crates/reuben-web/js/live-eval.mjs'
               - 'crates/reuben-web/proxy/**'
-              - '.github/workflows/ci.yml'
+              # ...minus the proxy files that CANNOT move the live smoke, so a no-risk edit
+              # doesn't spend real tokens (ADR-0054 §5): the mock-gated unit tests, the README,
+              # and cloudflare.mjs — the eval builds its own relay via createRelay() and imports
+              # only relay.mjs + system-prompt.mjs, so it never exercises the Cloudflare adapter.
+              - '!crates/reuben-web/proxy/**/*.test.mjs'
+              - '!crates/reuben-web/proxy/**/*.md'
+              - '!crates/reuben-web/proxy/cloudflare.mjs'
+              # Deliberately NOT '.github/workflows/ci.yml': listing it re-ran this paid job on
+              # EVERY unrelated CI edit (a bench tweak, a deploy step, a fmt job). A change to
+              # THIS job's own wiring is re-validated by the post-merge dev run instead, so the
+              # rare case still gets covered — just not on every in-flight PR commit.
             # The /web player app (ADR-0041, issue #226): its build/smoke closure is the app
             # itself PLUS everything the staging script pulls — the reuben-web wasm (built from
             # reuben-core + its macro/contract deps), the instrument documents + transitive
