@@ -270,9 +270,12 @@ jobs:
       # committed oracle) and render.test.mjs on the runner's preinstalled Node. share.test.mjs
       # (issue #228) is the share-link envelope codec and codec.test.mjs the control-buffer
       # codec. diff.test.mjs (issue #353) is the structural node-identity diff and tools.test.mjs
-      # the in-page tool layer over fake engine/introspect — all pure, all no wasm/browser.
-      - name: Test (JS auto-UI + share-codec unit tests)
-        run: node --test js/surface/*.test.mjs js/share.test.mjs js/codec.test.mjs js/diff.test.mjs js/tools.test.mjs
+      # the in-page tool layer over fake engine/introspect. agent-turn/agent-host/tool-schemas
+      # (issue #354) are the turn envelope, the streaming loop over a MOCK model, and the no-drift
+      # guard on the generated tool-schema artifact; proxy/relay.test.mjs is the relay over a mock
+      # upstream (self-gates without a key) — all pure, all no wasm/browser/network.
+      - name: Test (JS auto-UI + share-codec + chat-agent unit tests)
+        run: node --test js/surface/*.test.mjs js/share.test.mjs js/codec.test.mjs js/diff.test.mjs js/tools.test.mjs js/agent-turn.test.mjs js/agent-host.test.mjs js/tool-schemas.test.mjs proxy/relay.test.mjs
 
       - name: Build .wasm (release)
         run: cargo build --release --target wasm32-unknown-unknown
@@ -484,6 +487,45 @@ jobs:
             pages deploy dist
             --project-name=${{ env.CF_PROJECT }}
             --branch=${{ github.head_ref || github.ref_name }}
+
+  # NON-BLOCKING live Sonnet-5 smoke of the web-chat streaming loop (issue #354, ADR-0054). The
+  # merge gate uses the DETERMINISTIC MOCK model (js/agent-host.test.mjs in the `web` job); this job
+  # exercises the REAL relay → real Sonnet-5 → the real loop over a fake engine (js/live-eval.mjs).
+  # Deliberately NOT in `ci-passed`'s needs, so a red here (model variance, network) never blocks a
+  # merge. SELF-GATING, mirroring `deploy-web`: secrets can't sit in a job-level `if`, so the gate
+  # step reads ANTHROPIC_API_KEY from env and skips the eval green when it is absent (forks; before
+  # the secret lands). Same-repo `claude/*` branches get the secret. Path/draft skips as elsewhere.
+  web-chat-live-eval:
+    name: web-chat live Sonnet-5 smoke (non-blocking)
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.web == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      # Secret gate: expose a boolean the eval step hangs off. Missing key → skip green with a notice.
+      - name: Check ANTHROPIC_API_KEY configuration
+        id: gate
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$ANTHROPIC_API_KEY" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Live chat eval skipped::Set the ANTHROPIC_API_KEY secret to run the non-blocking live Sonnet-5 smoke (see the web-chat-live-eval job + crates/reuben-web/js/live-eval.mjs)."
+          fi
+      # Pure Node (no wasm, no npm deps): the eval wires the real proxy relay to real Sonnet-5 and
+      # drives one authored turn through the loop over a fake engine. Exits 0 on pass or no-key.
+      - name: Live loop smoke (real Sonnet-5)
+        if: steps.gate.outputs.ready == 'true'
+        working-directory: crates/reuben-web
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: node js/live-eval.mjs
 
   bench:
     name: perf gate (macro + micro Ir)
