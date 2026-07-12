@@ -25,6 +25,21 @@ function req(bodyObj, { method = "POST", badJson = false } = {}) {
   };
 }
 
+/**
+ * Run `fn` with `globalThis.fetch` replaced by `handler`, restoring the original after (even on
+ * throw). The adapter is a Pages entry with no `fetchImpl` seam (unlike `createRelay`, which
+ * `relay.test.mjs` injects), so stubbing the global is the only way to capture the upstream request.
+ */
+async function withStubbedFetch(handler, fn) {
+  const saved = globalThis.fetch;
+  globalThis.fetch = handler;
+  try {
+    return await fn();
+  } finally {
+    globalThis.fetch = saved;
+  }
+}
+
 test("no key → clean 503 proxy_unconfigured end-to-end through the mount (ADR-0054 §5)", async () => {
   const res = await onRequestPost({ request: req({ messages: [{ role: "user", content: "hi" }] }), env: {} });
   assert.strictEqual(res.status, 503);
@@ -43,55 +58,51 @@ test("onRequest rejects non-POST verbs with 405 (Pages catch-all)", async () => 
 });
 
 test("with a key: declares the GENERATED artifact + SYSTEM_PROMPT + default model (§2/§3/§4)", async () => {
-  const savedFetch = globalThis.fetch;
   let captured;
-  globalThis.fetch = async (url, init) => {
-    captured = { url, init };
-    return new Response('event: message_stop\ndata: {"type":"message_stop"}\n\n', {
-      status: 200,
-      headers: { "content-type": "text/event-stream" },
-    });
-  };
-  try {
-    const res = await onRequestPost({
-      request: req({ messages: [{ role: "user", content: "make it warmer" }] }),
-      env: { ANTHROPIC_API_KEY: "sk-test" },
-    });
+  const res = await withStubbedFetch(
+    async (url, init) => {
+      captured = { url, init };
+      return new Response('event: message_stop\ndata: {"type":"message_stop"}\n\n', {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    },
+    () =>
+      onRequestPost({
+        request: req({ messages: [{ role: "user", content: "make it warmer" }] }),
+        env: { ANTHROPIC_API_KEY: "sk-test" },
+      }),
+  );
 
-    // The SSE passthrough reaches the browser verbatim.
-    assert.strictEqual(res.status, 200);
-    assert.strictEqual(res.headers.get("content-type"), "text/event-stream");
-    assert.match(await res.text(), /message_stop/);
+  // The SSE passthrough reaches the browser verbatim.
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.headers.get("content-type"), "text/event-stream");
+  assert.match(await res.text(), /message_stop/);
 
-    // Done-when #2: the tool schemas the proxy declares ARE the generated artifact (no drift).
-    const sent = JSON.parse(captured.init.body);
-    assert.ok(Array.isArray(artifact.tools) && artifact.tools.length > 0, "artifact carries tools");
-    assert.deepStrictEqual(sent.tools, artifact.tools, "declares the generated tool schemas verbatim");
-    assert.strictEqual(sent.system, SYSTEM_PROMPT, "declares the authoring-policy system prompt");
-    assert.strictEqual(sent.model, MODEL_DEFAULT, "defaults to the Sonnet-5 tier (§4)");
-    assert.strictEqual(captured.init.headers["x-api-key"], "sk-test");
-  } finally {
-    globalThis.fetch = savedFetch;
-  }
+  // Done-when #2: the tool schemas the proxy declares ARE the generated artifact (no drift).
+  const sent = JSON.parse(captured.init.body);
+  assert.ok(Array.isArray(artifact.tools) && artifact.tools.length > 0, "artifact carries tools");
+  assert.deepStrictEqual(sent.tools, artifact.tools, "declares the generated tool schemas verbatim");
+  assert.strictEqual(sent.system, SYSTEM_PROMPT, "declares the authoring-policy system prompt");
+  assert.strictEqual(sent.model, MODEL_DEFAULT, "defaults to the Sonnet-5 tier (§4)");
+  assert.strictEqual(captured.init.headers["x-api-key"], "sk-test");
 });
 
 test("REUBEN_CHAT_MODEL overrides the declared model id (config, not a constant — §4)", async () => {
-  const savedFetch = globalThis.fetch;
   let captured;
-  globalThis.fetch = async (url, init) => {
-    captured = { init };
-    return new Response('data: {"type":"message_stop"}\n\n', {
-      status: 200,
-      headers: { "content-type": "text/event-stream" },
-    });
-  };
-  try {
-    await onRequestPost({
-      request: req({ messages: [{ role: "user", content: "hi" }] }),
-      env: { ANTHROPIC_API_KEY: "sk-test", REUBEN_CHAT_MODEL: "claude-opus-4-8" },
-    });
-    assert.strictEqual(JSON.parse(captured.init.body).model, "claude-opus-4-8");
-  } finally {
-    globalThis.fetch = savedFetch;
-  }
+  await withStubbedFetch(
+    async (url, init) => {
+      captured = { init };
+      return new Response('data: {"type":"message_stop"}\n\n', {
+        status: 200,
+        headers: { "content-type": "text/event-stream" },
+      });
+    },
+    () =>
+      onRequestPost({
+        request: req({ messages: [{ role: "user", content: "hi" }] }),
+        env: { ANTHROPIC_API_KEY: "sk-test", REUBEN_CHAT_MODEL: "claude-opus-4-8" },
+      }),
+  );
+  assert.strictEqual(JSON.parse(captured.init.body).model, "claude-opus-4-8");
 });

@@ -552,6 +552,13 @@ jobs:
       # over the GitHub-Deployment record for the dev push only, and leave production + previews on
       # wrangler-action's proven path untouched. The two deploy steps are mutually exclusive on ref.
 
+      # wrangler-action@v3's bundled default is wrangler 3.90.0, whose pinned esbuild (0.17.x)
+      # predates JS import attributes and rejects the Pages Function's `import … with { type: "json" }`
+      # (the generated tool-schema artifact) with `Expected ";" but found "with"`. Node 22 REQUIRES
+      # that attribute for JSON imports, so the source can't drop it. wrangler 4.x bundles a modern
+      # esbuild that parses it — pin it here (both deploy steps). `--commit-dirty=true` acknowledges
+      # the expected dirty tree: this job overlays the prebuilt `web/dist` artifact onto the checkout.
+
       # PRODUCTION (main) + PREVIEW (PR). --branch is `main` on a push to main (→ production, per
       # SETUP step 1) or the head branch on a PR (→ a preview URL). gitHubToken lets wrangler-action
       # record the GitHub Deployment (surfacing the preview URL in the PR) — the `deployments: write`
@@ -564,10 +571,12 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
           workingDirectory: web
+          wranglerVersion: '4.110.0'
           command: >-
             pages deploy dist
             --project-name=${{ env.CF_PROJECT }}
             --branch=${{ github.head_ref || github.ref_name }}
+            --commit-dirty=true
 
       # STAGING (dev push). Same deploy, but WITHOUT gitHubToken — so wrangler-action ships the
       # bytes to the `dev` branch alias and records NOTHING on GitHub. The next step records the
@@ -581,10 +590,12 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: web
+          wranglerVersion: '4.110.0'
           command: >-
             pages deploy dist
             --project-name=${{ env.CF_PROJECT }}
             --branch=dev
+            --commit-dirty=true
 
       # Record the staging deploy as a first-class `staging` GitHub Deployment pointing at the
       # stable branch alias. required_contexts: [] + auto_merge: false make it a pure record (no
