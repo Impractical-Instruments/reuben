@@ -418,8 +418,9 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
-  # Cloudflare Pages deploy for the /web player app (issue #226, P4). main → production, PR →
-  # a preview URL. `needs: webapp` makes this a build→test→deploy pipeline: if `webapp` fails
+  # Cloudflare Pages deploy for the /web player app (issue #226, P4). main → production, dev →
+  # the `staging` branch alias (ADR-0055), PR → a preview URL. `needs: webapp` makes this a
+  # build→test→deploy pipeline: if `webapp` fails
   # (or is path-skipped because nothing web changed), this is skipped and NOTHING deploys; only
   # a green build+smoke lets it run. It then ships the artifact `webapp` uploaded — it does NOT
   # rebuild, so it deploys the exact bytes that were smoke-tested and runs no untrusted build
@@ -454,7 +455,7 @@ jobs:
   #      CLOUDFLARE_API_TOKEN and CLOUDFLARE_ACCOUNT_ID.
   #   If you name the Pages project something other than `reuben-web-player`, change CF_PROJECT.
   deploy-web:
-    name: Cloudflare Pages (production on main, preview on PR)
+    name: Cloudflare Pages (production on main, staging on dev, preview on PR)
     runs-on: ubuntu-latest
     needs: webapp
     # `needs: webapp` already gates on a green build+smoke (a failed or skipped webapp skips this
@@ -493,24 +494,84 @@ jobs:
           name: web-dist
           path: web/dist
 
-      # Deploy web/dist. --branch drives Cloudflare's production-vs-preview split: on a push to
-      # main the branch is `main` (the project's production branch, set at SETUP step 1) →
-      # production; on a PR it's the head branch → a preview URL. wrangler-action surfaces the
-      # deployment URL in its log and as a GitHub Deployment.
-      - name: Deploy to Cloudflare Pages
-        if: steps.gate.outputs.ready == 'true'
+      # WHY THE DEPLOY IS SPLIT IN TWO. --branch drives Cloudflare's production-vs-preview split,
+      # but Cloudflare has exactly two environments — `production` (the project's production branch,
+      # `main`) and `preview` (EVERY other branch, including `dev`). wrangler-action, when handed a
+      # gitHubToken, records a GitHub Deployment under whichever of those two Cloudflare reports. So
+      # a `dev` push would be filed under `preview` alongside the per-PR previews — invisible as a
+      # distinct environment even though it serves the stable `dev.<project>.pages.dev` alias
+      # (ADR-0055 §2). To give `dev` a first-class `staging` card in the Deployments list we take
+      # over the GitHub-Deployment record for the dev push only, and leave production + previews on
+      # wrangler-action's proven path untouched. The two deploy steps are mutually exclusive on ref.
+
+      # PRODUCTION (main) + PREVIEW (PR). --branch is `main` on a push to main (→ production, per
+      # SETUP step 1) or the head branch on a PR (→ a preview URL). gitHubToken lets wrangler-action
+      # record the GitHub Deployment (surfacing the preview URL in the PR) — the `deployments: write`
+      # permission above is for this. Skipped on the dev push; the staging steps below handle that.
+      - name: Deploy to Cloudflare Pages (production / preview)
+        if: steps.gate.outputs.ready == 'true' && !(github.event_name == 'push' && github.ref_name == 'dev')
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          # Records the deploy as a GitHub Deployment (surfacing the preview URL in the PR),
-          # which is what the `deployments: write` permission above is for.
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
           workingDirectory: web
           command: >-
             pages deploy dist
             --project-name=${{ env.CF_PROJECT }}
             --branch=${{ github.head_ref || github.ref_name }}
+
+      # STAGING (dev push). Same deploy, but WITHOUT gitHubToken — so wrangler-action ships the
+      # bytes to the `dev` branch alias and records NOTHING on GitHub. The next step records the
+      # deployment ourselves under a `staging` environment, so it lands as its own card instead of
+      # being folded into `preview`. Cloudflare still classifies it `preview` internally; only the
+      # GitHub-side label differs.
+      - name: Deploy to Cloudflare Pages (staging)
+        if: steps.gate.outputs.ready == 'true' && github.event_name == 'push' && github.ref_name == 'dev'
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          workingDirectory: web
+          command: >-
+            pages deploy dist
+            --project-name=${{ env.CF_PROJECT }}
+            --branch=dev
+
+      # Record the staging deploy as a first-class `staging` GitHub Deployment pointing at the
+      # stable branch alias. required_contexts: [] + auto_merge: false make it a pure record (no
+      # status-check wait, no base-branch merge); auto_inactive retires the previous staging record
+      # so the environment shows a single live deployment. Runs only when the staging deploy above
+      # ran (and succeeded — the default `if` implies success of prior steps).
+      - name: Record staging GitHub Deployment
+        if: steps.gate.outputs.ready == 'true' && github.event_name == 'push' && github.ref_name == 'dev'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const url = `https://dev.${process.env.CF_PROJECT}.pages.dev`;
+            const runUrl = `${context.serverUrl}/${context.repo.owner}/${context.repo.repo}/actions/runs/${context.runId}`;
+            const dep = await github.rest.repos.createDeployment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              ref: context.sha,
+              environment: 'staging',
+              description: 'Cloudflare Pages staging (dev branch alias)',
+              auto_merge: false,
+              required_contexts: [],
+              transient_environment: false,
+              production_environment: false,
+            });
+            await github.rest.repos.createDeploymentStatus({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              deployment_id: dep.data.id,
+              state: 'success',
+              environment: 'staging',
+              environment_url: url,
+              log_url: runUrl,
+              auto_inactive: true,
+              description: 'Deployed to the dev staging alias',
+            });
 
   # NON-BLOCKING live Sonnet-5 smoke of the web-chat streaming loop (issue #354, ADR-0054). The
   # merge gate uses the DETERMINISTIC MOCK model (js/agent-host.test.mjs in the `web` job); this job
