@@ -26,17 +26,28 @@ import { access, copyFile, mkdir, readdir, readFile, rm, writeFile } from "node:
 import { constants } from "node:fs";
 import { createHash } from "node:crypto";
 import { dirname, join, resolve } from "node:path";
-import { fileURLToPath } from "node:url";
-
-import { loadInstrument } from "../../crates/reuben-web/js/loader.mjs";
+import { fileURLToPath, pathToFileURL } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url)); // web/scripts
 const WEB = resolve(HERE, ".."); // web
 const ROOT = resolve(WEB, ".."); // repo root
-const CRATE = join(ROOT, "crates", "reuben-web");
+
+// Staging roots (issue #416). Each is env-overridable so the private repo — which consumes this
+// repo as a git submodule at engine/ (epic #414) — can point them at engine/crates/reuben-web,
+// engine/instruments, and engine/surfaces while THIS monorepo build stays byte-for-byte unchanged
+// when they're unset. A relative override resolves against the repo root; an absolute one is used
+// verbatim.
+const stagingRoot = (name, ...defaults) =>
+  process.env[name] ? resolve(ROOT, process.env[name]) : join(ROOT, ...defaults);
+const CRATE = stagingRoot("CRATE", "crates", "reuben-web");
 const WASM = join(CRATE, "target", "wasm32-unknown-unknown", "release", "reuben_web.wasm");
-const INSTRUMENTS = join(ROOT, "instruments");
-const SURFACES = join(ROOT, "surfaces");
+const INSTRUMENTS = stagingRoot("INSTRUMENTS", "instruments");
+const SURFACES = stagingRoot("SURFACES", "surfaces");
+
+// The engine JS ships from the SAME crate as the wasm, so it's loaded from CRATE too (not a fixed
+// relative import) — a CRATE override retargets discovery's loader alongside the binary. Default
+// CRATE resolves to ../../crates/reuben-web, so this is the previous static import unchanged.
+const { loadInstrument } = await import(pathToFileURL(join(CRATE, "js", "loader.mjs")).href);
 // The master PWA icon (issue #227 human prerequisite): a ≥512×512 square committed by a human.
 // @vite-pwa/assets-generator derives every icon size from it, but it resolves its output dir
 // relative to Vite's publicDir — so the source must live UNDER public/ or the generated icons
