@@ -322,9 +322,12 @@ jobs:
       # is the battery of scripted user turns from #356's Verification section, driven through the
       # REAL loop/tool-layer/turn-envelope, asserting no forbidden word leaks, send-vs-swap routes
       # correctly, and chips post verbatim. declick.test.mjs (issue #360) is the re-strike's
-      # raised-cosine declick ramp SHAPE (spec §6.2.4) — all pure, all no wasm/browser/network.
+      # raised-cosine declick ramp SHAPE (spec §6.2.4). proxy/config.test.mjs + proxy/cloudflare.test.mjs
+      # (issue #403 / Live-loop/B) are the env→config surface (model + reshape ceiling N) and the
+      # mounted Pages Function entry — self-gate 503 without a key, and the GENERATED artifact is what
+      # it declares to the model. All pure, all no wasm/browser/network.
       - name: Test (JS auto-UI + share-codec + chat-agent unit tests)
-        run: node --test js/surface/*.test.mjs js/share.test.mjs js/codec.test.mjs js/diff.test.mjs js/tools.test.mjs js/agent-turn.test.mjs js/agent-host.test.mjs js/tool-schemas.test.mjs js/agent-policy-eval.test.mjs js/declick.test.mjs proxy/relay.test.mjs proxy/system-prompt.test.mjs
+        run: node --test js/surface/*.test.mjs js/share.test.mjs js/codec.test.mjs js/diff.test.mjs js/tools.test.mjs js/agent-turn.test.mjs js/agent-host.test.mjs js/tool-schemas.test.mjs js/agent-policy-eval.test.mjs js/declick.test.mjs proxy/relay.test.mjs proxy/system-prompt.test.mjs proxy/config.test.mjs proxy/cloudflare.test.mjs
 
       - name: Build .wasm (release)
         run: cargo build --release --target wasm32-unknown-unknown
@@ -448,8 +451,17 @@ jobs:
   # build→test→deploy pipeline: if `webapp` fails
   # (or is path-skipped because nothing web changed), this is skipped and NOTHING deploys; only
   # a green build+smoke lets it run. It then ships the artifact `webapp` uploaded — it does NOT
-  # rebuild, so it deploys the exact bytes that were smoke-tested and runs no untrusted build
-  # step of its own (it only downloads a static bundle and runs the pinned wrangler-action).
+  # rebuild the app, so it deploys the exact static bytes that were smoke-tested.
+  #
+  # PAGES FUNCTION (issue #403 / Live-loop/B). The same-origin chat relay ships as a Pages Function
+  # (`web/functions/api/chat.js`, re-exporting crates/reuben-web/proxy/cloudflare.mjs). Pages
+  # discovers `functions/` relative to the wrangler CWD (`web/`), so the source must be on disk here
+  # — the `web/dist` artifact alone doesn't carry it. Hence the checkout step below (gated on the
+  # secrets, like the rest of the deploy). This does NOT reintroduce an untrusted app rebuild: the
+  # static bundle is still the verbatim smoke-tested artifact; the pinned wrangler-action compiles
+  # the first-party function source (esbuild, no npm install — the function imports only sibling
+  # .mjs + the generated JSON). Until the ANTHROPIC_API_KEY Pages secret is set the function
+  # self-gates 503 (ADR-0054 §5), so shipping it is safe before the key lands (Live-loop/A).
   #
   # SELF-GATING: if the CLOUDFLARE_* secrets aren't set yet, the deploy steps SKIP and the job
   # stays green (a notice explains how to enable it). So this is mergeable before the account
@@ -510,8 +522,19 @@ jobs:
             echo "::notice title=Cloudflare deploy skipped::Set CLOUDFLARE_API_TOKEN + CLOUDFLARE_ACCOUNT_ID and create the '$CF_PROJECT' Pages project to enable deploys (see the deploy-web job in .github/workflows/ci.yml)."
           fi
 
-      # Pull the exact bundle `webapp` built and smoke-tested into web/dist — no checkout, no
-      # toolchain, no rebuild. download-artifact defaults to this run's artifacts.
+      # Check out the source so the Pages Function is present for wrangler to compile + ship (issue
+      # #403 / Live-loop/B). Pages finds `functions/` relative to the wrangler CWD (`web/`), and the
+      # `web/dist` artifact below doesn't carry it. No toolchain, no npm install, no app rebuild —
+      # the static bundle is still the verbatim artifact; this only puts the first-party function
+      # source (`web/functions/` + the proxy adapter it re-exports) on disk for the pinned
+      # wrangler-action to bundle. Gated on the secrets, like the deploy steps (skip → green no-op).
+      - name: Check out source (for the Pages Function)
+        if: steps.gate.outputs.ready == 'true'
+        uses: actions/checkout@v4
+
+      # Pull the exact bundle `webapp` built and smoke-tested into web/dist — no rebuild.
+      # download-artifact defaults to this run's artifacts; web/dist is gitignored, so it lands fresh
+      # over the checkout without clobbering tracked files.
       - name: Download built app (web/dist)
         if: steps.gate.outputs.ready == 'true'
         uses: actions/download-artifact@v4
@@ -529,6 +552,13 @@ jobs:
       # over the GitHub-Deployment record for the dev push only, and leave production + previews on
       # wrangler-action's proven path untouched. The two deploy steps are mutually exclusive on ref.
 
+      # wrangler-action@v3's bundled default is wrangler 3.90.0, whose pinned esbuild (0.17.x)
+      # predates JS import attributes and rejects the Pages Function's `import … with { type: "json" }`
+      # (the generated tool-schema artifact) with `Expected ";" but found "with"`. Node 22 REQUIRES
+      # that attribute for JSON imports, so the source can't drop it. wrangler 4.x bundles a modern
+      # esbuild that parses it — pin it here (both deploy steps). `--commit-dirty=true` acknowledges
+      # the expected dirty tree: this job overlays the prebuilt `web/dist` artifact onto the checkout.
+
       # PRODUCTION (main) + PREVIEW (PR). --branch is `main` on a push to main (→ production, per
       # SETUP step 1) or the head branch on a PR (→ a preview URL). gitHubToken lets wrangler-action
       # record the GitHub Deployment (surfacing the preview URL in the PR) — the `deployments: write`
@@ -541,10 +571,12 @@ jobs:
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           gitHubToken: ${{ secrets.GITHUB_TOKEN }}
           workingDirectory: web
+          wranglerVersion: '4.110.0'
           command: >-
             pages deploy dist
             --project-name=${{ env.CF_PROJECT }}
             --branch=${{ github.head_ref || github.ref_name }}
+            --commit-dirty=true
 
       # STAGING (dev push). Same deploy, but WITHOUT gitHubToken — so wrangler-action ships the
       # bytes to the `dev` branch alias and records NOTHING on GitHub. The next step records the
@@ -558,10 +590,12 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
           workingDirectory: web
+          wranglerVersion: '4.110.0'
           command: >-
             pages deploy dist
             --project-name=${{ env.CF_PROJECT }}
             --branch=dev
+            --commit-dirty=true
 
       # Record the staging deploy as a first-class `staging` GitHub Deployment pointing at the
       # stable branch alias. required_contexts: [] + auto_merge: false make it a pure record (no

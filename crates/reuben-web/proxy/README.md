@@ -16,14 +16,20 @@ execute in the page against the live worklet (`js/tools.mjs`, `js/agent-host.mjs
 | File | Role |
 | --- | --- |
 | `relay.mjs` | **Portable core.** `createRelay({ apiKey, systemPrompt, tools, model, fetchImpl })` → a handler that takes the parsed browser body `{messages}` and returns a streaming `Response`. Runtime-agnostic; unit-tested against a mock upstream (`relay.test.mjs`). |
-| `cloudflare.mjs` | **Cloudflare Pages Functions adapter.** Reads `env.ANTHROPIC_API_KEY`, injects the generated tool schemas, delegates to `createRelay`. |
+| `config.mjs` | **Env → config surface.** `readProxyConfig(env)` → `{ apiKey, model, reshapeCeiling }`: the key (a Pages secret), the model id (`REUBEN_CHAT_MODEL`, §4), and the per-session reshape ceiling **N** (`REUBEN_CHAT_RESHAPE_CEILING`, §5 — surfaced for the abuse floor, Live-loop/C). Unit-tested (`config.test.mjs`). |
+| `cloudflare.mjs` | **Cloudflare Pages Functions adapter.** Resolves config via `readProxyConfig`, injects the generated tool schemas + `SYSTEM_PROMPT`, delegates to `createRelay`. Mounted at `web/functions/api/chat.js`; adapter-level tests in `cloudflare.test.mjs`. |
 | `system-prompt.mjs` | The **authoring policy** (issue #356): the §1 lexicon, §8 register, §6.1 send-vs-swap routing, §4.2 narration contract, §2.3/§2.4 turn-one shapes, §6.4 first-run re-strike line — the model-facing `SYSTEM_PROMPT` string, plus the shared `FORBIDDEN_TERMS`/`scanForbiddenTerms` the eval harness scans with. |
 | `../js/tool-schemas.generated.json` | The **generated** tool-schema artifact (ADR-0054 §3), consumed by BOTH this proxy (declares to the model) and the in-page layer (executes). Regenerate with `cargo run --example gen_tool_schemas`. |
 
-## Model
+## Config (`config.mjs`)
 
-Default **`claude-sonnet-5`** (ADR-0054 §4: the Sonnet-5 tier is the decision; the exact id and
-`max_tokens` are config). Override per environment with `REUBEN_CHAT_MODEL`.
+Server env, read by `readProxyConfig(env)`:
+
+| Var | Role | Default |
+| --- | --- | --- |
+| `ANTHROPIC_API_KEY` | The server-side key (a Pages **secret**, never in the bundle, §2). Absent ⇒ the relay self-gates `503`. | — (self-gate) |
+| `REUBEN_CHAT_MODEL` | The model id. ADR-0054 §4: the Sonnet-5 **tier** is the decision; the exact id is config. | `claude-sonnet-5` |
+| `REUBEN_CHAT_RESHAPE_CEILING` | The per-session reshape ceiling **N** (§5) — a *soft* cap on "updates," never on sound. Surfaced here; **enforced** by the abuse floor (Live-loop/C). | `25` |
 
 ## Self-gating (ADR-0054 §5)
 
@@ -33,37 +39,47 @@ mock transport (no key, no network). This mirrors the `deploy-web` job's skip-gr
 posture. Logging is minimal: aggregate/diagnostic only, **no retention of prompt or instrument
 content** (§5).
 
-## Deploy path (do NOT provision here)
+## Deploy path (mounted — issue #403 / Live-loop/B)
 
-The app already deploys to Cloudflare Pages (`deploy-web` in `.github/workflows/ci.yml`, shipping
-`web/dist`). To run the relay as a same-origin Pages Function:
+The app deploys to Cloudflare Pages (`deploy-web` in `.github/workflows/ci.yml`, shipping
+`web/dist`). The relay runs as a **same-origin Pages Function**, now mounted:
 
-1. **Expose the Function.** Add a Pages Function at `web/functions/api/chat.js` that re-exports the
-   adapter (Pages picks up `functions/` at build):
+1. **The Function** is `web/functions/api/chat.js`, re-exporting the adapter's POST handler (Pages
+   discovers `functions/` relative to the wrangler CWD, `web/`):
 
    ```js
    // web/functions/api/chat.js
-   export { onRequest } from "../../../crates/reuben-web/proxy/cloudflare.mjs";
+   export { onRequestPost } from "../../../crates/reuben-web/proxy/cloudflare.mjs";
    ```
 
-   The browser talks to it via `proxyTransport("/api/chat")` (`js/agent-host.mjs`).
+   Exporting `onRequestPost` (not `onRequest`) makes Pages route only POST here and auto-`405` other
+   verbs. The browser talks to it via `proxyTransport("/api/chat")` (`js/agent-host.mjs`). CI ships
+   it: `deploy-web` checks out the source so the pinned wrangler-action compiles the function
+   alongside the verbatim `web/dist` artifact (no app rebuild).
 
 2. **Set the secret** (Pages project → Settings → Environment variables, encrypted):
-   `ANTHROPIC_API_KEY` (and optionally `REUBEN_CHAT_MODEL`). Until it is set the Function self-gates
-   to `503`, exactly like `deploy-web` self-gates without the Cloudflare secrets. Rotating this key
-   later — how, who, cadence — is written up in [`KEY-ROTATION.md`](KEY-ROTATION.md).
+   `ANTHROPIC_API_KEY` (and optionally `REUBEN_CHAT_MODEL` / `REUBEN_CHAT_RESHAPE_CEILING` — see
+   [Config](#config-configmjs)). Until it is set the Function self-gates to `503`, exactly like
+   `deploy-web` self-gates without the Cloudflare secrets — so shipping the mount is safe before the
+   key lands (provisioning the account + secret is **Live-loop/A**, #402). Rotating the key later —
+   how, who, cadence — is written up in [`KEY-ROTATION.md`](KEY-ROTATION.md).
 
-3. **Abuse floor (ADR-0054 §5 / §7 — ready-for-human follow-up, NOT built here).** Add the
-   origin/Referer allow-list, per-IP token bucket, and short-lived signed session token in
-   `cloudflare.mjs`'s documented seam; provision a Turnstile-class invisible challenge as the
-   escalation layer if abuse materializes.
+3. **Abuse floor (ADR-0054 §5 — built by Live-loop/C, #404, NOT here).** The origin/Referer
+   allow-list, per-IP token bucket, short-lived signed session token, and the per-session reshape
+   ceiling (`config.reshapeCeiling`, N) attach at `cloudflare.mjs`'s documented seam; a
+   Turnstile-class invisible challenge is the escalation layer (§7), provisioned wired-dormant by
+   Live-loop/D (#405).
 
-Nothing is provisioned by this ticket. The relay is runnable and self-gates green without a key.
+This ticket mounts + funds the *config surface*; it does not provision the account, the secret, or
+the floor. The relay is runnable and self-gates green without a key.
 
 ## Testing
 
-- Merge-gating: `node --test proxy/relay.test.mjs` (from `crates/reuben-web`) — deterministic,
-  no key, mock upstream. Runs in the `web` CI job.
+- Merge-gating: `node --test proxy/relay.test.mjs proxy/config.test.mjs proxy/cloudflare.test.mjs`
+  (from `crates/reuben-web`) — deterministic, no key, mock upstream. `relay.test.mjs` is the
+  portable core; `config.test.mjs` is the env→config surface (model + reshape ceiling N);
+  `cloudflare.test.mjs` drives the mounted Function entry (self-gate `503` without a key, and the
+  **generated** artifact is what it declares to the model). Runs in the `web` CI job.
 - Merge-gating policy eval (issue #356): `node --test proxy/system-prompt.test.mjs
   js/agent-policy-eval.test.mjs` — asserts the prompt text covers every §1/§8/§6.1/§6.4 rule, and
   runs a battery of scripted (mock-model) user turns through the REAL loop/tool-layer/turn-envelope
