@@ -343,6 +343,21 @@
 .tx-card-row[data-bucket="removed"] .tx-card-row-mark {
   color: var(--string);
 }
+/* §5.1 case 1 (issue #361) — the "how I read it" preface + the alternative-interpretation chips.
+   The best-effort change already played (rows + surface glow above); the reading names the guess in
+   one sensory line, the chips (reusing .tx-chip) let one tap swing the other way — a wrong guess is
+   one tap from fixed, no typing (spec §5.1). Both ride THIS card (§5.2: a change happened). */
+.tx-card-reading {
+  margin: 0.5rem 0 0;
+  font-family: var(--font-hand);
+  font-size: 0.92rem;
+  line-height: 1.35;
+  color: var(--ink);
+}
+.tx-card-alts {
+  margin: 0.4rem 0 0.1rem;
+}
+
 /* §4.7 restart-honesty slot — reserved by #358 at the card foot, FILLED + animated by #360 (§6.4).
    The first-run-only restart line (content + once/session gate are #356's; the envelope carries it
    already — we only render the slot when present). When non-empty it reveals with a soft settle, so

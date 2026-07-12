@@ -885,6 +885,22 @@ function submitDescribe(text) {
   });
 }
 
+// The one phase divergence of the failure taxonomy (spec §5.3, issue #361). A terminal failure at
+// FIRST CREATION — reachable only via the describe path from cold-start, when nothing is playing
+// yet — has nothing to keep sounding, so it lands the user BACK at the gallery/cold-start (§2) with
+// a warm, lexicon-clean nudge that reinforces the gallery-first bet. (A terminal failure at RESHAPE
+// keeps the prior sound instead — ADR-0048 §5 — and is a plain chat turn via `spine.chatReply`, not
+// this.) Sensory-only, forbidden-word clean.
+const FIRST_CREATION_FAIL_LINE =
+  "I couldn't build that from scratch — want to start from one of these and shape it?";
+
+// Land a first-creation terminal failure back on the gallery with the §5.3 nudge. Kept a top-level
+// function (exposed on window.reubenPlayer, which persists across screens) so the describe path's
+// build-failure branch — and the failure spec — can reach it once the real agent loop is wired in.
+function firstCreationTerminalFailure() {
+  showGallery(FIRST_CREATION_FAIL_LINE);
+}
+
 // The Playwright test surface for the spine (issue #355 verification) — analogous to
 // window.reubenPlayer. Exposes the arrival state, the sheet + turn controls, the node-identity
 // board readout, and the two re-render paths the node-identity test contrasts: an identity-
@@ -946,6 +962,30 @@ function exposeSpineTestHook(spine) {
     // line the envelope carries (#356's content/gate); `sounding=false` exercises §6.4's build-ready
     // path (nothing playing → no duck, no reset, no line). Async, so the driver awaits the gesture.
     reshapeRestrike: (diff, honesty, opts) => reshapeCard?.restrike(diff, honesty, opts),
+
+    // --- ambiguity & failure (spec §5, issue #361) ------------------------------------------
+    // Case 1 seams: attach the "how I read it" preface + the alternative-interpretation chips to the
+    // in-flight card BEFORE resolving, so the best-effort change and its guess land together (§5.1).
+    reshapeSetReading: (text) => reshapeCard?.setReading(text),
+    reshapeSetAlternatives: (alts) => reshapeCard?.setAlternatives(alts),
+    // Case 3 seam: push a tool round-trip (e.g. a {ok:false} report with a Diag) onto the envelope's
+    // INTERNAL toolLog — proving it never reaches the DOM (the card has no Diag surface, ADR-0048 §3).
+    reshapeRecordTool: (inv) => reshapeCard?.recordTool(inv),
+    // The resolved card's case-1 readout: the "how I read it" line + the alternative chip labels, and
+    // a tap on the nth chip (which re-reshapes toward that reading — posts the label verbatim, §2.3).
+    cardReading: () => document.querySelector(".tx-card .tx-card-reading")?.textContent ?? null,
+    cardAlternatives: () =>
+      [...document.querySelectorAll(".tx-card .tx-alt-chip")].map((c) => c.textContent),
+    tapAltChip: (i = 0) => document.querySelectorAll(".tx-card .tx-alt-chip")[i]?.click(),
+
+    // Cases 2 & 4 (and case-3-exhausted at reshape): the plain chat-turn container (§5.2) — a reuben
+    // line + optional tappable chips, touching NEITHER the board NOR the transport (sound unchanged).
+    chatReply: (opts) => spine.chatReply(opts),
+    // The count of rendered transcript entries (messages, chip rows, and change-cards) — lets the
+    // spec assert an empty/no-op send added nothing, and that a chat turn added no change-card.
+    transcriptEntryCount: () =>
+      document.querySelectorAll(".transcript .tx-entry, .transcript .tx-chips-entry, .transcript .tx-card")
+        .length,
 
     // Card introspection (transcript half). All read the ONE card element, so "same object across
     // resolve" is observable: the count stays 1 through thinking → resolved.
@@ -1148,6 +1188,9 @@ window.reubenPlayer = {
   // Toy (e.g. one with `chips: []`, proving the greeting-only fallback) without editing toys.json.
   pickToy: (toy) => pickToy(toy),
   submitDescribe: (text) => submitDescribe(text),
+  // The §5.3 first-creation terminal failure lands back on the gallery with a warm nudge (issue
+  // #361). Top-level (not on reubenChat) because it leaves the spine — the gallery is a fresh screen.
+  firstCreationTerminalFailure: () => firstCreationTerminalFailure(),
 };
 
 // Register the service worker (issue #227): precache the whole payload on first load so a cold,
