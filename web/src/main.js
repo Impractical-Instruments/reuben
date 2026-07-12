@@ -760,7 +760,14 @@ function micControl(engine, status) {
 async function openSpine({ toyId, arrival = "picked", seed = [], onReady } = {}) {
   const token = ++loadToken;
   journal.clear(); // reflect only the instrument about to load
-  const spine = createSpine({ arrival, seed });
+  // Wire the live engine's declicked duck (spec §6.2.4, issue #360) into the spine's re-strike. The
+  // spine is built BEFORE the engine loads, so this closure resolves `engine` at CALL time (by which
+  // point a re-strike means the instrument is loaded + playing). Absent an engine it degrades to an
+  // immediate pass-through, so the visible re-strike still runs — the spine's own default does the
+  // same, this just hands it the real audio fade once one exists.
+  const duck = (atSilence) =>
+    engine ? engine.restrikeDuck(atSilence) : Promise.resolve(atSilence?.());
+  const spine = createSpine({ arrival, seed, duck });
   currentSpine = spine;
   currentSurface = null;
   currentSpineEngine = null;
@@ -932,7 +939,13 @@ function exposeSpineTestHook(spine) {
       return reshapeCard.turn.id;
     },
     reshapeAppendPlan: (text) => reshapeCard?.appendPlan(text),
-    reshapeResolve: (diff, honesty) => reshapeCard?.resolve(diff, honesty),
+    // §6.1 param-only resolve: live sweep, no gap, no restart line (a param reshape never restarts).
+    reshapeResolve: (diff) => reshapeCard?.resolve(diff),
+    // §6.2 structural re-strike: the declicked duck + co-timed commit + replay-from-top. Returns the
+    // duck's promise so a Playwright test can await the gap. `honesty` is the first-run-only restart
+    // line the envelope carries (#356's content/gate); `sounding=false` exercises §6.4's build-ready
+    // path (nothing playing → no duck, no reset, no line). Async, so the driver awaits the gesture.
+    reshapeRestrike: (diff, honesty, opts) => reshapeCard?.restrike(diff, honesty, opts),
 
     // Card introspection (transcript half). All read the ONE card element, so "same object across
     // resolve" is observable: the count stays 1 through thinking → resolved.
@@ -953,6 +966,20 @@ function exposeSpineTestHook(spine) {
     // and the live count of controls currently echo-highlighted by a hovered row (§4.1).
     lastHighlight: () => spine.board.lastHighlight(),
     echoedCount: () => document.querySelectorAll('.board-cell[data-echo="on"]').length,
+
+    // --- the re-strike (spec §6, issue #360) -------------------------------------------------
+    // The transport's replay-from-top counter: it increments once per structural re-strike, so a
+    // test proves the playhead visibly reset (spec §6.2.2) exactly when — and only when — one fired.
+    // (The honesty-slot text is read via the existing `cardHonesty` hook above.)
+    transportRestrikeSeq: () => spine.transport.restrikeSeq(),
+    // §6.2.3 negative control: any loading/spinner chrome anywhere in the spine. Must stay 0 — the
+    // gap is a beat, not a wait, so the re-strike shows NO spinner. Matches a spinner class, an
+    // aria-busy region, or literal "loading" text.
+    loadingChromeCount: () => {
+      const spinners = spine.screen.querySelectorAll('.spinner, [role="progressbar"], [aria-busy="true"]').length;
+      const loadingText = /\bloading\b/i.test(spine.screen.textContent || "") ? 1 : 0;
+      return spinners + loadingText;
+    },
   };
 }
 

@@ -296,9 +296,10 @@ jobs:
       # authoring-policy prompt text for §1/§8/§6.1/§4.2/§6.4 coverage; js/agent-policy-eval.test.mjs
       # is the battery of scripted user turns from #356's Verification section, driven through the
       # REAL loop/tool-layer/turn-envelope, asserting no forbidden word leaks, send-vs-swap routes
-      # correctly, and chips post verbatim — all pure, all no wasm/browser/network.
+      # correctly, and chips post verbatim. declick.test.mjs (issue #360) is the re-strike's
+      # raised-cosine declick ramp SHAPE (spec §6.2.4) — all pure, all no wasm/browser/network.
       - name: Test (JS auto-UI + share-codec + chat-agent unit tests)
-        run: node --test js/surface/*.test.mjs js/share.test.mjs js/codec.test.mjs js/diff.test.mjs js/tools.test.mjs js/agent-turn.test.mjs js/agent-host.test.mjs js/tool-schemas.test.mjs js/agent-policy-eval.test.mjs proxy/relay.test.mjs proxy/system-prompt.test.mjs
+        run: node --test js/surface/*.test.mjs js/share.test.mjs js/codec.test.mjs js/diff.test.mjs js/tools.test.mjs js/agent-turn.test.mjs js/agent-host.test.mjs js/tool-schemas.test.mjs js/agent-policy-eval.test.mjs js/declick.test.mjs proxy/relay.test.mjs proxy/system-prompt.test.mjs
 
       - name: Build .wasm (release)
         run: cargo build --release --target wasm32-unknown-unknown
