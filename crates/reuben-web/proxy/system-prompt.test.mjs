@@ -70,6 +70,17 @@ test("the prompt describes the streaming-plan-then-landing narration contract (�
   assert.match(SYSTEM_PROMPT, /sensory/i);
 });
 
+test("the prompt states that every STREAMED sentence is user-facing verbatim — no tool-narration, even in working-notes asides (§4.2; host-level counterpart #385)", () => {
+  // The host appends all streamed model text to the user-facing plan (spec §4.2), so the model's
+  // inter-tool reasoning asides ("let me check the shape…") reach the user just like its final
+  // caption. The prompt must say so and forbid narrating tool mechanics / leaking engine words in
+  // those asides. Deterministic host-level enforcement is #385; this lint only guards the prompt
+  // rule from silently regressing.
+  assert.match(SYSTEM_PROMPT, /shown to the person verbatim/i);
+  assert.match(SYSTEM_PROMPT, /no backstage channel/i);
+  assert.match(SYSTEM_PROMPT, /aside/i);
+});
+
 test("the prompt covers both turn-one shapes: describe-path echo/build/land and gallery-pick chips-verbatim (§2.3/§2.4)", () => {
   assert.match(SYSTEM_PROMPT, /verbatim/i);
   assert.match(SYSTEM_PROMPT, /next/i);
