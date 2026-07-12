@@ -15,7 +15,9 @@ use std::time::Duration;
 use reuben_core::coordinator::{DiagnosticsReport, DocSource, Request, Response};
 use reuben_core::{Diag, DiffSummary, Report, SwapReport};
 
-use reuben_mcp::{DocumentSnapshot, EngineChannel, EngineLink, StructureClient, SwapOutcome};
+use reuben_mcp::{
+    default_osc_addr, DocumentSnapshot, EngineChannel, EngineLink, StructureClient, SwapOutcome,
+};
 
 /// A running loopback NDJSON stub: the address the client dials, plus a receiver of every request
 /// the stub parsed off the wire (so a test can assert the client sent the *right* envelope — e.g.
@@ -306,7 +308,7 @@ fn engine_link_pings_reachable_only_when_the_engine_answers() {
             message: "no".to_string(),
         },
     });
-    let link = EngineLink::new(live.addr.to_string(), "127.0.0.1:9000");
+    let link = EngineLink::new(live.addr.to_string(), default_osc_addr());
     assert!(
         within(Duration::from_secs(5), "link live", move || link
             .ping()
@@ -314,7 +316,7 @@ fn engine_link_pings_reachable_only_when_the_engine_answers() {
         "a live ping-answering engine must read as reachable"
     );
 
-    let dead = EngineLink::new(dead_addr(), "127.0.0.1:9000");
+    let dead = EngineLink::new(dead_addr(), default_osc_addr());
     let err = within(Duration::from_secs(5), "link dead", move || dead.ping());
     assert!(
         err.is_err_and(|e| e.is_unreachable()),
