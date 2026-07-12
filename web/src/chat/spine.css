@@ -47,6 +47,42 @@
   color: var(--string);
 }
 
+/* --- the re-strike transport (spec §6.2.2, issue #360): the replay-from-top cue ---------------
+   A slim rail above the board whose playhead sweeps left→right; a structural re-strike snaps it
+   back to the start (chat/spine.js `transport.restrike` re-triggers the sweep), SHOWING the phase
+   reset — "playing the new version from the top." The sweep is a v1 visual cue (M1 exposes no clock
+   to the shell); the honest, load-bearing part is the reset, driven only by a genuine re-strike. */
+.spine-transport {
+  position: relative;
+  width: 100%;
+  max-width: 60rem;
+  height: 3px;
+  margin: 0 auto 0.7rem;
+  border-radius: 999px;
+  background: var(--butter);
+  overflow: hidden;
+}
+.transport-playhead {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 22%;
+  height: 100%;
+  border-radius: 999px;
+  background: linear-gradient(90deg, transparent, var(--turquoise), transparent);
+  /* The sweep begins at the LEFT edge (transform: translateX(-100%) → past the right), so a restart
+     of this animation visibly returns the playhead to the start (spec §6.2.2). */
+  animation: transport-sweep 3.6s linear infinite;
+}
+@keyframes transport-sweep {
+  from {
+    transform: translateX(-100%);
+  }
+  to {
+    transform: translateX(455%);
+  }
+}
+
 /* The node-identity board (chat/board.js): a uniform reflowing grid — survivors hold their slot,
    added cells append + animate in, removed cells animate out (spec §3.6). */
 .surface-board {
@@ -307,15 +343,31 @@
 .tx-card-row[data-bucket="removed"] .tx-card-row-mark {
   color: var(--string);
 }
-/* §4.7 restart-honesty slot — reserved at the card foot, empty until #360 fills it (then it shows). */
+/* §4.7 restart-honesty slot — reserved by #358 at the card foot, FILLED + animated by #360 (§6.4).
+   The first-run-only restart line (content + once/session gate are #356's; the envelope carries it
+   already — we only render the slot when present). When non-empty it reveals with a soft settle, so
+   the line lands with the re-strike rather than snapping in — a quiet punctuation on the replay. */
 .tx-card-honesty {
   margin: 0.45rem 0 0;
   font-family: var(--font-hand);
   font-size: 0.9rem;
   color: var(--ink-soft, #6b6b6b);
 }
+.tx-card-honesty:not(:empty) {
+  animation: honesty-reveal 0.32s ease both;
+}
 .tx-card-honesty:empty {
   display: none;
+}
+@keyframes honesty-reveal {
+  from {
+    opacity: 0;
+    transform: translateY(0.2rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
 }
 @media (prefers-reduced-motion: reduce) {
   .tx-card[data-card-state="thinking"] .tx-card-plan {
@@ -410,7 +462,14 @@
 
 @media (prefers-reduced-motion: reduce) {
   .board-cell[data-board-state],
-  .spine[data-turn="in-flight"] .spine-chrome::before {
+  .spine[data-turn="in-flight"] .spine-chrome::before,
+  .transport-playhead,
+  .tx-card-honesty:not(:empty) {
     animation: none;
+  }
+  /* Reduced motion keeps the transport, but parks the playhead at the START so the replay-from-top
+     reset (spec §6.2.2) is still legible as a position, not a moving sweep. */
+  .transport-playhead {
+    transform: translateX(-100%);
   }
 }

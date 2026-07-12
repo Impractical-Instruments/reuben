@@ -35,6 +35,40 @@ import { assistantTurn } from "../../../crates/reuben-web/js/agent-turn.mjs";
 // this ticket just honors it.
 const ARRIVAL_EXPANDED = { made: true, picked: false };
 
+// The re-strike's REPLAY-FROM-TOP cue (spec §6.2.2, issue #360): a slim transport strip above the
+// board whose playhead sweeps left→right and, on a structural restart, VISIBLY RETURNS TO THE
+// START. That return is the load-bearing honesty: a structural swap resets every node cold and the
+// clock/sequencer to step 0 (ADR-0046 §10), so snapping the playhead to the start at the re-strike
+// moment SHOWS the phase reset the spec calls the salient event — "playing the new version from the
+// beginning." The continuous sweep between re-strikes is a v1 VISUAL cue, not a sample-accurate
+// playhead: M1 exposes no clock/transport position to the shell, so binding the sweep to the real
+// loop phase is a named deferred door (alongside quantize-to-downbeat, §6.3). What IS honest today
+// is the reset — driven only by a genuine re-strike, never faked.
+function createTransport() {
+  const playhead = h("div", { class: "transport-playhead", "aria-hidden": "true" });
+  const el = h(
+    "div",
+    { class: "spine-transport", dataset: { restrikeSeq: "0" }, role: "presentation" },
+    playhead,
+  );
+  let seq = 0;
+  return {
+    el,
+    // Snap the playhead back to the start and re-run the sweep from step 0 (spec §6.2.2). Re-trigger
+    // the CSS animation by clearing it, forcing a reflow, then restoring it — the reliable
+    // restart-an-animation idiom. `data-restrike-seq` is a monotonic stamp the re-strike spec reads
+    // to prove the reset FIRED (and fired exactly once per structural change), race-free.
+    restrike() {
+      seq += 1;
+      el.dataset.restrikeSeq = String(seq);
+      playhead.style.animation = "none";
+      void playhead.offsetWidth; // force reflow so the animation genuinely restarts from 0
+      playhead.style.animation = "";
+    },
+    restrikeSeq: () => seq,
+  };
+}
+
 /**
  * Build the co-presence spine (spec §3).
  *
@@ -49,13 +83,24 @@ const ARRIVAL_EXPANDED = { made: true, picked: false };
  *   creation — the cold-start / gallery ticket (#357)'s proactive greeting (+ authored chips) for
  *   a pick, or the user's own words echoed for a describe-path build. Empty by default (a caller
  *   that wants no seed content, or that pushes its own turn one asynchronously via `transcript`).
+ * @param {(atSilence: () => (void|Promise<void>)) => Promise<void>} [opts.duck] - the re-strike's
+ *   declicked audio duck (spec §6.2.4, issue #360): fade to silence, run `atSilence` at the trough,
+ *   fade back up. main.js wires the live engine's `restrikeDuck` here so the visible commit is
+ *   co-timed with the real sound drop. Defaults to an IMMEDIATE pass-through (runs `atSilence` now,
+ *   no audio) so the visible re-strike gesture works headless / before an engine is bound.
  * @returns {object} the spine handle (screen + board + transcript + turn/sheet controls + seams).
  */
-export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [] } = {}) {
+export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [], duck } = {}) {
   const expanded = ARRIVAL_EXPANDED[arrival] ?? false;
+  // The declicked duck (spec §6.2.4). Absent a wired engine, a synchronous pass-through: the trough
+  // work still runs (co-timed commit stays honest), just with no audible fade.
+  const runDuck =
+    duck ??
+    ((atSilence) => Promise.resolve(atSilence?.()));
 
   const board = createBoard();
   const transcript = createTranscript();
+  const transport = createTransport();
 
   // --- transcript sheet (spec §3.3): the UPWARD collapsible conversation ---------------------
   // A `kind: "chips"` entry (spec §2.3/§I) renders as a row of tappable quick-change chips
@@ -161,7 +206,9 @@ export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [] } =
   // instrument's inputChannels, exactly as the player does. Stays EMPTY for self-playing /
   // tap-to-play Toys. Kept a bare container (like `keepSlot`) so the spine owns no mic logic.
   const micSlot = h("div", { class: "spine-mic", dataset: { slot: "mic" } });
-  const surfaceRegion = h("div", { class: "spine-surface" }, micSlot, board.el);
+  // The re-strike transport (spec §6.2.2, issue #360) sits between the mic affordance and the board:
+  // the replay-from-top cue reads at the surface's head, above the controls it replays.
+  const surfaceRegion = h("div", { class: "spine-surface" }, micSlot, transport.el, board.el);
 
   const screen = h(
     "section",
@@ -210,6 +257,7 @@ export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [] } =
     screen,
     board,
     transcript,
+    transport,
     keepSlot,
     micSlot,
 
@@ -225,44 +273,84 @@ export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [] } =
     },
     turnInFlight: () => screen.dataset.turn === "in-flight",
 
-    // --- the change-card + surface highlights (spec §4, issue #358) --------------------------
+    // --- the change-card + surface highlights (spec §4, #358) + the re-strike (spec §6, #360) --
     // Open a change-card for a reshape (spec §4.1/§4.2). Builds a turn envelope in the "thinking"
     // state (js/agent-turn.mjs — THE #354 contract), mounts its card into the transcript IMMEDIATELY
     // (so the plan can start streaming at once), and returns a controller the caller drives:
     //   - `appendPlan(text)`  grow the streamed plan; the card repaints in place (§4.2).
-    //   - `resolve(diff, honesty)` transition thinking → resolved on the SAME card: it resolves into
-    //     the sensory rows AND fires the diff-keyed surface highlight (§4.1/§4.6). `honesty` is the
-    //     optional §4.7 restart line (#360 owns its content; we only render-if-present).
-    // The real agent loop (#354) drives this exactly as the tests do; until it is wired into the
-    // browser this is the seam a crafted envelope pushes through (mirrors main.js:859's un-wired seam).
+    //   - `resolve(diff)` — the §6.1 PARAMETER-ONLY path: transition thinking → resolved on the SAME
+    //     card into sensory rows + the diff-keyed surface glow (§4.1/§4.6), a live sweep with no gap.
+    //   - `restrike(diff, honesty, {sounding})` — the §6.2 STRUCTURAL path: the declicked-duck
+    //     re-strike, committing the card + surface + playhead reset at the trough, with the
+    //     first-run-only restart line (§6.4) rendered from the envelope.
+    // The routing between the two is the agent's (#356); this renders each behavior. The real agent
+    // loop (#354) drives this exactly as the tests do; until it is wired into the browser this is the
+    // seam a crafted envelope pushes through (mirrors main.js:859's un-wired seam).
     beginReshapeCard() {
       const env = assistantTurn();
       const card = createChangeCard(env.turn, board);
       transcript.push({ kind: "change-card", card });
+
+      // The card-commit + surface-animate half of a landed reshape (spec §4.1/§4.6). Factored out so
+      // BOTH resolve paths below share it: the param-only live sweep runs it immediately, the
+      // structural re-strike runs it AT the duck's trough (co-timed with the sound drop, §6.2.1).
+      //
+      // GLOW ONLY (finding 3 / §4.1 "a changed control sweeps its value"): this fires the
+      // node-identity GLOW, not the value re-render — we do not call `board.update(...)`. The
+      // structural diff carries node addresses, not the reshaped widget's new value, so there is
+      // nothing to sweep the control TO yet. The value-sweep half of §4.1 lands with the #354
+      // agent-loop wiring, which delivers the fresh widget set alongside the diff (the seam at
+      // main.js:859): at that point this also re-renders the touched controls through `board.update`
+      // and the "changed" glow doubles as the value-sweep. Until then it is honestly glow-only.
+      function commit() {
+        env.resolve();
+        card.update();
+        board.highlightDiff(env.turn.diff);
+      }
+
       return {
         turn: env.turn,
         appendPlan(text) {
           env.appendPlan(text);
           card.update();
         },
-        resolve(diff, honesty) {
+
+        // §6.1 PARAMETER-ONLY path: a live sweep, NO gap, no phase reset — the existing #358 behavior.
+        // The routing (param-only → `send`) is the agent's (#356); this renders it as the
+        // magnitude-appropriate live control move. A param-only reshape NEVER carries a restart line
+        // (spec §6.4: nothing restarted) — `honesty` is deliberately not accepted here.
+        resolve(diff) {
           if (diff) env.setDiff(diff);
-          if (typeof honesty === "string") env.turn.restartHonesty = honesty;
-          env.resolve();
-          card.update();
-          // The surface half of the A+B hybrid (§4.1): animate the touched controls keyed on node
-          // identity. The card (transcript half) and this (surface half) are the two linked views.
-          //
-          // GLOW ONLY (finding 3 / §4.1 "a changed control sweeps its value"): this fires the
-          // node-identity GLOW, but NOT the value re-render — we intentionally do not call
-          // `board.update(...)` here. The structural diff carries node addresses, not the reshaped
-          // widget's new value, so there is nothing to sweep the control TO yet. The value-sweep half
-          // of §4.1 lands with the #354 agent-loop wiring, which delivers the fresh widget set
-          // alongside the diff (the same seam noted at main.js:859 / beginReshapeCard above): at that
-          // point `resolve` also re-renders the touched controls through `board.update`, and the
-          // "changed" glow doubles as the value-sweep cue. Until then this is honestly glow-only — we
-          // do not invent a value to sweep, and no test asserts a value-sweep that does not happen.
-          board.highlightDiff(env.turn.diff);
+          commit();
+          return env.turn;
+        },
+
+        // §6.2 STRUCTURAL path: THE re-strike. A structural reshape (add/remove/rewire) restarts the
+        // sound cold (ADR-0046 §10), so it is presented as "the instrument replaying with your
+        // change, from the top" — never named as a restart to the user (§6.1). The gesture:
+        //   1. co-timed cause (§6.2.1) — the card commits + the surface animates AT the sound drop,
+        //      inside the duck's trough (`commit` runs there), so cause and effect are simultaneous;
+        //   2. replay-from-top (§6.2.2) — the transport playhead visibly returns to the start;
+        //   3. a decisive, consistent gesture with NO spinner over the gap (§6.2.3) — it's a beat,
+        //      not a wait; we add no loading chrome, and the turn-in-flight stripe is not touched;
+        //   4. a clean declicked duck (§6.2.4) — `runDuck` fades to silence and back (raised-cosine,
+        //      js/declick.mjs), never a hard cut.
+        // `sounding` gates §6.4's "nothing currently playing → just build ready": with no live sound
+        // there is no restart to be honest about, so we skip the duck, the playhead reset, AND the
+        // honesty line, and simply commit (build-and-be-ready). `honesty` renders the first-run-only
+        // restart line the ENVELOPE already gates once/session (#356 attaches it; we only render the
+        // slot #358 reserved — never re-implement the gate). Resolves when the duck completes.
+        async restrike(diff, honesty, { sounding = true } = {}) {
+          if (diff) env.setDiff(diff);
+          if (!sounding) {
+            commit(); // build-and-be-ready: no duck, no playhead reset, no restart line (§6.4)
+            return env.turn;
+          }
+          await runDuck(() => {
+            if (typeof honesty === "string" && honesty) env.turn.restartHonesty = honesty;
+            commit(); // the co-timed cause: card + surface land exactly as the sound drops (§6.2.1)
+            transport.restrike(); // replay-from-top: the playhead visibly returns to start (§6.2.2)
+          });
           return env.turn;
         },
       };
@@ -276,11 +364,14 @@ export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [] } =
     relayout: board.relayout,
     onSuggestRelayout: board.onSuggestRelayout,
 
-    // #360 seam — the structural restart / re-strike moment (the declicked duck + replay-from-top,
-    // spec §6). The ONE interruption the spine allows (spec §3.4). A no-op here: assign a real
-    // implementation from the re-strike ticket; the spine never calls it itself.
+    // #360 — the structural restart / re-strike moment (spec §6) is now IMPLEMENTED on the
+    // reshape-card controller: `beginReshapeCard().restrike(diff, honesty, {sounding})` runs the
+    // declicked duck (§6.2.4) with the co-timed card-commit + surface-animate + replay-from-top at
+    // its trough (§6.2.1/§6.2.2). This stays as the named seam the spec §3.4 note points at — the
+    // spine still never triggers a restart on its own; a restart only ever happens through a
+    // structural `restrike` a turn drives. Left as a no-op so nothing here fires audio unbidden.
     onStructuralRestart() {
-      /* no-op seam (#360) */
+      /* implemented via beginReshapeCard().restrike (#360); this seam stays a no-op */
     },
   };
 

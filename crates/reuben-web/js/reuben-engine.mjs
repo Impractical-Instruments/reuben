@@ -22,6 +22,7 @@
 
 import { encodeControl } from "./codec.mjs";
 import { loadInstrument } from "./loader.mjs";
+import { raisedCosineDuckCurve, DECLICK_EDGE_MS } from "./declick.mjs";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -122,7 +123,17 @@ export async function createReubenEngine({
     log("[worklet] port messageerror on the main thread: reply could not be deserialized");
   node.onprocessorerror = (e) => log(`[worklet] processor error: ${e}`);
 
-  node.connect(ctx.destination);
+  // A master GainNode between the worklet and the speakers — M1-web's ONLY master-gain stage, and
+  // so the only place the re-strike's declicked duck (spec §6.2.4, issue #360) can ride. ADR-0050
+  // §2 puts that raised-cosine ramp on the CORE RT-side install slot "inherited by both shells",
+  // but §1 ships it with M2's mailbox swap ("M1 stays rude — no M1 work item") and the core master
+  // path has no gain stage yet (§Context). M1's swap is stop-the-world (ADR-0046 §10 / ADR-0052 §2:
+  // destroy → stage → construct in the worklet), so the restart edges live in THIS shell — and this
+  // node is where `restrikeDuck` fades to silence and back around them. Steady-state gain is unity;
+  // it only moves during a duck (see js/declick.mjs for the WHERE-the-declick-lives finding).
+  const masterGain = ctx.createGain();
+  node.connect(masterGain);
+  masterGain.connect(ctx.destination);
   // Transfer, don't copy: the compiled wasmModule above already owns its own copy.
   node.port.postMessage({ type: "module", bytes: wasmBytes }, [wasmBytes]);
 
@@ -333,6 +344,65 @@ export async function createReubenEngine({
       node.port.postMessage({ type: "control", buffer: copy }, [copy.buffer]);
     },
 
+    /**
+     * The re-strike's declicked duck (spec §6.2.4, issue #360): fade the master output to silence,
+     * run `atSilence` at the trough, then fade back up — a raised-cosine ramp per edge, NEVER a hard
+     * cut. This is where the structural restart's audio edge is declicked in M1-web (see the
+     * WHERE-it-lives finding in js/declick.mjs; the engine-side core ramp of ADR-0050 §2 is M2).
+     *
+     * `atSilence` is the co-timed cause (spec §6.2.1): the caller commits the change-card, animates
+     * the surface, and resets the playhead HERE, so cause and effect are simultaneous — the change
+     * lands exactly as the sound drops. In the agent-wired flow it is also where the real restart-swap
+     * (engine.loadBundle, the worklet reconstruct) belongs, so the reconstruct happens under silence.
+     *
+     * Instant re-strike for v1 (spec §6.3): the trough is the ~12ms edge boundary, not a held gap —
+     * quantize-to-downbeat (holding the swap for a bar line) is a named deferred door, not built here.
+     * Resolves when the up-edge completes. If the engine is torn down (no context/gain), `atSilence`
+     * still runs (so the visible commit never stalls) and it resolves immediately — a silent no-op duck.
+     *
+     * @param {() => (void | Promise<void>)} atSilence - the trough work (commit + reconstruct), run
+     *   once the output has reached silence.
+     * @param {{edgeMs?: number}} [opts] - edge duration per side (default DECLICK_EDGE_MS; ADR-0050
+     *   §3's fixed 5–20ms door — do not widen without a new decision).
+     * @returns {Promise<void>}
+     */
+    async restrikeDuck(atSilence, { edgeMs = DECLICK_EDGE_MS } = {}) {
+      const run = async () => {
+        try {
+          await atSilence?.();
+        } catch (err) {
+          log(`[restrike] trough work threw: ${err && err.message ? err.message : err}`);
+        }
+      };
+      // No live output to duck (destroyed / no context): keep the visible re-strike honest by still
+      // committing at the "trough", just with no audible fade. Never leave the caller hanging.
+      if (destroyed || !masterGain || ctx.state === "closed") {
+        await run();
+        return;
+      }
+      const edgeSec = Math.max(0.001, edgeMs / 1000);
+      const now = ctx.currentTime;
+      const gain = masterGain.gain;
+      // Fade unity → silence → unity as ONE raised-cosine value curve (declick.mjs). A single curve
+      // (not two back-to-back edges) is deliberate: Web Audio rejects a second curve that touches the
+      // first's end ("overlaps another curve"). cancelScheduledValues clears any half-finished duck
+      // from a rapid double re-strike so the ramps can't fight; the curve then spans both edges
+      // (2·edgeSec) starting from unity, its silent midpoint the trough where we commit. No
+      // setValueAtTime anchor around it — an instantaneous event touching the curve's window is
+      // itself rejected as an overlap, and the curve carries its own start (1) and end (1) values.
+      gain.cancelScheduledValues(now);
+      gain.setValueCurveAtTime(raisedCosineDuckCurve(), now, edgeSec * 2);
+      // Commit at the trough (≈ one edge in). setTimeout is coarse vs. the audio clock, but the
+      // visible commit needs a beat, not sample accuracy (spec §6.3), and it lands inside the duck.
+      await new Promise((resolve) => setTimeout(resolve, edgeMs));
+      await run();
+      // Let the up-edge finish before resolving, so a caller awaiting the duck sees the sound return.
+      // The curve itself ends at unity (declick.mjs) — no trailing anchor: a setValueAtTime landing
+      // inside the still-settling curve window would be rejected as an overlap. A subsequent
+      // re-strike re-anchors from the current value, so steady-state gain stays 1 either way.
+      await new Promise((resolve) => setTimeout(resolve, edgeMs));
+    },
+
     /** Ask for the microphone and wire it into the worklet node's input. */
     async enableMic() {
       if (micSource) return; // already live
@@ -388,6 +458,7 @@ export async function createReubenEngine({
         micStream = null;
       }
       node.disconnect();
+      masterGain.disconnect();
       if (ownsContext) ctx.close().catch(() => {});
     },
   };
