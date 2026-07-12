@@ -122,6 +122,38 @@ test("controls stay hand-live while a mock agent turn is in flight (no freeze)",
   expect(errors, `no uncaught page errors: ${errors.join("; ")}`).toEqual([]);
 });
 
+// --- 2b. the real user submit path: form submit → clears → in-flight → auto-settles -----------
+// The test above drives the turn state directly; this exercises the ACTUAL path a user takes —
+// typing a reshape and hitting Send routes through the form's onsubmit → mockReshape (the #354
+// seam), which pushes the "you" line, marks the turn in flight, and auto-settles.
+test("submitting the reshape form clears the input, records the turn, and settles", async ({
+  page,
+}) => {
+  const errors = [];
+  page.on("pageerror", (e) => errors.push(e.message));
+
+  await bootSpine(page, DESKTOP);
+
+  const input = page.locator(".reshape-input");
+  await input.fill("make it warmer");
+  await page.locator(".reshape-send").click(); // the real submit gesture
+
+  // The input clears, and the turn is now in flight (set synchronously by the submit handler).
+  await expect(input).toHaveValue("");
+  await expect(page.locator(".spine")).toHaveAttribute("data-turn", "in-flight");
+
+  // The user's words were pushed to the transcript as their line (spec §3.3 / §2.4 echo).
+  await page.evaluate(() => window.reubenChat.toggleSheet(true));
+  await expect(page.locator('.transcript .tx-entry[data-role="you"] .tx-text')).toHaveText(
+    "make it warmer",
+  );
+
+  // ...then the mock turn auto-settles back to idle (no freeze — spec §3.4).
+  await expect(page.locator(".spine")).toHaveAttribute("data-turn", "idle", { timeout: 3000 });
+
+  expect(errors, `no uncaught page errors: ${errors.join("; ")}`).toEqual([]);
+});
+
 // --- 3. node-identity layout (spec §3.6): survivors hold position; a re-sort moves them --------
 test("surface layout keys on node identity: identity-preserving re-render is stable, re-sort is not", async ({
   page,
@@ -133,24 +165,24 @@ test("surface layout keys on node identity: identity-preserving re-render is sta
 
   const before = await page.evaluate(() => window.reubenChat.boardNodes());
   expect(before.length).toBeGreaterThan(2); // need ≥2 controls for order to be meaningful
-  const orderBefore = before.map((n) => n.node);
-  const uidBefore = Object.fromEntries(before.map((n) => [n.node, n.uid]));
+  const orderBefore = before.map((n) => n.control);
+  const uidBefore = Object.fromEntries(before.map((n) => [n.control, n.uid]));
 
   // Identity-preserving re-render (the SAME nodes in a DIFFERENT input order). Survivors HOLD
   // POSITION → the board order is unchanged and every cell is the SAME element (uid preserved).
   await page.evaluate(() => window.reubenChat.reshapePreserveIdentity());
   const afterPreserve = await page.evaluate(() => window.reubenChat.boardNodes());
-  expect(afterPreserve.map((n) => n.node)).toEqual(orderBefore);
-  for (const n of afterPreserve) expect(n.uid).toBe(uidBefore[n.node]);
+  expect(afterPreserve.map((n) => n.control)).toEqual(orderBefore);
+  for (const n of afterPreserve) expect(n.uid).toBe(uidBefore[n.control]);
 
   // The fresh-sort ANTI-PATTERN §3.6 forbids: positions follow the (reversed) input, so the
   // controls MOVE and the cells are rebuilt. This is what "a shuffled re-sort FAILS the test"
   // means — the stability assertion above genuinely distinguishes the two.
   await page.evaluate(() => window.reubenChat.resortRebuild());
   const afterResort = await page.evaluate(() => window.reubenChat.boardNodes());
-  expect(afterResort.map((n) => n.node)).not.toEqual(orderBefore);
-  expect(afterResort.map((n) => n.node)).toEqual([...orderBefore].reverse());
-  for (const n of afterResort) expect(n.uid).not.toBe(uidBefore[n.node]);
+  expect(afterResort.map((n) => n.control)).not.toEqual(orderBefore);
+  expect(afterResort.map((n) => n.control)).toEqual([...orderBefore].reverse());
+  for (const n of afterResort) expect(n.uid).not.toBe(uidBefore[n.control]);
 
   expect(errors, `no uncaught page errors: ${errors.join("; ")}`).toEqual([]);
 });

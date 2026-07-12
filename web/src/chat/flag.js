@@ -1,8 +1,10 @@
 // chat/flag.js — the SINGLE source-of-truth ship gate for the in-browser chat authoring
-// experience (epic #350 M1, spec §7 / ADR-0052 §3). OFF by default: the chat window must NOT
-// reach normal users before M2's Keep gesture is wired into its loop (ADR-0052 §3's ordering
-// constraint on ship). Every M1 chat UI ticket imports THIS predicate — there is exactly one
-// place the gate lives, so no screen can drift out of sync with the others.
+// experience (epic #350 M1). OFF by default: the chat window must NOT reach normal users before
+// M2's Keep gesture is wired into its loop. The GATE CRITERION is acceptance criterion §9(7)
+// ("the chat window ships only once Keep is wired in") + ADR-0052 §3's by-value / ordering
+// constraint on ship; spec §7 is the Keep section that explains WHY Keep must land first, not the
+// gate itself. Every M1 chat UI ticket imports THIS predicate — there is exactly one place the
+// gate lives, so no screen can drift out of sync with the others.
 //
 // Two ways to opt in, checked at call time (never cached — the query string can change under a
 // SPA hashchange, and a test may navigate):

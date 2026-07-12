@@ -214,9 +214,15 @@ function splashScreen() {
       const e = await ensureEngine();
       // The unlock: resume() alone, on the user gesture. Everything heavy already happened.
       await e.context.resume();
-      // Ship gate (spec §7 / ADR-0052 §3): when the chat flag is OFF (the default) this is the
-      // unchanged launcher flow; when ON, the same unlock gesture boots into the co-presence
-      // spine (spec §3, issue #355) instead. One flag, checked in one place (chat/flag.js).
+      // Ship gate (acceptance criterion §9(7) + ADR-0052 §3; see chat/flag.js): when the chat
+      // flag is OFF (the default) this is the unchanged launcher flow; when ON, the same unlock
+      // gesture boots into the co-presence spine (spec §3, issue #355) instead. One flag, checked
+      // in one place (chat/flag.js).
+      // NOTE (M1 routing scope): the spine intentionally covers ONLY this splash → default-
+      // instrument path in M1. The other two entry points below — a shared-link fragment boot and
+      // an empty-hash landing — still mount the OLD player even when the flag is on (see the notes
+      // at fragmentBoot and the hashchange handler); routing those into the spine is deferred to
+      // the cold-start / gallery + share-into-spine work, not omitted by accident.
       if (chatEnabled()) openSpine();
       else showLauncher();
     } catch (err) {
@@ -757,6 +763,11 @@ function exposeSpineTestHook(spine) {
 // A shared link (`#r1.…`) IS an instrument: decode it, then boot it on ONE tap (iOS needs the
 // gesture). decode needs no audio, so it runs at boot; a decode failure lands on the launcher
 // with the mapped banner (classes B–E′), never a splash the reader can't leave.
+//
+// M1 chat-flag scope (deliberate, not a bug): this path mounts the OLD player even when the chat
+// flag is on. The spine (issue #355) covers only the splash → default-instrument path; routing a
+// shared link INTO the spine belongs with the share-into-spine / Keep (M2) work, so a link stays
+// on the player for now.
 async function fragmentBoot(hash) {
   let bundle;
   try {
@@ -933,6 +944,9 @@ function isFragment(hash) {
 window.addEventListener("hashchange", () => {
   const hash = location.hash.slice(1);
   if (isFragment(hash)) fragmentBoot(hash);
+  // M1 chat-flag scope (deliberate): the empty-hash landing shows the OLD launcher even when the
+  // chat flag is on — the spine (issue #355) is entered only via splash → Start. A flag-on empty
+  // hash routing into the spine/gallery is the cold-start ticket's (#357), not this ticket's.
   else showLauncher();
 });
 
