@@ -1,5 +1,5 @@
 {
-  "comment": "Launcher manifest (issue #226, scope item 2): the curated list of the bundled Toys. Each entry's `id` is the instrument document name under instruments/<id>.json — and the id the player auto-discovers a surface doc by (surfaces/<id>.web.json ?? surfaces/<id>.json ?? auto-derived from the interface pipes, ADR-0043; no manifest field needed); `title`/`blurb` are player-facing (blurbs adapted from the README rig table); `kind` is self-playing (sounds on load), tap-to-play (surfaces trigger widgets), or live-input (takes the mic — the player renders an Enable-microphone control, issue #248); `order` sets grid position. The staging script (scripts/stage-assets.mjs) stages exactly these Toys + their transitive resources, plus every surface doc, into public/. Default Toy is groovebox (order 1) — its assets are prefetched at splash so the first pick is instant.",
+  "comment": "Launcher manifest (issue #226, scope item 2): the curated list of the bundled Toys. Each entry's `id` is the instrument document name under instruments/<id>.json — and the id the player auto-discovers a surface doc by (surfaces/<id>.web.json ?? surfaces/<id>.json ?? auto-derived from the interface pipes, ADR-0043; no manifest field needed); `title`/`blurb` are player-facing (blurbs adapted from the README rig table); `kind` is self-playing (sounds on load), tap-to-play (surfaces trigger widgets), or live-input (takes the mic — the player renders an Enable-microphone control, issue #248); `order` sets grid position (also the cold-start gallery's ranking, spec §2.2 — show-all, no auto-derivation). `chips` (issue #357, spec §2.3/§I): an OPTIONAL array of 2-3 sensory strings, authored in `plain` register (spec §8.4), shown as tappable quick-change chips on the gallery-pick's proactive turn one. A chip posts VERBATIM as the user's chat turn — no hidden label/prompt pair. Absent/empty means a greeting-only turn one (tailored-or-nothing, no generic filler); it does NOT gate a Toy's presence in the gallery. The staging script (scripts/stage-assets.mjs) stages exactly these Toys + their transitive resources, plus every surface doc, into public/. Default Toy is groovebox (order 1) — its assets are prefetched at splash so the first pick is instant.",
   "default": "groovebox",
   "toys": [
     {
@@ -7,35 +7,40 @@
       "title": "Groovebox",
       "blurb": "A free-running 16-step drum machine — kick, snare, and hat synthesized from operators on a shared clock. Toggle steps, ride the tempo.",
       "kind": "self-playing",
-      "order": 1
+      "order": 1,
+      "chips": ["busier beat", "more swing", "deeper kick"]
     },
     {
       "id": "chord-player",
       "title": "Chord Player",
       "blurb": "Tap and hold diatonic triad buttons (I–vii°). Chords re-spell live when you change key — a 12-voice pad.",
       "kind": "tap-to-play",
-      "order": 2
+      "order": 2,
+      "chips": ["brighter chords", "switch to a minor key", "warmer pad"]
     },
     {
       "id": "strum-harp",
       "title": "Strum Harp",
       "blurb": "Drag to strum — the bar plucks a note each time it crosses a string. Strings stay in key through the tonal context.",
       "kind": "tap-to-play",
-      "order": 3
+      "order": 3,
+      "chips": ["wider range", "softer plucks", "change the key"]
     },
     {
       "id": "euclidean-drums",
       "title": "Euclidean Drums",
       "blurb": "A self-playing drum machine with knobs to change beat density.",
       "kind": "self-playing",
-      "order": 4
+      "order": 4,
+      "chips": ["denser pattern", "add a tom", "slower"]
     },
     {
       "id": "mic-space",
       "title": "Mic Space",
       "blurb": "Your microphone through a tunable reverb — speak, sing, or play into it and hear yourself in a big room. Headphones required.",
       "kind": "live-input",
-      "order": 5
+      "order": 5,
+      "chips": ["bigger room", "darker tone", "less reverb"]
     }
   ]
 }

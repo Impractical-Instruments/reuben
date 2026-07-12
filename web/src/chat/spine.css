@@ -164,6 +164,38 @@
   line-height: 1.4;
 }
 
+/* Tappable quick-change chips (spec §2.3/§I): the proactive turn-one's authored suggestions. A
+   chip posts its text VERBATIM as a user turn (chat/spine.js `submitTurn`) — same visual family
+   as a .toy-badge stamp, but a real button. */
+.tx-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  margin: 0.2rem 0 0;
+}
+.tx-chip {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.78rem;
+  letter-spacing: 0.02em;
+  color: var(--ink);
+  background: var(--butter);
+  border: var(--border-ink-thin);
+  border-radius: var(--radius-pill, 999px);
+  box-shadow: var(--shadow-paper-sm);
+  padding: 0.32rem 0.85rem 0.26rem;
+  cursor: pointer;
+  transition: transform 0.08s ease, box-shadow 0.08s ease;
+}
+.tx-chip:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--turquoise);
+}
+.tx-chip:active {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--turquoise);
+}
+
 /* --- chrome: the ALWAYS-visible pinned input + the empty Keep slot (M2) --------------------- */
 
 .spine-chrome {

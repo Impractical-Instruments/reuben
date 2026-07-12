@@ -33,15 +33,6 @@ import { createTranscript } from "./transcript.js";
 // this ticket just honors it.
 const ARRIVAL_EXPANDED = { made: true, picked: false };
 
-// A neutral, sensory-only PLACEHOLDER seed so the transcript sheet has content to expand over.
-// The REAL proactive turn-one (a greeting naming what's playing + tappable chips, spec §2.3) is
-// the cold-start ticket's (#357); this line is a stand-in it replaces. Lexicon-clean (spec §1):
-// no engine word ever reaches the user.
-const ARRIVAL_SEED = {
-  made: "Here's your instrument. Tell me what to change.",
-  picked: "This one's playing. Tell me what to change — or just play it.",
-};
-
 /**
  * Build the co-presence spine (spec §3).
  *
@@ -51,26 +42,52 @@ const ARRIVAL_SEED = {
  * @param {(text: string, api: object) => void} [opts.onReshapeSubmit] - handler for a submitted
  *   reshape line. Defaults to the MOCK turn (proves controls stay live); #354 overrides it with
  *   the real agent loop, pushing its streamed plan / resolved card onto `transcript`.
+ * @param {Array<{role: string, text?: string, kind?: string, chips?: string[]}>} [opts.seed] -
+ *   the turn-one content the caller already knows (spec §2.3/§2.4), pushed into the transcript at
+ *   creation — the cold-start / gallery ticket (#357)'s proactive greeting (+ authored chips) for
+ *   a pick, or the user's own words echoed for a describe-path build. Empty by default (a caller
+ *   that wants no seed content, or that pushes its own turn one asynchronously via `transcript`).
  * @returns {object} the spine handle (screen + board + transcript + turn/sheet controls + seams).
  */
-export function createSpine({ arrival = "picked", onReshapeSubmit } = {}) {
+export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [] } = {}) {
   const expanded = ARRIVAL_EXPANDED[arrival] ?? false;
 
   const board = createBoard();
   const transcript = createTranscript();
 
   // --- transcript sheet (spec §3.3): the UPWARD collapsible conversation ---------------------
+  // A `kind: "chips"` entry (spec §2.3/§I) renders as a row of tappable quick-change chips
+  // instead of a text bubble. Each chip posts its string VERBATIM through the SAME `submitTurn`
+  // path a typed-and-sent line takes — "what you said is what happened" (spec §2.3): a chip tap
+  // and re-typing the identical phrase are indistinguishable to the turn loop.
   const transcriptView = h("div", { class: "transcript", role: "log", "aria-live": "polite" });
   const renderTranscript = () => {
     transcriptView.replaceChildren(
-      ...transcript.entries.map((e) =>
-        h(
+      ...transcript.entries.map((e) => {
+        if (e.kind === "chips") {
+          return h(
+            "div",
+            { class: "tx-entry tx-chips-entry", dataset: { role: e.role } },
+            h(
+              "div",
+              { class: "tx-chips" },
+              (e.chips ?? []).map((chip) =>
+                h(
+                  "button",
+                  { class: "tx-chip", type: "button", onclick: () => submitTurn(chip) },
+                  chip,
+                ),
+              ),
+            ),
+          );
+        }
+        return h(
           "div",
           { class: "tx-entry", dataset: { role: e.role } },
           h("span", { class: "tx-role" }, e.role === "you" ? "You" : "reuben"),
           h("p", { class: "tx-text" }, e.text),
-        ),
-      ),
+        );
+      }),
     );
     // Newest line into view when the sheet is open.
     transcriptView.scrollTop = transcriptView.scrollHeight;
@@ -116,7 +133,7 @@ export function createSpine({ arrival = "picked", onReshapeSubmit } = {}) {
         const text = input.value.trim();
         if (!text) return; // empty send is the failure ticket's gentle re-orient (#303/E), not ours
         input.value = "";
-        (onReshapeSubmit ?? mockReshape)(text, api);
+        submitTurn(text);
       },
     },
     input,
@@ -169,6 +186,14 @@ export function createSpine({ arrival = "picked", onReshapeSubmit } = {}) {
     setTimeout(() => self.endMockTurn(), 700);
   }
 
+  // The ONE submit path every source of a turn goes through — the pinned input's Send AND a
+  // tappable chip (spec §2.3's "what you said is what happened": a chip is not a separate,
+  // hidden action, it is the SAME turn a typed-and-sent line would produce).
+  function submitTurn(text) {
+    if (!text) return;
+    (onReshapeSubmit ?? mockReshape)(text, api);
+  }
+
   const api = {
     screen,
     board,
@@ -203,8 +228,11 @@ export function createSpine({ arrival = "picked", onReshapeSubmit } = {}) {
     },
   };
 
-  // Seed the arrival placeholder (replaced by #357's real turn-one) and paint the transcript.
-  transcript.push({ role: "reuben", text: ARRIVAL_SEED[arrival] ?? ARRIVAL_SEED.picked });
+  // Seed the caller's turn-one content (spec §2.3/§2.4 — the cold-start / gallery ticket, #357:
+  // a pick's greeting + authored chips, or a describe-path's echoed first message) and paint the
+  // transcript. Empty by default — a caller with nothing to seed synchronously just gets a blank
+  // transcript and pushes its own content onto `transcript` once it's ready.
+  for (const entry of seed) transcript.push(entry);
   renderTranscript();
 
   return api;
