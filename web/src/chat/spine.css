@@ -75,6 +75,12 @@
 .board-cell[data-board-state="changed"] {
   animation: cell-glow 0.6s ease;
 }
+/* §4.1 echo-highlight: a card row hovered/focused glows its control here (persistent while the row
+   is held, cleared on leave). A steady ring, distinct from the one-shot landing glow above. */
+.board-cell[data-echo="on"] {
+  box-shadow: 0 0 0 3px var(--sky);
+  border-radius: 8px;
+}
 @keyframes cell-in {
   from {
     opacity: 0;
@@ -212,6 +218,109 @@
 .tx-chip:active {
   transform: translate(1px, 1px);
   box-shadow: 1px 1px 0 var(--turquoise);
+}
+
+/* --- the change-card (spec §4, issue #358): the persistent transcript record of a reshape ------ */
+
+/* One card per reshape — a bordered paper block that resolves in place from a streaming plan to
+   sensory rows (§4.2). `data-card-state` is thinking → resolved on the SAME element. */
+.tx-card {
+  margin: 0 0 0.85rem;
+  padding: 0.6rem 0.75rem 0.5rem;
+  background: var(--paper);
+  border: var(--border-ink-thin);
+  border-radius: var(--radius-wobble-sm);
+  box-shadow: var(--shadow-paper-sm);
+}
+.tx-card .tx-role {
+  color: var(--persimmon);
+}
+/* The streamed plan (§4.2). While thinking, a soft pulse reads as "working" (never disables
+   anything — spec §3.4); once resolved it settles as the lead summary above the rows. */
+.tx-card-plan {
+  margin: 0.15rem 0 0;
+  font-size: 0.98rem;
+  line-height: 1.4;
+}
+.tx-card[data-card-state="thinking"] .tx-card-plan {
+  animation: card-working 1.2s ease-in-out infinite;
+}
+@keyframes card-working {
+  50% {
+    opacity: 0.55;
+  }
+}
+/* §4.4 big-diff headline + show-all toggle. */
+.tx-card-headline {
+  margin: 0.5rem 0 0.3rem;
+  font-weight: 700;
+  font-size: 0.98rem;
+}
+.tx-card-showall {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.7rem;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--ink);
+  background: var(--butter);
+  border: var(--border-ink-thin);
+  border-radius: var(--radius-pill, 999px);
+  box-shadow: var(--shadow-paper-sm);
+  padding: 0.24rem 0.7rem 0.2rem;
+  cursor: pointer;
+}
+/* One sensory row per change (§4.1/§4.5). A collapsed big-diff hides the rows until expanded. */
+.tx-card-rows {
+  list-style: none;
+  margin: 0.4rem 0 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+}
+.tx-card-rows[data-expanded="false"] {
+  display: none;
+}
+.tx-card-row {
+  display: flex;
+  align-items: baseline;
+  gap: 0.45rem;
+  font-size: 0.95rem;
+  line-height: 1.35;
+  cursor: default;
+  border-radius: var(--radius-wobble-sm);
+  padding: 0.1rem 0.2rem;
+}
+/* The echo-linkage cue (§4.1): the hovered/focused row tints so the eye connects it to the control
+   that just glowed on the surface. */
+.tx-card-row:hover,
+.tx-card-row:focus {
+  outline: none;
+  background: var(--butter);
+}
+.tx-card-row-mark {
+  font-family: var(--font-mono);
+  font-weight: 700;
+  color: var(--persimmon);
+}
+.tx-card-row[data-bucket="removed"] .tx-card-row-mark {
+  color: var(--string);
+}
+/* §4.7 restart-honesty slot — reserved at the card foot, empty until #360 fills it (then it shows). */
+.tx-card-honesty {
+  margin: 0.45rem 0 0;
+  font-family: var(--font-hand);
+  font-size: 0.9rem;
+  color: var(--ink-soft, #6b6b6b);
+}
+.tx-card-honesty:empty {
+  display: none;
+}
+@media (prefers-reduced-motion: reduce) {
+  .tx-card[data-card-state="thinking"] .tx-card-plan {
+    animation: none;
+  }
 }
 
 /* --- chrome: the ALWAYS-visible pinned input + the empty Keep slot (M2) --------------------- */

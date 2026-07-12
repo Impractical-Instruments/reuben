@@ -68,10 +68,35 @@ function makeCell(widget, engine, uid) {
   return cell;
 }
 
+// The diff → surface bridge (spec §4.1/§4.6, issue #358). The change-card renders the NODE-addressed
+// structural diff (js/diff.mjs keys on `node.address`, e.g. "/cutoff"); this board keys each cell on
+// the CONTROL/pipe address (`widget.address`, e.g. "/cutoff/in" — the granularity note atop this
+// file). So a diff node address must be resolved to the cell(s) it backs before it can highlight one.
+// A control's node is its address minus the trailing "/<port>" segment.
+function nodeOfControl(controlAddr) {
+  const cut = controlAddr.lastIndexOf("/");
+  return cut > 0 ? controlAddr.slice(0, cut) : controlAddr;
+}
+
 export function createBoard() {
   const el = h("div", { class: "surface-board" });
   const cells = new Map(); // control address -> { cell, widget }
   let uidSeq = 0;
+  // TEST-ONLY provenance of the last diff-driven highlight (issue #358): the node addresses whose
+  // controls actually animated, per bucket. Lets the change-card spec assert "the reshape swept THIS
+  // control" deterministically, without racing the settle/reap animation timers. Not load-bearing.
+  let lastHighlight = { added: [], changed: [], removed: [] };
+
+  // Resolve a diff NODE address (e.g. "/cutoff") to the mounted cell(s) that back it (spec §4.1).
+  // A node may back several controls (each a shared cell collapses by address) or NONE — a no-knob
+  // change (§4.3) resolves to [] and simply has no surface echo.
+  function cellsForNode(nodeAddr) {
+    const out = [];
+    for (const { cell } of cells.values()) {
+      if (nodeOfControl(cell.dataset.control) === nodeAddr) out.push(cell);
+    }
+    return out;
+  }
 
   // Detach an exiting cell once its animate-out finishes (or a fallback timeout, so a
   // reduced-motion / animation-suppressed context still cleans up). The cells map is updated
@@ -149,6 +174,66 @@ export function createBoard() {
         .filter((c) => c.dataset.boardState !== "exiting")
         .map((c, index) => ({ control: c.dataset.control, uid: c.dataset.cellUid, index }));
     },
+
+    // --- §4.1 diff → surface highlight (issue #358) -----------------------------------------
+    // The card + the surface are two linked views of one reshape, both driven off the node-identity
+    // diff. These are the surface half; chat/change-card.js is the transcript half.
+
+    // Expose the node→cell bridge so the change-card can tell whether a change HAS a control to echo
+    // (a no-knob change, §4.3, resolves to []).
+    cellsForNode,
+
+    // Echo-highlight the control(s) for a node (spec §4.1): hovering/focusing a card row glows its
+    // control on the surface. A PERSISTENT state (`data-echo`) held while the row is hovered and
+    // cleared on leave — distinct from the transient landing animations below. No-op for a no-knob
+    // node (nothing resolves).
+    echoNode(nodeAddr) {
+      for (const cell of cellsForNode(nodeAddr)) cell.dataset.echo = "on";
+    },
+    clearEchoNode(nodeAddr) {
+      for (const cell of cellsForNode(nodeAddr)) delete cell.dataset.echo;
+    },
+
+    /**
+     * Animate the controls a landed reshape touched, keyed on NODE IDENTITY from the structural diff
+     * (spec §4.1/§4.6): added → pulse in, changed → value-sweep glow, removed → animate out (and
+     * detach — a removed node's control leaves the board, §3.6). This is the diff-driven companion to
+     * `update`'s widget-reconcile animation: `update` is the authority on membership, this fires the
+     * node-identity glow the card is the record of (they agree in the live flow; the diff path also
+     * covers a change that isn't visible in the widget's own fields). Records `lastHighlight` for the
+     * test hook. Returns the count of controls actually touched (0 ⇒ the whole diff was no-knob).
+     */
+    highlightDiff(diff) {
+      const touched = { added: [], changed: [], removed: [] };
+      for (const addr of diff?.changed ?? []) {
+        for (const cell of cellsForNode(addr)) {
+          if (cell.dataset.boardState === "exiting") continue;
+          cell.dataset.boardState = "changed";
+          settle(cell);
+          touched.changed.push(addr);
+        }
+      }
+      for (const addr of diff?.added ?? []) {
+        for (const cell of cellsForNode(addr)) {
+          cell.dataset.boardState = "entering";
+          settle(cell);
+          touched.added.push(addr);
+        }
+      }
+      for (const addr of diff?.removed ?? []) {
+        for (const cell of cellsForNode(addr)) {
+          cell.dataset.boardState = "exiting";
+          reap(cell);
+          cells.delete(cell.dataset.control);
+          touched.removed.push(addr);
+        }
+      }
+      lastHighlight = touched;
+      return touched.added.length + touched.changed.length + touched.removed.length;
+    },
+
+    // TEST-ONLY readout of the last highlightDiff's touched node addresses (see `lastHighlight`).
+    lastHighlight: () => lastHighlight,
 
     // §3.6 seam — explicit user-directed re-layout ("rearrange this / clean up the layout"). The
     // BEHAVIOR (re-sorting into a tidier arrangement, and restoring lane/group density — see the

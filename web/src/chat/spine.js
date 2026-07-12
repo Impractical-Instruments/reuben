@@ -26,6 +26,8 @@ import "./spine.css";
 import { h } from "../dom.js";
 import { createBoard } from "./board.js";
 import { createTranscript } from "./transcript.js";
+import { createChangeCard } from "./change-card.js";
+import { assistantTurn } from "../../../crates/reuben-web/js/agent-turn.mjs";
 
 // The arrival-default transcript state (spec §3.3): land EXPANDED when the user MADE an
 // instrument (they were just talking), COLLAPSED-TO-BAR when they PICKED one to play. Exposed as
@@ -64,6 +66,10 @@ export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [] } =
   const renderTranscript = () => {
     transcriptView.replaceChildren(
       ...transcript.entries.map((e) => {
+        // A `kind: "change-card"` entry (spec §4, issue #358) carries a STATEFUL card component
+        // whose `.el` is a stable node — return that SAME element every render so its thinking →
+        // resolved repaint lands in place (§4.2), not as a re-created (or duplicated) card.
+        if (e.kind === "change-card") return e.card.el;
         if (e.kind === "chips") {
           return h(
             "div",
@@ -218,6 +224,39 @@ export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [] } =
       setTurnInFlight(false);
     },
     turnInFlight: () => screen.dataset.turn === "in-flight",
+
+    // --- the change-card + surface highlights (spec §4, issue #358) --------------------------
+    // Open a change-card for a reshape (spec §4.1/§4.2). Builds a turn envelope in the "thinking"
+    // state (js/agent-turn.mjs — THE #354 contract), mounts its card into the transcript IMMEDIATELY
+    // (so the plan can start streaming at once), and returns a controller the caller drives:
+    //   - `appendPlan(text)`  grow the streamed plan; the card repaints in place (§4.2).
+    //   - `resolve(diff, honesty)` transition thinking → resolved on the SAME card: it resolves into
+    //     the sensory rows AND fires the diff-keyed surface highlight (§4.1/§4.6). `honesty` is the
+    //     optional §4.7 restart line (#360 owns its content; we only render-if-present).
+    // The real agent loop (#354) drives this exactly as the tests do; until it is wired into the
+    // browser this is the seam a crafted envelope pushes through (mirrors main.js:859's un-wired seam).
+    beginReshapeCard() {
+      const env = assistantTurn();
+      const card = createChangeCard(env.turn, board);
+      transcript.push({ kind: "change-card", card });
+      return {
+        turn: env.turn,
+        appendPlan(text) {
+          env.appendPlan(text);
+          card.update();
+        },
+        resolve(diff, honesty) {
+          if (diff) env.setDiff(diff);
+          if (typeof honesty === "string") env.turn.restartHonesty = honesty;
+          env.resolve();
+          card.update();
+          // The surface half of the A+B hybrid (§4.1): animate the touched controls keyed on node
+          // identity. The card (transcript half) and this (surface half) are the two linked views.
+          board.highlightDiff(env.turn.diff);
+          return env.turn;
+        },
+      };
+    },
 
     // Sheet.
     toggleSheet,

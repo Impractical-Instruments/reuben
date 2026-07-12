@@ -885,6 +885,10 @@ function submitDescribe(text) {
 // for any surface with ≥2 controls a reversed order is guaranteed different from the original.
 function exposeSpineTestHook(spine) {
   const reversedWidgets = () => [...(currentSurface?.widgets ?? [])].reverse();
+  // The change-card controller a driver (a test, or #354's real loop) is currently steering. Held
+  // so the id-based reshape hooks below (begin → appendPlan → resolve) act on ONE card, mirroring
+  // how the agent host drives a single turn envelope through its lifecycle.
+  let reshapeCard = null;
   window.reubenChat = {
     screen: () => document.body.dataset.screen,
     arrival: () => spine.screen.dataset.arrival,
@@ -912,6 +916,43 @@ function exposeSpineTestHook(spine) {
         spine.board.__resortRebuild(reversedWidgets(), currentSpineEngine);
       }
     },
+
+    // --- the change-card + surface highlights (spec §4, issue #358) --------------------------
+    // The NODE addresses the current board's controls back (control "/cutoff/in" → node "/cutoff").
+    // A test picks a REAL one so a crafted diff's highlight lands on an on-screen control (the live
+    // surface sweep), and a made-up one to exercise the no-knob path (§4.3).
+    controlNodes: () =>
+      spine.board.nodes().map((n) => n.control.replace(/\/[^/]*$/, "")),
+
+    // Drive one change-card through its lifecycle (spec §4.2): begin (thinking) → appendPlan (stream)
+    // → resolve (rows + surface highlight). Id-based so a Playwright test can step it across
+    // page.evaluate calls, exactly as #354's agent host will step the turn envelope.
+    reshapeBegin: () => {
+      reshapeCard = spine.beginReshapeCard();
+      return reshapeCard.turn.id;
+    },
+    reshapeAppendPlan: (text) => reshapeCard?.appendPlan(text),
+    reshapeResolve: (diff, honesty) => reshapeCard?.resolve(diff, honesty),
+
+    // Card introspection (transcript half). All read the ONE card element, so "same object across
+    // resolve" is observable: the count stays 1 through thinking → resolved.
+    cardCount: () => document.querySelectorAll(".tx-card").length,
+    cardState: () => document.querySelector(".tx-card")?.dataset.cardState ?? null,
+    cardTurnId: () => document.querySelector(".tx-card")?.dataset.turnId ?? null,
+    cardPlan: () => document.querySelector(".tx-card .tx-card-plan")?.textContent ?? "",
+    cardRows: () =>
+      [...document.querySelectorAll(".tx-card .tx-card-row .tx-card-row-text")].map(
+        (r) => r.textContent,
+      ),
+    cardHeadline: () => document.querySelector(".tx-card .tx-card-headline")?.textContent ?? null,
+    cardRowsExpanded: () =>
+      document.querySelector(".tx-card .tx-card-rows")?.dataset.expanded === "true",
+    cardHonesty: () => document.querySelector(".tx-card .tx-card-honesty")?.textContent ?? "",
+
+    // Surface half: which controls a landed reshape actually swept/pulsed/removed (node identity),
+    // and the live count of controls currently echo-highlighted by a hovered row (§4.1).
+    lastHighlight: () => spine.board.lastHighlight(),
+    echoedCount: () => document.querySelectorAll('.board-cell[data-echo="on"]').length,
   };
 }
 
