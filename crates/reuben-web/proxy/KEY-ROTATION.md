@@ -6,8 +6,6 @@ own rotating it. This is that written-down story — how to rotate, who owns it,
 on [ADR-0054](../../../docs/adr/0054-web-chat-agent-host.md) §1 (key is a **server-side secret**,
 never client-reachable), §5 (spend ceiling + minimal logging), and §7 (this provisioning follow-up).
 
-> **Fill in the org-specific blanks below** (`<BILLING-OWNER>`, cadence). Everything else is exact.
-
 ## The key lives in two independent stores
 
 The same `ANTHROPIC_API_KEY` string is set in **two separate places**, for two different jobs.
@@ -25,17 +23,17 @@ breaking the app.
 
 ## Who owns this
 
-- **Billing owner / rotation owner:** `<BILLING-OWNER>` — _fill in the person with billing authority
-  named in #402._ They hold the Anthropic Console login and are the single point of accountability
-  for the key's lifecycle.
+- **Billing owner / rotation owner:** the **billing owner** — the person with billing authority named
+  in #402. They hold the Anthropic Console login and are the single point of accountability for the
+  key's lifecycle.
 - **Second pair of hands:** anyone with admin on the `reuben-web-player` Pages project and on the
   GitHub repo's Actions secrets can perform the Cloudflare/GitHub half; only the billing owner mints
   and revokes keys in the Anthropic Console.
 
 ## Cadence
 
-- **Scheduled:** `<CADENCE>` — _recommended default: **every 90 days (quarterly)**._ Put a recurring
-  reminder on the rotation owner's calendar; there is no automated expiry.
+- **Scheduled:** **every 30 days.** Put a recurring reminder on the billing owner's calendar; there
+  is no automated expiry.
 - **Immediate (out of cycle), no debate:** a suspected leak (key seen in a log, a bundle, a
   screen-share, a paste), an unexplained spend spike (see the §5 ceiling / billing alerts below), or
   any personnel change that removes someone who had Console or Pages-admin access.
