@@ -186,6 +186,10 @@ for (const [name, viewport] of [["phone", PHONE], ["desktop", DESKTOP]]) {
     expect(await page.evaluate(() => window.reubenChat.leaveGuardArmed())).toBe(false);
 
     // --- RELOAD RESTORE (spec §7.6): the written fragment reboots the instrument on one tap ----
+    // Identity-level BY DESIGN for the current (pre-#354) build: the reshape hooks here are
+    // glow-only, and `captureSnapshot` persists only MOVED control values — so this asserts the
+    // kept `#r1.` hash decodes and boots the correct INSTRUMENT, not that the "darker/shimmer"
+    // edits survived the round-trip. That edit-persistence half is the demo-bar runbook's, by ear.
     await page.reload();
     await expect(page.locator("#start")).toBeVisible();
     await page.locator("#start").click();
