@@ -61,6 +61,15 @@ export function createRelay({
   // `messages.N.content.0.thinking.thinking: Field required`. Turning adaptive thinking on is the
   // authoring-policy ticket's call (#356), paired there with thinking-block round-tripping.
   thinking = { type: "disabled" },
+  // Realize the prompt cache the ADR promised (ADR-0054 §3: the position-0 tools + system + model
+  // prefix "caches perfectly"). Without a `cache_control` breakpoint the API caches NOTHING, so the
+  // whole prefix — plus the accumulated conversation — is re-billed at full input price on every
+  // round of the network-bound reshape loop (ADR-0054 §2). A single top-level breakpoint auto-places
+  // on the last cacheable block, so it caches the stable prefix WITHOUT reshaping the declared
+  // `tools`/`system` arrays; each subsequent round then reads that prefix (and the prior turns) at
+  // ~0.1x instead of 1x. This cuts the per-turn token bill in the browser loop AND in CI's live
+  // smoke (crates/reuben-web/js/live-eval.mjs). Pass `null` to disable (e.g. to A/B the cache).
+  cacheControl = { type: "ephemeral" },
   fetchImpl = fetch,
   anthropicUrl = ANTHROPIC_URL,
 }) {
@@ -82,8 +91,9 @@ export function createRelay({
       });
     }
 
-    // The server-authoritative, per-turn-invariant prefix (tools + system + model) that caches
-    // perfectly (ADR-0054 §3); the volatile tail is the conversation.
+    // The server-authoritative, per-turn-invariant prefix (tools + system + model) is position-0 so
+    // it caches (ADR-0054 §3); the volatile tail is the conversation. The `cache_control` breakpoint
+    // below is what actually turns that "caches perfectly" from intent into billed reality.
     const upstreamBody = {
       model,
       max_tokens: maxTokens,
@@ -93,6 +103,9 @@ export function createRelay({
       stream: true,
       messages,
     };
+    // Top-level breakpoint (ADR-0054 §3): auto-places on the last cacheable block, so it caches the
+    // stable tools+system prefix without wrapping the declared arrays. Omitted when disabled.
+    if (cacheControl) upstreamBody.cache_control = cacheControl;
 
     let upstream;
     try {

@@ -40,6 +40,7 @@ jobs:
       check: ${{ steps.filter.outputs.check }}
       windows: ${{ steps.filter.outputs.windows }}
       web: ${{ steps.filter.outputs.web }}
+      webchat: ${{ steps.filter.outputs.webchat }}
       webapp: ${{ steps.filter.outputs.webapp }}
       bench: ${{ steps.filter.outputs.bench }}
     steps:
@@ -97,6 +98,24 @@ jobs:
               - 'rust-toolchain.toml'
               - '.github/workflows/ci.yml'
               - '.github/actions/setup-rust/**'
+            # The NON-BLOCKING live Sonnet-5 smoke (web-chat-live-eval) — the ONE CI job that spends
+            # real Anthropic tokens (ADR-0054 §5: we pay for every one). It exercises only the
+            # streaming reshape loop: the browser agent-host loop, the in-page tool layer, the tool
+            # schemas DECLARED to the model (the generated artifact), the relay, and the eval script.
+            # Its behavior cannot move on a reuben-core or instruments/ change that leaves the
+            # generated tool-schema artifact byte-identical — so it gates on that narrow set, NOT the
+            # broad `web` build closure. (The artifact IS regenerated from core serde types, so a
+            # core change that alters the declared contract shows up as a diff to the committed
+            # artifact and re-fires this. A pure engine/instrument edit that doesn't is correctly
+            # skipped — no paid API run for a change that can't affect the loop.)
+            webchat:
+              - 'crates/reuben-web/js/agent-host.mjs'
+              - 'crates/reuben-web/js/agent-turn.mjs'
+              - 'crates/reuben-web/js/tools.mjs'
+              - 'crates/reuben-web/js/tool-schemas.generated.json'
+              - 'crates/reuben-web/js/live-eval.mjs'
+              - 'crates/reuben-web/proxy/**'
+              - '.github/workflows/ci.yml'
             # The /web player app (ADR-0041, issue #226): its build/smoke closure is the app
             # itself PLUS everything the staging script pulls — the reuben-web wasm (built from
             # reuben-core + its macro/contract deps), the instrument documents + transitive
@@ -494,12 +513,15 @@ jobs:
   # Deliberately NOT in `ci-passed`'s needs, so a red here (model variance, network) never blocks a
   # merge. SELF-GATING, mirroring `deploy-web`: secrets can't sit in a job-level `if`, so the gate
   # step reads ANTHROPIC_API_KEY from env and skips the eval green when it is absent (forks; before
-  # the secret lands). Same-repo `claude/*` branches get the secret. Path/draft skips as elsewhere.
+  # the secret lands). Same-repo `claude/*` branches get the secret. Draft skips as elsewhere; the
+  # path gate is the NARROW `webchat` filter (the chat loop + declared schemas + relay + eval), not
+  # the broad `web` closure — this is the only job that spends real tokens, so it must not fire on an
+  # unrelated engine/instrument change that can't move the loop (ADR-0054 §5).
   web-chat-live-eval:
     name: web-chat live Sonnet-5 smoke (non-blocking)
     runs-on: ubuntu-latest
     needs: changes
-    if: needs.changes.outputs.web == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
+    if: needs.changes.outputs.webchat == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
     steps:
       - uses: actions/checkout@v4
       - name: Setup Node
