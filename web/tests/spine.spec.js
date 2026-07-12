@@ -24,14 +24,26 @@ const FORBIDDEN = [
   "coordinator", "voicer", "voice", "survivor", "rig", "tuning", "param", "widget", "surface",
 ];
 
-// Boot the built app into the spine at `viewport`, opting the flag in with `?chat=1` and
-// (optionally) forcing the arrival default. Returns once a control has rendered on the board.
-async function bootSpine(page, viewport, { arrival } = {}) {
+// Boot the built app into the spine at `viewport`, opting the flag in with `?chat=1`. The chat
+// flag routes Start into the gallery-first cold start (spec §2, issue #357) rather than straight
+// to the spine, so reaching the spine now goes THROUGH a real gallery interaction:
+//   - arrival "picked" (the default) → tap the first gallery card (spec §2.3);
+//   - arrival "made" → submit the persistent describe bar (spec §2.4).
+// Returns once a control has rendered on the board.
+async function bootSpine(page, viewport, { arrival = "picked" } = {}) {
   await page.setViewportSize(viewport);
-  const q = arrival ? `&arrival=${arrival}` : "";
-  await page.goto(`/?chat=1${q}`);
+  await page.goto("/?chat=1");
   await expect(page.locator("#start")).toBeVisible();
   await page.locator("#start").click();
+  await expect.poll(() => page.evaluate(() => window.reubenPlayer?.screen())).toBe("gallery");
+
+  if (arrival === "made") {
+    await page.locator(".gallery-describe input").fill("a warm pad that swells");
+    await page.locator(".gallery-describe .reshape-send").click();
+  } else {
+    await page.locator(".toy-card").first().click();
+  }
+
   await expect.poll(() => page.evaluate(() => window.reubenChat?.screen())).toBe("spine");
   // The engine loaded the instrument and the node-identity board rendered its controls.
   await expect(page.locator(".surface-board .surface-widget").first()).toBeVisible();

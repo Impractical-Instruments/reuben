@@ -216,14 +216,14 @@ function splashScreen() {
       await e.context.resume();
       // Ship gate (acceptance criterion §9(7) + ADR-0052 §3; see chat/flag.js): when the chat
       // flag is OFF (the default) this is the unchanged launcher flow; when ON, the same unlock
-      // gesture boots into the co-presence spine (spec §3, issue #355) instead. One flag, checked
-      // in one place (chat/flag.js).
-      // NOTE (M1 routing scope): the spine intentionally covers ONLY this splash → default-
-      // instrument path in M1. The other two entry points below — a shared-link fragment boot and
-      // an empty-hash landing — still mount the OLD player even when the flag is on (see the notes
-      // at fragmentBoot and the hashchange handler); routing those into the spine is deferred to
-      // the cold-start / gallery + share-into-spine work, not omitted by accident.
-      if (chatEnabled()) openSpine();
+      // gesture boots into the gallery-first cold start (spec §2, issue #357) instead — the
+      // gallery leads into the co-presence spine (spec §3, issue #355) on a pick or a description.
+      // One flag, checked in one place (chat/flag.js).
+      // NOTE (M1 routing scope): the flagged-on path covers the splash → gallery → spine loop
+      // only. A shared-link fragment boot still mounts the OLD player even when the flag is on
+      // (see the note at fragmentBoot) — routing a link into the spine is share-into-spine / Keep
+      // (M2) work, not omitted by accident.
+      if (chatEnabled()) showGallery();
       else showLauncher();
     } catch (err) {
       start.disabled = false;
@@ -272,24 +272,29 @@ function bannerElement(message) {
   return banner;
 }
 
+// A Toy's card — shared between the OFF-path launcher (openToy) and the ON-path gallery
+// (pickToy, issue #357): title, blurb, kind badge. `onClick` is the caller's pick handler, so
+// the card itself carries no routing opinion.
+function toyCard(toy, onClick) {
+  return h(
+    "button",
+    {
+      class: "toy-card",
+      type: "button",
+      dataset: { toy: toy.id, kind: toy.kind },
+      onclick: onClick,
+    },
+    h("span", { class: "toy-title" }, toy.title),
+    h("span", { class: "toy-blurb" }, toy.blurb),
+    h("span", { class: `toy-badge ${toy.kind}` }, badgeText(toy.kind)),
+  );
+}
+
 function launcherScreen(bannerMessage) {
   const grid = h(
     "div",
     { class: "toy-grid" },
-    TOYS.map((toy) =>
-      h(
-        "button",
-        {
-          class: "toy-card",
-          type: "button",
-          dataset: { toy: toy.id, kind: toy.kind },
-          onclick: () => openToy(toy),
-        },
-        h("span", { class: "toy-title" }, toy.title),
-        h("span", { class: "toy-blurb" }, toy.blurb),
-        h("span", { class: `toy-badge ${toy.kind}` }, badgeText(toy.kind)),
-      ),
-    ),
+    TOYS.map((toy) => toyCard(toy, () => openToy(toy))),
   );
   return h(
     "section",
@@ -325,6 +330,83 @@ function showLauncher(bannerMessage) {
 function backToLauncher() {
   history.replaceState(null, "", location.pathname);
   showLauncher();
+}
+
+// --- gallery (cold start, issue #357, spec §2) ---------------------------------------------
+
+// The first-run screen when the chat flag is on: the show-all `toys.json` gallery (§2.2 — all 5,
+// in `order`, no auto-derivation from `instruments/`) plus a PERSISTENT "…or describe your own"
+// bar (§2.1). The bar reuses the spine's own reshape-input classes (chat/spine.css) so it reads
+// as the SAME input line that continues into the player's pinned input once an instrument is
+// playing — one input, cold-start through play. A card tap starts sound + fires the proactive
+// turn one (§2.3, `pickToy`); the describe bar routes free text into the build path (§2.4,
+// `submitDescribe`).
+function galleryScreen(bannerMessage) {
+  const grid = h(
+    "div",
+    { class: "toy-grid" },
+    TOYS.map((toy) => toyCard(toy, () => pickToy(toy))),
+  );
+  const describeInput = h("input", {
+    class: "reshape-input",
+    type: "text",
+    name: "describe",
+    autocomplete: "off",
+    placeholder: "…or describe your own (e.g. a warm pad that swells)",
+    "aria-label": "Describe your own instrument",
+  });
+  const describeSend = h("button", { class: "reshape-send", type: "submit" }, "Go");
+  const describeForm = h(
+    "form",
+    {
+      class: "reshape",
+      onsubmit: (ev) => {
+        ev.preventDefault();
+        const text = describeInput.value.trim();
+        if (!text) return; // empty send is the failure ticket's gentle re-orient (#303/E), not ours
+        describeInput.value = "";
+        submitDescribe(text);
+      },
+    },
+    describeInput,
+    describeSend,
+  );
+  return h(
+    "section",
+    { class: "gallery" },
+    h(
+      "div",
+      { class: "gallery-scroll" },
+      bannerMessage ? bannerElement(bannerMessage) : null,
+      h(
+        "header",
+        { class: "launcher-head" },
+        iiMark(),
+        h("h1", { class: "wordmark small" }, "reuben"),
+        h("p", { class: "launcher-sub" }, "Tap one to play."),
+      ),
+      grid,
+      infoLink(),
+    ),
+    h(
+      "div",
+      { class: "gallery-describe" },
+      h("p", { class: "gallery-describe-label" }, "…or describe your own"),
+      describeForm,
+    ),
+  );
+}
+
+// Show the gallery, optionally carrying a dismissible banner — the chat-flag-on counterpart of
+// showLauncher (kept as a separate function/screen name so the OFF-path launcher stays byte-for-
+// byte unchanged, per chat/flag.js's contract).
+function showGallery(bannerMessage) {
+  currentBanner = bannerMessage ?? null;
+  currentSurface = null;
+  currentSurfaceDocText = null;
+  currentShareBtn = null;
+  currentShareSlot = null;
+  setScreen("gallery", galleryScreen(currentBanner));
 }
 
 // --- player -------------------------------------------------------------------------------
@@ -659,23 +741,25 @@ function micControl(engine, status) {
   return wrap;
 }
 
-// --- spine (chat authoring, issue #355) ---------------------------------------------------
+// --- spine (chat authoring, issue #355 + #357) ---------------------------------------------
 
-// Open the co-presence spine (spec §3), reached ONLY when the chat flag is on (chat/flag.js);
-// the OFF path never calls this. It loads an instrument onto the persistent engine and renders
-// its controls into the spine's node-identity board (spec §3.6), then mounts the spine.
+// Open the co-presence spine (spec §3), reached ONLY when the chat flag is on (chat/flag.js) —
+// via a gallery pick (§2.3, `pickToy`) or the describe bar (§2.4, `submitDescribe`), both of
+// which call this. It loads `toyId` (defaulting to DEFAULT_TOY) onto the persistent engine and
+// renders its controls into the spine's node-identity board (spec §3.6), reusing the SAME
+// engine-load + surface-resolution path as openToy so the board binds the real, engine-wired
+// controls (never a re-derived copy).
 //
-// For M1 it loads the DEFAULT toy — the minimal "picked one to play" arrival; the cold-start
-// gallery + describe path (#357) will choose which instrument and which arrival. The arrival
-// default (spec §3.3) is overridable via `?arrival=made|picked` so the scripted responsive pass
-// can exercise both landing states. Reuses the SAME engine-load + surface-resolution path as
-// openToy, so the board binds the real, engine-wired controls (never a re-derived copy).
-async function openSpine() {
+// `seed` is turn-one content the caller already knows synchronously (a pick's authored greeting
+// + chips, or a describe-path's optimistic echo of the user's own words) — passed straight to
+// createSpine so it appears the instant the spine mounts, before the (possibly slow) engine load
+// resolves (spec §2.3/§2.4 both promise an immediate turn one). `onReady(spine, {id, title})`
+// fires once the instrument has actually loaded and rendered — for content that can only be
+// known then (a describe-path's "here's what it made" landing line).
+async function openSpine({ toyId, arrival = "picked", seed = [], onReady } = {}) {
   const token = ++loadToken;
   journal.clear(); // reflect only the instrument about to load
-  const arrival =
-    new URLSearchParams(location.search).get("arrival") === "made" ? "made" : "picked";
-  const spine = createSpine({ arrival });
+  const spine = createSpine({ arrival, seed });
   currentSpine = spine;
   currentSurface = null;
   currentSpineEngine = null;
@@ -685,8 +769,11 @@ async function openSpine() {
   try {
     const e = await ensureEngine();
     instrumentJournal(e);
-    const id = DEFAULT_TOY;
-    await loadWithRetry(e, id);
+    const id = toyId ?? DEFAULT_TOY;
+    // The resolved {channels, inputChannels, blockSize} tells us whether this instrument takes
+    // live input (inputChannels > 0) — the mic affordance below is driven by that, not by a
+    // per-Toy flag, exactly as the player does (#248).
+    const info = await loadWithRetry(e, id);
     if (token !== loadToken) return; // superseded by a newer navigation — drop this render
     currentToy = id;
 
@@ -705,12 +792,23 @@ async function openSpine() {
     currentSurface = surface;
     currentSpineEngine = e;
     // Render the controls into the node-identity board, then fire the load-time defaults AFTER
-    // load() resolved (the render.mjs lifecycle) exactly as the player does. An input-taking
-    // instrument's mic gesture is the player's affordance, not the spine's, and DEFAULT_TOY is
-    // self-playing, so no mic control is needed here.
+    // load() resolved (the render.mjs lifecycle) exactly as the player does.
     spine.board.update(surface.widgets, e);
     sendInitialDefaults(surface, e);
     document.body.dataset.state = e.context.state; // "running" — the spec asserts on this
+
+    // A live-input Toy (Mic Space) loads and renders but plays SILENCE until the user enables the
+    // mic on a gesture (#248). Its pick MUST surface the enable control — otherwise the pick is a
+    // silent dead end and the greeting's "enable the microphone to play" points at nothing. Mount
+    // the SAME micControl the player uses into the spine's mic slot, keyed on inputChannels (not a
+    // per-Toy flag), with a small status line for the live/denied feedback the control writes.
+    if (info?.inputChannels > 0) {
+      const micStatus = h("p", { class: "spine-mic-status" });
+      spine.micSlot.replaceChildren(micControl(e, micStatus), micStatus);
+    }
+
+    const toy = TOYS.find((t) => t.id === id);
+    onReady?.(spine, { id, title: toy?.title ?? currentInstrument, kind: toy?.kind });
   } catch (err) {
     if (token !== loadToken) return;
     // The full failure taxonomy is the ambiguity/failure ticket's (spec §5, #303); the engine
@@ -721,6 +819,62 @@ async function openSpine() {
       text: "Something went wrong starting the sound. Give it another try in a moment.",
     });
   }
+}
+
+// The lead clause of a pick's proactive turn one, kind-aware so it NEVER claims a state that
+// isn't real (the epic's honesty gate). Mirrors the player's per-kind split (playingStatusText):
+// a self-playing Toy IS emitting sound; a tap-to-play Toy is silent until a button is tapped; a
+// live-input (mic) Toy makes NO sound at all until the mic is enabled on a gesture. Sensory-only,
+// forbidden-word-clean. `kind` comes from the Toy manifest (self-playing | tap-to-play |
+// live-input); an unknown/absent kind degrades to the self-playing lead.
+function greetingLead(title, kind) {
+  if (kind === "live-input") return `${title}'s ready — enable the microphone to play`;
+  if (kind === "tap-to-play") return `${title}'s ready — tap the buttons to play`;
+  return `${title}'s playing`;
+}
+
+// Gallery pick → proactive turn one (spec §2.3): starts the Toy (self-playing sounds immediately;
+// tap-to-play waits for a tap; live-input waits for the mic) and opens the spine with a short,
+// kind-aware greeting that names it honestly + the Toy's authored chips (or greeting-only when
+// `chips` is absent/empty — tailored-or-nothing, no generic filler, §I). Lands COLLAPSED-to-bar
+// (arrival "picked", spec §3.3) — a newcomer just picked something to PLAY, not to talk about.
+function pickToy(toy) {
+  const chips = toy.chips ?? [];
+  const lead = greetingLead(toy.title, toy.kind);
+  const greeting = chips.length
+    ? `${lead}. Tell me what to change — or try one of these:`
+    : `${lead}. Tell me what to change.`;
+  const seed = [{ role: "reuben", text: greeting }];
+  if (chips.length) seed.push({ role: "reuben", kind: "chips", chips });
+  return openSpine({ toyId: toy.id, arrival: "picked", seed });
+}
+
+// Describe-path → echo → build → play → land (spec §2.4): the user's words become their first
+// chat message immediately (`seed`, so the echo doesn't wait on the engine), reuben "builds" it,
+// it starts playing, then reuben closes the turn by naming what it made + inviting a next change
+// — symmetric with `pickToy`'s landing. Lands EXPANDED (arrival "made", spec §3.3): the user was
+// just talking, so the transcript stays open.
+//
+// SCOPE (issue #357): real text → NEW-instrument generation needs the agent host wired
+// end-to-end (#354's agent-host.mjs + #356's system prompt + #358's change-card renderer) — none
+// of that is wired into the browser yet (this ticket wires the SCREEN + the launcher→player
+// continuity, not the agent). So this is a SEAM: it "builds" by loading the default Toy (today's
+// closest thing to a first playable instrument). The landing line MUST NOT claim it built what
+// the user described (the honesty gate) — until the agent lands, it can't. So it names what's
+// actually playing and frames it as a starting point, kind-aware and lexicon-clean. Swap the body
+// of this function for a real agent call once the loop is wired in.
+function submitDescribe(text) {
+  return openSpine({
+    toyId: DEFAULT_TOY,
+    arrival: "made",
+    seed: [{ role: "you", text }],
+    onReady: (spine, { title, kind }) => {
+      spine.transcript.push({
+        role: "reuben",
+        text: `To get you started, ${greetingLead(title, kind)}. Tell me what to change.`,
+      });
+    },
+  });
 }
 
 // The Playwright test surface for the spine (issue #355 verification) — analogous to
@@ -741,6 +895,9 @@ function exposeSpineTestHook(spine) {
     endMockTurn: () => spine.endMockTurn(),
     boardNodes: () => spine.board.nodes(),
     keepSlotPresent: () => !!spine.screen.querySelector('[data-slot="keep"]'),
+    // The Enable-microphone affordance a live-input pick mounts (#248/#357) — present ONLY when
+    // the loaded instrument takes the mic, so its absence for other kinds is meaningful.
+    micEnablePresent: () => !!spine.screen.querySelector('[data-slot="mic"] .mic-enable'),
     // Identity-preserving re-render: the SAME nodes in a DIFFERENT input order. Survivors hold
     // position (spec §3.6), so the board order MUST be unchanged after this.
     reshapePreserveIdentity: () => {
@@ -918,6 +1075,11 @@ window.reubenPlayer = {
   // The resolved widget list (kind/widget/bind per widget), for launcher-vs-link parity checks.
   surface: () => currentSurface?.widgets.map(({ kind, widget, bind }) => ({ kind, widget, bind })) ?? null,
   toys: TOYS,
+  // Gallery / cold-start test hooks (issue #357 verification): drive a pick or a describe-bar
+  // submit directly, the SAME functions the gallery's DOM calls. Lets a spec exercise a synthetic
+  // Toy (e.g. one with `chips: []`, proving the greeting-only fallback) without editing toys.json.
+  pickToy: (toy) => pickToy(toy),
+  submitDescribe: (text) => submitDescribe(text),
 };
 
 // Register the service worker (issue #227): precache the whole payload on first load so a cold,
@@ -944,9 +1106,9 @@ function isFragment(hash) {
 window.addEventListener("hashchange", () => {
   const hash = location.hash.slice(1);
   if (isFragment(hash)) fragmentBoot(hash);
-  // M1 chat-flag scope (deliberate): the empty-hash landing shows the OLD launcher even when the
-  // chat flag is on — the spine (issue #355) is entered only via splash → Start. A flag-on empty
-  // hash routing into the spine/gallery is the cold-start ticket's (#357), not this ticket's.
+  // An empty-hash landing (issue #357): the gallery when the chat flag is on, the OLD launcher
+  // otherwise — the same chat-flag branch `onStart` uses, kept in sync here.
+  else if (chatEnabled()) showGallery();
   else showLauncher();
 });
 
