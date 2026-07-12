@@ -26,6 +26,7 @@
 
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
+use std::thread::LocalKey;
 
 thread_local! {
     /// Number of `alloc`/`realloc` calls counted on this thread while it was armed.
@@ -43,6 +44,14 @@ fn armed() -> bool {
     ARMED.with(Cell::get)
 }
 
+/// Add one to a thread-local counter. Shared by the armed `alloc`/`realloc`/`dealloc`
+/// paths; `#[inline]` and destructor-free like [`armed`], so it stays allocation-free
+/// inside the allocator.
+#[inline]
+fn bump(counter: &'static LocalKey<Cell<usize>>) {
+    counter.with(|c| c.set(c.get() + 1));
+}
+
 /// System allocator that counts allocations, reallocations, and frees — but only those
 /// made on a thread that is currently armed (see [`measure`]). Free-counting matters for
 /// the mailbox contract, which forbids the render side to *drop* a payload, not just to
@@ -52,19 +61,19 @@ pub struct Counting;
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
         if armed() {
-            ALLOCS.with(|c| c.set(c.get() + 1));
+            bump(&ALLOCS);
         }
         System.alloc(layout)
     }
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
         if armed() {
-            FREES.with(|c| c.set(c.get() + 1));
+            bump(&FREES);
         }
         System.dealloc(ptr, layout)
     }
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
         if armed() {
-            ALLOCS.with(|c| c.set(c.get() + 1));
+            bump(&ALLOCS);
         }
         System.realloc(ptr, layout, new_size)
     }
