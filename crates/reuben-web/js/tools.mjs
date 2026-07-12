@@ -180,7 +180,13 @@ export function createToolLayer({ engine, introspect }) {
       // survived: 0 ALWAYS (restart-swap; ADR-0052 §2). `d` is {added, removed, changed}; no
       // state_reset key — degenerate on web, deliberately not computed (#353) — the web diff IS
       // the structural node-identity diff.
-      return { ...report, content_hash: newHash, diff: { survived: 0, ...d } };
+      //
+      // `restarted`: true iff something was ALREADY playing before this install (beforeText
+      // non-null) — a genuine sonic restart, distinct from a first install into silence. This is
+      // the signal agent-host.mjs (#356) uses to gate spec §6.4's first-run re-strike line: "if
+      // nothing is currently sounding when a structural change lands, there's no restart to be
+      // honest about — it just builds and is ready."
+      return { ...report, content_hash: newHash, diff: { survived: 0, ...d }, restarted: beforeText !== null };
     },
 
     /**

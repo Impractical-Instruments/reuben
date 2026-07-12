@@ -165,6 +165,7 @@ test("swap on a valid doc installs by value, reports survived:0 + structural dif
   assert.deepStrictEqual(out.diff.changed, ["/osc"]);
   assert.deepStrictEqual(out.diff.removed, []);
   assert.ok(!("state_reset" in out.diff), "no state_reset key on the web diff (#353)");
+  assert.strictEqual(out.restarted, true, "something was already playing — this is a genuine restart (#356)");
 
   // content_hash is the NEW document's hash, not the installed one.
   const newText = JSON.stringify(AFTER_DOC);
@@ -230,6 +231,7 @@ test("swap from nothing loaded: beforeText null → installedHash empty, before 
   // Every node is `added` (there was no before document).
   assert.deepStrictEqual(out.diff.added, ["/lfo", "/osc", "/out"]);
   assert.deepStrictEqual(out.diff.changed, []);
+  assert.strictEqual(out.restarted, false, "a first install into silence is not a restart (#356, spec §6.4)");
   assert.deepStrictEqual(out.diff.removed, []);
 });
 

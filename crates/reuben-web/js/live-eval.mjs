@@ -1,14 +1,28 @@
-// live-eval.mjs — NON-BLOCKING live smoke of the streaming loop against real Sonnet-5 (issue #354).
+// live-eval.mjs — NON-BLOCKING live smoke of the streaming loop against real Sonnet-5 (issue #354),
+// extended (issue #356) into a small live BEHAVIORAL battery — the one place any of #356's
+// Verification criteria can be checked against what a real model actually does, rather than a
+// scripted transport we authored ourselves (js/agent-policy-eval.test.mjs, the merge-gating half,
+// can only prove the plumbing carries the policy — it cannot prove Sonnet-5 obeys it).
 //
 // This is NOT a merge gate. It is run by the self-gated `web-chat-live-eval` CI job, which skips
-// green when `secrets.ANTHROPIC_API_KEY` is absent (mirroring the `deploy-web` job's shape). It
-// wires the REAL relay (proxy/relay.mjs) → real Anthropic → the REAL agent-host loop over a FAKE
-// engine (no wasm/browser needed), and asserts the loop runs end-to-end and drives at least one
-// tool through the in-page layer. Assertions are deliberately lenient — the authoring policy that
-// makes tool-use reliable is issue #356; here we only prove the plumbing carries a live turn.
+// green when `secrets.ANTHROPIC_API_KEY` is absent (mirroring the `deploy-web` job's shape), and
+// is deliberately excluded from `ci-passed`'s needs — a real regression here should still show
+// red in the job's own log, but never blocks a merge on live-model variance.
+//
+// Session shape: ONE host (one conversation) carries four turns, so register/restart state is
+// genuinely session-scoped exactly like production:
+//   1. an explicit tool-use smoke (unchanged from #354) — proves the plumbing still carries a turn.
+//   2. a plain parameter-style ask ("make it brighter") — should read as a live, no-restart update.
+//   3. an unprompted theory-vocabulary ask ("put it in a minor key") — the §8 register-bump signal.
+//   4. a structural ask ("add a delay") — should restart, and AT MOST ONE turn in the whole
+//      session may carry the restart-honesty line (§6.4), whichever turn actually first restarts
+//      already-playing sound.
+// Hard assertions: no forbidden word (§1) in ANY turn's plan, ever; at most one restart-honesty
+// line per session. Soft (logged, not asserted): which tool ran per turn, and the plan text itself,
+// for the human tone read-through the Verification section also calls for.
 //
 // Run: `ANTHROPIC_API_KEY=… node js/live-eval.mjs` (from crates/reuben-web).
-// Exit 0 = pass or skip (no key); exit 1 = the live loop failed.
+// Exit 0 = pass or skip (no key); exit 1 = the live loop failed or leaked a forbidden word.
 
 import { readFileSync } from "node:fs";
 
@@ -16,7 +30,7 @@ import { createToolLayer } from "./tools.mjs";
 import { createAgentHost, sseEvents } from "./agent-host.mjs";
 import { stubTranscript } from "./agent-turn.mjs";
 import { createRelay } from "../proxy/relay.mjs";
-import { SYSTEM_PROMPT_PLACEHOLDER } from "../proxy/system-prompt.mjs";
+import { SYSTEM_PROMPT, scanForbiddenTerms } from "../proxy/system-prompt.mjs";
 
 const apiKey = process.env.ANTHROPIC_API_KEY;
 if (!apiKey) {
@@ -79,7 +93,7 @@ async function main() {
   // cacheControl default) makes the re-sent prefix cheap across rounds.
   const relay = createRelay({
     apiKey,
-    systemPrompt: SYSTEM_PROMPT_PLACEHOLDER,
+    systemPrompt: SYSTEM_PROMPT,
     tools: artifact.tools,
     model,
     maxTokens: 2048,
@@ -102,21 +116,53 @@ async function main() {
   // (agent-host.mjs), so the lenient assertions below hold either way.
   const host = createAgentHost({ toolLayer, transport, transcript, maxRounds: 6 });
 
-  // An explicit ask that should drive tool-use even without the #356 authoring policy.
-  const resolved = await host.send(
+  const turns = [];
+  async function runTurn(label, text) {
+    const resolved = await host.send(text);
+    const toolNames = resolved.toolLog.map((t) => t.name);
+    console.log(`[live-eval] [${label}] model=${model} status=${resolved.status} tools=[${toolNames.join(", ")}]`);
+    console.log(`[live-eval] [${label}] plan: ${resolved.plan.slice(0, 300)}`);
+    if (resolved.restartHonesty) console.log(`[live-eval] [${label}] restartHonesty: "${resolved.restartHonesty}"`);
+    turns.push({ label, resolved });
+    return resolved;
+  }
+
+  // Turn 1: an explicit ask that should drive tool-use even without the #356 authoring policy
+  // (the original #354 plumbing smoke — kept so a regression in the loop itself still shows here).
+  const smoke = await runTurn(
+    "plumbing-smoke",
     "You have tools to inspect and reshape a live sound. Call get_current_instrument to read " +
       "what's playing, then use send to audition a brighter cutoff, then swap to make a small " +
       "change permanent. Do it now with the tools, then tell me in one sentence.",
   );
-
-  const toolNames = resolved.toolLog.map((t) => t.name);
-  console.log(`[live-eval] model=${model} status=${resolved.status} tools=[${toolNames.join(", ")}]`);
-  console.log(`[live-eval] deltas streamed=${transcript.deltas.length}`);
-  console.log(`[live-eval] plan: ${resolved.plan.slice(0, 200)}`);
-
-  assert(resolved.status === "resolved", "the live turn must resolve");
+  assert(smoke.status === "resolved", "the live turn must resolve");
   assert(transcript.deltas.length > 0, "the live turn must stream tokens");
-  assert(resolved.toolLog.length > 0, "the live loop must drive at least one tool through the layer");
+  assert(smoke.toolLog.length > 0, "the live loop must drive at least one tool through the layer");
+
+  // Turn 2: a plain parameter-style ask — §6.1's routing policy, unprompted (no tool named).
+  await runTurn("parameter-ask", "make it a bit brighter");
+
+  // Turn 3: unprompted theory vocabulary — §8's sole register-bump signal.
+  await runTurn("theory-vocabulary-ask", "put it in a minor key");
+
+  // Turn 4: a structural ask — should restart; exercises §6.4's honesty-line gate.
+  await runTurn("structural-ask", "add a slow, wobbly delay");
+
+  // Hard assertion (a): no forbidden engine word EVER reaches a turn's plan, across the session.
+  const leaks = turns.flatMap(({ label, resolved }) =>
+    scanForbiddenTerms(resolved.plan).map((term) => `${label}: "${term}" in "${resolved.plan.slice(0, 200)}"`),
+  );
+  assert(leaks.length === 0, `forbidden word(s) leaked to the user:\n${leaks.join("\n")}`);
+
+  // Hard assertion (e): the once-per-session restart-honesty gate — at most one turn carries it.
+  const restartTurns = turns.filter(({ resolved }) => resolved.restartHonesty).map(({ label }) => label);
+  assert(
+    restartTurns.length <= 1,
+    `more than one turn carried the restart-honesty line this session: ${restartTurns.join(", ")}`,
+  );
+
+  console.log(`[live-eval] forbidden-word scan: clean across ${turns.length} turns`);
+  console.log(`[live-eval] restart-honesty line fired on: ${restartTurns.join(", ") || "(no structural restart this session)"}`);
   console.log("[live-eval] PASS");
 }
 
