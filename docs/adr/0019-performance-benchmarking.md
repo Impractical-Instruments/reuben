@@ -164,3 +164,29 @@ every comparison. That uniformity is the point: it holds codegen determinism con
 rather than letting it drift with crate size. `[profile.release]` is deliberately left at the
 default — production/shipped binaries keep parallel codegen, so this has **zero** runtime impact
 outside the bench harness.
+
+## Amendment (2026-07-12): `dev` gets its own persisted trend
+
+The persisted trend recorded **`main` only**, so a regression was invisible until it had already
+landed on `main`. To watch perf *before* promoting, the persist job now also fires on direct pushes
+to **`dev`**, recording to a **separate `bench-history-dev` orphan branch** — never the same file as
+`main`. Isolation is not cosmetic: the dashboard treats its JSONL as **one linear commit history**
+(one line per case, "per commit" x-axis), so interleaving `dev` commits into `main`'s series would
+corrupt the `main` trend. Two branches, two dashboards; browsing `bench-history-dev` is the dev view,
+`bench-history` stays exactly as before. The two READMEs cross-link.
+
+The machinery is the same, parameterized: [`bench-history-append.sh`](../../.github/scripts/bench-history-append.sh)
+takes the target branch + a human label, and [`bench-dashboard.py`](../../.github/scripts/bench-dashboard.py)
+takes an optional label (default `main`, so `main`'s render is unchanged bar the new cross-link) that
+it substitutes into copy only — the chart logic is branch-agnostic. The persist job derives both from
+`github.ref`.
+
+Two consequences, both deliberate:
+
+- **Full dev fidelity costs CI minutes.** `dev` joins `main` in the no-cancel concurrency exception
+  (SHA-unique group, cancellation off) so every dev commit records a point instead of rapid pushes
+  cancelling each other into holes. That means the whole workflow runs to completion on every dev
+  push — accepted, on the busiest branch, as the price of a hole-free dev trend.
+- **Dev history is kept, and reset by hand.** No auto-pruning: when the dev trend gets noisy (it
+  grows fast, and rebases/squashes replay the same work under new SHAs), delete `bench-history-dev`
+  and it rebuilds from the next dev push. The isolated branch makes reset a one-liner.
