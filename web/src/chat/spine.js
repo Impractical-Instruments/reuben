@@ -88,9 +88,14 @@ function createTransport() {
  *   fade back up. main.js wires the live engine's `restrikeDuck` here so the visible commit is
  *   co-timed with the real sound drop. Defaults to an IMMEDIATE pass-through (runs `atSilence` now,
  *   no audio) so the visible re-strike gesture works headless / before an engine is bound.
+ * @param {() => void} [opts.onReshapeCommit] - THE KEEP DIVERGENCE SEAM (spec §7.4/§7.7, issue
+ *   #359): fired once, in-band, whenever a reshape actually LANDS a change on the instrument (a
+ *   change-card resolve or re-strike commits — NOT the no-op mock turn, which changes nothing). The
+ *   Keep control (M2) wires this to `markDiverged` so a landed reshape diverges the instrument and
+ *   makes any prior keep stale. Defaults to a no-op (the spine ships no Keep on its own).
  * @returns {object} the spine handle (screen + board + transcript + turn/sheet controls + seams).
  */
-export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [], duck } = {}) {
+export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [], duck, onReshapeCommit } = {}) {
   const expanded = ARRIVAL_EXPANDED[arrival] ?? false;
   // The declicked duck (spec §6.2.4). Absent a wired engine, a synchronous pass-through: the trough
   // work still runs (co-timed commit stays honest), just with no audible fade.
@@ -306,6 +311,11 @@ export function createSpine({ arrival = "picked", onReshapeSubmit, seed = [], du
         env.resolve();
         card.update();
         board.highlightDiff(env.turn.diff);
+        // A landed reshape diverges the instrument (spec §7.4/§7.7) — the Keep gesture (#359) wires
+        // this to flip any prior keep stale + arm the leave-guard. Fires for BOTH the param-only
+        // live sweep and the structural re-strike (both change the instrument); the no-op mock turn
+        // never reaches here, so a turn that changes nothing never spuriously diverges.
+        onReshapeCommit?.();
       }
 
       return {

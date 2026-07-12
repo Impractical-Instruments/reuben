@@ -408,10 +408,119 @@
   }
 }
 
-/* The bottom-chrome slot the Keep control (M2, spec §7.3) fills — present + labeled by data-slot,
-   but EMPTY here, so it takes no space until the Keep ticket mounts into it. */
+/* The bottom-chrome slot the Keep control (spec §7.3, issue #359) fills — by the pinned input,
+   always visible whether the transcript sheet is open or collapsed, thumb-reachable. Empty only in
+   the brief window before the Keep ticket mounts (defensive); once filled it holds its space. */
 .keep-slot:empty {
   display: none;
+}
+
+/* --- the keep gesture (spec §7, issue #359): the ship-gate control ------------------------------
+   "Not kept yet" → "Kept ✓" — a persistent state that teaches volatility passively (spec §7.4).
+   `position: relative` anchors the non-modal confirm popover (spec §7.6) above the chip. */
+.keep-control {
+  position: relative;
+  flex: none;
+}
+.keep-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-family: var(--font-mono);
+  font-weight: 700;
+  font-size: 0.72rem;
+  letter-spacing: 0.03em;
+  color: var(--ink);
+  background: var(--butter);
+  border: var(--border-ink-thin);
+  border-radius: var(--radius-pill, 999px);
+  box-shadow: var(--shadow-paper-sm);
+  padding: 0.5rem 0.8rem 0.42rem;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: transform 0.08s ease, box-shadow 0.08s ease, background 0.2s ease;
+}
+.keep-btn:hover {
+  transform: translate(-1px, -1px);
+  box-shadow: 3px 3px 0 var(--turquoise);
+}
+.keep-btn:active {
+  transform: translate(1px, 1px);
+  box-shadow: 1px 1px 0 var(--turquoise);
+}
+.keep-btn:disabled {
+  cursor: default;
+  opacity: 0.7;
+}
+.keep-mark {
+  font-size: 0.85rem;
+  line-height: 1;
+}
+/* Kept ✓: a settled, affirmative tint distinct from the unkept butter — the state reads at a glance. */
+.keep-control[data-kept="true"] .keep-btn {
+  background: var(--turquoise, #7fd6c2);
+}
+
+/* The first-divergence one-time pulse (spec §7.5) + the agent's point-to-Keep pulse (spec §7.8) —
+   the SAME visual language as §4's surface highlights (a soft ring throb), fired via `data-pulse`. */
+.keep-control[data-pulse="on"] .keep-btn {
+  animation: keep-pulse 0.9s ease;
+}
+@keyframes keep-pulse {
+  0% {
+    box-shadow: 0 0 0 0 var(--turquoise);
+  }
+  40% {
+    box-shadow: 0 0 0 5px var(--turquoise);
+  }
+  100% {
+    box-shadow: var(--shadow-paper-sm);
+  }
+}
+
+/* The brief NON-MODAL confirm (spec §7.6): a popover above the chip, out of the layout flow so it
+   never reflows the pinned input. Keep-to-not-lose leads; the hand-copy field rides along when the
+   clipboard was unavailable. */
+.keep-confirm {
+  position: absolute;
+  bottom: calc(100% + 0.5rem);
+  left: 0;
+  z-index: 5;
+  width: max(16rem, 60vw);
+  max-width: 22rem;
+  padding: 0.6rem 0.75rem;
+  background: var(--paper);
+  border: var(--border-ink-thin);
+  border-radius: var(--radius-wobble-sm);
+  box-shadow: var(--shadow-paper-sm);
+}
+.keep-confirm[hidden] {
+  display: none;
+}
+.keep-confirm-text {
+  margin: 0;
+  font-family: var(--font-hand);
+  font-size: 0.92rem;
+  line-height: 1.35;
+  color: var(--ink);
+}
+.keep-copy-field {
+  width: 100%;
+  margin-top: 0.5rem;
+  font: inherit;
+  font-size: 0.8rem;
+  color: var(--ink);
+  background: var(--paper);
+  border: var(--border-ink-thin);
+  border-radius: var(--radius-wobble-sm);
+  padding: 0.4rem 0.5rem;
+  resize: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .keep-control[data-pulse="on"] .keep-btn {
+    animation: none;
+  }
 }
 
 .reshape {
