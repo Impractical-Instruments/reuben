@@ -25,16 +25,9 @@ if [ "$pin" != "$msrv" ]; then
     exit 1
 fi
 
-# Detached crates (own [workspace] table, issue #224) can't inherit the workspace
-# rust-version, so they carry their own copy — hold each to the same pin.
-for detached in crates/reuben-web/Cargo.toml; do
-    dmsrv=$(sed -n 's/^[[:space:]]*rust-version = "\(.*\)"/\1/p' "$detached")
-    if [ "$pin" != "$dmsrv" ]; then
-        echo "✗ MSRV lockstep broken (ADR-0023) for detached crate $detached:" >&2
-        echo "    rust-toolchain.toml channel = $pin" >&2
-        echo "    $detached rust-version = ${dmsrv:-<missing>}" >&2
-        exit 1
-    fi
-done
+# There used to be a loop here holding each DETACHED crate (own [workspace] table, so it can't
+# inherit the workspace rust-version) to the same pin. `crates/reuben-web` was the only one, and
+# it left with the extraction (ADR-0056) — every remaining crate is a workspace member and
+# inherits `rust-version` from [workspace.package]. Re-add the loop if a detached crate returns.
 
 echo "✓ MSRV lockstep OK: $pin"

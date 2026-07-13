@@ -509,10 +509,12 @@ class EmitCliTest(unittest.TestCase):
             self.assertEqual(addrs, ["/brightness/in", "/tempo/in", "/tone/in", "/kick_step1/in"])
 
 
-# The shared cross-implementation oracle (ADR-0043 §9): the JS twin
-# (crates/reuben-web/js/surface/widget-model.mjs) regenerates this fixture from ITS resolver;
-# this suite must resolve the same instrument + surface doc to the same widget list and rows.
-ORACLE = REPO_ROOT / "crates" / "reuben-web" / "js" / "surface" / "testdata" / "expected-widgets.json"
+# The shared cross-implementation oracle (ADR-0043 §9). It is a public SDK fixture: the JS twin
+# (widget-model.mjs) lives in the private reuben-web repo and regenerates this file from ITS
+# resolver, reading it back through the `engine/` submodule — so the fixture is committed HERE
+# and the pin now spans the two repos (ADR-0056). This suite must resolve the same instrument +
+# surface doc to the same widget list and rows.
+ORACLE = REPO_ROOT / "surfaces" / "testdata" / "expected-widgets.json"
 
 # The 5 committed instrument + surface-doc pairs the oracle covers.
 ORACLE_INSTRUMENTS = {
@@ -524,15 +526,25 @@ ORACLE_INSTRUMENTS = {
 }
 
 
-@unittest.skipUnless(ORACLE.exists(),
-                     f"cross-implementation oracle {ORACLE} is absent — the JS twin "
-                     f"(widget-model.mjs) regenerates it; rerun once it lands")
 class CrossImplementationOracleTest(unittest.TestCase):
     """Both native resolvers (this one and the JS twin) must resolve each committed
-    instrument + surface doc to the SAME widget list (parsed-JSON equality) and row layout."""
+    instrument + surface doc to the SAME widget list (parsed-JSON equality) and row layout.
+
+    Deliberately NOT skipUnless(ORACLE.exists()): the oracle used to live in the web crate,
+    which this suite could legitimately be run without, so its absence meant "not landed yet".
+    It is now a committed fixture of THIS repo, so an absent oracle is a broken repo — and a
+    skip would silently retire the ADR-0043 §9 cross-implementation guarantee while CI stayed
+    green. Fail loudly instead.
+    """
 
     @classmethod
     def setUpClass(cls):
+        if not ORACLE.exists():
+            raise AssertionError(
+                f"cross-implementation oracle {ORACLE} is missing. It is a committed public SDK "
+                f"fixture (ADR-0056) that pins this resolver against the private repo's JS twin — "
+                f"restore it rather than deleting this suite."
+            )
         cls.oracle = json.loads(ORACLE.read_text())
 
     def test_oracle_covers_all_committed_pairs(self):

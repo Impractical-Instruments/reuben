@@ -4,9 +4,10 @@ A configurable musical instrument built from composable **Operators** — small
 single-purpose DSP units patched into playable Instruments and Rigs. OSC is the
 lingua franca, in and out.
 
-**Stack:** Rust workspace (Cargo). Core: `reuben-core`; binary: `reuben-native`. The web
-shell `crates/reuben-web` is deliberately **detached** from the workspace (own `[workspace]`
-table) — workspace-wide commands don't touch it; run cargo inside that crate (its CI job does).
+**Stack:** Rust workspace (Cargo). Core: `reuben-core` (the portable engine + its C-ABI embed
+surface); binary: `reuben-native`; MCP sidecar: `reuben-mcp`. This repo is the **SDK** — the
+browser player and its chat-authoring agent were extracted to the private `reuben-web` repo,
+which consumes this one as a submodule (ADR-0056).
 
 ## Commands
 

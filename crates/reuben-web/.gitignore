@@ -1,2 +1,0 @@
-# Out-of-workspace crate: the repo-root /target ignore doesn't cover this build dir.
-/target

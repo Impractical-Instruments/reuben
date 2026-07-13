@@ -7,9 +7,9 @@ presentation (label/widget/group/order + an optional narrower range); the instru
 `interface.inputs` pipes carry the quantity contract (type/min/max/default/unit/curve).
 This script resolves the two into a concrete widget list and projects it to the `.tosc`
 XML TouchOSC reads. The resolver semantics are shared verbatim with the web player's JS
-twin (`crates/reuben-web/js/surface/widget-model.mjs`); the cross-implementation oracle
-(`crates/reuben-web/js/surface/testdata/expected-widgets.json`) pins both to the same
-widget lists.
+twin, which now lives in the private `reuben-web` repo and reads this repo through its
+`engine/` submodule; the cross-implementation oracle (`surfaces/testdata/expected-widgets.json`)
+is the public SDK fixture that pins both to the same widget lists.
 
 Two subcommands:
 

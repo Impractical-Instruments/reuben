@@ -220,9 +220,10 @@ Group rows size to their own width, so a 6-knob row and a 1-knob row share the s
 widget inference, range clamping, the skip table), the derived default surface, the doc
 resolution order, layout, the zlib/XML round-trip, the structural match against
 `fixtures/REUBEN_REF.tosc`, the **cross-implementation oracle**
-(`crates/reuben-web/js/surface/testdata/expected-widgets.json` — both native resolvers, this one
-and the web player's JS twin, must resolve every committed instrument + surface doc to the same
-widget list; the JS side regenerates the fixture), and a **live-engine boundary test** that runs
+(`surfaces/testdata/expected-widgets.json` — both native resolvers, this one and the web player's
+JS twin, must resolve every committed instrument + surface doc to the same widget list; the JS
+side lives in the private `reuben-web` repo and regenerates the fixture through its `engine/`
+submodule), and a **live-engine boundary test** that runs
 the real `reuben describe` (via `cargo run`, so it tracks current source) on
 `instruments/patches/space.json` — the guard that fails on an interface-format flip instead of
 letting the boundary path rot silently. It skips (loudly) if `cargo` isn't on `PATH`.
@@ -235,7 +236,7 @@ letting the boundary path rot silently. It skips (loudly) if `cargo` isn't on `P
 | `control-surfaces/*.tosc` | **emit** via `gen_surface.py` — disposable projection; regenerate, never hand-edit |
 | instrument `interface` input pipes | **read** only — the contract this skill binds to |
 | instrument graph — promote a control to a pipe, rename, rewire, change a pipe's contract | **never** — delegate to the `patcher` skill |
-| web renderer (`crates/reuben-web/js/surface`) | **never edit** — it consumes the same docs; the shared oracle pins both resolvers |
+| web renderer (private `reuben-web` repo) | **not in this repo** — it consumes the same docs; `surfaces/testdata/expected-widgets.json` is the shared oracle that pins both resolvers |
 | two-way OSC feedback; reserved widgets (`xy-pad`, `grid`, `visualizer`, `keyboard`) | **out of scope** (format-allowed, not built) |
 
 ## Report

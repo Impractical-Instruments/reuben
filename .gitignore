@@ -20,9 +20,3 @@
 
 # Claude Code worktrees
 /.claude/worktrees/
-
-# CLoudflare
-/.wrangler/
-
-# Playwright artifacts (a stray run from any directory; web/ ignores its own copy)
-test-results/
