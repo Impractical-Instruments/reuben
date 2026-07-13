@@ -1,5 +1,13 @@
 # ADR-0042: Share links carry a self-contained bundle + a live-state sidecar in a self-versioned envelope
 
+> **Superseded in part by [ADR-0056](0056-web-product-extracted-to-private-repo.md).** The codec,
+> the envelope, and the links themselves are private now (the README carries no play-links). What
+> survives as an obligation on **this** repo is §3: refusing `kind = 1` (WAV samples) is a *trust*
+> boundary, not a size limit — `hound`/`decode_wav_bytes` trusts the declared data-chunk length, so
+> the hardening it asks for is still owed by `reuben-core` before any sample-bearing link can exist.
+> §4's `format_version()` C-ABI export and its dependency on ADR-0036 are likewise core-format facts
+> and unchanged.
+
 ## Status
 
 Accepted (2026-07-09). Amended 2026-07-10: the envelope optionally carries the resolved

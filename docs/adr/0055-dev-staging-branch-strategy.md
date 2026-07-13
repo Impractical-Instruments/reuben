@@ -1,10 +1,19 @@
 # ADR-0055: `dev` staging branch + promotion-based production release
 
+> **Amended by [ADR-0056](0056-web-product-extracted-to-private-repo.md).** §1's `web`/`webapp` CI
+> lanes and §2 entirely (the Cloudflare Pages project and its `dev` branch alias) moved out with the
+> web player; the private repo re-decides its own deploy in
+> [reuben-web ADR-0002](https://github.com/Impractical-Instruments/reuben-web/blob/main/docs/adr/0002-deploy-cutover-branch-strategy.md).
+> **§3–§6 stand untouched** and still govern this repo: `dev` is the integration branch, production
+> ships by fast-forward promotion (never a merge button), the promotion push is authored by a GitHub
+> App token, no direct commits to `main`, and the `main`-keyed bench-history/perf/release machinery
+> is unchanged. Pushing to `dev` still runs full CI here — it just no longer deploys anything.
+
 ## Status
 
 Accepted (2026-07-11). Introduces a long-lived integration branch and a staging environment for the
 web player, resolving issue [#346](https://github.com/Impractical-Instruments/reuben/issues/346).
-**Rides on** [ADR-0041](0041-web-player-app.md) (the `/web` player app and its Cloudflare Pages
+**Rides on** [ADR-0041](0041-web-player-app-in-repo.md) (the `/web` player app and its Cloudflare Pages
 deploy), [ADR-0019](0019-performance-benchmarking.md) (the iai perf gate and `bench-history`, which
 stay `main`-only), and the branch-restriction rulesets. **Amends none** — production still ships off
 `main`; this adds a bake stage in front of it.

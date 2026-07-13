@@ -1,5 +1,11 @@
 # ADR-0049: No resource bytes over MCP — samples ride the filesystem convention
 
+> **Amended by [ADR-0056](0056-web-product-extracted-to-private-repo.md).** The browser-embedded
+> engine this ADR reasons about (§3's handoff and its staging seam) is now a *cross-repo* consumer:
+> it lives in the private `reuben-web` repo and reaches `reuben-core` through a submodule. The
+> decision — no resource bytes over MCP, samples ride the filesystem convention — is unchanged;
+> only the location of the consumer it cites has moved.
+
 ## Status
 
 Accepted (2026-07-11). The sample/resource-upload decision of the reuben MCP server effort —

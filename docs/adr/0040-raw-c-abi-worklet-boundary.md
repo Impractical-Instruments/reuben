@@ -1,5 +1,12 @@
 # ADR-0040: Raw C-ABI at the WebAudio worklet boundary, no wasm-bindgen
 
+> **Amended by [ADR-0056](0056-web-product-extracted-to-private-repo.md).** The `crates/reuben-web`
+> *shell* this ADR describes has left for a private repo. The *contract* it binds against has not:
+> the raw C-ABI worklet boundary is still the decision, still exported from `reuben-core`, and is
+> now **the** public browser story — a third party rebuilds the binding from it rather than
+> receiving one from us. Read the shell details below as a worked reference implementation, not as
+> code in this tree.
+
 ## Status
 
 Accepted (2026-07-07). Flagged for recording by the P1 spike
