@@ -316,7 +316,7 @@ the entry owns this metadata outright, and `unit`/`curve` describe the *quantity
 surface of the instrument inherits them). Presentation — `label`, `widget`, grouping, order —
 lives apart in a **surface doc** (`surfaces/<name>.json`, schema
 `surfaces/surface.schema.json`) that binds pipes by name; the `control-surface` skill authors
-it, and the web player and TouchOSC emitter render from it. The declared `type` is what flows
+it, and the TouchOSC emitter and any host-side renderer read from it. The declared `type` is what flows
 (see `instruments/patches/space.json`):
 
 ```json
@@ -341,8 +341,8 @@ a v2 document (or a v3 one still carrying leftovers) parses, but the block is dr
 `LoadWarning::DeprecatedControlBlock` — the engine never read it, so sound is unchanged, and
 re-saving strips it. Player-facing controls are **interface input pipes** now; their
 presentation lives in a surface doc read by the
-[`control-surface` skill](../../.claude/skills/control-surface/SKILL.md) and the web player
-(`instruments/groovebox.json` + `surfaces/groovebox.json` are the worked pair).
+[`control-surface` skill](../../.claude/skills/control-surface/SKILL.md) and by any host-side
+renderer (`instruments/groovebox.json` + `surfaces/groovebox.json` are the worked pair).
 
 ## The sample workflow: "use this sample" is a filesystem gesture
 
