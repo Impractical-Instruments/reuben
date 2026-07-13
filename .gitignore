@@ -20,3 +20,6 @@
 
 # Claude Code worktrees
 /.claude/worktrees/
+
+# Wrangler's local cache (writes account_id into the working tree)
+.wrangler/
