@@ -44,9 +44,9 @@ the pinned toolchain, which equals the MSRV).
 The repo runs a two-branch model (see [ADR-0055](./docs/adr/0055-dev-staging-branch-strategy.md)):
 
 - **`dev`** is the default, long-lived integration branch. **Open every PR against `dev`.**
-- Pushing to `dev` runs the full CI suite and deploys the **staging** app at
-  <https://dev.reuben-web-player.pages.dev>. Per-PR previews are unchanged — each PR still gets its
-  own ephemeral preview URL.
+- Pushing to `dev` runs the full CI suite. (The staging/preview *deploys* ADR-0055 §2 describes
+  moved out with the web player — they now run in the private `reuben-web` repo, which pins this
+  one as a submodule. ADR-0055 §3–§6, the promotion model below, are unchanged.)
 - **`main` is production and ships by promotion, never by a direct merge.** Run the manual
   **[Promote dev to main](./.github/workflows/promote.yml)** workflow (Actions → *Promote dev to
   main* → Run workflow). It fast-forwards `main` to `dev` and the resulting push deploys production.
