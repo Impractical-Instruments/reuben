@@ -148,4 +148,4 @@ End with: which instrument file, what was built or changed (nodes added/rewired,
 the final `validate` result (`ok`, any warnings), and how to play it
 (`reuben play <file>`, the OSC address to send notes to). If you built a Good Button or promoted
 a player-facing control to an interface pipe, suggest the `control-surface` skill to author its
-surface doc (the web player and TouchOSC render from it).
+surface doc (TouchOSC and any host-side renderer read from it).

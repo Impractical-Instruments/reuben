@@ -18,9 +18,10 @@ sends OSC to **`/<name>/in`** — the pipe node minted at `/<name>`, its `in` po
 address `describe` reports. (That assumes the instrument plays at top level; nested under a host
 at `/h`, the same pipe is `/h/<name>/in`.) The resolver merges the pipe's contract at load, so
 the doc stores only the pipe *name*: change the pipe's range and every surface follows,
-drift-free. The web player consumes the same docs live (its JS resolver is this script's twin,
-pinned to identical output by a shared oracle) — editing a surface doc updates the web UI with
-no emit step; only the `.tosc` needs regenerating.
+drift-free. A host with its own renderer consumes the same docs directly — the browser player's
+JS resolver (private `reuben-web` repo) is this script's twin, pinned to identical output by a
+shared oracle — so editing a surface doc updates such a host with no emit step; only the `.tosc`
+needs regenerating.
 
 **Widget vocabulary** — a superset of what TouchOSC renders, so the web target is never capped:
 
@@ -244,5 +245,5 @@ letting the boundary path rot silently. It skips (loudly) if `cargo` isn't on `P
 End with: which instrument and which surface doc (authored, edited, per-target variant, or the
 derived default), the controls that resolved (bind + widget + range) and every skip warning with
 its reason, where the `.tosc` was written, the host/port to set in TouchOSC, the explicit ask to
-verify it loads on device — and, if the doc changed, the reminder that the web player picks the
-edit up with no emit step.
+verify it loads on device — and, if the doc changed, the reminder that a host with its own
+renderer picks the edit up with no emit step.
