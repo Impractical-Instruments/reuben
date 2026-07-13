@@ -11,7 +11,11 @@
 //! ("the live file is a pure presentation rewrite of this snapshot") stops holding and no
 //! honest fixture can restore it (a back-ported v2 doc would be a fabrication, not a
 //! snapshot). First exit: groovebox, when its master chain gained the saturator + DJ filter +
-//! volume knob (PR #266). The v2→v3 *loader migration* stays covered by the remaining rows.
+//! volume knob (PR #266). Second exit: strum-harp, when its master chain gained the `/vtrim`
+//! -> `/trim` headroom stage — its 8 resonator voices now pluck at full level and the raw sum
+//! clipped without it, so the live file is louder *and* differently shaped than the snapshot
+//! by design. Its sound is pinned instead by `tests/strum_harp.rs`, which asserts the level
+//! directly. The v2→v3 *loader migration* stays covered by the remaining rows.
 //!
 //! Pipe naming (pinned here; the rewrite implements to it): the pipe keeps the *public*
 //! control name; an internal node colliding with a minted pipe address is renamed
@@ -25,7 +29,7 @@
 //!   (m2s → `/brightness_cv`)
 //!
 //! (good-button, djfilter-demo, and granulator-demo were covered here until the library cull
-//! removed them; the rewrite path stays pinned by the four surviving Toys.)
+//! removed them; the rewrite path stays pinned by euclidean-drums and chord-player.)
 
 use reuben_core::format::LoadWarning;
 use reuben_core::message::{Arg, Message};
@@ -210,40 +214,6 @@ const REWRITES: &[Rewrite] = &[
             _ => Vec::new(),
         },
     },
-    Rewrite {
-        name: "strum-harp",
-        fixture: include_str!("fixtures/pre-v3/strum-harp.json"),
-        blocks: BLOCKS,
-        pre: |b| match b {
-            2 => vec![
-                f32_msg("/strum/position", 0.1, 10),
-                f32_msg("/strum/position", 0.5, 60),
-                f32_msg("/strum/position", 0.9, 110),
-            ],
-            10 => vec![
-                f32_msg("/harmony/root", 50.0, 4),
-                f32_msg("/strum/octaves", 2.0, 4),
-            ],
-            14 => vec![
-                f32_msg("/strum/position", 0.6, 20),
-                f32_msg("/brightness/in", 0.7, 20),
-            ],
-            _ => Vec::new(),
-        },
-        post: |b| match b {
-            2 => vec![
-                f32_msg("/strum/in", 0.1, 10),
-                f32_msg("/strum/in", 0.5, 60),
-                f32_msg("/strum/in", 0.9, 110),
-            ],
-            10 => vec![f32_msg("/key/in", 50.0, 4), f32_msg("/octaves/in", 2.0, 4)],
-            14 => vec![
-                f32_msg("/strum/in", 0.6, 20),
-                f32_msg("/brightness/in", 0.7, 20),
-            ],
-            _ => Vec::new(),
-        },
-    },
 ];
 
 fn spec(name: &str) -> &'static Rewrite {
@@ -296,9 +266,4 @@ fn euclidean_drums_rewrite_renders_bit_identical() {
 #[test]
 fn chord_player_rewrite_renders_bit_identical() {
     assert_rewritten("chord-player");
-}
-
-#[test]
-fn strum_harp_rewrite_renders_bit_identical() {
-    assert_rewritten("strum-harp");
 }

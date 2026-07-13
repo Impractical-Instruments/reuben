@@ -1,7 +1,7 @@
 {
   "format_version": 3,
   "instrument": "strum-harp",
-  "doc": "Toy 3 of 3 (V1.3 'The Toys', ADR-0022 §3 / ADR-0032): a drag-to-strum harp. One big fader is the strum bar — stream /strum/in [0..1] (the `strum` interface pipe driving /strummer) and the `strum` op plucks a note each time the position crosses a string boundary (both directions strum). Strings are scale degrees resolved through the tonal context, so an open full-diatonic scale reads as a harp glissando and stays in key. Each of the 8 voices is a hosted `strum-harp-voice` sub-patch (plucked saw -> percussive ADSR VCA); the voicer sums them and a brightness Good Button tones the mix through a master filter. Change the key live with /key/in (MIDI 48..60) or reshape the scale with /harmony/s0../harmony/s6. Sweep /brightness/in [0..1] to open the plucked tone (master filter cutoff + resonance). Set the string span with /octaves/in [1..4].",
+  "doc": "Toy 3 of 3 (V1.3 'The Toys', ADR-0022 §3 / ADR-0032): a drag-to-strum harp. One big fader is the strum bar — stream /strum/in [0..1] (the `strum` interface pipe driving /strummer) and the `strum` op plucks a note each time the position crosses a string boundary (both directions strum). Strings are scale degrees resolved through the tonal context, so an open full-diatonic scale reads as a harp glissando and stays in key. Each of the 8 voices is a hosted `strum-harp-voice` sub-patch (a modal `resonator` pinged by the pluck — a real plucked-string ring, not an oscillator+envelope); the voicer sums them and a brightness Good Button tones the mix through a master filter. Change the key live with /key/in (MIDI 48..60) or reshape the scale with /harmony/s0../harmony/s6. Sweep /brightness/in [0..1] to open the plucked tone (master filter cutoff + resonance). Set the string span with /octaves/in [1..4].",
   "resources": {
     "strum-harp-voice": "voices/strum-harp-voice.json"
   },
@@ -75,7 +75,7 @@
     {
       "type": "voicer",
       "address": "/voicer",
-      "doc": "Hosts 8 strum-harp-voice sub-patches. Degree plucks resolve through /harmony and allocate across the voices (polyphonic, so overlapping plucks ring together — a glissando); the voicer sums their audio.",
+      "doc": "Hosts 8 strum-harp-voice (resonator) sub-patches. Degree plucks resolve through /harmony and allocate across the voices (polyphonic, so overlapping plucks ring together — a glissando); the voicer sums their audio.",
       "config": {
         "voices": 8.0
       },
@@ -106,11 +106,32 @@
       }
     },
     {
+      "type": "m2s",
+      "address": "/vtrim",
+      "doc": "Master headroom: a constant equal-power trim (~1/sqrt(8)) smoothed into a CV. The voicer sums its 8 voices raw, so a fast glissando can have several strings ringing at once; this keeps the pile-up off the clip ceiling while a single pluck stays loud. NOT makeup gain — each resonator voice already plucks at full level on its own.",
+      "inputs": {
+        "in": 0.35
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/trim",
+      "doc": "master filtered mix (a) * trim CV (b).",
+      "inputs": {
+        "a": {
+          "from": "/filter"
+        },
+        "b": {
+          "from": "/vtrim"
+        }
+      }
+    },
+    {
       "type": "output",
       "address": "/out",
       "inputs": {
         "audio": {
-          "from": "/filter"
+          "from": "/trim"
         }
       }
     },

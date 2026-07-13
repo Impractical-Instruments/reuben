@@ -1,14 +1,14 @@
 {
   "format_version": 2,
   "instrument": "strum-harp-voice",
-  "doc": "Voice patch for strum-harp.json (ADR-0032). One monophonic plucked saw voice: a held freq drives the oscillator, a held gate the percussive ADSR (near-instant attack, short decay, long release — each pluck rings out). NO filter here — the brightness Good Button drives a single master filter on the summed mix (host post-mix), so the voice is just osc -> env VCA. interface: freq/gate in, audio/active out.",
+  "doc": "Voice patch for strum-harp.json (ADR-0032). One monophonic plucked-string voice: a held freq tunes the modal resonator's fundamental, a held gate fires its internal mallet (the resonator's own attack + decay ring, no separate envelope/VCA needed). No `active` output: the voice pool falls back to keying liveness on `gate`, and because a stolen voice reuses the same resonator instance (not a fresh spawn), its ring simply continues underneath a re-trigger rather than cutting off. NO filter here — the brightness Good Button drives a single master filter on the summed mix (host post-mix). interface: freq/gate in, audio out.",
   "interface": {
     "inputs": {
       "freq": {
-        "type": "f32_buffer",
+        "type": "f32",
         "default": 440.0,
         "min": 20.0,
-        "max": 20000.0,
+        "max": 8000.0,
         "curve": "exp",
         "unit": "Hz"
       },
@@ -20,9 +20,6 @@
       }
     },
     "outputs": {
-      "active": {
-        "from": "/env.active"
-      },
       "audio": {
         "from": "/out.audio"
       }
@@ -30,50 +27,15 @@
   },
   "nodes": [
     {
-      "type": "oscillator",
-      "address": "/osc",
-      "doc": "Saw",
+      "type": "resonator",
+      "address": "/res",
+      "doc": "Plucked string: tuned by the voice's freq, pinged by the voice's gate (rising edge fires the internal mallet — no external `in` excitation wired). Macro controls (structure/brightness/damping/position) are left at their operator defaults, which read as a mildly-stretched, moderately-bright, moderately-long ring plucked near the string's end.",
       "inputs": {
         "freq": {
           "from": "/freq"
         },
-        "waveform": "Saw"
-      }
-    },
-    {
-      "type": "envelope",
-      "address": "/env",
-      "doc": "Percussive pluck: near-instant attack, short decay, no sustain — each pluck rings out on its own. Gated by the voicer; the strum op's paired note-off frees the voice.",
-      "inputs": {
-        "attack": 0.002,
-        "decay": 0.0,
         "gate": {
           "from": "/gate"
-        },
-        "release": 0.8,
-        "sustain": 1.0
-      }
-    },
-    {
-      "type": "power_f32_signal",
-      "address": "/env_curve",
-      "doc": "Shape the linear envelope CV into an exponential-style volume curve (x^2).",
-      "inputs": {
-        "x": {
-          "from": "/env.cv"
-        }
-      }
-    },
-    {
-      "type": "mul_f32_signal",
-      "address": "/env_vca",
-      "doc": "VCA: saw * shaped envelope CV.",
-      "inputs": {
-        "a": {
-          "from": "/osc"
-        },
-        "b": {
-          "from": "/env_curve"
         }
       }
     },
@@ -82,7 +44,7 @@
       "address": "/out",
       "inputs": {
         "audio": {
-          "from": "/env_vca"
+          "from": "/res"
         }
       }
     }
