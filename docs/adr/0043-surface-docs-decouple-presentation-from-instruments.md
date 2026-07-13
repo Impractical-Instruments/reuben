@@ -1,5 +1,13 @@
 # ADR-0043: Surface docs — presentation decoupled from instruments, pipes as the one boundary
 
+> **Amended by [ADR-0056](0056-web-product-extracted-to-private-repo.md).** The twin resolvers of
+> §9 now live in different repos: the Python TouchOSC emitter here, the JS twin in the private
+> `reuben-web` repo. The cross-implementation oracle that pins them survives the split and is
+> committed **here** as a public SDK fixture at `surfaces/testdata/expected-widgets.json` (it used
+> to sit inside the web crate); the JS twin regenerates it through its `engine/` submodule. Surface
+> docs and their schema stay public. Paths below that point into `crates/reuben-web/js/surface/`
+> are historical.
+
 ## Status
 
 Accepted (2026-07-09). The design gate of the decouple-UI-from-instruments epic
