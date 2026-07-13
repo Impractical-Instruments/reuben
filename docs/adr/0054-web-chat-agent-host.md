@@ -14,10 +14,10 @@ Accepted (2026-07-11). The agent-host decision of the web-chat authoring UX effo
 ticket [#351](https://github.com/Impractical-Instruments/reuben/issues/351), the deferred
 question [ADR-0052 §2](0052-web-parity-contract-not-protocol.md) explicitly declined
 ("the chat window's agent host — client-side API key vs backend proxy — auth, cost, product
-questions") and [spec §10](../web-chat-authoring-ux-spec.md#10-out-of-scope--deferred-doors)
+questions") and [spec §10](https://github.com/Impractical-Instruments/reuben-web/blob/main/docs/web-chat-authoring-ux-spec.md#10-out-of-scope--deferred-doors)
 listed out of scope. This ADR **is** that question, and it is a **design decision, not a build**:
 it gates the agent-loop ticket (the first M1 root of the downstream execution epic). **Grounds on**
-the [Web-chat authoring UX spec](../web-chat-authoring-ux-spec.md) (the UX this host serves),
+the [Web-chat authoring UX spec](https://github.com/Impractical-Instruments/reuben-web/blob/main/docs/web-chat-authoring-ux-spec.md) (the UX this host serves),
 [ADR-0052](0052-web-parity-contract-not-protocol.md) (the in-page tool layer — eight contracts
 over the C-ABI worklet — this host drives, and §5's "one schema, many doors" type discipline this
 ADR extends), and [ADR-0042](0042-share-links.md) (the account-free share-link lane the keep
@@ -28,7 +28,7 @@ tickets start from a settled architecture.
 ## Context
 
 - The spec designs the UX on top of *some* agent host and never picks one. The persona
-  ([spec §0.1](../web-chat-authoring-ux-spec.md#01-the-persona)) is a non-musician in a browser
+  ([spec §0.1](https://github.com/Impractical-Instruments/reuben-web/blob/main/docs/web-chat-authoring-ux-spec.md#01-the-persona)) is a non-musician in a browser
   tab, no toolchain, here to **play** — describe a sound in plain language and hear it. Every copy
   and interaction decision is calibrated to someone who did not come to answer a setup quiz.
 - Two spec rules bound the host from the UX side. The **lexicon** (§1) speaks only in sound and
