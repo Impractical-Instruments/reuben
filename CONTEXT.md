@@ -100,7 +100,7 @@ The synthesized port set a [[subpatch]] presents, computed at load from its chil
 _Avoid_: descriptor (the compile-time operator contract), synthesized ports (informal).
 
 **Surface doc**:
-A presentation-only JSON document (`surfaces/<name>.json`) binding an [[instrument]]'s [[interface]] input pipes to widgets by name — label, widget kind, grouping, order, optionally a narrower range. It carries no contract: the pipe owns the quantity, a resolver merges it at load (so surfaces never drift from the boundary), and with no doc a default surface derives from the pipes. Durable and editable; the `.tosc` layout is a disposable projection of it, and the web player renders it live.
+A presentation-only JSON document (`surfaces/<name>.json`) binding an [[instrument]]'s [[interface]] input pipes to widgets by name — label, widget kind, grouping, order, optionally a narrower range. It carries no contract: the pipe owns the quantity, a resolver merges it at load (so surfaces never drift from the boundary), and with no doc a default surface derives from the pipes. Durable and editable, and portable across hosts: the `.tosc` layout is a disposable projection of it, while a host with its own renderer (the browser player) reads it directly.
 _Avoid_: control block (the retired inline per-node form), layout file, UI config, `.tosc` (a projection of the doc, not the doc).
 
 **Superset widget vocabulary**:
