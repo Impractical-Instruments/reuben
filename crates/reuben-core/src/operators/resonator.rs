@@ -1,10 +1,16 @@
 //! Resonator — a modal resonator (Mutable Instruments *Rings*-inspired).
 //!
-//! A bank of `NUM_MODES` tuned two-pole resonators ("modes") excited in parallel. The excitation
-//! is the sum of an **external input** (`in`, the audio-effect / "excite it with anything" path)
-//! and an **internal mallet** — a short brightness-filtered noise burst fired by a rising edge on
-//! `gate` (the ping / strum trigger). Output is **pure wet**: the ringing bank only, so dry/wet
-//! blending (if wanted) is a downstream `mul`/`add` patch.
+//! A bank of `NUM_MODES` tuned two-pole resonators ("modes") excited in parallel by two paths: an
+//! **external input** (`in`, the audio-effect / "excite it with anything" path) and an **internal
+//! mallet** — a short brightness-filtered noise burst fired by a rising edge on `gate` (the ping /
+//! strum trigger). Output is **pure wet**: the ringing bank only, so dry/wet blending (if wanted) is
+//! a downstream `mul`/`add` patch.
+//!
+//! The two paths enter each mode through **different gains**, because a two-pole resonator's gain
+//! depends on what you feed it — sustained audio is normalized against its *resonant* gain, a struck
+//! ping against its *impulse* response (see `recompute`). One shared gain cannot serve both: it
+//! makes the ping's level slide around with `damping` and `freq`, which no downstream makeup gain
+//! can undo. A unit-velocity ping is a full-level voice at any pitch and any ring time.
 //!
 //! It is authored single-Voice (ADR-0032): one mono stream, hosted by the Voicer via the standard
 //! `freq`/`gate` voice interface. So the existing `strum` op → Voicer → per-voice `gate` plucks it
@@ -26,7 +32,9 @@
 //!
 //! - input 0: `in` (`Buffer`) — external excitation; unwired it materializes to silence.
 //! - input 1: `freq` (`Float`, Hz) — resonant fundamental (default 220).
-//! - input 2: `gate` (`Float`) — rising edge fires the mallet; the edge value is the velocity.
+//! - input 2: `gate` (`Float`) — rising edge (crossing the engine's 0.5 on-threshold, as `envelope`
+//!   uses) fires the mallet; the edge value scales it, so velocity spans (0.5, 1.0]. The `voicer`
+//!   drives this with a plain 1.0, so a hosted voice always strikes at full velocity.
 //! - input 3: `structure` (`Float`) — partial inharmonicity 0..1.
 //! - input 4: `brightness` (`Float`) — spectral tilt 0..1.
 //! - input 5: `damping` (`Float`) — ring time 0..1.
@@ -62,21 +70,39 @@ const HF_DAMP: f32 = 0.5;
 /// Fundamental decay-time range (seconds) mapped exponentially by `damping` (0 → short, 1 → long).
 const T_MIN: f32 = 0.02;
 const T_MAX: f32 = 8.0;
-/// Mallet noise-burst length, seconds (~3 ms — a struck/blown attack, not a click).
-const BURST_SECS: f32 = 0.003;
-/// Boosts the short mallet burst so the ring is clearly audible.
+/// Pole-radius ceiling. Must stay far enough below 1 that `1 - r²` keeps usable f32 precision, yet
+/// high enough that `T_MAX` is actually reachable — `r = exp(-1/(T_MAX·sr))` is 0.9999974 at 48 kHz
+/// and 0.9999993 at 192 kHz, so a tighter ceiling would silently cap the ring time.
+const R_MAX: f32 = 0.999_999_5;
+/// Mallet contact time (seconds) as `BURST_K / √freq` — a shorter, stiffer strike on a shorter
+/// string. It has to scale with pitch, and this exponent is the one that holds the ping level flat:
+/// a mode draws energy from the burst both by its *length* (more noise samples) and by the *cycles*
+/// it sees within it (coherent buildup), and those pull in opposite directions. A fixed contact time
+/// tilts the level ~7 dB toward the treble; a fully period-scaled one (`∝ 1/freq`) tilts it ~6 dB
+/// toward the bass. `1/√freq` is the balance point — measured flat within ~3 dB from 110 Hz to
+/// 1760 Hz. `K` puts a 440 Hz strike at ~1.5 ms.
+const BURST_K: f32 = 0.031;
+/// Contact time is clamped to a physical range: never a sub-sample click, never a smear.
+const BURST_MIN_SECS: f32 = 0.0005;
+const BURST_MAX_SECS: f32 = 0.008;
+/// Drive level of the mallet burst into the bank.
 const EXC_GAIN: f32 = 4.0;
-/// Output trim keeping the summed bank at a comfortable level.
-const MASTER_GAIN: f32 = 0.5;
+/// Output trim. With the mallet path impulse-normalized this is an honest level knob — it sets what
+/// a unit-velocity ping peaks at (~0.6, i.e. a full-level voice), the same at every pitch and ring
+/// time, rather than compensating for a gain that slides around underneath it.
+const MASTER_GAIN: f32 = 0.08;
 /// Fixed deterministic PRNG seed a fresh / spawned Resonator starts from (xorshift can't leave 0).
 const SEED: u32 = 0x2545_F491;
 
 pub struct Resonator {
     /// Per-mode two-pole resonator coefficients (recomputed only when a control changes).
-    /// `y[n] = g·x[n] + c·y[n-1] - d·y[n-2]`.
+    /// `y[n] = g·x[n] + g_exc·e[n] + c·y[n-1] - d·y[n-2]`.
     c: [f32; NUM_MODES],
     d: [f32; NUM_MODES],
+    /// Input gain for the **external** `in` path — resonant-gain normalized (see `recompute`).
     g: [f32; NUM_MODES],
+    /// Input gain for the **internal mallet** path — impulse normalized (see `recompute`).
+    g_exc: [f32; NUM_MODES],
     /// Per-mode delay state (the ring), continuous across blocks; reset on `spawn`.
     y1: [f32; NUM_MODES],
     y2: [f32; NUM_MODES],
@@ -109,6 +135,7 @@ impl Default for Resonator {
             c: [0.0; NUM_MODES],
             d: [0.0; NUM_MODES],
             g: [0.0; NUM_MODES],
+            g_exc: [0.0; NUM_MODES],
             y1: [0.0; NUM_MODES],
             y2: [0.0; NUM_MODES],
             last_freq: f32::NAN,
@@ -152,6 +179,19 @@ impl Resonator {
 
     /// Recompute the per-mode coefficients from the held controls. Pure given its args, so reusing
     /// the cache when nothing changed is identical to recomputing. Called at most once per block.
+    ///
+    /// The bank has two excitation paths, and they need **different** input gains, because a
+    /// two-pole resonator's gain depends on what you feed it:
+    /// - Its *steady-state* gain at resonance is `g / (1 - r²)`, so the external `in` path takes
+    ///   `g = (1 - r²)·amp`. That normalizes a sustained tone to unity and is what keeps the effect
+    ///   path bounded as `r → 1` (a long ring is a very high-Q filter).
+    /// - Its *impulse* response peaks at `g / sin(w)`, so the mallet path takes `g_exc = sin(w)·amp`
+    ///   — a unit-peak ping whatever the mode's decay or pitch.
+    ///
+    /// Sharing one gain across both is the trap: normalize for the sustained case and every ping
+    /// comes out scaled by `(1 - r²)`, which is `1e-4` at long decays. The ring gets quieter the
+    /// longer it rings, and higher notes get quieter than low ones — a level that slides around with
+    /// `damping` and `freq` and can't be rescued by a fixed makeup gain downstream.
     fn recompute(
         &mut self,
         freq: f32,
@@ -178,18 +218,43 @@ impl Resonator {
                 self.c[i] = 0.0;
                 self.d[i] = 0.0;
                 self.g[i] = 0.0;
+                self.g_exc[i] = 0.0;
                 continue;
             }
             let w = std::f32::consts::TAU * f / sample_rate;
             let t = t0 / (1.0 + HF_DAMP * i as f32);
-            let r = (-1.0 / (t * sample_rate)).exp().min(0.99995);
+            let r = (-1.0 / (t * sample_rate)).exp().min(R_MAX);
             let comb = (std::f32::consts::PI * n * pos).sin().abs();
             let amp = brightness.powi(i as i32) * comb;
             self.c[i] = 2.0 * r * w.cos();
             self.d[i] = r * r;
-            // (1 - r²) normalizes the resonant peak so the bank stays bounded as r → 1.
+            // Sustained input: (1 - r²) normalizes the resonant peak, bounding the bank as r → 1.
             self.g[i] = (1.0 - r * r) * amp;
+            // Struck input: sin(w) cancels the 1/sin(w) in the impulse response, so a ping peaks at
+            // `amp` regardless of how long the mode rings or how high it is tuned.
+            self.g_exc[i] = w.sin() * amp;
         }
+    }
+
+    /// One sample of the modal bank: advance every mode and sum. `EXCITED` is a const so the mallet
+    /// term monomorphizes away entirely while the bank is merely ringing — which is nearly all of
+    /// the time, since a burst is ~3 ms of a multi-second ring. Keeps the hot steady-state loop at
+    /// the same arithmetic it has always done (ADR-0019: the micro bench gates this at 10%).
+    #[inline(always)]
+    fn bank_step<const EXCITED: bool>(&mut self, x_in: f32, exc: f32) -> f32 {
+        let mut acc = 0.0f32;
+        for m in 0..NUM_MODES {
+            let drive = if EXCITED {
+                self.g[m] * x_in + self.g_exc[m] * exc
+            } else {
+                self.g[m] * x_in
+            };
+            let y = drive + self.c[m] * self.y1[m] - self.d[m] * self.y2[m];
+            self.y2[m] = self.y1[m];
+            self.y1[m] = y;
+            acc += y;
+        }
+        acc
     }
 
     /// One sample of the internal mallet exciter (0 when idle). A brightness-filtered noise burst
@@ -246,7 +311,8 @@ impl Operator for Resonator {
         let gate = io.read(IN_GATE);
         let gate_hi = gate > 0.5;
         if gate_hi && !self.prev_gate {
-            self.burst_len = ((BURST_SECS * sample_rate) as i32).max(1);
+            let contact = (BURST_K / freq.max(1.0).sqrt()).clamp(BURST_MIN_SECS, BURST_MAX_SECS);
+            self.burst_len = ((contact * sample_rate) as i32).max(1);
             self.burst_remaining = self.burst_len;
             self.burst_amp = gate.clamp(0.0, 1.0);
         }
@@ -264,16 +330,13 @@ impl Operator for Resonator {
         for i in 0..n {
             let x_in = audio[i];
             let exc = self.exciter_step(lp_alpha);
-            let x = x_in + exc;
-
-            // Run the parallel modal bank and sum.
-            let mut acc = 0.0f32;
-            for m in 0..NUM_MODES {
-                let y = self.g[m] * x + self.c[m] * self.y1[m] - self.d[m] * self.y2[m];
-                self.y2[m] = self.y1[m];
-                self.y1[m] = y;
-                acc += y;
-            }
+            // The two excitations enter through different per-mode gains (see `recompute`), so they
+            // cannot be summed into one drive term. Idle mallet -> take the cheap bank.
+            let acc = if exc != 0.0 {
+                self.bank_step::<true>(x_in, exc)
+            } else {
+                self.bank_step::<false>(x_in, 0.0)
+            };
             out[i] = acc * MASTER_GAIN;
         }
     }
@@ -352,6 +415,92 @@ mod tests {
         (buf.iter().map(|x| x * x).sum::<f32>() / buf.len() as f32).sqrt()
     }
 
+    fn peak(buf: &[f32]) -> f32 {
+        buf.iter().fold(0.0f32, |a, &b| a.max(b.abs()))
+    }
+
+    /// The operator's descriptor defaults, which is what an unconfigured `resonator` node plays at.
+    fn defaults() -> Macros {
+        Macros {
+            freq: 440.0,
+            structure: 0.25,
+            brightness: 0.5,
+            damping: 0.7,
+            position: 0.3,
+        }
+    }
+
+    /// The level contract, and the reason `g_exc` exists: a unit-velocity ping is a *usable voice*
+    /// straight out of the operator. Before the mallet path got its own impulse-normalized gain this
+    /// peaked at 0.007 — 43 dB down, which read as "the resonator is broken" at the instrument.
+    #[test]
+    fn a_ping_at_the_defaults_is_a_full_level_voice() {
+        let p = peak(&ping(96_000, defaults()));
+        assert!(
+            (0.25..=1.0).contains(&p),
+            "a unit-velocity ping should land near full scale, got {p}"
+        );
+    }
+
+    /// `damping` is a *decay-time* control, not a volume control. It used to be both: the shared
+    /// (1 - r²) mode gain scaled the ping by the very quantity that sets the ring length, so a long
+    /// ring came out 22 dB quieter than a short one.
+    #[test]
+    fn ping_level_is_independent_of_damping() {
+        let levels: Vec<f32> = [0.1, 0.3, 0.5, 0.7, 0.9]
+            .iter()
+            .map(|&damping| {
+                peak(&ping(
+                    96_000,
+                    Macros {
+                        damping,
+                        ..defaults()
+                    },
+                ))
+            })
+            .collect();
+        let lo = levels.iter().copied().fold(f32::MAX, f32::min);
+        let hi = levels.iter().copied().fold(0.0f32, f32::max);
+        assert!(
+            hi < lo * 2.0,
+            "damping must not act as a volume knob (within 6 dB): {levels:?}"
+        );
+    }
+
+    /// Every string of the harp should speak at the same level — a glissando must not fade out as it
+    /// climbs. Guards both the `sin(w)` mode normalization and the `1/√freq` contact time.
+    #[test]
+    fn ping_level_is_independent_of_pitch() {
+        let levels: Vec<f32> = [110.0, 220.0, 440.0, 880.0, 1760.0]
+            .iter()
+            .map(|&freq| peak(&ping(96_000, Macros { freq, ..defaults() })))
+            .collect();
+        let lo = levels.iter().copied().fold(f32::MAX, f32::min);
+        let hi = levels.iter().copied().fold(0.0f32, f32::max);
+        assert!(
+            hi < lo * 2.0,
+            "ping level must hold across the pitch range (within 6 dB): {levels:?}"
+        );
+    }
+
+    /// Velocity (the gate's edge value) is the one thing that *should* scale the ping. Note the
+    /// usable range is (0.5, 1.0]: `gate` must clear the engine's 0.5 on-threshold to count as an
+    /// edge at all, so 0.6 is the softest strike, not 0.0.
+    #[test]
+    fn velocity_scales_the_ping() {
+        let mut soft = OpDriver::for_type(Resonator::new(), SR);
+        set_macros(&mut soft, defaults());
+        soft.push(IN_GATE, 0, 0.6);
+        let soft = peak(soft.render(48_000).output(OUT_OUT));
+
+        let loud = peak(&ping(48_000, defaults()));
+        let ratio = loud / soft;
+        assert!(
+            (1.5..=1.8).contains(&ratio),
+            "a 0.6-velocity ping should be ~0.6x a full one, ratio {ratio}"
+        );
+    }
+
     #[test]
     fn ping_rings_then_decays_to_silence() {
         // A struck resonator (moderate damping) sounds, then rings out — not a click, not a drone.
@@ -396,6 +545,33 @@ mod tests {
         assert!(
             late_long > late_short * 4.0,
             "more damping should ring longer: long {late_long}, short {late_short}"
+        );
+    }
+
+    /// The top of the `damping` range must keep doing something. The old pole-radius ceiling
+    /// (0.99995) pinned the fundamental's decay at ~0.42 s, so every value above ~0.52 produced a
+    /// bit-identical ring and the documented `T_MAX` of 8 s was unreachable.
+    #[test]
+    fn damping_keeps_lengthening_at_the_top_of_its_range() {
+        let mid = ping(
+            96_000,
+            Macros {
+                damping: 0.65,
+                ..defaults()
+            },
+        );
+        let full = ping(
+            96_000,
+            Macros {
+                damping: 1.0,
+                ..defaults()
+            },
+        );
+        let late_mid = rms(&mid[84_000..96_000]);
+        let late_full = rms(&full[84_000..96_000]);
+        assert!(
+            late_full > late_mid * 2.0,
+            "damping 1.0 must ring longer than 0.65: mid {late_mid}, full {late_full}"
         );
     }
 

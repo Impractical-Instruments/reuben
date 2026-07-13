@@ -106,11 +106,32 @@
       }
     },
     {
+      "type": "m2s",
+      "address": "/vtrim",
+      "doc": "Master headroom: a constant equal-power trim (~1/sqrt(8)) smoothed into a CV. The voicer sums its 8 voices raw, so a fast glissando can have several strings ringing at once; this keeps the pile-up off the clip ceiling while a single pluck stays loud. NOT makeup gain — each resonator voice already plucks at full level on its own.",
+      "inputs": {
+        "in": 0.35
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/trim",
+      "doc": "master filtered mix (a) * trim CV (b).",
+      "inputs": {
+        "a": {
+          "from": "/filter"
+        },
+        "b": {
+          "from": "/vtrim"
+        }
+      }
+    },
+    {
       "type": "output",
       "address": "/out",
       "inputs": {
         "audio": {
-          "from": "/filter"
+          "from": "/trim"
         }
       }
     },
