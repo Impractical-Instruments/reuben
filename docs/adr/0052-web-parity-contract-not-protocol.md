@@ -1,5 +1,12 @@
 # ADR-0052: Web-player parity: the contract ports, not the protocol — no browser MCP
 
+> **Amended by [ADR-0056](0056-web-product-extracted-to-private-repo.md).** The in-page tool layer
+> of §2 and the by-value `swap` of §3 are private code now. What remains binding on **this** repo is
+> §5: the contract types live OS-free in `reuben-core` and one schema serves many doors — that is
+> precisely the invariant the extraction depends on, since the private repo generates its tool
+> schemas from those types across the submodule boundary. The no-browser-MCP conclusion stands; the
+> code that honors it is elsewhere.
+
 ## Status
 
 Accepted (2026-07-11). The web-player-parity decision of the reuben MCP server effort —

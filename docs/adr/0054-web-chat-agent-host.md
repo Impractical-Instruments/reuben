@@ -1,5 +1,13 @@
 # ADR-0054: The web-chat agent host — a hosted proxy, tiered toward bring-your-own
 
+> **Superseded by [ADR-0056](0056-web-product-extracted-to-private-repo.md)** as a decision of
+> *this* repo. The proxy, the relay, the API key, the abuse floor, the model tier, the cost ceiling,
+> and every "ready-for-human follow-up" below are product and operations decisions of the private
+> `reuben-web` repo — the public BSD engine hosts no proxy, funds no account, and ships no chat
+> agent. One clause outlives the move as a constraint on public core: §3's rule that the tool
+> schemas are **generated from `reuben-core`'s serde types**, so the contract has one source. The
+> generator itself moved with the crate. Kept as history.
+
 ## Status
 
 Accepted (2026-07-11). The agent-host decision of the web-chat authoring UX effort —

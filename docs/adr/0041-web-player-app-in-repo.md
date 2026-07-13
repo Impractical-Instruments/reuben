@@ -1,5 +1,15 @@
 # ADR-0041: The web player app lives in-repo at `/web`
 
+> **Superseded by [ADR-0056](0056-web-product-extracted-to-private-repo.md).** The app does not
+> live at `/web`, or anywhere in this repo — it was extracted to a private AGPL repo that consumes
+> this one as a submodule. Of the three arguments below for keeping it in-repo — the engine already
+> reached into the browser from here; this was the only place it could be built and deployed;
+> "own repo" bought isolation the app didn't want, since it must track the engine lockstep — the
+> first two were artifacts of not yet having a submodule, and the third is answered by the pin. This
+> ADR's supersession of [ADR-0026](0026-v1-finish-line-osc-out-and-stereo.md)'s "own repo" clause
+> is itself reversed: that clause is restored. Kept as the record of why the app was built the way
+> it was — which is still true, it just isn't built here.
+
 > **Amended by [ADR-0043](0043-surface-docs-decouple-presentation-from-instruments.md).**
 > The auto-UI renders from interface pipes + surface docs, not from ADR-0018's `control`
 > blocks (the "Rides on ADR-0018" line below is retired with them).
