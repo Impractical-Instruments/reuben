@@ -20,10 +20,13 @@ This repo is the **engine and its SDK**:
   ([ADR-0044](docs/adr/0044-mcp-stdio-sidecar.md)).
 - **`instruments/`** + **`surfaces/`** — the instrument library and the presentation docs over
   their interface pipes.
-
-Products built on top of it live elsewhere: the browser player and its chat-authoring agent were
-extracted into a separate private repo, which consumes this one as a submodule
-([ADR-0056](docs/adr/0056-web-product-extracted-to-private-repo.md)).
+- **`.claude/skills/`** — the **authoring and developer agent skills** that run inside [Claude
+  Code](https://claude.com/claude-code), each grounded on the *live* engine so it can't drift from
+  the code. Authoring: **`patcher`** (build/edit an instrument) and **`control-surface`** (author a
+  surface doc and project it to TouchOSC). Development: **`create-operator`** (a new DSP operator in
+  Rust), **`sync-docs`** (bring the living docs back in sync after a change), and
+  **`rust-hot-path-review`** (RT-safety/perf review of an audio-thread diff). The
+  [Make your own](#make-your-own) section below walks through them.
 
 ## Prerequisites
 
@@ -166,71 +169,6 @@ Need behavior no operator provides? That's a new **Operator** in Rust — `scaff
 (or the `create-operator` skill) generates the skeleton and wires its registration
 ([ADR-0021](docs/adr/0021-scaffold-operator-and-create-operator-skill.md)); see
 [docs/agents/operator-dev.md](docs/agents/operator-dev.md) for the operator contract.
-
-## Status
-
-**MVP complete; v1 in progress.** The headless "it makes a sound" spine works end to end.
-The signal/value port-form refactor ([ADR-0031](docs/adr/0031-float-resolves-to-value-or-signal-by-wiring.md))
-and Voicer-hosts-voice-sub-patches rewrite ([ADR-0032](docs/adr/0032-voicer-hosts-voice-subpatches.md))
-have landed: a port is a held **Value** (`f32`) or a **Signal** buffer (`f32_buffer`), read/written
-through the contract's typed handles (`io.read(IN_X)` / `io.write(OUT_X)`,
-[ADR-0037](docs/adr/0037-typed-port-handles.md)), and polyphony comes from the Voicer hosting voice
-sub-patches (`instruments/voices/*.json`) rather than the now-removed Lane model.
-General nesting ([ADR-0034](docs/adr/0034-instrument-nesting.md)) has landed end to end: a
-`subpatch` node references another instrument (cycle-guarded), inlines into the parent graph at
-build (zero runtime cost, internals still OSC-reachable under the node's address prefix), presents
-the child's `interface` as its ports — each entry declaring its own type and quantity
-metadata (unit/range/default/curve) since the ADR-0038 pipe flip (presentation lives in a
-surface doc since format v3, [ADR-0043](docs/adr/0043-surface-docs-decouple-presentation-from-instruments.md)),
-type-checked by the ordinary wire check — and
-`reuben describe <patch.json>` introspects that boundary (`instruments/patches/space.json`,
-nested by `mic-space`, is the worked example). The library resolution story (#122) has landed: a reference resolves relative
-to the document that names it (a library patch bundles its private sub-patches and samples next
-to itself), falling back to a configurable instrument root (`reuben --instrument-root <DIR>` or
-`REUBEN_INSTRUMENT_ROOT`); the resolver canonicalizes source identity, so two spellings of one
-path are one cycle-guard/dedup key, and an in-memory `MemoryResolver` serves embedded hosts and
-tests with no filesystem. Documents carry a `format_version` (absent means 1; a newer-than-engine
-document refuses to load with a clear message) and the document is the save source of truth —
-`NormalizedDoc::from_graph` is the explicit flatten/export path
-([ADR-0036](docs/adr/0036-instrument-library-and-format-versioning.md), as amended by
-[ADR-0047](docs/adr/0047-normalization-is-a-type.md): the version gate and the parse-time
-migrations live in `format/normalize.rs` behind the `NormalizedDoc` type, minted only by
-`NormalizedDoc::from_json` — so "migrated exactly once" is compiler-enforced, not re-checked).
-The I/O-mapping epic ([ADR-0038](docs/adr/0038-interface-pipes-and-the-device-layer.md), #185) has
-landed end to end: **format v2** makes `interface` entries typed named **pipes** (direction
-flipped — an input pipe mints an address internal nodes wire from, an output pipe is fed from an
-internal port; the old anonymous master `outputs` array dissolved into `interface.outputs`; v1
-documents auto-migrate at parse and render bit-identically, and save writes v2). A signal pipe may
-bind a **logical channel**, honored only on the top-level played graph — and **audio input
-exists**: an input pipe with `channel: k` carries real device audio (`instruments/mic-space.json`
-is the demo), the input stream opened only when a patch binds input channels, crossing a
-lock-free ring into the render callback with resampling and drift compensation from day one,
-under fixed, counted xrun/ring policies surfaced as diagnostics. Logical channels bind to real
-hardware outside the patch via the **device profile** (`play --io-map`,
-[docs/device-profile.md](docs/device-profile.md); the worked pair is frozen as a test
-fixture, `crates/reuben-native/tests/fixtures/stereo-sub.json` + `stereo-sub.io-map.json`). Live input is the one sanctioned
-nondeterministic boundary — offline render injects known buffers, so the determinism story is
-unchanged (ADR-0038 §10).
-The **embed surface** landed with the browser work: the `Engine` — the arbitrary-length pull over
-the block-size core (`queue_osc` → `fill`/`fill_duplex` → `drain_outbound`, plus the
-`Engine::from_document` construction glue) — descended from `reuben-native` into
-`reuben_core::engine` ([ADR-0039](docs/adr/0039-engine-in-core-embed-surface.md)), and
-`reuben-core` compiles to `wasm32-unknown-unknown` untouched. That is the seam any host embeds
-against — native, browser, or a game engine's mix step — and it is the whole public embedding
-story: **the browser player and its chat-authoring agent were extracted into a separate private
-repo** ([ADR-0056](docs/adr/0056-web-product-extracted-to-private-repo.md)), which consumes this
-one as a submodule. The C-ABI worklet boundary it binds against
-([ADR-0040](docs/adr/0040-raw-c-abi-worklet-boundary.md)) is documented and stable, so a browser
-binding is reconstructible from this repo without it.
-**Format v3** ([ADR-0043](docs/adr/0043-surface-docs-decouple-presentation-from-instruments.md), #247)
-decoupled presentation from instruments: the per-node `control` block and pipe `label`/`widget`
-are retired (a v2 document keeps loading — leftovers are ignored with a `LoadWarning` naming
-each; sound is unaffected), an interface pipe carries only the quantity contract
-(`type`/`default`/`min`/`max`/`curve`/`unit`), and presentation lives in **surface docs**
-(`surfaces/*.json`), resolved as `surfaces/<id>.<target>.json ?? surfaces/<id>.json ??` an
-auto-derived default from the pipes. Twin thin resolvers render them — the Python TouchOSC
-emitter here, and a JS twin in the web repo — pinned to identical output by a shared oracle
-fixture, `surfaces/testdata/expected-widgets.json`.
 
 ## Going deeper
 
