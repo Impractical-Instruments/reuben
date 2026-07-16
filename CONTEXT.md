@@ -61,7 +61,7 @@ Executing the current [[plan]] per block on the audio thread — hard realtime, 
 _Avoid_: block time, process, audio callback (the callback is the host of Render, not Render itself).
 
 **Lane** _(retired)_:
-Formerly one concrete path through a Voice×Channel fan-out the engine replicated operators across. Removed: polyphony now comes from a [[voicer]] hosting [[voice sub-patch]]es, and [[channel]]s fan out only at the master output. The term survives only in frozen ADRs (e.g. 0010, 0032) — don't use it for new work; say [[voice]], [[channel]], or [[voice sub-patch]].
+Formerly one concrete path through a Voice×Channel fan-out the engine replicated operators across. Removed: polyphony now comes from a [[voicer]] hosting [[voice instrument]]s, and [[channel]]s fan out only at the master output. The term survives only in frozen ADRs (e.g. 0010, 0032) — don't use it for new work; say [[voice]], [[channel]], or [[voice instrument]].
 
 **Voice**:
 One independent sounding instance within a polyphonic [[instrument]] — its own envelope, filter, oscillator phase, etc. Voices come from a pre-allocated pool bounded at instantiation; a [[voicer]] assigns notes to Voices and applies the stealing policy. A Voice is *not* a [[channel]] — a single Voice may span several Channels (e.g. a stereo Voice).
@@ -72,20 +72,24 @@ One discrete signal path in n-channel I/O — a speaker output, an input, or one
 _Avoid_: voice, bus.
 
 **Voicer**:
-The Operator that assigns incoming note Messages to [[voice]]s from a pre-allocated pool and applies the voice-stealing policy (default: steal oldest with a quick release to avoid clicks). Hosts the [[voice sub-patch]]es and sums their audio. Where polyphony is managed.
+The Operator that assigns incoming note Messages to [[voice]]s from a pre-allocated pool and applies the voice-stealing policy (default: steal oldest with a quick release to avoid clicks). Hosts the [[voice instrument]]s and sums their audio. Where polyphony is managed.
 _Avoid_: allocator, poly, note manager.
 
-**Voice sub-patch**:
-A standalone [[instrument]] a [[voicer]] hosts as one [[voice]] of its pool — referenced by path, instantiated once per Voice. It carries a Voice's per-instance signal chain (oscillator, filter, envelope) and exposes an [[interface]] the Voicer drives (`freq`/`gate` in) and taps (`audio`/`active` out).
-_Avoid_: voice graph, sub-instrument, voice template.
+**Voice instrument**:
+A standalone [[instrument]] whose [[interface]] carries the voice face — `freq`/`gate` in, `audio`/`active` out — which is all that makes it hostable by a [[voicer]] as one [[voice]] of its pool ([[interface makes the role]]). Referenced by path, instantiated once per Voice; carries a Voice's per-instance signal chain (oscillator, filter, envelope). The same document, statically nested via a `subpatch` node, is just a nested instrument — the role is contextual.
+_Avoid_: voice sub-patch (retired — role, not kind), voice graph, sub-instrument, voice template.
 
 **Interface**:
-An [[instrument]]'s engine-honored I/O boundary: named, typed **pipes** — an input pipe mints an address internal Operators consume; an output pipe is fed from an internal port — type-checked and wired by the engine. Real wiring carrying the quantity contract (type/default/range/curve/unit), never surface metadata: the one boundary a [[surface doc]] binds by name. A [[voice sub-patch]]'s `freq`/`gate`/`audio`/`active` boundary is the canonical case.
+An [[instrument]]'s engine-honored I/O boundary: named, typed **pipes** — an input pipe mints an address internal Operators consume; an output pipe is fed from an internal port — type-checked and wired by the engine. Real wiring carrying the quantity contract (type/default/range/curve/unit), never surface metadata: the one boundary a [[surface doc]] binds by name. A [[voice instrument]]'s `freq`/`gate`/`audio`/`active` boundary is the canonical case.
 _Avoid_: control surface, ports block.
 
+**Interface makes the role**:
+The naming principle for reusable documents (ADR-0057): there is one noun — [[instrument]] — and roles are contextual, read off the [[interface]] or the use, never off a path, filename, or kind. Hosted by a [[voicer]] → a [[voice instrument]], while hosted; referenced via a `subpatch` node → a nested instrument, while referenced. An instrument's **recipe-role** — its reuse story — is its `doc` first line plus its interface face, projected into the generated library index: trusted for selection, never for wiring (the face is always generated from the `interface` block).
+_Avoid_: recipe as a kind of document, role-by-directory, naming conventions for role.
+
 **Subpatch**:
-A nested [[instrument]] referenced as a node inside another Instrument, via a `subpatch` node whose `patch` slot names it in `resources`. Statically nested — exactly one instance, fixed at build — so it [[inline (dissolve)]]s; a [[voice sub-patch]] is the dynamic counterpart, [[host]]ed by a [[voicer]].
-_Avoid_: sub-instrument, nested patch, embedded instrument.
+A format keyword, not a domain noun (ADR-0057): the built-in node type whose `patch` slot names an [[instrument]] in `resources`, referencing it as a nested instrument inside another. Statically nested — exactly one instance, fixed at build — so it [[inline (dissolve)]]s; a [[voice instrument]] is the dynamic counterpart, [[host]]ed by a [[voicer]]. The referenced document is an ordinary instrument; say "nested instrument" for the thing, `subpatch` only for the node.
+_Avoid_: subpatch as a noun for the document, sub-instrument, nested patch, embedded instrument.
 
 **Inline (dissolve)**:
 The build-time splice that flattens a [[subpatch]] into its parent: child nodes spliced in, addresses namespace-prefixed, boundary wires rewired to the inner targets, the subpatch node gone before [[render]]. The fixed-cardinality half of the line: fixed-at-build → inline; runtime-varying → [[host]].
@@ -176,5 +180,5 @@ A port's current value: the last [[message]]'s [[arg]] on that port, held until 
 _Avoid_: context, param latch, enum latch (as separate mechanisms), state.
 
 **Constant**:
-Instantiate-time configuration of an Operator instance that never changes on the data path. The line is exact: a value is a Constant iff changing it would rebuild the graph — e.g. `voices`, which sets a [[voicer]]'s [[voice]]-pool size (how many [[voice sub-patch]]es it hosts). Declared with the contract's `constant:` keyword; lives in an Operator's `config` block, not its [[input]]s. [[arg]] type alone does not make a Constant: a live-switchable enum like filter mode is an [[input]], not a Constant.
+Instantiate-time configuration of an Operator instance that never changes on the data path. The line is exact: a value is a Constant iff changing it would rebuild the graph — e.g. `voices`, which sets a [[voicer]]'s [[voice]]-pool size (how many [[voice instrument]]s it hosts). Declared with the contract's `constant:` keyword; lives in an Operator's `config` block, not its [[input]]s. [[arg]] type alone does not make a Constant: a live-switchable enum like filter mode is an [[input]], not a Constant.
 _Avoid_: param, setting, option, config value.
