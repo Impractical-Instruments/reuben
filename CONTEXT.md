@@ -182,3 +182,19 @@ _Avoid_: context, param latch, enum latch (as separate mechanisms), state.
 **Constant**:
 Instantiate-time configuration of an Operator instance that never changes on the data path. The line is exact: a value is a Constant iff changing it would rebuild the graph — e.g. `voices`, which sets a [[voicer]]'s [[voice]]-pool size (how many [[voice instrument]]s it hosts). Declared with the contract's `constant:` keyword; lives in an Operator's `config` block, not its [[input]]s. [[arg]] type alone does not make a Constant: a live-switchable enum like filter mode is an [[input]], not a Constant.
 _Avoid_: param, setting, option, config value.
+
+**Delivery lane**:
+One of the three consumer paths for authoring grounding — repo skills (checkout, pointers), MCP clients (in-band resources), web chat (bundled at build). A lane is a transport, never a content author: sauce is authored once and delivered per lane (ADR-0059). Distinct from the retired DSP sense of [[lane]].
+_Avoid_: surface (that is a presentation doc), channel (that is signal I/O), bare "lane" without context.
+
+**Input handling**:
+The lane-shared half of the chat sauce: interpreting musical/mood/abstract language as patching moves — the word→move table (ADR-0058) plus the edge conduct around imperfect mappings (ambiguous → act on the most-likely reading and offer alternatives; unsatisfiable → nearest achievable move). Identical in every [[delivery lane]]; a dev says "warmer" too.
+_Avoid_: intent parsing, NLU.
+
+**Output filter**:
+The host-owned half of the chat sauce: what the person is shown — the sound-not-machine subject rule, hidden failures, silent tool planning, the register ratchet, naming, tone. Zero at skills/MCP, maximal at web; "persona" means this filter. It is a composable host module, never lane sauce (ADR-0059).
+_Avoid_: persona (ambiguous), style gate (deleted, ADR-0005 — the filter is taught, not enforced).
+
+**Push/pull delivery**:
+The cost shape of a [[delivery lane]]: **push** = bundled into context, paid every session (web's only channel); **pull** = pointer or resource, free until followed (skills, MCP). The delivery rule: push only what earns its keep every session; pull everything else; for a push-only lane, omission is a cost decision, not a redundancy claim (ADR-0059).
+_Avoid_: eager/lazy loading (runtime words for a prompt-architecture idea).
