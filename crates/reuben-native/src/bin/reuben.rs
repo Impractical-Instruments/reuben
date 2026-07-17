@@ -12,11 +12,14 @@
 //!   /voicer/notes  [69.0, 0.0]   # note-off (gate 0)
 //!   ```
 //!
-//! - `reuben describe [op|patch.json] [--json]` — print the operator set, one operator's ports/
-//!   params/resource slots, or — given an instrument JSON path — that instrument's `interface`
-//!   boundary as a host sees it (ADR-0034 §4 / ADR-0038 §2: an input pipe from its own declared
-//!   type/range, an output pipe inheriting from the port feeding it, both carrying the entry's
-//!   presentational fields). The introspection half of the Patcher skill (ADR-0020).
+//! - `reuben describe [op|patch.json] [--json] [--compact]` — print the operator set, one
+//!   operator's ports/params/resource slots, or — given an instrument JSON path — that
+//!   instrument's `interface` boundary as a host sees it (ADR-0034 §4 / ADR-0038 §2: an input
+//!   pipe from its own declared type/range, an output pipe inheriting from the port feeding it,
+//!   both carrying the entry's presentational fields). The introspection half of the Patcher
+//!   skill (ADR-0020). `--compact` is the generated signature-line mode of the operator view
+//!   (ADR-0059 §3): one line per operator, legend first — the bundle-able grounding artifact
+//!   the web build consumes.
 //! - `reuben validate <path> [--json]` — load + plan an instrument with no audio device and
 //!   report structural/wiring errors. Exit 1 if invalid; warnings alone stay exit 0.
 //! - `reuben scaffold-operator --spec <path> [--json]` — generate a new Operator's Rust skeleton
@@ -35,7 +38,9 @@ use reuben_core::boundary;
 use reuben_core::coordinator::Coordinator;
 use reuben_core::message::Message;
 use reuben_core::Registry;
-use reuben_native::cli::{describe, describe_patch, validate};
+use reuben_native::cli::{
+    describe, describe_compact, describe_patch, validate, COMPACT_DESCRIBE_LEGEND,
+};
 use reuben_native::profile::DeviceProfile;
 use reuben_native::resources::FsResolver;
 use reuben_native::rigs::DEFAULT_JSON;
@@ -94,6 +99,11 @@ enum Command {
         /// Emit machine-readable JSON instead of a human summary.
         #[arg(long)]
         json: bool,
+        /// Compact mode (ADR-0059 §3): one generated signature line per operator instead of the
+        /// full port listing — the same registry truth, projected for grounding budgets. Operator
+        /// view only; full describe stays the zoom for port detail.
+        #[arg(long)]
+        compact: bool,
     },
     /// Load + plan an instrument (no audio) and report errors/warnings.
     Validate {
@@ -129,7 +139,7 @@ fn main() -> ExitCode {
             play(path, osc_out, io_map, root);
             ExitCode::SUCCESS
         }
-        Command::Describe { op, json } => cmd_describe(op.as_deref(), json, root),
+        Command::Describe { op, json, compact } => cmd_describe(op.as_deref(), json, compact, root),
         Command::Validate { path, json } => cmd_validate(&path, json, root),
         Command::ScaffoldOperator {
             spec,
@@ -222,13 +232,26 @@ fn is_patch_path(arg: &str) -> bool {
 }
 
 /// `describe`: dump the operator set, one operator, or — for an instrument JSON path — that
-/// instrument's boundary as a host sees it (ADR-0034 §4), as human text or JSON.
-fn cmd_describe(op: Option<&str>, json: bool, root: Option<PathBuf>) -> ExitCode {
+/// instrument's boundary as a host sees it (ADR-0034 §4), as human text or JSON. `--compact`
+/// switches the operator view to the generated signature-line mode (ADR-0059 §3).
+fn cmd_describe(op: Option<&str>, json: bool, compact: bool, root: Option<PathBuf>) -> ExitCode {
     // A path-shaped argument is an instrument: describe its boundary.
     if let Some(arg) = op {
         if is_patch_path(arg) {
+            if compact {
+                // The compact projection is a mode of the *operator* listing (ADR-0059 §3); an
+                // instrument's compact face line is the library index's job (ADR-0057 §4).
+                eprintln!(
+                    "error: --compact describes the operator set, not an instrument boundary"
+                );
+                return ExitCode::FAILURE;
+            }
             return cmd_describe_patch(Path::new(arg), json, root);
         }
+    }
+
+    if compact {
+        return cmd_describe_compact(op, json);
     }
 
     let ops = match describe(&Registry::builtin(), op) {
@@ -254,6 +277,35 @@ fn cmd_describe(op: Option<&str>, json: bool, root: Option<PathBuf>) -> ExitCode
         for r in &o.resources {
             println!("  resource {r}");
         }
+    }
+    ExitCode::SUCCESS
+}
+
+/// `describe --compact`: the generated signature-line mode of the operator view (ADR-0059 §3) —
+/// one line per operator off the same registry truth as the full mode, never a hand-written
+/// digest (ADR-0051). Human output prints the notation legend first, so the listing is the
+/// self-describing bundle-able artifact the web build consumes; `--json` emits the bare line
+/// array for machine consumers that compose their own framing.
+fn cmd_describe_compact(op: Option<&str>, json: bool) -> ExitCode {
+    let lines = match describe_compact(&Registry::builtin(), op) {
+        Ok(lines) => lines,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&lines).expect("serialize compact describe")
+        );
+        return ExitCode::SUCCESS;
+    }
+
+    println!("{COMPACT_DESCRIBE_LEGEND}");
+    for line in &lines {
+        println!("{line}");
     }
     ExitCode::SUCCESS
 }

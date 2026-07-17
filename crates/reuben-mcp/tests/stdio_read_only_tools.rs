@@ -122,6 +122,43 @@ fn describe_operators_no_filter_lists_all() {
 }
 
 #[test]
+fn describe_operators_compact_returns_signatures() {
+    // ADR-0059 §3 (reuben#459): `compact:true` switches the verb to its generated signature-line
+    // projection — `{ signatures: [...] }`, one line per registered operator, with the full port
+    // objects absent (their token weight is the point). Same registry truth, same count.
+    let result = call_tool("describe_operators", serde_json::json!({ "compact": true }));
+    assert!(
+        !is_error(&result),
+        "compact listing is not an error: {result}"
+    );
+
+    let signatures = result["structuredContent"]["signatures"]
+        .as_array()
+        .unwrap_or_else(|| {
+            panic!("compact describe_operators must return {{ signatures: [...] }}: {result}")
+        });
+    let expected = reuben_core::Registry::builtin().entries().count();
+    assert_eq!(
+        signatures.len(),
+        expected,
+        "compact mode must list exactly the builtin registry ({expected}): {result}"
+    );
+    assert!(
+        result["structuredContent"].get("operators").is_none(),
+        "compact mode must not also ship the full port objects: {result}"
+    );
+    // Spot-check the notation on a known line: name(inputs…) -> outputs.
+    assert!(
+        signatures
+            .iter()
+            .any(|s| s.as_str().is_some_and(|s| s.starts_with("filter(")
+                && s.contains("cutoff:signal")
+                && s.contains("-> audio:signal"))),
+        "the filter signature must carry the wiring essentials: {result}"
+    );
+}
+
+#[test]
 fn validate_broken_doc_is_ok_false_not_iserror() {
     // ADR-0048 §3, the crux: a failing validation is the tool *working*. An inline document with a
     // typo'd operator type validates to `ok:false` with a node-named Diag — an ordinary result,

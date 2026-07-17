@@ -1,6 +1,7 @@
 //! Pure introspection for the Patcher skill and every conversational door (ADR-0020,
-//! ADR-0044 §3): `describe` the operator set, `describe_patch` a nested instrument's
-//! boundary, and `validate` an instrument without touching audio hardware.
+//! ADR-0044 §3): `describe` the operator set (full port objects, or the compact
+//! signature-line mode `describe_compact`, ADR-0059 §3), `describe_patch` a nested
+//! instrument's boundary, and `validate` an instrument without touching audio hardware.
 //!
 //! Descended from `reuben-native`'s CLI module so one implementation serves every consumer:
 //! the CLI re-exports this module as `reuben_native::cli`, and the MCP sidecar and the web
@@ -159,7 +160,89 @@ impl PortInfo {
     }
 }
 
+impl PortInfo {
+    /// This input's fragment of a compact [`signature`](OperatorInfo::signature) line
+    /// (ADR-0059 §3): `name:kind`, then only the metadata the port actually carries —
+    /// `[variants]` for an enum, unit, `exp` for an exponential curve (linear is unmarked),
+    /// `lo..hi`, `=default`. The `±1e6` "effectively unbounded" sentinel range
+    /// ([`reuben_contract::NUMBER_MIN`]/[`NUMBER_MAX`](reuben_contract::NUMBER_MAX)) is
+    /// suppressed — it states no authoring intent, and it would swamp the listing (every bare
+    /// math operand carries it). Everything is read off the same flattened fields the full
+    /// JSON view serializes, so the two modes cannot disagree about a port.
+    fn signature_fragment(&self) -> String {
+        let mut s = format!("{}:{}", self.name, self.kind);
+        if !self.variants.is_empty() {
+            s.push_str(&format!("[{}]", self.variants.join(",")));
+        }
+        if !self.unit.is_empty() {
+            s.push_str(&format!(" {}", self.unit));
+        }
+        if self.curve.as_deref() == Some("exponential") {
+            s.push_str(" exp");
+        }
+        if let (Some(min), Some(max)) = (self.min, self.max) {
+            let unbounded = min == f64::from(reuben_contract::NUMBER_MIN)
+                && max == f64::from(reuben_contract::NUMBER_MAX);
+            if !unbounded {
+                s.push_str(&format!(" {min}..{max}"));
+            }
+        }
+        if let Some(d) = &self.default {
+            match d {
+                // An enum default is its variant symbol — render it bare, not `"quoted"`.
+                serde_json::Value::String(symbol) => s.push_str(&format!("={symbol}")),
+                // A numeric default renders shortest (`440`, not JSON's `440.0`).
+                other => match other.as_f64() {
+                    Some(f) => s.push_str(&format!("={f}")),
+                    None => s.push_str(&format!("={other}")),
+                },
+            }
+        }
+        s
+    }
+}
+
 impl OperatorInfo {
+    /// This operator's compact one-line signature (ADR-0059 §3; grounding-audit option 2a), e.g.
+    /// `filter(audio:signal, cutoff:signal Hz exp 20..20000=1000, …) -> audio:signal`. Runtime
+    /// inputs come first; plan-time constants group under `config:` (they are set in the node's
+    /// `config` block, never wired); resource slots group under `res:`; a pure sink renders with
+    /// no arrow. Outputs render bare `name:kind` — what wiring needs; an output's range/default
+    /// metadata is not an authoring lever, and full describe stays the zoom for it. Notation is
+    /// keyed by [`COMPACT_DESCRIBE_LEGEND`]. Rendered from the same flattened view as the full
+    /// JSON mode — one source, two projections (ADR-0051).
+    pub fn signature(&self) -> String {
+        let group = |constant: bool| -> Vec<String> {
+            self.inputs
+                .iter()
+                .filter(|p| p.constant == constant)
+                .map(PortInfo::signature_fragment)
+                .collect()
+        };
+        let mut groups: Vec<String> = Vec::new();
+        let inputs = group(false);
+        if !inputs.is_empty() {
+            groups.push(inputs.join(", "));
+        }
+        let constants = group(true);
+        if !constants.is_empty() {
+            groups.push(format!("config: {}", constants.join(", ")));
+        }
+        if !self.resources.is_empty() {
+            groups.push(format!("res: {}", self.resources.join(", ")));
+        }
+        let mut s = format!("{}({})", self.type_name, groups.join("; "));
+        if !self.outputs.is_empty() {
+            let outputs: Vec<String> = self
+                .outputs
+                .iter()
+                .map(|p| format!("{}:{}", p.name, p.kind))
+                .collect();
+            s.push_str(&format!(" -> {}", outputs.join(", ")));
+        }
+        s
+    }
+
     fn from_descriptor(d: &Descriptor) -> Self {
         // One input surface: runtime inputs, then plan-time `Constant` ports (ADR-0035) flagged
         // `constant`. A port's `kind` + metadata already distinguish scalar / integer / enum, so
@@ -196,6 +279,30 @@ pub fn describe(registry: &Registry, which: Option<&str>) -> Result<Vec<Operator
             None => Err(format!("unknown operator type {name:?}")),
         },
     }
+}
+
+/// The one-line notation key for the compact describe listing (ADR-0059 §3). Consumers that ship
+/// the listing as standalone grounding (the web build's bundled prefix, the CLI's human view)
+/// prepend this line so the notation is self-describing; consumers with their own prose home for
+/// it (an MCP tool description) may carry the gist there instead.
+pub const COMPACT_DESCRIBE_LEGEND: &str = "One line per operator: \
+name(inputs; config: constants; res: resource-slots) -> outputs. Each port is name:kind, an enum \
+lists [variants], a numeric port appends unit, exp (exponential curve; linear unmarked), lo..hi, \
+=default. config: ports are plan-time constants set in the node's `config` block, never wired; \
+res: slots name `resources` entries the node binds. Describe one operator by name for full detail.";
+
+/// Compact describe — a generated mode of the verb (ADR-0059 §3; grounding-audit option 2a): the
+/// same registry truth as [`describe`], projected to one [`signature`](OperatorInfo::signature)
+/// line per operator instead of full port objects. It delegates to [`describe`] and renders its
+/// flattened view, so the two modes cannot list different operator sets — a new operator appears
+/// in both by construction (never a hand-written digest, ADR-0051). Full describe remains the
+/// in-session zoom tool; this is the listing that earns a place in a bundled prefix
+/// (~2–3k tokens full-registry vs ~9.9k, reuben-web#96 corrected figures).
+pub fn describe_compact(registry: &Registry, which: Option<&str>) -> Result<Vec<String>, String> {
+    Ok(describe(registry, which)?
+        .iter()
+        .map(OperatorInfo::signature)
+        .collect())
 }
 
 /// A nested instrument's synthesized boundary (ADR-0034 §4 / ADR-0038 §2), described **as if it
@@ -687,6 +794,152 @@ mod tests {
         assert!(
             err.contains("nope"),
             "error should name the missing type: {err}"
+        );
+    }
+
+    #[test]
+    fn describe_compact_lists_exactly_the_registry() {
+        // R2's registry-parity acceptance (reuben#459, ADR-0059 §3): compact is generated from
+        // the same source as full describe — a new operator appears in both or this fails. The
+        // two projections must agree entry-for-entry, in the same deterministic order.
+        let reg = Registry::builtin();
+        let lines = describe_compact(&reg, None).expect("compact all");
+        let ops = describe(&reg, None).expect("describe all");
+
+        assert_eq!(
+            lines.len(),
+            reg.type_names().count(),
+            "compact lists exactly the registry"
+        );
+        for (line, op) in lines.iter().zip(&ops) {
+            assert!(
+                line.starts_with(&format!("{}(", op.type_name)),
+                "compact line must open with the full view's operator: {} vs {line}",
+                op.type_name
+            );
+        }
+    }
+
+    #[test]
+    fn describe_compact_one_operator_matches_the_full_listing_line() {
+        // One projection, two entry points: the per-name compact line is byte-identical to that
+        // operator's line in the full-registry listing — the filter selects, it never re-renders.
+        let reg = Registry::builtin();
+        let all = describe_compact(&reg, None).expect("compact all");
+        let one = describe_compact(&reg, Some("filter")).expect("compact filter");
+
+        assert_eq!(one.len(), 1);
+        assert!(
+            all.contains(&one[0]),
+            "the single-operator line must appear verbatim in the full listing: {}",
+            one[0]
+        );
+    }
+
+    #[test]
+    fn describe_compact_unknown_operator_errors() {
+        let err = describe_compact(&Registry::builtin(), Some("nope")).unwrap_err();
+        assert!(
+            err.contains("nope"),
+            "error should name the missing type: {err}"
+        );
+    }
+
+    #[test]
+    fn compact_signature_carries_the_wiring_essentials() {
+        // The signature line carries what wiring needs (grounding-audit option 2a's shape):
+        // port kinds, a swept scalar's unit/curve/range/default, an enum's variants + default,
+        // and the named outputs.
+        let line = &describe_compact(&Registry::builtin(), Some("filter")).expect("filter")[0];
+
+        assert!(line.contains("audio:signal"), "input kind: {line}");
+        assert!(
+            line.contains("cutoff:signal Hz exp 20..20000=1000"),
+            "unit + exponential curve + range + default: {line}"
+        );
+        assert!(
+            line.contains("mode:enum[Lp,Hp,Bp]=Lp"),
+            "enum variants + default symbol: {line}"
+        );
+        assert!(
+            line.ends_with("-> audio:signal"),
+            "named, kinded outputs after the arrow: {line}"
+        );
+    }
+
+    #[test]
+    fn compact_signature_groups_constants_and_resources() {
+        // A plan-time Constant (ADR-0035) routes to the node's `config` block and a resource
+        // slot (ADR-0016) to a `resources` entry — the signature must say so, or the compact
+        // grounding teaches un-loadable documents. The voicer carries both.
+        let line = &describe_compact(&Registry::builtin(), Some("voicer")).expect("voicer")[0];
+
+        assert!(
+            line.contains("config: voices:int"),
+            "the voices pool size is a config: constant: {line}"
+        );
+        assert!(line.contains("res: voice"), "the voice slot: {line}");
+        // Constants live inside the parens — part of the authoring surface, not an output.
+        let parens = &line[line.find('(').unwrap()..line.find(')').unwrap()];
+        assert!(
+            parens.contains("config:") && parens.contains("res:"),
+            "config/res group inside the parens: {line}"
+        );
+    }
+
+    #[test]
+    fn compact_signature_suppresses_the_unbounded_sentinel_range() {
+        // The ±1e6 sentinel (`reuben_contract::NUMBER_MIN/MAX`) means "effectively unbounded" —
+        // it states no authoring intent, so the compact projection drops the range (the default
+        // stays: it is the unwired value). Every bare math operand would otherwise carry 24
+        // chars of noise. A real range (the clamp's own defaults) still renders.
+        let reg = Registry::builtin();
+        let add = &describe_compact(&reg, Some("add_f32_value")).expect("add")[0];
+        assert!(
+            add.contains("a:value=0") && !add.contains(".."),
+            "sentinel range suppressed, default kept: {add}"
+        );
+
+        let osc = &describe_compact(&reg, Some("oscillator")).expect("osc")[0];
+        assert!(
+            osc.contains("20..20000"),
+            "a declared range still renders: {osc}"
+        );
+    }
+
+    #[test]
+    fn compact_signature_of_a_sink_has_no_arrow() {
+        // A pure sink (`osc_out`) has nothing after the parens — no dangling `->`.
+        let line = &describe_compact(&Registry::builtin(), Some("osc_out")).expect("osc_out")[0];
+        assert!(!line.contains("->"), "no arrow on a sink: {line}");
+    }
+
+    #[test]
+    fn compact_full_registry_fits_the_grounding_budget() {
+        // R2's sizing-sanity acceptance (reuben#459), zero-token per the tier-1 rules: the
+        // re-baseline correction table (reuben-web#96) measured full-registry describe at
+        // ~9.9k tok and calibrated dense text at ≈ chars/2.0–2.2, so ≤6,000 chars keeps the
+        // compact listing ≤ ~3k tok at the conservative end of the audit's 2–3k target
+        // (5,399 chars ≈ 2.5–2.7k tok when this landed). The relative gate scales with the
+        // registry: compact must stay under a third of the full minified view, or it no longer
+        // earns the name.
+        let reg = Registry::builtin();
+        let compact = describe_compact(&reg, None)
+            .expect("compact all")
+            .join("\n");
+        let full = serde_json::to_string(&describe(&reg, None).expect("describe all"))
+            .expect("serialize full describe");
+
+        let compact_chars = compact.chars().count();
+        assert!(
+            compact_chars <= 6_000,
+            "compact full-registry listing must stay ≤ ~3k tok (≤6,000 chars at chars/2.0, \
+             reuben-web#96); measured {compact_chars} chars"
+        );
+        assert!(
+            compact_chars * 3 <= full.chars().count(),
+            "compact must stay under a third of the full minified view: {compact_chars} vs {}",
+            full.chars().count()
         );
     }
 
