@@ -292,7 +292,7 @@ possible for whoever wants the Synohara shape.
   tools to list and read MCP resources" — so the *model* can also pull them on demand. MCP
   prompts surface as `/mcp__server__prompt` slash commands.
 - Rule of thumb this implies: **resources for stable, human-or-model-browsable documents**
-  (authoring guide, per-operator docs, the instrument schema — things an agent should be able
+  (authoring guide, per-operator docs — things an agent should be able
   to `@`-mention or list); **tools for anything computed or parameterized** (validate,
   describe-this-patch). A tool returning text is model-driven and costs a tool call; a resource
   is addressable context. Given tool-search defers tool schemas, server `instructions` +
