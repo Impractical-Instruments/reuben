@@ -13,16 +13,20 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The retired schema machinery's greppable tokens — the committed schema file, the
-/// generator example, the MCP resource URI, and the loose prose phrase (review round 1
-/// found it surviving in skill frontmatter, untouched by the three exact tokens). Built by
-/// concatenation so this file never trips over its own needles. Lowercase: matching
-/// lowercases each line, so capitalized prose forms are caught too.
-fn retired_tokens() -> [String; 4] {
+/// generator example, the MCP resource URI, the loose noun phrase (review round 1 found it
+/// surviving in skill frontmatter, untouched by the three exact tokens), and the two
+/// schema-regen verb phrasings (review round 10 found one in create-operator, reuben#481:
+/// the regeneration step was deleted with the schema — ADR-0059 §4). Built by concatenation
+/// so this file never trips over its own needles. Lowercase: matching lowercases each line,
+/// so capitalized prose forms are caught too.
+fn retired_tokens() -> [String; 6] {
     [
         ["instrument", ".schema.json"].concat(),
         ["gen", "_schema"].concat(),
         ["reuben://", "schema/instrument"].concat(),
         ["instrument", " schema"].concat(),
+        ["schema", " regenerated"].concat(),
+        ["regenerate", " the schema"].concat(),
     ]
 }
 
