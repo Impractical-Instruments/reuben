@@ -24,11 +24,11 @@ const COMMITTED_VOCABULARY: &str = include_str!("../../../docs/agents/vocabulary
 const COMMITTED_LIBRARY_INDEX: &str = include_str!("../../../instruments/index.md");
 
 /// The retired resource URI (ADR-0059 §4): the instrument JSON Schema resource, deleted outright.
-/// Built by concatenation, like `no_dangling_references.rs`'s own retired tokens, so this literal
-/// doesn't trip that test's live-text tripwire for the very machinery it proves absent here.
-fn retired_schema_resource_uri() -> String {
-    ["reuben://", "schema/instrument"].concat()
-}
+/// Built by compile-time concatenation — the same `concat!` trick `VOCABULARY_PATH`/
+/// `LIBRARY_INDEX_PATH` use in `src/lib.rs`, and the same idea as `no_dangling_references.rs`'s
+/// own retired tokens — so this literal doesn't trip that test's live-text tripwire for the very
+/// machinery it proves absent here.
+const RETIRED_SCHEMA_RESOURCE_URI: &str = concat!("reuben://", "schema/instrument");
 
 /// Drive the shim through initialize → initialized → the given requests over stdio and return the
 /// raw stdout. Requests are buffered into the child's stdin, which is then closed; on EOF the shim
@@ -127,10 +127,11 @@ fn resources_list_advertises_guide_vocabulary_and_index_only() {
     );
 
     // Named explicitly too (ADR-0059 §8's tier-2 wording): the retired schema URI never appears.
-    let schema_uri = retired_schema_resource_uri();
     assert!(
-        !advertised.iter().any(|(uri, _)| *uri == schema_uri),
-        "the retired {schema_uri} resource must never be advertised: {advertised:?}"
+        !advertised
+            .iter()
+            .any(|(uri, _)| *uri == RETIRED_SCHEMA_RESOURCE_URI),
+        "the retired {RETIRED_SCHEMA_RESOURCE_URI} resource must never be advertised: {advertised:?}"
     );
 }
 
@@ -199,9 +200,8 @@ fn read_library_index_is_byte_equal_to_the_checkout() {
 fn read_retired_schema_resource_is_a_resource_not_found_error() {
     // ADR-0059 §8 tier-2, named explicitly by the ticket: the retired schema resource URI is
     // absent — not just missing from `resources/list`, but genuinely unreadable.
-    let schema_uri = retired_schema_resource_uri();
     let request = format!(
-        r#"{{"jsonrpc":"2.0","id":9,"method":"resources/read","params":{{"uri":"{schema_uri}"}}}}"#
+        r#"{{"jsonrpc":"2.0","id":9,"method":"resources/read","params":{{"uri":"{RETIRED_SCHEMA_RESOURCE_URI}"}}}}"#
     );
     let out = drive(&[&request]);
     let response = response_with_id(&out, 9);
@@ -218,38 +218,47 @@ fn read_retired_schema_resource_is_a_resource_not_found_error() {
 
 #[test]
 fn every_instructions_pointer_resolves() {
-    // ADR-0059 §8 tier-2, named explicitly by the ticket: every `reuben://` URI the wire
-    // `instructions` text names must actually resolve over `resources/read`. Reads the live
-    // `instructions` off the real `initialize` response — not the private INSTRUCTIONS constant —
-    // so this proves the wire contract, not just the source string.
-    let out = drive(&[]);
-    let response = response_with_id(&out, 1);
-    let instructions = response["result"]["instructions"]
-        .as_str()
-        .unwrap_or_else(|| panic!("initialize result missing `instructions`: {response}"));
-
-    let pointers: Vec<&str> = instructions
-        .split("reuben://")
-        .skip(1) // the text before the first `reuben://` is not a pointer
-        .map(|tail| {
-            let end = tail
-                .find(|c: char| c.is_whitespace() || c == '`' || c == '.' || c == ',')
-                .unwrap_or(tail.len());
-            &tail[..end]
+    // ADR-0059 §8 tier-2, named explicitly by the ticket: every resource `INSTRUCTIONS` points at
+    // must actually resolve over `resources/read`. Checked against the three public resource-URI
+    // constants directly — not a hand-rolled parse of the prose, which would silently mis-parse a
+    // future edit that ends a URI with punctuation the parser didn't anticipate — so a dropped
+    // pointer sentence still fails this test loudly. One shim process: the `initialize` response
+    // (id 1, read live off the wire — not the private INSTRUCTIONS constant) plus one
+    // `resources/read` per URI, pipelined under distinct ids rather than spawning a child per
+    // lookup.
+    let uris = [
+        reuben_mcp::GUIDE_RESOURCE_URI,
+        reuben_mcp::VOCABULARY_RESOURCE_URI,
+        reuben_mcp::LIBRARY_INDEX_RESOURCE_URI,
+    ];
+    let requests: Vec<String> = uris
+        .iter()
+        .enumerate()
+        .map(|(i, uri)| {
+            let id = 10 + i as i64;
+            format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"method":"resources/read","params":{{"uri":"{uri}"}}}}"#
+            )
         })
         .collect();
-    assert!(
-        !pointers.is_empty(),
-        "the instructions text should name at least one reuben:// pointer: {instructions:?}"
-    );
+    let request_refs: Vec<&str> = requests.iter().map(String::as_str).collect();
+    let out = drive(&request_refs);
 
-    for pointer in pointers {
-        let uri = format!("reuben://{pointer}");
-        let (resolved_uri, _, text) = read_resource(&uri);
-        assert_eq!(
-            resolved_uri, uri,
-            "the instructions pointer {uri} must resolve to itself"
+    let init = response_with_id(&out, 1);
+    let instructions = init["result"]["instructions"]
+        .as_str()
+        .unwrap_or_else(|| panic!("initialize result missing `instructions`: {init}"));
+
+    for (i, uri) in uris.iter().enumerate() {
+        assert!(
+            instructions.contains(uri),
+            "INSTRUCTIONS must point at {uri}: {instructions:?}"
         );
+        let id = 10 + i as i64;
+        let response = response_with_id(&out, id);
+        let text = response["result"]["contents"][0]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("resources/read({uri}) contents[0] is not text: {response}"));
         assert!(
             !text.trim().is_empty(),
             "the instructions pointer {uri} must resolve to non-empty content"
