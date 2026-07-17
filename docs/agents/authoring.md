@@ -377,30 +377,42 @@ instrument plays *while referenced* by another via `subpatch` (above) — same f
 loader, same `validate`, nothing extra to keep true.
 
 - **The recipe-role lives in the document itself.** The first sentence of an instrument's
-  top-level `doc` field states what it is and when to reach for it, in the domain language —
-  authored once, at creation, then kept true by re-emission (the loop-conduct bullet above).
-  It is **trusted for selection only**: the `interface` block is always the
+  top-level `doc` field is **trusted for selection only** — the `interface` block is always
+  the mechanically-enforced face; no consumer may take wiring facts from prose.
+- **Discovery is a generated index, not a curated list.** Check `instruments/index.md` for a
+  close-enough child before drafting a chain from scratch, and reference it by id through a
+  `subpatch` node rather than re-authoring its shape inline. Fetch the full document only when
+  a role line seems off — reference id + face is the whole contract; no internals are needed
+  to reuse one.
+
+## Recipe authoring: canonical naming, non-nestable idioms, and index regeneration <!-- lanes: skills,mcp -->
+
+Depth for whoever drafts or maintains a reusable recipe rather than just referencing one — the
+web chat lane consumes seeds via the essentials above and doesn't author them, so this detail
+stays checkout-side.
+
+- **The recipe-role lives in the document itself, in full.** The first sentence of an
+  instrument's top-level `doc` field states what it is and when to reach for it, in the domain
+  language — authored once, at creation, then kept true by re-emission (the loop-conduct
+  bullet above). It is trusted for selection only: the `interface` block is always the
   mechanically-enforced face (pipe names, `Arg` types, defaults, outputs) — no consumer may
   take wiring facts from prose.
-- **Discovery is a generated index, not a curated list.** `instruments/index.md` is one
-  signature line per instrument in the available-set — name, role line, face signature
-  (`(inputs) → outputs`) — projected mechanically from the documents themselves (regenerate
-  with `cargo run -p reuben-native --example gen_library_index`; a staleness test fails the
-  build if it drifts, so it is never hand-kept). Check it for a close-enough child before
-  drafting a chain from scratch, and reference it by id through a `subpatch` node rather than
-  re-authoring its shape inline. Fetch the full document only when a role line seems off —
-  reference id + face is the whole contract; no internals are needed to reuse one.
-- **Not every idiom is a library entry.** Clock scaffolds and poly scaffolds compose *around*
-  a voice rather than presenting a reusable face, so they stay prompt-side material, never a
-  library entry (ADR-0057 §1) — there is no index line for them, and none is coming. The
-  worked self-playing idiom: add a `clock` + `sequencer` feeding the voicer, one sequencer per
-  voice on a shared clock, as in `instruments/groovebox.json`.
 - **Canonical pipe naming** is a recipe-authoring guideline
   ([ADR-0058](../adr/0058-intent-vocabulary-word-to-move-table.md) §2): give a reusable
   instrument's face pipes the same names the intent vocabulary's moves target (`cutoff`,
   `tone`, `decay`, `drive`, …) wherever the pipe proxies that move, so the vocabulary's
   type-keyed rows transfer to the face by name instead of needing a second,
   instrument-specific mapping.
+- **Not every idiom is a library entry.** Clock scaffolds and poly scaffolds compose *around*
+  a voice rather than presenting a reusable face, so they stay prompt-side material, never a
+  library entry (ADR-0057 §1) — there is no index line for them, and none is coming. The
+  worked self-playing idiom: add a `clock` + `sequencer` feeding the voicer, one sequencer per
+  voice on a shared clock, as in `instruments/groovebox.json`.
+- **The index is generated, never hand-kept.** `instruments/index.md` is one signature line
+  per instrument in the available-set — name, role line, face signature (`(inputs) →
+  outputs`) — projected mechanically from the documents themselves; regenerate with
+  `cargo run -p reuben-native --example gen_library_index`. A staleness test fails the build if
+  it drifts, so it is never hand-kept.
 
 ## The sample workflow: "use this sample" is a filesystem gesture <!-- lanes: skills,mcp -->
 
