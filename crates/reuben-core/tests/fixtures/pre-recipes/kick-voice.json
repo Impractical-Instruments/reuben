@@ -1,0 +1,124 @@
+{
+  "format_version": 2,
+  "instrument": "kick-voice",
+  "doc": "Kick drum voice (ADR-0032). A gate fires one envelope whose CV both drops the pitch (sine body, base + decaying sweep) and shapes the amplitude — the classic synth 'thump'. Pitch is internal (no freq interface input); the host's lane voicer only drives the gate. interface: gate in, audio/active out.",
+  "interface": {
+    "inputs": {
+      "gate": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "outputs": {
+      "active": {
+        "from": "/env.active"
+      },
+      "audio": {
+        "from": "/out.audio"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "type": "envelope",
+      "address": "/env",
+      "doc": "One amplitude+pitch envelope -> linear CV, fast decay. Drives both the pitch drop and the amp.",
+      "inputs": {
+        "attack": 0.001,
+        "decay": 0.1,
+        "gate": {
+          "from": "/gate"
+        },
+        "release": 0.08,
+        "sustain": 0.0
+      }
+    },
+    {
+      "type": "m2s",
+      "address": "/sweep_amt",
+      "doc": "Constant pitch-sweep amount (Hz).",
+      "inputs": {
+        "in": 220.0
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/penv",
+      "doc": "Scale the sweep amount by the (linear) envelope CV -> the decaying pitch drop.",
+      "inputs": {
+        "a": {
+          "from": "/sweep_amt"
+        },
+        "b": {
+          "from": "/env.cv"
+        }
+      }
+    },
+    {
+      "type": "m2s",
+      "address": "/base",
+      "doc": "Constant kick base frequency (Hz).",
+      "inputs": {
+        "in": 48.0
+      }
+    },
+    {
+      "type": "add_f32_signal",
+      "address": "/freq",
+      "doc": "kick freq = base (a) + decaying sweep (b).",
+      "inputs": {
+        "a": {
+          "from": "/base"
+        },
+        "b": {
+          "from": "/penv"
+        }
+      }
+    },
+    {
+      "type": "oscillator",
+      "address": "/osc",
+      "doc": "Sine body, frequency driven by the pitch-drop.",
+      "inputs": {
+        "freq": {
+          "from": "/freq"
+        },
+        "waveform": "Sine"
+      }
+    },
+    {
+      "type": "power_f32_signal",
+      "address": "/curve",
+      "doc": "Exponential-style volume curve (x^2) on the amp CV.",
+      "inputs": {
+        "x": {
+          "from": "/env.cv"
+        }
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/vca",
+      "doc": "VCA: kick body * shaped amp CV.",
+      "inputs": {
+        "a": {
+          "from": "/osc"
+        },
+        "b": {
+          "from": "/curve"
+        }
+      }
+    },
+    {
+      "type": "output",
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/vca"
+        }
+      }
+    }
+  ]
+}

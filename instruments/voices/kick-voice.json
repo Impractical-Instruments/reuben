@@ -1,7 +1,10 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "instrument": "kick-voice",
-  "doc": "Kick drum voice (ADR-0032). A gate fires one envelope whose CV both drops the pitch (sine body, base + decaying sweep) and shapes the amplitude — the classic synth 'thump'. Pitch is internal (no freq interface input); the host's lane voicer only drives the gate. interface: gate in, audio/active out.",
+  "doc": "Pitch-drop drum body (ADR-0057 seed 2): one gate-fired envelope both drops the pitch of a sine body (base + decaying sweep) and shapes its amplitude through the nested shaped-vca -- the classic kick/tom 'thump'. At rest it is the kick (base 48 Hz, sweep 220 Hz, tight decay); a tom is the same body with `base`/`sweep`/`release` overridden at the reference (e.g. 130/120/0.12). Every former baked literal is a defaulted interface pipe (canonical names per ADR-0058): `base`/`sweep` set the pitch drop, `attack`/`decay`/`sustain`/`release` reshape the contour (`decay` stretches tail AND pitch drop together -- one envelope drives both). Hosted by a voicer only `gate` is drivable (per-voice params aren't host-addressable); statically nested via `subpatch`, every pipe is reachable on the boundary face. interface: gate in (+ pitch/contour pipes), audio/active out.",
+  "resources": {
+    "shaped-vca": "shaped-vca.json"
+  },
   "interface": {
     "inputs": {
       "gate": {
@@ -9,11 +12,52 @@
         "default": 0.0,
         "min": 0.0,
         "max": 1.0
+      },
+      "base": {
+        "type": "f32",
+        "default": 48.0,
+        "min": 20.0,
+        "max": 1000.0,
+        "unit": "Hz"
+      },
+      "sweep": {
+        "type": "f32",
+        "default": 220.0,
+        "min": 0.0,
+        "max": 2000.0,
+        "unit": "Hz"
+      },
+      "attack": {
+        "type": "f32",
+        "default": 0.001,
+        "min": 0.001,
+        "max": 5.0,
+        "unit": "s"
+      },
+      "decay": {
+        "type": "f32",
+        "default": 0.1,
+        "min": 0.001,
+        "max": 5.0,
+        "unit": "s"
+      },
+      "sustain": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "release": {
+        "type": "f32",
+        "default": 0.08,
+        "min": 0.001,
+        "max": 5.0,
+        "unit": "s"
       }
     },
     "outputs": {
       "active": {
-        "from": "/env.active"
+        "from": "/vca.active"
       },
       "audio": {
         "from": "/out.audio"
@@ -22,55 +66,45 @@
   },
   "nodes": [
     {
-      "type": "envelope",
-      "address": "/env",
-      "doc": "One amplitude+pitch envelope -> linear CV, fast decay. Drives both the pitch drop and the amp.",
-      "inputs": {
-        "attack": 0.001,
-        "decay": 0.1,
-        "gate": {
-          "from": "/gate"
-        },
-        "release": 0.08,
-        "sustain": 0.0
-      }
-    },
-    {
       "type": "m2s",
-      "address": "/sweep_amt",
-      "doc": "Constant pitch-sweep amount (Hz).",
+      "address": "/sweep_cv",
+      "doc": "Materializes the `sweep` pipe (pitch-sweep amount, Hz) into a Signal.",
       "inputs": {
-        "in": 220.0
+        "in": {
+          "from": "/sweep"
+        }
       }
     },
     {
       "type": "mul_f32_signal",
       "address": "/penv",
-      "doc": "Scale the sweep amount by the (linear) envelope CV -> the decaying pitch drop.",
+      "doc": "Sweep amount (a) * the raw linear envelope CV (b, tapped from the nested shaped-vca) -> the decaying pitch drop.",
       "inputs": {
         "a": {
-          "from": "/sweep_amt"
+          "from": "/sweep_cv"
         },
         "b": {
-          "from": "/env.cv"
+          "from": "/vca.env"
         }
       }
     },
     {
       "type": "m2s",
-      "address": "/base",
-      "doc": "Constant kick base frequency (Hz).",
+      "address": "/base_cv",
+      "doc": "Materializes the `base` pipe (body base frequency, Hz) into a Signal.",
       "inputs": {
-        "in": 48.0
+        "in": {
+          "from": "/base"
+        }
       }
     },
     {
       "type": "add_f32_signal",
       "address": "/freq",
-      "doc": "kick freq = base (a) + decaying sweep (b).",
+      "doc": "body freq = base (a) + decaying sweep (b).",
       "inputs": {
         "a": {
-          "from": "/base"
+          "from": "/base_cv"
         },
         "b": {
           "from": "/penv"
@@ -89,34 +123,37 @@
       }
     },
     {
-      "type": "power_f32_signal",
-      "address": "/curve",
-      "doc": "Exponential-style volume curve (x^2) on the amp CV.",
-      "inputs": {
-        "x": {
-          "from": "/env.cv"
-        }
-      }
-    },
-    {
-      "type": "mul_f32_signal",
+      "type": "subpatch",
       "address": "/vca",
-      "doc": "VCA: kick body * shaped amp CV.",
+      "doc": "The nested shaped-vca (one envelope shapes the amp; its raw `env` CV also drives the pitch drop above). Contour pipes forward this body's own pipes.",
       "inputs": {
-        "a": {
+        "attack": {
+          "from": "/attack"
+        },
+        "audio": {
           "from": "/osc"
         },
-        "b": {
-          "from": "/curve"
+        "decay": {
+          "from": "/decay"
+        },
+        "gate": {
+          "from": "/gate"
+        },
+        "release": {
+          "from": "/release"
+        },
+        "sustain": {
+          "from": "/sustain"
         }
-      }
+      },
+      "patch": "shaped-vca"
     },
     {
       "type": "output",
       "address": "/out",
       "inputs": {
         "audio": {
-          "from": "/vca"
+          "from": "/vca.audio"
         }
       }
     }

@@ -58,6 +58,16 @@ impl ResourceResolver for InstrumentsDir {
         let path = format!("{}/../../instruments/{source}", env!("CARGO_MANIFEST_DIR"));
         std::fs::read_to_string(&path).map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))
     }
+
+    /// Per-document rebase (the `FsResolver` discipline, ADR-0034 §1): a nested document's own
+    /// references (kick-voice.json's `shaped-vca.json`) resolve next to *it*, keys staying
+    /// `instruments/`-relative.
+    fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
+        match referrer.and_then(|r| r.rsplit_once('/')) {
+            Some((dir, _)) => format!("{dir}/{source}"),
+            None => source.to_string(),
+        }
+    }
 }
 
 fn shipped(name: &str) -> String {

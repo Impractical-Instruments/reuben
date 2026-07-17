@@ -1,0 +1,121 @@
+{
+  "format_version": 2,
+  "instrument": "snare-voice",
+  "doc": "Snare drum voice (ADR-0032). A gate fires one envelope whose CV shapes both a noise body and a short tonal sine ring; their sum is the snare. Pitch is internal (no freq interface input); the host's lane voicer only drives the gate. interface: gate in, audio/active out.",
+  "interface": {
+    "inputs": {
+      "gate": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "outputs": {
+      "active": {
+        "from": "/env.active"
+      },
+      "audio": {
+        "from": "/out.audio"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "type": "envelope",
+      "address": "/env",
+      "doc": "One amplitude envelope -> linear CV, short snap. Shapes both noise and tone.",
+      "inputs": {
+        "attack": 0.001,
+        "decay": 0.08,
+        "gate": {
+          "from": "/gate"
+        },
+        "release": 0.06,
+        "sustain": 0.0
+      }
+    },
+    {
+      "type": "power_f32_signal",
+      "address": "/curve",
+      "doc": "Exponential-style volume curve (x^2) on the amp CV.",
+      "inputs": {
+        "x": {
+          "from": "/env.cv"
+        }
+      }
+    },
+    {
+      "type": "noise",
+      "address": "/noise",
+      "doc": "Snare noise body."
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/noise_vca",
+      "doc": "VCA: noise * shaped amp CV.",
+      "inputs": {
+        "a": {
+          "from": "/noise"
+        },
+        "b": {
+          "from": "/curve"
+        }
+      }
+    },
+    {
+      "type": "m2s",
+      "address": "/tone_f",
+      "doc": "Constant tonal frequency (Hz) for the snare's ring.",
+      "inputs": {
+        "in": 185.0
+      }
+    },
+    {
+      "type": "oscillator",
+      "address": "/osc",
+      "doc": "Tonal component (sine) under the noise.",
+      "inputs": {
+        "freq": {
+          "from": "/tone_f"
+        },
+        "waveform": "Sine"
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/tone_vca",
+      "doc": "VCA: tone * shaped amp CV.",
+      "inputs": {
+        "a": {
+          "from": "/osc"
+        },
+        "b": {
+          "from": "/curve"
+        }
+      }
+    },
+    {
+      "type": "add_f32_signal",
+      "address": "/mix",
+      "doc": "snare = noise body (a) + tonal ring (b).",
+      "inputs": {
+        "a": {
+          "from": "/noise_vca"
+        },
+        "b": {
+          "from": "/tone_vca"
+        }
+      }
+    },
+    {
+      "type": "output",
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/mix"
+        }
+      }
+    }
+  ]
+}
