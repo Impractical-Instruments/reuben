@@ -1,7 +1,9 @@
 //! Pure introspection for the Patcher skill and every conversational door (ADR-0020,
 //! ADR-0044 §3): `describe` the operator set (full port objects, or the compact
 //! signature-line mode `describe_compact`, ADR-0059 §3), `describe_patch` a nested
-//! instrument's boundary, and `validate` an instrument without touching audio hardware.
+//! instrument's boundary, `validate` an instrument without touching audio hardware, and
+//! project an instrument's `library_index_line` — the generated library index's
+//! signature line (ADR-0057 §4).
 //!
 //! Descended from `reuben-native`'s CLI module so one implementation serves every consumer:
 //! the CLI re-exports this module as `reuben_native::cli`, and the MCP sidecar and the web
@@ -15,7 +17,7 @@
 use crate::contract::{Diag, Report};
 use crate::describe::{describe_boundary, BoundaryPortDesc};
 use crate::descriptor::{Curve, Descriptor, Port, PortType};
-use crate::format::{load_instrument, load_instrument_doc, DocValue, NormalizedDoc};
+use crate::format::{load_instrument, load_instrument_doc, DocValue, NormalizedDoc, PipeDefault};
 use crate::plan::{Plan, PlanError};
 use crate::registry::Registry;
 use crate::resources::ResourceResolver;
@@ -397,6 +399,94 @@ pub fn describe_patch(
         dark_outputs: b.dark_outputs,
         warnings: loaded.warnings.iter().map(Diag::from_warning).collect(),
     })
+}
+
+/// One instrument's **library-index signature line** (ADR-0057 §4): name, recipe-role line, and
+/// interface face —
+///
+/// ```text
+/// kick-body — pitch-drop kick/tom body; gate-driven. (gate:f32=0, base:f32 Hz=48) → audio, active
+/// ```
+///
+/// Projected mechanically from the document alone, through the real load path (the same
+/// projection family as [`describe_patch`]): the role line is the top-level `doc` field's first
+/// sentence (ADR-0057 §3 — trusted for selection only, never for wiring), and the face is read
+/// off the post-mint `interface` block — each input pipe's declared `type`/`unit`/`default`
+/// (min/max/curve/channel stay in the full [`describe_patch`] view, the on-demand fallback),
+/// then the output pipe names. A document that fails to load gets no line: the index never
+/// vouches for an instrument the engine would refuse.
+pub fn library_index_line(
+    json: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> Result<String, String> {
+    // Mint + load exactly like `describe_patch`: migration rewrites v1 interface forms into
+    // pipes, and the full load enforces the face the line advertises.
+    let doc =
+        NormalizedDoc::from_json(json, registry, Some(resolver)).map_err(|e| e.to_string())?;
+    load_instrument_doc(&doc, registry, resolver).map_err(|e| e.to_string())?;
+
+    let mut line = format!("{} —", doc.instrument);
+    if let Some(role) = doc
+        .doc
+        .as_deref()
+        .map(first_sentence)
+        .filter(|s| !s.is_empty())
+    {
+        line.push(' ');
+        line.push_str(&role);
+    }
+
+    let mut inputs: Vec<String> = Vec::new();
+    let mut outputs: Vec<&str> = Vec::new();
+    if let Some(iface) = doc.interface.as_ref() {
+        for (name, entry) in &iface.inputs {
+            // Post-mint, every input entry is a Pipe (the mint migrates or rejects v1 forms).
+            let pipe = entry.pipe().expect("a minted input entry is a pipe");
+            let mut part = format!("{name}:{}", pipe.ty);
+            if let Some(unit) = pipe.unit.as_deref().filter(|u| !u.is_empty()) {
+                part.push(' ');
+                part.push_str(unit);
+            }
+            match &pipe.default {
+                // `f64` Display is the shortest round-trip decimal: `48`, `0.4` — never `48.0`.
+                Some(PipeDefault::Number(n)) => part.push_str(&format!("={n}")),
+                Some(PipeDefault::Symbol(s)) => part.push_str(&format!("={s}")),
+                None => {}
+            }
+            inputs.push(part);
+        }
+        outputs.extend(iface.outputs.keys().map(String::as_str));
+    }
+
+    line.push_str(&format!(" ({})", inputs.join(", ")));
+    if !outputs.is_empty() {
+        line.push_str(&format!(" → {}", outputs.join(", ")));
+    }
+    Ok(line)
+}
+
+/// The `doc` field's first sentence — the recipe-role line (ADR-0057 §3). Whitespace-normalized
+/// (the line format is one instrument per line), ending at the first `.` whose successor is
+/// whitespace or end-of-text, so a `.` inside a token (`patches/space.json`, `e.g.`… followed by
+/// more of the same sentence) never truncates. A doc with no sentence-ending period is one
+/// sentence — returned whole.
+fn first_sentence(doc: &str) -> String {
+    let text = doc.split_whitespace().collect::<Vec<_>>().join(" ");
+    let end = text
+        .char_indices()
+        .find(|&(i, c)| {
+            c == '.'
+                && text[i + 1..]
+                    .chars()
+                    .next()
+                    .is_none_or(|next| next.is_whitespace())
+        })
+        .map(|(i, _)| i);
+    match end {
+        Some(i) => text[..=i].to_string(),
+        None => text,
+    }
 }
 
 /// Split a `"{node.address}.{port}"` wire-ref — the shape [`PlanError::FormMismatch`] carries in
@@ -1070,6 +1160,89 @@ mod tests {
         let b =
             describe_patch(json, &Registry::builtin(), &MemoryResolver::new()).expect("describe");
         assert!(b.is_empty());
+    }
+
+    #[test]
+    fn library_index_line_projects_name_role_line_and_face() {
+        // ADR-0057 §4: name — role line (the `doc` first sentence) — face (declared input
+        // pipes) → output pipe names, through the real load path.
+        let dir = instruments_dir().join("voices");
+        let json = std::fs::read_to_string(dir.join("kick-voice.json")).expect("read voice");
+        let line = library_index_line(&json, &Registry::builtin(), &DirResolver::new(&dir))
+            .expect("index line");
+        assert_eq!(
+            line,
+            "kick-voice — Kick drum voice (ADR-0032). (gate:f32=0) → active, audio"
+        );
+    }
+
+    #[test]
+    fn library_index_line_renders_declared_units_and_symbol_defaults() {
+        // The face speaks the interface block's own declarations: `name:type unit=default`,
+        // with an enum pipe's default as its variant symbol. min/max/curve/channel stay in the
+        // full describe_patch view — the index line is the ~30–60-token selection signature.
+        let json = r#"{
+          "format_version": 3,
+          "instrument": "sig",
+          "doc": "Signature fixture.",
+          "interface": {
+            "inputs": {
+              "base": { "type": "f32", "unit": "Hz", "default": 48.0, "min": 20.0, "max": 2000.0 },
+              "decay": { "type": "f32", "unit": "s", "default": 0.4, "min": 0.0, "max": 2.0 },
+              "mode": { "type": "FilterMode", "default": "Lp" },
+              "in": { "type": "f32_buffer" }
+            },
+            "outputs": { "audio": { "from": "/osc.audio" } }
+          },
+          "nodes": [
+            { "type": "oscillator", "address": "/osc", "inputs": { "freq": { "from": "/base" } } }
+          ]
+        }"#;
+        let line = library_index_line(json, &Registry::builtin(), &MemoryResolver::new())
+            .expect("index line");
+        assert_eq!(
+            line,
+            "sig — Signature fixture. \
+             (base:f32 Hz=48, decay:f32 s=0.4, in:f32_buffer, mode:FilterMode=Lp) → audio"
+        );
+    }
+
+    #[test]
+    fn library_index_line_role_ends_at_the_sentence_not_inside_a_token() {
+        // A `.` inside a token (`patches/space.json`) never truncates the role line — only a
+        // `.` followed by whitespace (or end) ends the sentence; whitespace normalizes to
+        // single spaces so the artifact stays one instrument per line.
+        let json = r#"{
+          "format_version": 3,
+          "instrument": "nester",
+          "doc": "Nests patches/space.json\n   into one demo. Everything after is not the role.",
+          "nodes": [ { "type": "oscillator", "address": "/osc" } ]
+        }"#;
+        let line = library_index_line(json, &Registry::builtin(), &MemoryResolver::new())
+            .expect("index line");
+        assert_eq!(line, "nester — Nests patches/space.json into one demo. ()");
+    }
+
+    #[test]
+    fn library_index_line_without_doc_or_interface_degrades_to_the_bare_face() {
+        // No `doc` → no role line to project (quality is authoring, ADR-0057 §4 — the index
+        // never invents one); no `interface` → an empty face, honestly rendered.
+        let json = r#"{ "format_version": 3, "instrument": "plain",
+          "nodes": [ { "type": "oscillator", "address": "/osc" } ] }"#;
+        let line = library_index_line(json, &Registry::builtin(), &MemoryResolver::new())
+            .expect("index line");
+        assert_eq!(line, "plain — ()");
+    }
+
+    #[test]
+    fn library_index_line_refuses_a_document_that_does_not_load() {
+        // The index never vouches for an instrument the engine would refuse: a load error is a
+        // generation error, not a silently missing or lying line.
+        let json = r#"{ "format_version": 3, "instrument": "typo",
+          "nodes": [ { "type": "oscilllator", "address": "/osc" } ] }"#;
+        let err = library_index_line(json, &Registry::builtin(), &MemoryResolver::new())
+            .expect_err("a broken document must not index");
+        assert!(err.contains("oscilllator"), "names the bad type: {err}");
     }
 
     /// ADR-0044 §3 / ADR-0048 §3: rmcp derives tool `outputSchema`s from these view types via

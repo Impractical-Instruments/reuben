@@ -27,6 +27,7 @@ pub mod audio;
 pub mod cli;
 pub mod diagnostics;
 pub mod input;
+pub mod library;
 pub mod osc;
 pub mod profile;
 pub mod resources;
