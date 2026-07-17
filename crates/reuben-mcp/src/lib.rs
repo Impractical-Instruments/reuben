@@ -76,17 +76,44 @@ pub const GUIDE_RESOURCE_URI: &str = "reuben://guide/authoring";
 /// The MIME type advertised for [`GUIDE_RESOURCE_URI`]: the authoring guide is CommonMark prose.
 pub const GUIDE_RESOURCE_MIME: &str = "text/markdown";
 
+/// The `reuben://guide/vocabulary` resource URI (ADR-0058 §6, amended into ADR-0048 §7 by
+/// ADR-0059 §3/§6): the rendered intent→parameter vocabulary, `docs/agents/vocabulary.md`
+/// (generated and staleness-tested against the registry by R5, #462), read from the checkout at
+/// request time (ADR-0051 §4) — the same posture as [`GUIDE_RESOURCE_URI`].
+pub const VOCABULARY_RESOURCE_URI: &str = "reuben://guide/vocabulary";
+
+/// The MIME type advertised for [`VOCABULARY_RESOURCE_URI`]: the rendered vocabulary is
+/// CommonMark prose.
+pub const VOCABULARY_RESOURCE_MIME: &str = "text/markdown";
+
+/// The library-index resource URI (ADR-0059 §3/§6, amending ADR-0048 §7): the generated
+/// signature-line index over the available instrument set, `instruments/index.md` (generated and
+/// staleness-tested against `instruments/` by R4, #461), read from the checkout at request time
+/// (ADR-0051 §4) — the same posture as [`GUIDE_RESOURCE_URI`]. No exact URI is fixed by ADR-0059;
+/// this follows the established `reuben://<category>/<name>` convention with the category ADR-0057
+/// already uses for the instruments directory (`library` root, `library index`).
+pub const LIBRARY_INDEX_RESOURCE_URI: &str = "reuben://library/index";
+
+/// The MIME type advertised for [`LIBRARY_INDEX_RESOURCE_URI`]: the generated index is CommonMark
+/// prose.
+pub const LIBRARY_INDEX_RESOURCE_MIME: &str = "text/markdown";
+
 /// The server `instructions` (ADR-0048 §7): the one-breath authoring gist. It carries the workflow
 /// semantics — the document is durable truth; `send` to audition, doc-edit + `swap` to keep; start
 /// `reuben play` first — and *points* at `reuben://guide/authoring` rather than restating the
-/// contract (gist-and-point, ADR-0051 §4). The finalized prose is single-sourced by the
-/// content-pass (#311); this is the real-but-refinable surface text.
+/// contract (gist-and-point, ADR-0051 §4). ADR-0059 §6 adds one pointer sentence each at the
+/// vocabulary and library-index resources — additions only, nothing restated or restructured.
+/// The finalized prose is single-sourced by the content-pass (#311); this is the
+/// real-but-refinable surface text.
 const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is the durable \
      truth; keep it in sync with the sound. Start `reuben play` in another terminal first — the \
      engine tools (`send`, `swap`, `get_current_instrument`, `get_diagnostics`) fail fast until it \
      is reachable. The loop: `send` OSC to audition a change (ephemeral — clobbered at the next \
      swap), then edit the document and `swap` to make it durable. Read `reuben://guide/authoring` \
-     for the type system, wiring rules, instrument format, and the authoring loop.";
+     for the type system, wiring rules, instrument format, and the authoring loop. Read \
+     `reuben://guide/vocabulary` for the word→move table translating intent language (\"warmer\", \
+     \"busier\", \"sadder\") into parameter moves. Read `reuben://library/index` for the available \
+     instruments to reuse by reference through a `subpatch` node.";
 
 /// Default absolute path to the authoring guide (`docs/agents/authoring.md`), anchored at build
 /// time to this crate's manifest dir (workspace-root-relative). The file is READ AT REQUEST TIME —
@@ -100,6 +127,21 @@ const AUTHORING_GUIDE_PATH: &str = concat!(
     "/../../docs/agents/authoring.md"
 );
 
+/// Default absolute path to the rendered vocabulary (`docs/agents/vocabulary.md`), anchored at
+/// build time to this crate's manifest dir — the same checkout-relative, read-at-request-time
+/// posture as [`AUTHORING_GUIDE_PATH`] (ADR-0051 §4). Overridden for a non-checkout deploy by
+/// [`VOCABULARY_ENV`] (see [`resolve_vocabulary_path`]).
+const VOCABULARY_PATH: &str = concat!(
+    env!("CARGO_MANIFEST_DIR"),
+    "/../../docs/agents/vocabulary.md"
+);
+
+/// Default absolute path to the generated library index (`instruments/index.md`), anchored at
+/// build time to this crate's manifest dir — the same checkout-relative, read-at-request-time
+/// posture as [`AUTHORING_GUIDE_PATH`] (ADR-0051 §4). Overridden for a non-checkout deploy by
+/// [`LIBRARY_INDEX_ENV`] (see [`resolve_library_index_path`]).
+const LIBRARY_INDEX_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../instruments/index.md");
+
 /// Env override for the authoring-guide path: point the `reuben://guide/authoring` resource at an
 /// explicit file for a **non-checkout deploy** — a shipped sidecar binary whose compile-time
 /// [`AUTHORING_GUIDE_PATH`] points into a build checkout that need not exist where it runs
@@ -107,20 +149,63 @@ const AUTHORING_GUIDE_PATH: &str = concat!(
 /// convention (a `REUBEN_*` path override resolved from the environment).
 pub const AUTHORING_GUIDE_ENV: &str = "REUBEN_AUTHORING_GUIDE";
 
+/// Env override for the vocabulary path, mirroring [`AUTHORING_GUIDE_ENV`] for
+/// [`VOCABULARY_RESOURCE_URI`]: point a non-checkout deploy at an explicit file.
+pub const VOCABULARY_ENV: &str = "REUBEN_VOCABULARY";
+
+/// Env override for the library-index path, mirroring [`AUTHORING_GUIDE_ENV`] for
+/// [`LIBRARY_INDEX_RESOURCE_URI`]: point a non-checkout deploy at an explicit file.
+pub const LIBRARY_INDEX_ENV: &str = "REUBEN_LIBRARY_INDEX";
+
+/// Resolve a checkout-relative resource path: the given env override when set, else `default`.
+/// Pure over an already-read env value so it is unit-testable without mutating (and racing on)
+/// the process environment — the shared machinery behind [`resolve_guide_path`],
+/// [`resolve_vocabulary_path`], and [`resolve_library_index_path`].
+fn resolve_checkout_path(
+    env_override: Option<std::ffi::OsString>,
+    default: &str,
+) -> std::path::PathBuf {
+    env_override
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from(default))
+}
+
 /// Resolve the filesystem path to serve the authoring guide from: the [`AUTHORING_GUIDE_ENV`]
 /// override when set, else the compile-time [`AUTHORING_GUIDE_PATH`]. Pure over the already-read
 /// env value so it is unit-testable without mutating (and racing on) the process environment; the
 /// live read happens once in [`authoring_guide_path`].
 fn resolve_guide_path(env_override: Option<std::ffi::OsString>) -> std::path::PathBuf {
-    env_override
-        .map(std::path::PathBuf::from)
-        .unwrap_or_else(|| std::path::PathBuf::from(AUTHORING_GUIDE_PATH))
+    resolve_checkout_path(env_override, AUTHORING_GUIDE_PATH)
 }
 
 /// The path the guide resource is served from this request: [`resolve_guide_path`] over the live
 /// [`AUTHORING_GUIDE_ENV`] value.
 fn authoring_guide_path() -> std::path::PathBuf {
     resolve_guide_path(std::env::var_os(AUTHORING_GUIDE_ENV))
+}
+
+/// Resolve the filesystem path to serve the vocabulary from: the [`VOCABULARY_ENV`] override when
+/// set, else the compile-time [`VOCABULARY_PATH`]. Mirrors [`resolve_guide_path`].
+fn resolve_vocabulary_path(env_override: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    resolve_checkout_path(env_override, VOCABULARY_PATH)
+}
+
+/// The path the vocabulary resource is served from this request: [`resolve_vocabulary_path`] over
+/// the live [`VOCABULARY_ENV`] value.
+fn vocabulary_path() -> std::path::PathBuf {
+    resolve_vocabulary_path(std::env::var_os(VOCABULARY_ENV))
+}
+
+/// Resolve the filesystem path to serve the library index from: the [`LIBRARY_INDEX_ENV`]
+/// override when set, else the compile-time [`LIBRARY_INDEX_PATH`]. Mirrors [`resolve_guide_path`].
+fn resolve_library_index_path(env_override: Option<std::ffi::OsString>) -> std::path::PathBuf {
+    resolve_checkout_path(env_override, LIBRARY_INDEX_PATH)
+}
+
+/// The path the library-index resource is served from this request:
+/// [`resolve_library_index_path`] over the live [`LIBRARY_INDEX_ENV`] value.
+fn library_index_path() -> std::path::PathBuf {
+    resolve_library_index_path(std::env::var_os(LIBRARY_INDEX_ENV))
 }
 
 /// The fail-fast result for an unreachable engine (ADR-0044 §2, ADR-0048 §3): `isError: true`
@@ -698,31 +783,46 @@ impl ServerHandler for ReubenServer {
         info
     }
 
-    /// The static resource set (ADR-0048 §7, as amended by ADR-0059): the authoring guide. No
-    /// `subscribe`/`listChanged` — the capability builder declares neither, and this list never
-    /// changes over a session, so there is no cursor to page.
+    /// The static resource set (ADR-0048 §7, as amended by ADR-0059 §3/§6): the authoring guide,
+    /// the intent vocabulary, and the library index. No `subscribe`/`listChanged` — the
+    /// capability builder declares neither, and this list never changes over a session, so there
+    /// is no cursor to page.
     async fn list_resources(
         &self,
         _request: Option<PaginatedRequestParams>,
         _context: RequestContext<RoleServer>,
     ) -> Result<ListResourcesResult, McpError> {
-        Ok(ListResourcesResult::with_all_items(vec![Resource::new(
-            GUIDE_RESOURCE_URI,
-            "authoring guide",
-        )
-        .with_title("Instrument authoring guide")
-        .with_description(
-            "docs/agents/authoring.md — the type system and wiring rules, the instrument \
-             format, addressing, and the try-then-commit authoring loop.",
-        )
-        .with_mime_type(GUIDE_RESOURCE_MIME)]))
+        Ok(ListResourcesResult::with_all_items(vec![
+            Resource::new(GUIDE_RESOURCE_URI, "authoring guide")
+                .with_title("Instrument authoring guide")
+                .with_description(
+                    "docs/agents/authoring.md — the type system and wiring rules, the instrument \
+                     format, addressing, and the try-then-commit authoring loop.",
+                )
+                .with_mime_type(GUIDE_RESOURCE_MIME),
+            Resource::new(VOCABULARY_RESOURCE_URI, "intent vocabulary")
+                .with_title("Intent → parameter vocabulary")
+                .with_description(
+                    "docs/agents/vocabulary.md — the word→move table translating intent \
+                     language (\"warmer\", \"busier\", \"sadder\") into parameter moves, plus \
+                     the edge-conduct preamble and the direction-only fallback block.",
+                )
+                .with_mime_type(VOCABULARY_RESOURCE_MIME),
+            Resource::new(LIBRARY_INDEX_RESOURCE_URI, "library index")
+                .with_title("Instrument library index")
+                .with_description(
+                    "instruments/index.md — the generated signature-line index over the \
+                     available instrument set (name, recipe-role line, face) for selecting a \
+                     `subpatch` reference; trusted for selection only.",
+                )
+                .with_mime_type(LIBRARY_INDEX_RESOURCE_MIME),
+        ]))
     }
 
-    /// Read one static resource (ADR-0048 §7, as amended by ADR-0059), served at request time
-    /// (ADR-0051 §4): the guide is read from disk — never `include_str!`, so a sidecar built
-    /// yesterday still serves today's content — at [`authoring_guide_path`] (the
-    /// [`AUTHORING_GUIDE_ENV`] override, else the compile-time checkout path). An unknown URI is
-    /// `resource_not_found`.
+    /// Read one static resource (ADR-0048 §7, as amended by ADR-0059 §3/§6), served at request
+    /// time (ADR-0051 §4): each is read from disk — never `include_str!`, so a sidecar built
+    /// yesterday still serves today's content — at its checkout path (env-overridable per
+    /// resource, else the compile-time checkout path). An unknown URI is `resource_not_found`.
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
@@ -743,9 +843,35 @@ impl ServerHandler for ReubenServer {
                 })?;
                 ResourceContents::text(guide, uri).with_mime_type(GUIDE_RESOURCE_MIME)
             }
+            VOCABULARY_RESOURCE_URI => {
+                let path = vocabulary_path();
+                let vocabulary = std::fs::read_to_string(&path).map_err(|e| {
+                    McpError::internal_error(
+                        format!("failed to read the vocabulary at {}: {e}", path.display()),
+                        None,
+                    )
+                })?;
+                ResourceContents::text(vocabulary, uri).with_mime_type(VOCABULARY_RESOURCE_MIME)
+            }
+            LIBRARY_INDEX_RESOURCE_URI => {
+                let path = library_index_path();
+                let index = std::fs::read_to_string(&path).map_err(|e| {
+                    McpError::internal_error(
+                        format!(
+                            "failed to read the library index at {}: {e}",
+                            path.display()
+                        ),
+                        None,
+                    )
+                })?;
+                ResourceContents::text(index, uri).with_mime_type(LIBRARY_INDEX_RESOURCE_MIME)
+            }
             other => {
                 return Err(McpError::resource_not_found(
-                    format!("unknown resource `{other}`; this server serves {GUIDE_RESOURCE_URI}"),
+                    format!(
+                        "unknown resource `{other}`; this server serves {GUIDE_RESOURCE_URI}, \
+                         {VOCABULARY_RESOURCE_URI}, and {LIBRARY_INDEX_RESOURCE_URI}"
+                    ),
                     None,
                 ))
             }
@@ -1048,6 +1174,36 @@ mod tests {
         assert_eq!(
             resolve_guide_path(None),
             std::path::PathBuf::from(AUTHORING_GUIDE_PATH),
+            "unset falls back to the compile-time checkout default"
+        );
+    }
+
+    #[test]
+    fn vocabulary_path_prefers_the_env_override_then_the_checkout_default() {
+        // R9 (#466): mirrors the guide's resolver for REUBEN_VOCABULARY (ADR-0051 §4).
+        assert_eq!(
+            resolve_vocabulary_path(Some(std::ffi::OsString::from("/opt/reuben/vocabulary.md"))),
+            std::path::PathBuf::from("/opt/reuben/vocabulary.md"),
+            "an explicit override wins for a non-checkout deploy"
+        );
+        assert_eq!(
+            resolve_vocabulary_path(None),
+            std::path::PathBuf::from(VOCABULARY_PATH),
+            "unset falls back to the compile-time checkout default"
+        );
+    }
+
+    #[test]
+    fn library_index_path_prefers_the_env_override_then_the_checkout_default() {
+        // R9 (#466): mirrors the guide's resolver for REUBEN_LIBRARY_INDEX (ADR-0051 §4).
+        assert_eq!(
+            resolve_library_index_path(Some(std::ffi::OsString::from("/opt/reuben/index.md"))),
+            std::path::PathBuf::from("/opt/reuben/index.md"),
+            "an explicit override wins for a non-checkout deploy"
+        );
+        assert_eq!(
+            resolve_library_index_path(None),
+            std::path::PathBuf::from(LIBRARY_INDEX_PATH),
             "unset falls back to the compile-time checkout default"
         );
     }
