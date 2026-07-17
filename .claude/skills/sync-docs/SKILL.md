@@ -1,6 +1,6 @@
 ---
 name: sync-docs
-description: Bring reuben's living docs back in sync with the code after a feature lands. Sweeps ARCHITECTURE, README, the authoring guide (docs/agents/authoring.md), docs/agents/operator-dev.md, the reuben-mcp prose strings (once the crate ships), and the skills' workflow sections (patcher, control-surface, create-operator) against the current code + git diff, and flags new domain terms. Use when a feature is implemented, before opening a PR, or when the user says "sync docs", "update the docs", "currentness pass", or "currency pass".
+description: Bring reuben's living docs back in sync with the code after a feature lands. Sweeps ARCHITECTURE, README, the authoring guide (docs/agents/authoring.md), docs/agents/operator-dev.md, the reuben-mcp prose strings (once the crate ships), and the skills' workflow sections (patcher, control-surface, create-operator) against the current code + git diff, regenerates the intent-vocabulary and library-index artifacts, verifies the compact describe projection, and flags new domain terms. Use when a feature is implemented, before opening a PR, or when the user says "sync docs", "update the docs", "currentness pass", or "currency pass".
 ---
 
 # sync-docs
@@ -54,11 +54,31 @@ Run from the feature branch so the diff is meaningful.
      its pointer rather than syncing the copy. The other skills don't touch a contract —
      skip them.
 
-3. **Flag, don't edit, new vocabulary.** If the feature introduces a domain term not in
+3. **Regenerate the generated artifacts** (if their source changed):
+   - **intent vocabulary** (ADR-0058) — after editing `docs/agents/vocabulary.json`, or
+     renaming/removing an operator or param a row references: `cargo run -p reuben-core
+     --example gen_vocabulary`, then commit `docs/agents/vocabulary.md` if it changed.
+     `committed_rendered_view_is_in_sync` and
+     `committed_vocabulary_references_the_live_registry`
+     (`crates/reuben-core/tests/vocabulary.rs`) fail when it's stale. Rows themselves are
+     eval-gated content (ADR-0058 §3) — sweep the mechanics, never hand-add a word.
+   - **library index** (ADR-0057 §4) — after adding, editing, or removing an
+     `instruments/*.json` document: `cargo run -p reuben-native --example
+     gen_library_index`, then commit `instruments/index.md` if it changed.
+     `library_index_is_in_sync` (`crates/reuben-native/tests/library_index.rs`) fails when
+     it's stale.
+   - **compact describe** (`describe_compact`, `reuben describe --compact`, ADR-0059 §3) —
+     nothing to regenerate or commit: it's a live projection of the registry
+     (`crates/reuben-core/src/introspect.rs`), proven fresh by
+     `describe_compact_lists_exactly_the_registry`. If you touch prose describing the
+     operator listing (ARCHITECTURE.md, the authoring guide), verify it still gists the
+     compact mode rather than restating its shape.
+
+4. **Flag, don't edit, new vocabulary.** If the feature introduces a domain term not in
    CONTEXT.md, surface it and suggest `/domain-modeling` — the glossary is grilled, not
    auto-written. Likewise, if a change contradicts an ADR, surface it; don't rewrite the ADR.
 
-4. **Verify.** `cargo build` and `cargo test` pass; every doc link/path you touched
+5. **Verify.** `cargo build` and `cargo test` pass; every doc link/path you touched
    resolves; new instrument names match files in `instruments/`.
 
 ## Scope
@@ -68,10 +88,14 @@ Run from the feature branch so the diff is meaningful.
 | ARCHITECTURE.md, README.md, docs/agents/authoring.md, docs/agents/operator-dev.md | **edit** to match reality |
 | `reuben-mcp` prose strings (server `instructions` + tool descriptions, once the crate ships) | **verify gist-and-point** — each gists and points at `reuben://guide/authoring`, never restates contract facts |
 | `.claude/skills/{patcher,control-surface,create-operator}/SKILL.md` | **edit** for workflow drift only — contract facts live in the canonical docs; leave the other skills alone |
+| `docs/agents/vocabulary.json` → `docs/agents/vocabulary.md` (intent vocabulary, ADR-0058) | **regenerate** via `gen_vocabulary` — edit the source, never hand-edit the rendered view |
+| `instruments/*.json` → `instruments/index.md` (library index, ADR-0057 §4) | **regenerate** via `gen_library_index` — edit an instrument, never hand-edit the index |
+| compact describe projection (`describe_compact`) | **verify** — a live registry projection, no committed file; nothing to regenerate |
 | CONTEXT.md (glossary) | **flag** new terms → suggest /domain-modeling, don't auto-edit |
 | docs/adr/* | **never touch** — decisions, not status |
 
 ## Report
 
-End with: which docs changed and why, and any flagged terms or ADR conflicts left for the
-user to decide.
+End with: which docs changed and why, which generated artifacts were regenerated
+(vocabulary, library index — yes/no each), and any flagged terms or ADR conflicts left for
+the user to decide.
