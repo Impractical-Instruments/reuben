@@ -1,7 +1,7 @@
 {
   "format_version": 3,
   "instrument": "shaped-vca",
-  "doc": "Shaped VCA (ADR-0057 seed 1): a gate fires an ADSR envelope whose linear CV is bent through an x-squared perceptual volume curve and multiplied into the audio path -- the universal amplitude tail for any oscillator or noise source. Wire a source into `audio` and a gate into `gate`; the ADSR pipes (attack/decay/sustain/release, canonical names per ADR-0058) default to the envelope operator's own contract defaults, so an untouched reference behaves like a bare envelope. Outputs: `audio` (the enveloped source), `active` (the envelope's liveness Value, for a voicer face), `cv` (the shaped x-squared amp CV -- feed a second `mul_f32_signal` to fan one envelope across two sources, e.g. a snare's noise + tone), and `env` (the raw linear envelope CV -- feed pitch drops and other unshaped modulation).",
+  "doc": "Shaped VCA: a gate fires an ADSR envelope whose linear CV is bent through an x-squared perceptual volume curve and multiplied into the audio path -- the universal amplitude tail for any oscillator or noise source. Wire a source into `audio` and a gate into `gate`; the ADSR pipes (attack/decay/sustain/release, canonical names per ADR-0058) default to the envelope operator's own contract defaults, so an untouched reference behaves like a bare envelope. Outputs: `audio` (the enveloped source), `active` (the envelope's liveness Value, for a voicer face), `cv` (the shaped x-squared amp CV -- feed a second `mul_f32_signal` to fan one envelope across two sources, e.g. a snare's noise + tone), and `env` (the raw linear envelope CV -- feed pitch drops and other unshaped modulation).",
   "interface": {
     "inputs": {
       "audio": {

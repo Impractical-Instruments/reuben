@@ -31,6 +31,8 @@
 //! (good-button, djfilter-demo, and granulator-demo were covered here until the library cull
 //! removed them; the rewrite path stays pinned by euclidean-drums and chord-player.)
 
+mod common;
+
 use reuben_core::format::LoadWarning;
 use reuben_core::message::{Arg, Message};
 use reuben_core::plan::Plan;
@@ -42,7 +44,8 @@ use reuben_core::{load_instrument, AudioConfig, Registry};
 const BLOCK: usize = 128;
 const BLOCKS: usize = 40;
 
-/// Text resources from the live `instruments/` tree; samples synthesized in memory (the
+/// Text resources from the live `instruments/` tree (delegated to the shared `common::Dir`,
+/// including its `FsResolver`-discipline rebase); samples synthesized in memory (the
 /// surviving corpus is sample-free, but a future wav-carrying Toy renders audibly for free —
 /// a real wav decode belongs to reuben-native, not core tests).
 struct InstrumentsDir;
@@ -55,18 +58,10 @@ impl ResourceResolver for InstrumentsDir {
         Ok(SampleBuffer::new(vec![samples], 48_000.0))
     }
     fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
-        let path = format!("{}/../../instruments/{source}", env!("CARGO_MANIFEST_DIR"));
-        std::fs::read_to_string(&path).map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))
+        common::Dir("instruments").resolve_text(source)
     }
-
-    /// Per-document rebase (the `FsResolver` discipline, ADR-0034 §1): a nested document's own
-    /// references (kick-voice.json's `shaped-vca.json`) resolve next to *it*, keys staying
-    /// `instruments/`-relative.
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
-        match referrer.and_then(|r| r.rsplit_once('/')) {
-            Some((dir, _)) => format!("{dir}/{source}"),
-            None => source.to_string(),
-        }
+        common::Dir("instruments").canonical(source, referrer)
     }
 }
 

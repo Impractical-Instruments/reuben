@@ -5,42 +5,22 @@
 //! (Supersedes the old `groovebox_snare_gate.rs` probes, which tapped the now-removed `voicer.gate`
 //! output and internal drum-synth nodes that moved inside the voice patches, ADR-0032.)
 
+mod common;
+
+use common::Dir;
 use reuben_core::message::Message;
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
-use reuben_core::resources::{ResolveError, ResourceResolver, SampleBuffer};
 use reuben_core::{load_instrument, AudioConfig, Registry};
 
 const GROOVEBOX: &str = include_str!("../../../instruments/groovebox.json");
-
-/// Resolves the groovebox's drum-voice instrument-resources from the repo `instruments/` dir.
-struct InstrumentsDir;
-impl ResourceResolver for InstrumentsDir {
-    fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
-        Err(ResolveError::NotFound(source.to_string()))
-    }
-    fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
-        let path = format!("{}/../../instruments/{source}", env!("CARGO_MANIFEST_DIR"));
-        std::fs::read_to_string(&path).map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))
-    }
-
-    /// Per-document rebase (the `FsResolver` discipline, ADR-0034 §1): a nested document's own
-    /// references (kick-voice.json's `shaped-vca.json`) resolve next to *it*, keys staying
-    /// `instruments/`-relative.
-    fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
-        match referrer.and_then(|r| r.rsplit_once('/')) {
-            Some((dir, _)) => format!("{dir}/{source}"),
-            None => source.to_string(),
-        }
-    }
-}
 
 #[test]
 fn groovebox_self_plays_a_non_silent_beat() {
     // The clock-driven rig needs no external notes: the three step sequencers fire their track
     // Voicers, each hosting a drum-synth voice. Render ~2 s (default 120 BPM, several bars) and
     // listen for sound.
-    let graph = load_instrument(GROOVEBOX, &Registry::builtin(), &InstrumentsDir)
+    let graph = load_instrument(GROOVEBOX, &Registry::builtin(), &Dir("instruments"))
         .expect("load groovebox")
         .graph;
     let cfg = AudioConfig::new(48_000.0, 256);
