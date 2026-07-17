@@ -1,7 +1,7 @@
 {
   "format_version": 3,
   "instrument": "good-button",
-  "doc": "Good Button fan-out (ADR-0057 seed 6): one 0..1 `knob`, smoothed against zipper noise and fanned through two ranged maps into CV Signals -- the composition behind every Good Button artifact (a brightness knob onto filter cutoff + resonance, a tone knob onto a DJ-filter position). The recipe ends at the CVs; the parent wires the targets on. `cv` is the primary map (Exponential -- perceptually even for Hz-like targets; range rides `out_min`/`out_max`, resting at a cutoff-shaped 600..11000). `cv2` is the secondary map (Linear; range rides `out2_min`/`out2_max`, resting at a resonance-shaped 0.1..0.7) -- leave it unconsumed for a one-target knob.",
+  "doc": "Good Button fan-out: one 0..1 `knob`, smoothed against zipper noise and fanned through two ranged maps into CV Signals -- the composition behind every Good Button artifact (a brightness knob onto filter cutoff + resonance, a tone knob onto a DJ-filter position). The recipe ends at the CVs; the parent wires the targets on. `cv` is the primary map (Exponential -- perceptually even for Hz-like targets; range rides `out_min`/`out_max`, resting at a cutoff-shaped 600..11000). `cv2` is the secondary map (Linear; range rides `out2_min`/`out2_max`, resting at a resonance-shaped 0.1..0.7) -- leave it unconsumed for a one-target knob.",
   "interface": {
     "inputs": {
       "knob": {

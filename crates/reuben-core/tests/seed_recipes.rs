@@ -16,39 +16,23 @@
 //!   `UnboundInputPipe` on the two processors (the same shape `patches/space.json` has —
 //!   nothing can feed a bare signal pipe at top level).
 
+mod common;
+
+use common::Dir;
 use reuben_core::format::LoadWarning;
 use reuben_core::message::{Arg, Message};
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
-use reuben_core::resources::{ResolveError, ResourceResolver, SampleBuffer};
+use reuben_core::resources::ResourceResolver;
 use reuben_core::{load_instrument, AudioConfig, Registry};
 
 const BLOCK: usize = 128;
-const BLOCKS: usize = 80;
-
-/// Text resources from a repo directory (the corpus is sample-free). Keys are relative to the
-/// root the resolver is built with — `Dir("instruments")` mirrors loading a top-level
-/// instrument, `Dir("instruments/voices")` mirrors `reuben play` on a voice document (the
-/// `FsResolver::for_instrument` base).
-struct Dir(&'static str);
-impl ResourceResolver for Dir {
-    fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
-        Err(ResolveError::NotFound(source.to_string()))
-    }
-    fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
-        let path = format!("{}/../../{}/{source}", env!("CARGO_MANIFEST_DIR"), self.0);
-        std::fs::read_to_string(&path).map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))
-    }
-    /// Per-document rebase (the `FsResolver` discipline, ADR-0034 §1): a nested document's own
-    /// references (kick-voice.json's `shaped-vca.json`) resolve next to *it*, keys staying
-    /// root-relative.
-    fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
-        match referrer.and_then(|r| r.rsplit_once('/')) {
-            Some((dir, _)) => format!("{dir}/{source}"),
-            None => source.to_string(),
-        }
-    }
-}
+/// The euclid comparison window: ~1.33 s. Long enough that **all four** channels fire — kick
+/// and hat hit immediately, but the snare's first euclid pulse (2/16, rotation 4) lands around
+/// 0.55 s and the tom's (3/16, rotation 2) around 0.3 s. A shorter window (the original 80
+/// blocks, ~0.21 s) never fired them, making the bit-identity assertion vacuous for their
+/// re-expressions; `comparison_window_covers_snare_and_tom` guards against regressing that.
+const BLOCKS: usize = 500;
 
 fn shipped(dir: &'static str, name: &str) -> String {
     Dir(dir)
@@ -157,6 +141,20 @@ fn euclid_gestures(b: usize) -> Vec<Message> {
             f32_msg("/kick_rotation/in", 2.0, 0),
             f32_msg("/hat_pulses/in", 11.0, 15),
         ],
+        // Late gestures land after the snare and tom start firing, so their pipes are driven
+        // while those channels are live, not only before their first hit.
+        140 => vec![
+            f32_msg("/snare_decay/in", 0.2, 30),
+            f32_msg("/tom_decay/in", 0.5, 96),
+        ],
+        260 => vec![
+            f32_msg("/tom_level/in", 0.75, 64),
+            f32_msg("/snare_filter/in", 0.5, 12),
+        ],
+        420 => vec![
+            f32_msg("/snare_level/in", 0.4, 7),
+            f32_msg("/tom_rotation/in", 5.0, 88),
+        ],
         _ => Vec::new(),
     }
 }
@@ -183,6 +181,29 @@ fn euclidean_drums_re_expression_renders_bit_identical() {
         &post,
         "euclidean-drums: recipe re-expression vs pre-recipe inline",
     );
+}
+
+/// Guards `BLOCKS` against regressing to a vacuous window: the snare and tom must each
+/// **audibly contribute** within it — muting a channel's level at block 0 must change the
+/// at-rest render. (Neither channel fires at t=0 — snare's first hit is ~0.55 s, tom's
+/// ~0.3 s — so the level smoother has fully settled before either sounds; any difference is
+/// that channel's own contribution, not mute-ramp leakage.)
+#[test]
+fn comparison_window_covers_snare_and_tom() {
+    let fixture = include_str!("fixtures/pre-recipes/euclidean-drums.json");
+    let (baseline, _) = render(fixture, &Dir("instruments"), BLOCKS, |_| Vec::new());
+    for channel in ["snare", "tom"] {
+        let addr = format!("/{channel}_level/in");
+        let (muted, _) = render(fixture, &Dir("instruments"), BLOCKS, |b| match b {
+            0 => vec![f32_msg(&addr, 0.0, 0)],
+            _ => Vec::new(),
+        });
+        assert_ne!(
+            baseline.channels, muted.channels,
+            "{channel} never sounds within the {BLOCKS}-block window — the euclid \
+             bit-identity comparison is vacuous for its re-expression"
+        );
+    }
 }
 
 /// The gate gesture stream for the voice comparisons: on/off cycles hitting attack, decay,
