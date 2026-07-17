@@ -1,41 +1,280 @@
 {
-  "about": "Curated intent-vocabulary source (ADR-0058): word → ordered parameter moves {op, input, direction, magnitude?, condition?} + antonym pointers, instrument-blind and registry-keyed. Edit rows here, then regenerate the rendered view: cargo run -p reuben-core --example gen_vocabulary. CI sweeps every move's op + input against the live operator registry and diffs the committed rendered view. STUB ROWS ONLY — the human-locked day-one content lands with reuben#463 (R6).",
+  "about": "Curated intent-vocabulary source (ADR-0058): word → ordered parameter moves {op, input, direction, magnitude?, condition?} + antonym pointers, instrument-blind and registry-keyed. Edit rows here, then regenerate the rendered view: cargo run -p reuben-core --example gen_vocabulary. CI sweeps every move's op + input against the live operator registry and diffs the committed rendered view. Day-one content (R6, reuben#463); growth — rows, sections, exemplars — is eval-gated (ADR-0058 §3), never hand-added.",
   "preamble": [
-    "STUB — the edge-conduct preamble (ambiguous ask → act on the most likely reading and offer alternatives; unsatisfiable ask → nearest achievable move, state the gap) lands with the vocabulary content (ADR-0059 §2, reuben#463)."
+    "Ambiguous ask → act on the most likely reading, then name the alternative you passed over (\"took *darker* as tone color; say the word and I'll take it minor instead\").",
+    "Unsatisfiable ask → apply the nearest achievable move and state the gap plainly; never fake the effect, and don't stall for clarification when a conservative move exists (act, then react)."
   ],
   "words": [
     {
-      "word": "stub-warmer",
+      "word": "warmer",
       "section": "timbral",
       "moves": [
+        { "op": "filter", "input": "cutoff", "direction": "down", "magnitude": "slightly" },
+        { "op": "saturator", "input": "warmth", "direction": "up" },
+        { "op": "reverb", "input": "damp", "direction": "up", "magnitude": "slightly" }
+      ],
+      "antonyms": ["brighter"]
+    },
+    {
+      "word": "brighter",
+      "section": "timbral",
+      "moves": [
+        { "op": "filter", "input": "cutoff", "direction": "up" },
+        { "op": "resonator", "input": "brightness", "direction": "up", "condition": "a resonator voices the tone" },
+        { "op": "reverb", "input": "damp", "direction": "down", "magnitude": "slightly" }
+      ],
+      "antonyms": ["warmer", "darker"]
+    },
+    {
+      "word": "darker",
+      "section": "timbral",
+      "moves": [
+        { "op": "filter", "input": "cutoff", "direction": "down", "condition": "the ask is about tone color; a mood/harmony 'darker' is the tonal darker below" },
+        { "op": "saturator", "input": "warmth", "direction": "up", "magnitude": "slightly" }
+      ],
+      "antonyms": ["brighter"]
+    },
+    {
+      "word": "dirtier",
+      "section": "timbral",
+      "moves": [
+        { "op": "saturator", "input": "drive", "direction": "up" },
+        { "op": "filter", "input": "resonance", "direction": "up", "magnitude": "slightly" }
+      ],
+      "antonyms": ["cleaner"]
+    },
+    {
+      "word": "cleaner",
+      "section": "timbral",
+      "moves": [
+        { "op": "saturator", "input": "drive", "direction": "down" },
+        { "op": "reverb", "input": "mix", "direction": "down", "magnitude": "slightly" },
+        { "op": "delay", "input": "feedback", "direction": "down", "magnitude": "slightly" }
+      ],
+      "antonyms": ["dirtier"]
+    },
+    {
+      "word": "harsher",
+      "section": "timbral",
+      "moves": [
+        { "op": "saturator", "input": "drive", "direction": "up" },
+        { "op": "filter", "input": "cutoff", "direction": "up" },
+        { "op": "filter", "input": "resonance", "direction": "up" }
+      ],
+      "antonyms": ["softer"]
+    },
+    {
+      "word": "softer",
+      "section": "timbral",
+      "moves": [
+        { "op": "envelope", "input": "attack", "direction": "up" },
+        { "op": "saturator", "input": "drive", "direction": "down" },
         { "op": "filter", "input": "cutoff", "direction": "down", "magnitude": "slightly" }
       ],
-      "antonyms": ["stub-brighter"]
+      "antonyms": ["harsher", "punchier"]
     },
     {
-      "word": "stub-brighter",
+      "word": "punchier",
       "section": "timbral",
       "moves": [
-        { "op": "filter", "input": "cutoff", "direction": "up", "magnitude": "slightly" }
+        { "op": "envelope", "input": "attack", "direction": "down" },
+        { "op": "envelope", "input": "sustain", "direction": "down", "magnitude": "slightly" },
+        { "op": "saturator", "input": "drive", "direction": "up", "magnitude": "slightly", "condition": "synth-land punch — the registry has no compressor" }
       ],
-      "antonyms": ["stub-warmer"]
+      "antonyms": ["softer"]
     },
     {
-      "word": "stub-busier",
+      "word": "airier",
+      "section": "timbral",
+      "moves": [
+        { "op": "reverb", "input": "mix", "direction": "up", "magnitude": "slightly" },
+        { "op": "reverb", "input": "damp", "direction": "down" },
+        { "op": "filter", "input": "cutoff", "direction": "up", "condition": "the filter is lowpass" }
+      ]
+    },
+    {
+      "word": "wetter",
+      "section": "timbral",
+      "moves": [
+        { "op": "reverb", "input": "mix", "direction": "up" },
+        { "op": "delay", "input": "mix", "direction": "up", "condition": "a delay is the space in the voice" }
+      ],
+      "antonyms": ["drier"]
+    },
+    {
+      "word": "drier",
+      "section": "timbral",
+      "moves": [
+        { "op": "reverb", "input": "mix", "direction": "down" },
+        { "op": "delay", "input": "mix", "direction": "down" }
+      ],
+      "antonyms": ["wetter"]
+    },
+    {
+      "word": "bigger",
+      "section": "timbral",
+      "moves": [
+        { "op": "reverb", "input": "room", "direction": "up" },
+        { "op": "delay", "input": "time", "direction": "up", "magnitude": "slightly" },
+        { "op": "saturator", "input": "warmth", "direction": "up", "magnitude": "slightly" }
+      ]
+    },
+    {
+      "word": "busier",
       "section": "rhythmic",
       "moves": [
-        { "op": "clock", "input": "division", "direction": "up", "condition": "stub row — real conduct lands with the R6 content" }
+        { "op": "euclid", "input": "pulses", "direction": "up", "condition": "a euclid drives the pattern" },
+        { "op": "clock", "input": "division", "direction": "up", "condition": "a clock sets the rate" }
+      ],
+      "antonyms": ["sparser"]
+    },
+    {
+      "word": "sparser",
+      "section": "rhythmic",
+      "moves": [
+        { "op": "euclid", "input": "pulses", "direction": "down", "condition": "a euclid drives the pattern" },
+        { "op": "clock", "input": "division", "direction": "down", "condition": "a clock sets the rate" }
+      ],
+      "antonyms": ["busier"]
+    },
+    {
+      "word": "faster",
+      "section": "rhythmic",
+      "moves": [
+        { "op": "clock", "input": "tempo", "direction": "up" }
+      ],
+      "antonyms": ["slower"]
+    },
+    {
+      "word": "slower",
+      "section": "rhythmic",
+      "moves": [
+        { "op": "clock", "input": "tempo", "direction": "down" }
+      ],
+      "antonyms": ["faster"]
+    },
+    {
+      "word": "longer",
+      "section": "rhythmic",
+      "moves": [
+        { "op": "envelope", "input": "release", "direction": "up" },
+        { "op": "envelope", "input": "decay", "direction": "up" }
+      ],
+      "antonyms": ["shorter"]
+    },
+    {
+      "word": "shorter",
+      "section": "rhythmic",
+      "moves": [
+        { "op": "envelope", "input": "release", "direction": "down" },
+        { "op": "envelope", "input": "decay", "direction": "down" }
+      ],
+      "antonyms": ["longer"]
+    },
+    {
+      "word": "tighter",
+      "section": "rhythmic",
+      "moves": [
+        { "op": "envelope", "input": "attack", "direction": "down" },
+        { "op": "envelope", "input": "release", "direction": "down" },
+        { "op": "reverb", "input": "mix", "direction": "down", "magnitude": "slightly", "condition": "smear is the complaint" }
+      ],
+      "antonyms": ["looser"]
+    },
+    {
+      "word": "looser",
+      "section": "rhythmic",
+      "moves": [
+        { "op": "envelope", "input": "attack", "direction": "up", "magnitude": "slightly" },
+        { "op": "m2s", "input": "time", "direction": "up", "condition": "an m2s glides the pitch — the registry has no timing-jitter seat, so this is the laid-back feel, not literal swing" }
+      ],
+      "antonyms": ["tighter"]
+    },
+    {
+      "word": "more syncopated",
+      "section": "rhythmic",
+      "moves": [
+        { "op": "euclid", "input": "rotation", "direction": "up", "magnitude": "by 1", "condition": "a euclid drives the pattern" }
+      ],
+      "antonyms": ["straighter"]
+    },
+    {
+      "word": "straighter",
+      "section": "rhythmic",
+      "moves": [
+        { "op": "euclid", "input": "rotation", "direction": "set 0", "condition": "a euclid drives the pattern" }
+      ],
+      "antonyms": ["more syncopated"]
+    },
+    {
+      "word": "sadder",
+      "section": "tonal",
+      "moves": [
+        { "op": "harmony", "input": "s2", "direction": "set", "magnitude": "3 (minor 3rd)" },
+        { "op": "harmony", "input": "s5", "direction": "set", "magnitude": "8 (minor 6th)" },
+        { "op": "harmony", "input": "s6", "direction": "set", "magnitude": "10 (minor 7th)" }
+      ],
+      "antonyms": ["happier"]
+    },
+    {
+      "word": "happier",
+      "section": "tonal",
+      "moves": [
+        { "op": "harmony", "input": "s2", "direction": "set", "magnitude": "4 (major 3rd)" },
+        { "op": "harmony", "input": "s5", "direction": "set", "magnitude": "9 (major 6th)" },
+        { "op": "harmony", "input": "s6", "direction": "set", "magnitude": "11 (major 7th)" }
+      ],
+      "antonyms": ["sadder"]
+    },
+    {
+      "word": "richer",
+      "section": "tonal",
+      "moves": [
+        { "op": "chord", "input": "size", "direction": "up", "magnitude": "3 → 4, adds the 7th" }
       ]
     },
     {
-      "word": "stub-sadder",
+      "word": "more dissonant",
       "section": "tonal",
       "moves": [
-        { "op": "harmony", "input": "s2", "direction": "down" }
-      ]
+        { "op": "snap", "input": "target", "direction": "set Scale", "magnitude": "off Chord — chord-snap is the most consonant policy" },
+        { "op": "harmony", "input": "s1", "direction": "set", "magnitude": "1 (flat 2nd)", "condition": "more spice is wanted" }
+      ],
+      "antonyms": ["more consonant"]
+    },
+    {
+      "word": "more consonant",
+      "section": "tonal",
+      "moves": [
+        { "op": "snap", "input": "target", "direction": "set Chord", "magnitude": "snap to chord tones" }
+      ],
+      "antonyms": ["more dissonant"]
+    },
+    {
+      "word": "darker",
+      "section": "tonal",
+      "moves": [
+        { "op": "harmony", "input": "s2", "direction": "set", "magnitude": "3 (minor 3rd)", "condition": "the ask is about mood/harmony; a tone-color 'darker' is the timbral darker above" },
+        { "op": "harmony", "input": "s5", "direction": "set", "magnitude": "8 (minor 6th)" }
+      ],
+      "antonyms": ["brighter"]
     }
   ],
   "fallback": [
-    "STUB — the direction-only fallback block and its tie-breaker rule (table wins; unknown word → one conservative move, act-then-react) land with the vocabulary content (ADR-0058 §3, reuben#463)."
+    "Tie-breaker: when the word is in the table above, the table wins. Otherwise pick ONE conservative move from the families below, apply it, and let the user react.",
+    "High-frequency-energy words (crisp, sparkly, glassy, sizzly, thin, tinny) → brightness family: filter cutoff up, reverb damp down.",
+    "Weight / size-down words (deep, fat, thick, huge, heavy) → filter cutoff down slightly, saturator warmth up, reverb room up.",
+    "Aggression words (aggressive, crunchy, fuzzy, gnarly) → saturator drive up.",
+    "Gentleness words (mellow, smooth, dreamy, lush) → envelope attack up, saturator drive down, reverb mix up slightly.",
+    "Distance words (distant, cavernous ↔ close, intimate) → reverb mix and room up ↔ down.",
+    "Motion words (wobbly, shimmery, vibrato, pulsing) → lfo rate and depth.",
+    "Register words (higher, lower, an octave up / down) → transpose amount ±12, or harmony root.",
+    "Energy words (energetic, frantic ↔ chill, laid-back) → clock tempo, then the busier / sparser family.",
+    "Width words (wider, stereo ↔ narrower, mono) → pan spread apart ↔ together, granulator spray up ↔ down. No single width seat exists — move per voice and say so.",
+    "Fatness words (fatter, thicker) → saturator warmth up and drive up slightly; there is no detune / sub-oscillator seat, so state that the body is coming from saturation.",
+    "Mood words beyond the table (moody, ominous, mysterious) → the minor-mode family (see sadder), plus filter cutoff down slightly.",
+    "Material words (clickier, woodier, metallic) → resonator structure, brightness, and damping, when a resonator is in the voice.",
+    "Swing words (swung, shuffled, groovy) → no direct seat today; the nearest is nudging euclid rotation off the grid — apply it and state the gap.",
+    "Nothing fits → name what the document lacks and offer the nearest table move rather than refusing."
   ]
 }
