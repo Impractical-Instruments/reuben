@@ -660,11 +660,14 @@ impl ReubenServer {
     /// not the tool failing, ADR-0048 §3).
     #[tool(
         name = "swap",
-        description = "Install an instrument document from disk as the playing engine (path-only). In M1 this is a \
-                       restart-swap (ADR-0046 §10): a ~100ms silent gap, every node rebuilt cold, so the diff \
-                       reports survived:0. Returns the validation report + content_hash + (on success) a diff \
-                       summary; ok:false installs nothing and the old sound keeps playing. Pass `expect` (a \
-                       content_hash) to guard against a stale swap — a mismatch returns a conflict, no install.",
+        description = "Install an instrument document from disk as the playing engine (path-only). A gapless \
+                       mailbox swap (ADR-0046 §§1–7): the new Engine is built and validated off-thread, then \
+                       installed under a ~20ms master-gain duck (ADR-0050) — no silent gap. A node at the same \
+                       address with the same operator type survives with its live state, so the diff summary \
+                       reports how many survived and which reset. Returns the validation report + content_hash \
+                       + (on success) that diff summary; ok:false installs nothing and the old sound keeps \
+                       playing. Pass `expect` (a content_hash) to guard against a stale swap — a mismatch \
+                       returns a conflict, no install.",
         output_schema = rmcp::handler::server::tool::schema_for_output::<SwapToolOutput>()
             .expect("SwapToolOutput is an object schema")
     )]
@@ -1388,9 +1391,10 @@ mod tests {
     }
 
     #[test]
-    fn m1_swap_diff_reports_survived_zero() {
-        // ADR-0046 §10: M1 is restart-swap — every node rebuilt cold — so a successful swap's diff
-        // reports survived:0 honestly. The tool relays the channel's report unchanged.
+    fn swap_relays_diff_summary_verbatim() {
+        // The tool relays the channel's diff unchanged (ADR-0048 §8). Fixture: an all-cold swap
+        // (nothing survived), which is what the web lane always reports and what a native swap
+        // reports when no node survives (ADR-0052 §2, ADR-0046 §5).
         let report = SwapReport {
             report: Report {
                 ok: true,
@@ -1424,7 +1428,7 @@ mod tests {
         assert_eq!(
             s["diff"]["survived"],
             serde_json::json!(0),
-            "M1 restart-swap reports survived:0: {s}"
+            "the channel's survived count is relayed verbatim: {s}"
         );
     }
 
