@@ -90,9 +90,10 @@ pub const VOCABULARY_RESOURCE_MIME: &str = "text/markdown";
 /// signature-line index over the available instrument set, `instruments/index.md` (generated and
 /// staleness-tested against `instruments/` by R4, #461), read from the checkout at request time
 /// (ADR-0051 §4) — the same posture as [`GUIDE_RESOURCE_URI`]. No exact URI is fixed by ADR-0059;
-/// this follows the established `reuben://<category>/<name>` convention with the category ADR-0057
-/// already uses for the instruments directory (`library` root, `library index`).
-pub const LIBRARY_INDEX_RESOURCE_URI: &str = "reuben://library/index";
+/// this lives in the same `guide/` namespace as [`GUIDE_RESOURCE_URI`] and
+/// [`VOCABULARY_RESOURCE_URI`] — one namespace for all agent-read grounding, rather than minting
+/// a second category for what is, from a client's view, just another pointed-at document.
+pub const LIBRARY_INDEX_RESOURCE_URI: &str = "reuben://guide/library-index";
 
 /// The MIME type advertised for [`LIBRARY_INDEX_RESOURCE_URI`]: the generated index is CommonMark
 /// prose.
@@ -112,8 +113,8 @@ const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is
      swap), then edit the document and `swap` to make it durable. Read `reuben://guide/authoring` \
      for the type system, wiring rules, instrument format, and the authoring loop. Read \
      `reuben://guide/vocabulary` for the word→move table translating intent language (\"warmer\", \
-     \"busier\", \"sadder\") into parameter moves. Read `reuben://library/index` for the available \
-     instruments to reuse by reference through a `subpatch` node.";
+     \"busier\", \"sadder\") into parameter moves. Read `reuben://guide/library-index` for the \
+     available instruments to reuse by reference through a `subpatch` node.";
 
 /// Default absolute path to the authoring guide (`docs/agents/authoring.md`), anchored at build
 /// time to this crate's manifest dir (workspace-root-relative). The file is READ AT REQUEST TIME —
