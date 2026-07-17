@@ -1,6 +1,6 @@
 ---
 name: sync-docs
-description: Bring reuben's living docs back in sync with the code after a feature lands. Sweeps ARCHITECTURE, README, the authoring guide (docs/agents/authoring.md), docs/agents/operator-dev.md, the reuben-mcp prose strings (once the crate ships), and the skills' workflow sections (patcher, control-surface, create-operator) against the current code + git diff, regenerates the instrument schema, and flags new domain terms. Use when a feature is implemented, before opening a PR, or when the user says "sync docs", "update the docs", "currentness pass", or "currency pass".
+description: Bring reuben's living docs back in sync with the code after a feature lands. Sweeps ARCHITECTURE, README, the authoring guide (docs/agents/authoring.md), docs/agents/operator-dev.md, the reuben-mcp prose strings (once the crate ships), and the skills' workflow sections (patcher, control-surface, create-operator) against the current code + git diff, and flags new domain terms. Use when a feature is implemented, before opening a PR, or when the user says "sync docs", "update the docs", "currentness pass", or "currency pass".
 ---
 
 # sync-docs

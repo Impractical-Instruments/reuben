@@ -13,13 +13,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The retired schema machinery's greppable tokens — the committed schema file, the
-/// generator example, and the MCP resource URI. Built by concatenation so this file never
-/// trips over its own needles.
-fn retired_tokens() -> [String; 3] {
+/// generator example, the MCP resource URI, and the loose prose phrase (review round 1
+/// found it surviving in skill frontmatter, untouched by the three exact tokens). Built by
+/// concatenation so this file never trips over its own needles. Lowercase: matching
+/// lowercases each line, so capitalized prose forms are caught too.
+fn retired_tokens() -> [String; 4] {
     [
         ["instrument", ".schema.json"].concat(),
         ["gen", "_schema"].concat(),
         ["reuben://", "schema/instrument"].concat(),
+        ["instrument", " schema"].concat(),
     ]
 }
 
@@ -31,19 +34,27 @@ fn repo_root() -> PathBuf {
 }
 
 /// Collect every file under `dir`, skipping what can't carry a live reference: `.git` (a dir
-/// in a checkout, a pointer file in a worktree), build output (`target`), and nested
-/// checkouts (`.claude/worktrees`, `node_modules`).
+/// in a checkout, a pointer file in a worktree), build output (`target`), and dependency
+/// trees (`node_modules`) — names tooling reserves at any depth — plus nested checkouts,
+/// where the `worktrees` name is reserved only directly under `.claude`. Directories are
+/// never entered through a symlink (`DirEntry::file_type` reports the link itself), so a
+/// symlinked directory cycle can't recurse; a symlink to a file is pushed and read through
+/// downstream, and a symlink to a directory fails `read_to_string` and is skipped there.
 fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
     let entries = fs::read_dir(dir).unwrap_or_else(|e| panic!("read_dir {}: {e}", dir.display()));
     for entry in entries {
         let entry = entry.expect("dir entry");
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name == ".git" || name == "target" || name == "worktrees" || name == "node_modules" {
+        if name == ".git" || name == "target" || name == "node_modules" {
+            continue;
+        }
+        if name == "worktrees" && dir.file_name().is_some_and(|parent| parent == ".claude") {
             continue;
         }
         let path = entry.path();
-        if path.is_dir() {
+        let file_type = entry.file_type().expect("file type");
+        if file_type.is_dir() {
             walk(&path, files);
         } else {
             files.push(path);
@@ -74,6 +85,8 @@ fn no_live_text_references_the_retired_schema_machinery() {
         };
         let rel = path.strip_prefix(&root).unwrap_or(&path).to_path_buf();
         for (i, line) in text.lines().enumerate() {
+            // Prose capitalizes freely; the needles are lowercase, so lowercase the hay.
+            let line = line.to_lowercase();
             for token in &tokens {
                 if line.contains(token.as_str()) {
                     offenders.push(format!("{}:{}: `{token}`", rel.display(), i + 1));
