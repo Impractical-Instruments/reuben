@@ -1,7 +1,7 @@
 //! Tier-1 mechanical guards for the intent-vocabulary artifact (ADR-0058 §§4–5): the committed
 //! source parses, every move references the live operator registry (the registry-staleness
 //! test — a rename breaks the build, not the agent), and the committed rendered view is in
-//! sync with the source (the `gen_schema` posture: one source, generated artifact, CI-checked).
+//! sync with the source (the generated-artifact posture: one source, generated view, CI-checked).
 
 use reuben_core::vocabulary::Vocabulary;
 use reuben_core::Registry;
