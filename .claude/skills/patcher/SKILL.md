@@ -13,8 +13,8 @@ different file types — this skill authors all three. It grounds itself on the 
 finishing (ADR-0020).
 
 It does **not** author new Operators (that is Rust — the `create-operator` skill, ADR-0021), author
-surface docs (`surfaces/*.json` presentation — the `control-surface` skill, ADR-0043), or edit the
-schema/core.
+surface docs (`surfaces/*.json` presentation — the `control-surface` skill, ADR-0043), or edit core
+crates.
 
 ## The loop: introspect → draft → validate → report
 
@@ -34,10 +34,13 @@ Run all `reuben` commands from the repo root.
      This is what a `subpatch` node referencing that file exposes — wire against these names,
      never the child's internals.
 
-2. **Draft the graph.** Start from a **canonical recipe** (below) or an existing
-   `instruments/*.json` (e.g. `chord-player.json`) rather than a blank file. The format rules
-   the loader enforces — node `inputs` (literals vs wire-refs) and `config`, the wire-form
-   rules and their one implicit coercion, `Constant`s, `interface` pipes, `resources` — are
+2. **Draft the graph.** Check `instruments/index.md` (the generated library index, ADR-0057
+   §4 — one line per available instrument: role + face signature) for a close-enough
+   instrument before drafting a chain from scratch, or draft against an existing
+   `instruments/*.json` (e.g. `chord-player.json`) rather than a blank file. Reuse mechanics
+   (referencing an index hit by id via `subpatch`), the format rules the loader enforces —
+   node `inputs` (literals vs wire-refs) and `config`, the wire-form rules and their one
+   implicit coercion, `Constant`s, `interface` pipes, `resources` — and the recipe-role are
    the **authoring guide's** content, not this skill's: read
    [docs/agents/authoring.md](../../docs/agents/authoring.md) (served to MCP clients as
    `reuben://guide/authoring`) and draft against it so step 3 passes first try.
@@ -49,87 +52,13 @@ Run all `reuben` commands from the repo root.
    `Plan::instantiate`, so it catches unknown type/input, duplicate address, type mismatches,
    constants-in-inputs, **and cycles** — without playing audio.
 
-4. **Sanity-check that it's audible.** `validate` proves the graph is *legal*, **not that it
-   makes sound** — a disconnected oscillator or a missing `output` validates clean and is silent.
-   Before reporting, eyeball: is there a path from a generator to a declared `output`? Are the
-   voicer's `freq`/`gate` reaching the voice chain? Warnings (e.g. an unresolved sample) are
-   advisory — the instrument is still valid.
-
-## Canonical recipes
-
-**Basic playable voice** (osc → filter → ADSR → out), the spine of `instruments/voices/default-voice.json`:
-
-```
-voicer ─freq→ oscillator ─audio→ filter ─audio→ envelope ─audio→ output
-voicer ─gate───────────────────────────────────→ envelope(gate)
-```
-
-- `voicer` turns `/voicer/notes [midi, gate]` into per-Voice `freq` + `gate` (held `value` outputs);
-  wire them into the chain via `"freq": {"from":"/voicer.freq"}` etc.
-- `filter` `cutoff`/`resonance` are `signal` inputs — leave them at their literal defaults
-  (`"cutoff": 1200`), wire a modulator (`"cutoff": {"from":"/lfo.audio"}`), or drive them live over
-  OSC (`/filter/cutoff 1500`). `mode` is an `enum` (`"mode": "Hp"`). A **Good Button** is still a
-  nicety for a curated player control — `map`(public) → `map`(ranged) → filter input, optionally
-  with an `m2s`/`slew` shaper for zipper-free smoothing — but it is no longer *required* to reach a
-  `signal` input. See `chord-player.json`'s brightness chain (`m2s` → `map` → filter cutoff)
-  for the worked fan-out.
-- Play it: `reuben play <file>` then send `/voicer/notes [60, 1]` (note-on) / `[60, 0]` (off).
-
-**Self-playing** (no external notes): add a `clock` + `sequencer` feeding the voicer, as in
-`instruments/groovebox.json` (one sequencer per drum on a shared clock).
-
-**Nesting an instrument as a node** (ADR-0034) — the worked pair is
-`instruments/patches/space.json` (the nestable child) + `instruments/mic-space.json` (the host):
-
-- **Host side**: add the child to `resources` and reference it from a `subpatch` node's `patch`
-  field. The node's ports are the child's `interface` names — `describe <patch.json>` first, then
-  wire/set them like any operator's (`"in": {"from":"/voicer.audio"}, "tone": 2500`):
-
-  ```json
-  "resources": { "space": "patches/space.json" },
-  "nodes": [ { "type": "subpatch", "address": "/space", "patch": "space",
-               "inputs": { "in": { "from": "/voicer.audio" }, "tone": 2500 } } ]
-  ```
-
-  At build the child inlines under the node's address (`/space/filter`…, OSC-reachable) and the
-  node dissolves — zero runtime cost. Boundary wires type-check against each interface pipe's
-  **declared type** (ADR-0038 §2); errors name the subpatch address + external name.
-- **Child side**: a nestable instrument declares `interface { inputs, outputs }` as **named
-  pipes** (ADR-0038 flipped the wiring direction from v1's target-pointing entries — no entry
-  points inward anymore). An **input pipe** mints an address in the flat node namespace (entry
-  `tone` → `/tone`) that internal nodes consume with an ordinary wire-ref, and — pointing at no
-  inner port — **declares its own `type`** (`f32`, `f32_buffer`, `note`, `harmony`, or a vocab
-  enum name) plus the quantity contract it now **owns**: `default`/`min`/`max`/`curve`/`unit`
-  (range engine-enforced for a numeric pipe). Presentation — `label`/`widget` — does **not**
-  belong on a pipe (ADR-0043): it lives in a surface doc (`surfaces/*.json`, the
-  `control-surface` skill's territory). An **output pipe** is fed **from** an internal port:
-
-  ```json
-  "interface": {
-    "inputs":  { "in":   { "type": "f32_buffer" },
-                 "tone": { "type": "f32_buffer", "default": 4000.0, "min": 20.0, "max": 20000.0,
-                           "curve": "exp", "unit": "Hz" } },
-    "outputs": { "out": { "from": "/verb.audio" } }
-  }
-  ```
-
-  Internal nodes wire from an input pipe by its minted address — the filter's
-  `"audio": { "from": "/in" }`, `"cutoff": { "from": "/tone" }` (see `patches/space.json`). A
-  **signal** pipe may carry an optional `channel: <int>` binding to a logical hardware channel,
-  honored only when the graph is played at top level and **inert when nested** (ADR-0038 §3).
-  The declared `Arg` type is enforced against every consumer wire by the ordinary wire check.
-  (v1 documents that spell interface entries as `{ "target": "/node.port" }` still load — the
-  loader migrates them to pipes at parse — but author new **instruments** in the pipe form.)
-- A cyclic patch reference is a fatal error; a missing/unreadable child degrades to a warning
-  (the node goes dark). Validate the child standalone too — it's a full instrument.
-
-When unsure of a port or param name, **`describe` it** — don't infer from these sketches.
-
 ## Run the tests
 
-The introspection commands are backed by `reuben_native::cli`:
-`cargo test -p reuben-native --test cli` — covers validate (accept, unknown-type localization,
-cycle, advisory warning) and describe (list-all, one-op fields, unknown-op error).
+The introspection commands are backed by `reuben_core::introspect`, unit-tested there:
+`cargo test -p reuben-core --lib introspect::tests` — covers validate (accept, unknown-type
+localization, cycle, advisory warning) and describe (list-all, one-op fields, unknown-op
+error, compact mode, library-index lines). `cargo test -p reuben-native --test cli` covers
+the native CLI's own shipped multichannel-fixture integration coverage.
 
 ## Scope
 
