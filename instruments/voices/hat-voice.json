@@ -1,7 +1,10 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "instrument": "hat-voice",
-  "doc": "Hi-hat voice (ADR-0032). A gate fires a short envelope shaping highpassed noise into a metallic tick. Pitch is internal (no freq interface input); the host's lane voicer only drives the gate. interface: gate in, audio/active out.",
+  "doc": "Highpassed noise tick (ADR-0057 seed 4): a gate fires a short envelope (the nested shaped-vca) on highpassed noise -- a metallic hat. Every former baked literal is a defaulted interface pipe (canonical names per ADR-0058): `cutoff` sets how thin the noise gets, `attack`/`decay`/`sustain`/`release` run tick to open hat. Hosted by a voicer only `gate` is drivable (per-voice params aren't host-addressable); statically nested via `subpatch`, every pipe is reachable on the boundary face. interface: gate in (+ cutoff/contour pipes), audio/active out.",
+  "resources": {
+    "shaped-vca": "shaped-vca.json"
+  },
   "interface": {
     "inputs": {
       "gate": {
@@ -9,11 +12,45 @@
         "default": 0.0,
         "min": 0.0,
         "max": 1.0
+      },
+      "cutoff": {
+        "type": "f32",
+        "default": 7000.0,
+        "min": 20.0,
+        "max": 20000.0,
+        "unit": "Hz"
+      },
+      "attack": {
+        "type": "f32",
+        "default": 0.001,
+        "min": 0.001,
+        "max": 5.0,
+        "unit": "s"
+      },
+      "decay": {
+        "type": "f32",
+        "default": 0.04,
+        "min": 0.001,
+        "max": 5.0,
+        "unit": "s"
+      },
+      "sustain": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "release": {
+        "type": "f32",
+        "default": 0.03,
+        "min": 0.001,
+        "max": 5.0,
+        "unit": "s"
       }
     },
     "outputs": {
       "active": {
-        "from": "/env.active"
+        "from": "/vca.active"
       },
       "audio": {
         "from": "/out.audio"
@@ -29,59 +66,50 @@
     {
       "type": "filter",
       "address": "/hp",
-      "doc": "Highpass to thin the noise into a metallic hat.",
+      "doc": "Highpass to thin the noise into a metallic hat; cutoff rides the `cutoff` pipe.",
       "inputs": {
         "audio": {
           "from": "/noise"
         },
-        "cutoff": 7000.0,
+        "cutoff": {
+          "from": "/cutoff"
+        },
         "mode": "Hp",
         "resonance": 0.1
       }
     },
     {
-      "type": "envelope",
-      "address": "/env",
-      "doc": "Very short amplitude envelope -> linear CV -> tick.",
+      "type": "subpatch",
+      "address": "/vca",
+      "doc": "The nested shaped-vca ticking the highpassed noise. Contour pipes forward this body's own pipes.",
       "inputs": {
-        "attack": 0.001,
-        "decay": 0.04,
+        "attack": {
+          "from": "/attack"
+        },
+        "audio": {
+          "from": "/hp"
+        },
+        "decay": {
+          "from": "/decay"
+        },
         "gate": {
           "from": "/gate"
         },
-        "release": 0.03,
-        "sustain": 0.0
-      }
-    },
-    {
-      "type": "power_f32_signal",
-      "address": "/curve",
-      "doc": "Exponential-style volume curve (x^2) on the hat CV.",
-      "inputs": {
-        "x": {
-          "from": "/env.cv"
-        }
-      }
-    },
-    {
-      "type": "mul_f32_signal",
-      "address": "/vca",
-      "doc": "VCA: hat noise * shaped amp CV.",
-      "inputs": {
-        "a": {
-          "from": "/hp"
+        "release": {
+          "from": "/release"
         },
-        "b": {
-          "from": "/curve"
+        "sustain": {
+          "from": "/sustain"
         }
-      }
+      },
+      "patch": "shaped-vca"
     },
     {
       "type": "output",
       "address": "/out",
       "inputs": {
         "audio": {
-          "from": "/vca"
+          "from": "/vca.audio"
         }
       }
     }

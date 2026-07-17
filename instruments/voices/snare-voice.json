@@ -1,7 +1,10 @@
 {
-  "format_version": 2,
+  "format_version": 3,
   "instrument": "snare-voice",
-  "doc": "Snare drum voice (ADR-0032). A gate fires one envelope whose CV shapes both a noise body and a short tonal sine ring; their sum is the snare. Pitch is internal (no freq interface input); the host's lane voicer only drives the gate. interface: gate in, audio/active out.",
+  "doc": "Noise+tone snare body (ADR-0057 seed 3): one gate-fired envelope shapes both a noise body (through the nested shaped-vca) and a short tonal sine ring (a second VCA fed the shaped-vca's tapped `cv`); their sum is the snare. Every former baked literal is a defaulted interface pipe (canonical names per ADR-0058): `tone` sets the ring frequency, `attack`/`decay`/`sustain`/`release` reshape the one contour that drives both halves. Hosted by a voicer only `gate` is drivable (per-voice params aren't host-addressable); statically nested via `subpatch`, every pipe is reachable on the boundary face. interface: gate in (+ tone/contour pipes), audio/active out.",
+  "resources": {
+    "shaped-vca": "shaped-vca.json"
+  },
   "interface": {
     "inputs": {
       "gate": {
@@ -9,11 +12,45 @@
         "default": 0.0,
         "min": 0.0,
         "max": 1.0
+      },
+      "tone": {
+        "type": "f32",
+        "default": 185.0,
+        "min": 20.0,
+        "max": 2000.0,
+        "unit": "Hz"
+      },
+      "attack": {
+        "type": "f32",
+        "default": 0.001,
+        "min": 0.001,
+        "max": 5.0,
+        "unit": "s"
+      },
+      "decay": {
+        "type": "f32",
+        "default": 0.08,
+        "min": 0.001,
+        "max": 5.0,
+        "unit": "s"
+      },
+      "sustain": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "release": {
+        "type": "f32",
+        "default": 0.06,
+        "min": 0.001,
+        "max": 5.0,
+        "unit": "s"
       }
     },
     "outputs": {
       "active": {
-        "from": "/env.active"
+        "from": "/vca.active"
       },
       "audio": {
         "from": "/out.audio"
@@ -22,53 +59,44 @@
   },
   "nodes": [
     {
-      "type": "envelope",
-      "address": "/env",
-      "doc": "One amplitude envelope -> linear CV, short snap. Shapes both noise and tone.",
-      "inputs": {
-        "attack": 0.001,
-        "decay": 0.08,
-        "gate": {
-          "from": "/gate"
-        },
-        "release": 0.06,
-        "sustain": 0.0
-      }
-    },
-    {
-      "type": "power_f32_signal",
-      "address": "/curve",
-      "doc": "Exponential-style volume curve (x^2) on the amp CV.",
-      "inputs": {
-        "x": {
-          "from": "/env.cv"
-        }
-      }
-    },
-    {
       "type": "noise",
       "address": "/noise",
       "doc": "Snare noise body."
     },
     {
-      "type": "mul_f32_signal",
-      "address": "/noise_vca",
-      "doc": "VCA: noise * shaped amp CV.",
+      "type": "subpatch",
+      "address": "/vca",
+      "doc": "The nested shaped-vca on the noise body; its tapped `cv` output also shapes the tonal ring below (one envelope, two VCAs). Contour pipes forward this body's own pipes.",
       "inputs": {
-        "a": {
+        "attack": {
+          "from": "/attack"
+        },
+        "audio": {
           "from": "/noise"
         },
-        "b": {
-          "from": "/curve"
+        "decay": {
+          "from": "/decay"
+        },
+        "gate": {
+          "from": "/gate"
+        },
+        "release": {
+          "from": "/release"
+        },
+        "sustain": {
+          "from": "/sustain"
         }
-      }
+      },
+      "patch": "shaped-vca"
     },
     {
       "type": "m2s",
-      "address": "/tone_f",
-      "doc": "Constant tonal frequency (Hz) for the snare's ring.",
+      "address": "/tone_cv",
+      "doc": "Materializes the `tone` pipe (ring frequency, Hz) into a Signal.",
       "inputs": {
-        "in": 185.0
+        "in": {
+          "from": "/tone"
+        }
       }
     },
     {
@@ -77,7 +105,7 @@
       "doc": "Tonal component (sine) under the noise.",
       "inputs": {
         "freq": {
-          "from": "/tone_f"
+          "from": "/tone_cv"
         },
         "waveform": "Sine"
       }
@@ -85,13 +113,13 @@
     {
       "type": "mul_f32_signal",
       "address": "/tone_vca",
-      "doc": "VCA: tone * shaped amp CV.",
+      "doc": "VCA: tone (a) * the shaped amp CV tapped from the nested shaped-vca (b).",
       "inputs": {
         "a": {
           "from": "/osc"
         },
         "b": {
-          "from": "/curve"
+          "from": "/vca.cv"
         }
       }
     },
@@ -101,7 +129,7 @@
       "doc": "snare = noise body (a) + tonal ring (b).",
       "inputs": {
         "a": {
-          "from": "/noise_vca"
+          "from": "/vca.audio"
         },
         "b": {
           "from": "/tone_vca"

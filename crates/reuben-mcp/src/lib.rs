@@ -131,21 +131,34 @@ pub fn engine_unreachable() -> CallToolResult {
 }
 
 /// Input for `describe_operators` (ADR-0048 §5): an optional `name` filter, mirroring
-/// [`reuben_core::introspect::describe`]'s `Option<&str>`.
+/// [`reuben_core::introspect::describe`]'s `Option<&str>`, plus the `compact` mode switch
+/// (ADR-0059 §3).
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DescribeOperatorsParams {
     /// Restrict to one operator type; omit to list every registered operator.
     #[serde(default)]
     pub name: Option<String>,
+    /// Compact mode (ADR-0059 §3): one generated signature line per operator instead of full
+    /// port objects — the same registry truth, projected for grounding budgets. Default false.
+    #[serde(default)]
+    pub compact: bool,
 }
 
-/// Output for `describe_operators` (ADR-0048 §5): the operator set wrapped in `{ operators }`, so
-/// the tool's `outputSchema` is an object (MCP requires an object root) whose one field is the
-/// list mirroring [`reuben_core::introspect::describe`].
+/// Output for `describe_operators` (ADR-0048 §5): the operator set under an object root (MCP
+/// requires one), in exactly one of the verb's two projections of the same registry truth
+/// (ADR-0059 §3) — `operators` (full port objects, the default) or `signatures` (the compact
+/// mode), keyed by the `compact` param. Both mirror [`reuben_core::introspect::describe`] /
+/// [`describe_compact`](reuben_core::introspect::describe_compact).
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct DescribeOperatorsOutput {
-    /// One entry per registered operator (or the single filtered one), in registry order.
-    pub operators: Vec<OperatorInfo>,
+    /// Full mode: one entry per registered operator (or the single filtered one), in registry
+    /// order. Absent in compact mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub operators: Option<Vec<OperatorInfo>>,
+    /// Compact mode: one generated signature line per operator —
+    /// `name(inputs; config: constants; res: resource-slots) -> outputs`. Absent in full mode.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub signatures: Option<Vec<String>>,
 }
 
 /// Input for the read-only document tools `describe_instrument` and `validate` (ADR-0048 §2):
@@ -338,12 +351,17 @@ impl ReubenServer {
     // --- Pure tools: always available (ADR-0044 §2) --------------------------------------------
 
     /// List the operator set (ADR-0048 §§1,5): delegates to [`reuben_core::introspect::describe`]
-    /// and returns `{ operators: OperatorInfo[] }`, mirroring its `Option<&str>` filter exactly.
+    /// (or its compact signature-line mode, ADR-0059 §3, when `compact` is set) and returns
+    /// `{ operators }` / `{ signatures }`, mirroring the `Option<&str>` filter exactly.
     /// Engine-free — always available (ADR-0044 §2). An unknown `name` is a can't-do-the-job error
     /// (ADR-0048 §5): there is no such operator to describe.
     #[tool(
         name = "describe_operators",
-        description = "List the registered operators and their ports/params, optionally filtered by name.",
+        description = "List the registered operators and their ports/params, optionally filtered by name. \
+                       Set compact:true for one generated signature line per operator — \
+                       name(inputs; config: constants; res: resource-slots) -> outputs, each port as \
+                       name:kind with enum [variants], unit, exp for an exponential curve, lo..hi, =default \
+                       — instead of full port objects; the full mode stays the zoom for port detail.",
         output_schema = rmcp::handler::server::tool::schema_for_output::<DescribeOperatorsOutput>()
             .expect("DescribeOperatorsOutput is an object schema")
     )]
@@ -352,10 +370,35 @@ impl ReubenServer {
         Parameters(params): Parameters<DescribeOperatorsParams>,
     ) -> Result<CallToolResult, McpError> {
         let registry = Registry::builtin();
+        if params.compact {
+            return match reuben_core::introspect::describe_compact(
+                &registry,
+                params.name.as_deref(),
+            ) {
+                Ok(signatures) => {
+                    let summary = format!("{} operator signature(s) (compact)", signatures.len());
+                    structured_ok(
+                        &DescribeOperatorsOutput {
+                            operators: None,
+                            signatures: Some(signatures),
+                        },
+                        summary,
+                    )
+                }
+                // ADR-0048 §5: an unknown name is isError, not an empty deliverable.
+                Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
+            };
+        }
         match reuben_core::introspect::describe(&registry, params.name.as_deref()) {
             Ok(operators) => {
                 let summary = describe_operators_summary(&operators);
-                structured_ok(&DescribeOperatorsOutput { operators }, summary)
+                structured_ok(
+                    &DescribeOperatorsOutput {
+                        operators: Some(operators),
+                        signatures: None,
+                    },
+                    summary,
+                )
             }
             // ADR-0048 §5: an unknown name is isError, not an empty deliverable.
             Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),

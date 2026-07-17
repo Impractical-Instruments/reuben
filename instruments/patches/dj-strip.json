@@ -1,0 +1,82 @@
+{
+  "format_version": 3,
+  "instrument": "dj-strip",
+  "doc": "DJ-filter + level channel strip (ADR-0057 seed 5): the per-channel output stage -- a bipolar DJ-filter knob (`filter`, -1 lowpass down .. 0 open .. +1 highpass up) and a level knob (`level`, 0..1, rests at 1 = unity), each smoothed against zipper noise, on one audio path. Canonical pipe names per ADR-0058. Wire a channel into `audio`, take the strip's `audio` out to the mix bus; at rest the strip passes audio unchanged.",
+  "interface": {
+    "inputs": {
+      "audio": {
+        "type": "f32_buffer"
+      },
+      "filter": {
+        "type": "f32",
+        "default": 0.0,
+        "min": -1.0,
+        "max": 1.0
+      },
+      "level": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "outputs": {
+      "audio": {
+        "from": "/amp.out"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "type": "m2s",
+      "address": "/filter_cv",
+      "doc": "Smooths the `filter` pipe (DJ-filter position, [-1..1]) into a zipper-free CV.",
+      "inputs": {
+        "in": {
+          "from": "/filter"
+        },
+        "mode": "Smooth",
+        "time": 0.1
+      }
+    },
+    {
+      "type": "djfilter",
+      "address": "/dj",
+      "doc": "The channel's DJ filter; position driven by the smoothed knob.",
+      "inputs": {
+        "audio": {
+          "from": "/audio"
+        },
+        "position": {
+          "from": "/filter_cv"
+        },
+        "resonance": 0.25
+      }
+    },
+    {
+      "type": "m2s",
+      "address": "/level_cv",
+      "doc": "Smooths the `level` pipe ([0..1]) into a CV.",
+      "inputs": {
+        "in": {
+          "from": "/level"
+        },
+        "mode": "Smooth",
+        "time": 0.02
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/amp",
+      "doc": "channel audio (a) * level CV (b).",
+      "inputs": {
+        "a": {
+          "from": "/dj"
+        },
+        "b": {
+          "from": "/level_cv"
+        }
+      }
+    }
+  ]
+}

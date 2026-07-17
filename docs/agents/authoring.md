@@ -1,4 +1,4 @@
-# Authoring: Instruments and Rigs
+# Authoring: Instruments and Rigs <!-- lanes: skills,mcp -->
 
 The instrument-authoring guide — the contract an **authoring agent** builds against, whether
 it drives the repo skills (`patcher`) or the reuben MCP server (this file is served in-band
@@ -13,7 +13,7 @@ Developing a new **Operator in Rust** — the `Operator` trait, the `operator_co
 registration, `OpDriver` testing — is the builder's job, not the authoring agent's: that
 contract lives in [operator-dev.md](operator-dev.md).
 
-## The recursive model
+## The recursive model <!-- lanes: skills,mcp,web -->
 
 One concept at every scale ([ADR-0003](../adr/0003-recursive-composition.md)): a graph of
 nodes with typed ports.
@@ -25,7 +25,7 @@ nodes with typed ports.
 
 Nesting is an authoring concept only; at runtime everything inlines into one flat graph.
 
-## The authoring loop: the document is truth, `send` is audition
+## The authoring loop: the document is truth, `send` is audition <!-- lanes: skills,mcp,web -->
 
 A conversational edit works on one thing: the **instrument document**. Its semantics
 ([ADR-0045](../adr/0045-whole-document-edit-contract.md) §5):
@@ -46,6 +46,19 @@ A conversational edit works on one thing: the **instrument document**. Its seman
   everything else — rewired inputs, changed params, new neighbors — leaves a survivor a
   survivor.
 
+Two pieces of loop conduct, in every lane
+([ADR-0059](../adr/0059-cross-lane-grounding-unification.md) §2):
+
+- **Sanity-check that it's audible.** `validate` proves the graph is *legal*, **not that it
+  makes sound** — a disconnected oscillator or an unfed output pipe validates clean and
+  renders silence. Before reporting a reshape done, check generator→output reach: is there a
+  path from a sound source to a declared `interface` output, and are the voicer's
+  `freq`/`gate` reaching the voice chain? Warnings (an unresolvable sample, a dark subpatch)
+  are advisory — the document is still valid.
+- **When unsure of a port, `describe` it — never infer.** Port, input, and param names come
+  from the live operator set, not from memory or a sketch; a guessed name costs a repair
+  round.
+
 Two swap rules of thumb ([ADR-0050](../adr/0050-swap-sonic-rudeness-ramp.md)):
 
 - **A swap ducks the output for ~20ms.** The engine ramps the master to silence, installs
@@ -59,7 +72,7 @@ Two swap rules of thumb ([ADR-0050](../adr/0050-swap-sonic-rudeness-ramp.md)):
   a swap with a corrective `send`.
 
 <a id="type-system"></a>
-## One `Input`, one `Arg` type ([ADR-0030](../adr/0030-osc-as-all-data-one-message-type.md))
+## One `Input`, one `Arg` type ([ADR-0030](../adr/0030-osc-as-all-data-one-message-type.md)) <!-- lanes: skills,mcp,web -->
 
 Every functional input an operator consumes is **one `Input`**, declared once, carrying one
 piece of typed data — its **`Arg`** type, drawn from one closed, central enum. How the value is
@@ -89,7 +102,7 @@ the declared `Arg` type (`PortKind` in `plan.rs`). Reading older code: **Signal*
 ADR-0028 `shape`/temporality axis is gone). A runtime integer is a rounded `f32` or an enum; `I32` is
 an OSC primitive `Arg`, but no operator declares an `Int` port.
 
-### Form is declared, not inferred: `f32` is a held Value, `f32_buffer` is a Signal
+### Form is declared, not inferred: `f32` is a held Value, `f32_buffer` is a Signal <!-- lanes: skills,mcp,web -->
 
 The author picks a numeric port's form by which keyword it declares
 ([ADR-0031](../adr/0031-float-resolves-to-value-or-signal-by-wiring.md)):
@@ -113,7 +126,7 @@ So form follows the processing model: per-sample DSP (osc, filter, `mul_f32_sign
 `cv`) declares `f32_buffer` and reads a slice; block-rate controls (a clock's `tempo`, a sequencer's
 `length`, a gate edge) declare `f32` and read the held value.
 
-### Wiring across forms: one legal coercion, the rest hard errors
+### Wiring across forms: one legal coercion, the rest hard errors <!-- lanes: skills,mcp,web -->
 
 Each wire is checked **locally** at Instantiate against the two ports' forms (`check_wire_forms` in
 `plan.rs`, surfacing `PlanError::FormMismatch`). The rules:
@@ -132,7 +145,7 @@ Each wire is checked **locally** at Instantiate against the two ports' forms (`c
 Every cross-*type* crossing still needs an operator: `f32 → enum` is a quantizer; `f32 → Note` is a
 threshold/trigger; `slew`/`glide` are `f32 → f32` shapers (the `m2s` gap-filling modes).
 
-### `Constant` — instantiate-time configuration, not an `Input`
+### `Constant` — instantiate-time configuration, not an `Input` <!-- lanes: skills,mcp,web -->
 
 A **`Constant`** configures an operator *instance* at instantiate time and never changes on the
 data path. The boundary is precise: **a value is a `Constant` iff changing it would rebuild the
@@ -145,7 +158,7 @@ declared with the contract's **`constant: <param>`** keyword (ADR-0032) and live
 are enums, but changing them rebuilds nothing — only which coefficients run — so they are **runtime
 enum inputs**, switchable live over OSC. Only genuinely topology-fixing values are `Constant`s.
 
-## The Instrument format (`crates/reuben-core/src/format/`)
+## The Instrument format (`crates/reuben-core/src/format/`) <!-- lanes: skills,mcp,web -->
 
 An Instrument is plain JSON data ([ADR-0028](../adr/0028-one-input-shape.md); **format v3**
 since [ADR-0043](../adr/0043-surface-docs-decouple-presentation-from-instruments.md)): `nodes` (operator
@@ -185,7 +198,7 @@ Other errors are specific: `UnknownInput`, `BadInputValue`, `TypeMismatch`,
 `ConstantInInputs` (a `Constant` placed in `inputs`), `UnknownConfig`, `AmbiguousWire`. See
 `instruments/*.json` for worked examples.
 
-### The `interface` block: named pipes at the boundary ([ADR-0038](../adr/0038-interface-pipes-and-the-device-layer.md))
+### The `interface` block: named pipes at the boundary ([ADR-0038](../adr/0038-interface-pipes-and-the-device-layer.md)) <!-- lanes: skills,mcp,web -->
 
 `interface.inputs` / `interface.outputs` entries are **named pipes** — the single boundary
 mechanism at every graph level, with the wiring direction **flipped** relative to the v1
@@ -285,7 +298,7 @@ ports — so the host Voicer can drive and tap it through the boundary. Hosted t
 (`interface` is real wiring the engine type-checks — the contract a surface doc binds to,
 never surface metadata itself.) See `instruments/default.json` + `instruments/voices/default-voice.json`.
 
-### Nesting: a `subpatch` node inlined at build ([ADR-0034](../adr/0034-instrument-nesting.md))
+### Nesting: a `subpatch` node inlined at build ([ADR-0034](../adr/0034-instrument-nesting.md)) <!-- lanes: skills,mcp,web -->
 
 A **`subpatch`** node references a nested instrument the same way, by a **`patch`** field naming an
 instrument JSON in `resources`. At build the child is resolved recursively and **inlined**: its
@@ -344,7 +357,7 @@ presentation lives in a surface doc read by the
 [`control-surface` skill](../../.claude/skills/control-surface/SKILL.md) and by any host-side
 renderer (`instruments/groovebox.json` + `surfaces/groovebox.json` are the worked pair).
 
-## The sample workflow: "use this sample" is a filesystem gesture
+## The sample workflow: "use this sample" is a filesystem gesture <!-- lanes: skills,mcp -->
 
 No resource bytes cross the tool surface — there is no upload tool, by decision
 ([ADR-0049](../adr/0049-no-resource-bytes-over-mcp.md)). The agent handles the bytes itself:
@@ -363,7 +376,7 @@ No resource bytes cross the tool surface — there is no upload tool, by decisio
    undecodable file surfaces the same way in the swap report as the dark-degrade warning:
    announced, not discovered.
 
-## "Audio vs control" is boundary metadata, not a type
+## "Audio vs control" is boundary metadata, not a type <!-- lanes: skills,mcp,web -->
 
 Collapsing audio, CV, and control into one `f32_buffer` Signal means the engine treats every
 `f32_buffer` alike. The authoring *intent* — "this is an audio/CV cable" vs "this is a control knob" —
@@ -371,7 +384,7 @@ that the surface resolvers and patcher care about lives at the **graph boundary*
 interface input pipe with a declared range and default; a surface doc binds it to a widget),
 never as a runtime type.
 
-## Addressing
+## Addressing <!-- lanes: skills,mcp,web -->
 
 Every node has an OSC **address**, derived from graph structure by default. A Message targets a
 node by address prefix and an **input port by name** — always addressed explicitly as
@@ -383,7 +396,7 @@ never a silent snap to the default. A `Note` input takes its args (`/voicer/note
 Full wildcard dispatch (`/drums/*/decay`) is designed but not built — today a Message targets at
 most one node ([ADR-0005](../adr/0005-osc-namespace-and-wildcards.md)).
 
-## Invariants you must not break
+## Invariants you must not break <!-- lanes: skills,mcp,web -->
 
 - **Determinism** — output is bit-identical regardless of executor or thread interleaving
   ([ADR-0001](../adr/0001-unified-block-graph-execution.md)). No wall-clock, no RNG without
@@ -404,7 +417,7 @@ most one node ([ADR-0005](../adr/0005-osc-namespace-and-wildcards.md)).
   Render only ever reads an immutable Plan
   ([ADR-0012](../adr/0012-boundary-and-threading.md)).
 
-## ADR index
+## ADR index <!-- lanes: skills,mcp -->
 
 The decisions and reasoning behind all of the above live in [docs/adr/](../adr/) — start
 there when a contract's *why* is unclear.
