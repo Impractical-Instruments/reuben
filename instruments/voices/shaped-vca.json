@@ -1,0 +1,106 @@
+{
+  "format_version": 3,
+  "instrument": "shaped-vca",
+  "doc": "Shaped VCA (ADR-0057 seed 1): a gate fires an ADSR envelope whose linear CV is bent through an x-squared perceptual volume curve and multiplied into the audio path -- the universal amplitude tail for any oscillator or noise source. Wire a source into `audio` and a gate into `gate`; the ADSR pipes (attack/decay/sustain/release, canonical names per ADR-0058) default to the envelope operator's own contract defaults, so an untouched reference behaves like a bare envelope. Outputs: `audio` (the enveloped source), `active` (the envelope's liveness Value, for a voicer face), `cv` (the shaped x-squared amp CV -- feed a second `mul_f32_signal` to fan one envelope across two sources, e.g. a snare's noise + tone), and `env` (the raw linear envelope CV -- feed pitch drops and other unshaped modulation).",
+  "interface": {
+    "inputs": {
+      "audio": {
+        "type": "f32_buffer"
+      },
+      "gate": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "attack": {
+        "type": "f32",
+        "default": 0.01,
+        "min": 0.001,
+        "max": 5.0,
+        "unit": "s"
+      },
+      "decay": {
+        "type": "f32",
+        "default": 0.1,
+        "min": 0.001,
+        "max": 5.0,
+        "unit": "s"
+      },
+      "sustain": {
+        "type": "f32",
+        "default": 0.7,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "release": {
+        "type": "f32",
+        "default": 0.2,
+        "min": 0.001,
+        "max": 5.0,
+        "unit": "s"
+      }
+    },
+    "outputs": {
+      "active": {
+        "from": "/env.active"
+      },
+      "audio": {
+        "from": "/vca.out"
+      },
+      "cv": {
+        "from": "/curve.out"
+      },
+      "env": {
+        "from": "/env.cv"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "type": "envelope",
+      "address": "/env",
+      "doc": "The ADSR -> linear CV. Every contour input rides its interface pipe.",
+      "inputs": {
+        "attack": {
+          "from": "/attack"
+        },
+        "decay": {
+          "from": "/decay"
+        },
+        "gate": {
+          "from": "/gate"
+        },
+        "release": {
+          "from": "/release"
+        },
+        "sustain": {
+          "from": "/sustain"
+        }
+      }
+    },
+    {
+      "type": "power_f32_signal",
+      "address": "/curve",
+      "doc": "Exponential-style volume curve (x^2) on the linear CV.",
+      "inputs": {
+        "x": {
+          "from": "/env.cv"
+        }
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/vca",
+      "doc": "VCA: audio in (a) * shaped amp CV (b).",
+      "inputs": {
+        "a": {
+          "from": "/audio"
+        },
+        "b": {
+          "from": "/curve"
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,86 @@
+{
+  "format_version": 3,
+  "instrument": "good-button",
+  "doc": "Good Button fan-out (ADR-0057 seed 6): one 0..1 `knob`, smoothed against zipper noise and fanned through two ranged maps into CV Signals -- the composition behind every Good Button artifact (a brightness knob onto filter cutoff + resonance, a tone knob onto a DJ-filter position). The recipe ends at the CVs; the parent wires the targets on. `cv` is the primary map (Exponential -- perceptually even for Hz-like targets; range rides `out_min`/`out_max`, resting at a cutoff-shaped 600..11000). `cv2` is the secondary map (Linear; range rides `out2_min`/`out2_max`, resting at a resonance-shaped 0.1..0.7) -- leave it unconsumed for a one-target knob.",
+  "interface": {
+    "inputs": {
+      "knob": {
+        "type": "f32",
+        "default": 0.5,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "out_min": {
+        "type": "f32",
+        "default": 600.0
+      },
+      "out_max": {
+        "type": "f32",
+        "default": 11000.0
+      },
+      "out2_min": {
+        "type": "f32",
+        "default": 0.1
+      },
+      "out2_max": {
+        "type": "f32",
+        "default": 0.7
+      }
+    },
+    "outputs": {
+      "cv": {
+        "from": "/map_a.out"
+      },
+      "cv2": {
+        "from": "/map_b.out"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "type": "m2s",
+      "address": "/knob_cv",
+      "doc": "The `knob` pipe's held value [0,1] smoothed into a CV Signal, fanned to the two ranged maps below.",
+      "inputs": {
+        "in": {
+          "from": "/knob"
+        },
+        "mode": "Smooth",
+        "time": 0.03
+      }
+    },
+    {
+      "type": "map_f32_signal",
+      "address": "/map_a",
+      "doc": "knob [0,1] -> [out_min, out_max], exponential (perceptually even) -> the `cv` output.",
+      "inputs": {
+        "curve": "Exponential",
+        "in": {
+          "from": "/knob_cv"
+        },
+        "out_max": {
+          "from": "/out_max"
+        },
+        "out_min": {
+          "from": "/out_min"
+        }
+      }
+    },
+    {
+      "type": "map_f32_signal",
+      "address": "/map_b",
+      "doc": "knob [0,1] -> [out2_min, out2_max], linear -> the `cv2` output.",
+      "inputs": {
+        "in": {
+          "from": "/knob_cv"
+        },
+        "out_max": {
+          "from": "/out2_max"
+        },
+        "out_min": {
+          "from": "/out2_min"
+        }
+      }
+    }
+  ]
+}
