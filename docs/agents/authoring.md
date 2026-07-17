@@ -59,6 +59,17 @@ Two pieces of loop conduct, in every lane
   from the live operator set, not from memory or a sketch; a guessed name costs a repair
   round.
 
+One more piece of authoring conduct that rides the same whole-document re-emission
+([ADR-0057](../adr/0057-instrument-reuse-interface-makes-the-role.md) §3):
+
+- **Keep `doc` true when you reshape.** An instrument's reuse story — its **recipe-role** —
+  is the first sentence of its own top-level `doc` field: what it is, and when to reach for
+  it. Under the whole-document contract every reshape re-emits `doc` too, mechanically
+  re-presenting the role line for revision on every edit — keep it true: revise it whenever
+  the reshape changes what the instrument is or when it earns reaching for. The role is
+  trusted for **selection only**; the `interface` block stays the mechanically-enforced
+  face, so a stale role line can cost a bad-sounding pick, never a mis-wired document.
+
 Two swap rules of thumb ([ADR-0050](../adr/0050-swap-sonic-rudeness-ramp.md)):
 
 - **A swap ducks the output for ~20ms.** The engine ramps the master to silence, installs
@@ -356,6 +367,33 @@ re-saving strips it. Player-facing controls are **interface input pipes** now; t
 presentation lives in a surface doc read by the
 [`control-surface` skill](../../.claude/skills/control-surface/SKILL.md) and by any host-side
 renderer (`instruments/groovebox.json` + `surfaces/groovebox.json` are the worked pair).
+
+## Instrument reuse: the recipe-role and the library index ([ADR-0057](../adr/0057-instrument-reuse-interface-makes-the-role.md)) <!-- lanes: skills,mcp,web -->
+
+There is one noun — **instrument**. A "recipe" is not a second kind of file: it is a role an
+instrument plays *while referenced* by another via `subpatch` (above) — same format, same
+loader, same `validate`, nothing extra to keep true.
+
+- **The recipe-role lives in the document itself.** The first sentence of an instrument's
+  top-level `doc` field states what it is and when to reach for it, in the domain language —
+  authored once, at creation, then kept true by re-emission (the loop-conduct bullet above).
+  It is **trusted for selection only**: the `interface` block is always the
+  mechanically-enforced face (pipe names, `Arg` types, defaults, outputs) — no consumer may
+  take wiring facts from prose.
+- **Discovery is a generated index, not a curated list.** `instruments/index.md` is one
+  signature line per instrument in the available-set — name, role line, face signature
+  (`(inputs) → outputs`) — projected mechanically from the documents themselves (regenerate
+  with `cargo run -p reuben-native --example gen_library_index`; a staleness test fails the
+  build if it drifts, so it is never hand-kept). Check it for a close-enough child before
+  drafting a chain from scratch, and reference it by id through a `subpatch` node rather than
+  re-authoring its shape inline. Fetch the full document only when a role line seems off —
+  reference id + face is the whole contract; no internals are needed to reuse one.
+- **Canonical pipe naming** is a recipe-authoring guideline
+  ([ADR-0058](../adr/0058-intent-vocabulary-word-to-move-table.md) §2): give a reusable
+  instrument's face pipes the same names the intent vocabulary's moves target (`cutoff`,
+  `tone`, `decay`, `drive`, …) wherever the pipe proxies that move, so the vocabulary's
+  type-keyed rows transfer to the face by name instead of needing a second,
+  instrument-specific mapping.
 
 ## The sample workflow: "use this sample" is a filesystem gesture <!-- lanes: skills,mcp -->
 
