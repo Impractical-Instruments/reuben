@@ -388,6 +388,11 @@ loader, same `validate`, nothing extra to keep true.
   drafting a chain from scratch, and reference it by id through a `subpatch` node rather than
   re-authoring its shape inline. Fetch the full document only when a role line seems off —
   reference id + face is the whole contract; no internals are needed to reuse one.
+- **Not every idiom is a library entry.** Clock scaffolds and poly scaffolds compose *around*
+  a voice rather than presenting a reusable face, so they stay prompt-side material, never a
+  library entry (ADR-0057 §1) — there is no index line for them, and none is coming. The
+  worked self-playing idiom: add a `clock` + `sequencer` feeding the voicer, one sequencer per
+  voice on a shared clock, as in `instruments/groovebox.json`.
 - **Canonical pipe naming** is a recipe-authoring guideline
   ([ADR-0058](../adr/0058-intent-vocabulary-word-to-move-table.md) §2): give a reusable
   instrument's face pipes the same names the intent vocabulary's moves target (`cutoff`,

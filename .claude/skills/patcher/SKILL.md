@@ -36,14 +36,14 @@ Run all `reuben` commands from the repo root.
 
 2. **Draft the graph.** Check `instruments/index.md` (the generated library index, ADR-0057
    §4 — one line per available instrument: role + face signature) for a close-enough
-   instrument before drafting a chain from scratch; reference it by id through a `subpatch`
-   node rather than re-authoring its shape inline. Otherwise draft against an existing
-   `instruments/*.json` (e.g. `chord-player.json`) rather than a blank file. The format rules
-   the loader enforces — node `inputs` (literals vs wire-refs) and `config`, the wire-form
-   rules and their one implicit coercion, `Constant`s, `interface` pipes, `resources`,
-   instrument reuse and the recipe-role — are the **authoring guide's** content, not this
-   skill's: read [docs/agents/authoring.md](../../docs/agents/authoring.md) (served to MCP
-   clients as `reuben://guide/authoring`) and draft against it so step 3 passes first try.
+   instrument before drafting a chain from scratch, or draft against an existing
+   `instruments/*.json` (e.g. `chord-player.json`) rather than a blank file. Reuse mechanics
+   (referencing an index hit by id via `subpatch`), the format rules the loader enforces —
+   node `inputs` (literals vs wire-refs) and `config`, the wire-form rules and their one
+   implicit coercion, `Constant`s, `interface` pipes, `resources` — and the recipe-role are
+   the **authoring guide's** content, not this skill's: read
+   [docs/agents/authoring.md](../../docs/agents/authoring.md) (served to MCP clients as
+   `reuben://guide/authoring`) and draft against it so step 3 passes first try.
 
 3. **Validate — loop until `ok`.**
    `cargo run -q -p reuben-native --bin reuben -- validate <path> --json`
