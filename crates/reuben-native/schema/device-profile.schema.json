@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://reuben.dev/schema/device-profile.schema.json",
   "title": "reuben device profile",
-  "description": "The --io-map <file> document (ADR-0038 §6/§7): binds an instrument's logical master channels to a real device, outside the patch, so the same instrument plays on any rig. Every field is optional; an empty document (or omitting --io-map) means identity map + the default device, bit-identical to today's behavior. Hand-maintained (unlike instrument.schema.json, this is not generated from the operator Registry) — keep in sync with crates/reuben-native/src/profile.rs.",
+  "description": "The --io-map <file> document (ADR-0038 §6/§7): binds an instrument's logical master channels to a real device, outside the patch, so the same instrument plays on any rig. Every field is optional; an empty document (or omitting --io-map) means identity map + the default device, bit-identical to today's behavior. Hand-maintained (not generated from the operator Registry) — keep in sync with crates/reuben-native/src/profile.rs.",
   "type": "object",
   "additionalProperties": false,
   "properties": {

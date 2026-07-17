@@ -150,8 +150,7 @@ A typical first session, by hand or by skill:
    ```
    This is the same introspection the `patcher` skill reads ([ADR-0020](docs/adr/0020-introspection-and-patcher-skill.md)).
 2. **Patch.** Copy an instrument in `instruments/`, rewire node `inputs` (a literal or a wire-ref `{"from":"/node.port"}`), or ask the
-   `patcher` skill for a sound. Documents are validated against a JSON Schema generated from
-   the operators (`crates/reuben-core/schema/instrument.schema.json`).
+   `patcher` skill for a sound.
 3. **Validate before you play** — load + plan with no audio, surfacing errors/warnings:
    ```sh
    cargo run -p reuben-native --bin reuben -- validate instruments/my-rig.json
