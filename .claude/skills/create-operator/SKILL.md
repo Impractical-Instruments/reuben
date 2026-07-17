@@ -140,6 +140,6 @@ Run all `reuben`/`cargo` commands from the repo root.
 ## Report
 
 End with: the operator's type name + one-line behavior, its final descriptor (ports/params), the
-gate results (`cargo test` green, schema regenerated, `describe`/`validate` confirmations), and the
+gate results (`cargo test` green, `describe`/`validate` confirmations), and the
 honest audible status — whether it was ear-checked or still needs one. Note that `sync-docs` should
 sweep the prose, and `patcher` can now use the operator in instruments.
