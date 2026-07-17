@@ -1,8 +1,13 @@
-//! Integration test for the MCP stdio resource surface (#319 verification): spawn the real shim
-//! binary, complete the `initialize` handshake, and drive `resources/list` + `resources/read` over
-//! newline-delimited JSON-RPC — the actual protocol boundary the client sees, not an in-process
-//! shortcut. Mirrors the tool-surface harness in `stdio_tools_list.rs`, with the same watchdog so a
-//! regression fails loudly instead of hanging CI.
+//! Integration test for the MCP stdio resource surface (#319 verification, extended by R9 #466 to
+//! the vocabulary + library-index resources): spawn the real shim binary, complete the
+//! `initialize` handshake, and drive `resources/list` + `resources/read` over newline-delimited
+//! JSON-RPC — the actual protocol boundary the client sees, not an in-process shortcut. Mirrors the
+//! tool-surface harness in `stdio_tools_list.rs`, with the same watchdog so a regression fails
+//! loudly instead of hanging CI.
+//!
+//! The tier-2 acceptance this file rides (ADR-0059 §8): resources served byte-equal to the
+//! checkout, the retired instrument-JSON-Schema resource (ADR-0059 §4) absent, and every
+//! `INSTRUCTIONS` pointer resolves.
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
@@ -10,6 +15,20 @@ use std::sync::mpsc;
 use std::time::Duration;
 
 use serde_json::Value;
+
+/// The committed checkout artifacts — compile-time bound so a deleted or stale file fails as
+/// loudly as a byte mismatch. Same relative depth from `crates/reuben-mcp/tests/` as the
+/// staleness tests that keep these files honest (`crates/reuben-core/tests/vocabulary.rs`,
+/// `crates/reuben-native/tests/library_index.rs`).
+const COMMITTED_VOCABULARY: &str = include_str!("../../../docs/agents/vocabulary.md");
+const COMMITTED_LIBRARY_INDEX: &str = include_str!("../../../instruments/index.md");
+
+/// The retired resource URI (ADR-0059 §4): the instrument JSON Schema resource, deleted outright.
+/// Built by compile-time concatenation — the same `concat!` trick `VOCABULARY_PATH`/
+/// `LIBRARY_INDEX_PATH` use in `src/lib.rs`, and the same idea as `no_dangling_references.rs`'s
+/// own retired tokens — so this literal doesn't trip that test's live-text tripwire for the very
+/// machinery it proves absent here.
+const RETIRED_SCHEMA_RESOURCE_URI: &str = concat!("reuben://", "schema/instrument");
 
 /// Drive the shim through initialize → initialized → the given requests over stdio and return the
 /// raw stdout. Requests are buffered into the child's stdin, which is then closed; on EOF the shim
@@ -64,7 +83,7 @@ fn response_with_id(out: &str, id: i64) -> Value {
 }
 
 #[test]
-fn resources_list_advertises_the_guide_only() {
+fn resources_list_advertises_guide_vocabulary_and_index_only() {
     let out = drive(&[r#"{"jsonrpc":"2.0","id":2,"method":"resources/list","params":{}}"#]);
     let response = response_with_id(&out, 2);
 
@@ -84,16 +103,35 @@ fn resources_list_advertises_the_guide_only() {
         })
         .collect();
 
-    // Exactly the guide — an exact-set assertion, so the retired instrument-JSON-Schema
-    // resource (deleted outright, ADR-0059 §4) can never quietly reappear on the wire.
+    // Exactly the guide + vocabulary + index — an exact-set assertion, so the retired
+    // instrument-JSON-Schema resource (deleted outright, ADR-0059 §4) can never quietly
+    // reappear on the wire, and no fourth resource sneaks in unnoticed either.
     assert_eq!(
         advertised,
-        vec![(
-            reuben_mcp::GUIDE_RESOURCE_URI.to_string(),
-            reuben_mcp::GUIDE_RESOURCE_MIME.to_string(),
-        )],
-        "resources/list must advertise exactly the authoring guide (ADR-0048 §7, as amended by \
-         ADR-0059): {advertised:?}"
+        vec![
+            (
+                reuben_mcp::GUIDE_RESOURCE_URI.to_string(),
+                reuben_mcp::GUIDE_RESOURCE_MIME.to_string(),
+            ),
+            (
+                reuben_mcp::VOCABULARY_RESOURCE_URI.to_string(),
+                reuben_mcp::VOCABULARY_RESOURCE_MIME.to_string(),
+            ),
+            (
+                reuben_mcp::LIBRARY_INDEX_RESOURCE_URI.to_string(),
+                reuben_mcp::LIBRARY_INDEX_RESOURCE_MIME.to_string(),
+            ),
+        ],
+        "resources/list must advertise exactly guide + vocabulary + library index (ADR-0048 §7, \
+         as amended by ADR-0059 §3/§6): {advertised:?}"
+    );
+
+    // Named explicitly too (ADR-0059 §8's tier-2 wording): the retired schema URI never appears.
+    assert!(
+        !advertised
+            .iter()
+            .any(|(uri, _)| *uri == RETIRED_SCHEMA_RESOURCE_URI),
+        "the retired {RETIRED_SCHEMA_RESOURCE_URI} resource must never be advertised: {advertised:?}"
     );
 }
 
@@ -130,6 +168,102 @@ fn read_authoring_guide_is_nonempty_markdown() {
         text.contains('#'),
         "the authoring guide is markdown — it should carry at least one heading"
     );
+}
+
+#[test]
+fn read_vocabulary_is_byte_equal_to_the_checkout() {
+    // ADR-0059 §8 tier-2: the resource served over the wire is byte-equal with the checkout —
+    // read from disk at request time (ADR-0051 §4), not baked into the binary, so this also
+    // proves the crate isn't serving a stale embedded copy.
+    let (uri, mime, text) = read_resource(reuben_mcp::VOCABULARY_RESOURCE_URI);
+    assert_eq!(uri, reuben_mcp::VOCABULARY_RESOURCE_URI);
+    assert_eq!(mime, reuben_mcp::VOCABULARY_RESOURCE_MIME);
+    assert_eq!(
+        text, COMMITTED_VOCABULARY,
+        "the served vocabulary must be byte-equal to docs/agents/vocabulary.md"
+    );
+}
+
+#[test]
+fn read_library_index_is_byte_equal_to_the_checkout() {
+    // ADR-0059 §8 tier-2: same byte-equal contract as the vocabulary, for the library index.
+    let (uri, mime, text) = read_resource(reuben_mcp::LIBRARY_INDEX_RESOURCE_URI);
+    assert_eq!(uri, reuben_mcp::LIBRARY_INDEX_RESOURCE_URI);
+    assert_eq!(mime, reuben_mcp::LIBRARY_INDEX_RESOURCE_MIME);
+    assert_eq!(
+        text, COMMITTED_LIBRARY_INDEX,
+        "the served library index must be byte-equal to instruments/index.md"
+    );
+}
+
+#[test]
+fn read_retired_schema_resource_is_a_resource_not_found_error() {
+    // ADR-0059 §8 tier-2, named explicitly by the ticket: the retired schema resource URI is
+    // absent — not just missing from `resources/list`, but genuinely unreadable.
+    let request = format!(
+        r#"{{"jsonrpc":"2.0","id":9,"method":"resources/read","params":{{"uri":"{RETIRED_SCHEMA_RESOURCE_URI}"}}}}"#
+    );
+    let out = drive(&[&request]);
+    let response = response_with_id(&out, 9);
+    assert!(
+        response.get("result").is_none(),
+        "the retired schema resource must not return a result: {response}"
+    );
+    assert_eq!(
+        response["error"]["code"],
+        serde_json::json!(-32002),
+        "reading the retired schema resource must be resource_not_found: {response}"
+    );
+}
+
+#[test]
+fn every_instructions_pointer_resolves() {
+    // ADR-0059 §8 tier-2, named explicitly by the ticket: every resource `INSTRUCTIONS` points at
+    // must actually resolve over `resources/read`. Checked against the three public resource-URI
+    // constants directly — not a hand-rolled parse of the prose, which would silently mis-parse a
+    // future edit that ends a URI with punctuation the parser didn't anticipate — so a dropped
+    // pointer sentence still fails this test loudly. One shim process: the `initialize` response
+    // (id 1, read live off the wire — not the private INSTRUCTIONS constant) plus one
+    // `resources/read` per URI, pipelined under distinct ids rather than spawning a child per
+    // lookup.
+    let uris = [
+        reuben_mcp::GUIDE_RESOURCE_URI,
+        reuben_mcp::VOCABULARY_RESOURCE_URI,
+        reuben_mcp::LIBRARY_INDEX_RESOURCE_URI,
+    ];
+    let requests: Vec<String> = uris
+        .iter()
+        .enumerate()
+        .map(|(i, uri)| {
+            let id = 10 + i as i64;
+            format!(
+                r#"{{"jsonrpc":"2.0","id":{id},"method":"resources/read","params":{{"uri":"{uri}"}}}}"#
+            )
+        })
+        .collect();
+    let request_refs: Vec<&str> = requests.iter().map(String::as_str).collect();
+    let out = drive(&request_refs);
+
+    let init = response_with_id(&out, 1);
+    let instructions = init["result"]["instructions"]
+        .as_str()
+        .unwrap_or_else(|| panic!("initialize result missing `instructions`: {init}"));
+
+    for (i, uri) in uris.iter().enumerate() {
+        assert!(
+            instructions.contains(uri),
+            "INSTRUCTIONS must point at {uri}: {instructions:?}"
+        );
+        let id = 10 + i as i64;
+        let response = response_with_id(&out, id);
+        let text = response["result"]["contents"][0]["text"]
+            .as_str()
+            .unwrap_or_else(|| panic!("resources/read({uri}) contents[0] is not text: {response}"));
+        assert!(
+            !text.trim().is_empty(),
+            "the instructions pointer {uri} must resolve to non-empty content"
+        );
+    }
 }
 
 #[test]
