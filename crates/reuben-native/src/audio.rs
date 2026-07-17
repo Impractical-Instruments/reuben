@@ -71,8 +71,9 @@ const DIAGNOSTICS_LOG_INTERVAL: Duration = Duration::from_secs(5);
 /// (B1). The map mailbox is one-in-flight (ADR-0046 §2): install is refused until the *previous*
 /// swap's displaced map has come home, which the live render callback posts within ~one master-gain
 /// ramp (ADR-0050). This bound only bites when audio has genuinely stopped — and even then
-/// [`apply_output_map`]'s total read keeps a stale-width map safe. Generous, matching the structure
-/// channel's engine-reclaim bound.
+/// [`apply_output_map`]'s total read keeps a stale-width map *panic*-free (it never indexes out of
+/// range), not misroute-free: a callback that recovers after the drop routes at the stale width
+/// until the next swap re-syncs. Generous, matching the structure channel's engine-reclaim bound.
 const RENDER_CONFIG_INSTALL_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// Things that can go wrong opening the audio stream.
@@ -532,7 +533,9 @@ impl RenderConfigPublisher for NativeRenderConfig {
             // deadline rather than dropping: the retiree arrives promptly, and the map is guaranteed
             // installed before the swap returns, so the callback promotes it the moment the engine
             // reaches the new width (no desync window). A timeout only bites if audio has genuinely
-            // stopped, and even then `apply_output_map`'s total read keeps the stale map safe.
+            // stopped, and even then `apply_output_map`'s total read keeps the stale map *panic*-free
+            // — not misroute-free: a callback recovering after the drop routes at the stale width, at
+            // full gain, until the next swap re-syncs (impossible under live audio; self-healing).
             let deadline = Instant::now() + RENDER_CONFIG_INSTALL_TIMEOUT;
             loop {
                 let _ = mailbox.try_reclaim();
@@ -542,7 +545,9 @@ impl RenderConfigPublisher for NativeRenderConfig {
                         cfg = rejected;
                         if Instant::now() >= deadline {
                             // Audio isn't consuming maps; drop this update (off the audio thread).
-                            // The old map keeps working and `apply_output_map`'s total read is safe.
+                            // The old map keeps working; `apply_output_map`'s total read stays
+                            // panic-free, though a recovered callback misroutes at the stale width
+                            // until the next swap re-syncs.
                             break;
                         }
                         std::thread::sleep(Duration::from_millis(1));
