@@ -1,5 +1,12 @@
 # ADR-0048: MCP tool surface and contracts
 
+> **§7 amended by [ADR-0059](0059-cross-lane-grounding-unification.md).** The resource surface
+> changes: `reuben://schema/instrument` is **deleted** — the instrument JSON Schema has no
+> grounding role in any lane, and its one real job (the registry guard) is same-commit
+> native≡wasm describe parity instead (ADR-0059 §4) — while the vocabulary view and the
+> generated library index **join** the set (ADR-0059 §3/§6). The guide resource, the
+> no-prompts posture, and everything else in §7 stand.
+
 > Renumbered from 0047 (2026-07-11) — that number was already held by
 > [0047-normalization-is-a-type.md](0047-normalization-is-a-type.md). External references dated
 > 2026-07-10/11 (map [#270](https://github.com/Impractical-Instruments/reuben/issues/270), ticket

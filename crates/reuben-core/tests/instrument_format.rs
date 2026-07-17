@@ -1,5 +1,4 @@
-//! Integration: the JSON instrument format produces a working, deterministic rig, and the
-//! committed schema stays in sync with the operator descriptors.
+//! Integration: the JSON instrument format produces a working, deterministic rig.
 
 use reuben_core::message::{Arg, Message};
 use reuben_core::plan::Plan;
@@ -14,7 +13,6 @@ const METRONOME_JSON: &str = include_str!("fixtures/metronome.json");
 const SEQUENCE_JSON: &str = include_str!("fixtures/sequence.json");
 const GOOD_BUTTON_JSON: &str = include_str!("fixtures/good-button.json");
 const AUTO_FILTER_JSON: &str = include_str!("fixtures/auto-filter.json");
-const COMMITTED_SCHEMA: &str = include_str!("../schema/instrument.schema.json");
 
 /// A filesystem resolver rooted at the frozen `tests/fixtures/` tree, so an instrument-resource (`voice`)
 /// reference (ADR-0032) resolves to its on-disk voice patch. Samples aren't needed by the patches
@@ -316,15 +314,6 @@ fn auto_filter_base_plus_lfo_modulation_sounds_and_wobbles() {
     for (i, (x, y)) in wobble.iter().zip(&again).enumerate() {
         assert_eq!(x.to_bits(), y.to_bits(), "non-deterministic at sample {i}");
     }
-}
-
-#[test]
-fn committed_schema_is_in_sync() {
-    let fresh = reuben_core::schema::generate_pretty(&Registry::builtin());
-    assert_eq!(
-        COMMITTED_SCHEMA, fresh,
-        "schema/instrument.schema.json is stale — run `cargo run -p reuben-core --example gen_schema`"
-    );
 }
 
 #[test]

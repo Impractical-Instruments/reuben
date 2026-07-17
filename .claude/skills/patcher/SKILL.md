@@ -33,8 +33,6 @@ Run all `reuben` commands from the repo root.
      ports, each with its **declared** `Arg` type, range, default, and unit.
      This is what a `subpatch` node referencing that file exposes — wire against these names,
      never the child's internals.
-   The schema at `crates/reuben-core/schema/instrument.schema.json` is the same data as a
-   document shape; `describe` is the per-operator view.
 
 2. **Draft the graph.** Start from a **canonical recipe** (below) or an existing
    `instruments/*.json` (e.g. `chord-player.json`) rather than a blank file. The format rules
@@ -140,7 +138,7 @@ cycle, advisory warning) and describe (list-all, one-op fields, unknown-op error
 | Instrument/Rig graph — nodes, `inputs` (literals + wire-refs), `config`, `interface` pipes (including promoting a player-facing control to an input pipe), resources | **author / edit** (validate before done) |
 | Surface docs (`surfaces/*.json` — presentation binding pipes to widgets, ADR-0043) | **never** — that is the `control-surface` skill; it delegates graph edits back here |
 | New Operator types (Rust) | **never** — that is the `create-operator` skill (ADR-0021) |
-| `instrument.schema.json` / core crates | **never edit** — read the schema for grounding only |
+| Core crates (Rust) | **never edit** — grounding comes from `describe` and the authoring guide |
 
 ## Report
 

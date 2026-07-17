@@ -209,13 +209,7 @@ never hand-writes symbol/index handling.
    `impl Operator` block: `crate::register_operator!(<Type>);` — a compile-time `inventory`
    submission `Registry::builtin()` gathers ([ADR-0024](../adr/0024-compile-time-operator-registration.md)),
    so there is **no central list to edit**. (`grep -rn register_operator! operators/` is the census.)
-4. **Regenerate the schema** so JSON validation knows the new type/inputs:
-   ```sh
-   cargo run -p reuben-core --example gen_schema
-   ```
-   Commit the updated `crates/reuben-core/schema/instrument.schema.json`. The
-   `committed_schema_is_in_sync` test fails if it's stale.
-5. **Test** in the operator module, test-first, with
+4. **Test** in the operator module, test-first, with
    [`OpDriver`](../../crates/reuben-core/src/op_driver.rs) — it drives your operator through the
    **real** engine (`Plan::instantiate` + `Renderer::step_node`), so a test can never drift from how
    the engine actually seeds and steps a node. Address ports by the generated `IN_*` / `OUT_*`

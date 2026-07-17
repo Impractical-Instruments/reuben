@@ -61,8 +61,8 @@ Run all `reuben`/`cargo` commands from the repo root.
 
 4. **Close the gate** — `validate` can't prove DSP is correct, so the gate is richer than the
    patcher's. In order:
-   1. `cargo test -p reuben-core` — your tests (the real oracle), the registry self-registration
-      invariants (your op is gathered, names stay unique + snake_case), and `committed_schema_is_in_sync`.
+   1. `cargo test -p reuben-core` — your tests (the real oracle) and the registry
+      self-registration invariants (your op is gathered, names stay unique + snake_case).
    2. **Register a micro-bench workload** (#30, ADR-0019) — a forcing function in
       [`bench_support.rs`](../../crates/reuben-core/src/bench_support.rs) (`#[cfg(feature = "bench")]`,
       so plain `cargo test` **won't** catch it — only CI's `check` job does) requires every registered
@@ -77,13 +77,11 @@ Run all `reuben`/`cargo` commands from the repo root.
       `apply_recipe` arm. Then prove it: `cargo test -p reuben-core --features bench`
       (`every_operator_has_a_micro_bench_workload`, `iai_list_covers_every_workload`, and
       `every_workload_renders` must pass).
-   3. `cargo run -p reuben-core --example gen_schema` — regenerate + commit the schema (**owned
-      here**: the staleness test fails otherwise, and `patcher` can't use the op until it's listed).
-   4. `cargo clippy -p reuben-core --all-targets` — clean.
-   5. `cargo fmt` — the CI `fmt` gate fails on any unformatted line; run it before you commit.
-   6. `reuben describe <op> --json` — confirm the registered contract matches the freeze.
-   7. `reuben validate <throwaway instrument using it>` — prove it wires in a real graph.
-   8. **Honest audible caveat.** The above prove it compiles, registers, wires, and meets its
+   3. `cargo clippy -p reuben-core --all-targets` — clean.
+   4. `cargo fmt` — the CI `fmt` gate fails on any unformatted line; run it before you commit.
+   5. `reuben describe <op> --json` — confirm the registered contract matches the freeze.
+   6. `reuben validate <throwaway instrument using it>` — prove it wires in a real graph.
+   7. **Honest audible caveat.** The above prove it compiles, registers, wires, and meets its
       written oracle — **not that it sounds right.** When behavior is subjective, recommend an
       ear-check: `patcher` a tiny instrument around it, then `reuben play`.
 
@@ -135,7 +133,6 @@ Run all `reuben`/`cargo` commands from the repo root.
 |---|---|
 | New Operator: Rust impl + descriptor + tests + registration | **author** (TDD `process`, close the gate) |
 | Micro-bench workload (`bench_support.rs` + `micro_iai.rs`) | **register** the new op's `WORKLOADS`/`MICRO_IAI_KINDS`/`#[bench]` entries (part of the gate; CI's `check` job reds without it) |
-| `instrument.schema.json` | **regenerate** via `gen_schema` after the op lands (part of the gate) |
 | Instrument/Rig graphs | **never** — that is the `patcher` skill |
 | Surface docs (`surfaces/*.json`) | **never** — that is the `control-surface` skill (ADR-0043) |
 | authoring.md / operator-dev.md / ARCHITECTURE / README / domain terms | **never inline** — hand to `sync-docs` |

@@ -64,7 +64,7 @@ fn response_with_id(out: &str, id: i64) -> Value {
 }
 
 #[test]
-fn resources_list_advertises_two_uris() {
+fn resources_list_advertises_the_guide_only() {
     let out = drive(&[r#"{"jsonrpc":"2.0","id":2,"method":"resources/list","params":{}}"#]);
     let response = response_with_id(&out, 2);
 
@@ -84,28 +84,16 @@ fn resources_list_advertises_two_uris() {
         })
         .collect();
 
+    // Exactly the guide — an exact-set assertion, so the retired instrument-JSON-Schema
+    // resource (deleted outright, ADR-0059 §4) can never quietly reappear on the wire.
     assert_eq!(
-        advertised.len(),
-        2,
-        "resources/list must advertise exactly the two static resources (ADR-0048 §7): {advertised:?}"
-    );
-    assert!(
-        advertised.contains(&(
-            reuben_mcp::SCHEMA_RESOURCE_URI.to_string(),
-            reuben_mcp::SCHEMA_RESOURCE_MIME.to_string(),
-        )),
-        "resources/list must advertise {} as {}: {advertised:?}",
-        reuben_mcp::SCHEMA_RESOURCE_URI,
-        reuben_mcp::SCHEMA_RESOURCE_MIME,
-    );
-    assert!(
-        advertised.contains(&(
+        advertised,
+        vec![(
             reuben_mcp::GUIDE_RESOURCE_URI.to_string(),
             reuben_mcp::GUIDE_RESOURCE_MIME.to_string(),
-        )),
-        "resources/list must advertise {} as {}: {advertised:?}",
-        reuben_mcp::GUIDE_RESOURCE_URI,
-        reuben_mcp::GUIDE_RESOURCE_MIME,
+        )],
+        "resources/list must advertise exactly the authoring guide (ADR-0048 §7, as amended by \
+         ADR-0059): {advertised:?}"
     );
 }
 
@@ -127,26 +115,6 @@ fn read_resource(uri: &str) -> (String, String, String) {
         .as_str()
         .unwrap_or_else(|| panic!("resources/read({uri}) contents[0] is not text:\n{response}"));
     (block_uri.to_string(), mime.to_string(), text.to_string())
-}
-
-#[test]
-fn read_schema_resource_parses_as_json_schema() {
-    let (uri, mime, text) = read_resource(reuben_mcp::SCHEMA_RESOURCE_URI);
-    assert_eq!(uri, reuben_mcp::SCHEMA_RESOURCE_URI);
-    assert_eq!(mime, reuben_mcp::SCHEMA_RESOURCE_MIME);
-
-    // The body is the instrument JSON Schema: it deserializes, and carries the two markers of a
-    // JSON Schema document — a `$schema` dialect and a top-level `type`.
-    let schema: Value = serde_json::from_str(&text)
-        .unwrap_or_else(|e| panic!("schema body is not JSON: {e}\n{text}"));
-    assert!(
-        schema["$schema"].is_string(),
-        "served schema must declare a `$schema` dialect: {schema}"
-    );
-    assert_eq!(
-        schema["type"], "object",
-        "served schema must have a top-level object `type`: {schema}"
-    );
 }
 
 #[test]
@@ -192,24 +160,7 @@ fn read_unknown_resource_is_a_resource_not_found_error() {
         "the error should name the unknown URI: {response}"
     );
     assert!(
-        message.contains(reuben_mcp::GUIDE_RESOURCE_URI)
-            && message.contains(reuben_mcp::SCHEMA_RESOURCE_URI),
-        "the error should point at the URIs the server does serve: {response}"
-    );
-}
-
-/// Drift guard (#319): the schema SERVED over `reuben://schema/instrument` must equal the committed
-/// `crates/reuben-core/schema/instrument.schema.json` byte-for-byte. The served copy is generated
-/// live from the registry, so if an operator change makes the two diverge this fails — forcing
-/// `cargo run -p reuben-core --example gen_schema` — and the served schema can never be stale.
-#[test]
-fn read_schema_resource_matches_committed() {
-    let (_, _, served) = read_resource(reuben_mcp::SCHEMA_RESOURCE_URI);
-    let committed = include_str!("../../reuben-core/schema/instrument.schema.json");
-    assert_eq!(
-        served, committed,
-        "the served instrument schema has drifted from the committed \
-         crates/reuben-core/schema/instrument.schema.json — regenerate it with \
-         `cargo run -p reuben-core --example gen_schema`"
+        message.contains(reuben_mcp::GUIDE_RESOURCE_URI),
+        "the error should point at the URI the server does serve: {response}"
     );
 }

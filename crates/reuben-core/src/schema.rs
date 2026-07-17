@@ -1,10 +1,12 @@
 //! Schema generation — the JSON Schema for instrument documents, derived from the
 //! operator descriptors (ADR-0004).
 //!
-//! The schema is one source of truth: file validation, editor autocomplete, and AI
-//! grounding all read it. Because it is generated from the [`Registry`], it cannot drift
-//! from the operators (a committed copy is checked for staleness by a test + regenerated
-//! by `cargo run -p reuben-core --example gen_schema`).
+//! Nothing ships a rendered copy: the schema has no grounding role in any lane (agents need
+//! prose rules + ports + a validator loop, not a JSON Schema to eyeball), and the registry
+//! guard its committed rendering once carried is same-commit native≡wasm describe parity
+//! instead (ADR-0059 §4). The generator survives because it is derived from the [`Registry`]
+//! descriptors — a future constrained-decoding experiment regenerates on demand; the
+//! rendering earns no permanent residency.
 //!
 //! Per-operator validation is emitted as `if`/`then` branches keyed on the node `type`, so each
 //! node's `inputs` (literals or wire-refs) and `config` (constants) are checked against the right

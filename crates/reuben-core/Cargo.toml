@@ -42,9 +42,6 @@ iai-callgrind = "0.16"
 [[example]]
 name = "first_sound"
 
-[[example]]
-name = "gen_schema"
-
 # Macro render_block benches. `harness = false` — both bring their own main().
 [[bench]]
 name = "macro_criterion"

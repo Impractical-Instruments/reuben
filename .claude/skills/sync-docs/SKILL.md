@@ -54,16 +54,11 @@ Run from the feature branch so the diff is meaningful.
      its pointer rather than syncing the copy. The other skills don't touch a contract —
      skip them.
 
-3. **Regenerate the schema** (if any operator/param changed):
-   `cargo run -p reuben-core --example gen_schema`, then commit
-   `crates/reuben-core/schema/instrument.schema.json` if it changed. The
-   `committed_schema_is_in_sync` test fails when it's stale.
-
-4. **Flag, don't edit, new vocabulary.** If the feature introduces a domain term not in
+3. **Flag, don't edit, new vocabulary.** If the feature introduces a domain term not in
    CONTEXT.md, surface it and suggest `/domain-modeling` — the glossary is grilled, not
    auto-written. Likewise, if a change contradicts an ADR, surface it; don't rewrite the ADR.
 
-5. **Verify.** `cargo build` and `cargo test` pass; every doc link/path you touched
+4. **Verify.** `cargo build` and `cargo test` pass; every doc link/path you touched
    resolves; new instrument names match files in `instruments/`.
 
 ## Scope
@@ -73,11 +68,10 @@ Run from the feature branch so the diff is meaningful.
 | ARCHITECTURE.md, README.md, docs/agents/authoring.md, docs/agents/operator-dev.md | **edit** to match reality |
 | `reuben-mcp` prose strings (server `instructions` + tool descriptions, once the crate ships) | **verify gist-and-point** — each gists and points at `reuben://guide/authoring`, never restates contract facts |
 | `.claude/skills/{patcher,control-surface,create-operator}/SKILL.md` | **edit** for workflow drift only — contract facts live in the canonical docs; leave the other skills alone |
-| instrument schema | **regenerate** via gen_schema |
 | CONTEXT.md (glossary) | **flag** new terms → suggest /domain-modeling, don't auto-edit |
 | docs/adr/* | **never touch** — decisions, not status |
 
 ## Report
 
-End with: which docs changed and why, schema regenerated (yes/no), and any flagged terms
-or ADR conflicts left for the user to decide.
+End with: which docs changed and why, and any flagged terms or ADR conflicts left for the
+user to decide.
