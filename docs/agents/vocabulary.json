@@ -1,0 +1,41 @@
+{
+  "about": "Curated intent-vocabulary source (ADR-0058): word → ordered parameter moves {op, input, direction, magnitude?, condition?} + antonym pointers, instrument-blind and registry-keyed. Edit rows here, then regenerate the rendered view: cargo run -p reuben-core --example gen_vocabulary. CI sweeps every move's op + input against the live operator registry and diffs the committed rendered view. STUB ROWS ONLY — the human-locked day-one content lands with reuben#463 (R6).",
+  "preamble": [
+    "STUB — the edge-conduct preamble (ambiguous ask → act on the most likely reading and offer alternatives; unsatisfiable ask → nearest achievable move, state the gap) lands with the vocabulary content (ADR-0059 §2, reuben#463)."
+  ],
+  "words": [
+    {
+      "word": "stub-warmer",
+      "section": "timbral",
+      "moves": [
+        { "op": "filter", "input": "cutoff", "direction": "down", "magnitude": "slightly" }
+      ],
+      "antonyms": ["stub-brighter"]
+    },
+    {
+      "word": "stub-brighter",
+      "section": "timbral",
+      "moves": [
+        { "op": "filter", "input": "cutoff", "direction": "up", "magnitude": "slightly" }
+      ],
+      "antonyms": ["stub-warmer"]
+    },
+    {
+      "word": "stub-busier",
+      "section": "rhythmic",
+      "moves": [
+        { "op": "clock", "input": "division", "direction": "up", "condition": "stub row — real conduct lands with the R6 content" }
+      ]
+    },
+    {
+      "word": "stub-sadder",
+      "section": "tonal",
+      "moves": [
+        { "op": "harmony", "input": "s2", "direction": "down" }
+      ]
+    }
+  ],
+  "fallback": [
+    "STUB — the direction-only fallback block and its tie-breaker rule (table wins; unknown word → one conservative move, act-then-react) land with the vocabulary content (ADR-0058 §3, reuben#463)."
+  ]
+}

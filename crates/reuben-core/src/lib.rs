@@ -50,6 +50,7 @@ pub mod schema;
 pub mod signal;
 pub mod tuning;
 pub mod vocab;
+pub mod vocabulary;
 pub mod wavetable;
 
 pub use config::AudioConfig;
