@@ -42,7 +42,7 @@ Run all `reuben` commands from the repo root.
    node `inputs` (literals vs wire-refs) and `config`, the wire-form rules and their one
    implicit coercion, `Constant`s, `interface` pipes, `resources` — and the recipe-role are
    the **authoring guide's** content, not this skill's: read
-   [docs/agents/authoring.md](../../docs/agents/authoring.md) (served to MCP clients as
+   [docs/agents/authoring.md](../../../docs/agents/authoring.md) (served to MCP clients as
    `reuben://guide/authoring`) and draft against it so step 3 passes first try.
 
 3. **Validate — loop until `ok`.**

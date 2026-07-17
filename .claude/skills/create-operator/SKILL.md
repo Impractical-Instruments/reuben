@@ -6,13 +6,13 @@ description: Author a new reuben Operator in Rust — the unit of DSP behind eve
 # create-operator
 
 An Operator is one unit of DSP — authored **single-Voice** (one mono stream; polyphony comes from the
-Voicer hosting voice sub-patches, ADR-0010/0032) as a Rust file in [`crates/reuben-core/src/operators/`](../../crates/reuben-core/src/operators):
+Voicer hosting voice sub-patches, ADR-0010/0032) as a Rust file in [`crates/reuben-core/src/operators/`](../../../crates/reuben-core/src/operators):
 index consts, a state struct, and `impl Operator` (`descriptor` / `process` / `spawn`), declared in
 `operators/mod.rs` and self-registered by its own `register_operator!` line (no central list to
 edit, ADR-0024). This skill authors that end-to-end (ADR-0021). The **canonical
 operator-development contract** — the trait, the `operator_contract!` macro, registration,
 `OpDriver`, the RT-safety rules — lives in
-[docs/agents/operator-dev.md](../../docs/agents/operator-dev.md); this skill is the workflow
+[docs/agents/operator-dev.md](../../../docs/agents/operator-dev.md); this skill is the workflow
 that drives it, not a second copy of it.
 
 First check it doesn't already exist: `reuben describe --json` lists every operator — a request is
@@ -31,9 +31,9 @@ Run all `reuben`/`cargo` commands from the repo root.
    underspecified, **invoke the `grilling` skill** to pin: each input/output by its **`Arg` type**
    and form — `f32_buffer`, `f32` (with `{ min..max, default, unit, lin|exp }`),
    `enum(VocabType)`, `note`/`harmony`; the type system is canonical in the
-   [guide's type-system section](../../docs/agents/authoring.md#type-system), the macro
+   [guide's type-system section](../../../docs/agents/authoring.md#type-system), the macro
    declaration grammar in
-   [operator-dev.md#descriptor-macro](../../docs/agents/operator-dev.md#descriptor-macro) —
+   [operator-dev.md#descriptor-macro](../../../docs/agents/operator-dev.md#descriptor-macro) —
    plus any **`Constant`** (instantiate-time `config`, e.g. `voices`), and — critically —
    **the DSP behavior and its test oracle: "how will we know it's right?"** Use
    `domain-modeling` for naming. Skip the interview only when the user hands a precise contract.
@@ -47,29 +47,29 @@ Run all `reuben`/`cargo` commands from the repo root.
 
 3. **Implement `process` test-first** — lean on the `tdd` skill. The scaffold starts you **red**;
    turn the contract's oracle into real tests (drive the operator through the real engine with
-   [`OpDriver`](../../crates/reuben-core/src/op_driver.rs) — `for_type` / `set` / `push` / `drive` /
+   [`OpDriver`](../../../crates/reuben-core/src/op_driver.rs) — `for_type` / `set` / `push` / `drive` /
    `bind` / `render` / `output` / `emits`, addressing ports by the generated `IN_*` / `OUT_*`
    consts — and assert observable output), then write the DSP to pass. **Copy the structure of
-   [`lfo.rs`](../../crates/reuben-core/src/operators/lfo.rs)** — a clean stateful operator with
+   [`lfo.rs`](../../../crates/reuben-core/src/operators/lfo.rs)** — a clean stateful operator with
    `OpDriver` continuity/spawn tests. The **contract you are writing against** is canonical in
-   [docs/agents/operator-dev.md](../../docs/agents/operator-dev.md) — read it before writing
+   [docs/agents/operator-dev.md](../../../docs/agents/operator-dev.md) — read it before writing
    DSP rather than recalling it from here: single-Voice authoring, the typed-handle read/write
    shapes (ADR-0037), state-across-blocks and `spawn` semantics, and the RT rules — `process`
    runs on the **hot** path and must not allocate, lock, block, or panic (the hot/cold boundary
    and hot-path totality live at
-   [operator-dev.md#rt-safe-render](../../docs/agents/operator-dev.md#rt-safe-render)).
+   [operator-dev.md#rt-safe-render](../../../docs/agents/operator-dev.md#rt-safe-render)).
 
 4. **Close the gate** — `validate` can't prove DSP is correct, so the gate is richer than the
    patcher's. In order:
    1. `cargo test -p reuben-core` — your tests (the real oracle) and the registry
       self-registration invariants (your op is gathered, names stay unique + snake_case).
    2. **Register a micro-bench workload** (#30, ADR-0019) — a forcing function in
-      [`bench_support.rs`](../../crates/reuben-core/src/bench_support.rs) (`#[cfg(feature = "bench")]`,
+      [`bench_support.rs`](../../../crates/reuben-core/src/bench_support.rs) (`#[cfg(feature = "bench")]`,
       so plain `cargo test` **won't** catch it — only CI's `check` job does) requires every registered
       operator to have one. Add, **alphabetically**, in lockstep: a `w("<op>", Recipe::<R>)` entry in
       `WORKLOADS`, the matching `"<op>"` line in `MICRO_IAI_KINDS`, and the matching
       `#[bench::<op>(args = ("<op>",), setup = OpHarness::for_kind)]` attribute in
-      [`benches/micro_iai.rs`](../../crates/reuben-core/benches/micro_iai.rs). Pick the `Recipe` that
+      [`benches/micro_iai.rs`](../../../crates/reuben-core/benches/micro_iai.rs). Pick the `Recipe` that
       exercises your real per-sample path, not an idle early-out: `Default` (held defaults — most
       oscillators/filters/math), `Gate` (a `gate` input), `Clocked` (a `clock`-driven stepper, e.g.
       `sequencer`/`euclid`), `Notes`/`ChordSet` (note-event sinks), `Value` (a driven `in`),

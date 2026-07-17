@@ -10,7 +10,7 @@ hot path, toward idiom on the cold path. **Silence everywhere else.** It is *not
 linter: naming, error handling, API shape, and every other mechanical idiom are **deferred to clippy
 (`-D warnings`) and the global `/code-review` skill**. It is the review mirror of the
 [`create-operator`](../create-operator/SKILL.md) authoring skill, and references the canonical RT
-rules at [operator-dev.md#rt-safe-render](../../docs/agents/operator-dev.md#rt-safe-render) — read
+rules at [operator-dev.md#rt-safe-render](../../../docs/agents/operator-dev.md#rt-safe-render) — read
 that anchor for the *why*; this skill is the *how-to-spot-it*.
 
 ## Run it
@@ -53,11 +53,11 @@ These are **defects, not opinions** — they glitch or crash the audio thread. E
 - **Lock / blocking** → `make-total` (move it off-thread). Tells: `Mutex::lock`, blocking `recv`,
   syscalls, file I/O, logging.
 - **`unsafe`** → `benchmark-or-remove`. **Hard line.** Admissible *only* with a committed benchmark
-  ([ADR-0019](../../docs/adr/0019-performance-benchmarking.md)) proving it's a measured hot path and
+  ([ADR-0019](../../../docs/adr/0019-performance-benchmarking.md)) proving it's a measured hot path and
   safe Rust was the bottleneck. The core has **zero `unsafe`** today; keep it that way unless a number
   says otherwise.
 - **Determinism** (one-line scan, not this skill's chapter — see
-  [the guide's invariants](../../docs/agents/authoring.md#invariants-you-must-not-break)):
+  [the guide's invariants](../../../docs/agents/authoring.md#invariants-you-must-not-break)):
   `HashMap`/`HashSet` iteration order, `Instant::now`, unseeded `rand`, threads racing on
   render output.
 
