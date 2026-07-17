@@ -63,8 +63,10 @@ Two swap rules of thumb ([ADR-0050](../adr/0050-swap-sonic-rudeness-ramp.md)):
 
 - **A swap ducks the output for ~20ms.** The engine ramps the master to silence, installs
   the new Plan at zero, and ramps back up — a brief duck, never a click. Don't chase it as a
-  dropout. (M1's interim restart-swap is ruder — ~100ms of silence, every node cold — until
-  the M2 mailbox swap lands, [ADR-0046](../adr/0046-coordinator-swap-engine-unit.md) §10.)
+  dropout. A node at the same address with the same operator type keeps its live state across
+  the swap; only the changed nodes rebuild cold. (The **web** lane's swap is ruder by design —
+  every node rebuilds cold, `survived: 0` — because its single-threaded worklet can't run the
+  off-thread mailbox install, [ADR-0052](../adr/0052-web-parity-contract-not-protocol.md) §2.)
 - **A note-off racing a swap can hang a note — re-send the off.** Pending messages are
   dropped at install, so an off landing in that window (≤ one block plus the down-ramp) is
   lost and a surviving voice's gate stays high. Recoverable in-band: re-send the off (or

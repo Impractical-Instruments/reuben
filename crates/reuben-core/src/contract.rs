@@ -133,9 +133,9 @@ pub struct Report {
 /// `state_reset` lists addresses present in both documents whose node did **not** survive
 /// (a type change or an instantiate-time fingerprint change); `added`/`removed` catch
 /// whole-document re-emission accidents — a param tweak reporting `removed: ["/voice1"]`
-/// is a typo'd address caught while still fixable. Under M1's restart-swap every node is
-/// cold, reported honestly as `survived: 0` (ADR-0046 §10); M2 fills in real survivor
-/// stats behind this unchanged shape.
+/// is a typo'd address caught while still fixable. The native lane's gapless swap fills in
+/// real survivor stats (ADR-0046 §5); the web lane's restart-swap rebuilds every node cold,
+/// reported honestly as `survived: 0` behind this same shape (ADR-0052 §2).
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DiffSummary {
