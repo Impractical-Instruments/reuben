@@ -1172,7 +1172,10 @@ mod tests {
             .expect("index line");
         assert_eq!(
             line,
-            "kick-voice — Kick drum voice (ADR-0032). (gate:f32=0) → active, audio"
+            "kick-voice — Pitch-drop drum body (ADR-0057 seed 2): one gate-fired envelope both \
+drops the pitch of a sine body (base + decaying sweep) and shapes its amplitude through the \
+nested shaped-vca -- the classic kick/tom 'thump'. (attack:f32 s=0.001, base:f32 Hz=48, \
+decay:f32 s=0.1, gate:f32=0, release:f32 s=0.08, sustain:f32=0, sweep:f32 Hz=220) → active, audio"
         );
     }
 
