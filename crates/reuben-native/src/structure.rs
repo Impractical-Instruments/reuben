@@ -70,73 +70,100 @@ const READ_POLL: Duration = Duration::from_millis(250);
 /// already committed, so a timeout just defers the free to the next swap's opportunistic reclaim.
 const SWAP_RECLAIM_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// How long a swap's bounded install/reclaim poll waits for the render callback to prove it is
-/// running before concluding audio has *stopped* and bailing early (issue #373 note 2). Both the
-/// map install ([`RenderConfigPublisher::publish`]) and the engine reclaim poll under the
-/// Coordinator lock; when audio has genuinely stopped, waiting the full [`SWAP_RECLAIM_TIMEOUT`]
-/// needlessly holds that lock (stalling `get_document` and the next swap for up to ~1s across both
-/// polls). The [`SwapPollGate`] watches the render heartbeat: the instant the callback is seen to
-/// advance it honors the full deadline (a live-but-slow device is never cut off), but if the
-/// callback never ticks within this grace the poll gives up — well above any plausible callback
-/// period (a 4096-frame block at 44.1 kHz is ~93ms) so a live callback is never mistaken for a
-/// stopped one, yet far below the full deadline so the lock is released promptly.
-const SWAP_LIVENESS_GRACE: Duration = Duration::from_millis(150);
+/// How many callback periods of silence the swap's install/reclaim poll tolerates before concluding
+/// audio has *stopped* (issue #373 note 2). The grace is derived from the render callback's own
+/// period rather than a fixed wall-clock so a large-buffer / low-rate device (whose callbacks are
+/// legitimately far apart) is never mistaken for a stopped one: at 4× the period a live callback has
+/// always ticked at least once within the window. See [`SwapPollGate`].
+const SWAP_LIVENESS_GRACE_PERIODS: u32 = 4;
+
+/// Floor under [`SWAP_LIVENESS_GRACE_PERIODS`] × period, so a tiny buffer still gets a grace wide
+/// enough to absorb poll-thread scheduling jitter, and a publisher that reports no period (headless)
+/// has a sane bail latency.
+const SWAP_LIVENESS_GRACE_FLOOR: Duration = Duration::from_millis(50);
+
+/// The render callback's liveness, sampled off-thread by a swap: `callbacks` is a monotonic
+/// per-callback counter, `callback_period` the most recent block's duration (frames / sample rate).
+/// A publisher with no live render thread reports `None` (see
+/// [`RenderConfigPublisher::render_liveness`]).
+#[derive(Clone, Copy)]
+pub struct RenderLiveness {
+    /// Monotonic count of render callbacks so far — advances iff the callback is running.
+    pub callbacks: u64,
+    /// The most recent callback period, used to size the liveness grace to the device's block rate.
+    pub callback_period: Duration,
+}
+
+/// The liveness grace for a poll bounded by `hard`: [`SWAP_LIVENESS_GRACE_PERIODS`] callback periods,
+/// clamped to `[SWAP_LIVENESS_GRACE_FLOOR, hard]`. Clamping to `hard` guarantees the grace never
+/// exceeds the pre-existing bound, so a device whose period is so long the grace saturates behaves
+/// exactly as the old fixed timeout did — the fix never cuts a live device off *earlier* than before.
+/// A publisher reporting no period (headless) gets the floor.
+fn liveness_grace(period: Option<Duration>, hard: Duration) -> Duration {
+    let floor = SWAP_LIVENESS_GRACE_FLOOR.min(hard);
+    match period {
+        Some(p) => (p * SWAP_LIVENESS_GRACE_PERIODS).clamp(floor, hard),
+        None => floor,
+    }
+}
 
 /// Fast-bail gate for a swap's bounded install/reclaim poll (issue #373 note 2).
 ///
 /// Both polls run under the Coordinator lock and, absent this gate, spin to a fixed ~500ms deadline
 /// whenever the render side is not consuming — which starves `get_document` and the next swap when
-/// audio has genuinely stopped. The gate distinguishes *stopped* from *slow* by watching the render
-/// callback's heartbeat: once the callback is observed to advance even once, the poll honors the
-/// full `hard` deadline (a live-but-slow device — a long ramp, a fat buffer — must never be cut
-/// off); if the callback never ticks within [`SWAP_LIVENESS_GRACE`], the poll gives up early. A
-/// headless publisher reports no heartbeat (`None`) and so always bails at the grace — there is no
-/// render thread to consume, exactly the case the early-out is for.
+/// audio has genuinely stopped. The gate watches the render callback's heartbeat and gives up once
+/// it has been **flat for the liveness grace** ([`liveness_grace`]): every observed tick re-arms the
+/// window, so the gate tracks liveness continuously rather than latching on the first tick. This
+/// bails promptly whether audio was already stopped at poll start *or* stalls mid-poll, while a live
+/// callback — however far apart its blocks — keeps re-arming the window and is bounded only by the
+/// full `hard` deadline. A headless publisher reports no heartbeat (`None`): the window never re-arms
+/// and the gate bails at the floor grace — there is no render thread to consume.
 ///
 /// This never shortens a *successful* poll: `reclaim`/`install` return the moment the retiree or
 /// install slot is free, before the gate is ever consulted. It only bounds the *failure* wait.
 pub(crate) struct SwapPollGate {
-    /// The heartbeat sampled at poll start; `None` when the publisher drives no live render thread.
-    baseline: Option<u64>,
-    /// Set once the heartbeat is observed past `baseline` — proof the callback is live.
-    seen_live: bool,
-    /// Bail after this instant if the callback has not been seen live (the stopped-audio early-out).
-    grace: Instant,
-    /// The hard deadline honored once the callback is known live (the pre-existing generous bound).
+    /// The last heartbeat count observed; `None` when the publisher drives no live render thread.
+    last_beat: Option<u64>,
+    /// When the heartbeat last advanced (or poll start) — the window the grace is measured from.
+    last_change: Instant,
+    /// Bail once the heartbeat has been flat this long (sized to the callback period at start).
+    grace: Duration,
+    /// The absolute hard deadline (the pre-existing generous bound), honored even while live.
     hard: Instant,
 }
 
 impl SwapPollGate {
-    /// Start a gate for a poll bounded by `hard`, sampling the render heartbeat at `now`.
-    pub(crate) fn start(heartbeat: Option<u64>, hard: Duration) -> Self {
-        Self::start_at(heartbeat, Instant::now(), hard)
+    /// Start a gate for a poll bounded by `hard`, seeding from the render `liveness` at `now`.
+    pub(crate) fn start(liveness: Option<RenderLiveness>, hard: Duration) -> Self {
+        Self::start_at(liveness, Instant::now(), hard)
     }
 
     /// [`start`](Self::start) with an explicit clock, so the gate's logic is unit-testable without
     /// sleeping.
-    pub(crate) fn start_at(heartbeat: Option<u64>, now: Instant, hard: Duration) -> Self {
+    pub(crate) fn start_at(liveness: Option<RenderLiveness>, now: Instant, hard: Duration) -> Self {
         Self {
-            baseline: heartbeat,
-            seen_live: false,
-            // Never let the grace outrun the hard deadline (a very short `hard` in a test).
-            grace: now + SWAP_LIVENESS_GRACE.min(hard),
+            last_beat: liveness.map(|l| l.callbacks),
+            last_change: now,
+            grace: liveness_grace(liveness.map(|l| l.callback_period), hard),
             hard: now + hard,
         }
     }
 
-    /// Consult after each empty poll with the *current* heartbeat: `true` means give up.
-    pub(crate) fn give_up(&mut self, heartbeat: Option<u64>) -> bool {
-        self.give_up_at(heartbeat, Instant::now())
+    /// Consult after each empty poll with the *current* heartbeat count: `true` means give up.
+    pub(crate) fn give_up(&mut self, callbacks: Option<u64>) -> bool {
+        self.give_up_at(callbacks, Instant::now())
     }
 
     /// [`give_up`](Self::give_up) with an explicit clock (unit-test seam).
-    pub(crate) fn give_up_at(&mut self, heartbeat: Option<u64>, now: Instant) -> bool {
-        if let (Some(base), Some(cur)) = (self.baseline, heartbeat) {
-            if cur != base {
-                self.seen_live = true;
+    pub(crate) fn give_up_at(&mut self, callbacks: Option<u64>, now: Instant) -> bool {
+        if let (Some(prev), Some(cur)) = (self.last_beat, callbacks) {
+            if cur != prev {
+                // A tick: the callback is live right now, so re-arm the flat-window from here.
+                self.last_beat = Some(cur);
+                self.last_change = now;
             }
         }
-        now >= self.hard || (!self.seen_live && now >= self.grace)
+        now >= self.hard || now.saturating_duration_since(self.last_change) >= self.grace
     }
 }
 
@@ -162,14 +189,18 @@ pub trait RenderConfigPublisher: Send + Sync {
     /// [`SwapReport`].
     fn publish(&self, logical: usize, input_channels: usize) -> Vec<Diag>;
 
-    /// A monotonic count of render callbacks observed so far, or `None` if this publisher drives no
-    /// live render thread (the headless case). The engine reclaim's [`SwapPollGate`] samples it to
-    /// tell a running device from a stopped one and bail early instead of holding the Coordinator
-    /// lock to the full [`SWAP_RECLAIM_TIMEOUT`] (issue #373 note 2). Default `None`: a publisher
-    /// with no device is treated as not consuming, so the reclaim bails at the grace window.
-    fn render_heartbeat(&self) -> Option<u64> {
-        None
-    }
+    /// The render callback's [`RenderLiveness`] (callback counter + period), or `None` if this
+    /// publisher drives no live render thread. A swap's [`SwapPollGate`] samples it to tell a running
+    /// device from a stopped one and bail early instead of holding the Coordinator lock to the full
+    /// [`SWAP_RECLAIM_TIMEOUT`] (issue #373 note 2).
+    ///
+    /// **Deliberately has no default.** The gate's correctness for a real device hinges on this being
+    /// wired, so every publisher must decide rather than silently inherit `None`. The invariant: a
+    /// publisher backing a **live render callback MUST return `Some`** with a counter that advances
+    /// once per callback (and that callback's period). Returning `None` — or a `Some` whose counter
+    /// never moves — marks the device as *stopped*, so the swap bails at the liveness grace; that is
+    /// correct only for a publisher with no live callback (e.g. [`HeadlessRenderConfig`]).
+    fn render_liveness(&self) -> Option<RenderLiveness>;
 }
 
 /// The default [`RenderConfigPublisher`] for a headless [`StructureState`] (ADR-0053 §4): no
@@ -186,6 +217,13 @@ pub struct HeadlessRenderConfig {
 impl RenderConfigPublisher for HeadlessRenderConfig {
     fn publish(&self, _logical: usize, input_channels: usize) -> Vec<Diag> {
         dark_degrade_warning(input_channels, self.opened_input_channels)
+    }
+
+    /// No device, no render callback: report no liveness, so a swap's reclaim bails at the floor
+    /// grace instead of spinning the full timeout (the [`FakeCallback`] tests drive real consumption,
+    /// so their reclaims complete before the gate is ever consulted).
+    fn render_liveness(&self) -> Option<RenderLiveness> {
+        None
     }
 }
 
@@ -383,9 +421,9 @@ fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>
         // 5. Reclaim the retired Engine off-thread (this structure thread, never the callback). This
         //    also proves the callback is consuming — the retiree comes home at the ramp
         //    zero-crossing — so `publish`'s bounded install poll above can never wedge. The render
-        //    heartbeat lets the reclaim bail early if audio has genuinely stopped rather than hold
+        //    liveness lets the reclaim bail early if audio has genuinely stopped rather than hold
         //    this lock to the full deadline (issue #373 note 2).
-        reclaim_retired_engine(&mut coordinator, || state.render_config.render_heartbeat());
+        reclaim_retired_engine(&mut coordinator, || state.render_config.render_liveness());
     }
     Response::SwapReport(report)
 }
@@ -416,15 +454,18 @@ fn rejected_swap(coordinator: &Arc<Mutex<Coordinator>>, message: String) -> Resp
 /// Reclaim the retired [`InstallBundle`](reuben_core::coordinator::InstallBundle) the RT callback
 /// posted back and **drop it here, off the audio thread** — ADR-0009's deferred free. Polls the
 /// retire slot with a 1ms back-off (the caller supplies the clock; core is OS-free), bounded by the
-/// [`SwapPollGate`]: at most [`SWAP_RECLAIM_TIMEOUT`] while the callback is proven live, but only
-/// [`SWAP_LIVENESS_GRACE`] once `heartbeat` shows audio has stopped ticking (issue #373 note 2). A
-/// timeout is not fatal: the swap already committed, so it just leaves the retiree in flight for the
-/// next swap's opportunistic reclaim (ADR-0046 §2) — the "audio isn't consuming swaps" case.
-fn reclaim_retired_engine(coordinator: &mut Coordinator, heartbeat: impl Fn() -> Option<u64>) {
-    let mut gate = SwapPollGate::start(heartbeat(), SWAP_RECLAIM_TIMEOUT);
+/// [`SwapPollGate`]: at most [`SWAP_RECLAIM_TIMEOUT`] while the callback keeps ticking, but only the
+/// liveness grace once `liveness` shows audio has stopped ticking (issue #373 note 2). A timeout is
+/// not fatal: the swap already committed, so it just leaves the retiree in flight for the next swap's
+/// opportunistic reclaim (ADR-0046 §2) — the "audio isn't consuming swaps" case.
+fn reclaim_retired_engine(
+    coordinator: &mut Coordinator,
+    liveness: impl Fn() -> Option<RenderLiveness>,
+) {
+    let mut gate = SwapPollGate::start(liveness(), SWAP_RECLAIM_TIMEOUT);
     match coordinator.reclaim(|| {
         std::thread::sleep(Duration::from_millis(1));
-        gate.give_up(heartbeat())
+        gate.give_up(liveness().map(|l| l.callbacks))
     }) {
         // Dropping the reclaimed bundle frees the retired Engine here, off the render thread.
         Ok(retiree) => drop(retiree),
@@ -1011,48 +1052,93 @@ mod tests {
     }
 
     #[test]
-    fn swap_poll_gate_bails_at_grace_only_when_the_callback_is_not_live() {
+    fn liveness_grace_scales_with_the_callback_period_and_clamps_to_the_bounds() {
+        let hard = Duration::from_millis(500);
+        // Floor: a tiny buffer's 4× period is below the floor, so the floor wins.
+        assert_eq!(
+            liveness_grace(Some(Duration::from_millis(3)), hard),
+            SWAP_LIVENESS_GRACE_FLOOR,
+            "4×3ms is under the 50ms floor"
+        );
+        // Mid: a fat buffer scales linearly (4 × 93ms ≈ 372ms, between floor and hard).
+        assert_eq!(
+            liveness_grace(Some(Duration::from_millis(93)), hard),
+            Duration::from_millis(372),
+            "4×93ms sits between the bounds"
+        );
+        // Ceiling: a large-buffer / low-rate device (256ms period, comment #1's example) would want
+        // 4×256ms = 1.024s, clamped to the hard deadline — never cut off earlier than the old bound.
+        assert_eq!(
+            liveness_grace(Some(Duration::from_millis(256)), hard),
+            hard,
+            "the grace never exceeds the hard deadline"
+        );
+        // No reported period (headless): the floor.
+        assert_eq!(liveness_grace(None, hard), SWAP_LIVENESS_GRACE_FLOOR);
+    }
+
+    #[test]
+    fn swap_poll_gate_bails_when_the_heartbeat_goes_flat_and_re_arms_on_every_tick() {
         // Deterministic clock (fixed base + offsets) so the gate's decision is tested without
-        // sleeping — issue #373 note 2's "stopped vs slow" distinction.
+        // sleeping. A ~10ms period ⇒ 40ms grace, clamped up to the 50ms floor.
         let t0 = Instant::now();
         let hard = Duration::from_millis(500);
+        let live = |callbacks| {
+            Some(RenderLiveness {
+                callbacks,
+                callback_period: Duration::from_millis(10),
+            })
+        };
+        let grace = SWAP_LIVENESS_GRACE_FLOOR; // 50ms here
 
-        // Stopped audio: the heartbeat never advances, so bail once past the grace (not the hard
-        // deadline).
-        let mut dead = SwapPollGate::start_at(Some(7), t0, hard);
+        // Stopped at the start: the heartbeat never advances, so bail once flat past the grace — not
+        // the hard deadline.
+        let mut dead = SwapPollGate::start_at(live(7), t0, hard);
         assert!(
             !dead.give_up_at(Some(7), t0 + Duration::from_millis(10)),
             "before the grace: keep polling"
         );
         assert!(
-            dead.give_up_at(Some(7), t0 + SWAP_LIVENESS_GRACE + Duration::from_millis(1)),
-            "past the grace with no heartbeat tick: give up"
+            dead.give_up_at(Some(7), t0 + grace + Duration::from_millis(1)),
+            "flat past the grace: give up"
         );
 
-        // Live-but-slow: one observed tick pins the poll to the full hard deadline, past the grace.
-        let mut live = SwapPollGate::start_at(Some(7), t0, hard);
+        // Live: each observed tick re-arms the flat-window, so the poll runs to the hard deadline no
+        // matter how long the individual blocks are.
+        let mut lively = SwapPollGate::start_at(live(7), t0, hard);
         assert!(
-            !live.give_up_at(
+            !lively.give_up_at(Some(8), t0 + Duration::from_millis(40)),
+            "a tick before the grace re-arms the window"
+        );
+        assert!(
+            !lively.give_up_at(Some(9), t0 + Duration::from_millis(80)),
+            "another tick keeps re-arming past the original grace"
+        );
+        assert!(
+            lively.give_up_at(Some(9), t0 + hard),
+            "still bounded by the hard deadline"
+        );
+
+        // Dies mid-poll (comment #2): ticks once, then goes flat — bail a grace after the LAST tick,
+        // not the full deadline. Last tick observed at 40ms ⇒ bail by ~90ms.
+        let mut stalled = SwapPollGate::start_at(live(7), t0, hard);
+        assert!(!stalled.give_up_at(Some(8), t0 + Duration::from_millis(40)));
+        assert!(
+            !stalled.give_up_at(Some(8), t0 + Duration::from_millis(80)),
+            "40ms flat since the last tick: still under the grace"
+        );
+        assert!(
+            stalled.give_up_at(
                 Some(8),
-                t0 + SWAP_LIVENESS_GRACE + Duration::from_millis(50)
+                t0 + Duration::from_millis(40) + grace + Duration::from_millis(1)
             ),
-            "seen live: the grace no longer applies, keep polling"
-        );
-        assert!(
-            live.give_up_at(Some(9), t0 + hard),
-            "a live poll is still bounded by the hard deadline"
+            "a grace flat since the last tick: give up well before the hard deadline"
         );
 
-        // Headless (no heartbeat at all): always bails at the grace — nothing consumes.
+        // Headless (no heartbeat at all): the window never re-arms, so bail at the grace.
         let mut headless = SwapPollGate::start_at(None, t0, hard);
-        assert!(
-            !headless.give_up_at(None, t0 + Duration::from_millis(10)),
-            "before the grace: keep polling"
-        );
-        assert!(
-            headless.give_up_at(None, t0 + SWAP_LIVENESS_GRACE + Duration::from_millis(1)),
-            "past the grace with no heartbeat: give up"
-        );
+        assert!(!headless.give_up_at(None, t0 + Duration::from_millis(10)));
+        assert!(headless.give_up_at(None, t0 + grace + Duration::from_millis(1)));
     }
 
     #[test]
@@ -1086,8 +1172,8 @@ mod tests {
         );
         assert!(
             elapsed < SWAP_RECLAIM_TIMEOUT,
-            "reclaim bailed at the ~{SWAP_LIVENESS_GRACE:?} liveness grace, not the full \
-             {SWAP_RECLAIM_TIMEOUT:?} (took {elapsed:?})"
+            "reclaim bailed at the liveness grace, not the full {SWAP_RECLAIM_TIMEOUT:?} \
+             (took {elapsed:?})"
         );
     }
 }

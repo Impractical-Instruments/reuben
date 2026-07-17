@@ -62,7 +62,7 @@ use reuben_core::{AudioConfig, Diag};
 use crate::diagnostics::Diagnostics;
 use crate::osc::OscIn;
 use crate::profile::DeviceProfile;
-use crate::structure::{dark_degrade_warning, RenderConfigPublisher, SwapPollGate};
+use crate::structure::{dark_degrade_warning, RenderConfigPublisher, RenderLiveness, SwapPollGate};
 
 /// How often the periodic diagnostics logger wakes to check the counters (ADR-0038 §9). It only
 /// emits a line when something changed, so a healthy run stays quiet at this cadence regardless.
@@ -77,26 +77,65 @@ const DIAGNOSTICS_LOG_INTERVAL: Duration = Duration::from_secs(5);
 /// until the next swap re-syncs. Generous, matching the structure channel's engine-reclaim bound.
 const RENDER_CONFIG_INSTALL_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// A render-callback liveness heartbeat (issue #373 note 2). The audio callback bumps it once per
-/// callback — a single `Relaxed` atomic add, the same RT-safe pattern as the diagnostics counters
-/// (no alloc, lock, or syscall) — so an off-thread swap can tell a running device from a stopped
-/// one and bail its bounded poll early instead of holding the Coordinator lock to the full deadline.
-/// Deliberately **not** a [`Diagnostics`](crate::diagnostics::Diagnostics) counter: it is a liveness
-/// probe, never reported on the wire.
-#[derive(Clone, Default)]
-pub(crate) struct RenderHeartbeat(Arc<AtomicU64>);
+/// A render-callback liveness heartbeat (issue #373 note 2). The audio callback [`tick`s](Self::tick)
+/// it once per callback — two relaxed atomic stores, the same RT-safe pattern as the diagnostics
+/// counters (no alloc, lock, or syscall) — recording both a monotonic count (so an off-thread swap
+/// can tell a running device from a stopped one) and the callback's period (so the swap can size its
+/// liveness grace to the device's block rate rather than a fixed wall-clock). Deliberately **not** a
+/// [`Diagnostics`](crate::diagnostics::Diagnostics) counter: it is a liveness probe, never reported
+/// on the wire.
+#[derive(Clone)]
+pub(crate) struct RenderHeartbeat(Arc<HeartbeatInner>);
+
+struct HeartbeatInner {
+    /// Monotonic per-callback counter.
+    callbacks: AtomicU64,
+    /// The most recent callback period, in nanoseconds (seeded with the nominal block period so the
+    /// grace is sane even before the first callback lands).
+    period_nanos: AtomicU64,
+}
 
 impl RenderHeartbeat {
-    /// Bump once per render callback. RT-safe: one relaxed atomic add.
-    #[inline]
-    fn bump(&self) {
-        self.0.fetch_add(1, Ordering::Relaxed);
+    /// A heartbeat seeded with the `nominal` callback period (block size / sample rate); the first
+    /// real callback refines it.
+    fn new(nominal: Duration) -> Self {
+        Self(Arc::new(HeartbeatInner {
+            callbacks: AtomicU64::new(0),
+            period_nanos: AtomicU64::new(clamp_nanos(nominal)),
+        }))
     }
 
-    /// The current count — a monotonic proxy for "how many callbacks have run."
-    fn count(&self) -> u64 {
-        self.0.load(Ordering::Relaxed)
+    /// Record one callback of duration `period`. RT-safe: two relaxed atomic stores.
+    #[inline]
+    fn tick(&self, period: Duration) {
+        self.0.callbacks.fetch_add(1, Ordering::Relaxed);
+        self.0
+            .period_nanos
+            .store(clamp_nanos(period), Ordering::Relaxed);
     }
+
+    /// An off-thread snapshot of the callback counter and most recent period.
+    fn liveness(&self) -> RenderLiveness {
+        RenderLiveness {
+            callbacks: self.0.callbacks.load(Ordering::Relaxed),
+            callback_period: Duration::from_nanos(self.0.period_nanos.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Default for RenderHeartbeat {
+    /// A heartbeat seeded with a typical block period, for tests that don't drive a real device.
+    fn default() -> Self {
+        Self::new(Duration::from_millis(3))
+    }
+}
+
+/// Saturating `Duration` → `u64` nanoseconds (a callback period never approaches the u64 ceiling; a
+/// garbage sample rate that yields [`Duration::MAX`] clamps to a large-but-finite period, sizing the
+/// grace to the hard deadline rather than overflowing).
+fn clamp_nanos(d: Duration) -> u64 {
+    d.as_nanos().min(u64::MAX as u128) as u64
 }
 
 /// Things that can go wrong opening the audio stream.
@@ -303,9 +342,10 @@ where
     let diag_for_callback = Arc::clone(&diagnostics);
     crate::diagnostics::spawn_periodic_logger(Arc::clone(&diagnostics), DIAGNOSTICS_LOG_INTERVAL);
 
-    // Render-callback liveness heartbeat (issue #373 note 2): the callback bumps it every block so a
-    // swap's off-thread reclaim/install poll can tell a running device from a stopped one.
-    let heartbeat = RenderHeartbeat::default();
+    // Render-callback liveness heartbeat (issue #373 note 2): the callback ticks it every block so a
+    // swap's off-thread reclaim/install poll can tell a running device from a stopped one. Seeded
+    // with the nominal block period so the poll's grace is sane before the first callback lands.
+    let heartbeat = RenderHeartbeat::new(callback_budget(block_size, sample_rate));
     let heartbeat_for_callback = heartbeat.clone();
 
     // Input opens ONLY when the *initial* played instrument binds input channels (ADR-0038 §3/P5);
@@ -337,10 +377,6 @@ where
                 // acceptable, deliberate exception to "no syscalls in the callback".
                 let callback_start = Instant::now();
 
-                // Liveness heartbeat (issue #373 note 2): one relaxed atomic add, so an off-thread
-                // swap poll can see this callback is running.
-                heartbeat_for_callback.bump();
-
                 while let Ok(m) = osc_rx.try_recv() {
                     // Convert flat OSC -> typed Message at the slot's Engine, where the Plan (and so
                     // each dest port's Arg type) is known (ADR-0030).
@@ -361,6 +397,12 @@ where
 
                 let in_channels = slot.input_channels();
                 let frames = data.len() / channels;
+
+                // Liveness heartbeat (issue #373 note 2): two relaxed atomic stores recording that
+                // this callback ran and how long a block it is, so an off-thread swap poll can tell a
+                // running device from a stopped one and size its grace to this device's block rate.
+                heartbeat_for_callback.tick(callback_budget(frames, sample_rate));
+
                 if buf.len() < frames * logical {
                     buf.resize(frames * logical, 0.0);
                 }
@@ -576,14 +618,14 @@ impl RenderConfigPublisher for NativeRenderConfig {
             // The heartbeat lets the poll give up at the liveness grace when the callback has stopped
             // ticking rather than spin the full deadline under the lock (issue #373 note 2).
             let mut gate =
-                SwapPollGate::start(Some(self.heartbeat.count()), RENDER_CONFIG_INSTALL_TIMEOUT);
+                SwapPollGate::start(self.render_liveness(), RENDER_CONFIG_INSTALL_TIMEOUT);
             loop {
                 let _ = mailbox.try_reclaim();
                 match mailbox.install(cfg) {
                     Ok(()) => break,
                     Err(SwapInFlight { rejected }) => {
                         cfg = rejected;
-                        if gate.give_up(Some(self.heartbeat.count())) {
+                        if gate.give_up(Some(self.heartbeat.liveness().callbacks)) {
                             // Audio isn't consuming maps; drop this update (off the audio thread).
                             // The old map keeps working; `apply_output_map`'s total read stays
                             // panic-free, though a recovered callback misroutes at the stale width
@@ -599,8 +641,8 @@ impl RenderConfigPublisher for NativeRenderConfig {
         dark_degrade_warning(input_channels, self.opened_input_channels)
     }
 
-    fn render_heartbeat(&self) -> Option<u64> {
-        Some(self.heartbeat.count())
+    fn render_liveness(&self) -> Option<RenderLiveness> {
+        Some(self.heartbeat.liveness())
     }
 }
 
@@ -1442,13 +1484,14 @@ mod tests {
         };
         let _ = publisher.publish(1, 0); // fill the in-flight slot so the next install is refused
 
-        // A background "callback" advances the heartbeat but never drains the mailbox.
+        // A background "callback" keeps ticking the heartbeat but never drains the mailbox, so each
+        // tick re-arms the gate's flat-window and the poll runs to the full hard deadline.
         let stop = Arc::new(AtomicBool::new(false));
         let ticker = {
             let (heartbeat, stop) = (heartbeat.clone(), Arc::clone(&stop));
             std::thread::spawn(move || {
                 while !stop.load(Ordering::Relaxed) {
-                    heartbeat.bump();
+                    heartbeat.tick(Duration::from_millis(3));
                     std::thread::sleep(Duration::from_millis(1));
                 }
             })
