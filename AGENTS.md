@@ -15,6 +15,7 @@ which consumes this one as a submodule (ADR-0056).
 cargo test --workspace
 cargo fmt --all --check                                # CI format gate
 cargo clippy --workspace --all-targets -- -D warnings  # CI lint gate
+cargo run -p reuben-native --example gen_library_index # after ANY instrument change
 cargo run -p reuben-native --bin reuben -- describe    # list operators/ports/params
 ```
 
