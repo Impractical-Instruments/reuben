@@ -928,13 +928,19 @@ impl ServerHandler for ReubenServer {
         let uri = request.uri.as_str();
         match RESOURCES.iter().find(|r| r.uri == uri) {
             Some(entry) => Ok(ReadResourceResult::new(vec![entry.read_contents()?])),
-            None => Err(McpError::resource_not_found(
-                format!(
-                    "unknown resource `{uri}`; this server serves {GUIDE_RESOURCE_URI}, \
-                     {VOCABULARY_RESOURCE_URI}, and {LIBRARY_INDEX_RESOURCE_URI}"
-                ),
-                None,
-            )),
+            None => {
+                // Name what IS served straight off the roster, so a 4th row can't be added while
+                // this message silently keeps listing only the original three (#496 single-sourcing).
+                let known = RESOURCES
+                    .iter()
+                    .map(|r| r.uri)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                Err(McpError::resource_not_found(
+                    format!("unknown resource `{uri}`; this server serves {known}"),
+                    None,
+                ))
+            }
         }
     }
 }
@@ -1249,29 +1255,33 @@ mod tests {
 
     #[test]
     fn resource_table_is_self_consistent() {
-        // #496 the "new resource = one row" guard: no duplicate URIs, every MIME is text/markdown
-        // (ADR-0048 §7 — all three resources are CommonMark prose), and every URI round-trips
-        // through the same lookup `read_resource` uses (find-by-uri returns that very row).
+        // #496 the "new resource = one row" guard: no duplicate URIs, env overrides, or default
+        // paths (a copy-pasted row that forgot to update any of them would silently alias another
+        // resource's wire URI, REUBEN_* override, or served file), and every MIME is text/markdown
+        // (ADR-0048 §7 — all three resources are CommonMark prose).
         use std::collections::HashSet;
-        let mut seen = HashSet::new();
+        let mut uris = HashSet::new();
+        let mut envs = HashSet::new();
+        let mut paths = HashSet::new();
         for entry in RESOURCES {
             assert!(
-                seen.insert(entry.uri),
+                uris.insert(entry.uri),
                 "RESOURCES must not contain a duplicate URI: {}",
                 entry.uri
+            );
+            assert!(
+                envs.insert(entry.env),
+                "RESOURCES must not reuse an env override: {}",
+                entry.env
+            );
+            assert!(
+                paths.insert(entry.default_path),
+                "RESOURCES must not reuse a default path: {}",
+                entry.default_path
             );
             assert_eq!(
                 entry.mime, "text/markdown",
                 "every resource is CommonMark prose: {}",
-                entry.uri
-            );
-            let found = RESOURCES
-                .iter()
-                .find(|r| r.uri == entry.uri)
-                .expect("every URI resolves through the lookup");
-            assert!(
-                std::ptr::eq(found, entry),
-                "the lookup must round-trip to the same row: {}",
                 entry.uri
             );
         }
