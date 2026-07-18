@@ -596,6 +596,41 @@ mod tests {
     }
 
     #[test]
+    fn scaffold_instrument_produces_a_document_validate_accepts() {
+        // The #146 fix: the scaffolded minimal document must clear the same `validate` path a
+        // first-creation stall fails — proving the emitted `{format_version, instrument, nodes:[]}`
+        // is a valid seed the model can edit-then-swap, not a shape it has to guess.
+        let doc = crate::format::scaffold_instrument(Some("my-synth"));
+        assert_eq!(
+            doc,
+            serde_json::json!({
+                "format_version": 3,
+                "instrument": "my-synth",
+                "nodes": []
+            }),
+            "the scaffold emits exactly the minimal required document"
+        );
+        let json = serde_json::to_string(&doc).expect("serialize scaffold document");
+        let report = validate(&json, &Registry::builtin(), &MemoryResolver::new());
+        assert!(
+            report.ok,
+            "the scaffolded document must validate ok: {:?}",
+            report.errors
+        );
+        assert!(
+            report.errors.is_empty(),
+            "no errors expected from a scaffold: {:?}",
+            report.errors
+        );
+
+        // A bare scaffold uses the default name and still validates.
+        let default = crate::format::scaffold_instrument(None);
+        assert_eq!(default["instrument"], serde_json::json!("untitled"));
+        let json = serde_json::to_string(&default).expect("serialize default scaffold");
+        assert!(validate(&json, &Registry::builtin(), &MemoryResolver::new()).ok);
+    }
+
+    #[test]
     fn validate_accepts_a_worked_instrument() {
         let dir = instruments_dir();
         let json =

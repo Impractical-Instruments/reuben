@@ -25,6 +25,10 @@
 //! - `reuben scaffold-operator --spec <path> [--json]` — generate a new Operator's Rust skeleton
 //!   from a contract spec and wire its registration. The codegen half of the create-operator
 //!   skill (ADR-0021).
+//! - `reuben scaffold-instrument [--name <name>] [--json]` — print a guaranteed-valid minimal
+//!   instrument document (`{format_version, instrument, nodes:[]}`) to edit then swap — the
+//!   first-creation start move (#146). Default output is pretty-printed; `--json` emits it as a
+//!   single compact line. Both pipe cleanly into `reuben validate`.
 
 use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
@@ -125,6 +129,16 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
+    /// Print a guaranteed-valid minimal instrument document to edit then swap — the start move for
+    /// creating an instrument from scratch (#146).
+    ScaffoldInstrument {
+        /// The `instrument` name for the scaffolded document (default `untitled`).
+        #[arg(long)]
+        name: Option<String>,
+        /// Emit the document as a single compact JSON line instead of pretty-printed.
+        #[arg(long)]
+        json: bool,
+    },
 }
 
 fn main() -> ExitCode {
@@ -146,7 +160,25 @@ fn main() -> ExitCode {
             core_root,
             json,
         } => cmd_scaffold(&spec, &core_root, json),
+        Command::ScaffoldInstrument { name, json } => cmd_scaffold_instrument(name.as_deref(), json),
     }
+}
+
+/// `scaffold-instrument`: print a guaranteed-valid minimal instrument document (#146) to stdout —
+/// the first-creation start move. The document is the deliverable, so it is always JSON: default
+/// pretty-printed for a human to edit, `--json` as one compact line for a machine. Both pipe
+/// cleanly into `reuben validate`. Single-sourced in `reuben_core` and returned by value; this
+/// door adds the native gesture of writing it out.
+fn cmd_scaffold_instrument(name: Option<&str>, json: bool) -> ExitCode {
+    let document = reuben_core::scaffold_instrument(name);
+    let text = if json {
+        serde_json::to_string(&document)
+    } else {
+        serde_json::to_string_pretty(&document)
+    }
+    .expect("serialize scaffold document");
+    println!("{text}");
+    ExitCode::SUCCESS
 }
 
 /// `scaffold-operator`: generate a new operator skeleton + registration from a contract spec.

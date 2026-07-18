@@ -65,7 +65,8 @@ cargo reuben-play
 `cargo reuben-play` is a workspace alias (defined in [`.cargo/config.toml`](.cargo/config.toml))
 for `cargo run -p reuben-native --bin reuben -- play`; anything you add after it is passed to
 `play`. The `reuben` binary is subcommand-driven: `play` (live audio), `describe` (list
-operators), `validate` (load-check an instrument), `scaffold-operator` (new-operator skeleton).
+operators), `validate` (load-check an instrument), `scaffold-operator` (new-operator skeleton),
+`scaffold-instrument` (minimal valid instrument to edit then swap).
 Add `--help` to any of them. The other subcommands have no alias — run them via
 `cargo run -p reuben-native --bin reuben -- <subcommand>` (everything after `--` is passed to
 the binary).

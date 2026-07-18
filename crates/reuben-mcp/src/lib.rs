@@ -9,9 +9,11 @@
 //!
 //! A [`ServerHandler`] declaring the `tools` and `resources` capabilities plus an `instructions`
 //! field, and a tool router with the full declared contract set (the
-//! [`reuben_core::tools::CONTRACTS`] roster, ADR-0048 §1). The three pure tools
-//! (`describe_operators`/`describe_instrument`/`validate`, #316) descend to
-//! [`reuben_core::introspect`] over a [`reuben_native::resources::FsResolver`]; the five engine
+//! [`reuben_core::tools::CONTRACTS`] roster, ADR-0048 §1). The pure tools
+//! (`describe_operators`/`describe_instrument`/`validate`, #316, plus `scaffold_instrument`, #158)
+//! are engine-free — `describe`/`validate` descend to [`reuben_core::introspect`] over a
+//! [`reuben_native::resources::FsResolver`], and `scaffold_instrument` mints a minimal valid
+//! document by value ([`reuben_core::scaffold_instrument`]); the five engine
 //! tools (`send`/`engine_status`/`swap`/`get_current_instrument`/`get_diagnostics`, #318) reach a
 //! user-owned `reuben play` through the [`EngineChannel`] seam:
 //!
@@ -106,7 +108,9 @@ const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is
      truth; keep it in sync with the sound. Start `reuben play` in another terminal first — the \
      engine tools (`send`, `swap`, `get_current_instrument`, `get_diagnostics`) fail fast until it \
      is reachable. The loop: `send` OSC to audition a change (ephemeral — clobbered at the next \
-     swap), then edit the document and `swap` to make it durable. Read `reuben://guide/authoring` \
+     swap), then edit the document and `swap` to make it durable. Creating an instrument from \
+     scratch? Call `scaffold_instrument` for a guaranteed-valid starting document, then edit and \
+     `swap` it. Read `reuben://guide/authoring` \
      for the type system, wiring rules, instrument format, and the authoring loop. Read \
      `reuben://guide/vocabulary` for the word→move table translating intent language (\"warmer\", \
      \"busier\", \"sadder\") into parameter moves. Read `reuben://guide/library-index` for the \
@@ -241,6 +245,25 @@ pub struct DescribeOperatorsOutput {
     /// `name(inputs; config: constants; res: resource-slots) -> outputs`. Absent in full mode.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub signatures: Option<Vec<String>>,
+}
+
+/// Input for `scaffold_instrument` (#158, closes #146): an optional `name` for the minted
+/// document. Omit it for the default (`untitled`, [`reuben_core::SCAFFOLD_DEFAULT_NAME`]).
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct ScaffoldInstrumentParams {
+    /// The `instrument` name of the scaffolded document; omit for the default (`untitled`).
+    #[serde(default)]
+    pub name: Option<String>,
+}
+
+/// Output for `scaffold_instrument` (#158): the guaranteed-valid minimal instrument document,
+/// returned **by value** under an object root (MCP requires one). The model edits this seed and
+/// swaps it — first-creation as reshape-from-template, not authoring from a blank file (ADR-0049:
+/// the document travels by value; writing it to disk stays native-only).
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct ScaffoldInstrumentOutput {
+    /// A minimal valid document: `{ "format_version": 3, "instrument": <name>, "nodes": [] }`.
+    pub document: serde_json::Value,
 }
 
 /// Input for the read-only document tools `describe_instrument` and `validate` (ADR-0048 §2):
@@ -545,6 +568,30 @@ impl ReubenServer {
         let summary = validate_summary(&report);
         // Ordinary result even when `report.ok` is false: a report is the tool working (ADR-0048 §3).
         structured_ok(&report, summary)
+    }
+
+    /// Scaffold a guaranteed-valid minimal instrument document (#158, closes #146) — the
+    /// first-creation start move. Authoring a top-level document from scratch stalls because the
+    /// required top-level `instrument` name is easy to omit and `validate` then rejects the
+    /// document; handing back a valid seed turns first-creation into the reshape-from-template path
+    /// that already works (edit this document, then `swap` it). Engine-free — always available
+    /// (ADR-0044 §2), read-only, and returns the document **by value** (ADR-0049).
+    #[tool(
+        name = "scaffold_instrument",
+        description = "Return a guaranteed-valid minimal instrument document to edit then swap — the start move for creating an instrument from scratch.",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<ScaffoldInstrumentOutput>()
+            .expect("ScaffoldInstrumentOutput is an object schema")
+    )]
+    async fn scaffold_instrument(
+        &self,
+        Parameters(params): Parameters<ScaffoldInstrumentParams>,
+    ) -> Result<CallToolResult, McpError> {
+        let document = reuben_core::scaffold_instrument(params.name.as_deref());
+        let name = document["instrument"].as_str().unwrap_or("untitled");
+        let summary = format!(
+            "scaffolded minimal instrument {name:?} — edit its `nodes`/`interface`, then swap it"
+        );
+        structured_ok(&ScaffoldInstrumentOutput { document }, summary)
     }
 
     // --- Engine tools: reach a user-owned `reuben play` through the channel seam ----------------

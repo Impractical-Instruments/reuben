@@ -174,12 +174,22 @@ enum inputs**, switchable live over OSC. Only genuinely topology-fixing values a
 ## The Instrument format (`crates/reuben-core/src/format/`) <!-- lanes: skills,mcp,web -->
 
 An Instrument is plain JSON data ([ADR-0028](../adr/0028-one-input-shape.md); **format v3**
-since [ADR-0043](../adr/0043-surface-docs-decouple-presentation-from-instruments.md)): `nodes` (operator
-`type` + `address`, plus an `inputs` map, an optional `config` block, and optional `doc`) and
-an optional **`interface`** block — the graph's one boundary, everything that crosses its edge
-(see below). There is **no top-level `connections` array** and **no per-node `params` map**
-(both fold into `inputs`), and **no anonymous master `outputs` array** (v1-only — it dissolved
-into named `interface.outputs` entries; the loader migrates old documents).
+since [ADR-0043](../adr/0043-surface-docs-decouple-presentation-from-instruments.md)). At the top
+level it **requires a `instrument` name field** (a string — the human-facing name/id) alongside
+`nodes`; a document that omits `instrument` is rejected (the loader denies unknown fields, so the
+name cannot be misspelled or dropped). It also carries `nodes` (operator `type` + `address`, plus
+an `inputs` map, an optional `config` block, and optional `doc`) and an optional **`interface`**
+block — the graph's one boundary, everything that crosses its edge (see below). There is **no
+top-level `connections` array** and **no per-node `params` map** (both fold into `inputs`), and
+**no anonymous master `outputs` array** (v1-only — it dissolved into named `interface.outputs`
+entries; the loader migrates old documents).
+
+**Creating an instrument from scratch? Start with `scaffold-instrument`, not a blank file** — every
+lane offers it (`reuben scaffold-instrument` on the CLI, the `scaffold_instrument` tool on the MCP/web
+surfaces). It returns a guaranteed-valid minimal document (`{ "format_version": 3, "instrument":
+<name>, "nodes": [] }`), which you then edit and swap — turning first-creation into the
+reshape-from-template path, so you never stall guessing the required top-level shape
+([#146](https://github.com/Impractical-Instruments/reuben/issues/146)).
 
 Each entry in a node's **`inputs`** map is one of:
 
