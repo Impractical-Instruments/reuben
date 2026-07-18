@@ -175,7 +175,7 @@ enum inputs**, switchable live over OSC. Only genuinely topology-fixing values a
 
 An Instrument is plain JSON data ([ADR-0028](../adr/0028-one-input-shape.md); **format v3**
 since [ADR-0043](../adr/0043-surface-docs-decouple-presentation-from-instruments.md)). At the top
-level it **requires a `instrument` name field** (a string — the human-facing name/id) alongside
+level it **requires an `instrument` name field** (a string — the human-facing name/id) alongside
 `nodes`; a document that omits `instrument` is rejected (the loader denies unknown fields, so the
 name cannot be misspelled or dropped). It also carries `nodes` (operator `type` + `address`, plus
 an `inputs` map, an optional `config` block, and optional `doc`) and an optional **`interface`**

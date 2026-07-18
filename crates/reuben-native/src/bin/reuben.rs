@@ -160,7 +160,9 @@ fn main() -> ExitCode {
             core_root,
             json,
         } => cmd_scaffold(&spec, &core_root, json),
-        Command::ScaffoldInstrument { name, json } => cmd_scaffold_instrument(name.as_deref(), json),
+        Command::ScaffoldInstrument { name, json } => {
+            cmd_scaffold_instrument(name.as_deref(), json)
+        }
     }
 }
 
