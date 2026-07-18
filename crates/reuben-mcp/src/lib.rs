@@ -175,9 +175,11 @@ fn resolve_checkout_path(
 /// compile-time `default_path`, and the `noun` for the read-failure message). All three resources
 /// are structurally identical — a static markdown file read from the checkout at request time
 /// (never `include_str!`, ADR-0051 §4), env-overridable per resource — so the surface is one table
-/// over the existing pub consts and one generic serve path, not N hand-spelled arms. The consts stay
-/// the single source of the wire URIs/MIMEs/env-vars/paths (they are public API, referenced by
-/// `tests/stdio_resources.rs`); this table is built *from* them.
+/// over the existing consts and one generic serve path, not N hand-spelled arms. The consts stay the
+/// single source of the wire URIs/MIMEs/env-vars/paths; this table is built *from* them. Only the six
+/// `*_RESOURCE_URI`/`*_RESOURCE_MIME` consts are external API (referenced by
+/// `tests/stdio_resources.rs`, so they can't be inlined away); the three `*_ENV` consts are `pub` but
+/// used only here, and the three `*_PATH` consts are private.
 struct ResourceEntry {
     /// The URI advertised over `resources/list` and matched on `resources/read`.
     uri: &'static str,
@@ -272,6 +274,19 @@ const RESOURCES: &[ResourceEntry] = &[
         noun: "library index",
     },
 ];
+
+/// The served resource URIs as an English list — single-sourced from [`RESOURCES`], joined with an
+/// Oxford comma for three or more (`"X, Y, and Z"`) so the unknown-resource guidance names every row
+/// with the pre-refactor grammar. Two items read `"X and Y"`; one reads `"X"`.
+fn served_resource_uris() -> String {
+    let uris: Vec<&str> = RESOURCES.iter().map(|r| r.uri).collect();
+    match uris.as_slice() {
+        [] => String::new(),
+        [only] => only.to_string(),
+        [a, b] => format!("{a} and {b}"),
+        [rest @ .., last] => format!("{}, and {last}", rest.join(", ")),
+    }
+}
 
 /// The fail-fast result for an unreachable engine (ADR-0044 §2, ADR-0048 §3): `isError: true`
 /// carrying the "start `reuben play`" guidance. `isError` tells the model the call could not do
@@ -928,19 +943,16 @@ impl ServerHandler for ReubenServer {
         let uri = request.uri.as_str();
         match RESOURCES.iter().find(|r| r.uri == uri) {
             Some(entry) => Ok(ReadResourceResult::new(vec![entry.read_contents()?])),
-            None => {
-                // Name what IS served straight off the roster, so a 4th row can't be added while
-                // this message silently keeps listing only the original three (#496 single-sourcing).
-                let known = RESOURCES
-                    .iter()
-                    .map(|r| r.uri)
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                Err(McpError::resource_not_found(
-                    format!("unknown resource `{uri}`; this server serves {known}"),
-                    None,
-                ))
-            }
+            None => Err(McpError::resource_not_found(
+                // Name what IS served straight off the roster (single-sourced, so a 4th row can't be
+                // added while this message keeps listing only the original three), read as an English
+                // Oxford list so the prose matches the pre-refactor "X, Y, and Z" bit-for-bit.
+                format!(
+                    "unknown resource `{uri}`; this server serves {}",
+                    served_resource_uris()
+                ),
+                None,
+            )),
         }
     }
 }
@@ -1233,8 +1245,10 @@ mod tests {
         // default logic `ResourceEntry::resolve_path` runs on the live env value) so it never
         // mutates (and races on) the process environment — sibling tests read the live files
         // concurrently.
-        for entry in RESOURCES {
-            let override_path = format!("/opt/reuben/{}.md", entry.noun.replace(' ', "-"));
+        for (i, entry) in RESOURCES.iter().enumerate() {
+            // Fixture path independent of any entry field — the override just has to differ from the
+            // default and round-trip through the resolver unchanged.
+            let override_path = format!("/opt/reuben/resource-{i}.md");
             assert_eq!(
                 resolve_checkout_path(
                     Some(std::ffi::OsString::from(&override_path)),
@@ -1285,6 +1299,21 @@ mod tests {
                 entry.uri
             );
         }
+    }
+
+    #[test]
+    fn served_resource_uris_reads_as_an_oxford_list() {
+        // #496: the unknown-resource guidance names every served URI. The list is single-sourced
+        // from RESOURCES, but the assembled prose is unguarded by stdio_resources.rs (which only
+        // does substring `.contains()` checks), so pin the exact 3-resource wording bit-for-bit —
+        // an Oxford comma before the final `and`, matching the pre-refactor message.
+        assert_eq!(
+            served_resource_uris(),
+            format!(
+                "{GUIDE_RESOURCE_URI}, {VOCABULARY_RESOURCE_URI}, and {LIBRARY_INDEX_RESOURCE_URI}"
+            ),
+            "the served-URI list must read as an Oxford list for the current 3-resource roster"
+        );
     }
 
     #[test]
