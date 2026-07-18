@@ -7,40 +7,22 @@
 //! allocation is reused, never freed on the render thread (the only free is the Coordinator's
 //! off-thread reclaim, outside every measured window here).
 //!
-//! Like `rt_safe.rs` / `coordinator_rt_safe.rs`, this file is its own single-test binary with a
-//! process-global counting allocator, so no sibling test perturbs the counters. A live probe and a
-//! post-window reclaim assertion keep each zero from being vacuous: the probe proves the counter is
-//! live, and reclaiming a real retiree proves the slot genuinely performed the transplant+post
-//! inside the measured window.
+//! Like `rt_safe.rs` / `coordinator_rt_safe.rs`, this file is its own single-test binary. Counting
+//! is armed per-thread by the shared [`rt_alloc`] harness (ticket #344) — each measured window arms
+//! this thread only around the ops under test — so an allocation on a libtest harness thread cannot
+//! interleave into a window and perturb the count under parallel load. The full-swap window, its
+//! `16 blocks > 2×ramp` sizing, and the live-probe/reclaim non-vacuity checks it shares with
+//! `m2_swap_harness.rs` live in the shared [`swap_rt_safe`] helper.
 
-use std::alloc::{GlobalAlloc, Layout, System};
-use std::sync::atomic::{AtomicUsize, Ordering};
+mod rt_alloc;
+mod swap_rt_safe;
+
+use rt_alloc::{measure, Counting};
+use swap_rt_safe::{assert_counter_is_live, assert_install_step_heap_neutral};
 
 use reuben_core::coordinator::{Coordinator, RenderSlot};
 use reuben_core::resources::MemoryResolver;
 use reuben_core::{AudioConfig, Registry};
-
-/// Allocations/reallocations since process start.
-static ALLOCS: AtomicUsize = AtomicUsize::new(0);
-/// Frees since process start — the slot must not *drop* a bundle any more than allocate one.
-static FREES: AtomicUsize = AtomicUsize::new(0);
-
-struct Counting;
-
-unsafe impl GlobalAlloc for Counting {
-    unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
-        System.alloc(layout)
-    }
-    unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
-        FREES.fetch_add(1, Ordering::Relaxed);
-        System.dealloc(ptr, layout)
-    }
-    unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, new_size: usize) -> *mut u8 {
-        ALLOCS.fetch_add(1, Ordering::Relaxed);
-        System.realloc(ptr, layout, new_size)
-    }
-}
 
 #[global_allocator]
 static GLOBAL: Counting = Counting;
@@ -88,37 +70,32 @@ fn install_slot_callback_never_allocates_or_frees() {
         slot.fill(&mut out);
     }
 
-    // Live probe: prove the counting allocator is observing, so every zero below is real.
-    let before = ALLOCS.load(Ordering::Relaxed);
-    let probe = Box::new([0u64; 8]);
-    assert!(
-        ALLOCS.load(Ordering::Relaxed) > before,
-        "counting allocator must observe an ordinary Box allocation"
-    );
-    drop(probe);
+    // Live probe: prove the counting harness is observing, so every zero below is real.
+    assert_counter_is_live();
 
     // (1) Steady state (no swap pending): the fast path is a bare Engine fill — no ramp, no
     // per-sample multiply, and provably no heap traffic.
-    let a0 = ALLOCS.load(Ordering::Relaxed);
-    let f0 = FREES.load(Ordering::Relaxed);
-    for _ in 0..1_000 {
-        slot.fill(&mut out);
-    }
-    let steady_allocs = ALLOCS.load(Ordering::Relaxed) - a0;
-    let steady_frees = FREES.load(Ordering::Relaxed) - f0;
+    let steady = measure(|| {
+        for _ in 0..1_000 {
+            slot.fill(&mut out);
+        }
+    });
     assert_eq!(
-        steady_allocs, 0,
-        "steady-state fill allocated {steady_allocs} time(s)"
+        steady.allocs, 0,
+        "steady-state fill allocated {} time(s)",
+        steady.allocs
     );
     assert_eq!(
-        steady_frees, 0,
-        "steady-state fill freed {steady_frees} time(s)"
+        steady.frees, 0,
+        "steady-state fill freed {} time(s)",
+        steady.frees
     );
     assert!(!slot.is_ramping(), "no swap ⇒ no ramp");
 
     // (2) A full swap. The Coordinator builds the new Engine + migration table off-thread (this
     // allocates — outside the measured window, ADR-0009). The RENDER SIDE then drains it, runs the
-    // ramp, transplants the survivors, and posts the retiree across the fills below.
+    // ramp, transplants the survivors, and posts the retiree across the fills the shared helper
+    // measures below.
     let report = coord.swap_document(&doc, None);
     assert!(report.report.ok, "swap should install: {:?}", report.report);
     assert_eq!(
@@ -127,38 +104,7 @@ fn install_slot_callback_never_allocates_or_frees() {
         "both nodes survive"
     );
 
-    // Measured window: fills spanning the whole ramp (down → install-at-zero → up). 16 blocks =
-    // 2048 frames > 2×ramp (≈960), so the transplant + post land inside the window.
-    let mut block = vec![0.0f32; BLOCK * ch];
-    let a1 = ALLOCS.load(Ordering::Relaxed);
-    let f1 = FREES.load(Ordering::Relaxed);
-    let mut saw_ramp = false;
-    for _ in 0..16 {
-        slot.fill(&mut block);
-        saw_ramp |= slot.is_ramping();
-    }
-    let swap_allocs = ALLOCS.load(Ordering::Relaxed) - a1;
-    let swap_frees = FREES.load(Ordering::Relaxed) - f1;
-    assert_eq!(
-        swap_allocs, 0,
-        "install-slot swap callback allocated {swap_allocs} time(s) — drain/ramp/transplant/post \
-         must be heap-neutral on the render thread"
-    );
-    assert_eq!(
-        swap_frees, 0,
-        "install-slot swap callback freed {swap_frees} time(s) — the retiree is posted in the same \
-         box, only ever dropped by its off-thread owner"
-    );
-
-    // Non-vacuity: the ramp actually ran, completed, and the transplant genuinely happened —
-    // otherwise no retiree would be sitting in the retire slot for the Coordinator to reclaim.
-    assert!(
-        saw_ramp,
-        "the swap must have driven the ramp through the measured window"
-    );
-    assert!(!slot.is_ramping(), "the ramp completed inside the window");
-    assert!(
-        coord.try_reclaim().is_some(),
-        "the slot posted a real retiree — the transplant/post happened inside the measured window"
-    );
+    // Measured window: fills spanning the whole ramp (down → install-at-zero → up), asserting the
+    // drain/ramp/transplant/post is heap-neutral and that the window was non-vacuous.
+    assert_install_step_heap_neutral(&mut coord, &mut slot, BLOCK);
 }
