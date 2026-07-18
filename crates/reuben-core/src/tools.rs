@@ -110,6 +110,7 @@ mod tests {
                 .count(),
             5
         );
-        assert_eq!(CONTRACTS.len(), names().len());
+        // Concrete, not tautological: the ADR-0048 roster is exactly eight contracts.
+        assert_eq!(CONTRACTS.len(), 8);
     }
 }
