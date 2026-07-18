@@ -48,6 +48,38 @@ fn default_format_version() -> u32 {
     1
 }
 
+/// The instrument name a bare [`scaffold_instrument`] mints when the caller names none.
+pub const SCAFFOLD_DEFAULT_NAME: &str = "untitled";
+
+/// Produce a **guaranteed-valid minimal instrument document** as JSON — the start move for
+/// authoring an instrument from scratch (#146). First-creation stalls because the model, authoring
+/// a top-level document from nothing, omits the required top-level `instrument` name field and
+/// [`validate`](crate::introspect::validate) rejects the document (`InstrumentDoc` is
+/// `deny_unknown_fields` with `instrument` required). Handing the author a valid seed turns
+/// first-creation into the reshape-from-template path that already works: the model edits this
+/// document and swaps it, instead of guessing the required shape.
+///
+/// The emitted document is the minimal one every door single-sources here (ADR-0048 §1 roster,
+/// [`crate::tools`]): the current [`FORMAT_VERSION`], the required `instrument` name, and an empty
+/// `nodes` list — `{ "format_version": 3, "instrument": <name>, "nodes": [] }`. Empty `nodes` is
+/// valid (no registry needed to build it); every other field is optional and omitted. Built by
+/// serializing an [`InstrumentDoc`] so the field spelling can only ever match the real serde
+/// contract — the round-trip through `validate` is asserted `ok` in the introspect tests. Returns
+/// the document **by value**; writing it to disk stays a native-only concern (ADR-0049).
+pub fn scaffold_instrument(name: Option<&str>) -> serde_json::Value {
+    let doc = InstrumentDoc {
+        format_version: FORMAT_VERSION,
+        instrument: name.unwrap_or(SCAFFOLD_DEFAULT_NAME).to_string(),
+        doc: None,
+        resources: BTreeMap::new(),
+        interface: None,
+        nodes: Vec::new(),
+        outputs: Vec::new(),
+        migration: MigrationNotes::default(),
+    };
+    serde_json::to_value(&doc).expect("a minimal InstrumentDoc always serializes to JSON")
+}
+
 /// A complete instrument document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]

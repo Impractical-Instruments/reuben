@@ -30,9 +30,11 @@ pub struct Contract {
     pub kind: ContractKind,
 }
 
-/// The ADR-0048 §1 contract roster, in the ADR's exact order: the three pure contracts first, then
-/// the five engine contracts. This is the authority every door derives its advertised name-set and
-/// count from; the order here is the order on the wire.
+/// The ADR-0048 §1 contract roster, in the ADR's exact order: the pure contracts first, then the
+/// engine contracts. `scaffold_instrument` (#158, closes #146) joins the pure group as the
+/// first-creation start move — a read-only producer of a guaranteed-valid minimal document. This
+/// is the authority every door derives its advertised name-set and count from; the order here is
+/// the order on the wire.
 pub const CONTRACTS: &[Contract] = &[
     Contract {
         name: "describe_operators",
@@ -44,6 +46,10 @@ pub const CONTRACTS: &[Contract] = &[
     },
     Contract {
         name: "validate",
+        kind: ContractKind::Pure,
+    },
+    Contract {
+        name: "scaffold_instrument",
         kind: ContractKind::Pure,
     },
     Contract {
@@ -88,6 +94,7 @@ mod tests {
                 "describe_operators",
                 "describe_instrument",
                 "validate",
+                "scaffold_instrument",
                 "send",
                 "engine_status",
                 "swap",
@@ -95,13 +102,14 @@ mod tests {
                 "get_diagnostics",
             ]
         );
-        // The three-pure / five-engine split (ADR-0048 §1), and it is a partition (no other kind).
+        // The four-pure / five-engine split (ADR-0048 §1, `scaffold_instrument` added by #158), and
+        // it is a partition (no other kind).
         assert_eq!(
             CONTRACTS
                 .iter()
                 .filter(|c| c.kind == ContractKind::Pure)
                 .count(),
-            3
+            4
         );
         assert_eq!(
             CONTRACTS
@@ -110,7 +118,7 @@ mod tests {
                 .count(),
             5
         );
-        // Concrete, not tautological: the ADR-0048 roster is exactly eight contracts.
-        assert_eq!(CONTRACTS.len(), 8);
+        // Concrete, not tautological: the roster is exactly nine contracts.
+        assert_eq!(CONTRACTS.len(), 9);
     }
 }

@@ -34,7 +34,12 @@ Run all `reuben` commands from the repo root.
      This is what a `subpatch` node referencing that file exposes — wire against these names,
      never the child's internals.
 
-2. **Draft the graph.** Check `instruments/index.md` (the generated library index, ADR-0057
+2. **Draft the graph.** **Creating from scratch? Start from a scaffold, never a blank file.**
+   `cargo run -q -p reuben-native --bin reuben -- scaffold-instrument --name <name>` prints a
+   guaranteed-valid minimal document (`{format_version, instrument, nodes:[]}`) — edit its `nodes`
+   and `interface`, then validate. This sidesteps the first-creation stall where a from-nothing
+   document omits the required top-level `instrument` field (#146). Then check `instruments/index.md`
+   (the generated library index, ADR-0057
    §4 — one line per available instrument: role + face signature) for a close-enough
    instrument before drafting a chain from scratch, or draft against an existing
    `instruments/*.json` (e.g. `chord-player.json`) rather than a blank file. Reuse mechanics
