@@ -75,15 +75,11 @@ jobs:
               - '.github/scripts/check-msrv-lockstep.sh'
               - '.github/workflows/ci.yml'
             # fmt + clippy + workspace test, PLUS the skill Python suites (control-surface today), so
-            # a skill-only change still re-runs its tests. surfaces/ is DATA for those suites — the
-            # surface docs the resolver binds, and (since ADR-0056) surfaces/testdata/'s
-            # cross-implementation oracle, which used to sit in the web crate and rode that crate's
-            # now-deleted `web` filter. Without this line an oracle or surface-doc edit would leave
-            # the one suite that reads it Skipped.
+            # a skill-only change still re-runs its tests. (The control-surface suite reads committed
+            # instruments/ — covered by *workspace — but no committed surfaces/, so no surfaces/ trigger.)
             check:
               - *workspace
               - '.claude/skills/**'
-              - 'surfaces/**'
             windows:
               - *workspace
             # The perf gate benches the same workspace closure; add its own gate script. .cargo/

@@ -8,8 +8,7 @@ presentation (label/widget/group/order + an optional narrower range); the instru
 This script resolves the two into a concrete widget list and projects it to the `.tosc`
 XML TouchOSC reads. The resolver semantics are shared verbatim with the web player's JS
 twin, which now lives in the private `reuben-web` repo and reads this repo through its
-`engine/` submodule; the cross-implementation oracle (`surfaces/testdata/expected-widgets.json`)
-is the public SDK fixture that pins both to the same widget lists.
+`engine/` submodule.
 
 Two subcommands:
 

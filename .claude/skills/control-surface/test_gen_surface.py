@@ -2,10 +2,9 @@
 (from this directory, or `python3 -m unittest discover .claude/skills/control-surface`).
 
 These cover the deterministic half — surface-doc resolution against interface pipes, the
-derived default surface, OSC addressing, layout, and the zlib/XML round-trip — plus the
-cross-implementation oracle shared with the web player's JS resolver. Whether the emitted
-.tosc *loads in TouchOSC* is the on-device verify step the skill calls out; it cannot be
-asserted here."""
+derived default surface, OSC addressing, layout, and the zlib/XML round-trip. Whether the
+emitted .tosc *loads in TouchOSC* is the on-device verify step the skill calls out; it cannot
+be asserted here."""
 
 import json
 import shutil
@@ -21,8 +20,6 @@ import gen_surface as g
 # A known-good TouchOSC export (built by hand in the editor) — the ground truth the emitter is
 # cloned from. The structural-match test below fails if our output drifts from this format.
 FIXTURE = Path(__file__).parent / "fixtures" / "REUBEN_REF.tosc"
-
-REPO_ROOT = Path(__file__).resolve().parents[3]
 
 # A compact instrument in the ADR-0043 shape: presentation-free interface input pipes carrying
 # only the quantity contract (type/default/min/max/unit/curve, optional device `channel`).
@@ -507,63 +504,6 @@ class EmitCliTest(unittest.TestCase):
             doc = ET.fromstring(zlib.decompress(out.read_bytes()))
             addrs = [o.find("./path/partial/value").text for o in doc.findall(".//osc")]
             self.assertEqual(addrs, ["/brightness/in", "/tempo/in", "/tone/in", "/kick_step1/in"])
-
-
-# The shared cross-implementation oracle (ADR-0043 §9). It is a public SDK fixture: the JS twin
-# (widget-model.mjs) lives in the private reuben-web repo and regenerates this file from ITS
-# resolver, reading it back through the `engine/` submodule — so the fixture is committed HERE
-# and the pin now spans the two repos (ADR-0056). This suite must resolve the same instrument +
-# surface doc to the same widget list and rows.
-ORACLE = REPO_ROOT / "surfaces" / "testdata" / "expected-widgets.json"
-
-# The 5 committed instrument + surface-doc pairs the oracle covers.
-ORACLE_INSTRUMENTS = {
-    "chord-player": "instruments/chord-player.json",
-    "euclidean-drums": "instruments/euclidean-drums.json",
-    "groovebox": "instruments/groovebox.json",
-    "strum-harp": "instruments/strum-harp.json",
-    "space": "instruments/patches/space.json",
-}
-
-
-class CrossImplementationOracleTest(unittest.TestCase):
-    """Both native resolvers (this one and the JS twin) must resolve each committed
-    instrument + surface doc to the SAME widget list (parsed-JSON equality) and row layout.
-
-    Deliberately NOT skipUnless(ORACLE.exists()): the oracle used to live in the web crate,
-    which this suite could legitimately be run without, so its absence meant "not landed yet".
-    It is now a committed fixture of THIS repo, so an absent oracle is a broken repo — and a
-    skip would silently retire the ADR-0043 §9 cross-implementation guarantee while CI stayed
-    green. Fail loudly instead.
-    """
-
-    @classmethod
-    def setUpClass(cls):
-        if not ORACLE.exists():
-            raise AssertionError(
-                f"cross-implementation oracle {ORACLE} is missing. It is a committed public SDK "
-                f"fixture (ADR-0056) that pins this resolver against the private repo's JS twin — "
-                f"restore it rather than deleting this suite."
-            )
-        cls.oracle = json.loads(ORACLE.read_text())
-
-    def test_oracle_covers_all_committed_pairs(self):
-        self.assertEqual(set(self.oracle), set(ORACLE_INSTRUMENTS))
-
-    def test_resolver_matches_js_oracle(self):
-        for name, inst_rel in ORACLE_INSTRUMENTS.items():
-            with self.subTest(instrument=name):
-                instrument = json.loads((REPO_ROOT / inst_rel).read_text())
-                doc = json.loads((REPO_ROOT / "surfaces" / f"{name}.json").read_text())
-                widgets, warnings = g.resolve_surface(instrument, doc, name)
-                self.assertEqual(warnings, [], "committed pairs must resolve cleanly")
-                expected = self.oracle[name]
-                self.assertEqual(widgets, expected["widgets"])
-                rows = [[w["address"] for w in row]
-                        for row in g.layout_rows(widgets, doc.get("cols", g.DEFAULT_COLS))]
-                expected_rows = [[w["address"] if isinstance(w, dict) else w for w in row]
-                                 for row in expected["rows"]]
-                self.assertEqual(rows, expected_rows)
 
 
 class BoundaryTest(unittest.TestCase):

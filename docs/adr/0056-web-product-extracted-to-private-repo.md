@@ -98,6 +98,15 @@ the sender's engine version a property of a URL; it is now also a property of a 
 
 ### 4. What has to stay public *because* the split happened
 
+> **Superseded (2026-07-18).** The pin described here did not hold in practice: the JS suite
+> asserts against its *own* copy of the fixture (`crates/reuben-web/js/surface/testdata/`), not the
+> engine's committed one, and nothing compares the two — so each repo ran a private snapshot test
+> and a real divergence would have passed both. That is the "two copies with nothing to catch their
+> divergence" failure rejected at the end of this section, reached by accident. The engine-side
+> oracle (`surfaces/testdata/expected-widgets.json` + `CrossImplementationOracleTest`) and the
+> `surfaces/**` `check`-filter line are removed; a genuine pin, if wanted, belongs in the web repo
+> where both resolvers coexist.
+
 The extraction's one genuinely load-bearing casualty was the **surface oracle**. ADR-0043 §9 pins
 the two resolvers — the Python TouchOSC emitter here and the JS twin in the web repo — to identical
 output by a shared fixture, and that fixture lived inside the crate that left.
@@ -134,7 +143,8 @@ one now has work to do. We judge the C-ABI stable and documented enough to carry
   Anthropic tokens or touches a Cloudflare account.
 - `surfaces/**` joins the `check` job's path filter: the oracle used to ride the deleted `web`
   filter, and without it an oracle or surface-doc edit would leave the only suite that reads it
-  Skipped.
+  Skipped. *(Reversed 2026-07-18 with the oracle's removal — see the §4 banner; no committed
+  surfaces/ is read by any suite now, so the trigger went with it.)*
 - The MSRV lockstep script loses its detached-crate loop — `reuben-web` was the only detached
   crate, and every remaining crate inherits `rust-version` from the workspace.
 - ADR-0041, ADR-0042, ADR-0054 and the web halves of ADR-0040/0043/0049/0052/0055 remain in this

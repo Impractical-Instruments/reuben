@@ -19,9 +19,8 @@ address `describe` reports. (That assumes the instrument plays at top level; nes
 at `/h`, the same pipe is `/h/<name>/in`.) The resolver merges the pipe's contract at load, so
 the doc stores only the pipe *name*: change the pipe's range and every surface follows,
 drift-free. A host with its own renderer consumes the same docs directly — the browser player's
-JS resolver (private `reuben-web` repo) is this script's twin, pinned to identical output by a
-shared oracle — so editing a surface doc updates such a host with no emit step; only the `.tosc`
-needs regenerating.
+JS resolver (private `reuben-web` repo) is this script's twin — so editing a surface doc updates
+such a host with no emit step; only the `.tosc` needs regenerating.
 
 **Widget vocabulary** — a superset of what TouchOSC renders, so the web target is never capped:
 
@@ -220,11 +219,7 @@ Group rows size to their own width, so a 6-knob row and a 1-knob row share the s
 `cd <skilldir> && python3 -m unittest` — covers the pinned resolver semantics (default labels,
 widget inference, range clamping, the skip table), the derived default surface, the doc
 resolution order, layout, the zlib/XML round-trip, the structural match against
-`fixtures/REUBEN_REF.tosc`, the **cross-implementation oracle**
-(`surfaces/testdata/expected-widgets.json` — both native resolvers, this one and the web player's
-JS twin, must resolve every committed instrument + surface doc to the same widget list; the JS
-side lives in the private `reuben-web` repo and regenerates the fixture through its `engine/`
-submodule), and a **live-engine boundary test** that runs
+`fixtures/REUBEN_REF.tosc`, and a **live-engine boundary test** that runs
 the real `reuben describe` (via `cargo run`, so it tracks current source) on
 `instruments/patches/space.json` — the guard that fails on an interface-format flip instead of
 letting the boundary path rot silently. It skips (loudly) if `cargo` isn't on `PATH`.
@@ -237,7 +232,7 @@ letting the boundary path rot silently. It skips (loudly) if `cargo` isn't on `P
 | `control-surfaces/*.tosc` | **emit** via `gen_surface.py` — disposable projection; regenerate, never hand-edit |
 | instrument `interface` input pipes | **read** only — the contract this skill binds to |
 | instrument graph — promote a control to a pipe, rename, rewire, change a pipe's contract | **never** — delegate to the `patcher` skill |
-| web renderer (private `reuben-web` repo) | **not in this repo** — it consumes the same docs; `surfaces/testdata/expected-widgets.json` is the shared oracle that pins both resolvers |
+| web renderer (private `reuben-web` repo) | **not in this repo** — it consumes the same docs; its JS resolver is this script's twin |
 | two-way OSC feedback; reserved widgets (`xy-pad`, `grid`, `visualizer`, `keyboard`) | **out of scope** (format-allowed, not built) |
 
 ## Report
