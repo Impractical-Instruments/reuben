@@ -174,31 +174,15 @@ impl Engine {
     }
 
     /// Transplant survivor operator boxes from a `retiring` Engine into this (freshly built) one,
-    /// per a precomputed migration table (ADR-0046 §4). Each `(old_index, new_index)` pair moves
-    /// the surviving box — its operator instance *is* its state (ADR-0046 §4), including a voicer's
-    /// hosted voice sub-plans — from `retiring.nodes[old_index]` into `self.nodes[new_index]`; the
-    /// displaced cold box lands in `retiring` and frees off-thread with it. The new Plan's wiring
-    /// and latches (which live in the PlanNode, not the box) stay this Engine's, so a survivor
-    /// re-reads its inputs from the *new* document (ADR-0045 §2). The survivor key
-    /// ([`crate::coordinator::manifest`]) guarantees each pair shares operator type + instantiate-
-    /// time identity, so the transplanted box's internal layout matches its new Plan node.
-    ///
-    /// **RT-safe:** a bounded loop of [`std::mem::swap`] over `Vec<Box<dyn Operator>>` — pointer
-    /// swaps only, no allocation, no drop, no lock. This is the transplant the render-side install
-    /// slot (ticket #321) runs at the callback top; it is exposed here because the primitive
-    /// touches Engine internals, while the migration *table* (which pairs, computed how) is owned
-    /// by the Coordinator side.
+    /// per the Coordinator's precomputed survivor pairs (ADR-0046 §4) — the `(old, new)` slice a
+    /// [`MigrationTable`](crate::coordinator::manifest::MigrationTable) yields via `survivors()`.
+    /// Engine owns two Plans here (fresh + retiring) but no longer indexes their nodes: it forwards
+    /// to the pointer-swap primitive that lives on [`Plan`] (which owns its nodes). See
+    /// [`Plan::transplant_survivors`] for the box-move semantics, the pairing invariant, and the
+    /// RT-safety guarantee (a bounded `mem::swap` loop — no alloc/drop/lock). Runs at the
+    /// render-side install slot's callback top (ticket #321).
     pub fn transplant_survivors(&mut self, retiring: &mut Engine, pairs: &[(usize, usize)]) {
-        for &(old_index, new_index) in pairs {
-            debug_assert!(
-                old_index < retiring.plan.nodes.len() && new_index < self.plan.nodes.len(),
-                "migration table index out of range — mispaired table/engine"
-            );
-            std::mem::swap(
-                &mut retiring.plan.nodes[old_index].ops,
-                &mut self.plan.nodes[new_index].ops,
-            );
-        }
+        self.plan.transplant_survivors(&mut retiring.plan, pairs);
     }
 
     /// Fill `out` with **interleaved logical** samples, rendering core blocks as needed.
