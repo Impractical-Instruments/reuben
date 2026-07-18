@@ -45,6 +45,7 @@
 
 use std::collections::BTreeMap;
 use std::fmt;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::{Receiver, Sender};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -61,7 +62,7 @@ use reuben_core::{AudioConfig, Diag};
 use crate::diagnostics::Diagnostics;
 use crate::osc::OscIn;
 use crate::profile::DeviceProfile;
-use crate::structure::{dark_degrade_warning, RenderConfigPublisher};
+use crate::structure::{dark_degrade_warning, RenderConfigPublisher, RenderLiveness, SwapPollGate};
 
 /// How often the periodic diagnostics logger wakes to check the counters (ADR-0038 §9). It only
 /// emits a line when something changed, so a healthy run stays quiet at this cadence regardless.
@@ -75,6 +76,67 @@ const DIAGNOSTICS_LOG_INTERVAL: Duration = Duration::from_secs(5);
 /// range), not misroute-free: a callback that recovers after the drop routes at the stale width
 /// until the next swap re-syncs. Generous, matching the structure channel's engine-reclaim bound.
 const RENDER_CONFIG_INSTALL_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// A render-callback liveness heartbeat (issue #373 note 2). The audio callback [`tick`s](Self::tick)
+/// it once per callback — two relaxed atomic stores, the same RT-safe pattern as the diagnostics
+/// counters (no alloc, lock, or syscall) — recording both a monotonic count (so an off-thread swap
+/// can tell a running device from a stopped one) and the callback's period (so the swap can size its
+/// liveness grace to the device's block rate rather than a fixed wall-clock). Deliberately **not** a
+/// [`Diagnostics`](crate::diagnostics::Diagnostics) counter: it is a liveness probe, never reported
+/// on the wire.
+#[derive(Clone)]
+pub(crate) struct RenderHeartbeat(Arc<HeartbeatInner>);
+
+struct HeartbeatInner {
+    /// Monotonic per-callback counter.
+    callbacks: AtomicU64,
+    /// The most recent callback period, in nanoseconds (seeded with the nominal block period so the
+    /// grace is sane even before the first callback lands).
+    period_nanos: AtomicU64,
+}
+
+impl RenderHeartbeat {
+    /// A heartbeat seeded with the `nominal` callback period (block size / sample rate); the first
+    /// real callback refines it.
+    fn new(nominal: Duration) -> Self {
+        Self(Arc::new(HeartbeatInner {
+            callbacks: AtomicU64::new(0),
+            period_nanos: AtomicU64::new(clamp_nanos(nominal)),
+        }))
+    }
+
+    /// Record one callback of duration `period`. RT-safe: two relaxed atomic stores.
+    #[inline]
+    fn tick(&self, period: Duration) {
+        self.0.callbacks.fetch_add(1, Ordering::Relaxed);
+        self.0
+            .period_nanos
+            .store(clamp_nanos(period), Ordering::Relaxed);
+    }
+
+    /// An off-thread snapshot of the callback counter and most recent period.
+    fn liveness(&self) -> RenderLiveness {
+        RenderLiveness {
+            callbacks: self.0.callbacks.load(Ordering::Relaxed),
+            callback_period: Duration::from_nanos(self.0.period_nanos.load(Ordering::Relaxed)),
+        }
+    }
+}
+
+#[cfg(test)]
+impl Default for RenderHeartbeat {
+    /// A heartbeat seeded with a typical block period, for tests that don't drive a real device.
+    fn default() -> Self {
+        Self::new(Duration::from_millis(3))
+    }
+}
+
+/// Saturating `Duration` → `u64` nanoseconds (a callback period never approaches the u64 ceiling; a
+/// garbage sample rate that yields [`Duration::MAX`] clamps to a large-but-finite period, sizing the
+/// grace to the hard deadline rather than overflowing).
+fn clamp_nanos(d: Duration) -> u64 {
+    d.as_nanos().min(u64::MAX as u128) as u64
+}
 
 /// Things that can go wrong opening the audio stream.
 #[derive(Debug)]
@@ -280,6 +342,12 @@ where
     let diag_for_callback = Arc::clone(&diagnostics);
     crate::diagnostics::spawn_periodic_logger(Arc::clone(&diagnostics), DIAGNOSTICS_LOG_INTERVAL);
 
+    // Render-callback liveness heartbeat (issue #373 note 2): the callback ticks it every block so a
+    // swap's off-thread reclaim/install poll can tell a running device from a stopped one. Seeded
+    // with the nominal block period so the poll's grace is sane before the first callback lands.
+    let heartbeat = RenderHeartbeat::new(callback_budget(block_size, sample_rate));
+    let heartbeat_for_callback = heartbeat.clone();
+
     // Input opens ONLY when the *initial* played instrument binds input channels (ADR-0038 §3/P5);
     // its width is fixed for the session. A later swap that binds input while no matching stream is
     // open dark-degrades (the callback feeds `&[]`); the warning rode the swap report.
@@ -329,6 +397,12 @@ where
 
                 let in_channels = slot.input_channels();
                 let frames = data.len() / channels;
+
+                // Liveness heartbeat (issue #373 note 2): two relaxed atomic stores recording that
+                // this callback ran and how long a block it is, so an off-thread swap poll can tell a
+                // running device from a stopped one and size its grace to this device's block rate.
+                heartbeat_for_callback.tick(callback_budget(frames, sample_rate));
+
                 if buf.len() < frames * logical {
                     buf.resize(frames * logical, 0.0);
                 }
@@ -397,6 +471,7 @@ where
         device_channels: channels,
         output_map: profile.output.map.clone(),
         opened_input_channels,
+        heartbeat,
     });
     Ok(LiveAudio {
         streams: Streams {
@@ -513,6 +588,10 @@ pub struct NativeRenderConfig {
     output_map: BTreeMap<usize, usize>,
     /// Logical input channels the (fixed) input stream provides; `0` for an output-only stream.
     opened_input_channels: usize,
+    /// The render callback's liveness heartbeat — shared with the callback so `publish`'s bounded
+    /// install poll (and the structure thread's reclaim) can bail early when audio has stopped
+    /// (issue #373 note 2).
+    heartbeat: RenderHeartbeat,
 }
 
 impl RenderConfigPublisher for NativeRenderConfig {
@@ -536,14 +615,17 @@ impl RenderConfigPublisher for NativeRenderConfig {
             // stopped, and even then `apply_output_map`'s total read keeps the stale map *panic*-free
             // — not misroute-free: a callback recovering after the drop routes at the stale width, at
             // full gain, until the next swap re-syncs (impossible under live audio; self-healing).
-            let deadline = Instant::now() + RENDER_CONFIG_INSTALL_TIMEOUT;
+            // The heartbeat lets the poll give up at the liveness grace when the callback has stopped
+            // ticking rather than spin the full deadline under the lock (issue #373 note 2).
+            let mut gate =
+                SwapPollGate::start(self.render_liveness(), RENDER_CONFIG_INSTALL_TIMEOUT);
             loop {
                 let _ = mailbox.try_reclaim();
                 match mailbox.install(cfg) {
                     Ok(()) => break,
                     Err(SwapInFlight { rejected }) => {
                         cfg = rejected;
-                        if Instant::now() >= deadline {
+                        if gate.give_up(Some(self.heartbeat.liveness().callbacks)) {
                             // Audio isn't consuming maps; drop this update (off the audio thread).
                             // The old map keeps working; `apply_output_map`'s total read stays
                             // panic-free, though a recovered callback misroutes at the stale width
@@ -557,6 +639,10 @@ impl RenderConfigPublisher for NativeRenderConfig {
         }
         // The input dark-degrade decision is native geometry too (ADR-0038 §7/§9).
         dark_degrade_warning(input_channels, self.opened_input_channels)
+    }
+
+    fn render_liveness(&self) -> Option<RenderLiveness> {
+        Some(self.heartbeat.liveness())
     }
 }
 
@@ -1276,6 +1362,7 @@ mod tests {
             device_channels,
             output_map: profile_map.clone(),
             opened_input_channels: 0,
+            heartbeat: RenderHeartbeat::default(),
         };
         let initial_map = build_output_map(&profile_map, init_logical, device_channels);
         let map_slot = OutputMapSlot::new(
@@ -1350,6 +1437,76 @@ mod tests {
             !desync.load(Ordering::SeqCst),
             "the device output map stayed in lockstep with the engine width across two \
              width-changing swaps (B1) — no dropped map, no stale-width apply"
+        );
+    }
+
+    #[test]
+    fn publish_bails_fast_when_the_callback_has_stopped() {
+        // No render side drains `_map_render`, so after the first install the one-in-flight mailbox
+        // refuses every later install — the "audio has stopped" case (issue #373 note 2). With the
+        // heartbeat frozen, the second publish must bail at the liveness grace, well under the full
+        // RENDER_CONFIG_INSTALL_TIMEOUT it would otherwise hold under the Coordinator lock.
+        let (map_coord, _map_render) = swap_pair::<RenderConfig>();
+        let publisher = NativeRenderConfig {
+            mailbox: Mutex::new(map_coord),
+            device_channels: 2,
+            output_map: BTreeMap::new(),
+            opened_input_channels: 0,
+            heartbeat: RenderHeartbeat::default(),
+        };
+        // First publish fills the single in-flight slot (installs immediately).
+        let _ = publisher.publish(1, 0);
+
+        let start = Instant::now();
+        let _ = publisher.publish(1, 0);
+        let elapsed = start.elapsed();
+        assert!(
+            elapsed < RENDER_CONFIG_INSTALL_TIMEOUT,
+            "publish bailed at the liveness grace, not the full \
+             {RENDER_CONFIG_INSTALL_TIMEOUT:?} (took {elapsed:?})"
+        );
+    }
+
+    #[test]
+    fn publish_honors_the_full_deadline_while_the_callback_is_live() {
+        // The complement of the fast-bail: a *live* callback (heartbeat advancing) but a mailbox
+        // that never drains must keep the poll on the full deadline, not the grace — this is what
+        // makes the fix a liveness gate rather than a blindly shorter bound (issue #373 note 2).
+        use std::sync::atomic::AtomicBool;
+        let (map_coord, _map_render) = swap_pair::<RenderConfig>();
+        let heartbeat = RenderHeartbeat::default();
+        let publisher = NativeRenderConfig {
+            mailbox: Mutex::new(map_coord),
+            device_channels: 2,
+            output_map: BTreeMap::new(),
+            opened_input_channels: 0,
+            heartbeat: heartbeat.clone(),
+        };
+        let _ = publisher.publish(1, 0); // fill the in-flight slot so the next install is refused
+
+        // A background "callback" keeps ticking the heartbeat but never drains the mailbox, so each
+        // tick re-arms the gate's flat-window and the poll runs to the full hard deadline.
+        let stop = Arc::new(AtomicBool::new(false));
+        let ticker = {
+            let (heartbeat, stop) = (heartbeat.clone(), Arc::clone(&stop));
+            std::thread::spawn(move || {
+                while !stop.load(Ordering::Relaxed) {
+                    heartbeat.tick(Duration::from_millis(3));
+                    std::thread::sleep(Duration::from_millis(1));
+                }
+            })
+        };
+
+        let start = Instant::now();
+        let _ = publisher.publish(1, 0);
+        let elapsed = start.elapsed();
+        stop.store(true, Ordering::Relaxed);
+        ticker.join().expect("ticker joined");
+
+        assert!(
+            elapsed >= Duration::from_millis(400),
+            "a live callback keeps the poll on the full ~{RENDER_CONFIG_INSTALL_TIMEOUT:?} deadline, \
+             not the grace (took {elapsed:?})"
         );
     }
 }
