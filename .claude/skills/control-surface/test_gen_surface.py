@@ -506,6 +506,116 @@ class EmitCliTest(unittest.TestCase):
             self.assertEqual(addrs, ["/brightness/in", "/tempo/in", "/tone/in", "/kick_step1/in"])
 
 
+class CommittedSurfaceDocTest(unittest.TestCase):
+    """The behavioral guards that replaced the retired expected-widgets oracle. For every
+    committed `surfaces/*.json`: (1) it satisfies `surfaces/surface.schema.json`, and (2) it
+    resolves against its instrument with no warnings and at least one widget. These assert
+    *properties* — well-formed, binds land, clean resolve — not a byte-for-byte snapshot, so a
+    legitimate range/label/reorder edit passes; only a genuinely broken doc fails.
+
+    The validator is schema-driven: the allowed keys, the `widget` enum, and the
+    `widget -> required payload` conditionals are read out of the schema file, so editing the
+    schema keeps the check honest without hand-syncing a second copy of its rules here.
+    """
+
+    REPO_ROOT = Path(__file__).resolve().parents[3]
+    SURFACES = REPO_ROOT / "surfaces"
+    SCHEMA = json.loads((SURFACES / "surface.schema.json").read_text())
+    DOCS = sorted(p for p in SURFACES.glob("*.json") if p.name != "surface.schema.json")
+
+    def _schema_errors(self, doc):
+        """Violations of surface.schema.json (empty list == valid). A hand-rolled check of the
+        JSON-Schema keyword subset this schema uses — the runner is bare `python3 -m unittest`,
+        so there is no `jsonschema` dependency to lean on."""
+        s, ctrl = self.SCHEMA, self.SCHEMA["$defs"]["control"]
+        errs = []
+        if not isinstance(doc, dict):
+            return ["document is not a JSON object"]
+        top_keys = set(s["properties"])
+        errs += [f"missing required key {k!r}" for k in s["required"] if k not in doc]
+        errs += [f"unknown top-level key {k!r}" for k in doc if k not in top_keys]
+        const_v = s["properties"]["surface_version"]["const"]
+        if doc.get("surface_version") != const_v:
+            errs.append(f"surface_version {doc.get('surface_version')!r} must be {const_v}")
+        if "instrument" in doc and not (isinstance(doc["instrument"], str) and doc["instrument"]):
+            errs.append("instrument must be a non-empty string")
+        if "cols" in doc and not (isinstance(doc["cols"], int) and doc["cols"] >= 1):
+            errs.append("cols must be an integer >= 1")
+        controls = doc.get("controls")
+        if not isinstance(controls, list):
+            return errs + ["controls must be an array"]
+        ctrl_keys = set(ctrl["properties"])
+        widgets = ctrl["properties"]["widget"]["enum"]
+        for i, c in enumerate(controls):
+            at = f"controls[{i}]"
+            if not isinstance(c, dict):
+                errs.append(f"{at} is not an object")
+                continue
+            errs += [f"{at} missing required key {k!r}" for k in ctrl["required"] if k not in c]
+            errs += [f"{at} unknown key {k!r}" for k in c if k not in ctrl_keys]
+            if "bind" in c and not (isinstance(c["bind"], str) and c["bind"]):
+                errs.append(f"{at} bind must be a non-empty string")
+            for strk in ("label", "group"):
+                if strk in c and not isinstance(c[strk], str):
+                    errs.append(f"{at} {strk} must be a string")
+            if "widget" in c and c["widget"] not in widgets:
+                errs.append(f"{at} widget {c['widget']!r} not one of {widgets}")
+            for numk in ("min", "max", "velocity"):
+                if numk in c and not isinstance(c[numk], (int, float)):
+                    errs.append(f"{at} {numk} must be a number")
+            if isinstance(c.get("velocity"), (int, float)) and not 0 <= c["velocity"] <= 1:
+                errs.append(f"{at} velocity {c['velocity']} out of [0, 1]")
+            for intk in ("note", "degree"):
+                if intk in c and not isinstance(c[intk], int):
+                    errs.append(f"{at} {intk} must be an integer")
+            # Schema-driven conditionals: a widget const implies a required payload key.
+            for rule in ctrl.get("allOf", []):
+                want = rule.get("if", {}).get("properties", {}).get("widget", {}).get("const")
+                if want is not None and c.get("widget") == want:
+                    errs += [f"{at} widget {want!r} requires {k!r}"
+                             for k in rule.get("then", {}).get("required", []) if k not in c]
+        return errs
+
+    def test_committed_surfaces_satisfy_schema(self):
+        self.assertTrue(self.DOCS, "no committed surface docs found under surfaces/")
+        for p in self.DOCS:
+            with self.subTest(surface=p.name):
+                self.assertEqual(self._schema_errors(json.loads(p.read_text())), [],
+                                 f"{p.name} violates surface.schema.json")
+
+    def test_validator_has_teeth(self):
+        """A green schema test is worthless if the validator accepts everything. Pin that each
+        rule actually fires — so this suite can't rot into the very thing it replaced."""
+        base = json.loads((self.SURFACES / f"{self.DOCS[0].stem}.json").read_text()) \
+            if self.DOCS else {"surface_version": 1, "instrument": "x", "controls": []}
+        cases = [
+            ({**base, "bogus": 1}, "unknown top-level key"),
+            ({k: v for k, v in base.items() if k != "controls"}, "missing required key"),
+            ({**base, "surface_version": 2}, "surface_version"),
+            ({**base, "controls": [{"label": "no bind"}]}, "missing required key 'bind'"),
+            ({**base, "controls": [{"bind": "x", "typo": 1}]}, "unknown key 'typo'"),
+            ({**base, "controls": [{"bind": "x", "widget": "slider"}]}, "not one of"),
+            ({**base, "controls": [{"bind": "x", "widget": "note-toggle"}]}, "requires 'note'"),
+            ({**base, "controls": [{"bind": "x", "widget": "chord-button"}]}, "requires 'degree'"),
+        ]
+        for doc, needle in cases:
+            with self.subTest(expect=needle):
+                errs = self._schema_errors(doc)
+                self.assertTrue(any(needle in e for e in errs),
+                                f"expected an error containing {needle!r}, got {errs}")
+
+    def test_committed_surfaces_resolve_clean(self):
+        for p in self.DOCS:
+            with self.subTest(surface=p.name):
+                doc = json.loads(p.read_text())
+                found = list((self.REPO_ROOT / "instruments").rglob(f"{doc['instrument']}.json"))
+                self.assertEqual(len(found), 1,
+                                 f"expected one instrument named {doc['instrument']!r}, got {found}")
+                widgets, warnings = g.resolve_surface(json.loads(found[0].read_text()), doc, p.stem)
+                self.assertEqual(warnings, [], f"{p.name} must resolve without warnings")
+                self.assertTrue(widgets, f"{p.name} produced no widgets")
+
+
 class BoundaryTest(unittest.TestCase):
     """The interface-pipe path (ADR-0038 §2): one fader per wireable `interface` input pipe, sourced
     from a `reuben describe --json` boundary view. Fed fixture boundary JSON directly (the view is
