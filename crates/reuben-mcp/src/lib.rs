@@ -235,8 +235,10 @@ impl ResourceEntry {
 /// The static resource roster (ADR-0048 §7, as amended by ADR-0059 §3/§6), in wire order: the
 /// authoring guide, the intent vocabulary, and the library index — the single source
 /// [`list_resources`](ReubenServer::list_resources) and [`read_resource`](ReubenServer::read_resource)
-/// both drive. Adding a resource is one row here (plus the four pub consts it references and one line
-/// in `tests/stdio_resources.rs`'s deliberate exact-set guard).
+/// both drive. Adding a resource is one row here — plus the four consts it references (three `pub`:
+/// `*_RESOURCE_URI`/`*_RESOURCE_MIME`/`*_ENV`; the `*_PATH` default is private), the hardcoded
+/// 3-item wording in the `served_resource_uris_reads_as_an_oxford_list` test, and one line in
+/// `tests/stdio_resources.rs`'s deliberate exact-set guard.
 const RESOURCES: &[ResourceEntry] = &[
     ResourceEntry {
         uri: GUIDE_RESOURCE_URI,
@@ -1239,27 +1241,31 @@ mod tests {
 
     #[test]
     fn every_resource_prefers_the_env_override_then_the_checkout_default() {
-        // #496 (folding #374 + R9 #466): one table-driven proof for every resource — an explicit
-        // REUBEN_* override wins for a non-checkout deploy; unset falls back to the compile-time
-        // checkout default (ADR-0051 §4). Tested over the pure resolver (the same override-then-
-        // default logic `ResourceEntry::resolve_path` runs on the live env value) so it never
-        // mutates (and races on) the process environment — sibling tests read the live files
-        // concurrently.
+        // #496 (folding #374 + R9 #466): one table-driven proof for every resource, driven through
+        // the PRODUCTION `entry.resolve_path()` so each row's own `env` field is what selects the
+        // path — a `resolve_path` that read a hardcoded var instead of `self.env` fails here. An
+        // explicit REUBEN_* override wins for a non-checkout deploy; unset falls back to the
+        // compile-time checkout default (ADR-0051 §4).
+        //
+        // `set_var`/`remove_var` are process-global and the suite runs in parallel, so this is only
+        // safe because these three REUBEN_* resource vars are read by NO other inline test. The
+        // mutation is scoped tightly per row — set → assert override → remove → assert default — and
+        // never left set across rows.
         for (i, entry) in RESOURCES.iter().enumerate() {
             // Fixture path independent of any entry field — the override just has to differ from the
-            // default and round-trip through the resolver unchanged.
+            // default and round-trip through `resolve_path` unchanged.
             let override_path = format!("/opt/reuben/resource-{i}.md");
+            std::env::set_var(entry.env, &override_path);
             assert_eq!(
-                resolve_checkout_path(
-                    Some(std::ffi::OsString::from(&override_path)),
-                    entry.default_path,
-                ),
+                entry.resolve_path(),
                 std::path::PathBuf::from(&override_path),
-                "an explicit override wins for a non-checkout deploy: {}",
+                "the row's own `env` ({}) must select the override for {}",
+                entry.env,
                 entry.uri
             );
+            std::env::remove_var(entry.env);
             assert_eq!(
-                resolve_checkout_path(None, entry.default_path),
+                entry.resolve_path(),
                 std::path::PathBuf::from(entry.default_path),
                 "unset falls back to the compile-time checkout default: {}",
                 entry.uri
