@@ -33,8 +33,10 @@
 //! harness.
 
 mod rt_alloc;
+mod swap_rt_safe;
 
-use rt_alloc::{measure, Counting};
+use rt_alloc::Counting;
+use swap_rt_safe::{assert_counter_is_live, assert_install_step_heap_neutral};
 
 use reuben_core::coordinator::{Coordinator, RenderSlot};
 use reuben_core::message::Arg;
@@ -43,8 +45,8 @@ use reuben_core::{AudioConfig, Registry};
 
 /// Each `tests/*.rs` file is its own binary, so it must declare its own global allocator for the
 /// thread-local counting harness to observe anything. Unarmed (the behavioral tests below), it is a
-/// pure pass-through to the System allocator; [`measure`] arms it per-thread only for part (b)'s
-/// measured window.
+/// pure pass-through to the System allocator; `rt_alloc::measure` (via the shared
+/// [`swap_rt_safe`] helper) arms it per-thread only for part (b)'s measured window.
 #[global_allocator]
 static GLOBAL: Counting = Counting;
 
@@ -299,11 +301,7 @@ fn the_install_step_makes_zero_heap_allocation() {
 
     // Live probe: an ordinary Box allocation inside a measured window must register, so the zeros
     // below cannot be vacuous (a dead counter would also read zero).
-    let probe = measure(|| drop(Box::new([0u64; 8])));
-    assert!(
-        probe.allocs > 0,
-        "the counting harness must observe an ordinary Box allocation"
-    );
+    assert_counter_is_live();
 
     // Off-thread build (ADR-0009): the Coordinator allocates the new Engine + migration table here,
     // OUTSIDE the measured window. Swapping to the identical document keeps both nodes survivors, so
@@ -316,39 +314,8 @@ fn the_install_step_makes_zero_heap_allocation() {
         "both nodes survive"
     );
 
-    // Measured window: 16 block fills (2048 frames > 2×ramp ≈ 960), so the whole ramp — including the
-    // install-at-zero transplant + retiree post — lands inside. Counting is armed only for this
-    // closure, only on this thread.
-    let mut block = vec![0.0f32; BLOCK * ch];
-    let mut saw_ramp = false;
-    let counts = measure(|| {
-        for _ in 0..16 {
-            slot.fill(&mut block);
-            saw_ramp |= slot.is_ramping();
-        }
-    });
-
-    assert_eq!(
-        counts.allocs, 0,
-        "the install step allocated {} time(s) — drain/ramp/transplant/post must be heap-neutral",
-        counts.allocs
-    );
-    assert_eq!(
-        counts.frees, 0,
-        "the install step freed {} time(s) — the retiree is posted in the SAME box, only ever \
-         dropped by its off-thread owner",
-        counts.frees
-    );
-
-    // Non-vacuity: the ramp actually ran and completed inside the window, and a real retiree came
-    // home — proving the transplant + post genuinely happened where we measured zero.
-    assert!(
-        saw_ramp,
-        "the swap must have driven the ramp through the window"
-    );
-    assert!(!slot.is_ramping(), "the ramp completed inside the window");
-    assert!(
-        coord.try_reclaim().is_some(),
-        "the slot posted a real retiree — the transplant/post happened inside the measured window"
-    );
+    // Measured window (shared skeleton): block fills spanning the whole ramp — including the
+    // install-at-zero transplant + retiree post — asserting drain/ramp/transplant/post is
+    // heap-neutral and the window was non-vacuous. Counting is armed only on this thread.
+    assert_install_step_heap_neutral(&mut coord, &mut slot, BLOCK);
 }
