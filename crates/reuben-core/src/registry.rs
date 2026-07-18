@@ -1,8 +1,8 @@
 //! Registry — maps an operator's stable type name to a constructor + descriptor.
 //!
-//! The instrument loader ([`crate::format`]) and the schema generator ([`crate::schema`])
-//! both need to turn a type-name string (from a JSON document) into a live operator and
-//! to enumerate every operator's self-description. [`Registry::builtin`] holds the MVP
+//! The instrument loader ([`crate::format`]) and the `describe` projections
+//! ([`crate::describe`]) both need to turn a type-name string (from a JSON document) into a
+//! live operator and to enumerate every operator's self-description. [`Registry::builtin`] holds the MVP
 //! operator set; [`Registry::register`] lets an embedder add its own operator types
 //! (the seam for the "agents author new Operators in Rust" goal, ADR-0004).
 

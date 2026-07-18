@@ -130,6 +130,12 @@ artifact, and the `reuben://schema/instrument` resource (ADR-0048 §7 amended). 
 constrained-decoding experiment regenerates from `Descriptor` — the source survives; the
 rendering does not deserve permanent residency.
 
+> **Superseded (#498):** the generator source (`crates/reuben-core/src/schema.rs`) was
+> retired too. Product call: the constrained-decoding experiment is YAGNI, so it is not worth
+> carrying 410 lines of dead-but-regenerable code plus its hand-maintained `$defs`↔serde parity
+> test. `InputPipeDoc`/`OutputPipeDoc` are now the sole field authority; a future experiment
+> re-derives `Descriptor → JSON-Schema` from scratch.
+
 **Considered and rejected:** keeping the file as the pin's carrier (any committed witness
 recreates the staleness-guard machinery for less value than a fresh comparison); re-homing
 the pin onto the compact describe artifact (workable, but couples the deletion to that
