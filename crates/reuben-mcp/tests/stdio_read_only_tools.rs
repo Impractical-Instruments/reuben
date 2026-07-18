@@ -290,7 +290,14 @@ fn read_only_tools_advertise_output_schemas() {
         .as_array()
         .unwrap_or_else(|| panic!("tools/list missing a tools array:\n{response}"));
 
-    for name in ["describe_operators", "describe_instrument", "validate"] {
+    // The read-only tools are exactly the Pure contracts (ADR-0048 §1) — derived from the
+    // single-source roster (#157), not a hand-typed list, so Wave 2 adds a CONTRACTS entry rather
+    // than editing a parallel literal here.
+    let read_only = reuben_core::tools::CONTRACTS
+        .iter()
+        .filter(|c| c.kind == reuben_core::tools::ContractKind::Pure)
+        .map(|c| c.name);
+    for name in read_only {
         let tool = tools
             .iter()
             .find(|t| t["name"] == serde_json::json!(name))

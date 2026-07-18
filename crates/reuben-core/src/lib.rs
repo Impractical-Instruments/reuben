@@ -48,6 +48,7 @@ pub mod render;
 pub mod resources;
 pub mod schema;
 pub mod signal;
+pub mod tools;
 pub mod tuning;
 pub mod vocab;
 pub mod vocabulary;
