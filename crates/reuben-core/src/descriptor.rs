@@ -2,8 +2,8 @@
 //!
 //! Separate from the process function, the descriptor lists ports and rich param
 //! metadata. It is the seat of "good button" (auto-generated controls that can't sound
-//! bad), of serialization, of connection type-checking, and of AI grounding. Run 2
-//! generates the JSON schema from these descriptors.
+//! bad), of serialization, of connection type-checking, and of AI grounding — the `describe`
+//! projections are derived from these descriptors.
 
 // The scalar-control metadata types are owned by `reuben-contract` (issue #217): one
 // `F32Meta`/`I32Meta`/`Curve` definition shared by the contract spec, the macro, and this
@@ -413,8 +413,8 @@ impl Descriptor {
     }
 
     /// Every input an author may set as a **numeric literal** (ADR-0030): each scalar
-    /// [`F32`](PortType::F32) control input, paired with its [`F32Meta`]. The JSON-schema generator and the
-    /// CLI `describe` both surface these alongside the real params (the old "signal port +
+    /// [`F32`](PortType::F32) control input, paired with its [`F32Meta`]. The
+    /// CLI `describe` surfaces these alongside the real params (the old "signal port +
     /// same-named unwired-default param" is now one input), so reading them from this single
     /// definition keeps the two from drifting. Enums are a separate, non-numeric settable surface.
     pub fn settable_inputs(&self) -> impl Iterator<Item = (&'static str, &F32Meta)> {

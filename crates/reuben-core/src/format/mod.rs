@@ -11,8 +11,8 @@
 //! `interface.outputs` pipes (`"main_l": {"from": "/pan.left", "channel": 0}`); the v1
 //! anonymous `outputs` block migrates into them at parse. Ports are referenced by **name**
 //! (from the operator's [`Descriptor`](crate::descriptor::Descriptor)), not by brittle index.
-//! Optional `doc` fields carry human/agent notes. The schema that validates these documents is
-//! generated from the operator descriptors ([`crate::schema`]).
+//! Optional `doc` fields carry human/agent notes. Validity is defined by the loader itself
+//! (ADR-0020): [`load`] is the single authority on what a legal document is.
 //!
 //! [`load`] turns JSON into a [`Graph`] (resolving types via a [`Registry`]);
 //! [`NormalizedDoc::from_graph`] goes the other way. Loading is an authoring step, not a realtime

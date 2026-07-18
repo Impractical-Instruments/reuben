@@ -46,7 +46,6 @@ pub mod plan;
 pub mod registry;
 pub mod render;
 pub mod resources;
-pub mod schema;
 pub mod signal;
 pub mod tools;
 pub mod tuning;
