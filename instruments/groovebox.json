@@ -326,8 +326,8 @@
       "tempo": {
         "type": "f32",
         "default": 120.0,
-        "min": 1.0,
-        "max": 999.0,
+        "min": 20.0,
+        "max": 240.0,
         "unit": "BPM"
       },
       "tone": {

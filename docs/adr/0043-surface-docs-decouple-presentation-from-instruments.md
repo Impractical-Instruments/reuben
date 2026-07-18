@@ -8,6 +8,14 @@
 > docs and their schema stay public. Paths below that point into `crates/reuben-web/js/surface/`
 > are historical.
 
+> **§9 superseded (2026-07-18).** The cross-implementation oracle was retired. After ADR-0056 the
+> two resolvers lived in different repos and each asserted against its *own* copy of the fixture,
+> with nothing enforcing equality — a private snapshot test on each side, not the pin §9 intended
+> (exactly the "two copies with nothing to catch their divergence" outcome ADR-0056 §4 set out to
+> avoid, reached by accident). The engine-side fixture and `CrossImplementationOracleTest` are
+> removed; the resolvers still share semantics verbatim, and a real pin, if wanted, belongs in the
+> web repo where both coexist.
+
 ## Status
 
 Accepted (2026-07-09). The design gate of the decouple-UI-from-instruments epic
