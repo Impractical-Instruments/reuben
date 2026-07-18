@@ -1,7 +1,8 @@
 //! Integration test for the MCP stdio wire surface (#313 verification): spawn the real shim
 //! binary, complete the `initialize` handshake, and assert `tools/list` advertises exactly the
-//! eight-tool roster (ADR-0048 §1) over newline-delimited JSON-RPC — the actual protocol boundary
-//! the client sees, not an in-process shortcut.
+//! declared contract roster (ADR-0048 §1) over newline-delimited JSON-RPC — the actual protocol
+//! boundary the client sees, not an in-process shortcut. The expected set is derived from the
+//! single-source `reuben_core::tools::CONTRACTS` roster (#157), not hand-typed here.
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
@@ -53,7 +54,7 @@ fn drive_tools_list() -> String {
 }
 
 #[test]
-fn advertises_all_eight_tools_over_stdio() {
+fn advertises_the_declared_roster_over_stdio() {
     let out = drive_tools_list();
 
     // The tools/list response is the JSON-RPC message carrying id == 2.
@@ -75,7 +76,7 @@ fn advertises_all_eight_tools_over_stdio() {
         })
         .collect();
 
-    for expected in reuben_mcp::TOOL_NAMES {
+    for expected in reuben_mcp::tool_names() {
         assert!(
             advertised.iter().any(|name| name == expected),
             "tools/list is missing `{expected}`; advertised: {advertised:?}"
@@ -83,15 +84,15 @@ fn advertises_all_eight_tools_over_stdio() {
     }
     assert_eq!(
         advertised.len(),
-        reuben_mcp::TOOL_NAMES.len(),
-        "tools/list must advertise exactly the eight-tool roster, got: {advertised:?}"
+        reuben_mcp::tool_names().len(),
+        "tools/list must advertise exactly the declared contract roster, got: {advertised:?}"
     );
 }
 
 #[test]
 fn every_tool_advertises_an_output_schema() {
     // ADR-0048 §3: every tool declares an `outputSchema` (rmcp derives it from the contract types
-    // via schemars). Asserting all eight over the wire also proves the shim STARTS — the five
+    // via schemars). Asserting the whole roster over the wire also proves the shim STARTS — the
     // engine tools' `schema_for_output` calls run at router construction, so a schema that failed
     // to derive would panic the binary before it could answer this request.
     let out = drive_tools_list();
@@ -104,7 +105,7 @@ fn every_tool_advertises_an_output_schema() {
         .as_array()
         .unwrap_or_else(|| panic!("tools/list result missing a tools array:\n{response}"));
 
-    for name in reuben_mcp::TOOL_NAMES {
+    for name in reuben_mcp::tool_names() {
         let tool = tools
             .iter()
             .find(|t| t["name"] == serde_json::json!(name))

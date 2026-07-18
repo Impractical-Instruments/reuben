@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "MCP stdio sidecar for reuben: exposes the eight authoring tools over the Model Context Protocol (ADR-0044/0048)."
+description = "MCP stdio sidecar for reuben: exposes the authoring tool roster over the Model Context Protocol (ADR-0044/0048)."
 
 # Both a bin (the shim the MCP client spawns per conversation) and a lib, so the server logic
 # and the engine-liveness seam are unit-testable in-process while the integration test spawns

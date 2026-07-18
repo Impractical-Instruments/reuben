@@ -8,7 +8,8 @@
 //! # Tool surface (ADR-0048 §1)
 //!
 //! A [`ServerHandler`] declaring the `tools` and `resources` capabilities plus an `instructions`
-//! field, and a tool router with all **eight** tools (ADR-0048 §1). The three pure tools
+//! field, and a tool router with the full declared contract set (the
+//! [`reuben_core::tools::CONTRACTS`] roster, ADR-0048 §1). The three pure tools
 //! (`describe_operators`/`describe_instrument`/`validate`, #316) descend to
 //! [`reuben_core::introspect`] over a [`reuben_native::resources::FsResolver`]; the five engine
 //! tools (`send`/`engine_status`/`swap`/`get_current_instrument`/`get_diagnostics`, #318) reach a
@@ -48,18 +49,13 @@ mod engine;
 pub use client::{DocumentSnapshot, StructureClient, StructureError, SwapOutcome};
 pub use engine::{default_osc_addr, EngineChannel, EngineLink};
 
-/// The eight-tool surface (ADR-0048 §1), in the ADR's roster order. The authority for the exact
-/// spellings advertised over `tools/list`; the integration test asserts the wire surface matches.
-pub const TOOL_NAMES: [&str; 8] = [
-    "describe_operators",
-    "describe_instrument",
-    "validate",
-    "send",
-    "engine_status",
-    "swap",
-    "get_current_instrument",
-    "get_diagnostics",
-];
+/// The tool surface this door advertises (ADR-0048 §1), in roster order — the exact spellings
+/// advertised over `tools/list`. Derived from the single-source [`reuben_core::tools::CONTRACTS`]
+/// roster (#157) rather than a hand-typed literal, so the wire surface can only change by changing
+/// the roster; the integration test asserts `tools/list` matches this same derivation.
+pub fn tool_names() -> Vec<&'static str> {
+    reuben_core::tools::names()
+}
 
 /// The actionable guidance an engine tool returns when the engine is unreachable (ADR-0044 §2):
 /// the shim never spawns `reuben play`, so it names the fix instead.
@@ -402,7 +398,7 @@ pub struct CurrentInstrumentOutput {
     pub content_hash: String,
 }
 
-/// The reuben MCP server: the eight-tool router plus the engine channel seam.
+/// The reuben MCP server: the declared-roster tool router plus the engine channel seam.
 ///
 /// Pure tools (`describe_operators`, `describe_instrument`, `validate`) are always available;
 /// the engine tools (`send`, `swap`, `get_current_instrument`, `get_diagnostics`) reach a
@@ -1562,9 +1558,10 @@ mod tests {
     }
 
     #[test]
-    fn all_eight_tools_are_registered() {
-        // The router advertises exactly the ADR-0048 §1 roster — the same surface the stdio
-        // integration test asserts over the wire, checked here without spawning a process.
+    fn the_declared_roster_is_registered() {
+        // The router advertises exactly the ADR-0048 §1 roster (derived from
+        // reuben_core::tools::CONTRACTS via tool_names) — the same surface the stdio integration
+        // test asserts over the wire, checked here without spawning a process.
         let server = ReubenServer::new();
         let mut advertised: Vec<String> = server
             .tool_router
@@ -1574,7 +1571,7 @@ mod tests {
             .collect();
         advertised.sort();
 
-        let mut expected: Vec<String> = TOOL_NAMES.iter().map(|n| n.to_string()).collect();
+        let mut expected: Vec<String> = tool_names().iter().map(|n| n.to_string()).collect();
         expected.sort();
 
         assert_eq!(
