@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend ([ADR-0019]): callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**28 commits** · 2026-07-12 → 2026-07-18 · 1680 data points · last: `4827db2` (2026-07-18T20:31:34-04:00)
+**29 commits** · 2026-07-12 → 2026-07-19 · 1740 data points · last: `bcfbece` (2026-07-19T12:46:37-04:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -21,7 +21,7 @@ Deterministic CI performance trend ([ADR-0019]): callgrind **instruction counts 
 | `autotune` | 40.9M | ±0.0% | ±0.0% | 2026-07-12 |
 | `echo` | 43.2M | ±0.0% | ±0.0% | 2026-07-12 |
 | `reverb` | 50.5M | ±0.0% | ±0.0% | 2026-07-12 |
-| `sampler-arp` | 15.9M | ±0.0% | +0.1% | 2026-07-12 |
+| `sampler-arp` | 15.8M | -0.1% | ±0.0% | 2026-07-12 |
 
 ## Per-node engine overhead
 
@@ -49,13 +49,13 @@ Deterministic CI performance trend ([ADR-0019]): callgrind **instruction counts 
 | `macro/autotune` | 40.9M | ±0.0% | ±0.0% | 2026-07-12 |
 | `macro/echo` | 43.2M | ±0.0% | ±0.0% | 2026-07-12 |
 | `macro/reverb` | 50.5M | ±0.0% | ±0.0% | 2026-07-12 |
-| `macro/sampler-arp` | 15.9M | ±0.0% | +0.1% | 2026-07-12 |
+| `macro/sampler-arp` | 15.8M | -0.1% | ±0.0% | 2026-07-12 |
 | `granulator` | 27.5M | ±0.0% | ±0.0% | 2026-07-12 |
 | `resonator` | 18.4M | ±0.0% | -0.5% | 2026-07-12 |
 | `reverb` | 11.0M | ±0.0% | ±0.0% | 2026-07-12 |
 | `saturator` | 8.66M | ±0.0% | ±0.0% | 2026-07-12 |
 | `pan` | 6.09M | ±0.0% | ±0.0% | 2026-07-12 |
-| `sequencer` | 4.89M | ±0.0% | ±0.0% | 2026-07-12 |
+| `sequencer` | 4.89M | -0.1% | -0.1% | 2026-07-12 |
 | `map_f32_signal` | 4.57M | ±0.0% | ±0.0% | 2026-07-12 |
 | `euclid` | 4.11M | ±0.0% | ±0.0% | 2026-07-12 |
 | `modulo_f32_signal` | 4.05M | ±0.0% | ±0.0% | 2026-07-12 |
