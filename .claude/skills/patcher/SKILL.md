@@ -16,7 +16,7 @@ It does **not** author new Operators (that is Rust — the `create-operator` ski
 surface docs (`surfaces/*.json` presentation — the `control-surface` skill, ADR-0043), or edit core
 crates.
 
-## The loop: introspect → draft → validate → report
+## The loop: introspect → draft → validate → sync index → report
 
 Run all `reuben` commands from the repo root.
 
@@ -57,6 +57,16 @@ Run all `reuben` commands from the repo root.
    `Plan::instantiate`, so it catches unknown type/input, duplicate address, type mismatches,
    constants-in-inputs, **and cycles** — without playing audio.
 
+4. **Sync the library index — whenever you added, removed, or renamed an instrument, or changed
+   its top-level `doc` first sentence or its `interface` face.** `instruments/index.md` is a
+   generated artifact (ADR-0057 §4), and the `library_index_is_in_sync` test fails CI when it
+   drifts from a fresh generation — so a new instrument or an interface/doc edit that skips this
+   step passes `validate` locally but reddens CI. Regenerate and stage it in the same commit:
+   `cargo run -q -p reuben-native --example gen_library_index` (rewrites `instruments/index.md`
+   from every instrument; never hand-edit it). Pure edits to a node's `inputs`/`config` that
+   touch neither the role line nor the `interface` leave the index unchanged — running it is
+   still safe (idempotent), and re-running to confirm a clean `git diff` is the reliable check.
+
 ## Run the tests
 
 The introspection commands are backed by `reuben_core::introspect`, unit-tested there:
@@ -77,7 +87,9 @@ the native CLI's own shipped multichannel-fixture integration coverage.
 ## Report
 
 End with: which instrument file, what was built or changed (nodes added/rewired, params set),
-the final `validate` result (`ok`, any warnings), and how to play it
-(`reuben play <file>`, the OSC address to send notes to). If you built a Good Button or promoted
+the final `validate` result (`ok`, any warnings), whether the library index was regenerated
+(step 4 — say so when a new/renamed instrument or an interface/doc change required it), and how
+to play it (`reuben play <file>`, the OSC address to send notes to). If you built a Good Button
+or promoted
 a player-facing control to an interface pipe, suggest the `control-surface` skill to author its
 surface doc (TouchOSC and any host-side renderer read from it).

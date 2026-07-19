@@ -1,0 +1,523 @@
+{
+  "surface_version": 1,
+  "instrument": "acid-techno",
+  "cols": 5,
+  "controls": [
+    {
+      "bind": "tempo",
+      "label": "Tempo",
+      "widget": "radial",
+      "group": "macros"
+    },
+    {
+      "bind": "key",
+      "label": "Key",
+      "widget": "radial",
+      "group": "macros"
+    },
+    {
+      "bind": "mode",
+      "label": "Mode",
+      "widget": "radial",
+      "group": "macros"
+    },
+    {
+      "bind": "drums_vol",
+      "label": "Drums",
+      "widget": "radial",
+      "group": "macros"
+    },
+    {
+      "bind": "bass_vol",
+      "label": "Bass",
+      "widget": "radial",
+      "group": "macros"
+    },
+    {
+      "bind": "pad_vol",
+      "label": "Pad",
+      "widget": "radial",
+      "group": "macros"
+    },
+    {
+      "bind": "kick_step1",
+      "label": "K1",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step2",
+      "label": "K2",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step3",
+      "label": "K3",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step4",
+      "label": "K4",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step5",
+      "label": "K5",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step6",
+      "label": "K6",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step7",
+      "label": "K7",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step8",
+      "label": "K8",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step9",
+      "label": "K9",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step10",
+      "label": "K10",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step11",
+      "label": "K11",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step12",
+      "label": "K12",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step13",
+      "label": "K13",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step14",
+      "label": "K14",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step15",
+      "label": "K15",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "kick_step16",
+      "label": "K16",
+      "widget": "param-toggle",
+      "group": "kick"
+    },
+    {
+      "bind": "snare_step1",
+      "label": "S1",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step2",
+      "label": "S2",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step3",
+      "label": "S3",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step4",
+      "label": "S4",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step5",
+      "label": "S5",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step6",
+      "label": "S6",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step7",
+      "label": "S7",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step8",
+      "label": "S8",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step9",
+      "label": "S9",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step10",
+      "label": "S10",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step11",
+      "label": "S11",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step12",
+      "label": "S12",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step13",
+      "label": "S13",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step14",
+      "label": "S14",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step15",
+      "label": "S15",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "snare_step16",
+      "label": "S16",
+      "widget": "param-toggle",
+      "group": "snare"
+    },
+    {
+      "bind": "chh_step1",
+      "label": "H1",
+      "widget": "param-toggle",
+      "group": "chh"
+    },
+    {
+      "bind": "chh_step2",
+      "label": "H2",
+      "widget": "param-toggle",
+      "group": "chh"
+    },
+    {
+      "bind": "chh_step3",
+      "label": "H3",
+      "widget": "param-toggle",
+      "group": "chh"
+    },
+    {
+      "bind": "chh_step4",
+      "label": "H4",
+      "widget": "param-toggle",
+      "group": "chh"
+    },
+    {
+      "bind": "chh_step5",
+      "label": "H5",
+      "widget": "param-toggle",
+      "group": "chh"
+    },
+    {
+      "bind": "chh_step6",
+      "label": "H6",
+      "widget": "param-toggle",
+      "group": "chh"
+    },
+    {
+      "bind": "chh_step7",
+      "label": "H7",
+      "widget": "param-toggle",
+      "group": "chh"
+    },
+    {
+      "bind": "chh_step8",
+      "label": "H8",
+      "widget": "param-toggle",
+      "group": "chh"
+    },
+    {
+      "bind": "chh_step9",
+      "label": "H9",
+      "widget": "param-toggle",
+      "group": "chh"
+    },
+    {
+      "bind": "chh_step10",
+      "label": "H10",
+      "widget": "param-toggle",
+      "group": "chh"
+    },
+    {
+      "bind": "chh_step11",
+      "label": "H11",
+      "widget": "param-toggle",
+      "group": "chh"
+    },
+    {
+      "bind": "chh_step12",
+      "label": "H12",
+      "widget": "param-toggle",
+      "group": "chh"
+    },
+    {
+      "bind": "chh_step13",
+      "label": "H13",
+      "widget": "param-toggle",
+      "group": "chh"
+    },
+    {
+      "bind": "chh_step14",
+      "label": "H14",
+      "widget": "param-toggle",
+      "group": "chh"
+    },
+    {
+      "bind": "chh_step15",
+      "label": "H15",
+      "widget": "param-toggle",
+      "group": "chh"
+    },
+    {
+      "bind": "chh_step16",
+      "label": "H16",
+      "widget": "param-toggle",
+      "group": "chh"
+    },
+    {
+      "bind": "ohh_step1",
+      "label": "O1",
+      "widget": "param-toggle",
+      "group": "ohh"
+    },
+    {
+      "bind": "ohh_step2",
+      "label": "O2",
+      "widget": "param-toggle",
+      "group": "ohh"
+    },
+    {
+      "bind": "ohh_step3",
+      "label": "O3",
+      "widget": "param-toggle",
+      "group": "ohh"
+    },
+    {
+      "bind": "ohh_step4",
+      "label": "O4",
+      "widget": "param-toggle",
+      "group": "ohh"
+    },
+    {
+      "bind": "ohh_step5",
+      "label": "O5",
+      "widget": "param-toggle",
+      "group": "ohh"
+    },
+    {
+      "bind": "ohh_step6",
+      "label": "O6",
+      "widget": "param-toggle",
+      "group": "ohh"
+    },
+    {
+      "bind": "ohh_step7",
+      "label": "O7",
+      "widget": "param-toggle",
+      "group": "ohh"
+    },
+    {
+      "bind": "ohh_step8",
+      "label": "O8",
+      "widget": "param-toggle",
+      "group": "ohh"
+    },
+    {
+      "bind": "ohh_step9",
+      "label": "O9",
+      "widget": "param-toggle",
+      "group": "ohh"
+    },
+    {
+      "bind": "ohh_step10",
+      "label": "O10",
+      "widget": "param-toggle",
+      "group": "ohh"
+    },
+    {
+      "bind": "ohh_step11",
+      "label": "O11",
+      "widget": "param-toggle",
+      "group": "ohh"
+    },
+    {
+      "bind": "ohh_step12",
+      "label": "O12",
+      "widget": "param-toggle",
+      "group": "ohh"
+    },
+    {
+      "bind": "ohh_step13",
+      "label": "O13",
+      "widget": "param-toggle",
+      "group": "ohh"
+    },
+    {
+      "bind": "ohh_step14",
+      "label": "O14",
+      "widget": "param-toggle",
+      "group": "ohh"
+    },
+    {
+      "bind": "ohh_step15",
+      "label": "O15",
+      "widget": "param-toggle",
+      "group": "ohh"
+    },
+    {
+      "bind": "ohh_step16",
+      "label": "O16",
+      "widget": "param-toggle",
+      "group": "ohh"
+    },
+    {
+      "bind": "bass_step1",
+      "label": "B1",
+      "widget": "fader",
+      "group": "bass"
+    },
+    {
+      "bind": "bass_step2",
+      "label": "B2",
+      "widget": "fader",
+      "group": "bass"
+    },
+    {
+      "bind": "bass_step3",
+      "label": "B3",
+      "widget": "fader",
+      "group": "bass"
+    },
+    {
+      "bind": "bass_step4",
+      "label": "B4",
+      "widget": "fader",
+      "group": "bass"
+    },
+    {
+      "bind": "bass_step5",
+      "label": "B5",
+      "widget": "fader",
+      "group": "bass"
+    },
+    {
+      "bind": "bass_step6",
+      "label": "B6",
+      "widget": "fader",
+      "group": "bass"
+    },
+    {
+      "bind": "bass_step7",
+      "label": "B7",
+      "widget": "fader",
+      "group": "bass"
+    },
+    {
+      "bind": "bass_step8",
+      "label": "B8",
+      "widget": "fader",
+      "group": "bass"
+    },
+    {
+      "bind": "bass_step9",
+      "label": "B9",
+      "widget": "fader",
+      "group": "bass"
+    },
+    {
+      "bind": "bass_step10",
+      "label": "B10",
+      "widget": "fader",
+      "group": "bass"
+    },
+    {
+      "bind": "bass_step11",
+      "label": "B11",
+      "widget": "fader",
+      "group": "bass"
+    },
+    {
+      "bind": "bass_step12",
+      "label": "B12",
+      "widget": "fader",
+      "group": "bass"
+    },
+    {
+      "bind": "bass_step13",
+      "label": "B13",
+      "widget": "fader",
+      "group": "bass"
+    },
+    {
+      "bind": "bass_step14",
+      "label": "B14",
+      "widget": "fader",
+      "group": "bass"
+    },
+    {
+      "bind": "bass_step15",
+      "label": "B15",
+      "widget": "fader",
+      "group": "bass"
+    },
+    {
+      "bind": "bass_step16",
+      "label": "B16",
+      "widget": "fader",
+      "group": "bass"
+    }
+  ]
+}
