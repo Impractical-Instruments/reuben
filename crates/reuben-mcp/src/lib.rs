@@ -204,10 +204,8 @@ struct ResourceEntry {
 }
 
 impl ResourceEntry {
-    /// The filesystem path to serve this resource from this request: the [`ResourceEntry::env`]
-    /// override when set, else the compile-time [`ResourceEntry::default_path`]. The live env read
-    /// happens here; the pure [`resolve_checkout_path`] does the override-then-default logic so it
-    /// stays unit-testable without racing on the process environment.
+    /// Resolves this entry's on-disk path, reading the `self.env` override then falling back to
+    /// `self.default_path`. See [`resolve_checkout_path`].
     fn resolve_path(&self) -> std::path::PathBuf {
         resolve_checkout_path(std::env::var_os(self.env), self.default_path)
     }
@@ -1240,32 +1238,58 @@ mod tests {
     }
 
     #[test]
-    fn every_resource_prefers_the_env_override_then_the_checkout_default() {
-        // #496 (folding #374 + R9 #466): one table-driven proof for every resource, driven through
-        // the PRODUCTION `entry.resolve_path()` so each row's own `env` field is what selects the
-        // path — a `resolve_path` that read a hardcoded var instead of `self.env` fails here. An
-        // explicit REUBEN_* override wins for a non-checkout deploy; unset falls back to the
-        // compile-time checkout default (ADR-0051 §4).
+    fn resolve_checkout_path_prefers_the_override_then_the_default() {
+        // #496 (folding #374 + R9 #466): the pure override-vs-default logic, tested by calling
+        // `resolve_checkout_path` directly with explicit args — no process-env mutation, so it can't
+        // flake and it keeps a genuine direct caller for the function's "unit-testable without racing
+        // on real env vars" rationale honest. A present override wins for a non-checkout deploy; an
+        // absent one falls back to the compile-time checkout default (ADR-0051 §4).
+        assert_eq!(
+            resolve_checkout_path(
+                Some(std::ffi::OsString::from("/opt/reuben/override.md")),
+                "/checkout/default.md",
+            ),
+            std::path::PathBuf::from("/opt/reuben/override.md"),
+            "a present override wins"
+        );
+        assert_eq!(
+            resolve_checkout_path(None, "/checkout/default.md"),
+            std::path::PathBuf::from("/checkout/default.md"),
+            "an absent override falls back to the default"
+        );
+    }
+
+    #[test]
+    fn every_resource_env_field_drives_its_resolve_path() {
+        // #496: for every row, prove the row's OWN `entry.env` field is what `entry.resolve_path()`
+        // reads — a `resolve_path` that read a hardcoded var instead of `self.env`, or a row with a
+        // cross-wired `env`, fails here. Driven through the production method (not the pure fn).
         //
-        // `set_var`/`remove_var` are process-global and the suite runs in parallel, so this is only
-        // safe because these three REUBEN_* resource vars are read by NO other inline test. The
-        // mutation is scoped tightly per row — set → assert override → remove → assert default — and
-        // never left set across rows.
+        // `set_var`/`remove_var` are process-global and cargo runs tests as threads in one process,
+        // so this is only safe because these three REUBEN_* resource vars are read by NO other inline
+        // test. Per row the env is mutated panic-safely: set, capture BOTH outcomes into locals, and
+        // `remove_var` BEFORE any assertion runs — so a failed assert can never leak a var into a
+        // sibling test.
         for (i, entry) in RESOURCES.iter().enumerate() {
             // Fixture path independent of any entry field — the override just has to differ from the
             // default and round-trip through `resolve_path` unchanged.
             let override_path = format!("/opt/reuben/resource-{i}.md");
+
             std::env::set_var(entry.env, &override_path);
+            let got_override = entry.resolve_path();
+            std::env::remove_var(entry.env);
+            let got_default = entry.resolve_path();
+
+            // Only now, with the env already cleaned, do the assertions.
             assert_eq!(
-                entry.resolve_path(),
+                got_override,
                 std::path::PathBuf::from(&override_path),
                 "the row's own `env` ({}) must select the override for {}",
                 entry.env,
                 entry.uri
             );
-            std::env::remove_var(entry.env);
             assert_eq!(
-                entry.resolve_path(),
+                got_default,
                 std::path::PathBuf::from(entry.default_path),
                 "unset falls back to the compile-time checkout default: {}",
                 entry.uri
