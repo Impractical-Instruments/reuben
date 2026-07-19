@@ -1,0 +1,1307 @@
+{
+  "format_version": 3,
+  "instrument": "acid-techno",
+  "doc": "Acid techno rig: a four-on-the-floor 16-step drum machine (kick, snare, closed + open hi-hat), a TB-303-style resonant acid bass sequencer, and a detuned three-saw pad playing sustained whole-note chords. Drums and bass share a 16th-note clock; the pad triggers one chord per bar. The `key` pipe (/key/in) is the chord/scale selector -- it drives a shared natural-minor harmony, so the bass line and the pad chord re-spell together (bass at the root, pad one octave up). Each instrument has its own volume pipe (/drums_vol/in, /bass_vol/in, /pad_vol/in); ride tempo 60-180 BPM with /tempo/in. Program the lanes with /kick_step1..16 /snare_step* /chh_step* /ohh_step* (boolean) and the bass with /bass_step1..16 (scale degrees, -1 = rest).",
+  "resources": {
+    "kick-voice": "voices/kick-voice.json",
+    "snare-voice": "voices/snare-voice.json",
+    "hat-voice": "voices/hat-voice.json",
+    "openhat-voice": "voices/openhat-voice.json",
+    "acid-bass-voice": "voices/acid-bass-voice.json",
+    "acid-pad-voice": "voices/acid-pad-voice.json"
+  },
+  "interface": {
+    "inputs": {
+      "tempo": {
+        "type": "f32",
+        "default": 130.0,
+        "min": 60.0,
+        "max": 180.0,
+        "unit": "BPM"
+      },
+      "key": {
+        "type": "f32",
+        "default": 45.0,
+        "min": 24.0,
+        "max": 72.0,
+        "unit": "MIDI"
+      },
+      "drums_vol": {
+        "type": "f32",
+        "default": 0.8,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "bass_vol": {
+        "type": "f32",
+        "default": 0.8,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "pad_vol": {
+        "type": "f32",
+        "default": 0.5,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step1": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step2": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step3": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step4": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step5": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step6": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step7": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step8": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step9": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step10": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step11": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step12": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step13": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step14": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step15": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "kick_step16": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step1": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step2": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step3": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step4": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step5": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step6": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step7": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step8": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step9": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step10": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step11": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step12": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step13": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step14": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step15": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "snare_step16": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step1": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step2": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step3": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step4": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step5": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step6": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step7": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step8": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step9": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step10": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step11": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step12": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step13": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step14": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step15": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "chh_step16": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step1": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step2": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step3": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step4": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step5": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step6": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step7": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step8": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step9": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step10": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step11": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step12": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step13": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step14": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step15": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "ohh_step16": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "bass_step1": {
+        "type": "f32",
+        "default": 0.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step2": {
+        "type": "f32",
+        "default": -1.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step3": {
+        "type": "f32",
+        "default": 0.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step4": {
+        "type": "f32",
+        "default": 7.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step5": {
+        "type": "f32",
+        "default": 0.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step6": {
+        "type": "f32",
+        "default": -1.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step7": {
+        "type": "f32",
+        "default": 3.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step8": {
+        "type": "f32",
+        "default": 0.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step9": {
+        "type": "f32",
+        "default": 0.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step10": {
+        "type": "f32",
+        "default": 7.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step11": {
+        "type": "f32",
+        "default": -1.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step12": {
+        "type": "f32",
+        "default": 5.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step13": {
+        "type": "f32",
+        "default": 0.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step14": {
+        "type": "f32",
+        "default": -1.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step15": {
+        "type": "f32",
+        "default": 3.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      },
+      "bass_step16": {
+        "type": "f32",
+        "default": 7.0,
+        "min": -1.0,
+        "max": 24.0,
+        "unit": "degree"
+      }
+    },
+    "outputs": {
+      "out": {
+        "from": "/out.audio"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "type": "clock",
+      "address": "/clock",
+      "doc": "16th-note grid for drums + bass. division=4 -> 4 pulses per beat.",
+      "inputs": {
+        "division": 4.0,
+        "tempo": {
+          "from": "/tempo"
+        }
+      }
+    },
+    {
+      "type": "clock",
+      "address": "/pad_clock",
+      "doc": "Beat grid for the pad. division=1 -> one pulse per beat; the length-4 pad sequencer fires only on the downbeat, so chords land on whole notes.",
+      "inputs": {
+        "division": 1.0,
+        "tempo": {
+          "from": "/tempo"
+        }
+      }
+    },
+    {
+      "type": "sequencer",
+      "address": "/kick",
+      "doc": "kick lane: 16 boolean gate steps.",
+      "inputs": {
+        "clock": {
+          "from": "/clock.gate"
+        },
+        "gate_mode": "Gate",
+        "length": 16.0,
+        "pitch": 0.0,
+        "step1": {
+          "from": "/kick_step1"
+        },
+        "step2": {
+          "from": "/kick_step2"
+        },
+        "step3": {
+          "from": "/kick_step3"
+        },
+        "step4": {
+          "from": "/kick_step4"
+        },
+        "step5": {
+          "from": "/kick_step5"
+        },
+        "step6": {
+          "from": "/kick_step6"
+        },
+        "step7": {
+          "from": "/kick_step7"
+        },
+        "step8": {
+          "from": "/kick_step8"
+        },
+        "step9": {
+          "from": "/kick_step9"
+        },
+        "step10": {
+          "from": "/kick_step10"
+        },
+        "step11": {
+          "from": "/kick_step11"
+        },
+        "step12": {
+          "from": "/kick_step12"
+        },
+        "step13": {
+          "from": "/kick_step13"
+        },
+        "step14": {
+          "from": "/kick_step14"
+        },
+        "step15": {
+          "from": "/kick_step15"
+        },
+        "step16": {
+          "from": "/kick_step16"
+        }
+      }
+    },
+    {
+      "type": "voicer",
+      "address": "/kick_v",
+      "doc": "Hosts the kick-voice; the lane gate fires it.",
+      "config": {
+        "voices": 1.0
+      },
+      "inputs": {
+        "notes": {
+          "from": "/kick"
+        }
+      },
+      "voice": "kick-voice"
+    },
+    {
+      "type": "m2s",
+      "address": "/kick_trim",
+      "doc": "Baked relative level for the kick lane in the kit balance.",
+      "inputs": {
+        "in": 0.9,
+        "mode": "Smooth",
+        "time": 0.02
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/kick_amp",
+      "doc": "kick audio * lane trim.",
+      "inputs": {
+        "a": {
+          "from": "/kick_v.audio"
+        },
+        "b": {
+          "from": "/kick_trim"
+        }
+      }
+    },
+    {
+      "type": "sequencer",
+      "address": "/snare",
+      "doc": "snare lane: 16 boolean gate steps.",
+      "inputs": {
+        "clock": {
+          "from": "/clock.gate"
+        },
+        "gate_mode": "Gate",
+        "length": 16.0,
+        "pitch": 0.0,
+        "step1": {
+          "from": "/snare_step1"
+        },
+        "step2": {
+          "from": "/snare_step2"
+        },
+        "step3": {
+          "from": "/snare_step3"
+        },
+        "step4": {
+          "from": "/snare_step4"
+        },
+        "step5": {
+          "from": "/snare_step5"
+        },
+        "step6": {
+          "from": "/snare_step6"
+        },
+        "step7": {
+          "from": "/snare_step7"
+        },
+        "step8": {
+          "from": "/snare_step8"
+        },
+        "step9": {
+          "from": "/snare_step9"
+        },
+        "step10": {
+          "from": "/snare_step10"
+        },
+        "step11": {
+          "from": "/snare_step11"
+        },
+        "step12": {
+          "from": "/snare_step12"
+        },
+        "step13": {
+          "from": "/snare_step13"
+        },
+        "step14": {
+          "from": "/snare_step14"
+        },
+        "step15": {
+          "from": "/snare_step15"
+        },
+        "step16": {
+          "from": "/snare_step16"
+        }
+      }
+    },
+    {
+      "type": "voicer",
+      "address": "/snare_v",
+      "doc": "Hosts the snare-voice; the lane gate fires it.",
+      "config": {
+        "voices": 1.0
+      },
+      "inputs": {
+        "notes": {
+          "from": "/snare"
+        }
+      },
+      "voice": "snare-voice"
+    },
+    {
+      "type": "m2s",
+      "address": "/snare_trim",
+      "doc": "Baked relative level for the snare lane in the kit balance.",
+      "inputs": {
+        "in": 0.6,
+        "mode": "Smooth",
+        "time": 0.02
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/snare_amp",
+      "doc": "snare audio * lane trim.",
+      "inputs": {
+        "a": {
+          "from": "/snare_v.audio"
+        },
+        "b": {
+          "from": "/snare_trim"
+        }
+      }
+    },
+    {
+      "type": "sequencer",
+      "address": "/chh",
+      "doc": "chh lane: 16 boolean gate steps.",
+      "inputs": {
+        "clock": {
+          "from": "/clock.gate"
+        },
+        "gate_mode": "Gate",
+        "length": 16.0,
+        "pitch": 0.0,
+        "step1": {
+          "from": "/chh_step1"
+        },
+        "step2": {
+          "from": "/chh_step2"
+        },
+        "step3": {
+          "from": "/chh_step3"
+        },
+        "step4": {
+          "from": "/chh_step4"
+        },
+        "step5": {
+          "from": "/chh_step5"
+        },
+        "step6": {
+          "from": "/chh_step6"
+        },
+        "step7": {
+          "from": "/chh_step7"
+        },
+        "step8": {
+          "from": "/chh_step8"
+        },
+        "step9": {
+          "from": "/chh_step9"
+        },
+        "step10": {
+          "from": "/chh_step10"
+        },
+        "step11": {
+          "from": "/chh_step11"
+        },
+        "step12": {
+          "from": "/chh_step12"
+        },
+        "step13": {
+          "from": "/chh_step13"
+        },
+        "step14": {
+          "from": "/chh_step14"
+        },
+        "step15": {
+          "from": "/chh_step15"
+        },
+        "step16": {
+          "from": "/chh_step16"
+        }
+      }
+    },
+    {
+      "type": "voicer",
+      "address": "/chh_v",
+      "doc": "Hosts the hat-voice; the lane gate fires it.",
+      "config": {
+        "voices": 1.0
+      },
+      "inputs": {
+        "notes": {
+          "from": "/chh"
+        }
+      },
+      "voice": "hat-voice"
+    },
+    {
+      "type": "m2s",
+      "address": "/chh_trim",
+      "doc": "Baked relative level for the chh lane in the kit balance.",
+      "inputs": {
+        "in": 0.4,
+        "mode": "Smooth",
+        "time": 0.02
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/chh_amp",
+      "doc": "chh audio * lane trim.",
+      "inputs": {
+        "a": {
+          "from": "/chh_v.audio"
+        },
+        "b": {
+          "from": "/chh_trim"
+        }
+      }
+    },
+    {
+      "type": "sequencer",
+      "address": "/ohh",
+      "doc": "ohh lane: 16 boolean gate steps.",
+      "inputs": {
+        "clock": {
+          "from": "/clock.gate"
+        },
+        "gate_mode": "Gate",
+        "length": 16.0,
+        "pitch": 0.0,
+        "step1": {
+          "from": "/ohh_step1"
+        },
+        "step2": {
+          "from": "/ohh_step2"
+        },
+        "step3": {
+          "from": "/ohh_step3"
+        },
+        "step4": {
+          "from": "/ohh_step4"
+        },
+        "step5": {
+          "from": "/ohh_step5"
+        },
+        "step6": {
+          "from": "/ohh_step6"
+        },
+        "step7": {
+          "from": "/ohh_step7"
+        },
+        "step8": {
+          "from": "/ohh_step8"
+        },
+        "step9": {
+          "from": "/ohh_step9"
+        },
+        "step10": {
+          "from": "/ohh_step10"
+        },
+        "step11": {
+          "from": "/ohh_step11"
+        },
+        "step12": {
+          "from": "/ohh_step12"
+        },
+        "step13": {
+          "from": "/ohh_step13"
+        },
+        "step14": {
+          "from": "/ohh_step14"
+        },
+        "step15": {
+          "from": "/ohh_step15"
+        },
+        "step16": {
+          "from": "/ohh_step16"
+        }
+      }
+    },
+    {
+      "type": "voicer",
+      "address": "/ohh_v",
+      "doc": "Hosts the openhat-voice; the lane gate fires it.",
+      "config": {
+        "voices": 1.0
+      },
+      "inputs": {
+        "notes": {
+          "from": "/ohh"
+        }
+      },
+      "voice": "openhat-voice"
+    },
+    {
+      "type": "m2s",
+      "address": "/ohh_trim",
+      "doc": "Baked relative level for the ohh lane in the kit balance.",
+      "inputs": {
+        "in": 0.4,
+        "mode": "Smooth",
+        "time": 0.02
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/ohh_amp",
+      "doc": "ohh audio * lane trim.",
+      "inputs": {
+        "a": {
+          "from": "/ohh_v.audio"
+        },
+        "b": {
+          "from": "/ohh_trim"
+        }
+      }
+    },
+    {
+      "type": "add_f32_signal",
+      "address": "/dsum1",
+      "doc": "kick + snare.",
+      "inputs": {
+        "a": {
+          "from": "/kick_amp"
+        },
+        "b": {
+          "from": "/snare_amp"
+        }
+      }
+    },
+    {
+      "type": "add_f32_signal",
+      "address": "/dsum2",
+      "doc": "+ closed hat.",
+      "inputs": {
+        "a": {
+          "from": "/dsum1"
+        },
+        "b": {
+          "from": "/chh_amp"
+        }
+      }
+    },
+    {
+      "type": "add_f32_signal",
+      "address": "/dsum3",
+      "doc": "+ open hat -> full kit.",
+      "inputs": {
+        "a": {
+          "from": "/dsum2"
+        },
+        "b": {
+          "from": "/ohh_amp"
+        }
+      }
+    },
+    {
+      "type": "saturator",
+      "address": "/dsat",
+      "doc": "Warm tanh glue on the kit; peak-normalized so overlapping hits squash instead of clipping.",
+      "inputs": {
+        "audio": {
+          "from": "/dsum3"
+        },
+        "drive": 2.5,
+        "warmth": 0.5
+      }
+    },
+    {
+      "type": "m2s",
+      "address": "/drums_vol_cv",
+      "doc": "Smooth the drums_vol pipe into a CV.",
+      "inputs": {
+        "in": {
+          "from": "/drums_vol"
+        },
+        "mode": "Smooth",
+        "time": 0.02
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/drums_out",
+      "doc": "kit * drums volume.",
+      "inputs": {
+        "a": {
+          "from": "/dsat"
+        },
+        "b": {
+          "from": "/drums_vol_cv"
+        }
+      }
+    },
+    {
+      "type": "harmony",
+      "address": "/bass_harmony",
+      "doc": "Tonal context for the bass (natural minor). KEY/CHORD SELECTOR: the `key` pipe (/key/in) sets `root`; the whole bass line and the pad re-spell live when it changes.",
+      "inputs": {
+        "root": {
+          "from": "/key"
+        },
+        "degrees": 7.0,
+        "s0": 0.0,
+        "s1": 2.0,
+        "s2": 3.0,
+        "s3": 5.0,
+        "s4": 7.0,
+        "s5": 8.0,
+        "s6": 10.0
+      }
+    },
+    {
+      "type": "add_f32_value",
+      "address": "/key_up",
+      "doc": "Pad root = key + 12 (one octave up) so the pad sits above the bass.",
+      "inputs": {
+        "a": {
+          "from": "/key"
+        },
+        "b": 12.0
+      }
+    },
+    {
+      "type": "harmony",
+      "address": "/pad_harmony",
+      "doc": "Tonal context for the pad (same natural minor, one octave up). Re-spells with /key.",
+      "inputs": {
+        "root": {
+          "from": "/key_up"
+        },
+        "degrees": 7.0,
+        "s0": 0.0,
+        "s1": 2.0,
+        "s2": 3.0,
+        "s3": 5.0,
+        "s4": 7.0,
+        "s5": 8.0,
+        "s6": 10.0
+      }
+    },
+    {
+      "type": "sequencer",
+      "address": "/bass_seq",
+      "doc": "TB-303 line: 16 degree steps (-1 = rest), resolved against /bass_harmony.",
+      "inputs": {
+        "clock": {
+          "from": "/clock.gate"
+        },
+        "gate_mode": "Degree",
+        "length": 16.0,
+        "step1": {
+          "from": "/bass_step1"
+        },
+        "step2": {
+          "from": "/bass_step2"
+        },
+        "step3": {
+          "from": "/bass_step3"
+        },
+        "step4": {
+          "from": "/bass_step4"
+        },
+        "step5": {
+          "from": "/bass_step5"
+        },
+        "step6": {
+          "from": "/bass_step6"
+        },
+        "step7": {
+          "from": "/bass_step7"
+        },
+        "step8": {
+          "from": "/bass_step8"
+        },
+        "step9": {
+          "from": "/bass_step9"
+        },
+        "step10": {
+          "from": "/bass_step10"
+        },
+        "step11": {
+          "from": "/bass_step11"
+        },
+        "step12": {
+          "from": "/bass_step12"
+        },
+        "step13": {
+          "from": "/bass_step13"
+        },
+        "step14": {
+          "from": "/bass_step14"
+        },
+        "step15": {
+          "from": "/bass_step15"
+        },
+        "step16": {
+          "from": "/bass_step16"
+        }
+      }
+    },
+    {
+      "type": "voicer",
+      "address": "/bass_v",
+      "doc": "Monophonic 303 voice; degrees resolve to freq through /bass_harmony.",
+      "config": {
+        "voices": 1.0
+      },
+      "inputs": {
+        "notes": {
+          "from": "/bass_seq"
+        },
+        "harmony": {
+          "from": "/bass_harmony"
+        }
+      },
+      "voice": "acid-bass-voice"
+    },
+    {
+      "type": "m2s",
+      "address": "/bass_vol_cv",
+      "doc": "Smooth the bass_vol pipe into a CV.",
+      "inputs": {
+        "in": {
+          "from": "/bass_vol"
+        },
+        "mode": "Smooth",
+        "time": 0.02
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/bass_out",
+      "doc": "bass * bass volume.",
+      "inputs": {
+        "a": {
+          "from": "/bass_v.audio"
+        },
+        "b": {
+          "from": "/bass_vol_cv"
+        }
+      }
+    },
+    {
+      "type": "sequencer",
+      "address": "/pad_seq",
+      "doc": "Whole-note trigger: length-4 on the beat clock, degree 0 on the downbeat, rests elsewhere -> one chord root per bar.",
+      "inputs": {
+        "clock": {
+          "from": "/pad_clock.gate"
+        },
+        "gate_mode": "Degree",
+        "length": 4.0,
+        "step1": 0.0,
+        "step2": -1.0,
+        "step3": -1.0,
+        "step4": -1.0
+      }
+    },
+    {
+      "type": "chord",
+      "address": "/pad_chord",
+      "doc": "Stacks scale-relative thirds on the sequencer's degree -> triad `degree` notes; the voicer resolves them through /pad_harmony so the chord re-spells on /key change.",
+      "inputs": {
+        "set": {
+          "from": "/pad_seq"
+        },
+        "size": 3.0
+      }
+    },
+    {
+      "type": "voicer",
+      "address": "/pad_v",
+      "doc": "8-voice detuned pad; chord degrees resolve through /pad_harmony. 8 voices let long-release whole-note chords overlap.",
+      "config": {
+        "voices": 8.0
+      },
+      "inputs": {
+        "notes": {
+          "from": "/pad_chord"
+        },
+        "harmony": {
+          "from": "/pad_harmony"
+        }
+      },
+      "voice": "acid-pad-voice"
+    },
+    {
+      "type": "m2s",
+      "address": "/pad_vol_cv",
+      "doc": "Smooth the pad_vol pipe into a CV.",
+      "inputs": {
+        "in": {
+          "from": "/pad_vol"
+        },
+        "mode": "Smooth",
+        "time": 0.02
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/pad_out",
+      "doc": "pad * pad volume.",
+      "inputs": {
+        "a": {
+          "from": "/pad_v.audio"
+        },
+        "b": {
+          "from": "/pad_vol_cv"
+        }
+      }
+    },
+    {
+      "type": "add_f32_signal",
+      "address": "/mix1",
+      "doc": "drums + bass.",
+      "inputs": {
+        "a": {
+          "from": "/drums_out"
+        },
+        "b": {
+          "from": "/bass_out"
+        }
+      }
+    },
+    {
+      "type": "add_f32_signal",
+      "address": "/mix2",
+      "doc": "+ pad -> full mix.",
+      "inputs": {
+        "a": {
+          "from": "/mix1"
+        },
+        "b": {
+          "from": "/pad_out"
+        }
+      }
+    },
+    {
+      "type": "saturator",
+      "address": "/master_sat",
+      "doc": "Gentle master glue / soft ceiling so all three instruments together stay off the clip line.",
+      "inputs": {
+        "audio": {
+          "from": "/mix2"
+        },
+        "drive": 1.4,
+        "warmth": 0.3
+      }
+    },
+    {
+      "type": "output",
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/master_sat"
+        }
+      }
+    }
+  ]
+}

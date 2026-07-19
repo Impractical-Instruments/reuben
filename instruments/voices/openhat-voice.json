@@ -1,0 +1,52 @@
+{
+  "format_version": 3,
+  "instrument": "openhat-voice",
+  "doc": "Open hi-hat voice (ADR-0032): the nested hat-voice (highpassed noise tick) with a long decay/release baked in, so the same metallic noise source rings out into a sizzling open hat instead of a short closed tick. Hosted by a 1-voice voicer; only `gate` is drivable. interface: gate in, audio/active out.",
+  "resources": {
+    "hat-voice": "hat-voice.json"
+  },
+  "interface": {
+    "inputs": {
+      "gate": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "outputs": {
+      "active": {
+        "from": "/hat.active"
+      },
+      "audio": {
+        "from": "/out.audio"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "type": "subpatch",
+      "address": "/hat",
+      "doc": "The closed hat-voice, opened up: longer decay/release and a slightly lower highpass so it sizzles instead of ticking.",
+      "inputs": {
+        "gate": {
+          "from": "/gate"
+        },
+        "cutoff": 5500.0,
+        "decay": 0.32,
+        "release": 0.28,
+        "sustain": 0.0
+      },
+      "patch": "hat-voice"
+    },
+    {
+      "type": "output",
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/hat.audio"
+        }
+      }
+    }
+  ]
+}
