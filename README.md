@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend ([ADR-0019]): callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**27 commits** · 2026-07-12 → 2026-07-18 · 1620 data points · last: `b2c7eeb` (2026-07-18T18:22:55-04:00)
+**28 commits** · 2026-07-12 → 2026-07-18 · 1680 data points · last: `4827db2` (2026-07-18T20:31:34-04:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
