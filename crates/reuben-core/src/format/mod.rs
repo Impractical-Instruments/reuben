@@ -28,7 +28,7 @@ use std::sync::Arc;
 
 use serde::{Deserialize, Serialize};
 
-use crate::descriptor::{Curve, Descriptor, F32Meta, Port, PortType};
+use crate::descriptor::{Curve, Descriptor, F32Meta, I32Meta, Port, PortType};
 use crate::graph::{Graph, Interface, Node};
 use crate::message::Arg;
 use crate::operators::pipe::Pipe;
@@ -216,7 +216,7 @@ impl From<CurveDoc> for Curve {
 
 /// One v2 `interface.inputs` entry (ADR-0038 §2): a named **input pipe**. There is no inner
 /// port to inherit from — the entry **declares its `Arg` type** (`"f32_buffer"`, `"f32"`,
-/// `"note"`, `"harmony"`, or a vocab enum name like `"FilterMode"`), and the declared type is
+/// `"i32"`, `"note"`, `"harmony"`, or a vocab enum name like `"FilterMode"`), and the declared type is
 /// enforced against every consumer by the existing pass-2 wire check. A numeric pipe may carry
 /// its own `default`/`min`/`max`/`curve` — **engine-enforced** on the pipe's port (literals and
 /// external messages clamp to it; an unwired signal pipe materializes `default`, or silence when
@@ -226,8 +226,9 @@ impl From<CurveDoc> for Curve {
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InputPipeDoc {
-    /// The declared `Arg` type: `"f32_buffer"` (Signal), `"f32"` (held Value), `"note"`
-    /// (Event), `"harmony"` (held Value), or a shared vocab enum's type name (`"FilterMode"`).
+    /// The declared `Arg` type: `"f32_buffer"` (Signal), `"f32"` (held Value), `"i32"` (held
+    /// integer Value, ADR-0061), `"note"` (Event), `"harmony"` (held Value), or a shared vocab
+    /// enum's type name (`"FilterMode"`).
     #[serde(rename = "type")]
     pub ty: String,
     /// Logical input channel binding (ADR-0038 §3); signal pipes only, top-level-honored.
@@ -1585,6 +1586,18 @@ impl InstrumentDoc {
                 // silently dead. Anything else is illegal.
                 let compatible = same_wire_type(&from_ty, &to_ty)
                     || matches!((&from_ty, &to_ty), (PortType::F32, PortType::F32Buffer))
+                    // Numeric widening (ADR-0061): an `I32` source into an `F32`/`F32Buffer` sink
+                    // is lossless and total (every int is a distinct float; the read coerces via
+                    // `Arg::as_f32`), and both are the numeric wiring class — so it widens
+                    // implicitly, the same directional favour as `F32→F32Buffer` above. The
+                    // reverse, `F32→I32`, is lossy (it needs a rounding decision) and stays a hard
+                    // error: an explicit quantizer op is the sanctioned path, mirroring the
+                    // `Signal→Value` rule.
+                    || matches!(
+                        (&from_ty, &to_ty),
+                        (PortType::I32 { .. }, PortType::F32)
+                            | (PortType::I32 { .. }, PortType::F32Buffer)
+                    )
                     || (matches!(to_ty, PortType::Arg) && crate::boundary::has_osc_form(&from_ty));
                 if !compatible {
                     return Err(LoadError::TypeMismatch {
@@ -1904,6 +1917,26 @@ fn pipe_doc_from_descriptor(node: &crate::graph::Node, channel: Option<usize>) -
         }
         return pipe;
     }
+    // An integer pipe carries its range/default in `PortType::I32`, not the F32Meta slot
+    // (ADR-0061) — reconstruct min/max/default from there, mirroring the f32 arm below.
+    if let PortType::I32 { meta: Some(m) } = &p.ty {
+        if m.min != i32::MIN {
+            pipe.min = Some(m.min as f64);
+        }
+        if m.max != i32::MAX {
+            pipe.max = Some(m.max as f64);
+        }
+        let seed = node
+            .value_overrides
+            .first()
+            .and_then(|(_, a)| a.as_f32())
+            .map(|v| v.round() as i32)
+            .unwrap_or(m.default);
+        if seed != 0.clamp(m.min, m.max) {
+            pipe.default = Some(PipeDefault::Number(seed as f64));
+        }
+        return pipe;
+    }
     if let Some(m) = &p.meta {
         if m.min != reuben_contract::NUMBER_MIN {
             pipe.min = Some(widen_f32(m.min));
@@ -1952,6 +1985,7 @@ fn pipe_type_name(ty: &PortType) -> Option<String> {
     match ty {
         PortType::F32Buffer => Some("f32_buffer".to_string()),
         PortType::F32 => Some("f32".to_string()),
+        PortType::I32 { .. } => Some("i32".to_string()),
         PortType::Vocab {
             name: "Note",
             is_event: true,
@@ -2411,6 +2445,58 @@ fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortK
             curve: pipe.curve.map(Curve::from).unwrap_or(Curve::Linear),
         })
     };
+    // The declared integer meta for an `i32` pipe's two ports (ADR-0061). Mirrors `f32_meta`,
+    // but the bounds and default must be whole numbers: a fractional literal on an integer
+    // control is an authoring mistake, caught here rather than silently rounded.
+    let i32_meta = || -> Result<I32Meta, LoadError> {
+        let whole = |v: f64, what: &str| -> Result<i32, LoadError> {
+            if v.fract() != 0.0 {
+                return Err(err(format!(
+                    "{what} {v} is not a whole number — an i32 pipe takes integer bounds/default"
+                )));
+            }
+            Ok(v as i32)
+        };
+        let min = pipe
+            .min
+            .map(|v| whole(v, "min"))
+            .transpose()?
+            .unwrap_or(i32::MIN);
+        let max = pipe
+            .max
+            .map(|v| whole(v, "max"))
+            .transpose()?
+            .unwrap_or(i32::MAX);
+        if min >= max {
+            return Err(err(format!(
+                "declared range [{min}..{max}] is inverted or empty"
+            )));
+        }
+        if pipe.curve.is_some() {
+            return Err(err(
+                "`curve` applies to swept f32 pipes only — an integer count has no response curve"
+                    .to_string(),
+            ));
+        }
+        let default = match &pipe.default {
+            None => 0.clamp(min, max),
+            Some(PipeDefault::Number(v)) => {
+                let d = whole(*v, "default")?;
+                if d < min || d > max {
+                    return Err(err(format!(
+                        "default {d} is outside the declared range [{min}..{max}]"
+                    )));
+                }
+                d
+            }
+            Some(PipeDefault::Symbol(s)) => {
+                return Err(err(format!(
+                    "default {s:?} is a symbol — a numeric pipe takes a number"
+                )))
+            }
+        };
+        Ok(I32Meta { min, max, default })
+    };
     let no_numeric_meta = || -> Result<(), LoadError> {
         if pipe.default.is_some()
             || pipe.min.is_some()
@@ -2455,6 +2541,14 @@ fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortK
                 PortKind::Value,
             )
         }
+        "i32" => {
+            let meta = i32_meta()?;
+            (
+                Port::i32("in", meta.clone()),
+                Port::i32("out", meta),
+                PortKind::Value,
+            )
+        }
         "note" => {
             no_numeric_meta()?;
             (Port::note("in"), Port::note("out"), PortKind::Event)
@@ -2469,8 +2563,8 @@ fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortK
                 crate::vocab::enum_meta_by_type(other, "out"),
             ) else {
                 return Err(err(format!(
-                    "unknown pipe type {other:?} — one of \"f32_buffer\", \"f32\", \"note\", \
-                     \"harmony\", or a shared vocab enum name (e.g. \"FilterMode\")"
+                    "unknown pipe type {other:?} — one of \"f32_buffer\", \"f32\", \"i32\", \
+                     \"note\", \"harmony\", or a shared vocab enum name (e.g. \"FilterMode\")"
                 )));
             };
             if pipe.min.is_some() || pipe.max.is_some() || pipe.curve.is_some() {
@@ -3106,6 +3200,86 @@ mod tests {
             "inputs":{"in":{"type":"f32buffer"}}},"nodes":[]}"#;
         let err = load(json, &reg()).err().expect("unknown type");
         assert!(err.to_string().contains("unknown pipe type"), "{err}");
+    }
+
+    /// An `i32` interface pipe synthesizes an integer port carrying its range + default in
+    /// [`PortType::I32`]'s [`I32Meta`] (ADR-0061) — parallel to an `f32` pipe's F32Meta.
+    #[test]
+    fn int_pipe_parses_range_and_default() {
+        let json = r#"{"format_version":2,"instrument":"t","interface":{
+            "inputs":{"steps":{"type":"i32","min":1,"max":16,"default":8,"unit":"steps"}}},
+            "nodes":[]}"#;
+        let g = load(json, &reg()).expect("load");
+        let key = g.find("/steps").expect("pipe node minted");
+        assert!(
+            matches!(
+                &g.nodes[key].descriptor.inputs[0].ty,
+                PortType::I32 { meta: Some(m) } if *m == I32Meta { min: 1, max: 16, default: 8 }
+            ),
+            "got {:?}",
+            g.nodes[key].descriptor.inputs[0].ty
+        );
+    }
+
+    /// The headline of ADR-0061: an `i32` control pipe wires into an operator's `f32` port
+    /// (euclid's `steps`) — the lossless numeric widening — and loads clean, no converter op.
+    #[test]
+    fn int_pipe_widens_into_a_float_control() {
+        let json = r#"{"format_version":2,"instrument":"t","interface":{
+            "inputs":{"steps":{"type":"i32","min":1,"max":16,"default":8}}},
+            "nodes":[
+              {"type":"clock","address":"/clk"},
+              {"type":"euclid","address":"/eu","inputs":{
+                 "clock":{"from":"/clk.gate"},"steps":{"from":"/steps"}}}]}"#;
+        let g = load(json, &reg()).expect("i32 pipe must widen into euclid's f32 steps");
+        let eu = g.find("/eu").unwrap();
+        let steps = g.nodes[eu]
+            .descriptor
+            .inputs
+            .iter()
+            .position(|p| p.name == "steps")
+            .unwrap();
+        assert!(
+            g.connections
+                .iter()
+                .any(|c| c.dst == eu && c.dst_port == steps),
+            "euclid.steps must be wired from the int pipe"
+        );
+    }
+
+    /// A fractional default on an integer control is an authoring mistake, refused at load —
+    /// not silently rounded (the round is for *runtime* traffic, ADR-0061).
+    #[test]
+    fn int_pipe_rejects_a_fractional_default() {
+        let json = r#"{"format_version":2,"instrument":"t","interface":{
+            "inputs":{"steps":{"type":"i32","min":1,"max":16,"default":8.5}}},"nodes":[]}"#;
+        let err = load(json, &reg()).err().expect("fractional default");
+        assert!(err.to_string().contains("whole number"), "{err}");
+    }
+
+    /// A count has no response curve — `curve` on an `i32` pipe is refused (I32Meta has no curve).
+    #[test]
+    fn int_pipe_rejects_a_curve() {
+        let json = r#"{"format_version":2,"instrument":"t","interface":{
+            "inputs":{"steps":{"type":"i32","min":1,"max":16,"curve":"exp"}}},"nodes":[]}"#;
+        let err = load(json, &reg()).err().expect("curve on int");
+        assert!(err.to_string().contains("curve"), "{err}");
+    }
+
+    /// `i32` and `f32` are **distinct** wire types (ADR-0061): the widening is not a
+    /// `same_wire_type` equality — it is the one-directional `I32→F32` exception in the
+    /// `compatible` gate. So the reverse (`F32→I32`, lossy) has no path here and stays a hard
+    /// error, exactly as `Signal→Value` does. Guards against a future edit making it symmetric.
+    #[test]
+    fn int_and_float_are_distinct_wire_types() {
+        assert!(!same_wire_type(
+            &PortType::I32 { meta: None },
+            &PortType::F32
+        ));
+        assert!(!same_wire_type(
+            &PortType::F32,
+            &PortType::I32 { meta: None }
+        ));
     }
 
     #[test]

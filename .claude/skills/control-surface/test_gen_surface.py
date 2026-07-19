@@ -87,6 +87,27 @@ class SurfaceResolveTest(unittest.TestCase):
             "label": "Tempo", "min": 1.0, "max": 999.0, "default": 120.0, "unit": "BPM",
         }])
 
+    def test_int_pipe_infers_a_fader_and_detents_on_whole_values(self):
+        # ADR-0061: an `i32` control pipe is a fader (not skipped), and carries a `steps` count so
+        # the widget grid detents on each integer in [min, max].
+        inst = {"format_version": 3, "instrument": "t", "interface": {"inputs": {
+            "steps": {"type": "i32", "default": 16, "min": 1, "max": 16, "unit": "steps"}}},
+            "nodes": []}
+        widgets, warnings = resolve({"bind": "steps"}, instrument=inst)
+        self.assertEqual(warnings, [])
+        self.assertEqual(widgets, [{
+            "kind": "fader", "widget": "fader", "bind": "steps", "address": "/steps/in",
+            "label": "Steps", "min": 1, "max": 16, "default": 16, "unit": "steps", "steps": 15,
+        }])
+
+    def test_int_pipe_with_explicit_radial_widget_still_detents(self):
+        inst = {"format_version": 3, "instrument": "t", "interface": {"inputs": {
+            "rotation": {"type": "i32", "default": 0, "min": 0, "max": 15, "unit": "steps"}}},
+            "nodes": []}
+        widgets, _ = resolve({"bind": "rotation", "widget": "radial"}, instrument=inst)
+        self.assertEqual((widgets[0]["kind"], widgets[0]["widget"], widgets[0]["steps"]),
+                         ("fader", "radial", 15))
+
     def test_ranged_buffer_pipe_carries_unit_and_curve_from_the_pipe(self):
         widgets, warnings = resolve({"bind": "tone", "label": "Tone", "widget": "radial"})
         self.assertEqual(warnings, [])

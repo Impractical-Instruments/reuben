@@ -153,10 +153,15 @@ Each wire is checked **locally** at Instantiate against the two ports' forms (`c
   yet**: reshape the graph so the consumer reads a Signal, or shape on the Value side (the
   `m2s` gap-filling modes, below). Into an enum Value it's equally illegal (an enum takes a
   discrete choice, not a per-sample signal).
+- **`i32 → f32` / `i32 → f32_buffer`** is an **implicit numeric widening**
+  ([ADR-0061](../adr/0061-int-to-float-widening-and-int-controls.md)): an integer source wires
+  straight into a float sink (a `steps` `i32` control into euclid's `f32` port), lossless and read
+  via `Arg::as_f32`. Its reverse **`f32 → i32` is a hard error** — lossy, needing an explicit
+  quantizer — the same directional favour as `Value → Signal`.
 - **`Event` mismatched** against a Signal/Value is an error (needs an explicit latch / change-detect).
 
-Every cross-*type* crossing still needs an operator: `f32 → enum` is a quantizer; `f32 → Note` is a
-threshold/trigger; `slew`/`glide` are `f32 → f32` shapers (the `m2s` gap-filling modes).
+Every *other* cross-*type* crossing still needs an operator: `f32 → enum` is a quantizer; `f32 →
+Note` is a threshold/trigger; `slew`/`glide` are `f32 → f32` shapers (the `m2s` gap-filling modes).
 
 ### `Constant` — instantiate-time configuration, not an `Input` <!-- lanes: skills,mcp,web -->
 
@@ -231,8 +236,11 @@ target-pointing form (no entry points inward anymore):
   collision with a real node is the fatal `DuplicateAddress`) and behaves like a source node:
   internal consumers wire from it with ordinary wire-refs (`"audio": { "from": "/in" }`),
   fan-out free. Because nothing is pointed at, **the entry declares its own `Arg` type** —
-  `"type"`: `"f32_buffer"`, `"f32"`, `"note"`, `"harmony"`, or a vocab enum name — enforced
-  against every consumer wire by the ordinary pass-2 wire check. A numeric pipe owns
+  `"type"`: `"f32_buffer"`, `"f32"`, `"i32"`, `"note"`, `"harmony"`, or a vocab enum name —
+  enforced against every consumer wire by the ordinary pass-2 wire check. An `i32` pipe is an
+  **integer control** ([ADR-0061](../adr/0061-int-to-float-widening-and-int-controls.md)): a count
+  like euclid's `steps`/`pulses`/`rotation`, whole-numbered `default`/`min`/`max` (no `curve`), that
+  widens losslessly into an operator's `f32` port and quantizes live input. A numeric pipe owns
   engine-enforced `default`/`min`/`max`/`curve` plus a display `unit` — the pipe's whole
   *quantity* contract; presentation (`label`/`widget`) lives in a surface doc, not on the pipe
   ([ADR-0043](../adr/0043-surface-docs-decouple-presentation-from-instruments.md)). A
