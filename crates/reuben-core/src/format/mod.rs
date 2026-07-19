@@ -1938,23 +1938,26 @@ fn pipe_doc_from_descriptor(node: &crate::graph::Node, channel: Option<usize>) -
         return pipe;
     }
     if let Some(m) = &p.meta {
-        // Share the reader, not the writer (issue #497): the widening comes from the shared
-        // `NumericPipeMeta` so the field list can't drift from the other two projections, but the
-        // emission stays **minimal-diff** — a field is written only when it differs from the
-        // loader defaults, and `unit` is never emitted (a save re-derives it from the document).
-        let r = NumericPipeMeta::from_f32_meta(m);
+        // Share the reader, not the writer (issue #497): the min/max/curve widening comes from the
+        // shared `NumericPipeMeta` so the field list can't drift from the other two projections,
+        // but the emission stays **minimal-diff** — a field is written only when it differs from
+        // the loader defaults, and `unit` is never emitted (a save re-derives it from the
+        // document). This site takes only the range read: its default is the value-override seed
+        // below, not the declared default, so building the reader's `default`/`unit` would waste a
+        // widen + a clone this arm discards.
+        let (r_min, r_max, r_curve) = NumericPipeMeta::range_of(m);
         if m.min != reuben_contract::NUMBER_MIN {
-            pipe.min = Some(r.min);
+            pipe.min = Some(r_min);
         }
         if m.max != reuben_contract::NUMBER_MAX {
-            pipe.max = Some(r.max);
+            pipe.max = Some(r_max);
         }
-        if r.curve == Curve::Exponential {
+        if r_curve == Curve::Exponential {
             pipe.curve = Some(CurveDoc::Exp);
         }
         // The seed is the pipe's effective default — a host/author value-override beats the
-        // declared default (`r.default`), so it is the writer's own read, widened by the same
-        // `widen_f32` the reader uses.
+        // declared default, so it is the writer's own read, widened by the same `widen_f32` the
+        // reader uses.
         let seed = node
             .value_overrides
             .first()
@@ -2311,14 +2314,25 @@ pub(crate) struct NumericPipeMeta {
 }
 
 impl NumericPipeMeta {
-    /// Read a numeric pipe's projected metadata off its port [`F32Meta`] — the one place the
+    /// The widened range + sweep curve — the read the minimal-diff `from_graph` flatten
+    /// ([`pipe_doc_from_descriptor`]) needs and *all* it needs: its emitted default is the
+    /// value-override-resolved seed, not the declared default, and it never emits `unit`. Sourcing
+    /// min/max/curve here keeps that widening single-sourced with the two full-copy sites (which
+    /// take [`from_f32_meta`](Self::from_f32_meta)) without building the `default`/`unit` those
+    /// sites need and this one discards.
+    pub(crate) fn range_of(m: &F32Meta) -> (f64, f64, Curve) {
+        (widen_f32(m.min), widen_f32(m.max), m.curve)
+    }
+
+    /// Read a numeric pipe's full projected metadata off its port [`F32Meta`] — the one place the
     /// `default`/`min`/`max` widening and the empty-unit → `None` convention are decided.
     pub(crate) fn from_f32_meta(m: &F32Meta) -> Self {
+        let (min, max, curve) = Self::range_of(m);
         NumericPipeMeta {
             default: widen_f32(m.default),
-            min: widen_f32(m.min),
-            max: widen_f32(m.max),
-            curve: m.curve,
+            min,
+            max,
+            curve,
             unit: (!m.unit.is_empty()).then(|| m.unit.to_string()),
         }
     }
