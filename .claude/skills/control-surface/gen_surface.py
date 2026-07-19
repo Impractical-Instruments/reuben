@@ -80,14 +80,14 @@ def default_label(name: str) -> str:
 
 def infer_widget(pipe: dict) -> str | None:
     """The default widget for a pipe with no explicit `widget` (ADR-0043 §3), or `None` when no
-    default exists. A held scalar (`f32`) or a *ranged* dense signal (`f32_buffer` with declared
-    min & max) backs a fader; a channel-bound pipe (a device binding, not a control), a bare
-    `f32_buffer` (no range to scale into), and a message pipe (`note`/`harmony`/enum — a default
-    cannot guess its payload) infer nothing."""
+    default exists. A held scalar (`f32`), a held integer (`i32`, ADR-0061), or a *ranged* dense
+    signal (`f32_buffer` with declared min & max) backs a fader; a channel-bound pipe (a device
+    binding, not a control), a bare `f32_buffer` (no range to scale into), and a message pipe
+    (`note`/`harmony`/enum — a default cannot guess its payload) infer nothing."""
     if pipe.get("channel") is not None:
         return None
     t = pipe.get("type")
-    if t == "f32":
+    if t in ("f32", "i32"):
         return "fader"
     if t == "f32_buffer" and pipe.get("min") is not None and pipe.get("max") is not None:
         return "fader"
@@ -205,6 +205,14 @@ def resolve_surface(instrument: dict, surface: dict, instrument_name: str | None
 
         c = {"kind": kind, "widget": widget, "bind": bind,
              "address": f"/{bind}/in", "label": label}
+        # An integer control (ADR-0061) detents onto whole values: the fader/radial grid marks
+        # each integer in [lo, hi] so the knob reads as stepped. The engine quantizes regardless
+        # (the i32 pipe rounds live input), so this is presentation — a continuous drag still
+        # lands on an integer at the pipe.
+        if pipe.get("type") == "i32" and lo is not None and hi is not None:
+            span = int(round(hi)) - int(round(lo))
+            if span > 0:
+                c["steps"] = span
         if control.get("group") is not None:
             c["group"] = control["group"]
         if lo is not None:
@@ -429,28 +437,29 @@ def _group_props(w, h) -> str:
     ])
 
 
-def _fader_props(name, frame) -> str:
+def _fader_props(name, frame, grid_steps=13) -> str:
     x, y, w, h = frame
     return "".join([
         _pb("background", True), _pb("bar", True), _pi("barDisplay", 0), _pc("color", 1, 0, 0, 1),
         _pf("cornerRadius", 1), _pb("cursor", True), _pi("cursorDisplay", 0), _pr("frame", x, y, w, h),
-        _pb("grabFocus", True), _pb("grid", True), _pc("gridColor", 0, 0, 0, 0.25), _pi("gridSteps", 13),
+        _pb("grabFocus", True), _pb("grid", True), _pc("gridColor", 0, 0, 0, 0.25), _pi("gridSteps", grid_steps),
         _pb("interactive", True), _pb("locked", False), _ps("name", name), _pi("orientation", 0),
         _pb("outline", True), _pi("outlineStyle", 1), _pi("pointerPriority", 0), _pi("response", 0),
         _pi("responseFactor", 100), _pi("shape", 1), _pb("visible", True),
     ])
 
 
-def _radial_props(name, frame) -> str:
+def _radial_props(name, frame, grid_steps=13) -> str:
     x, y, w, h = frame
     # RADIAL = a rotary fader (same single `x` value model as FADER, ADR-0018). Property keys +
     # order are cloned from the reference export's RADIAL: it drops the fader's bar/cursor keys and
     # adds `centered`/`inverted`; shape 2 renders the knob. Keep this key set + order in lockstep
-    # with fixtures/REUBEN_REF.tosc (FixtureMatchTest asserts it).
+    # with fixtures/REUBEN_REF.tosc (FixtureMatchTest asserts it). `gridSteps` defaults to the
+    # reference's 13; an integer control (ADR-0061) overrides it to detent on whole values.
     return "".join([
         _pb("background", True), _pb("centered", False), _pc("color", 1, 0, 0, 1),
         _pf("cornerRadius", 1), _pr("frame", x, y, w, h), _pb("grabFocus", True), _pb("grid", True),
-        _pc("gridColor", 0, 0, 0, 0.25), _pi("gridSteps", 13), _pb("interactive", True),
+        _pc("gridColor", 0, 0, 0, 0.25), _pi("gridSteps", grid_steps), _pb("interactive", True),
         _pb("inverted", False), _pb("locked", False), _ps("name", name), _pi("orientation", 0),
         _pb("outline", True), _pi("outlineStyle", 1), _pi("pointerPriority", 0), _pi("response", 0),
         _pi("responseFactor", 100), _pi("shape", 2), _pb("visible", True),
@@ -565,10 +574,13 @@ def _widget_node(name: str, c: dict, wframe) -> tuple:
     default_x = 0.0 if span == 0 else max(0.0, min(1.0, (default - lo) / span))
     # `radial` renders the same value as a rotary knob; everything else (default, OSC scaling) is
     # identical to a fader, so only the node type + property block differ.
+    # An integer control detents its grid onto whole values (ADR-0061); everything else keeps the
+    # reference default of 13 grid divisions.
+    grid_steps = c.get("steps", 13)
     if c.get("widget") == "radial":
-        ctype, props = "RADIAL", _radial_props(c["label"], wframe)
+        ctype, props = "RADIAL", _radial_props(c["label"], wframe, grid_steps)
     else:
-        ctype, props = "FADER", _fader_props(c["label"], wframe)
+        ctype, props = "FADER", _fader_props(c["label"], wframe, grid_steps)
     return f"{c['label']} ({rng})", _node(_id(name, c["address"], "widget"), ctype, props,
                                           values=_value("x", _num(default_x)) + _value("touch", "false"),
                                           messages=_osc_fader(c["address"], lo, hi))

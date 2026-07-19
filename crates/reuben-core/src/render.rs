@@ -492,6 +492,14 @@ pub(crate) fn held_arg(p: &Port, arg: &Arg) -> Option<Arg> {
         PortType::F32 => arg
             .as_f32()
             .map(|v| Arg::F32(p.meta.as_ref().map(|m| m.clamp(v)).unwrap_or(v))),
+        // A held integer control (ADR-0061): a runtime message quantizes exactly as an author
+        // literal does through [`Port::coerce`] — round to the nearest integer, then clamp to the
+        // declared range. So an `i32` pipe driven `/steps/in 12.7` latches `13`, not `12.7`; the
+        // "int control" promise holds for live OSC input, not only authored defaults.
+        PortType::I32 { meta } => arg.as_f32().map(|v| {
+            let i = v.round() as i32;
+            Arg::I32(meta.as_ref().map(|m| m.clamp(i)).unwrap_or(i))
+        }),
         PortType::Vocab {
             enum_meta: Some(e), ..
         } => e.resolve_arg(arg),
@@ -843,6 +851,26 @@ fn process_node(
 mod tests {
     use super::*;
     use crate::{load, AudioConfig, Registry};
+
+    /// ADR-0061: an `i32` value port quantizes a runtime message — round to nearest, then clamp
+    /// to range — exactly as [`crate::descriptor::Port::coerce`] does for an authored literal. So
+    /// `/steps/in 12.7` latches `13`, not `12.7`; the "int control" contract holds for live OSC,
+    /// not only authored defaults.
+    #[test]
+    fn held_arg_quantizes_an_int_port() {
+        use crate::descriptor::{I32Meta, Port};
+        let port = Port::i32(
+            "steps",
+            I32Meta {
+                min: 1,
+                max: 16,
+                default: 8,
+            },
+        );
+        assert_eq!(held_arg(&port, &Arg::F32(12.7)), Some(Arg::I32(13)));
+        assert_eq!(held_arg(&port, &Arg::F32(99.0)), Some(Arg::I32(16))); // clamps to the ceiling
+        assert_eq!(held_arg(&port, &Arg::I32(5)), Some(Arg::I32(5))); // integer passes through
+    }
 
     /// Two leaf nodes in an ancestor-prefix relationship — the shape ADR-0034 §3's inlining
     /// manufactures systematically (`/fx` beside an inlined `/fx/verb/delay`). The wire from

@@ -1,7 +1,7 @@
 {
   "format_version": 3,
   "instrument": "euclidean-drums",
-  "doc": "A self-playing 4-channel Euclidean rhythm machine (kick, snare, tom, hat). One shared clock (division=4 -> a 16th-note grid) drives four `euclid` generators; each spreads its `pulses` hits evenly across `steps` (with `rotation` to shift the phase) and emits a gate that fires that channel's drum body. The bodies are seed-recipe references (ADR-0057), not inline node clusters: kick and tom are two references to voices/kick-voice.json (the pitch-drop body -- the tom overrides base/sweep/release: 130/120/0.12), snare is voices/snare-voice.json (noise + tonal ring), hat is voices/hat-voice.json (highpassed noise tick); every channel then runs through its own patches/dj-strip.json (DJ filter + level). Each body reference sets sustain 1.0 and wires its `decay` face pipe live, so the DECAY knobs behave exactly as the old inline channels did (on kick/tom decay stretches both the tail and the pitch sweep). Per channel you get: Euclidean controls (steps/pulses/rotation), a DECAY knob, a bipolar DJ FILTER knob (-1 lowpass down .. 0 open .. +1 highpass up), and a LEVEL knob. The four channels sum through a master trim to the output. Every knob is an interface input pipe (ADR-0043; presentation lives in surfaces/euclidean-drums.json): ride tempo via /tempo/in; reshape patterns via /<chan>_pulses/in, /<chan>_steps/in, /<chan>_rotation/in; sweep tone via /<chan>_filter/in [-1..1]; set loudness via /<chan>_level/in [0..1]; set tail via /<chan>_decay/in. The four <chan>_decay pipes declare default 0.001 rather than the retired inline literal 0.0: the loader coerce-clamped that literal to the envelope's range floor, so 0.001 IS the old effective rest value (a pipe default outside its declared range is a load error) — bit-identity vs the pre-v3 snapshot is asserted in format_v3_rewrite.rs, and vs the pre-recipe inline document in seed_recipes.rs.",
+  "doc": "A self-playing 4-channel Euclidean rhythm machine (kick, snare, tom, hat). One shared clock (division=4 -> a 16th-note grid) drives four `euclid` generators; each spreads its `pulses` hits evenly across `steps` (with `rotation` to shift the phase) and emits a gate that fires that channel's drum body. The bodies are seed-recipe references (ADR-0057), not inline node clusters: kick and tom are two references to voices/kick-voice.json (the pitch-drop body -- the tom overrides base/sweep/release: 130/120/0.12), snare is voices/snare-voice.json (noise + tonal ring), hat is voices/hat-voice.json (highpassed noise tick); every channel then runs through its own patches/dj-strip.json (DJ filter + level). Each body reference sets sustain 1.0 and wires its `decay` face pipe live, so the DECAY knobs behave exactly as the old inline channels did (on kick/tom decay stretches both the tail and the pitch sweep). Per channel you get: Euclidean controls (steps/pulses/rotation), a DECAY knob, a bipolar DJ FILTER knob (-1 lowpass down .. 0 open .. +1 highpass up), and a LEVEL knob. The four channels sum through a master trim to the output. Every knob is an interface input pipe (ADR-0043; presentation lives in surfaces/euclidean-drums.json): ride tempo via /tempo/in; reshape patterns via /<chan>_pulses/in, /<chan>_steps/in, /<chan>_rotation/in (integer controls -- steps/pulses/rotation are `i32` pipes that widen losslessly into euclid's f32 ports and quantize live input, ADR-0061); sweep tone via /<chan>_filter/in [-1..1]; set loudness via /<chan>_level/in [0..1]; set tail via /<chan>_decay/in. The four <chan>_decay pipes declare default 0.001 rather than the retired inline literal 0.0: the loader coerce-clamped that literal to the envelope's range floor, so 0.001 IS the old effective rest value (a pipe default outside its declared range is a load error) — bit-identity vs the pre-v3 snapshot is asserted in format_v3_rewrite.rs, and vs the pre-recipe inline document in seed_recipes.rs.",
   "resources": {
     "dj-strip": "patches/dj-strip.json",
     "hat-voice": "voices/hat-voice.json",
@@ -18,24 +18,24 @@
         "unit": "BPM"
       },
       "kick_pulses": {
-        "type": "f32",
-        "default": 4.0,
-        "min": 0.0,
-        "max": 16.0,
+        "type": "i32",
+        "default": 4,
+        "min": 0,
+        "max": 16,
         "unit": "pulses"
       },
       "kick_steps": {
-        "type": "f32",
-        "default": 16.0,
-        "min": 1.0,
-        "max": 16.0,
+        "type": "i32",
+        "default": 16,
+        "min": 1,
+        "max": 16,
         "unit": "steps"
       },
       "kick_rotation": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 15.0,
+        "type": "i32",
+        "default": 0,
+        "min": 0,
+        "max": 15,
         "unit": "steps"
       },
       "kick_decay": {
@@ -58,24 +58,24 @@
         "max": 1.0
       },
       "snare_pulses": {
-        "type": "f32",
-        "default": 2.0,
-        "min": 0.0,
-        "max": 16.0,
+        "type": "i32",
+        "default": 2,
+        "min": 0,
+        "max": 16,
         "unit": "pulses"
       },
       "snare_steps": {
-        "type": "f32",
-        "default": 16.0,
-        "min": 1.0,
-        "max": 16.0,
+        "type": "i32",
+        "default": 16,
+        "min": 1,
+        "max": 16,
         "unit": "steps"
       },
       "snare_rotation": {
-        "type": "f32",
-        "default": 4.0,
-        "min": 0.0,
-        "max": 15.0,
+        "type": "i32",
+        "default": 4,
+        "min": 0,
+        "max": 15,
         "unit": "steps"
       },
       "snare_decay": {
@@ -98,24 +98,24 @@
         "max": 1.0
       },
       "tom_pulses": {
-        "type": "f32",
-        "default": 3.0,
-        "min": 0.0,
-        "max": 16.0,
+        "type": "i32",
+        "default": 3,
+        "min": 0,
+        "max": 16,
         "unit": "pulses"
       },
       "tom_steps": {
-        "type": "f32",
-        "default": 16.0,
-        "min": 1.0,
-        "max": 16.0,
+        "type": "i32",
+        "default": 16,
+        "min": 1,
+        "max": 16,
         "unit": "steps"
       },
       "tom_rotation": {
-        "type": "f32",
-        "default": 2.0,
-        "min": 0.0,
-        "max": 15.0,
+        "type": "i32",
+        "default": 2,
+        "min": 0,
+        "max": 15,
         "unit": "steps"
       },
       "tom_decay": {
@@ -138,24 +138,24 @@
         "max": 1.0
       },
       "hat_pulses": {
-        "type": "f32",
-        "default": 8.0,
-        "min": 0.0,
-        "max": 16.0,
+        "type": "i32",
+        "default": 8,
+        "min": 0,
+        "max": 16,
         "unit": "pulses"
       },
       "hat_steps": {
-        "type": "f32",
-        "default": 16.0,
-        "min": 1.0,
-        "max": 16.0,
+        "type": "i32",
+        "default": 16,
+        "min": 1,
+        "max": 16,
         "unit": "steps"
       },
       "hat_rotation": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 15.0,
+        "type": "i32",
+        "default": 0,
+        "min": 0,
+        "max": 15,
         "unit": "steps"
       },
       "hat_decay": {
