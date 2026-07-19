@@ -42,16 +42,18 @@ Spawn the **Opus implementer** (`Agent`, `model: opus`, `isolation: "worktree"`)
 
 ### 2b. Review loop (max 5 rounds)
 
-Each round, spawn a **fresh Sonnet reviewer** (`Agent`, `model: sonnet`) — fresh every round, so it re-reviews adversarially with no "I already approved this" anchoring. Instruct it to:
+Each round, spawn a **fresh Sonnet reviewer** (`Agent`, `model: sonnet`) — fresh every round, so it re-reviews adversarially with no "I already approved this" anchoring. Reviewers are **read-only and not worktree-isolated** — they run in the coordinator's main working copy, so they must never mutate shared git state. Instruct it to:
 
-1. `git fetch origin`, check out the PR branch, and **set its upstream to `origin/dev`** (`git branch --set-upstream-to=origin/dev`) so the review diff is the whole PR, not an empty branch-vs-itself diff.
-2. Confirm the diff under review is non-empty and matches `gh pr diff <n>` — an empty diff means the checkout/upstream is wrong, not that the PR is clean. Fix the setup and retry before reviewing.
-3. Run `/code-review` at **high** effort, posting to the PR: `Skill(code-review, "high --comment")`.
+1. `git fetch origin`, then review from a **detached HEAD off the remote**: `git checkout --detach origin/claude/issue-<n>-<slug>`, and diff against `origin/dev` (`git diff origin/dev...HEAD`) so the review diff is the whole PR. **Never** `git checkout <local-branch>`, `git branch --set-upstream-to`, or `git reset --hard` — those move the coordinator's `dev`/branch pointers or fail against the branch already checked out in the implementer's worktree.
+2. Confirm the diff under review is non-empty and matches `gh pr diff <n>` — an empty diff means the checkout is wrong, not that the PR is clean. Fix the setup and retry before reviewing.
+3. Invoke the code-review skill **exactly once, in the reviewer agent itself**: `Skill(code-review, "high")`. **Do not spawn your own `fork`/`Agent` sub-agents** to parallelize — the skill runs its own internal fan-out, and forked children inherit the reviewer's context (including any posting flag) and duplicate-post to the PR. If the skill stalls waiting on its internal finders, abandon it and review the diff inline instead. **No `--comment`** — return the findings verbatim to the coordinator; do not post to the PR.
 4. Return the findings verbatim.
 
 Then **you adjudicate** each finding — you hold the issue and the approved scope:
 - **In-scope** → relay to the implementer (resume it via `SendMessage`) to fix, commit, push. Start the next round.
 - **Out-of-scope** (real, but outside this issue's scope) → set aside for the report. Do **not** fix it, and do **not** auto-file an issue.
+
+Reviewers never post to the PR — the fix loop (relay → implementer) and the Phase 3 report already carry every finding, so per-round `--comment` only piles stale, since-fixed comments onto the thread. If you want a durable inline trail, **you** (the coordinator) post it **once** at convergence as a single consolidated comment — never fanned out across reviewer agents.
 
 **Review-clean** = a round returns **zero in-scope findings**. Then go to the CI gate.
 If round 5 finishes without review-clean → **escalate** (see below).
