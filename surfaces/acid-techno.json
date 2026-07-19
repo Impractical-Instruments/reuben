@@ -16,6 +16,12 @@
       "group": "macros"
     },
     {
+      "bind": "mode",
+      "label": "Mode",
+      "widget": "radial",
+      "group": "macros"
+    },
+    {
       "bind": "drums_vol",
       "label": "Drums",
       "widget": "radial",

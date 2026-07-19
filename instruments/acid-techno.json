@@ -1,7 +1,7 @@
 {
   "format_version": 3,
   "instrument": "acid-techno",
-  "doc": "Acid techno rig: a four-on-the-floor 16-step drum machine (kick, snare, closed + open hi-hat), a TB-303-style resonant acid bass sequencer, and a detuned three-saw pad playing sustained whole-note chords. Drums and bass share a 16th-note clock; the pad triggers one chord per bar. The `key` pipe (/key/in) is the chord/scale selector -- it drives a shared natural-minor harmony, so the bass line and the pad chord re-spell together (bass at the root, pad one octave up). Each instrument has its own volume pipe (/drums_vol/in, /bass_vol/in, /pad_vol/in); ride tempo 60-180 BPM with /tempo/in. Program the lanes with /kick_step1..16 /snare_step* /chh_step* /ohh_step* (boolean) and the bass with /bass_step1..16 (scale degrees, -1 = rest).",
+  "doc": "Acid techno rig: a four-on-the-floor 16-step drum machine (kick, snare, closed + open hi-hat), a TB-303-style resonant acid bass sequencer, and a detuned three-saw pad playing sustained whole-note chords. Drums and bass share a 16th-note clock; the pad triggers one chord per bar. The `key` pipe (/key/in) sets the absolute tonic of a shared natural-minor harmony (bass at the root, pad one octave up). The `mode` pipe (/mode/in, 0-6) is the modal chord/scale selector: it transposes both the bass line and the pad chord by that many scale degrees, so one knob re-roots them together within the key -- the modal, chord-player-style move. Each instrument has its own volume pipe (/drums_vol/in, /bass_vol/in, /pad_vol/in); ride tempo 60-180 BPM with /tempo/in. Program the lanes with /kick_step1..16 /snare_step* /chh_step* /ohh_step* (boolean) and the bass with /bass_step1..16 (scale degrees, -1 = rest).",
   "resources": {
     "kick-voice": "voices/kick-voice.json",
     "snare-voice": "voices/snare-voice.json",
@@ -25,6 +25,13 @@
         "min": 24.0,
         "max": 72.0,
         "unit": "MIDI"
+      },
+      "mode": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 6.0,
+        "unit": "degree"
       },
       "drums_vol": {
         "type": "f32",
@@ -1146,15 +1153,28 @@
       }
     },
     {
+      "type": "transpose",
+      "address": "/bass_mode",
+      "doc": "MODE SELECTOR (bass): shift every bass degree by the `mode` pipe (/mode/in, 0-6 scale steps), re-centering the whole line on that degree -- modal, staying in the current key's collection. amount=0 leaves the line on the tonic.",
+      "inputs": {
+        "notes": {
+          "from": "/bass_seq"
+        },
+        "amount": {
+          "from": "/mode"
+        }
+      }
+    },
+    {
       "type": "voicer",
       "address": "/bass_v",
-      "doc": "Monophonic 303 voice; degrees resolve to freq through /bass_harmony.",
+      "doc": "Monophonic 303 voice; mode-shifted degrees resolve to freq through /bass_harmony.",
       "config": {
         "voices": 1.0
       },
       "inputs": {
         "notes": {
-          "from": "/bass_seq"
+          "from": "/bass_mode"
         },
         "harmony": {
           "from": "/bass_harmony"
@@ -1204,12 +1224,25 @@
       }
     },
     {
+      "type": "transpose",
+      "address": "/pad_mode",
+      "doc": "MODE SELECTOR (pad): shift the whole-note trigger degree by the SAME `mode` pipe (/mode/in) so the pad chord roots on the selected degree, moving in lockstep with the bass -- one knob re-roots both.",
+      "inputs": {
+        "notes": {
+          "from": "/pad_seq"
+        },
+        "amount": {
+          "from": "/mode"
+        }
+      }
+    },
+    {
       "type": "chord",
       "address": "/pad_chord",
-      "doc": "Stacks scale-relative thirds on the sequencer's degree -> triad `degree` notes; the voicer resolves them through /pad_harmony so the chord re-spells on /key change.",
+      "doc": "Stacks scale-relative thirds on the mode-shifted degree -> triad `degree` notes; the voicer resolves them through /pad_harmony so the chord re-spells on /key change and re-roots on /mode change.",
       "inputs": {
         "set": {
-          "from": "/pad_seq"
+          "from": "/pad_mode"
         },
         "size": 3.0
       }
