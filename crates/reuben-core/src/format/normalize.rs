@@ -703,15 +703,16 @@ fn pipe_from_port(port: &Port) -> Option<InputPipeDoc> {
     };
     if matches!(port.ty, PortType::F32Buffer | PortType::F32) {
         if let Some(m) = &port.meta {
-            pipe.default = Some(PipeDefault::Number(widen_f32(m.default)));
-            pipe.min = Some(widen_f32(m.min));
-            pipe.max = Some(widen_f32(m.max));
-            if m.curve == Curve::Exponential {
+            // Full copy through the shared reader (issue #497): the widening and field list are
+            // owned by `NumericPipeMeta`; this arm just re-encodes into the document's spelling.
+            let r = NumericPipeMeta::from_f32_meta(m);
+            pipe.default = Some(PipeDefault::Number(r.default));
+            pipe.min = Some(r.min);
+            pipe.max = Some(r.max);
+            if r.curve == Curve::Exponential {
                 pipe.curve = Some(CurveDoc::Exp);
             }
-            if !m.unit.is_empty() {
-                pipe.unit = Some(m.unit.to_string());
-            }
+            pipe.unit = r.unit;
         }
     }
     Some(pipe)

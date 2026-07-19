@@ -17,7 +17,9 @@
 use crate::contract::{Diag, Report};
 use crate::describe::{describe_boundary, BoundaryPortDesc};
 use crate::descriptor::{Curve, Descriptor, Port, PortType};
-use crate::format::{load_instrument, load_instrument_doc, DocValue, NormalizedDoc, PipeDefault};
+use crate::format::{
+    load_instrument, load_instrument_doc, pipe_type_name, DocValue, NormalizedDoc,
+};
 use crate::plan::{Plan, PlanError};
 use crate::registry::Registry;
 use crate::resources::ResourceResolver;
@@ -408,23 +410,28 @@ pub fn describe_patch(
 /// kick-body — pitch-drop kick/tom body; gate-driven. (gate:f32=0, base:f32 Hz=48) → audio, active
 /// ```
 ///
-/// Projected mechanically from the document alone, through the real load path (the same
-/// projection family as [`describe_patch`]): the role line is the top-level `doc` field's first
-/// sentence (ADR-0057 §3 — trusted for selection only, never for wiring), and the face is read
-/// off the post-mint `interface` block — each input pipe's declared `type`/`unit`/`default`
-/// (min/max/curve/channel stay in the full [`describe_patch`] view, the on-demand fallback),
-/// then the output pipe names. A document that fails to load gets no line: the index never
-/// vouches for an instrument the engine would refuse.
+/// Projected mechanically from the document alone, through the real load path — and through the
+/// **same resolved boundary** [`describe_patch`] projects (issue #497): mint + load, then
+/// [`describe_boundary`] resolves each pipe. The role line is the top-level `doc` field's first
+/// sentence (ADR-0057 §3 — trusted for selection only, never for wiring); the face reads each
+/// input pipe's `type`/`unit`/**effective** `default` off the resolved boundary (a host/author
+/// value-override on a pipe beats its declared default, exactly as `describe_patch` reports it),
+/// then the output pipe names. Omitting min/max/curve/channel and listing only output names is
+/// *formatting* narrowing, not a second extraction path — so this line can never disagree with
+/// the full `describe_patch` view about a pipe's `default`. A document that fails to load gets no
+/// line: the index never vouches for an instrument the engine would refuse.
 pub fn library_index_line(
     json: &str,
     registry: &Registry,
     resolver: &dyn ResourceResolver,
 ) -> Result<String, String> {
-    // Mint + load exactly like `describe_patch`: migration rewrites v1 interface forms into
-    // pipes, and the full load enforces the face the line advertises.
+    // Mint + load + resolve the boundary exactly like `describe_patch`: migration rewrites v1
+    // interface forms into pipes, the full load enforces the face the line advertises, and
+    // `describe_boundary` resolves each pipe's effective metadata.
     let doc =
         NormalizedDoc::from_json(json, registry, Some(resolver)).map_err(|e| e.to_string())?;
-    load_instrument_doc(&doc, registry, resolver).map_err(|e| e.to_string())?;
+    let loaded = load_instrument_doc(&doc, registry, resolver).map_err(|e| e.to_string())?;
+    let b = describe_boundary(&doc, &loaded);
 
     let mut line = format!("{} —", doc.instrument);
     if let Some(role) = doc
@@ -437,33 +444,44 @@ pub fn library_index_line(
         line.push_str(&role);
     }
 
-    let mut inputs: Vec<String> = Vec::new();
-    let mut outputs: Vec<&str> = Vec::new();
-    if let Some(iface) = doc.interface.as_ref() {
-        for (name, entry) in &iface.inputs {
-            // Post-mint, every input entry is a Pipe (the mint migrates or rejects v1 forms).
-            let pipe = entry.pipe().expect("a minted input entry is a pipe");
-            let mut part = format!("{name}:{}", pipe.ty);
-            if let Some(unit) = pipe.unit.as_deref().filter(|u| !u.is_empty()) {
-                part.push(' ');
-                part.push_str(unit);
-            }
-            match &pipe.default {
-                // `f64` Display is the shortest round-trip decimal: `48`, `0.4` — never `48.0`.
-                Some(PipeDefault::Number(n)) => part.push_str(&format!("={n}")),
-                Some(PipeDefault::Symbol(s)) => part.push_str(&format!("={s}")),
-                None => {}
-            }
-            inputs.push(part);
-        }
-        outputs.extend(iface.outputs.keys().map(String::as_str));
-    }
+    let inputs: Vec<String> = b.inputs.iter().map(index_input_fragment).collect();
+    // Output names only. A boundary output whose internal target went dark (an unavailable nested
+    // child, ADR-0016/0034) is still a declared output name — the load succeeded with a warning —
+    // so it belongs in the face; merge the two name-sorted sets back into one sorted list.
+    let mut outputs: Vec<&str> = b
+        .outputs
+        .iter()
+        .map(|o| o.name.as_str())
+        .chain(b.dark_outputs.iter().map(String::as_str))
+        .collect();
+    outputs.sort_unstable();
 
     line.push_str(&format!(" ({})", inputs.join(", ")));
     if !outputs.is_empty() {
         line.push_str(&format!(" → {}", outputs.join(", ")));
     }
     Ok(line)
+}
+
+/// One input pipe's fragment of the library-index face (ADR-0057 §4): `name:type[ unit][=default]`,
+/// read off the resolved [`BoundaryPortDesc`] so it matches the `describe_patch` view exactly.
+/// `type` is the document pipe-type word ([`pipe_type_name`], the single forward map); `default`
+/// is the effective unwired value. min/max/curve/channel are deliberately omitted — the index
+/// line is the ~30–60-token selection signature, not the full boundary.
+fn index_input_fragment(p: &BoundaryPortDesc) -> String {
+    let ty = pipe_type_name(&p.ty).unwrap_or_else(|| p.ty.to_string());
+    let mut part = format!("{}:{ty}", p.name);
+    if !p.unit.is_empty() {
+        part.push(' ');
+        part.push_str(&p.unit);
+    }
+    match &p.default {
+        // `f64` Display is the shortest round-trip decimal: `48`, `0.4` — never `48.0`.
+        Some(DocValue::Number(n)) => part.push_str(&format!("={n}")),
+        Some(DocValue::Symbol(s)) => part.push_str(&format!("={s}")),
+        None => {}
+    }
+    part
 }
 
 /// The `doc` field's first sentence — the recipe-role line (ADR-0057 §3). Whitespace-normalized
@@ -1270,6 +1288,74 @@ decay:f32 s=0.1, gate:f32=0, release:f32 s=0.08, sustain:f32=0, sweep:f32 Hz=220
         let line = library_index_line(json, &Registry::builtin(), &MemoryResolver::new())
             .expect("index line");
         assert_eq!(line, "plain — ()");
+    }
+
+    #[test]
+    fn library_index_line_default_matches_describe_patch_effective_default() {
+        // Issue #497 convergence lock: the index line and `describe_patch` project the SAME
+        // resolved boundary, so they can never disagree on a pipe's effective `default`.
+        //  - `declared` — an enum pipe's declared default is seeded as a value-override on the pipe
+        //    (format/mod.rs); `describe_patch` reads that effective value and the index shows it.
+        //  - `omitted`  — a pipe with no declared default still HAS an effective default (the enum's
+        //    own default variant). The old raw-`interface` index line dropped it (it read only the
+        //    document's `default` field, absent here); the converged line shows exactly what
+        //    `describe_patch` resolves — that is the divergence this test guards against returning.
+        let json = r#"{
+          "format_version": 3,
+          "instrument": "override-lock",
+          "doc": "Locks the index/describe default convergence.",
+          "interface": {
+            "inputs": {
+              "declared": { "type": "FilterMode", "default": "Hp" },
+              "omitted":  { "type": "FilterMode" }
+            }
+          },
+          "nodes": [
+            { "type": "filter", "address": "/f1", "inputs": { "mode": { "from": "/declared" } } },
+            { "type": "filter", "address": "/f2", "inputs": { "mode": { "from": "/omitted" } } }
+          ]
+        }"#;
+        let reg = Registry::builtin();
+        let patch = describe_patch(json, &reg, &MemoryResolver::new()).expect("describe_patch");
+        let line = library_index_line(json, &reg, &MemoryResolver::new()).expect("index line");
+
+        // The effective default `describe_patch` reports for a named input pipe (symbol form).
+        let effective = |name: &str| -> String {
+            let p = patch
+                .inputs
+                .iter()
+                .find(|p| p.name == name)
+                .expect("named input");
+            match p.default.as_ref().expect("an effective default") {
+                serde_json::Value::String(s) => s.clone(),
+                other => other.to_string(),
+            }
+        };
+        assert_eq!(
+            effective("declared"),
+            "Hp",
+            "the pipe's value-override is the effective default"
+        );
+        assert_eq!(
+            effective("omitted"),
+            "Lp",
+            "an omitted default resolves to the enum's own default variant"
+        );
+
+        // The index line renders exactly those effective defaults — a strict projection-narrowing
+        // of the `describe_patch` view, matching on `default` by construction.
+        for name in ["declared", "omitted"] {
+            let fragment = format!("{name}:FilterMode={}", effective(name));
+            assert!(
+                line.contains(&fragment),
+                "index fragment `{fragment}` must match describe_patch; line was: {line}"
+            );
+        }
+        assert_eq!(
+            line,
+            "override-lock — Locks the index/describe default convergence. \
+             (declared:FilterMode=Hp, omitted:FilterMode=Lp)"
+        );
     }
 
     #[test]

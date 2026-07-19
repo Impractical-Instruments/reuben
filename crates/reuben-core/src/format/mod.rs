@@ -1938,15 +1938,23 @@ fn pipe_doc_from_descriptor(node: &crate::graph::Node, channel: Option<usize>) -
         return pipe;
     }
     if let Some(m) = &p.meta {
+        // Share the reader, not the writer (issue #497): the widening comes from the shared
+        // `NumericPipeMeta` so the field list can't drift from the other two projections, but the
+        // emission stays **minimal-diff** — a field is written only when it differs from the
+        // loader defaults, and `unit` is never emitted (a save re-derives it from the document).
+        let r = NumericPipeMeta::from_f32_meta(m);
         if m.min != reuben_contract::NUMBER_MIN {
-            pipe.min = Some(widen_f32(m.min));
+            pipe.min = Some(r.min);
         }
         if m.max != reuben_contract::NUMBER_MAX {
-            pipe.max = Some(widen_f32(m.max));
+            pipe.max = Some(r.max);
         }
-        if m.curve == Curve::Exponential {
+        if r.curve == Curve::Exponential {
             pipe.curve = Some(CurveDoc::Exp);
         }
+        // The seed is the pipe's effective default — a host/author value-override beats the
+        // declared default (`r.default`), so it is the writer's own read, widened by the same
+        // `widen_f32` the reader uses.
         let seed = node
             .value_overrides
             .first()
@@ -1981,7 +1989,7 @@ fn generated_name(taken: impl Fn(&str) -> bool) -> String {
 /// (ADR-0038 §2) — the one forward mapping shared by v1 migration ([`pipe_from_port`]) and the
 /// `from_graph` flatten ([`pipe_doc_from_descriptor`]); [`pipe_descriptor`] owns the reverse
 /// (name → synthesized ports) and its arms must mirror this list.
-fn pipe_type_name(ty: &PortType) -> Option<String> {
+pub(crate) fn pipe_type_name(ty: &PortType) -> Option<String> {
     match ty {
         PortType::F32Buffer => Some("f32_buffer".to_string()),
         PortType::F32 => Some("f32".to_string()),
@@ -2278,6 +2286,42 @@ fn splice_subpatch(
 /// own shortest decimal so `0.2_f32` widens to `0.2`, not `0.20000000298…` (the naive `as f64`).
 pub fn widen_f32(v: f32) -> f64 {
     v.to_string().parse().unwrap_or(v as f64)
+}
+
+/// The single f32-meta read shared by the three numeric-pipe projections — v1 migration's
+/// [`pipe_from_port`](crate::format::normalize), the `from_graph` flatten's
+/// [`pipe_doc_from_descriptor`], and boundary introspection's `describe_boundary`
+/// ([`crate::describe`]). Each *emits* differently (a full copy into an [`InputPipeDoc`], a
+/// minimal-diff copy that omits `unit`, a full copy into a `BoundaryPortDesc` with
+/// [`DocValue`]/[`Curve`]), but the **read** off `&F32Meta` — the one [`widen_f32`] widening and
+/// the empty-unit convention — lives here so the field list and the widening can't drift between
+/// them. f32-only by construction: the ADR-0061 `I32` and vocab-enum arms carry their own meta
+/// and are read at each call site (issue #497).
+pub(crate) struct NumericPipeMeta {
+    /// The declared unwired default, widened.
+    pub default: f64,
+    /// The engine-enforced range floor, widened.
+    pub min: f64,
+    /// The engine-enforced range ceiling, widened.
+    pub max: f64,
+    /// The sweep curve, as the descriptor [`Curve`] (each caller spells it its own way).
+    pub curve: Curve,
+    /// The display unit, `None` when the meta carries the empty-string "no unit".
+    pub unit: Option<String>,
+}
+
+impl NumericPipeMeta {
+    /// Read a numeric pipe's projected metadata off its port [`F32Meta`] — the one place the
+    /// `default`/`min`/`max` widening and the empty-unit → `None` convention are decided.
+    pub(crate) fn from_f32_meta(m: &F32Meta) -> Self {
+        NumericPipeMeta {
+            default: widen_f32(m.default),
+            min: widen_f32(m.min),
+            max: widen_f32(m.max),
+            curve: m.curve,
+            unit: (!m.unit.is_empty()).then(|| m.unit.to_string()),
+        }
+    }
 }
 
 /// A single override [`Arg`] in document-facing form (ADR-0035): a number for `F32`/`I32`, the

@@ -8,7 +8,7 @@
 //! describe`, a wasm or embedded embedder — reads instead of re-implementing the merge.
 
 use crate::descriptor::{Curve, PortType};
-use crate::format::{doc_value, widen_f32, DocValue, InstrumentDoc, InterfaceEntry, Loaded};
+use crate::format::{doc_value, DocValue, InstrumentDoc, InterfaceEntry, Loaded, NumericPipeMeta};
 
 /// One boundary port as a host sees it (ADR-0034 §4 / ADR-0038 §2): an input pipe's **declared**
 /// type/range/default, or an output pipe's type and metadata inherited from the internal port
@@ -80,11 +80,14 @@ pub fn describe_boundary(doc: &InstrumentDoc, loaded: &Loaded) -> BoundaryDesc {
         // The port's own metadata: an input pipe's declared range/default (its descriptor was
         // synthesized from the entry), or the feeding port's inherited metadata for an output.
         if let Some(m) = &p.meta {
-            desc.default = Some(DocValue::Number(widen_f32(m.default)));
-            desc.min = Some(widen_f32(m.min));
-            desc.max = Some(widen_f32(m.max));
-            desc.unit = m.unit.to_string();
-            desc.curve = Some(m.curve);
+            // Full copy through the shared reader (issue #497): one widening read off the port's
+            // `F32Meta`, re-encoded into the description's `DocValue`/`Curve`/`String` spelling.
+            let r = NumericPipeMeta::from_f32_meta(m);
+            desc.default = Some(DocValue::Number(r.default));
+            desc.min = Some(r.min);
+            desc.max = Some(r.max);
+            desc.unit = r.unit.unwrap_or_default();
+            desc.curve = Some(r.curve);
         }
         match &p.ty {
             PortType::I32 { meta: Some(m) } => {
