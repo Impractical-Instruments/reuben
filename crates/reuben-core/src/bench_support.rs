@@ -144,6 +144,7 @@ pub const WORKLOADS: &[Workload] = &[
     // isolates the engine's per-node stepping overhead as its own gated, attributable case.
     w(overhead::KIND, Recipe::Default),
     w("pan", Recipe::Default),
+    w("pitch2freq", Recipe::Default),
     w("power_f32_signal", Recipe::Default),
     w("power_f32_value", Recipe::Default),
     w("reciprocal_f32_signal", Recipe::Default),
@@ -215,6 +216,7 @@ pub const MICRO_IAI_KINDS: &[&str] = &[
     "output",
     "overhead",
     "pan",
+    "pitch2freq",
     "power_f32_signal",
     "power_f32_value",
     "reciprocal_f32_signal",
