@@ -2,8 +2,10 @@
 
 ## Status
 
-Accepted (2026-07-20). **Design locked, not yet implemented** — the implementation is a downstream
-effort. Decided through wayfinder map [#517](https://github.com/Impractical-Instruments/reuben/issues/517),
+Accepted (2026-07-20). **Implemented** (2026-07-20,
+[#539](https://github.com/Impractical-Instruments/reuben/pull/539)) — the `unpack_op!` census macro
+and its first operator `unpack_note`, with `pitch` promoted to a first-class held-Value port form.
+Decided through wayfinder map [#517](https://github.com/Impractical-Instruments/reuben/issues/517),
 ticket [#522](https://github.com/Impractical-Instruments/reuben/issues/522).
 
 Depends on [ADR-0062](0062-payload-enums-are-first-class-arg-leaves.md) (leaf-promotion): `unpack`
