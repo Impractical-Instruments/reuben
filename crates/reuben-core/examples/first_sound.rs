@@ -1,7 +1,7 @@
 //! first_sound — render the MVP audio spine to a WAV file so you can hear it.
 //!
 //! Rig: Oscillator -> Filter -> VCA(mul) -> Output, with the VCA gain driven by an
-//! Envelope -> PowerF32Signal (exponential-style volume curve, ADR-0027). `osc.freq` defaults to
+//! Envelope -> PowerF32Signal (exponential-style volume curve). `osc.freq` defaults to
 //! 440 Hz; `env.gate` is a held Value raised to `1.0` at frame 0.
 //!
 //! Run: `cargo run -p reuben-core --example first_sound` -> `first_sound.wav`.

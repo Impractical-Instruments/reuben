@@ -1,4 +1,4 @@
-//! Behavioral contract of the Coordinator ↔ Render mailbox pair (ADR-0046 §2):
+//! Behavioral contract of the Coordinator ↔ Render mailbox pair:
 //! exactly-once drain, one swap in flight, caller-clocked timeout, and cross-thread
 //! delivery. RT-safety (zero alloc/free on the render side) is asserted separately in
 //! `coordinator_rt_safe.rs`, which needs a private global allocator.
@@ -59,7 +59,7 @@ fn retiree_rides_the_retire_slot_back() {
 
     // The Coordinator gets exactly the retiree back — the *first* post's payload, proving
     // the refused double-post neither clobbered the slot nor was silently dropped. The
-    // deferred free happens on its thread (ADR-0009 reclaim), never on the render side.
+    // deferred free happens on its thread on reclaim, never on the render side.
     assert_eq!(coordinator.try_reclaim().as_deref(), Some(&"old engine"));
     assert!(
         coordinator.try_reclaim().is_none(),
@@ -67,7 +67,7 @@ fn retiree_rides_the_retire_slot_back() {
     );
 }
 
-/// ADR-0046 §2: never publish the next install until the prior retiree came back. The
+/// Never publish the next install until the prior retiree came back. The
 /// swap stays "in flight" through all three intermediate states — published, drained,
 /// and posted-but-unreclaimed — because only reclaim guarantees the retire slot is
 /// vacant for the *next* swap's retiree.
@@ -149,7 +149,7 @@ fn never_draining_consumer_trips_the_timeout() {
         .expect("swap completed: next install accepted");
 }
 
-/// The real crossing (ADR-0012): a Coordinator thread swapping against a render thread
+/// The real crossing: a Coordinator thread swapping against a render thread
 /// that only ever drains, exchanges pointers, and posts. Every displaced payload comes
 /// back exactly once, in order — 10k rounds of the full protocol.
 #[test]
@@ -163,7 +163,7 @@ fn swaps_cross_threads_exactly_once_in_order() {
 
     let renderer = std::thread::spawn(move || {
         // The callback's resident engine: a mailbox install always displaces one
-        // (the first Swap's predecessor is the empty Plan, ADR-0009).
+        // (the first Swap's predecessor is the empty Plan).
         let mut current: Box<u64> = Box::new(0);
         loop {
             match render.take_install() {

@@ -1,16 +1,15 @@
-//! Behavioral harness for the RT-side install slot (ticket #321, ADR-0046 §7, ADR-0050 §2).
+//! Behavioral harness for the RT-side install slot (ticket #321).
 //!
 //! Coordinator-direct: a real [`Coordinator`] builds and installs swaps off-thread while a real
 //! [`RenderSlot`] drives the render side — the production RT path, not the synchronous `RenderRig`
 //! stand-in in `swap.rs`. These tests observe the **rendered buffer** to prove the master-gain
 //! ramp's sonic contract:
 //!
-//! - the master output **dips to zero and recovers over ~2× the ramp** (ADR-0050 §2 fade-down →
+//! - the master output **dips to zero and recovers over ~2× the ramp** (fade-down →
 //!   install-at-zero → fade-up), hitting exactly zero at the install frame;
-//! - a **survivor keeps ringing** through the up-ramp (its held level rides the box transplant,
-//!   ADR-0046 §4 / ADR-0050 §4);
+//! - a **survivor keeps ringing** through the up-ramp (its held level rides the box transplant);
 //! - a **non-survivor's cut lands at master-zero** — inaudible — and its fresh cold box is silent
-//!   after the ramp (ADR-0050 §4);
+//!   after the ramp;
 //! - **steady state is transparent**: with no swap pending the slot passes the Engine's audio
 //!   through unchanged (no dip, no ramp) — the fast path.
 
@@ -24,7 +23,7 @@ fn cfg() -> AudioConfig {
 
 /// An envelope (gate held, slow attack) whose CV is the master output — so the rendered level *is*
 /// the envelope level, a clean signal to read the ramp envelope off. `env_addr` lets a test rename
-/// the node to force a reset (ADR-0045 §2). Mirrors `swap.rs`'s test fixture.
+/// the node to force a reset. Mirrors `swap.rs`'s test fixture.
 fn envelope_doc(env_addr: &str) -> String {
     format!(
         r#"{{ "format_version": 3, "instrument": "eg",
@@ -38,7 +37,7 @@ fn envelope_doc(env_addr: &str) -> String {
     )
 }
 
-/// A one-pipe mic passthrough bound to logical input channel 0 (ADR-0038 §3): the rendered output
+/// A one-pipe mic passthrough bound to logical input channel 0: the rendered output
 /// *is* the logical input (one core block later), so a duplex `fill_duplex` drives real input into
 /// the render path — the fixture for the short-input dark-degrade regression below.
 fn mic_doc() -> String {
@@ -108,7 +107,7 @@ fn steady_state_is_transparent_no_ramp_no_dip() {
 
 #[test]
 fn master_dips_to_zero_and_recovers_while_survivor_rings_through() {
-    // The heart of ADR-0050 §2. Warm to sustain, swap to the identical document (both nodes survive
+    // The heart of the install cut. Warm to sustain, swap to the identical document (both nodes survive
     // — address + type + fingerprint all match), then read the ramp envelope off the rendered
     // buffer: it starts at full gain, hits exactly zero at the install frame (`ramp_edge_frames`),
     // and recovers to the survivor's held sustain over the up-ramp — a ~2× ramp duck, not a click.
@@ -135,7 +134,7 @@ fn master_dips_to_zero_and_recovers_while_survivor_rings_through() {
         "the ramp opens at full gain: {}",
         frame_mag(&buf, ch, 0)
     );
-    // Exactly zero at the install frame (ADR-0050 §2 install-at-zero): this is where a non-survivor's
+    // Exactly zero at the install frame (install-at-zero): this is where a non-survivor's
     // hard cut would land — masked to silence.
     assert!(
         frame_mag(&buf, ch, edge) < 0.02,
@@ -162,7 +161,7 @@ fn master_dips_to_zero_and_recovers_while_survivor_rings_through() {
 
 #[test]
 fn a_non_survivor_is_cut_at_master_zero_and_stays_silent() {
-    // ADR-0050 §4: a non-survivor's fresh box starts cold and its cut lands at master-zero
+    // A non-survivor's fresh box starts cold and its cut lands at master-zero
     // (inaudible). Warm to sustain, then swap to a document that *renames* the envelope: `/env` is
     // removed (reset) and `/eg` is added cold, while `/out` survives. The ramp still dips to zero at
     // the install frame (masking the cut), but after the up-ramp the fresh envelope has barely left
@@ -204,7 +203,7 @@ fn a_short_duplex_input_dark_degrades_instead_of_panicking_during_the_ramp() {
     // REGRESSION (adversarial hot-path review): the ramp path renders the buffer in phase-bounded
     // segments, slicing `input` per segment. A SHORT-but-nonempty duplex `input` — a capture
     // underrun — must NOT panic on that slice on the render thread; it must dark-degrade (stage the
-    // missing tail as zeros, ADR-0038 §7), exactly as the steady-state fast path already does via
+    // missing tail as zeros), exactly as the steady-state fast path already does via
     // Engine's per-frame `input.get().unwrap_or(0.0)`. Before the clamp fix this panicked with
     // slice-end-out-of-range inside `render_segment` while a swap's ramp was in flight.
     let (mut coord, mut slot) = setup(&mic_doc());

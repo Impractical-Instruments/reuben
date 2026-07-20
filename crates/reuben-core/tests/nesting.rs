@@ -1,6 +1,6 @@
-//! Integration: general instrument-as-operator nesting (ADR-0034, nesting P4).
+//! Integration: general instrument-as-operator nesting (nesting P4).
 //!
-//! The determinism acceptance criterion (ADR-0001): a nested patch renders **bit-identical** to
+//! The determinism acceptance criterion: a nested patch renders **bit-identical** to
 //! the hand-flattened equivalent instrument — inlining is an authoring concept with zero runtime
 //! cost, so the rendered samples cannot differ by even one bit. Two reuses of one sub-instrument
 //! must produce independent state (disjoint prefixes → disjoint nodes → no cross-talk), which the
@@ -15,7 +15,7 @@ use reuben_core::{load, load_instrument, AudioConfig, Graph, Registry};
 /// A single-oscillator sub-instrument exposing `freq` in / `audio` out.
 // A well-formed v1 child: its `audio` boundary output is also anonymously tapped (as every
 // shipped v1 patch's was), so migration claims the entry — no boundary-only divergence
-// warning (that accepted ADR-0038 §5 case is covered in format_v2.rs).
+// warning (that accepted migration case is covered in format_v2.rs).
 const TONE: &str = r#"{
     "instrument": "tone",
     "interface": {
@@ -177,9 +177,9 @@ fn boundary_wire_renders_bit_identical_to_direct_wire() {
     }
 }
 
-// --- P5 (ADR-0034 §5): the one legal cross-kind bridge, F32 → F32Buffer (Value→Signal, ZOH),
+// --- P5: the one legal cross-kind bridge, F32 → F32Buffer (Value→Signal, ZOH),
 // proven to *render* across the boundary in both orientations. The reverse (Buffer → F32,
-// Signal→Value) is a hard load error per ADR-0031 — pinned in format.rs's unit matrix.
+// Signal→Value) is a hard load error — pinned in format.rs's unit matrix.
 
 /// Serves whichever child JSON the test hands it.
 struct Fixed(&'static str);

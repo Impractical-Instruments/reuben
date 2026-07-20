@@ -1,7 +1,7 @@
 //! Signal — the audio-rate data that flows on edges.
 //!
-//! A [`Block`] is one block of audio for a single edge. CV and audio are the same thing
-//! (ADR-0001): there is no separate control-rate signal type. Sub-audio-rate control
+//! A [`Block`] is one block of audio for a single edge. CV and audio are the same thing:
+//! there is no separate control-rate signal type. Sub-audio-rate control
 //! travels as [`crate::message::Message`].
 
 /// One block of audio samples, length == `block_size`.

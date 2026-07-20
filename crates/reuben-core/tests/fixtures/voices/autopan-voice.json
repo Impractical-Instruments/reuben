@@ -1,7 +1,7 @@
 {
   "format_version": 2,
   "instrument": "autopan-voice",
-  "doc": "Voice patch for stereo-autopan.json (ADR-0032). One monophonic saw synth voice: a held freq drives the oscillator, a held gate the envelope; gentle static lowpass. Hosted N times by the rig's `voicer`, whose summed mono output is swept across the stereo field by the master `pan`. interface: freq/gate in, audio/active out.",
+  "doc": "Voice patch for stereo-autopan.json. One monophonic saw synth voice: a held freq drives the oscillator, a held gate the envelope; gentle static lowpass. Hosted N times by the rig's `voicer`, whose summed mono output is swept across the stereo field by the master `pan`. interface: freq/gate in, audio/active out.",
   "interface": {
     "inputs": {
       "freq": {

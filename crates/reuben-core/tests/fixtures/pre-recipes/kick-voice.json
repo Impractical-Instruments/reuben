@@ -1,7 +1,7 @@
 {
   "format_version": 2,
   "instrument": "kick-voice",
-  "doc": "Kick drum voice (ADR-0032). A gate fires one envelope whose CV both drops the pitch (sine body, base + decaying sweep) and shapes the amplitude — the classic synth 'thump'. Pitch is internal (no freq interface input); the host's lane voicer only drives the gate. interface: gate in, audio/active out.",
+  "doc": "Kick drum voice. A gate fires one envelope whose CV both drops the pitch (sine body, base + decaying sweep) and shapes the amplitude — the classic synth 'thump'. Pitch is internal (no freq interface input); the host's lane voicer only drives the gate. interface: gate in, audio/active out.",
   "interface": {
     "inputs": {
       "gate": {

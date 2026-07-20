@@ -1,4 +1,4 @@
-//! Integration: the V1.3 Chord player end-to-end (ADR-0022) — a `chord` op stacks scale-relative
+//! Integration: the V1.3 Chord player end-to-end — a `chord` op stacks scale-relative
 //! thirds and emits `degree` notes, the engine routes them to a polyphonic Voicer, and the Voicer
 //! resolves each degree through the tonal context. Exercises the engine plumbing the operator unit
 //! tests can't: routing the chord op's emitted Messages to a real Voicer's voices, and a live chord
@@ -25,7 +25,7 @@ fn hz(midi: f32) -> f32 {
     Harmony::default().hz(Pitch::from_midi(midi))
 }
 
-/// Test-only probe voices (ADR-0032 session 11): a single `mul_f32_signal` whose `a` operand is the
+/// Test-only probe voices: a single `mul_f32_signal` whose `a` operand is the
 /// voice's `freq` (or `gate`) interface input — f32_buffer-with-meta, message-settable, ZOH-
 /// materialized — and whose `b` defaults to 1.0, so the voice's audio is `a * 1 == a`. Hosting one
 /// under the Voicer makes `voicer.audio` equal the summed resolved freq (FREQ) or the summed gate

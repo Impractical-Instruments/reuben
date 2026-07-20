@@ -1,4 +1,4 @@
-//! Integration: the Voicer's idle-voice skipping (ADR-0032 §5) with a voice patch that declares
+//! Integration: the Voicer's idle-voice skipping with a voice patch that declares
 //! an `active` interface output (`default-voice`), so `can_skip` is live — a render path no other
 //! test reaches (the freq-probe voices in tonal_context.rs have no `active`, so they always take
 //! the render-everything fallback). Two redundant-looking guards keep a within-one-block tap
@@ -29,7 +29,7 @@ const TAP_HOST: &str = r#"{
   "outputs": [ { "node": "/out", "port": "audio" } ]
 }"#;
 
-/// Resolves the host's `voice` instrument-resource (ADR-0032) from the repo `instruments/` dir.
+/// Resolves the host's `voice` instrument-resource from the repo `instruments/` dir.
 struct InstrumentsDir;
 impl ResourceResolver for InstrumentsDir {
     fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {

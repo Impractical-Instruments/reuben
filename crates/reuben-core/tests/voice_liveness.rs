@@ -1,4 +1,4 @@
-//! Integration: ADR-0032 §4/§5 voice-liveness — a voice patch's `interface` outputs are read by
+//! Integration: voice-liveness — a voice patch's `interface` outputs are read by
 //! the host the same way an operator reads a port. `audio` (Signal) resolves to an arena buffer;
 //! `active` (Value) is captured into [`Plan::captured`] each block (held ZOH). This proves the
 //! capture seam end-to-end on a real, shipped voice patch (`default-voice`), driven standalone.

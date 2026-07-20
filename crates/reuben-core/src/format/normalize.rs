@@ -1,10 +1,10 @@
-//! The one normalization seam (ADR-0047): **gate + migrate + strip + stamp**, behind
+//! The one normalization seam: **gate + migrate + strip + stamp**, behind
 //! [`NormalizedDoc`] — a document proven current-shaped. The version gate refuses the future,
-//! the v1→v2 migration engine flips target-form `interface` entries into pipes (ADR-0038 §5),
-//! the v2→v3 strip drains retired presentation (ADR-0043 §7), and the stamp writes the current
+//! the v1→v2 migration engine flips target-form `interface` entries into pipes,
+//! the v2→v3 strip drains retired presentation, and the stamp writes the current
 //! version — all exactly once, at the mint. The newtype's field is private to this module, so
 //! the only way to hold a `NormalizedDoc` is to have passed through here: the two-migrations
-//! footgun ADR-0036 §4 guarded with prose and re-checks is unrepresentable by type.
+//! footgun otherwise guarded with prose and re-checks is unrepresentable by type.
 
 use super::*;
 
@@ -13,7 +13,7 @@ use super::*;
 /// mintable solely by this module ([`from_json`](Self::from_json) for text,
 /// [`from_doc`](Self::from_doc) for a hand-deserialized [`InstrumentDoc`],
 /// [`from_graph`](Self::from_graph) for a built graph), so normalization runs exactly once per
-/// document (ADR-0047). Read access is by [`Deref`](std::ops::Deref); there is deliberately no
+/// document. Read access is by [`Deref`](std::ops::Deref); there is deliberately no
 /// `DerefMut` — the data model can still represent v1-only shapes, so mutation exits via
 /// [`into_inner`](Self::into_inner) and re-enters through the gate.
 ///
@@ -37,7 +37,7 @@ impl NormalizedDoc {
     /// `from_json` pair with one mint. A v1 entry re-exporting a nested boundary port needs the
     /// child document to type its pipe: with `Some(resolver)` it migrates to the child's real
     /// declared type; with `None` it types `"f32"` as the documented fallback (degrades dark at
-    /// build, ADR-0016) — behaviorally, `None` is an always-failing resolver, so there is one
+    /// build) — behaviorally, `None` is an always-failing resolver, so there is one
     /// migration to reason about, parameterized by resolver, never two entry points to diverge
     /// through.
     pub fn from_json(
@@ -86,7 +86,7 @@ impl NormalizedDoc {
         Self::normalize(doc, registry, resolver, ctx, referrer)
     }
 
-    /// Gate + migrate + strip + stamp (ADR-0036 §4, held by this type per ADR-0047). The
+    /// Gate + migrate + strip + stamp, held by this type. The
     /// version gate lives at the mint so every load path — top-level, voice, subpatch, raw doc
     /// — refuses a too-new document before touching its shape; an older version migrates to
     /// current here; a current-version document is shape-checked (no v1 forms may hide under a
@@ -111,7 +111,7 @@ impl NormalizedDoc {
         } else {
             doc.check_pipe_shape()?;
         }
-        // v2→v3 (ADR-0043 §7) is a pure strip, so it runs unconditionally: a v3-stamped
+        // v2→v3 is a pure strip, so it runs unconditionally: a v3-stamped
         // document still carrying leftovers degrades identically (ignore-with-warning).
         doc.strip_retired_presentation();
         doc.format_version = FORMAT_VERSION;
@@ -122,7 +122,7 @@ impl NormalizedDoc {
     ///
     /// Two passes: pass 1 creates every node and applies its `config` constants and literal
     /// `inputs`; pass 2 resolves wire-refs (which may name a node declared later) into edges,
-    /// type-checking each `Arg` type (ADR-0030). Between them, the subpatch pass (ADR-0034)
+    /// type-checking each `Arg` type. Between them, the subpatch pass
     /// inlines nested instruments.
     ///
     /// This path resolves no resources, so a nested reference cannot be loaded: every `subpatch`
@@ -136,7 +136,7 @@ impl NormalizedDoc {
     }
 
     /// Derive a document from a built [`Graph`] — the explicit **flatten/export** path, not the
-    /// save path (ADR-0036): the document is the source of truth, so saving means serializing
+    /// save path: the document is the source of truth, so saving means serializing
     /// the [`InstrumentDoc`] you loaded/edited (nested references survive via serde), while
     /// `from_graph` of a built graph deliberately emits the flattened equivalent — every
     /// spliced subpatch appears as its inlined nodes, the reference dissolved. Use it to
@@ -144,7 +144,7 @@ impl NormalizedDoc {
     /// graph; don't round-trip an edited *nested* instrument through it. Nodes are emitted in
     /// a stable order, and within a node `config`/`inputs` keys are sorted (BTreeMap), so output is
     /// deterministic. A `Constant` override goes to `config`; a materialized `Float` override, an
-    /// `Enum` choice (as its symbol), and every inbound wire go to `inputs` (ADR-0035).
+    /// `Enum` choice (as its symbol), and every inbound wire go to `inputs`.
     pub fn from_graph(graph: &Graph, instrument: impl Into<String>, registry: &Registry) -> Self {
         Self::from_doc(
             InstrumentDoc::from_graph_doc(graph, instrument),
@@ -156,7 +156,7 @@ impl NormalizedDoc {
 }
 
 impl InstrumentDoc {
-    /// ADR-0043 §7: drain the retired presentation carriers — a node's `control` block and
+    /// Drain the retired presentation carriers — a node's `control` block and
     /// `label`/`widget` on interface pipes — into ignore-with-warning migration notes,
     /// surfaced on the next build. Sound is unaffected (the engine never read them); save
     /// writes the document clean.
@@ -222,7 +222,7 @@ impl InstrumentDoc {
     }
 }
 
-/// The v1→v2 migration (ADR-0036 §4, ADR-0038 §5), run at parse on any document declaring a
+/// The v1→v2 migration, run at parse on any document declaring a
 /// version below current. Mechanical, in four moves:
 ///
 /// 0. a node whose address an input entry is about to mint (`"filter"` entry, `/filter` node —
@@ -251,7 +251,7 @@ impl InstrumentDoc {
 /// An entry re-exporting a **nested** child's boundary port derives its type from the child's
 /// own (migrated) pipe; when the child is unavailable (no resolver / missing / unreadable) the
 /// pipe falls back to `"f32"` so the document still loads and references degrade dark at
-/// build, exactly like every other reference to an unavailable nest (ADR-0016).
+/// build, exactly like every other reference to an unavailable nest.
 fn migrate_v1(
     doc: &mut InstrumentDoc,
     registry: &Registry,
@@ -264,9 +264,9 @@ fn migrate_v1(
         reason: "a pipe-form entry in a v1 document — declare `format_version: 2`".to_string(),
     };
 
-    // 0: clear the minted namespace. Every input entry mints `/<name>` (ADR-0038 §2); a v1
+    // 0: clear the minted namespace. Every input entry mints `/<name>`; a v1
     // node already holding that address was legal, so a post-mint `DuplicateAddress` would
-    // break "v1 documents keep loading forever" (ADR-0036 §4). The **node** steps aside — its
+    // break "v1 documents keep loading forever". The **node** steps aside — its
     // address is internal plumbing (every wire/target/tap referencing it is rewritten
     // mechanically; the OSC surface moves, the documented migration cost), while the entry
     // name is the boundary contract hosts already wire by and must keep.
@@ -291,7 +291,7 @@ fn migrate_v1(
                 name: old.clone(),
                 detail: format!(
                     "node renamed to {new:?} (references rewritten): the interface input \
-                     {:?} mints {old:?} as its pipe address (ADR-0038 §2) — external OSC \
+                     {:?} mints {old:?} as its pipe address — external OSC \
                      paths under the old node address must follow it",
                     &old[1..]
                 ),
@@ -346,7 +346,7 @@ fn migrate_v1(
         doc.interface = Some(InterfaceDoc { inputs, outputs });
     }
 
-    // 3: the anonymous `outputs` block dissolves into `interface.outputs` (ADR-0038 §4),
+    // 3: the anonymous `outputs` block dissolves into `interface.outputs`,
     // reproducing the **exact v1 tap multiset**. At build, every channel-less signal output
     // pipe is a broadcast master tap and every channel-bound one a pinned tap, so each v1
     // anonymous tap must map to exactly one entry:
@@ -362,8 +362,8 @@ fn migrate_v1(
     //
     // A v1 boundary entry no tap claims migrates untouched; played at top level it becomes a
     // broadcast tap v1 did not have — the one v1 output shape the consolidated block cannot
-    // express (ADR-0038 §4 unified "boundary output" with "master tap"; v1 kept them
-    // separate). **Accepted + warned** (decided 2026-07-04, recorded in ADR-0038 §5):
+    // express (v2 unified "boundary output" with "master tap"; v1 kept them
+    // separate). **Accepted + warned** (decided 2026-07-04):
     // hosted/nested behavior — the position such entries were used in — is exact, and each
     // such signal entry gets a `Migration` warning naming it, so the new top-level audibility
     // is never silent.
@@ -410,7 +410,7 @@ fn migrate_v1(
             }),
         );
     }
-    // The accepted §4 divergence, surfaced loudly: every v1 boundary-only **signal** output —
+    // The accepted divergence, surfaced loudly: every v1 boundary-only **signal** output —
     // an entry no anonymous tap claimed — is a master tap in v2, audible at top level where
     // v1 played nothing from it. Provably-signal only: a message-typed feed never taps (no
     // divergence), and a nested re-export's type is unknowable at parse (rare; under-warning
@@ -424,7 +424,7 @@ fn migrate_v1(
                 name: name.clone(),
                 detail: format!(
                     "this v1 interface output was boundary-only; in v2 it is a master tap \
-                     (ADR-0038 §4) and is now audible when this instrument plays at top \
+                     and is now audible when this instrument plays at top \
                      level, where v1 played nothing from it (hosted/nested behavior is \
                      unchanged) — delete the entry from the migrated document if that tap \
                      is unwanted (feeds {:?})",
@@ -528,7 +528,7 @@ fn feed_names_port(
 /// the pipe default, and rewrite the target input into a consumer wire-ref. `Ok(None)` drops
 /// the entry — an internally-wired or aliased target, or a port type with no pipe form — always
 /// with a [`LoadWarning::Migration`] naming it and a dark boundary name (never silent, never
-/// fatal: ADR-0036 §4).
+/// fatal).
 #[allow(clippy::too_many_arguments)]
 fn migrate_input_entry(
     doc: &mut InstrumentDoc,
@@ -559,7 +559,7 @@ fn migrate_input_entry(
             type_name: doc.nodes[node_idx].type_name.clone(),
         })?;
     // Degrade, loudly: warn naming the entry and leave the name **dark** so a host reference
-    // to it drops with a warning instead of failing (the ADR-0016 discipline, applied to
+    // to it drops with a warning instead of failing (the degrade-dark discipline, applied to
     // migration loss).
     let drop_entry = |doc: &mut InstrumentDoc, detail: String| {
         doc.migration.warnings.push(LoadWarning::Migration {
@@ -595,7 +595,7 @@ fn migrate_input_entry(
     let mut pipe = if entry.descriptor.has_resource("patch") {
         // A re-export of a nested child's boundary port: the pipe declaration is the child's
         // own (migrated) pipe. Unavailable child → the `"f32"` fallback (degrades dark at
-        // build, ADR-0016).
+        // build).
         child_input_pipe(
             doc, node_idx, addr, port_name, registry, resolver, ctx, referrer,
         )?
@@ -609,7 +609,7 @@ fn migrate_input_entry(
                 node: addr.to_string(),
                 port: port_name.to_string(),
             })?;
-        // The v1 override law (ADR-0034 §4) still holds for v1 documents: an override must
+        // The v1 override law still holds for v1 documents: an override must
         // stay a truthful subset of what the target port enforced (fatal in v1, stays fatal).
         if let Some(m) = meta {
             check_range_override(
@@ -623,13 +623,13 @@ fn migrate_input_entry(
         match pipe_from_port(&d.inputs[pi]) {
             Some(pipe) => pipe,
             // v1 accepted any input port by inheritance (`Arg`/`Str`/`I32` included); the
-            // pipe model cannot carry those types (ADR-0038 §2), so the entry drops, warned.
+            // pipe model cannot carry those types, so the entry drops, warned.
             None => {
                 return drop_entry(
                     doc,
                     format!(
                         "entry dropped: its target {target:?} is a {} port, which has no \
-                         pipe form (ADR-0038 §2) — drive the target address directly, or \
+                         pipe form — drive the target address directly, or \
                          re-author the boundary around a pipe-typed port",
                         d.inputs[pi].ty
                     ),
@@ -656,7 +656,7 @@ fn migrate_input_entry(
     // The v1 presentational overrides decorate the derived declaration. `min`/`max` are
     // deliberately **not** carried: v1 documented them as presentational — the engine clamped
     // to the *inner* port's range — but on a v2 pipe they would become the engine-enforced
-    // range (ADR-0038 §2) and clamp harder than v1 did (a bit-identical break on out-of-range
+    // range and clamp harder than v1 did (a bit-identical break on out-of-range
     // control input). The pipe keeps the inner port's engine range (already derived above);
     // the display-only narrowing has no v2 slot and is dropped, validated first by the v1
     // truthfulness law above.
@@ -721,7 +721,7 @@ fn pipe_from_port(port: &Port) -> Option<InputPipeDoc> {
 /// migrated, cycle-guarded, cached in [`LoadCtx::docs`] so N re-exported entries parse it once)
 /// and copy the named boundary pipe's declaration. Any availability failure — no resolver on
 /// this path, a missing id/source, unreadable text — falls back to a plain `"f32"` pipe so the
-/// document loads and references degrade dark at build (ADR-0016); a child that *parses* but
+/// document loads and references degrade dark at build; a child that *parses* but
 /// declares no such pipe stays the fatal `UnknownPort` v1 raised.
 #[allow(clippy::too_many_arguments)]
 fn child_input_pipe(
@@ -751,7 +751,7 @@ fn child_input_pipe(
         let Ok(text) = resolver.resolve_text(&canon) else {
             return Ok(fallback());
         };
-        // A resolved-but-malformed child stays fatal (ADR-0034 §1).
+        // A resolved-but-malformed child stays fatal.
         let child = with_cycle_guard(ctx, &canon, |ctx| {
             NormalizedDoc::parse_with(&text, registry, Some(resolver), ctx, Some(&canon))
         })?;
@@ -768,7 +768,7 @@ fn child_input_pipe(
             port: port_name.to_string(),
         })?;
     Ok(InputPipeDoc {
-        // The child's own channel binding is child-local (inert when nested, ADR-0038 §3);
+        // The child's own channel binding is child-local (inert when nested);
         // a re-export does not inherit it.
         channel: None,
         ..pipe
@@ -830,7 +830,7 @@ mod tests {
 
     #[test]
     fn the_mint_migrates_a_stale_stamp_and_stamps_current() {
-        // ADR-0036 §4 through the one gate: a pre-versioning document is a valid v1, migrates
+        // Through the one gate: a pre-versioning document is a valid v1, migrates
         // at the mint, and holds (and saves) the current version — never its old number.
         let doc = NormalizedDoc::from_json(r#"{"instrument":"t","nodes":[]}"#, &reg(), None)
             .expect("v1 parses");
@@ -896,7 +896,7 @@ mod tests {
     #[test]
     fn from_doc_refuses_the_future() {
         // The embedded-host idiom deserializes straight to `InstrumentDoc`; entering typed
-        // requires the gate, which refuses a shape it can't trust (ADR-0036 §4).
+        // requires the gate, which refuses a shape it can't trust.
         let doc: InstrumentDoc =
             serde_json::from_str(r#"{"format_version":99,"instrument":"t","nodes":[]}"#)
                 .expect("raw deserialize does not gate");
@@ -925,7 +925,7 @@ mod tests {
 
     #[test]
     fn from_doc_strips_retired_presentation_under_a_current_stamp() {
-        // ADR-0043 §7 at the gate: a current-stamped doc still carrying pipe presentation is
+        // At the gate: a current-stamped doc still carrying pipe presentation is
         // stripped (ignore-with-warning), replacing load_doc_guarded's clone-and-re-migrate.
         let raw: InstrumentDoc = serde_json::from_str(
             r#"{"format_version":3,"instrument":"t",

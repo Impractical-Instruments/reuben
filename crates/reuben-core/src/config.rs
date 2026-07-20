@@ -3,20 +3,20 @@
 /// Fixed audio parameters a Plan is instantiated against.
 ///
 /// Sample rate and block size do not change while a Plan runs; changing either is a
-/// re-Instantiate (a Swap), not a Render-time mutation. See ADR-0009.
+/// re-Instantiate (a Swap), not a Render-time mutation.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct AudioConfig {
     /// Samples per second (e.g. 48_000.0).
     pub sample_rate: f32,
     /// Samples per Channel per Render block.
     pub block_size: usize,
-    /// Logical master channel count (ADR-0026). This is **derived from the instrument** at
+    /// Logical master channel count. This is **derived from the instrument** at
     /// [`Plan::instantiate`](crate::plan::Plan::instantiate) (max referenced tap `channel` +
     /// 1, floor 2), which overwrites whatever value `new` seeded here — the device's real
     /// channel count never enters core (`audio.rs` owns the logical→device map). The seed
     /// only matters for a renderer built without a Plan.
     pub channels: usize,
-    /// Logical **input** channel count (ADR-0038 §3) — the input master's width, the dual of
+    /// Logical **input** channel count — the input master's width, the dual of
     /// [`channels`](Self::channels). Also derived from the instrument at
     /// [`Plan::instantiate`](crate::plan::Plan::instantiate): max bound input `channel` + 1
     /// across the played top graph's input pipes, **`0` when the patch binds none** — the
@@ -27,7 +27,7 @@ pub struct AudioConfig {
 }
 
 impl AudioConfig {
-    /// Floor for the logical master width (ADR-0026): even a fully-mono patch presents at
+    /// Floor for the logical master width: even a fully-mono patch presents at
     /// least stereo, so a mono/5.1 device needs no special-casing in core.
     pub const MIN_CHANNELS: usize = 2;
 

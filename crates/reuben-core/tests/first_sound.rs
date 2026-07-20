@@ -1,9 +1,9 @@
 //! Integration: the MVP audio spine makes a verifiable, deterministic sound.
 //!
 //! Rig: Oscillator -> Filter -> VCA(mul) -> Output, with the VCA gain driven by an
-//! Envelope -> PowerF32Signal (exponential-style volume curve, ADR-0027). `osc.freq` defaults to
+//! Envelope -> PowerF32Signal (exponential-style volume curve). `osc.freq` defaults to
 //! 440 Hz (an `f32_buffer` materialized from its meta) and `env.gate` is a held **Value** raised to
-//! `1.0` at frame 0 via a routed message. This is the spine the ADR-0031 Value/Signal flip churns —
+//! `1.0` at frame 0 via a routed message. This is the spine the Value/Signal flip churns —
 //! message routing, the per-block topo schedule, Signal edges, held-value block-slicing, the master
 //! tap. (Polyphonic note allocation through a hosted `voicer` is covered by `voicer_host.rs`.)
 
@@ -116,7 +116,7 @@ fn envelope_attack_is_audible() {
 
 #[test]
 fn render_is_deterministic() {
-    // The determinism invariant (ADR-0001): re-rendering the same rig with the same
+    // The determinism invariant: re-rendering the same rig with the same
     // input yields bit-identical output. (Serial today; the contract must hold when a
     // parallel executor slots in behind the same trait.)
     let cfg = AudioConfig::new(48_000.0, 256);

@@ -1,34 +1,33 @@
-//! The contract serde types every conversational door serializes (ADR-0052 §5: one schema,
-//! two doors): [`Diag`]/[`Report`] (ADR-0048 §4), the swap [`DiffSummary`] and [`SwapReport`]
-//! (ADR-0046 §§7–9, ADR-0048 §5), and the [`content_hash`] over a document's canonical bytes
-//! (ADR-0046 §9).
+//! The contract serde types every conversational door serializes (one schema,
+//! two doors): [`Diag`]/[`Report`], the swap [`DiffSummary`] and [`SwapReport`],
+//! and the [`content_hash`] over a document's canonical bytes.
 //!
 //! These live OS-free in core — not in reuben-native or reuben-mcp — so the wasm lane reuses
 //! the exact types the native lane serializes. Every type derives serde both ways, plus
 //! `schemars::JsonSchema` behind the default-off `schemars` feature so rmcp can emit
-//! `outputSchema` without the play/CLI build paying for it (ADR-0044 §3 fencing).
+//! `outputSchema` without the play/CLI build paying for it (feature fencing).
 
 use serde::{Deserialize, Serialize};
 
 use crate::format::{LoadError, LoadWarning, NormalizedDoc};
 
-/// The content identity of a normalized document (ADR-0046 §9): a hash over the canonical
+/// The content identity of a normalized document: a hash over the canonical
 /// [`to_json_pretty`](crate::format::InstrumentDoc::to_json_pretty) bytes — the exact bytes
 /// a save writes — so two equal [`NormalizedDoc`]s hash equal regardless of how their source
 /// text was formatted. Every `SwapReport`/`get_document` response carries it; a swap's
-/// `expect` guard compares it; a future store may dedup by it (ADR-0052 §3) — but a store
+/// `expect` guard compares it; a future store may dedup by it — but a store
 /// deduping by it must byte-verify: the hash is not cryptographic, so equal tokens are a
 /// candidate match, not proof of identical content.
 ///
 /// The string is an **opaque token**: compare it for equality, never parse it. The algorithm
-/// is deliberately unspecified in the contract (ADR-0046 leaves the mechanism epic-level) and
+/// is deliberately unspecified in the contract (the mechanism is left epic-level) and
 /// carries no cryptographic claim — it guards against accident (a stale `expect`), not attack.
 pub fn content_hash(doc: &NormalizedDoc) -> String {
     format!("{:016x}", fnv1a_64(doc.to_json_pretty().as_bytes()))
 }
 
 /// FNV-1a, 64-bit: a tiny, well-known, platform-stable content fingerprint. Chosen over a
-/// crypto hash because core stays dependency-free (ADR-0046's consequence) and the contract
+/// crypto hash because core stays dependency-free and the contract
 /// needs accident-detection, not adversary-resistance; chosen over `std`'s `DefaultHasher`
 /// because that one is documented to vary across releases, and this token may outlive a
 /// process (expect-guards across conversations, dedup in a future store).
@@ -41,7 +40,7 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
 }
 
 /// One diagnostic — an error or a warning — with the offending node/port when the loader
-/// localized it (ADR-0048 §4), so an agent can jump straight to the offending node.
+/// localized it, so an agent can jump straight to the offending node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Diag {
@@ -85,7 +84,7 @@ impl Diag {
         }
     }
 
-    /// Promote a non-fatal [`LoadWarning`] to a localized `Diag` (ADR-0048 §4): the warning
+    /// Promote a non-fatal [`LoadWarning`] to a localized `Diag`: the warning
     /// variants already carry the offending node or boundary-entry name, so a warning jumps
     /// to its node exactly as an error does. The human message is the warning's `Display`,
     /// verbatim. As in [`from_load`](Self::from_load), a boundary-named problem localizes on
@@ -116,10 +115,9 @@ impl Diag {
     }
 }
 
-/// Outcome of validating (or swap-validating) an instrument document (ADR-0048 §4):
-/// loadable + cycle-free means `ok`. Resource problems are advisory `warnings` (ADR-0016)
-/// and do not flip `ok`; a `{ok: false}` report is a tool *working*, not a tool failure
-/// (ADR-0048 §3).
+/// Outcome of validating (or swap-validating) an instrument document:
+/// loadable + cycle-free means `ok`. Resource problems are advisory `warnings`
+/// and do not flip `ok`; a `{ok: false}` report is a tool *working*, not a tool failure.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Report {
@@ -128,14 +126,14 @@ pub struct Report {
     pub warnings: Vec<Diag>,
 }
 
-/// The swap diff summary (ADR-0048 §5, keyed by ADR-0046 §5's survivor fingerprint):
+/// The swap diff summary (keyed by the survivor fingerprint):
 /// what happened to the sounding graph, *announced* rather than discovered by ear.
 /// `state_reset` lists addresses present in both documents whose node did **not** survive
 /// (a type change or an instantiate-time fingerprint change); `added`/`removed` catch
 /// whole-document re-emission accidents — a param tweak reporting `removed: ["/voice1"]`
 /// is a typo'd address caught while still fixable. The native lane's gapless swap fills in
-/// real survivor stats (ADR-0046 §5); the web lane's restart-swap rebuilds every node cold,
-/// reported honestly as `survived: 0` behind this same shape (ADR-0052 §2).
+/// real survivor stats; the web lane's restart-swap rebuilds every node cold,
+/// reported honestly as `survived: 0` behind this same shape.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DiffSummary {
@@ -145,11 +143,11 @@ pub struct DiffSummary {
     pub removed: Vec<String>,
 }
 
-/// What a `swap` returns (ADR-0046 §§7–9, ADR-0048 §§5,8): the validation [`Report`], the
+/// What a `swap` returns: the validation [`Report`], the
 /// **installed** document's [`content_hash`] (on `ok: false` nothing installed — the hash
 /// still names what keeps playing), and, on success, the [`DiffSummary`]. The `Report`
 /// flattens so the wire shape is one flat object — this one serde type is both the structure
-/// channel's response and the MCP tool's `structuredContent` (ADR-0048 §8: shapes must not
+/// channel's response and the MCP tool's `structuredContent` (shapes must not
 /// drift).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
@@ -183,7 +181,7 @@ mod tests {
 
     #[test]
     fn diag_from_missing_resource_carries_node() {
-        // ADR-0048 §4 warning-promotion: `LoadWarning` already carries the offending node
+        // Warning-promotion: `LoadWarning` already carries the offending node
         // (`MissingResource { node, slot, id }`); the Diag must surface it structured, with
         // the loader's human message verbatim.
         let w = LoadWarning::MissingResource {
@@ -216,7 +214,7 @@ mod tests {
         let back: Report = serde_json::from_str(&json).expect("deserialize");
         assert_eq!(back, report);
 
-        // The wire shape is the ADR-0048 §4 contract, not an implementation detail:
+        // The wire shape is the contract, not an implementation detail:
         // { ok, errors: Diag[], warnings: Diag[] }, absent node/port omitted.
         let v: serde_json::Value = serde_json::from_str(&json).expect("as value");
         assert_eq!(v["ok"], serde_json::json!(false));
@@ -233,9 +231,9 @@ mod tests {
 
     #[test]
     fn swap_report_speaks_the_adr_0048_wire_shape() {
-        // ADR-0048 §5: `swap` → Report plus `content_hash` plus, on success, a diff summary
+        // `swap` → Report plus `content_hash` plus, on success, a diff summary
         // { survived, state_reset, added, removed }. One flat object — the channel and the
-        // tool serialize the same type (ADR-0048 §8).
+        // tool serialize the same type.
         let report = SwapReport {
             report: Report {
                 ok: true,
@@ -272,7 +270,7 @@ mod tests {
 
     #[test]
     fn a_rejected_swap_report_omits_the_diff() {
-        // ADR-0048 §5: the diff summary rides "on success" — `ok: false` means nothing
+        // The diff summary rides "on success" — `ok: false` means nothing
         // installed, so there is no old-vs-new to summarize.
         let report = SwapReport {
             report: Report {
@@ -296,7 +294,7 @@ mod tests {
         assert_eq!(back, report);
     }
 
-    /// ADR-0048 §3/§4: rmcp derives each tool's `outputSchema` from these types via schemars,
+    /// rmcp derives each tool's `outputSchema` from these types via schemars,
     /// so contract drift is a compile-time concern. Run with `--features schemars`.
     #[cfg(feature = "schemars")]
     #[test]
@@ -315,7 +313,7 @@ mod tests {
                 "{field} must be required: {schema}"
             );
         }
-        // The Diag items localize on optional node/port (ADR-0048 §4).
+        // The Diag items localize on optional node/port.
         let diag = &schema["$defs"]["Diag"]["properties"];
         for field in ["node", "port", "message"] {
             assert!(
@@ -327,7 +325,7 @@ mod tests {
 
     #[test]
     fn content_hash_is_stable_across_reserialization_of_an_equal_doc() {
-        // ADR-0046 §9: the hash is over the canonical to_json_pretty() bytes, so source-text
+        // The hash is over the canonical to_json_pretty() bytes, so source-text
         // formatting never leaks into identity. Mint, save (re-serialize), re-mint: the docs
         // are equal, and so are their hashes.
         let doc = mint(&doc_json(440.0));

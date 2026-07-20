@@ -1,7 +1,7 @@
 {
   "format_version": 2,
   "instrument": "sequence",
-  "doc": "A self-playing step melody (ADR-0032). The Clock's beat gate drives a sequencer that emits degree Messages — one per beat through an 8-step pattern (an ascending scale, degrees 0..7) — into a Voicer, which resolves each degree to Hz through the tonal context (default C-major/12-TET) and plays it on a hosted `sequence-voice` sub-patch. Set tempo via /clock/tempo; edit the line via /sequencer/step1../sequencer/step8 (scale degree, below 0 = rest) and /sequencer/length; send /clock/sync to relocate beat 1. To make it re-spell in another key, see scale-demo.json.",
+  "doc": "A self-playing step melody. The Clock's beat gate drives a sequencer that emits degree Messages — one per beat through an 8-step pattern (an ascending scale, degrees 0..7) — into a Voicer, which resolves each degree to Hz through the tonal context (default C-major/12-TET) and plays it on a hosted `sequence-voice` sub-patch. Set tempo via /clock/tempo; edit the line via /sequencer/step1../sequencer/step8 (scale degree, below 0 = rest) and /sequencer/length; send /clock/sync to relocate beat 1. To make it re-spell in another key, see scale-demo.json.",
   "resources": {
     "sequence-voice": "voices/sequence-voice.json"
   },

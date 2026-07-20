@@ -21,7 +21,7 @@ impl ResourceResolver for Dir {
         std::fs::read_to_string(&path).map_err(|e| ResolveError::NotFound(format!("{path}: {e}")))
     }
 
-    /// Per-document rebase (the `FsResolver` discipline, ADR-0034 §1): a nested document's own
+    /// Per-document rebase (the `FsResolver` discipline): a nested document's own
     /// references (kick-voice.json's `shaped-vca.json`) resolve next to *it*, keys staying
     /// root-relative.
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {

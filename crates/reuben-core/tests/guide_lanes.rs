@@ -1,7 +1,7 @@
-//! Tier-1 lane-tag cut test (ADR-0059 §8, the R7 acceptance): the authoring guide's web
+//! Tier-1 lane-tag cut test (the R7 acceptance): the authoring guide's web
 //! slice is a deterministic function of the `lanes:` tags + the guide — every section
 //! tagged, checkout-only sections dropped, kept sections verbatim and in source order,
-//! never hand-paraphrased (ADR-0051). `include_str!` pins the test to the committed guide,
+//! never hand-paraphrased. `include_str!` pins the test to the committed guide,
 //! so editing `docs/agents/authoring.md` re-runs it: a new heading without a tag (or with
 //! a typo'd lane) fails here instead of silently skipping the web cut.
 
@@ -15,13 +15,13 @@ const GUIDE: &str = include_str!("../../../docs/agents/authoring.md");
 fn every_section_is_tagged_for_every_lane() {
     for lane in Lane::ALL {
         if let Err(e) = lane_cut(GUIDE, lane) {
-            panic!("the guide must stay fully `lanes:`-tagged (ADR-0059 §3): {e}");
+            panic!("the guide must stay fully `lanes:`-tagged: {e}");
         }
     }
 }
 
 /// The web cut drops the checkout-only sections — the filesystem sample workflow (no disk
-/// on the web lane, ADR-0049) and the ADR index — while the checkout lanes keep them.
+/// on the web lane) and the ADR index — while the checkout lanes keep them.
 #[test]
 fn web_cut_drops_the_checkout_only_sections() {
     let web = lane_cut(GUIDE, Lane::Web).expect("tagged guide cuts clean");
@@ -77,7 +77,7 @@ fn cut_is_deterministic() {
     }
 }
 
-/// Loop conduct is shared sauce (ADR-0059 §2): the authoring-loop section — including the
+/// Loop conduct is shared sauce: the authoring-loop section — including the
 /// validate-proves-legal-not-audible check and describe-don't-infer — ships in every lane.
 #[test]
 fn loop_conduct_ships_in_every_lane() {
@@ -90,7 +90,7 @@ fn loop_conduct_ships_in_every_lane() {
         );
         assert!(
             cut.contains("Sanity-check that it's audible") && cut.contains("never infer"),
-            "loop conduct (ADR-0059 §2) must ship on the {} lane",
+            "loop conduct must ship on the {} lane",
             lane.name()
         );
     }

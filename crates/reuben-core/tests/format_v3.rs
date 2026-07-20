@@ -1,11 +1,11 @@
-//! Format v3 (ADR-0043): presentation decouples from the instrument document.
+//! Format v3: presentation decouples from the instrument document.
 //!
 //! v3 removes the two retired presentation carriers — the per-node `control` block
-//! (ADR-0018) and `label`/`widget` on interface pipes (ADR-0038 §2, as amended) — with the
-//! ignore-with-warning migration ADR-0043 §7 records: a v2 document (or a v3 document still
+//! (the per-node `control` block) and `label`/`widget` on interface pipes (as amended) — with the
+//! ignore-with-warning migration: a v2 document (or a v3 document still
 //! carrying leftovers) loads, the loader drops the retired fields and emits a `LoadWarning`
 //! naming each, and save writes clean v3. Sound is unaffected by construction (the engine
-//! never read any of them) — asserted here bit-identically, the ADR-0026/0038 discipline.
+//! never read any of them) — asserted here bit-identically.
 
 use reuben_core::format::LoadWarning;
 use reuben_core::message::Message;
@@ -96,7 +96,7 @@ fn flat(w: &LoadWarning) -> &LoadWarning {
 }
 
 /// A v2 document with a `control` block: an audible oscillator→filter chain whose filter node
-/// carries ADR-0018 UI metadata the engine never read.
+/// carries UI metadata the engine never read.
 const V2_WITH_CONTROL: &str = r#"{
   "format_version": 2,
   "instrument": "v3-control-strip",
@@ -130,7 +130,7 @@ const V2_WITHOUT_CONTROL: &str = r#"{
 #[test]
 fn v2_control_block_is_ignored_with_a_warning_and_save_strips_it() {
     let loaded = load_instrument(V2_WITH_CONTROL, &Registry::builtin(), &NoResources)
-        .expect("a control-carrying v2 document keeps loading (ignore-with-warning, ADR-0043)");
+        .expect("a control-carrying v2 document keeps loading (ignore-with-warning)");
     assert!(
         loaded.warnings.iter().map(flat).any(|w| matches!(
             w,
@@ -242,7 +242,7 @@ fn pipe_presentation_carrying_doc_renders_bit_identical_to_the_stripped_doc() {
 
 #[test]
 fn v3_stamped_doc_with_leftovers_degrades_identically() {
-    // ADR-0043 §7: ignore-with-warning is not gated on the stamp — a v3 document still
+    // Ignore-with-warning is not gated on the stamp — a v3 document still
     // carrying retired fields loads, warns, and strips exactly like a v2 one.
     let v3 = V2_WITH_CONTROL.replace("\"format_version\": 2", "\"format_version\": 3");
     let loaded = load_instrument(&v3, &Registry::builtin(), &NoResources)
@@ -261,8 +261,8 @@ fn v3_stamped_doc_with_leftovers_degrades_identically() {
 
 #[test]
 fn v1_doc_migrates_through_to_v3_and_save_writes_v3() {
-    // The whole chain: absent format_version (= v1) → target-form migration (ADR-0038) →
-    // presentation strip (ADR-0043) → stamped v3 on save.
+    // The whole chain: absent format_version (= v1) → target-form migration →
+    // presentation strip → stamped v3 on save.
     let v1 = r#"{"instrument":"t","interface":{
         "inputs":{"tone":{"target":"/filter.cutoff","label":"Tone"}},
         "outputs":{"out":"/filter.audio"}},

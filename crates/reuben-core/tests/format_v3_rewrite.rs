@@ -1,4 +1,4 @@
-//! The #247 P2 rewrite guard (ADR-0043 §7): every shipped control-block instrument, rewritten
+//! The #247 P2 rewrite guard: every shipped control-block instrument, rewritten
 //! to interface pipes + a surface doc, renders **bit-identically** to its pre-rewrite v2
 //! original — at rest (a pipe with a declared default is the old literal) and under driven
 //! input (the same gesture, sent to the old node address on the original and the pipe's
@@ -19,7 +19,7 @@
 //!
 //! Pipe naming (pinned here; the rewrite implements to it): the pipe keeps the *public*
 //! control name; an internal node colliding with a minted pipe address is renamed
-//! (ADR-0017's discipline, applied as a JSON-structural ref sweep):
+//! (the ref-integrity discipline, applied as a JSON-structural ref sweep):
 //! - euclidean-drums: `tempo`, per channel (kick/snare/tom/hat): `<ch>_pulses`, `<ch>_steps`,
 //!   `<ch>_rotation`, `<ch>_decay`, `<ch>_filter` (m2s → `/<ch>_filter_cv`), `<ch>_level`
 //!   (m2s → `/<ch>_level_cv`)

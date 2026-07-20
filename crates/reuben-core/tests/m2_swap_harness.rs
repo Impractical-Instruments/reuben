@@ -1,31 +1,31 @@
-//! The M2 swap-correctness + RT-safety harness (ticket #324) — ADR-0053 §§2–3, the epic's
+//! The M2 swap-correctness + RT-safety harness (ticket #324) — the epic's
 //! **terminal** off-device verification of the gapless mailbox swap.
 //!
 //! This module drives the **real** RT path: a live [`Coordinator`] builds and installs swaps
 //! off-thread (bypassing the TCP structure channel — decision 1's `reuben-native` live-server test
 //! owns that seam), and the production [`RenderSlot`] runs the **same callback-side install step the
 //! audio callback calls** — [`RenderSlot::fill`]/`fill_duplex`, which peeks the install mailbox, runs
-//! ADR-0050's master-gain ramp, box-transplants the survivors via [`Engine::transplant_survivors`],
+//! the master-gain ramp, box-transplants the survivors via [`Engine::transplant_survivors`],
 //! and posts the retiree. It is NOT the synchronous `RenderRig` stand-in in `swap.rs` (a pre-#321
-//! test shim); driving the production slot is exactly what ADR-0053 §2 asks for.
+//! test shim); driving the production slot is exactly what the survivor/reset case asks for.
 //!
-//! Two shapes land here, per the ADR:
+//! Two shapes land here:
 //!
-//! - **§2 — Coordinator-direct behavioral survivor/reset** (part a). Operator state is opaque
-//!   (ADR-0046 §4: the operator instance *is* the state — no extraction trait), so survivor/reset is
+//! - **Coordinator-direct behavioral survivor/reset** (part a). Operator state is opaque
+//!   (the operator instance *is* the state — no extraction trait), so survivor/reset is
 //!   asserted **behaviorally in rendered audio**:
 //!   * a swap that *rewires an already-decaying envelope's neighbors* leaves the envelope a survivor
 //!     — its box transplants with its in-progress decay, so the output keeps decaying smoothly with
-//!     **no re-attack transient** (ADR-0045 §2 / ADR-0046 §5: rewired neighbors leave a survivor a
+//!     **no re-attack transient** (rewired neighbors leave a survivor a
 //!     survivor);
-//!   * a swap that *bumps `voices`* on the same address is a different instantiation (ADR-0046 §5:
-//!     `voices` is an instantiate-time Constant), so the voicer **resets** — its old held note falls
+//!   * a swap that *bumps `voices`* on the same address is a different instantiation
+//!     (`voices` is an instantiate-time Constant), so the voicer **resets** — its old held note falls
 //!     silent and a fresh pool takes its place.
 //!
-//! - **§3 — install-path allocation-counting** (part b). The callback-side install step (mailbox
+//! - **Install-path allocation-counting** (part b). The callback-side install step (mailbox
 //!   drain + migration-table pointer-swap loop) is wrapped in the process's thread-local
 //!   allocation-counting harness ([`rt_alloc::measure`], ticket #344) and asserted to make **zero**
-//!   heap allocation and **zero** frees — the binary RT-safety invariant (ADR-0012), not a trend.
+//!   heap allocation and **zero** frees — the binary RT-safety invariant, not a trend.
 //!
 //! The behavioral assertions **red on a broken migration table** (a survivor that fails to transplant
 //! re-attacks from cold — the decay assertion trips); the alloc assertion **reds on any heap touch**
@@ -89,7 +89,7 @@ fn render(slot: &mut RenderSlot, frames: usize) -> Vec<f32> {
 }
 
 // ---------------------------------------------------------------------------------------------
-// (a) ADR-0053 §2 — Coordinator-direct behavioral survivor / reset, through the real RT install.
+// (a) Coordinator-direct behavioral survivor / reset, through the real RT install.
 // ---------------------------------------------------------------------------------------------
 
 /// An envelope whose CV *is* the master output, so the rendered per-frame level reads back the
@@ -113,7 +113,7 @@ fn decaying_envelope_doc(env_addr: &str) -> String {
 /// through a unity `add_f32_signal` pass node (`b` unwired ⇒ the additive identity `0`, so
 /// `out = a + 0 = /env.cv`, sample-identical, same block) before reaching `/out`. `/env`'s own node
 /// identity — address + type + (config-less) fingerprint — is untouched, so it stays a **survivor**
-/// (ADR-0045 §2 / ADR-0046 §5: rewired neighbours leave a survivor a survivor); only the graph around
+/// (rewired neighbours leave a survivor a survivor); only the graph around
 /// it, and the Plan indices, change — which is exactly what the migration table must remap.
 fn rewired_neighbors_doc() -> String {
     r#"{ "format_version": 3, "instrument": "eg",
@@ -131,7 +131,7 @@ fn rewired_neighbors_doc() -> String {
 
 #[test]
 fn rewiring_a_decaying_envelopes_neighbors_keeps_it_decaying_no_reattack() {
-    // ADR-0053 §2, case one. Warm the envelope past its 5ms attack and into its long linear decay,
+    // Case one. Warm the envelope past its 5ms attack and into its long linear decay,
     // capture the level mid-decay, then swap to a document that REWIRES its neighbors (inserts a
     // unity pass node between `/env` and `/out`) while keeping `/env` a survivor. Driven through the
     // production RenderSlot — the same install step the audio callback runs — the survivor's box
@@ -191,7 +191,7 @@ fn rewiring_a_decaying_envelopes_neighbors_keeps_it_decaying_no_reattack() {
     );
 }
 
-/// The default subtractive voice patch (ADR-0032) a `voicer` hosts, loaded as a resource.
+/// The default subtractive voice patch a `voicer` hosts, loaded as a resource.
 const DEFAULT_VOICE_JSON: &str = include_str!("../../../instruments/voices/default-voice.json");
 
 /// A resolver carrying the default voice patch under the path the voicer document references.
@@ -202,7 +202,7 @@ fn voice_resolver() -> MemoryResolver {
 }
 
 /// A voicer hosting `voices` copies of the default voice, summed to the master. `voices` is an
-/// instantiate-time Constant (ADR-0046 §5), so changing it changes the node's fingerprint.
+/// instantiate-time Constant, so changing it changes the node's fingerprint.
 fn voicer_doc(voices: u32) -> String {
     format!(
         r#"{{ "format_version": 3, "instrument": "top",
@@ -218,8 +218,8 @@ fn voicer_doc(voices: u32) -> String {
 
 #[test]
 fn bumping_voices_resets_the_pool_old_note_silent_fresh_pool_lives() {
-    // ADR-0053 §2, case two. A voicer's `voices` pool size is an instantiate-time Constant
-    // (ADR-0046 §5): the box carries a fixed-size pool built at instantiate. Hold a note into a
+    // Case two. A voicer's `voices` pool size is an instantiate-time Constant:
+    // the box carries a fixed-size pool built at instantiate. Hold a note into a
     // 4-voice pool so a voice rings at sustain, then swap to an 8-voice document on the SAME address.
     // Bumping `voices` is a different instantiation, so `/voicer` does NOT survive — the report says
     // so, the old held note falls silent (its 4-voice pool retired off-thread), and a fresh pool
@@ -323,8 +323,8 @@ fn fundamental_period(buf: &[f32], ch: usize) -> usize {
 
 #[test]
 fn swap_keeps_a_harmony_driven_voice_in_tune_no_silent_retranspose() {
-    // ADR-0053 §2, the emit-on-change survivor case. A `harmony` node survives an identical-document
-    // swap; its tonal context is published on change against a baseline in its box (ADR-0015). The
+    // The emit-on-change survivor case. A `harmony` node survives an identical-document
+    // swap; its tonal context is published on change against a baseline in its box. The
     // swap rebuilds the voicer's held `harmony` latch to Harmony::default() (C major, root 60), so
     // without `on_transplant` the survivor sees no change, stays silent, and a NEW note-on after the
     // swap resolves degree 0 to MIDI 60 instead of MIDI 45 — the swap silently retransposes the
@@ -377,12 +377,12 @@ fn swap_keeps_a_harmony_driven_voice_in_tune_no_silent_retranspose() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// (b) ADR-0053 §3 — the callback-side install step allocates and frees nothing (RT-safety).
+// (b) The callback-side install step allocates and frees nothing (RT-safety).
 // ---------------------------------------------------------------------------------------------
 
 #[test]
 fn the_install_step_makes_zero_heap_allocation() {
-    // ADR-0053 §3 / ADR-0012: the callback-side install step — drain the install bundle, run the
+    // The callback-side install step — drain the install bundle, run the
     // master-gain ramp, box-transplant the survivors, post the retiree — must be **heap-neutral** on
     // the render thread: no allocation and no free. This wraps the exact fills the audio callback
     // makes in the process's THREAD-LOCAL counting harness (`rt_alloc::measure`, ticket #344), NOT a
@@ -405,7 +405,7 @@ fn the_install_step_makes_zero_heap_allocation() {
     // below cannot be vacuous (a dead counter would also read zero).
     assert_counter_is_live();
 
-    // Off-thread build (ADR-0009): the Coordinator allocates the new Engine + migration table here,
+    // Off-thread build: the Coordinator allocates the new Engine + migration table here,
     // OUTSIDE the measured window. Swapping to the identical document keeps both nodes survivors, so
     // the transplant loop genuinely runs (two pointer swaps) inside the window.
     let report = coord.swap_document(&doc, None);

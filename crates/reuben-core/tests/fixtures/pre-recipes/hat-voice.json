@@ -1,7 +1,7 @@
 {
   "format_version": 2,
   "instrument": "hat-voice",
-  "doc": "Hi-hat voice (ADR-0032). A gate fires a short envelope shaping highpassed noise into a metallic tick. Pitch is internal (no freq interface input); the host's lane voicer only drives the gate. interface: gate in, audio/active out.",
+  "doc": "Hi-hat voice. A gate fires a short envelope shaping highpassed noise into a metallic tick. Pitch is internal (no freq interface input); the host's lane voicer only drives the gate. interface: gate in, audio/active out.",
   "interface": {
     "inputs": {
       "gate": {

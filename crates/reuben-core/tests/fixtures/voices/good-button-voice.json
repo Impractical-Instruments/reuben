@@ -1,7 +1,7 @@
 {
   "format_version": 2,
   "instrument": "good-button-voice",
-  "doc": "Voice patch for good-button.json (ADR-0032). One monophonic saw synth voice: a held freq drives the oscillator, a held gate the ADSR. NO filter here — the Good Button's brightness drives a single master filter on the summed mix (host post-mix), so the voice is just osc -> env VCA. The envelope ADSR rests at its operator defaults (per-voice params aren't host-addressable in the hosted-voice model). interface: freq/gate in, audio/active out.",
+  "doc": "Voice patch for good-button.json. One monophonic saw synth voice: a held freq drives the oscillator, a held gate the ADSR. NO filter here — the Good Button's brightness drives a single master filter on the summed mix (host post-mix), so the voice is just osc -> env VCA. The envelope ADSR rests at its operator defaults (per-voice params aren't host-addressable in the hosted-voice model). interface: freq/gate in, audio/active out.",
   "interface": {
     "inputs": {
       "freq": {

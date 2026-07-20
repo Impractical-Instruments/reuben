@@ -1,7 +1,7 @@
 {
   "format_version": 2,
   "instrument": "auto-filter-voice",
-  "doc": "Voice patch for auto-filter.json (ADR-0032). One monophonic saw synth voice: a held freq drives the oscillator, a held gate the ADSR. NO filter here — the base-plus-LFO cutoff drives a single master filter on the summed mix (host post-mix), so the voice is just osc -> env VCA. interface: freq/gate in, audio/active out.",
+  "doc": "Voice patch for auto-filter.json. One monophonic saw synth voice: a held freq drives the oscillator, a held gate the ADSR. NO filter here — the base-plus-LFO cutoff drives a single master filter on the summed mix (host post-mix), so the voice is just osc -> env VCA. interface: freq/gate in, audio/active out.",
   "interface": {
     "inputs": {
       "freq": {

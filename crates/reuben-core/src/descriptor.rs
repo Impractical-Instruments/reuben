@@ -1,4 +1,4 @@
-//! Descriptor — an Operator's self-description (ADR-0004).
+//! Descriptor — an Operator's self-description.
 //!
 //! Separate from the process function, the descriptor lists ports and rich param
 //! metadata. It is the seat of "good button" (auto-generated controls that can't sound
@@ -11,7 +11,7 @@
 // `::reuben_core::descriptor::F32Meta` and every in-crate `descriptor::` consumer keep working.
 pub use reuben_contract::{Curve, F32Meta, I32Meta};
 
-/// What a port carries — **the port's [`Arg`](crate::message::Arg) type** (ADR-0030). Replaces
+/// What a port carries — **the port's [`Arg`](crate::message::Arg) type**. Replaces
 /// the retired `Shape`: delivery and read-style are no longer a declared axis, they follow from
 /// the Arg type plus the handle's form (`io.read` on an `Event<Note>` / `Held<T>` handle). One variant per `Arg` *family*; a
 /// vocab type names itself by its Arg variant (`Vocab { name: "Note", .. }` ↔ `Arg::Note`), which
@@ -20,11 +20,11 @@ pub use reuben_contract::{Curve, F32Meta, I32Meta};
 pub enum PortType {
     /// A scalar number — a held (ZOH) control: freq, cutoff, amp. The port's [`F32Meta`] gives
     /// its good-button range / curve / unwired default. An `F32`-source wired into a [`Buffer`]
-    /// port ZOH-materializes (ADR-0030, the one implicit bridge).
+    /// port ZOH-materializes (the one implicit bridge).
     ///
     /// [`Buffer`]: PortType::F32Buffer
     F32,
-    /// A discrete integer control / constant (ADR-0035). `meta` is `Some` for a bounded settable
+    /// A discrete integer control / constant. `meta` is `Some` for a bounded settable
     /// integer (a count like the voicer's `voices` pool size), carrying its range + default in
     /// [`I32Meta`]; `None` for a bare integer atom with no declared range.
     I32 { meta: Option<I32Meta> },
@@ -33,7 +33,7 @@ pub enum PortType {
     /// construction still allocates and stays on the cold paths.
     Str,
     /// A dense per-sample signal (audio): the **only** Arg with a buffer form. A `Buffer`-source
-    /// wired into a scalar port is illegal — it needs an explicit sampler op (ADR-0030). Not
+    /// wired into a scalar port is illegal — it needs an explicit sampler op. Not
     /// boundary-crossable (no OSC form), which is how audio is kept off the wire by construction.
     F32Buffer,
     /// A shared *vocab* concrete type, named by its [`Arg`](crate::message::Arg) variant
@@ -66,8 +66,7 @@ pub enum PortType {
     /// has an external OSC form wires in — for a struct vocab type that means a converter
     /// registered via `register_osc_form!` ([`OscForm`](crate::boundary::OscForm), epic #146);
     /// a no-form source (`Harmony`, which registers none) is rejected at load/plan, and a
-    /// Signal (audio) source likewise — audio stays off the wire by construction
-    /// (ADR-0026/0030).
+    /// Signal (audio) source likewise — audio stays off the wire by construction.
     Arg,
 }
 
@@ -87,7 +86,7 @@ impl core::fmt::Display for PortType {
     }
 }
 
-/// Metadata for a vocab **enum** port (ADR-0030): the closed, ordered set of named choices an
+/// Metadata for a vocab **enum** port: the closed, ordered set of named choices an
 /// author may pick, the unwired default, and a type-erased resolver — all single-sourced from the
 /// type's `#[derive(ArgValue)]` via `T::enum_meta(name)`, so the descriptor and the type cannot
 /// drift.
@@ -158,7 +157,7 @@ impl EnumMeta {
     }
 
     /// The wire **symbol** for a concrete enum [`Arg`](crate::message::Arg) — the inverse of
-    /// [`resolve_arg`](Self::resolve_arg), for the save path (ADR-0035). Matches by `Copy`-normalized
+    /// [`resolve_arg`](Self::resolve_arg), for the save path. Matches by `Copy`-normalized
     /// equality against each variant; `None` if `arg` is not one of this enum's variants. Cold.
     pub fn symbol_of(&self, arg: &crate::message::Arg) -> Option<&'static str> {
         (0..self.variants.len())
@@ -173,10 +172,10 @@ impl EnumMeta {
 
 /// A named input or output port.
 ///
-/// `ty` is the sole axis (ADR-0030): the port's [`Arg`](crate::message::Arg) type says what it
+/// `ty` is the sole axis: the port's [`Arg`](crate::message::Arg) type says what it
 /// carries; delivery and read-style follow from that plus the read verb. `meta` is `Some` only for
 /// a scalar [`F32`](PortType::F32) control input that owns its unwired default and is materialized
-/// from a latched scalar (ADR-0030). A [`Buffer`](PortType::F32Buffer) audio input and vocab ports
+/// from a latched scalar. A [`Buffer`](PortType::F32Buffer) audio input and vocab ports
 /// leave `meta` `None`. A vocab **enum** carries its [`EnumMeta`] inside its
 /// [`PortType::Vocab`] (reach it via [`enum_meta`](Self::enum_meta)).
 #[derive(Debug, Clone)]
@@ -198,7 +197,7 @@ impl Port {
         }
     }
 
-    /// A signal port that *also* carries a scalar default + knob range (ADR-0031, decision (a)).
+    /// A signal port that *also* carries a scalar default + knob range.
     /// Classifies [`Signal`](crate::plan::PortKind::Signal) — so a Signal source (LFO / envelope)
     /// wires straight in with no converter — yet when unwired or knob-set it still materializes a
     /// per-sample buffer ZOH from `meta.default`, exactly like [`f32`](Self::f32). The form a
@@ -247,7 +246,7 @@ impl Port {
         Self::vocab(name, "Harmony", false)
     }
 
-    /// A scalar [`F32`](PortType::F32) control input (ADR-0030): one input declared once, carrying
+    /// A scalar [`F32`](PortType::F32) control input: one input declared once, carrying
     /// its own unwired default in `meta`. When unwired the engine ZOH-materializes a per-sample
     /// buffer from the latched default (writing mid-block changes at their frame); when wired into
     /// a buffer-consuming op the source materializes likewise. Replaces the legacy "signal port +
@@ -260,7 +259,7 @@ impl Port {
         }
     }
 
-    /// A bounded scalar **integer** port (ADR-0035) carrying its range + default in [`I32Meta`].
+    /// A bounded scalar **integer** port carrying its range + default in [`I32Meta`].
     /// Today the form a plan-time [`Constant`](Descriptor::constants) count takes (the voicer's
     /// `voices` pool size); a settable integer whose value rides the wire as [`Arg::I32`].
     /// Parallel to [`f32`](Self::f32): the port owns its name, the meta is nameless (#213).
@@ -272,7 +271,7 @@ impl Port {
         }
     }
 
-    /// A vocab **enum** input (ADR-0030): a held, live-switchable named choice (snap `dir`, osc
+    /// A vocab **enum** input: a held, live-switchable named choice (snap `dir`, osc
     /// `waveform`). Build `meta` from the type via `T::enum_meta(name)` so it cannot drift. An
     /// enum change rides the message wire as a block-sliced discrete update.
     pub fn enumerated(meta: EnumMeta) -> Self {
@@ -305,7 +304,7 @@ impl Port {
     }
 
     /// Coerce an author literal [`Arg`](crate::message::Arg) to this port's normalized latch value
-    /// (ADR-0035) — the single type-aware seam every authoring path funnels through. A scalar
+    /// — the single type-aware seam every authoring path funnels through. A scalar
     /// [`F32`](PortType::F32) control clamps to its [`F32Meta`] range; a vocab **enum** resolves a
     /// symbol / index / concrete variant to its `Copy`-normalized `Arg`. `None` when this port takes
     /// no settable literal (a bare audio buffer, a `Note` stream) or the literal does not resolve.
@@ -330,7 +329,7 @@ impl Port {
 
 /// A declared **resource slot**: external data (a sample) a node depends on, named so the
 /// loader knows which nodes need a ref, the format can validate the node's `sample` field,
-/// and the schema / AI-grounding can express it (ADR-0016). Distinct from params (which are
+/// and the schema / AI-grounding can express it. Distinct from params (which are
 /// `f32`) and ports (which carry edges) — a resource is decoded once and bound out-of-band
 /// via [`Operator::bind_resources`](crate::operator::Operator::bind_resources).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -351,13 +350,13 @@ pub struct Descriptor {
     pub type_name: &'static str,
     pub inputs: Vec<Port>,
     pub outputs: Vec<Port>,
-    /// Instantiate-time **`Constant`** ports (ADR-0035): plan-time config that, if changed, rebuilds
+    /// Instantiate-time **`Constant`** ports: plan-time config that, if changed, rebuilds
     /// the graph (e.g. the voicer's `voices` pool size). Each is an *immutable* [`Port`] — same type +
     /// meta as a runtime input, but it carries no edge/buffer and the loader routes it to the patch's
     /// `config` block, never `inputs`. Empty for the common operator. Runtime vs plan-time is which
     /// list a port lives in: [`inputs`](Self::inputs) (runtime) or here (plan-time).
     pub constants: Vec<Port>,
-    /// Declared resource slots (ADR-0016) — external data this operator binds out-of-band.
+    /// Declared resource slots — external data this operator binds out-of-band.
     /// Empty for every operator that is a pure function of inputs + edges (all but the
     /// sample player today).
     pub resources: Vec<ResourceSlot>,
@@ -369,7 +368,7 @@ impl Descriptor {
         self.constants.iter().position(|p| p.name == name)
     }
 
-    /// The [`Constant`](Self::constants) port named `name` (ADR-0035) — instantiate-time config the
+    /// The [`Constant`](Self::constants) port named `name` — instantiate-time config the
     /// loader routes to the patch's `config` block, not `inputs`. `None` if `name` is not a constant.
     pub fn constant(&self, name: &str) -> Option<&Port> {
         self.constants.iter().find(|p| p.name == name)
@@ -381,7 +380,7 @@ impl Descriptor {
     }
 
     /// Resolve a [`Constant`](Self::constants) by `name` and [`coerce`](Port::coerce) `raw` to its
-    /// stored [`Arg`](crate::message::Arg) (ADR-0035) — the constant-side dispatch behind
+    /// stored [`Arg`](crate::message::Arg) — the constant-side dispatch behind
     /// [`Graph::set_constant`](crate::graph::Graph::set_constant). `None` if `name` is not a constant
     /// or `raw` does not resolve to its type.
     pub fn coerce_constant(
@@ -396,12 +395,12 @@ impl Descriptor {
             .and_then(|(i, p)| p.coerce(raw).map(|a| (i, a)))
     }
 
-    /// Whether this operator declares a resource slot of the given name (ADR-0016).
+    /// Whether this operator declares a resource slot of the given name.
     pub fn has_resource(&self, name: &str) -> bool {
         self.resources.iter().any(|r| r.name == name)
     }
 
-    /// Index + metadata of a scalar [`F32`](PortType::F32) control input named `name` (ADR-0030),
+    /// Index + metadata of a scalar [`F32`](PortType::F32) control input named `name`,
     /// for routing an incoming `/node/<name> v` message to its latch/materialize buffer instead of
     /// a param slot. `None` for buffer inputs (no `meta`) and non-inputs.
     pub fn materialized_input(&self, name: &str) -> Option<(usize, &F32Meta)> {
@@ -412,7 +411,7 @@ impl Descriptor {
             .and_then(|(i, p)| p.meta.as_ref().map(|m| (i, m)))
     }
 
-    /// Every input an author may set as a **numeric literal** (ADR-0030): each scalar
+    /// Every input an author may set as a **numeric literal**: each scalar
     /// [`F32`](PortType::F32) control input, paired with its [`F32Meta`]. The
     /// CLI `describe` surfaces these alongside the real params (the old "signal port +
     /// same-named unwired-default param" is now one input), so reading them from this single
@@ -423,7 +422,7 @@ impl Descriptor {
             .filter_map(|p| p.meta.as_ref().map(|m| (p.name, m)))
     }
 
-    /// Index + metadata of a vocab **enum** input named `name` (ADR-0030), for resolving a
+    /// Index + metadata of a vocab **enum** input named `name`, for resolving a
     /// `/node/<name> "Up"` symbol (or fallback index) to its held variant. `None` for non-enum
     /// inputs and non-inputs.
     pub fn enum_input(&self, name: &str) -> Option<(usize, &EnumMeta)> {
@@ -435,7 +434,7 @@ impl Descriptor {
     }
 
     /// Resolve a settable input by `name` and [`coerce`](Port::coerce) `raw` to its latch
-    /// [`Arg`](crate::message::Arg) (ADR-0035) — the input-side dispatch behind
+    /// [`Arg`](crate::message::Arg) — the input-side dispatch behind
     /// [`Graph::set_value`](crate::graph::Graph::set_value). `None` if `name` is not a settable input
     /// or `raw` does not resolve to that input's type.
     pub fn coerce_input(

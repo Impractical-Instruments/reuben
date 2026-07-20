@@ -1,9 +1,8 @@
-//! Instrument format — the JSON canonical document (ADR-0004, ADR-0028; **v2**, ADR-0038;
-//! **v3**, ADR-0043).
+//! Instrument format — the JSON canonical document (**v2**, **v3**).
 //!
 //! An instrument is plain data: a list of operator `nodes`, each carrying one `inputs` map
-//! (ADR-0028) and an optional `config` block, plus an `interface` block of named boundary
-//! **pipes** (ADR-0038). A node's `inputs` entry is either a **literal** (a number, or an
+//! and an optional `config` block, plus an `interface` block of named boundary
+//! **pipes**. A node's `inputs` entry is either a **literal** (a number, or an
 //! `Enum` symbol like `"Hp"`) or a **wire-ref** to another node's output
 //! (`{ "from": "/osc.audio" }`, or `{ "from": "/osc" }` when the source has a single output —
 //! an interface input pipe is such a source: `{ "from": "/in" }`). `config` carries
@@ -12,7 +11,7 @@
 //! anonymous `outputs` block migrates into them at parse. Ports are referenced by **name**
 //! (from the operator's [`Descriptor`](crate::descriptor::Descriptor)), not by brittle index.
 //! Optional `doc` fields carry human/agent notes. Validity is defined by the loader itself
-//! (ADR-0020): [`load`] is the single authority on what a legal document is.
+//!: [`load`] is the single authority on what a legal document is.
 //!
 //! [`load`] turns JSON into a [`Graph`] (resolving types via a [`Registry`]);
 //! [`NormalizedDoc::from_graph`] goes the other way. Loading is an authoring step, not a realtime
@@ -36,10 +35,10 @@ use crate::plan::PortKind;
 use crate::registry::Registry;
 use crate::resources::{ResolvedRefs, ResourceResolver, ResourceStore, SampleBuffer, SampleId};
 
-/// The document format version this engine reads and writes (ADR-0036). **v2** (ADR-0038): the
+/// The document format version this engine reads and writes. **v2**: the
 /// `interface` direction flip — inputs/outputs are named pipes; the target-pointing entry form
 /// and the top-level anonymous `outputs` block are v1-only, auto-migrated at parse. **v3**
-/// (ADR-0043): presentation decouples from the instrument — the per-node `control` block and
+///: presentation decouples from the instrument — the per-node `control` block and
 /// `label`/`widget` on interface pipes retire; the loader drops leftovers with a
 /// [`LoadWarning`] naming each (ignore-with-warning, never fatal).
 pub const FORMAT_VERSION: u32 = 3;
@@ -59,13 +58,13 @@ pub const SCAFFOLD_DEFAULT_NAME: &str = "untitled";
 /// first-creation into the reshape-from-template path that already works: the model edits this
 /// document and swaps it, instead of guessing the required shape.
 ///
-/// The emitted document is the minimal one every door single-sources here (ADR-0048 §1 roster,
+/// The emitted document is the minimal one every door single-sources here (roster,
 /// [`crate::tools`]): the current [`FORMAT_VERSION`], the required `instrument` name, and an empty
 /// `nodes` list — `{ "format_version": 3, "instrument": <name>, "nodes": [] }`. Empty `nodes` is
 /// valid (no registry needed to build it); every other field is optional and omitted. Built by
 /// serializing an [`InstrumentDoc`] so the field spelling can only ever match the real serde
 /// contract — the round-trip through `validate` is asserted `ok` in the introspect tests. Returns
-/// the document **by value**; writing it to disk stays a native-only concern (ADR-0049).
+/// the document **by value**; writing it to disk stays a native-only concern.
 pub fn scaffold_instrument(name: Option<&str>) -> serde_json::Value {
     let doc = InstrumentDoc {
         format_version: FORMAT_VERSION,
@@ -84,7 +83,7 @@ pub fn scaffold_instrument(name: Option<&str>) -> serde_json::Value {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InstrumentDoc {
-    /// Document format version (ADR-0036). Absent means 1 — every document written before
+    /// Document format version. Absent means 1 — every document written before
     /// versioning is a valid v1 — and saving always writes the current version. Additive
     /// format changes (a new optional field) never bump it; a breaking shape change bumps it
     /// and ships a parse-time migration. A document **newer** than the engine understands is
@@ -97,29 +96,29 @@ pub struct InstrumentDoc {
     /// Optional note for humans and agents.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
-    /// Decoded-resource table (ADR-0016): logical id → source (a file path today). A node
+    /// Decoded-resource table: logical id → source (a file path today). A node
     /// references a resource by id via its `sample` field; the loader resolves+decodes each
     /// referenced id once (dedup) into the [`ResourceStore`]. Entries no node uses are
     /// ignored.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub resources: BTreeMap<String, String>,
-    /// Engine-honored I/O boundary as named **pipes** (ADR-0032 §1, reshaped by ADR-0038):
+    /// Engine-honored I/O boundary as named **pipes**:
     /// each `inputs` entry declares its type and mints an address internal nodes consume from;
     /// each `outputs` entry is fed from an internal port and — when Signal — is a master tap.
     /// A voice patch declares this so its host Voicer can drive its `freq`/`gate` pipes and tap
-    /// its `audio`/`active`. Distinct from a node's `control` (ADR-0018), which is opaque,
+    /// its `audio`/`active`. Distinct from a node's `control`, which is opaque,
     /// engine-ignored UI metadata.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub interface: Option<InterfaceDoc>,
     pub nodes: Vec<NodeDoc>,
-    /// **v1-only** (ADR-0038 §4): the anonymous top-level master-tap list. Migration moves its
+    /// **v1-only**: the anonymous top-level master-tap list. Migration moves its
     /// entries into `interface.outputs` under generated names; a v2 document carrying one is a
     /// load error, and save never writes it (empty after migration).
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub outputs: Vec<PortRef>,
-    /// What the v1→v2 migration could not carry over (ADR-0038 §5) — parse-session state, never
+    /// What the v1→v2 migration could not carry over — parse-session state, never
     /// serialized: [`build`](NormalizedDoc::build) surfaces the warnings and registers the dark names so
-    /// references to a dropped entry degrade instead of failing (ADR-0016). Empty on every
+    /// references to a dropped entry degrade instead of failing. Empty on every
     /// native-v2 or cleanly migrated document.
     #[serde(skip)]
     pub(crate) migration: MigrationNotes,
@@ -134,7 +133,7 @@ pub(crate) struct MigrationNotes {
     /// v1 `interface.inputs` names migration dropped (unexpressible in the pipe model): recorded
     /// as **dark** boundary inputs so a host wire onto the name drops with a warning — the same
     /// transitive degradation an unavailable nested target gets — instead of a fatal
-    /// `UnknownInput` (ADR-0036 §4: a legal v1 document keeps loading).
+    /// `UnknownInput` (a legal v1 document keeps loading).
     dark_inputs: BTreeSet<String>,
 }
 
@@ -148,7 +147,7 @@ impl PartialEq for MigrationNotes {
     }
 }
 
-/// A document's `interface` block — the named I/O boundary as **pipes** (ADR-0038 §2, format
+/// A document's `interface` block — the named I/O boundary as **pipes** (format
 /// v2). Every `inputs` entry is an [`InputPipeDoc`]: it declares its `Arg` type and **mints an
 /// address in the flat node namespace** (`in` → `/in`) that internal nodes consume with ordinary
 /// wire-refs (`{"from": "/in"}`, fan-out free). Every `outputs` entry is an [`OutputPipeDoc`]
@@ -168,7 +167,7 @@ pub struct InterfaceDoc {
 /// One `interface` entry. The v2 forms are [`Pipe`](Self::Pipe) (an input pipe, `{"type": …}`)
 /// and [`Feed`](Self::Feed) (an output pipe, `{"from": …}`). The v1 target-pointing forms —
 /// [`Target`](Self::Target) (a bare `"/node.port"` string) and [`Detailed`](Self::Detailed)
-/// (`{"target": …}` plus presentational overrides) — parse so ADR-0036 §4 migration can rewrite
+/// (`{"target": …}` plus presentational overrides) — parse so migration can rewrite
 /// them; the loader rejects them un-migrated. Deserialization dispatches on the JSON shape and
 /// the object's discriminator key (`type` / `from` / `target`) by hand, so a malformed object
 /// keeps pointed field-level serde errors ("unknown field `lable`") instead of collapsing into
@@ -176,9 +175,9 @@ pub struct InterfaceDoc {
 #[derive(Debug, Clone, PartialEq, Serialize)]
 #[serde(untagged)]
 pub enum InterfaceEntry {
-    /// A v2 **input pipe**: declared type + optional channel binding + metadata (ADR-0038 §2).
+    /// A v2 **input pipe**: declared type + optional channel binding + metadata.
     Pipe(InputPipeDoc),
-    /// A v2 **output pipe**: fed from an internal port, optional channel binding (ADR-0038 §2).
+    /// A v2 **output pipe**: fed from an internal port, optional channel binding.
     Feed(OutputPipeDoc),
     /// v1-only: the bare internal `/node.port` target (migrated at parse).
     Target(String),
@@ -214,24 +213,24 @@ impl From<CurveDoc> for Curve {
     }
 }
 
-/// One v2 `interface.inputs` entry (ADR-0038 §2): a named **input pipe**. There is no inner
+/// One v2 `interface.inputs` entry: a named **input pipe**. There is no inner
 /// port to inherit from — the entry **declares its `Arg` type** (`"f32_buffer"`, `"f32"`,
 /// `"i32"`, `"note"`, `"harmony"`, or a vocab enum name like `"FilterMode"`), and the declared type is
 /// enforced against every consumer by the existing pass-2 wire check. A numeric pipe may carry
 /// its own `default`/`min`/`max`/`curve` — **engine-enforced** on the pipe's port (literals and
 /// external messages clamp to it; an unwired signal pipe materializes `default`, or silence when
-/// bare). A **signal** pipe may bind a logical input `channel` (ADR-0038 §3), honored only when
+/// bare). A **signal** pipe may bind a logical input `channel`, honored only when
 /// the graph is played at top level; `channel` on a message pipe is a load error.
 /// `label`/`unit`/`widget` are presentational (describe / control-surface generation).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct InputPipeDoc {
     /// The declared `Arg` type: `"f32_buffer"` (Signal), `"f32"` (held Value), `"i32"` (held
-    /// integer Value, ADR-0061), `"note"` (Event), `"harmony"` (held Value), or a shared vocab
+    /// integer Value), `"note"` (Event), `"harmony"` (held Value), or a shared vocab
     /// enum's type name (`"FilterMode"`).
     #[serde(rename = "type")]
     pub ty: String,
-    /// Logical input channel binding (ADR-0038 §3); signal pipes only, top-level-honored.
+    /// Logical input channel binding; signal pipes only, top-level-honored.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<usize>,
     /// Unwired/seed value: number for a numeric pipe, variant symbol for an enum pipe.
@@ -246,45 +245,45 @@ pub struct InputPipeDoc {
     /// Sweep-curve hint for a numeric pipe (`"lin"`/`"exp"`); defaults to linear.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub curve: Option<CurveDoc>,
-    /// Display unit, e.g. `"Hz"` — describes the *quantity* (ADR-0043 §2), so it stays on the
+    /// Display unit, e.g. `"Hz"` — describes the *quantity*, so it stays on the
     /// pipe and every surface inherits it (the engine enforces only the range).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
-    /// **Retired** (ADR-0043): pipe display names live in a surface doc now. Deserialize-only
+    /// **Retired**: pipe display names live in a surface doc now. Deserialize-only
     /// sink; the [`NormalizedDoc`] mint drains it into a
     /// [`LoadWarning::DeprecatedPipePresentation`] and save never writes it.
     #[serde(default, skip_serializing)]
     pub(crate) label: Option<String>,
-    /// **Retired** (ADR-0043): widget hints live in a surface doc now. See `label`.
+    /// **Retired**: widget hints live in a surface doc now. See `label`.
     #[serde(default, skip_serializing)]
     pub(crate) widget: Option<String>,
 }
 
-/// One v2 `interface.outputs` entry (ADR-0038 §2): a named **output pipe** fed from an internal
+/// One v2 `interface.outputs` entry: a named **output pipe** fed from an internal
 /// port. `from` is an ordinary wire-ref (`"/node.port"`, sole-output sugar allowed). A signal
-/// pipe may bind the logical master `channel` it feeds (omitted = today's broadcast meaning,
-/// ADR-0026); `channel` on a message-typed pipe is a load error. `label`/`unit`/`widget` are
-/// presentational; `min`/`max` presentational overrides obey the ADR-0034 §4 subset law against
+/// pipe may bind the logical master `channel` it feeds (omitted = today's broadcast meaning);
+/// `channel` on a message-typed pipe is a load error. `label`/`unit`/`widget` are
+/// presentational; `min`/`max` presentational overrides obey the subset law against
 /// the feeding port's engine-enforced range.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct OutputPipeDoc {
     /// The internal `/node.port` (or sole-output `/node`) wire-ref feeding this pipe.
     pub from: String,
-    /// Logical master output channel this pipe feeds (ADR-0026/0038); omitted = broadcast.
+    /// Logical master output channel this pipe feeds; omitted = broadcast.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub channel: Option<usize>,
-    /// **Retired** (ADR-0043): pipe display names live in a surface doc now. Deserialize-only
+    /// **Retired**: pipe display names live in a surface doc now. Deserialize-only
     /// sink; the [`NormalizedDoc`] mint drains it into a
     /// [`LoadWarning::DeprecatedPipePresentation`] and save never writes it.
     #[serde(default, skip_serializing)]
     pub(crate) label: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub unit: Option<String>,
-    /// **Retired** (ADR-0043): widget hints live in a surface doc now. See `label`.
+    /// **Retired**: widget hints live in a surface doc now. See `label`.
     #[serde(default, skip_serializing)]
     pub(crate) widget: Option<String>,
-    /// Presentational range-minimum override (subset of the feeding port's range, ADR-0034 §4).
+    /// Presentational range-minimum override (subset of the feeding port's range).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min: Option<f64>,
     /// Presentational range-maximum override (see `min`).
@@ -292,7 +291,7 @@ pub struct OutputPipeDoc {
     pub max: Option<f64>,
 }
 
-/// The v1 object entry form (ADR-0034 §4, superseded by ADR-0038): the internal target plus
+/// The v1 object entry form: the internal target plus
 /// presentational overrides. Parses so migration can rewrite it into the pipe forms; never
 /// written back (save writes v2). `deny_unknown_fields` keeps its field-level errors pointed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -400,41 +399,41 @@ pub struct NodeDoc {
     pub address: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub doc: Option<String>,
-    /// Instantiate-time **`Constant`s** (ADR-0028) by name, e.g. `{ "voices": 8 }`. A name here
+    /// Instantiate-time **`Constant`s** by name, e.g. `{ "voices": 8 }`. A name here
     /// must be a declared [`Constant`](Descriptor::constants); a runtime input set here, or a
     /// constant set in `inputs`, is a load error.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub config: BTreeMap<String, ConfigValue>,
-    /// One value per wired/settable input (ADR-0028): a **literal** (a number, or an `Enum` symbol
+    /// One value per wired/settable input: a **literal** (a number, or an `Enum` symbol
     /// like `"Hp"`) or a **wire-ref** (`{ "from": "/node.port" }`). Replaces the old `params` map
     /// and top-level `connections` array — a `Float` input and the wire that drives it now target
     /// the same slot. Omitted inputs use the descriptor default.
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     pub inputs: BTreeMap<String, InputValue>,
-    /// Resource reference (ADR-0016): a logical id into the document's `resources` table.
+    /// Resource reference: a logical id into the document's `resources` table.
     /// Only valid on an operator whose descriptor declares a `sample` resource slot (the
     /// sample player); rejected elsewhere as a structural [`LoadError::UnknownResource`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub sample: Option<String>,
-    /// Instrument-resource reference (ADR-0032 §2): a logical id into the document's `resources`
+    /// Instrument-resource reference: a logical id into the document's `resources`
     /// table whose source is a **voice patch** (a standalone instrument JSON). Only valid on an
     /// operator declaring a `voice` resource slot (the Voicer); rejected elsewhere as a structural
     /// [`LoadError::UnknownResource`]. The loader builds the patch `voices` times and binds the
     /// graphs via [`Operator::bind_voices`](crate::operator::Operator::bind_voices).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub voice: Option<String>,
-    /// Nested-instrument reference (ADR-0034 §1): a logical id into the document's `resources` table
+    /// Nested-instrument reference: a logical id into the document's `resources` table
     /// whose source is another instrument patch. Only valid on the built-in `subpatch` operator
     /// (which declares a `patch` resource slot); rejected elsewhere as a structural
     /// [`LoadError::UnknownResource`]. At build the referenced patch is loaded recursively and
-    /// **inlined** (ADR-0034 §2, nesting P4): its nodes are spliced into this graph under this
+    /// **inlined** (nesting P4): its nodes are spliced into this graph under this
     /// node's address prefix, the boundary face is synthesized from its `interface`, and the
     /// `subpatch` node dissolves — it never reaches the built [`Graph`]. The reference survives in
     /// the *document* only — the document is the save source of truth, and `from_graph` of a
-    /// built graph is the explicit flatten/export path (ADR-0036).
+    /// built graph is the explicit flatten/export path.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub patch: Option<String>,
-    /// **Retired** (ADR-0018, superseded by ADR-0043): the v2 per-node `control` block.
+    /// **Retired**: the v2 per-node `control` block.
     /// Deserialize-only sink so a v2 document (or a v3 one still carrying leftovers) parses
     /// under `deny_unknown_fields`; the [`NormalizedDoc`] mint drains it into a
     /// [`LoadWarning::DeprecatedControlBlock`] and save never writes it — presentation lives
@@ -444,7 +443,7 @@ pub struct NodeDoc {
 }
 
 impl NodeDoc {
-    /// This node's resource references paired with the slot each targets (ADR-0016/0032/0034): the
+    /// This node's resource references paired with the slot each targets: the
     /// typed `sample`/`voice`/`patch` fields surfaced as one `(slot, ref)` list. The single place the
     /// format maps its fields to descriptor [`ResourceSlot`](crate::descriptor::ResourceSlot)
     /// names, so generic resource validation iterates this rather than enumerating known slots arm
@@ -458,7 +457,7 @@ impl NodeDoc {
     }
 }
 
-/// One [`NodeDoc::inputs`] value (ADR-0028): a wire-ref, an `Enum` symbol, or a numeric literal.
+/// One [`NodeDoc::inputs`] value: a wire-ref, an `Enum` symbol, or a numeric literal.
 ///
 /// Untagged: a JSON object `{ "from": ... }` is a [`Wire`](Self::Wire); a JSON string is a
 /// [`Symbol`](Self::Symbol) (an `Enum` variant name); a JSON number is a [`Number`](Self::Number)
@@ -469,13 +468,13 @@ pub enum InputValue {
     /// A wire-ref to a source output: `"/node.port"`, or `"/node"` when the source has exactly
     /// one output (the sole-output sugar).
     Wire { from: String },
-    /// An `Enum` input symbol, e.g. `"Hp"` (ADR-0028 enum-over-the-wire, symbol primary).
+    /// An `Enum` input symbol, e.g. `"Hp"` (enum-over-the-wire, symbol primary).
     Symbol(String),
     /// A numeric literal — a `Float` input/param value, or an `Enum` variant index (fallback form).
     Number(f64),
 }
 
-/// One [`NodeDoc::config`] value (ADR-0028): an instantiate-time `Constant`.
+/// One [`NodeDoc::config`] value: an instantiate-time `Constant`.
 ///
 /// Untagged: a JSON number is a [`Number`](Self::Number) (an `Int` constant such as `voices`); a
 /// JSON string is a [`Symbol`](Self::Symbol) (an `Enum` constant, none today). Floats are accepted
@@ -489,13 +488,13 @@ pub enum ConfigValue {
     Symbol(String),
 }
 
-/// A reference to one node's port, by names. Used only in `outputs` (a master tap, ADR-0026);
+/// A reference to one node's port, by names. Used only in `outputs` (a master tap);
 /// node-to-node wiring lives in [`NodeDoc::inputs`] as a [`InputValue::Wire`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct PortRef {
     pub node: String,
     pub port: String,
-    /// Logical master channel this tap feeds (ADR-0026): `0` = first channel (left), `1` = second
+    /// Logical master channel this tap feeds: `0` = first channel (left), `1` = second
     /// (right), and so on. Omitted → broadcast to every channel (the historical mono fan; existing
     /// instruments are bit-identical).
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -509,7 +508,7 @@ pub enum LoadError {
     /// The JSON itself was malformed.
     Json(serde_json::Error),
     /// The document declares a `format_version` newer than this engine understands
-    /// (ADR-0036): its shape can't be trusted, so refusing beats misloading. Older versions
+    ///: its shape can't be trusted, so refusing beats misloading. Older versions
     /// migrate at parse; only the future is unreadable.
     UnsupportedVersion { found: u32, supported: u32 },
     /// A node names an operator type that isn't registered.
@@ -523,7 +522,7 @@ pub enum LoadError {
     /// A node has no input (port, settable param, or enum) with that name.
     UnknownInput { node: String, input: String },
     /// An `inputs` entry sets a value the descriptor can't read as that input — an `Enum` symbol on
-    /// a non-enum input, or a symbol/index that names no variant (ADR-0028: never snaps to default).
+    /// a non-enum input, or a symbol/index that names no variant (never snaps to default).
     BadInputValue {
         node: String,
         input: String,
@@ -532,18 +531,18 @@ pub enum LoadError {
     /// A `config` name is not a declared [`Constant`](Descriptor::constants).
     UnknownConfig { node: String, name: String },
     /// A `Constant` (e.g. `voices`) appears in `inputs` — it must live in `config`, since changing
-    /// it would rebuild the graph (ADR-0028).
+    /// it would rebuild the graph.
     ConstantInInputs { node: String, name: String },
     /// A wire-ref uses the sole-output sugar (`"/node"`) but the source has more than one output,
     /// so the intended port is ambiguous.
     AmbiguousWire { node: String, reference: String },
     /// A wire joins two ports of incompatible [`PortType`]s (e.g. `Note` → `Buffer`) — the illegal
-    /// wiring (ADR-0030). Equal types are fine, an `F32` source into a `Buffer` port is the one
-    /// implicit ZOH bridge (ADR-0031 — the reverse, `Buffer` → `F32`, is Signal→Value and rejected:
+    /// wiring. Equal types are fine, an `F32` source into a `Buffer` port is the one
+    /// implicit ZOH bridge (the reverse, `Buffer` → `F32`, is Signal→Value and rejected:
     /// no implicit sample-and-hold), and an [`Arg`](PortType::Arg) pass-through input takes any
     /// source with an OSC form; everything else is rejected here. On a nested boundary wire,
     /// `from`/`to` name the **boundary** port (`/sub.audio`), never the prefixed internals
-    /// (ADR-0034 §5).
+    ///.
     TypeMismatch {
         from: String,
         from_type: Box<PortType>,
@@ -551,28 +550,28 @@ pub enum LoadError {
         to_type: Box<PortType>,
     },
     /// A node carries a `sample` reference but its operator declares no such resource slot
-    /// (ADR-0016) — a structural misuse, fatal like the other wiring errors.
+    /// — a structural misuse, fatal like the other wiring errors.
     UnknownResource { node: String, slot: String },
     /// An instrument-resource `source` is referenced again while it is still being loaded — a
-    /// `voice`/`patch` chain that (directly or transitively) contains itself (ADR-0032/0034).
+    /// `voice`/`patch` chain that (directly or transitively) contains itself.
     /// Loading it would recurse forever, so the cycle is a structural error, fatal like the
     /// other wiring errors.
     CyclicResource { source: String },
     /// An `interface.outputs` entry's presentational range override lies about what the engine
-    /// enforces (ADR-0034 §4): a range override on a port with no numeric range, a bound outside
+    /// enforces: a range override on a port with no numeric range, a bound outside
     /// the feeding port's engine-clamped range, or an inverted/empty advertised range.
     /// `describe` publishes these values as the boundary contract and no engine path reconciles
     /// them, so advertised must stay a subset of enforced — checked here at load, named by the
-    /// boundary port. (Input pipes own their range outright — ADR-0038 §2 — so this law now
+    /// boundary port. (Input pipes own their range outright, so this law now
     /// applies to outputs, and to v1 input entries during migration.)
     InterfaceOverride { name: String, reason: String },
-    /// An `interface` **pipe** entry is malformed (ADR-0038 §2/§3): an unknown declared type, a
+    /// An `interface` **pipe** entry is malformed: an unknown declared type, a
     /// `channel` on a message pipe, numeric metadata on a non-numeric pipe, an incoherent
     /// declared range/default, a v1 target-form entry surviving in a v2 document, or a v1 entry
     /// migration cannot express. Named by the boundary entry.
     InterfacePipe { name: String, reason: String },
     /// A v2 document carries the top-level anonymous `outputs` block, which is v1-only
-    /// (ADR-0038 §4): master taps are declared as `interface.outputs` pipes now.
+    ///: master taps are declared as `interface.outputs` pipes now.
     AnonymousOutputs,
 }
 
@@ -650,7 +649,7 @@ impl fmt::Display for LoadError {
             LoadError::AnonymousOutputs => write!(
                 f,
                 "the top-level anonymous `outputs` block is format v1 — declare named \
-                 `interface.outputs` pipes instead (ADR-0038)"
+                 `interface.outputs` pipes instead"
             ),
         }
     }
@@ -675,7 +674,7 @@ pub fn load(json: &str, registry: &Registry) -> Result<Graph, LoadError> {
     NormalizedDoc::from_json(json, registry, None)?.build(registry)
 }
 
-/// A non-fatal resource problem found at load (ADR-0016). The owning node still builds and
+/// A non-fatal resource problem found at load. The owning node still builds and
 /// binds to an empty buffer (so it plays silence); the boundary surfaces these to the user
 /// because they are authoring errors, just not crashing ones.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -696,8 +695,8 @@ pub enum LoadWarning {
         source: String,
         reason: String,
     },
-    /// A warning that arose while loading a **nested** instrument (a voice or subpatch child,
-    /// ADR-0032/0034), contextualized by the referencing parent node so provenance survives the
+    /// A warning that arose while loading a **nested** instrument (a voice or subpatch child),
+    /// contextualized by the referencing parent node so provenance survives the
     /// merge into the parent's warning list: warnings surface during the child's own load, while
     /// its addresses are still child-relative (inline prefixing happens after), and two
     /// same-shaped children would otherwise be indistinguishable. Nests recursively for deeper
@@ -712,26 +711,26 @@ pub enum LoadWarning {
     /// [`Interface::dark_inputs`](crate::graph::Interface)/`dark_outputs` so a consumer
     /// referencing it degrades the same way (wire dropped, this warning) instead of hitting a
     /// fatal `UnknownInput`/`UnknownPort` one level up — dark degradation stays **transitive**
-    /// (ADR-0016/0034).
+    ///.
     DarkInterfaceEntry {
         /// The external interface name that vanished.
         name: String,
         /// The internal reference it pointed at (`"/inner.freq"`).
         target: String,
     },
-    /// A `subpatch` node carries no `patch` reference at all (ADR-0034 §1) — an authoring
+    /// A `subpatch` node carries no `patch` reference at all — an authoring
     /// mistake, not an availability failure, but the node still dissolves dark so the
-    /// instrument stays playable (ADR-0016). Warned rather than silent: pre-inline this shape
+    /// instrument stays playable. Warned rather than silent: pre-inline this shape
     /// failed loud, and silence through the nest would hide the typo.
     NoPatchRef { node: String },
     /// A nested child's **bare signal input pipe** (no declared default) is left unfed by the
     /// hosting node — neither a wire nor a literal lands on the boundary name — so the pipe
-    /// renders **silence** (ADR-0038 §3). Warned, never fatal: silence is honest, but a nest
+    /// renders **silence**. Warned, never fatal: silence is honest, but a nest
     /// whose audio input nobody wired is usually an authoring slip. A pipe with a declared
     /// default (a control) materializes that default unfed — normal knob behavior, no warning —
     /// and message pipes are silent-by-nature streams.
     UnwiredPipe { node: String, name: String },
-    /// The v1→v2 migration (ADR-0036 §4, ADR-0038 §5) could not carry part of the v1 document
+    /// The v1→v2 migration could not carry part of the v1 document
     /// into the pipe model faithfully — an entry whose target port type has no pipe form, an
     /// entry aliasing a target another entry already flipped, an entry whose target the child
     /// wires internally (v1's merge-legal state the flip cannot express), or a node renamed out
@@ -741,25 +740,25 @@ pub enum LoadWarning {
     /// interface entry (or node address) affected.
     Migration { name: String, detail: String },
     /// A **top-level** bare signal input pipe (no declared default) binds no logical input
-    /// channel (ADR-0038 §3). At top level nothing else can ever feed a signal pipe — there is
+    /// channel. At top level nothing else can ever feed a signal pipe — there is
     /// no parent edge, and audio does not cross the OSC boundary — so it renders **silence**.
-    /// Warned, never fatal (dark-degrade, ADR-0038 §7): the patch still plays, but a declared
+    /// Warned, never fatal (dark-degrade): the patch still plays, but a declared
     /// audio input nobody bound is usually an authoring slip. A pipe with a declared default
     /// is a control at rest (no warning); nested/hosted pipes get [`UnwiredPipe`](Self::UnwiredPipe)
     /// from their host instead.
     UnboundInputPipe { name: String },
     /// A **hosted voice** patch's input pipe binds a logical input channel, which is **inert**
-    /// when hosted (ADR-0038 §3): a pipe inside a nest is never a magic hardware connection —
+    /// when hosted: a pipe inside a nest is never a magic hardware connection —
     /// the host's edges feed a voice's pipes, and an unfed one renders silence. The binding
     /// still works when the same patch is played at top level, so this is a warning, not an
     /// error. Wrapped in [`Nested`](Self::Nested) with the hosting node.
     InertChannelBinding { name: String },
-    /// The node carried a retired v2 `control` block (ADR-0018, superseded by ADR-0043) — UI
+    /// The node carried a retired v2 `control` block — UI
     /// metadata the engine never read. Ignored, never fatal: sound is unaffected; presentation
     /// lives in a surface doc now. Re-saving the document strips it.
     DeprecatedControlBlock { node: String },
-    /// The interface entry carried retired pipe presentation — `label`/`widget` (ADR-0038 §2
-    /// as amended by ADR-0043). Ignored, never fatal: the pipe keeps its quantity contract
+    /// The interface entry carried retired pipe presentation — `label`/`widget`. Ignored,
+    /// never fatal: the pipe keeps its quantity contract
     /// (`type`/`default`/`min`/`max`/`curve`/`unit`); presentation lives in a surface doc now.
     /// Re-saving the document strips it. `field` names which retired field was dropped.
     DeprecatedPipePresentation { name: String, field: &'static str },
@@ -807,12 +806,12 @@ impl fmt::Display for LoadWarning {
             ),
             LoadWarning::DeprecatedControlBlock { node } => write!(
                 f,
-                "node {node:?}: dropped retired `control` block (ADR-0043) — presentation \
+                "node {node:?}: dropped retired `control` block — presentation \
                  lives in a surface doc; re-saving writes it away"
             ),
             LoadWarning::DeprecatedPipePresentation { name, field } => write!(
                 f,
-                "interface entry {name:?}: dropped retired `{field}` (ADR-0043) — pipe \
+                "interface entry {name:?}: dropped retired `{field}` — pipe \
                  presentation lives in a surface doc; re-saving writes it away"
             ),
         }
@@ -831,19 +830,19 @@ impl LoadWarning {
 
 /// The result of [`load_instrument`]: the built graph (resources bound) plus any non-fatal
 /// [`LoadWarning`]s. Core returns structured warnings; the boundary decides how to present
-/// them (ADR-0016).
+/// them.
 pub struct Loaded {
     pub graph: Graph,
     pub warnings: Vec<LoadWarning>,
 }
 
-/// Shared state threaded through the recursive nested-load passes (`voice`/`patch`,
-/// ADR-0032/0034), one per top-level load.
+/// Shared state threaded through the recursive nested-load passes (`voice`/`patch`),
+/// one per top-level load.
 #[derive(Default)]
 struct LoadCtx {
     /// The cycle-guard stack: instrument-resource sources currently being resolved,
     /// root-first, keyed by **canonical id** ([`ResourceResolver::canonical`]) so two spellings
-    /// of one source (`a.json` vs `./a.json`) are one identity (ADR-0034 §1). A chain that
+    /// of one source (`a.json` vs `./a.json`) are one identity. A chain that
     /// re-enters a source still on the stack is the fatal [`LoadError::CyclicResource`]
     /// instead of infinite recursion.
     loading: Vec<String>,
@@ -862,7 +861,7 @@ struct LoadCtx {
     docs: BTreeMap<String, NormalizedDoc>,
 }
 
-/// Parse, build, and **resolve + bind decoded resources** (ADR-0016) — the full authoring
+/// Parse, build, and **resolve + bind decoded resources** — the full authoring
 /// load path. Structural/wiring problems are fatal ([`LoadError`]); resource problems are
 /// non-fatal: a missing id or a resolve/decode failure binds the node to an empty buffer
 /// (it plays silence) and is reported as a [`LoadWarning`]. Each referenced id is resolved
@@ -879,7 +878,7 @@ pub fn load_instrument(
 /// caller that needs both the document (e.g. for its `interface` overrides,
 /// [`crate::describe::describe_boundary`]) and the built graph, without re-parsing the JSON.
 /// Takes [`NormalizedDoc`] by type: the version gate and migration ran exactly once at the
-/// mint (ADR-0047), so this path has nothing to re-check — a host holding a raw
+/// mint, so this path has nothing to re-check — a host holding a raw
 /// [`InstrumentDoc`] enters via [`NormalizedDoc::from_doc`].
 pub fn load_instrument_doc(
     doc: &NormalizedDoc,
@@ -910,7 +909,7 @@ fn load_instrument_guarded(
 /// [`load_instrument_guarded`] from an already-minted document — the subpatch pass parses a
 /// shared child source once and loads it per referencing node through this. The old defensive
 /// re-normalize that lived here is gone: [`NormalizedDoc`] *is* the proof the gate + migration
-/// already ran (ADR-0047), so a gate-bypassing document cannot reach this path by construction.
+/// already ran, so a gate-bypassing document cannot reach this path by construction.
 fn load_doc_guarded(
     doc: &NormalizedDoc,
     registry: &Registry,
@@ -918,10 +917,10 @@ fn load_doc_guarded(
     ctx: &mut LoadCtx,
     referrer: Option<&str>,
 ) -> Result<Loaded, LoadError> {
-    // Build with the resolver threaded in (ADR-0034's resolution-ordering note): a `subpatch`
+    // Build with the resolver threaded in (the resolution-ordering note): a `subpatch`
     // node's boundary face only exists once its child is resolved, and it must exist *during*
-    // build pass 2 so the one wire type-checker covers boundary wires (§5) — so nested references
-    // resolve and inline inside `build`, earlier than the ADR-0016 pipeline resolves `sample`/
+    // build pass 2 so the one wire type-checker covers boundary wires — so nested references
+    // resolve and inline inside `build`, earlier than the pipeline resolves `sample`/
     // `voice` refs below.
     let Loaded {
         mut graph,
@@ -943,7 +942,7 @@ fn load_doc_guarded(
             None => Arc::new(SampleBuffer::empty()),
             Some(source) => {
                 // Canonical id is the cache key, so one sample spelled two ways still
-                // fetches + decodes once (ADR-0034 §1's identity rule, applied to samples).
+                // fetches + decodes once (the identity rule, applied to samples).
                 let canon = resolver.canonical(source, referrer);
                 match ctx.samples.get(&canon) {
                     Some(shared) => shared.clone(),
@@ -983,7 +982,7 @@ fn load_doc_guarded(
         }
     }
 
-    // Instrument-resource pass (ADR-0032 §2): a node with a `voice` ref hosts N copies of a voice
+    // Instrument-resource pass: a node with a `voice` ref hosts N copies of a voice
     // patch. Build the patch `voices` times (each an independent Graph — `Graph` is not `Clone`, and
     // `Plan::instantiate` consumes one Graph per voice) and bind them; the Voicer turns them into
     // per-voice sub-plans at `on_instantiate`. Structural errors in the patch are fatal; a missing id
@@ -1014,7 +1013,7 @@ fn load_doc_guarded(
                         // A hosted voice's **bare signal** input pipe is never fed: the Voicer
                         // drives the message pipes it knows by name (`freq`/`gate`) and nothing
                         // else reaches a hosted boundary, so the pipe renders silence — warn,
-                        // exactly as the subpatch face does (ADR-0038 §3 "nested/hosted").
+                        // exactly as the subpatch face does ("nested/hosted").
                         // A channel-bound bare pipe warns here *and* `InertChannelBinding`
                         // below, matching the subpatch path: the two warnings say different
                         // things (this pipe is silent; that binding is inert).
@@ -1027,7 +1026,7 @@ fn load_doc_guarded(
                                 });
                             }
                         }
-                        // A hosted voice's channel bindings are inert (ADR-0038 §3): the
+                        // A hosted voice's channel bindings are inert: the
                         // Voicer clears them before instantiating the sub-plan, so a bound
                         // pipe the host doesn't drive renders silence. Say so at load, once.
                         for pipe in loaded.graph.interface.input_channels.keys() {
@@ -1037,8 +1036,8 @@ fn load_doc_guarded(
                             );
                         }
                     }
-                    // Hosted inertness is enforced *here*, once, for every copy (ADR-0038
-                    // §3): clearing a hosted voice graph's channel bindings before any host
+                    // Hosted inertness is enforced *here*, once, for every copy: clearing a hosted voice graph's channel bindings before
+                    // any host
                     // sees it means `Plan::instantiate` derives no input-master plumbing for
                     // voice sub-plans — no host operator has to remember caller-side
                     // mutation, and the pipes stay on the message-fed materialize path the
@@ -1057,7 +1056,7 @@ fn load_doc_guarded(
 
 /// Look up a node's resource `id` in the document's `resources` table — the shared first step of
 /// every resource pass (`sample`/`voice`/`patch`). A miss is the non-fatal
-/// [`LoadWarning::MissingResource`] (ADR-0016), pushed here so the policy lives in one place;
+/// [`LoadWarning::MissingResource`], pushed here so the policy lives in one place;
 /// each caller picks its degradation on `None` (empty buffer, silent voices, no sub-graph).
 fn lookup_source<'a>(
     doc: &'a InstrumentDoc,
@@ -1077,13 +1076,13 @@ fn lookup_source<'a>(
     source
 }
 
-/// The voice-pool size for a Voicer node (ADR-0032): the node's **stored** value for the
+/// The voice-pool size for a Voicer node: the node's **stored** value for the
 /// operator's instantiate-time [`Constant`](Descriptor::constants) (the voicer's `voices` pool
 /// size), else that Constant's descriptor default, floored to 1. Reads the coerce-clamped
 /// `constant_overrides` entry the config pass stored through the single coercion seam
 /// ([`Graph::set_constant`] → [`Port::coerce`]) rather than re-reading the raw config number, so
 /// the pool this pass builds always agrees with the constant a save/reload round-trips
-/// (ADR-0035) — an out-of-range `voices` can't build one pool size and store another. Reads the
+/// — an out-of-range `voices` can't build one pool size and store another. Reads the
 /// generic first Constant slot rather than a hardcoded `"voices"` name, so the same machinery
 /// serves any future pool-sized operator. An operator with no Constant has a pool of one.
 fn voice_count(node: &Node) -> usize {
@@ -1107,16 +1106,16 @@ fn voice_count(node: &Node) -> usize {
     stored.max(1) as usize
 }
 
-/// Resolve an **instrument-kind resource** (ADR-0032 §2): a patch `source` (a path) is read to its
+/// Resolve an **instrument-kind resource**: a patch `source` (a path) is read to its
 /// JSON via [`ResourceResolver::resolve_text`], then built into a sub-[`Graph`] through the full
 /// [`load_instrument`] path — so the sub-patch's own `sample` resources resolve recursively and its
 /// `interface` boundary is resolved for the host to bind. Structural/wiring problems in the patch
-/// are fatal ([`LoadError`]) — including JSON that fails to parse: the ADR-0016 split lands at the
-/// fetch seam (ADR-0034 §1), so only *availability* degrades. A `resolve_text` failure is
+/// are fatal ([`LoadError`]) — including JSON that fails to parse: the split lands at the
+/// fetch seam, so only *availability* degrades. A `resolve_text` failure is
 /// **non-fatal**: it yields an empty graph plus a [`LoadWarning::ResolveFailed`], so one missing
 /// voice patch never crashes the host. A `source` that (directly or transitively) references itself is fatal
-/// ([`LoadError::CyclicResource`]) — the cycle guard that keeps recursive nesting (ADR-0034)
-/// from overflowing the stack. This is the net-new piece ADR-0032 needs — "a resource that is a
+/// ([`LoadError::CyclicResource`]) — the cycle guard that keeps recursive nesting
+/// from overflowing the stack. This is the net-new piece needed — "a resource that is a
 /// Graph, not bytes."
 pub fn resolve_instrument(
     source: &str,
@@ -1128,7 +1127,7 @@ pub fn resolve_instrument(
 }
 
 /// [`resolve_instrument`] with the cycle guard and the resource `slot` the ref came through (so
-/// warnings name what actually failed), folding an unavailable source into the ADR-0032
+/// warnings name what actually failed), folding an unavailable source into the
 /// degradation the voice pass wants: an empty graph carrying the warning (silence).
 /// `source` is already canonical — every caller canonicalizes at the site that knows the
 /// referring document.
@@ -1149,13 +1148,13 @@ fn resolve_instrument_slotted(
 }
 
 /// The distinguishing core of [`resolve_instrument`]: `Ok(Ok)` is a built child, `Ok(Err)` is an
-/// unavailable source (a `resolve_text` failure, non-fatal per ADR-0016) surfaced as the warning
+/// unavailable source (a `resolve_text` failure, non-fatal) surfaced as the warning
 /// so each caller picks its own degradation — the voice pass binds silence (empty graphs), the
 /// subpatch pass dissolves the reference dark (nothing spliced in). `slot`
 /// names the resource slot the ref came through (`"voice"`/`"patch"`) for the warning. Cycles
 /// are refused before resolving: a `source` already on the `loading` stack (a voice/patch chain
 /// re-entering itself) is a fatal [`LoadError::CyclicResource`], keyed on the **canonical**
-/// source string, so two spellings of one source are one identity (ADR-0034 §1).
+/// source string, so two spellings of one source are one identity.
 fn try_resolve_instrument(
     source: &str,
     slot: &'static str,
@@ -1182,7 +1181,7 @@ fn try_resolve_instrument(
 
 /// Load a child patch's parsed document with the cycle guard: refuse a `source` already on the
 /// `loading` stack (a voice/patch chain re-entering itself) as the fatal
-/// [`LoadError::CyclicResource`] — keyed on the **canonical** source id (ADR-0034 §1) —
+/// [`LoadError::CyclicResource`] — keyed on the **canonical** source id —
 /// otherwise push it and recurse through [`load_doc_guarded`], with this source as the child's
 /// referrer so the child's own references resolve relative to its location.
 fn load_child_guarded(
@@ -1197,7 +1196,7 @@ fn load_child_guarded(
     })
 }
 
-/// Run `f` with `source` pushed on the cycle-guard stack (ADR-0032/0034): a chain that
+/// Run `f` with `source` pushed on the cycle-guard stack: a chain that
 /// re-enters a source still loading — a `voice`/`patch`/re-export chain that (directly or
 /// transitively) contains itself — is the fatal [`LoadError::CyclicResource`] instead of
 /// infinite recursion. The one statement of the check/push/run/pop discipline, shared by the
@@ -1224,7 +1223,7 @@ impl InstrumentDoc {
         serde_json::to_string_pretty(self).expect("InstrumentDoc serializes")
     }
 
-    /// [`NormalizedDoc::build`] with the nesting machinery threaded through (ADR-0034's
+    /// [`NormalizedDoc::build`] with the nesting machinery threaded through (the
     /// resolution-ordering note): `resolver` loads `subpatch` children so their boundary faces
     /// exist during pass 2 (`None` — the plain [`load`]/[`build`] path — dissolves every nested
     /// reference dark without loading it); `ctx` carries the cycle-guard stack and the decoded-
@@ -1242,7 +1241,7 @@ impl InstrumentDoc {
         let mut warnings = Vec::new();
         // No anonymous-`outputs` re-check here: every route to this build starts from a
         // [`NormalizedDoc`], whose mint migrated the block away (v1) or refused it under a
-        // v2+ stamp (`check_pipe_shape`) — the invariant is carried by the type (ADR-0047).
+        // v2+ stamp (`check_pipe_shape`) — the invariant is carried by the type.
         debug_assert!(
             self.outputs.is_empty(),
             "a normalized document carries no anonymous outputs"
@@ -1251,28 +1250,28 @@ impl InstrumentDoc {
         warnings.extend(self.migration.warnings.iter().cloned());
         // address -> (key, descriptor) for resolving wire-refs and outputs. Document nodes only:
         // spliced subpatch internals are deliberately not wireable — the boundary face is the
-        // contract (ADR-0034 §3's namespace scopes OSC reachability, not wiring).
+        // contract (the namespace scopes OSC reachability, not wiring).
         let mut by_addr: BTreeMap<String, (crate::graph::NodeKey, Descriptor)> = BTreeMap::new();
         // Every claimed address — document nodes *and* spliced subpatch internals — so the
-        // duplicate check also catches post-prefix collisions (fatal, ADR-0034 §3).
+        // duplicate check also catches post-prefix collisions (fatal).
         let mut addresses: BTreeSet<String> = BTreeSet::new();
-        // Synthesized boundary face per subpatch address (ADR-0034 §4): the owned-string port set
+        // Synthesized boundary face per subpatch address: the owned-string port set
         // pass 2 resolves boundary wires against.
         let mut faces: BTreeMap<String, BoundaryFace> = BTreeMap::new();
-        // Subpatch addresses that dissolved dark — child unavailable (a warning, ADR-0016) or no
+        // Subpatch addresses that dissolved dark — child unavailable (a warning) or no
         // resolver on this path. Wires and taps touching them are dropped, so the instrument
         // still loads and the nest plays as silence, like a missing voice patch.
         let mut dark: BTreeSet<String> = BTreeSet::new();
         // The resolved boundary, accumulated through the build: input pipes as they mint below,
         // outputs after pass 2 resolves the graph they feed from. Names migration dropped
-        // (ADR-0038 §5) start dark, so a host reference to one degrades like any other dark
+        // start dark, so a host reference to one degrades like any other dark
         // boundary port instead of failing `UnknownInput`.
         let mut interface = Interface::default();
         interface
             .dark_inputs
             .extend(self.migration.dark_inputs.iter().cloned());
 
-        // Pass 0 — interface input pipes (ADR-0038 §2): each `interface.inputs` entry **mints an
+        // Pass 0 — interface input pipes: each `interface.inputs` entry **mints an
         // address in the flat node namespace** (`in` → `/in`) as a loader-built pass-through
         // node of its declared type. Minting runs before the document's own nodes claim
         // addresses, so a collision is the fatal `DuplicateAddress` either way the clash reads.
@@ -1305,19 +1304,19 @@ impl InstrumentDoc {
                 by_addr.insert(address, (key, descriptor));
                 interface.inputs.insert(name.clone(), (key, 0));
                 if let Some(ch) = pipe.channel {
-                    // A logical input channel binding (ADR-0038 §3) — honored only when this
+                    // A logical input channel binding — honored only when this
                     // graph is played at top level; recorded for the input master (P3). The
                     // index is bounded (`MAX_LOGICAL_CHANNELS`): the derived width sizes real
                     // per-channel buffers, so an unbounded document value would turn a typo
                     // into an allocation of arbitrary size. A structural bound is a load
-                    // error, not a degrade (ADR-0038 §7: degrade is for reality mismatches,
+                    // error, not a degrade (degrade is for reality mismatches,
                     // not broken documents).
                     check_logical_channel(name, ch)?;
                     interface.input_channels.insert(name.clone(), ch);
                 } else if referrer.is_none() && bare_signal {
                     // A top-level **bare signal** pipe with no channel binding renders
                     // silence forever: no parent edge exists at top level, and audio never
-                    // crosses the OSC boundary (ADR-0038 §3). Warn, never fatal (§7). A
+                    // crosses the OSC boundary. Warn, never fatal. A
                     // pipe with a declared default is a control at rest — no warning — and
                     // a nested/hosted child (`referrer.is_some()`) gets `UnwiredPipe` from
                     // its host when the host leaves it unfed.
@@ -1338,8 +1337,8 @@ impl InstrumentDoc {
                 return Err(LoadError::DuplicateAddress(n.address.clone()));
             }
             let descriptor = entry.descriptor.clone();
-            // A resource ref is only valid on an operator that declares that slot (ADR-0016: a
-            // `sample` on the sample player, a `voice` on the Voicer per ADR-0032 §2). Validate
+            // A resource ref is only valid on an operator that declares that slot (a
+            // `sample` on the sample player, a `voice` on the Voicer). Validate
             // data-driven against the node's refs, so a new slot needs no hand-written arm here.
             for (slot, provided) in n.resource_refs() {
                 if provided.is_some() && !descriptor.has_resource(slot) {
@@ -1350,9 +1349,9 @@ impl InstrumentDoc {
                 }
             }
             if descriptor.has_resource("patch") {
-                // A nested-instrument reference (ADR-0034): no graph node is created — the
-                // subpatch pass below splices the child's nodes in and the reference dissolves
-                // (§2). Its `inputs` are boundary values, validated there against the
+                // A nested-instrument reference: no graph node is created — the
+                // subpatch pass below splices the child's nodes in and the reference dissolves.
+                // Its `inputs` are boundary values, validated there against the
                 // synthesized face rather than this (portless) descriptor. `config` has no
                 // boundary surface at all — validate it here against the (constant-less)
                 // descriptor so a stray entry fails UnknownConfig, exactly as the schema
@@ -1373,7 +1372,7 @@ impl InstrumentDoc {
             graph.nodes[key].sample_id = n.sample.clone();
             graph.nodes[key].voice_id = n.voice.clone();
 
-            // `config`: every name must be a declared Constant (ADR-0035); apply it at its slot.
+            // `config`: every name must be a declared Constant; apply it at its slot.
             for (name, value) in &n.config {
                 if !descriptor.is_constant(name) {
                     return Err(LoadError::UnknownConfig {
@@ -1405,7 +1404,7 @@ impl InstrumentDoc {
             by_addr.insert(n.address.clone(), (key, descriptor));
         }
 
-        // Subpatch pass (ADR-0034 §2, nesting P4): resolve each nested reference, load the child
+        // Subpatch pass (nesting P4): resolve each nested reference, load the child
         // through the full path (its own resources bind and its own nests inline — recursion),
         // then splice it into this graph: internal addresses take this node's address as a prefix,
         // edges are remapped, and the boundary face is synthesized from the child's `interface`.
@@ -1424,7 +1423,7 @@ impl InstrumentDoc {
             }
             let Some(id) = &n.patch else {
                 // No `patch` key at all: an authoring mistake, not an availability failure —
-                // but the node still dissolves dark (ADR-0016 keeps the instrument playable).
+                // but the node still dissolves dark (keeps the instrument playable).
                 // Warn loudly: pre-inline this shape was a fatal UnknownPort, and pure silence
                 // would hide the typo.
                 warnings.push(LoadWarning::NoPatchRef {
@@ -1443,7 +1442,7 @@ impl InstrumentDoc {
                 dark.insert(n.address.clone());
                 continue;
             };
-            // Canonical id keys the fetch/parse dedup and the cycle guard (ADR-0034 §1): two
+            // Canonical id keys the fetch/parse dedup and the cycle guard: two
             // ids spelling one source (`a.json` vs `./a.json`) share one parse and one identity.
             let canon = resolver.canonical(source, referrer);
             if !patch_docs.contains_key(&canon) {
@@ -1486,7 +1485,7 @@ impl InstrumentDoc {
             let loaded = load_child_guarded(child_doc, &canon, registry, resolver, ctx)?;
             warnings.extend(loaded.warnings.into_iter().map(|w| w.nested_in(&n.address)));
             // A subpatch-inlined child's channel bindings are discarded at splice — inert
-            // (ADR-0038 §3), exactly as under a Voicer, and warned symmetrically: the same
+            //, exactly as under a Voicer, and warned symmetrically: the same
             // authoring slip must not go quiet just because the host is a subpatch.
             for pipe in loaded.graph.interface.input_channels.keys() {
                 warnings.push(
@@ -1495,7 +1494,7 @@ impl InstrumentDoc {
             }
             let face = splice_subpatch(&mut graph, loaded.graph, &n.address, &mut addresses)?;
 
-            // Boundary literals (ADR-0034 §1: `"wet": 0.3`): validated against the face and the
+            // Boundary literals (`"wet": 0.3`): validated against the face and the
             // inner port the interface names, then applied as that inner node's value-override.
             // Errors speak in boundary terms — the subpatch address and external port name —
             // never the prefixed internal address.
@@ -1505,7 +1504,7 @@ impl InstrumentDoc {
                 }
                 let Some(fp) = face.input(name) else {
                     if face.dark_inputs.contains(name) {
-                        continue; // dark boundary port: the literal is dropped (ADR-0016)
+                        continue; // dark boundary port: the literal is dropped
                     }
                     return Err(LoadError::UnknownInput {
                         node: n.address.clone(),
@@ -1520,7 +1519,7 @@ impl InstrumentDoc {
                     graph.set_value(fp.node, inner_name, &arg);
                 }
             }
-            // An unfed **bare signal** input pipe renders silence (ADR-0038 §3) — warn, never
+            // An unfed **bare signal** input pipe renders silence — warn, never
             // fatal. A pipe with a declared default is a control at rest (no warning), and
             // message pipes are silent-by-nature streams.
             for fp in &face.inputs {
@@ -1537,7 +1536,7 @@ impl InstrumentDoc {
         }
 
         // Pass 2: wire-refs -> edges (Arg-type-checked). A subpatch endpoint resolves through its
-        // synthesized boundary face (ADR-0034 §4/§5) to the inner `(node, port)` its interface
+        // synthesized boundary face to the inner `(node, port)` its interface
         // names — the same check that guards every other wire covers boundary wires, and the edge
         // lands directly on the inner target, so the splice introduces no untyped edge. Because
         // the face carries the inner port's type verbatim, checking against the face *is*
@@ -1552,7 +1551,7 @@ impl InstrumentDoc {
                     continue;
                 };
                 // Destination: this node's input port, or — on a subpatch — its face input.
-                // A dark boundary port drops the wire (ADR-0016), like a dark nest.
+                // A dark boundary port drops the wire, like a dark nest.
                 let Some((dst_key, dst_port, to_ty)) =
                     resolve_input(&faces, &by_addr, &n.address, name)?
                 else {
@@ -1570,23 +1569,23 @@ impl InstrumentDoc {
                 };
 
                 // Equal types wire directly. An `F32` source into a `Buffer` port is the **one
-                // implicit bridge** — Value→Signal, ZOH-materialized at the sink (ADR-0031). The
+                // implicit bridge** — Value→Signal, ZOH-materialized at the sink. The
                 // reverse, a `Buffer` source into an `F32` control port, is Signal→Value: a hard
-                // error with no implicit sample-and-hold (ADR-0031 — an explicit sig→val converter
+                // error with no implicit sample-and-hold (an explicit sig→val converter
                 // op is the sanctioned path). It is rejected *here*, not left to the plan's form
                 // check, so a mistyped wire into a nested boundary fails at load named in boundary
                 // terms (`/sub.audio`) instead of surfacing at instantiate as a FormMismatch on
-                // the prefixed internals (ADR-0034 §5). A type-agnostic `Arg` pass-through input
+                // the prefixed internals. A type-agnostic `Arg` pass-through input
                 // (issue #141) is **capability-keyed**: it accepts any source whose type has an
                 // external OSC form (`boundary::has_osc_form`, the single statement shared with
                 // the plan check) — the primitives, a vocab enum, `Note`'s registered flat form.
-                // A `Buffer` never emits Messages (audio stays off the wire, ADR-0026/0030) and
+                // A `Buffer` never emits Messages (audio stays off the wire) and
                 // `Harmony` has no OSC form (it registers no converter; its wire form is issue
                 // #209) — a wire that could never send anything is rejected here, not left
                 // silently dead. Anything else is illegal.
                 let compatible = same_wire_type(&from_ty, &to_ty)
                     || matches!((&from_ty, &to_ty), (PortType::F32, PortType::F32Buffer))
-                    // Numeric widening (ADR-0061): an `I32` source into an `F32`/`F32Buffer` sink
+                    // Numeric widening: an `I32` source into an `F32`/`F32Buffer` sink
                     // is lossless and total (every int is a distinct float; the read coerces via
                     // `Arg::as_f32`), and both are the numeric wiring class — so it widens
                     // implicitly, the same directional favour as `F32→F32Buffer` above. The
@@ -1611,16 +1610,16 @@ impl InstrumentDoc {
             }
         }
 
-        // `interface.outputs` (ADR-0038 §2/§4): each named output pipe is **fed from an internal
+        // `interface.outputs`: each named output pipe is **fed from an internal
         // port** — an ordinary wire-ref, resolving through a subpatch face when it names one
         // (re-export) — and, when Signal-typed, feeds the **master taps**: `channel: k` pins
         // logical master channel k (`tap_output_channel`), omitted keeps the broadcast meaning
-        // (ADR-0026). One consolidated block: at top level it is the master output; nested or
+        //. One consolidated block: at top level it is the master output; nested or
         // hosted, the same entries are the boundary a parent/Voicer reads. An entry whose
         // feeding port is dark — an unavailable subpatch, or a dark boundary port of a live one
         // — is dropped **and recorded** on the resolved interface's dark sets, with a warning,
         // so a consumer one level up degrades the same way instead of hitting a fatal
-        // unknown-port error (dark degradation is transitive, ADR-0016).
+        // unknown-port error (dark degradation is transitive).
         if let Some(iface) = &self.interface {
             for (name, entry) in &iface.outputs {
                 let feed = entry.feed().ok_or_else(|| LoadError::InterfacePipe {
@@ -1645,7 +1644,7 @@ impl InstrumentDoc {
                     continue;
                 };
                 // Presentational min/max stay a truthful subset of the feeding port's
-                // engine-enforced range (ADR-0034 §4's law, outputs half).
+                // engine-enforced range (the subset law, outputs half).
                 check_range_override(
                     name,
                     feed.min,
@@ -1660,7 +1659,7 @@ impl InstrumentDoc {
                             name: name.clone(),
                             reason: format!(
                                 "`channel` binds hardware channels, which carry signals — \
-                                 {:?} feeds from a message-domain port (ADR-0038 §3)",
+                                 {:?} feeds from a message-domain port",
                                 feed.from
                             ),
                         });
@@ -1689,7 +1688,7 @@ impl InstrumentDoc {
     /// routes this (current-shaped-by-construction) document through the mint. Kept here so the
     /// flatten stays next to its inverse ([`pipe_doc_from_descriptor`] / [`pipe_descriptor`]).
     fn from_graph_doc(graph: &Graph, instrument: impl Into<String>) -> Self {
-        // Interface pipes are loader-built nodes (ADR-0038), not document nodes. The graph's
+        // Interface pipes are loader-built nodes, not document nodes. The graph's
         // **own** boundary pipes (named by `graph.interface`) re-emit as `interface.inputs`
         // entries below; a pipe spliced in from a nested child (its boundary flattened away)
         // **dissolves**: consumers rewire to whatever fed it, or take its seed as a literal.
@@ -1730,7 +1729,7 @@ impl InstrumentDoc {
                 let mut config: BTreeMap<String, ConfigValue> = BTreeMap::new();
                 let mut inputs: BTreeMap<String, InputValue> = BTreeMap::new();
 
-                // Constant overrides (ADR-0035) go to `config` — a non-default plan-time value the
+                // Constant overrides go to `config` — a non-default plan-time value the
                 // author set (e.g. `voices`). An `i32` count saves as a number; defaults are omitted
                 // (they reload from the descriptor), keeping save minimal and round-trips stable.
                 for (slot, arg) in &node.constant_overrides {
@@ -1741,7 +1740,7 @@ impl InstrumentDoc {
                     };
                     config.insert(p.name.to_string(), value);
                 }
-                // Settable input overrides (ADR-0035) round-trip under the input's name: an `F32`
+                // Settable input overrides round-trip under the input's name: an `F32`
                 // control as a number, an enum as its variant **symbol** (the primary wire form).
                 for (port, arg) in &node.value_overrides {
                     let p = &d.inputs[*port];
@@ -1791,17 +1790,17 @@ impl InstrumentDoc {
                     doc: None,
                     config,
                     inputs,
-                    // Logical resource ids round-trip from the ids stashed at build (ADR-0016
-                    // `sample`, ADR-0032 `voice`). The decoded bytes/sub-graphs are bound
+                    // Logical resource ids round-trip from the ids stashed at build (`sample`,
+                    // `voice`). The decoded bytes/sub-graphs are bound
                     // out-of-band and are *not* reconstructed here — reload re-resolves from the id.
-                    // No `patch`: a subpatch dissolves at build (ADR-0034 §2), so a built graph
+                    // No `patch`: a subpatch dissolves at build, so a built graph
                     // holds only the flattened equivalent — this save emits the inlined child
                     // nodes, not the reference. Reference-preserving save is the library thread
                     // (P7, #122); the *document*-level round-trip keeps `patch` via serde.
                     sample: node.sample_id.clone(),
                     voice: node.voice_id.clone(),
                     patch: None,
-                    // Control metadata (ADR-0018) lives on the document, not the built Graph, so the
+                    // Control metadata lives on the document, not the built Graph, so the
                     // save-from-graph path does not reconstruct it; document-level round-trip
                     // (load → re-serialize) preserves it via serde.
                     control: None,
@@ -1810,7 +1809,7 @@ impl InstrumentDoc {
             .collect();
         nodes.sort_by(|a, b| a.address.cmp(&b.address));
 
-        // Reconstruct the boundary in v2 pipe form (ADR-0038). Inputs re-derive each pipe's
+        // Reconstruct the boundary in v2 pipe form. Inputs re-derive each pipe's
         // declaration from its synthesized descriptor; outputs re-emit the canonical explicit
         // `/node.port` feed (never the sole-output sugar) plus its channel binding, so a
         // load → save → reload round-trip is stable. Presentational fields (label/unit/widget)
@@ -1881,7 +1880,7 @@ impl InstrumentDoc {
             resources: BTreeMap::new(),
             interface,
             nodes,
-            // v2 never writes the anonymous block (ADR-0038 §4): every tap is an
+            // v2 never writes the anonymous block: every tap is an
             // `interface.outputs` pipe above.
             outputs: Vec::new(),
             migration: MigrationNotes::default(),
@@ -1918,7 +1917,7 @@ fn pipe_doc_from_descriptor(node: &crate::graph::Node, channel: Option<usize>) -
         return pipe;
     }
     // An integer pipe carries its range/default in `PortType::I32`, not the F32Meta slot
-    // (ADR-0061) — reconstruct min/max/default from there, mirroring the f32 arm below.
+    // — reconstruct min/max/default from there, mirroring the f32 arm below.
     if let PortType::I32 { meta: Some(m) } = &p.ty {
         if m.min != i32::MIN {
             pipe.min = Some(m.min as f64);
@@ -1978,7 +1977,7 @@ fn generated_name(taken: impl Fn(&str) -> bool) -> String {
 }
 
 /// The pipe **type name** a [`PortType`] declares as, when the type has a pipe form
-/// (ADR-0038 §2) — the one forward mapping shared by v1 migration ([`pipe_from_port`]) and the
+/// — the one forward mapping shared by v1 migration ([`pipe_from_port`]) and the
 /// `from_graph` flatten ([`pipe_doc_from_descriptor`]); [`pipe_descriptor`] owns the reverse
 /// (name → synthesized ports) and its arms must mirror this list.
 fn pipe_type_name(ty: &PortType) -> Option<String> {
@@ -2011,13 +2010,13 @@ fn lookup<'a>(
         .ok_or_else(|| LoadError::UnknownNode(node.to_string()))
 }
 
-/// The synthesized boundary face of a `subpatch` node (ADR-0034 §4): one port per `interface`
+/// The synthesized boundary face of a `subpatch` node: one port per `interface`
 /// name of the resolved child, each carrying the **inner** port's [`PortType`] verbatim (type
 /// inherited, never overridable) and the inlined `(node, port)` it resolves to. An owned-string
 /// artifact computed at build — deliberately *not* the engine [`Descriptor`], whose names are
-/// `&'static str` because operators are compile-time-registered (ADR-0024/0025). It exists only
+/// `&'static str` because operators are compile-time-registered. It exists only
 /// long enough to resolve + type-check the parent's boundary wires and then drops with the build
-/// scope; the runtime holds no synthesized descriptor at all (what keeps §2's "zero runtime cost"
+/// scope; the runtime holds no synthesized descriptor at all (what keeps the "zero runtime cost"
 /// honest).
 struct BoundaryFace {
     /// External input name → inner `(node, input port)` + its type, name-sorted (BTreeMap order).
@@ -2049,7 +2048,7 @@ impl BoundaryFace {
     /// Resolve a face output like [`resolve_out_port`] does for a descriptor, plus the dark
     /// dimension a descriptor doesn't have: `Ok(None)` means the reference lands on a **dark**
     /// boundary port (declared by the child, unresolvable this load) — the caller drops it
-    /// (ADR-0016) instead of erroring. The sole-output sugar counts dark ports as real, so
+    /// instead of erroring. The sole-output sugar counts dark ports as real, so
     /// darkness can only ever drop a wire, never silently re-target it: a two-output face with
     /// one port dark keeps `"/sub"` ambiguous, exactly as if the child were healthy.
     /// `node`/`reference` label errors in the author's terms.
@@ -2080,9 +2079,9 @@ impl BoundaryFace {
 /// Validate one literal `inputs` value against the port named `port_name` on `desc` and produce
 /// the [`Arg`] to set — `None` for a wire-ref (pass 2's job). The one statement of the literal
 /// rules for both surfaces that accept literals — a document node's input in pass 1, and a
-/// subpatch boundary input checked against the **inner** port its face names (ADR-0034 §1):
+/// subpatch boundary input checked against the **inner** port its face names:
 /// a number needs a materialized `Float` or an enum, a symbol needs an enum, and the symbol must
-/// name a variant (ADR-0028: an unknown symbol is an error, never a silent default).
+/// name a variant (an unknown symbol is an error, never a silent default).
 /// `err_node`/`err_input` label errors in the author's terms — for a boundary literal, the
 /// subpatch address and external name, never the prefixed internal.
 fn literal_arg(
@@ -2124,12 +2123,12 @@ fn literal_arg(
 }
 
 /// Resolve a wire/tap/interface endpoint's **input** side to the inner `(node, port, type)`:
-/// through the subpatch's synthesized boundary face when `addr` names one (ADR-0034 §4), else
+/// through the subpatch's synthesized boundary face when `addr` names one, else
 /// through the document node's descriptor. The one statement of face-vs-descriptor input
 /// resolution — every pass that lands on an input goes through here, so errors are labeled the
 /// same way everywhere: the address and port name the author wrote, never a prefixed internal.
 /// `Ok(None)` means the name is a **dark** boundary port (declared by the child, unresolvable
-/// this load, ADR-0016) — the caller drops the reference; an unknown name stays fatal.
+/// this load) — the caller drops the reference; an unknown name stays fatal.
 fn resolve_input(
     faces: &BTreeMap<String, BoundaryFace>,
     by_addr: &BTreeMap<String, (crate::graph::NodeKey, Descriptor)>,
@@ -2155,7 +2154,7 @@ fn resolve_input(
 
 /// [`resolve_input`]'s output-side twin: face output or descriptor output (sole-output sugar in
 /// both arms via [`pick_output`]), plus the `"addr.port"` label wire-type errors print — the face
-/// arm labels with the **boundary** port name (ADR-0034 §4's "errors speak in boundary terms").
+/// arm labels with the **boundary** port name (the "errors speak in boundary terms" rule).
 /// Errors name `addr` — the node being resolved — in both arms; `Ok(None)` is a dark boundary
 /// port (see [`resolve_input`]).
 fn resolve_output(
@@ -2168,7 +2167,7 @@ fn resolve_output(
     // A reference that **exactly names a known address** resolves whole, before the last-`.`
     // split: a v1 interface entry name may carry dots (`"my.tone"` was just a map key), and its
     // migrated pipe mints that name verbatim (`/my.tone`) — splitting would misread it as node
-    // `/my` port `tone` and fail a document v1 accepted (ADR-0036 §4). Exact-match-first is
+    // `/my` port `tone` and fail a document v1 accepted. Exact-match-first is
     // strictly widening: the split form only ever resolved refs the exact match doesn't claim.
     let (addr, port) =
         if port.is_some() && (by_addr.contains_key(reference) || faces.contains_key(reference)) {
@@ -2201,14 +2200,14 @@ fn resolve_output(
     }
 }
 
-/// Inline a resolved subpatch child into `parent` (ADR-0034 §2–§4): move every child node in
+/// Inline a resolved subpatch child into `parent`: move every child node in
 /// under `prefix` (its address becomes `<prefix><child address>`, compounding for deeper nests),
 /// remap the child's edges onto the new keys, and synthesize the boundary face from the child's
 /// resolved `interface`. Prefixing is a pure naming transform — edges are `NodeKey`-resolved, so
-/// no wiring can break (§3) — and per-reuse state isolation is automatic: each call splices a
+/// no wiring can break — and per-reuse state isolation is automatic: each call splices a
 /// freshly built child, so two reuses share no keys. A post-prefix address already claimed in
-/// `addresses` is the fatal [`LoadError::DuplicateAddress`] (§3). The child's master `outputs`
-/// taps do **not** cross the boundary — the `interface` is the whole contract (§4); a nested
+/// `addresses` is the fatal [`LoadError::DuplicateAddress`]. The child's master `outputs`
+/// taps do **not** cross the boundary — the `interface` is the whole contract; a nested
 /// patch feeds the parent only through its boundary outputs.
 fn splice_subpatch(
     parent: &mut Graph,
@@ -2237,7 +2236,7 @@ fn splice_subpatch(
         });
     }
 
-    // Synthesize the face (§4): type inherited verbatim from the inner port the interface names.
+    // Synthesize the face: type inherited verbatim from the inner port the interface names.
     let face_port = |(name, (ck, port)): (&String, &(crate::graph::NodeKey, usize)),
                      output: bool| {
         let node = key_map[ck];
@@ -2280,8 +2279,8 @@ pub fn widen_f32(v: f32) -> f64 {
     v.to_string().parse().unwrap_or(v as f64)
 }
 
-/// A single override [`Arg`] in document-facing form (ADR-0035): a number for `F32`/`I32`, the
-/// variant **symbol** for an enum choice (the primary wire form, ADR-0028).
+/// A single override [`Arg`] in document-facing form: a number for `F32`/`I32`, the
+/// variant **symbol** for an enum choice (the primary wire form).
 #[derive(Debug, Clone, PartialEq)]
 pub enum DocValue {
     Number(f64),
@@ -2305,7 +2304,7 @@ pub fn doc_value(port: &crate::descriptor::Port, arg: &Arg) -> DocValue {
     }
 }
 
-/// Enforce the presentational-override law (ADR-0034 §4): a `min`/`max` override decorates
+/// Enforce the presentational-override law: a `min`/`max` override decorates
 /// presentation but must stay **truthful**, because `describe` publishes it as the boundary
 /// contract and no engine path reconciles it with the range the engine actually clamps to. It
 /// must land on a port with a numeric range, stay within the engine-enforced bounds, and not
@@ -2313,7 +2312,7 @@ pub fn doc_value(port: &crate::descriptor::Port, arg: &Arg) -> DocValue {
 /// inside the advertised range. `label`/`unit`/`widget` are unconstrained — they rename, they
 /// cannot lie about a value the engine will accept. In v2 this law governs `interface.outputs`
 /// overrides and v1 input entries at migration; a v2 **input pipe owns its range outright**
-/// (ADR-0038 §2), validated in [`pipe_descriptor`] instead.
+///, validated in [`pipe_descriptor`] instead.
 fn check_range_override(
     name: &str,
     min_o: Option<f64>,
@@ -2368,20 +2367,20 @@ fn check_range_override(
     Ok(())
 }
 
-/// Synthesize an input pipe's per-entry [`Descriptor`] from its declaration (ADR-0038 §2): one
+/// Synthesize an input pipe's per-entry [`Descriptor`] from its declaration: one
 /// `in` port the boundary feeds and one `out` port consumers wire from, both of the **declared**
 /// `Arg` type — the existing pass-2 wire check then enforces that type against every consumer,
 /// no new checker. A numeric pipe's declared `default`/`min`/`max`/`curve` become the port's own
 /// engine-enforced [`F32Meta`] (an unwired signal pipe materializes `default`; a **bare** signal
 /// pipe materializes silence). Validation is local and pointed: unknown type, numeric metadata
 /// on a message pipe, an incoherent range, or a `channel` on anything but a signal pipe
-/// (hardware channels carry signals — ADR-0038 §3).
-/// Upper bound (exclusive) on a logical `channel` binding, input or output (ADR-0038 §3).
+/// (hardware channels carry signals).
+/// Upper bound (exclusive) on a logical `channel` binding, input or output.
 /// Logical widths derive as `max bound channel + 1` and size **real per-channel buffers**
 /// (the engine's input staging, the render master), so an unbounded document value would turn
 /// a typo'd `"channel": 100000000` into a multi-gigabyte allocation. 4096 is beyond any real
 /// rig; past it the document is structurally broken, which is a load error, not a degrade
-/// (ADR-0038 §7 degrades *reality* mismatches, not broken documents).
+/// (degrades *reality* mismatches, not broken documents).
 pub const MAX_LOGICAL_CHANNELS: usize = 4096;
 
 /// Reject an out-of-range logical `channel` binding (see [`MAX_LOGICAL_CHANNELS`]).
@@ -2445,7 +2444,7 @@ fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortK
             curve: pipe.curve.map(Curve::from).unwrap_or(Curve::Linear),
         })
     };
-    // The declared integer meta for an `i32` pipe's two ports (ADR-0061). Mirrors `f32_meta`,
+    // The declared integer meta for an `i32` pipe's two ports. Mirrors `f32_meta`,
     // but the bounds and default must be whole numbers: a fractional literal on an integer
     // control is an authoring mistake, caught here rather than silently rounded.
     let i32_meta = || -> Result<I32Meta, LoadError> {
@@ -2525,7 +2524,7 @@ fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortK
                     PortKind::Signal,
                 )
             } else {
-                // A bare signal pipe: unwired it materializes silence (the ADR-0038 promise).
+                // A bare signal pipe: unwired it materializes silence (the promise).
                 (
                     Port::f32_buffer("in"),
                     Port::f32_buffer("out"),
@@ -2589,7 +2588,7 @@ fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortK
     if pipe.channel.is_some() && kind != PortKind::Signal {
         return Err(err(format!(
             "`channel` binds hardware channels, which carry signals — a {:?} pipe is \
-             message-domain (ADR-0038 §3)",
+             message-domain",
             pipe.ty
         )));
     }
@@ -2607,8 +2606,7 @@ fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortK
 
 /// Whether two ports carry the same **`Arg` type** for wiring (the equal-types arm of the
 /// pass-2 check). [`PortType`]'s derived equality also compares per-port metadata — a vocab
-/// enum's [`EnumMeta`] carries the *port* name, so `pipe.out` (an interface pipe's output,
-/// ADR-0038) would spuriously mismatch `filter.mode` even though both carry a `FilterMode`.
+/// enum's [`EnumMeta`] carries the *port* name, so `pipe.out` (an interface pipe's output) would spuriously mismatch `filter.mode` even though both carry a `FilterMode`.
 /// Type identity is the variant plus, for a vocab, its **type** name; metadata (ranges,
 /// defaults, port labels) never decides wireability.
 fn same_wire_type(from: &PortType, to: &PortType) -> bool {
@@ -2730,7 +2728,7 @@ mod tests {
         assert_eq!(g.nodes[key].constant_overrides, vec![(slot, Arg::I32(3))]);
     }
 
-    /// ADR-0035: an out-of-range `voices` config passes through the single coercion seam
+    /// An out-of-range `voices` config passes through the single coercion seam
     /// (`Graph::set_constant` → `Port::coerce`), so the **stored** constant clamps to the
     /// voicer's declared `1..=32` range at both ends — a save/reload never resurrects the
     /// out-of-range value. And the pool the voice-resource pass *builds* agrees with the stored
@@ -2912,7 +2910,7 @@ mod tests {
 
     #[test]
     fn control_block_is_drained_at_parse_and_never_saved() {
-        // ADR-0043: the retired `control` block parses (deny_unknown_fields would otherwise
+        // The retired `control` block parses (deny_unknown_fields would otherwise
         // hard-fail a v2 document) but is drained at normalize — never read, never re-saved.
         let json = r#"{"instrument":"t",
             "nodes":[{"type":"map_f32_signal","address":"/brightness",
@@ -2927,7 +2925,7 @@ mod tests {
 
     #[test]
     fn absent_format_version_is_v1_and_save_writes_current() {
-        // Every pre-versioning document is a valid v1 (ADR-0036); it migrates at parse...
+        // Every pre-versioning document is a valid v1; it migrates at parse...
         let doc = NormalizedDoc::from_json(r#"{"instrument":"t","nodes":[]}"#, &reg(), None)
             .expect("parse");
         assert_eq!(doc.format_version, FORMAT_VERSION);
@@ -2944,7 +2942,7 @@ mod tests {
         // A document below the current version (here the schema-illegal `0`) parses — the gate
         // only refuses the *future* — and normalizes to the current version, so it saves back
         // stamped correctly rather than re-emitting the shape's old, now-wrong version number
-        // (ADR-0036 §4). Once migrations exist this is what keeps a migrated v1→v2 doc from
+        //. Once migrations exist this is what keeps a migrated v1→v2 doc from
         // saving as v1 on a v2 shape.
         let doc = NormalizedDoc::from_json(
             r#"{"format_version":0,"instrument":"t","nodes":[]}"#,
@@ -2987,7 +2985,7 @@ mod tests {
     #[test]
     fn newer_format_version_in_a_nested_child_is_fatal() {
         // The gate lives at the parse boundary, so a too-new *child* refuses too — a host
-        // must not splice a shape it can't trust (structural, not availability: ADR-0034 §1).
+        // must not splice a shape it can't trust (structural, not availability).
         let future_child =
             PatchResolver(r#"{"format_version":99,"instrument":"future","nodes":[]}"#);
         const HOST: &str = r#"{
@@ -3015,7 +3013,7 @@ mod tests {
 
     #[test]
     fn value_overrides_round_trip_across_types() {
-        // ADR-0035: the collapsed `value_overrides` channel must save an `F32` control override as a
+        // The collapsed `value_overrides` channel must save an `F32` control override as a
         // number and an enum override as its variant **symbol** (reconstructed via
         // `EnumMeta::symbol_of`, not a stored index) — one channel, two on-disk forms.
         let json = r#"{"instrument":"t","nodes":[
@@ -3027,7 +3025,7 @@ mod tests {
         assert_eq!(inputs["mode"], InputValue::Symbol("Hp".to_string()));
     }
 
-    // ADR-0032 §1 — the `interface` block. A voice-shaped patch: osc.freq / env.gate in,
+    // The `interface` block. A voice-shaped patch: osc.freq / env.gate in,
     // osc.audio / env.active out. `/env` has two outputs so a sole-output ref would be ambiguous;
     // the explicit `/env.active` resolves it.
     // A well-formed v1 voice: like every shipped v1 voice patch, its `audio` boundary output
@@ -3048,7 +3046,7 @@ mod tests {
 
     #[test]
     fn interface_inputs_become_pipes_and_outputs_resolve_to_internal_ports() {
-        // ADR-0038 §2 via v1 migration: each input entry mints a pipe node (`freq` → `/freq`)
+        // Via v1 migration: each input entry mints a pipe node (`freq` → `/freq`)
         // whose `in` port the boundary feeds; the old target consumes it with an ordinary
         // wire; outputs resolve to the internal ports that feed them.
         let g = load(VOICE_IFACE, &reg()).expect("load");
@@ -3118,7 +3116,7 @@ mod tests {
 
     #[test]
     fn native_v2_pipe_fans_out_to_several_consumers() {
-        // ADR-0038 §2: a pipe behaves like a source node, so fan-out is free — two consumers
+        // A pipe behaves like a source node, so fan-out is free — two consumers
         // wire from one input pipe with plain wire-refs.
         let json = r#"{"format_version":2,"instrument":"t","interface":{
             "inputs":{"in":{"type":"f32_buffer"}}},
@@ -3133,7 +3131,7 @@ mod tests {
 
     #[test]
     fn pipe_address_collision_with_a_node_is_fatal() {
-        // ADR-0038 §2: the entry mints `/in`; a document node claiming the same address is the
+        // The entry mints `/in`; a document node claiming the same address is the
         // existing fatal DuplicateAddress.
         let json = r#"{"format_version":2,"instrument":"t","interface":{
             "inputs":{"in":{"type":"f32_buffer"}}},
@@ -3146,7 +3144,7 @@ mod tests {
 
     #[test]
     fn channel_on_a_message_pipe_is_a_load_error() {
-        // ADR-0038 §3: hardware channels carry signals; a channel binding on a Value/Event
+        // Hardware channels carry signals; a channel binding on a Value/Event
         // pipe is a pointed load error, both directions.
         for iface in [
             r#""inputs":{"gate":{"type":"f32","channel":0}}"#,
@@ -3169,7 +3167,7 @@ mod tests {
 
     #[test]
     fn channel_bindings_derive_the_logical_widths() {
-        // ADR-0038 §3: input width = max bound input channel + 1 (0 when none); output pipes
+        // Input width = max bound input channel + 1 (0 when none); output pipes
         // with channels feed the pinned master taps.
         let json = r#"{"format_version":2,"instrument":"t","interface":{
             "inputs":{"mic_l":{"type":"f32_buffer","channel":0},
@@ -3203,7 +3201,7 @@ mod tests {
     }
 
     /// An `i32` interface pipe synthesizes an integer port carrying its range + default in
-    /// [`PortType::I32`]'s [`I32Meta`] (ADR-0061) — parallel to an `f32` pipe's F32Meta.
+    /// [`PortType::I32`]'s [`I32Meta`] — parallel to an `f32` pipe's F32Meta.
     #[test]
     fn int_pipe_parses_range_and_default() {
         let json = r#"{"format_version":2,"instrument":"t","interface":{
@@ -3221,7 +3219,7 @@ mod tests {
         );
     }
 
-    /// The headline of ADR-0061: an `i32` control pipe wires into an operator's `f32` port
+    /// An `i32` control pipe wires into an operator's `f32` port
     /// (euclid's `steps`) — the lossless numeric widening — and loads clean, no converter op.
     #[test]
     fn int_pipe_widens_into_a_float_control() {
@@ -3248,7 +3246,7 @@ mod tests {
     }
 
     /// A fractional default on an integer control is an authoring mistake, refused at load —
-    /// not silently rounded (the round is for *runtime* traffic, ADR-0061).
+    /// not silently rounded (the round is for *runtime* traffic).
     #[test]
     fn int_pipe_rejects_a_fractional_default() {
         let json = r#"{"format_version":2,"instrument":"t","interface":{
@@ -3266,7 +3264,7 @@ mod tests {
         assert!(err.to_string().contains("curve"), "{err}");
     }
 
-    /// `i32` and `f32` are **distinct** wire types (ADR-0061): the widening is not a
+    /// `i32` and `f32` are **distinct** wire types: the widening is not a
     /// `same_wire_type` equality — it is the one-directional `I32→F32` exception in the
     /// `compatible` gate. So the reverse (`F32→I32`, lossy) has no path here and stays a hard
     /// error, exactly as `Signal→Value` does. Guards against a future edit making it symmetric.
@@ -3285,7 +3283,7 @@ mod tests {
     #[test]
     fn v2_doc_with_v1_forms_is_refused() {
         // A v2 stamp must not hide v1 shapes: target-form entries and the anonymous outputs
-        // block are both refused with pointed errors (ADR-0038 §5).
+        // block are both refused with pointed errors.
         let target = r#"{"format_version":2,"instrument":"t","interface":{
             "inputs":{"freq":"/osc.freq"}},
             "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
@@ -3320,7 +3318,7 @@ mod tests {
         ));
     }
 
-    // ADR-0034 §4 — the object entry form: target + presentational overrides.
+    // The object entry form: target + presentational overrides.
     const VOICE_IFACE_META: &str = r#"{
         "instrument": "voice",
         "interface": {
@@ -3365,7 +3363,7 @@ mod tests {
         let iface = doc.interface.as_ref().unwrap();
         let pipe = iface.inputs["freq"].pipe().expect("migrated to a pipe");
         assert_eq!(pipe.ty, "f32_buffer");
-        // v1's `label`/`widget` are retired presentation (ADR-0043): drained on the way to
+        // v1's `label`/`widget` are retired presentation: drained on the way to
         // v3 with a DeprecatedPipePresentation warning. The quantity fields carry over.
         assert_eq!(pipe.label, None);
         assert_eq!(pipe.widget, None);
@@ -3446,7 +3444,7 @@ mod tests {
         }
     }
 
-    // ADR-0034 §4 override law (review F1/F5/F6): a range override must stay a subset of the
+    // The override law (review F1/F5/F6): a range override must stay a subset of the
     // engine-enforced range, not invert, land on a numeric port, and keep the effective default
     // inside the advertised range — `describe` publishes it as the boundary contract.
     fn iface_freq(entry: &str, freq_literal: &str) -> String {
@@ -3561,7 +3559,7 @@ mod tests {
         }
     }
 
-    // ADR-0032 §2 — the instrument-kind resource. A resolver whose `resolve_text` returns a voice
+    // The instrument-kind resource. A resolver whose `resolve_text` returns a voice
     // patch's JSON; `resolve_instrument` builds it into a sub-Graph (with its interface resolved).
     struct PatchResolver(&'static str);
     impl ResourceResolver for PatchResolver {
@@ -3578,7 +3576,7 @@ mod tests {
         let loaded = resolve_instrument("voices/lead.json", &reg(), &PatchResolver(VOICE_IFACE))
             .expect("resolve");
         assert!(loaded.warnings.is_empty());
-        // Two document nodes plus the two minted input pipes (ADR-0038).
+        // Two document nodes plus the two minted input pipes.
         assert_eq!(loaded.graph.nodes.len(), 4);
         // The sub-Graph carries its resolved interface, ready for a host to bind.
         assert!(loaded.graph.interface.inputs.contains_key("freq"));
@@ -3587,8 +3585,7 @@ mod tests {
 
     #[test]
     fn instrument_resource_resolve_failure_is_a_warning_not_fatal() {
-        // A resolver that can't produce the text (the default `resolve_text`): non-fatal per
-        // ADR-0016 — an empty graph plus a ResolveFailed warning, never a hard error.
+        // A resolver that can't produce the text (the default `resolve_text`): non-fatal — an empty graph plus a ResolveFailed warning, never a hard error.
         struct Failing;
         impl ResourceResolver for Failing {
             fn resolve(&self, s: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
@@ -3606,7 +3603,7 @@ mod tests {
     #[test]
     fn instrument_resource_structural_error_is_fatal() {
         // A sub-patch that resolves but is structurally broken (unknown operator type) is fatal,
-        // matching ADR-0016: availability problems warn, wiring problems error.
+        // availability problems warn, wiring problems error.
         const BROKEN: &str = r#"{"instrument":"v","nodes":[{"type":"nope","address":"/x"}]}"#;
         assert!(matches!(
             resolve_instrument("v.json", &reg(), &PatchResolver(BROKEN)),
@@ -3614,7 +3611,7 @@ mod tests {
         ));
     }
 
-    // ADR-0034 (nesting P4) — a `subpatch` node references an instrument patch; at build the
+    // Nesting P4 — a `subpatch` node references an instrument patch; at build the
     // child is loaded recursively and **inlined**: nodes spliced under the subpatch's address
     // prefix, boundary wires resolved through the synthesized face, the node dissolved. Reuses
     // the `VOICE_IFACE` patch as the child.
@@ -3642,7 +3639,7 @@ mod tests {
 
     #[test]
     fn subpatch_inlines_child_under_prefixed_addresses() {
-        // The P4 acceptance shape (ADR-0034 §2–§3): the child's nodes are spliced in under the
+        // The P4 acceptance shape: the child's nodes are spliced in under the
         // subpatch's address prefix and the subpatch node itself dissolves — no node named
         // `/sub` survives, and the internals stay addressable as first-class parent nodes.
         let loaded = load_instrument(PARENT_WITH_SUBPATCH, &reg(), &PatchResolver(VOICE_IFACE))
@@ -3654,11 +3651,11 @@ mod tests {
         );
         assert!(
             loaded.graph.find("/sub").is_none(),
-            "the subpatch node dissolves at build (§2)"
+            "the subpatch node dissolves at build"
         );
         assert!(loaded.graph.find("/sub/osc").is_some());
         assert!(loaded.graph.find("/sub/env").is_some());
-        // The child's input pipes splice in under the prefix too (ADR-0038).
+        // The child's input pipes splice in under the prefix too.
         assert!(loaded.graph.find("/sub/freq").is_some());
         assert!(loaded.graph.find("/sub/gate").is_some());
         assert_eq!(
@@ -3670,7 +3667,7 @@ mod tests {
 
     #[test]
     fn boundary_wires_and_literals_resolve_through_the_face() {
-        // ADR-0034 §4–§5: a wire out of `/sub.audio` lands directly on the inner `(node, port)`
+        // A wire out of `/sub.audio` lands directly on the inner `(node, port)`
         // the child interface names, and a literal onto `/sub.freq` becomes the inner node's
         // value-override — both through the synthesized face, no subpatch node in between.
         let loaded =
@@ -3695,7 +3692,7 @@ mod tests {
             g.connections
         );
 
-        // The boundary literal seeds the child's `freq` PIPE (ADR-0038): the pipe forwards it
+        // The boundary literal seeds the child's `freq` PIPE: the pipe forwards it
         // to the oscillator it feeds, so the value still lands — but as pipe state, not an
         // override on the inner node.
         let pipe = g.find("/sub/freq").expect("spliced freq pipe");
@@ -3804,7 +3801,7 @@ mod tests {
 
     #[test]
     fn type_mismatch_across_the_boundary_is_fatal() {
-        // The face inherits the inner port's type verbatim (§4), so the ordinary pass-2 check
+        // The face inherits the inner port's type verbatim, so the ordinary pass-2 check
         // rejects an illegal boundary wire: osc.audio (Buffer) into a Note boundary input. The
         // error speaks in boundary terms (`/sub.notes`).
         const NOTE_CHILD: &str = r#"{
@@ -3824,7 +3821,7 @@ mod tests {
 
     #[test]
     fn buffer_into_f32_value_input_is_fatal_at_load() {
-        // Signal→Value is a hard error with no implicit sample-and-hold (ADR-0031). The load-time
+        // Signal→Value is a hard error with no implicit sample-and-hold. The load-time
         // check owns it (not just the plan's form check), so it fails at load everywhere — and
         // the message points at the sanctioned converter path.
         let json = r#"{"instrument":"t","nodes":[
@@ -3846,7 +3843,7 @@ mod tests {
         assert!(msg.contains("sample-and-hold"), "{msg}");
     }
 
-    // P5 (ADR-0034 §5): the adversarial boundary-type matrix. Every case is a **well-typed inner
+    // P5: the adversarial boundary-type matrix. Every case is a **well-typed inner
     // graph** with a mistyped *boundary* wire, and every case must fail at parent load — these
     // tests never reach `Plan::instantiate` — with an error naming the boundary port in the
     // author's terms, never the prefixed internals.
@@ -3976,7 +3973,7 @@ mod tests {
     #[test]
     fn boundary_enum_symbol_literal_reaches_the_inner_port() {
         // A symbol literal on a boundary input resolves against the *inner* enum port; an unknown
-        // variant is BadInputValue named at the boundary (ADR-0028: never snaps to default).
+        // variant is BadInputValue named at the boundary (never snaps to default).
         const FILTER_CHILD: &str = r#"{
             "instrument": "fx",
             "interface": { "inputs": { "mode": "/f.mode" } },
@@ -4001,7 +3998,7 @@ mod tests {
 
     #[test]
     fn unwired_nested_bare_signal_pipe_warns_and_renders_silence() {
-        // ADR-0038 §3: a nested child's bare signal input pipe left unfed by the host renders
+        // A nested child's bare signal input pipe left unfed by the host renders
         // silence — honest, but almost always an authoring slip, so it warns. A defaulted
         // control pipe at rest and a fed pipe stay quiet.
         const FX_CHILD: &str = r#"{"format_version":2,"instrument":"fx",
@@ -4030,7 +4027,7 @@ mod tests {
 
     #[test]
     fn boundary_only_v1_signal_outputs_warn_on_migration() {
-        // The accepted ADR-0038 §4/§5 divergence (decided 2026-07-04): a v1 **signal**
+        // The accepted divergence (decided 2026-07-04): a v1 **signal**
         // interface output no anonymous tap claims becomes a real master tap in v2 — audible
         // at top level where v1 played nothing from it — and migration says so, naming the
         // entry. Message-typed entries never tap, so they migrate silently.
@@ -4057,7 +4054,7 @@ mod tests {
 
     #[test]
     fn voicer_hosted_bare_signal_pipe_warns_unwired() {
-        // ADR-0038 §3 promises the silence warning for "nested/hosted" alike: a Voicer feeds
+        // The silence warning covers "nested/hosted" alike: a Voicer feeds
         // only the message pipes it knows by name (`freq`/`gate`), so a hosted voice's bare
         // signal pipe is never fed — it renders silence and must warn, exactly as the
         // subpatch face does.
@@ -4087,7 +4084,7 @@ mod tests {
 
     #[test]
     fn post_prefix_address_collision_is_fatal() {
-        // ADR-0034 §3: a child address that, after prefixing, collides with an existing parent
+        // A child address that, after prefixing, collides with an existing parent
         // address is a DuplicateAddress load error — the uniqueness check runs over the
         // post-inline address set.
         let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
@@ -4101,7 +4098,7 @@ mod tests {
 
     #[test]
     fn nested_in_nested_compounds_prefixes_and_reexports() {
-        // Two levels (§3): the middle patch nests a child and re-exports its boundary input as
+        // Two levels: the middle patch nests a child and re-exports its boundary input as
         // its own (`freq: "/inner.freq"` resolves through the inner face). Addresses compound:
         // /outer/inner/osc. The outer literal flows through both boundaries to the innermost
         // oscillator.
@@ -4143,7 +4140,7 @@ mod tests {
             .find("/outer/inner/osc")
             .expect("compounded prefix reaches the innermost node");
         // The outer boundary literal seeds mid's re-export pipe; the value then flows through
-        // the pipe chain to the innermost oscillator at render (ADR-0038).
+        // the pipe chain to the innermost oscillator at render.
         let outer_pipe = g.find("/outer/freq").expect("mid's migrated freq pipe");
         assert!(g.nodes[outer_pipe]
             .value_overrides
@@ -4174,10 +4171,10 @@ mod tests {
     fn an_internally_driven_v1_boundary_input_is_dropped_by_migration() {
         // v1 could expose an input whose inner Signal port the child drove internally — a name
         // a host could see but never wire (the old fatal `BoundaryInputDriven`). The flip
-        // cannot express that state (ADR-0038): migration drops the entry **loudly** — a
+        // cannot express that state: migration drops the entry **loudly** — a
         // `Migration` warning names it — and leaves the name dark, so the parent's wire onto
         // it degrades (dropped, like any dark boundary reference) instead of turning a
-        // loadable v1 pair fatal (ADR-0036 §4).
+        // loadable v1 pair fatal.
         const DRIVEN_CHILD: &str = r#"{
             "instrument": "fx",
             "interface": { "inputs": { "audio": "/out.audio" } },
@@ -4219,7 +4216,7 @@ mod tests {
         // missing. Mid loads with a warning and records `freq`/`audio` as **dark** interface
         // entries; the parent's boundary literal, wire, and tap onto them then degrade exactly
         // like references to a dark nest — dropped with the warning — instead of escalating to
-        // a fatal UnknownInput/UnknownPort one level up (ADR-0016: dark is transitive).
+        // a fatal UnknownInput/UnknownPort one level up (dark is transitive).
         struct MissingLeaf;
         impl ResourceResolver for MissingLeaf {
             fn resolve(&self, s: &str) -> Result<SampleBuffer, crate::resources::ResolveError> {
@@ -4287,7 +4284,7 @@ mod tests {
 
     #[test]
     fn child_master_taps_do_not_cross_the_boundary() {
-        // The interface is the whole contract (§4): a child's own master `outputs` taps vanish on
+        // The interface is the whole contract: a child's own master `outputs` taps vanish on
         // inline — a nested patch feeds the parent only through its boundary outputs.
         const TAPPED_CHILD: &str = r#"{
             "instrument": "standalone",
@@ -4373,7 +4370,7 @@ mod tests {
 
     #[test]
     fn subpatch_missing_reference_warns_and_dissolves_dark() {
-        // A `patch` id absent from the `resources` table degrades to a warning (ADR-0016): the
+        // A `patch` id absent from the `resources` table degrades to a warning: the
         // reference dissolves dark — no node, no children — and wires/taps touching it are
         // dropped, so the instrument still loads and plays (silence through the nest), like a
         // missing voice patch. Never a hard error.
@@ -4413,7 +4410,7 @@ mod tests {
     #[test]
     fn subpatch_resolve_failure_warns_and_dissolves_dark() {
         // The id resolves to a source, but `resolve_text` fails (the default `Failing` resolver):
-        // non-fatal per ADR-0016 — a ResolveFailed warning, never a hard error. Like the
+        // non-fatal — a ResolveFailed warning, never a hard error. Like the
         // missing-id case, the reference dissolves dark: nothing is spliced in.
         struct Failing;
         impl ResourceResolver for Failing {
@@ -4472,7 +4469,7 @@ mod tests {
         let resolver = Counting(Cell::new(0));
         let loaded = load_instrument(json, &reg(), &resolver).expect("load");
         assert_eq!(resolver.0.get(), 1, "one read serves both nodes");
-        // Each reuse still gets its own inlined child — disjoint prefixes, disjoint state (§3).
+        // Each reuse still gets its own inlined child — disjoint prefixes, disjoint state.
         assert!(loaded.graph.find("/one/osc").is_some());
         assert!(loaded.graph.find("/two/osc").is_some());
     }
@@ -4480,7 +4477,7 @@ mod tests {
     #[test]
     fn subpatch_structural_error_is_fatal() {
         // The sub-patch resolves but is structurally broken (unknown operator type): fatal, matching
-        // the voice path — availability warns, structure/wiring errors (ADR-0016/0034).
+        // the voice path — availability warns, structure/wiring errors.
         const BROKEN: &str = r#"{"instrument":"v","nodes":[{"type":"nope","address":"/x"}]}"#;
         let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
             {"type":"subpatch","address":"/sub","patch":"v"}]}"#;
@@ -4492,7 +4489,7 @@ mod tests {
 
     #[test]
     fn subpatch_malformed_json_is_fatal() {
-        // The ADR-0016 split lands at the fetch seam (ADR-0034 §1): once the text is in hand,
+        // The split lands at the fetch seam: once the text is in hand,
         // JSON that fails to parse is a structural error in the referenced patch — fatal, like an
         // unknown operator type — not an availability warning.
         let json = r#"{"instrument":"p","resources":{"v":"v.json"},"nodes":[
@@ -4602,7 +4599,7 @@ mod tests {
 
     #[test]
     fn from_graph_saves_the_flattened_equivalent() {
-        // ADR-0034 §2: the subpatch dissolves at build, so saving a built graph emits the inlined
+        // The subpatch dissolves at build, so saving a built graph emits the inlined
         // child nodes under their prefixed addresses — no `subpatch` node, no `patch` ref. The
         // deliberate P4 shape; reference-preserving save is P7 (#122).
         let loaded = load_instrument(PARENT_WITH_SUBPATCH, &reg(), &PatchResolver(VOICE_IFACE))

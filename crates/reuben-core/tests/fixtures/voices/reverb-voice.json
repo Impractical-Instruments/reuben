@@ -1,7 +1,7 @@
 {
   "format_version": 2,
   "instrument": "reverb-voice",
-  "doc": "Voice patch for reverb.json (ADR-0032). One monophonic subtractive synth voice: a held freq drives the oscillator, a held gate the envelope; gentle static lowpass. Hosted N times by the rig's `voicer`, which sums the dry voices before the master Freeverb. interface: freq/gate in, audio/active out.",
+  "doc": "Voice patch for reverb.json. One monophonic subtractive synth voice: a held freq drives the oscillator, a held gate the envelope; gentle static lowpass. Hosted N times by the rig's `voicer`, which sums the dry voices before the master Freeverb. interface: freq/gate in, audio/active out.",
   "interface": {
     "inputs": {
       "freq": {

@@ -1,4 +1,4 @@
-//! Integration: the V1.3 Strum harp end-to-end (ADR-0022 §3 / ADR-0032) — dragging the strum bar
+//! Integration: the V1.3 Strum harp end-to-end — dragging the strum bar
 //! across the string bands plucks degrees, which the Voicer resolves through the tonal context and
 //! hands to 8 hosted `resonator` voices.
 //!

@@ -1,20 +1,20 @@
-//! Resources — decoded audio as a shared, bank-ready read service (ADR-0016).
+//! Resources — decoded audio as a shared, bank-ready read service.
 //!
 //! The sample player is the first operator that depends on **external bytes** (an audio
 //! file) which must be resolved and decoded before render. Three existing contracts make
 //! that awkward — zero-arg type-erased construction, `f32`-only params, and an
 //! allocation-free RT `process` — so decoded audio does not live on the operator's
 //! construction path. Instead it lives in a central [`ResourceStore`] built by the
-//! Coordinator at load time (single-writer, ADR-0012) and read **immutable** by Render.
+//! Coordinator at load time (single-writer) and read **immutable** by Render.
 //!
 //! The accessors here are written as **pure functions of `(id, channel, frame)`**: the
 //! resident v1.1 implementation indexes a decoded buffer, and the future streaming "audio
 //! bank" consults a warm-block cache behind the *same* signatures, so the operator never
-//! re-plumbs. Determinism (ADR-0001) is preserved because a read always returns the same
+//! re-plumbs. Determinism is preserved because a read always returns the same
 //! float for the same arguments; a bank that falls behind underruns (an xrun) rather than
 //! substituting silence.
 //!
-//! Codecs and filesystem IO stay out of this portable crate (ADR-0007, ADR-0012): the
+//! Codecs and filesystem IO stay out of this portable crate: the
 //! [`ResourceResolver`] trait is the seam `reuben-native` fills with a WAV decoder.
 
 use std::collections::BTreeMap;
@@ -27,7 +27,7 @@ use std::sync::Arc;
 pub struct SampleId(usize);
 
 /// Decoded audio: **every** channel, stored planar, at the file's native sample rate
-/// (ADR-0016). Channels are kept (not downmixed) so a player can pick or mix them and so
+/// Channels are kept (not downmixed) so a player can pick or mix them and so
 /// the data model already suits multichannel render. An [`SampleBuffer::empty`] buffer is
 /// the degrade-to-silence sentinel for a missing or failed resource.
 #[derive(Debug, Clone, Default)]
@@ -53,7 +53,7 @@ impl SampleBuffer {
     }
 
     /// The empty (zero-length, zero-channel) buffer — what a missing/failed resource binds
-    /// to so the player outputs silence (ADR-0016).
+    /// to so the player outputs silence.
     pub fn empty() -> Self {
         Self::default()
     }
@@ -85,7 +85,7 @@ impl SampleBuffer {
 }
 
 /// The decoded-resource store: built by the loader/Coordinator, read immutable by Render
-/// (ADR-0012, ADR-0016). Resident-only in v1.1 — every resource is decoded up front and
+/// Resident-only in v1.1 — every resource is decoded up front and
 /// held forever; the accessors' signatures are what the future streaming bank reuses.
 #[derive(Debug, Default)]
 pub struct ResourceStore {
@@ -140,7 +140,7 @@ impl ResourceStore {
     }
 
     /// One decoded sample at `(id, channel, frame)`; `0.0` out of range. A **pure
-    /// function** — the bank-ready read seam (ADR-0016): the resident impl indexes the
+    /// function** — the bank-ready read seam: the resident impl indexes the
     /// buffer; the future bank consults a warm-block cache behind this same signature, so
     /// the player is unchanged when streaming lands.
     pub fn sample(&self, id: SampleId, channel: usize, frame: usize) -> f32 {
@@ -149,7 +149,7 @@ impl ResourceStore {
 }
 
 /// The resolved resource handles for one node, keyed by descriptor resource-slot name
-/// (ADR-0016). The loader fills it and hands it to
+/// The loader fills it and hands it to
 /// [`Operator::bind_resources`](crate::operator::Operator::bind_resources).
 #[derive(Debug, Clone, Default)]
 pub struct ResolvedRefs {
@@ -173,7 +173,7 @@ impl ResolvedRefs {
 }
 
 /// Why resolving a resource failed. Always surfaced as a
-/// [`LoadWarning`](crate::format::LoadWarning) — never fatal (ADR-0016): a missing or bad
+/// [`LoadWarning`](crate::format::LoadWarning) — never fatal: a missing or bad
 /// sample binds to an empty buffer and the node plays silence, so one broken file never
 /// takes down a live rig.
 #[derive(Debug, Clone)]
@@ -195,10 +195,10 @@ impl fmt::Display for ResolveError {
 
 impl std::error::Error for ResolveError {}
 
-/// Resolves a logical source (a file path today) to a decoded [`SampleBuffer`] (ADR-0016).
+/// Resolves a logical source (a file path today) to a decoded [`SampleBuffer`].
 ///
-/// The seam that keeps codecs and filesystem IO out of the portable core (ADR-0007,
-/// ADR-0012, the boundary-adapter pattern): `reuben-native` provides the WAV/filesystem
+/// The seam that keeps codecs and filesystem IO out of the portable core (the
+/// boundary-adapter pattern): `reuben-native` provides the WAV/filesystem
 /// implementation, and compressed formats or non-file sources (a bundle, a network — the
 /// "library" thread) drop in behind the same trait without touching core. Resolution is an
 /// eager, non-RT authoring step.
@@ -207,7 +207,7 @@ pub trait ResourceResolver {
     fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError>;
 
     /// The canonical identity of `source` — the key the loader uses for the cycle guard and the
-    /// per-load dedup caches (ADR-0034 §1: two spellings of one source must be one identity, and
+    /// per-load dedup caches (two spellings of one source must be one identity, and
     /// that judgment belongs to the resolver seam, not the loader). `referrer` is the canonical
     /// id of the document the reference appears in (`None` for the top-level document), so a
     /// nested patch's own references resolve relative to *its* location, not the root's.
@@ -221,7 +221,7 @@ pub trait ResourceResolver {
         source.to_string()
     }
 
-    /// Read `source` as **text** — the seam for the instrument-kind resource (ADR-0032 §2): a voice
+    /// Read `source` as **text** — the seam for the instrument-kind resource: a voice
     /// patch path resolves to its JSON, which the core then builds into a sub-`Graph`
     /// ([`load_instrument`](crate::format::load_instrument) recursively, so nested `sample`
     /// resources resolve too). Defaults to [`ResolveError::NotFound`] so a sample-only resolver need
@@ -232,7 +232,7 @@ pub trait ResourceResolver {
 }
 
 /// An in-memory [`ResourceResolver`]: sources are exact map keys, nothing touches a
-/// filesystem. The non-file side of the library seam (ADR-0016) made concrete — an embedded
+/// filesystem. The non-file side of the library seam made concrete — an embedded
 /// or WASM host registers its patches and decoded samples programmatically and loads
 /// instruments with no IO; tests get a self-contained resolver without temp files.
 ///

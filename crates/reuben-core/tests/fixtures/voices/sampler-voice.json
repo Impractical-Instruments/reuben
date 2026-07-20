@@ -1,7 +1,7 @@
 {
   "format_version": 2,
   "instrument": "sampler-voice",
-  "doc": "One-shot sample voice (ADR-0016/0032). A held gate fires the 'blip' sample; a held freq shifts its playback rate around root MIDI 57 (~220 Hz). Hosted N times by a `voicer` (the host allocates notes across the voices); the sample resource resolves recursively when the host loads this patch. interface: freq/gate in, audio out (no envelope, so no `active` — the voicer keys liveness on gate).",
+  "doc": "One-shot sample voice. A held gate fires the 'blip' sample; a held freq shifts its playback rate around root MIDI 57 (~220 Hz). Hosted N times by a `voicer` (the host allocates notes across the voices); the sample resource resolves recursively when the host loads this patch. interface: freq/gate in, audio out (no envelope, so no `active` — the voicer keys liveness on gate).",
   "resources": {
     "blip": "../samples/blip.wav"
   },

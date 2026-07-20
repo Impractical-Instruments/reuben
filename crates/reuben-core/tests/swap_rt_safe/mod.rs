@@ -4,7 +4,7 @@
 //! Both post a full document swap to a production [`RenderSlot`], then fill the exact BLOCK-sized
 //! buffers the audio callback fills across the master-gain ramp, and assert the callback-side
 //! install step — drain the install bundle, run the ramp, box-transplant the survivors, post the
-//! retiree — is **heap-neutral** on the render thread (ADR-0012: zero allocs, zero frees) and that
+//! retiree — is **heap-neutral** on the render thread (zero allocs, zero frees) and that
 //! the measured window was **non-vacuous** (the ramp genuinely ran and completed, and a real
 //! retiree came home for the Coordinator to reclaim). This module holds that skeleton, the
 //! `16 blocks > 2×ramp` window constant, and the live-counter probe in one place.

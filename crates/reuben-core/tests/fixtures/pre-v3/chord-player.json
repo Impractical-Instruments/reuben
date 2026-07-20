@@ -1,7 +1,7 @@
 {
   "format_version": 2,
   "instrument": "chord-player",
-  "doc": "V1.3 Toy 2 — the Chord player (ADR-0022/0032). Seven buttons play the diatonic triads I–vii° of the current key: tap-and-hold sustains a chord, release stops it. Each button sends /chord/set [degree, gate] (a chord-root scale degree + gate); the `chord` op stacks scale-relative thirds and emits `degree` notes, which the voicer resolves through the tonal context — so held and tapped chords RE-SPELL LIVE when you change the key (send /harmony/root [48..72]). Each of the 12 voices is a hosted `chord-player-voice` sub-patch (saw -> slow-attack ADSR VCA); the voicer sums them and a 'brightness' Good Button (/brightness/in [0..1]) tones the mix through a master filter. Polyphonic: 12 voices cover four held seventh chords.",
+  "doc": "V1.3 Toy 2 — the Chord player. Seven buttons play the diatonic triads I–vii° of the current key: tap-and-hold sustains a chord, release stops it. Each button sends /chord/set [degree, gate] (a chord-root scale degree + gate); the `chord` op stacks scale-relative thirds and emits `degree` notes, which the voicer resolves through the tonal context — so held and tapped chords RE-SPELL LIVE when you change the key (send /harmony/root [48..72]). Each of the 12 voices is a hosted `chord-player-voice` sub-patch (saw -> slow-attack ADSR VCA); the voicer sums them and a 'brightness' Good Button (/brightness/in [0..1]) tones the mix through a master filter. Polyphonic: 12 voices cover four held seventh chords.",
   "resources": {
     "chord-player-voice": "voices/chord-player-voice.json"
   },
@@ -139,7 +139,7 @@
     {
       "type": "m2s",
       "address": "/brightness",
-      "doc": "PUBLIC Good Button. The held knob value [0,1] smoothed into a CV Signal (an `m2s` is the value->signal converter), then ranged into the master filter cutoff. Send /brightness/in [0..1]. Rests at 0.5 (ADR-0018).",
+      "doc": "PUBLIC Good Button. The held knob value [0,1] smoothed into a CV Signal (an `m2s` is the value->signal converter), then ranged into the master filter cutoff. Send /brightness/in [0..1]. Rests at 0.5.",
       "inputs": {
         "in": 0.5,
         "mode": "Smooth",

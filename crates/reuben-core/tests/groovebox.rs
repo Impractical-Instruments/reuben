@@ -1,9 +1,9 @@
-//! Integration: the groovebox beatmaker (V1.3 Toy 1, ADR-0022/0032) loads through the full
+//! Integration: the groovebox beatmaker (V1.3 Toy 1) loads through the full
 //! resource pipeline — three track Voicers each host a drum-synth voice patch — and self-plays a
 //! non-silent beat with no external input.
 //!
 //! (Supersedes the old `groovebox_snare_gate.rs` probes, which tapped the now-removed `voicer.gate`
-//! output and internal drum-synth nodes that moved inside the voice patches, ADR-0032.)
+//! output and internal drum-synth nodes that moved inside the voice patches.)
 
 mod common;
 

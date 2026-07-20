@@ -1,7 +1,7 @@
 {
   "format_version": 3,
   "instrument": "space",
-  "doc": "Nestable tone + space send effect (ADR-0034/0038): a lowpass into a Freeverb, exposed through interface pipes so a host patch uses it as one node. Boundary: `in` (audio), `tone` (a swept cutoff pipe), `space` (the reverb-mix Value pipe) in; `out` (audio, fed from the reverb) out. Display labels/widgets live in a surface doc, not on pipes (ADR-0043). Each input pipe declares its own type and engine-enforced range (ADR-0038 \u00a72) \u2014 `tone` keeps the filter cutoff's full 20..20000 Hz range, matching what the v1 boundary enforced; consumers wire from it (`{\"from\": \"/tone\"}`).",
+  "doc": "Nestable tone + space send effect: a lowpass into a Freeverb, exposed through interface pipes so a host patch uses it as one node. Boundary: `in` (audio), `tone` (a swept cutoff pipe), `space` (the reverb-mix Value pipe) in; `out` (audio, fed from the reverb) out. Display labels/widgets live in a surface doc, not on pipes. Each input pipe declares its own type and engine-enforced range \u2014 `tone` keeps the filter cutoff's full 20..20000 Hz range, matching what the v1 boundary enforced; consumers wire from it (`{\"from\": \"/tone\"}`).",
   "interface": {
     "inputs": {
       "in": {

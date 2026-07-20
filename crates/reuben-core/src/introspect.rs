@@ -1,16 +1,15 @@
-//! Pure introspection for the Patcher skill and every conversational door (ADR-0020,
-//! ADR-0044 §3): `describe` the operator set (full port objects, or the compact
-//! signature-line mode `describe_compact`, ADR-0059 §3), `describe_patch` a nested
-//! instrument's boundary, `validate` an instrument without touching audio hardware, and
-//! project an instrument's `library_index_line` — the generated library index's
-//! signature line (ADR-0057 §4).
+//! Pure introspection for the Patcher skill and every conversational door: `describe` the
+//! operator set (full port objects, or the compact signature-line mode `describe_compact`),
+//! `describe_patch` a nested instrument's boundary, `validate` an instrument without touching
+//! audio hardware, and project an instrument's `library_index_line` — the generated library
+//! index's signature line.
 //!
 //! Descended from `reuben-native`'s CLI module so one implementation serves every consumer:
 //! the CLI re-exports this module as `reuben_native::cli`, and the MCP sidecar and the web
 //! player call it directly. Everything here is a pure function over [`Registry`] + JSON
 //! through the real load/plan code paths, so introspection can never drift from what the
-//! engine accepts. `validate` returns the contract [`Report`] every door serializes
-//! (ADR-0048 §§4–5); the view types derive `schemars::JsonSchema` behind the same
+//! engine accepts. `validate` returns the contract [`Report`] every door serializes;
+//! the view types derive `schemars::JsonSchema` behind the same
 //! default-off `schemars` feature as the contract types, so rmcp can emit `outputSchema`
 //! without the play/CLI build paying for it.
 
@@ -41,7 +40,7 @@ pub struct OperatorInfo {
 }
 
 /// One port, flattened from its [`Port`] for agent grounding. Inputs and outputs share this shape;
-/// a plan-time [`Constant`](Descriptor::constants) (ADR-0035) is just an input with `constant: true`
+/// a plan-time [`Constant`](Descriptor::constants) is just an input with `constant: true`
 /// — an immutable port set in a node's `config` block, never wired in `inputs`. Optional metadata
 /// appears only where the port's type carries it: `default`/`min`/`max`/`unit`/`curve` for a swept
 /// scalar, `default`/`min`/`max` for an integer, `default`/`variants` for an enum.
@@ -52,10 +51,10 @@ pub struct PortInfo {
     /// The port's [`PortType`] as the glossary's word: `"value"` (a held `f32` Value),
     /// `"signal"` (a dense `f32_buffer` Signal), `"int"`, `"enum"`, `"message"` (Note),
     /// `"harmony"` (Harmony), `"vocab"`, or `"string"`. The two numeric kinds are one wiring
-    /// family with a single implicit bridge: `value` → `signal` materializes (ADR-0031);
+    /// family with a single implicit bridge: `value` → `signal` materializes;
     /// the reverse is a hard error.
     pub kind: String,
-    /// A plan-time `Constant` (ADR-0035): set in the node's `config` block, not wired in `inputs`.
+    /// A plan-time `Constant`: set in the node's `config` block, not wired in `inputs`.
     /// Omitted (false) for an ordinary runtime input or any output.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub constant: bool,
@@ -72,10 +71,10 @@ pub struct PortInfo {
     /// `"linear"` or `"exponential"` for a swept scalar; omitted for non-scalar ports.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub curve: Option<String>,
-    /// The ordered enum choices (ADR-0030); empty for non-enum ports.
+    /// The ordered enum choices; empty for non-enum ports.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub variants: Vec<String>,
-    /// Boundary-only (ADR-0038 §3): the logical channel a signal pipe binds — the input channel
+    /// Boundary-only: the logical channel a signal pipe binds — the input channel
     /// an input pipe reads, or the master channel an output pipe feeds, when the instrument is
     /// played at top level. Omitted for unbound pipes and operator ports.
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -84,7 +83,7 @@ pub struct PortInfo {
 
 fn port_kind(ty: &PortType) -> &'static str {
     match ty {
-        // The glossary's two numeric forms (ADR-0031): a held `f32` is a Value, a dense
+        // The glossary's two numeric forms: a held `f32` is a Value, a dense
         // `f32_buffer` is a Signal. Wire-compatible one way only — a Value source materializes
         // into a Signal input; a Signal into a Value input is a hard plan error.
         PortType::F32 => "value",
@@ -121,7 +120,7 @@ impl PortInfo {
     /// Flatten one [`Port`] into its agent-facing view, reading whatever metadata its type carries:
     /// the scalar [`F32Meta`](crate::descriptor::F32Meta) on `Port::meta`, or the integer
     /// range / enum variants embedded in the [`PortType`]. `constant` marks a plan-time
-    /// [`Constant`](Descriptor::constants) (ADR-0035) so the consumer routes it to `config`.
+    /// [`Constant`](Descriptor::constants) so the consumer routes it to `config`.
     fn from_port(p: &Port, constant: bool) -> Self {
         let mut info = PortInfo {
             name: p.name.to_string(),
@@ -135,7 +134,7 @@ impl PortInfo {
             variants: Vec::new(),
             channel: None,
         };
-        // Scalar control (ADR-0030): a materialized `f32` input owns its range/curve/default in `meta`.
+        // Scalar control: a materialized `f32` input owns its range/curve/default in `meta`.
         if let Some(m) = &p.meta {
             info.default = Some(serde_json::json!(widen(m.default)));
             info.min = Some(widen(m.min));
@@ -143,7 +142,7 @@ impl PortInfo {
             info.unit = m.unit.to_string();
             info.curve = Some(curve(m.curve).to_string());
         }
-        // Type-embedded metadata: an integer's range (ADR-0035) or an enum's named choices (ADR-0030).
+        // Type-embedded metadata: an integer's range or an enum's named choices.
         match &p.ty {
             PortType::I32 { meta: Some(m) } => {
                 info.default = Some(serde_json::json!(m.default));
@@ -164,7 +163,7 @@ impl PortInfo {
 
 impl PortInfo {
     /// This input's fragment of a compact [`signature`](OperatorInfo::signature) line
-    /// (ADR-0059 §3): `name:kind`, then only the metadata the port actually carries —
+    /// `name:kind`, then only the metadata the port actually carries —
     /// `[variants]` for an enum, unit, `exp` for an exponential curve (linear is unmarked),
     /// `lo..hi`, `=default`. The `±1e6` "effectively unbounded" sentinel range
     /// ([`reuben_contract::NUMBER_MIN`]/[`NUMBER_MAX`](reuben_contract::NUMBER_MAX)) is
@@ -205,14 +204,14 @@ impl PortInfo {
 }
 
 impl OperatorInfo {
-    /// This operator's compact one-line signature (ADR-0059 §3; grounding-audit option 2a), e.g.
+    /// This operator's compact one-line signature, e.g.
     /// `filter(audio:signal, cutoff:signal Hz exp 20..20000=1000, …) -> audio:signal`. Runtime
     /// inputs come first; plan-time constants group under `config:` (they are set in the node's
     /// `config` block, never wired); resource slots group under `res:`; a pure sink renders with
     /// no arrow. Outputs render bare `name:kind` — what wiring needs; an output's range/default
     /// metadata is not an authoring lever, and full describe stays the zoom for it. Notation is
     /// keyed by [`COMPACT_DESCRIBE_LEGEND`]. Rendered from the same flattened view as the full
-    /// JSON mode — one source, two projections (ADR-0051).
+    /// JSON mode — one source, two projections.
     pub fn signature(&self) -> String {
         let group = |constant: bool| -> Vec<String> {
             self.inputs
@@ -246,7 +245,7 @@ impl OperatorInfo {
     }
 
     fn from_descriptor(d: &Descriptor) -> Self {
-        // One input surface: runtime inputs, then plan-time `Constant` ports (ADR-0035) flagged
+        // One input surface: runtime inputs, then plan-time `Constant` ports flagged
         // `constant`. A port's `kind` + metadata already distinguish scalar / integer / enum, so
         // there is no separate `params`/`enums`/`constants` split to keep in sync.
         let mut inputs: Vec<PortInfo> = d
@@ -283,7 +282,7 @@ pub fn describe(registry: &Registry, which: Option<&str>) -> Result<Vec<Operator
     }
 }
 
-/// The one-line notation key for the compact describe listing (ADR-0059 §3). Consumers that ship
+/// The one-line notation key for the compact describe listing. Consumers that ship
 /// the listing as standalone grounding (the web build's bundled prefix, the CLI's human view)
 /// prepend this line so the notation is self-describing; consumers with their own prose home for
 /// it (an MCP tool description) may carry the gist there instead.
@@ -293,11 +292,11 @@ lists [variants], a numeric port appends unit, exp (exponential curve; linear un
 =default. config: ports are plan-time constants set in the node's `config` block, never wired; \
 res: slots name `resources` entries the node binds. Describe one operator by name for full detail.";
 
-/// Compact describe — a generated mode of the verb (ADR-0059 §3; grounding-audit option 2a): the
+/// Compact describe — a generated mode of the verb: the
 /// same registry truth as [`describe`], projected to one [`signature`](OperatorInfo::signature)
 /// line per operator instead of full port objects. It delegates to [`describe`] and renders its
 /// flattened view, so the two modes cannot list different operator sets — a new operator appears
-/// in both by construction (never a hand-written digest, ADR-0051). Full describe remains the
+/// in both by construction (never a hand-written digest). Full describe remains the
 /// in-session zoom tool; this is the listing that earns a place in a bundled prefix
 /// (~2–3k tokens full-registry vs ~9.9k, reuben-web#96 corrected figures).
 pub fn describe_compact(registry: &Registry, which: Option<&str>) -> Result<Vec<String>, String> {
@@ -307,7 +306,7 @@ pub fn describe_compact(registry: &Registry, which: Option<&str>) -> Result<Vec<
         .collect())
 }
 
-/// A nested instrument's synthesized boundary (ADR-0034 §4 / ADR-0038 §2), described **as if it
+/// A nested instrument's synthesized boundary, described **as if it
 /// were an Operator**: one [`PortInfo`] per `interface` name — an input pipe from its own declared
 /// type/range/default, an output pipe inheriting type and metadata from the internal port feeding
 /// it plus optional min/max range overrides (a subset of that port's range). Both carry the entry's
@@ -321,13 +320,13 @@ pub struct PatchBoundary {
     pub inputs: Vec<PortInfo>,
     pub outputs: Vec<PortInfo>,
     /// Declared boundary ports whose internal target went dark this load (an unavailable
-    /// nested child, ADR-0016/0034) — real ports the description can't type.
+    /// nested child) — real ports the description can't type.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dark_inputs: Vec<String>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dark_outputs: Vec<String>,
     /// Non-fatal load warnings (unresolved resources etc.), advisory as in `validate` and
-    /// localized the same way (ADR-0048 §4): each carries the offending node when the loader
+    /// localized the same way: each carries the offending node when the loader
     /// named one.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub warnings: Vec<Diag>,
@@ -346,7 +345,7 @@ impl PatchBoundary {
 }
 
 impl PortInfo {
-    /// The introspection view of one core [`BoundaryPortDesc`] (ADR-0034 §4 / ADR-0038 §2):
+    /// The introspection view of one core [`BoundaryPortDesc`]:
     /// [`describe_boundary`] already resolved each pipe (an input pipe's declared metadata, an
     /// output pipe's inherited-then-decorated metadata); this only maps its typed fields onto
     /// the flat agent-facing shape shared with operator ports.
@@ -369,11 +368,11 @@ impl PortInfo {
     }
 }
 
-/// Describe an instrument document's boundary the way a host instrument will see it (ADR-0034 §4 /
-/// ADR-0038 §2): load it through the real engine path (parsed once), let core's
+/// Describe an instrument document's boundary the way a host instrument will see it: load it
+/// through the real engine path (parsed once), let core's
 /// [`describe_boundary`] resolve each pipe (an input pipe from its own declared type/range, an
 /// output pipe inheriting from the port feeding it plus optional min/max range overrides — both
-/// decorated with the entry's `unit`; presentation lives in a surface doc, ADR-0043), and
+/// decorated with the entry's `unit`; presentation lives in a surface doc), and
 /// present each port as an operator-style [`PortInfo`]. `kind` is the pipe's `Arg`
 /// type — declared on an input pipe, the feeding port's on an output. An instrument with no
 /// `interface` yields empty port lists (it nests, but exposes nothing to wire).
@@ -401,7 +400,7 @@ pub fn describe_patch(
     })
 }
 
-/// One instrument's **library-index signature line** (ADR-0057 §4): name, recipe-role line, and
+/// One instrument's **library-index signature line**: name, recipe-role line, and
 /// interface face —
 ///
 /// ```text
@@ -410,7 +409,7 @@ pub fn describe_patch(
 ///
 /// Projected mechanically from the document alone, through the real load path (the same
 /// projection family as [`describe_patch`]): the role line is the top-level `doc` field's first
-/// sentence (ADR-0057 §3 — trusted for selection only, never for wiring), and the face is read
+/// sentence (trusted for selection only, never for wiring), and the face is read
 /// off the post-mint `interface` block — each input pipe's declared `type`/`unit`/`default`
 /// (min/max/curve/channel stay in the full [`describe_patch`] view, the on-demand fallback),
 /// then the output pipe names. A document that fails to load gets no line: the index never
@@ -466,7 +465,7 @@ pub fn library_index_line(
     Ok(line)
 }
 
-/// The `doc` field's first sentence — the recipe-role line (ADR-0057 §3). Whitespace-normalized
+/// The `doc` field's first sentence — the recipe-role line. Whitespace-normalized
 /// (the line format is one instrument per line), ending at the first `.` whose successor is
 /// whitespace or end-of-text, so a `.` inside a token (`patches/space.json`, `e.g.`… followed by
 /// more of the same sentence) never truncates. A doc with no sentence-ending period is one
@@ -490,7 +489,7 @@ fn first_sentence(doc: &str) -> String {
 }
 
 /// Split a `"{node.address}.{port}"` wire-ref — the shape [`PlanError::FormMismatch`] carries in
-/// its `src`/`dst` — into the structured `(node, port)` a [`Diag`] localizes on (ADR-0048 §4).
+/// its `src`/`dst` — into the structured `(node, port)` a [`Diag`] localizes on.
 /// Node addresses carry no `.`, so the last `.` separates node from port (the same rule as
 /// `format`'s `parse_wire`); a bare node ref with no port degrades to node-only.
 fn localize_wire_ref(reference: &str) -> (Option<String>, Option<String>) {
@@ -503,7 +502,7 @@ fn localize_wire_ref(reference: &str) -> (Option<String>, Option<String>) {
 /// Validate an instrument the same way the engine would build it — full load (structural +
 /// wiring + kind-checking) plus a `Plan::instantiate` to catch cycles — but with a synthetic
 /// [`AudioConfig`], so no audio device is opened and nothing renders. The result is the
-/// contract [`Report`] every conversational door serializes (ADR-0048 §§4–5, ADR-0052 §5).
+/// contract [`Report`] every conversational door serializes.
 pub fn validate(json: &str, registry: &Registry, resolver: &dyn ResourceResolver) -> Report {
     let loaded = match load_instrument(json, registry, resolver) {
         Ok(l) => l,
@@ -534,13 +533,13 @@ pub fn validate(json: &str, registry: &Registry, resolver: &dyn ResourceResolver
             warnings,
         },
         Err(PlanError::FormMismatch { src, dst, reason }) => {
-            // Localize to the destination endpoint (ADR-0048 §4): a form mismatch is rejected at
+            // Localize to the destination endpoint: a form mismatch is rejected at
             // the *input* port that can't accept the source's form (Signal→Value, Event→Signal,
             // …), so `dst` is the node an agent must go fix — exactly as every `LoadError` with a
             // known input localizes to its node.
             //
             // This arm is a **defensive backstop**: the load-time wiring check (`format`'s
-            // `compatible` gate, ADR-0034 §5) rejects every *reachable* form/type mismatch first,
+            // `compatible` gate) rejects every *reachable* form/type mismatch first,
             // in boundary terms, before `Plan::instantiate` ever runs its form check — see
             // `mistyped_boundary_wire_fails_at_load_not_at_instantiate`. So `validate` only reaches
             // here if some future path hands `instantiate` a form-mismatched graph that skipped
@@ -573,7 +572,7 @@ mod tests {
 
     /// Test-only directory resolver: reads instrument-kind resources (JSON text) relative to a
     /// base directory. Samples never resolve — no introspect test needs decoded audio, and
-    /// codecs stay out of this crate (ADR-0007/0016); the WAV-decoding `FsResolver` lives in
+    /// codecs stay out of this crate; the WAV-decoding `FsResolver` lives in
     /// reuben-native behind the same [`ResourceResolver`] seam.
     struct DirResolver(PathBuf);
 
@@ -651,7 +650,7 @@ mod tests {
 
     #[test]
     fn validate_accepts_the_mic_space_example() {
-        // The live-input demo (ADR-0038): a channel-bound top-level input pipe feeding the nested
+        // The live-input demo: a channel-bound top-level input pipe feeding the nested
         // space patch. Bound pipes are fed by the input master, so validate must be warning-clean
         // (an *unbound* bare signal pipe would warn).
         let dir = instruments_dir();
@@ -717,8 +716,8 @@ mod tests {
 
     #[test]
     fn localize_wire_ref_splits_the_offending_node_and_port() {
-        // The FormMismatch backstop localizes its Diag by splitting the `dst` wire-ref (ADR-0048
-        // §4). A load-shadowed arm has no reachable document to drive it (every form mismatch is a
+        // The FormMismatch backstop localizes its Diag by splitting the `dst` wire-ref.
+        // A load-shadowed arm has no reachable document to drive it (every form mismatch is a
         // load-time TypeMismatch first — `mistyped_boundary_wire_fails_at_load_not_at_instantiate`
         // in `format`), so the localization logic is pinned here on the pure split it performs.
         assert_eq!(
@@ -740,7 +739,7 @@ mod tests {
 
     #[test]
     fn validate_treats_a_missing_resource_as_advisory_not_invalid() {
-        // ADR-0016/0032: a voice resource that doesn't resolve plays silence rather than failing the
+        // A voice resource that doesn't resolve plays silence rather than failing the
         // load. The instrument is still valid (ok), but the unresolved resource surfaces as a warning.
         let json = r#"{
           "instrument": "ghost",
@@ -772,7 +771,7 @@ mod tests {
             "the unresolved sample should warn: {:?}",
             report.warnings
         );
-        // ADR-0048 §4 warning-promotion: warnings are Diags, localized like errors, so the agent
+        // Warning-promotion: warnings are Diags, localized like errors, so the agent
         // jumps to the offending node for a warning exactly as for an error.
         assert_eq!(
             report.warnings[0].node.as_deref(),
@@ -784,7 +783,7 @@ mod tests {
 
     #[test]
     fn validate_report_serializes_warnings_as_diag_objects() {
-        // The CLI's `validate --json` shape (ADR-0048 §4): warnings are Diag *objects* carrying a
+        // The CLI's `validate --json` shape: warnings are Diag *objects* carrying a
         // `message` (plus node/port localization when the loader named one) — never bare strings.
         let json = r#"{
           "instrument": "ghost",
@@ -847,7 +846,7 @@ mod tests {
         assert_eq!(ops.len(), 1);
         let osc = &ops[0];
 
-        // A scalar control input carries its range/curve/default inline (ADR-0030).
+        // A scalar control input carries its range/curve/default inline.
         let freq = osc
             .inputs
             .iter()
@@ -860,7 +859,7 @@ mod tests {
             .outputs
             .iter()
             .any(|p| p.name == "audio" && p.kind == "signal"));
-        // `waveform` is an Enum input (ADR-0030) — one input surface, no separate `enums` list; its
+        // `waveform` is an Enum input — one input surface, no separate `enums` list; its
         // variants + default symbol ride on the same `PortInfo`.
         let waveform = osc
             .inputs
@@ -874,8 +873,8 @@ mod tests {
 
     #[test]
     fn describe_speaks_the_glossary_for_the_two_numeric_forms() {
-        // Issue #176: a held `f32` is a Value, a dense `f32_buffer` is a Signal (ADR-0031,
-        // CONTEXT.md) — `describe` must not collapse both into `"signal"`. The envelope has both:
+        // Issue #176: a held `f32` is a Value, a dense `f32_buffer` is a Signal — `describe` must
+        // not collapse both into `"signal"`. The envelope has both:
         // its gate/ADSR inputs are held Values, its `cv` output a per-sample Signal.
         let ops = describe(&Registry::builtin(), Some("envelope")).expect("describe envelope");
         let env = &ops[0];
@@ -924,7 +923,7 @@ mod tests {
 
     #[test]
     fn describe_compact_lists_exactly_the_registry() {
-        // R2's registry-parity acceptance (reuben#459, ADR-0059 §3): compact is generated from
+        // Registry-parity acceptance: compact is generated from
         // the same source as full describe — a new operator appears in both or this fails. The
         // two projections must agree entry-for-entry, in the same deterministic order.
         let reg = Registry::builtin();
@@ -994,8 +993,8 @@ mod tests {
 
     #[test]
     fn compact_signature_groups_constants_and_resources() {
-        // A plan-time Constant (ADR-0035) routes to the node's `config` block and a resource
-        // slot (ADR-0016) to a `resources` entry — the signature must say so, or the compact
+        // A plan-time Constant routes to the node's `config` block and a resource
+        // slot to a `resources` entry — the signature must say so, or the compact
         // grounding teaches un-loadable documents. The voicer carries both.
         let line = &describe_compact(&Registry::builtin(), Some("voicer")).expect("voicer")[0];
 
@@ -1070,7 +1069,7 @@ mod tests {
 
     #[test]
     fn describe_patch_surfaces_the_boundary_with_inherited_metadata() {
-        // ADR-0034 §4 (P6): a voice patch's `interface` describes as operator-style ports, each
+        // A voice patch's `interface` describes as operator-style ports, each
         // inheriting the inner port's type + metadata (default-voice's `freq` targets the
         // oscillator's swept-Hz control, so its range/unit/curve come through).
         let dir = instruments_dir().join("voices");
@@ -1100,9 +1099,9 @@ mod tests {
 
     #[test]
     fn describe_patch_applies_interface_overrides_but_never_the_type() {
-        // ADR-0034 §4: quantity overrides (`unit`) decorate the inherited port; the Arg type
+        // Quantity overrides (`unit`) decorate the inherited port; the Arg type
         // (`kind`) stays the inner port's truth — there is no way to override it. v1's
-        // `label`/`widget` are retired presentation (ADR-0043) — drained with a warning, never
+        // `label`/`widget` are retired presentation — drained with a warning, never
         // described. The v1 range override is validated against the engine-enforced [20..20000]
         // (override law) but NOT migrated onto the pipe: a v2 pipe range is engine-enforced, and
         // v1's was display-only — so `describe` publishes the inner port's range, exactly what
@@ -1167,7 +1166,7 @@ mod tests {
 
     #[test]
     fn describe_patch_drops_an_internally_driven_v1_boundary_input() {
-        // ADR-0038: v1 could expose an input whose inner Signal port the child drove internally —
+        // v1 could expose an input whose inner Signal port the child drove internally —
         // a port a host could see but never wire (the old `driven` flag). The flip cannot express
         // that state, so migration drops the entry: the boundary lists only wireable pipes.
         let json = r#"{
@@ -1199,7 +1198,7 @@ mod tests {
 
     #[test]
     fn library_index_line_projects_name_role_line_and_face() {
-        // ADR-0057 §4: name — role line (the `doc` first sentence) — face (declared input
+        // name — role line (the `doc` first sentence) — face (declared input
         // pipes) → output pipe names, through the real load path.
         let dir = instruments_dir().join("voices");
         let json = std::fs::read_to_string(dir.join("kick-voice.json")).expect("read voice");
@@ -1263,7 +1262,7 @@ decay:f32 s=0.1, gate:f32=0, release:f32 s=0.08, sustain:f32=0, sweep:f32 Hz=220
 
     #[test]
     fn library_index_line_without_doc_or_interface_degrades_to_the_bare_face() {
-        // No `doc` → no role line to project (quality is authoring, ADR-0057 §4 — the index
+        // No `doc` → no role line to project (quality is authoring — the index
         // never invents one); no `interface` → an empty face, honestly rendered.
         let json = r#"{ "format_version": 3, "instrument": "plain",
           "nodes": [ { "type": "oscillator", "address": "/osc" } ] }"#;
@@ -1283,7 +1282,7 @@ decay:f32 s=0.1, gate:f32=0, release:f32 s=0.08, sustain:f32=0, sweep:f32 Hz=220
         assert!(err.contains("oscilllator"), "names the bad type: {err}");
     }
 
-    /// ADR-0044 §3 / ADR-0048 §3: rmcp derives tool `outputSchema`s from these view types via
+    /// rmcp derives tool `outputSchema`s from these view types via
     /// schemars, under the same default-off feature as the contract types. Run with
     /// `--features schemars`.
     #[cfg(feature = "schemars")]
