@@ -22,7 +22,7 @@ render mutates state — and reclaiming the old side without RT drops fights tha
 
 Install happens once per swap, at a device block boundary. The callback *peeks* the install slot at
 the **callback top** and begins the master-gain down-ramp there; the actual install lands later,
-**when the ramp reaches zero** (ADR-0050 §2 amends ADR-0046 §3's install-at-the-top — see
+**when the ramp reaches zero** (the fade-to-zero install replaces the earlier install-at-the-callback-top — see
 [swap-gain-ramp](swap-gain-ramp.md)). At that install, the retiring Engine's ≤1-block
 rendered-but-unplayed residue (~5 ms) is discarded and its pending control Messages are dropped,
 since a Message minted against the old Plan's port types may not be valid against the new one. That

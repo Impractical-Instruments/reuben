@@ -14,7 +14,7 @@ they land, though nothing builds them yet.
 The web renderer consumes the surface doc live and renders every shipped kind. The **TouchOSC
 target is a disposable projection** — the instrument JSON is the source of truth, a `.tosc` is a
 scratch playing surface you regenerate when the instrument changes (this is the one durable piece of
-ADR-0018's original framing, now scoped to the projection only). The emitter renders its subset and
+the original control-surface framing, now scoped to the projection only). The emitter renders its subset and
 **skips web-only or reserved widgets loudly**, a warning naming each skipped control, exactly as it
 already skips enum inputs. File resolution is per-target and layered:
 `surfaces/<instrument>.<target>.json` ?? `surfaces/<instrument>.json` ?? the auto-derived default
