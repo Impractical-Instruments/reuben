@@ -1,16 +1,16 @@
-//! Shared diagnostics counter surface (ADR-0038 §9, P6/#183).
+//! Shared diagnostics counter surface (P6/#183).
 //!
 //! reuben's xrun policy is **fixed and observable, not configurable**: an output render
 //! deadline miss plays the device's own silence and is counted; nothing about rendering
 //! changes because of it. This module is the *one* place those counts live, so that P5's
 //! input-ring underrun/overrun counters (#182) land as new fields here rather than a second,
-//! parallel counter surface. The ADR asks for "periodic and/or exit" logging; this pass ships
+//! parallel counter surface. The design asks for "periodic and/or exit" logging; this pass ships
 //! periodic logging ([`spawn_periodic_logger`]) since `reuben play` has no clean shutdown path
 //! today (it parks the main thread forever; Ctrl-C is an uncaught `SIGINT`) — wiring a
 //! process-exit hook is a separate, deliberately out-of-scope concern for a diagnostics-only
 //! pass. [`log_snapshot`] is exposed as a free function precisely so an exit hook can call it
 //! later without any change to this module. An OSC diagnostic endpoint is explicitly a later
-//! step (ADR-0038 §9), not built here.
+//! step, not built here.
 //!
 //! [`Diagnostics`] is designed to be bumped from an RT thread (the output callback, and P5's
 //! input-ring producer/consumer, #182) and read from an ordinary thread: every field is an
@@ -21,7 +21,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
-/// Atomic counters for the conditions ADR-0038 §9 says reuben must "know and say": an output
+/// Atomic counters for the conditions reuben must "know and say": an output
 /// render that missed its deadline, and (from P5 onward) the input ring's empty-read and
 /// full-write events. Shared via `Arc` between whichever RT thread(s) bump a counter and
 /// whatever logs it.
@@ -35,12 +35,12 @@ use std::time::Duration;
 pub struct Diagnostics {
     /// Output render callbacks that missed their real-time budget (P6, #183): the callback's
     /// own render + mapping work took longer than the audio time it was producing. The device
-    /// still played *something* (its own underrun silence, ADR-0038 §9) — this only counts
+    /// still played *something* (its own underrun silence) — this only counts
     /// that the miss happened.
     pub output_xruns: AtomicU64,
     /// Input-ring underruns (P5, #182), counted in **frames**: the ring ran empty while the
     /// output callback was pulling logical input, and this many input frames were read as
-    /// zeros instead (ADR-0038 §9's empty→zeros policy). Silence delivered while *re*-priming
+    /// zeros instead (the empty→zeros policy). Silence delivered while *re*-priming
     /// after a dry spell is counted too (per callback, as its input-frame demand) — a
     /// glitching device's delivered silence is fully accounted for. Only the *initial*
     /// startup prefill is uncounted: silence before the ring has ever flowed is expected,
@@ -48,7 +48,7 @@ pub struct Diagnostics {
     pub input_ring_underruns: AtomicU64,
     /// Input-ring overruns (P5, #182), counted in **frames**: the *consumer-side* drop-oldest
     /// trim discarded this many of the oldest queued frames because ring fill crossed the
-    /// high-water mark (ADR-0038 §9's full→drop-oldest policy). Diagnosis: input is arriving
+    /// high-water mark (the full→drop-oldest policy). Diagnosis: input is arriving
     /// faster than the drift servo's ±0.5% authority can absorb (a real rate mismatch), or an
     /// output stall left a backlog the trim re-anchored to the floor. The opposite failure —
     /// the output callback stalled outright — counts in
@@ -75,15 +75,15 @@ impl Diagnostics {
         self.output_xruns.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// Count `frames` input frames read as zeros because the ring was empty (ADR-0038 §9).
+    /// Count `frames` input frames read as zeros because the ring was empty.
     /// RT-safe: a single atomic add, no allocation, no syscall, no lock.
     pub fn record_input_ring_underrun_frames(&self, frames: u64) {
         self.input_ring_underruns
             .fetch_add(frames, Ordering::Relaxed);
     }
 
-    /// Count `frames` *oldest* input frames dropped by the consumer-side high-water trim
-    /// (ADR-0038 §9). RT-safe: a single atomic add, no allocation, no syscall, no lock.
+    /// Count `frames` *oldest* input frames dropped by the consumer-side high-water trim.
+    /// RT-safe: a single atomic add, no allocation, no syscall, no lock.
     pub fn record_input_ring_overrun_frames(&self, frames: u64) {
         self.input_ring_overruns
             .fetch_add(frames, Ordering::Relaxed);

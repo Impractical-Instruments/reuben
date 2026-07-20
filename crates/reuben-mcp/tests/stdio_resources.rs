@@ -5,8 +5,8 @@
 //! tool-surface harness in `stdio_tools_list.rs`, with the same watchdog so a regression fails
 //! loudly instead of hanging CI.
 //!
-//! The tier-2 acceptance this file rides (ADR-0059 §8): resources served byte-equal to the
-//! checkout, the retired instrument-JSON-Schema resource (ADR-0059 §4) absent, and every
+//! The tier-2 acceptance this file rides: resources served byte-equal to the
+//! checkout, the retired instrument-JSON-Schema resource absent, and every
 //! `INSTRUCTIONS` pointer resolves.
 
 use std::io::{Read, Write};
@@ -23,7 +23,7 @@ use serde_json::Value;
 const COMMITTED_VOCABULARY: &str = include_str!("../../../docs/agents/vocabulary.md");
 const COMMITTED_LIBRARY_INDEX: &str = include_str!("../../../instruments/index.md");
 
-/// The retired resource URI (ADR-0059 §4): the instrument JSON Schema resource, deleted outright.
+/// The retired resource URI: the instrument JSON Schema resource, deleted outright.
 /// Built by compile-time concatenation — the same `concat!` trick `VOCABULARY_PATH`/
 /// `LIBRARY_INDEX_PATH` use in `src/lib.rs`, and the same idea as `no_dangling_references.rs`'s
 /// own retired tokens — so this literal doesn't trip that test's live-text tripwire for the very
@@ -32,7 +32,7 @@ const RETIRED_SCHEMA_RESOURCE_URI: &str = concat!("reuben://", "schema/instrumen
 
 /// Drive the shim through initialize → initialized → the given requests over stdio and return the
 /// raw stdout. Requests are buffered into the child's stdin, which is then closed; on EOF the shim
-/// shuts down (ADR-0044 §1), flushing every response first, so reading stdout to EOF collects all
+/// shuts down, flushing every response first, so reading stdout to EOF collects all
 /// of them. A watchdog thread bounds the read so a protocol regression fails loudly.
 fn drive(requests: &[&str]) -> String {
     let mut child = Command::new(env!("CARGO_BIN_EXE_reuben-mcp"))
@@ -104,7 +104,7 @@ fn resources_list_advertises_guide_vocabulary_and_index_only() {
         .collect();
 
     // Exactly the guide + vocabulary + index — an exact-set assertion, so the retired
-    // instrument-JSON-Schema resource (deleted outright, ADR-0059 §4) can never quietly
+    // instrument-JSON-Schema resource (deleted outright) can never quietly
     // reappear on the wire, and no fourth resource sneaks in unnoticed either.
     assert_eq!(
         advertised,
@@ -122,11 +122,10 @@ fn resources_list_advertises_guide_vocabulary_and_index_only() {
                 reuben_mcp::LIBRARY_INDEX_RESOURCE_MIME.to_string(),
             ),
         ],
-        "resources/list must advertise exactly guide + vocabulary + library index (ADR-0048 §7, \
-         as amended by ADR-0059 §3/§6): {advertised:?}"
+        "resources/list must advertise exactly guide + vocabulary + library index: {advertised:?}"
     );
 
-    // Named explicitly too (ADR-0059 §8's tier-2 wording): the retired schema URI never appears.
+    // Named explicitly too: the retired schema URI never appears.
     assert!(
         !advertised
             .iter()
@@ -172,8 +171,8 @@ fn read_authoring_guide_is_nonempty_markdown() {
 
 #[test]
 fn read_vocabulary_is_byte_equal_to_the_checkout() {
-    // ADR-0059 §8 tier-2: the resource served over the wire is byte-equal with the checkout —
-    // read from disk at request time (ADR-0051 §4), not baked into the binary, so this also
+    // The resource served over the wire is byte-equal with the checkout —
+    // read from disk at request time, not baked into the binary, so this also
     // proves the crate isn't serving a stale embedded copy.
     let (uri, mime, text) = read_resource(reuben_mcp::VOCABULARY_RESOURCE_URI);
     assert_eq!(uri, reuben_mcp::VOCABULARY_RESOURCE_URI);
@@ -186,7 +185,7 @@ fn read_vocabulary_is_byte_equal_to_the_checkout() {
 
 #[test]
 fn read_library_index_is_byte_equal_to_the_checkout() {
-    // ADR-0059 §8 tier-2: same byte-equal contract as the vocabulary, for the library index.
+    // Same byte-equal contract as the vocabulary, for the library index.
     let (uri, mime, text) = read_resource(reuben_mcp::LIBRARY_INDEX_RESOURCE_URI);
     assert_eq!(uri, reuben_mcp::LIBRARY_INDEX_RESOURCE_URI);
     assert_eq!(mime, reuben_mcp::LIBRARY_INDEX_RESOURCE_MIME);
@@ -198,7 +197,7 @@ fn read_library_index_is_byte_equal_to_the_checkout() {
 
 #[test]
 fn read_retired_schema_resource_is_a_resource_not_found_error() {
-    // ADR-0059 §8 tier-2, named explicitly by the ticket: the retired schema resource URI is
+    // Named explicitly by the ticket: the retired schema resource URI is
     // absent — not just missing from `resources/list`, but genuinely unreadable.
     let request = format!(
         r#"{{"jsonrpc":"2.0","id":9,"method":"resources/read","params":{{"uri":"{RETIRED_SCHEMA_RESOURCE_URI}"}}}}"#
@@ -218,7 +217,7 @@ fn read_retired_schema_resource_is_a_resource_not_found_error() {
 
 #[test]
 fn every_instructions_pointer_resolves() {
-    // ADR-0059 §8 tier-2, named explicitly by the ticket: every resource `INSTRUCTIONS` points at
+    // Named explicitly by the ticket: every resource `INSTRUCTIONS` points at
     // must actually resolve over `resources/read`. Checked against the three public resource-URI
     // constants directly — not a hand-rolled parse of the prose, which would silently mis-parse a
     // future edit that ends a URI with punctuation the parser didn't anticipate — so a dropped
@@ -268,7 +267,7 @@ fn every_instructions_pointer_resolves() {
 
 #[test]
 fn read_unknown_resource_is_a_resource_not_found_error() {
-    // ADR-0048 §7: an unknown resource URI is `resource_not_found` — not a silent empty read, not a
+    // An unknown resource URI is `resource_not_found` — not a silent empty read, not a
     // panic. Drives the `other =>` arm of `read_resource` (otherwise untested) over the real stdio
     // JSON-RPC boundary and asserts a protocol error, naming the URIs the server does serve.
     let request = r#"{"jsonrpc":"2.0","id":7,"method":"resources/read","params":{"uri":"reuben://does/not/exist"}}"#;

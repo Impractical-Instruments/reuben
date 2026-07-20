@@ -1,4 +1,4 @@
-//! End-to-end stereo proof on a frozen fixture (ADR-0026): load `stereo-autopan.json`,
+//! End-to-end stereo proof on a frozen fixture: load `stereo-autopan.json`,
 //! play a note, and confirm the engine serves two interleaved channels whose content differs
 //! over time (the LFO is sweeping the voice across the field).
 

@@ -1,38 +1,40 @@
-//! The structure channel: a loopback-TCP / NDJSON server (ADR-0046 §8).
+//! The structure channel: a loopback-TCP / NDJSON server.
 //!
-//! This is the engine-side half of the sidecar↔engine control channel ADR-0044 delegated to
-//! ADR-0046: **TCP on `127.0.0.1`** (loopback-only — structure edits are more powerful than
+//! This is the engine-side half of the sidecar↔engine control channel:
+//! **TCP on `127.0.0.1`** (loopback-only — structure edits are more powerful than
 //! control, unlike OSC's `0.0.0.0:9000`), carrying **newline-delimited JSON**, one
 //! [`Response`] per [`Request`] in order. A thread in `reuben play` owns it; the client lives
 //! in `reuben-mcp`. Zero new dependencies beyond std, cross-platform, netcat-debuggable.
 //!
 //! M2 (#323) flips the `swap` verb from M1's stop-the-world restart onto the
-//! [`Coordinator`](reuben_core::coordinator::Coordinator)/mailbox path (ADR-0046 §10: *same
+//! [`Coordinator`](reuben_core::coordinator::Coordinator)/mailbox path (*same
 //! verb, machinery-only replacement*). The four verbs:
-//! - [`Request::Ping`] → [`Response::Pong`] — liveness of the channel itself (ADR-0044 §2).
+//! - [`Request::Ping`] → [`Response::Pong`] — liveness of the channel itself.
 //! - [`Request::GetDocument`] → the Coordinator's canonical document + its
-//!   [`content_hash`](reuben_core::content_hash) (ADR-0046 §7/§9). It changes only when a
+//!   [`content_hash`](reuben_core::content_hash). It changes only when a
 //!   [`Request::Swap`] installs a new document.
 //! - [`Request::GetDiagnostics`] → a [`DiagnosticsReport`] built from a live [`Snapshot`] of
-//!   the [`Diagnostics`] `audio::start` owns (ADR-0038 §9 / ADR-0048 §6). **RT-safety:** the
+//!   the [`Diagnostics`] `audio::start` owns. **RT-safety:** the
 //!   snapshot is [`Diagnostics::snapshot`]'s `Relaxed` atomic loads into an owned copy — the
 //!   query thread never forces the audio callback to synchronize.
-//! - [`Request::Swap`] → a **mailbox swap** (ADR-0046 §§1–7): [`Coordinator::swap_document`]
+//! - [`Request::Swap`] → a **mailbox swap**: [`Coordinator::swap_document`]
 //!   validates + builds a whole new Engine off-thread, fills the install mailbox, and returns a
 //!   real [`SwapReport`] with survivor/reset stats. The RT callback drains the mailbox and
-//!   box-transplants the survivors gaplessly (ADR-0050's ramp) — **no stream teardown**; the
-//!   streams are fixed at `play` start (ADR-0046 §6). This server thread then reclaims the
-//!   retired Engine off-thread (ADR-0009), and publishes the freshly-validated device output map
+//!   box-transplants the survivors gaplessly (under the master-gain ramp) — **no stream teardown**;
+//!   the streams are fixed at `play` start. This server thread then reclaims the
+//!   retired Engine off-thread, and publishes the freshly-validated device output map
 //!   for the new engine through the injected [`RenderConfigPublisher`] seam. A swapped-in engine
 //!   binding input channels no open stream provides **dark-degrades to silence** with a loud
-//!   swap-report warning (ADR-0038 §7/§9), never an error or a crash.
+//!   swap-report warning, never an error or a crash.
 //!
-//! The Coordinator is single-writer (ADR-0046 §7): the structure server holds it behind one
+//! The Coordinator is single-writer: the structure server holds it behind one
 //! [`Mutex`] so concurrent connections serialize, and the whole `expect`-compare → swap →
-//! publish → reclaim runs as one critical section (a correct compare-and-swap, ADR-0046 §9).
+//! publish → reclaim runs as one critical section (a correct compare-and-swap).
 //!
-//! reuben-native stays **tokio-free** (ADR-0044 §3 fence): the server is a dedicated std
-//! thread doing blocking line I/O, never an async runtime.
+//! reuben-native stays **tokio-free** (the async runtime is fenced to reuben-mcp): the server is a
+//! dedicated std thread doing blocking line I/O, never an async runtime.
+//!
+//! see rules: execution-runtime
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
@@ -64,9 +66,9 @@ const ACCEPT_POLL: Duration = Duration::from_millis(50);
 const READ_POLL: Duration = Duration::from_millis(250);
 
 /// How long a swap waits for the RT callback to drain the install mailbox and post the retired
-/// Engine back before giving up the off-thread reclaim (ADR-0046 §2 "engine isn't consuming
-/// swaps; is audio running?"). With a live callback the retiree comes home in one master-gain
-/// ramp (~20ms, ADR-0050); this bound only bites when audio has genuinely stopped — the swap has
+/// Engine back before giving up the off-thread reclaim (the "engine isn't consuming
+/// swaps; is audio running?" case). With a live callback the retiree comes home in one master-gain
+/// ramp (~20ms); this bound only bites when audio has genuinely stopped — the swap has
 /// already committed, so a timeout just defers the free to the next swap's opportunistic reclaim.
 const SWAP_RECLAIM_TIMEOUT: Duration = Duration::from_millis(500);
 
@@ -168,19 +170,19 @@ impl SwapPollGate {
 }
 
 /// Publish the render-side config for a freshly-installed engine and report any dark-degrade
-/// warnings (ADR-0046 §6, ADR-0038 §7/§9) — the **native device seam** of the M2 swap.
+/// warnings — the **native device seam** of the M2 swap.
 ///
 /// After [`Coordinator::swap_document`] commits, this rebuilds the device **output map**
-/// off-thread against the *retained* device channel count (streams are fixed at `play` start,
-/// ADR-0046 §6) and ships it across the render mailbox to the RT callback, so the callback
+/// off-thread against the *retained* device channel count (streams are fixed at `play` start)
+/// and ships it across the render mailbox to the RT callback, so the callback
 /// installs Engine + map together. It also decides the **input dark-degrade**: a swapped-in
 /// engine that binds input channels no open stream provides degrades to silence, and this returns
-/// the loud swap-report warning (§9 know-and-say) — not an error, not a crash.
+/// the loud swap-report warning (know-and-say) — not an error, not a crash.
 ///
 /// `play` wires the production implementation (the native map mailbox, in `audio.rs`); a headless
 /// test uses [`HeadlessRenderConfig`], which builds no map (there is no device) but still computes
 /// the dark-degrade warning from the retained geometry, so the swap **logic** — including the
-/// warning — is exercised with no cpal device (ADR-0053 §4).
+/// warning — is exercised with no cpal device.
 ///
 /// `Send + Sync` because a connection-handler thread calls it (under the Coordinator lock).
 pub trait RenderConfigPublisher: Send + Sync {
@@ -203,7 +205,7 @@ pub trait RenderConfigPublisher: Send + Sync {
     fn render_liveness(&self) -> Option<RenderLiveness>;
 }
 
-/// The default [`RenderConfigPublisher`] for a headless [`StructureState`] (ADR-0053 §4): no
+/// The default [`RenderConfigPublisher`] for a headless [`StructureState`]: no
 /// device, so no output map is built or shipped, but the **input dark-degrade** warning is still
 /// computed from the retained input-stream geometry — the device-independent half the integration
 /// and unit tests drive. `opened_input_channels` is how many logical input channels the input
@@ -227,12 +229,12 @@ impl RenderConfigPublisher for HeadlessRenderConfig {
     }
 }
 
-/// The input dark-degrade warning (ADR-0038 §7/§9), shared by the headless and production
+/// The input dark-degrade warning, shared by the headless and production
 /// publishers so the two can't drift. A swapped-in engine wanting `input_channels` logical input
 /// channels while the open input stream provides `opened_input_channels`: any shortfall (the
 /// output-only-stream case is `opened == 0`) means some bound input pipes have no live stream and
 /// **dark-degrade to silence** — a loud warning, never an error (the engine stays silent-but-alive;
-/// a device-topology change needs a `play` restart, ADR-0046 §6). Matched geometry is silent.
+/// a device-topology change needs a `play` restart). Matched geometry is silent.
 pub(crate) fn dark_degrade_warning(
     input_channels: usize,
     opened_input_channels: usize,
@@ -243,8 +245,8 @@ pub(crate) fn dark_degrade_warning(
             port: None,
             message: format!(
                 "swapped-in instrument binds {input_channels} input channel(s) but the open input \
-                 stream provides {opened_input_channels} (fixed at `play` start, ADR-0046 §6); the \
-                 unmatched input pipes dark-degrade to silence (ADR-0038 §7). The engine stays \
+                 stream provides {opened_input_channels} (fixed at `play` start); the \
+                 unmatched input pipes dark-degrade to silence. The engine stays \
                  alive and silent; restart `play` with a matching input-binding instrument to \
                  capture live input."
             ),
@@ -257,8 +259,8 @@ pub(crate) fn dark_degrade_warning(
 /// Everything the structure server answers with, cheap to clone (`Arc`-backed) so every
 /// connection-handler thread holds its own handle.
 ///
-/// The [`Coordinator`] behind one [`Mutex`] is the single writer of graph structure (ADR-0046
-/// §7): it owns the canonical document + hash (`swap` advances them, `get_document`/`expect` read
+/// The [`Coordinator`] behind one [`Mutex`] is the single writer of graph structure:
+/// it owns the canonical document + hash (`swap` advances them, `get_document`/`expect` read
 /// them) and the install mailbox. The `render_config` seam publishes the device output map + the
 /// dark-degrade warning after each swap; `diagnostics` is the live counter surface the callback
 /// feeds (fixed at `play` start — M2 never reopens streams, so it never re-points).
@@ -292,14 +294,14 @@ impl StructureState {
         self
     }
 
-    /// The live diagnostics surface, so `play` can flush a final exit-time snapshot (ADR-0038 §9).
+    /// The live diagnostics surface, so `play` can flush a final exit-time snapshot.
     pub fn diagnostics(&self) -> Arc<Diagnostics> {
         Arc::clone(&self.diagnostics)
     }
 }
 
 /// Map a diagnostics [`Snapshot`] (reuben-native's counter surface) to the wire
-/// [`DiagnosticsReport`] (reuben-core's contract type, ADR-0038 §9 / ADR-0048 §6).
+/// [`DiagnosticsReport`] (reuben-core's contract type).
 ///
 /// The two structs are duplicated across the crate boundary with no shared definition, so they
 /// could silently drift. The **exhaustive destructure** below is the compile-time coupling that
@@ -323,17 +325,17 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
     }
 }
 
-/// Dispatch one parsed request line to its response (ADR-0046 §8). Pure over [`StructureState`]
+/// Dispatch one parsed request line to its response. Pure over [`StructureState`]
 /// so it is unit-testable without a socket; the connection loop only frames it.
 ///
-/// An unreadable line is a channel-level [`Response::Error`] (ADR-0048 §3: distinct from a
+/// An unreadable line is a channel-level [`Response::Error`] (distinct from a
 /// domain answer that reports failure), so a malformed request still gets exactly one framed
 /// reply and the one-response-per-request invariant holds.
 fn dispatch(state: &StructureState, line: &str) -> Response {
     match Request::from_ndjson(line) {
         Ok(Request::Ping) => Response::Pong,
         Ok(Request::GetDocument) => {
-            // The Coordinator owns the canonical document (ADR-0046 §7); serialize it + its hash
+            // The Coordinator owns the canonical document; serialize it + its hash
             // under the lock so `get_document` never sees a half-installed pair.
             let coordinator = state
                 .coordinator
@@ -357,27 +359,27 @@ fn dispatch(state: &StructureState, line: &str) -> Response {
     }
 }
 
-/// The M2 mailbox-swap install path (ADR-0046 §§1–10), device-free up to the
+/// The M2 mailbox-swap install path, device-free up to the
 /// [`RenderConfigPublisher`] call. Everything runs under the Coordinator lock so the
-/// `expect`-compare and the swap are one atomic critical section (ADR-0046 §9's compare-and-swap)
+/// `expect`-compare and the swap are one atomic critical section (a compare-and-swap)
 /// — concurrent swaps from multiple connections serialize, and neither `get_document` nor another
 /// swap sees a half-installed document. In order:
 ///
-/// 1. **Resolve** the [`DocSource`] to its JSON text — inline JSON re-serialized, or a file read
-///    (ADR-0046 §8). Resources resolve through the Coordinator's own resolver (anchored at `play`
+/// 1. **Resolve** the [`DocSource`] to its JSON text — inline JSON re-serialized, or a file read.
+///    Resources resolve through the Coordinator's own resolver (anchored at `play`
 ///    start). A read failure is a rejected [`SwapReport`] (no install, prior retained), not a
 ///    channel `Error`.
-/// 2. **Arbitration** (ADR-0046 §9): a stale `expect` rejects with the real installed hash as
+/// 2. **Arbitration**: a stale `expect` rejects with the real installed hash as
 ///    [`Response::Conflict`] and does **not** swap. Absent `expect` is last-write-wins. Done here
 ///    (not inside `swap_document`) so the wire keeps M1's distinct `Conflict` response shape.
 /// 3. **Swap**: [`Coordinator::swap_document`] validates + builds a whole new Engine off-thread,
 ///    fills the install mailbox, and returns the real [`SwapReport`] (survivor/reset stats). A
 ///    load/plan error aborts with `ok: false` and the prior hash — the old engine keeps playing
-///    (retain-prior, ADR-0046 §10). The RT callback installs it gaplessly at the next ramp.
+///    (retain-prior). The RT callback installs it gaplessly at the next ramp.
 /// 4. **Publish** the render config: rebuild the device output map off-thread for the new engine's
-///    geometry and ship it across the render mailbox; fold any input dark-degrade warning (ADR-0038
-///    §7/§9) into the report.
-/// 5. **Reclaim** the retired Engine off-thread (ADR-0009 deferred free), clearing the mailbox for
+///    geometry and ship it across the render mailbox; fold any input dark-degrade warning
+///    into the report.
+/// 5. **Reclaim** the retired Engine off-thread (deferred free), clearing the mailbox for
 ///    the next swap.
 fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>) -> Response {
     // 1. Resolve the source to JSON text. A read failure is a domain rejection (no install).
@@ -391,7 +393,7 @@ fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>
         .lock()
         .expect("coordinator mutex poisoned");
 
-    // 2. Optimistic-concurrency guard (ADR-0046 §9): a stale expect is a Conflict, no swap.
+    // 2. Optimistic-concurrency guard: a stale expect is a Conflict, no swap.
     if let Some(expected) = &expect {
         let actual = coordinator.installed_hash();
         if expected != &actual {
@@ -430,7 +432,7 @@ fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>
 
 /// A rejected swap that never reached [`Coordinator::swap_document`] (a source read failure):
 /// `ok: false`, the message, no diff, and the still-installed hash — the report names what keeps
-/// playing (ADR-0046 §10 retain-prior).
+/// playing (retain-prior).
 fn rejected_swap(coordinator: &Arc<Mutex<Coordinator>>, message: String) -> Response {
     let content_hash = coordinator
         .lock()
@@ -452,12 +454,12 @@ fn rejected_swap(coordinator: &Arc<Mutex<Coordinator>>, message: String) -> Resp
 }
 
 /// Reclaim the retired [`InstallBundle`](reuben_core::coordinator::InstallBundle) the RT callback
-/// posted back and **drop it here, off the audio thread** — ADR-0009's deferred free. Polls the
+/// posted back and **drop it here, off the audio thread** — the deferred free. Polls the
 /// retire slot with a 1ms back-off (the caller supplies the clock; core is OS-free), bounded by the
 /// [`SwapPollGate`]: at most [`SWAP_RECLAIM_TIMEOUT`] while the callback keeps ticking, but only the
 /// liveness grace once `liveness` shows audio has stopped ticking (issue #373 note 2). A timeout is
 /// not fatal: the swap already committed, so it just leaves the retiree in flight for the next swap's
-/// opportunistic reclaim (ADR-0046 §2) — the "audio isn't consuming swaps" case.
+/// opportunistic reclaim — the "audio isn't consuming swaps" case.
 fn reclaim_retired_engine(
     coordinator: &mut Coordinator,
     liveness: impl Fn() -> Option<RenderLiveness>,
@@ -473,14 +475,14 @@ fn reclaim_retired_engine(
     }
 }
 
-/// Resolve a [`DocSource`] to its JSON text (ADR-0046 §8): inline JSON re-serialized to a string,
+/// Resolve a [`DocSource`] to its JSON text: inline JSON re-serialized to a string,
 /// or a file read. Resource paths inside the document resolve through **the Coordinator's own
 /// resolver**, anchored once at `play` start against the initial instrument's directory + the
 /// library root.
 ///
-/// **Behavior change from M1 (sanctioned by ADR-0046 §7).** M1 re-anchored a by-*path* swap at the
-/// swapped file's own directory (`FsResolver::for_instrument`). ADR-0046 §7 gives the Coordinator a
-/// single owned resolver ("owns the Registry handle, the resolver, …"), and M2's `swap_document`
+/// **Behavior change from M1 (sanctioned by the single-writer Coordinator design).** M1 re-anchored
+/// a by-*path* swap at the swapped file's own directory (`FsResolver::for_instrument`). The
+/// Coordinator now owns a single resolver (the Registry handle, the resolver, …), and M2's `swap_document`
 /// uses exactly that one resolver — so M2 does **not** re-anchor per swap source. By-*value* swaps
 /// (the MCP primary flow) are unchanged: their resources always resolved against the play-start
 /// anchor. A by-*path* swap's *relative* resources now resolve against that anchor + the library
@@ -511,7 +513,7 @@ impl StructureServer {
     /// Bind a loopback TCP listener and start serving. Pass `127.0.0.1:0` to let the OS assign
     /// an ephemeral port (read it back with [`local_addr`](Self::local_addr)); this is how tests
     /// avoid port collisions. Binding a non-loopback address is the caller's mistake — the
-    /// structure channel must not be network-exposed (ADR-0046 §8) — but not enforced here.
+    /// structure channel must not be network-exposed — but not enforced here.
     pub fn bind<A: ToSocketAddrs>(addr: A, state: StructureState) -> std::io::Result<Self> {
         let listener = TcpListener::bind(addr)?;
         // Non-blocking so the accept loop can poll its shutdown flag with no client connected.
@@ -618,7 +620,7 @@ fn accept_loop(listener: TcpListener, state: StructureState, shutdown: Arc<Atomi
 }
 
 /// Serve one connection: read one [`Request`] per line, write one [`Response`] per line, in
-/// order (ADR-0046 §8), until the client closes or shutdown wakes the blocked read. Blocking
+/// order, until the client closes or shutdown wakes the blocked read. Blocking
 /// reads keep the framing exact; a blank line is framing noise, not a request, so it draws no
 /// response.
 fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<AtomicBool>) {
@@ -706,7 +708,7 @@ mod tests {
         )
     }
 
-    /// A minimal instrument that binds logical input channel 0 (ADR-0038 §3): the swapped-in engine
+    /// A minimal instrument that binds logical input channel 0: the swapped-in engine
     /// wants live input, which an output-only stream can't provide — the dark-degrade case.
     const MIC_PASSTHRU: &str = r#"{ "format_version": 3, "instrument": "mic-passthru",
         "interface": {
@@ -718,7 +720,7 @@ mod tests {
     const BAD_DOC: &str = r#"{"format_version":3,"instrument":"bad",
         "nodes":[{"type":"no_such_operator","address":"/x"}]}"#;
 
-    /// A background "fake audio callback" (ADR-0053 §4): it owns the [`RenderSlot`] the real cpal
+    /// A background "fake audio callback": it owns the [`RenderSlot`] the real cpal
     /// callback would and drives it in a loop, draining the install mailbox, running the master-gain
     /// ramp, box-transplanting survivors, and posting retirees — so a Coordinator-driven swap
     /// installs **via the mailbox** and its `reclaim` completes, all with no audio device. Rendering
@@ -863,7 +865,7 @@ mod tests {
 
     #[test]
     fn swap_installs_via_the_mailbox_with_real_survivor_stats() {
-        // The heart of M2 (ADR-0046 §§5,10): a swap to the identical envelope document keeps both
+        // The heart of M2: a swap to the identical envelope document keeps both
         // nodes survivors, so the real migration diff carries `survived: 2` — impossible under M1's
         // all-cold restart (which hard-codes `survived: 0`). The swap installed via the mailbox (the
         // FakeCallback drained it; `reclaim` completing is the proof), no stream teardown involved.
@@ -910,7 +912,7 @@ mod tests {
 
     #[test]
     fn back_to_back_swaps_both_install_proving_off_thread_reclaim() {
-        // One swap in flight (ADR-0046 §2): a second swap can only install once the first's retiree
+        // One swap in flight: a second swap can only install once the first's retiree
         // has come home and been reclaimed. Both succeeding is the behavioral proof the mailbox +
         // off-thread reclaim cycle actually turned over — the M2 mechanism, not a restart.
         let (state, cb, _) = swap_fixture(&envelope_doc("/env"), 0);
@@ -929,7 +931,7 @@ mod tests {
 
     #[test]
     fn input_binding_swap_onto_output_only_stream_dark_degrades_with_a_warning() {
-        // ADR-0038 §7/§9: the initial rig is output-only (`opened_input_channels: 0`). A swap to an
+        // The initial rig is output-only (`opened_input_channels: 0`). A swap to an
         // instrument that binds an input channel installs and stays silent-but-alive — a loud
         // swap-report WARNING, never an error or a crash.
         let (state, cb, _) = swap_fixture(BASE_DOC, 0);
@@ -1027,7 +1029,7 @@ mod tests {
 
     #[test]
     fn dark_degrade_warning_fires_only_on_unmatched_input_geometry() {
-        // The pure rule (ADR-0038 §7): no warning when the engine needs no input or the stream
+        // The pure rule: no warning when the engine needs no input or the stream
         // matches; a warning on any shortfall (output-only stream, or a topology change).
         assert!(
             dark_degrade_warning(0, 0).is_empty(),

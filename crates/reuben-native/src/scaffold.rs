@@ -1,14 +1,14 @@
-//! `scaffold-operator` (ADR-0021): generate a new Operator's Rust skeleton and wire its
+//! `scaffold-operator`: generate a new Operator's Rust skeleton and wire its
 //! registration sites from a contract spec.
 //!
 //! The deterministic, error-prone half of authoring an Operator is mechanical: a new file in
 //! `operators/`, plus sorted inserts into `operators/mod.rs`. Registration itself is compile-time
-//! and self-contained (ADR-0024): the generated file carries its own `register_operator!` line,
-//! so the scaffold no longer edits `registry.rs`. Like the `describe`/`validate` introspection
-//! (ADR-0020), this lives as pure functions over source **text** — the binary does the filesystem
+//! and self-contained: the generated file carries its own `register_operator!` line,
+//! so the scaffold no longer edits `registry.rs`. Like the `describe`/`validate` introspection,
+//! this lives as pure functions over source **text** — the binary does the filesystem
 //! I/O around them — so the tricky sorted-insertion logic is tested directly.
 //!
-//! The contract itself (ports/params) is emitted as a single `operator_contract!` call (ADR-0025):
+//! The contract itself (ports/params) is emitted as a single `operator_contract!` call:
 //! the scaffold no longer writes a hand const block *and* a `Descriptor` literal that could drift.
 //! The spec types and the validator are shared with that macro via the `reuben-contract` crate —
 //! one validator, not a scaffold copy and a macro copy that could themselves diverge.
@@ -26,7 +26,7 @@ pub struct ScaffoldInputs<'a> {
 }
 
 /// What the scaffold produced: the new operator file plus the edited `mod.rs`. Registration is
-/// in the operator file itself (`register_operator!`, ADR-0024), so `registry.rs` is untouched.
+/// in the operator file itself (`register_operator!`), so `registry.rs` is untouched.
 #[derive(Debug)]
 pub struct ScaffoldOutputs {
     /// File stem (also the module name), e.g. `"my_op"` — the binary writes `operators/<stem>.rs`.
@@ -64,8 +64,8 @@ pub struct ScaffoldReport {
 
 /// Read a contract spec from `spec_path`, generate the operator under `core_root`
 /// (`crates/reuben-core/src`), and write the new operator file plus the edited `operators/mod.rs`
-/// — refusing to clobber an existing operator file. The operator self-registers at compile time
-/// (ADR-0024), so `registry.rs` is not touched. Best-effort `cargo fmt` finalises the re-emitted
+/// — refusing to clobber an existing operator file. The operator self-registers at compile time,
+/// so `registry.rs` is not touched. Best-effort `cargo fmt` finalises the re-emitted
 /// `mod.rs` lists.
 pub fn run_scaffold(spec_path: &Path, core_root: &Path) -> Result<ScaffoldReport, String> {
     let spec_text = std::fs::read_to_string(spec_path)
@@ -169,7 +169,7 @@ fn insert_line_sorted(
 fn signal_output_consts(spec: &OperatorSpec) -> Vec<String> {
     spec.outputs
         .iter()
-        // Only a `f32_buffer` output carries a per-sample buffer the silence stub zeroes (ADR-0030);
+        // Only a `f32_buffer` output carries a per-sample buffer the silence stub zeroes;
         // `note`/`harmony`/`enum`/`f32` outputs do not.
         .filter(|p| matches!(p.ty, PortTy::F32Buffer(_)))
         .map(|p| format!("OUT_{}", screaming(&p.name)))
@@ -184,7 +184,7 @@ fn render_operator(spec: &OperatorSpec) -> String {
 
     let mut out = String::new();
     out.push_str(&format!(
-        "//! {name} — TODO one-line description (ADR-0021 scaffold; fill in Stage B).\n\n"
+        "//! {name} — TODO one-line description (scaffold; fill in Stage B).\n\n"
     ));
 
     // Imports — pull in the bind_resources types only when there are resources. The contract
@@ -200,10 +200,10 @@ fn render_operator(spec: &OperatorSpec) -> String {
     }
     out.push('\n');
 
-    // The single-source contract (ADR-0025): the macro plants the IN_/OUT_/C_ index consts AND the
+    // The single-source contract: the macro plants the IN_/OUT_/C_ index consts AND the
     // matching `Descriptor` from these same tokens, so name↔slot drift is impossible.
     out.push_str(
-        "// Single-source contract (ADR-0025): one declaration -> IN_/OUT_/C_ consts + Descriptor, no drift.\n",
+        "// Single-source contract: one declaration -> IN_/OUT_/C_ consts + Descriptor, no drift.\n",
     );
     out.push_str(&render_contract_call(spec));
     out.push('\n');
@@ -217,7 +217,7 @@ fn render_operator(spec: &OperatorSpec) -> String {
         "impl {st} {{\n    pub fn new() -> Self {{\n        Self::default()\n    }}\n}}\n\n"
     ));
 
-    // impl Operator. `descriptor()` delegates to the macro-planted inherent `contract()` (ADR-0025).
+    // impl Operator. `descriptor()` delegates to the macro-planted inherent `contract()`.
     out.push_str(&format!("impl Operator for {st} {{\n"));
     out.push_str("    fn descriptor() -> Descriptor {\n        Self::contract()\n    }\n\n");
     out.push_str(&render_process(spec));
@@ -226,19 +226,19 @@ fn render_operator(spec: &OperatorSpec) -> String {
     );
     if has_resources {
         out.push_str(
-            "\n    fn bind_resources(&mut self, _store: &Arc<ResourceStore>, _refs: &ResolvedRefs) {\n        // TODO Stage B: clone the Arc and resolve handles by slot name (ADR-0016).\n    }\n",
+            "\n    fn bind_resources(&mut self, _store: &Arc<ResourceStore>, _refs: &ResolvedRefs) {\n        // TODO Stage B: clone the Arc and resolve handles by slot name.\n    }\n",
         );
     }
     out.push_str("}\n\n");
 
-    // Compile-time self-registration (ADR-0024).
+    // Compile-time self-registration.
     out.push_str(&format!("crate::register_operator!({st});\n\n"));
 
     out.push_str(&render_test_module(spec));
     out
 }
 
-/// Render the `operator_contract!` invocation (ADR-0025) — the one declaration of the contract.
+/// Render the `operator_contract!` invocation — the one declaration of the contract.
 fn render_contract_call(spec: &OperatorSpec) -> String {
     let st = struct_name(&spec.type_name);
     let mut out = format!("crate::operator_contract!({st} {{\n");
@@ -269,7 +269,7 @@ fn render_contract_call(spec: &OperatorSpec) -> String {
     out
 }
 
-/// The macro's port-list body. Each port renders by its [`Arg`] type (ADR-0030): `f32_buffer`,
+/// The macro's port-list body. Each port renders by its [`Arg`] type: `f32_buffer`,
 /// `f32 { .. }`, `enum(VocabType)`, `note`, `harmony`, or `arg`. Mirrors the
 /// `operator_contract!` grammar exactly.
 fn render_macro_ports(ports: &[PortSpec]) -> String {
@@ -303,10 +303,10 @@ fn render_macro_port(p: &PortSpec) -> String {
     match &p.ty {
         // A materialized scalar control carries its `{ .. }` meta.
         PortTy::F32(m) => format!("{}: f32 {}", p.name, render_f32_meta(m)),
-        // A signal port with a scalar default + knob range (ADR-0031 decision (a)).
+        // A signal port with a scalar default + knob range.
         PortTy::F32Buffer(Some(m)) => format!("{}: f32_buffer {}", p.name, render_f32_meta(m)),
         PortTy::F32Buffer(None) => format!("{}: f32_buffer", p.name),
-        // A bounded integer control / constant carries its integer `{ .. }` meta (ADR-0035).
+        // A bounded integer control / constant carries its integer `{ .. }` meta.
         PortTy::I32(m) => format!(
             "{}: i32 {{ {}..={}, default {} }}",
             p.name, m.min, m.max, m.default
@@ -324,7 +324,7 @@ fn render_macro_port(p: &PortSpec) -> String {
 fn render_process(spec: &OperatorSpec) -> String {
     let mut out = String::from("    fn process(&mut self, io: &mut Io) {\n");
     out.push_str(
-        "        // TODO Stage B: implement the DSP. This stub writes silence — the operator is\n        // structurally valid but makes no sound until you fill it in (ADR-0021).\n",
+        "        // TODO Stage B: implement the DSP. This stub writes silence — the operator is\n        // structurally valid but makes no sound until you fill it in.\n",
     );
     let sig_outs = signal_output_consts(spec);
     if sig_outs.is_empty() {
@@ -342,13 +342,13 @@ fn render_process(spec: &OperatorSpec) -> String {
 }
 
 /// The `#[cfg(test)]` module — an `OpDriver` harness plus one intentionally-failing placeholder so
-/// the author starts Stage B red (ADR-0021). `OpDriver` drives the operator through the *real*
+/// the author starts Stage B red. `OpDriver` drives the operator through the *real*
 /// engine seeding + per-node step, so the test surface can't drift from production.
 fn render_test_module(spec: &OperatorSpec) -> String {
     let name = &spec.type_name;
     let st = struct_name(name);
     format!(
-        "#[cfg(test)]\nmod tests {{\n    // These imports are unused until Stage B fills in the real test below.\n    #[allow(unused_imports)]\n    use super::*;\n    #[allow(unused_imports)]\n    use crate::op_driver::OpDriver;\n\n    const SR: f32 = 48_000.0;\n\n    #[test]\n    #[allow(non_snake_case)]\n    fn TODO_{name}_meets_its_contract() {{\n        // Stage B (ADR-0021): replace this with the real behavioral oracle from the\n        // contract. Drive `{st}` through the real engine with `OpDriver` — by-const port\n        // addressing, looped production-size blocks (see `lfo.rs` for the canonical pattern):\n        //\n        //     let out = OpDriver::for_type({st}::new(), SR)\n        //         .set(IN_PORT, value) // held scalar or constant audio-in (sticky/ZOH)\n        //         .render(n)           // ceil(n/block) real per-node steps\n        //         .output(OUT_PORT)    // a signal output (use `.emits()` for events)\n        //         .to_vec();\n        //\n        // then assert on observable output. The scaffold ships this red on purpose.\n        let _sr = SR;\n        panic!(\"create-operator: implement the `{name}` behavior test-first (ADR-0021)\");\n    }}\n}}\n"
+        "#[cfg(test)]\nmod tests {{\n    // These imports are unused until Stage B fills in the real test below.\n    #[allow(unused_imports)]\n    use super::*;\n    #[allow(unused_imports)]\n    use crate::op_driver::OpDriver;\n\n    const SR: f32 = 48_000.0;\n\n    #[test]\n    #[allow(non_snake_case)]\n    fn TODO_{name}_meets_its_contract() {{\n        // Stage B: replace this with the real behavioral oracle from the\n        // contract. Drive `{st}` through the real engine with `OpDriver` — by-const port\n        // addressing, looped production-size blocks (see `lfo.rs` for the canonical pattern):\n        //\n        //     let out = OpDriver::for_type({st}::new(), SR)\n        //         .set(IN_PORT, value) // held scalar or constant audio-in (sticky/ZOH)\n        //         .render(n)           // ceil(n/block) real per-node steps\n        //         .output(OUT_PORT)    // a signal output (use `.emits()` for events)\n        //         .to_vec();\n        //\n        // then assert on observable output. The scaffold ships this red on purpose.\n        let _sr = SR;\n        panic!(\"create-operator: implement the `{name}` behavior test-first\");\n    }}\n}}\n"
     )
 }
 
@@ -375,7 +375,7 @@ mod tests {
     #[test]
     fn renders_an_operator_file_that_delegates_to_the_contract() {
         let src = render(r#"{ "type_name": "my_op" }"#);
-        // The contract is declared once via the macro, and descriptor() delegates to it (ADR-0025).
+        // The contract is declared once via the macro, and descriptor() delegates to it.
         assert!(
             src.contains("crate::operator_contract!(MyOp {"),
             "should emit the contract macro call:\n{src}"
@@ -396,8 +396,8 @@ mod tests {
 
     #[test]
     fn ports_are_declared_in_the_contract_call_by_type() {
-        // Ordinals are the macro's job; the scaffold just declares each port by its Arg type
-        // (ADR-0030): `note` / `harmony` / `f32_buffer`.
+        // Ordinals are the macro's job; the scaffold just declares each port by its Arg type:
+        // `note` / `harmony` / `f32_buffer`.
         let src = render(
             r#"{ "type_name": "v",
                  "inputs": [ {"name":"notes","ty":"note"}, {"name":"ctx","ty":"harmony"} ],
@@ -435,7 +435,7 @@ mod tests {
 
     #[test]
     fn renders_typed_ports() {
-        // The contract surface declares each port by its Arg type (ADR-0030): a `f32_buffer` wire, a
+        // The contract surface declares each port by its Arg type: a `f32_buffer` wire, a
         // materialized `f32 { .. }` with a default, and an `enum(VocabType)` naming a shared vocab
         // — each must render in macro grammar.
         let src = render(
@@ -593,7 +593,7 @@ mod tests {
 
     #[test]
     fn render_emits_self_registration() {
-        // The operator wires itself in (ADR-0024): the generated file carries its own
+        // The operator wires itself in: the generated file carries its own
         // `register_operator!` call — there is no registry.rs edit to make.
         let out = scaffold_real(r#"{ "type_name": "tremolo" }"#);
         assert!(

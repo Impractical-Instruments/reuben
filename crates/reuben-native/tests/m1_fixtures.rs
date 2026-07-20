@@ -1,10 +1,10 @@
-//! Guards the checked-in M1 verification fixtures (ADR-0053 §§4,5) against rot.
+//! Guards the checked-in M1 verification fixtures against rot.
 //!
 //! The device-gap ritual (`docs/mcp-swap-ritual.md`) and the #220 demo bar
 //! (`docs/rituals/m1-demo-bar.md`) are scripted human tests: a human runs fixed commands against
 //! fixed, checked-in documents. Those documents live in `tests/fixtures/m1/`, co-located with the
 //! golden live-server test. This test keeps them honest — every fixture must still **load and
-//! plan** through the single loader authority (ADR-0045 §3), and the demo prompt text must stay
+//! plan** through the single loader authority, and the demo prompt text must stay
 //! the exact fixed string the ritual hands the agent — so a later change that breaks a fixture
 //! reds CI here instead of surfacing only when someone next runs the manual ritual on hardware.
 //!
@@ -43,21 +43,21 @@ fn assert_valid(name: &str) {
 #[test]
 fn demo_bass_starting_instrument_is_valid() {
     // (c) The #220 demo bar's fixed starting instrument — must be a real playable bass so
-    // `reuben play` sounds and the agent's edit has something to change (ADR-0053 §5).
+    // `reuben play` sounds and the agent's edit has something to change.
     assert_valid("bass.json");
 }
 
 #[test]
 fn device_gap_swap_target_is_valid() {
     // (b) The M1 restart-swap device-gap ritual's fixed second document — must load so the swap
-    // installs and the audible gap/resume is exercised on hardware (ADR-0053 §4, ADR-0046 §10).
+    // installs and the audible gap/resume is exercised on hardware.
     assert_valid("device-gap-swap.json");
 }
 
 #[test]
 fn demo_prompt_is_the_fixed_text() {
     // (c) The demo prompt is part of the fixture: pinned so the epic-level acceptance ritual is
-    // reproducible run to run (ADR-0053 §5) and a stray edit can't silently reword it.
+    // reproducible run to run and a stray edit can't silently reword it.
     let prompt = std::fs::read_to_string(fixture("prompt.txt")).expect("read demo prompt");
     assert_eq!(prompt.trim(), "make the bass rounder and add a dub delay");
 }

@@ -1,15 +1,15 @@
-//! Golden-pinned live-server integration test for the structure channel (ADR-0053 §1).
+//! Golden-pinned live-server integration test for the structure channel.
 //!
 //! The companion to `structure_server.rs`: where that test asserts the channel's *behavior*
 //! field by field, this one pins the **exact NDJSON wire bytes** each verb answers with as
 //! golden fixtures under `tests/golden/`, reusing the `descriptor_golden.rs` / `REUBEN_BLESS=1`
-//! bless convention (ADR-0025) so any wire-format drift — a renamed field, a reordered key, a
+//! bless convention so any wire-format drift — a renamed field, a reordered key, a
 //! changed hash or diff — reds CI the way descriptor drift already does.
 //!
 //! It starts the **real** structure-channel server in-process ([`StructureServer::bind`] on an
 //! ephemeral `127.0.0.1:0` port) — everything `reuben play` wires up except the cpal device.
 //! M2 (#323) drives the swap through the real Coordinator/mailbox path; a background **fake audio
-//! callback** owns the [`RenderSlot`] and drains that mailbox (ADR-0053 §4), so a swap installs via
+//! callback** owns the [`RenderSlot`] and drains that mailbox, so a swap installs via
 //! the mailbox and its off-thread reclaim completes with no device. A raw [`TcpStream`] client
 //! drives all four verbs (`ping` / `swap` / `get_document` / `get_diagnostics`) against a **canned
 //! document**; every response is captured off the wire, its framing asserted, its contract invariant
@@ -18,8 +18,8 @@
 //! The M2 `swap`-verb contract is covered headlessly here: a validation **success** (`ok:true` with
 //! **real** survivor stats — the `/osc`→`/sub` rename keeps `/out` a survivor, so `survived:1`, not
 //! M1's blanket `0`), a validation **failure** (an ordinary `SwapReport` with `ok:false`, *not* a
-//! transport error, ADR-0048 §3), and the `expect` **conflict** path (`Conflict{expected, actual}`,
-//! ADR-0046 §9). The device-level gapless swap is the scripted human ritual
+//! transport error), and the `expect` **conflict** path (`Conflict{expected, actual}`).
+//! The device-level gapless swap is the scripted human ritual
 //! `docs/rituals/m2-swap-ramp-duck.md`. To re-bless after a deliberate wire change:
 //! `REUBEN_BLESS=1 cargo test -p reuben-native --test structure_golden`.
 
@@ -55,8 +55,8 @@ const CANNED: &str = r#"{
 /// The fixed document a successful `swap` installs — a 55 Hz oscillator (`/sub`) through the same
 /// `/out`. Deliberately *renames* the oscillator (`/osc` → `/sub`) so the **real** migration diff
 /// exercises all three buckets: `/out` matches on address + type + fingerprint → **survivor**,
-/// `/sub` is new (`added`), `/osc` is gone (`removed`) — real survivor stats (ADR-0046 §5), the
-/// whole-document re-emission accidents ADR-0048 §5 wants surfaced.
+/// `/sub` is new (`added`), `/osc` is gone (`removed`) — real survivor stats, the
+/// whole-document re-emission accidents the swap report wants surfaced.
 const SWAP_TARGET: &str = r#"{
     "format_version": 3,
     "instrument": "m1-swapped",
@@ -69,7 +69,7 @@ const SWAP_TARGET: &str = r#"{
 
 /// A document that fails to load — an unknown operator type — so validation rejects it. Its
 /// failure is an ordinary `SwapReport` with `ok:false` (the channel *working*), never a
-/// channel-level `Error` (ADR-0048 §3).
+/// channel-level `Error`.
 const BAD_DOC: &str = r#"{
     "format_version": 3,
     "instrument": "m1-bad",
@@ -78,10 +78,10 @@ const BAD_DOC: &str = r#"{
 
 /// A hash the client wrongly believes is installed — drives the `expect` conflict path. Never
 /// matches the canned document's real hash, so the swap is rejected with a `Conflict` that names
-/// the real installed hash and installs nothing (ADR-0046 §9).
+/// the real installed hash and installs nothing.
 const STALE_EXPECT: &str = "0badc0de0badc0de";
 
-/// A background "fake audio callback" (ADR-0053 §4): owns the [`RenderSlot`] the real cpal callback
+/// A background "fake audio callback": owns the [`RenderSlot`] the real cpal callback
 /// would and drives it in a loop, draining the install mailbox — so a swap installs via the mailbox
 /// and the Coordinator's off-thread `reclaim` completes, with no audio device.
 struct FakeCallback {
@@ -146,14 +146,14 @@ fn assert_golden(name: &str, actual: &str) {
     });
     assert_eq!(
         actual, expected,
-        "wire response for {name} drifted from the golden snapshot (ADR-0053 §1). \
+        "wire response for {name} drifted from the golden snapshot. \
          If this change is intentional, re-bless with REUBEN_BLESS=1."
     );
 }
 
 /// Build the canned starting [`StructureState`] the server serves — a real [`Coordinator`] over
-/// the canned document (exactly as `play` builds it, ADR-0046 §7) — plus the [`FakeCallback`]
-/// draining its mailbox so a swap installs via the mailbox headlessly (ADR-0053 §4).
+/// the canned document (exactly as `play` builds it) — plus the [`FakeCallback`]
+/// draining its mailbox so a swap installs via the mailbox headlessly.
 fn canned_wired() -> (StructureState, FakeCallback) {
     let (coordinator, side, _warnings) = Coordinator::install_initial(
         CANNED,
@@ -172,7 +172,7 @@ fn send(writer: &mut impl Write, req: &Request) {
         .expect("send request");
 }
 
-/// Read one newline-framed response off the wire, asserting the NDJSON framing (ADR-0046 §8: one
+/// Read one newline-framed response off the wire, asserting the NDJSON framing (one
 /// JSON object per line, newline-terminated, one response per request), and return the **raw**
 /// line — trailing newline included — so the golden pins the exact bytes, framing and all.
 fn read_line_raw(reader: &mut impl BufRead) -> String {
@@ -222,12 +222,12 @@ fn live_server_wire_responses_match_golden() {
     let mut writer = client.try_clone().expect("clone client for writing");
     let mut reader = BufReader::new(client);
 
-    // ping -> pong: the channel proves itself alive (ADR-0044 §2).
+    // ping -> pong: the channel proves itself alive.
     let (raw, resp) = exchange(&mut writer, &mut reader, &Request::Ping);
     assert_eq!(resp, Response::Pong);
     assert_golden("ping.ndjson", &raw);
 
-    // get_document -> the retained canned document + its content hash (ADR-0046 §7/§9).
+    // get_document -> the retained canned document + its content hash.
     let (raw, resp) = exchange(&mut writer, &mut reader, &Request::GetDocument);
     match &resp {
         Response::Document { document, .. } => {
@@ -237,12 +237,12 @@ fn live_server_wire_responses_match_golden() {
     }
     assert_golden("get_document.ndjson", &raw);
 
-    // get_diagnostics -> a zeroed snapshot at startup (ADR-0038 §9 / ADR-0048 §6).
+    // get_diagnostics -> a zeroed snapshot at startup.
     let (raw, _) = exchange(&mut writer, &mut reader, &Request::GetDiagnostics);
     assert_golden("get_diagnostics.ndjson", &raw);
 
     // swap of a bad document -> validation FAILURE: an ordinary SwapReport with ok:false and the
-    // prior hash retained, not a channel Error (ADR-0048 §3). Nothing installs.
+    // prior hash retained, not a channel Error. Nothing installs.
     let bad: serde_json::Value = serde_json::from_str(BAD_DOC).expect("bad doc parses");
     let (raw, resp) = exchange(
         &mut writer,
@@ -265,8 +265,8 @@ fn live_server_wire_responses_match_golden() {
     }
     assert_golden("swap_validation_failure.ndjson", &raw);
 
-    // swap with a stale expect -> CONFLICT naming the real installed hash; nothing installs
-    // (ADR-0046 §9). Still against the unmutated canned document.
+    // swap with a stale expect -> CONFLICT naming the real installed hash; nothing installs.
+    // Still against the unmutated canned document.
     let target: serde_json::Value = serde_json::from_str(SWAP_TARGET).expect("target parses");
     let (raw, resp) = exchange(
         &mut writer,
@@ -283,8 +283,8 @@ fn live_server_wire_responses_match_golden() {
     assert_golden("swap_conflict.ndjson", &raw);
 
     // swap the whole document -> SUCCESS via the mailbox: ok:true, the new content hash, and a diff
-    // with **real** survivor stats — `/out` survives the `/osc`→`/sub` rename, so `survived:1`
-    // (ADR-0046 §5), not M1's blanket `0`. This one commits.
+    // with **real** survivor stats — `/out` survives the `/osc`→`/sub` rename, so `survived:1`,
+    // not M1's blanket `0`. This one commits.
     let (raw, resp) = exchange(
         &mut writer,
         &mut reader,
@@ -302,7 +302,7 @@ fn live_server_wire_responses_match_golden() {
                 .expect("a successful swap carries a diff");
             assert_eq!(
                 diff.survived, 1,
-                "the mailbox swap keeps /out a survivor across the /osc->/sub rename (ADR-0046 §5)"
+                "the mailbox swap keeps /out a survivor across the /osc->/sub rename"
             );
             assert_eq!(diff.removed, vec!["/osc".to_string()], "diff: {diff:?}");
             assert_eq!(diff.added, vec!["/sub".to_string()], "diff: {diff:?}");

@@ -1,5 +1,5 @@
 //! Integration: the shipped stereo examples and their device profile, driven through the
-//! `reuben_native::cli` re-export of core's introspection (ADR-0020, ADR-0044 §3) with the
+//! `reuben_native::cli` re-export of core's introspection with the
 //! real filesystem resolver — proving the re-export preserves the CLI surface. The pure
 //! introspection tests moved with the code to `reuben_core::introspect` (issue #309).
 
@@ -30,7 +30,7 @@ fn validate_accepts_the_stereo_autopan_example() {
 
 #[test]
 fn validate_accepts_the_stereo_sub_example() {
-    // The multichannel-out demo (ADR-0038): three channel-bound output pipes (mains + sub send).
+    // The multichannel-out demo: three channel-bound output pipes (mains + sub send).
     let dir = fixtures_dir();
     let json = std::fs::read_to_string(dir.join("stereo-sub.json")).expect("read stereo-sub.json");
     let report = validate(&json, &Registry::builtin(), &FsResolver::new(&dir));
@@ -48,7 +48,7 @@ fn validate_accepts_the_stereo_sub_example() {
 
 #[test]
 fn shipped_stereo_sub_io_map_parses() {
-    // The example device profile frozen next to the demo (ADR-0038 §6) stays structurally
+    // The example device profile frozen next to the demo stays structurally
     // valid: mains identity-mapped, the sub send routed to device channel 3.
     let profile =
         reuben_native::profile::DeviceProfile::load(&fixtures_dir().join("stereo-sub.io-map.json"))

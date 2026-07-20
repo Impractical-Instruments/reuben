@@ -1,5 +1,5 @@
 //! Integration: the one-shot sampler rig (voicer -> sample -> out) loads from JSON with a
-//! filesystem WAV resolver, binds the decoded `blip.wav`, and makes sound on a note (ADR-0016).
+//! filesystem WAV resolver, binds the decoded `blip.wav`, and makes sound on a note.
 
 use std::path::PathBuf;
 
@@ -99,7 +99,7 @@ fn sampler_arp_self_plays_a_sequenced_arpeggio() {
 
 /// Wraps an [`FsResolver`] but serves one inline voice patch — a `sampler-voice` whose nested
 /// `sample` resource points at a nonexistent file — so the test can exercise the recursive
-/// degrade-to-silence path (a missing sample *inside* a hosted voice, ADR-0016/0032) without
+/// degrade-to-silence path (a missing sample *inside* a hosted voice) without
 /// committing a deliberately-broken fixture. Sample bytes still resolve through the real FS.
 struct GhostVoiceResolver(FsResolver);
 impl reuben_core::resources::ResourceResolver for GhostVoiceResolver {
@@ -132,8 +132,8 @@ impl reuben_core::resources::ResourceResolver for GhostVoiceResolver {
 #[test]
 fn missing_sample_warns_but_still_loads() {
     // A hosted voice whose nested `sample` resource points at a nonexistent file: load succeeds
-    // with a warning, and the voice plays silence rather than crashing (ADR-0016 degrade-to-silence,
-    // resolved recursively through the voice sub-patch, ADR-0032).
+    // with a warning, and the voice plays silence rather than crashing (degrade-to-silence,
+    // resolved recursively through the voice sub-patch).
     let json = r#"{
       "instrument": "broken",
       "resources": { "ghost-voice": "ghost-voice" },

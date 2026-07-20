@@ -1,8 +1,8 @@
 //! Ready-made instrument graphs.
 //!
 //! The default rig is defined as **data** (`instruments/default.json`), loaded through the core
-//! registry — not hand-built in Rust. Notes arrive as OSC at `/voicer/notes [midi, gate]`. Under
-//! ADR-0032 the rig's `voicer` hosts a voice sub-patch (`voices/default-voice.json`); both files are
+//! registry — not hand-built in Rust. Notes arrive as OSC at `/voicer/notes [midi, gate]`. The
+//! rig's `voicer` hosts a voice sub-patch (`voices/default-voice.json`); both files are
 //! embedded and resolved in-memory so the binary stays self-contained. Load a different instrument
 //! file to swap the whole rig.
 
@@ -12,10 +12,10 @@ use reuben_core::{load_instrument, Graph, Registry};
 /// The default instrument, embedded so the binary is self-contained.
 pub const DEFAULT_JSON: &str = include_str!("../../../instruments/default.json");
 
-/// The default rig's voice sub-patch (ADR-0032), embedded alongside [`DEFAULT_JSON`].
+/// The default rig's voice sub-patch, embedded alongside [`DEFAULT_JSON`].
 const DEFAULT_VOICE_JSON: &str = include_str!("../../../instruments/voices/default-voice.json");
 
-/// Resolves the embedded default rig's instrument-resources (ADR-0032) in-memory, so the default rig
+/// Resolves the embedded default rig's instrument-resources in-memory, so the default rig
 /// loads with no filesystem access. Only the default voice patch is known; anything else is absent.
 struct EmbeddedVoices;
 

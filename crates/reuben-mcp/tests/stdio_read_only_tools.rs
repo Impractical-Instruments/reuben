@@ -3,7 +3,7 @@
 //! `describe_operators` / `describe_instrument` / `validate` over newline-delimited JSON-RPC —
 //! the actual protocol boundary the client sees, not an in-process shortcut.
 //!
-//! These assert the error-layer discipline (ADR-0048 §3): `isError` is reserved for
+//! These assert the error-layer discipline: `isError` is reserved for
 //! can't-do-the-job cases (unreadable path, ambiguous one-of, unknown operator, a document with
 //! no boundary to describe), while a *failing validation* is an ordinary result carrying an
 //! `ok:false` report. Every call is bounded by a watchdog so a protocol regression fails loudly
@@ -16,7 +16,7 @@ use std::time::Duration;
 
 /// Drive the shim through initialize → initialized → a single `tools/call` and return the raw
 /// stdout. Requests are buffered into the child's stdin, which is then closed; on EOF the shim
-/// shuts down (ADR-0044 §1), flushing every response first. A watchdog thread bounds the read so
+/// shuts down, flushing every response first. A watchdog thread bounds the read so
 /// a regression fails loudly instead of hanging CI.
 fn drive_tool_call(name: &str, arguments: serde_json::Value) -> String {
     let mut child = Command::new(env!("CARGO_BIN_EXE_reuben-mcp"))
@@ -82,7 +82,7 @@ fn is_error(result: &serde_json::Value) -> bool {
 
 #[test]
 fn describe_operators_unknown_name_is_iserror() {
-    // ADR-0048 §5: an unknown operator name is a can't-do-the-job error — the tool cannot
+    // An unknown operator name is a can't-do-the-job error — the tool cannot
     // describe an operator that does not exist.
     let result = call_tool(
         "describe_operators",
@@ -96,7 +96,7 @@ fn describe_operators_unknown_name_is_iserror() {
 
 #[test]
 fn describe_operators_no_filter_lists_all() {
-    // ADR-0048 §5: no filter mirrors `introspect::describe(None)` — every registered operator,
+    // No filter mirrors `introspect::describe(None)` — every registered operator,
     // structured under `{ operators: [...] }`. The count must match the live registry.
     let result = call_tool("describe_operators", serde_json::json!({}));
     assert!(
@@ -114,7 +114,7 @@ fn describe_operators_no_filter_lists_all() {
         expected,
         "describe_operators must list exactly the builtin registry ({expected}): {result}"
     );
-    // A human-readable text block accompanies the structured content (ADR-0048 §3).
+    // A human-readable text block accompanies the structured content.
     assert!(
         result["content"][0]["text"].is_string(),
         "the result must carry a human-readable text block: {result}"
@@ -123,7 +123,7 @@ fn describe_operators_no_filter_lists_all() {
 
 #[test]
 fn describe_operators_compact_returns_signatures() {
-    // ADR-0059 §3 (reuben#459): `compact:true` switches the verb to its generated signature-line
+    // reuben#459: `compact:true` switches the verb to its generated signature-line
     // projection — `{ signatures: [...] }`, one line per registered operator, with the full port
     // objects absent (their token weight is the point). Same registry truth, same count.
     let result = call_tool("describe_operators", serde_json::json!({ "compact": true }));
@@ -160,7 +160,7 @@ fn describe_operators_compact_returns_signatures() {
 
 #[test]
 fn validate_broken_doc_is_ok_false_not_iserror() {
-    // ADR-0048 §3, the crux: a failing validation is the tool *working*. An inline document with a
+    // The crux: a failing validation is the tool *working*. An inline document with a
     // typo'd operator type validates to `ok:false` with a node-named Diag — an ordinary result,
     // NOT isError.
     let doc = serde_json::json!({
@@ -188,7 +188,7 @@ fn validate_broken_doc_is_ok_false_not_iserror() {
 
 #[test]
 fn describe_instrument_unloadable_is_iserror() {
-    // ADR-0048 §3 corollary: a document that fails to load has no boundary to describe, so
+    // Corollary: a document that fails to load has no boundary to describe, so
     // describe_instrument is isError (the message points the user at `validate`).
     let doc = serde_json::json!({
         "instrument": "typo",
@@ -214,7 +214,7 @@ fn describe_instrument_unloadable_is_iserror() {
 
 #[test]
 fn one_of_path_and_document_both_present_is_iserror() {
-    // ADR-0048 §2: exactly one of `path` or `document`. Both present is an ambiguous one-of —
+    // Exactly one of `path` or `document`. Both present is an ambiguous one-of —
     // a can't-do-the-job error, not a deliverable.
     let doc = serde_json::json!({ "instrument": "x", "nodes": [], "outputs": [] });
     let result = call_tool(
@@ -229,7 +229,7 @@ fn one_of_path_and_document_both_present_is_iserror() {
 
 #[test]
 fn one_of_neither_path_nor_document_is_iserror() {
-    // The other half of the one-of (ADR-0048 §2): neither given is equally unworkable.
+    // The other half of the one-of: neither given is equally unworkable.
     let result = call_tool("validate", serde_json::json!({}));
     assert!(
         is_error(&result),
@@ -277,7 +277,7 @@ fn drive_tools_list() -> String {
 
 #[test]
 fn read_only_tools_advertise_output_schemas() {
-    // ADR-0048 §3: every tool declares an `outputSchema`. The three read-only tools derive theirs
+    // Every tool declares an `outputSchema`. The three read-only tools derive theirs
     // from the introspect/contract types via schemars (the `schemars` fence), so a client can
     // validate the structured content it gets back.
     let out = drive_tools_list();
@@ -290,7 +290,7 @@ fn read_only_tools_advertise_output_schemas() {
         .as_array()
         .unwrap_or_else(|| panic!("tools/list missing a tools array:\n{response}"));
 
-    // The read-only tools are exactly the Pure contracts (ADR-0048 §1) — derived from the
+    // The read-only tools are exactly the Pure contracts — derived from the
     // single-source roster (#157), not a hand-typed list, so Wave 2 adds a CONTRACTS entry rather
     // than editing a parallel literal here.
     let read_only = reuben_core::tools::CONTRACTS

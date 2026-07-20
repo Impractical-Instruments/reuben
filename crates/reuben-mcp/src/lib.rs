@@ -1,15 +1,15 @@
-//! reuben-mcp — the per-conversation MCP stdio sidecar (ADR-0044).
+//! reuben-mcp — the per-conversation MCP stdio sidecar.
 //!
 //! The MCP client spawns this shim over stdio; it hosts the pure introspection tools in-process
 //! and reaches a user-owned `reuben play` for the engine tools. This crate is the FIRST workspace
 //! member allowed an async runtime: rmcp + tokio live here and nowhere else, fenced out of every
-//! other member so the play/CLI/web builds stay std-only (ADR-0044 §3/§5).
+//! other member so the play/CLI/web builds stay std-only.
 //!
-//! # Tool surface (ADR-0048 §1)
+//! # Tool surface
 //!
 //! A [`ServerHandler`] declaring the `tools` and `resources` capabilities plus an `instructions`
 //! field, and a tool router with the full declared contract set (the
-//! [`reuben_core::tools::CONTRACTS`] roster, ADR-0048 §1). The pure tools
+//! [`reuben_core::tools::CONTRACTS`] roster). The pure tools
 //! (`describe_operators`/`describe_instrument`/`validate`, #316, plus `scaffold_instrument`, #158)
 //! are engine-free — `describe`/`validate` descend to [`reuben_core::introspect`] over a
 //! [`reuben_native::resources::FsResolver`], and `scaffold_instrument` mints a minimal valid
@@ -17,16 +17,17 @@
 //! tools (`send`/`engine_status`/`swap`/`get_current_instrument`/`get_diagnostics`, #318) reach a
 //! user-owned `reuben play` through the [`EngineChannel`] seam:
 //!
-//! - `send` → [`reuben_native::osc::encode`] over the OSC/UDP control path (probe-first liveness,
-//!   ADR-0048 §5).
+//! - `send` → [`reuben_native::osc::encode`] over the OSC/UDP control path (probe-first liveness).
 //! - `engine_status`/`swap`/`get_current_instrument`/`get_diagnostics` → the structure channel's
-//!   four verbs (ADR-0046 §8), via [`StructureClient`] behind [`EngineLink`].
+//!   four verbs, via [`StructureClient`] behind [`EngineLink`].
 //!
-//! Error-layer discipline (ADR-0048 §3): a failing validation or a rejected swap is an ORDINARY
+//! Error-layer discipline: a failing validation or a rejected swap is an ORDINARY
 //! result — the tool worked; `isError` is reserved for the can't-do-the-job cases (an unreachable
 //! engine, a bad one-of, an unknown operator). `engine_status` is never `isError` — answering
 //! "reachable?" is its job. The four engine-reading/mutating tools use ACT-THEN-MAP: run the real
 //! exchange and map [`StructureError::is_unreachable`] to the fail-fast result, no separate probe.
+//!
+//! see rules: agent-mcp
 
 use std::path::Path;
 
@@ -51,7 +52,7 @@ mod engine;
 pub use client::{DocumentSnapshot, StructureClient, StructureError, SwapOutcome};
 pub use engine::{default_osc_addr, EngineChannel, EngineLink};
 
-/// The tool surface this door advertises (ADR-0048 §1), in roster order — the exact spellings
+/// The tool surface this door advertises, in roster order — the exact spellings
 /// advertised over `tools/list`. Derived from the single-source [`reuben_core::tools::CONTRACTS`]
 /// roster (#157) rather than a hand-typed literal, so the wire surface can only change by changing
 /// the roster; the integration test asserts `tools/list` matches this same derivation.
@@ -59,35 +60,34 @@ pub fn tool_names() -> Vec<&'static str> {
     reuben_core::tools::names()
 }
 
-/// The actionable guidance an engine tool returns when the engine is unreachable (ADR-0044 §2):
+/// The actionable guidance an engine tool returns when the engine is unreachable:
 /// the shim never spawns `reuben play`, so it names the fix instead.
 pub const ENGINE_UNREACHABLE_GUIDANCE: &str =
     "The reuben engine is not reachable. Start it in another terminal with `reuben play`, then retry.";
 
-/// The `reuben://guide/authoring` resource URI (ADR-0048 §7, as amended by ADR-0059): the
-/// authoring guide, `docs/agents/authoring.md`, read from the checkout at request time
-/// (ADR-0051 §4). The authority for the URI advertised over `resources/list`; the integration
-/// test asserts the wire surface matches. (The instrument-JSON-Schema resource this served
-/// beside was deleted outright — ADR-0059 §4.)
+/// The `reuben://guide/authoring` resource URI: the
+/// authoring guide, `docs/agents/authoring.md`, read from the checkout at request time.
+/// The authority for the URI advertised over `resources/list`; the integration
+/// test asserts the wire surface matches. (The instrument-JSON-Schema resource this once served
+/// beside was deleted outright.)
 pub const GUIDE_RESOURCE_URI: &str = "reuben://guide/authoring";
 
 /// The MIME type advertised for [`GUIDE_RESOURCE_URI`]: the authoring guide is CommonMark prose.
 pub const GUIDE_RESOURCE_MIME: &str = "text/markdown";
 
-/// The `reuben://guide/vocabulary` resource URI (ADR-0058 §6, amended into ADR-0048 §7 by
-/// ADR-0059 §3/§6): the rendered intent→parameter vocabulary, `docs/agents/vocabulary.md`
-/// (generated and staleness-tested against the registry by R5, #462), read from the checkout at
-/// request time (ADR-0051 §4) — the same posture as [`GUIDE_RESOURCE_URI`].
+/// The `reuben://guide/vocabulary` resource URI: the rendered intent→parameter vocabulary,
+/// `docs/agents/vocabulary.md` (generated and staleness-tested against the registry by R5, #462),
+/// read from the checkout at request time — the same posture as [`GUIDE_RESOURCE_URI`].
 pub const VOCABULARY_RESOURCE_URI: &str = "reuben://guide/vocabulary";
 
 /// The MIME type advertised for [`VOCABULARY_RESOURCE_URI`]: the rendered vocabulary is
 /// CommonMark prose.
 pub const VOCABULARY_RESOURCE_MIME: &str = "text/markdown";
 
-/// The library-index resource URI (ADR-0059 §3/§6, amending ADR-0048 §7): the generated
+/// The library-index resource URI: the generated
 /// signature-line index over the available instrument set, `instruments/index.md` (generated and
 /// staleness-tested against `instruments/` by R4, #461), read from the checkout at request time
-/// (ADR-0051 §4) — the same posture as [`GUIDE_RESOURCE_URI`]. No exact URI is fixed by ADR-0059;
+/// — the same posture as [`GUIDE_RESOURCE_URI`]. No exact URI is mandated;
 /// this lives in the same `guide/` namespace as [`GUIDE_RESOURCE_URI`] and
 /// [`VOCABULARY_RESOURCE_URI`] — one namespace for all agent-read grounding, rather than minting
 /// a second category for what is, from a client's view, just another pointed-at document.
@@ -97,12 +97,11 @@ pub const LIBRARY_INDEX_RESOURCE_URI: &str = "reuben://guide/library-index";
 /// prose.
 pub const LIBRARY_INDEX_RESOURCE_MIME: &str = "text/markdown";
 
-/// The server `instructions` (ADR-0048 §7): the one-breath authoring gist. It carries the workflow
+/// The server `instructions`: the one-breath authoring gist. It carries the workflow
 /// semantics — the document is durable truth; `send` to audition, doc-edit + `swap` to keep; start
 /// `reuben play` first — and *points* at `reuben://guide/authoring` rather than restating the
-/// contract (gist-and-point, ADR-0051 §4). ADR-0059 §6 adds one pointer sentence each at the
-/// vocabulary and library-index resources — additions only, nothing restated or restructured.
-/// The finalized prose is single-sourced by the content-pass (#311); this is the
+/// contract (gist-and-point). It also points once each at the vocabulary and library-index
+/// resources. The finalized prose is single-sourced by the content-pass (#311); this is the
 /// real-but-refinable surface text.
 const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is the durable \
      truth; keep it in sync with the sound. Start `reuben play` in another terminal first — the \
@@ -118,9 +117,9 @@ const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is
 
 /// Default absolute path to the authoring guide (`docs/agents/authoring.md`), anchored at build
 /// time to this crate's manifest dir (workspace-root-relative). The file is READ AT REQUEST TIME —
-/// never `include_str!` — so a sidecar built yesterday still serves today's guide (ADR-0051 §4);
+/// never `include_str!` — so a sidecar built yesterday still serves today's guide;
 /// only the path is compile-time, valid in the checkout the sidecar is built and run from (the MVP
-/// persona, ADR-0044). Matches the repo convention for locating workspace files
+/// persona). Matches the repo convention for locating workspace files
 /// (`CARGO_MANIFEST_DIR`). A deploy that runs the sidecar *outside* that checkout overrides it with
 /// [`AUTHORING_GUIDE_ENV`] (see [`ResourceEntry::resolve_path`]).
 const AUTHORING_GUIDE_PATH: &str = concat!(
@@ -130,7 +129,7 @@ const AUTHORING_GUIDE_PATH: &str = concat!(
 
 /// Default absolute path to the rendered vocabulary (`docs/agents/vocabulary.md`), anchored at
 /// build time to this crate's manifest dir — the same checkout-relative, read-at-request-time
-/// posture as [`AUTHORING_GUIDE_PATH`] (ADR-0051 §4). Overridden for a non-checkout deploy by
+/// posture as [`AUTHORING_GUIDE_PATH`]. Overridden for a non-checkout deploy by
 /// [`VOCABULARY_ENV`] (see [`ResourceEntry::resolve_path`]).
 const VOCABULARY_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
@@ -139,14 +138,14 @@ const VOCABULARY_PATH: &str = concat!(
 
 /// Default absolute path to the generated library index (`instruments/index.md`), anchored at
 /// build time to this crate's manifest dir — the same checkout-relative, read-at-request-time
-/// posture as [`AUTHORING_GUIDE_PATH`] (ADR-0051 §4). Overridden for a non-checkout deploy by
+/// posture as [`AUTHORING_GUIDE_PATH`]. Overridden for a non-checkout deploy by
 /// [`LIBRARY_INDEX_ENV`] (see [`ResourceEntry::resolve_path`]).
 const LIBRARY_INDEX_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../instruments/index.md");
 
 /// Env override for the authoring-guide path: point the `reuben://guide/authoring` resource at an
 /// explicit file for a **non-checkout deploy** — a shipped sidecar binary whose compile-time
-/// [`AUTHORING_GUIDE_PATH`] points into a build checkout that need not exist where it runs
-/// (ADR-0051 §4). Unset keeps the compile-time default. Mirrors the `REUBEN_INSTRUMENT_ROOT`
+/// [`AUTHORING_GUIDE_PATH`] points into a build checkout that need not exist where it runs.
+/// Unset keeps the compile-time default. Mirrors the `REUBEN_INSTRUMENT_ROOT`
 /// convention (a `REUBEN_*` path override resolved from the environment).
 pub const AUTHORING_GUIDE_ENV: &str = "REUBEN_AUTHORING_GUIDE";
 
@@ -170,11 +169,11 @@ fn resolve_checkout_path(
         .unwrap_or_else(|| std::path::PathBuf::from(default))
 }
 
-/// One served MCP resource (ADR-0048 §7, as amended by ADR-0059 §3/§6): the wire facts a client
+/// One served MCP resource: the wire facts a client
 /// sees (`uri`/`name`/`title`/`description`/`mime`) plus the serve mechanics (`env` override,
 /// compile-time `default_path`, and the `noun` for the read-failure message). All three resources
 /// are structurally identical — a static markdown file read from the checkout at request time
-/// (never `include_str!`, ADR-0051 §4), env-overridable per resource — so the surface is one table
+/// (never `include_str!`), env-overridable per resource — so the surface is one table
 /// over the existing consts and one generic serve path, not N hand-spelled arms. The consts stay the
 /// single source of the wire URIs/MIMEs/env-vars/paths; this table is built *from* them. Only the six
 /// `*_RESOURCE_URI`/`*_RESOURCE_MIME` consts are external API (referenced by
@@ -210,7 +209,7 @@ impl ResourceEntry {
         resolve_checkout_path(std::env::var_os(self.env), self.default_path)
     }
 
-    /// Read this resource's content from disk at request time (ADR-0051 §4) into a
+    /// Read this resource's content from disk at request time into a
     /// [`ResourceContents`] carrying its URI and MIME. A read failure is a genuine internal fault
     /// (the checkout path is missing or unreadable), surfaced as a protocol error naming the noun
     /// and path.
@@ -230,7 +229,7 @@ impl ResourceEntry {
     }
 }
 
-/// The static resource roster (ADR-0048 §7, as amended by ADR-0059 §3/§6), in wire order: the
+/// The static resource roster, in wire order: the
 /// authoring guide, the intent vocabulary, and the library index — the single source
 /// [`list_resources`](ReubenServer::list_resources) and [`read_resource`](ReubenServer::read_resource)
 /// both drive. Adding a resource is one row here — plus the four consts it references (three `pub`:
@@ -288,30 +287,29 @@ fn served_resource_uris() -> String {
     }
 }
 
-/// The fail-fast result for an unreachable engine (ADR-0044 §2, ADR-0048 §3): `isError: true`
+/// The fail-fast result for an unreachable engine: `isError: true`
 /// carrying the "start `reuben play`" guidance. `isError` tells the model the call could not do
 /// its job and to act on the guidance rather than treat the payload as a deliverable.
 pub fn engine_unreachable() -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(ENGINE_UNREACHABLE_GUIDANCE)])
 }
 
-/// Input for `describe_operators` (ADR-0048 §5): an optional `name` filter, mirroring
-/// [`reuben_core::introspect::describe`]'s `Option<&str>`, plus the `compact` mode switch
-/// (ADR-0059 §3).
+/// Input for `describe_operators`: an optional `name` filter, mirroring
+/// [`reuben_core::introspect::describe`]'s `Option<&str>`, plus the `compact` mode switch.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct DescribeOperatorsParams {
     /// Restrict to one operator type; omit to list every registered operator.
     #[serde(default)]
     pub name: Option<String>,
-    /// Compact mode (ADR-0059 §3): one generated signature line per operator instead of full
+    /// Compact mode: one generated signature line per operator instead of full
     /// port objects — the same registry truth, projected for grounding budgets. Default false.
     #[serde(default)]
     pub compact: bool,
 }
 
-/// Output for `describe_operators` (ADR-0048 §5): the operator set under an object root (MCP
+/// Output for `describe_operators`: the operator set under an object root (MCP
 /// requires one), in exactly one of the verb's two projections of the same registry truth
-/// (ADR-0059 §3) — `operators` (full port objects, the default) or `signatures` (the compact
+/// — `operators` (full port objects, the default) or `signatures` (the compact
 /// mode), keyed by the `compact` param. Both mirror [`reuben_core::introspect::describe`] /
 /// [`describe_compact`](reuben_core::introspect::describe_compact).
 #[derive(Debug, Serialize, schemars::JsonSchema)]
@@ -337,15 +335,15 @@ pub struct ScaffoldInstrumentParams {
 
 /// Output for `scaffold_instrument` (#158): the guaranteed-valid minimal instrument document,
 /// returned **by value** under an object root (MCP requires one). The model edits this seed and
-/// swaps it — first-creation as reshape-from-template, not authoring from a blank file (ADR-0049:
-/// the document travels by value; writing it to disk stays native-only).
+/// swaps it — first-creation as reshape-from-template, not authoring from a blank file (the
+/// document travels by value; writing it to disk stays native-only).
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct ScaffoldInstrumentOutput {
     /// A minimal valid document: `{ "format_version": 3, "instrument": <name>, "nodes": [] }`.
     pub document: serde_json::Value,
 }
 
-/// Input for the read-only document tools `describe_instrument` and `validate` (ADR-0048 §2):
+/// Input for the read-only document tools `describe_instrument` and `validate`:
 /// exactly one of `path` or `document`, with an optional `resolve_from` anchor for nested
 /// references. The one-of and the resolver rooting are enforced by the tool body (#318).
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -362,7 +360,7 @@ pub struct DocumentParams {
     pub resolve_from: Option<String>,
 }
 
-/// One OSC message in a `send` batch (ADR-0048 §5): an address and its primitive args.
+/// One OSC message in a `send` batch: an address and its primitive args.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct OscSendMessage {
     /// The full OSC address, e.g. `/voice1/cutoff`.
@@ -372,7 +370,7 @@ pub struct OscSendMessage {
     pub args: Vec<serde_json::Value>,
 }
 
-/// Input for `send` (ADR-0048 §5): a batch of **at least one** OSC message (the natural authoring
+/// Input for `send`: a batch of **at least one** OSC message (the natural authoring
 /// gesture is multi-control). The `length(min = 1)` puts `minItems: 1` in the advertised input
 /// schema; the tool body rejects an empty batch too, for a client that skips schema validation.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -382,18 +380,18 @@ pub struct SendParams {
     pub messages: Vec<OscSendMessage>,
 }
 
-/// Input for `swap` (ADR-0048 §5): a `path` (path-only — you can only install what exists on
-/// disk) plus an optional `expect` content-hash guard (ADR-0046 §9).
+/// Input for `swap`: a `path` (path-only — you can only install what exists on
+/// disk) plus an optional `expect` content-hash guard.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SwapParams {
     /// Path to the instrument document to install.
     pub path: String,
-    /// The content hash the client believes is installed; a mismatch rejects the swap (ADR-0046 §9).
+    /// The content hash the client believes is installed; a mismatch rejects the swap.
     #[serde(default)]
     pub expect: Option<String>,
 }
 
-/// Output for `send` (ADR-0048 §5): how many OSC datagrams were dispatched. The count is
+/// Output for `send`: how many OSC datagrams were dispatched. The count is
 /// "left the socket", not "received" — UDP promises neither delivery nor application receipt.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct SendOutput {
@@ -401,7 +399,7 @@ pub struct SendOutput {
     pub sent: usize,
 }
 
-/// The endpoints `engine_status` reports (ADR-0048 §5): the loopback structure channel and the
+/// The endpoints `engine_status` reports: the loopback structure channel and the
 /// OSC control plane the sidecar talks to.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct StatusEndpoints {
@@ -411,8 +409,8 @@ pub struct StatusEndpoints {
     pub osc: String,
 }
 
-/// The sidecar identity `engine_status` reports (ADR-0048 §5): its own version and the instrument
-/// `format_version` it supports (ADR-0048 §4 keeps `format_version` here, out of per-call reports).
+/// The sidecar identity `engine_status` reports: its own version and the instrument
+/// `format_version` it supports (kept here, out of per-call reports).
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct SidecarInfo {
     /// The reuben-mcp crate version.
@@ -421,7 +419,7 @@ pub struct SidecarInfo {
     pub format_version: u32,
 }
 
-/// Output for `engine_status` (ADR-0048 §5). **Never `isError`** for a dead engine — `reachable`
+/// Output for `engine_status`. **Never `isError`** for a dead engine — `reachable`
 /// and the `guidance` (present only when unreachable) ARE the deliverable.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct EngineStatusOutput {
@@ -436,7 +434,7 @@ pub struct EngineStatusOutput {
     pub guidance: Option<String>,
 }
 
-/// The `expect`-guard miss a [`SwapToolOutput`] carries (ADR-0046 §9): re-serialized field-for-
+/// The `expect`-guard miss a [`SwapToolOutput`] carries: re-serialized field-for-
 /// field from the channel's conflict so the model reconciles by re-reading, not by threading state.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct SwapConflict {
@@ -446,17 +444,17 @@ pub struct SwapConflict {
     pub actual: String,
 }
 
-/// Output for `swap` (ADR-0048 §§5,8): the shared [`SwapReport`] shape (ok, errors, warnings,
+/// Output for `swap`: the shared [`SwapReport`] shape (ok, errors, warnings,
 /// content_hash, and on success the diff summary) plus, on an `expect`-guard miss, `conflict`.
 /// One `outputSchema` spans the install, validation-failure, and guard-miss cases; the flattened
-/// [`SwapReport`] is the same serde type the structure channel serializes (ADR-0048 §8, no drift).
+/// [`SwapReport`] is the same serde type the structure channel serializes (no drift).
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct SwapToolOutput {
     /// The install report: `ok`, `errors`, `warnings`, the installed (or still-playing) content
     /// hash, and — on a successful install only — the diff summary.
     #[serde(flatten)]
     pub report: SwapReport,
-    /// Present only on an `expect`-guard miss (ADR-0046 §9): nothing was installed.
+    /// Present only on an `expect`-guard miss: nothing was installed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflict: Option<SwapConflict>,
 }
@@ -471,7 +469,7 @@ impl SwapToolOutput {
         }
     }
 
-    /// The `expect` guard missed (ADR-0046 §9): nothing installed, so `ok: false` with no diff; the
+    /// The `expect` guard missed: nothing installed, so `ok: false` with no diff; the
     /// `content_hash` names what keeps playing (the conflict's `actual`), and `conflict` carries
     /// both hashes field-for-field for the model to reconcile.
     fn conflict(expected: String, actual: String) -> Self {
@@ -490,13 +488,13 @@ impl SwapToolOutput {
     }
 }
 
-/// Output for `get_current_instrument` (ADR-0048 §5): the Coordinator's canonical installed
+/// Output for `get_current_instrument`: the Coordinator's canonical installed
 /// document (raw JSON — the engine is the single validation authority) and its content hash.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct CurrentInstrumentOutput {
     /// The document the engine is currently playing.
     pub document: serde_json::Value,
-    /// Its content hash — the token a later `swap`'s `expect` guard compares (ADR-0046 §9).
+    /// Its content hash — the token a later `swap`'s `expect` guard compares.
     pub content_hash: String,
 }
 
@@ -505,7 +503,7 @@ pub struct CurrentInstrumentOutput {
 /// Pure tools (`describe_operators`, `describe_instrument`, `validate`) are always available;
 /// the engine tools (`send`, `swap`, `get_current_instrument`, `get_diagnostics`) reach a
 /// user-owned `reuben play` through [`EngineChannel`] and fail fast when it is unreachable.
-/// `engine_status` answers "reachable?" and so is never itself an error (ADR-0048 §5).
+/// `engine_status` answers "reachable?" and so is never itself an error.
 pub struct ReubenServer {
     tool_router: ToolRouter<ReubenServer>,
     channel: Box<dyn EngineChannel>,
@@ -515,7 +513,7 @@ pub struct ReubenServer {
 impl ReubenServer {
     /// A server backed by the shipping [`EngineLink`] on the shared default endpoints
     /// (`reuben_core::coordinator::DEFAULT_STRUCTURE_ADDR` and [`default_osc_addr`]): the engine
-    /// tools reach a live `reuben play` over the real structure channel + OSC (ADR-0044 §2). The
+    /// tools reach a live `reuben play` over the real structure channel + OSC. The
     /// binary's composition root (`main`) injects the channel via [`with_channel`](Self::with_channel);
     /// this is the sensible default.
     pub fn new() -> Self {
@@ -532,13 +530,13 @@ impl ReubenServer {
         }
     }
 
-    // --- Pure tools: always available (ADR-0044 §2) --------------------------------------------
+    // --- Pure tools: always available -----------------------------------------------------------
 
-    /// List the operator set (ADR-0048 §§1,5): delegates to [`reuben_core::introspect::describe`]
-    /// (or its compact signature-line mode, ADR-0059 §3, when `compact` is set) and returns
+    /// List the operator set: delegates to [`reuben_core::introspect::describe`]
+    /// (or its compact signature-line mode when `compact` is set) and returns
     /// `{ operators }` / `{ signatures }`, mirroring the `Option<&str>` filter exactly.
-    /// Engine-free — always available (ADR-0044 §2). An unknown `name` is a can't-do-the-job error
-    /// (ADR-0048 §5): there is no such operator to describe.
+    /// Engine-free — always available. An unknown `name` is a can't-do-the-job error:
+    /// there is no such operator to describe.
     #[tool(
         name = "describe_operators",
         description = "List the registered operators and their ports/params, optionally filtered by name. \
@@ -569,7 +567,7 @@ impl ReubenServer {
                         summary,
                     )
                 }
-                // ADR-0048 §5: an unknown name is isError, not an empty deliverable.
+                // An unknown name is isError, not an empty deliverable.
                 Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
             };
         }
@@ -584,16 +582,16 @@ impl ReubenServer {
                     summary,
                 )
             }
-            // ADR-0048 §5: an unknown name is isError, not an empty deliverable.
+            // An unknown name is isError, not an empty deliverable.
             Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
         }
     }
 
-    /// Describe an instrument document's boundary as a host instrument will see it (ADR-0048 §5):
-    /// resolves the one-of `path`/`document` (ADR-0048 §2), then delegates to
+    /// Describe an instrument document's boundary as a host instrument will see it:
+    /// resolves the one-of `path`/`document`, then delegates to
     /// [`reuben_core::introspect::describe_patch`] over a stat-only resolver and returns a
-    /// [`PatchBoundary`]. Engine-free — always available (ADR-0044 §2). A document that fails to
-    /// load has no boundary to describe, so it is isError pointing at `validate` (ADR-0048 §3).
+    /// [`PatchBoundary`]. Engine-free — always available. A document that fails to
+    /// load has no boundary to describe, so it is isError pointing at `validate`.
     #[tool(
         name = "describe_instrument",
         description = "Describe an instrument document's boundary (inputs/outputs) as a host instrument sees it.",
@@ -614,7 +612,7 @@ impl ReubenServer {
                 let summary = describe_instrument_summary(&boundary);
                 structured_ok(&boundary, summary)
             }
-            // ADR-0048 §3 corollary: no boundary to describe — direct the user to `validate`.
+            // No boundary to describe — direct the user to `validate`.
             Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "{message}\n\nThe document could not be loaded, so there is no boundary to \
                  describe. Run `validate` for the full report of errors and warnings."
@@ -622,10 +620,10 @@ impl ReubenServer {
         }
     }
 
-    /// Validate an instrument document through the engine's own load + instantiate path (ADR-0048
-    /// §5): resolves the one-of `path`/`document` (ADR-0048 §2), then delegates to
+    /// Validate an instrument document through the engine's own load + instantiate path:
+    /// resolves the one-of `path`/`document`, then delegates to
     /// [`reuben_core::introspect::validate`] over a stat-only resolver (no audio decode).
-    /// Engine-free — always available (ADR-0044 §2). Error-layer discipline (ADR-0048 §3): a
+    /// Engine-free — always available. Error-layer discipline: a
     /// *failing* validation is an ordinary result carrying `{ ok: false, errors, warnings }` — the
     /// tool worked; only the can't-do-the-job cases (bad one-of, unreadable path) are isError.
     #[tool(
@@ -645,7 +643,7 @@ impl ReubenServer {
         let registry = Registry::builtin();
         let report = reuben_core::introspect::validate(&json, &registry, &resolver);
         let summary = validate_summary(&report);
-        // Ordinary result even when `report.ok` is false: a report is the tool working (ADR-0048 §3).
+        // Ordinary result even when `report.ok` is false: a report is the tool working.
         structured_ok(&report, summary)
     }
 
@@ -653,8 +651,8 @@ impl ReubenServer {
     /// first-creation start move. Authoring a top-level document from scratch stalls because the
     /// required top-level `instrument` name is easy to omit and `validate` then rejects the
     /// document; handing back a valid seed turns first-creation into the reshape-from-template path
-    /// that already works (edit this document, then `swap` it). Engine-free — always available
-    /// (ADR-0044 §2), read-only, and returns the document **by value** (ADR-0049).
+    /// that already works (edit this document, then `swap` it). Engine-free — always available,
+    /// read-only, and returns the document **by value**.
     #[tool(
         name = "scaffold_instrument",
         description = "Return a guaranteed-valid minimal instrument document to edit then swap — the start move for creating an instrument from scratch.",
@@ -675,13 +673,13 @@ impl ReubenServer {
 
     // --- Engine tools: reach a user-owned `reuben play` through the channel seam ----------------
 
-    /// Dispatch a batch of OSC control messages (ADR-0048 §5). Probe-first (UDP is silent about a
+    /// Dispatch a batch of OSC control messages. Probe-first (UDP is silent about a
     /// dead port): every datagram is encoded and validated first, then the structure channel is
     /// pinged, then the batch is sent; an unreachable engine ⇒ `isError`.
     #[tool(
         name = "send",
         description = "Send a batch of OSC control messages to audition a change on the running engine. \
-                       Ephemeral by design (ADR-0045 §5): these values live in render state only and are \
+                       Ephemeral by design: these values live in render state only and are \
                        CLOBBERED at the next swap — fold any you want to keep into the instrument document \
                        and swap. The ack means the engine was reachable and the datagrams were dispatched; \
                        UDP promises neither delivery nor receipt. Fails fast if no engine is reachable.",
@@ -693,14 +691,14 @@ impl ReubenServer {
         Parameters(params): Parameters<SendParams>,
     ) -> Result<CallToolResult, McpError> {
         // Reject an empty batch even though the input schema declares minItems:1 — belt-and-braces
-        // against a client that skips schema validation (ADR-0048 §5: min 1).
+        // against a client that skips schema validation (the schema declares min 1).
         if params.messages.is_empty() {
             return Ok(CallToolResult::error(vec![ContentBlock::text(
                 "`send` requires at least one OSC message.".to_string(),
             )]));
         }
-        // Encode every datagram first: a bad address or argument is a can't-do-the-job error
-        // (ADR-0048 §3), caught before any dispatch and even when the engine is down.
+        // Encode every datagram first: a bad address or argument is a can't-do-the-job error,
+        // caught before any dispatch and even when the engine is down.
         let mut datagrams = Vec::with_capacity(params.messages.len());
         for (i, message) in params.messages.iter().enumerate() {
             let args = match osc_args_from_json(&message.args) {
@@ -722,7 +720,7 @@ impl ReubenServer {
                 }
             }
         }
-        // Probe-first (ADR-0048 §5): confirm liveness on the structure channel before dispatching,
+        // Probe-first: confirm liveness on the structure channel before dispatching,
         // since UDP would swallow a dead port silently. Any ping failure ⇒ the fail-fast result.
         if self.channel.ping().is_err() {
             return Ok(engine_unreachable());
@@ -738,9 +736,9 @@ impl ReubenServer {
         }
     }
 
-    /// Liveness probe exposed as a tool (ADR-0048 §5). **Never `isError` for a dead engine** —
+    /// Liveness probe exposed as a tool. **Never `isError` for a dead engine** —
     /// answering "reachable?" is its job; `guidance` appears when the engine is down. Wraps the
-    /// structure-channel `ping` (ADR-0046 §8) and reports the endpoints and sidecar identity.
+    /// structure-channel `ping` and reports the endpoints and sidecar identity.
     #[tool(
         name = "engine_status",
         description = "Report whether the reuben engine is reachable, with the structure/OSC endpoints and the \
@@ -772,19 +770,19 @@ impl ReubenServer {
         } else {
             "engine not reachable — start `reuben play`".to_string()
         };
-        // NEVER isError (ADR-0048 §5): the reachable/guidance payload IS the deliverable.
+        // NEVER isError: the reachable/guidance payload IS the deliverable.
         structured_ok(&output, summary)
     }
 
-    /// Install an instrument document from disk (ADR-0048 §5). Path-only (ADR-0048 §2 — you can
+    /// Install an instrument document from disk. Path-only (you can
     /// only install what exists on disk). Act-then-map: an unreachable engine ⇒ `isError`; an
     /// `ok: false` load report or an `expect` conflict is an ORDINARY result (the guard guarding,
-    /// not the tool failing, ADR-0048 §3).
+    /// not the tool failing).
     #[tool(
         name = "swap",
         description = "Install an instrument document from disk as the playing engine (path-only). A gapless \
-                       mailbox swap (ADR-0046 §§1–7): the new Engine is built and validated off-thread, then \
-                       installed under a ~20ms master-gain duck (ADR-0050) — no silent gap. A node at the same \
+                       mailbox swap: the new Engine is built and validated off-thread, then \
+                       installed under a ~20ms master-gain duck — no silent gap. A node at the same \
                        address with the same operator type survives with its live state, so the diff summary \
                        reports how many survived and which reset. Returns the validation report + content_hash \
                        + (on success) that diff summary; ok:false installs nothing and the old sound keeps \
@@ -802,13 +800,13 @@ impl ReubenServer {
             .swap(DocSource::Path(params.path), params.expect)
         {
             // An install report — success OR ok:false load failure — is an ORDINARY result: the
-            // channel worked, the report is the deliverable (ADR-0048 §3).
+            // channel worked, the report is the deliverable.
             Ok(SwapOutcome::Installed(report)) => {
                 let summary = swap_summary(&report);
                 structured_ok(&SwapToolOutput::installed(report), summary)
             }
-            // An `expect`-guard miss is the guard guarding, not the tool failing (ADR-0048 §3):
-            // nothing installed, ordinary result carrying the conflict to reconcile (ADR-0046 §9).
+            // An `expect`-guard miss is the guard guarding, not the tool failing:
+            // nothing installed, ordinary result carrying the conflict to reconcile.
             Ok(SwapOutcome::Conflict { expected, actual }) => {
                 let summary = format!(
                     "swap rejected by the expect guard: the engine is playing {actual}, not the \
@@ -818,14 +816,14 @@ impl ReubenServer {
             }
             Err(why) if why.is_unreachable() => Ok(engine_unreachable()),
             // The engine answered, but not with a domain report (a channel-level fault): the tool
-            // could not do its job (ADR-0048 §3).
+            // could not do its job.
             Err(why) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                 "the swap could not be completed: {why}"
             ))])),
         }
     }
 
-    /// Read the canonical installed document (ADR-0048 §5). Act-then-map: an unreachable engine ⇒
+    /// Read the canonical installed document. Act-then-map: an unreachable engine ⇒
     /// `isError`. Forwards the structure-channel `get_document` and returns `{ document, content_hash }`.
     #[tool(
         name = "get_current_instrument",
@@ -854,7 +852,7 @@ impl ReubenServer {
         }
     }
 
-    /// Read the engine diagnostics counters (ADR-0048 §5/§6). Act-then-map: an unreachable engine ⇒
+    /// Read the engine diagnostics counters. Act-then-map: an unreachable engine ⇒
     /// `isError`. Forwards the structure-channel `get_diagnostics` and returns the four counters.
     #[tool(
         name = "get_diagnostics",
@@ -892,10 +890,10 @@ impl Default for ReubenServer {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for ReubenServer {
-    /// Declare the `tools` and `resources` capabilities and the `instructions` field (ADR-0048
-    /// §7). Providing `get_info` ourselves is what lets us add `resources` beside the tool
+    /// Declare the `tools` and `resources` capabilities and the `instructions` field.
+    /// Providing `get_info` ourselves is what lets us add `resources` beside the tool
     /// router's `tools`; the `resources` capability is a **static** set — no subscribe/listChanged
-    /// (ADR-0048 §7) — served by [`list_resources`](Self::list_resources) /
+    /// — served by [`list_resources`](Self::list_resources) /
     /// [`read_resource`](Self::read_resource).
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
@@ -909,7 +907,7 @@ impl ServerHandler for ReubenServer {
         info
     }
 
-    /// The static resource set (ADR-0048 §7, as amended by ADR-0059 §3/§6): the authoring guide,
+    /// The static resource set: the authoring guide,
     /// the intent vocabulary, and the library index. No `subscribe`/`listChanged` — the
     /// capability builder declares neither, and this list never changes over a session, so there
     /// is no cursor to page.
@@ -931,8 +929,8 @@ impl ServerHandler for ReubenServer {
         ))
     }
 
-    /// Read one static resource (ADR-0048 §7, as amended by ADR-0059 §3/§6), served at request
-    /// time (ADR-0051 §4): each is read from disk — never `include_str!`, so a sidecar built
+    /// Read one static resource, served at request
+    /// time: each is read from disk — never `include_str!`, so a sidecar built
     /// yesterday still serves today's content — at its checkout path (env-overridable per
     /// resource, else the compile-time checkout path). An unknown URI is `resource_not_found`.
     async fn read_resource(
@@ -958,7 +956,7 @@ impl ServerHandler for ReubenServer {
 }
 
 /// Convert a `send` message's JSON args into the flat primitive [`Arg`]s the OSC encoder packs
-/// (ADR-0048 §5: args are `number | string`). An integer within `i32` range maps to `Arg::I32`,
+/// (args are `number | string`). An integer within `i32` range maps to `Arg::I32`,
 /// any other number to `Arg::F32`, a string to `Arg::Str`; the engine re-types each against the
 /// destination port at its boundary (dest-port-type-driven, [`reuben_native::osc::encode`]'s
 /// contract). A non-number/non-string arg is a can't-do-the-job error naming the offending value.
@@ -1009,7 +1007,7 @@ fn swap_summary(report: &SwapReport) -> String {
 }
 
 /// Build an ordinary (non-error) result carrying BOTH a structured payload and a human-readable
-/// text block (ADR-0048 §3). The structured content is what the model acts on; the text is the
+/// text block. The structured content is what the model acts on; the text is the
 /// gloss for a human reading the transcript. A serialization failure is a genuine internal fault,
 /// so it surfaces as a protocol error rather than an `isError` deliverable.
 fn structured_ok<T: Serialize>(value: &T, summary: String) -> Result<CallToolResult, McpError> {
@@ -1022,7 +1020,7 @@ fn structured_ok<T: Serialize>(value: &T, summary: String) -> Result<CallToolRes
     Ok(result)
 }
 
-/// The isError result for a can't-do-the-job document-loading failure (ADR-0048 §3): an ambiguous
+/// The isError result for a can't-do-the-job document-loading failure: an ambiguous
 /// or missing one-of, or an unreadable path. `isError` tells the model to act on the guidance
 /// rather than treat the payload as a deliverable.
 fn cannot_load(message: impl Into<String>) -> CallToolResult {
@@ -1030,9 +1028,9 @@ fn cannot_load(message: impl Into<String>) -> CallToolResult {
 }
 
 /// Resolve a [`DocumentParams`] one-of into the instrument JSON plus a stat-only [`FsResolver`]
-/// (ADR-0048 §2, ADR-0045 §4). Exactly one of `path`/`document` is required. `Ok` carries the JSON
+/// Exactly one of `path`/`document` is required. `Ok` carries the JSON
 /// text and a resolver rooted for nested references; `Err` is the ready-to-return `isError` result
-/// for a bad one-of or an unreadable path — the can't-do-the-job cases (ADR-0048 §3).
+/// for a bad one-of or an unreadable path — the can't-do-the-job cases.
 fn load_document(params: &DocumentParams) -> Result<(String, FsResolver), CallToolResult> {
     match (&params.path, &params.document) {
         (Some(_), Some(_)) => Err(cannot_load(
@@ -1056,7 +1054,7 @@ fn load_document(params: &DocumentParams) -> Result<(String, FsResolver), CallTo
                 cannot_load(format!("inline `document` is not serializable JSON: {e}"))
             })?;
             // Anchor nested references at `resolve_from`, defaulting to the sidecar cwd; stat-only
-            // for the same reason as the path branch (ADR-0048 §2).
+            // for the same reason as the path branch.
             let base = params.resolve_from.as_deref().unwrap_or(".");
             Ok((json, FsResolver::new(base).stat_only()))
         }
@@ -1105,7 +1103,7 @@ fn validate_summary(report: &Report) -> String {
     }
 }
 
-/// Serve the MCP protocol over stdio until the client closes the connection (ADR-0044 §1). The
+/// Serve the MCP protocol over stdio until the client closes the connection. The
 /// current_thread runtime is built by `main`; this is the async body it drives. `main` injects the
 /// engine channel (the real [`EngineLink`] in the shipping binary), so the composition root stays
 /// in `main` and tests can serve with a fake channel.
@@ -1172,7 +1170,7 @@ mod tests {
     }
 
     /// The fail-fast error a fake verb returns when its outcome is unconfigured — the same
-    /// unreachable case the real client raises on a dead engine (ADR-0044 §2).
+    /// unreachable case the real client raises on a dead engine.
     fn down() -> StructureError {
         StructureError::Unreachable(ENGINE_UNREACHABLE_GUIDANCE.to_string())
     }
@@ -1243,7 +1241,7 @@ mod tests {
         // `resolve_checkout_path` directly with explicit args — no process-env mutation, so it can't
         // flake and it keeps a genuine direct caller for the function's "unit-testable without racing
         // on real env vars" rationale honest. A present override wins for a non-checkout deploy; an
-        // absent one falls back to the compile-time checkout default (ADR-0051 §4).
+        // absent one falls back to the compile-time checkout default.
         assert_eq!(
             resolve_checkout_path(
                 Some(std::ffi::OsString::from("/opt/reuben/override.md")),
@@ -1302,7 +1300,7 @@ mod tests {
         // #496 the "new resource = one row" guard: no duplicate URIs, env overrides, or default
         // paths (a copy-pasted row that forgot to update any of them would silently alias another
         // resource's wire URI, REUBEN_* override, or served file), and every MIME is text/markdown
-        // (ADR-0048 §7 — all three resources are CommonMark prose).
+        // (all three resources are CommonMark prose).
         use std::collections::HashSet;
         let mut uris = HashSet::new();
         let mut envs = HashSet::new();
@@ -1348,7 +1346,7 @@ mod tests {
 
     #[test]
     fn swap_result_serializes_report_hash_and_diff() {
-        // ADR-0048 §§5,8: a successful swap serializes as the shared SwapReport shape —
+        // A successful swap serializes as the shared SwapReport shape —
         // { ok, errors, warnings, content_hash, diff } — with no `conflict` key. The tool output
         // FLATTENS the contract SwapReport, so the tool's structuredContent and the structure
         // channel's response are the same serde type and cannot drift.
@@ -1390,7 +1388,7 @@ mod tests {
 
     #[test]
     fn engine_status_dead_engine_is_not_iserror_and_has_guidance() {
-        // ADR-0048 §5: engine_status answers "reachable?", so it is NEVER isError — even on a dead
+        // engine_status answers "reachable?", so it is NEVER isError — even on a dead
         // engine it reports the down state (reachable:false + guidance) as its deliverable, with the
         // endpoints and sidecar identity still filled in.
         let result = block_on(server_with(FakeEngine::unreachable()).engine_status())
@@ -1445,7 +1443,7 @@ mod tests {
 
     #[test]
     fn send_rejects_empty_messages() {
-        // (a) The advertised input schema declares minItems:1 (ADR-0048 §5: min 1).
+        // (a) The advertised input schema declares minItems:1.
         let router_server = ReubenServer::new();
         let send = router_server
             .tool_router
@@ -1473,7 +1471,7 @@ mod tests {
 
     #[test]
     fn get_current_instrument_unreachable_is_iserror() {
-        // ADR-0048 §3: a document read against a down engine is a can't-do-the-job isError carrying
+        // A document read against a down engine is a can't-do-the-job isError carrying
         // the "start `reuben play`" guidance (act-then-map on get_document).
         let result = block_on(server_with(FakeEngine::unreachable()).get_current_instrument())
             .expect("returns a result");
@@ -1490,7 +1488,7 @@ mod tests {
 
     #[test]
     fn swap_expect_mismatch_returns_conflict_no_install() {
-        // ADR-0046 §9 / ADR-0048 §3: an expect-guard miss is an ORDINARY result (the guard
+        // An expect-guard miss is an ORDINARY result (the guard
         // guarding, not the tool failing), NOT isError; nothing is installed (ok:false, no diff),
         // and the conflict names both hashes field-for-field so the model reconciles.
         let fake = FakeEngine::reachable().with_swap(SwapOutcome::Conflict {
@@ -1526,9 +1524,9 @@ mod tests {
 
     #[test]
     fn swap_relays_diff_summary_verbatim() {
-        // The tool relays the channel's diff unchanged (ADR-0048 §8). Fixture: an all-cold swap
+        // The tool relays the channel's diff unchanged. Fixture: an all-cold swap
         // (nothing survived), which is what the web lane always reports and what a native swap
-        // reports when no node survives (ADR-0052 §2, ADR-0046 §5).
+        // reports when no node survives.
         let report = SwapReport {
             report: Report {
                 ok: true,
@@ -1582,7 +1580,7 @@ mod tests {
 
     #[test]
     fn send_dispatches_all_messages_when_reachable() {
-        // A reachable send encodes every message and reports the count dispatched (ADR-0048 §5).
+        // A reachable send encodes every message and reports the count dispatched.
         let params = SendParams {
             messages: vec![
                 OscSendMessage {
@@ -1613,7 +1611,7 @@ mod tests {
 
     #[test]
     fn send_unreachable_is_iserror() {
-        // Probe-first (ADR-0048 §5): datagrams encode fine, but a down engine fails the ping.
+        // Probe-first: datagrams encode fine, but a down engine fails the ping.
         let params = SendParams {
             messages: vec![OscSendMessage {
                 address: "/voice1/cutoff".to_string(),
@@ -1628,7 +1626,7 @@ mod tests {
 
     #[test]
     fn send_rejects_a_non_scalar_argument() {
-        // ADR-0048 §3/§5: args are number | string; a nested array is a can't-do-the-job error,
+        // Args are number | string; a nested array is a can't-do-the-job error,
         // caught before any dispatch (and without needing the engine).
         let params = SendParams {
             messages: vec![OscSendMessage {
@@ -1697,7 +1695,7 @@ mod tests {
 
     #[test]
     fn the_declared_roster_is_registered() {
-        // The router advertises exactly the ADR-0048 §1 roster (derived from
+        // The router advertises exactly the declared roster (derived from
         // reuben_core::tools::CONTRACTS via tool_names) — the same surface the stdio integration
         // test asserts over the wire, checked here without spawning a process.
         let server = ReubenServer::new();
@@ -1714,7 +1712,7 @@ mod tests {
 
         assert_eq!(
             advertised, expected,
-            "the tool surface must be the ADR-0048 §1 roster"
+            "the tool surface must be the declared roster"
         );
     }
 }
