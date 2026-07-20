@@ -42,7 +42,7 @@ authoring guide, the intent vocabulary, the library index), and code, skills, an
 curated registry-keyed word→move table) is shared base sauce delivered to every lane, while output
 filtering (the sound-not-machine persona) is host-owned flavor. There is deliberately **no instrument
 JSON Schema** in that grounding — an agent grounds on prose rules, ports, and the validator loop —
-and the conversational loop is proven by a fixed menu of tests, from golden-pinned live-channel
+and the conversational loop is proven by a fixed menu of tests, from live-channel
 integration tests down to scripted human rituals for the perceptual judgments automation cannot reach.
 
 ## Rules
@@ -123,7 +123,7 @@ integration tests down to scripted human rituals for the perceptual judgments au
 [why](rationale/agent-mcp/grounding-not-schema.md)
 
 <a id="conversational-loop-verification"></a>
-### The conversational authoring loop is verified by a fixed menu — golden-pinned live-channel tests, Coordinator-direct behavioral swap checks, allocation-counting for RT-safety, and scripted human rituals where automation cannot reach.
+### The conversational authoring loop is verified by a fixed menu — live-channel integration tests, Coordinator-direct behavioral swap checks, allocation-counting for RT-safety, and scripted human rituals where automation cannot reach.
 
 [why](rationale/agent-mcp/conversational-loop-verification.md)
 
