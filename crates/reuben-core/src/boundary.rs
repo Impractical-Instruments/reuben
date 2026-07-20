@@ -433,6 +433,9 @@ mod tests {
             &Arg::Note(Note::new(Pitch::Absolute(60.0), 0.5)),
             &mut flat,
         ));
+        // Wire-internal leaves emit no external form (leaf-promotion, issue #519): `Pitch` rides
+        // the internal wire only, like `Harmony`.
+        assert!(!osc_out_args(&Arg::Pitch(Pitch::Degree(0)), &mut flat));
         assert!(!osc_out_args(
             &Arg::Harmony(crate::vocab::harmony::Harmony::default()),
             &mut flat,

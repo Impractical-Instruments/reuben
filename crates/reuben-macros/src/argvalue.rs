@@ -41,8 +41,14 @@ pub fn expand(input: TokenStream) -> TokenStream {
     }
 }
 
-/// `From<T> for Arg` + `TryFrom<&Arg> for T` for a **struct** vocab type, whose Rust name is its
-/// own `Arg` variant. (Enums type-erase to `Arg::Enum` instead — see [`expand_enum`].)
+/// `From<T> for Arg` + `TryFrom<&Arg> for T` for a leaf vocab type whose Rust name is its own
+/// `Arg` variant. Structs always take this path; so do **payload-carrying** enums (`Pitch`), which
+/// promote to a named leaf rather than lose their payload (leaf-promotion, issue #519 — see
+/// [`expand_enum`]). Only all-unit enums skip it, type-erasing to `Arg::Enum` instead.
+///
+/// The generated `Arg::#name(v)` assumes a matching `Arg` variant exists: emitting this for a type
+/// with no hand-added `Arg::#name` fails to compile with a "no variant named" error pointing into
+/// the generated tokens, not here. Adding a leaf `Arg` variant to `message.rs` is the caller's job.
 fn arg_conversions(name: &syn::Ident) -> TokenStream {
     quote! {
         impl ::core::convert::From<#name> for ::reuben_core::message::Arg {
@@ -92,6 +98,8 @@ fn expand_enum(ast: &DeriveInput, data: &syn::DataEnum) -> TokenStream {
     // lost. Instead it rides as its **own** named `Arg` variant, an opaque `Copy` leaf, exactly
     // like a struct (leaf-promotion, issue #519): whole-enum in, whole-enum out, its internal
     // case invisible to the wire. Only an **all-unit** enum takes the index-table path below.
+    // Like a struct leaf, this requires a hand-added `Arg::#name` variant in `message.rs` — see
+    // `arg_conversions`.
     if data
         .variants
         .iter()
