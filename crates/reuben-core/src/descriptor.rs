@@ -246,6 +246,12 @@ impl Port {
         Self::vocab(name, "Harmony", false)
     }
 
+    /// A held `Pitch` leaf port — a latched Value, like `harmony`. The output an
+    /// `unpack_<type>` operator emits for a `Pitch` field; `resolve` (#523) reads it.
+    pub const fn pitch(name: &'static str) -> Self {
+        Self::vocab(name, "Pitch", false)
+    }
+
     /// A scalar [`F32`](PortType::F32) control input: one input declared once, carrying
     /// its own unwired default in `meta`. When unwired the engine ZOH-materializes a per-sample
     /// buffer from the latched default (writing mid-block changes at their frame); when wired into

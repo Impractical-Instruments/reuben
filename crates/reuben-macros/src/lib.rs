@@ -23,6 +23,7 @@ mod argvalue;
 mod grammar;
 mod model;
 mod number_op;
+mod unpack;
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
@@ -47,6 +48,13 @@ pub fn operator_contract(input: proc_macro::TokenStream) -> proc_macro::TokenStr
 #[proc_macro]
 pub fn number_operator_contract(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     number_op::expand(input.into()).into()
+}
+
+/// Generate an `unpack_<type>` operator that destructures a product vocab type into its held
+/// fields. See the [`unpack`] module docs for the grammar and what it emits.
+#[proc_macro]
+pub fn unpack_op(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
+    unpack::expand(input.into()).into()
 }
 
 /// Integrate a shared *vocab* type with the central `Arg` enum: `From`/`TryFrom`
@@ -160,6 +168,7 @@ fn port_form(p: &model::PortModel) -> TokenStream {
         }
         PortTy::Note => quote! { Event<::reuben_core::vocab::pitch::Note> },
         PortTy::Harmony => quote! { Held<::reuben_core::vocab::Harmony> },
+        PortTy::Pitch => quote! { Held<::reuben_core::vocab::pitch::Pitch> },
         PortTy::Arg => quote! { Raw },
     }
 }
@@ -192,6 +201,9 @@ fn input_handle(p: &model::PortModel) -> TokenStream {
             quote! { ::reuben_core::vocab::#ty::DEFAULT }
         }
         PortTy::Harmony => quote! { ::reuben_core::vocab::Harmony::DEFAULT },
+        // A held `Pitch` leaf carries its declared default (tonic, `Degree(0)`) as data, exactly
+        // like `Harmony` above — the read fallback for a `pitch` input (`resolve`, #523).
+        PortTy::Pitch => quote! { ::reuben_core::vocab::pitch::Pitch::DEFAULT },
         // Defaultless forms (events, the raw pass-through) store `()`.
         PortTy::Note | PortTy::Arg => quote! { () },
     };
@@ -269,6 +281,10 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
                         // A `Harmony` held port — `Port::harmony`.
                         PortTy::Harmony => {
                             quote! { ::reuben_core::descriptor::Port::harmony(#name) }
+                        }
+                        // A held `Pitch` leaf port — `Port::pitch`.
+                        PortTy::Pitch => {
+                            quote! { ::reuben_core::descriptor::Port::pitch(#name) }
                         }
                         // A type-agnostic pass-through — `Port::arg` (issue #141).
                         PortTy::Arg => quote! { ::reuben_core::descriptor::Port::arg(#name) },
@@ -400,6 +416,7 @@ fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
             }
             "note" => PortTy::Note,
             "harmony" => PortTy::Harmony,
+            "pitch" => PortTy::Pitch,
             "arg" => PortTy::Arg,
             "f32" => PortTy::F32(parse_f32_meta(&body)?),
             "i32" => PortTy::I32(parse_i32_meta(&body)?),
@@ -413,7 +430,7 @@ fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
             other => {
                 return Err(Error::new(
                     kw.span(),
-                    format!("port type must be `f32_buffer`, `f32`, `i32`, `enum(..)`, `note`, `harmony`, or `arg`, got `{other}`"),
+                    format!("port type must be `f32_buffer`, `f32`, `i32`, `enum(..)`, `note`, `harmony`, `pitch`, or `arg`, got `{other}`"),
                 ))
             }
         };

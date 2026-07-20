@@ -76,6 +76,10 @@ pub use reuben_macros::operator_contract;
 // The pointwise-number-operator family macro: one scalar fn -> value+signal variants
 // across number types. Re-exported here so operator modules call `crate::number_operator_contract!`.
 pub use reuben_macros::number_operator_contract;
+// The product-vocab unpack macro: one census line -> an `unpack_<type>` operator that
+// destructures a product vocab type into its held fields. Re-exported so `operators/unpack.rs`
+// calls `crate::unpack_op!`.
+pub use reuben_macros::unpack_op;
 // `#[derive(ArgValue)]`: integrates a shared `vocab` type with the central `Arg`.
 pub use reuben_macros::ArgValue;
 // Re-export the self-registration macro at the crate root so operator modules can call

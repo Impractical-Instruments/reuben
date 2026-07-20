@@ -313,9 +313,10 @@ fn render_macro_port(p: &PortSpec) -> String {
         ),
         // A held vocab enum names its shared vocab type.
         PortTy::Enum(vocab) => format!("{}: enum({})", p.name, vocab),
-        // `note` / `harmony` / `arg` need no extra syntax.
+        // `note` / `harmony` / `pitch` / `arg` need no extra syntax.
         PortTy::Note => format!("{}: note", p.name),
         PortTy::Harmony => format!("{}: harmony", p.name),
+        PortTy::Pitch => format!("{}: pitch", p.name),
         PortTy::Arg => format!("{}: arg", p.name),
     }
 }

@@ -25,6 +25,7 @@ fn kind(ty: &PortType) -> &'static str {
         PortType::Vocab {
             name: "Harmony", ..
         } => "harmony",
+        PortType::Vocab { name: "Pitch", .. } => "pitch",
         PortType::Vocab {
             enum_meta: Some(_), ..
         } => "enum",
