@@ -7,7 +7,7 @@ S01 templates + README, then run the REAL S01 guards (`check_rules_links.py`,
 the invariant the guards enforce, this reds in CI's `check` job (which runs `.claude/skills/*/test_*.py`).
 """
 from __future__ import annotations
-import shutil, subprocess, sys, tempfile, unittest
+import contextlib, io, shutil, subprocess, sys, tempfile, unittest
 from pathlib import Path
 
 import scaffold_rule
@@ -35,7 +35,13 @@ class ScaffoldRuleTest(unittest.TestCase):
         for k, v in kw.items():
             argv += [f"--{k}", v]
         argv += ["--root", str(self.tmp)]
-        return scaffold_rule.main(argv)
+        # Capture the helper's own CLI stdout/stderr so a green run reads as clean `.........` in the
+        # CI log; stash them for the refusal tests to assert on *why* it refused.
+        out, err = io.StringIO(), io.StringIO()
+        with contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
+            rc = scaffold_rule.main(argv)
+        self._last_stdout, self._last_stderr = out.getvalue(), err.getvalue()
+        return rc
 
     def assert_guards_green(self):
         # links guard must pass on the topic docs the scaffold produced
@@ -103,6 +109,7 @@ class ScaffoldRuleTest(unittest.TestCase):
         rc = self.scaffold(topic="signal-time-dsp", title="T", summary="s", rule="osc-only-core",
                            heading="H2.")
         self.assertNotEqual(rc, 0)
+        self.assertIn("refusing to clobber", self._last_stderr)  # refused for the right reason
         self.assertEqual(p.read_text(), marker)  # untouched
 
     def test_refuses_duplicate_rule_slug(self):
@@ -113,13 +120,16 @@ class ScaffoldRuleTest(unittest.TestCase):
         rc = self.scaffold(topic="signal-time-dsp", title="T", summary="s", rule="osc-only-core",
                            heading="H again.")
         self.assertNotEqual(rc, 0)
+        self.assertIn("already exists", self._last_stderr)  # refused for the right reason
         self.assertEqual(self.topic_text().count('id="osc-only-core"'), 1)  # not duplicated
 
     def test_rejects_non_kebab_slug(self):
         self.assertNotEqual(
             self.scaffold(topic="Bad Slug", title="T", summary="s", rule="ok", heading="H."), 0)
+        self.assertIn("not kebab-case", self._last_stderr)  # bad topic slug, named reason
         self.assertNotEqual(
             self.scaffold(topic="ok-topic", title="T", summary="s", rule="Bad_Rule", heading="H."), 0)
+        self.assertIn("not kebab-case", self._last_stderr)  # bad rule slug, named reason
 
     # --- render_rationale hardening (template-drift robustness) -------------------------------
     def test_render_rationale_collapses_multi_placeholder_body(self):
