@@ -23,8 +23,10 @@
 //! fields — the field names and their wire forms must be named here. Listing them keeps the
 //! unpackable surface *explicit and auditable in one greppable file*, exactly the property we want.
 //!
-//! The **input** rides as a `note` Event today (the only event-form product vocab type). Extending
-//! to another event-carried product type is a one-line census entry once that type exists.
+//! The **input** is currently hardcoded to a `note` Event (`Note` is the only event-carried product
+//! vocab type today). Unpacking a *different* event-carried product type is not just a census line:
+//! `to_spec` fixes the input port to `note` and the state snapshots `Note` payloads, so that type's
+//! event input form must be taught here first.
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
@@ -134,6 +136,9 @@ impl UnpackInput {
     /// The [`OperatorSpec`]: a `note` Event input `in`, one held-Value output per field. Reuses the
     /// shared validator + builder so the contract is identical to a hand-written `operator_contract!`.
     fn to_spec(&self, type_name: &str) -> OperatorSpec {
+        // The input event form is hardcoded to `note` — `Note` is the only event-carried product
+        // vocab type today. A different `self.vocab` would need this derived from its event form
+        // (and the `Vec<(usize, #vocab)>` state matched), so the macro is Note-input-only for now.
         let inputs = vec![PortSpec {
             name: "in".to_string(),
             ty: PortTy::Note,
@@ -310,5 +315,13 @@ mod tests {
         let out = render(r#"Note { pitch: harmony }"#);
         assert!(out.contains("compile_error"), "{out}");
         assert!(out.contains("pitch` or `f32"), "{out}");
+    }
+
+    // A census entry with no output fields is a spanned error, not an operator with no ports.
+    #[test]
+    fn no_output_fields_errors() {
+        let out = render(r#"Note { }"#);
+        assert!(out.contains("compile_error"), "{out}");
+        assert!(out.contains("at least one output field"), "{out}");
     }
 }

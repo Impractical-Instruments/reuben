@@ -163,7 +163,7 @@ pub const WORKLOADS: &[Workload] = &[
     w("subpatch", Recipe::Default),
     w("transpose", Recipe::Notes),
     // `unpack_note`'s `in` is a `Note` port (like `osc_out`), so `Value` pushes an event into it —
-    // one note runs the frame-sorted latch + field emits (ADR-0063) rather than the idle baseline.
+    // one note runs the frame-sorted latch + field emits rather than the idle baseline.
     w("unpack_note", Recipe::Value),
     w("voicer", Recipe::Notes),
 ];

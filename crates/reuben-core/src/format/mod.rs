@@ -215,7 +215,7 @@ impl From<CurveDoc> for Curve {
 
 /// One v2 `interface.inputs` entry: a named **input pipe**. There is no inner
 /// port to inherit from — the entry **declares its `Arg` type** (`"f32_buffer"`, `"f32"`,
-/// `"i32"`, `"note"`, `"harmony"`, or a vocab enum name like `"FilterMode"`), and the declared type is
+/// `"i32"`, `"note"`, `"harmony"`, `"pitch"`, or a vocab enum name like `"FilterMode"`), and the declared type is
 /// enforced against every consumer by the existing pass-2 wire check. A numeric pipe may carry
 /// its own `default`/`min`/`max`/`curve` — **engine-enforced** on the pipe's port (literals and
 /// external messages clamp to it; an unwired signal pipe materializes `default`, or silence when
@@ -226,8 +226,8 @@ impl From<CurveDoc> for Curve {
 #[serde(deny_unknown_fields)]
 pub struct InputPipeDoc {
     /// The declared `Arg` type: `"f32_buffer"` (Signal), `"f32"` (held Value), `"i32"` (held
-    /// integer Value), `"note"` (Event), `"harmony"` (held Value), or a shared vocab
-    /// enum's type name (`"FilterMode"`).
+    /// integer Value), `"note"` (Event), `"harmony"` (held Value), `"pitch"` (held Value), or a
+    /// shared vocab enum's type name (`"FilterMode"`).
     #[serde(rename = "type")]
     pub ty: String,
     /// Logical input channel binding; signal pipes only, top-level-honored.
@@ -1902,7 +1902,7 @@ fn pipe_doc_from_descriptor(node: &crate::graph::Node, channel: Option<usize>) -
         channel,
         ..Default::default()
     };
-    if pipe.ty == "note" || pipe.ty == "harmony" {
+    if pipe.ty == "note" || pipe.ty == "harmony" || pipe.ty == "pitch" {
         return pipe;
     }
     if let PortType::Vocab {
@@ -1993,6 +1993,7 @@ fn pipe_type_name(ty: &PortType) -> Option<String> {
         PortType::Vocab {
             name: "Harmony", ..
         } => Some("harmony".to_string()),
+        PortType::Vocab { name: "Pitch", .. } => Some("pitch".to_string()),
         PortType::Vocab {
             enum_meta: Some(e), ..
         } => Some(e.type_name.to_string()),
@@ -2556,6 +2557,10 @@ fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortK
             no_numeric_meta()?;
             (Port::harmony("in"), Port::harmony("out"), PortKind::Value)
         }
+        "pitch" => {
+            no_numeric_meta()?;
+            (Port::pitch("in"), Port::pitch("out"), PortKind::Value)
+        }
         other => {
             let (Some(im), Some(om)) = (
                 crate::vocab::enum_meta_by_type(other, "in"),
@@ -2563,7 +2568,7 @@ fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortK
             ) else {
                 return Err(err(format!(
                     "unknown pipe type {other:?} — one of \"f32_buffer\", \"f32\", \"i32\", \
-                     \"note\", \"harmony\", or a shared vocab enum name (e.g. \"FilterMode\")"
+                     \"note\", \"harmony\", \"pitch\", or a shared vocab enum name (e.g. \"FilterMode\")"
                 )));
             };
             if pipe.min.is_some() || pipe.max.is_some() || pipe.curve.is_some() {
@@ -3140,6 +3145,31 @@ mod tests {
             load(json, &reg()),
             Err(LoadError::DuplicateAddress(a)) if a == "/in"
         ));
+    }
+
+    #[test]
+    fn pitch_pipe_type_mints_a_held_pitch_value_port() {
+        // A `pitch` interface input pipe is a first-class held-Value pipe, parallel to
+        // `harmony`: it mints a `Pitch` Value port and round-trips to the `"pitch"` type name.
+        let json = r#"{"format_version":2,"instrument":"t","interface":{
+            "inputs":{"p":{"type":"pitch"}}},
+            "nodes":[]}"#;
+        let g = load(json, &reg()).expect("pitch pipe loads");
+        let pipe = g.find("/p").expect("input pipe minted at /p");
+        let ty = &g.nodes[pipe].descriptor.inputs[0].ty;
+        assert!(
+            matches!(
+                ty,
+                PortType::Vocab {
+                    name: "Pitch",
+                    is_event: false,
+                    ..
+                }
+            ),
+            "{ty:?}"
+        );
+        // The reverse mapping mirrors the forward parser (round-trip).
+        assert_eq!(pipe_type_name(ty), Some("pitch".to_string()));
     }
 
     #[test]

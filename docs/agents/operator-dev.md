@@ -194,8 +194,10 @@ Other notes:
   whole value as a `Note` event on `in` and emits each field as a held `Value` — the Event→Value
   latch expressed as a patchable node ([ADR-0063](../adr/0063-product-vocab-types-unpack-to-fields.md)).
   Like `number_operator_contract!` it reuses the shared contract internals, so the op is
-  indistinguishable in shape from a hand-written one and self-registers via `inventory`. Adding a
-  product type to the wire's decompose surface is a one-line edit in that one greppable census file.
+  indistinguishable in shape from a hand-written one and self-registers via `inventory`. The census
+  is one greppable file, but the macro's input event form is currently fixed to `note` (`Note` is the
+  only event-carried product vocab type today), so unpacking a *different* product type is a census
+  line **plus** teaching the macro that type's event input — not a one-line edit alone.
 - **Polyphony** is not a per-operator concern (ADR-0032): there is no Lane fan-out. The **Voicer** is
   a single-Voice operator that hosts N voice sub-patches — a voice is a standalone Instrument
   (instrument-resource, declared `resources: { voice }`) with an `interface { inputs, outputs }`
