@@ -1,8 +1,8 @@
 # reuben bench history — dev
 
-Deterministic CI performance trend ([ADR-0019]): callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
+Deterministic CI performance trend: callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**43 commits** · 2026-07-12 → 2026-07-20 · 2599 data points · last: `68dd940` (2026-07-20T16:19:05-04:00)
+**44 commits** · 2026-07-12 → 2026-07-20 · 2662 data points · last: `b621527` (2026-07-20T17:10:52-04:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -91,7 +91,7 @@ Deterministic CI performance trend ([ADR-0019]): callgrind **instruction counts 
 | `unpack_note` | 594k | ±0.0% | ±0.0% | 2026-07-20 |
 | `overhead` | 568k | ±0.0% | -0.4% | 2026-07-12 |
 | `clamp_f32_value` | 556k | ±0.0% | -0.3% | 2026-07-12 |
-| `pitch2freq` | 552k | — | ±0.0% | 2026-07-20 |
+| `pitch2freq` | 552k | ±0.0% | ±0.0% | 2026-07-20 |
 | `modulo_f32_value` | 549k | ±0.0% | -0.3% | 2026-07-12 |
 | `power_f32_value` | 545k | ±0.0% | -0.3% | 2026-07-12 |
 | `div_f32_value` | 536k | ±0.0% | -0.3% | 2026-07-12 |
@@ -113,10 +113,8 @@ Deterministic CI performance trend ([ADR-0019]): callgrind **instruction counts 
 
 ## Reading notes
 
-- **Bold** deltas exceed the perf gate's 3% warn line ([ADR-0019]).
+- **Bold** deltas exceed the perf gate's 3% warn line.
 - Micro cases measure `step_node` — operator DSP **plus** the constant per-node engine overhead above. Cheap (value-rate) cases are therefore dominated by that overhead: a uniform absolute shift across all of them is an engine-overhead change, not operator regressions.
 - A series that starts mid-chart is an operator that landed after recording began; its *vs first* compares against its own first real measurement (registration stubs < 1000 Ir are dropped).
 - Gaps are honest: a commit whose bench harness didn't compile against its baseline records nothing.
 - Ir is not wall-clock. Counts shift when the pinned toolchain or target baseline changes (e.g. the x86-64-v3 bump on 2026-06-29) — those steps are real cost changes on the same workload, but not source-code regressions/wins.
-
-[ADR-0019]: https://github.com/Impractical-Instruments/reuben/blob/main/docs/adr/0019-performance-benchmarking.md
