@@ -32,6 +32,16 @@ operator clock
   in[2] f32 division min=1.0 max=64.0 default=1.0 unit="" curve=linear
   out[0] f32_buffer phase
   out[1] f32 gate
+operator compressor
+  in[0] f32_buffer audio
+  in[1] f32_buffer sidechain
+  in[2] f32 threshold min=-60.0 max=0.0 default=-24.0 unit="dB" curve=linear
+  in[3] f32 ratio min=1.0 max=20.0 default=4.0 unit=":1" curve=linear
+  in[4] f32 attack min=0.1 max=100.0 default=5.0 unit="ms" curve=exponential
+  in[5] f32 release min=1.0 max=2000.0 default=150.0 unit="ms" curve=exponential
+  in[6] f32 makeup min=-24.0 max=24.0 default=0.0 unit="dB" curve=linear
+  in[7] f32 key_hp min=20.0 max=2000.0 default=20.0 unit="Hz" curve=exponential
+  out[0] f32_buffer audio
 operator delay
   in[0] f32_buffer audio
   in[1] f32 time min=0.001 max=2.0 default=0.3 unit="s" curve=linear

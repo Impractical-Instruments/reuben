@@ -49,6 +49,7 @@ fn setup(kind: &str) -> Option<OpHarness> {
 #[bench::clamp(args = ("clamp_f32_signal",), setup = setup)]
 #[bench::clamp_value(args = ("clamp_f32_value",), setup = setup)]
 #[bench::clock(args = ("clock",), setup = setup)]
+#[bench::compressor(args = ("compressor",), setup = setup)]
 #[bench::delay(args = ("delay",), setup = setup)]
 #[bench::differentiate(args = ("differentiate_f32_signal",), setup = setup)]
 #[bench::div(args = ("div_f32_signal",), setup = setup)]
