@@ -132,6 +132,62 @@ class DeriveGuardTest(unittest.TestCase):
             # The Glossary (last section) still collated correctly.
             self.assertIn("- **Block** — a unit of time. · [clock](clock.md)", second)
 
+    def test_multiline_leading_comment_preserved_and_idempotent(self):
+        # A leading HTML comment wrapped across lines must survive `--write` intact — opener, body,
+        # and closing `-->` all retained, no dangling/unterminated `<!--` eating the entries. (Fails
+        # against the single-line-only comment loop.)
+        readme = """# reuben rules index
+
+## Topics
+
+<!--
+  derived — collated from each topic's `> summary`; do not hand-edit out of sync.
+-->
+- **[<Topic title>](<topic>.md)** — <one-line summary>
+
+## Glossary
+
+<!-- derived glossary -->
+- **<Term>** — <one-line definition> · [<topic>](<topic>.md)
+
+## Conventions
+
+Prose that must survive collation untouched.
+"""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            build(root, {"clock.md": CLOCK}, readme=readme)
+            self.assertEqual(check_rules_derive.main(["--write", str(root)]), 0)
+            first = (root / "docs" / "rules" / "README.md").read_text(encoding="utf-8")
+            # Multi-line comment preserved verbatim, and every `<!--` has a matching `-->`.
+            self.assertIn(
+                "<!--\n  derived — collated from each topic's `> summary`; "
+                "do not hand-edit out of sync.\n-->",
+                first,
+            )
+            self.assertEqual(first.count("<!--"), first.count("-->"),
+                             "unbalanced HTML comment markers -> corruption")
+            # Entries collated after the (intact) comment.
+            self.assertIn("- **[Clock](clock.md)** — How musical time works.", first)
+            self.assertIn("Prose that must survive collation untouched.", first)
+            # Idempotent on a second write; still green under --check.
+            self.assertEqual(check_rules_derive.main(["--write", str(root)]), 0)
+            second = (root / "docs" / "rules" / "README.md").read_text(encoding="utf-8")
+            self.assertEqual(first, second, "multi-line-comment --write must be byte-idempotent")
+            self.assertEqual(check_rules_derive.main(["--check", str(root)]), 0)
+
+    def test_summary_with_leading_gt_preserves_inner_marker(self):
+        # `str.lstrip("> ")` would strip the run `> >` and drop the inner `>`; only the one
+        # blockquote marker should be removed.
+        topic = "# Clock\n\n> >50% of blocks share a tempo.\n\n## Terms\n\n- **Block** — a unit.\n"
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            build(root, {"clock.md": topic})
+            self.assertEqual(check_rules_derive.main(["--write", str(root)]), 0)
+            text = (root / "docs" / "rules" / "README.md").read_text(encoding="utf-8")
+            self.assertIn("- **[Clock](clock.md)** — >50% of blocks share a tempo.", text)
+            self.assertEqual(check_rules_derive.main(["--check", str(root)]), 0)
+
     def test_missing_summary_is_structural_error(self):
         no_summary = "# Clock\n\n## Now\n\nNo summary line here.\n"
         with tempfile.TemporaryDirectory() as d:

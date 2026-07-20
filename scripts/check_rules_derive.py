@@ -31,7 +31,7 @@ def parse_topic(path: Path):
         if title is None and s.startswith("# "):
             title = s[2:].strip()
         if summary is None and s.startswith(">"):
-            summary = s.lstrip("> ").strip()
+            summary = s[1:].strip()  # strip exactly one blockquote marker (keep any inner `>`)
         if s.startswith("## "):
             in_terms = s[3:].strip().lower() == "terms"
             continue
@@ -106,13 +106,19 @@ def splice(text: str, section: str, body: list[str]) -> str:
         out.append(lines[i])
         if lines[i].strip().lower() == heading:
             i += 1
-            # Preserve the leading HTML comment line(s); skip any surrounding blank lines. Stop at
-            # the first real entry or the next `## ` heading.
+            # Preserve the leading HTML comment(s) verbatim — single- or multi-line — skipping any
+            # blank lines OUTSIDE a comment. Stop at the first real entry or the next `## ` heading.
             comments = []
             while i < n and not lines[i].startswith("## "):
                 s = lines[i].strip()
                 if s.startswith("<!--"):
-                    comments.append(lines[i]); i += 1
+                    # Consume the whole comment through its closing `-->`, keeping every line
+                    # (including blanks inside the comment) verbatim.
+                    comments.append(lines[i])
+                    while "-->" not in lines[i] and i + 1 < n:
+                        i += 1
+                        comments.append(lines[i])
+                    i += 1
                 elif s == "":
                     i += 1
                 else:
