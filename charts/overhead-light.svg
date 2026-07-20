@@ -2,32 +2,32 @@
 <rect width="880" height="340" rx="6" fill="#fcfcfb"/>
 <text x="64" y="24" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="14" font-weight="600" fill="#0b0b0b">Per-node engine overhead</text>
 <text x="64" y="41" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#52514e">callgrind instructions of a case that is ~pure engine stepping cost, gated like any operator. Axis zoomed.</text>
-<line x1="64" y1="268.7" x2="730" y2="268.7" stroke="#e1e0d9" stroke-width="1"/>
-<text x="56" y="272.2" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">520</text>
-<line x1="64" y1="190.4" x2="730" y2="190.4" stroke="#e1e0d9" stroke-width="1"/>
-<text x="56" y="193.9" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">540</text>
-<line x1="64" y1="112.0" x2="730" y2="112.0" stroke="#e1e0d9" stroke-width="1"/>
-<text x="56" y="115.5" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">560</text>
+<line x1="64" y1="262.2" x2="730" y2="262.2" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="265.7" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">520</text>
+<line x1="64" y1="186.5" x2="730" y2="186.5" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="190.0" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">540</text>
+<line x1="64" y1="110.7" x2="730" y2="110.7" stroke="#e1e0d9" stroke-width="1"/>
+<text x="56" y="114.2" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">560</text>
 <text x="56" y="46" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" fill="#898781">Ir (k)</text>
 <line x1="64" y1="306" x2="730" y2="306" stroke="#c3c2b7" stroke-width="1"/>
 <text x="64.0" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-12</text>
-<text x="188.9" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-13</text>
-<text x="209.7" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-14</text>
-<text x="230.5" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-16</text>
-<text x="397.0" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-17</text>
-<text x="521.9" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-18</text>
-<text x="646.8" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-19</text>
-<text x="709.2" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-20</text>
-<path d="M64.0,73.2 L84.8,73.2 L105.6,73.2 L126.4,73.2 L147.2,73.2 L168.1,73.2 L188.9,73.2 L209.7,73.2 L230.5,73.2 L251.3,73.2 L272.1,73.2 L292.9,73.2 L313.8,73.2 L334.6,73.2 L355.4,73.2 L376.2,73.2 L397.0,73.2 L417.8,73.2 L438.6,73.2 L459.4,73.2 L480.2,73.2 L501.1,73.2 L521.9,73.2 L542.7,73.2 L563.5,73.2 L584.3,73.2 L605.1,73.2 L625.9,73.2 L646.8,73.2 L667.6,73.2 L688.4,81.5 L709.2,81.5 L730.0,81.5" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="730.0" cy="81.5" r="6" fill="#fcfcfb"/>
-<circle cx="730.0" cy="81.5" r="4" fill="#2a78d6"/>
-<path d="M64.0,288.8 L84.8,288.8 L105.6,288.8 L126.4,288.8 L147.2,288.8 L168.1,288.8 L188.9,288.8 L209.7,288.8 L230.5,288.8 L251.3,288.8 L272.1,288.8 L292.9,288.8 L313.8,288.8 L334.6,288.8 L355.4,288.8 L376.2,288.8 L397.0,288.8 L417.8,288.8 L438.6,288.8 L459.4,288.8 L480.2,288.8 L501.1,288.8 L521.9,288.8 L542.7,288.8 L563.5,288.8 L584.3,288.8 L605.1,288.8 L625.9,288.8 L646.8,288.8 L667.6,288.8 L688.4,287.4 L709.2,287.4 L730.0,287.4" fill="none" stroke="#1baf7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="730.0" cy="287.4" r="6" fill="#fcfcfb"/>
-<circle cx="730.0" cy="287.4" r="4" fill="#1baf7a"/>
-<circle cx="745.0" cy="78.0" r="3.5" fill="#2a78d6"/>
-<text x="753.0" y="81.5" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">overhead</text>
-<text x="753.0" y="93.5" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">568k</text>
-<circle cx="745.0" cy="283.9" r="3.5" fill="#1baf7a"/>
-<text x="753.0" y="287.4" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">proxy (abs_f32_value)</text>
-<text x="753.0" y="299.4" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">515k</text>
+<text x="185.1" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-13</text>
+<text x="205.3" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-14</text>
+<text x="225.5" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-16</text>
+<text x="386.9" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-17</text>
+<text x="508.0" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-18</text>
+<text x="629.1" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-19</text>
+<text x="689.6" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-20</text>
+<path d="M64.0,73.2 L84.2,73.2 L104.4,73.2 L124.5,73.2 L144.7,73.2 L164.9,73.2 L185.1,73.2 L205.3,73.2 L225.5,73.2 L245.6,73.2 L265.8,73.2 L286.0,73.2 L306.2,73.2 L326.4,73.2 L346.5,73.2 L366.7,73.2 L386.9,73.2 L407.1,73.2 L427.3,73.2 L447.5,73.2 L467.6,73.2 L487.8,73.2 L508.0,73.2 L528.2,73.2 L548.4,73.2 L568.5,73.2 L588.7,73.2 L608.9,73.2 L629.1,73.2 L649.3,73.2 L669.5,81.2 L689.6,81.2 L709.8,81.2 L730.0,91.2" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="730.0" cy="91.2" r="6" fill="#fcfcfb"/>
+<circle cx="730.0" cy="91.2" r="4" fill="#2a78d6"/>
+<path d="M64.0,281.6 L84.2,281.6 L104.4,281.6 L124.5,281.6 L144.7,281.6 L164.9,281.6 L185.1,281.6 L205.3,281.6 L225.5,281.6 L245.6,281.6 L265.8,281.6 L286.0,281.6 L306.2,281.6 L326.4,281.6 L346.5,281.6 L366.7,281.6 L386.9,281.6 L407.1,281.6 L427.3,281.6 L447.5,281.6 L467.6,281.6 L487.8,281.6 L508.0,281.6 L528.2,281.6 L548.4,281.6 L568.5,281.6 L588.7,281.6 L608.9,281.6 L629.1,281.6 L649.3,281.6 L669.5,280.2 L689.6,280.2 L709.8,280.2 L730.0,288.8" fill="none" stroke="#1baf7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="730.0" cy="288.8" r="6" fill="#fcfcfb"/>
+<circle cx="730.0" cy="288.8" r="4" fill="#1baf7a"/>
+<circle cx="745.0" cy="87.7" r="3.5" fill="#2a78d6"/>
+<text x="753.0" y="91.2" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">overhead</text>
+<text x="753.0" y="103.2" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">565k</text>
+<circle cx="745.0" cy="285.3" r="3.5" fill="#1baf7a"/>
+<text x="753.0" y="288.8" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#0b0b0b">proxy (abs_f32_value)</text>
+<text x="753.0" y="300.8" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#52514e">513k</text>
 </svg>
