@@ -45,6 +45,17 @@ both default no-ops: `bind_voices(Vec<Graph>)` receives the N built voice sub-pa
 one place with the audio config) so the Voicer can build each voice's sub-`Plan` + arena off the hot
 path.
 
+A third default-no-op hook, `on_transplant(&mut self)`, runs on a **survivor** box just after it is
+transplanted across a hot-swap ([ADR-0046](../adr/0046-coordinator-swap-engine-unit.md) §4). A Swap
+rebuilds every input latch from the new document, so a downstream consumer's held-input latch resets
+to its default. An operator that publishes a **held output on change** (emit-on-change,
+[ADR-0015](../adr/0015-latched-context-read.md)) against a baseline it keeps in its box would then see
+no change and stay silent, stranding that consumer on the default — a Swap would silently retranspose
+a `harmony`-driven voice. Such an operator clears its publish baseline here (`self.last = None`) so the
+first post-swap block re-asserts the current value; `harmony.rs` is the exemplar. RT-safe: it runs in
+the render-callback transplant loop, so it must not allocate. Signal outputs (refreshed every block)
+and event outputs (append-only) need nothing.
+
 - **`descriptor()`** — see below. The single source of an operator's ports and metadata.
 - **`process(io)`** — the only realtime path. **Allocation-free.** Read inputs, write outputs
   through the `Io` view, by the contract's typed handles (ADR-0037) — the handle's form decides

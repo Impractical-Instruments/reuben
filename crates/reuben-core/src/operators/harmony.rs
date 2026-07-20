@@ -126,6 +126,15 @@ impl Operator for HarmonyOp {
     fn spawn(&self) -> Box<dyn Operator> {
         Box::new(Self::new())
     }
+
+    fn on_transplant(&mut self) {
+        // Surviving a Swap, this box kept its emit-on-change baseline, but the downstream `harmony`
+        // consumer latch was rebuilt to Harmony::default() (ADR-0046 §4). Clear the baseline so the
+        // first post-swap block re-publishes the current context — otherwise the voice it drives is
+        // silently retransposed onto the default (C major, root 60). The latched `chord` is real
+        // survivor state and is preserved; only the publish baseline resets. RT-safe: one field write.
+        self.last = None;
+    }
 }
 
 crate::register_operator!(HarmonyOp);
@@ -159,6 +168,53 @@ mod tests {
         // No change → no further publishes.
         let second = d.render(128).emits().to_vec();
         assert!(second.is_empty(), "unchanged context does not re-publish");
+    }
+
+    #[test]
+    fn on_transplant_re_publishes_the_current_context_not_the_default() {
+        // A Swap transplants this surviving `harmony` box while the downstream consumer's held
+        // `harmony` latch is rebuilt to Harmony::default() (C major, root 60). Because the op
+        // publishes on change against a baseline in its box (ADR-0015), a plain post-swap block
+        // would see no change and stay silent — stranding the consumer on that default and silently
+        // retransposing the voice. `on_transplant` must clear the baseline so the first post-swap
+        // block re-asserts the *current* context (here: root 45, natural minor), not the default.
+        let mut d = OpDriver::for_type(HarmonyOp::new(), SR);
+        let _ = d.render(128); // consume the initial default publish
+        d.set(IN_ROOT, 45.0)
+            .set(IN_S2, 3.0) // natural-minor third, so the scale differs from the C-major default
+            .set(IN_S5, 8.0)
+            .set(IN_S6, 10.0);
+        let moved = d.render(128).emits().to_vec();
+        assert_eq!(moved.len(), 1, "the root/scale move publishes once");
+        assert_eq!(harmony_of(&moved[0]).root, 45);
+        // Steady state: unchanged context, no publish.
+        assert!(
+            d.render(128).emits().is_empty(),
+            "an unchanged context does not re-publish"
+        );
+
+        // Now the Swap seam: transplant, then render one block with NO input change.
+        d.on_transplant();
+        let after = d.render(128).emits().to_vec();
+        assert_eq!(
+            after.len(),
+            1,
+            "on_transplant forces a re-assertion on the next block despite no input change"
+        );
+        let ctx = harmony_of(&after[0]);
+        assert_eq!(
+            ctx.root, 45,
+            "and it re-asserts the current root, not the default 60"
+        );
+        assert_eq!(
+            ctx,
+            Harmony {
+                root: 45,
+                scale: ScaleField::new(&[0, 2, 3, 5, 7, 8, 10]),
+                chord: Chord::empty(),
+            },
+            "the full current context is re-asserted, not Harmony::default()"
+        );
     }
 
     #[test]

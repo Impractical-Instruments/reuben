@@ -274,6 +274,108 @@ fn bumping_voices_resets_the_pool_old_note_silent_fresh_pool_lives() {
     );
 }
 
+/// A `harmony → voicer → output` graph: the voicer resolves incoming **degree** notes through the
+/// held tonal context the `harmony` node publishes. Root 45 + natural-minor scale, so degree 0
+/// resolves to MIDI 45 (≈110 Hz). The `harmony` node is a survivor across an identical-document
+/// swap, and its context is published **on change** — the exact shape that strands a rebuilt
+/// downstream latch on `Harmony::default()` (C major, root 60 ≈ MIDI 60) without `on_transplant`.
+fn harmony_voicer_doc() -> String {
+    r#"{ "format_version": 3, "instrument": "harmctx",
+         "resources": { "dv": "voices/default-voice.json" },
+         "interface": { "outputs": { "out": { "from": "/out.audio" } } },
+         "nodes": [
+           { "type": "harmony", "address": "/harm",
+             "inputs": { "root": 45, "degrees": 7,
+                         "s0": 0, "s1": 2, "s2": 3, "s3": 5, "s4": 7, "s5": 8, "s6": 10 } },
+           { "type": "voicer", "address": "/voicer", "config": { "voices": 1 }, "voice": "dv",
+             "inputs": { "harmony": { "from": "/harm.harmony" } } },
+           { "type": "output", "address": "/out",
+             "inputs": { "audio": { "from": "/voicer.audio" } } } ] }"#
+        .to_string()
+}
+
+/// Estimate the fundamental **period in samples** of channel 0 of an interleaved buffer via
+/// autocorrelation: the lag in `[MIN_LAG, MAX_LAG]` that maximizes the mean lagged product. Robust
+/// to phase, envelope, and harmonic brightness — so it cleanly separates a ~110 Hz tone (root 45,
+/// ≈436 samples at 48 kHz) from a ~262 Hz one (root 60, ≈183 samples) without depending on the
+/// voice's waveform. Mean-removed so any DC offset does not dominate.
+fn fundamental_period(buf: &[f32], ch: usize) -> usize {
+    const MIN_LAG: usize = 100; // < ~480 Hz — low enough to find the ~183-sample (262 Hz) bug pitch
+    const MAX_LAG: usize = 600; // > ~80 Hz
+    let x: Vec<f32> = buf.iter().step_by(ch).copied().collect();
+    let mean = x.iter().sum::<f32>() / x.len().max(1) as f32;
+    let x: Vec<f32> = x.iter().map(|s| s - mean).collect();
+    let hi = MAX_LAG.min(x.len() / 2);
+    // Mean-normalized autocorrelation across the lag range.
+    let acc: Vec<f32> = (MIN_LAG..=hi)
+        .map(|lag| {
+            let n = x.len() - lag;
+            (0..n).map(|i| x[i] * x[i + lag]).sum::<f32>() / n as f32
+        })
+        .collect();
+    // The *fundamental* is the smallest lag whose correlation is near the maximum — autocorrelation
+    // peaks just as strongly at 2×, 3× the true period, so a global-max pick octave-errors; the
+    // first prominent peak does not.
+    let best = acc.iter().cloned().fold(f32::MIN, f32::max);
+    let k = acc.iter().position(|&a| a >= 0.85 * best).unwrap_or(0);
+    MIN_LAG + k
+}
+
+#[test]
+fn swap_keeps_a_harmony_driven_voice_in_tune_no_silent_retranspose() {
+    // ADR-0053 §2, the emit-on-change survivor case. A `harmony` node survives an identical-document
+    // swap; its tonal context is published on change against a baseline in its box (ADR-0015). The
+    // swap rebuilds the voicer's held `harmony` latch to Harmony::default() (C major, root 60), so
+    // without `on_transplant` the survivor sees no change, stays silent, and a NEW note-on after the
+    // swap resolves degree 0 to MIDI 60 instead of MIDI 45 — the swap silently retransposes the
+    // voice up ~15 semitones. Faithful to the report: a running sequencer's next degree step lands
+    // in the wrong key after any hot-swap.
+    //
+    // RED without the fix: `after_period` collapses to ~183 samples (262 Hz) against ~436 (110 Hz),
+    // so the ratio leaves the band below.
+    let (mut coord, mut slot) = setup_with(&harmony_voicer_doc(), voice_resolver());
+    let ch = slot.channels();
+
+    // Degree 0 in A natural minor = MIDI 45. Warm to sustain, then measure the sounding pitch.
+    slot.queue_osc("/voicer/notes", &[Arg::I32(0), Arg::F32(1.0)]);
+    render(&mut slot, 12_000);
+    let before_buf = render(&mut slot, 9_600);
+    let before = fundamental_period(&before_buf, ch);
+    // Note-off (velocity 0), let the release finish, so the post-swap note-on is a clean fresh voice.
+    slot.queue_osc("/voicer/notes", &[Arg::I32(0), Arg::F32(0.0)]);
+    render(&mut slot, 12_000);
+
+    // Swap the identical document: /harm, /voicer, /out all survive (no reset, no add).
+    let report = coord.swap_document(&harmony_voicer_doc(), None);
+    assert!(report.report.ok, "swap should install: {:?}", report.report);
+    let diff = report.diff.as_ref().unwrap();
+    assert_eq!(diff.survived, 3, "harm+voicer+out survive: {diff:?}");
+    assert!(diff.state_reset.is_empty(), "no resets: {diff:?}");
+
+    // Past the ramp (the harmony node has re-published its context by now), play a NEW degree-0 note.
+    // It re-resolves through the harmony latch: with the fix, MIDI 45 again; without it, MIDI 60.
+    let span = 6 * slot.ramp_edge_frames();
+    render(&mut slot, span);
+    slot.queue_osc("/voicer/notes", &[Arg::I32(0), Arg::F32(1.0)]);
+    render(&mut slot, 12_000);
+    let after_buf = render(&mut slot, 9_600);
+    let after = fundamental_period(&after_buf, ch);
+
+    // Non-vacuous: an audible tone on both sides (a silent buffer would give a meaningless period).
+    assert!(
+        peak(&before_buf) > 0.01 && peak(&after_buf) > 0.01,
+        "the voice must be audibly sounding before and after: peaks {} / {}",
+        peak(&before_buf),
+        peak(&after_buf)
+    );
+    // Same pitch across the swap: the survivor re-asserted its context, so the new note stays in key.
+    let ratio = after as f32 / before as f32;
+    assert!(
+        (0.80..1.20).contains(&ratio),
+        "the swap retransposed the voice: before {before} samp, after {after} samp (ratio {ratio:.3})"
+    );
+}
+
 // ---------------------------------------------------------------------------------------------
 // (b) ADR-0053 §3 — the callback-side install step allocates and frees nothing (RT-safety).
 // ---------------------------------------------------------------------------------------------

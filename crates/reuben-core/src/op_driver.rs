@@ -232,6 +232,15 @@ impl OpDriver {
         &self.outputs
     }
 
+    /// Invoke the operator's [`Operator::on_transplant`] hook — the survivor-side seam a Swap runs
+    /// after box-transplant (ADR-0046 §4). Lets an operator's unit test assert its post-swap
+    /// re-assertion behavior (an on-change held publisher must re-emit its current value the next
+    /// block, even with no input change).
+    pub fn on_transplant(&mut self) -> &mut Self {
+        self.plan.nodes[0].ops[0].on_transplant();
+        self
+    }
+
     /// A driver over a fresh [`Operator::spawn`] of this one: carries resource bindings forward (the
     /// op's spawn clones them) while resetting playback state. Configure it independently.
     pub fn spawn(&self) -> OpDriver {
