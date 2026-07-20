@@ -1,7 +1,7 @@
 {
   "format_version": 3,
   "instrument": "acid-techno",
-  "doc": "Acid techno rig: a four-on-the-floor 16-step drum machine (kick, snare, closed + open hi-hat), a TB-303-style resonant acid bass sequencer, and a detuned three-saw pad playing sustained whole-note chords. Drums and bass share a 16th-note clock; the pad triggers one chord per bar. The `key` pipe (/key/in) sets the absolute tonic of a shared natural-minor harmony (bass at the root, pad one octave up). The `mode` pipe (/mode/in, 0-6) is the modal chord/scale selector: it transposes both the bass line and the pad chord by that many scale degrees, so one knob re-roots them together within the key -- the modal, chord-player-style move. Each instrument has its own volume pipe (/drums_vol/in, /bass_vol/in, /pad_vol/in); ride tempo 60-180 BPM with /tempo/in. Program the lanes with /kick_step1..16 /snare_step* /chh_step* /ohh_step* (boolean) and the bass with /bass_step1..16 (scale degrees, -1 = rest).",
+  "doc": "Acid techno rig: a four-on-the-floor 16-step drum machine (kick, snare, closed + open hi-hat), a TB-303-style resonant acid bass sequencer, and a detuned three-saw pad playing sustained whole-note chords. Drums and bass share a 16th-note clock; the pad triggers one chord per bar. The `key` pipe (/key/in) sets the absolute tonic of a shared natural-minor harmony (bass at the root, pad one octave up). The `mode` pipe (/mode/in, 0-6) is the modal chord/scale selector: it transposes both the bass line and the pad chord by that many scale degrees, so one knob re-roots them together within the key -- the modal, chord-player-style move. Each instrument has its own volume pipe (/drums_vol/in, /bass_vol/in, /pad_vol/in); ride tempo 60-180 BPM with /tempo/in. Program the lanes with /kick_step1..16 /snare_step* /chh_step* /ohh_step* (boolean) and the bass with /bass_step1..16 (scale degrees, -1 = rest). The pad is sidechain-pumped by the kick (a `compressor` at /pad_pump keyed off the raw kick voice), so the chords breathe with the four-on-the-floor -- the signature acid-techno pump.",
   "resources": {
     "kick-voice": "voices/kick-voice.json",
     "snare-voice": "voices/snare-voice.json",
@@ -1290,6 +1290,25 @@
       }
     },
     {
+      "type": "compressor",
+      "address": "/pad_pump",
+      "doc": "Sidechain pump: ducks the pad (`audio` <- /pad_out) in time with the kick (`sidechain` <- /kick_v.audio, the raw kick voicer before the drum trim). Every four-on-the-floor kick shoves the pad down and it ramps back over the release — the classic acid-techno breathing pad. Low threshold + fast attack so each kick fully triggers a snappy duck; ~200 ms release recovers before the next quarter-note kick. key_hp stays open (20 Hz) so the kick's low end drives the detector rather than being filtered out; makeup 0 so the duck reads as a real level drop.",
+      "inputs": {
+        "audio": {
+          "from": "/pad_out"
+        },
+        "sidechain": {
+          "from": "/kick_v.audio"
+        },
+        "threshold": -30.0,
+        "ratio": 5.0,
+        "attack": 1.0,
+        "release": 200.0,
+        "makeup": 0.0,
+        "key_hp": 20.0
+      }
+    },
+    {
       "type": "add_f32_signal",
       "address": "/mix1",
       "doc": "drums + bass.",
@@ -1305,13 +1324,13 @@
     {
       "type": "add_f32_signal",
       "address": "/mix2",
-      "doc": "+ pad -> full mix.",
+      "doc": "+ pumped pad -> full mix.",
       "inputs": {
         "a": {
           "from": "/mix1"
         },
         "b": {
-          "from": "/pad_out"
+          "from": "/pad_pump.audio"
         }
       }
     },

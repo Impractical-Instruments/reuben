@@ -51,6 +51,11 @@ pub enum Recipe {
     /// cost is dominated by a transcendental on the input (the saturator's tanh has a libm
     /// early-out at 0.0, so a silent bench underreports).
     Audio,
+    /// `Default`, plus a constant-magnitude AC waveform driven into the `sidechain` key — for the
+    /// compressor, whose detector idles below threshold. A held/DC key would be removed by the key
+    /// high-pass; an above-threshold AC key runs the real path (peak log + ballistics + makeup exp)
+    /// every sample.
+    Sidechain,
     /// `Default`, plus the `gate` input held high — a rising edge at block 0 opens the envelope so
     /// its attack/decay/sustain math runs (an ungated envelope idles at zero).
     Gate,
@@ -105,6 +110,7 @@ pub const WORKLOADS: &[Workload] = &[
     w("clamp_f32_signal", Recipe::Default),
     w("clamp_f32_value", Recipe::Default),
     w("clock", Recipe::Default),
+    w("compressor", Recipe::Sidechain),
     w("delay", Recipe::Default),
     w("differentiate_f32_signal", Recipe::Value),
     w("div_f32_signal", Recipe::Default),
@@ -174,6 +180,7 @@ pub const MICRO_IAI_KINDS: &[&str] = &[
     "clamp_f32_signal",
     "clamp_f32_value",
     "clock",
+    "compressor",
     "delay",
     "differentiate_f32_signal",
     "div_f32_signal",
@@ -342,6 +349,7 @@ fn apply_recipe(driver: &mut OpDriver, desc: &Descriptor, recipe: Recipe) {
     match recipe {
         Recipe::Default => {}
         Recipe::Audio => set_const(driver, desc, "audio", 0.5),
+        Recipe::Sidechain => drive_ac(driver, desc, "sidechain", 0.5),
         Recipe::Gate => set_const(driver, desc, "gate", 1.0),
         Recipe::Clocked => drive_clock(driver, desc, "clock"),
         Recipe::Sample => {
@@ -379,6 +387,17 @@ fn input_index(desc: &Descriptor, name: &str) -> usize {
 /// `Float`/enum, a constant materialized buffer for an audio input. Sticky across blocks.
 fn set_const(driver: &mut OpDriver, desc: &Descriptor, name: &str, value: f32) {
     driver.set(input_index(desc, name), value);
+}
+
+/// Drive a named Signal input with a period-4 ±`amp` square across the whole fixed schedule — a
+/// constant-magnitude AC waveform (12 kHz at 48 kHz, inside a sidechain high-pass's passband) that
+/// keeps a level detector on its real above-threshold path rather than an idle early-out.
+fn drive_ac(driver: &mut OpDriver, desc: &Descriptor, name: &str, amp: f32) {
+    let frames = BLOCKS * BLOCK_SIZE;
+    let buf: Vec<f32> = (0..frames)
+        .map(|i| if (i / 2) % 2 == 0 { amp } else { -amp })
+        .collect();
+    driver.drive(input_index(desc, name), &buf);
 }
 
 /// Queue a `Note` event for block 0 on the named event input (the engine routes it to the port's `io.read` stream).
