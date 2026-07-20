@@ -1335,12 +1335,25 @@
       }
     },
     {
+      "type": "reverb",
+      "address": "/master_verb",
+      "doc": "Big-room reverb on the full mix, low wet mix -- a wide ambient tail behind the whole rig without washing out the four-on-the-floor. Sits before the master saturator so the glue catches the tail too.",
+      "inputs": {
+        "audio": {
+          "from": "/mix2"
+        },
+        "room": 0.9,
+        "damp": 0.5,
+        "mix": 0.15
+      }
+    },
+    {
       "type": "saturator",
       "address": "/master_sat",
       "doc": "Gentle master glue / soft ceiling so all three instruments together stay off the clip line.",
       "inputs": {
         "audio": {
-          "from": "/mix2"
+          "from": "/master_verb.audio"
         },
         "drive": 1.4,
         "warmth": 0.3
