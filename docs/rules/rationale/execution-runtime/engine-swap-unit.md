@@ -20,11 +20,14 @@ rejected (a new dependency and a queue depth implying multiple in-flight swaps t
 never produces); ArcSwap/triple-buffering was rejected because the callback needs `&mut Engine` —
 render mutates state — and reclaiming the old side without RT drops fights that shape.
 
-Install happens once, at the **callback top** (a device block boundary), before any fill; the
-retiring Engine's ≤1-block rendered-but-unplayed residue (~5 ms) is discarded and its pending
-control Messages are dropped, since a Message minted against the old Plan's port types may not be
-valid against the new one. That ~5 ms is below what the [gain ramp](swap-gain-ramp.md) papers over,
-so core-block-boundary precision inside the fill hot loop was not worth the RT branching. The
+Install happens once per swap, at a device block boundary. The callback *peeks* the install slot at
+the **callback top** and begins the master-gain down-ramp there; the actual install lands later,
+**when the ramp reaches zero** (ADR-0050 §2 amends ADR-0046 §3's install-at-the-top — see
+[swap-gain-ramp](swap-gain-ramp.md)). At that install, the retiring Engine's ≤1-block
+rendered-but-unplayed residue (~5 ms) is discarded and its pending control Messages are dropped,
+since a Message minted against the old Plan's port types may not be valid against the new one. That
+~5 ms is below what the gain ramp papers over, so core-block-boundary precision inside the fill hot
+loop was not worth the RT branching. The
 Coordinator's RT counterpart (the slot that checks the install mailbox, runs the migration table,
 posts the retiree) also lives in core, so both the native callback and the web worklet embed the
 same machinery ([single-writer-coordinator](single-writer-coordinator.md)). Swaps never touch audio
