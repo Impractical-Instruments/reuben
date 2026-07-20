@@ -81,6 +81,7 @@ fn setup(kind: &str) -> Option<OpHarness> {
 #[bench::output(args = ("output",), setup = setup)]
 #[bench::overhead(args = ("overhead",), setup = setup)]
 #[bench::pan(args = ("pan",), setup = setup)]
+#[bench::pitch2freq(args = ("pitch2freq",), setup = setup)]
 #[bench::power(args = ("power_f32_signal",), setup = setup)]
 #[bench::power_value(args = ("power_f32_value",), setup = setup)]
 #[bench::reciprocal(args = ("reciprocal_f32_signal",), setup = setup)]
