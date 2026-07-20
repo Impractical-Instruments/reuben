@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate a Hexler TouchOSC control surface (.tosc) for a reuben instrument (ADR-0043).
+"""Generate a Hexler TouchOSC control surface (.tosc) for a reuben instrument.
 
 The deterministic half of the `control-surface` skill: a *surface doc* (`surfaces/*.json`,
 per `surfaces/surface.schema.json`) binds interface input pipes by name and carries the
@@ -15,23 +15,25 @@ Two subcommands:
   emit   INSTRUMENT [--surface FILE] [--target touchosc] [--host H] [--port N] [--out F] [--cols N]
       Read-only on the instrument. Resolve the surface doc — an explicit `--surface`, else
       `surfaces/<stem>.touchosc.json` ?? `surfaces/<stem>.json` ?? a default surface derived
-      from the instrument's wireable input pipes (ADR-0043 §3) — against the instrument's
+      from the instrument's wireable input pipes — against the instrument's
       `interface.inputs`, and write a `.tosc` targeting `host:port`. Controls the TouchOSC
       target cannot render (reserved/web-only widget kinds, unknown binds, payload-less
       message pipes) are skipped loudly: one stderr warning naming each.
 
   boundary INSTRUMENT [--describe F] [--reuben P] [--host H] [--port N] [--out F] [--cols N]
       Read-only on the instrument. For an instrument whose `interface.inputs` declares control
-      pipes (ADR-0038 §2), emit one fader per wireable input pipe straight from the *live
+      pipes, emit one fader per wireable input pipe straight from the *live
       engine's* view — metadata is read from `reuben describe --json`, so this path doubles as
       the drift guard binding the skill to the real describe contract. The OSC address is the
-      pipe's `/<name>/in` port (ADR-0038's direction flip: the pipe mints its own address and
+      pipe's `/<name>/in` port (the direction flip: the pipe mints its own address and
       fans out to internal consumers, so a fader drives the pipe, not an inner port).
 
-OSC addressing (ADR-0043 §1): a control bound to pipe `name` sends to `/<name>/in` — the pipe
+OSC addressing: a control bound to pipe `name` sends to `/<name>/in` — the pipe
 node minted at `/<name>`, its `in` port — the same address `describe` and the `boundary`
 subcommand use. Note pipes take a `[note|degree, gate]` payload at that same port.
 """
+
+# see rules: authoring-library
 
 import argparse
 import json
@@ -48,7 +50,7 @@ LABEL_H = 28
 DEFAULT_COLS = 4
 STEP_COLS = 16  # a gate-step lane lays out as a full-width row, wrapping past this many buttons
 
-# The widget vocabulary this target renders (the shipped kinds, ADR-0043 §5). Everything else in
+# The widget vocabulary this target renders (the shipped kinds). Everything else in
 # the superset vocabulary — the reserved/web-only kinds ("xy-pad", "grid", "visualizer",
 # "keyboard") and any unknown name — is skipped loudly by the resolver.
 SHIPPED_WIDGETS = {"fader", "radial", "param-toggle", "note-toggle", "chord-button"}
@@ -58,7 +60,7 @@ SHIPPED_WIDGETS = {"fader", "radial", "param-toggle", "note-toggle", "chord-butt
 TOGGLE_KINDS = {"param-toggle", "note-toggle", "chord-button"}
 
 
-# --- surface-doc resolution (ADR-0043) ---------------------------------------------------
+# --- surface-doc resolution ---------------------------------------------------------------
 
 def interface_pipes(instrument: dict) -> dict:
     """`name -> pipe spec` for the instrument's interface *input pipes*: the `interface.inputs`
@@ -79,8 +81,8 @@ def default_label(name: str) -> str:
 
 
 def infer_widget(pipe: dict) -> str | None:
-    """The default widget for a pipe with no explicit `widget` (ADR-0043 §3), or `None` when no
-    default exists. A held scalar (`f32`), a held integer (`i32`, ADR-0061), or a *ranged* dense
+    """The default widget for a pipe with no explicit `widget`, or `None` when no
+    default exists. A held scalar (`f32`), a held integer (`i32`), or a *ranged* dense
     signal (`f32_buffer` with declared min & max) backs a fader; a channel-bound pipe (a device
     binding, not a control), a bare `f32_buffer` (no range to scale into), and a message pipe
     (`note`/`harmony`/enum — a default cannot guess its payload) infer nothing."""
@@ -95,7 +97,7 @@ def infer_widget(pipe: dict) -> str | None:
 
 
 def derive_surface(instrument: dict, instrument_name: str) -> tuple:
-    """Synthesize the default surface doc from the instrument's pipes (ADR-0043 §3): one fader
+    """Synthesize the default surface doc from the instrument's pipes: one fader
     per wireable input pipe, declaration order (JSON object order). Pipes a default cannot
     surface are skipped with a warning naming each. Returns `(surface_doc, warnings)`."""
     controls, warnings = [], []
@@ -129,13 +131,13 @@ def resolve_surface(instrument: dict, surface: dict, instrument_name: str | None
     """Resolve a surface doc against the instrument's interface pipes into the concrete widget
     list the emitter (and the JS twin) consume. Returns `(widgets, warnings)`.
 
-    Pinned shared semantics (ADR-0043; the JS twin implements these identically):
+    Pinned shared semantics (the JS twin implements these identically):
       - `surface_version` != 1 is a hard error; an instrument-name mismatch is a warning only.
       - Each `controls[]` entry resolves in order. A `bind` naming no pipe warns and skips.
       - label = control.label ?? the pinned default-label algorithm on the pipe name.
       - widget = control.widget ?? the type-inferred widget; a message pipe with no explicit
         widget warns and skips. A reserved/web-only/unknown widget kind warns and skips (the
-        TouchOSC skip table, ADR-0043 §5).
+        TouchOSC skip table).
       - kind = widget for the toggle kinds, else "fader" (a "radial" is kind "fader").
       - min/max = control.min/max clamped INTO the pipe range (warn on an out-of-range
         override; absent -> the pipe's). default = the pipe default clamped into the effective
@@ -180,7 +182,7 @@ def resolve_surface(instrument: dict, surface: dict, instrument_name: str | None
         kind = widget if widget in TOGGLE_KINDS else "fader"
 
         # Presentation range: the control may narrow the pipe range, never widen it (the
-        # ADR-0034 §4 subset law) — an out-of-range override clamps into the pipe range, loudly.
+        # subset law) — an out-of-range override clamps into the pipe range, loudly.
         pipe_lo, pipe_hi = pipe.get("min"), pipe.get("max")
         lo = control.get("min")
         if lo is None:
@@ -205,7 +207,7 @@ def resolve_surface(instrument: dict, surface: dict, instrument_name: str | None
 
         c = {"kind": kind, "widget": widget, "bind": bind,
              "address": f"/{bind}/in", "label": label}
-        # An integer control (ADR-0061) detents onto whole values: the fader/radial grid marks
+        # An integer control detents onto whole values: the fader/radial grid marks
         # each integer in [lo, hi] so the knob reads as stepped. The engine quantizes regardless
         # (the i32 pipe rounds live input), so this is presentation — a continuous drag still
         # lands on an integer at the pipe.
@@ -243,7 +245,7 @@ def resolve_surface(instrument: dict, surface: dict, instrument_name: str | None
 
 
 def find_surface_doc(surfaces_dir: Path, stem: str, target: str = "touchosc") -> Path | None:
-    """The authored surface doc for instrument `stem`, per the ADR-0043 §5 resolution order:
+    """The authored surface doc for instrument `stem`, per the resolution order:
     `surfaces/<stem>.<target>.json` ?? `surfaces/<stem>.json` ?? `None` (auto-derive)."""
     for cand in (surfaces_dir / f"{stem}.{target}.json", surfaces_dir / f"{stem}.json"):
         if cand.exists():
@@ -251,7 +253,7 @@ def find_surface_doc(surfaces_dir: Path, stem: str, target: str = "touchosc") ->
     return None
 
 
-# --- interface boundary (interface input pipes, ADR-0038 §2) ----------------------------
+# --- interface boundary (interface input pipes) -----------------------------------------
 
 # The boundary port kinds that map to a fader: a held scalar knob (`value`), a swept scalar
 # (`signal`), or a ranged integer (`int`). `reuben describe --json` reports the kind (issue #176:
@@ -264,10 +266,10 @@ FADER_BOUNDARY_KINDS = {"value", "signal", "int"}
 
 def _osc_from_pipe(name: str) -> str:
     """The OSC address an `interface.inputs` pipe is driven at — the authoritative account of the
-    ADR-0038 §2 addressing contract this whole boundary path rests on. An input pipe mints an
+    addressing contract this whole boundary path rests on. An input pipe mints an
     address in the flat node namespace (`tone` -> node `/tone`) and takes external control on its
     single `in` port, so the address is `/<name>/in` — driving the pipe, which fans out to every
-    internal consumer, rather than any one inner port. That is the ADR-0038 *direction flip*: a v2
+    internal consumer, rather than any one inner port. That is the *direction flip*: a v2
     pipe declares its own type and owns its metadata, so there is no inner target to resolve — the
     describe view alone suffices. (Assumes the described instrument is the top-level graph; nested
     under a host at `/h`, the same pipe is `/h/<name>/in`.)"""
@@ -276,12 +278,12 @@ def _osc_from_pipe(name: str) -> str:
 
 def boundary_controls(boundary: dict) -> list:
     """One fader control per wireable `interface` input pipe, resolved from a `reuben describe
-    --json` boundary view (ADR-0038 §2). The boundary is already the curated presentational
+    --json` boundary view. The boundary is already the curated presentational
     metadata, so this path authors nothing — the interface *is* the surface.
 
     `boundary` is the parsed `describe --json` output, the source of every pipe's
     name/kind/default/min/max/unit/curve. The OSC address derives from the pipe name alone via
-    `_osc_from_pipe` (see there for the ADR-0038 direction flip).
+    `_osc_from_pipe` (see there for the direction flip).
 
     Skips inputs a host cannot drive from a fader: a non-fader kind (enum/message/harmony) and a
     range-less numeric (a bare audio pipe, no min/max to scale into)."""
@@ -296,7 +298,7 @@ def boundary_controls(boundary: dict) -> list:
             continue  # a bare audio pipe (unranged) — not a fader
         lo, hi = float(port["min"]), float(port["max"])
         default = float(port["default"]) if port.get("default") is not None else lo
-        # `describe` carries no presentation since ADR-0043 (label/widget live in a surface
+        # `describe` carries no presentation (label/widget live in a surface
         # doc) — labels here come from the one pinned default_label algorithm.
         controls.append({
             "kind": "fader",
@@ -451,11 +453,11 @@ def _fader_props(name, frame, grid_steps=13) -> str:
 
 def _radial_props(name, frame, grid_steps=13) -> str:
     x, y, w, h = frame
-    # RADIAL = a rotary fader (same single `x` value model as FADER, ADR-0018). Property keys +
+    # RADIAL = a rotary fader (same single `x` value model as FADER). Property keys +
     # order are cloned from the reference export's RADIAL: it drops the fader's bar/cursor keys and
     # adds `centered`/`inverted`; shape 2 renders the knob. Keep this key set + order in lockstep
     # with fixtures/REUBEN_REF.tosc (FixtureMatchTest asserts it). `gridSteps` defaults to the
-    # reference's 13; an integer control (ADR-0061) overrides it to detent on whole values.
+    # reference's 13; an integer control overrides it to detent on whole values.
     return "".join([
         _pb("background", True), _pb("centered", False), _pc("color", 1, 0, 0, 1),
         _pf("cornerRadius", 1), _pr("frame", x, y, w, h), _pb("grabFocus", True), _pb("grid", True),
@@ -574,7 +576,7 @@ def _widget_node(name: str, c: dict, wframe) -> tuple:
     default_x = 0.0 if span == 0 else max(0.0, min(1.0, (default - lo) / span))
     # `radial` renders the same value as a rotary knob; everything else (default, OSC scaling) is
     # identical to a fader, so only the node type + property block differ.
-    # An integer control detents its grid onto whole values (ADR-0061); everything else keeps the
+    # An integer control detents its grid onto whole values; everything else keeps the
     # reference default of 13 grid divisions.
     grid_steps = c.get("steps", 13)
     if c.get("widget") == "radial":
@@ -657,7 +659,7 @@ def main(argv=None):
                     help=f"widgets per row (default: the surface doc's `cols`, else {DEFAULT_COLS})")
 
     pb = sub.add_parser("boundary",
-                        help="emit a .tosc from an instrument's `interface` input pipes (ADR-0038)")
+                        help="emit a .tosc from an instrument's `interface` input pipes")
     pb.add_argument("instrument")
     pb.add_argument("--describe", default=None,
                     help="pre-captured `reuben describe --json` output (skips running the binary)")
@@ -671,7 +673,7 @@ def main(argv=None):
     inst_path = Path(args.instrument)
 
     if args.cmd == "boundary":
-        # The boundary is served by core `describe --json` (ADR-0038 §2) — the single source of
+        # The boundary is served by core `describe --json` — the single source of
         # truth for both the pipe surface *and* the instrument name, so this path reads that view,
         # not the raw instrument document (addresses come from `_osc_from_pipe`).
         if args.describe:
@@ -689,7 +691,7 @@ def main(argv=None):
         controls = boundary_controls(boundary)
         if not controls:
             sys.exit(f"{inst_path}: no wireable `interface` input pipes to surface — needs an "
-                     f"instrument whose `interface.inputs` declares ranged control pipes (ADR-0038 §2).")
+                     f"instrument whose `interface.inputs` declares ranged control pipes.")
         out = _surface_out(script, inst_path, args.out)
         out.write_bytes(build_tosc(boundary.get("instrument", inst_path.stem), controls, args.cols))
         print(f"wrote {out} — {len(controls)} control(s) from the interface boundary, "
@@ -717,7 +719,7 @@ def main(argv=None):
         print(f"warning: {w}", file=sys.stderr)
     if not controls:
         sys.exit(f"{inst_path}: no resolvable surface controls — the surface doc (or the derived "
-                 f"default) surfaced nothing this target can render (ADR-0043).")
+                 f"default) surfaced nothing this target can render.")
     cols = args.cols if args.cols is not None else surface.get("cols", DEFAULT_COLS)
     out = _surface_out(script, inst_path, args.out)
     out.write_bytes(build_tosc(name, controls, cols))

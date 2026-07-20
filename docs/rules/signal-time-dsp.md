@@ -35,7 +35,11 @@ freely. The current key/scale/chord/tuning is the **tonal context**, and — exa
 for the same polytonality reason — it is an **Operator**, not a global: a default context node grooves
 a Rig into one key, multiple nodes give polytonality. The context node owns the resolver (`hz`,
 `snap`, `chord_tone`) as a deep module, so followers stay dumb and read `io.context().hz(p)`; its
-value is a small `Copy` struct of optional fields written per-field last-write-wins. Followers read
+value is a small `Copy` struct of optional fields written per-field last-write-wins. That resolver
+also has a wire-exposed form: **`pitch2freq`** is the single operator that *exits* the symbolic domain,
+a pure `pitch`+`harmony` → held-`freq` lookup wrapping `harmony.hz` — everything upstream
+(`snap`/`chord`) keeps pitch symbolic, and glide, gating, and velocity stay in downstream operators, so
+a mono voice resolves its pitch without a Voicer. Followers read
 that value through the engine's per-port **latch** and its changes are sliced sample-accurately — both
 mechanisms owned by the [execution-runtime](execution-runtime.md) topic (its latch-service and
 sample-accurate-timing rules); this topic only fixes *what* rides that wire and *who* resolves it.
@@ -129,6 +133,11 @@ higher-order calculus valid.
 ### differentiate and integrate are dense Float-to-Float ops with a constant one-sample dt, which is what keeps higher-order calculus valid.
 
 [why](rationale/signal-time-dsp/calculus-constant-dt.md)
+
+<a id="pitch-to-freq-operator"></a>
+### `pitch2freq` is the single wire operator that exits the symbolic pitch domain — a pure `pitch`+`harmony` to held-`freq` lookup wrapping `Harmony::hz`, with glide, gating, and velocity left to downstream operators.
+
+[why](rationale/signal-time-dsp/pitch-to-freq-operator.md)
 
 ## Terms
 

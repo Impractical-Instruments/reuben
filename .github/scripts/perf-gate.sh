@@ -1,12 +1,12 @@
 #!/usr/bin/env bash
-# Perf regression gate (ADR-0019).
+# Perf regression gate. see rules: web-product-process
 #
 # Compares instruction counts (callgrind `Ir`) between the PR's library code and a baseline
 # ref, using the PR's *own* bench harness for both sides — so a bench that doesn't exist yet
 # on the baseline commit still works (we never swap the benches). Deterministic instruction
 # counts mean no wall-clock flake on the shared runner.
 #
-# TWO LAYERS (ADR-0019, #30), each gated independently so one can't mask the other:
+# TWO LAYERS (#30), each gated independently so one can't mask the other:
 #   - macro_iai: end-to-end `render_block` per instrument.
 #   - micro_iai: per-operator `process` (needs the `bench` feature's crate-private bridge).
 # Each layer runs its own baseline/compare cycle. If a layer's harness postdates the baseline
@@ -24,12 +24,12 @@
 # (`instruments/`), AND the build config (`.cargo/config.toml`), together. Swapping reuben-core/src
 # alone is not enough: its operators call
 # `Self::contract()`, emitted by the reuben-macros proc-macro — so a PR that changes that macro
-# (as ADR-0030 did) leaves baseline reuben-core/src compiled against HEAD's macro, which no longer
+# (as a past macro-changing PR did) leaves baseline reuben-core/src compiled against HEAD's macro, which no longer
 # emits `contract`, and the baseline build fails. Moving the whole source closure together keeps
 # the snapshot self-consistent. Bench harnesses (`benches/`) are never swapped; `bench_support`
 # lives in reuben-core/src, so a baseline that predates it still skips the micro layer as intended.
 # The harness embeds those JSONs via `include_str!`, and the JSON is a *wire
-# format versioned with the engine* — a format-migration PR (e.g. ADR-0028 moved op params
+# format versioned with the engine* — a format-migration PR (e.g. one that moved op params
 # to `Float`/`Enum` inputs) makes the new JSON unloadable by old `src/`. Swapping only
 # `src/` would then bench old code against new-format JSON, which mis-loads into a cheap
 # degenerate graph and produces a bogus, far-too-low baseline (a false regression of
@@ -58,7 +58,7 @@ set -uo pipefail
 
 BASE_SHA="${1:-}"
 PKG="reuben-core"
-# Both iai layers (ADR-0019, #30). macro_iai needs no features; micro_iai needs `bench` for the
+# Both iai layers (#30). macro_iai needs no features; micro_iai needs `bench` for the
 # crate-private `Io` bridge. The feature only compiles `bench_support` (dead code for macro_iai),
 # so it leaves macro Ir byte-stable — safe to pass on both runs.
 BENCHES=("macro_iai" "micro_iai")
@@ -87,7 +87,7 @@ SUMMARY="${GITHUB_STEP_SUMMARY:-/dev/stdout}"
 FAIL_PCT=10
 WARN_PCT=3
 
-# Persisted trend (ADR-0019, layer 1). The gate only ever compares HEAD to its parent and then
+# Persisted trend (layer 1). The gate only ever compares HEAD to its parent and then
 # discards the numbers (they survive only in this job's step summary). We additionally harvest
 # HEAD's absolute instruction count per benched case into a JSONL record; a downstream job
 # (push-to-main only) appends it to the `bench-history` branch so a cross-commit trend can be read

@@ -1,7 +1,7 @@
 {
   "format_version": 3,
   "instrument": "strum-harp",
-  "doc": "Toy 3 of 3 (V1.3 'The Toys', ADR-0022 §3 / ADR-0032): a drag-to-strum harp. One big fader is the strum bar — stream /strum/in [0..1] (the `strum` interface pipe driving /strummer) and the `strum` op plucks a note each time the position crosses a string boundary (both directions strum). Strings are scale degrees resolved through the tonal context, so an open full-diatonic scale reads as a harp glissando and stays in key. Each of the 8 voices is a hosted `strum-harp-voice` sub-patch (a modal `resonator` pinged by the pluck — a real plucked-string ring, not an oscillator+envelope); the voicer sums them and a brightness Good Button tones the mix through a master filter. Change the key live with /key/in (MIDI 48..60) or reshape the scale with /harmony/s0../harmony/s6. Sweep /brightness/in [0..1] to open the plucked tone (master filter cutoff + resonance). Set the string span with /octaves/in [1..4].",
+  "doc": "Toy 3 of 3 (V1.3 'The Toys'): a drag-to-strum harp. One big fader is the strum bar — stream /strum/in [0..1] (the `strum` interface pipe driving /strummer) and the `strum` op plucks a note each time the position crosses a string boundary (both directions strum). Strings are scale degrees resolved through the tonal context, so an open full-diatonic scale reads as a harp glissando and stays in key. Each of the 8 voices is a hosted `strum-harp-voice` sub-patch (a modal `resonator` pinged by the pluck — a real plucked-string ring, not an oscillator+envelope); the voicer sums them and a brightness Good Button tones the mix through a master filter. Change the key live with /key/in (MIDI 48..60) or reshape the scale with /harmony/s0../harmony/s6. Sweep /brightness/in [0..1] to open the plucked tone (master filter cutoff + resonance). Set the string span with /octaves/in [1..4].",
   "resources": {
     "strum-harp-voice": "voices/strum-harp-voice.json"
   },
@@ -42,7 +42,7 @@
     {
       "type": "strum",
       "address": "/strummer",
-      "doc": "The strum bar op. `position` (a held Value — ADR-0031) is the strum bar itself, fed by the `strum` interface pipe (/strum/in [0..1]); each band crossing plucks a degree. Rests at 0.0 (bottom string) so no note fires at load. 8 strings over 1 octave by default; the `octaves` pipe (/octaves/in) widens the span.",
+      "doc": "The strum bar op. `position` (a held Value) is the strum bar itself, fed by the `strum` interface pipe (/strum/in [0..1]); each band crossing plucks a degree. Rests at 0.0 (bottom string) so no note fires at load. 8 strings over 1 octave by default; the `octaves` pipe (/octaves/in) widens the span.",
       "inputs": {
         "octaves": {
           "from": "/octaves"

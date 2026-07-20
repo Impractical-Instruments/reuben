@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render the bench-history dashboard (ADR-0019, layer 2).
+"""Render the bench-history dashboard (layer 2).
 
 Reads the `bench-history.jsonl` series (one {sha,commit_sha,date,run_id,layer,case,ir} object
 per benched case per push to the source branch) and writes a README.md plus light/dark SVG line
@@ -392,7 +392,7 @@ def main():
     lines = [
         f"# reuben bench history{'' if label == 'main' else f' — {label}'}",
         "",
-        "Deterministic CI performance trend ([ADR-0019]): callgrind **instruction counts (Ir)** "
+        "Deterministic CI performance trend: callgrind **instruction counts (Ir)** "
         + "for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every "
         + f"direct push to `{label}`. Instruction counts don't jitter — every visible move is a real "
         + "code change (or a toolchain bump).",
@@ -452,7 +452,7 @@ def main():
         "",
         "## Reading notes",
         "",
-        "- **Bold** deltas exceed the perf gate's 3% warn line ([ADR-0019]).",
+        "- **Bold** deltas exceed the perf gate's 3% warn line.",
         "- Micro cases measure `step_node` — operator DSP **plus** the constant per-node engine "
         + "overhead above. Cheap (value-rate) cases are therefore dominated by that overhead: a "
         + "uniform absolute shift across all of them is an engine-overhead change, not operator "
@@ -465,9 +465,6 @@ def main():
         "- Ir is not wall-clock. Counts shift when the pinned toolchain or target baseline "
         + "changes (e.g. the x86-64-v3 bump on 2026-06-29) — those steps are real cost changes "
         + "on the same workload, but not source-code regressions/wins.",
-        "",
-        f"[ADR-0019]: https://github.com/{REPO}/blob/main/docs/adr/"
-        + "0019-performance-benchmarking.md",
         "",
     ]
     with open(os.path.join(outdir, "README.md"), "w", encoding="utf-8") as f:

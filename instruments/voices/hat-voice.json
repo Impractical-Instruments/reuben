@@ -1,7 +1,7 @@
 {
   "format_version": 3,
   "instrument": "hat-voice",
-  "doc": "Highpassed noise tick: a gate fires a short envelope (the nested shaped-vca) on highpassed noise -- a metallic hat. Every former baked literal is a defaulted interface pipe (canonical names per ADR-0058): `cutoff` sets how thin the noise gets, `attack`/`decay`/`sustain`/`release` run tick to open hat. Hosted by a voicer only `gate` is drivable (per-voice params aren't host-addressable); statically nested via `subpatch`, every pipe is reachable on the boundary face. interface: gate in (+ cutoff/contour pipes), audio/active out.",
+  "doc": "Highpassed noise tick: a gate fires a short envelope (the nested shaped-vca) on highpassed noise -- a metallic hat. Every former baked literal is a defaulted interface pipe (canonical names): `cutoff` sets how thin the noise gets, `attack`/`decay`/`sustain`/`release` run tick to open hat. Hosted by a voicer only `gate` is drivable (per-voice params aren't host-addressable); statically nested via `subpatch`, every pipe is reachable on the boundary face. interface: gate in (+ cutoff/contour pipes), audio/active out.",
   "resources": {
     "shaped-vca": "shaped-vca.json"
   },

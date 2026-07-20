@@ -18,7 +18,7 @@ on:
 
 # Cancel superseded runs on the same ref so the latest push wins and minutes aren't wasted —
 # EXCEPT pushes to main and dev. Every commit on those two branches must get its own run so the perf
-# gate records a history point for each (ADR-0019, layer 1) — main to the `bench-history` branch, dev
+# gate records a history point for each (layer 1) — main to the `bench-history` branch, dev
 # to `bench-history-dev`; cancelling an in-progress or queued run punches a hole in the trend on rapid
 # pushes/merges. So main and dev pushes get a SHA-unique group (nothing to cancel against) with
 # cancellation off; PR and other branch runs keep per-ref grouping and still cancel superseded runs.
@@ -67,9 +67,9 @@ jobs:
               - 'instruments/**'
               - '.github/workflows/ci.yml'
               - '.github/actions/setup-rust/**'
-            # Pure text check (ADR-0023): the pin, the MSRV declaration it must equal, and its own
+            # Pure text check: the pin, the MSRV declaration it must equal, and its own
             # script. Nothing else can red it. (It used to also gate on the detached reuben-web
-            # crate's own rust-version; that crate left with the extraction — ADR-0056.)
+            # crate's own rust-version; that crate left with the extraction.)
             lockstep:
               - 'rust-toolchain.toml'
               - 'Cargo.toml'
@@ -110,7 +110,7 @@ jobs:
     if: needs.changes.outputs.lockstep == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
-      - name: Assert rust-toolchain.toml channel == Cargo.toml rust-version (ADR-0023)
+      - name: Assert rust-toolchain.toml channel == Cargo.toml rust-version
         run: ./.github/scripts/check-msrv-lockstep.sh
 
   check:
@@ -130,7 +130,7 @@ jobs:
       - name: Install ALSA dev headers (cpal, for reuben-native)
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
 
-      # Single source of truth = rust-toolchain.toml (ADR-0023); the composite
+      # Single source of truth = rust-toolchain.toml; the composite
       # installs + caches the pinned channel. No version hardcoded here.
       - name: Setup pinned Rust toolchain
         uses: ./.github/actions/setup-rust
@@ -173,7 +173,7 @@ jobs:
     runs-on: windows-latest
     needs: changes
     # Same draft-skip as `check`, AND'd with the workspace path gate. Proves the build + non-audio
-    # logic on Windows (ADR-0026): a headless runner can't init WASAPI, so audio out is verified by
+    # logic on Windows: a headless runner can't init WASAPI, so audio out is verified by
     # a manual smoke pass on real hardware — not here. fmt/clippy/lockstep are
     # platform-independent and stay ubuntu-only (`check`); no need to re-run them.
     # No ALSA install: cpal links WASAPI on Windows, and tests open no device.
@@ -185,7 +185,7 @@ jobs:
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      # Same pinned toolchain as `check`, via the shared composite (ADR-0023).
+      # Same pinned toolchain as `check`, via the shared composite.
       - name: Setup pinned Rust toolchain
         uses: ./.github/actions/setup-rust
 
@@ -233,7 +233,7 @@ jobs:
       - name: Install valgrind (callgrind backend for iai-callgrind)
         run: sudo apt-get install -y --no-install-recommends ~/valgrind-debs/*.deb
 
-      # Same pinned toolchain as `check`, via the shared composite (ADR-0023).
+      # Same pinned toolchain as `check`, via the shared composite.
       - name: Setup pinned Rust toolchain
         uses: ./.github/actions/setup-rust
 
@@ -268,7 +268,7 @@ jobs:
       - name: Compare instruction counts vs baseline (macro render_block + per-operator process)
         run: ./.github/scripts/perf-gate.sh "${{ steps.base.outputs.sha }}"
 
-      # Hand the harvested per-case Ir record (ADR-0019, layer 1) to the persist job. `always()` so a
+      # Hand the harvested per-case Ir record (layer 1) to the persist job. `always()` so a
       # commit that redded the gate is still recorded — its Ir is valid history. `ignore` when the
       # harness didn't compile against its baseline (no comparison ran): an honest gap, not a failure.
       - name: Upload bench-history record
@@ -320,7 +320,7 @@ jobs:
   ci-passed:
     # This `name` is the exact string the `dev` ruleset requires as a status check (GitHub matches
     # required checks by a job's `name`, not its id) — keep it equal to `ci-passed` so the ruleset,
-    # this workflow, CONTRIBUTING, and ADR-0055 all refer to the check by one name.
+    # this workflow and CONTRIBUTING refer to the check by one name.
     name: ci-passed
     runs-on: ubuntu-latest
     needs: [changes, lockstep, check, windows, bench, rules-guards]
@@ -338,7 +338,7 @@ jobs:
           done
           echo "All required jobs passed or were skipped."
 
-  # Persist the benchmark trend (ADR-0019, layer 1). The ONLY job granted `contents: write`; the gate
+  # Persist the benchmark trend (layer 1). The ONLY job granted `contents: write`; the gate
   # above stays read-only. Records each commit's absolute Ir to a per-branch orphan branch: main to
   # `bench-history`, dev to `bench-history-dev` (never main/dev themselves — no tree churn, no CI
   # re-trigger). The two trends are fully isolated, so watching dev's trend before promoting to main

@@ -1,4 +1,4 @@
-# Provision the toolchain pinned in rust-toolchain.toml (ADR-0023) and cache it.
+# Provision the toolchain pinned in rust-toolchain.toml and cache it.
 # `rustup toolchain install` (no arg) reads the toml and installs the pinned
 # channel + components. The runner's pre-installed stable advances continuously
 # while the pin is bumped only occasionally, so most of the time the pin trails

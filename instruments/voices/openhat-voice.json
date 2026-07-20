@@ -1,7 +1,7 @@
 {
   "format_version": 3,
   "instrument": "openhat-voice",
-  "doc": "Open hi-hat voice (ADR-0032): the nested hat-voice (highpassed noise tick) with a long decay/release baked in, so the same metallic noise source rings out into a sizzling open hat instead of a short closed tick. Hosted by a 1-voice voicer; only `gate` is drivable. interface: gate in, audio/active out.",
+  "doc": "Open hi-hat voice: the nested hat-voice (highpassed noise tick) with a long decay/release baked in, so the same metallic noise source rings out into a sizzling open hat instead of a short closed tick. Hosted by a 1-voice voicer; only `gate` is drivable. interface: gate in, audio/active out.",
   "resources": {
     "hat-voice": "hat-voice.json"
   },

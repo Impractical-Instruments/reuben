@@ -6,7 +6,7 @@ name: Promote dev to main (production)
 # GitHub App token. The App token, not GITHUB_TOKEN, does the write for two reasons: `main`'s
 # ruleset restricts pushes to the App's bypass entry, and a GITHUB_TOKEN-authored push does NOT
 # trigger downstream workflows — so the `push: [main]` CI → production deploy would silently never
-# fire. See ADR-0055 for the full rationale and the maintainer setup this depends on.
+# fire — see rules: web-product-process for the full rationale and the maintainer setup this depends on.
 
 on:
   workflow_dispatch:
@@ -27,7 +27,7 @@ jobs:
           APP_KEY: ${{ secrets.PROMOTE_APP_PRIVATE_KEY }}
         run: |
           if [ -z "$APP_ID" ] || [ -z "$APP_KEY" ]; then
-            echo "::error title=Promotion App not configured::Set PROMOTE_APP_ID and PROMOTE_APP_PRIVATE_KEY repo secrets (see ADR-0055) and add the App to main's ruleset bypass list."
+            echo "::error title=Promotion App not configured::Set PROMOTE_APP_ID and PROMOTE_APP_PRIVATE_KEY repo secrets and add the App to main's ruleset bypass list."
             exit 1
           fi
 

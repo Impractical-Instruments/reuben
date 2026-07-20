@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Append per-commit benchmark instruction counts to a per-branch orphan trend (ADR-0019, layer 1).
+# Append per-commit benchmark instruction counts to a per-branch orphan trend (layer 1).
+# see rules: web-product-process
 #
 # The perf gate compares each commit to its parent and then discards the numbers — they live only in
 # the job's step summary, which ages out. This script persists HEAD's absolute Ir per benched case,
@@ -12,7 +13,7 @@
 # committed beside the JSONL, so browsing the branch on GitHub *is* the trend view.
 #
 # It runs ONLY on direct pushes to main and dev, in a dedicated job whose token is the single
-# `contents: write` grant in CI; the gate job itself stays `contents: read` (ADR-0019). Each source
+# `contents: write` grant in CI; the gate job itself stays `contents: read`. Each source
 # branch keeps its own isolated orphan trend (main -> bench-history, dev -> bench-history-dev), so
 # main's and dev's series never mix, and neither the source branches' trees nor CI are re-triggered.
 #
@@ -63,7 +64,7 @@ for attempt in 1 2 3 4 5; do
     git rm -rqf . >/dev/null 2>&1 || true
   fi
   cat "$abs_rec" >>"$FILE"
-  # Re-render the dashboard (ADR-0019, layer 2) over the full series so browsing the branch on
+  # Re-render the dashboard (layer 2) over the full series so browsing the branch on
   # GitHub shows the trend. Best-effort BOTH ways: a render bug must never lose the data point,
   # and a failed render must never commit the deletion (or a half-written replacement) of the
   # previous dashboard — wipe whatever the failed run left and restore the branch-tip render,

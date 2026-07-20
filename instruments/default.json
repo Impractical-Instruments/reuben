@@ -1,7 +1,7 @@
 {
   "format_version": 2,
   "instrument": "default",
-  "doc": "Default polyphonic playable rig (8 voices, ADR-0032). Send /voicer/notes [midi, gate] to play (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off); send several to play a chord. Each voice is a hosted `default-voice` sub-patch.",
+  "doc": "Default polyphonic playable rig (8 voices). Send /voicer/notes [midi, gate] to play (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off); send several to play a chord. Each voice is a hosted `default-voice` sub-patch.",
   "resources": {
     "default-voice": "voices/default-voice.json"
   },

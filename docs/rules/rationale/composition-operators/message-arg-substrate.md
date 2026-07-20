@@ -17,9 +17,10 @@ offset; external OSC has none and is stamped "now"); **exactly one `Arg`**, not 
 concrete-type Args exist, since two scalars (a note's pitch + velocity) cannot be two args, so they
 pack into one `Arg::Note`; and concrete-type Args instead of OSC primitives-or-blob, which keeps
 values human-readable and a compile-time data contract. `Arg` is **one closed, central enum**: OSC
-primitives (`F32`/`I32`/`Str`), shared *vocab* types (`Note`, `Harmony`, and every enum type-erased to
-one `Enum(index)` variant — type identity moves to the port descriptor's `EnumMeta`, so adding a vocab
-enum touches no central engine file), and the dense `Buffer`. A **`Signal` is just a Message whose Arg
+primitives (`F32`/`I32`/`Str`), shared *vocab* types (`Note`, `Harmony`, and every **all-unit** enum
+type-erased to one `Enum(index)` variant — type identity moves to the port descriptor's `EnumMeta`, so
+adding a unit enum touches no central engine file; a payload-carrying enum instead rides its own named
+leaf variant, see [payload-enum-arg-leaves](payload-enum-arg-leaves.md)), and the dense `Buffer`. A **`Signal` is just a Message whose Arg
 is a `Buffer`** — shorthand, not a second type; `Buffer` is the only Arg with no OSC form, which is
 how audio is kept off the wire *by construction*.
 

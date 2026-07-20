@@ -6,10 +6,10 @@ description: Author a new reuben Operator in Rust — the unit of DSP behind eve
 # create-operator
 
 An Operator is one unit of DSP — authored **single-Voice** (one mono stream; polyphony comes from the
-Voicer hosting voice sub-patches, ADR-0010/0032) as a Rust file in [`crates/reuben-core/src/operators/`](../../../crates/reuben-core/src/operators):
+Voicer hosting voice sub-patches) as a Rust file in [`crates/reuben-core/src/operators/`](../../../crates/reuben-core/src/operators):
 index consts, a state struct, and `impl Operator` (`descriptor` / `process` / `spawn`), declared in
 `operators/mod.rs` and self-registered by its own `register_operator!` line (no central list to
-edit, ADR-0024). This skill authors that end-to-end (ADR-0021). The **canonical
+edit). This skill authors that end-to-end. The **canonical
 operator-development contract** — the trait, the `operator_contract!` macro, registration,
 `OpDriver`, the RT-safety rules — lives in
 [docs/agents/operator-dev.md](../../../docs/agents/operator-dev.md); this skill is the workflow
@@ -18,7 +18,7 @@ that drives it, not a second copy of it.
 First check it doesn't already exist: `reuben describe --json` lists every operator — a request is
 often a *patch* of existing ones (the `patcher` skill), not new Rust. This skill is only for
 behavior no operator provides. It does **not** build graphs (`patcher`), author surface docs
-(`control-surface`, ADR-0043), or edit the living docs (`sync-docs`). Its review mirror is
+(`control-surface`), or edit the living docs (`sync-docs`). Its review mirror is
 [`rust-hot-path-review`](../rust-hot-path-review/SKILL.md) — run that over the diff to check the
 `process` you wrote stays RT-safe.
 
@@ -42,7 +42,7 @@ Run all `reuben`/`cargo` commands from the repo root.
    `cargo run -q -p reuben-native --bin reuben -- scaffold-operator --spec <contract.json>`
    This writes `operators/<name>.rs` (descriptor filled in, a silence-writing `process` stub, its
    own `register_operator!` self-registration line, and an **intentionally-red placeholder test**)
-   and the sorted `mod.rs` inserts — `registry.rs` is not touched (ADR-0024). It refuses to clobber
+   and the sorted `mod.rs` inserts — `registry.rs` is not touched. It refuses to clobber
    and rejects a malformed spec.
 
 3. **Implement `process` test-first** — lean on the `tdd` skill. The scaffold starts you **red**;
@@ -54,7 +54,7 @@ Run all `reuben`/`cargo` commands from the repo root.
    `OpDriver` continuity/spawn tests. The **contract you are writing against** is canonical in
    [docs/agents/operator-dev.md](../../../docs/agents/operator-dev.md) — read it before writing
    DSP rather than recalling it from here: single-Voice authoring, the typed-handle read/write
-   shapes (ADR-0037), state-across-blocks and `spawn` semantics, and the RT rules — `process`
+   shapes, state-across-blocks and `spawn` semantics, and the RT rules — `process`
    runs on the **hot** path and must not allocate, lock, block, or panic (the hot/cold boundary
    and hot-path totality live at
    [operator-dev.md#rt-safe-render](../../../docs/agents/operator-dev.md#rt-safe-render)).
@@ -63,7 +63,7 @@ Run all `reuben`/`cargo` commands from the repo root.
    patcher's. In order:
    1. `cargo test -p reuben-core` — your tests (the real oracle) and the registry
       self-registration invariants (your op is gathered, names stay unique + snake_case).
-   2. **Register a micro-bench workload** (#30, ADR-0019) — a forcing function in
+   2. **Register a micro-bench workload** (#30) — a forcing function in
       [`bench_support.rs`](../../../crates/reuben-core/src/bench_support.rs) (`#[cfg(feature = "bench")]`,
       so plain `cargo test` **won't** catch it — only CI's `check` job does) requires every registered
       operator to have one. Add, **alphabetically**, in lockstep: a `w("<op>", Recipe::<R>)` entry in
@@ -102,12 +102,12 @@ Run all `reuben`/`cargo` commands from the repo root.
 }
 ```
 
-- **`ty`** (ADR-0030) ∈ `f32_buffer` | `f32` | `i32` | `enum` | `note` | `harmony` | `pitch` | `arg` — the port's `Arg` type. A
+- **`ty`** ∈ `f32_buffer` | `f32` | `i32` | `enum` | `note` | `harmony` | `pitch` | `arg` — the port's `Arg` type. A
   `f32_buffer` port is a dense audio/CV Signal (no settable default *in the spec* — see the
   Signal-with-default bullet below). A `f32` port is a held Value and
   adds `"f32": { min, max, default, unit, curve }` for its materialized default; `curve` ∈ `linear` |
   `exponential` (default linear), `unit` defaults `""`.
-- A **Signal input with a scalar default** (ADR-0031 — knob-set it materializes as a held buffer,
+- A **Signal input with a scalar default** (knob-set it materializes as a held buffer,
   an LFO/envelope wires straight in; `filter.cutoff`, `saturator.drive`) can't carry its `{ .. }`
   meta in the spec JSON: declare it as a bare `f32_buffer`, scaffold, then hand-add the meta to the
   generated `operator_contract!` line — e.g. `drive: f32_buffer { 1.0..=30.0, default 2.5, "x", exp }`.
@@ -115,17 +115,17 @@ Run all `reuben`/`cargo` commands from the repo root.
 - An **`enum` port** names its shared *vocab* enum in `"vocab": "Waveform"` (PascalCase) — the
   descriptor reads its variants and `#[default]` from `Waveform::enum_meta`. The vocab type must
   already exist in `crates/reuben-core/src/vocab/`; if it's new, define it there, `#[derive(ArgValue)]`,
-  and add one variant to `Arg` **first** (ADR-0030), then reference it here. `note`/`harmony`/`pitch`
+  and add one variant to `Arg` **first**, then reference it here. `note`/`harmony`/`pitch`
   ports (vocab leaves) need no extra fields.
 - The generated `IN_*`/`OUT_*`/`P_*` index consts follow declaration order — the scaffold renders
   the contract in `operator_contract!` grammar, so a `f32_buffer`/`f32 { .. }`/`enum(VocabType)` spec
   lands as the real port declaration, no Stage-B retyping (sole exception: adding `{ .. }` meta to a
   Signal-with-default input, above).
-- A **`Constant`** (ADR-0035) is a `PortSpec` in the top-level `constants` array — e.g.
+- A **`Constant`** is a `PortSpec` in the top-level `constants` array — e.g.
   `"constants": [{ "name": "voices", "ty": "i32", "i32": { "min": 1, "max": 32, "default": 8 } }]` —
   the instantiate-time value that sizes the voice pool (the loader routes it to the patch's
-  `config` block, ADR-0032).
-- `resources: ["wave"]` adds a `ResourceSlot` and a `bind_resources` stub (ADR-0016).
+  `config` block).
+- `resources: ["wave"]` adds a `ResourceSlot` and a `bind_resources` stub.
 
 ## Scope
 
@@ -134,7 +134,7 @@ Run all `reuben`/`cargo` commands from the repo root.
 | New Operator: Rust impl + descriptor + tests + registration | **author** (TDD `process`, close the gate) |
 | Micro-bench workload (`bench_support.rs` + `micro_iai.rs`) | **register** the new op's `WORKLOADS`/`MICRO_IAI_KINDS`/`#[bench]` entries (part of the gate; CI's `check` job reds without it) |
 | Instrument/Rig graphs | **never** — that is the `patcher` skill |
-| Surface docs (`surfaces/*.json`) | **never** — that is the `control-surface` skill (ADR-0043) |
+| Surface docs (`surfaces/*.json`) | **never** — that is the `control-surface` skill |
 | authoring.md / operator-dev.md / ARCHITECTURE / README / domain terms | **never inline** — hand to `sync-docs` |
 
 ## Report

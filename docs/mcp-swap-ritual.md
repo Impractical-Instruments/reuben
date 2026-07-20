@@ -1,14 +1,14 @@
 # Swap — human testing (the M2 gapless mailbox swap)
 
 A scripted human test for the **M2 mailbox swap** (issue #323,
-[ADR-0046](adr/0046-coordinator-swap-engine-unit.md) §§1–10). The swap verb's request/response
+[the Swap](rules/execution-runtime.md)). The swap verb's request/response
 contract — validation, `SwapReport`, doc/hash update, `expect` arbitration, **real survivor
 stats** — is covered headlessly by `crates/reuben-native/tests/structure_server.rs` and the
-`structure.rs` unit tests ([ADR-0053](adr/0053-mcp-epic-verification-strategy.md) §4). What
+`structure.rs` unit tests. What
 **cannot** be asserted in CI is the device-level behavior: that the swap installs **gaplessly via
-the mailbox** with **no stream teardown** — the streams are fixed at `play` start (ADR-0046 §6), and
+the mailbox** with **no stream teardown** — the streams are fixed at `play` start, and
 a swap box-transplants survivors under a ~20ms master-gain ramp
-([ADR-0050](adr/0050-swap-sonic-rudeness-ramp.md)). CI has no audio device, so — exactly as this
+([swap ramp](rules/execution-runtime.md)). CI has no audio device, so — exactly as this
 repo's `windows` CI job already does for anything that opens a stream — that half is verified here,
 by ear, on real hardware.
 
@@ -17,7 +17,7 @@ by ear, on real hardware.
 > swap works end-to-end over the channel and is gapless; for the fine perceptual judgment of the duck
 > shape and survivor ring-through, see [`docs/rituals/m2-swap-ramp-duck.md`](rituals/m2-swap-ramp-duck.md).
 
-This ritual is **scripted** (ADR-0053 §6): fixed commands, one perceptual judgment. It is not an
+This ritual is **scripted**: fixed commands, one perceptual judgment. It is not an
 unscripted "go check it works."
 
 > **Fixed, library-independent fixtures.** The steps below play the built-in default rig and swap
@@ -36,7 +36,7 @@ unscripted "go check it works."
    `reuben play`** — the process, the OSC-in socket (`0.0.0.0:9000`), and the structure channel
    (`127.0.0.1:9124`) all survive — **and the cpal streams are never torn down** (a swap is a mailbox
    install, not a restart).
-2. There is **no ~100ms gap**: the swap is gapless (at most a ~20ms duck, ADR-0050), then the new
+2. There is **no ~100ms gap**: the swap is gapless (at most a ~20ms duck), then the new
    instrument plays.
 3. Notes keep working **across and after** the swap: the *same* OSC-in receiver and callback stay
    live (M2 never re-points them), and a **survivor** node keeps its held note ringing through the
@@ -86,7 +86,7 @@ You should hear a steady tone. Leave it ringing.
 ### 3. Survivor swap — edit the running rig in place
 
 Prepare a **lightly edited copy** of the default rig that keeps a node's address, type, `config`
-constants, and resolved resources unchanged (so it stays a **survivor**, ADR-0046 §5) — e.g. copy the
+constants, and resolved resources unchanged (so it stays a **survivor**) — e.g. copy the
 played instrument and nudge a filter cutoff or a level:
 
 ```sh
@@ -155,4 +155,4 @@ joins its threads (reclaiming the last retired engine off-thread) and the stream
 
 If you hear a ~100ms silence on any swap, or clicks/pops on the duck edges, note it — the M2 swap is
 gapless by construction (mailbox install, no stream teardown) and the duck is a fixed raised-cosine
-ramp (ADR-0050). A stop-the-world gap would mean the mailbox path did not run.
+ramp. A stop-the-world gap would mean the mailbox path did not run.

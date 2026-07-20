@@ -1,7 +1,7 @@
 {
   "format_version": 3,
   "instrument": "acid-bass-voice",
-  "doc": "TB-303-style monophonic acid bass voice (ADR-0032): a saw oscillator through a resonant lowpass whose cutoff is swept by the amp envelope, so every plucked note squelches open then snaps shut -- the classic acid bassline timbre. One envelope drives both the filter sweep and the amplitude, giving the short, accented character of a 303. Hosted by a 1-voice voicer; the sequencer's degree notes resolve through the host's harmony into `freq`. interface: freq/gate in, audio/active out.",
+  "doc": "TB-303-style monophonic acid bass voice: a saw oscillator through a resonant lowpass whose cutoff is swept by the amp envelope, so every plucked note squelches open then snaps shut -- the classic acid bassline timbre. One envelope drives both the filter sweep and the amplitude, giving the short, accented character of a 303. Hosted by a 1-voice voicer; the sequencer's degree notes resolve through the host's harmony into `freq`. interface: freq/gate in, audio/active out.",
   "interface": {
     "inputs": {
       "freq": {

@@ -5,15 +5,15 @@ description: Author and edit a reuben surface doc (`surfaces/<name>.json`) — t
 
 # control-surface
 
-A playable surface is three layers owned by three files (ADR-0043):
+A playable surface is three layers owned by three files:
 
 | Layer | File | Carries | Lifecycle |
 |---|---|---|---|
 | **Contract** | the instrument's `interface.inputs` pipes | the *quantity*: `type` / `default` / `min` / `max` / `curve` / `unit` — engine-enforced against every consumer wire | edited by the **`patcher`** skill, never this one |
 | **Presentation** | `surfaces/<name>.json` (schema: `surfaces/surface.schema.json`) | `bind` / `label` / `widget` / `group`, selection + order, optional **narrower** `min`/`max` | **durable, editable** — this skill's source of truth |
-| **Projection** | `control-surfaces/<name>.tosc` | the TouchOSC rendering | **disposable** (ADR-0018's one-shot framing, now scoped to the `.tosc` only) — regenerate, never hand-edit |
+| **Projection** | `control-surfaces/<name>.tosc` | the TouchOSC rendering | **disposable** (one-shot framing, now scoped to the `.tosc` only) — regenerate, never hand-edit |
 
-Interface input pipes are the **one boundary** (ADR-0038/0043): a control bound to pipe `name`
+Interface input pipes are the **one boundary**: a control bound to pipe `name`
 sends OSC to **`/<name>/in`** — the pipe node minted at `/<name>`, its `in` port — the same
 address `describe` reports. (That assumes the instrument plays at top level; nested under a host
 at `/h`, the same pipe is `/h/<name>/in`.) The resolver merges the pipe's contract at load, so
@@ -36,7 +36,7 @@ such a host with no emit step; only the `.tosc` needs regenerating.
 warning naming it: a reserved/web-only/unknown `widget`; a `bind` naming no pipe; a message
 (`note`) pipe bound with no explicit widget (nothing inferable); a `note-toggle` missing `note`
 or `chord-button` missing `degree`. An out-of-range `min`/`max` override is *clamped* into the
-pipe range with a warning (the control is kept — the ADR-0034 §4 subset law). A
+pipe range with a warning (the control is kept — the subset law). A
 `surface_version` other than 1 is a hard error; an instrument-name mismatch is a warning only.
 
 **Surface-doc resolution order** (per target `t`, today `touchosc` only):
@@ -211,7 +211,7 @@ many rows yields small knobs — **more columns = fewer rows = bigger knobs**: s
 the committed docs: `surfaces/euclidean-drums.json` rows its radials one drum channel per
 `group` (kick/snare/tom/hat) with ungrouped tempo on its own row; `surfaces/groovebox.json` tags
 each 16-step `param-toggle` lane with its channel's `group`, so every lane lines up as one row —
-a lane is *identified* by its shared group, since steps are ordinary pipes now (ADR-0043 §6).
+a lane is *identified* by its shared group, since steps are ordinary pipes now.
 Group rows size to their own width, so a 6-knob row and a 1-knob row share the same knob size.
 
 ## Run the tests

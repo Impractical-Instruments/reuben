@@ -45,7 +45,7 @@ These are **defects, not opinions** — they glitch or crash the audio thread. E
   `todo!` / `unimplemented!`. Fix with the codebase's totality idioms:
   `.unwrap_or(..)`, `.map_or(..)`, `.clamp(0.0, 1.0)` (see `operators/envelope.rs`; typed
   handles make port reads total by construction — `io.read(IN_GATE)` returns a defaulted value,
-  and a Signal read is always exactly `io.frames()` samples, ADR-0037). A panic in the cpal
+  and a Signal read is always exactly `io.frames()` samples). A panic in the cpal
   callback unwinds across the FFI boundary.
   - **`debug_assert!` is blessed** — it vanishes in release; prefer it for hot-path invariants.
   - **Plain in-bounds indexing is exempt** — `buf[i]` where `i < n` (the `for i in 0..n` pattern) is
@@ -53,7 +53,7 @@ These are **defects, not opinions** — they glitch or crash the audio thread. E
 - **Lock / blocking** → `make-total` (move it off-thread). Tells: `Mutex::lock`, blocking `recv`,
   syscalls, file I/O, logging.
 - **`unsafe`** → `benchmark-or-remove`. **Hard line.** Admissible *only* with a committed benchmark
-  ([ADR-0019](../../../docs/adr/0019-performance-benchmarking.md)) proving it's a measured hot path and
+  ([the perf gate](../../../docs/rules/web-product-process.md)) proving it's a measured hot path and
   safe Rust was the bottleneck. The core has **zero `unsafe`** today; keep it that way unless a number
   says otherwise.
 - **Determinism** (one-line scan, not this skill's chapter — see

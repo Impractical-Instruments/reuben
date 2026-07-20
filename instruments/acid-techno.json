@@ -1193,7 +1193,7 @@
     {
       "type": "unpack_note",
       "address": "/bass_unpack",
-      "doc": "Unbundle the mono bass note line into held fields (ADR-0063): `pitch` (the degree, a vocab Pitch) feeds pitch2freq; `velocity` (1 = note-on, 0 = note-off) IS the mono synth's gate. This replaces the voicer -- inlining the 303 synth at rig level so its glide/filter/resonance params can be driven by interface pipes (the voicer only forwards freq/gate).",
+      "doc": "Unbundle the mono bass note line into held fields: `pitch` (the degree, a vocab Pitch) feeds pitch2freq; `velocity` (1 = note-on, 0 = note-off) IS the mono synth's gate. This replaces the voicer -- inlining the 303 synth at rig level so its glide/filter/resonance params can be driven by interface pipes (the voicer only forwards freq/gate).",
       "inputs": {
         "in": {
           "from": "/bass_mode"
@@ -1203,7 +1203,7 @@
     {
       "type": "pitch2freq",
       "address": "/bass_freq",
-      "doc": "Resolve the mode-shifted degree to Hz against /bass_harmony (natural minor) -- the note→freq step the voicer used to do internally (ADR-0064).",
+      "doc": "Resolve the mode-shifted degree to Hz against /bass_harmony (natural minor) -- the note→freq step the voicer used to do internally.",
       "inputs": {
         "pitch": {
           "from": "/bass_unpack.pitch"

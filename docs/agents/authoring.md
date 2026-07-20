@@ -2,12 +2,13 @@
 
 The instrument-authoring guide — the contract an **authoring agent** builds against, whether
 it drives the repo skills (`patcher`) or the reuben MCP server (this file is served in-band
-as `reuben://guide/authoring` — [ADR-0048](../adr/0048-mcp-tool-surface-and-contracts.md) §7).
+as `reuben://guide/authoring`).
 It owns the type system and wiring rules, the instrument JSON format, addressing, and the
-authoring loop's semantics. The conceptual narrative lives in
-[ARCHITECTURE.md](../ARCHITECTURE.md); capitalized terms (Operator, Voice, Plan…) are defined
-in [CONTEXT.md](../../CONTEXT.md). The ADRs are the source of truth; this doc tells you where
-the contract lives and how to author against it.
+authoring loop's semantics. The conceptual narrative and the glossary now live in the
+[rules corpus](../rules/README.md) — the six topic docs plus the derived glossary that absorbed
+the old end-to-end narrative and term list; capitalized terms (Operator, Voice, Plan…) are defined
+there. The rules corpus is the source of truth; this doc tells you where the contract lives and how
+to author against it.
 
 Developing a new **Operator in Rust** — the `Operator` trait, the `operator_contract!` macro,
 registration, `OpDriver` testing — is the builder's job, not the authoring agent's: that
@@ -15,7 +16,7 @@ contract lives in [operator-dev.md](operator-dev.md).
 
 ## The recursive model <!-- lanes: skills,mcp,web -->
 
-One concept at every scale ([ADR-0003](../adr/0003-recursive-composition.md)): a graph of
+One concept at every scale ([composition-operators](../rules/composition-operators.md)): a graph of
 nodes with typed ports.
 
 - **Operator** — the smallest unit of behavior; does one simple thing.
@@ -28,10 +29,9 @@ Nesting is an authoring concept only; at runtime everything inlines into one fla
 ## The authoring loop: the document is truth, `send` is audition <!-- lanes: skills,mcp,web -->
 
 A conversational edit works on one thing: the **instrument document**. Its semantics
-([ADR-0045](../adr/0045-whole-document-edit-contract.md) §5):
+([agent-mcp](../rules/agent-mcp.md)):
 
-- **The document is durable truth.** The unit of edit is the whole document
-  (ADR-0045 §1): edit the JSON, validate it (the engine's own load path is the single
+- **The document is durable truth.** The unit of edit is the whole document: edit the JSON, validate it (the engine's own load path is the single
   validation authority), and swap it in. What the document says is what plays after the next
   Swap — and what saves, shares, and reloads.
 - **`send` is ephemeral audition.** A live control message (`/filt/cutoff 1500`) changes
@@ -41,13 +41,13 @@ A conversational edit works on one thing: the **instrument document**. Its seman
   document and swap. Never let the sound and the document drift apart — the document is the
   save source of truth.
 - **Renames reset state.** At Swap a node keeps its state iff a node with the same
-  fully-qualified address *and* the same operator type exists on both sides (ADR-0045 §2).
+  fully-qualified address *and* the same operator type exists on both sides.
   Renaming an address, or changing the operator type at an address, is a remove + add;
   everything else — rewired inputs, changed params, new neighbors — leaves a survivor a
   survivor.
 
 Two pieces of loop conduct, in every lane
-([ADR-0059](../adr/0059-cross-lane-grounding-unification.md) §2):
+([agent-mcp](../rules/agent-mcp.md)):
 
 - **Sanity-check that it's audible.** `validate` proves the graph is *legal*, **not that it
   makes sound** — a disconnected oscillator or an unfed output pipe validates clean and
@@ -60,7 +60,7 @@ Two pieces of loop conduct, in every lane
   round.
 
 One more piece of authoring conduct that rides the same whole-document re-emission
-([ADR-0057](../adr/0057-instrument-reuse-interface-makes-the-role.md) §3):
+([authoring-library](../rules/authoring-library.md)):
 
 - **Keep `doc` true when you reshape.** An instrument's reuse story — its **recipe-role** —
   is the first sentence of its own top-level `doc` field: what it is, and when to reach for
@@ -70,14 +70,14 @@ One more piece of authoring conduct that rides the same whole-document re-emissi
   trusted for **selection only**; the `interface` block stays the mechanically-enforced
   face, so a stale role line can cost a bad-sounding pick, never a mis-wired document.
 
-Two swap rules of thumb ([ADR-0050](../adr/0050-swap-sonic-rudeness-ramp.md)):
+Two swap rules of thumb ([execution-runtime](../rules/execution-runtime.md)):
 
 - **A swap ducks the output for ~20ms.** The engine ramps the master to silence, installs
   the new Plan at zero, and ramps back up — a brief duck, never a click. Don't chase it as a
   dropout. A node at the same address with the same operator type keeps its live state across
   the swap; only the changed nodes rebuild cold. (The **web** lane's swap is ruder by design —
   every node rebuilds cold, `survived: 0` — because its single-threaded worklet can't run the
-  off-thread mailbox install, [ADR-0052](../adr/0052-web-parity-contract-not-protocol.md) §2.)
+  off-thread mailbox install.)
 - **A note-off racing a swap can hang a note — re-send the off.** Pending messages are
   dropped at install, so an off landing in that window (≤ one block plus the down-ramp) is
   lost and a surviving voice's gate stays high. Recoverable in-band: re-send the off (or
@@ -85,17 +85,16 @@ Two swap rules of thumb ([ADR-0050](../adr/0050-swap-sonic-rudeness-ramp.md)):
   a swap with a corrective `send`.
 
 <a id="type-system"></a>
-## One `Input`, one `Arg` type ([ADR-0030](../adr/0030-osc-as-all-data-one-message-type.md)) <!-- lanes: skills,mcp,web -->
+## One `Input`, one `Arg` type ([composition-operators](../rules/composition-operators.md)) <!-- lanes: skills,mcp,web -->
 
 Every functional input an operator consumes is **one `Input`**, declared once, carrying one
 piece of typed data — its **`Arg`** type, drawn from one closed, central enum. How the value is
 read follows from the `Arg` type plus the read verb; whether a numeric port is a held **Value**
-(`f32`) or a dense **Signal** (`f32_buffer`) follows from which keyword it declares (ADR-0031).
-Outputs carry an `Arg` the same way. (The ADR-0028 **`shape`** axis is **retired** — the axes now
+(`f32`) or a dense **Signal** (`f32_buffer`) follows from which keyword it declares.
+Outputs carry an `Arg` the same way. (The old **`shape`** axis is **retired** — the axes now
 are the port's `Arg` type and its declared form.)
 
-The read/write surface is **two verbs over typed handles** ([ADR-0037](../adr/0037-typed-port-handles.md),
-extending ADR-0031): `io.read(IN_X)` and `io.write(OUT_X)`. The contract macro emits each port's
+The read/write surface is **two verbs over typed handles** ([composition-operators](../rules/composition-operators.md)): `io.read(IN_X)` and `io.write(OUT_X)`. The contract macro emits each port's
 const as a typed handle — `In<form>` / `Out<form>` — whose *type* fixes the read/write shape and
 whose value carries the declared default, so a wrong-form read **does not compile** and a held
 read's fallback **is** the contract default (no second literal to drift).
@@ -112,22 +111,22 @@ A port's **form** is one of three — **Signal** (`f32_buffer`), **Value** (`f32
 held latch read once per slice), **Event** (`Note`, a sparse frame-stamped stream) — and follows from
 the declared `Arg` type (`PortKind` in `plan.rs`). Reading older code: **Signal** = `f32_buffer`;
 **param** = an `f32` Value or held enum; **Context** = `Harmony`; **Message events** = `Note` (the
-ADR-0028 `shape`/temporality axis is gone). A runtime integer is a rounded `f32` or an enum; `I32` is
+old `shape`/temporality axis is gone). A runtime integer is a rounded `f32` or an enum; `I32` is
 an OSC primitive `Arg`, but no operator declares an `Int` port.
 
 ### Form is declared, not inferred: `f32` is a held Value, `f32_buffer` is a Signal <!-- lanes: skills,mcp,web -->
 
 The author picks a numeric port's form by which keyword it declares
-([ADR-0031](../adr/0031-float-resolves-to-value-or-signal-by-wiring.md)):
+([composition-operators](../rules/composition-operators.md)):
 
 - **`f32` → a held Value.** A latched scalar read once per block-slice with `io.read(IN)`. The
   engine block-slices at each change frame, so the read is sample-accurate without a buffer. It
   seeds its latch from override-or-default; unwired it reads the declared default (carried by the
-  handle itself, ADR-0037). No buffer allocated.
+  handle itself). No buffer allocated.
 - **`f32_buffer` → a Signal.** A dense per-sample buffer read with `io.read(IN)` — audio, CV,
   or any *swept* control (a filter cutoff an LFO modulates). A meta default materializes a constant
   buffer when unwired/knob-set; an unwired *bare* buffer materializes **silence** — so the read is
-  a real length-n buffer in every case (the **buffer-presence invariant**, ADR-0037): index
+  a real length-n buffer in every case (the **buffer-presence invariant**): index
   `io.read(IN)[i]` directly, no `.get(i).unwrap_or(..)` guard.
 
 A cheap **`varying: bool`** rides alongside a Signal read (`io.varying(IN)`): `false` when a
@@ -154,7 +153,7 @@ Each wire is checked **locally** at Instantiate against the two ports' forms (`c
   `m2s` gap-filling modes, below). Into an enum Value it's equally illegal (an enum takes a
   discrete choice, not a per-sample signal).
 - **`i32 → f32` / `i32 → f32_buffer`** is an **implicit numeric widening**
-  ([ADR-0061](../adr/0061-int-to-float-widening-and-int-controls.md)): an integer source wires
+  ([composition-operators](../rules/composition-operators.md)): an integer source wires
   straight into a float sink (a `steps` `i32` control into euclid's `f32` port), lossless and read
   via `Arg::as_f32`. Its reverse **`f32 → i32` is a hard error** — lossy, needing an explicit
   quantizer — the same directional favour as `Value → Signal`.
@@ -169,7 +168,7 @@ A **`Constant`** configures an operator *instance* at instantiate time and never
 data path. The boundary is precise: **a value is a `Constant` iff changing it would rebuild the
 graph.** The canonical (and today only) case is the Voicer's `voices` — it sets the voice-pool size,
 hence how many voice sub-patches are instantiated, so it can't be a runtime value. A `Constant` is
-declared with the contract's **`constant: <param>`** keyword (ADR-0032) and lives in the patch's
+declared with the contract's **`constant: <param>`** keyword and lives in the patch's
 `config` block, not `inputs`.
 
 **`Arg` type does not decide `Constant`-vs-`Input`.** `mode` (Lp/Hp/Bp) and `waveform` (Sine/Saw)
@@ -178,8 +177,7 @@ enum inputs**, switchable live over OSC. Only genuinely topology-fixing values a
 
 ## The Instrument format (`crates/reuben-core/src/format/`) <!-- lanes: skills,mcp,web -->
 
-An Instrument is plain JSON data ([ADR-0028](../adr/0028-one-input-shape.md); **format v3**
-since [ADR-0043](../adr/0043-surface-docs-decouple-presentation-from-instruments.md)). At the top
+An Instrument is plain JSON data (**format v3**; see [authoring-library](../rules/authoring-library.md)). At the top
 level it **requires an `instrument` name field** (a string — the human-facing name/id) alongside
 `nodes`; a document that omits `instrument` is rejected (the loader denies unknown fields, so the
 name cannot be misspelled or dropped). It also carries `nodes` (operator `type` + `address`, plus
@@ -226,7 +224,7 @@ Other errors are specific: `UnknownInput`, `BadInputValue`, `TypeMismatch`,
 `ConstantInInputs` (a `Constant` placed in `inputs`), `UnknownConfig`, `AmbiguousWire`. See
 `instruments/*.json` for worked examples.
 
-### The `interface` block: named pipes at the boundary ([ADR-0038](../adr/0038-interface-pipes-and-the-device-layer.md)) <!-- lanes: skills,mcp,web -->
+### The `interface` block: named pipes at the boundary ([composition-operators](../rules/composition-operators.md)) <!-- lanes: skills,mcp,web -->
 
 `interface.inputs` / `interface.outputs` entries are **named pipes** — the single boundary
 mechanism at every graph level, with the wiring direction **flipped** relative to the v1
@@ -238,12 +236,11 @@ target-pointing form (no entry points inward anymore):
   fan-out free. Because nothing is pointed at, **the entry declares its own `Arg` type** —
   `"type"`: `"f32_buffer"`, `"f32"`, `"i32"`, `"note"`, `"harmony"`, or a vocab enum name —
   enforced against every consumer wire by the ordinary pass-2 wire check. An `i32` pipe is an
-  **integer control** ([ADR-0061](../adr/0061-int-to-float-widening-and-int-controls.md)): a count
+  **integer control** ([composition-operators](../rules/composition-operators.md)): a count
   like euclid's `steps`/`pulses`/`rotation`, whole-numbered `default`/`min`/`max` (no `curve`), that
   widens losslessly into an operator's `f32` port and quantizes live input. A numeric pipe owns
   engine-enforced `default`/`min`/`max`/`curve` plus a display `unit` — the pipe's whole
-  *quantity* contract; presentation (`label`/`widget`) lives in a surface doc, not on the pipe
-  ([ADR-0043](../adr/0043-surface-docs-decouple-presentation-from-instruments.md)). A
+  *quantity* contract; presentation (`label`/`widget`) lives in a surface doc, not on the pipe. A
   defaulted pipe unfed materializes its default —
   a knob at rest, message-drivable at **`/<name>/in`** over OSC; an unfed *bare* signal pipe
   renders silence (and warns at top level, where nothing can ever feed it).
@@ -287,7 +284,7 @@ channel-pinned outputs).
 
 A document may also carry a top-level `resources` table (logical id → source path) that
 resource-bearing nodes reference by a `sample` field
-([ADR-0016](../adr/0016-sample-player-and-resource-store.md)). Resolving + decoding those needs a
+([authoring-library](../rules/authoring-library.md)). Resolving + decoding those needs a
 `ResourceResolver`, so use `format::load_instrument(json, registry, resolver)` — it returns the
 `Graph` plus any non-fatal `LoadWarning`s (a missing/undecodable sample degrades to silence).
 `crates/reuben-native/tests/fixtures/sampler.json` is the worked example (frozen as a test
@@ -297,11 +294,10 @@ live next to *it*, not next to the top-level instrument), falling back to a conf
 root (`reuben --instrument-root <DIR>` or `REUBEN_INSTRUMENT_ROOT`); the resolver canonicalizes
 identity, so `a.json` and `./a.json` are one cycle-guard/dedup key. For embedded hosts and tests,
 core's in-memory `MemoryResolver` serves patches and samples by exact key with no filesystem.
-A document may declare a `format_version` ([ADR-0036](../adr/0036-instrument-library-and-format-versioning.md));
+A document may declare a `format_version` ([authoring-library](../rules/authoring-library.md));
 absent means 1, and a version newer than the engine understands refuses to load. The current
-version is **3** — [ADR-0043](../adr/0043-surface-docs-decouple-presentation-from-instruments.md)'s
-presentation strip, the second breaking bump after ADR-0038's v2 interface-pipe direction
-flip. Old documents keep loading forever, migrated at parse: v1's target-form `interface`
+version is **3** — the presentation strip, the second breaking bump after the v2 interface-pipe
+direction flip. Old documents keep loading forever, migrated at parse: v1's target-form `interface`
 entries flip to pipes + consumer wire-refs (deriving each pipe's type/range/default from the
 old target port; the anonymous `outputs` array becomes named `interface.outputs` entries), and
 a leftover per-node `control` block or pipe `label`/`widget` — v2's retired presentation — is
@@ -311,7 +307,7 @@ never read them; re-saving strips them). Migrated-vs-native renders are **bit-id
 (asserted in `crates/reuben-core/tests/format_v2.rs` and `format_v3.rs`). Save writes v3 — a
 migrated document never saves back under its old number. The whole normalize pipeline —
 version gate, migrations, stamp — lives in `format/normalize.rs` behind the **`NormalizedDoc`**
-type ([ADR-0047](../adr/0047-normalization-is-a-type.md)): `NormalizedDoc::from_json` is the
+type: `NormalizedDoc::from_json` is the
 one mint (a hand-deserialized `InstrumentDoc` enters via `NormalizedDoc::from_doc`), building a
 `Graph` is `NormalizedDoc::build`, so a document past the gate is current-shaped and migrated
 exactly once — held by the compiler, not re-checks. To **save**, serialize
@@ -320,16 +316,16 @@ the `InstrumentDoc` (nested references survive; a `NormalizedDoc` derefs to one,
 flatten/export path — a built graph's spliced subpatches appear as their inlined nodes.
 
 A Voicer node references a **voice sub-patch** the same way, by a **`voice`** field naming a standalone
-instrument JSON ([ADR-0032](../adr/0032-voicer-hosts-voice-subpatches.md)); the loader resolves it
+instrument JSON ([composition-operators](../rules/composition-operators.md)); the loader resolves it
 (nested `sample` resources resolve recursively), builds it `voices` times, and binds the graphs. A
-voice patch declares its **`interface`** like any graph (pipes, ADR-0038): input pipes
+voice patch declares its **`interface`** like any graph (pipes): input pipes
 (`freq`/`gate`) its internal nodes consume, output pipes (`audio`/`active`) fed from internal
 ports — so the host Voicer can drive and tap it through the boundary. Hosted this way, any
 `channel` binding on a voice's pipes is inert, exactly as for a nested subpatch.
 (`interface` is real wiring the engine type-checks — the contract a surface doc binds to,
 never surface metadata itself.) See `instruments/default.json` + `instruments/voices/default-voice.json`.
 
-### Nesting: a `subpatch` node inlined at build ([ADR-0034](../adr/0034-instrument-nesting.md)) <!-- lanes: skills,mcp,web -->
+### Nesting: a `subpatch` node inlined at build ([composition-operators](../rules/composition-operators.md)) <!-- lanes: skills,mcp,web -->
 
 A **`subpatch`** node references a nested instrument the same way, by a **`patch`** field naming an
 instrument JSON in `resources`. At build the child is resolved recursively and **inlined**: its
@@ -343,20 +339,19 @@ fatal `CyclicResource`; availability problems (missing id, unreadable source) de
 resolved-but-malformed child document is fatal.
 
 The node's ports are the child's **`interface` names** — a synthesized **boundary face**, one port
-per name, each carrying the **entry's declared `Arg` type** (ADR-0038 §2, amending ADR-0034 §4's
+per name, each carrying the **entry's declared `Arg` type** (amending the earlier
 inherit-from-the-inner-port rule: a pipe points at no inner port, so there is nothing to inherit
 from and the entry declares its type itself; the ordinary pass-2 wire check covers boundary wires,
 and errors speak in boundary terms — the subpatch address and external name). Wire or set literals
 on those names exactly as on operator ports: `"tone": 2500` validates against the pipe's declared
-type and range. Inlined this way, a child pipe's `channel` binding is **inert** (ADR-0038 §3): the
+type and range. Inlined this way, a child pipe's `channel` binding is **inert**: the
 host's wiring feeds the pipe through the face; an unwired nested pipe falls back to its declared
 default (silence for a bare signal pipe) with a `LoadWarning` — a nest never reaches the hardware
 on its own.
 
 A pipe entry carries its **quantity contract** alongside the declared type — for numeric
-pipes the engine-enforced `default`/`min`/`max`/`curve` plus a display `unit` (ADR-0038 §2 as
-amended by [ADR-0043](../adr/0043-surface-docs-decouple-presentation-from-instruments.md):
-the entry owns this metadata outright, and `unit`/`curve` describe the *quantity*, so every
+pipes the engine-enforced `default`/`min`/`max`/`curve` plus a display `unit` (the entry owns
+this metadata outright, and `unit`/`curve` describe the *quantity*, so every
 surface of the instrument inherits them). Presentation — `label`, `widget`, grouping, order —
 lives apart in a **surface doc** (`surfaces/<name>.json`, schema
 `surfaces/surface.schema.json`) that binds pipes by name; the `control-surface` skill authors
@@ -379,8 +374,8 @@ declared type, range, default, and unit.
 `instruments/patches/space.json` (nestable effect) + `instruments/mic-space.json` (its host,
 behind a live-input pipe) are the worked pair.
 
-The per-node **`control`** block ([ADR-0018](../adr/0018-control-surface-generation.md)) is
-**retired** ([ADR-0043](../adr/0043-surface-docs-decouple-presentation-from-instruments.md)):
+The per-node **`control`** block is
+**retired** ([authoring-library](../rules/authoring-library.md)):
 a v2 document (or a v3 one still carrying leftovers) parses, but the block is dropped with a
 `LoadWarning::DeprecatedControlBlock` — the engine never read it, so sound is unchanged, and
 re-saving strips it. Player-facing controls are **interface input pipes** now; their
@@ -388,7 +383,7 @@ presentation lives in a surface doc read by the
 [`control-surface` skill](../../.claude/skills/control-surface/SKILL.md) and by any host-side
 renderer (`instruments/groovebox.json` + `surfaces/groovebox.json` are the worked pair).
 
-## Instrument reuse: the recipe-role and the library index ([ADR-0057](../adr/0057-instrument-reuse-interface-makes-the-role.md)) <!-- lanes: skills,mcp,web -->
+## Instrument reuse: the recipe-role and the library index ([authoring-library](../rules/authoring-library.md)) <!-- lanes: skills,mcp,web -->
 
 There is one noun — **instrument**. A "recipe" is not a second kind of file: it is a role an
 instrument plays *while referenced* by another via `subpatch` (above) — same format, same
@@ -416,14 +411,14 @@ stays checkout-side.
   mechanically-enforced face (pipe names, `Arg` types, defaults, outputs) — no consumer may
   take wiring facts from prose.
 - **Canonical pipe naming** is a recipe-authoring guideline
-  ([ADR-0058](../adr/0058-intent-vocabulary-word-to-move-table.md) §2): give a reusable
+  ([agent-mcp](../rules/agent-mcp.md)): give a reusable
   instrument's face pipes the same names the intent vocabulary's moves target (`cutoff`,
   `tone`, `decay`, `drive`, …) wherever the pipe proxies that move, so the vocabulary's
   type-keyed rows transfer to the face by name instead of needing a second,
   instrument-specific mapping.
 - **Not every idiom is a library entry.** Clock scaffolds and poly scaffolds compose *around*
   a voice rather than presenting a reusable face, so they stay prompt-side material, never a
-  library entry (ADR-0057 §1) — there is no index line for them, and none is coming. The
+  library entry — there is no index line for them, and none is coming. The
   worked self-playing idiom: add a `clock` + `sequencer` feeding the voicer, one sequencer per
   voice on a shared clock, as in `instruments/groovebox.json`.
 - **The index is generated, never hand-kept.** `instruments/index.md` is one signature line
@@ -435,11 +430,11 @@ stays checkout-side.
 ## The sample workflow: "use this sample" is a filesystem gesture <!-- lanes: skills,mcp -->
 
 No resource bytes cross the tool surface — there is no upload tool, by decision
-([ADR-0049](../adr/0049-no-resource-bytes-over-mcp.md)). The agent handles the bytes itself:
+([agent-mcp](../rules/agent-mcp.md)). The agent handles the bytes itself:
 
 1. **Write the bytes yourself, next to the instrument.** Copy, move, or synthesize the WAV
    **sibling to the instrument document** with your own file tools. Sibling-first resolution
-   ([ADR-0036](../adr/0036-instrument-library-and-format-versioning.md)) makes
+   ([authoring-library](../rules/authoring-library.md)) makes
    next-to-the-document the blessed location.
 2. **Reference it by logical id + relative path.** Add a `resources` entry mapping a logical
    id to the file's path relative to the document (`"resources": { "pluck": "pluck.wav" }`),
@@ -463,20 +458,20 @@ never as a runtime type.
 
 Every node has an OSC **address**, derived from graph structure by default. A Message targets a
 node by address prefix and an **input port by name** — always addressed explicitly as
-`/<node>/<input>` (ADR-0030 routes by port name; there is no whole-node sugar). An `F32` control
+`/<node>/<input>` (routing is by port name; there is no whole-node sugar). An `F32` control
 input takes a scalar (`/filt/cutoff 1500`). An enum input takes a **symbol** — its variant name
 (`/filt/mode "Hp"`; the JSON literal `"mode": "Hp"` is the same form) — with a bare in-range
 integer index accepted as a fallback; an unknown symbol or out-of-range index is an **error**,
 never a silent snap to the default. A `Note` input takes its args (`/voicer/notes [69.0, 1.0]`).
 Full wildcard dispatch (`/drums/*/decay`) is designed but not built — today a Message targets at
-most one node ([ADR-0005](../adr/0005-osc-namespace-and-wildcards.md)).
+most one node ([signal-time-dsp](../rules/signal-time-dsp.md)).
 
 ## Invariants you must not break <!-- lanes: skills,mcp,web -->
 
 - **Determinism** — output is bit-identical regardless of executor or thread interleaving
-  ([ADR-0001](../adr/0001-unified-block-graph-execution.md)). No wall-clock, no RNG without
+  ([execution-runtime](../rules/execution-runtime.md)). No wall-clock, no RNG without
   a seeded, plan-owned source. **Live audio input is the one sanctioned nondeterministic
-  boundary** ([ADR-0038](../adr/0038-interface-pipes-and-the-device-layer.md) §10, the same
+  boundary** (the same
   category as OSC-in): a patch with no input pipes gains no new nondeterminism, and offline
   render / `OpDriver` injects known buffers into input pipes, so injected-input renders stay
   bit-reproducible.
@@ -487,14 +482,14 @@ most one node ([ADR-0005](../adr/0005-osc-namespace-and-wildcards.md)).
   idioms — lives in [operator-dev.md](operator-dev.md#rt-safe-render).
 - **OSC-only core** — the core speaks only OSC-shaped Messages. MIDI, Ableton Link, tempo
   sync, etc. are removable boundary adapters that convert to/from OSC in the native layer
-  ([ADR-0007](../adr/0007-osc-only-core.md)).
+  ([signal-time-dsp](../rules/signal-time-dsp.md)).
 - **Single-writer boundary** — the Coordinator is the only writer of graph structure;
   Render only ever reads an immutable Plan
-  ([ADR-0012](../adr/0012-boundary-and-threading.md)).
+  ([execution-runtime](../rules/execution-runtime.md)).
 
-## ADR index <!-- lanes: skills,mcp -->
+## Where the rules live <!-- lanes: skills,mcp -->
 
-The decisions and reasoning behind all of the above live in [docs/adr/](../adr/) — start
-there when a contract's *why* is unclear.
-[ADR-0030](../adr/0030-osc-as-all-data-one-message-type.md) is the one-`Message`/`Arg` data model
-this doc is built on (superseding the ADR-0028 shape model).
+The decisions and reasoning behind all of the above live in the [rules corpus](../rules/README.md) —
+start there when a contract's *why* is unclear.
+[composition-operators](../rules/composition-operators.md) is the now-source for the
+one-`Message`/`Arg` data model this doc is built on.

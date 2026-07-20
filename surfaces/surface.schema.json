@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "https://impractical-instruments.github.io/reuben/surface.schema.json",
   "title": "reuben surface doc",
-  "description": "A presentation-only control surface for a reuben instrument (ADR-0043). Controls bind interface input pipes by name; the pipe carries the quantity contract (type/min/max/default/unit/curve), the surface carries presentation (label/widget/group/order + optional narrower range). Hand-authored schema — the engine never reads surface docs.",
+  "description": "A presentation-only control surface for a reuben instrument. Controls bind interface input pipes by name; the pipe carries the quantity contract (type/min/max/default/unit/curve), the surface carries presentation (label/widget/group/order + optional narrower range). Hand-authored schema — the engine never reads surface docs.",
   "type": "object",
   "additionalProperties": false,
   "required": ["surface_version", "instrument", "controls"],

@@ -1,12 +1,12 @@
 # The device profile (`--io-map`)
 
-[ADR-0038](adr/0038-interface-pipes-and-the-device-layer.md) §6/§7 is the design record; this
+[The device layer](rules/composition-operators.md) is the design record; this
 is the quick-reference for the JSON shape. Schema:
 [`crates/reuben-native/schema/device-profile.schema.json`](../crates/reuben-native/schema/device-profile.schema.json).
 
 ## Why it exists
 
-Patches speak only **logical** channels ([ADR-0026](adr/0026-v1-finish-line-osc-out-and-stereo.md)):
+Patches speak only **logical** channels:
 an instrument's master taps are indexed 0, 1, 2… with no idea what hardware they'll land on.
 The device profile is the one place that logical→device binding is spelled out — a small JSON
 file, kept outside the patch (checked in, named, versioned like any other rig asset) and loaded
@@ -50,7 +50,7 @@ object keys, so they're spelled as integer strings — `{"0": 2}`, not `{0: 2}`.
 
 ## Mismatch policy: warn + degrade, never fatal
 
-Per ADR-0038 §7, once a profile parses there are two different kinds of "wrong":
+Once a profile parses there are two different kinds of "wrong":
 
 - **Structural** — malformed JSON, an unknown field, a `map` key/value that isn't a
   non-negative integer. This is a **load error**: `reuben play` refuses to start. The document
@@ -79,9 +79,9 @@ an input device. `input.map` runs device→logical (the reverse direction of `ou
 the same warn+degrade policy applies at stream startup: out-of-range pairs are dropped with a
 warning, and a logical input channel nothing feeds reads silence. The input device runs at its
 own rate; audio is resampled (with drift compensation) into the engine rate, so
-mismatched-rate and dual-device setups work (ADR-0038 §8).
+mismatched-rate and dual-device setups work.
 
-One deliberate exception to "never fatal" (recorded in ADR-0038 §7): when the played
+One deliberate exception to "never fatal": when the played
 instrument explicitly binds input channels but **no input device exists at all** (or none
 matches `input.device`), `play` fails fast instead of playing silently — the same precedent as
 a missing output device.

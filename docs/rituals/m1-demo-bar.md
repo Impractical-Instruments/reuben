@@ -1,15 +1,15 @@
 # Ritual: the #220 M1 demo bar — "make the bass rounder and add a dub delay"
 
-The epic's top-level acceptance ritual (ADR-0053 §5, [issue #220](https://github.com/Impractical-Instruments/reuben/issues/220)),
+The epic's top-level acceptance ritual ([issue #220](https://github.com/Impractical-Instruments/reuben/issues/220)),
 scripted for the **M1** bar. A human plays a fixed starting instrument, hands the conversational
 agent one fixed prompt, and judges — by ear — whether the edit landed. The setup is scripted so
 the run reproduces bar to bar; the **judgment stays human**, because "rounder" and "the delay is
 there" are perceptual calls no automated gate should stand in for.
 
 **The M1 bar is deliberately lower than the epic's final bar:** the edit lands via an M1
-**restart-swap**, so a brief (~100 ms) stop-the-world gap at the swap is **tolerated** (ADR-0046
-§10). The seamless, transport-never-stops version is the M2 mailbox-swap bar
-(`docs/rituals/m2-swap-ramp-duck.md`, ADR-0050) — not this one. Here, all that must be true is:
+**restart-swap**, so a brief (~100 ms) stop-the-world gap at the swap is **tolerated**. The
+seamless, transport-never-stops version is the M2 mailbox-swap bar
+(`docs/rituals/m2-swap-ramp-duck.md`) — not this one. Here, all that must be true is:
 you hear the bass change into the thing you asked for, and `reuben play` never restarts.
 
 ## The fixed fixture (checked in — do not improvise)
@@ -29,14 +29,14 @@ prompt text is pinned), so this ritual can't silently rot.
 
 You need speakers/headphones and an MCP client (the conversational door) configured to launch the
 reuben sidecar. All addresses are the shipped defaults: the structure channel on loopback TCP
-`127.0.0.1:9124`, OSC control on UDP `127.0.0.1:9000` (ADR-0044, ADR-0046 §8).
+`127.0.0.1:9124`, OSC control on UDP `127.0.0.1:9000`.
 
 ```sh
 cargo build -p reuben-native --bin reuben
 cargo build -p reuben-mcp --bin reuben-mcp
 ```
 
-Point your MCP client at the built `reuben-mcp` binary. Per ADR-0044 it is a stdio shim the client
+Point your MCP client at the built `reuben-mcp` binary. It is a stdio shim the client
 spawns per conversation; on startup it dials the running `reuben play` over the structure channel
 and OSC, so start `play` **first**.
 
@@ -91,17 +91,17 @@ reopen on the new document.
 If the agent's `swap` came back `ok:false`, that is the agent's authored document failing
 validation, not a harness failure — read the `errors`, and (this being a demo of the conversational
 loop) let the agent try again. A longer-than-~100 ms gap, or clicks beyond the single restart gap,
-is worth noting: smoothing that gap is the M2 rung ([ADR-0050](../adr/0050-swap-sonic-rudeness-ramp.md)),
+is worth noting: smoothing that gap is the M2 rung ([swap ramp](../rules/execution-runtime.md)),
 not M1.
 
 ### 5. Shut down
 
 Terminal A: `Ctrl-C`. `play` shuts down cleanly (`shutting down…`, then exit).
 
-## Why this is scripted, not automated (ADR-0053 §§5–6)
+## Why this is scripted, not automated
 
 The setup — the exact starting document and the exact prompt — is pinned so the scenario is the
 same every time. What is **not** automated is the ear: whether it sounds rounder and whether the
 delay is musically present are perceptual judgments, deliberately the one human check sitting above
-every automated per-ticket gate. An LLM-judged audio diff was considered and rejected (ADR-0053 §5)
+every automated per-ticket gate. An LLM-judged audio diff was considered and rejected
 as over-engineering the epic's one intentionally-human acceptance ritual.

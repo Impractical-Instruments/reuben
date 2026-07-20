@@ -12,12 +12,12 @@ franca**, in and out.
 This repo is the **engine and its SDK**:
 
 - **`reuben-core`** — the portable engine and its **embed surface**
-  ([ADR-0039](docs/adr/0039-engine-in-core-embed-surface.md)): construct from a document, push
+  ([execution-runtime](docs/rules/execution-runtime.md)): construct from a document, push
   OSC in, pull audio out. No OS dependency; compiles to `wasm32-unknown-unknown` untouched. This
   is what you link against to put reuben inside something else.
 - **`reuben-native`** — the `reuben` CLI and its audio/OSC/filesystem host.
 - **`reuben-mcp`** — a stdio MCP sidecar, so an agent can author instruments against a live engine
-  ([ADR-0044](docs/adr/0044-mcp-stdio-sidecar.md)).
+  ([agent-mcp](docs/rules/agent-mcp.md)).
 - **`instruments/`** + **`surfaces/`** — the instrument library and the presentation docs over
   their interface pipes.
 - **`.claude/skills/`** — the **authoring and developer agent skills** that run inside [Claude
@@ -95,11 +95,11 @@ cargo reuben-play instruments/<name>.json
 | Rig          | Plays on its own? | What it is                                                         |
 |--------------|-------------------|-------------------------------------------------------------------|
 | `default`    | needs OSC notes   | Polyphonic synth (8 voices): voicer → osc → filter → ADSR → out. What `play` loads when you give it no file. |
-| `groovebox`   | **yes**           | The Groovebox Toy (ADR-0022): a free-running 16-step drum machine — kick/snare/hat synthesized from operators (no samples), each a sequencer driving its own voicer voice on a shared clock. Toggle steps via `/kick_step1/in`..`/kick_step16/in` (also `snare_*`, `hat_*`), ride `/tempo/in`; per-drum volumes (`/kick_vol/in`…), a master DJ-filter sweep (`/tone/in`), and a main volume knob (`/volume/in`, default −6 dB) are Good Buttons, with a warm `saturator` gluing the mix ahead of the filter and a `/drive/in` knob to ride the squash. |
-| `chord-player` | needs OSC       | The Chord player Toy (ADR-0022): tap-and-hold diatonic triad buttons (I–vii°) at `/chord/in [degree, gate]`. The `chord` op stacks scale thirds and the voicer resolves them through the tonal context, so held chords re-spell live when you change key (`/key/in`). A 12-voice pad; `/brightness/in` tones the mix. |
-| `strum-harp`  | needs OSC         | The Strum harp Toy (ADR-0022): drag-to-strum. Stream `/strum/in [0..1]` and the `strum` op plucks a note each time the bar crosses a string boundary. Strings are scale degrees through the tonal context, so it stays in key. `/octaves/in` sets the span; `/key/in` the key. |
+| `groovebox`   | **yes**           | The Groovebox Toy: a free-running 16-step drum machine — kick/snare/hat synthesized from operators (no samples), each a sequencer driving its own voicer voice on a shared clock. Toggle steps via `/kick_step1/in`..`/kick_step16/in` (also `snare_*`, `hat_*`), ride `/tempo/in`; per-drum volumes (`/kick_vol/in`…), a master DJ-filter sweep (`/tone/in`), and a main volume knob (`/volume/in`, default −6 dB) are Good Buttons, with a warm `saturator` gluing the mix ahead of the filter and a `/drive/in` knob to ride the squash. |
+| `chord-player` | needs OSC       | The Chord player Toy: tap-and-hold diatonic triad buttons (I–vii°) at `/chord/in [degree, gate]`. The `chord` op stacks scale thirds and the voicer resolves them through the tonal context, so held chords re-spell live when you change key (`/key/in`). A 12-voice pad; `/brightness/in` tones the mix. |
+| `strum-harp`  | needs OSC         | The Strum harp Toy: drag-to-strum. Stream `/strum/in [0..1]` and the `strum` op plucks a note each time the bar crosses a string boundary. Strings are scale degrees through the tonal context, so it stays in key. `/octaves/in` sets the span; `/key/in` the key. |
 | `euclidean-drums` | **yes**         | A self-playing 4-channel Euclidean rhythm machine — kick/snare/tom/hat synthesized from operators, each driven by a `euclid` generator on a shared 16th-note clock. Reshape patterns via `/<chan>_pulses/in`, `/<chan>_steps/in`, `/<chan>_rotation/in`; per-channel DJ-filter, level, and decay knobs; `/tempo/in`. |
-| `mic-space` | needs a **mic**  | Live-input demo (ADR-0038): a top-level input pipe bound to logical input channel 0 feeds the nested `space` patch (`instruments/patches/space.json`) — speak/play into your default input device and hear it through the tone+reverb, broadcast to stereo out. Fails fast if no input device exists; pick a device / remap channels with `play --io-map`. Tweak `/space/tone/in` (Hz), `/space/space/in` (mix). |
+| `mic-space` | needs a **mic**  | Live-input demo: a top-level input pipe bound to logical input channel 0 feeds the nested `space` patch (`instruments/patches/space.json`) — speak/play into your default input device and hear it through the tone+reverb, broadcast to stereo out. Fails fast if no input device exists; pick a device / remap channels with `play --io-map`. Tweak `/space/tone/in` (Hz), `/space/space/in` (mix). |
 
 The rows marked **yes** make sound immediately — good for a first run with no OSC sender. Every
 node's inputs are live over OSC at its address.
@@ -111,7 +111,7 @@ live on as frozen fixtures under `crates/*/tests/fixtures/` and
 
 To play an instrument from a phone/tablet, project its **surface doc** (`surfaces/<name>.json`
 — the presentation layer over its interface pipes,
-[ADR-0043](docs/adr/0043-surface-docs-decouple-presentation-from-instruments.md)) to a
+[authoring-library](docs/rules/authoring-library.md)) to a
 TouchOSC layout with the `control-surface` skill. A surface doc is a portable presentation
 contract, not a TouchOSC file: any host can render one.
 (The v1.4-era walkthrough, [docs/v1.4-control-surface-testing.md](docs/v1.4-control-surface-testing.md),
@@ -149,7 +149,7 @@ A typical first session, by hand or by skill:
    cargo run -p reuben-native --bin reuben -- describe          # list all operators
    cargo run -p reuben-native --bin reuben -- describe filter   # one operator's ports/params
    ```
-   This is the same introspection the `patcher` skill reads ([ADR-0020](docs/adr/0020-introspection-and-patcher-skill.md)).
+   This is the same introspection the `patcher` skill reads ([agent-mcp](docs/rules/agent-mcp.md)).
 2. **Patch.** Copy an instrument in `instruments/`, rewire node `inputs` (a literal or a wire-ref `{"from":"/node.port"}`), or ask the
    `patcher` skill for a sound.
 3. **Validate before you play** — load + plan with no audio, surfacing errors/warnings:
@@ -159,7 +159,7 @@ A typical first session, by hand or by skill:
 4. **Play it** with `cargo reuben-play instruments/my-rig.json` (above).
 5. **Play it on a tablet.** Player-facing controls are the instrument's `interface` input
    pipes; presentation lives in a **surface doc** (`surfaces/<name>.json`,
-   [ADR-0043](docs/adr/0043-surface-docs-decouple-presentation-from-instruments.md)) — or is
+   [authoring-library](docs/rules/authoring-library.md)) — or is
    auto-derived from the pipes when no doc exists. The `control-surface` skill authors the doc
    and projects it to a [TouchOSC](https://hexler.net/touchosc) layout (`.tosc` files land in
    `control-surfaces/`); other hosts render the same doc directly, with no emit step.
@@ -167,7 +167,7 @@ A typical first session, by hand or by skill:
 
 Need behavior no operator provides? That's a new **Operator** in Rust — `scaffold-operator`
 (or the `create-operator` skill) generates the skeleton and wires its registration
-([ADR-0021](docs/adr/0021-scaffold-operator-and-create-operator-skill.md)); see
+([composition-operators](docs/rules/composition-operators.md)); see
 [docs/agents/operator-dev.md](docs/agents/operator-dev.md) for the operator contract.
 
 ## Going deeper

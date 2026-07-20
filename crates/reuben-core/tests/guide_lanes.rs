@@ -21,11 +21,11 @@ fn every_section_is_tagged_for_every_lane() {
 }
 
 /// The web cut drops the checkout-only sections — the filesystem sample workflow (no disk
-/// on the web lane) and the ADR index — while the checkout lanes keep them.
+/// on the web lane) and the rules-corpus pointer — while the checkout lanes keep them.
 #[test]
 fn web_cut_drops_the_checkout_only_sections() {
     let web = lane_cut(GUIDE, Lane::Web).expect("tagged guide cuts clean");
-    for checkout_only in ["## The sample workflow", "## ADR index"] {
+    for checkout_only in ["## The sample workflow", "## Where the rules live"] {
         assert!(
             !web.contains(checkout_only),
             "checkout-only section {checkout_only:?} must not ship in the web cut"
