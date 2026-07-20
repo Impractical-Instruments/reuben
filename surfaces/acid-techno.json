@@ -40,6 +40,30 @@
       "group": "macros"
     },
     {
+      "bind": "glide",
+      "label": "Glide",
+      "widget": "radial",
+      "group": "bass_synth"
+    },
+    {
+      "bind": "squelch",
+      "label": "Squelch",
+      "widget": "radial",
+      "group": "bass_synth"
+    },
+    {
+      "bind": "filter_env",
+      "label": "Env Amt",
+      "widget": "radial",
+      "group": "bass_synth"
+    },
+    {
+      "bind": "filter_decay",
+      "label": "Decay",
+      "widget": "radial",
+      "group": "bass_synth"
+    },
+    {
       "bind": "kick_step1",
       "label": "K1",
       "widget": "param-toggle",
