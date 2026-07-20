@@ -96,6 +96,7 @@ fn setup(kind: &str) -> Option<OpHarness> {
 #[bench::sub_value(args = ("sub_f32_value",), setup = setup)]
 #[bench::subpatch(args = ("subpatch",), setup = setup)]
 #[bench::transpose(args = ("transpose",), setup = setup)]
+#[bench::unpack_note(args = ("unpack_note",), setup = setup)]
 #[bench::voicer(args = ("voicer",), setup = setup)]
 fn process(harness: Option<OpHarness>) -> f32 {
     black_box(harness.map_or(0.0, OpHarness::render))

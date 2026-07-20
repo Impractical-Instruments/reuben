@@ -78,8 +78,8 @@ pub enum Recipe {
     /// a string boundary (the strummer seeds `prev_string` at -1), so the strummer plucks.
     Position,
     /// `Default`, plus driving the `in` port — a held `0.5` for the dense message→signal
-    /// transformers (m2s, map, integrate, differentiate), or a `Note` event for the message sink
-    /// (osc_out, whose `in` is a `Note` port).
+    /// transformers (m2s, map, integrate, differentiate), or a `Note` event for the operators whose
+    /// `in` is a `Note` port (the `osc_out` sink; `unpack_note`, whose event drives its latch).
     Value,
 }
 
@@ -162,6 +162,9 @@ pub const WORKLOADS: &[Workload] = &[
     // benching the format anchor for census completeness.
     w("subpatch", Recipe::Default),
     w("transpose", Recipe::Notes),
+    // `unpack_note`'s `in` is a `Note` port (like `osc_out`), so `Value` pushes an event into it —
+    // one note runs the frame-sorted latch + field emits (ADR-0063) rather than the idle baseline.
+    w("unpack_note", Recipe::Value),
     w("voicer", Recipe::Notes),
 ];
 
@@ -227,6 +230,7 @@ pub const MICRO_IAI_KINDS: &[&str] = &[
     "sub_f32_value",
     "subpatch",
     "transpose",
+    "unpack_note",
     "voicer",
 ];
 
