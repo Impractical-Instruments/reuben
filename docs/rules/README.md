@@ -21,6 +21,7 @@ Code points at topics, never at rules or ADRs: `// see rules: <topic>` (this rep
 - **[Authoring surface & instrument library](authoring-library.md)** — How authoring surfaces and the instrument library sit on top of the graph — decoupled surface docs over interface pipes, Good Buttons, the sample/resource store, library resolution and format versioning, and the launch Toys.
 - **[Composition & operator model](composition-operators.md)** — The one recursive graph — how operators declare and register their contract, how all data flows as one Message/Arg substrate in Value, Event, and Signal forms, and how instruments nest and expose interface pipes.
 - **[Execution & runtime](execution-runtime.md)** — How the unified block graph is scheduled, threaded, swapped, and rendered in real time — the Plan lifecycle, RT boundary, determinism, latch service, and the embed surface.
+- **[Web/product boundary & dev process](web-product-process.md)** — How this repo sits under the web/product boundary: the BSD SDK a private product consumes, the raw C-ABI browser contract and sample-trust obligation it owes, and the branch, release, toolchain, and perf-benchmark process that governs it.
 - **[Signal, OSC, musical time & DSP](signal-time-dsp.md)** — How signal and musical meaning are carried, timed, and shaped — the OSC-only Message model, the Clock and musical time, symbolic pitch and Tuning, the tonal-context bus, and the envelope/curve/math DSP families.
 
 ## Glossary
@@ -32,6 +33,7 @@ Code points at topics, never at rules or ADRs: `// see rules: <topic>` (this rep
 - **Boundary adapter** — a removable I/O-edge component that converts a foreign protocol (MIDI, Ableton Link, external OSC) to and from the core's OSC-shaped Messages. · [signal-time-dsp](signal-time-dsp.md)
 - **Clock** — the Operator providing base musical timing — tempo, meter, the beat grid — as a sample-accurate beat phasor; a default instance syncs a Rig. · [signal-time-dsp](signal-time-dsp.md)
 - **Constant** — a plan-time immutable port whose value is fixed at instantiate; changing it rebuilds the graph. · [composition-operators](composition-operators.md)
+- **C-ABI worklet boundary** — the documented raw `extern "C"`, `(ptr, len)`-over-linear-memory interface a browser host drives per audio quantum, carrying no `wasm-bindgen` glue and shipped as a contract to rebuild against, not a maintained binding. · [web-product-process](web-product-process.md)
 - **Coordinator** — the single non-RT writer of graph structure; owns the canonical graph and instrument library and performs every Swap. · [execution-runtime](execution-runtime.md)
 - **CV** — a linear control signal in a normalized range (e.g. an envelope's `[0, 1]` contour), carried untyped on the Signal domain and interpreted by downstream ops. · [signal-time-dsp](signal-time-dsp.md)
 - **Delivery lane** — a grounding consumer (repo skills, MCP clients, web chat), each reducing to transport bindings plus host furniture plus the shared base sauce, fed by push or pull. · [agent-mcp](agent-mcp.md)
@@ -50,6 +52,7 @@ Code points at topics, never at rules or ADRs: `// see rules: <topic>` (this rep
 - **Intent vocabulary** — the one curated, registry-keyed word→move table that grounds musical/mood words (warmer, busier, sadder) as operator-type parameter moves. · [agent-mcp](agent-mcp.md)
 - **interface pipe** — a named boundary entry, the one boundary mechanism at every graph level: an input pipe mints an address, an output pipe is fed from an internal port. · [composition-operators](composition-operators.md)
 - **latch** — the engine-held per-port zero-order-hold of an input's last Message, read by an operator as its constant current value. · [execution-runtime](execution-runtime.md)
+- **perf gate** — the CI iai-callgrind instruction-count check that fails a PR on a >10% regression of the render hot path, base-ref-relative so toolchain drift cancels. · [web-product-process](web-product-process.md)
 - **library index** — the generated one-signature-line-per-instrument projection of the available-set (name + recipe-role + interface face). · [authoring-library](authoring-library.md)
 - **logical channel** — the device-independent channel index a signal pipe binds; a device profile, not the patch, maps it to hardware. · [composition-operators](composition-operators.md)
 - **Message** — the one data unit: `{ address, frame, Arg }`, carrying exactly one `Arg`. · [composition-operators](composition-operators.md)
@@ -57,8 +60,12 @@ Code points at topics, never at rules or ADRs: `// see rules: <topic>` (this rep
 - **Operator** — the smallest node: a unit of DSP behavior, authored as one single-voice, single-channel block-at-a-time stream that the engine schedules. · [composition-operators](composition-operators.md)
 - **Output filter** — the host-owned persona: what the person is shown (sound-not-machine subject, hidden diagnostics, register), maximal on web and absent at skills/MCP. · [agent-mcp](agent-mcp.md)
 - **Plan** — the runtime artifact: the immutable, already-allocated static parallel schedule (topo-ordered, clustered) that Render executes per block. · [execution-runtime](execution-runtime.md)
+- **product repo** — the separate private AGPL repo holding the browser shell, player app, share-link codec, and chat-authoring agent, which pins this repo as a submodule. · [web-product-process](web-product-process.md)
+- **promotion** — the fast-forward-only advance of `dev` onto `main` that ships production, run as a workflow so commit SHAs are preserved and the branches never diverge. · [web-product-process](web-product-process.md)
 - **recipe-role** — an instrument's reuse story: the first sentence of its `doc` field, trusted for selection only, never for wiring. · [authoring-library](authoring-library.md)
 - **Render** — the hard-realtime, allocation-free per-block execution of the current Plan on the audio thread. · [execution-runtime](execution-runtime.md)
+- **SDK** — this (BSD-3-Clause) repo: the engine core, native CLI, MCP sidecar, and instrument/surface library that the product consumes. · [web-product-process](web-product-process.md)
+- **share link** — an origin-independent encoded bundle that boots an instrument in the browser; a product-repo feature whose residue here is the sample-bytes trust obligation. · [web-product-process](web-product-process.md)
 - **ResourceStore** — the central store of decoded resource bytes, built by the Coordinator at load and read immutably by Render through one pure `(id, range)` accessor, keyed by logical id. · [authoring-library](authoring-library.md)
 - **Rig** — the outermost graph, the one actually played at top level. · [composition-operators](composition-operators.md)
 - **Scale** — ordered step-offsets within a Tuning's period plus a root, mapping a scale degree to a step index (symbolic → symbolic). · [signal-time-dsp](signal-time-dsp.md)
@@ -69,6 +76,7 @@ Code points at topics, never at rules or ADRs: `// see rules: <topic>` (this rep
 - **surface doc** — the presentation-only document that binds an instrument's interface input-pipe names to widgets, decoupled from the instrument itself. · [authoring-library](authoring-library.md)
 - **survivor** — an operator that persists across a Swap (matched on address + type + instantiate-time fingerprint) and keeps its state via box transplant. · [execution-runtime](execution-runtime.md)
 - **Swap** — the single off-thread transition that installs a new Plan/Engine at a block boundary, migrating survivor state and reclaiming the old vessel. · [execution-runtime](execution-runtime.md)
+- **toolchain pin** — the exact-version `rust-toolchain.toml` that local dev and CI share so their fmt/clippy verdicts are identical, kept in lockstep with the workspace MSRV. · [web-product-process](web-product-process.md)
 - **Tonal context** — the latched key/scale/chord/tuning value, owned by a context Operator, that followers resolve pitch against. · [signal-time-dsp](signal-time-dsp.md)
 - **Toy** — a launch beginner instrument assembled from existing operators plus a generated surface, one per distinct player gesture. · [authoring-library](authoring-library.md)
 - **Tuning** — the resolution layer mapping a symbolic pitch (a scale step) to a frequency in Hz; 12-TET is the default, Scala-importable. · [signal-time-dsp](signal-time-dsp.md)
