@@ -2,9 +2,8 @@
 //!
 //! The companion to `structure_server.rs`: where that test asserts the channel's *behavior*
 //! field by field, this one pins the **exact NDJSON wire bytes** each verb answers with as
-//! golden fixtures under `tests/golden/`, reusing the `descriptor_golden.rs` / `REUBEN_BLESS=1`
-//! bless convention so any wire-format drift — a renamed field, a reordered key, a
-//! changed hash or diff — reds CI the way descriptor drift already does.
+//! golden fixtures under `tests/golden/`, gated on a `REUBEN_BLESS=1` bless convention so any
+//! wire-format drift — a renamed field, a reordered key, a changed hash or diff — reds CI.
 //!
 //! It starts the **real** structure-channel server in-process ([`StructureServer::bind`] on an
 //! ephemeral `127.0.0.1:0` port) — everything `reuben play` wires up except the cpal device.
@@ -127,9 +126,8 @@ fn golden_path(name: &str) -> PathBuf {
 }
 
 /// Pin `actual` (the raw wire bytes of one response) against `tests/golden/<name>`, gated on the
-/// same `REUBEN_BLESS` env var `descriptor_golden.rs` uses: set it to regenerate, unset to assert
-/// byte-equality. A missing golden points the reader at the bless command instead of a bare
-/// file-not-found.
+/// `REUBEN_BLESS` env var: set it to regenerate, unset to assert byte-equality. A missing golden
+/// points the reader at the bless command instead of a bare file-not-found.
 fn assert_golden(name: &str, actual: &str) {
     let path = golden_path(name);
     if std::env::var_os("REUBEN_BLESS").is_some() {
