@@ -11,7 +11,7 @@
 //! **one** [`Arg`](crate::message::Arg) because a Message carries exactly one.
 
 /// A symbolic pitch — exactly one of a scale degree or an absolute MIDI coordinate (ADR-0030).
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, Copy, PartialEq, reuben_macros::ArgValue)]
 pub enum Pitch {
     /// A scale degree within the active Scale. Resolves to Hz through the
     /// [`Harmony`](crate::vocab::harmony::Harmony), so it re-spells live on a key/scale change.
