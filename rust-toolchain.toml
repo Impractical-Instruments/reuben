@@ -1,9 +1,9 @@
-# Pinned toolchain — single source of truth for local dev AND CI (ADR-0023).
+# Pinned toolchain — single source of truth for local dev AND CI. see rules: web-product-process
 # rustup auto-honors this file: any cargo invocation in this repo uses exactly
 # this version and auto-installs it + the components below if missing.
 # Pinning makes the local hooks' fmt/clippy verdict identical to CI's.
 #
-# Bump procedure (keep MSRV in lockstep — see ADR-0023):
+# Bump procedure (keep MSRV in lockstep):
 #   1. edit `channel` below
 #   2. edit `rust-version` in Cargo.toml [workspace.package] to the SAME version
 # `profile = "minimal"` keeps installs lean (rustc + std + cargo only); the two

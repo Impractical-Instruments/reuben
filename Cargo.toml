@@ -11,7 +11,7 @@ members = [
 [workspace.package]
 version = "0.0.0"
 edition = "2021"
-# MSRV — kept in lockstep with rust-toolchain.toml's `channel` (ADR-0023).
+# MSRV — kept in lockstep with rust-toolchain.toml's `channel`. see rules: web-product-process
 # Self-verified: CI runs on the pinned toolchain, which == this floor.
 rust-version = "1.96.0"
 license = "BSD-3-Clause"
@@ -21,12 +21,12 @@ repository = "https://github.com/Impractical-Instruments/reuben"
 slotmap = "1"
 smallvec = "1"
 # Generic numeric traits (Zero/One/Signed/Euclid) so the pointwise math operators are written once
-# over any number type, not pinned to f32 (ADR-0033).
+# over any number type, not pinned to f32.
 num-traits = "0.2"
-# Compile-time operator self-registration (ADR-0024). linkme is the no_std fallback.
+# Compile-time operator self-registration. linkme is the no_std fallback.
 inventory = "0.3"
 # Compile-time codegen: the operator_contract! proc-macro parses its own grammar (not Rust
-# items/exprs); the ArgValue derive (ADR-0030) parses a type definition, which needs `derive`.
+# items/exprs); the ArgValue derive parses a type definition, which needs `derive`.
 # Neither needs the heavy `full` expression AST.
 syn = { version = "2", default-features = false, features = ["parsing", "printing", "proc-macro", "derive"] }
 quote = "1"
@@ -36,30 +36,31 @@ approx = "0.5"
 # Instrument format (serde) — portable core authoring layer.
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
-# JSON Schema derive for the contract types (ADR-0048 §4/§5): rmcp emits each tool's
+# JSON Schema derive for the contract types: rmcp emits each tool's
 # `outputSchema` from these. Optional in reuben-core behind its default-off `schemars`
-# feature, so the play/CLI build stays lean (ADR-0044 §3 fencing).
+# feature, so the play/CLI build stays lean (fenced out of that build).
 schemars = "1"
 # Native layer (reuben-native) only.
 cpal = "0.15"
 rosc = "0.10"
 clap = { version = "4", features = ["derive"] }
-# Lock-free SPSC ring between the input callback and the render thread (ADR-0038 §8 — the
-# primitive ADR-0002 anticipated). Wait-free push/pop, no locks, no allocation after creation.
+# Lock-free SPSC ring between the input callback and the render thread. Wait-free push/pop,
+# no locks, no allocation after creation.
 rtrb = "0.3"
 # MCP sidecar ONLY (reuben-mcp) — the ~34-package rmcp/tokio tree is fenced out of every other
-# workspace member (ADR-0044 §3/§5). `default-features = false` here keeps the network stack off;
+# workspace member. `default-features = false` here keeps the network stack off;
 # reuben-mcp enables exactly `server`, `macros`, `transport-io` (stdio) and no HTTP/reqwest
 # transport. reuben-mcp is the first workspace member allowed an async runtime.
 rmcp = { version = "2", default-features = false }
-# current_thread runtime, sync/rt/time/io-std only — no `net`, so no mio/OS reactor (ADR-0044 §5).
+# current_thread runtime, sync/rt/time/io-std only — no `net`, so no mio/OS reactor.
 tokio = { version = "1", default-features = false }
-# Unix SIGINT/SIGTERM handler for `reuben play`'s clean shutdown (ADR-0044 §2 Consequences):
+# Unix SIGINT/SIGTERM handler for `reuben play`'s clean shutdown:
 # std has no signal API. Already in the tree transitively (via cpal); not an async dependency,
-# so it does not touch ADR-0044 §3's tokio fence. reuben-native takes it only on `cfg(unix)`.
+# so it does not touch the tokio fence. reuben-native takes it only on `cfg(unix)`.
 libc = "0.2"
 
-# Benchmark profile: pin a single codegen unit so operator codegen is deterministic (ADR-0019).
+# Benchmark profile: pin a single codegen unit so operator codegen is deterministic.
+# see rules: web-product-process
 # With the default 16 CGUs, adding cold source to reuben-core repartitions LLVM's codegen units
 # and re-rolls register allocation / instruction selection for each operator's vtable-dispatched
 # `process` — swinging its callgrind Ir ±13% with ZERO change in actual work (identical Dr/Dw

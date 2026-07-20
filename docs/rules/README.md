@@ -170,7 +170,7 @@ and prose:
 - **Constant** — avoid: param, setting, option, config value.
 - **Delivery lane** — avoid: surface (that is a presentation doc), channel (that is signal I/O), bare "lane" without context.
 - **Input handling** — avoid: intent parsing, NLU.
-- **Output filter** — avoid: persona (ambiguous), style gate (deleted, ADR-0005 — the filter is taught, not enforced).
+- **Output filter** — avoid: persona (ambiguous), style gate (deleted — the filter is taught, not enforced).
 - **Push/pull delivery** — avoid: eager/lazy loading (runtime words for a prompt-architecture idea).
 
 ## Conventions
@@ -180,7 +180,7 @@ and prose:
 ```
 docs/rules/README.md                     index: topic summaries + derived glossary
 docs/rules/<topic>.md                    now-story + rules; each rule links its rationale
-docs/rules/rationale/<topic>/<rule>.md   condensed why + "Distilled from: ADR-00xx"
+docs/rules/rationale/<topic>/<rule>.md   condensed why + "Distilled from: ADR-NNNN"
 docs/adr/                                live ADRs (iteration surface); see docs/adr/README.md
 ```
 
@@ -189,7 +189,7 @@ slug (unique within its topic) as a raw-HTML `<a id>` anchor above the heading, 
 sentence can be reworded without breaking links. Exactly one rationale link.
 
 **Rationale** — the condensed "why" that still applies; superseded/dead-end paths are dropped
-(git keeps them). Ends with a `Distilled from: ADR-00xx[, ADR-00yy]` provenance line. One file
+(git keeps them). Ends with a `Distilled from: ADR-NNNN[, ADR-MMMM]` provenance line. One file
 per rule at `rationale/<topic>/<rule>.md`.
 
 **Code-comment reference** — topic-level only, never a rule slug or ADR number:

@@ -1,14 +1,14 @@
-# Ritual: the M2 swap master-gain duck (ADR-0050)
+# Ritual: the M2 swap master-gain duck
 
-A **scripted human test** (ADR-0053 §§4–6): the perceptual half of ticket #321's verification.
+A **scripted human test**: the perceptual half of ticket #321's verification.
 Automation proves the ramp math (the `master_dips_to_zero_and_recovers_*` behavioral harness) and
 the RT-safety (the `install_slot_rt_safe` allocation counter); what a machine can't judge is whether
 the duck *sounds* right on a real device. This ritual scripts the setup so the run reproduces; the
 **judgment stays human**.
 
-**What you are listening for (ADR-0050 §2/§3):** a swap should duck the master to silence and back
+**What you are listening for:** a swap should duck the master to silence and back
 over a **~20ms raised-cosine fade** — a smooth declick, *not* a click/pop, and *not* the ~100ms
-stop-the-world silence of M1 restart-swap (ADR-0046 §10). A held note on a **survivor** node keeps
+stop-the-world silence of M1 restart-swap. A held note on a **survivor** node keeps
 ringing straight through the up-ramp (edit-while-playing); the transport never audibly stops.
 
 ---
@@ -17,7 +17,7 @@ ringing straight through the up-ramp (edit-while-playing); the transport never a
 
 **This is now the live M2 gapless-swap ritual.** #323 flipped `reuben play`'s `swap` verb onto the
 mailbox/slot path: the cpal callback drives `reuben_core::coordinator::RenderSlot::fill_duplex`
-(which runs ADR-0050's ramp and box-transplants survivors) and the structure channel drives
+(which runs the [master-gain ramp](../rules/execution-runtime.md) and box-transplants survivors) and the structure channel drives
 `Coordinator::swap_document` off-thread. There is **no stream teardown** on a swap and the ~100ms M1
 gap is gone (that path is deleted) — the swap is a ~20ms duck, not a silence. Run the ritual below.
 
@@ -42,7 +42,7 @@ is truly gapless on real hardware.
 
 You need an OSC sender (`oscsend` from `liblo-utils`/`liblo-tools`, or any OSC app) and `nc`
 (netcat). All addresses are the shipped defaults: OSC control on UDP `0.0.0.0:9000`, the structure
-channel on loopback TCP `127.0.0.1:9124` (ADR-0046 §8).
+channel on loopback TCP `127.0.0.1:9124`.
 
 1. **Play an instrument with a sustaining voice** (opens your default audio device):
 
@@ -71,7 +71,7 @@ channel on loopback TCP `127.0.0.1:9124` (ADR-0046 §8).
 
    (Prepare `chord-player-edited.json` first: copy `chord-player.json` and nudge, e.g., a filter
    cutoff or delay time — anything that does **not** change a node's address, type, `config`
-   constants, or resolved resources, per the survivor key ADR-0046 §5.)
+   constants, or resolved resources, per the survivor key.)
 
 4. **Listen at the moment the swap lands.**
 
@@ -80,17 +80,17 @@ channel on loopback TCP `127.0.0.1:9124` (ADR-0046 §8).
 - [ ] **Clean duck, not a click.** The output briefly ducks to silence and comes back — a soft
       ~20ms dip, no click, pop, or zipper noise on either edge.
 - [ ] **Survivor rings through.** The held note is still sounding after the duck — it was not
-      re-triggered or cut. (This is the audible face of the box transplant, ADR-0046 §4.)
+      re-triggered or cut. (This is the audible face of the box transplant.)
 - [ ] **Transport does not stop.** The dip is momentary (~20ms), clearly *not* the ~100ms
       stop-the-world gap of M1 restart-swap.
 - [ ] **The edit took.** The swapped-in change is audible after recovery (the point of the loop).
 
 ## Variations worth a listen
 
-- **Non-survivor cut (ADR-0050 §4).** Swap to a document that *renames* or *retypes* the ringing
+- **Non-survivor cut.** Swap to a document that *renames* or *retypes* the ringing
   node. Its old voice is cut and a fresh cold box replaces it — but the cut lands at master-zero, so
   you should hear the duck, then silence-then-new-sound, with **no click** at the cut.
-- **Hanging-note window (ADR-0050 §5, accepted).** Send a note-**off** in the same instant as the
+- **Hanging-note window (accepted).** Send a note-**off** in the same instant as the
   swap; the off can be lost in the discard window and leave the note hanging. This is documented,
   recoverable behavior — re-send the off (`oscsend 127.0.0.1 9000 /voicer/notes ff 60.0 0.0`). Do
   **not** file this as a bug.

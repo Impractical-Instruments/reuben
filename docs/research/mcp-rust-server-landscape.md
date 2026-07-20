@@ -174,7 +174,7 @@ server is bigger but the same *kind* of thing: a `stdin().lock().lines()` loop,
 — for describe/validate-shaped tools this is single-client, strictly sequential, no concurrency
 required. Realistic estimate: **300–600 lines, zero new dependencies** (serde_json is already
 in the workspace), i.e. on the order of the existing 513-line
-[`bin/reuben.rs`](../../crates/reuben-native/src/bin/reuben.rs). ADR-0020's design already
+[`bin/reuben.rs`](../../crates/reuben-native/src/bin/reuben.rs). The [introspection surface](../rules/agent-mcp.md)'s design already
 provides the tool bodies: `describe`/`validate` are pure library functions returning
 serde-serializable reports.
 
@@ -252,8 +252,8 @@ engine-dies-with-conversation. None of the surveyed servers use Streamable HTTP.
 
 Notably, reuben already has the pattern's right-hand side built: `reuben play` is a long-lived
 engine process listening for OSC on UDP `0.0.0.0:9000`
-([bin/reuben.rs](../../crates/reuben-native/src/bin/reuben.rs)), and ADR-0039's
-`Engine::from_document`/`queue_osc` embed surface additionally makes an in-process engine
+([bin/reuben.rs](../../crates/reuben-native/src/bin/reuben.rs)), and the
+`Engine::from_document`/`queue_osc` [embed surface](../rules/execution-runtime.md) additionally makes an in-process engine
 possible for whoever wants the Synohara shape.
 
 ---
@@ -268,7 +268,7 @@ possible for whoever wants the Synohara shape.
   "SHOULD also return the serialized JSON in a TextContent block" for backwards compatibility
   ([tools](https://github.com/modelcontextprotocol/modelcontextprotocol/blob/main/docs/specification/2025-11-25/server/tools.mdx)).
   For reuben this is a direct fit: `describe`/`validate` already return serde-serializable
-  reports (ADR-0020), i.e. the `structuredContent` payload exists today.
+  reports, i.e. the `structuredContent` payload exists today.
 - **The spec has no size guidance for single tool results** (only `tools/list` pagination).
   Size limits are a *client* norm: **Claude Code warns at 10,000 tokens of tool output and
   hard-caps at 25,000 tokens by default** (`MAX_MCP_OUTPUT_TOKENS`), with a per-tool
@@ -310,7 +310,7 @@ possible for whoever wants the Synohara shape.
   machine as its engine and passes paths/names over the bridge rather than payloads. For a
   local stdio server this is also what the client-side `roots` capability anticipates (clients
   advertise filesystem roots to servers). For reuben, whose resolver already loads samples by
-  path (`FsResolver`, ADR-0016), path-passing is both the ecosystem norm and the zero-new-code
+  path (`FsResolver`), path-passing is both the ecosystem norm and the zero-new-code
   option; base64 tool args remain viable for small payloads at ~33% size overhead.
 
 ---
@@ -320,16 +320,16 @@ possible for whoever wants the Synohara shape.
 *Evidence, not a verdict — the decisions belong to MCP/B (server location & lifecycle) and
 MCP/E.*
 
-**Charter constraints, restated from the ADRs (one line each):**
-- [ADR-0007](../adr/0007-osc-only-core.md): the core speaks only OSC-shaped Messages; MCP must
+**Charter constraints, restated from the rules (one line each):**
+- [OSC-only core](../rules/signal-time-dsp.md): the core speaks only OSC-shaped Messages; MCP must
   be an isolated, removable boundary adapter that converts to/from OSC at the edge.
-- [ADR-0012](../adr/0012-boundary-and-threading.md): the MCP adapter lives in the I/O & control
+- [boundary & threading](../rules/execution-runtime.md): the MCP adapter lives in the I/O & control
   region, crossing to Render only via the existing lock-free queues — nothing about MCP may
   touch core threading.
-- [ADR-0020](../adr/0020-introspection-and-patcher-skill.md): `describe`/`validate` are pure
+- [introspection surface](../rules/agent-mcp.md): `describe`/`validate` are pure
   library functions with serde report types; an MCP tool surface is a second thin shell over
   the same functions, not new capability.
-- [ADR-0039](../adr/0039-engine-in-core-embed-surface.md): `Engine::from_document` +
+- [embed surface](../rules/execution-runtime.md): `Engine::from_document` +
   `queue_osc(address, &[Arg])` is the portable embed surface — an MCP process could host an
   engine in-process without touching core.
 
@@ -352,7 +352,7 @@ that re-tracking five methods is cheaper than riding majors. Deferring the build
 ships 2026-07-28 support would avoid implementing the old lifecycle twice.
 
 **Lifecycle options for MCP/B, framed by §3.** (a) *stdio, engine in-process* (the Synohara
-shape): simplest, and ADR-0039 makes it cheap — but the spec's shutdown semantics mean the
+shape): simplest, and the [embed surface](../rules/execution-runtime.md) makes it cheap — but the spec's shutdown semantics mean the
 sound dies when the conversation ends, and two clients can never share an engine.
 (b) *stdio shim → OSC/UDP → `reuben play`*: the pattern five of six comparable audio servers
 converged on, and reuben uniquely already has the engine side built and listening on UDP 9000 —
@@ -403,4 +403,4 @@ All accessed 2026-07-10.
 **Client behavior:**
 - Claude Code MCP docs (resources via @-mentions, prompts as slash commands, 10k-token warning / 25k-token default cap, `MAX_MCP_OUTPUT_TOKENS`, stdio non-reconnection) — https://code.claude.com/docs/en/mcp
 
-**reuben (local, read 2026-07-10):** docs/adr/0007, 0012, 0020, 0039; crates/reuben-native/src/osc.rs (196 lines incl. tests); crates/reuben-native/src/bin/reuben.rs (513 lines); crates/reuben-native/Cargo.toml; workspace Cargo.toml + Cargo.lock (180 packages, no tokio).
+**reuben (local, read 2026-07-10):** docs/rules/signal-time-dsp, execution-runtime, agent-mcp; crates/reuben-native/src/osc.rs (196 lines incl. tests); crates/reuben-native/src/bin/reuben.rs (513 lines); crates/reuben-native/Cargo.toml; workspace Cargo.toml + Cargo.lock (180 packages, no tokio).

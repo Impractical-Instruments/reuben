@@ -7,13 +7,14 @@ description: Build or modify a reuben Instrument or Rig — the playable JSON gr
 
 A reuben Instrument is one recursive JSON graph: **Operators** (nodes), each with an **`inputs`**
 map (literals + wire-refs) and an optional **`config`** block, with declared **outputs**
-(CONTEXT.md; ADR-0003, ADR-0030). Operator / Instrument / Rig are *scales* of the same graph, not
-different file types — this skill authors all three. It grounds itself on the **live operator set**
-(`reuben describe`) and proves its work on the **real engine load path** (`reuben validate`) before
-finishing (ADR-0020).
+([the rules index glossary](../../../docs/rules/README.md);
+[composition-operators](../../../docs/rules/composition-operators.md)). Operator / Instrument / Rig
+are *scales* of the same graph, not different file types — this skill authors all three. It grounds
+itself on the **live operator set** (`reuben describe`) and proves its work on the **real engine load
+path** (`reuben validate`) before finishing.
 
-It does **not** author new Operators (that is Rust — the `create-operator` skill, ADR-0021), author
-surface docs (`surfaces/*.json` presentation — the `control-surface` skill, ADR-0043), or edit core
+It does **not** author new Operators (that is Rust — the `create-operator` skill), author
+surface docs (`surfaces/*.json` presentation — the `control-surface` skill), or edit core
 crates.
 
 ## The loop: introspect → draft → validate → sync index → report
@@ -29,7 +30,7 @@ Run all `reuben` commands from the repo root.
      settable inputs (`min`/`max`/`default`/`unit`/`curve`), enum inputs (`variants`+`default`),
      resource slots.
    - `cargo run -q -p reuben-native --bin reuben -- describe <patch.json> --json` — a nested
-     instrument's **boundary** (ADR-0034/0038): its `interface` pipes as if they were operator
+     instrument's **boundary**: its `interface` pipes as if they were operator
      ports, each with its **declared** `Arg` type, range, default, and unit.
      This is what a `subpatch` node referencing that file exposes — wire against these names,
      never the child's internals.
@@ -39,9 +40,8 @@ Run all `reuben` commands from the repo root.
    guaranteed-valid minimal document (`{format_version, instrument, nodes:[]}`) — edit its `nodes`
    and `interface`, then validate. This sidesteps the first-creation stall where a from-nothing
    document omits the required top-level `instrument` field (#146). Then check `instruments/index.md`
-   (the generated library index, ADR-0057
-   §4 — one line per available instrument: role + face signature) for a close-enough
-   instrument before drafting a chain from scratch, or draft against an existing
+   (the generated library index — one line per available instrument: role + face signature) for a
+   close-enough instrument before drafting a chain from scratch, or draft against an existing
    `instruments/*.json` (e.g. `chord-player.json`) rather than a blank file. Reuse mechanics
    (referencing an index hit by id via `subpatch`), the format rules the loader enforces —
    node `inputs` (literals vs wire-refs) and `config`, the wire-form rules and their one
@@ -59,7 +59,7 @@ Run all `reuben` commands from the repo root.
 
 4. **Sync the library index — whenever you added, removed, or renamed an instrument, or changed
    its top-level `doc` first sentence or its `interface` face.** `instruments/index.md` is a
-   generated artifact (ADR-0057 §4), and the `library_index_is_in_sync` test fails CI when it
+   generated artifact, and the `library_index_is_in_sync` test fails CI when it
    drifts from a fresh generation — so a new instrument or an interface/doc edit that skips this
    step passes `validate` locally but reddens CI. Regenerate and stage it in the same commit:
    `cargo run -q -p reuben-native --example gen_library_index` (rewrites `instruments/index.md`
@@ -80,8 +80,8 @@ the native CLI's own shipped multichannel-fixture integration coverage.
 | Thing | Action |
 |---|---|
 | Instrument/Rig graph — nodes, `inputs` (literals + wire-refs), `config`, `interface` pipes (including promoting a player-facing control to an input pipe), resources | **author / edit** (validate before done) |
-| Surface docs (`surfaces/*.json` — presentation binding pipes to widgets, ADR-0043) | **never** — that is the `control-surface` skill; it delegates graph edits back here |
-| New Operator types (Rust) | **never** — that is the `create-operator` skill (ADR-0021) |
+| Surface docs (`surfaces/*.json` — presentation binding pipes to widgets) | **never** — that is the `control-surface` skill; it delegates graph edits back here |
+| New Operator types (Rust) | **never** — that is the `create-operator` skill |
 | Core crates (Rust) | **never edit** — grounding comes from `describe` and the authoring guide |
 
 ## Report

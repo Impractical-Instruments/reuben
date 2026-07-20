@@ -1,7 +1,7 @@
 {
   "format_version": 3,
   "instrument": "snare-voice",
-  "doc": "Noise+tone snare body: one gate-fired envelope shapes both a noise body (through the nested shaped-vca) and a short tonal sine ring (a second VCA fed the shaped-vca's tapped `cv`); their sum is the snare. Every former baked literal is a defaulted interface pipe (canonical names per ADR-0058): `tone` sets the ring frequency, `attack`/`decay`/`sustain`/`release` reshape the one contour that drives both halves. Hosted by a voicer only `gate` is drivable (per-voice params aren't host-addressable); statically nested via `subpatch`, every pipe is reachable on the boundary face. interface: gate in (+ tone/contour pipes), audio/active out.",
+  "doc": "Noise+tone snare body: one gate-fired envelope shapes both a noise body (through the nested shaped-vca) and a short tonal sine ring (a second VCA fed the shaped-vca's tapped `cv`); their sum is the snare. Every former baked literal is a defaulted interface pipe (canonical names): `tone` sets the ring frequency, `attack`/`decay`/`sustain`/`release` reshape the one contour that drives both halves. Hosted by a voicer only `gate` is drivable (per-voice params aren't host-addressable); statically nested via `subpatch`, every pipe is reachable on the boundary face. interface: gate in (+ tone/contour pipes), audio/active out.",
   "resources": {
     "shaped-vca": "shaped-vca.json"
   },

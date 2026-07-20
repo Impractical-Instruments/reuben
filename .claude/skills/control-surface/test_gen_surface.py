@@ -1,10 +1,12 @@
-"""Tests for the control-surface generator (ADR-0043). Run: python3 -m unittest -v
+"""Tests for the control-surface generator. Run: python3 -m unittest -v
 (from this directory, or `python3 -m unittest discover .claude/skills/control-surface`).
 
 These cover the deterministic half — surface-doc resolution against interface pipes, the
 derived default surface, OSC addressing, layout, and the zlib/XML round-trip. Whether the
 emitted .tosc *loads in TouchOSC* is the on-device verify step the skill calls out; it cannot
 be asserted here."""
+
+# see rules: authoring-library
 
 import json
 import shutil
@@ -21,7 +23,7 @@ import gen_surface as g
 # cloned from. The structural-match test below fails if our output drifts from this format.
 FIXTURE = Path(__file__).parent / "fixtures" / "REUBEN_REF.tosc"
 
-# A compact instrument in the ADR-0043 shape: presentation-free interface input pipes carrying
+# A compact instrument in the interface-pipe shape: presentation-free interface input pipes carrying
 # only the quantity contract (type/default/min/max/unit/curve, optional device `channel`).
 # Covers every pipe classification the resolver distinguishes: ranged f32s, note (message)
 # pipes, a ranged f32_buffer, a bare (rangeless) f32_buffer, and a channel-bound pipe.
@@ -76,7 +78,7 @@ class DefaultLabelTest(unittest.TestCase):
 
 
 class SurfaceResolveTest(unittest.TestCase):
-    """Surface-doc resolution (ADR-0043): the pipe carries the quantity, the control the
+    """Surface-doc resolution: the pipe carries the quantity, the control the
     presentation; expected widgets are hand-written literals in the shared cross-impl shape."""
 
     def test_fader_resolves_to_exact_widget_literal(self):
@@ -88,7 +90,7 @@ class SurfaceResolveTest(unittest.TestCase):
         }])
 
     def test_int_pipe_infers_a_fader_and_detents_on_whole_values(self):
-        # ADR-0061: an `i32` control pipe is a fader (not skipped), and carries a `steps` count so
+        # An `i32` control pipe is a fader (not skipped), and carries a `steps` count so
         # the widget grid detents on each integer in [min, max].
         inst = {"format_version": 3, "instrument": "t", "interface": {"inputs": {
             "steps": {"type": "i32", "default": 16, "min": 1, "max": 16, "unit": "steps"}}},
@@ -163,7 +165,7 @@ class SurfaceResolveTest(unittest.TestCase):
         self.assertIn("ghost", warnings[0])
 
     def test_reserved_and_unknown_widgets_skip_loudly(self):
-        # The TouchOSC skip table (ADR-0043 §5): reserved/web-only/unrecognized kinds are
+        # The TouchOSC skip table: reserved/web-only/unrecognized kinds are
         # dropped with a warning naming each control, never silently.
         widgets, warnings = resolve(
             {"bind": "brightness", "widget": "xy-pad", "label": "Pad"},
@@ -231,7 +233,7 @@ class SurfaceResolveTest(unittest.TestCase):
 
 
 class DefaultSurfaceTest(unittest.TestCase):
-    """The derived default surface (ADR-0043 §3): one fader per wireable input pipe, declaration
+    """The derived default surface: one fader per wireable input pipe, declaration
     order; channel-bound, bare-audio, and message pipes are skipped with a warning naming each."""
 
     def test_one_fader_per_wireable_pipe_in_declaration_order(self):
@@ -261,7 +263,7 @@ class DefaultSurfaceTest(unittest.TestCase):
 
 
 class SurfaceDocLookupTest(unittest.TestCase):
-    """File resolution order (ADR-0043 §5): <stem>.<target>.json ?? <stem>.json ?? None."""
+    """File resolution order: <stem>.<target>.json ?? <stem>.json ?? None."""
 
     def test_lookup_order(self):
         with tempfile.TemporaryDirectory() as d:
@@ -346,7 +348,7 @@ class ParamToggleTest(unittest.TestCase):
         self.assertEqual([c["label"] for c in rows[-1]], ["Tempo"], "non-toggle controls grid below")
 
     def test_adjacent_lanes_with_different_groups_get_their_own_rows(self):
-        # Steps are ordinary pipes now (ADR-0043 §6), so a lane is identified by its shared
+        # Steps are ordinary pipes now, so a lane is identified by its shared
         # `group` hint — two back-to-back lanes must not merge into one run.
         inst = {"instrument": "gb2", "interface": {"inputs": {
             **{f"kick_step{i}": {"type": "f32", "default": 0.0, "min": 0.0, "max": 1.0} for i in (1, 2, 3)},
@@ -384,7 +386,7 @@ class GroupLayoutTest(unittest.TestCase):
 
 
 class ChordButtonTest(unittest.TestCase):
-    """Chord buttons (ADR-0043 §1): a toggle whose payload is `[degree, gate]`, sent to the
+    """Chord buttons: a toggle whose payload is `[degree, gate]`, sent to the
     bound note pipe's `/in` port (the OSC boundary converts the degree payload at a note port).
     Same 2-arg button mechanism as note-toggle, but the constant is a scale degree."""
 
@@ -469,7 +471,7 @@ class EmitTest(unittest.TestCase):
 
     def test_fader_addresses_and_scaling(self):
         # Partials use child elements (not attributes). The argument scaling maps x[0,1] to the
-        # pipe's real range, at the pipe's own `/in` port (ADR-0043 §1).
+        # pipe's real range, at the pipe's own `/in` port.
         found = {}
         for osc in self.doc.findall(".//osc"):
             addr = osc.find("./path/partial/value").text
@@ -638,7 +640,7 @@ class CommittedSurfaceDocTest(unittest.TestCase):
 
 
 class BoundaryTest(unittest.TestCase):
-    """The interface-pipe path (ADR-0038 §2): one fader per wireable `interface` input pipe, sourced
+    """The interface-pipe path: one fader per wireable `interface` input pipe, sourced
     from a `reuben describe --json` boundary view. Fed fixture boundary JSON directly (the view is
     core's job, exercised by reuben's own tests) so these don't need the built binary. In v2 an
     input pipe declares its own type + owned metadata and mints its own address — there is no inner
@@ -651,7 +653,7 @@ class BoundaryTest(unittest.TestCase):
     BOUNDARY = {"inputs": [
         {"name": "freq", "kind": "signal", "default": 440.0, "min": 20.0, "max": 20000.0, "unit": "Hz", "curve": "exponential"},
         {"name": "gate", "kind": "value", "default": 0.0, "min": 0.0, "max": 1.0, "curve": "linear"},
-        # `label`/`widget` here are STALE keys a pre-ADR-0043 describe could emit — the
+        # `label`/`widget` here are STALE keys an older describe could emit — the
         # boundary path must ignore them (presentation lives in a surface doc; describe no
         # longer carries any). Kept in the fixture to guard against re-reading them.
         {"name": "tone", "kind": "signal", "default": 4000.0, "min": 200.0, "max": 8000.0, "unit": "Hz", "curve": "exponential", "label": "Legacy", "widget": "radial"},
@@ -660,7 +662,7 @@ class BoundaryTest(unittest.TestCase):
     ]}
 
     def test_osc_address_is_the_pipe_in_port(self):
-        # ADR-0038: a pipe mints its own address and takes control on its `in` port -> `/<name>/in`.
+        # A pipe mints its own address and takes control on its `in` port -> `/<name>/in`.
         self.assertEqual(g._osc_from_pipe("tone"), "/tone/in")
 
     def test_one_fader_per_wireable_input(self):
@@ -676,7 +678,7 @@ class BoundaryTest(unittest.TestCase):
         self.assertEqual(freq["widget"], "fader")
 
     def test_stale_describe_presentation_is_ignored(self):
-        # ADR-0043: describe carries no presentation; a stale `label`/`widget` key in a
+        # describe carries no presentation; a stale `label`/`widget` key in a
         # pre-captured describe view must not leak through (labels come from default_label,
         # every boundary control is a plain fader).
         tone = next(c for c in g.boundary_controls(self.BOUNDARY) if c["address"] == "/tone/in")
@@ -706,7 +708,7 @@ class LiveEngineBoundaryTest(unittest.TestCase):
     """Bind the boundary path to the **live engine**, not a hand-written fixture. `BoundaryTest`
     above feeds `boundary_controls` a describe view *we* wrote, so it stays green even if the real
     `describe --json` shape flips under it — exactly the blind spot that let issue #233 rot (the
-    interface `target`→pipe direction flip, ADR-0038, silently retired the v1 shape this script
+    interface `target`→pipe direction flip silently retired the v1 shape this script
     hand-decoded). This test runs the real `reuben describe` on the committed v3 instrument
     `instruments/patches/space.json` and asserts the surface, so a future breaking format change
     breaks *here* instead of drifting silently.
@@ -734,7 +736,7 @@ class LiveEngineBoundaryTest(unittest.TestCase):
     def _live_describe(self):
         if shutil.which("cargo") is None:
             self.skipTest("cargo not on PATH — the live-engine boundary test needs the Rust "
-                          "toolchain to build a current `reuben` (guards ADR-0038 pipe drift)")
+                          "toolchain to build a current `reuben` (guards pipe drift)")
         # `--features reuben-core/bench` mirrors CI's clippy/test steps so this shares their
         # compiled artifacts instead of forcing a featureless rebuild (the `bench` feature is inert
         # for `describe`).
@@ -755,7 +757,7 @@ class LiveEngineBoundaryTest(unittest.TestCase):
         by_addr = {c["address"]: c for c in g.boundary_controls(self._live_describe())}
         # The two regressions #233 fixed, asserted against *real* engine output:
         #  - non-empty (v1-decoding produced zero controls on a v2 doc), and
-        #  - addressed by the pipe's own `/<name>/in` port (ADR-0038), not a v1 inner target.
+        #  - addressed by the pipe's own `/<name>/in` port, not a v1 inner target.
         # space.json's ranged pipes `space` (0..1 value) + `tone` (20..20000 signal) surface;
         # the bare-audio `in` pipe (no range) is skipped.
         self.assertEqual(set(by_addr), {"/space/in", "/tone/in"})

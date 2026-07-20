@@ -1,7 +1,7 @@
 {
   "format_version": 3,
   "instrument": "acid-pad-voice",
-  "doc": "Detuned three-saw pad voice (ADR-0032): three saw oscillators at the note freq and +/-~12 cents feed a slow-attack, long-release ADSR through a warm lowpass -- a lush, wide chord voice that swells and rings out. Hosted N-up by a voicer that resolves chord degrees through the host's harmony; the long release lets whole-note chords overlap into a sustained wash. interface: freq/gate in, audio/active out.",
+  "doc": "Detuned three-saw pad voice: three saw oscillators at the note freq and +/-~12 cents feed a slow-attack, long-release ADSR through a warm lowpass -- a lush, wide chord voice that swells and rings out. Hosted N-up by a voicer that resolves chord degrees through the host's harmony; the long release lets whole-note chords overlap into a sustained wash. interface: freq/gate in, audio/active out.",
   "interface": {
     "inputs": {
       "freq": {

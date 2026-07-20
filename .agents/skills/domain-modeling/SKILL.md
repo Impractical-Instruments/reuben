@@ -5,7 +5,17 @@ description: Build and sharpen a project's domain model. Use when the user wants
 
 # Domain Modeling
 
-Actively build and sharpen the project's domain model as you design. This is the *active* discipline — challenging terms, inventing edge-case scenarios, and writing the glossary and decisions down the moment they crystallise. (Merely *reading* `CONTEXT.md` for vocabulary is not this skill — that's a one-line habit any skill can do. This skill is for when you're changing the model, not just consuming it.)
+Actively build and sharpen the project's domain model as you design. This is the *active* discipline — challenging terms, inventing edge-case scenarios, and writing the glossary and decisions down the moment they crystallise. (Merely *reading* the glossary for vocabulary is not this skill — that's a one-line habit any skill can do. This skill is for when you're changing the model, not just consuming it.)
+
+> **In this repo (reuben), the doc model is a now-based rules system, not a `CONTEXT.md`.** The
+> durable glossary + ubiquitous language is **derived** in the rules index
+> ([`docs/rules/README.md`](../../../docs/rules/README.md)) from the per-topic docs — you don't
+> hand-edit the glossary; you edit a topic's `## Terms` and regenerate. An individual **decision**
+> is authored as an **ADR** under [`docs/adr/`](../../../docs/adr/README.md) (the *live iteration
+> surface*); once it solidifies, the `absorb-adrs` skill distills it into a rule + rationale under
+> `docs/rules/` and deletes the ADR. So in reuben: "record a decision" → a new ADR; "sharpen a
+> term" → a topic's `## Terms` (see [`docs/agents/domain.md`](../../../docs/agents/domain.md)).
+> The generic single-`CONTEXT.md` layout below is the portable default for repos without that system.
 
 ## File structure
 

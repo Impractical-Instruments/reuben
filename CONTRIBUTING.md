@@ -30,7 +30,7 @@ clippy verdicts match CI's exactly.
 ### Bumping the Rust version
 
 The pinned version and the MSRV are kept **in lockstep** (see
-[ADR-0023](./docs/adr/0023-toolchain-pin-and-git-hooks.md)). To move to a new Rust:
+[web-product-process](./docs/rules/web-product-process.md)). To move to a new Rust:
 
 1. `channel` in `rust-toolchain.toml`
 2. `rust-version` in `Cargo.toml` `[workspace.package]` — set to the **same** version
@@ -41,12 +41,12 @@ the pinned toolchain, which equals the MSRV).
 
 ## Branching & release flow
 
-The repo runs a two-branch model (see [ADR-0055](./docs/adr/0055-dev-staging-branch-strategy.md)):
+The repo runs a two-branch model (see [web-product-process](./docs/rules/web-product-process.md)):
 
 - **`dev`** is the default, long-lived integration branch. **Open every PR against `dev`.**
-- Pushing to `dev` runs the full CI suite. (The staging/preview *deploys* ADR-0055 §2 describes
+- Pushing to `dev` runs the full CI suite. (The staging/preview *deploys* that once lived here
   moved out with the web player — they now run in the private `reuben-web` repo, which pins this
-  one as a submodule. ADR-0055 §3–§6, the promotion model below, are unchanged.)
+  one as a submodule. The promotion model below is unchanged.)
 - **`main` is production and ships by promotion, never by a direct merge.** Run the manual
   **[Promote dev to main](./.github/workflows/promote.yml)** workflow (Actions → *Promote dev to
   main* → Run workflow). It fast-forwards `main` to `dev` and the resulting push deploys production.

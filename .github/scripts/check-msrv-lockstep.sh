@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Assert the lockstep invariant from ADR-0023: the pinned toolchain channel in
+# Assert the lockstep invariant (see rules: web-product-process): the pinned toolchain channel in
 # rust-toolchain.toml must equal the workspace MSRV (rust-version) in Cargo.toml.
 # They're bumped together by hand, so this gate turns drift into a CI failure
 # instead of a silently unverified MSRV claim. Pure text — no toolchain needed.
@@ -18,7 +18,7 @@ if [ -z "$msrv" ]; then
 fi
 
 if [ "$pin" != "$msrv" ]; then
-    echo "✗ MSRV lockstep broken (ADR-0023):" >&2
+    echo "✗ MSRV lockstep broken:" >&2
     echo "    rust-toolchain.toml channel = $pin" >&2
     echo "    Cargo.toml rust-version     = $msrv" >&2
     echo "  Set both to the same version (see CONTRIBUTING.md bump procedure)." >&2
@@ -27,7 +27,7 @@ fi
 
 # There used to be a loop here holding each DETACHED crate (own [workspace] table, so it can't
 # inherit the workspace rust-version) to the same pin. `crates/reuben-web` was the only one, and
-# it left with the extraction (ADR-0056) — every remaining crate is a workspace member and
+# it left with the extraction — every remaining crate is a workspace member and
 # inherits `rust-version` from [workspace.package]. Re-add the loop if a detached crate returns.
 
 echo "✓ MSRV lockstep OK: $pin"

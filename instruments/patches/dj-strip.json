@@ -1,7 +1,7 @@
 {
   "format_version": 3,
   "instrument": "dj-strip",
-  "doc": "DJ-filter + level channel strip: the per-channel output stage -- a bipolar DJ-filter knob (`filter`, -1 lowpass down .. 0 open .. +1 highpass up) and a level knob (`level`, 0..1, rests at 1 = unity), each smoothed against zipper noise, on one audio path. Canonical pipe names per ADR-0058. Wire a channel into `audio`, take the strip's `audio` out to the mix bus; at rest the strip passes audio unchanged.",
+  "doc": "DJ-filter + level channel strip: the per-channel output stage -- a bipolar DJ-filter knob (`filter`, -1 lowpass down .. 0 open .. +1 highpass up) and a level knob (`level`, 0..1, rests at 1 = unity), each smoothed against zipper noise, on one audio path. Canonical pipe names. Wire a channel into `audio`, take the strip's `audio` out to the mix bus; at rest the strip passes audio unchanged.",
   "interface": {
     "inputs": {
       "audio": {

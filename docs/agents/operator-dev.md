@@ -5,8 +5,8 @@ The builder doc — how to author a new **Operator** in Rust: the `Operator` tra
 testing. Its counterpart is the [instrument-authoring guide](authoring.md), which owns the
 material this doc builds on and does not restate: the `Arg`/form **type system and wiring
 rules** ([authoring.md#type-system](authoring.md#type-system)), the instrument JSON format,
-and the engine-wide invariants. Capitalized terms (Operator, Voice, Plan…) are defined in
-[CONTEXT.md](../../CONTEXT.md); the ADRs are the source of truth.
+and the engine-wide invariants. Capitalized terms (Operator, Voice, Plan…) are defined in the
+[rules corpus glossary](../rules/README.md#glossary), the source of truth.
 
 The [`create-operator` skill](../../.claude/skills/create-operator/SKILL.md) drives this
 doc's workflow end to end; the
@@ -15,9 +15,9 @@ review mirror over a finished diff.
 
 ## The Operator contract (`crates/reuben-core/src/operator.rs`)
 
-Operators are authored **single-Voice** ([ADR-0010](../adr/0010-single-lane-operators.md)):
+Operators are authored **single-Voice** ([composition-operators](../rules/composition-operators.md)):
 you write one mono, single-Voice stream a (sub)block at a time. Polyphony is not a per-operator
-fan-out — the **Voicer** hosts N voice sub-patches and sums them ([ADR-0032](../adr/0032-voicer-hosts-voice-subpatches.md)),
+fan-out — the **Voicer** hosts N voice sub-patches and sums them,
 so an operator never carries per-Voice copies. The trait is three core methods (plus optional
 lifecycle hooks):
 
@@ -39,17 +39,16 @@ pub trait Operator: Send {
 }
 ```
 
-Two optional lifecycle hooks support the Voicer ([ADR-0032](../adr/0032-voicer-hosts-voice-subpatches.md)),
+Two optional lifecycle hooks support the Voicer,
 both default no-ops: `bind_voices(Vec<Graph>)` receives the N built voice sub-patches at load, and
 `on_instantiate(&AudioConfig) -> Result<(), PlanError>` runs per node from `Plan::instantiate` (the
 one place with the audio config) so the Voicer can build each voice's sub-`Plan` + arena off the hot
 path.
 
 A third default-no-op hook, `on_transplant(&mut self)`, runs on a **survivor** box just after it is
-transplanted across a hot-swap ([ADR-0046](../adr/0046-coordinator-swap-engine-unit.md) §4). A Swap
+transplanted across a hot-swap ([execution-runtime](../rules/execution-runtime.md)). A Swap
 rebuilds every input latch from the new document, so a downstream consumer's held-input latch resets
-to its default. An operator that publishes a **held output on change** (emit-on-change,
-[ADR-0015](../adr/0015-latched-context-read.md)) against a baseline it keeps in its box would then see
+to its default. An operator that publishes a **held output on change** (emit-on-change) against a baseline it keeps in its box would then see
 no change and stay silent, stranding that consumer on the default — a Swap would silently retranspose
 a `harmony`-driven voice. Such an operator clears its publish baseline here (`self.last = None`) so the
 first post-swap block re-asserts the current value; `harmony.rs` is the exemplar. RT-safe: it runs in
@@ -58,7 +57,7 @@ and event outputs (append-only) need nothing.
 
 - **`descriptor()`** — see below. The single source of an operator's ports and metadata.
 - **`process(io)`** — the only realtime path. **Allocation-free.** Read inputs, write outputs
-  through the `Io` view, by the contract's typed handles (ADR-0037) — the handle's form decides
+  through the `Io` view, by the contract's typed handles — the handle's form decides
   the read/write shape, and a wrong-form access does not compile. The per-form read/write
   shapes — the buffer-presence invariant and `io.varying`, held reads defaulted by the handle,
   an enum read as the real vocab type, `Harmony`'s default, `EventStream<Note>`/`Stamped<Note>`
@@ -72,15 +71,14 @@ and event outputs (append-only) need nothing.
     survive. A Signal write (`io.write(OUT) -> &mut [f32]`) fills the buffer in place.
   - **No `enum_index`/`from_index` on the hot path** — an enum handle reads the real vocab
     type directly (`io.read(IN_WAVEFORM) == Waveform::Saw`), constant for the (sub)block.
-  - **Internal wires are addressless** — routed by connection, not name
-    ([ADR-0014](../adr/0014-internal-message-graph.md), ADR-0031 step 7). Exemplars:
+  - **Internal wires are addressless** — routed by connection, not name. Exemplars:
     `sequencer.rs` / `snap.rs` for `Note` events; the Voicer and `snap.rs` read `Harmony`,
     `harmony.rs` emits it.
 - **`spawn()`** — usually `Box::new(Self::new())`. Resets per-Voice state only. A resource-bearing
   operator carries its binding (the `Arc<ResourceStore>` + resolved handle) forward while resetting
   playback state, so every Voice shares the decoded data — see `sample.rs`.
 - **`bind_resources(store, refs)`** — the two-phase-init hook for operators depending on
-  **external decoded data** ([ADR-0016](../adr/0016-sample-player-and-resource-store.md)). The
+  **external decoded data**. The
   loader resolves+decodes the document's `resources` table into a shared `ResourceStore` and calls
   this hook on each node declaring a resource slot. Default no-op. `sample.rs` is the template.
 
@@ -92,15 +90,15 @@ accumulating phase in `f64` so it doesn't drift over a long session (see `lfo.rs
 
 An operator's self-description, separate from `process` — the seat of "good button",
 serialization, connection checking, and AI grounding
-([ADR-0004](../adr/0004-ai-authorability-first-class.md)).
+([agent-mcp](../rules/agent-mcp.md)).
 
 You declare it **once**, in an `operator_contract!` call
-([ADR-0025](../adr/0025-single-source-operator-contract.md)). The macro plants, at module scope,
+([composition-operators](../rules/composition-operators.md)). The macro plants, at module scope,
 the **typed `IN_`/`OUT_` handles** (`In<form>`/`Out<form>` consts whose type is the port's form and
-whose value carries the declared default — ADR-0037), the `C_*` constant ordinals, **and** an
+whose value carries the declared default), the `C_*` constant ordinals, **and** an
 inherent `fn contract() -> Descriptor` from the same tokens, so handles and descriptor can't drift. An `enum` port **references a shared *vocab* enum** by
 name (`enum(FilterMode)`) — it generates no per-op type; the descriptor is single-sourced off the
-vocab type's `FilterMode::enum_meta(name)` (ADR-0030). The trait's `descriptor()` delegates:
+vocab type's `FilterMode::enum_meta(name)`. The trait's `descriptor()` delegates:
 
 ```rust
 crate::operator_contract!(Filter {
@@ -120,7 +118,7 @@ crate::operator_contract!(Voicer {
 });
 
 impl Operator for Filter {
-    fn descriptor() -> Descriptor { Self::contract() }   // one-liner delegate (ADR-0025)
+    fn descriptor() -> Descriptor { Self::contract() }   // one-liner delegate
     fn process(&mut self, io: &mut Io) {
         let mode = io.read(IN_MODE);  // a real Rust enum, defaulted to FilterMode's #[default]
         // per sample: let x = io.read(IN_AUDIO)[i]; let cut = io.read(IN_CUTOFF)[i];  (`varying` lets it const-fold)
@@ -149,7 +147,7 @@ impl Operator for Filter {
   off `VocabType::enum_meta`); the type's `#[default]` variant is the default.
 - **`name: note`** / **`name: harmony`** / **`name: pitch`** — `Note` (Event) / `Harmony` (Value) /
   `Pitch` (Value) ports (`Port::note` / `Port::harmony` / `Port::pitch`). `pitch` is a held `Pitch`
-  leaf (ADR-0062/0063) — the wire-internal output an `unpack_<type>` op emits, consumed by `resolve`.
+  leaf — the wire-internal output an `unpack_<type>` op emits, consumed by `pitch2freq`.
 - **`name: arg`** — a **type-agnostic pass-through** (issue #141): carries *any* `Arg` as a raw
   Event stream (`Port::arg`), read via its `In<Raw>` handle (`io.read(IN)` yields undecoded
   `&Arg` payloads) and re-emitted through the sink's local `Out<Raw>` tap handle
@@ -167,9 +165,9 @@ impl Operator for Filter {
   through an `arg` port; a typed `note` port still decodes it. Today the form of `osc_out.in`,
   the outbound OSC sink.
 - **`constants: { name: i32 { LO..=HI, default D } }`** — instantiate-time `Constant`s
-  ([ADR-0035](../adr/0035-constants-are-immutable-ports.md), the Voicer's `voices`); the loader
+  (the Voicer's `voices`); the loader
   routes them to the patch's `config` block. Constants keep bare `usize` `C_*` ordinals — they are
-  never read in `process`, so they get no handle (ADR-0037).
+  never read in `process`, so they get no handle.
 
 Other notes:
 
@@ -178,13 +176,13 @@ Other notes:
 - **Ports are referenced by name** in the JSON format, not by index — names are the stable
   contract the rig builder wires against. The macro computes the ordinals.
 - **No exceptions:** every operator declares its contract through the macro and delegates via
-  `Self::contract()` (`output`, the last hand-written descriptor, folded in with ADR-0037 so its
-  ports get typed handles too). One operator per module since
-  [ADR-0029](../adr/0029-math-family-dense-float-one-file-per-op.md) deleted the old `math.rs`.
+  `Self::contract()` (`output`, the last hand-written descriptor, folded in so its
+  ports get typed handles too). One operator per module (the old `math.rs` was split
+  one-file-per-op).
 - **Pointwise number ops use a higher-level macro.** `add`, `mul`, `power`, `map` are each a single
   `crate::number_operator_contract!(..)` call over one scalar fn, which generates **both carriers**
   (`*F32Value` + `*F32Signal`) — their contracts, `Operator` impls, registration, and a
-  defaults-are-data test ([ADR-0033](../adr/0033-number-operator-contract-macro.md)). The criterion:
+  defaults-are-data test. The criterion:
   an op is macro-eligible iff it is **stateless pointwise** (output sample = fn of this sample's
   inputs only) **and** every operand is a number or held enum mode. `differentiate`/`integrate` are
   **stateful** (they carry state across blocks), so they stay hand-written `operator_contract!` ops
@@ -192,13 +190,13 @@ Other notes:
 - **Product vocab types get their `unpack` from a census macro.** `crate::unpack_op!(Note { pitch:
   pitch, velocity: f32 })` in `operators/unpack.rs` generates an `unpack_<type>` op that reads the
   whole value as a `Note` event on `in` and emits each field as a held `Value` — the Event→Value
-  latch expressed as a patchable node ([ADR-0063](../adr/0063-product-vocab-types-unpack-to-fields.md)).
+  latch expressed as a patchable node.
   Like `number_operator_contract!` it reuses the shared contract internals, so the op is
   indistinguishable in shape from a hand-written one and self-registers via `inventory`. The census
   is one greppable file, but the macro's input event form is currently fixed to `note` (`Note` is the
   only event-carried product vocab type today), so unpacking a *different* product type is a census
   line **plus** teaching the macro that type's event input — not a one-line edit alone.
-- **Polyphony** is not a per-operator concern (ADR-0032): there is no Lane fan-out. The **Voicer** is
+- **Polyphony** is not a per-operator concern: there is no Lane fan-out. The **Voicer** is
   a single-Voice operator that hosts N voice sub-patches — a voice is a standalone Instrument
   (instrument-resource, declared `resources: { voice }`) with an `interface { inputs, outputs }`
   boundary (`freq`/`gate` in, `audio`/`active` out). The loader builds the patch `voices` times and
@@ -228,7 +226,7 @@ never hand-writes symbol/index handling.
    and `pub use <name>::<Type>;`.
 3. **Self-register** by adding one line at the operator's module top level, after its
    `impl Operator` block: `crate::register_operator!(<Type>);` — a compile-time `inventory`
-   submission `Registry::builtin()` gathers ([ADR-0024](../adr/0024-compile-time-operator-registration.md)),
+   submission `Registry::builtin()` gathers,
    so there is **no central list to edit**. (`grep -rn register_operator! operators/` is the census.)
 4. **Test** in the operator module, test-first, with
    [`OpDriver`](../../crates/reuben-core/src/op_driver.rs) — it drives your operator through the
@@ -250,7 +248,7 @@ never hand-writes symbol/index handling.
    (`bind`).
 
 Embedders can add their own types without touching the core via `Registry::register` — the
-seam for the "agents author new Operators in Rust" goal ([ADR-0004](../adr/0004-ai-authorability-first-class.md)).
+seam for the "agents author new Operators in Rust" goal ([agent-mcp](../rules/agent-mcp.md)).
 
 ## Invariants as they bind an operator author
 
@@ -278,4 +276,4 @@ directly on the code you write here:
     `unwrap_or`, `.clamp()`); a panic in the audio callback unwinds across the cpal FFI
     boundary. `debug_assert!` is fine (it vanishes in release); plain in-bounds indexing
     (`buf[i]` for `i < n`) is fine. `unsafe` on the hot path is a last resort that requires
-    a committed benchmark ([ADR-0019](../adr/0019-performance-benchmarking.md)) proving it.
+    a committed benchmark ([web-product-process](../rules/web-product-process.md)) proving it.

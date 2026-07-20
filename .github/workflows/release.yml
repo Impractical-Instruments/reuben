@@ -1,6 +1,6 @@
 name: Release
 
-# Fires on a `v*` tag (ADR-0026). Both GitHub's Releases GUI and
+# Fires on a `v*` tag. Both GitHub's Releases GUI and
 # `gh release create vX.Y.Z` create the tag and trigger this. Builds a
 # `--release` `reuben` binary on Linux + Windows and attaches each as a
 # versioned archive (tar.gz / zip) + a SHA256 sidecar to the GitHub Release.
@@ -44,7 +44,7 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
 
-      # Single source of truth = rust-toolchain.toml (ADR-0023).
+      # Single source of truth = rust-toolchain.toml.
       - name: Setup pinned Rust toolchain
         uses: ./.github/actions/setup-rust
 

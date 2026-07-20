@@ -1,7 +1,7 @@
 {
   "format_version": 2,
   "instrument": "strum-harp-voice",
-  "doc": "Voice patch for strum-harp.json (ADR-0032). One monophonic plucked-string voice: a held freq tunes the modal resonator's fundamental, a held gate fires its internal mallet (the resonator's own attack + decay ring, no separate envelope/VCA needed). No `active` output: the voice pool falls back to keying liveness on `gate`, and because a stolen voice reuses the same resonator instance (not a fresh spawn), its ring simply continues underneath a re-trigger rather than cutting off. NO filter here — the brightness Good Button drives a single master filter on the summed mix (host post-mix). interface: freq/gate in, audio out.",
+  "doc": "Voice patch for strum-harp.json. One monophonic plucked-string voice: a held freq tunes the modal resonator's fundamental, a held gate fires its internal mallet (the resonator's own attack + decay ring, no separate envelope/VCA needed). No `active` output: the voice pool falls back to keying liveness on `gate`, and because a stolen voice reuses the same resonator instance (not a fresh spawn), its ring simply continues underneath a re-trigger rather than cutting off. NO filter here — the brightness Good Button drives a single master filter on the summed mix (host post-mix). interface: freq/gate in, audio out.",
   "interface": {
     "inputs": {
       "freq": {

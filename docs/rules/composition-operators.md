@@ -22,11 +22,16 @@ metadata and emits both the runtime `Descriptor` and a **typed port handle** per
 handle, whose type fixes the port's form and carries its declared default, so a wrong-form read does
 not compile and no default can drift. The stateless-pointwise math family goes one level further —
 `number_operator_contract!` generates a whole value/signal operator family from a single scalar
-function.
+function — and the same census-macro idea gives every **product vocab type** its field-destructure
+operator: one `unpack_op!(vocab::Note)` line mints `unpack_note`, which reads a `Note` **event** stream
+on `in` and emits each field (`pitch`, `velocity`) as a held Value that defaults to the type's
+`Default`, so a mono voice can be wired as a patch instead of hidden inside the Voicer.
 
 All data on the graph is **one substrate**: a `Message = { address, frame, Arg }` carrying exactly
-one `Arg` (OSC primitives, shared vocab types like `Note`/`Harmony`, an erased enum index, or the
-dense `Buffer`). A `Signal` is just a Message whose Arg is a Buffer; a held control is the
+one `Arg` (OSC primitives, shared vocab types like `Note`/`Harmony`, an all-unit enum's erased index,
+or the dense `Buffer`). A vocab enum that carries a payload — `Pitch` (`Degree | Absolute`) — is not
+erasable without dropping that payload, so it is promoted to its own named `Arg` leaf and rides a wire
+on its own; `#[derive(ArgValue)]` routes each enum by whether any variant carries a payload. A `Signal` is just a Message whose Arg is a Buffer; a held control is the
 zero-order-hold of a port's last Arg (the engine's latch service, see
 [execution-runtime](execution-runtime.md)). The address is a boundary/debug label — internal edges
 route by wired port, never by name. Every port declares one of three **forms** by its value type:
@@ -109,6 +114,16 @@ the patch — maps onto the rig.
 ### A graph's boundary is named interface pipes — an input pipe mints an address internal nodes wire from and an output pipe is fed from an internal port, each pipe declares its own `Arg` type, and N-channel I/O is N mono pipes bound to logical channels that a device profile, not the patch, maps to hardware.
 
 [why](rationale/composition-operators/interface-pipes.md)
+
+<a id="payload-enum-arg-leaves"></a>
+### A vocab enum that carries a payload is promoted to its own named `Arg` variant as an opaque `Copy` leaf, while an all-unit enum type-erases to `Arg::Enum(index)` — `#[derive(ArgValue)]` routes each enum by whether any variant carries a payload.
+
+[why](rationale/composition-operators/payload-enum-arg-leaves.md)
+
+<a id="product-type-unpack-operators"></a>
+### Each product vocab type gets a generated `unpack_<type>` operator from a one-line `unpack_op!` census entry that reuses the shared contract internals and self-registers through inventory, emitting every field as a ZOH-held Value defaulting to the type's `Default`.
+
+[why](rationale/composition-operators/product-type-unpack-operators.md)
 
 ## Terms
 

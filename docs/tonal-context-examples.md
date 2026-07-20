@@ -1,6 +1,6 @@
 # Tonal-context: worked examples
 
-Concrete scenarios that exercise the tonal-context mechanics ([ADR-0013](adr/0013-tonal-context-bus-mechanics.md)), built to grow intuition. Notation: scale degrees are 0-based (`0` = root). MIDI is float (60.0 = middle C). "step" = a step in the active tuning's period (12 in 12-TET).
+Concrete scenarios that exercise the tonal-context mechanics ([tonal context](rules/signal-time-dsp.md)), built to grow intuition. Notation: scale degrees are 0-based (`0` = root). MIDI is float (60.0 = middle C). "step" = a step in the active tuning's period (12 in 12-TET).
 
 ---
 
@@ -28,7 +28,7 @@ Same context as §1, but swap **only** the tuning to quarter-comma meantone. Deg
 | 2 (third) | 64 | 329.63 | **327.03** |
 | 4 (fifth) | 67 | 392.00 | **391.21** |
 
-The follower asked for "degree 2" both times. Only the Tuning layer changed. This is why Scale lives in step-space, not cents (ADR-0013).
+The follower asked for "degree 2" both times. Only the Tuning layer changed. This is why Scale lives in step-space, not cents.
 
 ## 3. Diatonic chord motion — the feature
 
@@ -68,7 +68,7 @@ Context: C major. Input is an arbitrary float-MIDI gesture.
 | 66.0 (F♯) | Scale / **Down** | **F (65)** | forced downward |
 | 62.0 (D) | Scale | **D (62)** | already in scale → unchanged |
 
-The tie-break is **deterministic down** (ADR-0001 forbids a coin-flip on exact ties).
+The tie-break is **deterministic down** (determinism forbids a coin-flip on exact ties).
 
 ## 6. Snap target — `Chord` vs `ChordThenScale`
 
@@ -123,7 +123,7 @@ Both carry the same tuning (set in each node, or — later — via cross-scope l
 
 One Render block, `n` frames. A chord-progression op writes the new chord at frame **40**; a sequencer emits note-ons at frames **37** and **45**.
 
-The engine slices the block at 40 (the context write is on the control-slicing path, ADR-0011):
+The engine slices the block at 40 (the context write is on the control-slicing path):
 
 ```
 sub-block A = [0, 40)   context = OLD chord   → note-on @37 reads OLD  ✓
