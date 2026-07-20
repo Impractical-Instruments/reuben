@@ -23,3 +23,6 @@
 
 # Wrangler's local cache (writes account_id into the working tree)
 .wrangler/
+
+# Doc scripts generated files
+/scripts/__pycache__/
