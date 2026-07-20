@@ -1,14 +1,14 @@
-//! Filesystem + WAV resource resolution — the native side of the resource seam (ADR-0016).
+//! Filesystem + WAV resource resolution — the native side of the resource seam.
 //!
-//! The portable core defines [`SampleBuffer`] / [`ResourceResolver`] but stays codec-free
-//! (ADR-0007, ADR-0012). This module fills the seam with a filesystem [`ResourceResolver`]
+//! The portable core defines [`SampleBuffer`] / [`ResourceResolver`] but stays codec-free.
+//! This module fills the seam with a filesystem [`ResourceResolver`]
 //! that decodes **WAV** (`hound`; PCM int + float — tiny, deterministic, no codec
 //! licensing). Compressed formats and non-file sources drop in behind the same trait later.
 //!
 //! Paths in a resource table resolve **relative to the referencing document's directory** (a
 //! sample or sub-patch lives next to the file that names it), falling back to a configurable
 //! [library root](FsResolver::with_root) — so a project keeps local references working while
-//! shared patches come from one place. Identity is the resolver's job (ADR-0034 §1):
+//! shared patches come from one place. Identity is the resolver's job:
 //! [`FsResolver::canonical`] lexically normalizes the winning absolute path, so `a.json`,
 //! `./a.json`, and `x/../a.json` are one cycle-guard/dedup key. Symlinks are *not* chased —
 //! canonicalization never does IO beyond the sibling-vs-root existence probe.
@@ -108,7 +108,7 @@ impl ResourceResolver for FsResolver {
         decode_wav(&path)
     }
 
-    /// Read a patch path (an instrument-kind resource, ADR-0032 §2) to its JSON text, relative to
+    /// Read a patch path (an instrument-kind resource) to its JSON text, relative to
     /// the base dir like a sample. Core then builds it into a sub-`Graph`.
     fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
         let path = self.base_dir.join(source);
@@ -241,7 +241,7 @@ mod tests {
         let _ = std::fs::remove_file(&path);
     }
 
-    /// Canonicalization is lexical (ADR-0034 §1): spelling variants of one path are one
+    /// Canonicalization is lexical: spelling variants of one path are one
     /// identity, with no filesystem probe needed when no library root is configured.
     #[test]
     fn canonical_normalizes_path_spellings() {
@@ -306,7 +306,7 @@ mod tests {
 
     #[test]
     fn resolve_text_reads_a_patch_file_and_builds_a_subgraph() {
-        // The instrument-kind resource seam (ADR-0032 §2): write a voice patch, resolve its path to
+        // The instrument-kind resource seam: write a voice patch, resolve its path to
         // text via FsResolver, and build it into a sub-Graph through core's `resolve_instrument`.
         let dir = std::env::temp_dir();
         let path = dir.join("reuben_test_voice.json");
@@ -327,7 +327,7 @@ mod tests {
         )
         .expect("resolve patch");
         assert!(loaded.warnings.is_empty());
-        // The oscillator plus the `freq` input pipe its migrated interface minted (ADR-0038).
+        // The oscillator plus the `freq` input pipe its migrated interface minted.
         assert_eq!(loaded.graph.nodes.len(), 2);
         assert!(loaded.graph.interface.inputs.contains_key("freq"));
 

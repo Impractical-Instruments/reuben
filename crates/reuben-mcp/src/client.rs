@@ -1,22 +1,23 @@
-//! The structure-channel client (ADR-0046 §8, owned by reuben-mcp per ADR-0044 §3): the
+//! The structure-channel client (owned by reuben-mcp): the
 //! sidecar's half of the sidecar↔engine control channel a live `reuben play` presents. It dials
 //! the engine's loopback TCP structure channel and exchanges the shared
 //! [`reuben_core::coordinator`] NDJSON envelope — one [`Request`] line out, one [`Response`] line
-//! back, per ADR-0046 §8's one-response-per-request framing — reusing the wire types **verbatim**
+//! back, per the one-response-per-request framing — reusing the wire types **verbatim**
 //! (no re-declaration).
 //!
 //! # Transport: `std::net` with timeouts, not `tokio::net`
 //!
-//! reuben-mcp is the workspace's only async member (ADR-0044 §3), but the tokio it carries is the
+//! reuben-mcp is the workspace's only async member, but the tokio it carries is the
 //! `current_thread` runtime fenced to `sync/rt/time/io-std` — **no `net` feature, no OS reactor**
-//! (ADR-0044 §5 measured that as sufficient; adding `net` pulls mio and a reactor for nothing).
+//! (that feature set is measured sufficient; adding `net` pulls mio and a reactor for nothing).
 //! So the channel is blocking [`std::net::TcpStream`] bounded by an explicit
 //! [`connect_timeout`](TcpStream::connect_timeout) and read/write timeouts. Each exchange is one
 //! short, bounded, blocking round trip — cheap enough to run directly, and crucially unable to
 //! hang the sidecar: a dead port is refused at once, and a *wedged* server (accepts, never
 //! answers) trips the read timeout instead of blocking forever.
+//! see rules: agent-mcp
 //!
-//! # Fail fast (ADR-0044 §2)
+//! # Fail fast
 //!
 //! The shim never spawns `reuben play`. A connect failure, a resolution failure, or a timeout is
 //! a [`StructureError::Unreachable`] whose message carries the actionable
@@ -45,16 +46,16 @@ const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The read budget for `ping` specifically. A pong is **immediate** — the structure server answers
-/// `Ping` with `Pong` doing no work (ADR-0046 §8), unlike a `swap`'s off-thread engine rebuild — so
+/// `Ping` with `Pong` doing no work, unlike a `swap`'s off-thread engine rebuild — so
 /// the liveness probe (`engine_status`, and the probe-first `send`) need not inherit the generous
 /// [`DEFAULT_READ_TIMEOUT`]: a wedged engine surfaces as unreachable ~5× sooner. Still comfortably
 /// above loopback + scheduler jitter, so a live-but-momentarily-busy engine is never misjudged dead.
 const DEFAULT_PING_READ_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// A failed structure-channel exchange. [`Unreachable`](Self::Unreachable) is the fail-fast case
-/// (ADR-0044 §2) — connect/timeout/I/O died — and its message names the fix; the other two are the
+/// — connect/timeout/I/O died — and its message names the fix; the other two are the
 /// channel answering but unusably: [`Channel`](Self::Channel) is a server-sent [`Response::Error`]
-/// (a channel-level fault, distinct from a domain answer that reports failure — ADR-0048 §3), and
+/// (a channel-level fault, distinct from a domain answer that reports failure), and
 /// [`Protocol`](Self::Protocol) is an unparseable or wrong-variant response.
 #[derive(Debug)]
 pub enum StructureError {
@@ -94,10 +95,10 @@ impl fmt::Display for StructureError {
 
 impl std::error::Error for StructureError {}
 
-/// The engine's answer to `get_document` (ADR-0046 §8): the canonical installed document paired
+/// The engine's answer to `get_document`: the canonical installed document paired
 /// with its [`content_hash`](reuben_core::content_hash) — the token a later swap's `expect` guard
-/// compares (ADR-0046 §9). Reads the raw [`Response::Document`] fields without re-validating: the
-/// engine is the single validation authority (ADR-0045 §3).
+/// compares. Reads the raw [`Response::Document`] fields without re-validating: the
+/// engine is the single validation authority.
 #[derive(Debug, Clone, PartialEq)]
 pub struct DocumentSnapshot {
     /// The installed document as raw JSON — exactly what the engine is playing.
@@ -108,8 +109,8 @@ pub struct DocumentSnapshot {
 
 /// The outcome of a `swap` that reached the engine (transport failures are [`StructureError`]).
 /// Both are legitimate answers the tool surface (#318) maps as it chooses: an install report
-/// (which itself may carry `ok: false` load errors — the channel *worked*, ADR-0048 §3), or an
-/// `expect`-guard conflict the client reconciles by re-reading (ADR-0046 §9).
+/// (which itself may carry `ok: false` load errors — the channel *worked*), or an
+/// `expect`-guard conflict the client reconciles by re-reading.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SwapOutcome {
     /// The engine processed the swap and returned its [`SwapReport`] (success or load-failure).
@@ -165,21 +166,21 @@ impl StructureClient {
         &self.addr
     }
 
-    /// Liveness (ADR-0046 §8): `Ok(())` iff the channel answered [`Response::Pong`]. This is what
+    /// Liveness: `Ok(())` iff the channel answered [`Response::Pong`]. This is what
     /// [`EngineLink`](crate::EngineLink) consults for engine reachability (`engine_status`, and the
     /// probe-first `send`).
     pub fn ping(&self) -> Result<(), StructureError> {
         // The pong is immediate, so bound this exchange by the tighter `ping_read_timeout` rather
-        // than the general read budget a swap earns — a wedged engine fails fast (ADR-0044 §2).
+        // than the general read budget a swap earns — a wedged engine fails fast.
         match self.exchange_with(&Request::Ping, self.ping_read_timeout)? {
             Response::Pong => Ok(()),
             other => Err(unexpected("ping", "pong", &other)),
         }
     }
 
-    /// Install a document (ADR-0046 §8), accepted **by value or by path** — both branches are
-    /// exposed here; which the tool surface offers is #318's call (ADR-0048 §2). An optional
-    /// `expect` content-hash guard rejects the swap on mismatch (ADR-0046 §9).
+    /// Install a document, accepted **by value or by path** — both branches are
+    /// exposed here; which the tool surface offers is #318's call. An optional
+    /// `expect` content-hash guard rejects the swap on mismatch.
     pub fn swap(
         &self,
         source: DocSource,
@@ -195,7 +196,7 @@ impl StructureClient {
         }
     }
 
-    /// Read the canonical installed document and its content hash (ADR-0046 §8): a fresh
+    /// Read the canonical installed document and its content hash: a fresh
     /// conversation attaches to what's playing in one call.
     pub fn get_document(&self) -> Result<DocumentSnapshot, StructureError> {
         match self.exchange(&Request::GetDocument)? {
@@ -211,7 +212,7 @@ impl StructureClient {
         }
     }
 
-    /// Read the engine's running diagnostics counters (ADR-0046 §8 / ADR-0048 §6).
+    /// Read the engine's running diagnostics counters.
     pub fn get_diagnostics(&self) -> Result<DiagnosticsReport, StructureError> {
         match self.exchange(&Request::GetDiagnostics)? {
             Response::Diagnostics(report) => Ok(report),
@@ -220,7 +221,7 @@ impl StructureClient {
         }
     }
 
-    /// One request → one response over a fresh connection (ADR-0046 §8's framing), bounded by the
+    /// One request → one response over a fresh connection (the NDJSON framing), bounded by the
     /// general [`read_timeout`](Self::read_timeout) — the budget every verb but `ping` uses (a real
     /// swap's off-thread rebuild earns it). `ping` calls [`exchange_with`](Self::exchange_with)
     /// directly with its tighter budget.
@@ -231,7 +232,7 @@ impl StructureClient {
     /// [`exchange`](Self::exchange), but with an explicit read/write budget for this one call — so
     /// `ping` can fail fast on its immediate pong without loosening (or tightening) the general
     /// budget the other verbs share. Connect is always bounded by [`connect_timeout`](Self::connect_timeout);
-    /// any I/O or timeout failure is the fail-fast [`StructureError::Unreachable`] (ADR-0044 §2).
+    /// any I/O or timeout failure is the fail-fast [`StructureError::Unreachable`].
     fn exchange_with(
         &self,
         request: &Request,
@@ -265,7 +266,7 @@ impl StructureClient {
             .map_err(StructureError::unreachable)?;
         (&stream).flush().map_err(StructureError::unreachable)?;
 
-        // Read exactly one response line (ADR-0046 §8: one response per request). A read timeout on
+        // Read exactly one response line (one response per request). A read timeout on
         // a wedged server surfaces here as an Err → Unreachable, not a hang.
         let mut reader = BufReader::new(&stream);
         let mut line = String::new();
@@ -300,7 +301,7 @@ mod tests {
 
     #[test]
     fn unreachable_error_carries_the_start_reuben_play_guidance() {
-        // The fail-fast contract (ADR-0044 §2): the unreachable message names the fix, whatever
+        // The fail-fast contract: the unreachable message names the fix, whatever
         // the underlying cause, so a caller that surfaces it is actionable.
         let err = StructureError::unreachable("connection refused");
         assert!(err.is_unreachable());

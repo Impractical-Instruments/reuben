@@ -3,7 +3,7 @@
 //! drive the client's four verbs over the real TCP boundary — the same socket a live `reuben play`
 //! server presents. `ping` returns Pong; `swap` (by value AND by path) and `get_document`
 //! round-trip a document; a connect against a dead port fails fast with the "start `reuben play`"
-//! guidance (ADR-0044 §2), not a hang or panic. Every case is bounded by a watchdog so a wedged
+//! guidance, not a hang or panic. Every case is bounded by a watchdog so a wedged
 //! client fails loudly instead of hanging CI.
 
 use std::io::{BufRead, BufReader, Write};
@@ -247,7 +247,7 @@ fn get_diagnostics_round_trips_the_four_counters() {
 
 #[test]
 fn dead_port_fails_fast_with_start_reuben_play_guidance() {
-    // ADR-0044 §2: an unreachable engine is a fail-fast with actionable guidance, never a hang or
+    // An unreachable engine is a fail-fast with actionable guidance, never a hang or
     // a panic. The watchdog is generous — a refused connect returns immediately — so blowing it
     // means the client hung, which is itself the failure this test guards against.
     let addr = dead_addr();
@@ -336,7 +336,7 @@ fn ping_fails_fast_even_when_the_general_read_budget_is_generous() {
 
 #[test]
 fn engine_link_pings_reachable_only_when_the_engine_answers() {
-    // The reachability the engine tools consult (ADR-0044 §2): EngineLink.ping() succeeds against a
+    // The reachability the engine tools consult: EngineLink.ping() succeeds against a
     // live ping-answering engine and fails (unreachable) against a dead port. This is the real seam
     // wired into `ReubenServer` — `engine_status` and the probe-first `send` read it, and the four
     // structure-channel tools act-then-map its unreachable case.

@@ -1,10 +1,10 @@
-//! Integration: the M2 structure channel (ADR-0046 §8) end-to-end over a real loopback TCP
+//! Integration: the M2 structure channel end-to-end over a real loopback TCP
 //! socket. Starts a [`StructureServer`] wired to a real [`Coordinator`] — everything `reuben play`
 //! wires up except the cpal device (there is none in CI) — binds an **ephemeral** port
 //! (`127.0.0.1:0`, OS-assigned, so parallel CI jobs never collide), then drives a plain
 //! `TcpStream` client speaking NDJSON.
 //!
-//! The device half is stood in for by a **fake audio callback** (ADR-0053 §4): a background thread
+//! The device half is stood in for by a **fake audio callback**: a background thread
 //! owning the [`RenderSlot`] the real cpal callback would, driving it in a loop so a swap installs
 //! **via the install mailbox** (not a stream restart) and the Coordinator's off-thread `reclaim`
 //! completes — all with no audio device. The audible/device-gap half stays a scripted human test
@@ -12,13 +12,13 @@
 //!
 //! Behaviors under test:
 //! - the three non-mutating verbs answer over the wire, one framed response per request, in order;
-//! - the **`swap`** verb (ADR-0046 §§1–10) installs a new document over the wire **via the
+//! - the **`swap`** verb installs a new document over the wire **via the
 //!   mailbox** — `get_document` then reports the new doc + hash, and the [`SwapReport`] carries
 //!   **real** survivor stats (`survived: 2` for an identical-document swap — impossible under M1's
 //!   all-cold restart, which hard-codes `survived: 0`);
 //! - an **input-binding swap onto an output-only stream** dark-degrades to silence with a loud
-//!   warning and stays alive (ADR-0038 §7/§9) — not an error, not a crash;
-//! - `expect` arbitration (ADR-0046 §9) conflicts on a stale hash and proceeds on a matching one;
+//!   warning and stays alive — not an error, not a crash;
+//! - `expect` arbitration conflicts on a stale hash and proceeds on a matching one;
 //!   a bad document reports errors with no install;
 //! - the server **shuts down cleanly** — every thread joined — even with an idle client connected.
 
@@ -62,7 +62,7 @@ fn envelope_doc(env_addr: &str) -> String {
     )
 }
 
-/// A minimal instrument binding logical input channel 0 (ADR-0038 §3) — live input an output-only
+/// A minimal instrument binding logical input channel 0 — live input an output-only
 /// stream can't provide, the dark-degrade case.
 const MIC_PASSTHRU: &str = r#"{ "format_version": 3, "instrument": "mic-passthru",
     "interface": {
@@ -129,7 +129,7 @@ fn wired(doc: &str, opened_input_channels: usize) -> (StructureState, FakeCallba
     (state, FakeCallback::spawn(side), base_hash)
 }
 
-/// Read one newline-framed [`Response`] off the wire, asserting the framing (ADR-0046 §8).
+/// Read one newline-framed [`Response`] off the wire, asserting the framing.
 fn read_response(reader: &mut impl BufRead) -> Response {
     let mut line = String::new();
     let n = reader.read_line(&mut line).expect("read a response line");
@@ -381,7 +381,7 @@ fn swap_by_path_over_the_wire_installs() {
 
 #[test]
 fn input_binding_swap_over_the_wire_dark_degrades_and_stays_alive() {
-    // ADR-0038 §7/§9: the initial rig is output-only (no input stream). A swap to an instrument
+    // The initial rig is output-only (no input stream). A swap to an instrument
     // that binds an input channel installs and stays silent-but-alive — a loud swap-report WARNING,
     // never an error or a crash. The FakeCallback keeps rendering (the process stays alive).
     let (state, cb, _) = wired(BASE_DOC, 0);
@@ -485,7 +485,7 @@ fn swap_expect_arbitration_conflicts_then_proceeds_over_the_wire() {
     let mut writer = client.try_clone().unwrap();
     let mut reader = BufReader::new(client);
 
-    // A stale expect rejects with the real installed hash — nothing installs (ADR-0046 §9).
+    // A stale expect rejects with the real installed hash — nothing installs.
     let target: serde_json::Value = serde_json::from_str(&envelope_doc("/eg")).unwrap();
     send(
         &mut writer,
@@ -531,7 +531,7 @@ fn shuts_down_cleanly_with_an_idle_client_still_connected() {
 
     within(10, move || {
         server.shutdown();
-        // The final exit-time snapshot flush `play` performs (ADR-0038 §9).
+        // The final exit-time snapshot flush `play` performs.
         reuben_native::diagnostics::log_snapshot(&diagnostics.snapshot());
     });
     cb.stop();

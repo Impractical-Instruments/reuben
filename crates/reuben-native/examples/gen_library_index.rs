@@ -1,4 +1,4 @@
-//! Regenerate the committed library index from the `instruments/` available-set (ADR-0057 §4).
+//! Regenerate the committed library index from the `instruments/` available-set.
 //!
 //! Run after adding or changing an instrument document:
 //! `cargo run -p reuben-native --example gen_library_index`

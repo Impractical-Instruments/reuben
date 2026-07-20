@@ -1,5 +1,4 @@
-//! The engine-facing seam the five engine tools drive (ADR-0044 §2, ADR-0046 §8) and its
-//! shipping implementation.
+//! The engine-facing seam the five engine tools drive and its shipping implementation.
 //!
 //! Every engine tool reaches a user-owned `reuben play` through ONE seam, [`EngineChannel`], so
 //! the tool bodies stay engine-independent and the unit tests inject an in-memory fake instead of
@@ -12,8 +11,10 @@
 //! The structure-channel tools (`swap`, `get_current_instrument`, `get_diagnostics`) run their
 //! real exchange and map [`StructureError::is_unreachable`] to the fail-fast
 //! [`crate::engine_unreachable`] result — one connection, no TOCTOU window between a separate
-//! liveness probe and the act. `send` is the one probe-first tool (ADR-0048 §5): UDP is silent
+//! liveness probe and the act. `send` is the one probe-first tool: UDP is silent
 //! about a dead port, so it pings the structure channel before dispatching datagrams.
+//!
+//! see rules: agent-mcp
 
 use std::net::UdpSocket;
 
@@ -25,7 +26,7 @@ use crate::client::{DocumentSnapshot, StructureClient, StructureError, SwapOutco
 
 /// The engine's OSC-in endpoint the sidecar dispatches `send` datagrams to, composed from the
 /// shared [`DEFAULT_OSC_PORT`]. `reuben play` binds OSC-in on `0.0.0.0:<port>`; the sidecar and
-/// engine share a host (the MVP persona, ADR-0044), so dialing `127.0.0.1:<port>` reaches it. Only
+/// engine share a host (the MVP persona), so dialing `127.0.0.1:<port>` reaches it. Only
 /// the port is shared with the binary — the host differs per end — so both derive their address
 /// from the one `DEFAULT_OSC_PORT` const and can never drift on it. Structure edits ride the
 /// separate, loopback-only structure channel ([`DEFAULT_STRUCTURE_ADDR`]) — this is the OSC control
@@ -34,27 +35,27 @@ pub fn default_osc_addr() -> String {
     format!("127.0.0.1:{DEFAULT_OSC_PORT}")
 }
 
-/// The engine-facing seam every engine tool drives (ADR-0044 §2). The shipping impl is
+/// The engine-facing seam every engine tool drives. The shipping impl is
 /// [`EngineLink`]; the unit tests inject an in-memory fake so the tool bodies are exercised
-/// without a live `reuben play`. The three structure verbs mirror [`StructureClient`] one-for-one
-/// (ADR-0046 §8); [`send_osc`](Self::send_osc) is the OSC/UDP control path; the endpoint getters
+/// without a live `reuben play`. The three structure verbs mirror [`StructureClient`] one-for-one;
+/// [`send_osc`](Self::send_osc) is the OSC/UDP control path; the endpoint getters
 /// feed `engine_status`.
 pub trait EngineChannel: Send + Sync {
-    /// Structure-channel liveness (ADR-0046 §8): `Ok(())` iff the engine answered `pong`.
+    /// Structure-channel liveness: `Ok(())` iff the engine answered `pong`.
     fn ping(&self) -> Result<(), StructureError>;
-    /// Install a document by path, with an optional `expect` content-hash guard (ADR-0046 §§8,9).
+    /// Install a document by path, with an optional `expect` content-hash guard.
     fn swap(
         &self,
         source: DocSource,
         expect: Option<String>,
     ) -> Result<SwapOutcome, StructureError>;
-    /// Read the canonical installed document and its content hash (ADR-0046 §8).
+    /// Read the canonical installed document and its content hash.
     fn get_document(&self) -> Result<DocumentSnapshot, StructureError>;
-    /// Read the running diagnostics counters (ADR-0046 §8 / ADR-0048 §6).
+    /// Read the running diagnostics counters.
     fn get_diagnostics(&self) -> Result<DiagnosticsReport, StructureError>;
     /// Dispatch a batch of already-encoded OSC datagrams to the engine's control endpoint,
     /// returning how many left the socket. UDP is fire-and-forget: a datagram out is "dispatched",
-    /// not "received" (ADR-0048 §5).
+    /// not "received".
     fn send_osc(&self, datagrams: &[Vec<u8>]) -> std::io::Result<usize>;
     /// The structure-channel endpoint address, for `engine_status`.
     fn structure_endpoint(&self) -> String;

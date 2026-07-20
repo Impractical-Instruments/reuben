@@ -1,5 +1,5 @@
 //! OSC codec — decode external OSC/UDP datagrams into the **flat primitive form**, and encode
-//! outbound Messages back out (ADR-0007, ADR-0026, ADR-0030).
+//! outbound Messages back out.
 //!
 //! OSC is reuben's lingua franca, but an internal [`Message`](reuben_core::message::Message)
 //! carries exactly **one** [`Arg`], whereas an OSC message is a flat list of args. So this layer
@@ -16,12 +16,14 @@
 //! looking noise. Sample-accurate timing is an *internal* property — events generated inside the
 //! graph (the Clock and what it drives) sit on the deterministic sample timeline. Incoming OSC is
 //! stamped `frame = 0` ("now") when the engine builds Messages. Bundle timetags are likewise
-//! ignored; explicit musical-time scheduling resolves against the Clock (ADR-0006), not wall-clock.
+//! ignored; explicit musical-time scheduling resolves against the Clock, not wall-clock.
+//!
+//! see rules: signal-time-dsp
 
 use reuben_core::message::Arg;
 use rosc::{OscMessage, OscPacket, OscType};
 
-/// One decoded OSC datagram in **flat primitive form** (ADR-0030): an address plus the OSC args as
+/// One decoded OSC datagram in **flat primitive form**: an address plus the OSC args as
 /// primitive [`Arg`]s, *before* dest-port-type-driven conversion to the single typed `Arg`. The
 /// engine routes `address` to a node/port and calls [`reuben_core::boundary::osc_in_arg`] with that
 /// port's type to produce the Message.
@@ -61,7 +63,7 @@ fn flatten(packet: OscPacket, out: &mut Vec<OscIn>) {
     }
 }
 
-/// Encode an outbound datagram (ADR-0026): a full OSC address plus the **flat OSC args** already
+/// Encode an outbound datagram: a full OSC address plus the **flat OSC args** already
 /// expanded by [`reuben_core::boundary::osc_out_args`]. Every `Arg` here is a primitive; a non-
 /// primitive (it should never reach this point) is dropped. Errors only if the encoder itself
 /// rejects the packet.
@@ -159,7 +161,7 @@ mod tests {
 
     #[test]
     fn encode_round_trips_through_decode() {
-        // encode is the inverse of decode for every primitive arg (ADR-0026): floats, ints in i32
+        // encode is the inverse of decode for every primitive arg: floats, ints in i32
         // range, and symbols all survive the boundary out-and-back.
         let addr = "/fb/level";
         let args = [Arg::F32(0.5), Arg::I32(7), Arg::Str("hi".into())];

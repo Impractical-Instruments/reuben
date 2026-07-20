@@ -1,4 +1,4 @@
-//! CLI introspection surface — a thin re-export of [`reuben_core::introspect`] (ADR-0044 §3).
+//! CLI introspection surface — a thin re-export of [`reuben_core::introspect`].
 //!
 //! The pure describe/validate functions descended into core so one implementation serves
 //! every door: this CLI, the MCP sidecar, and any embedder of the core. The paths here

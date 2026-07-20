@@ -1,4 +1,4 @@
-//! The generated **library index** over the available-set (ADR-0057 §4, patch-pipeline R4).
+//! The generated **library index** over the available-set (patch-pipeline R4).
 //!
 //! Discovery for instrument reuse is one signature line per instrument — name, recipe-role
 //! line, interface face — projected mechanically by
@@ -7,7 +7,7 @@
 //! `instruments/`, today's whole available-set), project each line through the real load path,
 //! and aggregate deterministically. There is **no curated list**: the index is generated or it
 //! doesn't exist, and the committed artifact (`instruments/index.md`) is staleness-tested
-//! against a fresh generation exactly like every generated grounding view (ADR-0051).
+//! against a fresh generation exactly like every generated grounding view.
 //!
 //! Regenerate with `cargo run -p reuben-native --example gen_library_index` after any
 //! instrument change; the `library_index_is_in_sync` test fails while the committed file is
@@ -23,8 +23,8 @@ use crate::resources::FsResolver;
 
 /// Generate the library index over every `*.json` instrument document under `instruments_dir`
 /// (recursively — roles are read off the interface, never off a path, so subdirectories carry
-/// no meaning; ADR-0057 §2). Each document loads with resolution based at its **own**
-/// directory (the ADR-0049 §4 placement convention: references are relative to the referencing
+/// no meaning). Each document loads with resolution based at its **own**
+/// directory (references are relative to the referencing
 /// document), `stat_only` so samples are checked for presence but never decoded. Lines sort by
 /// instrument name; output is byte-deterministic. Any document that fails to load fails the
 /// whole generation — a broken instrument in the available-set is a broken index, never a
@@ -47,7 +47,7 @@ pub fn generate_library_index(
         lines.push(line);
     }
     // Every line leads with its instrument name, so sorting lines is sorting by name — the
-    // document-derived identity, not the storage path (ADR-0057 §2).
+    // document-derived identity, not the storage path.
     lines.sort();
 
     Ok(format!("{HEADER}\n{}\n", lines.join("\n")))
@@ -58,7 +58,7 @@ pub fn generate_library_index(
 const HEADER: &str = "\
 # Library index
 
-One signature line per instrument in the available-set (ADR-0057 §4): name — role line
+One signature line per instrument in the available-set: name — role line
 (the document's `doc` first sentence), (interface input pipes) → output pipes. Trusted for
 selection only — wiring facts come from `describe_patch` or the document itself. Generated:
 regenerate with `cargo run -p reuben-native --example gen_library_index`; never hand-edit

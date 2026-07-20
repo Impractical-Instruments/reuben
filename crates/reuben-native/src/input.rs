@@ -1,16 +1,16 @@
-//! Live audio input via cpal (ADR-0038 §8/§9, P5/#182): the cross-thread, cross-clock path
+//! Live audio input via cpal (P5/#182): the cross-thread, cross-clock path
 //! from a real input device into the engine's logical input master (P3).
 //!
 //! ## Shape
 //!
 //! The engine stays hosted in the **output** callback, rendering at the output device's rate
-//! (ADR-0038 §8 — the clock anchor). The input device runs its own callback on its own clock;
-//! the two meet at a lock-free SPSC ring (`rtrb` — the primitive ADR-0002 anticipated):
+//! (the clock anchor). The input device runs its own callback on its own clock;
+//! the two meet at a lock-free SPSC ring (`rtrb`):
 //!
 //! - **Producer** (the input callback): maps each device frame onto the instrument's *logical*
 //!   input channels ([`InputMap`], the dual of `audio.rs`'s output `map_frame` — identity by
 //!   default, a profile's `input.map` overrides; a logical channel the device/map can't supply
-//!   reads silence with a one-time startup warning, ADR-0038 §7), then commits it to the ring
+//!   reads silence with a one-time startup warning), then commits it to the ring
 //!   **whole frames at a time** so the consumer never observes a torn frame.
 //! - **Consumer** ([`InputStage`], owned by the output callback): pops device-rate frames and
 //!   resamples them to the engine rate with a drift-servoed ratio, filling the interleaved
@@ -20,14 +20,14 @@
 //! is preallocated, the resampler's state is two frames, and every policy decision is
 //! arithmetic on values already in cache.
 //!
-//! ## Resampler choice (recorded per ADR-0038 §8)
+//! ## Resampler choice
 //!
 //! **Linear interpolation** over a two-frame window ([`LinearResampler`]). Rationale: it is
 //! trivially RT-safe (no FIR history, no allocation, no library), it is *bit-exact* in the
 //! dominant case (equal rates → ratio 1.0 → straight passthrough while the servo is
 //! centered), and at the tiny ratio deviations drift compensation produces (|1 − r| ≤ 0.5%)
-//! its passband error sits far below the noise floor of any live mic path. The ADR explicitly
-//! allows modest starting quality; a windowed-sinc upgrade can replace [`LinearResampler`]
+//! its passband error sits far below the noise floor of any live mic path. Modest starting
+//! quality is allowed by design; a windowed-sinc upgrade can replace [`LinearResampler`]
 //! without touching the ring, the servo, or the policies. For genuinely mismatched rates
 //! (44.1k mic into a 48k engine) linear interpolation images above ~17 kHz — audible on
 //! bright synthetic material, acceptable for voice/instrument capture, and the recorded
@@ -35,7 +35,7 @@
 //!
 //! ## Drift compensation
 //!
-//! Two devices are two clocks (§8's USB-mic argument): even at the same nominal rate they
+//! Two devices are two clocks (the USB-mic argument): even at the same nominal rate they
 //! drift, so any fixed ratio eventually starves or floods the ring. The [`DriftServo`]
 //! measures the ring's **residual** fill after each output callback drains it and steers the
 //! resample ratio to hold that residual at a fixed floor ([`RING_FLOOR_BLOCKS`] core blocks).
@@ -44,7 +44,7 @@
 //! ±[`DriftServo::MAX_CORRECTION`] (0.5% ≈ 8.6 cents, inaudible on live input) and one-pole
 //! smoothed so producer-chunk granularity doesn't jitter the pitch.
 //!
-//! ## Fixed policies + counters (ADR-0038 §9 — know and say, never improvise)
+//! ## Fixed policies + counters (know and say, never improvise)
 //!
 //! - **Ring empty → zeros**, counted per missing input frame (`input_ring_underruns`). The
 //!   stage then re-enters warmup so a stalled input device re-primes cleanly — and the zeros
@@ -112,7 +112,7 @@ const HIGH_WATER_SLACK_BLOCKS: usize = 16;
 /// Ceiling on the *reported* input rate used for ring sizing: ~4× the fastest real capture
 /// hardware (384 kHz). A garbage rate from a broken driver must not turn `rate ×`
 /// [`RING_HEADROOM_SECS`] (or the ratio-scaled floor) into a multi-GB startup allocation.
-/// Geometry only — the resampler's nominal ratio still follows the reported rate, and the §9
+/// Geometry only — the resampler's nominal ratio still follows the reported rate, and the
 /// counters say so if that rate is genuinely garbage.
 const MAX_GEOMETRY_INPUT_RATE: f64 = 1_536_000.0;
 
@@ -126,16 +126,16 @@ const MAX_GEOMETRY_INPUT_RATE: f64 = 1_536_000.0;
 /// instrument without input pipes never touches an input device. Failures to *open* (no
 /// device, no name match, unusable config, no f32-capable config, build error) are fatal
 /// [`AudioError`]s: the instrument explicitly asked for live input, so silently playing
-/// without a device would violate "know and say" (recorded as a deliberate ADR-0038 §7
-/// carve-out). Channel-count mismatches between the device and the instrument are the
-/// non-fatal path (§7): warn once, zero-fill, keep playing.
+/// without a device would violate "know and say" (a deliberate carve-out). Channel-count
+/// mismatches between the device and the instrument are the non-fatal path: warn once,
+/// zero-fill, keep playing.
 ///
 /// The input stream runs at the device's **default** config when that config is already f32;
 /// a non-f32 default (i16 is common on ALSA) negotiates an f32 config from
 /// `supported_input_configs` ([`find_f32_input_config`]) — like the output side, the format
 /// is only fatal when the *hardware* genuinely has no f32 path. The profile's
 /// `sample_rate`/`buffer_size` preferences are output-side (P4) — the resampler absorbs
-/// whatever rate the input device runs at, which is the §8 design.
+/// whatever rate the input device runs at, which is by design.
 pub(crate) fn open_input(
     host: &cpal::Host,
     profile: &DeviceProfile,
@@ -234,7 +234,7 @@ fn find_f32_input_config(
     Some(range.with_sample_rate(cpal::SampleRate(rate)))
 }
 
-/// Select an input device (ADR-0038 §6, the dual of `select_output_device`): `None` is the
+/// Select an input device (the dual of `select_output_device`): `None` is the
 /// host default; `Some(substr)` is the first input device whose name contains `substr`,
 /// case-insensitively (the shared [`find_named_device`] kernel).
 fn select_input_device(
@@ -372,7 +372,7 @@ fn ring_dimensions(block_size: usize, in_rate: f64, engine_rate: f64) -> (usize,
     (floor, capacity, high_water)
 }
 
-/// The device→logical input channel map (ADR-0038 §6/§7): the dual of `audio.rs`'s output
+/// The device→logical input channel map: the dual of `audio.rs`'s output
 /// mapping. `Identity` is the no-profile default — logical channel `c` reads device channel
 /// `c`, and a logical channel past the device's width reads silence (warned once at setup).
 /// `Explicit` is a profile's validated `input.map`, which overrides the identity policy
@@ -383,8 +383,8 @@ enum InputMap {
         /// Validated `(device, logical)` pairs, ascending device order — both indices already
         /// checked in range.
         pairs: Vec<(usize, usize)>,
-        /// `true` at index `l` for every logical channel a pair feeds; the rest read silence
-        /// (§7), zeroed without re-deriving this per frame.
+        /// `true` at index `l` for every logical channel a pair feeds; the rest read silence,
+        /// zeroed without re-deriving this per frame.
         fed: Vec<bool>,
     },
 }
@@ -413,8 +413,8 @@ impl InputMap {
     }
 }
 
-/// Build the active input map from a profile's `input.map` (device→logical, ADR-0038 §6).
-/// Empty map = [`InputMap::Identity`]. All mismatch handling is §7 warn+degrade, emitted once
+/// Build the active input map from a profile's `input.map` (device→logical).
+/// Empty map = [`InputMap::Identity`]. All mismatch handling is warn+degrade, emitted once
 /// here at setup (the "one-time startup warning"):
 ///
 /// - identity with a device narrower than the instrument's input width → the unsupplied
@@ -519,7 +519,7 @@ impl LinearResampler {
 
     /// Fill `out` (interleaved at [`Self::channels`]) at `ratio` input frames per output
     /// frame, pulling source frames from `next` (which writes one frame and returns `true`,
-    /// or returns `false` when dry). A dry pull slides silence into the window — the ADR §9
+    /// or returns `false` when dry). A dry pull slides silence into the window — the
     /// empty→zeros policy, with a one-sample interpolated fade instead of a hard edge — and
     /// is counted; the return value is the number of missing source frames.
     fn process(
@@ -626,7 +626,7 @@ pub struct InputStage {
     warmed: bool,
     /// `true` once the ring has flowed at all. Gates underrun counting during warmup: initial
     /// prefill silence is expected (uncounted), but silence while *re*-priming after a dry
-    /// spell is the device still failing to deliver — counted (module doc, §9).
+    /// spell is the device still failing to deliver — counted (see module doc).
     ever_warmed: bool,
     diagnostics: Arc<Diagnostics>,
 }
@@ -673,7 +673,7 @@ impl InputStage {
             // Warmup gate, capped at capacity: a granted output buffer so large that
             // `need + floor` can't fit in the ring must still warm once the ring is full —
             // otherwise the stage never flows at all (permanent uncounted silence plus an
-            // unbounded producer-drop count, the exact avalanche §9 forbids).
+            // unbounded producer-drop count, the exact avalanche the fixed policies forbid).
             let target = (need + self.floor).min(self.capacity);
             if avail < target {
                 out.fill(0.0);
@@ -694,7 +694,7 @@ impl InputStage {
             // at the floor instead of leaving the ±0.5% servo to drain it at ~5 ms/s.
             self.discard_frames(avail.saturating_sub(need + self.floor));
         } else if avail > self.high_water {
-            // Drop-oldest (ADR-0038 §9): past the high-water mark the servo has lost —
+            // Drop-oldest: past the high-water mark the servo has lost —
             // discard the *oldest* frames down to exactly what this callback needs plus the
             // floor, count every dropped frame, and let the servo re-center from there.
             let drop_frames = avail.saturating_sub(need + self.floor);
@@ -750,7 +750,7 @@ mod tests {
 
     #[test]
     fn identity_map_zero_fills_logical_channels_past_device_width() {
-        // ADR-0038 §7: a mono mic under a stereo-input instrument supplies channel 0;
+        // A mono mic under a stereo-input instrument supplies channel 0;
         // channel 1 reads silence (warned once at setup).
         let map = build_input_map(&BTreeMap::new(), 1, 2);
         let mut logical = [9.0f32; 2];
@@ -978,7 +978,7 @@ mod tests {
     fn ring_dimensions_cap_a_garbage_huge_rate() {
         // A broken driver reporting a multi-GHz rate must not demand a multi-GB ring: the
         // geometry rate is clamped to MAX_GEOMETRY_INPUT_RATE (the resampler's nominal ratio
-        // is unaffected — the §9 counters surface the consequences instead).
+        // is unaffected — the counters surface the consequences instead).
         let (floor, capacity, high_water) = ring_dimensions(256, 4.0e9, 48_000.0);
         let (want_floor, want_capacity, want_high_water) =
             ring_dimensions(256, MAX_GEOMETRY_INPUT_RATE, 48_000.0);
@@ -1037,7 +1037,7 @@ mod tests {
     #[test]
     fn f32_negotiation_clamps_the_rate_into_the_chosen_range() {
         // The default rate isn't inside the f32 range: stay as close as the range allows
-        // (the resampler absorbs whatever rate results — §8).
+        // (the resampler absorbs whatever rate results).
         let configs = vec![range(2, 88_200, 96_000, SampleFormat::F32)];
         let cfg = find_f32_input_config(2, 48_000, &configs).expect("f32 exists");
         assert_eq!(cfg.sample_rate().0, 88_200);
@@ -1167,8 +1167,8 @@ mod tests {
         }
         assert_eq!(&out[10..], &[0.0; 6], "post-dry frames must be silence");
 
-        // Still dry: warmup again — zeros, and the re-prime silence *keeps counting* (§9
-        // know-and-say: a glitching device's delivered silence is fully accounted for; the
+        // Still dry: warmup again — zeros, and the re-prime silence *keeps counting*
+        // (know-and-say: a glitching device's delivered silence is fully accounted for; the
         // servo reset the ratio to nominal 1.0, so the counted demand is 16 input frames).
         stage.fill(&mut out);
         assert_eq!(out, [0.0; 16]);
@@ -1250,7 +1250,7 @@ mod tests {
         // A callback demanding more than the ring can hold (need 82 > capacity 64) must
         // still warm once the ring is full — the alternative is permanent, uncounted
         // silence plus unbounded producer-side drops. It flows what exists and counts the
-        // shortfall as underruns (§9).
+        // shortfall as underruns.
         let (mut p, mut stage, diag) = test_stage();
         let mut out = [9.0f32; 80];
         push_samples(&mut p, 0..64); // ring completely full

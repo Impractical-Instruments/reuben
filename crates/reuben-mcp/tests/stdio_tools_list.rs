@@ -1,6 +1,6 @@
 //! Integration test for the MCP stdio wire surface (#313 verification): spawn the real shim
 //! binary, complete the `initialize` handshake, and assert `tools/list` advertises exactly the
-//! declared contract roster (ADR-0048 §1) over newline-delimited JSON-RPC — the actual protocol
+//! declared contract roster over newline-delimited JSON-RPC — the actual protocol
 //! boundary the client sees, not an in-process shortcut. The expected set is derived from the
 //! single-source `reuben_core::tools::CONTRACTS` roster (#157), not hand-typed here.
 
@@ -11,7 +11,7 @@ use std::time::Duration;
 
 /// Drive the shim through initialize → initialized → tools/list over stdio and return the raw
 /// stdout. Requests are buffered into the child's stdin, which is then closed; on EOF the shim
-/// shuts down (ADR-0044 §1), flushing every response first, so reading stdout to EOF collects all
+/// shuts down, flushing every response first, so reading stdout to EOF collects all
 /// of them. A watchdog thread bounds the read so a protocol regression fails loudly instead of
 /// hanging CI.
 fn drive_tools_list() -> String {
@@ -91,7 +91,7 @@ fn advertises_the_declared_roster_over_stdio() {
 
 #[test]
 fn every_tool_advertises_an_output_schema() {
-    // ADR-0048 §3: every tool declares an `outputSchema` (rmcp derives it from the contract types
+    // Every tool declares an `outputSchema` (rmcp derives it from the contract types
     // via schemars). Asserting the whole roster over the wire also proves the shim STARTS — the
     // engine tools' `schema_for_output` calls run at router construction, so a schema that failed
     // to derive would panic the binary before it could answer this request.

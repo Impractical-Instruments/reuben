@@ -9,19 +9,19 @@ description = "Removable native layer for reuben: live audio (cpal) + OSC-in (UD
 
 [dependencies]
 reuben-core = { path = "../reuben-core" }
-# Shared operator-contract spec types + validation, single-sourced with the macro (ADR-0025).
+# Shared operator-contract spec types + validation, single-sourced with the macro.
 reuben-contract = { path = "../reuben-contract" }
 cpal.workspace = true
 rosc.workspace = true
-# Input-callback -> render-thread SPSC ring (ADR-0038 §8, P5/#182).
+# Input-callback -> render-thread SPSC ring (P5/#182).
 rtrb.workspace = true
 hound.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 clap.workspace = true
 
-# SIGINT/SIGTERM handler for `play`'s clean shutdown (ADR-0044 §2). Unix-only: `play`'s dev
-# persona is a checkout + a terminal (ADR-0044 §2); non-unix keeps the OS default Ctrl-C.
+# SIGINT/SIGTERM handler for `play`'s clean shutdown. Unix-only: `play`'s dev
+# persona is a checkout + a terminal; non-unix keeps the OS default Ctrl-C.
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true
 

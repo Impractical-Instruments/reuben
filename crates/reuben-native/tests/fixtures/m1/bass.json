@@ -1,7 +1,7 @@
 {
   "format_version": 3,
   "instrument": "m1-demo-bass",
-  "doc": "The fixed starting instrument for the #220 M1 demo bar (ADR-0053 §5). A self-contained, always-on bass drone: a 55 Hz (A1) sawtooth through a gentle low-pass, straight to the master output. It sounds the moment `reuben play` opens the device — no OSC note needed — so the human ear has a steady reference to judge the agent's edit against. Deliberately a raw saw with an open-ish filter: it has obvious room to be made 'rounder', and no delay yet, so 'add a dub delay' is an audible addition. Resource-free (no voice sub-patch) so the fixture never rots against the instrument library.",
+  "doc": "The fixed starting instrument for the #220 M1 demo bar. A self-contained, always-on bass drone: a 55 Hz (A1) sawtooth through a gentle low-pass, straight to the master output. It sounds the moment `reuben play` opens the device — no OSC note needed — so the human ear has a steady reference to judge the agent's edit against. Deliberately a raw saw with an open-ish filter: it has obvious room to be made 'rounder', and no delay yet, so 'add a dub delay' is an audible addition. Resource-free (no voice sub-patch) so the fixture never rots against the instrument library.",
   "nodes": [
     {
       "type": "oscillator",

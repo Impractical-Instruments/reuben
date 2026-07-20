@@ -1,8 +1,8 @@
-//! Tier-1 staleness gate for the generated library index (ADR-0057 §4, patch-pipeline R4):
+//! Tier-1 staleness gate for the generated library index (patch-pipeline R4):
 //! the committed `instruments/index.md` must equal a fresh generation over the checkout's
 //! available-set — the same regenerate-and-compare pattern as the schema's
 //! `committed_schema_is_in_sync`. Registry- or instrument-varying content is generated or
-//! CI-keyed, never hand-kept (ADR-0051, ADR-0059 §2 plugin posture).
+//! CI-keyed, never hand-kept.
 
 use std::path::PathBuf;
 
@@ -39,9 +39,9 @@ fn generation_is_deterministic() {
 
 #[test]
 fn every_available_instrument_has_a_line() {
-    // No curated list (ADR-0057 §4): the index covers the whole available-set — one line per
+    // No curated list: the index covers the whole available-set — one line per
     // document under instruments/, keyed by the document's own `instrument` name, wherever the
-    // file lives (roles are never read off a path, ADR-0057 §2).
+    // file lives (roles are never read off a path).
     let dir = instruments_dir();
     let index = generate_library_index(&dir, &Registry::builtin()).expect("generate index");
 

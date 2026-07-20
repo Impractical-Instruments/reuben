@@ -1,11 +1,11 @@
-//! Device profile (ADR-0038 §6/§7): a small JSON file, loaded with `--io-map <file>` on `play`,
+//! Device profile: a small JSON file, loaded with `--io-map <file>` on `play`,
 //! that binds an instrument's *logical* master channels to a real device's channels, selects a
 //! non-default device by name substring, and states sample-rate/buffer-size **preferences** the
 //! engine requests against the device's supported configs. reuben never fights the device: the
 //! outcome is granted, then adopted, then logged (`audio.rs`'s job) — never forced.
 //!
-//! Patches never learn device geography ([ADR-0026](../../../docs/adr/0026-v1-finish-line-osc-out-and-stereo.md));
-//! this file is the one place logical↔device binding is spelled out, kept outside the patch so
+//! Patches never learn device geography; this file is the one place logical↔device binding is
+//! spelled out, kept outside the patch so
 //! the same instrument plays on any rig.
 //!
 //! **Structural** problems (malformed JSON, an unknown field, a map key/value that isn't a
@@ -13,7 +13,7 @@
 //! Once a profile parses, it is never a load error again: a map entry naming a channel that
 //! turns out not to exist on the real device is a **reality mismatch**, handled by warn +
 //! degrade at the point the mismatch is discovered (`audio.rs`'s output path; `crate::input`'s
-//! input path) — see ADR-0038 §7. `input.*` is applied by the input stream
+//! input path). `input.*` is applied by the input stream
 //! (P5, [#182](https://github.com/Impractical-Instruments/reuben/issues/182)), which opens
 //! only when the played instrument binds input channels.
 
@@ -23,7 +23,7 @@ use std::path::Path;
 
 use serde::Deserialize;
 
-/// One side's (`output` or `input`) device selection + channel map (ADR-0038 §6).
+/// One side's (`output` or `input`) device selection + channel map.
 #[derive(Debug, Clone, Default, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct SideProfile {
@@ -39,7 +39,7 @@ pub struct SideProfile {
     pub map: BTreeMap<usize, usize>,
 }
 
-/// A device profile: the `--io-map <file>` document (ADR-0038 §6). Every field is optional —
+/// A device profile: the `--io-map <file>` document. Every field is optional —
 /// a profile with every field omitted, or no `--io-map` at all ([`DeviceProfile::default`]),
 /// means identity map + today's implicit broadcast/mono-downmix/zero-fill defaults, bit-identical
 /// for existing instruments.
@@ -53,7 +53,7 @@ pub struct DeviceProfile {
     #[serde(default)]
     pub input: SideProfile,
     /// Preferred output sample rate in Hz, requested against the device's supported configs
-    /// (ADR-0038 §6/§8 — the engine renders at whatever the output device grants).
+    /// (the engine renders at whatever the output device grants).
     #[serde(default)]
     pub sample_rate: Option<u32>,
     /// Preferred output buffer size in frames, clamped into the device's supported range.
@@ -62,14 +62,14 @@ pub struct DeviceProfile {
 }
 
 /// Something wrong with the profile document itself — structural, not a device/reality
-/// mismatch (those degrade with a warning at the point they're discovered; ADR-0038 §7).
+/// mismatch (those degrade with a warning at the point they're discovered).
 #[derive(Debug)]
 pub enum ProfileError {
     Io(std::io::Error, std::path::PathBuf),
     Json(serde_json::Error),
     /// A field violates a bound the schema declares (`"minimum": 1` on `sample_rate` and
     /// `buffer_size`) but serde can't enforce on a plain `Option<u32>`. Checked once at load,
-    /// here — ADR-0038 §7 treats this as a structural document problem (like malformed JSON),
+    /// here — treated as a structural document problem (like malformed JSON),
     /// not a reality mismatch, since a `0` would otherwise reach `negotiate_output_config` and
     /// fail opaquely inside cpal instead of at the clean load-time boundary the schema promises.
     OutOfRange(&'static str),
@@ -92,8 +92,8 @@ impl std::error::Error for ProfileError {}
 impl DeviceProfile {
     /// Load + parse a device profile from `path`. Any structural problem (bad JSON, an unknown
     /// field, a non-numeric map key/value, an out-of-range `sample_rate`/`buffer_size`) is a
-    /// load error — never silently ignored, per ADR-0038 §7's distinction between a broken
-    /// document and a reality mismatch.
+    /// load error — never silently ignored, keeping a broken document distinct from a reality
+    /// mismatch.
     pub fn load(path: &Path) -> Result<Self, ProfileError> {
         let text =
             std::fs::read_to_string(path).map_err(|e| ProfileError::Io(e, path.to_path_buf()))?;
@@ -119,7 +119,7 @@ impl DeviceProfile {
         Ok(())
     }
 
-    /// True when the profile carries any `input.*` field (ADR-0038 §6/P5). `play` uses this
+    /// True when the profile carries any `input.*` field (P5). `play` uses this
     /// to note that input settings take effect only when the played instrument binds input
     /// channels — an instrument without input pipes never opens an input device.
     pub fn has_input(&self) -> bool {
