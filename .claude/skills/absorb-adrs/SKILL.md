@@ -36,7 +36,7 @@ topic without a taxonomy change.
 |---|---|---|
 | **T1** Execution & runtime | `execution-runtime` | Plan lifecycle, RT boundary, determinism, scheduling/threading, swap, latch service, embed surface. |
 | **T2** Composition & operator model | `composition-operators` | The one recursive graph — operator contract/registration, values vs signals, the `Message`/`Arg` substrate, nesting, interface pipes. |
-| **T3** Signal / OSC / time / DSP | `signal-time-dsp` | OSC-only message model, clock & musical time, pitch & tuning, tonal context, DSP families (envelopes, math). |
+| **T3** Signal / OSC / musical time / DSP | `signal-time-dsp` | OSC-only message model, clock & musical time, pitch & tuning, tonal context, DSP families (envelopes, math). |
 | **T4** Authoring surface & instrument library | `authoring-library` | Control surface, decoupled surface docs, sample/resource store, library resolution & format versioning, the Toys. |
 | **T5** Agent framework & MCP | `agent-mcp` | AI-authorability, introspection + authoring skills, the MCP sidecar / tool contracts, grounding single-source, intent vocabulary. |
 | **T6** Web/product boundary & dev process | `web-product-process` | The C-ABI web boundary, SDK-vs-private-product split, share links, branch/release strategy, toolchain pin, perf-benchmark CI. |
@@ -49,6 +49,10 @@ above. A topic's `## Rules` may hold many rules from many ADRs.
 
 Absorbing is **lossy on purpose** — dead-end history is dropped (git keeps it). So only absorb a
 decision that has stopped moving. Before absorbing an ADR, confirm **all** of:
+
+> `sup=part` / `FULL`-superseded below is the annotation shorthand from the (throwaway) #167
+> crosswalk, **not** a literal field in any `docs/adr/` file — ADRs record supersession as free-form
+> "Superseded by X — …" prose, so read the chain, don't grep for a `sup=` tag.
 
 - **No open supersession or iteration.** It is not itself marked provisional/draft, and nothing
   newer is actively revising it. A `sup=part` ADR is fine to absorb *as long as* the surviving
