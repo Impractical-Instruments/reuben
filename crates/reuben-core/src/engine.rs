@@ -18,6 +18,8 @@
 //! message handoff (the `pending` Vec) still churns the heap when messages flow, so the
 //! audio callback isn't fully allocation-free yet. A lock-free, preallocated handoff is
 //! tracked for later.
+//!
+//! see rules: execution-runtime
 
 use crate::config::AudioConfig;
 use crate::format::{load_instrument, LoadError, LoadWarning};
@@ -57,7 +59,7 @@ impl std::error::Error for FromDocumentError {
 }
 
 /// Owns a Plan + Renderer and serves **interleaved logical** audio one block at a time into
-/// arbitrary buffers. "Logical" = the instrument's master channels (ADR-0026); mapping those
+/// arbitrary buffers. "Logical" = the instrument's master channels; mapping those
 /// onto the real device's channel count is the shell's job (native's `audio.rs`), not the
 /// engine's.
 pub struct Engine {
@@ -65,13 +67,13 @@ pub struct Engine {
     renderer: Renderer,
     /// Messages to apply at the start of the next rendered block.
     pending: Vec<Message>,
-    /// Outbound Messages an `osc_out` sink sent (ADR-0026), accumulated across the block(s) one
+    /// Outbound Messages an `osc_out` sink sent, accumulated across the block(s) one
     /// [`Engine::fill`] renders and drained by the caller after fill (native encodes + UDP-sends
     /// them). Cleared at the top of each `fill`.
     outbound: Vec<Message>,
     /// Logical master channel count, fixed for this Plan.
     channels: usize,
-    /// Logical **input** channel count (ADR-0038 §3), fixed for this Plan; `0` for a patch
+    /// Logical **input** channel count, fixed for this Plan; `0` for a patch
     /// that binds no input channels — the common case, which pays nothing below.
     in_channels: usize,
     /// One block of rendered, not-yet-consumed samples, planar: `scratch[channel][frame]`.
@@ -113,7 +115,7 @@ impl Engine {
     /// Construct an engine straight from an instrument document: `load_instrument` →
     /// [`Plan::instantiate`] → [`Engine::new`]. The one place this glue is written — every
     /// shell (native, web, game) calls it instead of re-wiring the chain. Returns the load
-    /// warnings alongside the engine: resource problems are non-fatal (ADR-0016) but they are
+    /// warnings alongside the engine: resource problems are non-fatal but they are
     /// authoring errors the shell must surface, not swallow.
     pub fn from_document(
         text: &str,
@@ -131,12 +133,12 @@ impl Engine {
         self.plan.config.block_size
     }
 
-    /// Logical master channel count (ADR-0026). `fill` interleaves this many channels.
+    /// Logical master channel count. `fill` interleaves this many channels.
     pub fn channels(&self) -> usize {
         self.channels
     }
 
-    /// Logical **input** channel count (ADR-0038 §3). [`Engine::fill_duplex`] de-interleaves
+    /// Logical **input** channel count. [`Engine::fill_duplex`] de-interleaves
     /// this many channels from its `input`; `0` (a patch with no bound input pipes) means
     /// input is ignored entirely.
     pub fn input_channels(&self) -> usize {
@@ -153,7 +155,7 @@ impl Engine {
         self.pending.push(msg);
     }
 
-    /// Queue an inbound external message in **flat primitive form** (ADR-0030): an address plus
+    /// Queue an inbound external message in **flat primitive form**: an address plus
     /// the flat `F32`/`I32`/`Str` args, however the shell decoded them (a UDP/OSC datagram, a
     /// worklet control buffer). Converts them into the single typed [`Message`] the destination
     /// port carries (driven by the port's Arg type), then queues it. Dropped silently if the
@@ -166,7 +168,7 @@ impl Engine {
         }
     }
 
-    /// Drain the outbound Messages produced by the most recent [`Engine::fill`] (ADR-0026), in
+    /// Drain the outbound Messages produced by the most recent [`Engine::fill`], in
     /// emission order. The caller (native's OSC-out path) encodes and UDP-sends them. Empty unless
     /// the instrument has an `osc_out` sink that fired; call right after `fill`, before the next.
     pub fn drain_outbound(&mut self) -> std::vec::Drain<'_, Message> {
@@ -174,7 +176,7 @@ impl Engine {
     }
 
     /// Transplant survivor operator boxes from a `retiring` Engine into this (freshly built) one,
-    /// per the Coordinator's precomputed survivor pairs (ADR-0046 §4) — the `(old, new)` slice a
+    /// per the Coordinator's precomputed survivor pairs — the `(old, new)` slice a
     /// [`MigrationTable`](crate::coordinator::manifest::MigrationTable) yields via `survivors()`.
     /// Engine owns two Plans here (fresh + retiring) but no longer indexes their nodes: it forwards
     /// to the pointer-swap primitive that lives on [`Plan`] (which owns its nodes). See
@@ -194,11 +196,11 @@ impl Engine {
         self.fill_duplex(&[], out);
     }
 
-    /// [`Engine::fill`] with the **logical input master** supplied (ADR-0038 §3): `input` is
+    /// [`Engine::fill`] with the **logical input master** supplied: `input` is
     /// interleaved at [`Engine::input_channels`] channels and carries **one input frame per
     /// output frame** (`input.len() / input_channels == out.len() / channels`; same clock —
-    /// the device layer resamples before this seam, ADR-0038 §8). A short `input` stages
-    /// zeros for the missing samples — dark-degrade (§7). A caller with no input stream can
+    /// the device layer resamples before this seam). A short `input` stages
+    /// zeros for the missing samples — dark-degrade. A caller with no input stream can
     /// always pass `&[]`: before any input has ever been staged that is the true no-input
     /// path (bound pipes fall back to their declared defaults); after, it stages honest
     /// device silence.
@@ -261,7 +263,7 @@ impl Engine {
     /// Render one block into `scratch`, consuming any queued Messages and the staged input.
     /// Until real input has ever been staged (`in_dirty`), the render sees **no** input
     /// channels rather than staged zeros: an input pipe with a declared `default` then
-    /// materializes that default (ADR-0038 §3/§7 — no device stream is not the same as a
+    /// materializes that default (no device stream is not the same as a
     /// silent device stream). Once a stream exists, staged zeros are honest device silence.
     fn render_next(&mut self) {
         let msgs = std::mem::take(&mut self.pending);
@@ -303,7 +305,7 @@ mod tests {
     fn engine_with_note() -> Engine {
         let mut e = default_engine(AudioConfig::new(48_000.0, 256));
         // Drive a note in through the real inbound boundary: flat OSC args -> typed `Arg::Note`,
-        // driven by the voicer's note port type (ADR-0030).
+        // driven by the voicer's note port type.
         e.queue_osc("/voicer/notes", &[Arg::F32(69.0), Arg::F32(1.0)]);
         e
     }
@@ -403,7 +405,7 @@ mod tests {
     #[test]
     fn outbound_messages_drain_after_fill() {
         // A value addressed to the sink's node routes in and comes back out on the outbound
-        // route, stamped with the node address (ADR-0026). The sink's input is the type-agnostic
+        // route, stamped with the node address. The sink's input is the type-agnostic
         // pass-through (issue #141): a single primitive atom crosses the inbound boundary
         // verbatim and echoes out unchanged — the OSC loopback path.
         let mut e = Engine::new(osc_out_plan());
@@ -440,7 +442,7 @@ mod tests {
         assert_eq!(e.drain_outbound().count(), 0);
     }
 
-    /// A one-pipe passthrough bound to logical input channel 0 (ADR-0038 §3, P3).
+    /// A one-pipe passthrough bound to logical input channel 0 (P3).
     fn input_engine(block_size: usize) -> Engine {
         const MIC: &str = r#"{
           "format_version": 2,
@@ -565,7 +567,7 @@ mod tests {
 
     #[test]
     fn fill_without_input_is_silence_for_a_bound_patch() {
-        // The no-input convenience on an input-bound patch reads zeros (ADR-0038 §7) — the
+        // The no-input convenience on an input-bound patch reads zeros — the
         // exact behavior every pre-P5 caller (no input stream yet) gets.
         let mut e = input_engine(256);
         let mut out = vec![1.0f32; 2048 * e.channels()];

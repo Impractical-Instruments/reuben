@@ -1,9 +1,9 @@
-//! The installed-Plan **manifest** and the swap **survivor key** (ADR-0046 §§4,5).
+//! The installed-Plan **manifest** and the swap **survivor key**.
 //!
 //! The Coordinator keeps, for every node of the installed Plan, its **fully-qualified address**,
 //! its **operator type**, and an **instantiate-time identity fingerprint** — a content hash over
 //! the node's normalized `config` block **plus the content identity of everything it resolved at
-//! Instantiate**: resource bytes and hosted sub-documents, recursively (ADR-0046 §5). A node in a
+//! Instantiate**: resource bytes and hosted sub-documents, recursively. A node in a
 //! new Plan is a **survivor** iff it matches an old node on all three; the fingerprint is the
 //! gate that makes a changed constant (a voicer's `voices` pool size), changed resource content
 //! (a sample re-uploaded at the same path), or changed hosted document behave exactly like a type
@@ -12,9 +12,11 @@
 //! Crucially the fingerprint covers **only** instantiate-time inputs — `config` + resolved content
 //! — never the node's runtime `inputs`/params: rewired inputs and changed params leave a survivor
 //! a survivor, because those latches live in the Plan (the new Plan's values win), not in the
-//! operator box (ADR-0045 §2). That asymmetry is the whole point of the split.
+//! operator box. That asymmetry is the whole point of the split.
 //!
 //! This is off-thread load-time work (no RT constraint) and, like the rest of core, OS-free.
+//!
+//! see rules: execution-runtime
 
 use std::collections::BTreeMap;
 
@@ -25,12 +27,12 @@ use crate::registry::Registry;
 use crate::resources::{ResourceResolver, SampleBuffer};
 use crate::DiffSummary;
 
-/// One installed node's survivor identity (ADR-0046 §5): its fully-qualified address, operator
+/// One installed node's survivor identity: its fully-qualified address, operator
 /// type, and instantiate-time fingerprint. Position in [`Manifest::nodes`] is the node's Plan
 /// index, which the migration table pairs old↔new.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NodeIdentity {
-    /// Fully-qualified address (a spliced subpatch child carries its prefix, ADR-0034 §2), the
+    /// Fully-qualified address (a spliced subpatch child carries its prefix), the
     /// same address the Plan node holds.
     pub address: String,
     /// Operator type name ([`Descriptor::type_name`]).
@@ -49,7 +51,7 @@ pub struct Manifest {
     pub nodes: Vec<NodeIdentity>,
 }
 
-/// The precomputed **migration table** (ADR-0046 §4): the `(old index, new index)` survivor pairs
+/// The precomputed **migration table**: the `(old index, new index)` survivor pairs
 /// the render side transplants by box swap. Owned here — the render-side install slot (ticket
 /// #321) only *consumes* it — so the survivor semantics (which nodes survive, how indices map)
 /// stay on the Coordinator side.
@@ -83,8 +85,8 @@ impl MigrationTable {
 
 impl Manifest {
     /// Diff the installed (`self`, old) manifest against a freshly built `new` one, producing the
-    /// migration table plus the [`DiffSummary`] the swap report carries (ADR-0046 §5, ADR-0048
-    /// §5). A node **survives** iff a node at the **same address** exists in both, with the **same
+    /// migration table plus the [`DiffSummary`] the swap report carries. A node **survives** iff a
+    /// node at the **same address** exists in both, with the **same
     /// operator type** and the **same instantiate-time fingerprint** (both present). Everything
     /// else at a shared address is a `state_reset` (a type change or a fingerprint change — the
     /// edit always wins); addresses only in `new` are `added`, only in `old` are `removed`.
@@ -153,8 +155,8 @@ pub fn build_manifest(
 ) -> Manifest {
     // address -> fingerprint, mirroring how the loader names Plan nodes: top-level nodes keep
     // their address; a subpatch's children are spliced under the subpatch address as a prefix
-    // (ADR-0034 §2), so the walk recurses with that prefix; a voicer's hosted voice document folds
-    // into the one voicer node's fingerprint (voices are sub-plans inside the box, ADR-0032).
+    //, so the walk recurses with that prefix; a voicer's hosted voice document folds
+    // into the one voicer node's fingerprint (voices are sub-plans inside the box).
     let mut fingerprints: BTreeMap<String, u64> = BTreeMap::new();
     walk_document(doc, "", None, registry, resolver, &mut fingerprints, 0);
 
@@ -171,7 +173,7 @@ pub fn build_manifest(
 }
 
 /// Depth cap for the recursive content walk. A document that successfully built has no resource
-/// cycle (the loader rejects them as fatal, ADR-0034 §1), so this is a pure safety net against a
+/// cycle (the loader rejects them as fatal), so this is a pure safety net against a
 /// pathological input reaching the fingerprint path some other way.
 const MAX_DEPTH: usize = 32;
 
@@ -184,7 +186,7 @@ const UNRESOLVED_FAILED: u64 = 0x6661_696c_6564_6721; // "failed!"
 /// Walk `doc`'s nodes, emitting `fully_qualified_address -> fingerprint` for every node that
 /// becomes a Plan node. `prefix` is the splice prefix (empty at top level); `referrer` is the
 /// canonical id of `doc` (`None` at top level), threaded so nested references resolve relative to
-/// their own document (ADR-0034 §1).
+/// their own document.
 fn walk_document(
     doc: &NormalizedDoc,
     prefix: &str,
@@ -204,7 +206,7 @@ fn walk_document(
         };
         let address = format!("{prefix}{}", node.address);
         if descriptor.has_resource("patch") {
-            // A subpatch dissolves (ADR-0034 §2): its own address is not a Plan node, and its
+            // A subpatch dissolves: its own address is not a Plan node, and its
             // child's nodes splice in under this address as a prefix. Recurse so those children
             // get their fully-qualified fingerprints; a dark (unavailable) child contributes no
             // Plan nodes, so it contributes none here either.
@@ -229,10 +231,10 @@ fn walk_document(
     }
 }
 
-/// One node's instantiate-time fingerprint (ADR-0046 §5): its normalized `config` block, plus the
+/// One node's instantiate-time fingerprint: its normalized `config` block, plus the
 /// content identity of what it resolved at Instantiate — a `sample`'s decoded bytes, a `voice`'s
-/// hosted document (recursively). Runtime `inputs` are deliberately excluded (ADR-0045 §2: the new
-/// Plan's latches win, so a param edit survives).
+/// hosted document (recursively). Runtime `inputs` are deliberately excluded: the new
+/// Plan's latches win, so a param edit survives.
 fn node_fingerprint(
     doc: &NormalizedDoc,
     node: &crate::format::NodeDoc,
@@ -250,7 +252,7 @@ fn node_fingerprint(
     let config = serde_json::to_vec(&node.config).unwrap_or_default();
     h.tagged(b"config", &config);
 
-    // Resolved resource bytes (ADR-0016) — a sample player's decoded audio. Its identity is the
+    // Resolved resource bytes — a sample player's decoded audio. Its identity is the
     // decoded content, not the path, so a re-upload at the same path resets the node.
     if descriptor.has_resource("sample") {
         if let Some(id) = &node.sample {
@@ -259,7 +261,7 @@ fn node_fingerprint(
         }
     }
 
-    // Hosted voice document (ADR-0032) — folded in recursively, so changing content *inside* a
+    // Hosted voice document — folded in recursively, so changing content *inside* a
     // hosted voice patch changes this (host) node's fingerprint.
     if descriptor.has_resource("voice") {
         if let Some(id) = &node.voice {
@@ -309,7 +311,7 @@ fn buffer_identity(buffer: &SampleBuffer) -> u64 {
     h.finish()
 }
 
-/// The recursive content identity of a hosted document (a `voice` or `patch` source, ADR-0032/34):
+/// The recursive content identity of a hosted document (a `voice` or `patch` source):
 /// the child's canonical JSON bytes **plus** the content identity of everything *it* resolves —
 /// samples, and its own hosted documents, recursively. This is what makes the parent's fingerprint
 /// sensitive to a change buried inside a hosted voice patch.
@@ -471,7 +473,7 @@ mod tests {
     const DEFAULT_VOICE_JSON: &str =
         include_str!("../../../../instruments/voices/default-voice.json");
 
-    /// A voicer hosting `voices` copies of a voice patch (the hosted-document case, ADR-0032).
+    /// A voicer hosting `voices` copies of a voice patch (the hosted-document case).
     fn voicer_doc(voices: u32) -> String {
         format!(
             r#"{{ "format_version": 3, "instrument": "top",
@@ -487,7 +489,7 @@ mod tests {
 
     /// A bare envelope whose `attack` — a pure runtime `inputs` param — a caller varies. The
     /// envelope has no `config` and resolves nothing, so `attack` is entirely outside the
-    /// instantiate-time fingerprint (ADR-0045 §2): changing it must leave the fingerprint equal.
+    /// instantiate-time fingerprint: changing it must leave the fingerprint equal.
     fn envelope_doc(attack: f32) -> String {
         format!(
             r#"{{ "format_version": 3, "instrument": "eg",
@@ -501,7 +503,7 @@ mod tests {
         )
     }
 
-    /// A sample player bound to `kick.wav` (the resolved-bytes case, ADR-0016).
+    /// A sample player bound to `kick.wav` (the resolved-bytes case).
     const SAMPLE_DOC: &str = r#"{ "format_version": 3, "instrument": "samp",
         "resources": { "kick": "kick.wav" },
         "interface": { "outputs": { "out": { "from": "/samp.audio" } } },
@@ -541,7 +543,7 @@ mod tests {
 
     #[test]
     fn equal_config_and_content_fingerprint_equal() {
-        // ADR-0046 §5: the same config + the same resolved content is the same instantiation, so
+        // The same config + the same resolved content is the same instantiation, so
         // the fingerprints match node-for-node — the property that lets an unchanged node survive.
         let resolver = voice_resolver();
         let a = manifest_for(&voicer_doc(4), &resolver);
@@ -572,7 +574,7 @@ mod tests {
 
     #[test]
     fn changed_runtime_input_keeps_the_fingerprint() {
-        // The survivor half of the asymmetry (ADR-0045 §2 / ADR-0046 §5), the exact counterpart to
+        // The survivor half of the asymmetry, the exact counterpart to
         // `changed_config_constant_changes_the_fingerprint`: the fingerprint covers only
         // instantiate-time inputs (`config` + resolved content), never a node's runtime `inputs`.
         // Two documents identical but for the envelope's `attack` — a pure runtime param — must
@@ -599,7 +601,7 @@ mod tests {
 
     #[test]
     fn changed_resolved_bytes_change_the_fingerprint() {
-        // ADR-0046 §5 / ADR-0016: the sample's identity is its decoded content, not its path — a
+        // The sample's identity is its decoded content, not its path — a
         // re-upload of different bytes at the same path is a different instantiation.
         let x = manifest_for(
             SAMPLE_DOC,
@@ -628,7 +630,7 @@ mod tests {
 
     #[test]
     fn changed_content_inside_a_hosted_voice_doc_changes_the_parent_fingerprint() {
-        // Prove the recursion (ADR-0046 §5): the top document is byte-identical, but the hosted
+        // Prove the recursion: the top document is byte-identical, but the hosted
         // voice patch's own content changes — a constant buried inside it. The parent voicer's
         // fingerprint must follow, because the voice document is part of what the voicer resolved
         // at Instantiate.

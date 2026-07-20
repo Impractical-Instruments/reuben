@@ -1,20 +1,22 @@
-//! The structure channel's NDJSON wire envelope (ADR-0046 §8): the shared `Request`/
+//! The structure channel's NDJSON wire envelope: the shared `Request`/
 //! `Response` types the native server (in `reuben play`) and the reuben-mcp client both
 //! serialize, one JSON object per line, one response per request in order.
 //!
 //! This module owns the **envelope only** — no engine, no threads, no sockets. The value
 //! types a response carries ([`SwapReport`](crate::contract::SwapReport),
 //! [`content_hash`](crate::contract::content_hash)) live in [`crate::contract`]
-//! (ADR-0052 §5: one schema, two doors); the TCP server is reuben-native's, the client
+//! (one schema, two doors); the TCP server is reuben-native's, the client
 //! reuben-mcp's. Framing is newline-delimited JSON
 //! ([`Request::to_ndjson`]/[`Request::from_ndjson`] and the `Response` pair) so the channel
 //! stays netcat-debuggable and std-only.
+//!
+//! see rules: execution-runtime
 
 use serde::{Deserialize, Serialize};
 
 use crate::contract::SwapReport;
 
-/// The structure channel's default loopback bind/target (ADR-0046 §8): `127.0.0.1` only —
+/// The structure channel's default loopback bind/target: `127.0.0.1` only —
 /// structure edits are more powerful than OSC control, so unlike OSC's `0.0.0.0:9000` this
 /// channel must never be network-exposed. The concrete port is epic-level detail; a fixed
 /// default suffices for M1. Shared here — next to the wire types both ends serialize — so the
@@ -22,18 +24,18 @@ use crate::contract::SwapReport;
 /// address and can never drift; a taken port is non-fatal on the server side (see `play`).
 pub const DEFAULT_STRUCTURE_ADDR: &str = "127.0.0.1:9124";
 
-/// The default UDP port for the engine's OSC-in control plane (ADR-0044). The single source of
+/// The default UDP port for the engine's OSC-in control plane. The single source of
 /// truth for the port `reuben play` binds and the reuben-mcp sidecar dials, so the two can never
 /// drift on it. Only the *port* is shared: the engine binds it on `0.0.0.0` (all interfaces) while
 /// the host-sharing sidecar dials it on `127.0.0.1`, so each side composes its own `host:port`
 /// from this one const — unlike the structure channel above, whose full loopback address is fixed.
 /// Kept next to [`DEFAULT_STRUCTURE_ADDR`] as the other endpoint the sidecar and engine must agree
-/// on; a bare `u16` carries no dependency, so reuben-core stays OS-free (ADR-0044 §3).
+/// on; a bare `u16` carries no dependency, so reuben-core stays OS-free.
 pub const DEFAULT_OSC_PORT: u16 = 9000;
 
-/// Where a swap's document comes from (ADR-0046 §8: accepted **by value or by path**, both
-/// resolver-loaded engine-side; ADR-0045 §4 deliberately left both branches open, and the
-/// channel keeps both — which to *expose* is the tool surface's call, ADR-0048 §2). Field
+/// Where a swap's document comes from (accepted **by value or by path**, both
+/// resolver-loaded engine-side; both branches deliberately stay open, and the
+/// channel keeps both — which to *expose* is the tool surface's call). Field
 /// names match that tool contract: `document` for inline JSON, `path` for a
 /// resolver-anchored location.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -41,37 +43,37 @@ pub const DEFAULT_OSC_PORT: u16 = 9000;
 pub enum DocSource {
     /// The whole document inline, as raw JSON. Raw [`serde_json::Value`] — not a parsed doc
     /// type — because validation is the engine side's job (the loader is the single
-    /// validation authority, ADR-0045 §3); the envelope never pre-judges a document.
+    /// validation authority); the envelope never pre-judges a document.
     Document(serde_json::Value),
     /// A path the engine side loads through its resolver (near-zero tokens for the
-    /// dev-with-checkout persona, ADR-0048 §2).
+    /// dev-with-checkout persona).
     Path(String),
 }
 
-/// One structure-channel request (ADR-0046 §8's four verbs), serialized as a single JSON
+/// One structure-channel request (its four verbs), serialized as a single JSON
 /// object tagged by `verb`: `{"verb": "ping"}`, `{"verb": "swap", "source": …}`, ….
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "verb", rename_all = "snake_case")]
 pub enum Request {
-    /// Liveness. Resolves ADR-0044's open probe mechanism: it proves the structure channel
+    /// Liveness — the structure channel's own probe: it proves the structure channel
     /// itself, which an OSC ping does not.
     Ping,
-    /// Install a document (whole-document edit contract, ADR-0045 §1).
+    /// Install a document (whole-document edit contract).
     Swap {
         /// The document, by value or by path.
         source: DocSource,
-        /// ADR-0046 §9's opt-in guard: the [`content_hash`](crate::contract::content_hash)
+        /// The opt-in concurrency guard: the [`content_hash`](crate::contract::content_hash)
         /// the client believes is installed. A mismatch rejects the swap with
         /// `Response::Conflict` — no sessions, no leases, one off-thread hash compare.
         /// `None` is last-write-wins, the default arbitration.
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expect: Option<String>,
     },
-    /// Read the currently installed document — the Coordinator owns the canonical doc
-    /// (ADR-0046 §7), so a fresh conversation attaches in one call.
+    /// Read the currently installed document — the Coordinator owns the canonical doc,
+    /// so a fresh conversation attaches in one call.
     GetDocument,
-    /// Read the ADR-0038 §9 diagnostics counters, exposed past log-only (the vehicle
-    /// amended to this channel by ADR-0048 §6).
+    /// Read the diagnostics counters, exposed past log-only (this channel is their
+    /// vehicle).
     GetDiagnostics,
 }
 
@@ -88,10 +90,10 @@ impl Request {
     }
 }
 
-/// One structure-channel response (one per request, in order — ADR-0046 §8), serialized as
+/// One structure-channel response (one per request, in order), serialized as
 /// a single JSON object tagged by `reply`. The tag rides *inside* the payload object
 /// (`{"reply": "swap_report", "ok": …}`), so a swap's wire shape stays the flat
-/// `SwapReport` object the MCP tool also serializes (ADR-0048 §8: the shapes must not
+/// `SwapReport` object the MCP tool also serializes (the shapes must not
 /// drift) — the envelope adds a discriminant, never a nesting level.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "reply", rename_all = "snake_case")]
@@ -99,28 +101,27 @@ pub enum Response {
     /// `Ping`'s answer: the channel itself is alive.
     Pong,
     /// `Swap`'s answer, success or rejection alike: the contract's [`SwapReport`]
-    /// (ADR-0046 §§7–9) — `ok`, diagnostics, the **installed** document's content hash,
+    /// — `ok`, diagnostics, the **installed** document's content hash,
     /// and on success the diff summary.
     SwapReport(SwapReport),
     /// `GetDocument`'s answer: the canonical installed document (raw JSON — the canonical
     /// doc is the Coordinator's, and re-validating it client-side would make two
-    /// authorities) with its content hash, the token a later swap's `expect` compares
-    /// (ADR-0046 §9).
+    /// authorities) with its content hash, the token a later swap's `expect` compares.
     Document {
         document: serde_json::Value,
         content_hash: String,
     },
-    /// `GetDiagnostics`' answer: the ADR-0038 §9 counters.
+    /// `GetDiagnostics`' answer: the diagnostics counters.
     Diagnostics(DiagnosticsReport),
-    /// A `Swap` whose `expect` guard missed (ADR-0046 §9): nothing installed; `actual` is
+    /// A `Swap` whose `expect` guard missed: nothing installed; `actual` is
     /// the hash of what actually kept playing — the client re-reads via `GetDocument` and
-    /// reconciles. Both hashes ride the wire with ADR-0048 §5's field names (its user-facing
+    /// reconciles. Both hashes ride the wire with the user-facing field names (the
     /// schema is `conflict: {expected, actual}`), so the tool surface re-serializes this
-    /// variant field-for-field instead of threading request state (ADR-0048 §8).
+    /// variant field-for-field instead of threading request state.
     Conflict { expected: String, actual: String },
     /// A channel-level failure: an unreadable request, or an engine-side fault that
     /// produced no domain-shaped answer. Distinct from a `SwapReport` with `ok: false`,
-    /// which is the channel *working* (ADR-0048 §3).
+    /// which is the channel *working*.
     Error { message: String },
 }
 
@@ -137,9 +138,9 @@ impl Response {
     }
 }
 
-/// The diagnostics payload: ADR-0038 §9's counters, running totals since engine start,
-/// exposed past log-only through this channel (the endpoint's amended vehicle, ADR-0048
-/// §6). `output_xruns` counts events; the ring counters count **frames**. New counters
+/// The diagnostics payload: the counters, running totals since engine start, exposed
+/// past log-only through this channel (its vehicle). `output_xruns` counts events; the
+/// ring counters count **frames**. New counters
 /// land as new fields here — this stays the one wire surface mirroring reuben-native's
 /// `diagnostics.rs`, never a second parallel shape.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
@@ -171,7 +172,7 @@ mod tests {
     use crate::contract::{Diag, DiffSummary, Report};
 
     /// A populated SwapReport exercising every field, so the round-trip proves the envelope
-    /// carries the contract type intact (ADR-0048 §8: shapes must not drift).
+    /// carries the contract type intact (shapes must not drift).
     fn swap_report() -> SwapReport {
         SwapReport {
             report: Report {
@@ -203,7 +204,7 @@ mod tests {
     }
 
     /// Every request must serialize to exactly one newline-terminated JSON line (the NDJSON
-    /// framing contract, ADR-0046 §8) and parse back to itself.
+    /// framing contract) and parse back to itself.
     fn assert_one_line_round_trip(req: &Request) {
         let line = req.to_ndjson();
         assert!(
@@ -221,7 +222,7 @@ mod tests {
 
     #[test]
     fn default_structure_addr_is_loopback_9124() {
-        // The shared bind/dial address (ADR-0046 §8): loopback-only and the fixed M1 port. This
+        // The shared bind/dial address: loopback-only and the fixed M1 port. This
         // one const is the single source both the reuben-native server and the reuben-mcp client
         // reference, so they can never drift; the literal is pinned here so an accidental edit is
         // a red test, not a silent server/client mismatch.
@@ -234,8 +235,8 @@ mod tests {
 
     #[test]
     fn every_request_variant_round_trips_as_one_ndjson_line() {
-        // ADR-0046 §8's four verbs: ping, swap (by value or by path, with the optional
-        // ADR-0046 §9 expect guard), get_document, get_diagnostics.
+        // The four verbs: ping, swap (by value or by path, with the optional
+        // expect guard), get_document, get_diagnostics.
         let requests = [
             Request::Ping,
             Request::Swap {
@@ -261,7 +262,7 @@ mod tests {
     #[test]
     fn requests_speak_the_adr_0046_verbs() {
         // The wire shape is the contract, not an implementation detail: every request is an
-        // object tagged by `verb`, named exactly as ADR-0046 §8 names the four verbs.
+        // object tagged by `verb`, named exactly as the channel names the four verbs.
         let v: serde_json::Value =
             serde_json::from_str(&Request::Ping.to_ndjson()).expect("ping as value");
         assert_eq!(v, serde_json::json!({ "verb": "ping" }));
@@ -320,7 +321,7 @@ mod tests {
 
     #[test]
     fn swap_report_response_stays_the_flat_contract_object() {
-        // ADR-0048 §8: the structure channel's swap response and the MCP tool's
+        // The structure channel's swap response and the MCP tool's
         // structuredContent serialize the *same* contract type — the envelope adds only its
         // `reply` tag next to the flat { ok, errors, warnings, content_hash, diff } object,
         // never a nesting level the tool shape doesn't have.
@@ -336,7 +337,7 @@ mod tests {
 
     #[test]
     fn diagnostics_response_carries_the_four_adr_0038_counters() {
-        // ADR-0048 §6 amends ADR-0038 §9: the diagnostics endpoint is this channel verb, and
+        // The diagnostics endpoint is this channel verb, and
         // its payload is the four running totals (xruns count events, ring counters count
         // frames), flat next to the tag so new counters land as new fields.
         let v: serde_json::Value =
@@ -356,11 +357,11 @@ mod tests {
 
     #[test]
     fn conflict_and_error_responses_name_their_cause() {
-        // ADR-0046 §9: an expect mismatch rejects the swap with a conflict naming the actual
-        // hash, so the client re-reads and reconciles. ADR-0048 §5's user-facing schema is
+        // An expect mismatch rejects the swap with a conflict naming the actual
+        // hash, so the client re-reads and reconciles. The user-facing schema is
         // `conflict: {expected, actual}` — both hashes, same field names — so the tool
         // ticket composes its report from this variant field-for-field instead of threading
-        // request state (ADR-0048 §8: shapes must not drift).
+        // request state (shapes must not drift).
         let v: serde_json::Value = serde_json::from_str(
             &Response::Conflict {
                 expected: "0badc0de0badc0de".to_string(),
@@ -393,7 +394,7 @@ mod tests {
 
     #[test]
     fn document_response_pairs_the_doc_with_its_content_hash() {
-        // ADR-0046 §9: every get_document response carries the installed document's content
+        // Every get_document response carries the installed document's content
         // hash, the token a later swap's expect guard compares.
         let v: serde_json::Value = serde_json::from_str(
             &Response::Document {
@@ -428,7 +429,7 @@ mod tests {
         assert_one_line_round_trip(&req);
     }
 
-    /// ADR-0048 §5: `get_diagnostics` is a tool whose `outputSchema` rmcp derives from this
+    /// `get_diagnostics` is a tool whose `outputSchema` rmcp derives from this
     /// payload type via schemars, exactly as the contract types do. Run with
     /// `--features schemars`.
     #[cfg(feature = "schemars")]
@@ -456,9 +457,9 @@ mod tests {
 
     #[test]
     fn swap_carries_its_source_by_path_or_by_value() {
-        // ADR-0045 §4 left both branches open and ADR-0046 §8 keeps both on the channel:
+        // Both branches stay open and the channel keeps both:
         // `source` is either `{"path": ...}` (resolver-loaded engine-side) or
-        // `{"document": {...}}` (inline JSON). Field names match ADR-0048 §2's tool contract.
+        // `{"document": {...}}` (inline JSON). Field names match the tool contract.
         let by_path = Request::Swap {
             source: DocSource::Path("instruments/warm-pad.json".to_string()),
             expect: None,

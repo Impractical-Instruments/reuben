@@ -28,12 +28,14 @@
 //! Gated to test/bench builds: it reaches `Renderer`'s `pub(crate)` `step_node` seam, which is not
 //! part of the public render API.
 //!
-//! **Input injection** (ADR-0038 §10): at the single-node level, [`drive`](OpDriver::drive) is
+//! **Input injection**: at the single-node level, [`drive`](OpDriver::drive) is
 //! the known-buffer seam — it is how a loader-built signal `Pipe` (an interface input pipe's
 //! runtime node) is driven with deterministic audio in tests. At the *graph* level, the same
 //! carve-out is [`Renderer::render_block_multi`]'s `inputs` parameter: the offline render path
 //! injects known buffers per logical input channel, so a render with injected input stays
 //! bit-reproducible while live device input remains the sanctioned nondeterministic boundary.
+//!
+//! see rules: execution-runtime
 
 use std::sync::Arc;
 
@@ -233,7 +235,7 @@ impl OpDriver {
     }
 
     /// Invoke the operator's [`Operator::on_transplant`] hook — the survivor-side seam a Swap runs
-    /// after box-transplant (ADR-0046 §4). Lets an operator's unit test assert its post-swap
+    /// after box-transplant. Lets an operator's unit test assert its post-swap
     /// re-assertion behavior (an on-change held publisher must re-emit its current value the next
     /// block, even with no input change).
     pub fn on_transplant(&mut self) -> &mut Self {
@@ -340,7 +342,7 @@ mod tests {
         );
     }
 
-    /// Block-boundary zero-order-hold on a materialized `Float` port (ADR-0030). A held value that
+    /// Block-boundary zero-order-hold on a materialized `Float` port. A held value that
     /// changes mid-block must (a) write sample-accurately from its frame within that block, and
     /// (b) carry its end-of-block value into the *next* block's materialize fill **and** into the
     /// held read — the single-source-of-truth contract the former `input_latches` f32 shadow
@@ -390,7 +392,7 @@ mod tests {
         );
     }
 
-    /// **Buffer-presence invariant** (ADR-0037, the engine half of the typed-handle contract):
+    /// **Buffer-presence invariant** (the engine half of the typed-handle contract):
     /// every declared `f32_buffer` input handed to `process` is a dense buffer of **exactly
     /// `frames` samples** — an unwired *bare* buffer input (no meta, no source) materializes
     /// **silence** (zeros), never `&[]` or a short slice. This is what lets `io.read(SIG)[i]`
@@ -433,9 +435,9 @@ mod tests {
         );
     }
 
-    /// The loader-built interface pipe (ADR-0038 §2) through the real engine substrate: a signal
+    /// The loader-built interface pipe through the real engine substrate: a signal
     /// `Pipe` driven with a known buffer reproduces it verbatim — the single-node face of the
-    /// P3 injection seam (§10). `Pipe` is deliberately unregistered, so the registry smoke test
+    /// P3 injection seam. `Pipe` is deliberately unregistered, so the registry smoke test
     /// below never covers it; this drives it through `from_boxed` like the loader does.
     #[test]
     fn signal_pipe_driven_with_a_known_buffer_reproduces_it() {

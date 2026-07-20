@@ -1,9 +1,11 @@
-//! Graph — the author-facing description of a patch (ADR-0003).
+//! Graph — the author-facing description of a patch.
 //!
 //! A Graph is plain data: operator instances (nodes) plus connections between their
 //! ports. It carries no execution order — that is produced by Instantiate
 //! ([`crate::plan::Plan::instantiate`]). Node identity is a stable slotmap key, so a
 //! future Swap can match surviving operators across re-Instantiate.
+//!
+//! see rules: composition-operators
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -24,30 +26,30 @@ pub struct Node {
     pub address: String,
     pub op: Box<dyn Operator>,
     pub descriptor: Descriptor,
-    /// Author value-overrides for settable inputs (ADR-0035), as `(input port, coerced `Arg`)` — the
+    /// Author value-overrides for settable inputs, as `(input port, coerced `Arg`)` — the
     /// unwired-default a `/node/<input> v` literal sets, seeding the input's latch at Instantiate.
     /// One generic channel: an `F32` control's clamped value and an enum's concrete variant share it,
     /// replacing the former type-split `input_overrides` (`f32`) / `enum_overrides` (variant index).
     /// Sparse — empty unless an author overrides an input's default; the value is
     /// [`Port::coerce`](crate::descriptor::Port::coerce)-normalized at set time.
     pub value_overrides: Vec<(usize, Arg)>,
-    /// Author overrides for the operator's plan-time **`Constant`** ports (ADR-0035), as
+    /// Author overrides for the operator's plan-time **`Constant`** ports, as
     /// `(constant slot, coerced `Arg`)` — the value the patch's `config` block sets (e.g. the
     /// voicer's `voices`). The sibling of [`value_overrides`](Self::value_overrides) for the
     /// plan-time surface: sparse, descriptor-default fallback, `Arg`-valued. Routed to `config` on
     /// save, never `inputs`.
     pub constant_overrides: Vec<(usize, Arg)>,
-    /// The logical `sample` resource id (ADR-0016) this node referenced in its document, retained so
+    /// The logical `sample` resource id this node referenced in its document, retained so
     /// [`NormalizedDoc::from_graph`](crate::format::NormalizedDoc::from_graph) can round-trip it on
     /// save. `None` unless the node declared a `sample` slot and named an id. The *decoded bytes* are
     /// bound out-of-band and do not round-trip; only this id does.
     pub sample_id: Option<String>,
-    /// The logical `voice` instrument-resource id (ADR-0032) this node referenced, retained for the
+    /// The logical `voice` instrument-resource id this node referenced, retained for the
     /// same save round-trip as [`sample_id`](Self::sample_id). `None` unless the node declared a
     /// `voice` slot and named an id.
     ///
     /// A `subpatch` node's `patch` id has no counterpart here: the node **dissolves** at build
-    /// (ADR-0034 §2, nesting P4) — its child's nodes are spliced in with prefixed addresses and no
+    /// (nesting P4) — its child's nodes are spliced in with prefixed addresses and no
     /// node survives to carry the reference. A built graph is the *flattened* instrument;
     /// reference-preserving save is the library thread (P7,
     /// [#122](https://github.com/Impractical-Instruments/reuben/issues/122)).
@@ -64,11 +66,11 @@ pub struct Connection {
 }
 
 /// A patch's engine-honored I/O boundary — the resolved form of a document's `interface` block
-/// (ADR-0032 §1, reshaped by ADR-0038 §2 into **pipes**). Each external **input** name maps to
+/// (reshaped into **pipes**). Each external **input** name maps to
 /// the `in` port of the loader-built pipe node it minted (`in` → `/in`); whatever feeds the
 /// boundary lands there, and internal consumers wire from the pipe's output. Each **output**
 /// name maps to the internal `(node, output port)` that feeds it. Empty unless the document
-/// declares an `interface`. Distinct from `control` (ADR-0018), which is engine-ignored: this
+/// declares an `interface`. Distinct from `control`, which is engine-ignored: this
 /// is real wiring the engine binds and type-checks (the Voicer reads it to drive each voice
 /// sub-patch's `freq`/`gate` pipes and tap its `audio`/`active`).
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -77,17 +79,17 @@ pub struct Interface {
     pub inputs: BTreeMap<String, (NodeKey, usize)>,
     /// External output name → the internal `(node, output port)` that feeds it.
     pub outputs: BTreeMap<String, (NodeKey, usize)>,
-    /// Logical **input** channel bindings (ADR-0038 §3): input pipe name → the logical input
+    /// Logical **input** channel bindings: input pipe name → the logical input
     /// channel it reads when this graph is played at top level. Inert when nested/hosted (a
     /// splice discards the child's `Interface`, so a binding never reaches hardware from inside
     /// a nest). Consumed by the core input master (P3).
     pub input_channels: BTreeMap<String, usize>,
-    /// Logical **output** channel bindings (ADR-0038 §3): output pipe name → the logical master
+    /// Logical **output** channel bindings: output pipe name → the logical master
     /// channel it feeds (already applied to [`Graph::outputs`] taps at build; retained here so
     /// save/introspection can reconstruct the entry). Omitted = broadcast.
     pub output_channels: BTreeMap<String, usize>,
-    /// Declared **input** names whose internal target went dark — an unavailable nested child
-    /// (ADR-0016/0034). The port is real in the document but resolves to nothing this load; a
+    /// Declared **input** names whose internal target went dark — an unavailable nested child.
+    /// The port is real in the document but resolves to nothing this load; a
     /// consumer referencing it degrades (drops the wire with a warning) instead of failing, so
     /// dark degradation stays transitive through re-exports rather than escalating to a
     /// structural error one level up.
@@ -102,13 +104,13 @@ pub struct Graph {
     pub nodes: SlotMap<NodeKey, Node>,
     pub connections: Vec<Connection>,
     /// Master output taps: `(node, output port, channel)`. `channel` is the logical master
-    /// channel index this tap feeds (ADR-0026); `None` broadcasts to every channel (the
+    /// channel index this tap feeds; `None` broadcasts to every channel (the
     /// historical mono fan). Summed into the rendered output.
     pub outputs: Vec<(NodeKey, usize, Option<usize>)>,
-    /// The resolved `interface` boundary (ADR-0032), empty unless declared. Set by the loader's
+    /// The resolved `interface` boundary, empty unless declared. Set by the loader's
     /// [`build`](crate::format::NormalizedDoc::build) after nodes/wires resolve.
     pub interface: Interface,
-    /// Derived **logical input width** (ADR-0038 §3): max bound input channel + 1 across this
+    /// Derived **logical input width**: max bound input channel + 1 across this
     /// graph's own input pipes, `0` when none binds a channel — a patch that uses no inputs pays
     /// nothing. Honored only when this graph is played at top level (the core input master, P3);
     /// a nested/hosted graph's value is inert.
@@ -146,7 +148,7 @@ impl Graph {
         })
     }
 
-    /// Override a plan-time **`Constant`** by name (ADR-0035), coercing the raw author literal to the
+    /// Override a plan-time **`Constant`** by name, coercing the raw author literal to the
     /// constant's stored [`Arg`] (an `i32` count clamps to its range). No-op if `name` is not a
     /// constant or `raw` does not resolve. Upserts the `(slot, Arg)` override the patch's `config`
     /// block sets and `from_graph` saves back.
@@ -161,7 +163,7 @@ impl Graph {
         }
     }
 
-    /// Override a settable input's unwired default by name (ADR-0035), coercing the raw author
+    /// Override a settable input's unwired default by name, coercing the raw author
     /// literal to the input's latch [`Arg`]: an `F32` control clamps to its range, an enum resolves a
     /// symbol / index / concrete variant. No-op if `name` is not a settable input or `raw` does not
     /// resolve (the loader validates names + values up front). Upserts the `(port, Arg)` override
@@ -178,7 +180,7 @@ impl Graph {
     }
 
     /// Connect `src` output port to `dst` input port. Ports are typed contract handles
-    /// (`OUT_*`/`IN_*`, ADR-0037) or bare indices (the loader's resolved ordinals).
+    /// (`OUT_*`/`IN_*`) or bare indices (the loader's resolved ordinals).
     pub fn connect(
         &mut self,
         src: NodeKey,
@@ -199,14 +201,14 @@ impl Graph {
         self.outputs.push((node, port.index(), None));
     }
 
-    /// Designate a master output tap feeding a single logical master `channel` (ADR-0026) —
+    /// Designate a master output tap feeding a single logical master `channel` —
     /// e.g. a `pan` op's `left`/`right` tapped as channel 0 / 1.
     pub fn tap_output_channel(&mut self, node: NodeKey, port: impl PortIndex, channel: usize) {
         self.outputs.push((node, port.index(), Some(channel)));
     }
 
     /// Find a node by its OSC address. Used by the loader to bind resources to the right
-    /// node after the graph is built (ADR-0016).
+    /// node after the graph is built.
     pub fn find(&self, address: &str) -> Option<NodeKey> {
         self.nodes
             .iter()
