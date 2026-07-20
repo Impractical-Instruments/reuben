@@ -92,19 +92,38 @@ def parse_readme(path: Path):
 
 
 def splice(text: str, section: str, body: list[str]) -> str:
-    """Replace the list body under `## <section>`, preserving the heading and any leading
-    blank lines / HTML comment, up to the next `## ` heading."""
+    """Replace the list body under `## <section>` with a CANONICAL block, dropping the old body up
+    to the next `## ` heading or EOF. The block is: one blank line, the section's leading HTML
+    comment line(s), the collated entries (possibly empty), one trailing blank.
+
+    Idempotent — a second `--write` yields byte-identical output for empty, populated, and
+    at-EOF sections. (The old code preserved leading blanks verbatim, so on an empty section it
+    re-absorbed the prior run's trailing blank and then appended a fresh one, growing the file by a
+    line each run; the entries were the only "wall" stopping that, so only the empty case drifted.)"""
     lines, out, i, n = text.split("\n"), [], 0, len(text.split("\n"))
+    heading = f"## {section}".lower()
     while i < n:
         out.append(lines[i])
-        if lines[i].strip().lower() == f"## {section}".lower():
+        if lines[i].strip().lower() == heading:
             i += 1
-            while i < n and (lines[i].strip() == "" or lines[i].strip().startswith("<!--")):
-                out.append(lines[i]); i += 1
-            out.extend(body)
-            out.append("")
+            # Preserve the leading HTML comment line(s); skip any surrounding blank lines. Stop at
+            # the first real entry or the next `## ` heading.
+            comments = []
+            while i < n and not lines[i].startswith("## "):
+                s = lines[i].strip()
+                if s.startswith("<!--"):
+                    comments.append(lines[i]); i += 1
+                elif s == "":
+                    i += 1
+                else:
+                    break
+            # Drop the old entries up to the next `## ` heading / EOF.
             while i < n and not lines[i].startswith("## "):
                 i += 1
+            out.append("")
+            out.extend(comments)
+            out.extend(body)
+            out.append("")
             continue
         i += 1
     return "\n".join(out)

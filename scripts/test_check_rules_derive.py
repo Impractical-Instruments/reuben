@@ -81,6 +81,7 @@ class DeriveGuardTest(unittest.TestCase):
             self.assertIn("Prose that must survive collation untouched.", text)
 
     def test_write_is_idempotent(self):
+        # Populated README (>=1 topic): the case that already worked — guard against regression.
         with tempfile.TemporaryDirectory() as d:
             root = Path(d)
             build(root, {"clock.md": CLOCK})
@@ -89,6 +90,47 @@ class DeriveGuardTest(unittest.TestCase):
             self.assertEqual(check_rules_derive.main(["--write", str(root)]), 0)
             second = (root / "docs" / "rules" / "README.md").read_text(encoding="utf-8")
             self.assertEqual(first, second)
+
+    def test_write_empty_section_is_idempotent(self):
+        # Day-one README: no topic docs, so both derived sections collate to empty. This is the
+        # case the old splice() grew by a blank line on every run.
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            build(root, {})  # skeleton with placeholder items, zero topics
+            self.assertEqual(check_rules_derive.main(["--write", str(root)]), 0)
+            first = (root / "docs" / "rules" / "README.md").read_text(encoding="utf-8")
+            self.assertEqual(check_rules_derive.main(["--write", str(root)]), 0)
+            second = (root / "docs" / "rules" / "README.md").read_text(encoding="utf-8")
+            self.assertEqual(first, second, "empty-section --write must be byte-idempotent")
+            # And the empty index is still green under --check.
+            self.assertEqual(check_rules_derive.main(["--check", str(root)]), 0)
+
+    def test_write_eof_section_is_idempotent(self):
+        # A derived section that is the LAST thing in the file (no following `## ` heading) must
+        # round-trip identically — exercises the EOF branch of splice().
+        readme_eof = """# reuben rules index
+
+## Topics
+
+<!-- derived topics -->
+- **[<Topic title>](<topic>.md)** — <one-line summary>
+
+## Glossary
+
+<!-- derived glossary -->
+- **<Term>** — <one-line definition> · [<topic>](<topic>.md)
+"""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            build(root, {"clock.md": CLOCK}, readme=readme_eof)
+            self.assertEqual(check_rules_derive.main(["--write", str(root)]), 0)
+            first = (root / "docs" / "rules" / "README.md").read_text(encoding="utf-8")
+            self.assertEqual(check_rules_derive.main(["--write", str(root)]), 0)
+            second = (root / "docs" / "rules" / "README.md").read_text(encoding="utf-8")
+            self.assertEqual(first, second, "at-EOF --write must be byte-idempotent")
+            self.assertEqual(check_rules_derive.main(["--check", str(root)]), 0)
+            # The Glossary (last section) still collated correctly.
+            self.assertIn("- **Block** — a unit of time. · [clock](clock.md)", second)
 
     def test_missing_summary_is_structural_error(self):
         no_summary = "# Clock\n\n## Now\n\nNo summary line here.\n"
