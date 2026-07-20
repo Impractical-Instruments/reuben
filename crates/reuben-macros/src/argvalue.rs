@@ -41,8 +41,14 @@ pub fn expand(input: TokenStream) -> TokenStream {
     }
 }
 
-/// `From<T> for Arg` + `TryFrom<&Arg> for T` for a **struct** vocab type, whose Rust name is its
-/// own `Arg` variant. (Enums type-erase to `Arg::Enum` instead — see [`expand_enum`].)
+/// `From<T> for Arg` + `TryFrom<&Arg> for T` for a leaf vocab type whose Rust name is its own
+/// `Arg` variant. Structs always take this path; so do **payload-carrying** enums (`Pitch`), which
+/// promote to a named leaf rather than lose their payload (leaf-promotion, issue #519 — see
+/// [`expand_enum`]). Only all-unit enums skip it, type-erasing to `Arg::Enum` instead.
+///
+/// The generated `Arg::#name(v)` assumes a matching `Arg` variant exists: emitting this for a type
+/// with no hand-added `Arg::#name` fails to compile with a "no variant named" error pointing into
+/// the generated tokens, not here. Adding a leaf `Arg` variant to `message.rs` is the caller's job.
 fn arg_conversions(name: &syn::Ident) -> TokenStream {
     quote! {
         impl ::core::convert::From<#name> for ::reuben_core::message::Arg {
@@ -74,24 +80,32 @@ fn expand_struct(ast: &DeriveInput) -> TokenStream {
     arg_conversions(&ast.ident)
 }
 
-/// A unit-enum vocab type (`SnapTarget`, `GateMode`): `Arg` integration plus the
-/// Enum-over-OSC table (symbol primary, index fallback — ADR-0030's binding, derive-generated).
+/// An enum vocab type. Routing splits on the payload (leaf-promotion, issue #519): a
+/// **payload-carrying** enum (`Pitch`) gets its own named `Arg` variant like a struct — the index
+/// path would drop its payload; an **all-unit** enum (`SnapTarget`, `GateMode`) type-erases to the
+/// single `Arg::Enum(index)` with the Enum-over-OSC table (symbol primary, index fallback —
+/// ADR-0030's binding, derive-generated).
 fn expand_enum(ast: &DeriveInput, data: &syn::DataEnum) -> TokenStream {
     let name = &ast.ident;
 
-    // Every variant must be a unit variant — a vocab enum is a closed set of named choices.
-    for v in &data.variants {
-        if !matches!(v.fields, Fields::Unit) {
-            return syn::Error::new_spanned(
-                v,
-                "ArgValue enum variants must be unit variants (no fields)",
-            )
-            .to_compile_error();
-        }
-    }
     if data.variants.is_empty() {
         return syn::Error::new_spanned(name, "ArgValue enum needs at least one variant")
             .to_compile_error();
+    }
+
+    // A **payload-carrying** enum (any non-unit variant, e.g. `Pitch { Degree(i32),
+    // Absolute(f32) }`) cannot type-erase to the bare `Arg::Enum` index — the payload would be
+    // lost. Instead it rides as its **own** named `Arg` variant, an opaque `Copy` leaf, exactly
+    // like a struct (leaf-promotion, issue #519): whole-enum in, whole-enum out, its internal
+    // case invisible to the wire. Only an **all-unit** enum takes the index-table path below.
+    // Like a struct leaf, this requires a hand-added `Arg::#name` variant in `message.rs` — see
+    // `arg_conversions`.
+    if data
+        .variants
+        .iter()
+        .any(|v| !matches!(v.fields, Fields::Unit))
+    {
+        return arg_conversions(name);
     }
 
     let idents: Vec<&syn::Ident> = data.variants.iter().map(|v| &v.ident).collect();
@@ -264,10 +278,20 @@ mod tests {
     }
 
     #[test]
-    fn data_enum_variant_is_rejected() {
+    fn payload_enum_gets_named_arg_variant() {
+        // A payload-carrying enum is a first-class leaf: its own named `Arg` variant (like a
+        // struct), never the lossy `Arg::Enum(index)` (issue #519).
         let out = render("enum Pitch { Degree(i32), Absolute(f32) }");
-        assert!(out.contains("compile_error !"), "{out}");
-        assert!(out.contains("unit variants"), "{out}");
+        assert!(
+            out.contains("impl :: core :: convert :: From < Pitch >"),
+            "{out}"
+        );
+        assert!(out.contains("Arg :: Pitch (v)"), "{out}");
+        assert!(out.contains("TryFrom"), "{out}");
+        // No index table and no type-erasure — a payload enum is opaque, not indexable.
+        assert!(!out.contains("VARIANTS"), "{out}");
+        assert!(!out.contains("Arg :: Enum"), "{out}");
+        assert!(!out.contains("compile_error !"), "{out}");
     }
 
     #[test]

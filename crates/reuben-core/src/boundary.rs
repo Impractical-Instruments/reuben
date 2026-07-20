@@ -202,8 +202,10 @@ pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) -> bool {
         // the value). Symbol-on-the-wire for outbound enums needs the sink's wired *source-port*
         // `enum_meta` resolved at the engine drain — issue #147, not here.
         Arg::Enum(i) => out.push(Arg::I32(*i as i32)),
-        // No external OSC form.
-        Arg::Harmony(_) | Arg::F32Buffer(_) => {}
+        // No external OSC form. `Pitch` is wire-internal (leaf-promotion, issue #519): like
+        // `Harmony`, it rides the internal wire only — no controller sends a bare pitch, so
+        // there is no `OscArg`/`register_osc_form!` for it and nothing to encode here.
+        Arg::Harmony(_) | Arg::Pitch(_) | Arg::F32Buffer(_) => {}
     }
     out.len() > before
 }
@@ -431,6 +433,9 @@ mod tests {
             &Arg::Note(Note::new(Pitch::Absolute(60.0), 0.5)),
             &mut flat,
         ));
+        // Wire-internal leaves emit no external form (leaf-promotion, issue #519): `Pitch` rides
+        // the internal wire only, like `Harmony`.
+        assert!(!osc_out_args(&Arg::Pitch(Pitch::Degree(0)), &mut flat));
         assert!(!osc_out_args(
             &Arg::Harmony(crate::vocab::harmony::Harmony::default()),
             &mut flat,
