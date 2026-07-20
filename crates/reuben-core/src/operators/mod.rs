@@ -50,6 +50,7 @@ pub mod strum;
 pub mod sub;
 pub mod subpatch;
 pub mod transpose;
+pub mod unpack;
 pub mod voicer;
 
 pub use abs::{AbsF32Signal, AbsF32Value};
@@ -93,4 +94,5 @@ pub use strum::Strum;
 pub use sub::{SubF32Signal, SubF32Value};
 pub use subpatch::Subpatch;
 pub use transpose::Transpose;
+pub use unpack::UnpackNote;
 pub use voicer::Voicer;

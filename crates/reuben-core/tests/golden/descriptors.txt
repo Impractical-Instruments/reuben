@@ -292,6 +292,10 @@ operator transpose
   in[0] message notes
   in[1] f32 amount min=-48.0 max=48.0 default=0.0 unit="steps" curve=linear
   out[0] message notes
+operator unpack_note
+  in[0] message in
+  out[0] pitch pitch
+  out[1] f32 velocity
 operator voicer
   in[0] message notes
   in[1] harmony harmony

@@ -147,8 +147,9 @@ impl Operator for Filter {
   `b`) without repeating the number.
 - **`name: enum(VocabType)`** — an enum (Value) input naming its shared *vocab* type (`Port::enumerated`
   off `VocabType::enum_meta`); the type's `#[default]` variant is the default.
-- **`name: note`** / **`name: harmony`** — `Note` (Event) / `Harmony` (Value) ports (`Port::note` /
-  `Port::harmony`).
+- **`name: note`** / **`name: harmony`** / **`name: pitch`** — `Note` (Event) / `Harmony` (Value) /
+  `Pitch` (Value) ports (`Port::note` / `Port::harmony` / `Port::pitch`). `pitch` is a held `Pitch`
+  leaf (ADR-0062/0063) — the wire-internal output an `unpack_<type>` op emits, consumed by `resolve`.
 - **`name: arg`** — a **type-agnostic pass-through** (issue #141): carries *any* `Arg` as a raw
   Event stream (`Port::arg`), read via its `In<Raw>` handle (`io.read(IN)` yields undecoded
   `&Arg` payloads) and re-emitted through the sink's local `Out<Raw>` tap handle
@@ -188,6 +189,15 @@ Other notes:
   inputs only) **and** every operand is a number or held enum mode. `differentiate`/`integrate` are
   **stateful** (they carry state across blocks), so they stay hand-written `operator_contract!` ops
   and are **signal-only** (a value form would shatter their continuous one-sample-`dt` stream).
+- **Product vocab types get their `unpack` from a census macro.** `crate::unpack_op!(Note { pitch:
+  pitch, velocity: f32 })` in `operators/unpack.rs` generates an `unpack_<type>` op that reads the
+  whole value as a `Note` event on `in` and emits each field as a held `Value` — the Event→Value
+  latch expressed as a patchable node ([ADR-0063](../adr/0063-product-vocab-types-unpack-to-fields.md)).
+  Like `number_operator_contract!` it reuses the shared contract internals, so the op is
+  indistinguishable in shape from a hand-written one and self-registers via `inventory`. The census
+  is one greppable file, but the macro's input event form is currently fixed to `note` (`Note` is the
+  only event-carried product vocab type today), so unpacking a *different* product type is a census
+  line **plus** teaching the macro that type's event input — not a one-line edit alone.
 - **Polyphony** is not a per-operator concern (ADR-0032): there is no Lane fan-out. The **Voicer** is
   a single-Voice operator that hosts N voice sub-patches — a voice is a standalone Instrument
   (instrument-resource, declared `resources: { voice }`) with an `interface { inputs, outputs }`

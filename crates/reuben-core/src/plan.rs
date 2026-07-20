@@ -22,6 +22,7 @@ use crate::graph::{Connection, Graph, NodeKey};
 use crate::message::{Arg, Message};
 use crate::operator::Operator;
 use crate::vocab::harmony::Harmony;
+use crate::vocab::pitch::Pitch;
 
 /// The **form** a wire carries, *declared* by the port's [`PortType`] — not inferred
 /// from the graph:
@@ -85,6 +86,11 @@ fn seed_latch(p: &Port, port: usize, value_overrides: &[(usize, Arg)]) -> Arg {
             .resolve_arg(&Arg::I32(e.default as i32))
             .unwrap_or(Arg::I32(e.default as i32)),
         PortType::Vocab { name, .. } if *name == "Harmony" => Arg::Harmony(Harmony::default()),
+        // A held `Pitch` leaf — its own named `Arg`, parallel to `Harmony`. Without this the
+        // placeholder arm below would seed `F32(0.0)`, which decodes as a `Pitch` only by the
+        // handle read's default-fallback; seed the real tonic so `latch_arg` is correct for any
+        // consumer that inspects it directly (an interface-pipe forward, `resolve`).
+        PortType::Vocab { name, .. } if *name == "Pitch" => Arg::Pitch(Pitch::default()),
         PortType::I32 { meta } => Arg::I32(meta.as_ref().map(|m| m.default).unwrap_or(0)),
         PortType::Str => Arg::Str("".into()),
         // Note (stream) / Buffer (dense): no held value — a placeholder a held-handle read never decodes.

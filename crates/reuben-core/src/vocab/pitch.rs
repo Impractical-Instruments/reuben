@@ -21,6 +21,13 @@ pub enum Pitch {
 }
 
 impl Pitch {
+    /// The load-time / pre-event default: the tonic scale **degree** (`Degree(0)`),
+    /// which stays in key. The const form the `pitch` handle carries as its held-read fallback
+    /// (parallel to `Harmony::DEFAULT`). A hand-written const rather than `#[default]` on the
+    /// variant — `#[derive(Default)]`'s `#[default]` may only sit on a *unit* variant, and
+    /// `Degree` carries an `i32`.
+    pub const DEFAULT: Self = Pitch::Degree(0);
+
     /// A pitch given directly as a float MIDI note.
     pub fn from_midi(midi: f32) -> Self {
         Pitch::Absolute(midi)
@@ -48,10 +55,22 @@ impl Pitch {
     }
 }
 
+/// The pre-event default: the tonic degree. Hand-written because `#[default]` only
+/// applies to unit variants, and [`Pitch::Degree`] carries a payload.
+impl Default for Pitch {
+    fn default() -> Self {
+        Pitch::DEFAULT
+    }
+}
+
 /// A note — a symbolic [`Pitch`] plus a velocity. The atomic vocab payload of an
 /// `Arg::Note`: pitch and velocity ride **one** Arg because a Message carries exactly one.
 /// Velocity 0 is a note-off.
-#[derive(Debug, Clone, Copy, PartialEq, reuben_macros::ArgValue)]
+///
+/// `Default` is `{ pitch: Degree(0), velocity: 0.0 }` — the tonic degree with a
+/// note-**off** velocity, so an `unpack_note` that has seen no event holds a quiet, in-key baseline:
+/// a downstream envelope's gate stays closed until the first real note ([`is_off`](Note::is_off)).
+#[derive(Debug, Clone, Copy, PartialEq, Default, reuben_macros::ArgValue)]
 pub struct Note {
     pub pitch: Pitch,
     pub velocity: f32,

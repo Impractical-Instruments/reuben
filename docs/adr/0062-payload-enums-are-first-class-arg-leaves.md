@@ -2,9 +2,11 @@
 
 ## Status
 
-Accepted (2026-07-20). **Design locked, not yet implemented** — proven by a reference prototype on
-branch `prototype/leaf-promotion-pitch`; the implementation is a downstream effort. Decided through
-wayfinder map [#517](https://github.com/Impractical-Instruments/reuben/issues/517), ticket
+Accepted (2026-07-20). **Implemented** (2026-07-20,
+[#536](https://github.com/Impractical-Instruments/reuben/pull/536)) — the `ArgValue` derive routes
+any payload-carrying enum to its own named `Arg` variant (`Arg::Pitch`); design was proven first by a
+reference prototype on branch `prototype/leaf-promotion-pitch`. Decided through wayfinder map
+[#517](https://github.com/Impractical-Instruments/reuben/issues/517), ticket
 [#519](https://github.com/Impractical-Instruments/reuben/issues/519).
 
 Amends [ADR-0030](0030-osc-as-all-data.md) — extends its 2026-06-30 amendment (the

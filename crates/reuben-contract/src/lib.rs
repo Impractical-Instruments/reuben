@@ -107,6 +107,10 @@ pub enum PortTy {
     Note,
     /// `harmony` — a `Harmony` held port.
     Harmony,
+    /// `pitch` — a held `Pitch` leaf port. A named `Arg` leaf (`Arg::Pitch`), like
+    /// a struct vocab type: wire-internal only (no external OSC form). The held-Value output an
+    /// `unpack_<type>` operator emits for a `Pitch` field, consumed by `resolve`.
+    Pitch,
     /// `arg` — a type-agnostic pass-through carrying any `Arg` (issue #141). Input-only
     /// ([`validate`] enforces it — legality needs list context).
     Arg,
@@ -114,7 +118,16 @@ pub enum PortTy {
 
 /// The legal `ty` words of the flat wire shape, for the deserialize error message — the same
 /// set the old stringly `PORT_TYPES` const enumerated, now owned by [`PortTy`].
-const PORT_TY_WORDS: [&str; 7] = ["f32_buffer", "f32", "i32", "enum", "note", "harmony", "arg"];
+const PORT_TY_WORDS: [&str; 8] = [
+    "f32_buffer",
+    "f32",
+    "i32",
+    "enum",
+    "note",
+    "harmony",
+    "pitch",
+    "arg",
+];
 
 /// A port in the contract — its name plus its payload-carrying [`PortTy`] (issue #217).
 ///
@@ -175,6 +188,7 @@ impl TryFrom<PortSpecFlat> for PortSpec {
             })?),
             "note" => PortTy::Note,
             "harmony" => PortTy::Harmony,
+            "pitch" => PortTy::Pitch,
             "arg" => PortTy::Arg,
             other => {
                 return Err(format!(
@@ -336,7 +350,7 @@ fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractErr
                 ));
             }
         }
-        PortTy::F32Buffer(None) | PortTy::Note | PortTy::Harmony => {}
+        PortTy::F32Buffer(None) | PortTy::Note | PortTy::Harmony | PortTy::Pitch => {}
     }
     Ok(())
 }
