@@ -612,6 +612,22 @@ pub trait Operator: Send {
     fn on_instantiate(&mut self, _config: &AudioConfig) -> Result<(), PlanError> {
         Ok(())
     }
+
+    /// Called on a **surviving** operator box just after it is transplanted into a freshly built
+    /// Plan across a Swap (ADR-0046 §4,
+    /// [`Plan::transplant_survivors`](crate::plan::Plan::transplant_survivors)). A Swap rebuilds
+    /// every input latch from the *new* document (the new Plan's latches win, ADR-0045 §2), so a
+    /// downstream consumer's held-input latch is reset to its declared default. An operator that
+    /// publishes a held output **on change** (emit-on-change, ADR-0015) — comparing against a
+    /// dedup baseline it keeps **in its box** — would therefore see no change and stay silent,
+    /// stranding that consumer on the default (issue: a Swap silently retransposes a
+    /// `harmony`-driven voice). Such an operator clears its baseline here so the first post-swap
+    /// block re-asserts the current value. Default no-op — only on-change held publishers need it;
+    /// signal outputs (refreshed every block) and event outputs (append-only) do not.
+    ///
+    /// **RT-safe:** runs at the render-callback top inside the transplant loop (ticket #321), so it
+    /// must not allocate — resetting a small dedup baseline (an `Option`) is the intended shape.
+    fn on_transplant(&mut self) {}
 }
 
 #[cfg(test)]

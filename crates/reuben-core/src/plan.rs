@@ -697,6 +697,14 @@ impl Plan {
                 &mut from.nodes[old_index].ops,
                 &mut self.nodes[new_index].ops,
             );
+            // The survivor's box carried its emit-on-change dedup baselines (ADR-0015), but the new
+            // Plan reset every downstream consumer latch to its declared default. Let each
+            // transplanted op re-assert its on-change held outputs on the first post-swap block, so a
+            // consumer is not stranded on that default (default no-op; only publishers like `harmony`
+            // act). RT-safe: a bounded loop of small baseline resets, no allocation (ADR-0012).
+            for op in &mut self.nodes[new_index].ops {
+                op.on_transplant();
+            }
         }
     }
 }
