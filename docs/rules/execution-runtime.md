@@ -11,9 +11,13 @@ and both are computed together, one fixed-size **block** at a time, in a single 
 pass. That order is a single static topological schedule, computed once when the graph changes and
 coalesced into cost-weighted clusters so independent branches run concurrently. The core does not
 own threads — it emits a task-and-dependency plan and hands it to a pluggable executor, so the same
-graph runs under the native worker pool, a game engine's job system, or a WebAudio worklet. Output
-is bit-identical no matter how those tasks interleave; determinism is a hard invariant, held by
-fixed fan-in order and a unit delay on real feedback cycles. The whole stack is Rust exposing a
+graph runs under the native worker pool, a game engine's job system, or a WebAudio worklet. *(The
+MVP ships a serial executor; the parallel executor is designed to slot in behind the same interface
+and is not built yet.)* Output is bit-identical no matter how those tasks interleave; determinism is
+a hard invariant, held by fixed fan-in order and a unit delay on real feedback cycles. The one
+sanctioned exception is a boundary that is nondeterministic by nature — live audio input, like
+OSC-in — so a patch with no input pipes gains no new nondeterminism, and offline render injects
+known buffers into the input pipes to stay bit-reproducible. The whole stack is Rust exposing a
 C ABI — chosen because its two hardest subsystems, lock-free plan swap and deterministic parallel
 execution, are exactly what Rust checks at compile time.
 

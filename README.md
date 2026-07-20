@@ -172,8 +172,7 @@ Need behavior no operator provides? That's a new **Operator** in Rust — `scaff
 
 ## Going deeper
 
-- **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** — the design, end to end.
-- **[CONTEXT.md](CONTEXT.md)** — the glossary / ubiquitous language. Read this first if a term is unclear.
+- **[docs/rules/README.md](docs/rules/README.md)** — the rules index: the now-state architecture as rules, plus the glossary and the "avoid these synonyms" list. The single front door (the merged home of the old design narrative and glossary). Start here.
 - **[docs/adr/](docs/adr/)** — the architectural decisions and the reasoning behind them.
 - **[docs/agents/authoring.md](docs/agents/authoring.md)** — authoring Instruments and Rigs (the guide for agents and contributors).
 - **[docs/agents/operator-dev.md](docs/agents/operator-dev.md)** — building new Operators in Rust.
