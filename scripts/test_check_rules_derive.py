@@ -1,0 +1,216 @@
+#!/usr/bin/env python3
+"""Unit tests for check_rules_derive — the README derive guard + collator.
+
+Covers the invariant every downstream authoring stage relies on: an empty/consistent index is
+green under --check, a drifted one is red, --write collates it back to green, and structural
+problems (missing summary, duplicate term) are reported rather than papered over.
+"""
+from __future__ import annotations
+import tempfile
+import unittest
+from pathlib import Path
+
+import check_rules_derive
+
+README_SKELETON = """# reuben rules index
+
+## Topics
+
+<!-- derived — collated from each topic's `> summary`; do not hand-edit out of sync. -->
+- **[<Topic title>](<topic>.md)** — <one-line summary>
+
+## Glossary
+
+<!-- derived — collated from each topic's `## Terms`, linking the defining topic. -->
+- **<Term>** — <one-line definition> · [<topic>](<topic>.md)
+
+## Conventions
+
+Prose that must survive collation untouched.
+"""
+
+CLOCK = """# Clock
+
+> How musical time works.
+
+## Now
+
+Time is a thing.
+
+## Terms
+
+- **Block** — a unit of time.
+"""
+
+
+def build(root: Path, topics: dict[str, str], readme: str = README_SKELETON):
+    rules = root / "docs" / "rules"
+    rules.mkdir(parents=True, exist_ok=True)
+    (rules / "README.md").write_text(readme, encoding="utf-8")
+    for name, body in topics.items():
+        (rules / name).write_text(body, encoding="utf-8")
+    return rules
+
+
+class DeriveGuardTest(unittest.TestCase):
+    def test_empty_tree_is_green_under_check(self):
+        # README with empty derived sections, no topic docs.
+        empty = README_SKELETON.replace(
+            "- **[<Topic title>](<topic>.md)** — <one-line summary>\n", ""
+        ).replace(
+            "- **<Term>** — <one-line definition> · [<topic>](<topic>.md)\n", ""
+        )
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            build(root, {}, readme=empty)
+            self.assertEqual(check_rules_derive.main(["--check", str(root)]), 0)
+
+    def test_skeleton_with_topic_is_drifted_then_write_fixes_it(self):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            build(root, {"clock.md": CLOCK})
+            # Placeholder list items don't match the real topic -> drift, red.
+            self.assertEqual(check_rules_derive.main(["--check", str(root)]), 1)
+            # --write collates the real topic in...
+            self.assertEqual(check_rules_derive.main(["--write", str(root)]), 0)
+            # ...and now --check is green.
+            self.assertEqual(check_rules_derive.main(["--check", str(root)]), 0)
+            text = (root / "docs" / "rules" / "README.md").read_text(encoding="utf-8")
+            self.assertIn("- **[Clock](clock.md)** — How musical time works.", text)
+            self.assertIn("- **Block** — a unit of time. · [clock](clock.md)", text)
+            self.assertIn("Prose that must survive collation untouched.", text)
+
+    def test_write_is_idempotent(self):
+        # Populated README (>=1 topic): the case that already worked — guard against regression.
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            build(root, {"clock.md": CLOCK})
+            self.assertEqual(check_rules_derive.main(["--write", str(root)]), 0)
+            first = (root / "docs" / "rules" / "README.md").read_text(encoding="utf-8")
+            self.assertEqual(check_rules_derive.main(["--write", str(root)]), 0)
+            second = (root / "docs" / "rules" / "README.md").read_text(encoding="utf-8")
+            self.assertEqual(first, second)
+
+    def test_write_empty_section_is_idempotent(self):
+        # Day-one README: no topic docs, so both derived sections collate to empty. This is the
+        # case the old splice() grew by a blank line on every run.
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            build(root, {})  # skeleton with placeholder items, zero topics
+            self.assertEqual(check_rules_derive.main(["--write", str(root)]), 0)
+            first = (root / "docs" / "rules" / "README.md").read_text(encoding="utf-8")
+            self.assertEqual(check_rules_derive.main(["--write", str(root)]), 0)
+            second = (root / "docs" / "rules" / "README.md").read_text(encoding="utf-8")
+            self.assertEqual(first, second, "empty-section --write must be byte-idempotent")
+            # And the empty index is still green under --check.
+            self.assertEqual(check_rules_derive.main(["--check", str(root)]), 0)
+
+    def test_write_eof_section_is_idempotent(self):
+        # A derived section that is the LAST thing in the file (no following `## ` heading) must
+        # round-trip identically — exercises the EOF branch of splice().
+        readme_eof = """# reuben rules index
+
+## Topics
+
+<!-- derived topics -->
+- **[<Topic title>](<topic>.md)** — <one-line summary>
+
+## Glossary
+
+<!-- derived glossary -->
+- **<Term>** — <one-line definition> · [<topic>](<topic>.md)
+"""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            build(root, {"clock.md": CLOCK}, readme=readme_eof)
+            self.assertEqual(check_rules_derive.main(["--write", str(root)]), 0)
+            first = (root / "docs" / "rules" / "README.md").read_text(encoding="utf-8")
+            self.assertEqual(check_rules_derive.main(["--write", str(root)]), 0)
+            second = (root / "docs" / "rules" / "README.md").read_text(encoding="utf-8")
+            self.assertEqual(first, second, "at-EOF --write must be byte-idempotent")
+            self.assertEqual(check_rules_derive.main(["--check", str(root)]), 0)
+            # The Glossary (last section) still collated correctly.
+            self.assertIn("- **Block** — a unit of time. · [clock](clock.md)", second)
+
+    def test_multiline_leading_comment_preserved_and_idempotent(self):
+        # A leading HTML comment wrapped across lines must survive `--write` intact — opener, body,
+        # and closing `-->` all retained, no dangling/unterminated `<!--` eating the entries. (Fails
+        # against the single-line-only comment loop.)
+        readme = """# reuben rules index
+
+## Topics
+
+<!--
+  derived — collated from each topic's `> summary`; do not hand-edit out of sync.
+-->
+- **[<Topic title>](<topic>.md)** — <one-line summary>
+
+## Glossary
+
+<!-- derived glossary -->
+- **<Term>** — <one-line definition> · [<topic>](<topic>.md)
+
+## Conventions
+
+Prose that must survive collation untouched.
+"""
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            build(root, {"clock.md": CLOCK}, readme=readme)
+            self.assertEqual(check_rules_derive.main(["--write", str(root)]), 0)
+            first = (root / "docs" / "rules" / "README.md").read_text(encoding="utf-8")
+            # Multi-line comment preserved verbatim, and every `<!--` has a matching `-->`.
+            self.assertIn(
+                "<!--\n  derived — collated from each topic's `> summary`; "
+                "do not hand-edit out of sync.\n-->",
+                first,
+            )
+            self.assertEqual(first.count("<!--"), first.count("-->"),
+                             "unbalanced HTML comment markers -> corruption")
+            # Entries collated after the (intact) comment.
+            self.assertIn("- **[Clock](clock.md)** — How musical time works.", first)
+            self.assertIn("Prose that must survive collation untouched.", first)
+            # Idempotent on a second write; still green under --check.
+            self.assertEqual(check_rules_derive.main(["--write", str(root)]), 0)
+            second = (root / "docs" / "rules" / "README.md").read_text(encoding="utf-8")
+            self.assertEqual(first, second, "multi-line-comment --write must be byte-idempotent")
+            self.assertEqual(check_rules_derive.main(["--check", str(root)]), 0)
+
+    def test_summary_with_leading_gt_preserves_inner_marker(self):
+        # `str.lstrip("> ")` would strip the run `> >` and drop the inner `>`; only the one
+        # blockquote marker should be removed.
+        topic = "# Clock\n\n> >50% of blocks share a tempo.\n\n## Terms\n\n- **Block** — a unit.\n"
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            build(root, {"clock.md": topic})
+            self.assertEqual(check_rules_derive.main(["--write", str(root)]), 0)
+            text = (root / "docs" / "rules" / "README.md").read_text(encoding="utf-8")
+            self.assertIn("- **[Clock](clock.md)** — >50% of blocks share a tempo.", text)
+            self.assertEqual(check_rules_derive.main(["--check", str(root)]), 0)
+
+    def test_missing_summary_is_structural_error(self):
+        no_summary = "# Clock\n\n## Now\n\nNo summary line here.\n"
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            build(root, {"clock.md": no_summary})
+            # Structural problem: --check reports it, and --write refuses (returns 1).
+            self.assertEqual(check_rules_derive.main(["--check", str(root)]), 1)
+            self.assertEqual(check_rules_derive.main(["--write", str(root)]), 1)
+
+    def test_duplicate_term_is_structural_error(self):
+        dup_a = "# A\n\n> Topic A.\n\n## Terms\n\n- **Block** — from A.\n"
+        dup_b = "# B\n\n> Topic B.\n\n## Terms\n\n- **Block** — from B.\n"
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            build(root, {"a.md": dup_a, "b.md": dup_b})
+            self.assertEqual(check_rules_derive.main(["--write", str(root)]), 1)
+            self.assertEqual(check_rules_derive.main(["--check", str(root)]), 1)
+
+    def test_readme_missing_returns_zero(self):
+        # No docs/rules/README.md at all -> nothing to do, green.
+        with tempfile.TemporaryDirectory() as d:
+            self.assertEqual(check_rules_derive.main(["--check", d]), 0)
+
+
+if __name__ == "__main__":
+    unittest.main()

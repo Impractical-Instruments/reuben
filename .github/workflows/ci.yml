@@ -41,6 +41,7 @@ jobs:
       check: ${{ steps.filter.outputs.check }}
       windows: ${{ steps.filter.outputs.windows }}
       bench: ${{ steps.filter.outputs.bench }}
+      rules: ${{ steps.filter.outputs.rules }}
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
       - uses: dorny/paths-filter@7b450fff21473bca461d4b92ce414b9d0420d706 # v4.0.2
@@ -87,6 +88,18 @@ jobs:
             bench:
               - *workspace
               - '.github/scripts/perf-gate.sh'
+            # Rules-doc system (docs/rules/ + its guard scripts + hooks). A docs-only rules change
+            # touches nothing in *workspace, so check/windows/bench all skip and `ci-passed` would
+            # green vacuously — the derive + links guards would never run. This dedicated gate makes
+            # them execute on their own path set. ci.yml is here too so a change to the gate re-runs it.
+            rules:
+              - 'docs/rules/**'
+              - 'scripts/check_rules_derive.py'
+              - 'scripts/check_rules_links.py'
+              - 'scripts/check_rules_refs.py'
+              - 'scripts/test_check_rules_*.py'
+              - 'scripts/hooks/**'
+              - '.github/workflows/ci.yml'
 
   lockstep:
     name: MSRV lockstep (toolchain == rust-version)
@@ -267,6 +280,36 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
+  # Rules-doc guards (S01). The rules-doc system's derive + links guards are stdlib-only Python that
+  # goes green on today's empty tree, so it wires in from day one (the reference-linter does NOT — it
+  # would red-fail on the workspace's ~2000 live ADR code refs until the harvest/repoint stage, so it
+  # is deliberately absent below). Same draft-skip as the Rust jobs; `python3` is preinstalled on
+  # ubuntu-latest, so no setup step. Gated on the `rules` path filter (see the `changes` job) — a
+  # docs-only rules change moves none of the *workspace jobs, so without this gate `ci-passed` would
+  # green vacuously and the invariant would never be enforced.
+  rules-guards:
+    name: rules-doc guards
+    runs-on: ubuntu-latest
+    needs: changes
+    if: needs.changes.outputs.rules == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # Mirror the "Skill tests" idiom: run each guard's unit suite from scripts/ so the tests can
+      # import their module by bare name.
+      - name: Guard unit tests
+        run: cd scripts && python3 -m unittest discover -p 'test_check_rules_*.py' -v
+
+      # Backstop for the pre-commit hook's `--write` collation: fail if README's derived sections
+      # drifted from the topic docs.
+      - name: Derive-drift guard
+        run: python3 scripts/check_rules_derive.py --check .
+
+      # The epic's core invariant: every topic has >=1 rule; every rule links exactly one rationale
+      # that exists. (check_rules_refs.py is intentionally NOT run here — it is unwired.)
+      - name: Rule<->rationale link guard
+        run: python3 scripts/check_rules_links.py .
+
   # Always-green aggregate merge gate. A ruleset can't require the per-path-filtered jobs above
   # directly: when a job is Skipped (nothing it gates changed) the ruleset reads it as "expected but
   # never reported" and wedges the PR (see the comment at the top of this file). So the `dev` ruleset
@@ -280,7 +323,7 @@ jobs:
     # this workflow, CONTRIBUTING, and ADR-0055 all refer to the check by one name.
     name: ci-passed
     runs-on: ubuntu-latest
-    needs: [changes, lockstep, check, windows, bench]
+    needs: [changes, lockstep, check, windows, bench, rules-guards]
     if: always()
     steps:
       - name: Fail if any required job failed or was cancelled (skipped is OK)

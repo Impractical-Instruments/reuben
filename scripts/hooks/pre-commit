@@ -1,0 +1,11 @@
+#!/bin/sh
+# Keep docs/rules/README.md's derived sections in sync with the topic docs. Runs only when a
+# commit touches the rules docs; regenerates the index and re-stages it so the fix lands in the
+# same commit. CI's `check_rules_derive.py --check` is the backstop, not the front line.
+if git diff --cached --name-only | grep -q '^docs/rules/'; then
+    python3 scripts/check_rules_derive.py --write "$(git rev-parse --show-toplevel)" || {
+        echo "pre-commit: rules index has a structural problem (see above)" >&2
+        exit 1
+    }
+    git add docs/rules/README.md
+fi
