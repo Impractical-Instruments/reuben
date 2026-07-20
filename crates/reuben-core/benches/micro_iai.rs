@@ -1,7 +1,7 @@
 //! CI regression gate, micro layer (#30): deterministic instruction count of each operator's
 //! `process` over the fixed 1 s schedule, via callgrind. Same rationale as `macro_iai` — counts are
 //! CPU-independent and byte-stable, so the same-toolchain compare in CI flags a per-operator
-//! regression without wall-clock flake (ADR-0019). The macro layer catches a graph getting slower;
+//! regression without wall-clock flake. The macro layer catches a graph getting slower;
 //! this layer says which operator.
 //!
 //! The [`setup`] wrapper builds the harness (alloc, resource decode, event construction) outside the

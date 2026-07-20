@@ -3,7 +3,7 @@
 //! Both bench harnesses — `macro_criterion` (wall-clock, local) and `macro_iai`
 //! (instruction-count, CI gate) — drive the *same* `BenchState` so the two layers
 //! measure identical work. The workload touches no clock and no RNG, so iai
-//! instruction counts are byte-stable across runs (ADR-0019).
+//! instruction counts are byte-stable across runs.
 //!
 //! Each bench binary compiles this module independently and uses only a subset of
 //! it, so `dead_code` is expected.
@@ -45,7 +45,7 @@ struct Fixture {
 /// (the lfo + m2s + math modulation stack), sampler-arp (sample + clock + sequencer, the
 /// non-oscillator path), and autotune — the tonal-context path (harmony → snap → voicer), which
 /// exercises the `hz`/`snap`/`chord_tone` resolver and context-driven block-slicing nothing else
-/// here touches (#30, ADR-0013/0019).
+/// here touches (#30).
 const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "reverb",
@@ -125,10 +125,10 @@ pub struct BenchState {
 
 /// Resolves a fixture's resources from `benches/fixtures/`, so voices *bind* and the bench
 /// renders the real hosted-voice workload (#102) — not the degraded empty-voicer path `load()` gives.
-/// `resolve_text` reads a voice patch's JSON (ADR-0032 §2); `resolve` decodes a WAV (mirrors
+/// `resolve_text` reads a voice patch's JSON; `resolve` decodes a WAV (mirrors
 /// `reuben-native`'s `FsResolver`, using the `hound` dev-dependency) so `sampler-arp`'s sample player
 /// reads real data instead of idling on an empty buffer. Setup-only IO — the timed `render` reads
-/// none of it — and the decoded bytes are fixed, so iai instruction counts stay byte-stable (ADR-0019).
+/// none of it — and the decoded bytes are fixed, so iai instruction counts stay byte-stable.
 struct FixturesDir;
 impl ResourceResolver for FixturesDir {
     fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {

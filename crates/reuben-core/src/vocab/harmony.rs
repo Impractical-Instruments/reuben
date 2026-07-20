@@ -1,28 +1,28 @@
-//! Tonal context — the latched harmony value followers resolve against (ADR-0013, ADR-0015).
+//! Tonal context — the latched harmony value followers resolve against.
 //!
 //! A [`Harmony`] is the current key/scale/chord, a small **`Copy`** value so the engine can
-//! snapshot it onto the Message wire allocation-free (ADR-0015): the slicing model *forces*
+//! snapshot it onto the Message wire allocation-free: the slicing model *forces*
 //! the `Copy` shape. It owns the resolver — `hz` (degree → Hz), `snap` (arbitrary pitch →
 //! nearest in-scale degree), `chord_tone` — so the Scale∘Tuning composition lives in one
 //! correct place and followers stay dumb (`io.read(IN_HARMONY).hz(p)`).
 //!
-//! Representation (ADR-0013): a **Scale** is ordered **step**-offsets within the tuning's
+//! Representation: a **Scale** is ordered **step**-offsets within the tuning's
 //! period (12-EDO major = `[0,2,4,5,7,9,11]`) plus a root; `degree d → root + scale[d mod
 //! len] + octave*period`. A **Chord** is a tagged union — scale-relative (re-spells with the
 //! key) or absolute (frozen). This v1.1 slice is **12-TET only** (period 12); Scala/EDO
-//! tunings ride the same step-space seam (the registry of ADR-0015) and land with the
+//! tunings ride the same step-space seam (the shared vocab registry) and land with the
 //! "Format & library" thread.
 
 use crate::vocab::pitch::Pitch;
 
 /// Max scale degrees in a `Harmony` (within a 12-TET period). The registry-side full tuning
-/// ladder (large MOS / Scala) is a separate, deferred axis (ADR-0015).
+/// ladder (large MOS / Scala) is a separate, deferred axis.
 pub const SCALE_CAP: usize = 12;
 /// Max chord tones in a `Harmony`.
 pub const CHORD_CAP: usize = 8;
 
-/// Steps per period — 12-TET only for v1.1 (ADR-0013: Scale lives in step-space so a tuning
-/// swap moves Hz without re-spelling; that swap is the deferred piece).
+/// Steps per period — 12-TET only for v1.1. Scale lives in step-space so a tuning
+/// swap moves Hz without re-spelling; that swap is the deferred piece.
 const PERIOD: i32 = 12;
 const REF_MIDI: f32 = 69.0;
 const REF_HZ: f32 = 440.0;
@@ -35,7 +35,7 @@ fn midi_to_hz(midi: f32) -> f32 {
 }
 
 /// An ordered set of within-period **step** offsets plus a length — the Scale field of a
-/// [`Harmony`]. Inline + `Copy` (no heap) so a context snapshot is a memcpy (ADR-0015).
+/// [`Harmony`]. Inline + `Copy` (no heap) so a context snapshot is a memcpy.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScaleField {
     offsets: [i16; SCALE_CAP],
@@ -55,7 +55,7 @@ impl ScaleField {
     }
 
     /// The 12-EDO major scale `[0,2,4,5,7,9,11]` — the default. A `const` so
-    /// [`Harmony::DEFAULT`] can be a `const` (the typed-handle default, ADR-0037).
+    /// [`Harmony::DEFAULT`] can be a `const` (the typed-handle default).
     pub const MAJOR: Self = Self {
         offsets: [0, 2, 4, 5, 7, 9, 11, 0, 0, 0, 0, 0],
         len: 7,
@@ -81,7 +81,7 @@ impl ScaleField {
     }
 }
 
-/// How a chord tracks the key (ADR-0013): the **tag** makes "follows key" vs "frozen" an
+/// How a chord tracks the key: the **tag** makes "follows key" vs "frozen" an
 /// explicit call-site choice, defusing the silent re-spell footgun.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub enum ChordTag {
@@ -133,7 +133,7 @@ impl Chord {
     }
 }
 
-/// Which set [`Harmony::snap`] quantizes to (ADR-0013). A shared *vocab* enum (ADR-0030):
+/// Which set [`Harmony::snap`] quantizes to. A shared *vocab* enum:
 /// rides the central `Arg` as `Arg::Enum`, read by the `snap` operator as a held choice.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, reuben_macros::ArgValue)]
 pub enum SnapTarget {
@@ -146,8 +146,8 @@ pub enum SnapTarget {
     ChordThenScale,
 }
 
-/// Snap direction (ADR-0013): `Nearest` with a deterministic **down** tie-break (ADR-0001
-/// forbids a coin-flip), or a forced `Up`/`Down`. A shared *vocab* enum (`Arg::Enum`).
+/// Snap direction: `Nearest` with a deterministic **down** tie-break (no coin-flip), or a
+/// forced `Up`/`Down`. A shared *vocab* enum (`Arg::Enum`).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default, reuben_macros::ArgValue)]
 pub enum SnapDir {
     #[default]
@@ -156,7 +156,7 @@ pub enum SnapDir {
     Down,
 }
 
-/// Snap policy — a caller argument, not baked into the context (ADR-0013): auto-tune wants
+/// Snap policy — a caller argument, not baked into the context: auto-tune wants
 /// `Scale/Nearest`, an arp wants `Chord`, a melody wants `ChordThenScale`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Default)]
 pub struct SnapPolicy {
@@ -165,8 +165,8 @@ pub struct SnapPolicy {
 }
 
 /// The latched tonal context: tuning (12-TET for v1.1) + root + scale + chord. A small
-/// `Copy` value (ADR-0015) carrying the resolver; a shared *vocab* type riding the central
-/// `Arg` as `Arg::Harmony` (ADR-0030).
+/// `Copy` value carrying the resolver; a shared *vocab* type riding the central
+/// `Arg` as `Arg::Harmony`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, reuben_macros::ArgValue)]
 pub struct Harmony {
     /// Tonic **step** (absolute MIDI; spans octaves). Default 60 (C4).
@@ -178,7 +178,7 @@ pub struct Harmony {
 impl Harmony {
     /// C major, 12-TET, no chord — the unwired-default tonal frame. A `const` (like every vocab
     /// enum's derive-generated `DEFAULT`) so a typed input handle can carry it as its declared
-    /// default (ADR-0037); [`Default::default`] returns exactly this value.
+    /// default; [`Default::default`] returns exactly this value.
     pub const DEFAULT: Harmony = Harmony {
         root: 60,
         scale: ScaleField::MAJOR,
@@ -274,7 +274,7 @@ impl Harmony {
     }
 
     /// Quantize an arbitrary float-MIDI gesture to the nearest in-target degree, per `policy`
-    /// (ADR-0013). Distance is measured in MIDI/semitone space (≡ cents in 12-TET);
+    /// Distance is measured in MIDI/semitone space (≡ cents in 12-TET);
     /// microtonal cents-correct distance rides the same path when non-12-TET tunings land.
     /// Returns a symbolic [`Pitch`] (a degree where possible) so it re-resolves if the tuning
     /// swaps. Allocation-free.
@@ -356,7 +356,7 @@ impl Harmony {
 }
 
 /// Choose the better of two snap candidates: lower distance wins; on a tie, `ChordThenScale`
-/// prefers a chord tone, then the **lower step** (deterministic down tie-break, ADR-0001).
+/// prefers a chord tone, then the **lower step** (deterministic down tie-break).
 fn pick(a: Cand, b: Cand, target: SnapTarget) -> Cand {
     if (a.dist - b.dist).abs() > EPS {
         return if a.dist < b.dist { a } else { b };
@@ -400,7 +400,7 @@ mod tests {
 
     // §2 — octave wrap off the heptatonic path. `degree_to_step` wraps by the tuning PERIOD
     // (12) while a scale-relative `chord_tone` wraps by the *scale length* — the two constants
-    // ADR-0013's `degree d → root + scale[d mod len] + octave*period` keeps distinct. Every
+    // the resolver rule `degree d → root + scale[d mod len] + octave*period` keeps distinct. Every
     // other resolver test uses a 7-note scale, where a "unify the two wraps" refactor can pass
     // the whole suite; a 5-note pentatonic separates len (5) from PERIOD (12) and pins both.
     #[test]
@@ -547,7 +547,7 @@ mod tests {
 
     #[test]
     fn context_is_copy_and_small() {
-        // The slicing model forces a `Copy`, heap-free struct (ADR-0015): assert it stays so.
+        // The slicing model forces a `Copy`, heap-free struct: assert it stays so.
         fn assert_copy<T: Copy>() {}
         assert_copy::<Harmony>();
         // Guard against an accidental Box/Vec creeping in and ballooning the snapshot.

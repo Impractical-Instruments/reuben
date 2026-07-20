@@ -1,9 +1,9 @@
-//! RT-safety invariant for the install slot (ticket #321, ADR-0046 §7, ADR-0050 §2, ADR-0012):
+//! RT-safety invariant for the install slot (ticket #321):
 //! a render callback driven through [`RenderSlot`] performs **zero** heap allocation and **zero**
 //! frees — both at steady state (no swap pending) and across a full swap, where the callback drains
 //! the install bundle, runs the master-gain ramp, box-transplants the survivors, and posts the
 //! retiree. Every one of those is a pointer swap: the transplant is `mem::swap` over the operator
-//! boxes (ADR-0046 §4), and the retiree is posted **in the same box** the install arrived in, so its
+//! boxes, and the retiree is posted **in the same box** the install arrived in, so its
 //! allocation is reused, never freed on the render thread (the only free is the Coordinator's
 //! off-thread reclaim, outside every measured window here).
 //!
@@ -93,7 +93,7 @@ fn install_slot_callback_never_allocates_or_frees() {
     assert!(!slot.is_ramping(), "no swap ⇒ no ramp");
 
     // (2) A full swap. The Coordinator builds the new Engine + migration table off-thread (this
-    // allocates — outside the measured window, ADR-0009). The RENDER SIDE then drains it, runs the
+    // allocates — outside the measured window). The RENDER SIDE then drains it, runs the
     // ramp, transplants the survivors, and posts the retiree across the fills the shared helper
     // measures below.
     let report = coord.swap_document(&doc, None);

@@ -1,6 +1,6 @@
 //! Integration: resource resolution identity + the non-file library seam (nesting P7, #122).
 //!
-//! ADR-0034 §1: two spellings of one source must be **one identity** to the cycle guard and
+//! Two spellings of one source must be **one identity** to the cycle guard and
 //! the per-load dedup caches, and that judgment belongs to the resolver seam
 //! ([`ResourceResolver::canonical`]), not the loader. These tests drive the loader through
 //! resolvers with a non-identity canonical form and through the in-memory library resolver.
@@ -80,7 +80,7 @@ fn two_spellings_of_one_source_share_one_fetch_and_identity() {
 #[test]
 fn cycle_across_spellings_is_caught_on_canonical_identity() {
     // The patch references itself as `./self.json` while loaded as `self.json`: canonical
-    // identity catches the cycle at the first re-entry (ADR-0034 §1's caveat, resolved).
+    // identity catches the cycle at the first re-entry (a known caveat, resolved).
     const SELF_REF: &str = r#"{
         "instrument": "self",
         "resources": { "me": "./self.json" },

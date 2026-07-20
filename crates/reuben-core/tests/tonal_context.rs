@@ -1,4 +1,4 @@
-//! Integration: the tonal-context bus end-to-end (ADR-0013, ADR-0015) — a harmony node
+//! Integration: the tonal-context bus end-to-end — a harmony node
 //! publishes the latched key/scale, the engine routes and slices it onto downstream readers,
 //! and a Voicer resolves degree notes to Hz through it. Exercises the engine plumbing the
 //! operator unit tests can't: the context arena, context routing onto downstream readers, and
@@ -15,7 +15,7 @@ use reuben_core::{load_instrument, AudioConfig, Registry};
 const SCALE_DEMO: &str = include_str!("fixtures/scale-demo.json");
 const AUTOTUNE: &str = include_str!("fixtures/autotune.json");
 
-/// Resolves each rig's `voice` instrument-resource (ADR-0032) from the frozen `tests/fixtures/` tree.
+/// Resolves each rig's `voice` instrument-resource from the frozen `tests/fixtures/` tree.
 struct InstrumentsDir;
 impl ResourceResolver for InstrumentsDir {
     fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
@@ -38,7 +38,7 @@ fn hz(midi: f32) -> f32 {
     Harmony::default().hz(Pitch::from_midi(midi))
 }
 
-/// Test-only **freq-probe voice** (ADR-0032 session 11): a single `mul_f32_signal` whose `a`
+/// Test-only **freq-probe voice**: a single `mul_f32_signal` whose `a`
 /// operand is the voice's `freq` interface input (f32_buffer-with-meta, message-settable, ZOH-
 /// materialized) and whose `b` defaults to 1.0 — so the voice's audio is `freq * 1 == freq`. Hosting
 /// it under a Voicer makes `voicer.audio` equal the resolved pitch, recreating the removed

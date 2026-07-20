@@ -1,4 +1,4 @@
-//! Format v2 (ADR-0038): the migration renders **bit-identically**.
+//! Format v2: the migration renders **bit-identically**.
 //!
 //! The direction flip is a pure format change — a v1 document auto-migrated at parse and its
 //! hand-written native-v2 equivalent must produce the *same output*, on **every** observable
@@ -6,10 +6,10 @@
 //! interface outputs. These tests render both forms through the real engine and compare
 //! exactly, across the three host positions (top-level played, subpatch-nested, Voicer-hosted):
 //!
-//! - a **Voicer-hosted** synth (ADR-0032): the voice's `freq`/`gate` interface inputs become
+//! - a **Voicer-hosted** synth: the voice's `freq`/`gate` interface inputs become
 //!   pipes the Voicer drives by message — note-ons/offs at mid-block frames exercise value-pipe
 //!   forwarding and signal-pipe materialization timing;
-//! - a **nested** effect (ADR-0034): boundary wires, boundary literals, and defaulted control
+//! - a **nested** effect: boundary wires, boundary literals, and defaulted control
 //!   pipes through the synthesized face — including an out-of-display-range literal, pinning
 //!   that v1's presentational `min`/`max` did not become engine clamps;
 //! - **master-tap fidelity** (review #189 F1): duplicate v1 anonymous taps stay duplicated,
@@ -23,7 +23,7 @@
 //!   (embedded verbatim from git history) against their rewritten v2 forms, frozen under
 //!   `tests/fixtures/` since the library cull.
 //!
-//! This is the ADR-0026 discipline the instrument rewrite rode on: the library suite
+//! This is the discipline the instrument rewrite rode on: the library suite
 //! (first_sound, groovebox, stereo_pan, …) keeps asserting behavior on the rewritten v2 files,
 //! and this file pins v1 ≡ v2 at the sample/message level.
 
@@ -38,7 +38,7 @@ use reuben_core::{load_instrument, AudioConfig, NormalizedDoc, Registry};
 const BLOCK: usize = 128;
 const BLOCKS: usize = 40;
 
-/// Everything a render makes observable past the boundary (ADR-0026/0030/0032): the master
+/// Everything a render makes observable past the boundary: the master
 /// signal channels, the outbound message vector (block-stamped), and each block's captured
 /// Value interface outputs. Bit-identical migration means **all three** match.
 #[derive(Debug, PartialEq)]
@@ -142,7 +142,7 @@ fn voicer_messages(block: usize) -> Vec<Message> {
     }
 }
 
-// The v1 spelling of a subtractive voice + its hosting synth (the pre-ADR-0038 shipped shape:
+// The v1 spelling of a subtractive voice + its hosting synth (the pre-v2 shipped shape:
 // target-pointing interface entries, anonymous top-level `outputs`).
 const VOICE_V1: &str = r#"{
   "instrument": "voice",
@@ -172,7 +172,7 @@ const SYNTH_V1: &str = r#"{
   "outputs": [ { "node": "/out", "port": "audio" } ]
 }"#;
 
-// The same instrument spelled native v2 (ADR-0038): interface inputs are typed pipes consumed
+// The same instrument spelled native v2: interface inputs are typed pipes consumed
 // by ordinary wire-refs; the master taps are named `interface.outputs` entries.
 const VOICE_V2: &str = r#"{
   "format_version": 2,
@@ -239,7 +239,7 @@ fn migration_produces_exactly_the_native_v2_document() {
     }
 }
 
-// A nested effect (ADR-0034): the child's boundary — an audio input, a swept tone control with
+// A nested effect: the child's boundary — an audio input, a swept tone control with
 // a child literal and v1 *presentational* min/max, a Value mix control — spelled v1 (targets)
 // and v2 (pipes). The v1 `tone` narrowing (200..8000) was display-only: the engine enforced the
 // inner cutoff's 20..20000 — so the native-v2 equivalent declares the inner range (the migrated
@@ -374,7 +374,7 @@ fn out_of_display_range_control_is_not_clamped_harder_than_v1() {
 
 #[test]
 fn migrated_channel_taps_render_bit_identical_to_native_v2() {
-    // ADR-0026's channel-pinned taps: the v1 anonymous `outputs` with `channel` migrate into
+    // Channel-pinned taps: the v1 anonymous `outputs` with `channel` migrate into
     // channel-bound output pipes; both spellings drive the same logical master channels.
     const PAN_V1: &str = r#"{
       "instrument": "pan",
@@ -552,7 +552,7 @@ const WETDRY_V2: &str = r#"{
 #[test]
 fn boundary_only_v1_outputs_are_exact_when_hosted() {
     // The position boundary-only outputs were USED in: a host wiring the child's `wet`/`out`.
-    // Child master taps never cross the boundary (ADR-0034 §4), so hosted behavior is exact.
+    // Child master taps never cross the boundary, so hosted behavior is exact.
     fn host(version: &str) -> String {
         let (stamp, taps, outputs) = if version == "v2" {
             (
@@ -595,12 +595,12 @@ fn boundary_only_v1_outputs_are_exact_when_hosted() {
 
 #[test]
 fn boundary_only_v1_output_played_top_level_is_the_accepted_warned_divergence() {
-    // ADR-0038 §4 unified "boundary output" with "master tap": a channel-less signal output
+    // v2 unified "boundary output" with "master tap": a channel-less signal output
     // pipe at top level IS a broadcast tap. v1 kept the two separate — `wet` above produced no
     // sound at top level (only the anonymous `outputs` tapped). The consolidated block has no
     // way to spell "signal boundary output, not a tap", so this ONE v1 shape diverges when the
     // migrated document is played top-level: `wet` now broadcasts alongside the dry tap.
-    // **Accepted + warned** (decided 2026-07-04, recorded in ADR-0038 §5): the unification
+    // **Accepted + warned** (decided 2026-07-04): the unification
     // stands, the divergence is surfaced via a Migration warning naming the entry, and
     // everything hosted/nested — the position these entries were authored for — is exact
     // (test above).
@@ -739,7 +739,7 @@ fn internally_wired_value_target_drops_loudly_and_the_voice_keeps_loading() {
 fn a_node_at_a_minted_address_steps_aside_with_its_references() {
     // Review #189 F4: entry "filter" mints /filter — an address the document's own /filter
     // node holds. Legal v1 (entries minted nothing); fatal DuplicateAddress would break
-    // ADR-0036 §4. The node renames aside and every reference follows.
+    // the legal-v1-keeps-loading rule. The node renames aside and every reference follows.
     const COLLIDING: &str = r#"{
       "instrument": "colliding",
       "interface": { "inputs": { "filter": "/filter.cutoff" } },
@@ -816,7 +816,7 @@ fn dotted_v1_entry_names_mint_and_resolve() {
 fn arg_target_entries_drop_loudly_instead_of_refusing_the_document() {
     // Review #189 F6: v1 accepted interface entries targeting ANY input port by inheritance —
     // including `osc_out.in` (the type-agnostic Arg pass-through). The pipe model has no Arg
-    // form, so the entry drops with a warning; the document keeps loading (ADR-0036 §4), and
+    // form, so the entry drops with a warning; the document keeps loading, and
     // the rest of its boundary is intact.
     const ARG_TARGET: &str = r#"{
       "instrument": "argy",

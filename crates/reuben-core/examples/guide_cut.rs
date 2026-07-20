@@ -1,11 +1,11 @@
-//! Emit one delivery lane's cut of the authoring guide to stdout (ADR-0059 §3).
+//! Emit one delivery lane's cut of the authoring guide to stdout.
 //!
 //! `cargo run -p reuben-core --example guide_cut -- web`
 //!
 //! The web build bundles the `web` slice into its stable prefix — the full guide minus
 //! checkout-only sections, mechanically sliced by the headings' `lanes:` tags, never
-//! hand-paraphrased (ADR-0051). The guide is read from the checkout at run time (the
-//! ADR-0051 §4 posture: a stale build must not emit a stale guide); the `guide_lanes`
+//! hand-paraphrased. The guide is read from the checkout at run time (a stale build must
+//! not emit a stale guide); the `guide_lanes`
 //! test keeps every heading tagged so the cut can be trusted.
 
 use std::path::Path;

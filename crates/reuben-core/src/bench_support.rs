@@ -1,4 +1,4 @@
-//! Per-operator micro-benchmark bridge (#30, follow-up to #19 / ADR-0019; unified model, ADR-0030).
+//! Per-operator micro-benchmark bridge (#30, follow-up to #19; unified model).
 //!
 //! The macro layer ([`benches/macro_*`](../../benches)) benches end-to-end `render_block` of a
 //! real instrument. This module is the deferred *micro* layer: it drives a single operator's
@@ -10,7 +10,7 @@
 //! `Renderer::step_node` over the fixed schedule. So this layer can never drift from how the engine
 //! actually seeds and steps a node — and the engine per-node overhead it now includes (edge clear,
 //! routing, materialize, `Io` build) is a *constant* per-operator offset, so regression detection
-//! survives the shift from "process cost" to "per-node cost" (the OpDriver reframe of ADR-0019).
+//! survives the shift from "process cost" to "per-node cost" (the OpDriver reframe).
 //! That constant offset is also measured *by itself*: the bench-only [`overhead`] case is a no-op
 //! operator behind a typical port shape, so a change to the engine's stepping cost fails one case
 //! whose name says so instead of smearing small deltas across every cheap operator.
@@ -21,7 +21,7 @@
 //! kind. The [`tests::every_operator_has_a_micro_bench_workload`] forcing function asserts
 //! `WORKLOADS` covers every registered operator, so adding an operator without a workload reds CI.
 //!
-//! Determinism (ADR-0001): every workload is a fixed function of constants — no clock, no entropy
+//! Determinism: every workload is a fixed function of constants — no clock, no entropy
 //! (the one RNG operator, `noise`, is seeded) — so iai instruction counts are byte-stable.
 
 use crate::descriptor::{Descriptor, PortType};
@@ -30,7 +30,7 @@ use crate::registry::Registry;
 use crate::resources::SampleBuffer;
 use crate::vocab::pitch::{Note, Pitch};
 
-/// 48 kHz — the real shipped sample rate (matches the macro layer, ADR-0019).
+/// 48 kHz — the real shipped sample rate (matches the macro layer).
 pub const SAMPLE_RATE: f32 = 48_000.0;
 /// 128-frame blocks — the real shipped default.
 pub const BLOCK_SIZE: usize = 128;
@@ -157,7 +157,7 @@ pub const WORKLOADS: &[Workload] = &[
     w("strum", Recipe::Position),
     w("sub_f32_signal", Recipe::Default),
     w("sub_f32_value", Recipe::Default),
-    // `subpatch` registers no ports and dissolves at build (ADR-0034 §2), so the loader never
+    // `subpatch` registers no ports and dissolves at build, so the loader never
     // lets one reach a Plan; the harness constructs it directly and steps its no-op `process`,
     // benching the format anchor for census completeness.
     w("subpatch", Recipe::Default),
@@ -166,7 +166,7 @@ pub const WORKLOADS: &[Workload] = &[
 ];
 
 /// The operator kinds the iai CI gate benches — the canonical mirror of `micro_iai.rs`'s
-/// compile-time `#[bench::…]` list (#30, ADR-0019). iai's `harness = false` bench can't host a
+/// compile-time `#[bench::…]` list (#30). iai's `harness = false` bench can't host a
 /// normal test to introspect its own attributes, so the list lives here, where the
 /// [`tests::iai_list_covers_every_workload`] forcing function (in the `check` job) asserts it equals
 /// [`WORKLOADS`]. Adding an operator therefore reds `check` until both this list and the matching
@@ -230,7 +230,7 @@ pub const MICRO_IAI_KINDS: &[&str] = &[
     "voicer",
 ];
 
-/// `overhead` — the zero-DSP measurement point (ADR-0019 follow-up to the OpDriver reframe).
+/// `overhead` — the zero-DSP measurement point (follow-up to the OpDriver reframe).
 ///
 /// Every micro case measures `step_node` = the operator's own `process` **plus** the engine's
 /// per-node overhead (edge clear, routing, materialize, `Io` build). That overhead is a constant
@@ -296,7 +296,7 @@ pub fn workload(kind: &str) -> Workload {
 /// A fully-prepared single-operator bench. Built by [`OpHarness::for_kind`] *outside* the measured
 /// region; only [`OpHarness::render`] is timed. Rides on a real [`OpDriver`]: the recipe is applied
 /// through the driver, and `render` steps the operator through the engine's real per-node path, so
-/// the bench cannot drift from production stepping (the OpDriver reframe of ADR-0019).
+/// the bench cannot drift from production stepping (the OpDriver reframe).
 pub struct OpHarness {
     driver: OpDriver,
     /// Frames rendered per timed call — the fixed 1 s schedule (`BLOCKS * BLOCK_SIZE`).
@@ -311,7 +311,7 @@ impl OpHarness {
         use crate::operator::Operator;
         // `overhead` is bench-only and deliberately absent from `Registry::builtin` (see
         // [`overhead`]) — layer it onto this local lookup copy through the embedder seam
-        // (ADR-0004), so every kind resolves through one uniform path.
+        // through the embedder seam, so every kind resolves through one uniform path.
         let mut reg = Registry::builtin();
         reg.register(
             || Box::new(overhead::Overhead::new()),
@@ -344,7 +344,7 @@ impl OpHarness {
 }
 
 /// Apply a [`Recipe`]'s input drives + events to a freshly-built driver — the minimum each operator
-/// needs to exercise its real per-sample path rather than an early-out idle path (ADR-0030).
+/// needs to exercise its real per-sample path rather than an early-out idle path.
 fn apply_recipe(driver: &mut OpDriver, desc: &Descriptor, recipe: Recipe) {
     match recipe {
         Recipe::Default => {}
@@ -362,7 +362,7 @@ fn apply_recipe(driver: &mut OpDriver, desc: &Descriptor, recipe: Recipe) {
         Recipe::ChordSet => push_note(driver, desc, "set", Note::new(Pitch::Degree(0), 1.0)),
         Recipe::Position => set_const(driver, desc, "position", 0.5),
         // `in` is a `Float` control on the dense transformers but a `Note` port on `osc_out`; drive
-        // each in its own type (ADR-0030 split the formerly-uniform value event).
+        // each in its own type (the formerly-uniform value event is now split by type).
         Recipe::Value => {
             let i = input_index(desc, "in");
             if matches!(desc.inputs[i].ty, PortType::F32) {
@@ -406,7 +406,7 @@ fn push_note(driver: &mut OpDriver, desc: &Descriptor, name: &str, note: Note) {
 }
 
 /// Drive a named clock input as a per-block square wave: high for the first half of every 128-frame
-/// block, low for the second. The clock is a held **Value** (ADR-0031), fed by edges rather than a
+/// block, low for the second. The clock is a held **Value**, fed by edges rather than a
 /// per-sample buffer, so push a level change at each 0.5-threshold crossing — a rising edge every
 /// block (last-low → first-high) with a falling edge mid-block, so a sequencer walks its step table.
 fn drive_clock(driver: &mut OpDriver, desc: &Descriptor, name: &str) {

@@ -1,14 +1,14 @@
 //! The engine's agent-tool **contract roster** — the single source of truth for *which* contracts
-//! the ADR-0048 tool surface exposes, and in what order (#157, Wave 1 of #156).
+//! the tool surface exposes, and in what order.
 //!
 //! This declares the roster *identity* — names and channel kind — and nothing else. Descriptions,
 //! input/output schemas, and the tool bodies stay per-door (they are host-flavoured and, for the
 //! MCP door, carry rmcp/schemars machinery reuben-core must never depend on). "Contracts live in
-//! core" (ADR-0052 §5): the roster is OS-free and depends on no engine or protocol type, so every
+//! core": the roster is OS-free and depends on no engine or protocol type, so every
 //! door can derive its name-set and count from [`CONTRACTS`] instead of hand-typing a parallel
 //! literal. Adding a verb becomes one entry here rather than a roster edit in every door.
 
-/// Which channel a contract is served over (ADR-0048 §1). Roster metadata only — it does not carry
+/// Which channel a contract is served over. Roster metadata only — it does not carry
 /// the tool's behaviour, just how the door reaches it.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContractKind {
@@ -21,7 +21,7 @@ pub enum ContractKind {
 }
 
 /// One entry in the contract roster: the exact name advertised on the wire, plus its channel kind.
-/// Names only — the description and schema are the door's business (ADR-0052 §5).
+/// Names only — the description and schema are the door's business.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Contract {
     /// The exact spelling advertised over the tool surface (e.g. `tools/list`).
@@ -30,7 +30,7 @@ pub struct Contract {
     pub kind: ContractKind,
 }
 
-/// The ADR-0048 §1 contract roster, in the ADR's exact order: the pure contracts first, then the
+/// The contract roster, in canonical wire order: the pure contracts first, then the
 /// engine contracts. `scaffold_instrument` (#158, closes #146) joins the pure group as the
 /// first-creation start move — a read-only producer of a guaranteed-valid minimal document. This
 /// is the authority every door derives its advertised name-set and count from; the order here is
@@ -102,7 +102,7 @@ mod tests {
                 "get_diagnostics",
             ]
         );
-        // The four-pure / five-engine split (ADR-0048 §1, `scaffold_instrument` added by #158), and
+        // The four-pure / five-engine split (`scaffold_instrument` added by #158), and
         // it is a partition (no other kind).
         assert_eq!(
             CONTRACTS

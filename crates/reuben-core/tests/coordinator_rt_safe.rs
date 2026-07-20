@@ -1,8 +1,8 @@
-//! RT-safety invariant (ADR-0046 §2, ADR-0012): the render side of the swap mailbox
+//! RT-safety invariant: the render side of the swap mailbox
 //! pair — `take_install` and `post_retiree` — performs **zero** heap allocation and
 //! **zero** frees. Both directions are pure atomic pointer exchanges; `Box::into_raw`/
 //! `Box::from_raw` are pointer conversions, and the displaced payload is handed back to
-//! the Coordinator to drop off-thread (deferred free, ADR-0009). The same window also
+//! the Coordinator to drop off-thread (deferred free). The same window also
 //! proves the ops take no locks by construction: the module's only synchronization is
 //! the two `AtomicPtr`s (no `Mutex`/`Condvar`/syscall anywhere in `coordinator`), and a
 //! blocking op could not complete 100k single-threaded round trips.
@@ -29,8 +29,8 @@ fn render_side_drain_and_post_never_alloc_or_free() {
         _state: [u64; 32],
     }
 
-    // All allocation lives here, off the measured path (Swap's Instantiate side,
-    // ADR-0009): the mailbox pair, the resident payload, and one incoming payload.
+    // All allocation lives here, off the measured path (Swap's Instantiate side):
+    // the mailbox pair, the resident payload, and one incoming payload.
     let (mut coordinator, mut render) = swap_pair::<Payload>();
     let mut current = Box::new(Payload { _state: [0; 32] });
     coordinator

@@ -15,7 +15,7 @@ const GOOD_BUTTON_JSON: &str = include_str!("fixtures/good-button.json");
 const AUTO_FILTER_JSON: &str = include_str!("fixtures/auto-filter.json");
 
 /// A filesystem resolver rooted at the frozen `tests/fixtures/` tree, so an instrument-resource (`voice`)
-/// reference (ADR-0032) resolves to its on-disk voice patch. Samples aren't needed by the patches
+/// reference resolves to its on-disk voice patch. Samples aren't needed by the patches
 /// these tests load, so `resolve` is a stub.
 struct InstrumentsDir;
 
@@ -29,13 +29,13 @@ impl ResourceResolver for InstrumentsDir {
     }
 }
 
-/// Load `default.json` through the full resource pipeline (ADR-0032): the `voicer` node's `voice`
+/// Load `default.json` through the full resource pipeline: the `voicer` node's `voice`
 /// instrument-resource resolves + builds its sub-patches from disk.
 fn load_default() -> Graph {
     load_res(DEFAULT_JSON)
 }
 
-/// Load any instrument JSON through the full resource pipeline (ADR-0032), resolving its `voice`
+/// Load any instrument JSON through the full resource pipeline, resolving its `voice`
 /// sub-patches from the repo `instruments/` dir.
 fn load_res(json: &str) -> Graph {
     load_instrument(json, &Registry::builtin(), &InstrumentsDir)
@@ -144,7 +144,7 @@ fn save_then_reload_renders_identically() {
 
 #[test]
 fn from_graph_round_trips_resource_ids() {
-    // `from_graph` must re-emit a node's logical resource id — an ADR-0016 `sample` and an ADR-0032
+    // `from_graph` must re-emit a node's logical resource id — a `sample` and a
     // `voice` — so save -> reload preserves the reference. The id is stashed at build, independent of
     // resource resolution (the decoded bytes still don't round-trip; only the id does, by design).
     let reg = Registry::builtin();
@@ -225,7 +225,7 @@ fn render_with_control(graph: Graph, cfg: AudioConfig, seconds: f32, control: Me
 
 #[test]
 fn good_button_brightness_opens_the_filter() {
-    // ADR-0017 Good Button: one /brightness knob fanned (identity map -> two ranged maps ->
+    // Good Button: one /brightness knob fanned (identity map -> two ranged maps ->
     // two m2s converters) into the filter's Signal cutoff + resonance. Brightness 1.0 opens
     // the filter far wider than 0.0, so the held saw carries clearly more energy.
     let cfg = AudioConfig::new(48_000.0, 256);
@@ -267,7 +267,7 @@ fn good_button_brightness_opens_the_filter() {
 
 #[test]
 fn auto_filter_base_plus_lfo_modulation_sounds_and_wobbles() {
-    // ADR-0017 base-plus-modulation: a Signal `add` sums a base-cutoff CV (m2s) and an LFO
+    // Base-plus-modulation: a Signal `add` sums a base-cutoff CV (m2s) and an LFO
     // wobble, feeding the filter's Signal cutoff. The rig must sound; and turning the LFO
     // depth to 0 (a static cutoff) must change the output — which proves the LFO -> add ->
     // filter.cutoff modulation path is actually live, not bypassed.
@@ -373,7 +373,7 @@ fn clock_makes_a_sample_accurate_metronome() {
 fn sequencer_emits_notes_through_a_voicer() {
     // The sequence rig (Clock beat-gate -> sequencer -> Voicer hosting sequence-voice sub-patches)
     // plays itself with no external input: the sequencer emits note Messages on the internal
-    // message graph (ADR-0014), the Voicer drives a hosted voice per note, and each beat sounds
+    // message graph, the Voicer drives a hosted voice per note, and each beat sounds
     // with a changing pitch. Deterministic, like the metronome.
     let cfg = AudioConfig::new(48_000.0, 256);
     let reg = Registry::builtin();

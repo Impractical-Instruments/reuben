@@ -1,6 +1,6 @@
 //! Integration: the `osc_out` sink collects its input Messages onto the outbound route, the
 //! render loop stamps the node's address (the outbound OSC address), and they surface on
-//! `render_block_multi`'s outbound out-parameter (ADR-0026).
+//! `render_block_multi`'s outbound out-parameter.
 
 use reuben_core::graph::Graph;
 use reuben_core::message::{Arg, Message};
@@ -40,7 +40,7 @@ fn forwards_input_to_outbound_stamped_with_node_address() {
     assert_eq!(outbound[0].arg, Arg::Note(note));
 }
 
-/// The sink is type-agnostic (issue #141): a **wired Value source** — the ADR-0026 two-way
+/// The sink is type-agnostic (issue #141): a **wired Value source** — the two-way
 /// control-surface case, a Good Button's `map` output echoing a control value — reaches the
 /// outbound route too, not just a `Note`. The Value's emission delivers to the pass-through
 /// input as a raw Event and forwards verbatim, stamped with the sink's address.
@@ -78,7 +78,7 @@ fn forwards_a_wired_value_source_for_control_feedback() {
     );
 }
 
-/// The frame on an outbound Message is **block-absolute** (ADR-0011 timing, ADR-0026 feedback):
+/// The frame on an outbound Message is **block-absolute** (timing + feedback):
 /// the render loop stamps operator emissions by adding each segment's start (`with_emit(..,
 /// seg_start)`), and the outbound drain forwards that frame verbatim — it must neither re-stamp
 /// nor lose the offset. Two held changes to the map's `in` split its block into segments [0,100)

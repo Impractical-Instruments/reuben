@@ -1,4 +1,4 @@
-//! Tier-1 mechanical guards for the intent-vocabulary artifact (ADR-0058 §§4–5): the committed
+//! Tier-1 mechanical guards for the intent-vocabulary artifact: the committed
 //! source parses, every move references the live operator registry (the registry-staleness
 //! test — a rename breaks the build, not the agent), and the committed rendered view is in
 //! sync with the source (the generated-artifact posture: one source, generated view, CI-checked).

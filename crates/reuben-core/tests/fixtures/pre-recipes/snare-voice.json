@@ -1,7 +1,7 @@
 {
   "format_version": 2,
   "instrument": "snare-voice",
-  "doc": "Snare drum voice (ADR-0032). A gate fires one envelope whose CV shapes both a noise body and a short tonal sine ring; their sum is the snare. Pitch is internal (no freq interface input); the host's lane voicer only drives the gate. interface: gate in, audio/active out.",
+  "doc": "Snare drum voice. A gate fires one envelope whose CV shapes both a noise body and a short tonal sine ring; their sum is the snare. Pitch is internal (no freq interface input); the host's lane voicer only drives the gate. interface: gate in, audio/active out.",
   "interface": {
     "inputs": {
       "gate": {

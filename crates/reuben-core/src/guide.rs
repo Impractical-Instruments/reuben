@@ -1,6 +1,6 @@
-//! The authoring guide's `lanes:` section tags and the mechanical lane cut (ADR-0059 §3).
+//! The authoring guide's `lanes:` section tags and the mechanical lane cut.
 //!
-//! `docs/agents/authoring.md` is authored once and delivered per lane (ADR-0051): the repo
+//! `docs/agents/authoring.md` is authored once and delivered per lane: the repo
 //! skills point at it, the MCP sidecar serves it in-band, and the web lane bundles a
 //! build-time slice — the full guide **minus checkout-only sections** (the filesystem
 //! sample workflow, the ADR index). The slice is never hand-paraphrased: every Markdown
@@ -13,7 +13,7 @@
 
 use std::fmt;
 
-/// A delivery lane for the authoring guide (ADR-0059 §1): repo **skills** (checkout,
+/// A delivery lane for the authoring guide: repo **skills** (checkout,
 /// pointers work), **MCP** clients (in-band resources), **web** chat (no checkout — the
 /// bundled slice is its only grounding).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -84,7 +84,7 @@ impl std::error::Error for LaneCutError {}
 /// level; fenced code blocks are opaque (a `#` line inside one is content, not a heading).
 ///
 /// Errors rather than guesses on an untagged heading, an unknown lane name, or an empty
-/// tag — the guide must stay fully tagged for the cut to be trusted (ADR-0059 §8).
+/// tag — the guide must stay fully tagged for the cut to be trusted.
 pub fn lane_cut(source: &str, lane: Lane) -> Result<String, LaneCutError> {
     let mut out = String::with_capacity(source.len());
     let mut in_fence = false;

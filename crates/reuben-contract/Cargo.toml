@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Single-source operator contract: spec types, naming, and validation shared by the operator_contract! macro and the scaffold (ADR-0025)."
+description = "Single-source operator contract: spec types, naming, and validation shared by the operator_contract! macro and the scaffold."
 
 [dependencies]
 serde.workspace = true

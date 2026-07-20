@@ -1,7 +1,7 @@
 {
   "format_version": 2,
   "instrument": "scale-demo",
-  "doc": "The same self-playing sequence as sequence.json (ADR-0032), but the Voicer resolves each step degree through a tonal context set to C natural minor — so the identical degree pattern (0..7) re-spells into the minor scale with no edit to the line. Each step plays on a hosted `scale-voice` sub-patch. Change the key live with /harmony/root (MIDI), or reshape the scale with /harmony/s0../harmony/s6 (step offsets) and /harmony/degrees; both apply sample-accurately. Send a chord with /harmony/set [tag, d0, d1, ...] (tag 1 = scale-relative, 2 = absolute, 0 = clear).",
+  "doc": "The same self-playing sequence as sequence.json, but the Voicer resolves each step degree through a tonal context set to C natural minor — so the identical degree pattern (0..7) re-spells into the minor scale with no edit to the line. Each step plays on a hosted `scale-voice` sub-patch. Change the key live with /harmony/root (MIDI), or reshape the scale with /harmony/s0../harmony/s6 (step offsets) and /harmony/degrees; both apply sample-accurately. Send a chord with /harmony/set [tag, d0, d1, ...] (tag 1 = scale-relative, 2 = absolute, 0 = clear).",
   "resources": {
     "scale-voice": "voices/scale-voice.json"
   },

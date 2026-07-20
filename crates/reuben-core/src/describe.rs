@@ -1,16 +1,16 @@
-//! Boundary introspection (ADR-0034 §4 / ADR-0038): describe a loaded instrument's `interface`
+//! Boundary introspection: describe a loaded instrument's `interface`
 //! as the operator-style port list a host wires against. An **input pipe** is described from
 //! its own declaration (the synthesized pipe descriptor carries the declared type, range, and
 //! default; the document entry carries `unit`); an **output pipe** inherits type and metadata
 //! from the internal port that feeds it, decorated by the entry's quantity overrides.
 //! Presentation (`label`/`widget`) is no longer part of the boundary — it lives in a surface
-//! doc (ADR-0043). This is the core-side construction every host — the CLI's `reuben
+//! doc. This is the core-side construction every host — the CLI's `reuben
 //! describe`, a wasm or embedded embedder — reads instead of re-implementing the merge.
 
 use crate::descriptor::{Curve, PortType};
 use crate::format::{doc_value, widen_f32, DocValue, InstrumentDoc, InterfaceEntry, Loaded};
 
-/// One boundary port as a host sees it (ADR-0034 §4 / ADR-0038 §2): an input pipe's **declared**
+/// One boundary port as a host sees it: an input pipe's **declared**
 /// type/range/default, or an output pipe's type and metadata inherited from the internal port
 /// feeding it, decorated by the entry's presentational fields. Values are owned/document-facing
 /// (`f64`, `String`) — a description, not a descriptor.
@@ -18,7 +18,7 @@ use crate::format::{doc_value, widen_f32, DocValue, InstrumentDoc, InterfaceEntr
 pub struct BoundaryPortDesc {
     /// The external boundary name — the wiring handle a host uses.
     pub name: String,
-    /// The pipe's `Arg` type: declared on an input pipe (nothing to inherit from — ADR-0038),
+    /// The pipe's `Arg` type: declared on an input pipe (nothing to inherit from),
     /// inherited from the feeding port on an output pipe.
     pub ty: PortType,
     /// Effective unwired value: an input pipe's seed (a host literal beats the declared
@@ -29,14 +29,14 @@ pub struct BoundaryPortDesc {
     pub unit: String,
     /// Sweep curve for a swept scalar; `None` for non-scalar ports.
     pub curve: Option<Curve>,
-    /// The ordered enum choices (ADR-0030); empty for non-enum ports.
+    /// The ordered enum choices; empty for non-enum ports.
     pub variants: Vec<String>,
-    /// Logical channel binding (ADR-0038 §3): the input channel a signal input pipe reads, or
+    /// Logical channel binding: the input channel a signal input pipe reads, or
     /// the master channel a signal output pipe feeds, when the graph plays at top level.
     pub channel: Option<usize>,
 }
 
-/// A loaded instrument's boundary (ADR-0034 §4 / ADR-0038), described as if it were an operator:
+/// A loaded instrument's boundary, described as if it were an operator:
 /// one entry per `interface` name. An instrument with no `interface` yields empty lists (it
 /// nests, but exposes nothing to wire).
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -44,7 +44,7 @@ pub struct BoundaryDesc {
     pub inputs: Vec<BoundaryPortDesc>,
     pub outputs: Vec<BoundaryPortDesc>,
     /// Declared boundary ports whose internal target went dark this load (an unavailable nested
-    /// child, ADR-0016/0034) — real ports the description can't type. Always outputs in v2
+    /// child) — real ports the description can't type. Always outputs in v2
     /// (an input pipe is self-contained), kept per-direction for the host view.
     pub dark_inputs: Vec<String>,
     pub dark_outputs: Vec<String>,
@@ -53,9 +53,9 @@ pub struct BoundaryDesc {
 /// Describe `loaded`'s boundary the way a host instrument will see it. `doc` must be the document
 /// `loaded` was built from — it carries the entries' presentational fields (label/unit/widget),
 /// which the built [`Graph`](crate::graph::Graph) deliberately does not (they are
-/// document-level, like `control`). Output overrides are load-validated (the ADR-0034 §4
+/// document-level, like `control`). Output overrides are load-validated (the
 /// subset law), so every range here is a subset of what the engine enforces; an input pipe's
-/// range *is* what the engine enforces (ADR-0038 §2).
+/// range *is* what the engine enforces.
 pub fn describe_boundary(doc: &InstrumentDoc, loaded: &Loaded) -> BoundaryDesc {
     let g = &loaded.graph;
     let port_desc = |name: &String, key: crate::graph::NodeKey, idx: usize, output: bool| {
@@ -108,7 +108,7 @@ pub fn describe_boundary(doc: &InstrumentDoc, loaded: &Loaded) -> BoundaryDesc {
             }
         }
         // Decorate with the entry's quantity fields (`unit`, output range overrides) —
-        // presentation (`label`/`widget`) lives in a surface doc since ADR-0043.
+        // presentation (`label`/`widget`) lives in a surface doc now.
         let entries = doc
             .interface
             .as_ref()
@@ -182,7 +182,7 @@ mod tests {
     #[test]
     fn input_pipe_describes_its_own_declaration() {
         // A native-v2 pipe: the declared type/range/default/curve and presentation come from
-        // the entry itself — nothing inherited (ADR-0038 §2).
+        // the entry itself — nothing inherited.
         let b = boundary(
             r#"{"format_version":2,"instrument":"t","interface":{
                 "inputs":{"tone":{"type":"f32_buffer","default":4000,"min":200,"max":8000,
@@ -208,12 +208,12 @@ mod tests {
 
     #[test]
     fn migrated_v1_boundary_describes_like_the_original() {
-        // The v1 fixture from ADR-0034: `tone` targeted /filter.cutoff with overrides. After
+        // The v1 fixture: `tone` targeted /filter.cutoff with overrides. After
         // migration the pipe carries the **inner port's engine range** (v1's min/max were
         // presentational — the engine clamped to the target's own range, and a v2 pipe range
         // is engine-enforced, so the narrowing cannot ride along), the child literal became
         // its default, and the label decorates. What describe publishes is what the engine
-        // enforces — the ADR-0034 §4 truthfulness law, now with nothing lost in between.
+        // enforces — the truthfulness law, now with nothing lost in between.
         let b = boundary(
             r#"{"instrument":"t","interface":{
                 "inputs":{"tone":{"target":"/filter.cutoff","label":"Tone","min":200,"max":8000}},

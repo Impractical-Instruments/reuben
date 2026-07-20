@@ -1,13 +1,13 @@
-//! Operator — the authoring contract (ADR-0010, ADR-0030).
+//! Operator — the authoring contract.
 //!
 //! An Operator is mono and single-voice: the author writes one stream a (sub)block at a time;
-//! polyphony comes from the Voicer hosting voice sub-patches (ADR-0032), not from the operator.
+//! polyphony comes from the Voicer hosting voice sub-patches, not from the operator.
 //! The process function is allocation-free and sees held values constant for the whole call
-//! (the engine block-slices at Message boundaries, ADR-0011), so the author simply reads "my
+//! (the engine block-slices at Message boundaries), so the author simply reads "my
 //! current value".
 //!
-//! Reads and writes go through **typed handles** (ADR-0037, extending ADR-0031's "the form is
-//! the type" to "the form is the port"): `operator_contract!` emits one [`In`]/[`Out`] const per
+//! Reads and writes go through **typed handles**, extending "the form is
+//! the type" to "the form is the port": `operator_contract!` emits one [`In`]/[`Out`] const per
 //! port whose *type parameter* (a [`form`] marker) fixes the port's read/write shape and whose
 //! value carries the declared default. [`Io::read`] and [`Io::write`] dispatch on the handle:
 //!
@@ -23,10 +23,9 @@
 //!
 //! A wrong-form read no longer compiles: the handle *is* the declared form, so
 //! `io.read(IN_FREQ)` cannot return an event stream for a Signal port. Each [`form`] impl reads
-//! the private `Io` state directly — one dispatch per form (issue #216 folded ADR-0031's former
+//! the private `Io` state directly — one dispatch per form (issue #216 folded the former
 //! `Io::input`/`Io::output` primitives into the impls that were their only callers). The one
-//! type-erased held read left is [`Io::latch_arg`], the interface pipe's forwarding seam
-//! (ADR-0038).
+//! type-erased held read left is [`Io::latch_arg`], the interface pipe's forwarding seam.
 
 use std::sync::Arc;
 
@@ -39,8 +38,8 @@ use crate::message::{Arg, Emit, Event, FromArg};
 use crate::plan::PlanError;
 use crate::resources::{ResolvedRefs, ResourceStore};
 
-/// A typed, frame-stamped payload yielded by an [`EventStream`] — one decoded Message on a port
-/// (ADR-0030). `frame` is segment-relative; `payload` is the Message's [`Arg`] decoded to the
+/// A typed, frame-stamped payload yielded by an [`EventStream`] — one decoded Message on a port.
+/// `frame` is segment-relative; `payload` is the Message's [`Arg`] decoded to the
 /// requested `T` via [`FromArg`].
 #[derive(Debug, Clone, Copy)]
 pub struct Stamped<T> {
@@ -66,24 +65,24 @@ pub struct Io<'a> {
     /// no buffer form. Read per-sample via [`Io::read`] on a Signal handle.
     inputs: SmallVec<[Option<&'a [f32]>; 20]>,
     outputs: SmallVec<[&'a mut [f32]; 2]>,
-    /// The held (ZOH) [`Arg`] per **input** port — the unified per-port latch (ADR-0030),
+    /// The held (ZOH) [`Arg`] per **input** port — the unified per-port latch,
     /// collapsing the former Harmony / enum / param lanes. In input-port order; `Copy`-normalized
     /// and constant for this (sub)block (the engine block-slices at held-value changes). Touched
     /// only through [`Io::latch_arg`]; empty when unattached, so a held read then falls back to
     /// the handle's declared default.
     latched: &'a [Arg],
-    /// The sparse [`Event`]s per **input** port this (sub)block, frames segment-relative
-    /// (ADR-0030). In input-port order; zero-copy views borrowed from the Render loop. Touched
+    /// The sparse [`Event`]s per **input** port this (sub)block, frames segment-relative.
+    /// In input-port order; zero-copy views borrowed from the Render loop. Touched
     /// only through [`Io::stream`]; empty when unattached.
     streams: &'a [&'a [Event<'a>]],
-    /// Sink for Messages this call emits (ADR-0014, ADR-0030), or `None` when unattached. The former
+    /// Sink for Messages this call emits, or `None` when unattached. The former
     /// harmony-publish and outbound sinks fold into this: a context/`osc_out` node simply emits to
     /// the right output port, and routing (the wired edge) carries it.
     emit: Option<&'a mut Vec<Emit>>,
     /// Block-absolute frame of this (sub)block's start, added to an emitted frame so the operator
     /// can work in segment-relative time.
     frame_offset: usize,
-    /// Per-input `varying` hint (ADR-0030), in input-port order: `false` when a materialized
+    /// Per-input `varying` hint, in input-port order: `false` when a materialized
     /// input held its value unchanged this block, so a const-folding operator may reuse cached
     /// coefficients. Empty when unattached — `varying()` then conservatively reports `true`.
     varying: &'a [bool],
@@ -113,21 +112,21 @@ impl<'a> Io<'a> {
         }
     }
 
-    /// Attach the per-input held [`Arg`] latch for this segment (ADR-0030). In input-port order;
+    /// Attach the per-input held [`Arg`] latch for this segment. In input-port order;
     /// read through [`Io::latch_arg`]. Unattached ⇒ a held read falls back to its default.
     pub(crate) fn with_latched(mut self, latched: &'a [Arg]) -> Self {
         self.latched = latched;
         self
     }
 
-    /// Attach the per-input [`Event`] streams for this (sub)block (ADR-0030). In input-port order;
+    /// Attach the per-input [`Event`] streams for this (sub)block. In input-port order;
     /// read through [`Io::stream`]. Unattached ⇒ the event read is empty.
     pub(crate) fn with_streams(mut self, streams: &'a [&'a [Event<'a>]]) -> Self {
         self.streams = streams;
         self
     }
 
-    /// Attach the per-input `varying` hints for this segment (ADR-0030). In input-port order;
+    /// Attach the per-input `varying` hints for this segment. In input-port order;
     /// read by [`Io::varying`]. Unattached ⇒ `varying()` reports `true`.
     pub(crate) fn with_varying(mut self, varying: &'a [bool]) -> Self {
         self.varying = varying;
@@ -152,7 +151,7 @@ impl<'a> Io<'a> {
         self.frames
     }
 
-    /// The `varying` hint for an input (ADR-0030): `false` when a materialized input held its
+    /// The `varying` hint for an input: `false` when a materialized input held its
     /// value unchanged this block (so a const-folding op may reuse cached state), `true` when it
     /// is dense or changed this block. Conservatively `true` when unattached. Takes the input's
     /// typed handle (or a bare index, for loops over computed ports).
@@ -160,7 +159,7 @@ impl<'a> Io<'a> {
         self.varying.get(port.index()).copied().unwrap_or(true)
     }
 
-    /// **Read an input through its typed handle** (ADR-0037). The handle's [`form`] marker fixes
+    /// **Read an input through its typed handle**. The handle's [`form`] marker fixes
     /// the return shape (see the module docs) and its stored default is the held-read fallback,
     /// so the declared contract default is the read default by construction. This is the one
     /// read verb operator code uses; each form impl reads the latch / stream / buffer state
@@ -169,7 +168,7 @@ impl<'a> Io<'a> {
         F::read(self, port.index, port.default)
     }
 
-    /// **Write an output through its typed handle** (ADR-0037). The handle's [`form`] marker
+    /// **Write an output through its typed handle**. The handle's [`form`] marker
     /// fixes the write shape: a Signal handle borrows this node's dense buffer to fill, a held
     /// handle returns a [`MsgWriter`], an event handle an [`EventWriter`].
     pub fn write<F: form::OutForm>(&mut self, port: Out<F>) -> F::Write<'_, 'a> {
@@ -178,7 +177,7 @@ impl<'a> Io<'a> {
 
     /// The raw held [`Arg`] latched on `port`, undecoded — the **single touch point** of the
     /// private `latched` state. [`form::Held`]'s read decodes through it; the interface **pipe**
-    /// (ADR-0038) calls it directly, forwarding whatever Value its declared type latched (`f32`,
+    /// calls it directly, forwarding whatever Value its declared type latched (`f32`,
     /// an enum's concrete variant, a `Harmony`) without naming a concrete Rust type.
     pub(crate) fn latch_arg(&self, port: usize) -> Option<&'a Arg> {
         self.latched.get(port)
@@ -192,12 +191,12 @@ impl<'a> Io<'a> {
     }
 }
 
-/// A **typed input handle** (ADR-0037): the contract macro emits one `In` const per input port.
+/// A **typed input handle**: the contract macro emits one `In` const per input port.
 /// The [`form`] marker `F` *is* the port's declared form — it fixes what [`Io::read`] returns —
 /// and `default` carries the declared descriptor default, applied as the held-read fallback (so
 /// the contract's `default` and the read fallback are one datum). Normally constructed by
 /// `operator_contract!` (operator code just names the const); the in-crate special cases with no
-/// contract to emit consts — the loader-built interface pipe (ADR-0038) — build handles inline.
+/// contract to emit consts — the loader-built interface pipe — build handles inline.
 pub struct In<F: form::InForm> {
     index: usize,
     default: F::Default,
@@ -207,7 +206,7 @@ pub struct In<F: form::InForm> {
 impl<F: form::InForm> In<F> {
     /// Build a handle for input `index` with the port's declared `default` (`()` for forms with
     /// no scalar default — events and raw pass-throughs). Called from macro-emitted consts, and
-    /// inline by the loader-built pipe (ADR-0038), whose descriptor is synthesized per
+    /// inline by the loader-built pipe, whose descriptor is synthesized per
     /// `interface.inputs` entry rather than contract-declared.
     pub const fn new(index: usize, default: F::Default) -> Self {
         Self {
@@ -240,7 +239,7 @@ impl<F: form::InForm> Clone for In<F> {
 }
 impl<F: form::InForm> Copy for In<F> {}
 
-/// A **typed output handle** (ADR-0037): the contract macro emits one `Out` const per output
+/// A **typed output handle**: the contract macro emits one `Out` const per output
 /// port. The [`form`] marker `F` fixes what [`Io::write`] returns. The index is the
 /// **all-outputs** port index (the same index [`Emit::port`] carries), matching the invariant
 /// that signal outputs precede message outputs in declaration order.
@@ -251,7 +250,7 @@ pub struct Out<F> {
 
 impl<F> Out<F> {
     /// Build a handle for output `index`. Called from macro-emitted consts, and inline by the
-    /// in-crate special cases with no contract-emitted const: the loader-built pipe (ADR-0038)
+    /// in-crate special cases with no contract-emitted const: the loader-built pipe
     /// and the `osc_out` sink's undeclared tap port.
     pub const fn new(index: usize) -> Self {
         Self {
@@ -300,8 +299,8 @@ impl<F> PortIndex for Out<F> {
 }
 
 pub mod form {
-    //! **Port-form markers** (ADR-0037) — the closed taxonomy of shapes a port read/write can
-    //! take, mirroring the three wire forms (ADR-0031): [`SignalF32`] (dense per-sample Signal),
+    //! **Port-form markers** — the closed taxonomy of shapes a port read/write can
+    //! take, mirroring the three wire forms: [`SignalF32`] (dense per-sample Signal),
     //! [`Held`] (latched Value — scalar, enum, `Harmony`), [`Event`] (sparse frame-stamped
     //! stream), and [`Raw`] (the type-agnostic `&Arg` pass-through). A marker never appears in
     //! operator code — it lives in the *type* of a macro-emitted [`In`](super::In)/
@@ -316,7 +315,7 @@ pub mod form {
 
     /// The dense Signal form: a `f32_buffer` port (bare audio or a meta-carrying signal
     /// control). Reads as `&[f32]`, always exactly [`Io::frames`] samples (the buffer-presence
-    /// invariant, ADR-0037); writes as `&mut [f32]`.
+    /// invariant); writes as `&mut [f32]`.
     pub struct SignalF32;
 
     /// The held (ZOH latch) Value form over payload `T`: a `f32` control, a vocab enum, a held
@@ -360,7 +359,7 @@ pub mod form {
         type Read<'a> = &'a [f32];
         fn read<'a>(io: &Io<'a>, index: usize, _default: f32) -> &'a [f32] {
             let buf = io.inputs.get(index).copied().flatten().unwrap_or(&[]);
-            // The buffer-presence invariant (ADR-0037): the engine hands every declared
+            // The buffer-presence invariant: the engine hands every declared
             // f32_buffer input a dense buffer of exactly `frames` samples (unwired bare inputs
             // materialize silence), so `io.read(SIG)[i]` is safe by construction. A hand-built
             // `Io` that skips the invariant trips this in debug builds.
@@ -444,11 +443,11 @@ pub mod form {
 }
 
 /// A handle for **sparse Value writes** on one output port, returned by [`Io::write`] on a held
-/// handle (ADR-0031/0037). Lowers to today's `Emit → Event → latch`. [`set`](MsgWriter::set) is **deduped** (a
+/// handle. Lowers to today's `Emit → Event → latch`. [`set`](MsgWriter::set) is **deduped** (a
 /// no-op change emits nothing, so the wire stays genuinely sparse), **last-write-wins per frame**,
 /// and **addressless** (internal wires route by connection). The dedup baseline is writer-local for
 /// now — a fresh handle starts with no prior value, so the first `set` of a block always emits; the
-/// cross-block held-latch baseline rides in with the operator sweep (ADR-0031 step 5).
+/// cross-block held-latch baseline rides in with the operator sweep.
 pub struct MsgWriter<'io> {
     /// The node's emit sink, or `None` when no sink is attached.
     sink: Option<&'io mut Vec<Emit>>,
@@ -461,7 +460,7 @@ pub struct MsgWriter<'io> {
 impl<'io> MsgWriter<'io> {
     /// Open a writer on `io`'s output `port` — the shared lowering behind every held-Value
     /// write: [`Io::write`] via [`form::Held`], and the interface pipe's direct forward, whose
-    /// dedup baseline is cross-block operator state (ADR-0038).
+    /// dedup baseline is cross-block operator state.
     pub(crate) fn on<'a>(io: &'io mut Io<'a>, port: usize) -> Self {
         MsgWriter {
             sink: io.emit.as_deref_mut(),
@@ -497,7 +496,7 @@ impl MsgWriter<'_> {
 }
 
 /// A handle for **Event writes** on one output port, returned by [`Io::write`] on an Event or
-/// Raw handle (ADR-0031/0037). Unlike [`MsgWriter`], it is **append-only**: every [`emit`](EventWriter::emit) pushes
+/// Raw handle. Unlike [`MsgWriter`], it is **append-only**: every [`emit`](EventWriter::emit) pushes
 /// a distinct Message — no dedup, no last-write-wins — so a chord's many notes at a single frame all
 /// survive and a re-press of the same note is a real second event. Addressless (internal wires route
 /// by connection); lowers to today's `Emit → Event`. Replaces the old `emit` verb for events.
@@ -510,8 +509,7 @@ pub struct EventWriter<'io> {
 
 impl<'io> EventWriter<'io> {
     /// Open a writer on `io`'s output `port` — the shared lowering behind every Event write:
-    /// [`Io::write`] via [`form::Event`]/[`form::Raw`], and the interface pipe's event re-emit
-    /// (ADR-0038).
+    /// [`Io::write`] via [`form::Event`]/[`form::Raw`], and the interface pipe's event re-emit.
     pub(crate) fn on<'a>(io: &'io mut Io<'a>, port: usize) -> Self {
         EventWriter {
             sink: io.emit.as_deref_mut(),
@@ -569,7 +567,7 @@ impl<'a, T: FromArg<'a>> Iterator for EventStream<'a, T> {
     }
 }
 
-/// A unit of behavior. Authored mono and single-voice; polyphony is hosted by the Voicer (ADR-0032).
+/// A unit of behavior. Authored mono and single-voice; polyphony is hosted by the Voicer.
 pub trait Operator: Send {
     /// Static self-description (ports + param metadata). Drives serialization,
     /// connection checking, good-button controls, and AI grounding.
@@ -587,14 +585,14 @@ pub trait Operator: Send {
     /// so every copy shares the decoded data.
     fn spawn(&self) -> Box<dyn Operator>;
 
-    /// Receive decoded resources after construction, before instantiate (ADR-0016). The
+    /// Receive decoded resources after construction, before instantiate. The
     /// loader calls this on every node that declares a resource slot in its descriptor,
     /// handing the shared [`ResourceStore`] (clone the `Arc` to hold it) and the node's
     /// [`ResolvedRefs`] (resolved handles by slot name). Default no-op — the two-phase
     /// init pattern for a type-erased registry, so operators with no resources ignore it.
     fn bind_resources(&mut self, _store: &Arc<ResourceStore>, _refs: &ResolvedRefs) {}
 
-    /// Receive the resolved **instrument-resource** sub-graphs for this node (ADR-0032 §2). The
+    /// Receive the resolved **instrument-resource** sub-graphs for this node. The
     /// loader calls this on a node whose descriptor declares an instrument-resource slot (the
     /// Voicer), handing the voice patch built `voices` times — one independent [`Graph`] per voice,
     /// each with its own state and resolved `interface` boundary. Building happens at **load** (where
@@ -603,10 +601,10 @@ pub trait Operator: Send {
     /// has the [`AudioConfig`]). Default no-op — only the Voicer hosts sub-patches.
     fn bind_voices(&mut self, _voices: Vec<Graph>) {}
 
-    /// Construct any config-dependent runtime state, after the engine fixes the [`AudioConfig`]
-    /// (ADR-0032 §3). Called once per node from [`Plan::instantiate`](crate::plan::Plan::instantiate)
+    /// Construct any config-dependent runtime state, after the engine fixes the [`AudioConfig`].
+    /// Called once per node from [`Plan::instantiate`](crate::plan::Plan::instantiate)
     /// — the one place with the resolved config — **before** the node enters the execution image, so
-    /// every allocation here is off the hot path (RT-safe by construction, ADR-0012). The Voicer
+    /// every allocation here is off the hot path (RT-safe by construction). The Voicer
     /// instantiates each bound voice [`Graph`] into a sub-`Plan` + pre-allocated arena here. May fail
     /// (a voice sub-plan can be malformed); the error aborts the whole instantiate. Default `Ok(())`.
     fn on_instantiate(&mut self, _config: &AudioConfig) -> Result<(), PlanError> {
@@ -614,11 +612,11 @@ pub trait Operator: Send {
     }
 
     /// Called on a **surviving** operator box just after it is transplanted into a freshly built
-    /// Plan across a Swap (ADR-0046 §4,
-    /// [`Plan::transplant_survivors`](crate::plan::Plan::transplant_survivors)). A Swap rebuilds
-    /// every input latch from the *new* document (the new Plan's latches win, ADR-0045 §2), so a
+    /// Plan across a Swap
+    /// ([`Plan::transplant_survivors`](crate::plan::Plan::transplant_survivors)). A Swap rebuilds
+    /// every input latch from the *new* document (the new Plan's latches win), so a
     /// downstream consumer's held-input latch is reset to its declared default. An operator that
-    /// publishes a held output **on change** (emit-on-change, ADR-0015) — comparing against a
+    /// publishes a held output **on change** (emit-on-change) — comparing against a
     /// dedup baseline it keeps **in its box** — would therefore see no change and stay silent,
     /// stranding that consumer on the default (issue: a Swap silently retransposes a
     /// `harmony`-driven voice). Such an operator clears its baseline here so the first post-swap
@@ -632,7 +630,7 @@ pub trait Operator: Send {
 
 #[cfg(test)]
 mod typed_handles {
-    //! ADR-0037 — the handle verbs `io.read(port)` / `io.write(port)`: the [`form`] marker in the
+    //! The handle verbs `io.read(port)` / `io.write(port)`: the [`form`] marker in the
     //! handle's type fixes the shape, the handle's stored default is the held-read fallback, and
     //! each form impl reads the `Io` state directly (issue #216 — one dispatch per form).
     use super::form::{Event, Held, Raw, SignalF32};

@@ -1,7 +1,7 @@
 {
   "format_version": 2,
   "instrument": "sequence-voice",
-  "doc": "Voice patch for sequence.json (ADR-0032). One plucked monophonic synth voice: a held freq drives the oscillator, a held gate the short-decay envelope; gentle static lowpass. Hosted N times by the rig's `voicer`. interface: freq/gate in, audio/active out.",
+  "doc": "Voice patch for sequence.json. One plucked monophonic synth voice: a held freq drives the oscillator, a held gate the short-decay envelope; gentle static lowpass. Hosted N times by the rig's `voicer`. interface: freq/gate in, audio/active out.",
   "interface": {
     "inputs": {
       "freq": {

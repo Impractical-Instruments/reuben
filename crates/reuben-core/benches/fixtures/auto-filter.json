@@ -1,7 +1,7 @@
 {
   "format_version": 2,
   "instrument": "auto-filter",
-  "doc": "A saw synth whose MASTER filter cutoff is a base value PLUS an LFO wobble — base-plus-modulation built explicitly with a Signal `add` operator (ADR-0017/0032). Play with /voicer/notes [midi, gate]. The 8 voices are hosted `auto-filter-voice` sub-patches (saw -> ADSR VCA); the voicer sums them and one shared resonant filter sweeps the mix. Move the base cutoff with /cutoff/in [20..12000]; change the wobble with /lfo/rate (Hz) and /lfo/depth (Hz of sweep). The LFO swings around 0 and `add` sums it onto the base CV, which feeds the master filter's Signal cutoff input.",
+  "doc": "A saw synth whose MASTER filter cutoff is a base value PLUS an LFO wobble — base-plus-modulation built explicitly with a Signal `add` operator. Play with /voicer/notes [midi, gate]. The 8 voices are hosted `auto-filter-voice` sub-patches (saw -> ADSR VCA); the voicer sums them and one shared resonant filter sweeps the mix. Move the base cutoff with /cutoff/in [20..12000]; change the wobble with /lfo/rate (Hz) and /lfo/depth (Hz of sweep). The LFO swings around 0 and `add` sums it onto the base CV, which feeds the master filter's Signal cutoff input.",
   "resources": {
     "auto-filter-voice": "voices/auto-filter-voice.json"
   },

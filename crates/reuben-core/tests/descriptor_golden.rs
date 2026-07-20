@@ -1,4 +1,4 @@
-//! Golden descriptor snapshots (ADR-0025) — the oracle for the `operator_contract!` migration.
+//! Golden descriptor snapshots — the oracle for the `operator_contract!` migration.
 //!
 //! Every built-in operator's `descriptor()` output is serialised to a canonical, human-readable
 //! form and pinned in `tests/golden/descriptors.txt`. The snapshot was taken **before** any
@@ -12,7 +12,7 @@
 use reuben_core::descriptor::{Curve, Descriptor, PortType};
 use reuben_core::registry::Registry;
 
-/// The carrier word for a bare port's [`PortType`] (ADR-0030/0031). Materialized `f32` and `enum`
+/// The carrier word for a bare port's [`PortType`]. Materialized `f32` and `enum`
 /// **inputs** render via their own branches (`meta` / `enum_meta`); this names the carrier-style
 /// ports: an `f32_buffer` audio wire ("f32_buffer"), `Note` ("message"), `Harmony` ("harmony"), and
 /// an enum **output** ("enum", none today).
@@ -49,7 +49,7 @@ fn render(d: &Descriptor) -> String {
     for (i, p) in d.inputs.iter().enumerate() {
         // A meta-carrying input renders its own default/range. The type word comes from `kind`,
         // not a hardcoded `f32`: a materialized scalar control is `f32`, but a *signal* control
-        // with a scalar default (ADR-0031 decision (a), e.g. `oscillator.freq`) is `f32_buffer`.
+        // with a scalar default (e.g. `oscillator.freq`) is `f32_buffer`.
         // An `Enum` input renders its ordered variants + default index. Bare carrier
         // f32_buffer/message/harmony inputs (no `meta`/`enum_meta`) render via `kind`.
         match (&p.meta, p.enum_meta()) {
@@ -98,7 +98,7 @@ fn render_all() -> String {
 
 /// The formatter renders an `enum` input (variants + default) — exercised on a synthetic
 /// descriptor built off a shared vocab type's [`enum_meta`](reuben_core::vocab::FilterMode::enum_meta)
-/// (ADR-0030: enum metadata is single-sourced from the type, never hand-built).
+/// (enum metadata is single-sourced from the type, never hand-built).
 #[test]
 fn renders_enum_input_line() {
     use reuben_core::descriptor::{Descriptor, Port};
@@ -132,7 +132,7 @@ fn descriptors_match_golden() {
     });
     assert_eq!(
         actual, expected,
-        "descriptor output drifted from the golden snapshot (ADR-0025). \
+        "descriptor output drifted from the golden snapshot. \
          If this change is intentional, re-bless with REUBEN_BLESS=1."
     );
 }

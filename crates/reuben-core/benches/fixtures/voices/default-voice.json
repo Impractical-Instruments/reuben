@@ -1,7 +1,7 @@
 {
   "format_version": 2,
   "instrument": "default-voice",
-  "doc": "Default subtractive voice patch (ADR-0032). One monophonic synth voice: a held freq drives the oscillator, a held gate the envelope. Hosted N times by a `voicer`; also loads + plays standalone for testing. interface: freq/gate in, audio/active out.",
+  "doc": "Default subtractive voice patch. One monophonic synth voice: a held freq drives the oscillator, a held gate the envelope. Hosted N times by a `voicer`; also loads + plays standalone for testing. interface: freq/gate in, audio/active out.",
   "interface": {
     "inputs": {
       "freq": {

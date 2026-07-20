@@ -1,4 +1,4 @@
-//! reuben-contract — the single source of an operator's port/constant contract (ADR-0025, ADR-0030).
+//! reuben-contract — the single source of an operator's port/constant contract.
 //!
 //! Every operator declares its ports and constants **once**. Two consumers turn that one
 //! declaration into code: the [`operator_contract!`](../reuben_macros) proc-macro (which emits
@@ -8,7 +8,7 @@
 //! the spec types, the naming rules, and [`validate`] — lives here, in a crate both depend on.
 //! Putting it anywhere else would re-create the very drift this layer exists to remove.
 //!
-//! A port carries an **[`Arg`](reuben_core::message::Arg) type** (ADR-0030, ADR-0035), named by
+//! A port carries an **[`Arg`](reuben_core::message::Arg) type**, named by
 //! [`PortSpec::ty`]: `f32_buffer` (a dense per-sample signal), `f32` (a materialized scalar control
 //! with a `{ .. }` meta block), `i32` (a bounded integer control / constant), `enum` (a held vocab
 //! enum, naming its shared `vocab` type), `note`, `harmony`, or `arg` (the type-agnostic
@@ -44,7 +44,7 @@ pub enum Curve {
     Exponential,
 }
 
-/// The `{ min, max, default, unit, curve }` block on a `f32` port (ADR-0030): its unwired
+/// The `{ min, max, default, unit, curve }` block on a `f32` port: its unwired
 /// default, range, and display metadata. Required on a `f32` port (a bare per-sample wire is
 /// `f32_buffer`, not `f32`). The **one** definition (issue #217): the macro AST, the model layer,
 /// and the runtime descriptor all use this type — the owning
@@ -68,7 +68,7 @@ impl F32Meta {
     }
 }
 
-/// The `{ min, max, default }` block on an `i32` port (ADR-0035): a bounded integer control /
+/// The `{ min, max, default }` block on an `i32` port: a bounded integer control /
 /// constant (a count like `voices`). No unit/curve — a count is not a swept knob. Like
 /// [`F32Meta`], the one definition (issue #217), nameless: the owning port carries the name.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -84,7 +84,7 @@ impl I32Meta {
     }
 }
 
-/// A port's [`Arg`](reuben_core::message::Arg) type (ADR-0030, ADR-0035) — **payload-carrying**
+/// A port's [`Arg`](reuben_core::message::Arg) type — **payload-carrying**
 /// (issue #217): the type and the meta it takes are one datum, so "meta iff type" is
 /// unrepresentable rather than validated. The one authoring-side taxonomy: the proc-macro's
 /// grammar parses into it, the scaffold's JSON deserializes into it (via the flat wire shape —
@@ -92,13 +92,13 @@ impl I32Meta {
 #[derive(Debug, Clone, PartialEq)]
 pub enum PortTy {
     /// `f32_buffer` — a dense per-sample signal (audio / control buffer). The optional meta
-    /// (ADR-0031 decision (a)) gives a Signal port a scalar default + knob range
+    /// gives a Signal port a scalar default + knob range
     /// (`oscillator.freq`): unwired/knob-set it materializes from the default, yet a Signal
     /// source still wires straight in.
     F32Buffer(Option<F32Meta>),
     /// `f32 { .. }` — a materialized scalar control with its (required) default/range meta.
     F32(F32Meta),
-    /// `i32 { .. }` — a bounded integer control / constant (ADR-0035).
+    /// `i32 { .. }` — a bounded integer control / constant.
     I32(I32Meta),
     /// `enum(VocabType)` — a held vocab enum, naming its shared `vocab` type (PascalCase, e.g.
     /// `"FilterMode"`); the descriptor reads its `VARIANTS`/default from `Type::enum_meta(name)`.
@@ -212,7 +212,7 @@ pub struct OperatorSpec {
     pub inputs: Vec<PortSpec>,
     #[serde(default)]
     pub outputs: Vec<PortSpec>,
-    /// Instantiate-time **`Constant`** ports (ADR-0035) — plan-time config (e.g. a voicer's
+    /// Instantiate-time **`Constant`** ports — plan-time config (e.g. a voicer's
     /// `voices`), each an immutable [`PortSpec`]. Empty for the common operator. Mirrors
     /// [`reuben_core::descriptor::Descriptor::constants`].
     #[serde(default)]
@@ -274,7 +274,7 @@ fn is_ident(name: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
 
-/// Validate one port's **data** rules (ADR-0030): coherent ranges, in-range defaults, an
+/// Validate one port's **data** rules: coherent ranges, in-range defaults, an
 /// identifier-shaped vocab type, `arg` input-only. Shape rules ("meta iff type") no longer live
 /// here — the payload-carrying [`PortTy`] makes a shape mismatch unrepresentable (issue #217),
 /// rejected at the macro's parse or the scaffold JSON's deserialize.
@@ -356,7 +356,7 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
             format!("type_name {name:?} must be snake_case: a lowercase letter then [a-z0-9_]"),
         ));
     }
-    // Reserved: interface pipes are **loader-built** (ADR-0038 §2) — declared through
+    // Reserved: interface pipes are **loader-built** — declared through
     // `interface.inputs` entries, never a registered operator — and the save path identifies
     // pipe nodes by this type name. Refused here (the one validator: macro + scaffold) so a
     // scaffolded/hand-written `pipe` operator fails before any code is generated; the registry
@@ -364,7 +364,7 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
     if name == "pipe" {
         return Err(ContractError::new(
             Locus::TypeName,
-            "type_name \"pipe\" is reserved: interface pipes are loader-built (ADR-0038), \
+            "type_name \"pipe\" is reserved: interface pipes are loader-built, \
              declared as `interface.inputs` entries, never as an operator type",
         ));
     }
@@ -453,7 +453,7 @@ mod tests {
 
     #[test]
     fn rejects_the_reserved_pipe_type_name() {
-        // Interface pipes are loader-built (ADR-0038): the name is reserved so a scaffolded
+        // Interface pipes are loader-built: the name is reserved so a scaffolded
         // `pipe` operator fails before any code is generated.
         let e = err(r#"{ "type_name": "pipe" }"#);
         assert_eq!(e.locus, Locus::TypeName);
@@ -501,8 +501,8 @@ mod tests {
         let no_vocab = de_err(r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"enum"} ] }"#);
         assert!(no_vocab.contains("vocab"), "{no_vocab}");
 
-        // A port that is neither `f32` nor `f32_buffer` can't carry f32 meta (ADR-0031
-        // decision (a) extended the optional meta block to `f32_buffer`).
+        // A port that is neither `f32` nor `f32_buffer` can't carry f32 meta (the optional
+        // meta block is extended to `f32_buffer`).
         let stray_meta = de_err(
             r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"note","f32":{"min":0,"max":1,"default":0}} ] }"#,
         );

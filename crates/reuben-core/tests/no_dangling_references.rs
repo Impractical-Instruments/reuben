@@ -1,13 +1,13 @@
-//! No-dangling-references seed (ADR-0059 §8, seeded by the schema deletion — reuben#458):
+//! No-dangling-references seed (seeded by the schema deletion — reuben#458):
 //! every artifact or tool the repo's live text names must actually ship. The instrument JSON
 //! Schema was deleted outright — its one real job, the registry guard, moved to same-commit
-//! native≡wasm describe parity in the lane that builds the wasm (ADR-0059 §4) — so nothing
+//! native≡wasm describe parity in the lane that builds the wasm — so nothing
 //! greppable (docs, skills, code, tool/resource descriptions) may still point a reader at the
 //! retired machinery. Grow the test class by adding a retired artifact's tokens here when the
 //! artifact goes; the tripwire keeps it from leaking back into live prose.
 //!
 //! `docs/adr/` is exempt: ADRs are decision history, and the history names the schema on
-//! purpose (ADR-0056: history does not relocate).
+//! purpose (history does not relocate).
 
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 /// generator example, the MCP resource URI, the loose noun phrase (review round 1 found it
 /// surviving in skill frontmatter, untouched by the three exact tokens), and the two
 /// schema-regen verb phrasings (review round 10 found one in create-operator, reuben#481:
-/// the regeneration step was deleted with the schema — ADR-0059 §4). Built by concatenation
+/// the regeneration step was deleted with the schema). Built by concatenation
 /// so this file never trips over its own needles. Lowercase: matching lowercases each line,
 /// so capitalized prose forms are caught too.
 fn retired_tokens() -> [String; 6] {
@@ -101,7 +101,7 @@ fn no_live_text_references_the_retired_schema_machinery() {
 
     assert!(
         offenders.is_empty(),
-        "the instrument JSON Schema is deleted (ADR-0059 §4) — live text may not reference \
+        "the instrument JSON Schema is deleted — live text may not reference \
          its retired machinery (fix the reference; don't resurrect the artifact):\n{}",
         offenders.join("\n")
     );

@@ -1,16 +1,16 @@
-//! The core input master (ADR-0038 §3/§7/§10, P3 — issue #180).
+//! The core input master (P3 — issue #180).
 //!
 //! Top-level signal input pipes with a `channel` binding read the **logical input master**:
 //! the caller hands `render_block_multi` one buffer per logical input channel and each bound
-//! pipe copies its channel — the dual of ADR-0026's output master. These tests pin the whole
+//! pipe copies its channel — the dual of the output master. These tests pin the whole
 //! contract through the real load → instantiate → render path:
 //!
 //! - a bound pipe carries the injected channel, sample-exact, across blocks;
 //! - fan-out at the master (two pipes, one channel), like output broadcast;
-//! - dark-degrade (§7): an unsupplied channel falls back to the pipe's declared default (a
+//! - dark-degrade: an unsupplied channel falls back to the pipe's declared default (a
 //!   bare pipe reads **zeros**) and stays message-drivable; a short buffer's tail reads zeros;
-//! - determinism (§10): offline render with injected input is **bit-reproducible**;
-//! - inertness (§3): nested (subpatch-inlined) and Voicer-hosted channel bindings never
+//! - determinism: offline render with injected input is **bit-reproducible**;
+//! - inertness: nested (subpatch-inlined) and Voicer-hosted channel bindings never
 //!   reach the input master — the parent/host edge feeds the pipe, unfed renders silence —
 //!   with the load warnings that make each dark path honest.
 
@@ -93,7 +93,7 @@ fn bound_pipe_reads_its_logical_input_channel() {
 
 #[test]
 fn distinct_pipes_fan_out_one_channel_at_the_master() {
-    // ADR-0038 §3: two pipes may bind the same channel — fan-out at the master, like output
+    // Two pipes may bind the same channel — fan-out at the master, like output
     // broadcast. Summing both must yield exactly 2x the injected signal (x + x is exact in f32).
     const FAN: &str = r#"{
       "format_version": 2,
@@ -125,7 +125,7 @@ fn distinct_pipes_fan_out_one_channel_at_the_master() {
 
 #[test]
 fn zero_input_is_silence_from_an_input_pipe() {
-    // Dark-degrade (ADR-0038 §7): a caller that supplies no input at all — the `&[]` every
+    // Dark-degrade: a caller that supplies no input at all — the `&[]` every
     // pre-input call site passes — reads zeros through every bound pipe.
     let none = MemoryResolver::new();
     let loaded = load_instrument(MIC_THROUGH, &Registry::builtin(), &none).expect("load");
@@ -150,7 +150,7 @@ fn zero_input_is_silence_from_an_input_pipe() {
 #[test]
 fn unsupplied_channel_and_short_buffer_read_zeros() {
     // A pipe bound past what the caller supplies, and the tail of a short buffer, both read
-    // zeros (ADR-0038 §7) — missing reality degrades dark, never fatally and never stale.
+    // zeros — missing reality degrades dark, never fatally and never stale.
     const MIC_CH1: &str = r#"{
       "format_version": 2,
       "instrument": "mic_ch1",
@@ -200,7 +200,7 @@ fn unsupplied_channel_and_short_buffer_read_zeros() {
 
 #[test]
 fn offline_render_with_injected_input_is_bit_reproducible() {
-    // The determinism carve-out (ADR-0038 §10): live input is a sanctioned nondeterministic
+    // The determinism carve-out: live input is a sanctioned nondeterministic
     // boundary, but the offline path injects *known* buffers — so two renders of the same
     // graph with the same injected input are bit-identical. The delay gives the render state
     // that persists across blocks, so any nondeterminism would compound visibly.
@@ -234,7 +234,7 @@ fn offline_render_with_injected_input_is_bit_reproducible() {
     }
 }
 
-// A child whose pipe binds a channel — inert once nested/hosted (ADR-0038 §3).
+// A child whose pipe binds a channel — inert once nested/hosted.
 const CHILD_BOUND: &str = r#"{
   "format_version": 2,
   "instrument": "gainer",
@@ -285,7 +285,7 @@ fn nested_channel_binding_is_inert_parent_edge_feeds_the_pipe() {
 #[test]
 fn nested_channel_binding_unwired_renders_silence_with_a_warning() {
     // The host leaves the child's bound pipe unfed: no hardware fallback reach-through
-    // (ADR-0038 §3 rejected it) — silence, plus the UnwiredPipe warning.
+    // (channel binding is rejected there) — silence, plus the UnwiredPipe warning.
     const PARENT_UNWIRED: &str = r#"{
       "format_version": 2,
       "instrument": "host",
@@ -328,7 +328,7 @@ fn nested_channel_binding_unwired_renders_silence_with_a_warning() {
 
 #[test]
 fn hosted_voice_channel_binding_is_inert_and_warns() {
-    // A Voicer-hosted voice's channel binding is inert (ADR-0038 §3): hosted voice plans get
+    // A Voicer-hosted voice's channel binding is inert: hosted voice plans get
     // no input-master plumbing, so the voice's bound pipe renders silence even when the
     // caller supplies that channel — and the load says so.
     const HOST: &str = r#"{
@@ -391,7 +391,7 @@ fn hosted_voice_channel_binding_is_inert_and_warns() {
 
 #[test]
 fn top_level_bare_pipe_without_a_channel_warns_unbound() {
-    // ADR-0038 §7 / issue #180: an unbound-but-declared bare signal pipe at top level renders
+    // issue #180: an unbound-but-declared bare signal pipe at top level renders
     // zeros — nothing can ever feed it — so the load says so. A channel-bound pipe, a
     // defaulted (control) signal pipe, and a Value pipe are all fine.
     let none = MemoryResolver::new();
@@ -448,7 +448,7 @@ fn top_level_bare_pipe_without_a_channel_warns_unbound() {
 
 #[test]
 fn channel_bound_default_pipe_falls_back_to_its_default_unfed() {
-    // #190 F1 / ADR-0038 §3: `channel` + `default` on one pipe must not kill the knob.
+    // #190 F1: `channel` + `default` on one pipe must not kill the knob.
     // Unfed, the declared default materializes (not zeros) and messages still sweep it;
     // fed, device audio wins for the block; unfed again, the held control resumes.
     const LEVEL: &str = r#"{
@@ -590,7 +590,7 @@ fn hosted_voice_with_channel_bound_freq_stays_message_fed() {
 
     // And the binding is fully inert: flooding logical channel 0 with a constant must not
     // change a single bit of the render — the host's messages, not the input master, feed
-    // a hosted voice's pipes (ADR-0038 §3).
+    // a hosted voice's pipes.
     let flooded = render_bound_freq_host(4, &[vec![0.33f32; BLOCK]]);
     for (ch, (a, b)) in unfed.iter().zip(flooded.iter()).enumerate() {
         for (g, (p, q)) in a.iter().zip(b.iter()).enumerate() {

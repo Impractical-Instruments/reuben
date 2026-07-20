@@ -4,7 +4,7 @@
 //! ([`crate::describe`]) both need to turn a type-name string (from a JSON document) into a
 //! live operator and to enumerate every operator's self-description. [`Registry::builtin`] holds the MVP
 //! operator set; [`Registry::register`] lets an embedder add its own operator types
-//! (the seam for the "agents author new Operators in Rust" goal, ADR-0004).
+//! (the seam for the "agents author new Operators in Rust" goal).
 
 use std::collections::BTreeMap;
 
@@ -12,7 +12,7 @@ use crate::descriptor::Descriptor;
 use crate::operator::Operator;
 
 /// A compile-time operator registration, submitted at each operator's definition site via
-/// [`register_operator!`] and collected by `inventory` into a link-time slice (ADR-0024). This
+/// [`register_operator!`] and collected by `inventory` into a link-time slice. This
 /// replaces the hand-maintained `builtin()` list that every new operator used to edit — the
 /// merge-conflict magnet — so an operator self-registers where it is defined.
 pub struct OpReg {
@@ -24,7 +24,7 @@ pub struct OpReg {
 
 inventory::collect!(OpReg);
 
-/// Register an operator type with the built-in [`Registry`] at compile time (ADR-0024).
+/// Register an operator type with the built-in [`Registry`] at compile time.
 ///
 /// Invoke **by path** at the operator's definition site, after its `impl Operator`:
 /// `crate::register_operator!(MyOp);`. The macro name is the greppable census of built-ins —
@@ -65,11 +65,11 @@ impl Registry {
     }
 
     /// The built-in operator set, gathered from every [`register_operator!`] submission across
-    /// the crate (ADR-0024). Each operator self-registers at its definition site, so adding one
+    /// the crate. Each operator self-registers at its definition site, so adding one
     /// no longer edits any central list. Iteration here is in link order; the `BTreeMap` re-keys
     /// by `type_name` for deterministic output. Panics on a duplicate `type_name` — a build-time
     /// assertion that two operators don't claim the same name (the override seam stays in
-    /// [`register`](Self::register), which still last-writer-wins for embedders, ADR-0004).
+    /// [`register`](Self::register), which still last-writer-wins for embedders).
     pub fn builtin() -> Self {
         let mut r = Self::new();
         for reg in inventory::iter::<OpReg> {
@@ -86,8 +86,8 @@ impl Registry {
 
     /// Register an operator type. Keyed by its descriptor's `type_name`.
     ///
-    /// Panics on the reserved name `"pipe"`: interface pipes are **loader-built** (ADR-0038 §2
-    /// — declared through `interface.inputs` entries, never as document nodes), and save
+    /// Panics on the reserved name `"pipe"`: interface pipes are **loader-built**
+    /// — declared through `interface.inputs` entries, never as document nodes — and save
     /// (`NormalizedDoc::from_graph`) identifies pipe nodes by that type name — a registered
     /// `"pipe"` operator's nodes would silently vanish on save. Fail loudly at registration
     /// (a programming error in the embedder, not a document error).
@@ -95,7 +95,7 @@ impl Registry {
         assert_ne!(
             descriptor.type_name, "pipe",
             "operator type name \"pipe\" is reserved: interface pipes are loader-built \
-             (ADR-0038) and save identifies their nodes by this name"
+             and save identifies their nodes by this name"
         );
         self.entries
             .insert(descriptor.type_name, Entry { make, descriptor });
@@ -121,14 +121,14 @@ impl Registry {
 mod tests {
     use super::*;
 
-    // The built-in set is no longer an enumerated list (it self-registers, ADR-0024), so these
+    // The built-in set is no longer an enumerated list (it self-registers), so these
     // are churn-free invariants over whatever the `inventory` slice gathered, plus a small canary
     // that fails loudly if the linker ever dead-strips the submissions.
 
     #[test]
     #[should_panic(expected = "reserved")]
     fn registering_the_reserved_pipe_name_panics() {
-        // ADR-0038: pipes are loader-built; an embedder-registered "pipe" operator's nodes
+        // Pipes are loader-built; an embedder-registered "pipe" operator's nodes
         // would silently vanish on save (`from_graph` drops nodes by this type name).
         use crate::operator::Operator;
         let mut r = Registry::new();
@@ -198,7 +198,7 @@ mod tests {
 
     #[test]
     fn register_overrides_an_existing_type_name_last_writer_wins() {
-        // ADR-0004/ADR-0024: builtin() panics on a duplicate type_name (two built-ins claiming
+        // builtin() panics on a duplicate type_name (two built-ins claiming
         // one name is a build error), but register() is the *embedder override seam* — a
         // re-registration under an existing name must replace the entry, not panic and not keep
         // the old one. That asymmetry is the contract; a "harden the invariant" refactor moving

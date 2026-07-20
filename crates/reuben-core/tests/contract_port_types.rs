@@ -1,7 +1,7 @@
-//! Compile-level proof of the ADR-0030 port-type surface: `operator_contract!` expands the
+//! Compile-level proof of the port-type surface: `operator_contract!` expands the
 //! `inputs { name: f32_buffer/f32 { .. }/enum(VocabType) }` grammar into a valid `Descriptor` whose
 //! ports carry the right [`PortType`], single-sourced off the **shared vocab** enums (no per-op
-//! enum generation any more — ADR-0030 phase 7a). The macro's own unit tests assert the emitted
+//! enum generation any more). The macro's own unit tests assert the emitted
 //! **tokens**; this test compiles them and inspects the runtime values, for the filter + oscillator
 //! target contracts.
 //!
@@ -12,7 +12,7 @@
 use reuben_core::descriptor::{Curve, PortType};
 use reuben_core::vocab::{FilterMode, Waveform};
 
-/// The ADR-0030 filter example: a `f32_buffer` wire-in, two materialized floats (one with full meta,
+/// The filter example: a `f32_buffer` wire-in, two materialized floats (one with full meta,
 /// one with unit/curve omitted), a live-switchable `enum` mode naming the shared `FilterMode`
 /// vocab, and a `f32_buffer` output.
 mod filter_demo {
@@ -46,7 +46,7 @@ fn filter_demo_descriptor_has_the_right_port_types() {
     assert_eq!(d.type_name, "filter_demo");
 
     // Inputs number in declaration order (sequential, not per-kind), matching the handles'
-    // ordinals (the consts are typed `In`/`Out` handles since ADR-0037; `index()` is the slot).
+    // ordinals (the consts are typed `In`/`Out` handles; `index()` is the slot).
     assert_eq!(
         (
             IN_AUDIO.index(),
@@ -101,7 +101,7 @@ fn enum_input_binds_by_symbol_then_index() {
     assert_eq!(e.default, 0);
     assert_eq!(e.default_symbol(), "Lp");
 
-    // Enum-over-OSC binding (ADR-0030): symbol primary, integer index fallback.
+    // Enum-over-OSC binding: symbol primary, integer index fallback.
     assert_eq!(e.resolve("Hp"), Some(1));
     assert_eq!(e.resolve("2"), Some(2)); // index fallback
     assert_eq!(e.resolve("Xx"), None); // unknown symbol

@@ -1,7 +1,7 @@
 {
   "format_version": 2,
   "instrument": "stereo-autopan",
-  "doc": "Stereo demo (ADR-0026, ADR-0032). A playable 8-voice synth whose summed voices are swept across the stereo field by an LFO driving a `pan` op. Each voice is a hosted `autopan-voice` sub-patch. Play it: send /voicer/notes [midi, gate] (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off; several at once = a chord) and listen to it move left<->right. The pan op's `left`/`right` outputs are tapped as master channel 0 / 1 \u2014 no `output` op needed for stereo. Tweak live over OSC: /autopan/rate (sweep speed, Hz), /autopan/depth (how far it swings, 0..1). Set /autopan/rate near 0 to park it, then /pan/pan to position it by hand.",
+  "doc": "Stereo demo. A playable 8-voice synth whose summed voices are swept across the stereo field by an LFO driving a `pan` op. Each voice is a hosted `autopan-voice` sub-patch. Play it: send /voicer/notes [midi, gate] (e.g. [69.0, 1.0] note-on A4, [69.0, 0.0] note-off; several at once = a chord) and listen to it move left<->right. The pan op's `left`/`right` outputs are tapped as master channel 0 / 1 \u2014 no `output` op needed for stereo. Tweak live over OSC: /autopan/rate (sweep speed, Hz), /autopan/depth (how far it swings, 0..1). Set /autopan/rate near 0 to park it, then /pan/pan to position it by hand.",
   "resources": {
     "autopan-voice": "voices/autopan-voice.json"
   },

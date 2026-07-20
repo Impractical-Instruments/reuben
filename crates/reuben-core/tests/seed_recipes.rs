@@ -1,10 +1,10 @@
-//! The R3 seed-recipe guard (ADR-0057 §5): euclidean-drums, re-expressed through the seed
+//! The R3 seed-recipe guard: euclidean-drums, re-expressed through the seed
 //! recipes (`voices/kick-voice.json` ×2 — the tom is the same body overridden —
 //! `voices/snare-voice.json`, `voices/hat-voice.json`, each through `patches/dj-strip.json`),
 //! renders **bit-identically** to the pre-recipe inline version — at rest and under driven
 //! input on the unchanged top-level pipes. The pre-recipe originals are snapshotted verbatim
 //! under `tests/fixtures/pre-recipes/`; this is the format_v3_rewrite.rs shipped-corpus
-//! discipline (ADR-0026), applied to the recipe re-expression instead of a format rewrite.
+//! discipline, applied to the recipe re-expression instead of a format rewrite.
 //!
 //! Alongside the headline assertion:
 //! - each promoted drum voice (baked literals → defaulted interface pipes, rebuilt on the
@@ -159,7 +159,7 @@ fn euclid_gestures(b: usize) -> Vec<Message> {
     }
 }
 
-/// ADR-0057 §5's named acceptance: the re-expressed document renders bit-identical to the
+/// The named acceptance: the re-expressed document renders bit-identical to the
 /// pre-recipe inline version, and its recipe references resolve warning-free.
 #[test]
 fn euclidean_drums_re_expression_renders_bit_identical() {
@@ -264,7 +264,7 @@ fn promoted_hat_voice_renders_bit_identical() {
 }
 
 /// Every seed document loads and instantiates through the real engine load path — the single
-/// validation authority (ADR-0045) — from its own directory, the `FsResolver::for_instrument`
+/// validation authority — from its own directory, the `FsResolver::for_instrument`
 /// base `reuben play` would use. `bare_audio` marks the two processors whose bare `audio`
 /// signal pipe legitimately warns unfed at top level.
 #[test]

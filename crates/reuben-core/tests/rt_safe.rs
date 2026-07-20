@@ -27,7 +27,7 @@ use reuben_core::{load_instrument, AudioConfig, Graph, Registry};
 const DEFAULT_JSON: &str = include_str!("../../../instruments/default.json");
 
 /// A filesystem resolver rooted at the frozen `tests/fixtures/` tree, so `default.json`'s `voice`
-/// instrument-resource (ADR-0032) resolves to its on-disk voice patch.
+/// instrument-resource resolves to its on-disk voice patch.
 struct InstrumentsDir;
 
 impl ResourceResolver for InstrumentsDir {
@@ -47,7 +47,7 @@ static GLOBAL: Counting = Counting;
 fn render_block_is_allocation_free_after_warmup() {
     let cfg = AudioConfig::new(48_000.0, 256);
 
-    // (1) The hosted-voice Voicer (ADR-0032): playing `default.json` renders a voice sub-patch per
+    // (1) The hosted-voice Voicer: playing `default.json` renders a voice sub-patch per
     // voice through the re-entrant `render_plan` over each voice's own arena. That nested render path
     // — and the sparse `freq`/`gate` message buffer the Voicer rebuilds each block — must be
     // allocation-free in steady state, both sustaining a held note and on message-bearing blocks.
@@ -94,7 +94,7 @@ fn render_block_is_allocation_free_after_warmup() {
         "message-bearing render allocated {with_msgs} time(s)"
     );
 
-    // (2) The sample player (ADR-0016) must be allocation-free too. Post-ADR-0031 its `freq`/`gate`
+    // (2) The sample player must be allocation-free too. Its `freq`/`gate`
     // are held **Value** controls, so a sample -> out rig is driven by routed Value messages directly
     // (the Voicer no longer emits per-Voice freq/gate buffers). The RT read goes through the store's
     // pure accessor and the Arc rides on the operator (an atomic bump, not a heap allocation), so
@@ -156,7 +156,7 @@ fn render_block_is_allocation_free_after_warmup() {
         "retriggering sample render allocated {sample_retrig} time(s)"
     );
 
-    // (3) A nested instrument (ADR-0034, nesting P4): the subpatch dissolves at build into
+    // (3) A nested instrument (nesting P4): the subpatch dissolves at build into
     // ordinary flat nodes, so its steady-state render must be exactly as allocation-free as any
     // flat graph — inlining is a load-time transform, and the renderer never sees a boundary.
     struct Inline(&'static str);
@@ -201,7 +201,7 @@ fn render_block_is_allocation_free_after_warmup() {
         "nested-instrument steady-state allocated {nested_held} time(s)"
     );
 
-    // (4) The input master (ADR-0038 §3, P3): a channel-bound input pipe's per-block feed is a
+    // (4) The input master (P3): a channel-bound input pipe's per-block feed is a
     // copy into a scratch buffer allocated at plan build — rendering with injected input must
     // be exactly as allocation-free as the output side (issue #180's RT-safety clause).
     const MIC: &str = r#"{
@@ -238,7 +238,7 @@ fn render_block_is_allocation_free_after_warmup() {
         "input-master render allocated {input_held} time(s)"
     );
 
-    // (5) A self-playing rig (ADR-0014's emission machinery under sustained *internal* traffic):
+    // (5) A self-playing rig (emission machinery under sustained *internal* traffic):
     // `sequence.json`'s clock gate drives the sequencer, which emits note Messages into the
     // Voicer every beat — so the operator-emitted routing path (the `emit_scratch`/`emitted`
     // pool and each node's `events`/`held`/`materialize_writes` route vectors) runs every block

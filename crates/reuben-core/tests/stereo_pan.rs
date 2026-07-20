@@ -1,4 +1,4 @@
-//! Stereo master + `pan` op (ADR-0026): channel-pinned taps land on separate logical
+//! Stereo master + `pan` op: channel-pinned taps land on separate logical
 //! channels, master width is derived from the instrument (floor 2), and a fully-broadcast
 //! (mono) instrument stays bit-identical to the pre-stereo single buffer.
 
@@ -72,7 +72,7 @@ fn master_width_floors_to_stereo_for_a_mono_instrument() {
 #[test]
 fn broadcast_instrument_is_bit_identical_mono_and_across_channels() {
     // A broadcast (mono) instrument: mono render_block == every channel of the multi render,
-    // sample-for-sample. This is the ADR-0026 backwards-compat guarantee.
+    // sample-for-sample. This is the backwards-compat guarantee.
     let json = r#"{
       "instrument": "mono",
       "nodes": [

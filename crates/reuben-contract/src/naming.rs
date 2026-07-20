@@ -1,4 +1,4 @@
-//! Naming rules shared by every contract consumer (ADR-0025).
+//! Naming rules shared by every contract consumer.
 //!
 //! The mapping from a port/param *name* to its `IN_`/`OUT_`/`P_` const fragment, and between an
 //! operator's `type_name` and its Rust struct name, lives here so the macro and the scaffold can

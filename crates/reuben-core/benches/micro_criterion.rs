@@ -1,7 +1,7 @@
 //! Local wall-clock per-operator micro benchmark (#30): each operator's `process` driven directly
 //! for the fixed 1 s schedule, reported as samples/sec (÷ 48 000 == ×realtime). The diagnostic
 //! companion to `macro_criterion` — when the macro layer flags a graph got slower, this attributes
-//! it to an operator. Dev-facing; never runs in CI (the gate is `micro_iai`, ADR-0019).
+//! it to an operator. Dev-facing; never runs in CI (the gate is `micro_iai`).
 //!
 //! Iterates [`WORKLOADS`] at runtime, so a new operator is benched automatically once it has a
 //! workload entry. Run via `cargo reuben-core-bench --bench micro_criterion` (the alias enables the

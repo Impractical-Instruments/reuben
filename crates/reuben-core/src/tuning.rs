@@ -1,4 +1,4 @@
-//! Tuning — resolves symbolic [`Pitch`] to frequency in Hz (ADR-0008).
+//! Tuning — resolves symbolic [`Pitch`] to frequency in Hz.
 //!
 //! 12-TET is just the default Tuning. Scala `.scl`/`.kbm` import and the tonal-context
 //! bus (live retuning while notes sound) land later; the trait is the seam.
@@ -30,7 +30,7 @@ impl Tuning for TwelveTet {
     fn hz(&self, pitch: Pitch) -> f32 {
         // The tuning-only layer resolves an absolute MIDI coordinate directly. A bare degree
         // with no Harmony to resolve it falls back to a chromatic reading from middle C (60);
-        // real degree resolution goes through `Harmony::hz` (ADR-0008, ADR-0030).
+        // real degree resolution goes through `Harmony::hz`.
         let midi = match pitch {
             Pitch::Absolute(m) => m,
             Pitch::Degree(d) => 60.0 + d as f32,
