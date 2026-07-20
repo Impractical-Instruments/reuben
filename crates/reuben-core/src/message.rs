@@ -16,7 +16,7 @@
 //! or, for a [`Buffer`](Arg::F32Buffer) payload, as a dense per-sample block.
 
 use crate::vocab::harmony::Harmony;
-use crate::vocab::pitch::Note;
+use crate::vocab::pitch::{Note, Pitch};
 use std::sync::Arc;
 
 /// A contiguous sample buffer — the performant representation of a per-sample stream (a
@@ -129,6 +129,12 @@ pub enum Arg {
     // which generates this variant's `From`/`TryFrom` glue. More land as operators migrate.
     Note(Note),
     Harmony(Harmony),
+    /// A symbolic [`Pitch`] riding the wire on its own (leaf-promotion, issue #519). A
+    /// payload-carrying vocab enum promoted to a first-class **named** `Arg` variant — never the
+    /// lossy type-erased [`Enum`](Arg::Enum) index, which would drop the `Degree`/`Absolute`
+    /// payload. Wire-internal only (no external OSC form, like [`Harmony`](Arg::Harmony)); the
+    /// output of `break(Note)`, consumed by `resolve`.
+    Pitch(Pitch),
 
     /// Any **vocab enum** value, type-erased to its bare variant **index** (ADR-0030). One
     /// variant for *every* enum: type identity lives in the port descriptor's
@@ -355,5 +361,24 @@ mod tests {
 
         // A numeric primitive is not an enum; the typed read declines.
         assert_eq!(FilterMode::from_arg(&Arg::F32(1.0)), None);
+    }
+
+    /// Leaf-promotion (issue #519): a **payload-carrying** vocab enum rides as its own named
+    /// `Arg::Pitch` variant, and the payload survives the round-trip — the very thing the
+    /// type-erased `Arg::Enum(index)` path drops. Both cases are preserved distinctly.
+    #[test]
+    fn payload_enum_pitch_round_trips_losslessly() {
+        use crate::vocab::pitch::Pitch;
+
+        let d: Arg = Pitch::Degree(3).into();
+        assert!(matches!(d, Arg::Pitch(_)), "named variant, not Enum");
+        assert!(!matches!(d, Arg::Enum(_)), "must not type-erase");
+        assert_eq!(Pitch::from_arg(&d), Some(Pitch::Degree(3)));
+
+        let a: Arg = Pitch::Absolute(60.0).into();
+        assert_eq!(Pitch::from_arg(&a), Some(Pitch::Absolute(60.0)));
+
+        // A different vocab type's Arg is not a Pitch; the typed read declines.
+        assert_eq!(Pitch::from_arg(&Arg::F32(60.0)), None);
     }
 }
