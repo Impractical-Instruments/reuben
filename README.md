@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend ([ADR-0019]): callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**39 commits** · 2026-07-12 → 2026-07-20 · 2349 data points · last: `e7f95ed` (2026-07-20T14:57:22-04:00)
+**40 commits** · 2026-07-12 → 2026-07-20 · 2411 data points · last: `2bb4904` (2026-07-20T15:13:14-04:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -17,11 +17,11 @@ Deterministic CI performance trend ([ADR-0019]): callgrind **instruction counts 
 
 | Instrument | Latest Ir | vs prev | vs first | since |
 |---|---:|---:|---:|---|
-| `auto-filter` | 43.8M | ±0.0% | -0.2% | 2026-07-12 |
-| `autotune` | 40.8M | ±0.0% | -0.1% | 2026-07-12 |
+| `auto-filter` | 43.8M | ±0.0% | -0.1% | 2026-07-12 |
+| `autotune` | 40.8M | ±0.0% | -0.2% | 2026-07-12 |
 | `echo` | 43.2M | ±0.0% | -0.1% | 2026-07-12 |
 | `reverb` | 50.5M | ±0.0% | -0.1% | 2026-07-12 |
-| `sampler-arp` | 15.8M | ±0.0% | ±0.0% | 2026-07-12 |
+| `sampler-arp` | 15.8M | -0.1% | -0.1% | 2026-07-12 |
 
 ## Per-node engine overhead
 
@@ -45,20 +45,20 @@ Deterministic CI performance trend ([ADR-0019]): callgrind **instruction counts 
 
 | Case | Latest Ir | vs prev | vs first | since |
 |---|---:|---:|---:|---|
-| `macro/auto-filter` | 43.8M | ±0.0% | -0.2% | 2026-07-12 |
-| `macro/autotune` | 40.8M | ±0.0% | -0.1% | 2026-07-12 |
+| `macro/auto-filter` | 43.8M | ±0.0% | -0.1% | 2026-07-12 |
+| `macro/autotune` | 40.8M | ±0.0% | -0.2% | 2026-07-12 |
 | `macro/echo` | 43.2M | ±0.0% | -0.1% | 2026-07-12 |
 | `macro/reverb` | 50.5M | ±0.0% | -0.1% | 2026-07-12 |
-| `macro/sampler-arp` | 15.8M | ±0.0% | ±0.0% | 2026-07-12 |
+| `macro/sampler-arp` | 15.8M | -0.1% | -0.1% | 2026-07-12 |
 | `granulator` | 27.5M | ±0.0% | ±0.0% | 2026-07-12 |
 | `resonator` | 18.4M | ±0.0% | -0.5% | 2026-07-12 |
-| `reverb` | 11.0M | ±0.0% | -0.1% | 2026-07-12 |
-| `compressor` | 9.69M | ±0.0% | ±0.0% | 2026-07-20 |
+| `reverb` | 11.0M | ±0.0% | ±0.0% | 2026-07-12 |
+| `compressor` | 9.69M | ±0.0% | -0.1% | 2026-07-20 |
 | `saturator` | 8.65M | ±0.0% | -0.1% | 2026-07-12 |
 | `pan` | 6.08M | ±0.0% | -0.1% | 2026-07-12 |
-| `sequencer` | 5.16M | ±0.0% | **+5.6%** | 2026-07-12 |
+| `sequencer` | 5.17M | +0.2% | **+5.8%** | 2026-07-12 |
 | `map_f32_signal` | 4.57M | ±0.0% | -0.1% | 2026-07-12 |
-| `euclid` | 4.39M | ±0.0% | **+6.7%** | 2026-07-12 |
+| `euclid` | 4.39M | +0.1% | **+6.8%** | 2026-07-12 |
 | `modulo_f32_signal` | 4.05M | ±0.0% | -0.1% | 2026-07-12 |
 | `sample` | 3.87M | ±0.0% | -0.1% | 2026-07-12 |
 | `delay` | 3.71M | ±0.0% | -0.1% | 2026-07-12 |
@@ -92,19 +92,19 @@ Deterministic CI performance trend ([ADR-0019]): callgrind **instruction counts 
 | `clamp_f32_value` | 556k | ±0.0% | -0.3% | 2026-07-12 |
 | `modulo_f32_value` | 549k | ±0.0% | -0.3% | 2026-07-12 |
 | `power_f32_value` | 544k | ±0.0% | -0.3% | 2026-07-12 |
-| `div_f32_value` | 535k | ±0.0% | -0.4% | 2026-07-12 |
-| `add_f32_value` | 534k | ±0.0% | -0.4% | 2026-07-12 |
-| `max_f32_value` | 534k | ±0.0% | -0.4% | 2026-07-12 |
-| `min_f32_value` | 534k | ±0.0% | -0.4% | 2026-07-12 |
-| `mul_f32_value` | 534k | ±0.0% | -0.4% | 2026-07-12 |
-| `sub_f32_value` | 534k | ±0.0% | -0.4% | 2026-07-12 |
+| `div_f32_value` | 535k | ±0.0% | -0.3% | 2026-07-12 |
+| `add_f32_value` | 534k | ±0.0% | -0.3% | 2026-07-12 |
+| `max_f32_value` | 534k | ±0.0% | -0.3% | 2026-07-12 |
+| `min_f32_value` | 534k | ±0.0% | -0.3% | 2026-07-12 |
+| `mul_f32_value` | 534k | ±0.0% | -0.3% | 2026-07-12 |
+| `sub_f32_value` | 534k | ±0.0% | -0.3% | 2026-07-12 |
 | `snap` | 527k | ±0.0% | -0.1% | 2026-07-12 |
 | `reciprocal_f32_value` | 514k | ±0.0% | -0.4% | 2026-07-12 |
 | `abs_f32_value` | 513k | ±0.0% | -0.4% | 2026-07-12 |
 | `negate_f32_value` | 513k | ±0.0% | -0.4% | 2026-07-12 |
 | `transpose` | 507k | ±0.0% | -0.1% | 2026-07-12 |
 | `chord` | 496k | ±0.0% | -0.1% | 2026-07-12 |
-| `osc_out` | 448k | ±0.0% | -0.1% | 2026-07-12 |
+| `osc_out` | 448k | ±0.0% | -0.2% | 2026-07-12 |
 | `subpatch` | 415k | ±0.0% | -0.4% | 2026-07-12 |
 
 </details>
