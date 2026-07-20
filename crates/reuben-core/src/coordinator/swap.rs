@@ -1,4 +1,4 @@
-//! The passive, OS-free [`Coordinator`] (ADR-0046 §7): the single writer of graph structure.
+//! The passive, OS-free [`Coordinator`]: the single writer of graph structure.
 //!
 //! It owns the [`Registry`] handle, the resolver, the installed-Plan [`Manifest`], the canonical
 //! [`NormalizedDoc`], and the Coordinator-side mailbox endpoint. [`Coordinator::swap_document`]
@@ -10,7 +10,9 @@
 //! "Off-thread build" is a property of the *caller*, not this code: everything here is a plain
 //! function with no clock, threads, or I/O, so the native shell runs [`swap_document`] on a worker
 //! thread and the render side never blocks. Single-writer discipline is enforced by `&mut self`.
-//! The Coordinator **never touches devices** (ADR-0046 §6).
+//! The Coordinator **never touches devices**.
+//!
+//! see rules: execution-runtime
 
 use crate::config::AudioConfig;
 use crate::contract::{content_hash, Diag, Report, SwapReport};
@@ -23,7 +25,7 @@ use crate::resources::ResourceResolver;
 use super::mailbox::{swap_pair, CoordinatorMailbox, ReclaimError, RenderMailbox};
 use super::manifest::{build_manifest, Manifest, MigrationTable};
 
-/// What crosses the install mailbox (ADR-0046 §1, §4): a complete [`Engine`] — the Plan's runtime
+/// What crosses the install mailbox: a complete [`Engine`] — the Plan's runtime
 /// vessel, so the callback allocates nothing post-install — plus the precomputed
 /// [`MigrationTable`] the render side transplants by. This is the payload type ticket #321's RT
 /// install slot drains and applies; the retiree posted back is the same type (its `migration` is
@@ -32,7 +34,7 @@ pub struct InstallBundle {
     /// The freshly built Engine to install at the next callback top.
     pub engine: Engine,
     /// The `(old index, new index)` survivor pairs to transplant into `engine` from the retiring
-    /// Engine before it goes live (ADR-0046 §4).
+    /// Engine before it goes live.
     pub migration: MigrationTable,
 }
 
@@ -45,26 +47,26 @@ pub struct RenderSide {
     pub mailbox: RenderMailbox<InstallBundle>,
 }
 
-/// The passive Coordinator (ADR-0046 §7). Single-writer by `&mut self`; OS-free.
+/// The passive Coordinator. Single-writer by `&mut self`; OS-free.
 pub struct Coordinator {
     registry: Registry,
     resolver: Box<dyn ResourceResolver + Send>,
     config: AudioConfig,
-    /// The canonical installed document (ADR-0046 §7): the source of truth for what is playing,
-    /// and the basis of the content hash a swap's `expect` guard compares (§9).
+    /// The canonical installed document: the source of truth for what is playing,
+    /// and the basis of the content hash a swap's `expect` guard compares.
     doc: NormalizedDoc,
-    /// The installed Plan's survivor identities (ADR-0046 §5), diffed against each swap's new Plan.
+    /// The installed Plan's survivor identities, diffed against each swap's new Plan.
     manifest: Manifest,
-    /// The Coordinator-side install/retire mailbox endpoint (ADR-0046 §2).
+    /// The Coordinator-side install/retire mailbox endpoint.
     mailbox: CoordinatorMailbox<InstallBundle>,
     /// The currently-installed engine's logical output channel count ([`Engine::channels`]). The
     /// engine itself has crossed into the mailbox, but the native shell still needs this logical
     /// geometry to rebuild the device output map off-thread against the retained device channel
-    /// count (ADR-0046 §6). A *logical* count — not the device's — so recording it here keeps the
-    /// Coordinator device-free (ADR-0046 §7).
+    /// count. A *logical* count — not the device's — so recording it here keeps the
+    /// Coordinator device-free.
     installed_channels: usize,
     /// The currently-installed engine's logical input channel count ([`Engine::input_channels`]).
-    /// The native shell reads it to decide the input dark-degrade warning (ADR-0038 §7): an engine
+    /// The native shell reads it to decide the input dark-degrade warning: an engine
     /// that binds input channels no open stream provides degrades to silence with a loud warning.
     installed_input_channels: usize,
 }
@@ -72,7 +74,7 @@ pub struct Coordinator {
 impl Coordinator {
     /// Build the initial Engine from `doc_json`, take its manifest, and return the Coordinator
     /// alongside the [`RenderSide`] (initial Engine + render mailbox) for the shell's callback and
-    /// the load warnings (resource problems are non-fatal, ADR-0016, but the shell must surface
+    /// the load warnings (resource problems are non-fatal, but the shell must surface
     /// them). The initial Engine is installed *directly* into the callback — it does not cross the
     /// mailbox — so the first swap is what first fills the install slot.
     pub fn install_initial(
@@ -84,8 +86,8 @@ impl Coordinator {
         let doc = NormalizedDoc::from_json(doc_json, &registry, Some(&*resolver))
             .map_err(FromDocumentError::Load)?;
         let (engine, manifest, warnings) = build_engine(&doc, &registry, &*resolver, config)?;
-        // Record the initial engine's logical geometry before it moves into the RenderSide (ADR-0046
-        // §6/§7): the native shell reads it to build the first device output map.
+        // Record the initial engine's logical geometry before it moves into the RenderSide:
+        // the native shell reads it to build the first device output map.
         let installed_channels = engine.channels();
         let installed_input_channels = engine.input_channels();
         let (mailbox, render_mailbox) = swap_pair::<InstallBundle>();
@@ -106,13 +108,13 @@ impl Coordinator {
         Ok((coordinator, render_side, warnings))
     }
 
-    /// The content hash of the currently installed document (ADR-0046 §9) — the token a later
+    /// The content hash of the currently installed document — the token a later
     /// swap's `expect` guard compares, and what every report names as "what is playing".
     pub fn installed_hash(&self) -> String {
         content_hash(&self.doc)
     }
 
-    /// The canonical installed document (ADR-0046 §7): a fresh conversation reads what is playing
+    /// The canonical installed document: a fresh conversation reads what is playing
     /// from here.
     pub fn document(&self) -> &NormalizedDoc {
         &self.doc
@@ -120,25 +122,25 @@ impl Coordinator {
 
     /// The currently-installed engine's logical output channel count ([`Engine::channels`]). The
     /// native shell reads it to rebuild the device output map off-thread against the retained device
-    /// channel count after a swap (ADR-0046 §6) — a *logical* count, so the Coordinator stays
-    /// device-free (§7).
+    /// channel count after a swap — a *logical* count, so the Coordinator stays
+    /// device-free.
     pub fn installed_channels(&self) -> usize {
         self.installed_channels
     }
 
     /// The currently-installed engine's logical input channel count ([`Engine::input_channels`]).
-    /// The native shell reads it to raise the input dark-degrade warning (ADR-0038 §7/§9) when a
+    /// The native shell reads it to raise the input dark-degrade warning when a
     /// swapped-in engine binds input channels no open stream provides.
     pub fn installed_input_channels(&self) -> usize {
         self.installed_input_channels
     }
 
     /// Validate + build a whole new Engine off-thread, precompute the migration table, fill the
-    /// install mailbox, and return a real [`SwapReport`] (ADR-0046 §§5,7,9).
+    /// install mailbox, and return a real [`SwapReport`].
     ///
     /// `source` is the document JSON (by-path resolution is a shell concern — the resolver seam —
     /// kept out of this OS-free core). `expect`, when `Some`, is the installed content hash the
-    /// client believes is live: a mismatch is the optimistic-concurrency guard (§9) — the swap is
+    /// client believes is live: a mismatch is the optimistic-concurrency guard — the swap is
     /// rejected, nothing installs, and the report names the *actual* installed hash so the client
     /// re-reads and reconciles. A load/instantiate error likewise installs nothing. On success the
     /// report carries the real survivor/reset [`DiffSummary`] and the now-installed hash, and the
@@ -148,14 +150,14 @@ impl Coordinator {
         // drove the render side between swaps can install the next one without a separate reclaim.
         self.mailbox.try_reclaim();
 
-        // Parse + normalize (the loader is the single validation authority, ADR-0045 §3).
+        // Parse + normalize (the loader is the single validation authority).
         let new_doc = match NormalizedDoc::from_json(source, &self.registry, Some(&*self.resolver))
         {
             Ok(d) => d,
             Err(e) => return self.reject(vec![Diag::from_load(&e)]),
         };
 
-        // Optimistic-concurrency guard (ADR-0046 §9): honor `expect` before building anything.
+        // Optimistic-concurrency guard: honor `expect` before building anything.
         if let Some(expected) = expect {
             let actual = self.installed_hash();
             if expected != actual {
@@ -186,14 +188,14 @@ impl Coordinator {
 
         // The new engine's logical geometry, captured before it is boxed into the mailbox — the
         // native shell reads it back (via the installed-geometry accessors) to rebuild the device
-        // output map off-thread (ADR-0046 §6) and to compute the input dark-degrade warning (§7).
+        // output map off-thread and to compute the input dark-degrade warning.
         let new_channels = engine.channels();
         let new_input_channels = engine.input_channels();
 
-        // Precompute the migration table + diff (the edit always wins, ADR-0046 §5).
+        // Precompute the migration table + diff (the edit always wins).
         let (migration, diff) = self.manifest.diff(&new_manifest);
 
-        // Fill the install mailbox. One swap in flight (§2): if the render side has not yet drained
+        // Fill the install mailbox. One swap in flight: if the render side has not yet drained
         // the previous swap, the retiree is not home, `install` is refused, and nothing changes —
         // report it honestly, still-playing hash intact, so the caller retries after reclaim.
         let bundle = Box::new(InstallBundle { engine, migration });
@@ -227,14 +229,14 @@ impl Coordinator {
         }
     }
 
-    /// Non-blocking reclaim of the retired [`InstallBundle`] (ADR-0009 deferred free): take it back
+    /// Non-blocking reclaim of the retired [`InstallBundle`] (deferred free): take it back
     /// so the caller can drop it off the audio thread, and open the slot for the next swap. `None`
     /// if the render side has not posted the retiree yet.
     pub fn try_reclaim(&mut self) -> Option<Box<InstallBundle>> {
         self.mailbox.try_reclaim()
     }
 
-    /// Blocking reclaim (ADR-0046 §2): poll until the retiree returns or `timed_out` fires. The
+    /// Blocking reclaim: poll until the retiree returns or `timed_out` fires. The
     /// caller supplies the clock (core is OS-free) — see [`CoordinatorMailbox::reclaim`]. Dropping
     /// the returned bundle is the off-thread free; it opens the slot for the next swap.
     pub fn reclaim(
@@ -244,7 +246,7 @@ impl Coordinator {
         self.mailbox.reclaim(timed_out)
     }
 
-    /// A rejected swap installs nothing (ADR-0046 §9): `ok: false`, the given diagnostics, no
+    /// A rejected swap installs nothing: `ok: false`, the given diagnostics, no
     /// diff, and the still-installed document's hash — the report names what keeps playing.
     fn reject(&self, errors: Vec<Diag>) -> SwapReport {
         SwapReport {
@@ -307,7 +309,7 @@ mod tests {
             }
         }
 
-        /// The callback-top install step (ADR-0046 §§3,4), synchronous test form.
+        /// The callback-top install step, synchronous test form.
         fn poll_install(&mut self) {
             if let Some(bundle) = self.mailbox.take_install() {
                 let mut bundle = bundle;
@@ -368,11 +370,11 @@ mod tests {
 
     #[test]
     fn a_survivor_keeps_state_a_reset_starts_fresh() {
-        // The behavioral heart of ADR-0046 §5. Warm the envelope to its sustain level, then swap.
+        // The behavioral heart of survivor migration. Warm the envelope to its sustain level, then swap.
         // Swapping to the identical document keeps `/env` a survivor (address + type + fingerprint
         // all match): the transplanted box carries its held level, so the first post-swap block is
         // still ringing at sustain. Swapping to a document that *renames* the node makes it a
-        // remove+add (ADR-0045 §2): the fresh box restarts its attack from zero.
+        // remove+add: the fresh box restarts its attack from zero.
         let base = envelope_doc("/env");
 
         let survived = {
@@ -429,7 +431,7 @@ mod tests {
 
     #[test]
     fn a_changed_runtime_param_leaves_the_survivor_ringing() {
-        // The load-bearing survivor half of the asymmetry (ADR-0045 §2 / ADR-0046 §5): a runtime
+        // The load-bearing survivor half of the asymmetry: a runtime
         // `inputs` param is NOT part of the survivor key, so editing one leaves the node a survivor
         // — the box (with its warmed state) transplants and the new Plan's latch supplies the new
         // value. Warm the envelope to sustain, then swap to a document that differs ONLY in `attack`
@@ -507,7 +509,7 @@ mod tests {
 
     #[test]
     fn bumping_voices_resets_the_voicer_unchanged_survives() {
-        // ADR-0046 §5: the voicer's `voices` pool size is an instantiate-time Constant. Swapping to
+        // The voicer's `voices` pool size is an instantiate-time Constant. Swapping to
         // an identical `voices` keeps the voicer a survivor — its held note keeps ringing across
         // the swap. Bumping `voices` 4→8 is a different instantiation (the box carries a 4-voice
         // pool): the voicer resets to a fresh, silent 8-voice pool and the note is gone.
@@ -526,7 +528,7 @@ mod tests {
     // ---- Sample player: re-resolving a same-path sample to different bytes resets it ----
 
     /// A resolver whose one sample's bytes can be flipped between installs, at the same path — the
-    /// re-upload-same-path flow (ADR-0046 §5 / MCP/F). Interior-mutable so a test can change the
+    /// re-upload-same-path flow (MCP/F). Interior-mutable so a test can change the
     /// resolved bytes without the document changing at all.
     #[derive(Clone)]
     struct FlipResolver {
@@ -581,7 +583,7 @@ mod tests {
 
     #[test]
     fn reresolving_a_sample_to_different_bytes_resets_the_player() {
-        // ADR-0046 §5 / ADR-0016: a sample's identity is its decoded bytes, not its path. Swapping
+        // A sample's identity is its decoded bytes, not its path. Swapping
         // the identical document with the *same* bytes keeps the player a survivor — the one-shot
         // keeps playing across the swap. Re-uploading different bytes at the same path is a
         // different instantiation: the player resets to a fresh, un-triggered box and falls silent.
@@ -601,7 +603,7 @@ mod tests {
 
     #[test]
     fn expect_guard_rejects_a_stale_swap_and_names_the_installed_hash() {
-        // ADR-0046 §9: a swap carrying an `expect` that does not match the installed document is
+        // A swap carrying an `expect` that does not match the installed document is
         // rejected — nothing installs — and the report names the actually-installed hash so the
         // client re-reads and reconciles. `None` is last-write-wins and always installs.
         let (mut coord, _side, _w) = Coordinator::install_initial(
@@ -636,7 +638,7 @@ mod tests {
         );
     }
 
-    /// A minimal instrument that binds logical input channel 0 (ADR-0038 §3): `input_channels`
+    /// A minimal instrument that binds logical input channel 0: `input_channels`
     /// becomes 1. No resources, so a bare [`MemoryResolver`] loads it. Used to prove the
     /// installed-geometry accessors advance across a swap.
     const MIC_PASSTHRU: &str = r#"{ "format_version": 3, "instrument": "mic-passthru",
@@ -647,8 +649,8 @@ mod tests {
 
     #[test]
     fn installed_channels_reflect_the_installed_engine_geometry() {
-        // The native shell reads these to build the device output map off-thread (ADR-0046 §6) and
-        // to compute the input dark-degrade warning (ADR-0038 §7): both need the *currently
+        // The native shell reads these to build the device output map off-thread and
+        // to compute the input dark-degrade warning: both need the *currently
         // installed* engine's logical channel geometry, which the Coordinator holds even though the
         // engine itself has crossed into the mailbox.
         let (mut coord, side, _w) = Coordinator::install_initial(
@@ -692,7 +694,7 @@ mod tests {
 
     #[test]
     fn reclaim_returns_the_retiree_for_off_thread_drop() {
-        // ADR-0009/§2: after the render side applies a swap it posts the retired Engine back; the
+        // After the render side applies a swap it posts the retired Engine back; the
         // Coordinator reclaims it (to drop off-thread) which also opens the slot for the next swap.
         let (mut coord, side, _w) = Coordinator::install_initial(
             &envelope_doc("/env"),

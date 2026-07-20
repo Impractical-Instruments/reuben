@@ -1,4 +1,4 @@
-//! Boundary — the OSC ⇄ [`Arg`] conversion at the external edge (ADR-0007, ADR-0026, ADR-0030).
+//! Boundary — the OSC ⇄ [`Arg`] conversion at the external edge.
 //!
 //! The native layer decodes a UDP datagram into an address plus a flat list of **primitive**
 //! `Arg`s (the OSC atoms `F32`/`I32`/`Str`) and, on the way out, encodes the same. The two
@@ -6,7 +6,7 @@
 //! list into the single `Arg` a destination port carries, and [`osc_out_args`] expands one
 //! internal `Arg` back into the flat list to send.
 //!
-//! **Dest-port-type-driven** (ADR-0030, Q10a). External OSC routes by address to a node/port; the
+//! **Dest-port-type-driven.** External OSC routes by address to a node/port; the
 //! **port's declared [`PortType`]** drives [`osc_in_arg`]. A primitive port wraps the single arg; a
 //! vocab enum resolves it via its [`EnumMeta`](crate::descriptor::EnumMeta); a struct vocab type
 //! unpacks the flat form via the converter it registered with [`register_osc_form!`] (its
@@ -17,12 +17,14 @@
 //!
 //! **The converter registry** ([`OscForm`], issues #204/#205): struct vocab converters
 //! self-register at their definition site and are collected by `inventory` into a link-time
-//! slice (the ADR-0024 pattern). [`osc_form_by_name`] serves the inbound decode; [`has_form`]
+//! slice (the operator-registry self-registration pattern). [`osc_form_by_name`] serves the inbound decode; [`has_form`]
 //! serves [`has_osc_form`]'s capability key. Only those two sides are registry-backed:
 //! outbound ([`osc_out_args`]) stays a **closed exhaustive match** over [`Arg`] — see
 //! [`OscForm`]'s docs for why — with the
 //! `has_osc_form_matches_what_the_drain_can_send` test pinning the name-keyed registry to the
 //! variant-keyed drain.
+//!
+//! see rules: composition-operators
 
 use crate::descriptor::{Port, PortType};
 use crate::message::{Arg, OscArg};
@@ -30,7 +32,7 @@ use crate::message::{Arg, OscArg};
 /// A compile-time OSC-form registration for a **struct vocab type** (issue #204, epic #146),
 /// submitted at the type's definition site via [`register_osc_form!`] and collected by
 /// `inventory` into a link-time slice — the same self-registration pattern as the operator
-/// registry's [`OpReg`](crate::registry::OpReg) (ADR-0024). Keyed by
+/// registry's [`OpReg`](crate::registry::OpReg). Keyed by
 /// [`PortType::Vocab`]'s `name`, the inbound + capability authority: [`osc_form_by_name`]
 /// serves [`osc_in_arg`]'s struct decode and [`has_form`] serves [`has_osc_form`]'s
 /// capability key, so a struct type registers its external form once instead of editing
@@ -51,7 +53,7 @@ pub struct OscForm {
 inventory::collect!(OscForm);
 
 /// Register a struct vocab type's external OSC form at compile time (issue #204, mirroring
-/// [`register_operator!`](crate::registry) — ADR-0024).
+/// [`register_operator!`](crate::registry)).
 ///
 /// Invoke **by path** next to the type's [`OscArg`] impl: `crate::register_osc_form!(Note);`.
 /// The submitted entry wraps `<T as OscArg>::from_osc(args).map(Arg::from)`, so it requires
@@ -90,13 +92,13 @@ pub fn has_form(name: &str) -> bool {
 }
 
 /// Convert a flat OSC arg list into the single [`Arg`] a destination port carries, driven by the
-/// **destination port** (ADR-0030). `None` when the args don't fit the port (a wrong-typed wire —
+/// **destination port**. `None` when the args don't fit the port (a wrong-typed wire —
 /// dropped) or the port has no OSC form (a *bare* [`Buffer`](Arg::F32Buffer): audio never crosses).
 ///
 /// - **F32 / I32 / Str** — wrap the first arg (numeric coercion as for any `Arg`).
 /// - **F32Buffer with meta** — a signal control carrying a scalar default (`f32_buffer` + meta,
 ///   e.g. `djfilter.position`): crosses as a clamped `F32`, materialized ZOH downstream — a control
-///   surface can sweep it (ADR-0030/0031). The port's `meta` is what distinguishes it from audio.
+///   surface can sweep it. The port's `meta` is what distinguishes it from audio.
 /// - **Vocab enum** — resolve the first arg (symbol or index) via the port's resolver.
 /// - **Vocab struct** — unpack the flat form via the type's [`OscArg::from_osc`].
 /// - **bare F32Buffer** (no meta — audio) — `None` (opt-out).
@@ -123,7 +125,7 @@ pub fn osc_in_arg(p: &Port, args: &[Arg]) -> Option<Arg> {
             .first()
             .and_then(Arg::as_f32)
             .map(|v| Arg::F32(p.meta.as_ref().map(|m| m.clamp(v)).unwrap_or(v))),
-        // A *bare* Buffer (audio) is not boundary-crossable (ADR-0030): no OSC form.
+        // A *bare* Buffer (audio) is not boundary-crossable: no OSC form.
         PortType::F32Buffer => None,
         PortType::Vocab {
             enum_meta: Some(e), ..
@@ -140,7 +142,7 @@ pub fn osc_in_arg(p: &Port, args: &[Arg]) -> Option<Arg> {
         // with a verbatim single-Arg form — numeric or string — crosses as-is: the OSC
         // echo/loopback path (fader/encoder/label feedback). The string atom joined once
         // `Arg::Str` went `Arc<str>`-backed (issues #206/#207): forwarding it through
-        // `osc_out.process()` is now a refcount bump, not a heap clone (ADR-0009 holds). A
+        // `osc_out.process()` is now a refcount bump, not a heap clone. A
         // multi-arg list still has no unambiguous single-Arg form (the port names no vocab type
         // to unpack it), so it drops — a typed destination port decodes those.
         PortType::Arg => match args {
@@ -175,12 +177,12 @@ pub fn has_osc_form(ty: &PortType) -> bool {
             name,
             ..
         } => has_form(name),
-        // Audio never crosses (ADR-0026/0030), and a pass-through names no type of its own.
+        // Audio never crosses, and a pass-through names no type of its own.
         PortType::F32Buffer | PortType::Arg => false,
     }
 }
 
-/// Expand one internal [`Arg`] into the flat OSC arg list to send out (ADR-0026, ADR-0030),
+/// Expand one internal [`Arg`] into the flat OSC arg list to send out,
 /// appending primitive `Arg`s to `out`. The inverse of [`osc_in_arg`], dispatched on the `Arg`
 /// variant (the closed central enum). A primitive forwards verbatim; a struct vocab type packs via
 /// [`OscArg::to_osc`]; a type-erased [`Enum`](Arg::Enum) goes out as its bare index (the boundary
@@ -294,7 +296,7 @@ mod tests {
         assert_eq!(got, Some(Arg::Note(Note::new(Pitch::Degree(2), 1.0))));
     }
 
-    /// ADR-0028 at the runtime boundary: external OSC that doesn't fit the destination port
+    /// At the runtime boundary: external OSC that doesn't fit the destination port
     /// **drops** (`None`) — it never snaps to a default. Load time pins this for documents
     /// (`unknown_symbol_errors` in `format.rs`); this is the counterpart for live input, the
     /// hardening surface against arbitrary external OSC (a control surface sending a typo'd

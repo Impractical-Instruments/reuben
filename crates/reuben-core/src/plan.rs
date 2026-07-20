@@ -1,16 +1,18 @@
-//! Plan — the static execution image produced by Instantiate (ADR-0009, ADR-0010, ADR-0030).
+//! Plan — the static execution image produced by Instantiate.
 //!
 //! Instantiate consumes a [`Graph`], topologically orders its nodes, instantiates each operator
 //! (config-fixed, off the hot path), and assigns every Buffer output port a slot in the edge-buffer
 //! arena. The result is immutable and is what [`crate::render`] executes per block. Polyphony is
 //! hosted inside the Voicer (N voice sub-plans summed), not fanned out across engine Lanes — the
-//! Lane model is gone (ADR-0032).
+//! Lane model is gone.
 //!
-//! The seven former carriers collapse to one model (ADR-0030): every input port has a held
+//! The seven former carriers collapse to one model: every input port has a held
 //! [`Arg`] **latch** (the ZOH value a held-handle `io.read` sees), Buffer inputs additionally carry a dense
 //! arena buffer, and every output port either owns arena buffers (a Buffer/signal output) or
 //! routes emitted Messages to downstream input ports (a message output). The old context-arena /
 //! enum-latch / param lanes and the separate `msg_targets` / `ctx_targets` routing are unified.
+//!
+//! see rules: execution-runtime
 
 use slotmap::SecondaryMap;
 
@@ -21,7 +23,7 @@ use crate::message::{Arg, Message};
 use crate::operator::Operator;
 use crate::vocab::harmony::Harmony;
 
-/// The **form** a wire carries (ADR-0031), *declared* by the port's [`PortType`] — not inferred
+/// The **form** a wire carries, *declared* by the port's [`PortType`] — not inferred
 /// from the graph:
 ///
 /// - **Signal** — a dense per-sample buffer ([`Buffer`](PortType::F32Buffer) audio), read via
@@ -41,10 +43,10 @@ pub enum PortKind {
     Event,
 }
 
-/// Classify an input/output port into its declared [`PortKind`] form (ADR-0031). An `F32Buffer` is a
+/// Classify an input/output port into its declared [`PortKind`] form. An `F32Buffer` is a
 /// Signal (a dense per-sample carrier); a vocab declared `is_event` (a `Note` stream) is an Event;
 /// everything latched — a bare `F32`, enums, `Harmony`, `I32`, `Str` — is a Value. The Phase-B flip
-/// (ADR-0031): `F32 ⇒ Value`. A port that must carry a continuous signal with a scalar default
+/// is `F32 ⇒ Value`. A port that must carry a continuous signal with a scalar default
 /// (`oscillator.freq`, `filter.cutoff`, `envelope.cv`) is declared `f32_buffer`-with-meta, so it
 /// stays Signal and materializes from its default; every remaining bare `f32` is a held Value.
 ///
@@ -61,18 +63,18 @@ pub(crate) fn port_kind(p: &Port) -> PortKind {
     }
 }
 
-/// The seed [`Arg`] for an input port's latch at Instantiate (ADR-0030): an `F32` control's
+/// The seed [`Arg`] for an input port's latch at Instantiate: an `F32` control's
 /// (override-or-default) value, an enum's (override-or-default) variant, the default `Harmony`,
 /// or a harmless placeholder for ports with no held value (`Note`, `Buffer`).
 fn seed_latch(p: &Port, port: usize, value_overrides: &[(usize, Arg)]) -> Arg {
     // An author override is already `Port::coerce`-normalized to this port's latch value (an
-    // `F32` control's clamped scalar, an enum's concrete variant) — use it verbatim (ADR-0035).
+    // `F32` control's clamped scalar, an enum's concrete variant) — use it verbatim.
     if let Some((_, arg)) = value_overrides.iter().find(|(po, _)| *po == port) {
         return arg.clone();
     }
     match &p.ty {
-        // F32 (Value-bound scalar control) and an F32Buffer *carrying meta* (ADR-0031 decision (a):
-        // a signal port with a scalar default, e.g. `oscillator.freq`) both seed from their default.
+        // F32 (Value-bound scalar control) and an F32Buffer *carrying meta*
+        // (a signal port with a scalar default, e.g. `oscillator.freq`) both seed from their default.
         // A bare F32Buffer (no meta — audio) has no held value and falls to the placeholder arm below.
         PortType::F32 | PortType::F32Buffer if p.meta.is_some() => {
             Arg::F32(p.meta.as_ref().map(|m| m.default).unwrap_or(0.0))
@@ -93,7 +95,7 @@ fn seed_latch(p: &Port, port: usize, value_overrides: &[(usize, Arg)]) -> Arg {
 /// A node in execution order, with its arena buffer wiring resolved.
 pub struct PlanNode {
     pub address: String,
-    /// The operator instance (single-element `Vec`; the per-Lane fan-out is gone — ADR-0032).
+    /// The operator instance (single-element `Vec`; the per-Lane fan-out is gone).
     /// `pub(crate)`: the survivor transplant ([`Plan::transplant_survivors`]) is the only writer
     /// that moves these boxes, and it lives on `Plan` — no caller reaches in to swap them (#495).
     pub(crate) ops: Vec<Box<dyn Operator>>,
@@ -102,36 +104,36 @@ pub struct PlanNode {
     /// `Vec`), or `None`. `Some` for **every** [`Buffer`](PortType::F32Buffer) input — wired to a
     /// Buffer source (zero-copy share) or **materialized** (a dedicated scratch buffer, see
     /// `materialize`) when fed by a scalar source *or unwired* (an unwired bare buffer fills with
-    /// silence from its zero-seeded latch). That totality is the **buffer-presence invariant**
-    /// (ADR-0037): `process` always sees a dense length-n buffer on a Signal input, so a typed
+    /// silence from its zero-seeded latch). That totality is the **buffer-presence invariant**:
+    /// `process` always sees a dense length-n buffer on a Signal input, so a typed
     /// Signal read indexes directly. Held / Stream inputs carry no buffer (`None`).
     pub inputs: Vec<Option<Vec<usize>>>,
     /// Per input port (full input-port order): its [`PortKind`], precomputed at Instantiate so the
     /// hot message-routing path reads the bucket directly instead of re-deriving it from the port
-    /// descriptor (ADR-0030 — `port_kind` does a `Vocab` name comparison that the audio thread
+    /// descriptor (`port_kind` does a `Vocab` name comparison that the audio thread
     /// should not repeat per routed message).
     pub input_kinds: Vec<PortKind>,
-    /// Materialized inputs (ADR-0030): `(input port, scratch arena buffer)` for each Buffer input
+    /// Materialized inputs: `(input port, scratch arena buffer)` for each Buffer input
     /// fed by a scalar source — the one implicit `F32`→`Buffer` ZOH bridge. The engine fills the
     /// buffer per block from `latch[port]` (decoded via `Arg::as_f32`), writing mid-block changes at
     /// their frame.
     pub materialize: Vec<(usize, usize)>,
     /// Per `materialize` entry (same index): `true` once the scratch buffer holds the latch
-    /// uniformly across the block, so a held-unchanged input can skip its refill (ADR-0030).
+    /// uniformly across the block, so a held-unchanged input can skip its refill.
     /// Carried across blocks. Starts `false` so the first block fills.
     pub materialize_clean: Vec<bool>,
     /// Per `materialize` entry (same index): `true` when the input master wrote device audio
-    /// into the scratch **this block** ([`InputTap`], ADR-0038 §3) — the ZOH fill must skip it
+    /// into the scratch **this block** ([`InputTap`]) — the ZOH fill must skip it
     /// (device audio wins over the latch and over routed messages for the block). Set by
     /// [`crate::render::render_plan`]'s tap copy, consumed (reset) by `process_node`. Always
     /// all-`false` for a plan with no channel-bound pipes — the common case pays one branch.
     pub materialize_device_fed: Vec<bool>,
-    /// The held [`Arg`] latch per input port (ADR-0030) — the unified ZOH value a `Held<T>` handle's `io.read` sees,
+    /// The held [`Arg`] latch per input port — the unified ZOH value a `Held<T>` handle's `io.read` sees,
     /// collapsing the former Harmony / enum / param lanes into one. Length = input count; seeded
     /// from each input's default / author override, `Copy`-normalized, carried across blocks. Render
     /// block-slices Held ports at change frames and updates the slot there.
     pub latch: Vec<Arg>,
-    /// Per-input `varying` hint (ADR-0030), in input-port order — preallocated here and reused every
+    /// Per-input `varying` hint, in input-port order — preallocated here and reused every
     /// block (no audio-thread alloc). All-`true`; Render rewrites only materialized ports each block
     /// (`false` ⇒ held unchanged this block).
     pub varying: Vec<bool>,
@@ -141,7 +143,7 @@ pub struct PlanNode {
     /// **only when signal outputs precede message outputs in the declaration** (the invariant every
     /// operator holds; e.g. `envelope` declares `cv` before `active`).
     pub outputs: Vec<Vec<usize>>,
-    /// Message-edge routing (ADR-0014, ADR-0030, ADR-0032): indexed by **all-outputs port index**
+    /// Message-edge routing: indexed by **all-outputs port index**
     /// (the index an `Out` handle carries into [`crate::operator::Io::write`]; `emit.port` is that index). A signal output
     /// has an empty slot; a message output carries the `(dst node, dst input port)` pairs its
     /// emissions are delivered to. Full-index (not compacted to message ordinals) so an operator can
@@ -151,7 +153,7 @@ pub struct PlanNode {
     pub out_targets: Vec<Vec<(usize, usize)>>,
 }
 
-/// One outbound (OSC-out) sink (ADR-0026, ADR-0030): a node whose emitted Messages leave the
+/// One outbound (OSC-out) sink: a node whose emitted Messages leave the
 /// graph past the boundary. The engine drains the node's emissions each block into the outbound
 /// list, stamping the node's `address` (one sink = one address) and the block-absolute frame;
 /// native encodes + UDP-sends them. The marker is the operator type (`osc_out`) — the one
@@ -163,7 +165,7 @@ pub struct OutboundTap {
     pub address: String,
 }
 
-/// One resolved `interface` **output** (ADR-0032 §4): a voice patch's named boundary output, so a
+/// One resolved `interface` **output**: a voice patch's named boundary output, so a
 /// host (`Voicer`) reads it by name + kind exactly as an operator reads a port — a Signal output
 /// from its arena buffer, a Value output from a captured scalar. Resolved at instantiate from
 /// [`Graph::interface`](crate::graph::Graph::interface); empty for a plan with no `interface`.
@@ -184,7 +186,7 @@ pub struct InterfaceOutput {
     pub captured_slot: Option<usize>,
 }
 
-/// One **dissolved interface pipe**'s live external address (ADR-0038 §2). Instantiate collapses
+/// One **dissolved interface pipe**'s live external address. Instantiate collapses
 /// a single-consumer pass-through pipe node out of the schedule (see
 /// [`dissolve_interface_pipes`]) — the pipe stays an authoring/format concept, not a rendered
 /// node — but its minted address (`in` → `/in`) is real boundary surface: the Voicer drives a
@@ -215,18 +217,18 @@ struct DissolvedPipe {
     consumer_port: usize,
 }
 
-/// One input-master tap (ADR-0038 §3) — the dual of [`OutputTap`]: a **top-level** signal
+/// One input-master tap — the dual of [`OutputTap`]: a **top-level** signal
 /// input pipe bound to a logical input channel. Each block, [`crate::render::render_plan`]
 /// copies the caller-supplied channel buffer into `buffer` (the pipe's `in` scratch, excluded
 /// from the per-block arena clear) *before* any node runs. A channel the caller does not
 /// supply leaves the pipe on its ordinary materialize path, so the pipe's **declared default
 /// materializes** (a bare pipe's zero-seeded latch fills silence) and routed messages still
-/// drive it — dark-degrade, never fatal (ADR-0038 §7), and a `channel` + `default` pipe stays
+/// drive it — dark-degrade, never fatal, and a `channel` + `default` pipe stays
 /// the sweepable control `describe` advertises. Distinct taps may share a channel (fan-out at
 /// the master, like output broadcast); each pipe still owns its own buffer. Built only from
 /// the played graph's **own** channel bindings: a subpatch-inlined child's bindings are
 /// discarded at splice and a Voicer-hosted voice's are cleared in the loader's voice pass,
-/// so nested/hosted bindings stay inert (ADR-0038 §3).
+/// so nested/hosted bindings stay inert.
 #[derive(Clone, Copy)]
 pub struct InputTap {
     /// The logical input channel this pipe reads.
@@ -244,7 +246,7 @@ pub struct InputTap {
 
 /// One master tap: a tapped port's arena buffers, summed into the master output.
 pub struct OutputTap {
-    /// Logical master channel this tap feeds (ADR-0026), or `None` to broadcast to every
+    /// Logical master channel this tap feeds, or `None` to broadcast to every
     /// channel (the historical mono fan).
     pub channel: Option<usize>,
     /// Arena buffer indices of the tapped port; all summed.
@@ -260,26 +262,26 @@ pub struct Plan {
     pub(crate) nodes: Vec<PlanNode>,
     /// Total number of edge buffers in the arena.
     pub num_buffers: usize,
-    /// Length `num_buffers`: `true` at each arena slot that is a materialize **scratch** buffer
-    /// (ADR-0030). Render skips these in its per-block "fresh edge buffers" clear, so a held input's
+    /// Length `num_buffers`: `true` at each arena slot that is a materialize **scratch** buffer.
+    /// Render skips these in its per-block "fresh edge buffers" clear, so a held input's
     /// buffer persists and need not be re-written every block (see `materialize_clean`).
     pub materialize_scratch_mask: Vec<bool>,
-    /// Master taps, summed into the per-channel master output (ADR-0026).
+    /// Master taps, summed into the per-channel master output.
     pub output_taps: Vec<OutputTap>,
-    /// Input-master taps (ADR-0038 §3): each channel-bound top-level signal input pipe, fed
+    /// Input-master taps: each channel-bound top-level signal input pipe, fed
     /// from the caller's logical input buffers before nodes run. Empty for a patch that binds
     /// no input channel (the common case pays nothing) and for hosted voice plans.
     pub input_taps: Vec<InputTap>,
-    /// Outbound (OSC-out) sinks, drained past the boundary each block (ADR-0026, ADR-0030).
+    /// Outbound (OSC-out) sinks, drained past the boundary each block.
     pub outbound_taps: Vec<OutboundTap>,
-    /// Resolved `interface` outputs (ADR-0032 §4), for a host operator to read this plan's boundary
+    /// Resolved `interface` outputs, for a host operator to read this plan's boundary
     /// outputs by name + kind. Empty unless the document declared an `interface`.
     pub interface_outputs: Vec<InterfaceOutput>,
     /// One slot per Value `interface` output (parallel to the `captured_slot` indices in
     /// `interface_outputs`): the port's last-emitted scalar, held ZOH across blocks (seeded `0.0`).
     /// `render_plan` updates it when the port emits; the host reads it post-render.
     pub captured: Vec<f32>,
-    /// Live addresses of interface pipes dissolved out of the schedule (ADR-0038 §2): message
+    /// Live addresses of interface pipes dissolved out of the schedule: message
     /// routing ([`crate::render`]) and [`Plan::osc_in_message`] consult these before the node
     /// scan, so a collapsed pipe's minted address keeps feeding its rewired consumer. Empty for
     /// a graph with no dissolvable pipes.
@@ -291,7 +293,7 @@ pub struct Plan {
 pub enum PlanError {
     /// The graph has a cycle (feedback needs an explicit unit-delay; deferred).
     Cycle,
-    /// A wire's two declared forms (ADR-0031) cannot connect: a Signal feeding a Value input (no
+    /// A wire's two declared forms cannot connect: a Signal feeding a Value input (no
     /// implicit sample-and-hold), or an Event mismatched against a Signal/Value. `src`/`dst` name
     /// the offending `node.port`; `reason` says what is missing (e.g. the explicit converter op).
     FormMismatch {
@@ -304,7 +306,7 @@ pub enum PlanError {
 impl Plan {
     /// Convert an inbound OSC datagram — an address plus a flat list of primitive `Arg`s — into the
     /// single typed [`Message`] it routes to, driven by the **destination port's Arg type**
-    /// (ADR-0030, the boundary). Resolves the address to a node + input port via
+    /// (the boundary). Resolves the address to a node + input port via
     /// [`crate::render::resolve_port`] — the *same* resolver the render routing path uses, so a
     /// nested node behind a prefix-matching ancestor stays reachable on both paths (issue #165) —
     /// then calls [`crate::boundary::osc_in_arg`] with that [`Port`] to type the flat args (the
@@ -312,7 +314,7 @@ impl Plan {
     /// cross, while bare audio does not). `None` if no node/port matches or the args don't fit the
     /// port. External OSC carries no timestamp, so the Message is stamped frame 0 ("now").
     pub fn osc_in_message(&self, address: &str, args: &[Arg]) -> Option<Message> {
-        // A dissolved pipe's minted address stays live (ADR-0038 §2): type the args by the
+        // A dissolved pipe's minted address stays live: type the args by the
         // pipe's own synthesized port, exactly as when the pipe was a rendered node.
         let port = self
             .input_alias(address)
@@ -333,13 +335,13 @@ impl Plan {
     /// Instantiate a Graph into an executable Plan (the construction sub-step of a Swap).
     pub fn instantiate(mut graph: Graph, mut config: AudioConfig) -> Result<Plan, PlanError> {
         // Validate the authored wires first (same error surface as before), then collapse
-        // pass-through interface pipes out of the schedule (ADR-0038 §2 — the pipe is a format
+        // pass-through interface pipes out of the schedule (the pipe is a format
         // concept, not a mandatory rendered node) before ordering what actually executes.
         check_wire_forms(&graph)?;
         let dissolved = dissolve_interface_pipes(&mut graph);
         let order = topo_order(&graph)?;
 
-        // Logical master width is derived from the instrument, not the device (ADR-0026):
+        // Logical master width is derived from the instrument, not the device:
         // the highest referenced channel index + 1, floored to stereo so a mono patch still
         // presents two channels. A broadcast tap (`None`) imposes no width on its own.
         config.channels = graph
@@ -350,7 +352,7 @@ impl Plan {
             .unwrap_or(0)
             .max(AudioConfig::MIN_CHANNELS);
 
-        // Logical **input** width, the dual (ADR-0038 §3): max bound input channel + 1 across
+        // Logical **input** width, the dual: max bound input channel + 1 across
         // the graph's own input pipes, 0 when none binds — a patch that uses no inputs pays
         // nothing (no floor). Derived here from the one binding source of truth
         // (`interface.input_channels`, the same map the taps below are built from), so no
@@ -368,9 +370,9 @@ impl Plan {
 
         // 1. Assign every (node, Buffer output port) a unique arena buffer index. A message output
         // (Note / Harmony / scalar control out) carries no Signal data — events arrive via routing
-        // (ADR-0014) — so it gets an empty buffer list (its emptiness is the marker that an edge into
+        // — so it gets an empty buffer list (its emptiness is the marker that an edge into
         // it must materialize rather than share). The inner `Vec` is a single buffer per signal port
-        // (the per-Lane dimension is gone — polyphony is hosted inside the Voicer, ADR-0032).
+        // (the per-Lane dimension is gone — polyphony is hosted inside the Voicer).
         let mut next_buffer = 0usize;
         let mut out_buffers: SecondaryMap<NodeKey, Vec<Vec<usize>>> = SecondaryMap::new();
         for (key, node) in &graph.nodes {
@@ -408,7 +410,7 @@ impl Plan {
 
         // 2. Build PlanNodes in execution order.
         let mut nodes = Vec::with_capacity(order.len());
-        // Arena slots that are materialize scratch (ADR-0030); Render skips them in its per-block
+        // Arena slots that are materialize scratch; Render skips them in its per-block
         // clear so held inputs persist. Collected as buffers are assigned below.
         let mut scratch_buffers: Vec<usize> = Vec::new();
         for key in &order {
@@ -416,7 +418,7 @@ impl Plan {
             let overrides = &graph.nodes[*key].value_overrides;
             let n_inputs = descriptor.inputs.len();
 
-            // The unified held latch per input port (ADR-0030): seeded from each input's default or
+            // The unified held latch per input port: seeded from each input's default or
             // an author override; `Copy`-normalized; carried across blocks.
             let latch: Vec<Arg> = descriptor
                 .inputs
@@ -425,22 +427,22 @@ impl Plan {
                 .map(|(port, p)| seed_latch(p, port, overrides))
                 .collect();
 
-            // Input buffer wiring (ADR-0030): a Buffer input wired to a Buffer source shares its
+            // Input buffer wiring: a Buffer input wired to a Buffer source shares its
             // arena buffers (zero-copy); a Buffer input wired to a scalar source materializes a
             // scratch buffer (the one implicit ZOH bridge); Held / Stream inputs carry no buffer.
             let mut inputs: Vec<Option<Vec<usize>>> = Vec::with_capacity(n_inputs);
             let mut materialize: Vec<(usize, usize)> = Vec::new();
             let varying: Vec<bool> = vec![true; n_inputs];
-            // Classify every input port once (ADR-0030): the routing kind feeds both the buffer
+            // Classify every input port once: the routing kind feeds both the buffer
             // wiring below and the per-node `input_kinds` the hot router reads each block.
             let input_kinds: Vec<PortKind> = descriptor.inputs.iter().map(port_kind).collect();
             for (port, &kind) in input_kinds.iter().enumerate() {
                 // Every Signal (Buffer) input presents a per-sample buffer to the operator's
-                // Signal read (ADR-0030): wired to a Buffer source it shares it zero-copy;
+                // Signal read: wired to a Buffer source it shares it zero-copy;
                 // otherwise (unwired, or fed by a scalar) the engine materializes a scratch
                 // filled ZOH from the latch — an unwired *bare* buffer's latch seeds 0.0, so it
                 // fills with silence. No Signal input is ever `None`: the buffer-presence
-                // invariant (ADR-0037). Held / Event inputs carry no buffer — they are read held
+                // invariant. Held / Event inputs carry no buffer — they are read held
                 // / as a stream.
                 if kind != PortKind::Signal {
                     inputs.push(None);
@@ -478,11 +480,11 @@ impl Plan {
 
             // Message-edge targets, indexed by **all-outputs port index** — the index an `Out`
             // handle carries into [`crate::operator::Io::write`] (the contract macro numbers outputs
-            // sequentially across kinds, ADR-0030; `emit.port` is that index). A signal (`F32Buffer`) output never
+            // sequentially across kinds; `emit.port` is that index). A signal (`F32Buffer`) output never
             // emits Messages, so its slot is empty; a message output carries the `(dst node, dst input
             // port)` pairs wired to it. Indexing by the full output index (not a compacted
             // message-ordinal) is what lets an operator interleave a signal output and a message
-            // output — e.g. `envelope` (`cv` signal + `active` message) for ADR-0032 voice-liveness.
+            // output — e.g. `envelope` (`cv` signal + `active` message) for voice-liveness.
             let out_targets: Vec<Vec<(usize, usize)>> = descriptor
                 .outputs
                 .iter()
@@ -501,7 +503,7 @@ impl Plan {
                 .collect();
 
             let node = graph.nodes.remove(*key).expect("key from topo order");
-            // Config-dependent runtime state (ADR-0032 §3): the Voicer instantiates its bound voice
+            // Config-dependent runtime state: the Voicer instantiates its bound voice
             // graphs into per-voice sub-plans here, where `config` is fixed and we are off the hot
             // path.
             let mut op = node.op;
@@ -531,7 +533,7 @@ impl Plan {
             materialize_scratch_mask[b] = true;
         }
 
-        // Input-master taps (ADR-0038 §3): bind each channel-bound signal input pipe to its
+        // Input-master taps: bind each channel-bound signal input pipe to its
         // logical input channel. The pipe's `in` port is unwired at its own level (an input
         // pipe is a source; only a parent face ever wires into it, and then this graph is not
         // the one being played), so the node loop above materialized it a scratch buffer.
@@ -572,7 +574,7 @@ impl Plan {
             });
         }
 
-        // Outbound sinks (ADR-0030): the `osc_out` operator is the one whose output is the external
+        // Outbound sinks: the `osc_out` operator is the one whose output is the external
         // edge, so its emissions drain past the boundary stamped with the node's address.
         let outbound_taps = nodes
             .iter()
@@ -584,7 +586,7 @@ impl Plan {
             })
             .collect();
 
-        // Resolve the `interface` outputs (ADR-0032 §4) so a host reads this plan's boundary by name
+        // Resolve the `interface` outputs so a host reads this plan's boundary by name
         // + kind: a Signal output from its arena buffer, a Value output from a captured scalar slot.
         // `graph.interface` survives the `graph.nodes.remove` drain above (separate field).
         let mut captured_len = 0usize;
@@ -642,7 +644,7 @@ impl Plan {
         })
     }
 
-    /// The arena buffer index of a Signal `interface` output (ADR-0032 §4), or `None` if there is no
+    /// The arena buffer index of a Signal `interface` output, or `None` if there is no
     /// such named output or it is not a Signal. A host reads the rendered buffer at this index.
     pub fn interface_signal_buf(&self, name: &str) -> Option<usize> {
         self.interface_outputs
@@ -651,7 +653,7 @@ impl Plan {
             .and_then(|o| o.signal_buf)
     }
 
-    /// The [`captured`](Plan::captured) slot index of a Value `interface` output (ADR-0032 §4), or
+    /// The [`captured`](Plan::captured) slot index of a Value `interface` output, or
     /// `None` if there is no such named output or it is not a Value. A host reads `captured[slot]`
     /// post-render for the port's held value.
     pub fn interface_value_slot(&self, name: &str) -> Option<usize> {
@@ -662,13 +664,12 @@ impl Plan {
     }
 
     /// Transplant survivor operator boxes from a `from` Plan into this (freshly built) one, per a
-    /// precomputed migration table (ADR-0046 §4). Each `(old_index, new_index)` pair moves the
-    /// surviving box — the operator instance *is* its state (ADR-0046 §4), including a voicer's
+    /// precomputed migration table. Each `(old_index, new_index)` pair moves the
+    /// surviving box — the operator instance *is* its state, including a voicer's
     /// hosted voice sub-plans — from `from.nodes[old_index]` into `self.nodes[new_index]`; the
     /// displaced cold box (the fresh Plan's node for that slot) lands back in `from` and frees
     /// off-thread with it. The new Plan's wiring and latches (which live in the [`PlanNode`], not
-    /// the box) stay this Plan's, so a survivor re-reads its inputs from the *new* document
-    /// (ADR-0045 §2).
+    /// the box) stay this Plan's, so a survivor re-reads its inputs from the *new* document.
     ///
     /// This is the single seam that mutates survivor state across a Swap, so the **pairing
     /// invariant** concentrates here: each pair must share operator type + instantiate-time
@@ -697,11 +698,11 @@ impl Plan {
                 &mut from.nodes[old_index].ops,
                 &mut self.nodes[new_index].ops,
             );
-            // The survivor's box carried its emit-on-change dedup baselines (ADR-0015), but the new
+            // The survivor's box carried its emit-on-change dedup baselines, but the new
             // Plan reset every downstream consumer latch to its declared default. Let each
             // transplanted op re-assert its on-change held outputs on the first post-swap block, so a
             // consumer is not stranded on that default (default no-op; only publishers like `harmony`
-            // act). RT-safe: a bounded loop of small baseline resets, no allocation (ADR-0012).
+            // act). RT-safe: a bounded loop of small baseline resets, no allocation.
             for op in &mut self.nodes[new_index].ops {
                 op.on_transplant();
             }
@@ -709,8 +710,8 @@ impl Plan {
     }
 }
 
-/// Collapse pass-through **interface pipes** out of the execution schedule (ADR-0038 §2,
-/// issue #189). A pipe is an authoring/format concept — a named boundary entry that mints an
+/// Collapse pass-through **interface pipes** out of the execution schedule
+/// (issue #189). A pipe is an authoring/format concept — a named boundary entry that mints an
 /// address — and rendering one as a real node costs a full per-node engine pass every block
 /// (routing, segmenting, an arena buffer + copy for a signal pipe), multiplied by the Voicer's
 /// per-voice plans. This pass removes each dissolvable pipe node and rewires around it so the
@@ -740,7 +741,7 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
             if node.descriptor.type_name != "pipe" {
                 continue;
             }
-            // A channel-bound pipe stays a rendered node (ADR-0038 §3): the input master
+            // A channel-bound pipe stays a rendered node: the input master
             // writes the caller's logical channel into the pipe's materialized scratch each
             // block, so the buffer — and the interface entry that finds it — must survive.
             // Hosted/nested bindings are cleared/discarded before instantiate, so their pipes
@@ -809,7 +810,7 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
         }
 
         // Transfer the pipe's rest seed to the consumer's latch, normalized exactly as the
-        // rendered pipe's frame-0 seed emission would have landed (ADR-0030 routing): raw f32
+        // rendered pipe's frame-0 seed emission would have landed (routing): raw f32
         // onto a materialized Signal input, `held_arg`-resolved onto a Value input. An Event
         // pipe holds nothing. If the seed cannot land (as it could not by message), the
         // consumer keeps its own default — same as when the emission was dropped.
@@ -847,7 +848,7 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
     }
 }
 
-/// The planner's only form job (ADR-0031): a **local per-wire check**. For each connection, compare
+/// The planner's only form job: a **local per-wire check**. For each connection, compare
 /// the source output's declared form against the destination input's and reject the illegal
 /// crossings — there is no topological solver, no propagation. The legal combinations are
 /// like→like (`Signal→Signal`, `Value→Value`, `Event→Event`) and the one implicit coercion
@@ -883,19 +884,19 @@ fn check_wire_forms(graph: &Graph) -> Result<(), PlanError> {
                     _ => "the source type",
                 };
                 format!(
-                    "{ty}→Arg: {ty} has no external OSC form (the boundary opt-out, \
-                     ADR-0030), so a pass-through wire could never send anything; \
+                    "{ty}→Arg: {ty} has no external OSC form (the boundary opt-out), \
+                     so a pass-through wire could never send anything; \
                      the type registers no boundary converter — Harmony's wire form \
                      is tracked in issue #209"
                 )
             }
             // A Signal source never emits Messages (its data lives in arena buffers), so
             // wiring one into the pass-through would silently send nothing — and audio stays
-            // off the wire by construction (ADR-0026/0030): hard error.
+            // off the wire by construction: hard error.
             (Signal, Event) if matches!(dst.ty, PortType::Arg) => {
                 "Signal→Arg: a pass-through input takes Message-domain sources only; \
                     audio never crosses the boundary (a live Signal needs the deferred \
-                    Signal→Message sampler, ADR-0017)"
+                    Signal→Message sampler)"
                     .to_string()
             }
             // like→like, and the one implicit coercion Value→Signal (materialized at the sink).
@@ -982,12 +983,12 @@ mod port_kind_tests {
     }
 }
 
-/// ADR-0031 wire-form oracle + per-wire checker fixtures.
+/// Wire-form oracle + per-wire checker fixtures.
 ///
 /// Built test-first as the spine's substrate (impl-prep §1). A port's **form** is *declared* by its
 /// [`PortType`] — `f32` = Value, `f32_buffer` = Signal, a struct vocab (`Note`) = Event — and the
 /// planner's only form job is a **local per-wire check**: Value→Signal materializes, Signal→Value is
-/// a hard error, like→like is direct (ADR-0031). These fixtures pin that check.
+/// a hard error, like→like is direct. These fixtures pin that check.
 ///
 /// The fixtures wire **synthetic single-port operators** (one declared form each) so a plan's
 /// buffer count isolates the wire under test: [`signal_buffer_count`] == declared-Signal ports +
@@ -1356,7 +1357,7 @@ mod wire_forms {
     }
 
     /// A Signal source stays a hard error: a dense buffer never emits Messages (the wire would
-    /// silently send nothing), and audio is kept off the OSC wire by construction (ADR-0026/0030).
+    /// silently send nothing), and audio is kept off the OSC wire by construction.
     #[test]
     fn signal_into_passthrough_is_a_hard_error_keeping_audio_off_the_wire() {
         match wire(signal("o"), passthrough("in")).err() {
@@ -1375,7 +1376,7 @@ mod wire_forms {
 
 /// Unit tests for the survivor-migration seam (#495). The transplant is the one primitive that
 /// mutates survivor state across a Swap; these prove the box (whose identity *is* the operator's
-/// state, ADR-0046 §4) moves, and that a mispaired-out-of-bounds table trips the debug guard.
+/// state) moves, and that a mispaired-out-of-bounds table trips the debug guard.
 #[cfg(test)]
 mod transplant_tests {
     use super::Plan;
@@ -1421,7 +1422,7 @@ mod transplant_tests {
     }
 
     /// The seam's payoff: transplanting a survivor moves the *exact* live box into the fresh Plan
-    /// (its internal state crosses, ADR-0046 §4), and the fresh node's cold box lands back in
+    /// (its internal state crosses), and the fresh node's cold box lands back in
     /// `from` to free off-thread. Proven by box identity, not by a value comparison, so it holds
     /// for any operator regardless of what state the box carries.
     #[test]

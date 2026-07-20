@@ -1,9 +1,11 @@
-//! Single-slot atomic mailbox pair — the lock-free RT crossing a Swap rides (ADR-0046 §2).
+//! Single-slot atomic mailbox pair — the lock-free RT crossing a Swap rides.
 //!
 //! Two hand-rolled single-slot mailboxes on [`AtomicPtr`]: an **install slot** the
 //! Coordinator fills and the render side drains, and a **retire slot** the render side
 //! fills and the Coordinator drains. The payload is generic/opaque — the install bundle
 //! (Engine + output map) is a later ticket; this is just the channel primitive.
+//!
+//! see rules: execution-runtime
 
 use std::fmt;
 use std::marker::PhantomData;
@@ -15,7 +17,7 @@ use std::sync::Arc;
 /// Create a connected mailbox pair: the Coordinator's end and the render side's end.
 ///
 /// Allocates (two empty slots behind an [`Arc`]) — call it at Swap-machinery setup time,
-/// off the audio thread, like all Instantiate-phase work (ADR-0009).
+/// off the audio thread, like all Instantiate-phase work.
 pub fn swap_pair<T: Send>() -> (CoordinatorMailbox<T>, RenderMailbox<T>) {
     let shared = Arc::new(Shared {
         install: CacheLine(Slot::empty()),
@@ -38,7 +40,7 @@ pub fn swap_pair<T: Send>() -> (CoordinatorMailbox<T>, RenderMailbox<T>) {
 /// `reclaim`/`try_reclaim` poll issuing a `swap` on the retire slot would then bounce
 /// exclusive ownership of that line against the render callback's own atomics (the
 /// install slot, the `Arc` strong count). Padding keeps the install slot, the retire
-/// slot, and the refcount header each on a private line (ADR-0046 §2's RT boundary).
+/// slot, and the refcount header each on a private line — the RT boundary.
 #[repr(align(64))]
 struct CacheLine<T>(T);
 
@@ -152,7 +154,7 @@ struct Shared<T> {
 }
 
 /// The Coordinator's end: fills the install slot, drains the retire slot, and enforces
-/// the one-swap-in-flight discipline (ADR-0046 §2).
+/// the one-swap-in-flight discipline.
 pub struct CoordinatorMailbox<T: Send> {
     shared: Arc<Shared<T>>,
     in_flight: bool,
@@ -163,10 +165,10 @@ pub struct CoordinatorMailbox<T: Send> {
 ///
 /// **RT-safety requirement (drop off-thread).** Dropping a `RenderMailbox` runs the
 /// slot destructors, and a slot still holding a payload *frees* it — a heap free, which
-/// the audio thread may never do (ADR-0012). A `RenderMailbox` must therefore not be
+/// the audio thread may never do. A `RenderMailbox` must therefore not be
 /// dropped on the render thread. In practice this is moot: the callback holds it for the
 /// life of the stream and it is torn down only after the stream stops, off-thread, where
-/// any stranded free is a Coordinator-side, non-RT act (deferred free, ADR-0009).
+/// any stranded free is a Coordinator-side, non-RT act (deferred free).
 pub struct RenderMailbox<T: Send> {
     shared: Arc<Shared<T>>,
 }
@@ -181,7 +183,7 @@ impl<T: Send> CoordinatorMailbox<T> {
     /// still in flight — published, drained, or posted but not yet reclaimed. Only a
     /// completed [`try_reclaim`](Self::try_reclaim) / [`reclaim`](Self::reclaim) opens
     /// the next install: that is what keeps the retire slot vacant for the next
-    /// retiree, so the render side's post can never collide (ADR-0046 §2).
+    /// retiree, so the render side's post can never collide.
     pub fn install(&mut self, payload: Box<T>) -> Result<(), SwapInFlight<T>> {
         if self.in_flight {
             return Err(SwapInFlight { rejected: payload });
@@ -201,8 +203,8 @@ impl<T: Send> CoordinatorMailbox<T> {
     /// has arrived. Non-blocking.
     ///
     /// `Acquire` pairs with the render side's `Release` post, so the retiree's final
-    /// render-thread state is visible before the Coordinator drops it (deferred free,
-    /// ADR-0009 reclaim). Peeks with an `Acquire` load first and only issues the `swap`
+    /// render-thread state is visible before the Coordinator drops it (deferred free).
+    /// Peeks with an `Acquire` load first and only issues the `swap`
     /// when a retiree is actually present, so a hot poll loop does not ping-pong the
     /// retire slot's cache line against the render thread on every empty poll.
     pub fn try_reclaim(&mut self) -> Option<Box<T>> {
@@ -218,7 +220,7 @@ impl<T: Send> CoordinatorMailbox<T> {
 
     /// Drain the retire slot, polling until the retiree returns or the caller's
     /// deadline passes — the error is the actionable "audio isn't running" diagnosis
-    /// of ADR-0046 §2 rather than a wedged Coordinator.
+    /// rather than a wedged Coordinator.
     ///
     /// **The caller supplies the clock.** reuben-core is OS-free (no `std::time`, no
     /// sleeping), so the timeout is a `timed_out` predicate consulted after each empty
@@ -273,7 +275,7 @@ impl<T: Send> RenderMailbox<T> {
     /// Whether an install is waiting to be drained — a plain `Acquire` load, no RMW, no
     /// alloc/free/lock (RT-safe).
     ///
-    /// The install slot ramp (ADR-0050 §2) "sees the pending Engine in the install slot
+    /// The install slot ramp "sees the pending Engine in the install slot
     /// but does not consume it immediately": the render side peeks with this to *begin*
     /// the master-gain down-ramp, then drains with [`take_install`](Self::take_install)
     /// only when the ramp reaches zero. Peeking (a load) rather than draining (a `swap`)

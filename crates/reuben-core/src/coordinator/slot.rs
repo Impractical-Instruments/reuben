@@ -1,29 +1,31 @@
-//! The RT-side install slot (ADR-0046 §7, ADR-0050 §2): the render-side unit each shell drives
+//! The RT-side install slot: the render-side unit each shell drives
 //! **instead of calling [`Engine::fill`] directly**.
 //!
 //! [`RenderSlot`] owns the live [`Engine`], the install-mailbox consumer ([`RenderMailbox`]), and
-//! the master-gain **ramp state**. Per callback it (ADR-0046 §3, ADR-0050 §2):
+//! the master-gain **ramp state**. Per callback it:
 //!
 //! 1. **peeks** the install slot ([`RenderMailbox::has_install`], one atomic load) and, if a swap
 //!    is waiting and no ramp is running, begins a **raised-cosine master-gain down-ramp** — it does
-//!    *not* consume the bundle yet (ADR-0050 §2: "begin the ramp at the callback top; install when
+//!    *not* consume the bundle yet ("begin the ramp at the callback top; install when
 //!    it reaches zero");
 //! 2. renders the current Engine and applies the ramp scalar as **one multiply per output sample**
-//!    on the interleaved logical master — the new master-gain machinery ADR-0050 §2 puts here so
+//!    on the interleaved logical master — the master-gain machinery lives here so
 //!    both shells (native callback, web worklet) inherit it. At steady state (gain == 1.0) there is
 //!    no per-sample multiply at all: the fast path is a bare [`Engine::fill_duplex`];
 //! 3. when the down-ramp reaches **zero** it **installs at zero** — drains the bundle, box-transplants
-//!    the survivors via [`Engine::transplant_survivors`] (ADR-0046 §4, the blessed `mem::swap`
+//!    the survivors via [`Engine::transplant_survivors`] (the blessed `mem::swap`
 //!    primitive from #320), swaps the new Engine in, and posts the retiree back through the mailbox
 //!    for **off-thread reclaim** — then ramps back up.
 //!
-//! **Everything on this path is RT-safe** (ADR-0012): no alloc, lock, syscall, or drop on the render
+//! **Everything on this path is RT-safe**: no alloc, lock, syscall, or drop on the render
 //! thread. The transplant is a bounded pointer-swap loop; the retiree is posted in the **same box**
 //! the install arrived in (its allocation is reused, never freed here); the only heap free is the
 //! Coordinator's off-thread reclaim of that box. Non-survivors' fresh boxes start cold but are
-//! silenced under the ramp (their hard cut lands at master-zero — inaudible, ADR-0050 §4); survivors
+//! silenced under the ramp (their hard cut lands at master-zero — inaudible); survivors
 //! keep voice/gate state and ring through the up-ramp. The ~15ms hanging-note window (a note-off lost
-//! in the discard window) is accepted (ADR-0050 §5).
+//! in the discard window) is accepted.
+//!
+//! see rules: execution-runtime
 
 use crate::message::{Arg, Message};
 
@@ -31,23 +33,23 @@ use super::mailbox::RenderMailbox;
 use super::swap::{InstallBundle, RenderSide};
 use crate::engine::Engine;
 
-/// Master-gain ramp duration **per edge** (ADR-0050 §3): raised-cosine, nominal 10ms, **fixed and
+/// Master-gain ramp duration **per edge**: raised-cosine, nominal 10ms, **fixed and
 /// hard-coded** — no document/profile knob, no opt-out. The implementation ticket may tune within
 /// 5–20ms without a new decision; this is that one constant. A full swap ducks for ~2× this.
 const RAMP_MS_PER_EDGE: f32 = 10.0;
 
-/// Where the master-gain ramp is in its down → install-at-zero → up cycle (ADR-0050 §2).
+/// Where the master-gain ramp is in its down → install-at-zero → up cycle.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Phase {
     /// Gain is a flat 1.0 — no ramp. The fast path: no per-sample multiply, only a mailbox peek.
     Steady,
-    /// Fading the master to zero ahead of the install (ADR-0050 §2 fade-down).
+    /// Fading the master to zero ahead of the install (fade-down).
     Down,
-    /// Fading the master back up after the install-at-zero (ADR-0050 §2 fade-up).
+    /// Fading the master back up after the install-at-zero (fade-up).
     Up,
 }
 
-/// The raised-cosine master-gain ramp (ADR-0050 §2/§3): the "gain stage" that never existed on the
+/// The raised-cosine master-gain ramp: the "gain stage" that never existed on the
 /// bare per-channel master sum. Holds a precomputed half-cosine curve and the running position; the
 /// curve is built once at construction (off-thread), so applying the ramp is table lookups + a
 /// multiply — allocation-free on the render thread.
@@ -91,7 +93,7 @@ impl MasterGainRamp {
         self.phase != Phase::Steady
     }
 
-    /// Begin a down-ramp from full gain (ADR-0050 §2). Precondition: currently [`Phase::Steady`].
+    /// Begin a down-ramp from full gain. Precondition: currently [`Phase::Steady`].
     #[inline]
     fn begin_down(&mut self) {
         self.phase = Phase::Down;
@@ -99,22 +101,22 @@ impl MasterGainRamp {
     }
 }
 
-/// The production RT-side install slot (ADR-0046 §7). Built from the [`RenderSide`] a
+/// The production RT-side install slot. Built from the [`RenderSide`] a
 /// [`Coordinator`](super::swap::Coordinator) hands out, it is what the shell's audio callback drives
 /// each block. See the module docs for the per-callback contract.
 ///
 /// **RT-safety requirement (drop off-thread).** Like the [`RenderMailbox`] it owns (see that type's
 /// doc), a `RenderSlot` must not be dropped on the render thread. Its destructor frees the live
 /// [`Engine`], the mailbox (and any payload still sitting in a slot), and the `stranded_retiree` box
-/// if one is riding — all heap frees the audio thread may never do (ADR-0012). In practice this is
+/// if one is riding — all heap frees the audio thread may never do. In practice this is
 /// moot: the callback holds the slot for the life of the stream and it is torn down only after the
-/// stream stops, off-thread, where any free is a non-RT act (deferred free, ADR-0009).
+/// stream stops, off-thread, where any free is a non-RT act (deferred free).
 pub struct RenderSlot {
     engine: Engine,
     mailbox: RenderMailbox<InstallBundle>,
     ramp: MasterGainRamp,
     /// A retiree that [`RenderMailbox::post_retiree`] refused (the retire slot was occupied). The
-    /// one-in-flight discipline (ADR-0046 §2) makes this **unreachable**, but if it ever happened we
+    /// one-in-flight discipline makes this **unreachable**, but if it ever happened we
     /// must not *drop* the box on the render thread (an RT free). Stash it and re-post at the top of
     /// the next callback; if the slot never re-opens it rides here until the slot is dropped
     /// off-thread. This is the only reason the render thread never frees an [`InstallBundle`].
@@ -135,12 +137,12 @@ impl RenderSlot {
         }
     }
 
-    /// Logical master channel count (ADR-0026) — [`fill`](Self::fill) interleaves this many.
+    /// Logical master channel count — [`fill`](Self::fill) interleaves this many.
     pub fn channels(&self) -> usize {
         self.engine.channels()
     }
 
-    /// Logical input channel count (ADR-0038 §3) — [`fill_duplex`](Self::fill_duplex) de-interleaves
+    /// Logical input channel count — [`fill_duplex`](Self::fill_duplex) de-interleaves
     /// this many.
     pub fn input_channels(&self) -> usize {
         self.engine.input_channels()
@@ -156,7 +158,7 @@ impl RenderSlot {
         self.engine.sample_rate()
     }
 
-    /// Queue an inbound external message in flat primitive form (ADR-0030) on the live Engine — the
+    /// Queue an inbound external message in flat primitive form on the live Engine — the
     /// slot forwards it, exactly as a shell would to a bare Engine.
     pub fn queue_osc(&mut self, address: &str, args: &[Arg]) {
         self.engine.queue_osc(address, args);
@@ -167,7 +169,7 @@ impl RenderSlot {
         self.engine.queue(msg);
     }
 
-    /// Drain the outbound Messages the most recent fill produced (ADR-0026), in emission order.
+    /// Drain the outbound Messages the most recent fill produced, in emission order.
     pub fn drain_outbound(&mut self) -> std::vec::Drain<'_, Message> {
         self.engine.drain_outbound()
     }
@@ -178,7 +180,7 @@ impl RenderSlot {
         self.ramp.is_active()
     }
 
-    /// Samples per ramp edge (ADR-0050 §3, the fixed ~10ms). A full swap ducks over `2 ×` this many
+    /// Samples per ramp edge (the fixed ~10ms). A full swap ducks over `2 ×` this many
     /// frames, with the master hitting exactly zero at frame `ramp_edge_frames()` of the ramp.
     pub fn ramp_edge_frames(&self) -> usize {
         self.ramp.edge
@@ -192,7 +194,7 @@ impl RenderSlot {
 
     /// The per-callback contract (module docs): peek → (ramp) → install-at-zero → (ramp) → render.
     ///
-    /// `input` is the interleaved logical input master (ADR-0038 §3), one input frame per output
+    /// `input` is the interleaved logical input master, one input frame per output
     /// frame, or empty for the no-input path — identical to [`Engine::fill_duplex`].
     pub fn fill_duplex(&mut self, input: &[f32], out: &mut [f32]) {
         // Re-post a stranded retiree if the one-in-flight invariant was ever (impossibly) violated.
@@ -200,14 +202,14 @@ impl RenderSlot {
         self.reflush_stranded_retiree();
 
         // Begin a down-ramp if idle and a swap is waiting. Peek (a load), do not drain: the bundle
-        // stays in the slot until the ramp reaches zero (ADR-0050 §2). Only the render side drains
-        // the install slot and one-swap-in-flight (ADR-0046 §2) keeps the Coordinator from replacing
+        // stays in the slot until the ramp reaches zero. Only the render side drains
+        // the install slot and one-swap-in-flight keeps the Coordinator from replacing
         // it mid-ramp, so what we peek here is exactly what we drain at zero.
         if !self.ramp.is_active() && self.mailbox.has_install() {
             self.ramp.begin_down();
         }
 
-        // Fast path (ADR-0050 §2 "nothing at steady state"): no ramp ⇒ a bare Engine fill, zero
+        // Fast path ("nothing at steady state"): no ramp ⇒ a bare Engine fill, zero
         // per-sample multiplies. The only steady-state cost over calling the Engine directly is the
         // one `has_install` load above.
         if !self.ramp.is_active() {
@@ -231,7 +233,7 @@ impl RenderSlot {
         // is a fresh `Engine::fill_duplex`, which clears the Engine's outbound. When one callback
         // runs two segments on the *same* (post-install) Engine — an up→steady transition — the
         // steady segment's fill clears the up segment's outbound OSC, dropping it. This is a
-        // segmentation artifact, distinct from ADR-0046 §3's deliberate install-time discard of the
+        // segmentation artifact, distinct from the deliberate install-time discard of the
         // retiring Engine's outbound.
         let mut f = 0;
         while f < frames {
@@ -276,7 +278,7 @@ impl RenderSlot {
         }
     }
 
-    /// Install at master-zero (ADR-0046 §3/§4, ADR-0050 §2): drain the bundle, box-transplant the
+    /// Install at master-zero: drain the bundle, box-transplant the
     /// survivors from the current Engine into the fresh one, swap the fresh Engine live, and post the
     /// retiree back **in the same box** for off-thread reclaim. All pointer swaps — no alloc, no
     /// drop, no lock on the render thread.
@@ -288,7 +290,7 @@ impl RenderSlot {
             return;
         };
         // Move the survivors' live boxes into the fresh Engine; the fresh Engine's cold boxes for
-        // those nodes land back in `bundle.engine`, to retire off-thread (ADR-0046 §4).
+        // those nodes land back in `bundle.engine`, to retire off-thread.
         bundle
             .engine
             .transplant_survivors(&mut self.engine, bundle.migration.survivors());
@@ -296,7 +298,7 @@ impl RenderSlot {
         // storage (rather than `Box::new`) is what keeps the post allocation-free.
         std::mem::swap(&mut self.engine, &mut bundle.engine);
         if let Err(returned) = self.mailbox.post_retiree(bundle) {
-            // Unreachable under one-in-flight (ADR-0046 §2): the retire slot is vacant here. Never
+            // Unreachable under one-in-flight: the retire slot is vacant here. Never
             // drop on the render thread — stash and retry next callback.
             self.stranded_retiree = Some(returned);
         }
@@ -335,7 +337,7 @@ fn render_segment(
         // Clamp the slice to what actually arrived. A short (capture-underrun) `input` would
         // otherwise panic on `&input[..(f + seg) * in_ch]` — a slice-out-of-range on the render
         // thread. Engine's per-frame `input.get().unwrap_or(0.0)` stages the missing tail as zeros,
-        // the same dark-degrade (ADR-0038 §7) the steady-state fast path already gets. `min` keeps
+        // the same dark-degrade the steady-state fast path already gets. `min` keeps
         // the bounds total; full-width and empty inputs are unchanged, and a branchless `cmp` adds
         // no cost the steady-state fast path pays (this is the ramp path only).
         let end = ((f + seg) * in_ch).min(input.len());
@@ -345,7 +347,7 @@ fn render_segment(
 }
 
 /// Multiply every channel of frame `f` (interleaved at `ch`) by the master gain `g` — the one
-/// multiply per output sample ADR-0050 §2 spends while ramping.
+/// multiply per output sample the ramp spends while ramping.
 #[inline]
 fn scale_frame(out: &mut [f32], ch: usize, f: usize, g: f32) {
     let base = f * ch;

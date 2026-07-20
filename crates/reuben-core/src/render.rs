@@ -1,4 +1,4 @@
-//! Render — executing a [`Plan`] per block (ADR-0009, ADR-0010, ADR-0011, ADR-0030).
+//! Render — executing a [`Plan`] per block.
 //!
 //! The serial executor walks the topologically-ordered nodes. For each node, incoming
 //! Messages are routed to its input ports by the port's [`PortKind`](crate::plan::PortKind):
@@ -9,14 +9,16 @@
 //! is **materialized** ZOH into its arena buffer (read via a `SignalF32` handle).
 //!
 //! Polyphony is hosted inside the Voicer (N voice sub-plans summed), not fanned out across the
-//! engine — the retired Lane model (ADR-0032).
+//! engine — the retired Lane model.
 //!
 //! **Realtime-safe.** A [`Renderer`] preallocates its edge-buffer arena and every piece
 //! of per-block scratch at construction, and reuses them; steady-state [`Renderer::render_block`]
 //! performs no heap allocation (verified by `tests/rt_safe.rs`). Per-port buffer wiring
 //! uses stack [`SmallVec`]s; routed events are zero-copy views onto the caller's Messages.
 //!
-//! The [`Executor`] trait is the pluggable-executor seam (ADR-0001).
+//! The [`Executor`] trait is the pluggable-executor seam.
+//!
+//! see rules: execution-runtime
 
 use smallvec::SmallVec;
 
@@ -35,7 +37,7 @@ pub trait Executor {
     fn order(&self, plan: &Plan, out: &mut Vec<usize>);
 }
 
-/// Single-threaded executor: process nodes in topo order. (ADR-0001 MVP.)
+/// Single-threaded executor: process nodes in topo order. (MVP.)
 #[derive(Default)]
 pub struct SerialExecutor;
 
@@ -51,7 +53,7 @@ impl Executor for SerialExecutor {
 /// grows the Vec once (allocation), which steady-state graphs do not reach.
 const EMIT_POOL_CAP: usize = 256;
 
-/// Reusable per-block render scratch (ADR-0030, ADR-0032 §4): everything the render path needs
+/// Reusable per-block render scratch: everything the render path needs
 /// *besides* the edge-buffer arena. Preallocated once (sized to a plan) and reused, so the render
 /// path is allocation-free in steady state. Kept separate from the arena so [`render_plan`] is a
 /// re-entrant free function — a hosting operator (`Voicer`) renders each sub-plan with that
@@ -63,7 +65,7 @@ pub struct RenderScratch {
     out_scratch: Vec<Vec<f32>>,
     /// Per-block message routing, one entry per node. Reused; inner Vecs cleared per block.
     routes: Vec<NodeRoute>,
-    /// Block-lifetime pool of operator-emitted Messages (ADR-0014). Routed events borrow
+    /// Block-lifetime pool of operator-emitted Messages. Routed events borrow
     /// from it, so it is grown once and only cleared (never freed) per block.
     emitted: Vec<Emit>,
     /// One node's emissions for the current node, drained into `emitted` after it runs.
@@ -109,11 +111,11 @@ pub struct Renderer<E: Executor = SerialExecutor> {
     /// Throwaway outbound sink for the mono [`Renderer::render_block`] convenience, which has no
     /// outbound out-parameter. Preallocated and cleared per call so render_block stays alloc-free.
     outbound_sink: Vec<Message>,
-    /// Per-channel master scratch (ADR-0026), one buffer per logical channel, each
+    /// Per-channel master scratch, one buffer per logical channel, each
     /// `block_size` long. Used by the mono [`Renderer::render_block`] convenience so it can
     /// compute the full N-channel master and hand back channel 0; preallocated and reused.
     master: Vec<Vec<f32>>,
-    /// The pluggable executor (ADR-0001). Decides node order each block.
+    /// The pluggable executor. Decides node order each block.
     executor: E,
     block_size: usize,
 }
@@ -150,12 +152,12 @@ impl<E: Executor> Renderer<E> {
     /// so this is bit-identical to the pre-stereo output; for a true stereo patch it is the
     /// left channel only (use [`Renderer::render_block_multi`] for both). Supplies **no input
     /// master**: a channel-bound input pipe reads zeros here (`render_block_multi` takes the
-    /// input buffers, ADR-0038 §3). Allocation-free.
+    /// input buffers). Allocation-free.
     pub fn render_block(&mut self, plan: &mut Plan, messages: &[Message], out: &mut [f32]) {
         debug_assert_eq!(out.len(), self.block_size);
         // Borrow `master`/`outbound_sink` out of `self` so `render_into` can take `&mut self` (both
         // preallocated; `take` swaps in an empty Vec, no allocation). The mono path discards
-        // outbound (ADR-0026) — it has no out-parameter — so it renders into a throwaway sink.
+        // outbound — it has no out-parameter — so it renders into a throwaway sink.
         let mut master = std::mem::take(&mut self.master);
         let mut outbound = std::mem::take(&mut self.outbound_sink);
         outbound.clear();
@@ -169,22 +171,22 @@ impl<E: Executor> Renderer<E> {
         self.outbound_sink = outbound;
     }
 
-    /// Render one block across **N logical master channels** (ADR-0026). `out` has one buffer
+    /// Render one block across **N logical master channels**. `out` has one buffer
     /// per channel (`out.len() == plan.config.channels`), each `block_size` long. This is the
     /// stereo/multichannel path the engine drives.
     ///
-    /// `inputs` is the **logical input master** (ADR-0038 §3), the dual of `out`: one buffer
+    /// `inputs` is the **logical input master**, the dual of `out`: one buffer
     /// per logical input channel (`inputs.len() == plan.config.input_channels`), each at least
     /// `block_size` long, that this block's channel-bound input pipes read. It is also the
-    /// determinism seam (ADR-0038 §10): the offline/test path injects known buffers here, so a
+    /// determinism seam: the offline/test path injects known buffers here, so a
     /// render with injected input is bit-reproducible. A channel the caller does not supply
     /// (`inputs` shorter than the bound width) leaves its pipes on the ordinary ZOH path —
     /// the pipe's **declared default materializes** (a bare pipe's zero seed fills silence)
-    /// and routed messages still drive it (dark-degrade, ADR-0038 §7); a supplied-but-short
+    /// and routed messages still drive it (dark-degrade); a supplied-but-short
     /// buffer's tail reads **zeros**. A no-input patch passes `&[]` and pays nothing.
     ///
-    /// `outbound` receives any Messages an `osc_out` sink sent this block (ADR-0026,
-    /// ADR-0030); it is **appended to, never cleared** — the caller drains it.
+    /// `outbound` receives any Messages an `osc_out` sink sent this block; it is
+    /// **appended to, never cleared** — the caller drains it.
     /// Allocation-free in steady state.
     pub fn render_block_multi(
         &mut self,
@@ -223,17 +225,17 @@ impl<E: Executor> Renderer<E> {
     }
 }
 
-/// Re-entrant block render over an explicit `(plan, arena, scratch)` (ADR-0032 §4): feed the
-/// input master from `inputs` (one buffer per logical input channel, ADR-0038 §3; an
+/// Re-entrant block render over an explicit `(plan, arena, scratch)`: feed the
+/// input master from `inputs` (one buffer per logical input channel; an
 /// unsupplied channel falls back to its pipe's declared default — a no-input plan passes
 /// `&[]`), execute every node for
 /// `frames` frames, and sum the master taps into `master` (one buffer per logical channel,
 /// `master.len()` should equal `plan.config.channels`; a tap beyond `master` is dropped). `outbound`
-/// is **appended to** (ADR-0026) — the caller drains it.
+/// is **appended to** — the caller drains it.
 ///
 /// This is the primitive that makes render re-entrant: render is a pure function of
 /// `(plan, arena, scratch)`, not nested mutable renderer state. The top-level [`Renderer`] calls it
-/// with the rig's arena; a hosting operator (`Voicer`, ADR-0032) calls the *same* function per
+/// with the rig's arena; a hosting operator (`Voicer`) calls the *same* function per
 /// active voice with that voice's own arena, reusing one shared `RenderScratch`. Allocation-free in
 /// steady state when `scratch` was [`RenderScratch::new`]-sized to `plan`.
 /// The [`Plan::captured`] slot a Value `interface` output `(node, port)` writes to, or `None` if the
@@ -257,7 +259,7 @@ pub fn render_plan<E: Executor>(
     outbound: &mut Vec<Message>,
 ) {
     // Fresh edge buffers each block (upstream writes before downstream reads). Materialize
-    // scratch buffers are excluded (ADR-0030): they are fully written by the materialize step
+    // scratch buffers are excluded: they are fully written by the materialize step
     // and persist a held input's value across blocks, so zeroing them would only force a
     // needless refill. `process_node` keeps each one fully defined (see `materialize_clean`).
     for (i, buf) in arena.iter_mut().enumerate() {
@@ -267,13 +269,13 @@ pub fn render_plan<E: Executor>(
         buf.iter_mut().for_each(|s| *s = 0.0);
     }
 
-    // Feed the input master (ADR-0038 §3): copy each caller-supplied logical input channel
+    // Feed the input master: copy each caller-supplied logical input channel
     // into its bound pipe's `in` materialize scratch before any node runs, and flag the entry
     // `materialize_device_fed` so `process_node`'s ZOH fill yields the buffer for the block
     // (device audio wins). Distinct taps may share a channel (fan-out at the master). A
     // channel the caller doesn't supply is left alone: the ordinary materialize fill then
     // renders the pipe's declared default and applies routed messages — dark-degrade
-    // (ADR-0038 §7) to the control the pipe advertises, not to a dead knob. The tail of a
+    // to the control the pipe advertises, not to a dead knob. The tail of a
     // supplied-but-short buffer reads zeros. No-input plans have no taps and pay nothing.
     for i in 0..plan.input_taps.len() {
         let tap = plan.input_taps[i];
@@ -324,7 +326,7 @@ pub fn render_plan<E: Executor>(
             block_size,
         );
 
-        // An `osc_out` sink: its emissions leave the graph (ADR-0026, ADR-0030). Drain each to
+        // An `osc_out` sink: its emissions leave the graph. Drain each to
         // the outbound list stamped with the node's (fixed) address and the already-block-
         // absolute frame; native encodes + sends them. A sink has no downstream wiring, so this
         // replaces — not supplements — the routing below.
@@ -340,7 +342,7 @@ pub fn render_plan<E: Executor>(
             continue;
         }
 
-        // Route this node's emissions (ADR-0014, ADR-0030): each goes into the block-lifetime
+        // Route this node's emissions: each goes into the block-lifetime
         // pool, and is delivered to every wired `(dst node, dst input port)` — which run later
         // in topo order, so they see it. The dst input port's [`PortKind`] decides how it
         // lands: a Value input latches + re-slices (the former context publish unifies here), a
@@ -348,7 +350,7 @@ pub fn render_plan<E: Executor>(
         for e in emit_scratch.drain(..) {
             let port = e.port;
             let pool_idx = emitted.len();
-            // Capture a Value `interface` output (ADR-0032 §4): its last-emitted scalar is held for
+            // Capture a Value `interface` output: its last-emitted scalar is held for
             // the host to read post-render. The port may also be wired downstream — capture is
             // additive (a tap), not a replacement for routing below.
             if let Some(slot) = capture_slot(&plan.interface_outputs, i, port) {
@@ -381,8 +383,8 @@ pub fn render_plan<E: Executor>(
         }
     }
 
-    // Sum master taps into the per-channel master (ADR-0026): every buffer of every tapped
-    // port, in fixed order, so output stays deterministic (ADR-0001). A broadcast tap
+    // Sum master taps into the per-channel master: every buffer of every tapped
+    // port, in fixed order, so output stays deterministic. A broadcast tap
     // (`channel: None`) adds to every channel — the historical mono fan, so channel 0 of a
     // fully-broadcast instrument is bit-identical to the pre-stereo single buffer. A
     // channel-pinned tap adds to that one channel only.
@@ -484,7 +486,7 @@ impl<E: Executor> Renderer<E> {
     }
 }
 
-/// Normalize a routed [`Arg`] for a **Held** input port (ADR-0030): clamp an `F32` to the port's
+/// Normalize a routed [`Arg`] for a **Held** input port: clamp an `F32` to the port's
 /// range, resolve an enum control message (symbol / index / variant) to the enum's concrete `Arg`,
 /// or take any other vocab value (`Harmony`) as-is. `None` if it cannot be a value of this port.
 pub(crate) fn held_arg(p: &Port, arg: &Arg) -> Option<Arg> {
@@ -492,7 +494,7 @@ pub(crate) fn held_arg(p: &Port, arg: &Arg) -> Option<Arg> {
         PortType::F32 => arg
             .as_f32()
             .map(|v| Arg::F32(p.meta.as_ref().map(|m| m.clamp(v)).unwrap_or(v))),
-        // A held integer control (ADR-0061): a runtime message quantizes exactly as an author
+        // A held integer control: a runtime message quantizes exactly as an author
         // literal does through [`Port::coerce`] — round to the nearest integer, then clamp to the
         // declared range. So an `i32` pipe driven `/steps/in 12.7` latches `13`, not `12.7`; the
         // "int control" promise holds for live OSC input, not only authored defaults.
@@ -508,12 +510,12 @@ pub(crate) fn held_arg(p: &Port, arg: &Arg) -> Option<Arg> {
 }
 
 /// Where a routed event's payload lives: an external block-input Message, or a Message an
-/// upstream operator emitted this block (ADR-0014). Either way delivery is zero-copy — the
+/// upstream operator emitted this block. Either way delivery is zero-copy — the
 /// [`Event`] borrows the source.
 #[derive(Clone, Copy)]
 enum EventSrc {
     /// Index into the block `messages` slice. The event delivers by the wired input port, so only
-    /// the payload (and frame) are carried forward — the external address is not (ADR-0031 step 7).
+    /// the payload (and frame) are carried forward — the external address is not (step 7).
     External { msg: usize },
     /// Index into the per-block emit pool.
     Emitted(usize),
@@ -526,14 +528,14 @@ struct RoutedEvent {
     src: EventSrc,
 }
 
-/// Per-node routed messages for one block (ADR-0030), one bucket per [`PortKind`].
+/// Per-node routed messages for one block, one bucket per [`PortKind`].
 #[derive(Default)]
 struct NodeRoute {
     /// (frame, input port, value) — a scalar feeding a materialized [`Buffer`](PortType::F32Buffer)
     /// input. The engine writes it into the input's scratch buffer at its frame (ZOH); does **not**
     /// split the block. Sorted by frame before materialize.
     materialize_writes: Vec<(usize, usize, f32)>,
-    /// (frame, input port, value) — a change to a **Held** input (ADR-0030): scalar / enum /
+    /// (frame, input port, value) — a change to a **Held** input: scalar / enum /
     /// `Harmony`. Splits the block (a held value is constant per `process` call); each interior
     /// frame becomes a segment boundary and updates the port's latch.
     held: Vec<(usize, usize, Arg)>,
@@ -555,7 +557,7 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
     }
 
     for (mi, msg) in messages.iter().enumerate() {
-        // A dissolved interface pipe's minted address (ADR-0038 §2): deliver to its rewired
+        // A dissolved interface pipe's minted address: deliver to its rewired
         // consumer with the pipe's own normalization — the same two hops (pipe port, then
         // consumer port) the rendered pipe node made. Checked first; alias addresses belonged
         // to removed nodes, so they can never shadow a live port.
@@ -601,8 +603,8 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
             continue;
         }
         // Resolve the address to its one destination port ([`resolve_port`], shared with the
-        // boundary's [`Plan::osc_in_message`]); deliver per the port's kind (ADR-0030, Q11a —
-        // routing is by port, not by operator address-filtering).
+        // boundary's [`Plan::osc_in_message`]); deliver per the port's kind (routing is
+        // by port, not by operator address-filtering).
         let Some((i, port, p)) = resolve_port(&plan.nodes, &msg.address) else {
             continue;
         };
@@ -639,7 +641,7 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
 ///
 /// A node whose address prefix-matches but has **no** matching port does not decide the
 /// outcome — keep scanning. Node addresses may be ancestors of one another (`/fx` beside an
-/// inlined `/fx/verb/delay`, ADR-0034 §3 manufactures these systematically), and
+/// inlined `/fx/verb/delay`, inlining manufactures these systematically), and
 /// `/fx/verb/delay/time` must reach the deeper node even though `/fx` prefix-matches it
 /// first in plan order.
 pub(crate) fn resolve_port<'p>(
@@ -694,11 +696,11 @@ fn process_node(
     // in frame order.
     route.materialize_writes.sort_by_key(|(f, _, _)| *f);
 
-    // Materialize each Buffer-from-scalar input into its scratch buffer (ADR-0030): fill from the
+    // Materialize each Buffer-from-scalar input into its scratch buffer: fill from the
     // latched scalar, overwrite with each mid-block change from its frame onward, persist the final
     // value as the next block's latch, and flag `varying`. Unwired inputs materialize too — a bare
     // buffer's latch seeds 0.0, so it fills with silence — which is what upholds the
-    // buffer-presence invariant (ADR-0037): every Signal input reaches `process` as a dense
+    // buffer-presence invariant: every Signal input reaches `process` as a dense
     // length-n slice. Done before the output-swap — scratch buffers are inputs, disjoint from this
     // node's outputs. These writes do NOT split the block; sample-accuracy comes from writing them
     // into the buffer at their frame.
@@ -708,7 +710,7 @@ fn process_node(
     for k in 0..node.materialize.len() {
         let (port, buf) = node.materialize[k];
         // The input master already wrote device audio into this scratch for the block
-        // (ADR-0038 §3, `InputTap`): device audio wins — skip the ZOH fill (and this block's
+        // (`InputTap`): device audio wins — skip the ZOH fill (and this block's
         // routed messages; the latch keeps its value for the next unsupplied block). The
         // buffer no longer holds the latch, so mark it dirty for the next ZOH refill, and
         // `varying` — device audio is per-sample data, not a held constant.
@@ -720,7 +722,7 @@ fn process_node(
         }
         let target = &mut arena[buf];
         let changed = route.materialize_writes.iter().any(|&(_, p, _)| p == port);
-        // The latch is the sole ZOH store (ADR-0030): a materialized port is always seeded/set
+        // The latch is the sole ZOH store: a materialized port is always seeded/set
         // `Arg::F32`, so this decode succeeds — assert it loudly in dev, hold the additive identity
         // in release if a wrong-typed port ever reaches here.
         debug_assert!(
@@ -747,7 +749,7 @@ fn process_node(
             v = val;
         }
         target[cursor..block_size].fill(v);
-        // Persist the end-of-block value as the next block's ZOH (ADR-0030): `latch` is the single
+        // Persist the end-of-block value as the next block's ZOH: `latch` is the single
         // source of truth — the materialized buffer is the sample-accurate path, the latch what a
         // held-handle `io.read` sees. A Buffer port carries no meaningful held value, so the write is ignored there.
         node.latch[port] = Arg::F32(v);
@@ -756,7 +758,7 @@ fn process_node(
     }
 
     // Segment boundaries: 0, block_size, every interior Held-change frame (a held value is constant
-    // per `process` call, ADR-0030). Sort + dedup since change frames interleave.
+    // per `process` call). Sort + dedup since change frames interleave.
     bounds.clear();
     bounds.push(0);
     bounds.push(block_size);
@@ -785,7 +787,7 @@ fn process_node(
         }
 
         // Apply Held changes landing at this segment's start: update the per-port latch, read via
-        // `io.read` on a `Held<T>` handle (ADR-0030). Persists across blocks (the latch is next block's frame-0 baseline).
+        // `io.read` on a `Held<T>` handle. Persists across blocks (the latch is next block's frame-0 baseline).
         // Last-write-wins on equal frames.
         for (f, port, arg) in route.held.iter() {
             if *f == seg_start {
@@ -794,7 +796,7 @@ fn process_node(
         }
 
         // Per-input-port Stream events whose frame falls in this segment, as zero-copy views with
-        // segment-relative frames (ADR-0030). Inline storage sized to the widest operator.
+        // segment-relative frames. Inline storage sized to the widest operator.
         let mut per_port: SmallVec<[SmallVec<[Event; 4]>; 24]> =
             (0..n_inputs).map(|_| SmallVec::new()).collect();
         for re in route.events.iter() {
@@ -828,7 +830,7 @@ fn process_node(
             .iter_mut()
             .map(|buf| &mut buf[seg_start..seg_end]);
 
-        // Emitted frames are stamped block-absolute by adding this segment's start (ADR-0014).
+        // Emitted frames are stamped block-absolute by adding this segment's start.
         let mut io = Io::new(sample_rate, seg_end - seg_start, inputs, outputs)
             .with_latched(&node.latch)
             .with_streams(&stream_refs)
@@ -852,7 +854,7 @@ mod tests {
     use super::*;
     use crate::{load, AudioConfig, Registry};
 
-    /// ADR-0061: an `i32` value port quantizes a runtime message — round to nearest, then clamp
+    /// An `i32` value port quantizes a runtime message — round to nearest, then clamp
     /// to range — exactly as [`crate::descriptor::Port::coerce`] does for an authored literal. So
     /// `/steps/in 12.7` latches `13`, not `12.7`; the "int control" contract holds for live OSC,
     /// not only authored defaults.
@@ -872,7 +874,7 @@ mod tests {
         assert_eq!(held_arg(&port, &Arg::I32(5)), Some(Arg::I32(5))); // integer passes through
     }
 
-    /// Two leaf nodes in an ancestor-prefix relationship — the shape ADR-0034 §3's inlining
+    /// Two leaf nodes in an ancestor-prefix relationship — the shape inlining
     /// manufactures systematically (`/fx` beside an inlined `/fx/verb/delay`). The wire from
     /// `/fx` pins the topo order, so the portless ancestor is genuinely scanned first.
     fn shadowed_plan() -> Plan {
