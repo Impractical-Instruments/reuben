@@ -102,7 +102,7 @@ Run all `reuben`/`cargo` commands from the repo root.
 }
 ```
 
-- **`ty`** (ADR-0030) ∈ `f32_buffer` | `f32` | `i32` | `enum` | `note` | `harmony` | `arg` — the port's `Arg` type. A
+- **`ty`** (ADR-0030) ∈ `f32_buffer` | `f32` | `i32` | `enum` | `note` | `harmony` | `pitch` | `arg` — the port's `Arg` type. A
   `f32_buffer` port is a dense audio/CV Signal (no settable default *in the spec* — see the
   Signal-with-default bullet below). A `f32` port is a held Value and
   adds `"f32": { min, max, default, unit, curve }` for its materialized default; `curve` ∈ `linear` |
@@ -115,8 +115,8 @@ Run all `reuben`/`cargo` commands from the repo root.
 - An **`enum` port** names its shared *vocab* enum in `"vocab": "Waveform"` (PascalCase) — the
   descriptor reads its variants and `#[default]` from `Waveform::enum_meta`. The vocab type must
   already exist in `crates/reuben-core/src/vocab/`; if it's new, define it there, `#[derive(ArgValue)]`,
-  and add one variant to `Arg` **first** (ADR-0030), then reference it here. `note`/`harmony` ports
-  need no extra fields.
+  and add one variant to `Arg` **first** (ADR-0030), then reference it here. `note`/`harmony`/`pitch`
+  ports (vocab leaves) need no extra fields.
 - The generated `IN_*`/`OUT_*`/`P_*` index consts follow declaration order — the scaffold renders
   the contract in `operator_contract!` grammar, so a `f32_buffer`/`f32 { .. }`/`enum(VocabType)` spec
   lands as the real port declaration, no Stage-B retyping (sole exception: adding `{ .. }` meta to a
