@@ -69,7 +69,7 @@ fn walk(dir: &Path, files: &mut Vec<PathBuf>) {
 #[test]
 fn no_live_text_references_the_retired_schema_machinery() {
     let root = repo_root();
-    let adr_dir = root.join("docs").join("adr");
+    let adr_dir = root.join("docs").join("rules").join("rationale");
     let tokens = retired_tokens();
 
     let mut files = Vec::new();
