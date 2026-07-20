@@ -27,7 +27,8 @@ sample-time tags stay available for transport-independent events.
 
 Pitch is **two layers**: a symbolic degree within the active Scale (with float MIDI as an always-
 available 12-TET coordinate) that a **Tuning** resolves to Hz — 12-TET is merely the default Tuning,
-and Scala `.scl`/`.kbm` is the import format for the whole microtonal world. In the Message domain
+and Scala `.scl`/`.kbm` is the import format for the whole microtonal world. *(Built for 12-TET
+today; the live Scala-tuning swap rides the same step-space seam and is not built yet.)* In the Message domain
 pitch is *explicitly typed* (an absolute pitch versus a scale degree, distinguished by port/address
 role and type-checked at load); the Signal domain stays untyped so audio-rate weirdness patches
 freely. The current key/scale/chord/tuning is the **tonal context**, and — exactly like the Clock, and

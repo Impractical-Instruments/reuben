@@ -1,7 +1,15 @@
 # reuben rules index
 
-The now-state architecture, as rules. Read top-down and **stop at the shallowest level
-that answers your question**:
+**reuben is a configurable musical instrument.** You build behavior by patching **Operators** —
+small units that each do one simple thing — into **Instruments**, and Instruments into a **Rig** (a
+full playable system). Beginners start with **Toys**: ready-made instruments that play instantly.
+The same engine that makes music can drive lights, video, or a game engine, because the data flowing
+through it is general.
+
+This file is the **front door** to how reuben works — the single index that absorbed the old
+end-to-end design narrative (`ARCHITECTURE.md`) and the glossary (`CONTEXT.md`). It is the now-state
+architecture, as rules. Read top-down and **stop at the shallowest level that answers your
+question**:
 
     index (this file)  →  topic doc   →  a rule         →  its rationale
     summaries+glossary     now-story +    present-tense     condensed "why",
@@ -13,6 +21,29 @@ that answers your question**:
 
 Code points at topics, never at rules or ADRs: `// see rules: <topic>` (this repo),
 `// see engine rules: <topic>` (web → engine). See [Conventions](#conventions).
+
+> **These rules describe the now-state design.** For what is actually built and running today, see
+> the [README status line](../../README.md). Where a designed mechanism is not built yet, its topic
+> doc flags it inline.
+
+## Design ethos
+
+A few load-bearing commitments run under every topic; each is held by mechanism in the topic docs,
+not by hope:
+
+- **Good button.** Every control is hard to make sound bad — energy in produces musical feedback
+  out, and easy defaults always exist ([authoring surface & instrument library](authoring-library.md)).
+- **Easy to learn, deep to master.** Toys and defaults on the surface; recursive composition and
+  full control underneath — a default Clock you can override, a default Tuning you can replace, a
+  curated playable surface over structural addresses ([composition & operator model](composition-operators.md),
+  [signal, OSC, musical time & DSP](signal-time-dsp.md)).
+- **AI-authorable, first-class.** Agents read the system and author Operators, Instruments, and Rigs
+  against a self-describing, one-recursive-model JSON format ([agent framework & MCP](agent-mcp.md)).
+- **OSC is the lingua franca.** Internal Messages and external OSC are the same idea; every other
+  protocol converts at the boundary ([signal, OSC, musical time & DSP](signal-time-dsp.md)).
+- **Portable core, removable shells.** The realtime core is OS-free Rust wrapped by thin
+  per-platform shells at one embed surface ([execution & runtime](execution-runtime.md),
+  [web/product boundary & dev process](web-product-process.md)).
 
 ## Topics
 
@@ -81,6 +112,66 @@ Code points at topics, never at rules or ADRs: `// see rules: <topic>` (this rep
 - **Toy** — a launch beginner instrument assembled from existing operators plus a generated surface, one per distinct player gesture. · [authoring-library](authoring-library.md)
 - **Tuning** — the resolution layer mapping a symbolic pitch (a scale step) to a frequency in Hz; 12-TET is the default, Scala-importable. · [signal-time-dsp](signal-time-dsp.md)
 - **Value** — a latched, held, single-valued port form (`f32`/`enum`/`harmony`/`i32`), read as a constant within a `process` call via zero-order-hold. · [composition-operators](composition-operators.md)
+
+## Avoid these synonyms
+
+<!-- HAND-AUTHORED — preserved verbatim from the retired CONTEXT.md. NOT derived: the collated
+     Glossary above holds one canonical term per topic, but this synonym guidance covers more terms
+     than the topic `## Terms` expose, so it lives here in full. The derive script leaves this
+     section alone (it only rewrites `## Topics` and `## Glossary`). -->
+
+Each domain term has one canonical spelling. These are the near-misses to keep out of code, issues,
+and prose:
+
+- **Operator** — avoid: node, object, module, block (block = an audio buffer chunk), ugen, plugin.
+- **Instrument** — avoid: patch (noun — see Patch), device, rack, module.
+- **Rig** — avoid: project, set, session, scene, song.
+- **Patch** (verb) — avoid: patch as a noun.
+- **Toy** — avoid: preset, template.
+- **Address** — avoid: path, route, id (id = internal identity, not the address).
+- **Coordinator** — avoid: engine, manager, host in the system-embedder sense (a host application embeds the system; the Coordinator owns the graph — the Voicer's host path is a different, sanctioned sense).
+- **Plan** — avoid: schedule, graph image, compiled graph.
+- **Swap** — avoid: hot-swap (describes how, not the phase), re-plan, recompile, reload.
+- **Survivor** — avoid: carried node, kept node, matched node.
+- **Restart-swap** — avoid: reload, hot restart.
+- **Structure channel** — avoid: control channel (that is OSC), admin port, command socket.
+- **Gist-and-point** — avoid: duplicate-then-sync (the sweep is a backstop, not the mechanism), summary copy.
+- **Render** — avoid: block time, process, audio callback (the callback is the host of Render, not Render itself).
+- **Lane** _(retired)_ — don't use it for new work; say Voice, Channel, or Voice instrument. It survives only in frozen ADRs.
+- **Voice** — avoid: channel, note (a note is a Message; a Voice is what sounds it).
+- **Channel** — avoid: voice, bus.
+- **Voicer** — avoid: allocator, poly, note manager.
+- **Voice instrument** — avoid: voice sub-patch (retired — role, not kind), voice graph, sub-instrument, voice template.
+- **Interface** — avoid: control surface, ports block.
+- **Interface makes the role** — avoid: recipe as a kind of document, role-by-directory, naming conventions for role.
+- **Subpatch** — avoid: subpatch as a noun for the document, sub-instrument, nested patch, embedded instrument.
+- **Inline (dissolve)** — avoid: expand, flatten (as the term of art), instantiate.
+- **Host** — avoid: runtime nest, sub-plan path (informal).
+- **Boundary face** — avoid: descriptor (the compile-time operator contract), synthesized ports (informal).
+- **Surface doc** — avoid: control block (the retired inline per-node form), layout file, UI config, `.tosc` (a projection of the doc, not the doc).
+- **Superset widget vocabulary** — avoid: widget list, control types, per-target vocabulary (the vocabulary is shared; only rendering is per-target).
+- **Surface pipe promotion** — avoid: exposing a param (informal — say promotion), control migration, lane pipe (shelved future sugar, not this).
+- **Pitch** — avoid: note number (alone), frequency (frequency is the resolved result, not the Pitch).
+- **Tuning** — avoid: temperament, scale (scale = which degrees are in play; Tuning = their frequencies).
+- **Scale** — avoid: mode (a mode is one kind of Scale), key (key is part of the Scale).
+- **Harmony** — avoid: tonal context, context, harmony bus, key signature.
+- **Clock** — avoid: transport, master clock, conductor.
+- **Good Button** — avoid: meta param, meta-control, macro (all name the artifact — say Good Button).
+- **Signal** — avoid: CV, audio buffer / control buffer (as distinct types), wire, carrier, read-view of a Float.
+- **Value** — avoid: param, scalar, control (as a distinct type), Float.
+- **Event** — avoid: trigger, stream (as a type), notes (plural, as a type).
+- **Buffer** — avoid: arena, sample array, f32 slice (as the domain term).
+- **Message** — avoid: event, control, OSC packet (as a distinct internal type), typed args (plural — a Message holds exactly one Arg).
+- **Input** — avoid: port, param, connection, slot (the slot is the Input; its payload is the Arg).
+- **Handle** — avoid: port handle, index const (the handle replaced the bare `usize` const), port.
+- **Arg** — avoid: shape, kind, PortKind, value, blob, carrier, port.
+- **vocab** — avoid: enum registry, type table, concrete-arg module.
+- **Held value (ZOH latch)** — avoid: context, param latch, enum latch (as separate mechanisms), state.
+- **Constant** — avoid: param, setting, option, config value.
+- **Delivery lane** — avoid: surface (that is a presentation doc), channel (that is signal I/O), bare "lane" without context.
+- **Input handling** — avoid: intent parsing, NLU.
+- **Output filter** — avoid: persona (ambiguous), style gate (deleted, ADR-0005 — the filter is taught, not enforced).
+- **Push/pull delivery** — avoid: eager/lazy loading (runtime words for a prompt-architecture idea).
 
 ## Conventions
 

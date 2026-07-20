@@ -31,7 +31,7 @@ core · single-writer Coordinator. Details + enforcing tests:
 ## Language
 
 Use the project's exact terms (Operator, Instrument, Rig, Plan, Swap, Voice…).
-[CONTEXT.md](CONTEXT.md) is the glossary — don't drift to synonyms it says to avoid.
+The [rules index](docs/rules/README.md) carries the glossary — don't drift to synonyms its [Avoid these synonyms](docs/rules/README.md#avoid-these-synonyms) list calls out.
 
 ## Code navigation
 Prefer LSP over Grep/Glob for code navigation:
@@ -47,7 +47,7 @@ Prefer LSP over Grep/Glob for code navigation:
 
 - **[Authoring](docs/agents/authoring.md)** — the instrument-authoring guide: JSON format, type system + wiring, addressing, the authoring loop.
 - **[Operator dev](docs/agents/operator-dev.md)** — operator trait, descriptor macro, adding an operator, RT-safety rules.
-- **[Domain docs](docs/agents/domain.md)** — read CONTEXT.md + relevant ADRs before exploring.
+- **[Domain docs](docs/agents/domain.md)** — read the [rules index](docs/rules/README.md) + relevant ADRs before exploring.
 - **[Issue tracker](docs/agents/issue-tracker.md)** — GitHub Issues via `gh`; external PRs are not a triage surface.
 - **[Triage labels](docs/agents/triage-labels.md)** — needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix.
-- **[CONTRIBUTING.md](CONTRIBUTING.md)** · **[Architecture](docs/ARCHITECTURE.md)** · **[ADRs](docs/adr/)**
+- **[CONTRIBUTING.md](CONTRIBUTING.md)** · **[Rules index](docs/rules/README.md)** · **[ADRs](docs/adr/)**
