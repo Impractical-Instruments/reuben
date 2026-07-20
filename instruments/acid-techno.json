@@ -1,13 +1,12 @@
 {
   "format_version": 3,
   "instrument": "acid-techno",
-  "doc": "Acid techno rig: a four-on-the-floor 16-step drum machine (kick, snare, closed + open hi-hat), a TB-303-style resonant acid bass sequencer, and a detuned three-saw pad playing sustained whole-note chords. Drums and bass share a 16th-note clock; the pad triggers one chord per bar. The `key` pipe (/key/in) sets the absolute tonic of a shared natural-minor harmony (bass at the root, pad one octave up). The `mode` pipe (/mode/in, 0-6) is the modal chord/scale selector: it transposes both the bass line and the pad chord by that many scale degrees, so one knob re-roots them together within the key -- the modal, chord-player-style move. Each instrument has its own volume pipe (/drums_vol/in, /bass_vol/in, /pad_vol/in); ride tempo 60-180 BPM with /tempo/in. Program the lanes with /kick_step1..16 /snare_step* /chh_step* /ohh_step* (boolean) and the bass with /bass_step1..16 (scale degrees, -1 = rest). The pad is sidechain-pumped by the kick (a `compressor` at /pad_pump keyed off the raw kick voice), so the chords breathe with the four-on-the-floor -- the signature acid-techno pump.",
+  "doc": "Acid techno rig: a four-on-the-floor 16-step drum machine (kick, snare, closed + open hi-hat), a TB-303-style monophonic acid bass synth sequencer, and a detuned three-saw pad playing sustained whole-note chords. The bass is a single inline mono synth (saw -> resonant lowpass -> env, note line unpacked to freq/gate at rig level rather than voiced) so its 303 controls are live: /glide/in slides the pitch between notes (portamento), /squelch/in is the filter resonance (the whistling acid tone), /filter_env/in is the filter-envelope amount (how far the cutoff sweep opens), and /filter_decay/in is the envelope decay (the length of the squelch tail). Drums and bass share a 16th-note clock; the pad triggers one chord per bar. The `key` pipe (/key/in) sets the absolute tonic of a shared natural-minor harmony (bass at the root, pad one octave up). The `mode` pipe (/mode/in, 0-6) is the modal chord/scale selector: it transposes both the bass line and the pad chord by that many scale degrees, so one knob re-roots them together within the key -- the modal, chord-player-style move. Each instrument has its own volume pipe (/drums_vol/in, /bass_vol/in, /pad_vol/in); ride tempo 60-180 BPM with /tempo/in. Program the lanes with /kick_step1..16 /snare_step* /chh_step* /ohh_step* (boolean) and the bass with /bass_step1..16 (scale degrees, -1 = rest). The pad is sidechain-pumped by the kick (a `compressor` at /pad_pump keyed off the raw kick voice), so the chords breathe with the four-on-the-floor -- the signature acid-techno pump.",
   "resources": {
     "kick-voice": "voices/kick-voice.json",
     "snare-voice": "voices/snare-voice.json",
     "hat-voice": "voices/hat-voice.json",
     "openhat-voice": "voices/openhat-voice.json",
-    "acid-bass-voice": "voices/acid-bass-voice.json",
     "acid-pad-voice": "voices/acid-pad-voice.json"
   },
   "interface": {
@@ -44,6 +43,32 @@
         "default": 0.8,
         "min": 0.0,
         "max": 1.0
+      },
+      "glide": {
+        "type": "f32",
+        "default": 0.06,
+        "min": 0.0,
+        "max": 0.5,
+        "unit": "s"
+      },
+      "squelch": {
+        "type": "f32",
+        "default": 0.72,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "filter_env": {
+        "type": "f32",
+        "default": 1.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "filter_decay": {
+        "type": "f32",
+        "default": 0.16,
+        "min": 0.01,
+        "max": 1.0,
+        "unit": "s"
       },
       "pad_vol": {
         "type": "f32",
@@ -1166,21 +1191,134 @@
       }
     },
     {
-      "type": "voicer",
-      "address": "/bass_v",
-      "doc": "Monophonic 303 voice; mode-shifted degrees resolve to freq through /bass_harmony.",
-      "config": {
-        "voices": 1.0
-      },
+      "type": "unpack_note",
+      "address": "/bass_unpack",
+      "doc": "Unbundle the mono bass note line into held fields (ADR-0063): `pitch` (the degree, a vocab Pitch) feeds pitch2freq; `velocity` (1 = note-on, 0 = note-off) IS the mono synth's gate. This replaces the voicer -- inlining the 303 synth at rig level so its glide/filter/resonance params can be driven by interface pipes (the voicer only forwards freq/gate).",
       "inputs": {
-        "notes": {
+        "in": {
           "from": "/bass_mode"
+        }
+      }
+    },
+    {
+      "type": "pitch2freq",
+      "address": "/bass_freq",
+      "doc": "Resolve the mode-shifted degree to Hz against /bass_harmony (natural minor) -- the note→freq step the voicer used to do internally (ADR-0064).",
+      "inputs": {
+        "pitch": {
+          "from": "/bass_unpack.pitch"
         },
         "harmony": {
           "from": "/bass_harmony"
         }
-      },
-      "voice": "acid-bass-voice"
+      }
+    },
+    {
+      "type": "m2s",
+      "address": "/bass_glide",
+      "doc": "PITCH GLIDE (303 slide): portamento the note freq toward each new target over `time` seconds, set by the /glide pipe (/glide/in, 0 = instant jumps). Value freq -> glided Signal into the oscillator.",
+      "inputs": {
+        "in": {
+          "from": "/bass_freq.freq"
+        },
+        "mode": "Glide",
+        "time": {
+          "from": "/glide"
+        }
+      }
+    },
+    {
+      "type": "oscillator",
+      "address": "/bass_osc",
+      "doc": "Saw core -- rich harmonics for the resonant filter to carve. Freq rides the glide.",
+      "inputs": {
+        "freq": {
+          "from": "/bass_glide"
+        },
+        "waveform": "Saw"
+      }
+    },
+    {
+      "type": "envelope",
+      "address": "/bass_env",
+      "doc": "Snappy 303 contour: fast attack, low sustain. Gate is the unpacked note velocity; `decay` is the /filter_decay pipe (/filter_decay/in) -- longer decay = longer squelch tail. Drives BOTH the filter sweep and the VCA.",
+      "inputs": {
+        "gate": {
+          "from": "/bass_unpack.velocity"
+        },
+        "attack": 0.005,
+        "decay": {
+          "from": "/filter_decay"
+        },
+        "sustain": 0.25,
+        "release": 0.09
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/bass_env_amt",
+      "doc": "FILTER ENV AMOUNT: scale the env CV by the /filter_env pipe (/filter_env/in) before it maps to cutoff. 1 = full sweep to 2800 Hz; 0 = filter stays parked at the 160 Hz floor (no squelch).",
+      "inputs": {
+        "a": {
+          "from": "/bass_env.cv"
+        },
+        "b": {
+          "from": "/filter_env"
+        }
+      }
+    },
+    {
+      "type": "map_f32_signal",
+      "address": "/bass_cutoff",
+      "doc": "Amount-scaled env CV [0,1] -> filter cutoff [160,2800] Hz (exponential). The acid squelch: the filter opens on the attack and closes as the note decays; env amount sets how far it opens.",
+      "inputs": {
+        "in": {
+          "from": "/bass_env_amt"
+        },
+        "out_min": 160.0,
+        "out_max": 2800.0,
+        "curve": "Exponential"
+      }
+    },
+    {
+      "type": "filter",
+      "address": "/bass_filter",
+      "doc": "Resonant lowpass -- cutoff rides the env sweep; `resonance` is the /squelch pipe (/squelch/in), the whistling acid-tone control.",
+      "inputs": {
+        "audio": {
+          "from": "/bass_osc"
+        },
+        "cutoff": {
+          "from": "/bass_cutoff"
+        },
+        "mode": "Lp",
+        "resonance": {
+          "from": "/squelch"
+        }
+      }
+    },
+    {
+      "type": "power_f32_signal",
+      "address": "/bass_ampcurve",
+      "doc": "Shape the linear env CV into an x-squared perceptual volume curve for the VCA.",
+      "inputs": {
+        "x": {
+          "from": "/bass_env.cv"
+        }
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/bass_vca",
+      "doc": "VCA: filtered saw (a) * shaped amp CV (b) -- the mono synth's audio output.",
+      "inputs": {
+        "a": {
+          "from": "/bass_filter"
+        },
+        "b": {
+          "from": "/bass_ampcurve"
+        }
+      }
     },
     {
       "type": "m2s",
@@ -1200,7 +1338,7 @@
       "doc": "bass * bass volume.",
       "inputs": {
         "a": {
-          "from": "/bass_v.audio"
+          "from": "/bass_vca"
         },
         "b": {
           "from": "/bass_vol_cv"
