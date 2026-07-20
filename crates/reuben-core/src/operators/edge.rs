@@ -1,6 +1,6 @@
 //! Gate/clock **edge detection** — the shared primitive behind every clock-driven operator.
 //!
-//! ADR-0031 made `clock`/`gate` held Values: the engine block-slices at every change, so an
+//! `clock`/`gate` are held Values: the engine block-slices at every change, so an
 //! operator sees one constant level per (sub)block and detects an edge by comparing that level to
 //! the one held across the previous slice — the slice's frame 0 *is* the change frame, so emitting
 //! there is sample-accurate. That "compare the held level to the previous, fire on the crossing"

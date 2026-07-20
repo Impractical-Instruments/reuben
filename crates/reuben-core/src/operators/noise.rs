@@ -1,4 +1,4 @@
-//! Noise — white-noise Signal source (V1.3, ADR-0022).
+//! Noise — white-noise Signal source (V1.3).
 //!
 //! A zero-input audio-rate generator emitting uniform white noise in ~[-1, 1]. The percussive
 //! core of the synthesized drums (snare body, hat) — a noise burst through an envelope (and,
@@ -6,7 +6,7 @@
 //! struct, advanced once per sample: no allocation, no `rand` dependency, RT-safe. The RNG
 //! state lives in the struct, so the stream is continuous across blocks / block-slices (no
 //! audible seam at a block boundary). `spawn` resets to a fixed deterministic seed, so a fresh
-//! Voice always starts from the same point — reproducible renders (ADR-0010).
+//! Voice always starts from the same point — reproducible renders.
 //!
 //! - inputs: none.
 //! - output 0: `out` (`Buffer`) — uniform white noise in ~[-1, 1], roughly zero-mean.
@@ -15,7 +15,7 @@
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
+// Single-source contract: one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Noise {
     outputs: { out: f32_buffer },
 });

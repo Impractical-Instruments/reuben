@@ -1,4 +1,4 @@
-//! Shared test helpers for the generated number operators (issue #104, ADR-0033).
+//! Shared test helpers for the generated number operators (issue #104).
 //!
 //! Every `number_operator_contract!` op tests the same two shapes — drive a value-carrier op and
 //! read its emitted scalar, or drive a signal-carrier op and read its output buffer. The extractor

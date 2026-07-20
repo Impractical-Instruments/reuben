@@ -1,4 +1,4 @@
-//! `reciprocal` — `out = 1 / x`, per sample (ADR-0029, ADR-0017, ADR-0033).
+//! `reciprocal` — `out = 1 / x`, per sample.
 //!
 //! The sanctioned way to **invert a stream multiplicatively**: turn a ratio into its inverse, a
 //! frequency into a period, a rate into a time. A dense `Float`→`Float` unary op whose arithmetic is
@@ -7,13 +7,13 @@
 //!
 //! Taking the reciprocal of zero would yield `±inf` (or panic, for integers), so [`recip_fn`] carries
 //! an **op-local guard**: a zero input produces `0` (a finite result) rather than infinity. `Zero`
-//! and `One` supply the guard and the numerator, so it is generic over the number type (ADR-0029
+//! and `One` supply the guard and the numerator, so it is generic over the number type (the
 //! pure-fn seam).
 //!
 //! - input 0: `x` (`Float`) — the value to invert. Unwired default `1` (so `1/1 == 1`, the identity).
 //! - output 0: `out` — `1 / x` (or `0` when `x == 0`).
 
-/// The op's scalar math, written once (ADR-0029 pure-fn seam) and generic over the number type. The
+/// The op's scalar math, written once (the pure-fn seam) and generic over the number type. The
 /// `x == 0` check is `reciprocal`'s **op-local** guard against an `inf` (or integer divide panic)
 /// poisoning the graph; it lives here. `One::one() / x` computes the inverse for any numeric type.
 #[inline]
@@ -25,7 +25,7 @@ fn recip_fn<T: num_traits::Zero + num_traits::One + core::ops::Div<Output = T>>(
     }
 }
 
-// One declaration -> ReciprocalF32Value + ReciprocalF32Signal (ADR-0033). `x` defaults to 1 (the
+// One declaration -> ReciprocalF32Value + ReciprocalF32Signal. `x` defaults to 1 (the
 // multiplicative identity) so an unwired input emits 1 rather than the guarded zero.
 crate::number_operator_contract!(Reciprocal {
     numbers:  [f32],

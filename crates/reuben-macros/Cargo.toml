@@ -5,7 +5,7 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "The operator_contract! proc-macro: emits an operator's index consts + Descriptor from one declaration (ADR-0025)."
+description = "The operator_contract! proc-macro: emits an operator's index consts + Descriptor from one declaration."
 
 [lib]
 proc-macro = true

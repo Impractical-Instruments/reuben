@@ -1,4 +1,4 @@
-//! `max` — `out = max(a, b)`, per sample (ADR-0029, ADR-0017, ADR-0033).
+//! `max` — `out = max(a, b)`, per sample.
 //!
 //! The sanctioned way to **take the higher of two streams**: a floor on CV, the lower half of a
 //! clamp, half-wave rectification (`max(x, 0)`). A dense `Float`→`Float` op whose arithmetic is the
@@ -7,14 +7,14 @@
 //!
 //! Unlike add/mul there is no finite identity, so `b`'s unwired default is the **range minimum**
 //! (`-1e6`): `max(a, -1e6) == a` for any in-range signal, so wiring only `a` passes it through. The
-//! comparison needs only `PartialOrd`, so [`max_fn`] is generic over the number type (ADR-0029
+//! comparison needs only `PartialOrd`, so [`max_fn`] is generic over the number type (the
 //! pure-fn seam).
 //!
 //! - input 0: `a` (`Float`) — first operand. Unwired default `0`.
 //! - input 1: `b` (`Float`) — second operand. Unwired default `-1e6` (the range min — a no-op).
 //! - output 0: `out` — `max(a, b)`.
 
-/// The op's scalar math, written once (ADR-0029 pure-fn seam) and generic over any `PartialOrd`
+/// The op's scalar math, written once (the pure-fn seam) and generic over any `PartialOrd`
 /// number: the greater of the two operands (ties return `a`). Hand-written rather than [`Ord::max`]
 /// so it covers `f32`, which is only `PartialOrd`.
 #[inline]
@@ -26,8 +26,8 @@ fn max_fn<T: PartialOrd>(a: T, b: T) -> T {
     }
 }
 
-// One declaration -> MaxF32Value + MaxF32Signal (ADR-0033). `b` defaults to the range minimum so an
-// unwired second operand is a no-op (`max(a, -1e6) == a`), passing `a` through (ADR-0029).
+// One declaration -> MaxF32Value + MaxF32Signal. `b` defaults to the range minimum so an
+// unwired second operand is a no-op (`max(a, -1e6) == a`), passing `a` through.
 crate::number_operator_contract!(Max {
     numbers:  [f32],
     carriers: [value, signal],

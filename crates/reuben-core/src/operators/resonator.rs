@@ -12,11 +12,11 @@
 //! makes the ping's level slide around with `damping` and `freq`, which no downstream makeup gain
 //! can undo. A unit-velocity ping is a full-level voice at any pitch and any ring time.
 //!
-//! It is authored single-Voice (ADR-0032): one mono stream, hosted by the Voicer via the standard
+//! It is authored single-Voice: one mono stream, hosted by the Voicer via the standard
 //! `freq`/`gate` voice interface. So the existing `strum` op → Voicer → per-voice `gate` plucks it
 //! for free, and a note-on simply pings it at the voice's `freq`.
 //!
-//! Macro controls map the *Rings* panel (all held `f32` Values, ADR-0031 — read once per
+//! Macro controls map the *Rings* panel (all held `f32` Values — read once per
 //! block-slice; the bank's coefficients are recomputed only when one changes, à la `filter`, so a
 //! 32-mode bank stays cheap on the hot path):
 //! - `freq` — the resonant fundamental (Hz). Mode `i` sits at partial `i+1`.
@@ -44,7 +44,7 @@
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025/0030/0031): one declaration -> IN_/OUT_ consts + Descriptor.
+// Single-source contract: one declaration -> IN_/OUT_ consts + Descriptor.
 // `in` is a per-sample Signal; `freq` and the four macros are held `f32` Values (block-rate, the
 // bank recomputes its coefficients only when one changes); `out` is the wet Signal.
 crate::operator_contract!(Resonator {
@@ -239,7 +239,7 @@ impl Resonator {
     /// One sample of the modal bank: advance every mode and sum. `EXCITED` is a const so the mallet
     /// term monomorphizes away entirely while the bank is merely ringing — which is nearly all of
     /// the time, since a burst is ~3 ms of a multi-second ring. Keeps the hot steady-state loop at
-    /// the same arithmetic it has always done (ADR-0019: the micro bench gates this at 10%).
+    /// the same arithmetic it has always done (the micro bench gates this at 10%).
     #[inline(always)]
     fn bank_step<const EXCITED: bool>(&mut self, x_in: f32, exc: f32) -> f32 {
         let mut acc = 0.0f32;
@@ -281,7 +281,7 @@ impl Operator for Resonator {
         let n = io.frames();
         let sample_rate = io.sample_rate();
 
-        // Held controls (ADR-0031): one read each, constant for this block-slice.
+        // Held controls: one read each, constant for this block-slice.
         let freq = io.read(IN_FREQ);
         let structure = io.read(IN_STRUCTURE);
         let brightness = io.read(IN_BRIGHTNESS);

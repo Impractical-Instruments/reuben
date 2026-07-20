@@ -1,18 +1,18 @@
-//! `osc_out` — the boundary sink that sends Messages out over OSC (ADR-0026).
+//! `osc_out` — the boundary sink that sends Messages out over OSC.
 //!
-//! The outward half of reuben's OSC I/O and the mirror of OSC-in (ADR-0007): core stays
+//! The outward half of reuben's OSC I/O and the mirror of OSC-in: core stays
 //! OSC-agnostic, so this op never encodes or touches UDP. It collects its input Messages onto
 //! the **outbound route** — the fourth lane, modelled on the context lane's publish mechanics
-//! (ADR-0015) — and native drains that route each block, encodes, and sends to the static
+//! — and native drains that route each block, encodes, and sends to the static
 //! `--osc-out host:port` target.
 //!
 //! **Address.** The node's address *is* the outbound OSC address (one sink = one address): the
 //! engine stamps it on drain. The op forwards only the args; the incoming event's local address
 //! (an internal emit label like `out`/`degree`) is dropped, not leaked onto the wire.
 //!
-//! **Message-domain only** (ADR-0026). A Good Button's `map` output is already a Message, so
+//! **Message-domain only**. A Good Button's `map` output is already a Message, so
 //! two-way control-surface feedback works without new machinery. Sending a live Signal value out
-//! needs the deferred Signal→Message sampler (ADR-0017); v1 OSC-out does not.
+//! needs the deferred Signal→Message sampler; v1 OSC-out does not.
 //!
 //! - input 0: `in` (`arg` — the type-agnostic pass-through, issue #141) — values to send out. The
 //!   sink forwards **any** [`Arg`](crate::message::Arg) verbatim: a `Note`, a scalar echo, a
@@ -25,7 +25,7 @@
 //!   crosses back in verbatim (the string since `Arg::Str` went `Arc<str>`-backed, issues
 //!   #206/#207), while a multi-arg list drops ([`osc_in_arg`](crate::boundary::osc_in_arg)'s
 //!   pass-through arm). In
-//!   the unified model (ADR-0030) the sink simply **emits** each received Message; the engine's
+//!   the unified model the sink simply **emits** each received Message; the engine's
 //!   outbound tap (`Plan.outbound_taps`) drains an `osc_out` node's emissions past the boundary,
 //!   where the flat OSC form is encoded. The incoming event's local address is dropped; the node's
 //!   address is stamped on drain.
@@ -34,9 +34,9 @@ use crate::descriptor::Descriptor;
 use crate::operator::form::Raw;
 use crate::operator::{Io, Operator, Out};
 
-// Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
+// Single-source contract: one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 // `OscOut` -> type_name "osc_out" (snake_case, required by the contract validator — the wire name
-// is `osc_out`, not the ADR's prose `osc-out`; the *CLI flag* keeps the hyphen).
+// is `osc_out`, not the prose `osc-out`; the *CLI flag* keeps the hyphen).
 crate::operator_contract!(OscOut {
     inputs: { in: arg },
 });
@@ -63,7 +63,7 @@ impl Operator for OscOut {
         // Each received Message is re-emitted verbatim and addressless — the raw `Arg`, no vocab
         // decode (issue #141) — so the boundary's type-driven expansion sees exactly what arrived.
         // The engine's outbound tap stamps the node's OSC address and drains these past the
-        // boundary (ADR-0030, ADR-0031). Cloning an `Arg` is alloc-free for every payload that
+        // boundary. Cloning an `Arg` is alloc-free for every payload that
         // can arrive here: `Str` is `Arc<str>`-backed (issue #206), so a string — echoed in from
         // outside through the `arg` port (issue #207) or internally wired — clones as a refcount
         // bump, never a heap clone. `frame` is segment-relative; the writer adds the segment

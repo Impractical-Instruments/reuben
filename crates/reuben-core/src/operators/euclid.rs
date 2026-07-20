@@ -1,4 +1,4 @@
-//! euclid — a clock-driven Euclidean rhythm generator emitting a **sparse gate** (ADR-0030).
+//! euclid — a clock-driven Euclidean rhythm generator emitting a **sparse gate**.
 //!
 //! Walks a Euclidean pattern one step per beat, driven by the [`Clock`](crate::operators::Clock)'s
 //! beat `gate`: each rising edge of the `clock` input advances to the next step (wrapping at
@@ -6,7 +6,7 @@
 //! gate-off, so the gate width tracks the clock pulse. Rest steps advance the counter but emit
 //! nothing. It is a *rhythm source* — wire its `gate` output into a [`Envelope`](crate::operators::Envelope)
 //! `gate` (or any Buffer/`Float` control): the gate is emitted at message rate (one F32 event per
-//! edge) and the engine's ZOH bridge (ADR-0030) materializes it into a dense gate buffer for the
+//! edge) and the engine's ZOH bridge materializes it into a dense gate buffer for the
 //! consumer, so there is no per-sample buffer to fill here.
 //!
 //! The Euclidean pattern distributes `pulses` active steps as evenly as possible across `steps`
@@ -16,7 +16,7 @@
 //! `rotation` rotates the ring of hits: at rotation `r`, step `s` plays the base pattern's step
 //! `s + r`. E(4,16) is four-on-the-floor (steps 0,4,8,12); E(3,8) is the tresillo (0,3,6).
 //!
-//! Unified model (ADR-0030): `steps`, `pulses`, and `rotation` are **held `Float` inputs**, each
+//! `steps`, `pulses`, and `rotation` are **held `Float` inputs**, each
 //! owning its unwired default — read block-rate via [`Io::read`] (rounded to an integer, then
 //! clamped/wrapped). `clock` is a **`buffer`** input read per-sample via [`Io::read`] for edge
 //! detection. Edge behaviour is forgiving for live knob-twiddling and modulation: `pulses` clamps
@@ -41,7 +41,7 @@ use crate::operators::edge::{Edge, EdgeDetector};
 /// Maximum number of steps in the pattern — the `steps` input clamps to this.
 pub const NUM_STEPS: usize = 16;
 
-// Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
+// One declaration -> IN_/OUT_ consts + Descriptor.
 crate::operator_contract!(Euclid {
     type_name: "euclid",
     inputs:  { clock:    f32 { 0.0..=1.0, default 0.0, "", lin },
@@ -104,7 +104,7 @@ impl Operator for Euclid {
         let pulses = (io.read(IN_PULSES).round() as i64).clamp(0, total);
         let rotation = (io.read(IN_ROTATION).round() as i64).rem_euclid(total);
 
-        // `clock` is a held Value (ADR-0031): the engine block-slices at every clock change, so this
+        // `clock` is a held Value: the engine block-slices at every clock change, so this
         // call sees one constant level. Compare it to the level held across the previous slice to
         // detect the edge; the slice's frame 0 *is* the change frame (block-absolute), so emitting
         // there is sample-accurate. The held latch carries `prev` across blocks/slices.
@@ -159,7 +159,7 @@ mod tests {
         d.render(clock.len()).emits().to_vec()
     }
 
-    /// Drive the now-held-Value `clock` from a dense gate buffer (ADR-0031): push a held-level
+    /// Drive the now-held-Value `clock` from a dense gate buffer: push a held-level
     /// change at each frame the buffer crosses the 0.5 threshold — the clock is fed by edges, not a
     /// per-sample buffer. `prev` threads the level across split renders; returns the trailing level.
     fn push_clock(d: &mut OpDriver, clock: &[f32], mut prev: f32) -> f32 {

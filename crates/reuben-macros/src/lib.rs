@@ -1,10 +1,10 @@
-//! `operator_contract!` — the single-source operator contract macro (ADR-0025).
+//! `operator_contract!` — the single-source operator contract macro.
 //!
 //! An operator declares its ports/params **once**, inside `operator_contract!`. The macro plants,
 //! at module scope, the `IN_`/`OUT_`/`P_` index consts *and* an inherent `fn contract() ->
 //! Descriptor`; the author's `impl Operator` delegates `fn descriptor()` to it with a one-liner.
 //! Because the consts and the descriptor come from the **same tokens**, name↔slot drift is
-//! impossible by construction — the disease this macro exists to cure (ADR-0010/0021).
+//! impossible by construction — the disease this macro exists to cure.
 //!
 //! Shape A (delegate), forced by Rust: `descriptor()` and `process()` are both required methods of
 //! one `impl Operator` block, and a macro can't inject a method into a hand-written impl. So the
@@ -42,14 +42,14 @@ pub fn operator_contract(input: proc_macro::TokenStream) -> proc_macro::TokenStr
     expand(input.into()).into()
 }
 
-/// Generate a family of stateless pointwise number operators from one scalar fn (ADR-0033). See
+/// Generate a family of stateless pointwise number operators from one scalar fn. See
 /// the [`number_op`] module docs for the grammar and what each `numbers × carriers` variant emits.
 #[proc_macro]
 pub fn number_operator_contract(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
     number_op::expand(input.into()).into()
 }
 
-/// Integrate a shared *vocab* type with the central `Arg` enum (ADR-0030): `From`/`TryFrom`
+/// Integrate a shared *vocab* type with the central `Arg` enum: `From`/`TryFrom`
 /// for every type, plus the Enum-over-OSC table for unit enums. See [`argvalue`].
 #[proc_macro_derive(ArgValue)]
 pub fn derive_arg_value(input: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -85,7 +85,7 @@ struct ContractInput {
     type_name: Option<LitStr>,
     inputs: Vec<PortAst>,
     outputs: Vec<PortAst>,
-    /// Instantiate-time `Constant` ports (ADR-0035) — declared like inputs, in their own block.
+    /// Instantiate-time `Constant` ports — declared like inputs, in their own block.
     constants: Vec<PortAst>,
     resources: Vec<Ident>,
 }
@@ -164,7 +164,7 @@ fn port_form(p: &model::PortModel) -> TokenStream {
     }
 }
 
-/// The typed-handle const for one **input** port (ADR-0037): its [`form`] marker type comes from
+/// The typed-handle const for one **input** port: its [`form`] marker type comes from
 /// the declared port type ([`port_form`]), its stored default from the same declaration — so the
 /// descriptor default and the held-read fallback are one datum. `In::new` takes `()` for
 /// defaultless forms (events, the raw pass-through).
@@ -201,7 +201,7 @@ fn input_handle(p: &model::PortModel) -> TokenStream {
     }
 }
 
-/// The typed-handle const for one **output** port (ADR-0037). Outputs carry no default — the
+/// The typed-handle const for one **output** port. Outputs carry no default — the
 /// handle is index + form ([`port_form`]) only.
 fn output_handle(p: &model::PortModel) -> TokenStream {
     let ident = Ident::new(&p.const_name, Span::call_site());
@@ -214,10 +214,10 @@ fn output_handle(p: &model::PortModel) -> TokenStream {
 }
 
 /// Render a resolved [`ContractModel`] to the `IN_`/`OUT_`/`C_` const block + the inherent
-/// `impl T { fn contract() }` (ADR-0025). Free function so both `operator_contract!` and the
+/// `impl T { fn contract() }`. Free function so both `operator_contract!` and the
 /// derived `number_operator_contract!` variants emit the identical contract from the same code.
 ///
-/// Inputs/outputs emit **typed handles** (`In<form>`/`Out<form>`, ADR-0037) whose type fixes the
+/// Inputs/outputs emit **typed handles** (`In<form>`/`Out<form>`) whose type fixes the
 /// `io.read`/`io.write` shape and whose value carries the declared default. Constants stay bare
 /// `usize` ordinals: a `C_*` is instantiate-time config, never read in `process`, so it gets no
 /// handle.
@@ -254,7 +254,7 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
                     // `compile_error!` fallback are gone (issue #217).
                     match &p.spec.ty {
                         // A dense per-sample signal — `Port::f32_buffer`, or `f32_buffer_meta`
-                        // when it carries a scalar default + knob (ADR-0031 decision (a)).
+                        // when it carries a scalar default + knob.
                         PortTy::F32Buffer(None) => {
                             quote! { ::reuben_core::descriptor::Port::f32_buffer(#name) }
                         }
@@ -277,7 +277,7 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
                             let meta = f32_meta_toks(m);
                             quote! { ::reuben_core::descriptor::Port::f32(#name, #meta) }
                         }
-                        // A bounded integer control / constant — `Port::i32` with its meta (ADR-0035).
+                        // A bounded integer control / constant — `Port::i32` with its meta.
                         PortTy::I32(m) => {
                             let (min, max, default) = (m.min, m.max, m.default);
                             quote! {
@@ -290,7 +290,7 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
                             }
                         }
                         // A held vocab enum — `Port::enumerated` off the shared type's
-                        // `enum_meta`, so the descriptor and the type are single-sourced (ADR-0030).
+                        // `enum_meta`, so the descriptor and the type are single-sourced.
                         PortTy::Enum(vocab) => {
                             let ty = Ident::new(vocab, Span::call_site());
                             quote! {
@@ -317,7 +317,7 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
 
             impl #struct_ident {
                 /// The operator's [`Descriptor`](::reuben_core::descriptor::Descriptor),
-                /// single-sourced with the index consts above by `operator_contract!` (ADR-0025).
+                /// single-sourced with the index consts above by `operator_contract!`.
                 pub fn contract() -> ::reuben_core::descriptor::Descriptor {
                     ::reuben_core::descriptor::Descriptor {
                         type_name: #type_name,
@@ -374,7 +374,7 @@ impl Parse for ContractInput {
 }
 
 /// A brace-wrapped, comma-separated port list. Each entry is `name: <ty>` where `<ty>` is the
-/// port's [`Arg`] type (ADR-0030): `f32_buffer`, `f32 { .. }`, `enum(VocabType)`, `note`,
+/// port's [`Arg`] type: `f32_buffer`, `f32 { .. }`, `enum(VocabType)`, `note`,
 /// `harmony`, or `arg` — parsed straight into the shared [`PortTy`] (issue #217), so an unknown
 /// type keyword is a parse error here and unrepresentable past this point.
 fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
@@ -389,7 +389,7 @@ fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
         let kw = Ident::parse_any(&body)?;
         let ty = match kw.to_string().as_str() {
             // A bare `f32_buffer` is a pure signal; an optional `{ .. }` meta block gives it a
-            // scalar default + knob range (ADR-0031 decision (a)).
+            // scalar default + knob range.
             "f32_buffer" => {
                 let meta = if body.peek(syn::token::Brace) {
                     Some(parse_f32_meta(&body)?)
@@ -492,7 +492,7 @@ fn parse_curve_ident(input: ParseStream) -> syn::Result<Curve> {
     }
 }
 
-/// `{ LO..=HI, default D }` — the meta on an `i32 { .. }` port / constant (ADR-0035). Integer
+/// `{ LO..=HI, default D }` — the meta on an `i32 { .. }` port / constant. Integer
 /// bounds + default; no unit/curve (a count is not a swept knob). Parses straight into the
 /// shared contract [`I32Meta`] (issue #217).
 fn parse_i32_meta(input: ParseStream) -> syn::Result<I32Meta> {
@@ -564,7 +564,7 @@ mod tests {
                 outputs: { audio: f32_buffer },
             }"#,
         );
-        // Typed handles (ADR-0037): the const's type carries the form, its value the ordinal +
+        // Typed handles: the const's type carries the form, its value the ordinal +
         // declared default.
         assert!(
             out.contains("pub const IN_FREQ : :: reuben_core :: operator :: In < :: reuben_core :: operator :: form :: Held < f32 > >"),
@@ -603,8 +603,8 @@ mod tests {
         );
     }
 
-    // Ports number sequentially in declaration order (ADR-0030) — a note input and a harmony input
-    // are 0 and 1, not split per kind. A `constants:` block (ADR-0035) renders as immutable ports
+    // Ports number sequentially in declaration order — a note input and a harmony input
+    // are 0 and 1, not split per kind. A `constants:` block renders as immutable ports
     // with their own `C_` index consts and an `i32` meta.
     #[test]
     fn ports_number_sequentially_and_constant_renders_as_port() {
@@ -680,7 +680,7 @@ mod tests {
         assert!(out.contains("unit : \"\""), "{out}");
     }
 
-    // The filter target contract (ADR-0030): a buffer audio in/out, float-with-meta controls, and
+    // The filter target contract: a buffer audio in/out, float-with-meta controls, and
     // an `enum(FilterMode)` naming its shared vocab type — sequential input ordinals.
     #[test]
     fn emits_filter_contract() {
@@ -725,7 +725,7 @@ mod tests {
             out.contains("vocab :: FilterMode :: enum_meta (\"mode\")"),
             "{out}"
         );
-        // No locally-generated enum type any more — vocab types are shared (ADR-0030).
+        // No locally-generated enum type any more — vocab types are shared.
         assert!(!out.contains("pub enum"), "{out}");
     }
 
@@ -753,7 +753,7 @@ mod tests {
         assert!(out.contains("type_name : \"oscillator\""), "{out}");
     }
 
-    // A signal control with a scalar default (ADR-0031 decision (a)): `f32_buffer { .. }` carries
+    // A signal control with a scalar default: `f32_buffer { .. }` carries
     // its meta yet stays a buffer port, so it emits `Port::f32_buffer_meta` — distinct from the
     // bare `Port::f32_buffer` and from a Value `Port::f32`.
     #[test]
@@ -805,7 +805,7 @@ mod tests {
         assert!(out.contains("default : - 1000000f32"), "{out}");
     }
 
-    // The remaining handle forms (ADR-0037), one assertion per PortType: a raw `arg`
+    // The remaining handle forms, one assertion per PortType: a raw `arg`
     // pass-through input, a bounded `i32` input, and the message-output handles (`f32`, `note`,
     // `harmony`) — every port form gets a typed handle, full coverage.
     #[test]
@@ -830,7 +830,7 @@ mod tests {
             out.contains("pub const IN_COUNT : :: reuben_core :: operator :: In < :: reuben_core :: operator :: form :: Held < i32 > > = :: reuben_core :: operator :: In :: new (1 , 3i32)"),
             "{out}"
         );
-        // Outputs: form-typed, index-only (all-outputs index — signal then message, ADR-0030).
+        // Outputs: form-typed, index-only (all-outputs index — signal then message).
         assert!(
             out.contains("pub const OUT_CV : :: reuben_core :: operator :: Out < :: reuben_core :: operator :: form :: SignalF32 > = :: reuben_core :: operator :: Out :: new (0)"),
             "{out}"

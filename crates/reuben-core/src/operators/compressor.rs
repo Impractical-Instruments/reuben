@@ -22,7 +22,7 @@
 //!    skipped, so the between-kick path costs nothing beyond the makeup trim.
 //!
 //! The **key source** follows the sidechain when it is wired and falls back to the main input when
-//! it is not (ADR-0031 materialize: an unwired bare Signal reads `io.varying == false`, a wired
+//! it is not (an unwired bare Signal reads `io.varying == false`, a wired
 //! source `true`). So unwired it is a plain self-keyed compressor; wire a kick and it becomes a
 //! sidechain pumper — no mode switch. Controls are held Values (block-sliced at changes); the
 //! detector and ballistics coefficients are recomputed once per block, not per sample.
@@ -41,7 +41,7 @@ use crate::descriptor::Descriptor;
 use crate::dsp::svf::{Svf, SvfCoeffs};
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
+// Single-source contract: one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Compressor {
     type_name: "compressor",
     inputs: { audio:     f32_buffer,
@@ -123,7 +123,7 @@ impl Operator for Compressor {
 
         // Key = the sidechain when wired, else the main input (the unwired-fallback contract). One
         // per-block decision: a wired Signal reads `varying == true`, an unwired bare Signal (which
-        // materializes constant silence) reads `false` from block 0 (ADR-0031/0037).
+        // materializes constant silence) reads `false` from block 0.
         let key_wired = io.varying(IN_SIDECHAIN);
 
         // Resolve slices once (each is exactly `n` samples — the buffer-presence invariant). The

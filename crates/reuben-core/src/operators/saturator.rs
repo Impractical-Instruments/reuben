@@ -11,7 +11,7 @@
 //! offset, so a one-pole ~5 Hz DC blocker sits after the shaper; its transient overshoot means
 //! output peaks can briefly exceed ±level by ~15% worst-case.
 //!
-//! `drive`/`warmth` are Signal inputs with scalar defaults (ADR-0031): knob-set they materialize
+//! `drive`/`warmth` are Signal inputs with scalar defaults: knob-set they materialize
 //! as held buffers, or an LFO/envelope wires straight in for audio-rate modulation. `level` is a
 //! held output trim after the shaper.
 //!
@@ -25,7 +25,7 @@
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025): one declaration -> IN_/OUT_/C_ consts + Descriptor, no drift.
+// Single-source contract: one declaration -> IN_/OUT_/C_ consts + Descriptor, no drift.
 crate::operator_contract!(Saturator {
     inputs: { audio: f32_buffer,
               drive: f32_buffer { 1.0..=30.0, default 2.5, "x", exp },
@@ -85,8 +85,8 @@ impl Operator for Saturator {
         };
         let level = io.read(IN_LEVEL).clamp(LEVEL_MIN, LEVEL_MAX);
 
-        // Resolve every slice once, outside the loop (the ADR-0037 handle re-derivation cost —
-        // same hoist as the filter). All are exactly `n` frames (buffer-presence invariant).
+        // Resolve every slice once, outside the loop (the handle re-derivation cost — same hoist
+        // as the filter). All are exactly `n` frames (buffer-presence invariant).
         let audio = io.read(IN_AUDIO);
         let drive = io.read(IN_DRIVE);
         let warmth = io.read(IN_WARMTH);

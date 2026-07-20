@@ -1,4 +1,4 @@
-//! `abs` — `out = |x|`, per sample (ADR-0029, ADR-0017, ADR-0033).
+//! `abs` — `out = |x|`, per sample.
 //!
 //! The sanctioned way to **rectify a stream**: full-wave rectification of audio, taking the
 //! magnitude of a bipolar CV, folding a signal into the positive half-plane. A dense `Float`→`Float`
@@ -9,14 +9,14 @@
 //! - input 0: `x` (`Float`) — the value to rectify. Unwired default `0`.
 //! - output 0: `out` — `|x|`.
 
-/// The op's scalar math, written once (ADR-0029 pure-fn seam) and generic over any signed number:
+/// The op's scalar math, written once (the pure-fn seam) and generic over any signed number:
 /// [`Signed::abs`](num_traits::Signed::abs), which delegates to `f32::abs` for the `f32` instance.
 #[inline]
 fn abs_fn<T: num_traits::Signed>(x: T) -> T {
     x.abs()
 }
 
-// One declaration -> AbsF32Value + AbsF32Signal (ADR-0033). A pure unary magnitude; `x` defaults to
+// One declaration -> AbsF32Value + AbsF32Signal. A pure unary magnitude; `x` defaults to
 // 0, so an unwired input is silent.
 crate::number_operator_contract!(Abs {
     numbers:  [f32],

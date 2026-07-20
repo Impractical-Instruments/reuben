@@ -1,4 +1,4 @@
-//! Strum — a drag-to-strum gesture op (V1.3 "The Toys", ADR-0022 §3; unified model, ADR-0030).
+//! Strum — a drag-to-strum gesture op.
 //!
 //! The strum-harp's one big fader streams its position (0..1). This op turns that drag into a harp
 //! glissando: the 0..1 range is divided into `strings` equal bands, and **each time the position
@@ -10,7 +10,7 @@
 //! plucks each string between, like a thumb across a harp).
 //!
 //! - input 0: `position` (`f32`, held Value) — the fader's position in 0..1, read **once per
-//!   block-slice** via [`Io::read`]. The engine block-slices at every position change (ADR-0031),
+//!   block-slice** via [`Io::read`]. The engine block-slices at every position change,
 //!   so a moved fader re-spells the strum at the change frame — the slice's frame 0 *is* the change
 //!   frame, so the pluck is sample-accurate — and a crossing straddling a block boundary fires
 //!   exactly once (`prev_string` carries the band across).
@@ -21,7 +21,7 @@
 //! - input 3: `velocity` (`Float`, held) — pluck velocity (0..1, default 1).
 //! - output 0: `degrees` (`Note`) — a degree note (velocity on the pluck, 0 on the paired off).
 //!
-//! **Plucks, not held notes** (ADR-0022 "no held gate"): each crossing emits a note-on immediately
+//! **Plucks, not held notes** (no held gate): each crossing emits a note-on immediately
 //! followed by a note-off `PLUCK_SAMPLES` later, so the downstream percussive envelope opens and
 //! then rings out on its own decay/release. The pending note-offs are held across blocks (a
 //! fixed-capacity queue, allocation-free). Emits one note stream, upstream of the Voicer.
@@ -32,7 +32,7 @@ use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 use crate::vocab::pitch::{Note, Pitch};
 
-// Single-source contract (ADR-0025/0030/0031). All inputs are held `f32` Values: `position` is read
+// All inputs are held `f32` Values: `position` is read
 // once per block-slice (the engine slices at its changes), `strings`/`octaves`/`velocity` block-rate.
 crate::operator_contract!(Strum {
     inputs:  { position: f32 { 0.0..=1.0,  default 0.0, "",        lin },
@@ -104,7 +104,7 @@ impl Operator for Strum {
         let octaves = io.read(IN_OCTAVES).max(1.0);
         let velocity = io.read(IN_VELOCITY).clamp(0.0, 1.0);
 
-        // `position` is a held Value (ADR-0031): the engine block-slices at every position change,
+        // `position` is a held Value: the engine block-slices at every position change,
         // so this call sees one constant fader position. Read it once (the immutable borrow ends
         // with this `let`, so `io.write` can borrow mutably below) and resolve the band. Any band
         // crossed since the last slice emits a pluck **at frame 0** — the slice's start *is* the
@@ -161,8 +161,8 @@ mod tests {
 
     const SR: f32 = 48_000.0;
 
-    /// Drive a fresh Strum through the real engine over `n` frames. `position` is a held Value
-    /// (ADR-0031): each discrete `(frame, value)` is `push`ed as a change, so the engine block-slices
+    /// Drive a fresh Strum through the real engine over `n` frames. `position` is a held Value:
+    /// each discrete `(frame, value)` is `push`ed as a change, so the engine block-slices
     /// at it and re-spells the strum at that frame (zero-order-held between changes — exactly the
     /// fader's semantics). `strings`/`octaves`/`velocity` are held `Float` controls (`set` once).
     /// Returns the emitted Messages, frames block-absolute.
