@@ -24,11 +24,13 @@ automatic.
 same layout exists in the web repo, so this skill runs unchanged there — never hardcode an
 engine-only path.
 
-## The topic map (ratified taxonomy)
+## The topic map (topics ratified in #167; slugs proposed here)
 
-Every rule lives under exactly one of six topics. The slugs are **stable kebab-case** — the same run
-after run, so `see rules:` code comments and cross-repo links never move. Use these; do not invent a
-new topic without a taxonomy change.
+Every rule lives under exactly one of six topics. The **six topics** (names + summaries + the 61-ADR
+crosswalk) are ratified in #167; the **kebab-case slugs below are this skill's proposal**, to be
+confirmed or adjusted at first use (S04). Once fixed, a slug is **stable** — the same run after run —
+so `see rules:` code comments and cross-repo links never move. Use these slugs; do not invent a new
+topic without a taxonomy change.
 
 | Topic | Slug | Covers |
 |---|---|---|

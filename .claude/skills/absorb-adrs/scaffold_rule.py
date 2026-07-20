@@ -69,20 +69,32 @@ def insert_rule(text: str, topic: str, rule: str, heading: str) -> str:
 
 def render_rationale(template: str, topic: str, rule: str, heading: str, provenance: str) -> str:
     """Instantiate `_templates/rationale.md`: fill the `# Why:` line, the `[Rule]` back-link, and
-    the `Distilled from:` provenance; replace the `<...>` body placeholder with a TODO comment."""
-    out = []
-    for ln in template.split("\n"):
-        if ln.startswith("# Why:"):
-            out.append(f"# Why: {heading}")
-        elif ln.startswith("[Rule]"):
-            out.append(f"[Rule](../../{topic}.md#{rule})")
-        elif ln.startswith("Distilled from:"):
+    the `Distilled from:` provenance, and collapse the reasoning body to a single TODO.
+
+    The body is scoped STRUCTURALLY to the region between the `[Rule]` line and the `Distilled from:`
+    line, so it becomes exactly one `BODY_TODO` no matter how many `<...>` placeholders the template
+    body carries. (A whole-text `<...>` regex would silently multiply them into several TODOs if the
+    template ever grew a second placeholder — mangling the rationale with no red test.) Raises a clear
+    error if the two structural anchors are missing or out of order, so template drift is caught."""
+    lines = template.split("\n")
+    rule_idx = next((i for i, l in enumerate(lines) if l.startswith("[Rule]")), None)
+    prov_idx = next((i for i, l in enumerate(lines) if l.startswith("Distilled from:")), None)
+    if rule_idx is None or prov_idx is None or prov_idx <= rule_idx:
+        raise ValueError("rationale template missing an ordered `[Rule]` ... `Distilled from:` "
+                         "pair — cannot scope the reasoning body")
+    out: list[str] = []
+    for i, ln in enumerate(lines):
+        if i == rule_idx:
+            out += [f"[Rule](../../{topic}.md#{rule})", "", BODY_TODO, ""]  # body -> one TODO
+        elif rule_idx < i < prov_idx:
+            continue  # drop the template's whole body region (any number of placeholders)
+        elif i == prov_idx:
             out.append(f"Distilled from: {provenance}")
+        elif ln.startswith("# Why:"):
+            out.append(f"# Why: {heading}")
         else:
             out.append(ln)
-    # The template's only `<...>` block is the body paragraph; swap it for a TODO. (Provenance is
-    # already substituted above, so a `<...>`-free provenance is never touched here.)
-    return re.sub(r"<[^>]*>", BODY_TODO, "\n".join(out), flags=re.S)
+    return "\n".join(out)
 
 
 def main(argv: list[str]) -> int:

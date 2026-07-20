@@ -121,6 +121,39 @@ class ScaffoldRuleTest(unittest.TestCase):
         self.assertNotEqual(
             self.scaffold(topic="ok-topic", title="T", summary="s", rule="Bad_Rule", heading="H."), 0)
 
+    # --- render_rationale hardening (template-drift robustness) -------------------------------
+    def test_render_rationale_collapses_multi_placeholder_body(self):
+        # A drifted template whose reasoning body carries TWO `<...>` placeholders. The old
+        # whole-text `<...>` regex replaced each independently -> two BODY_TODOs (mangled); the
+        # structural body-scope collapses the entire region to exactly one. This reds against the
+        # pre-fix logic and greens after it.
+        tpl = ("# Why: <the rule, named or restated>\n\n"
+               "[Rule](../../<topic>.md#<rule-slug>)\n\n"
+               "<first reasoning placeholder>\n\n"
+               "<second reasoning placeholder>\n\n"
+               "Distilled from: ADR-00xx\n")
+        out = scaffold_rule.render_rationale(tpl, "signal-time-dsp", "osc-only-core", "H.", "ADR-0007")
+        self.assertEqual(out.count(scaffold_rule.BODY_TODO), 1)
+        self.assertNotIn("<first reasoning", out)
+        self.assertNotIn("<second reasoning", out)
+        self.assertIn("[Rule](../../signal-time-dsp.md#osc-only-core)", out)
+        self.assertIn("Distilled from: ADR-0007", out)
+
+    def test_render_rationale_raises_on_missing_anchors(self):
+        # Template drift that drops the structural anchors must fail loudly, not silently mis-render.
+        with self.assertRaises(ValueError):
+            scaffold_rule.render_rationale("# Why: x\n\nbody, no anchors\n", "t", "r", "H.", "ADR-1")
+
+    def test_render_rationale_matches_real_template_shape(self):
+        # Against the repo's actual template, the happy path yields exactly one BODY_TODO and no
+        # surviving `<...>` field placeholder.
+        tpl = (REPO / "docs" / "rules" / "_templates" / "rationale.md").read_text()
+        out = scaffold_rule.render_rationale(tpl, "signal-time-dsp", "osc-only-core", "H.", "ADR-0007")
+        self.assertEqual(out.count(scaffold_rule.BODY_TODO), 1)
+        self.assertNotIn("<The condensed", out)
+        self.assertNotIn("<the rule", out)
+        self.assertNotIn("<topic>", out)
+
 
 if __name__ == "__main__":
     unittest.main()
