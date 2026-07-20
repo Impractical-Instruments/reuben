@@ -280,13 +280,13 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  # Rules-doc guards (S01). The rules-doc system's derive + links guards are stdlib-only Python that
-  # goes green on today's empty tree, so it wires in from day one (the reference-linter does NOT — it
-  # would red-fail on the workspace's ~2000 live ADR code refs until the harvest/repoint stage, so it
-  # is deliberately absent below). Same draft-skip as the Rust jobs; `python3` is preinstalled on
-  # ubuntu-latest, so no setup step. Gated on the `rules` path filter (see the `changes` job) — a
-  # docs-only rules change moves none of the *workspace jobs, so without this gate `ci-passed` would
-  # green vacuously and the invariant would never be enforced.
+  # Rules-doc guards (S01). The rules-doc system's derive + links guards are stdlib-only Python. Same
+  # draft-skip as the Rust jobs; `python3` is preinstalled on ubuntu-latest, so no setup step. Gated on
+  # the `rules` path filter (see the `changes` job) — a docs-only rules change moves none of the
+  # *workspace jobs, so without this gate `ci-passed` would green vacuously and the invariant would
+  # never be enforced. (The reference-linter is NOT here — it scans ALL code, not just docs/rules, so
+  # it runs unconditionally in the always-on `ref-guard` job below; wired in S19/#185 now that the
+  # code is clean.)
   rules-guards:
     name: rules-doc guards
     runs-on: ubuntu-latest
@@ -306,9 +306,23 @@ jobs:
         run: python3 scripts/check_rules_derive.py --check .
 
       # The epic's core invariant: every topic has >=1 rule; every rule links exactly one rationale
-      # that exists. (check_rules_refs.py is intentionally NOT run here — it is unwired.)
+      # that exists. (check_rules_refs.py runs separately in the always-on ref-guard job — it scans
+      # all code, not just docs/rules.)
       - name: Rule<->rationale link guard
         run: python3 scripts/check_rules_links.py .
+
+  # The rules reference-linter (check_rules_refs.py, S01 + wired in S19/#185): no ADR-NNNN survives in
+  # code, and every `see rules: <topic>` comment resolves to a real topic doc. Unlike the derive/link
+  # guards (path-filtered to docs/rules/**), a reintroduced ADR ref or a broken topic pointer can hide
+  # in ANY code change, so this ALWAYS runs. The absorb-adrs skill — the tool that stamps `Distilled
+  # from:` provenance — is exempt by the guard's SKILL_ALLOWLIST.
+  ref-guard:
+    name: no ADR refs in code (rules ref-linter)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: ADR-in-code + pointer-resolution guard
+        run: python3 scripts/check_rules_refs.py .
 
   # Always-green aggregate merge gate. A ruleset can't require the per-path-filtered jobs above
   # directly: when a job is Skipped (nothing it gates changed) the ruleset reads it as "expected but
@@ -323,7 +337,7 @@ jobs:
     # this workflow and CONTRIBUTING refer to the check by one name.
     name: ci-passed
     runs-on: ubuntu-latest
-    needs: [changes, lockstep, check, windows, bench, rules-guards]
+    needs: [changes, lockstep, check, windows, bench, rules-guards, ref-guard]
     if: always()
     steps:
       - name: Fail if any required job failed or was cancelled (skipped is OK)

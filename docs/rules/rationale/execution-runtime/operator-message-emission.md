@@ -32,7 +32,7 @@ and *cleared* (not freed) each block, an emitted payload is a `Copy` `Arg` bound
 string, nothing heap), and delivered events stay zero-copy views onto either the external slice or
 the emit pool ([render-is-allocation-free](render-is-allocation-free.md)).
 
-(ADR-0014 first built emit with a node-local `&'static str` address matched into a routing table;
+(emit was first built with a node-local `&'static str` address matched into a routing table;
 the unified `Message`/`Arg` model folded routing together and made internal Value/Event writes fully
 addressless — dispatch is by wired port connection, addresses are boundary-only. The durable
 position this rule fixes — operators emit on statically-wired typed edges, delivered same-block in

@@ -31,8 +31,8 @@ and gate-step sniffing in both resolvers go away. A sequencer's N gate steps bec
 (`kick_step1..16`), each defaulting to the old inline literal so the rest state is unchanged — no
 new lane/indexed-pipe machinery, just the honest, discoverable, engine-validated place.
 
-(This retires ADR-0018's `control` block, the `NodeDoc.control` passthrough, and the
-infer→write-back generator, and supersedes ADR-0017's carrier-era surface metadata; the pieces of
+(This retires the old per-node `control` block, the `NodeDoc.control` passthrough, and the
+infer→write-back generator, and supersedes the earlier carrier-era surface metadata; the pieces of
 those that survive — the disposable TouchOSC projection and the shared two-target format — are the
 [surface-format-two-targets](surface-format-two-targets.md) rule.)
 
