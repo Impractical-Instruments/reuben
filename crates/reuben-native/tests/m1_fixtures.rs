@@ -9,7 +9,7 @@
 //! reds CI here instead of surfacing only when someone next runs the manual ritual on hardware.
 //!
 //! These are the *human*-ritual fixtures; the *automated* half of the M1 harness is
-//! `structure_golden.rs`. The two are separate binaries on purpose (one wire test, one fixture
+//! `structure_server.rs`. The two are separate binaries on purpose (one wire test, one fixture
 //! guard), so neither reads as the other's concern.
 
 use std::path::{Path, PathBuf};

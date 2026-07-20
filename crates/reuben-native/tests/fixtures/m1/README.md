@@ -1,17 +1,17 @@
 # M1 verification harness fixtures
 
 The checked-in fixtures for the M1 milestone's verification harness. They sit
-next to the golden live-server test they belong with, so the epic's M1 acceptance materials — the
+next to the live-server test they belong with, so the epic's M1 acceptance materials — the
 automated wire test and the two scripted human rituals — are one co-located set that reproduces run
 to run.
 
 ## The three parts
 
-**(a) Automated — the golden-pinned live-server test.** `../../structure_golden.rs` starts the real
+**(a) Automated — the live-server behavioral test.** `../../structure_server.rs` starts the real
 structure-channel server in-process (device-free, no cpal) and drives all four verbs over a raw TCP
-NDJSON client, pinning each response's exact wire bytes as goldens under `../../golden/`. This is
-the self-verifying deliverable; it runs in `cargo test --workspace`. Its companion
-`../../structure_server.rs` asserts the same channel's behavior field-by-field.
+NDJSON client, asserting each response's behavior field-by-field. This is the self-verifying
+deliverable; it runs in `cargo test --workspace`. (The wire framing and `reply`-tag contract are
+pinned at the unit level in `reuben-core`'s `coordinator/wire.rs`.)
 
 **(b) Scripted human — the restart-swap device-gap ritual.** `docs/mcp-swap-ritual.md` scripts the
 one thing CI cannot see: the actual cpal stream teardown/reopen and the audible ~100 ms restart gap.

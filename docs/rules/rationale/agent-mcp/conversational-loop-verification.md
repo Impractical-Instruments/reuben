@@ -1,4 +1,4 @@
-# Why: The conversational authoring loop is verified by a fixed menu — golden-pinned live-channel tests, Coordinator-direct behavioral swap checks, allocation-counting for RT-safety, and scripted human rituals where automation cannot reach.
+# Why: The conversational authoring loop is verified by a fixed menu — live-channel integration tests, Coordinator-direct behavioral swap checks, allocation-counting for RT-safety, and scripted human rituals where automation cannot reach.
 
 [Rule](../../agent-mcp.md#conversational-loop-verification)
 
@@ -9,9 +9,11 @@ trait to read it. So verification is a **fixed menu**, each item matched to what
 prove, reusing conventions the repo already has:
 
 - **The structure channel** gets a live-server integration test: stand up the real channel
-  in-process, drive a raw client through every verb, and **golden-pin** the response shapes (reusing
-  the bless-workflow). This proves the actual framing and verb dispatch, not just that the serde types
-  round-trip — a types-only test would pass a protocol bug like NDJSON line-splitting.
+  in-process, drive a raw client through every verb, and assert each response's shape
+  **field-by-field**. This proves the actual framing and verb dispatch, not just that the serde types
+  round-trip — a types-only test would pass a protocol bug like NDJSON line-splitting. The wire
+  framing and `reply`-tag names are additionally pinned as literals at the unit level in
+  `coordinator/wire.rs`, where a rename reds a fast test with no live server to stand up.
 - **Swap correctness** is proven **off-device**, Coordinator-direct: bypass the channel, invoke the
   same install-check the audio callback calls, render blocks, and assert **behaviorally** (a
   rewired-neighbor envelope keeps decaying smoothly with no re-attack; a voice-count bump resets the

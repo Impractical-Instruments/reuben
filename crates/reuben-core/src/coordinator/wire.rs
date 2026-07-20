@@ -276,6 +276,48 @@ mod tests {
         assert_eq!(v, serde_json::json!({ "verb": "get_diagnostics" }));
     }
 
+    #[test]
+    fn responses_speak_their_reply_tags() {
+        // The wire shape is the contract, not an implementation detail: every response is an
+        // object tagged by `reply`, named exactly as the channel names each answer. Pinned as
+        // literals here (the way requests pin their `verb` names) so a rename is a red unit test,
+        // not a silent break of the reuben-mcp client that keys off these tags.
+        let tag = |resp: &Response| -> String {
+            let v: serde_json::Value =
+                serde_json::from_str(&resp.to_ndjson()).expect("response as value");
+            v["reply"]
+                .as_str()
+                .expect("reply tag is a string")
+                .to_string()
+        };
+        assert_eq!(tag(&Response::Pong), "pong");
+        assert_eq!(tag(&Response::SwapReport(swap_report())), "swap_report");
+        assert_eq!(
+            tag(&Response::Document {
+                document: serde_json::json!({}),
+                content_hash: String::new(),
+            }),
+            "document"
+        );
+        assert_eq!(
+            tag(&Response::Diagnostics(diagnostics_report())),
+            "diagnostics"
+        );
+        assert_eq!(
+            tag(&Response::Conflict {
+                expected: String::new(),
+                actual: String::new(),
+            }),
+            "conflict"
+        );
+        assert_eq!(
+            tag(&Response::Error {
+                message: String::new(),
+            }),
+            "error"
+        );
+    }
+
     /// Same framing contract as [`assert_one_line_round_trip`], response side.
     fn assert_one_line_response_round_trip(resp: &Response) {
         let line = resp.to_ndjson();
