@@ -137,6 +137,108 @@ No rules here yet.
                 '<a id="<rule-slug>"></a>\n### x\n', encoding="utf-8")
             self.assertEqual(check_rules_links.collect_problems(str(root)), [])
 
+    # --- multi-rule-per-topic: exercise the anchor -> next-anchor span boundary ---
+    # Every fixture above has a single anchor, so the boundary branch
+    # (`next_anchor = anchors[idx+1][0] ...`) is only hit once real topics carry 2+ rules.
+    # These fixtures put 2+ anchors under one `## Rules` and assert no span bleeds into its
+    # neighbor.
+
+    def test_multi_rule_topic_all_valid_is_green(self):
+        body = """# Clock
+
+> How musical time works.
+
+## Rules
+
+<a id="tempo-is-immutable"></a>
+### Tempo is immutable within a block.
+
+[why](rationale/clock/tempo-is-immutable.md)
+
+<a id="block-is-atomic"></a>
+### A block renders atomically.
+
+[why](rationale/clock/block-is-atomic.md)
+
+## Terms
+
+- **Block** — a unit of time.
+"""
+        problems = self._problems(
+            {"clock.md": body},
+            rationales=[
+                "rationale/clock/tempo-is-immutable.md",
+                "rationale/clock/block-is-atomic.md",
+            ],
+        )
+        self.assertEqual(problems, [])
+
+    def test_multi_rule_first_missing_why_no_leakage(self):
+        # First rule has NO [why]; second is well-formed. Correct span logic stops the first
+        # rule at the second anchor, so the first counts 0 links -> exactly 1 problem, on the
+        # first rule only. A boundary bug (span bleeding into the next rule) would let the
+        # second rule's [why] satisfy the first and report 0 — this test catches that.
+        body = """# Clock
+
+> How musical time works.
+
+## Rules
+
+<a id="tempo-is-immutable"></a>
+### Tempo is immutable within a block.
+
+<a id="block-is-atomic"></a>
+### A block renders atomically.
+
+[why](rationale/clock/block-is-atomic.md)
+
+## Terms
+
+- **Block** — a unit of time.
+"""
+        problems = self._problems(
+            {"clock.md": body},
+            rationales=["rationale/clock/block-is-atomic.md"],
+        )
+        self.assertEqual(len(problems), 1)
+        self.assertIn("tempo-is-immutable", problems[0])
+        self.assertNotIn("block-is-atomic", problems[0])
+
+    def test_multi_rule_first_has_two_whys_no_leakage(self):
+        # First rule has TWO [why]; second is well-formed. Exactly 1 problem, attributed to the
+        # first rule — the second must not be dragged into the first's over-count, nor vice versa.
+        body = """# Clock
+
+> How musical time works.
+
+## Rules
+
+<a id="tempo-is-immutable"></a>
+### Tempo is immutable within a block.
+
+[why](rationale/clock/tempo-is-immutable.md)
+[why](rationale/clock/tempo-is-immutable.md)
+
+<a id="block-is-atomic"></a>
+### A block renders atomically.
+
+[why](rationale/clock/block-is-atomic.md)
+
+## Terms
+
+- **Block** — a unit of time.
+"""
+        problems = self._problems(
+            {"clock.md": body},
+            rationales=[
+                "rationale/clock/tempo-is-immutable.md",
+                "rationale/clock/block-is-atomic.md",
+            ],
+        )
+        self.assertEqual(len(problems), 1)
+        self.assertIn("tempo-is-immutable", problems[0])
+        self.assertNotIn("block-is-atomic", problems[0])
+
 
 if __name__ == "__main__":
     unittest.main()
