@@ -1,11 +1,11 @@
-//! Pan — equal-power stereo positioner (ADR-0026).
+//! Pan — equal-power stereo positioner.
 //!
 //! Splits one mono Signal into a left / right pair, placing it in the stereo field with an
 //! **equal-power** law (constant perceived loudness across the sweep; −3 dB at center). The
 //! two outputs are meant to be tapped directly as `channel: 0` / `channel: 1` of the logical
 //! master bus — the `output` op is vestigial for a stereo patch.
 //!
-//! Pan amount is a **Signal input** with a default as its unwired value (ADR-0031), so an LFO can
+//! Pan amount is a **Signal input** with a default as its unwired value, so an LFO can
 //! auto-pan or a static knob can park it.
 //!
 //! - input 0: `audio` (Signal) — the mono source.
@@ -17,7 +17,7 @@
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
+// Single-source contract: one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Pan {
     inputs:  { audio: f32_buffer,
                pan:   f32_buffer { -1.0..=1.0, default 0.0, "", lin } },
@@ -42,7 +42,7 @@ impl Operator for Pan {
         let n = io.frames();
 
         // `audio`/`pan` are Signal inputs — always a buffer (wired source or materialized default),
-        // one read path (ADR-0031). Resolve both once (see filter.rs): each read returns a
+        // one read path. Resolve both once (see filter.rs): each read returns a
         // block-lifetime slice, so they coexist with the output writes and avoid re-deriving the
         // slice per sample. The two writes stay in the loop — `io.write` takes `&mut io`, so
         // `OUT_LEFT` and `OUT_RIGHT` can't both be held; a split-borrow accessor is future work.
@@ -126,7 +126,7 @@ mod tests {
 
     #[test]
     fn pan_input_overrides_param() {
-        // A wired `pan` buffer says hard-left — the single read path (ADR-0031) follows it.
+        // A wired `pan` buffer says hard-left — the single read path follows it.
         let n = 8;
         let pan_in = vec![-1.0f32; n];
         let mut d = OpDriver::for_type(Pan::new(), SR);

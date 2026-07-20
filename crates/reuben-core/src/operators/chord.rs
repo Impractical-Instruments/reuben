@@ -1,5 +1,4 @@
-//! Chord — tap-to-play diatonic harmony: a root degree → stacked-thirds note Messages (ADR-0022,
-//! ADR-0030).
+//! Chord — tap-to-play diatonic harmony: a root degree → stacked-thirds note Messages.
 //!
 //! The gesture operator behind the V1.3 Chord-player Toy. Each button on the surface sends a `set`
 //! `Note` carrying a **scale-degree** chord root ([`Degree`](crate::vocab::pitch::Pitch::Degree)) and a
@@ -15,7 +14,7 @@
 //!
 //! It tracks the **set of held roots** so overlapping chords sound and release independently, and
 //! captures each root's tone count at press time, so a mid-hold `size` change can't orphan a
-//! note-off. Emits one note stream, upstream of the Voicer that fans it out to voices (ADR-0032).
+//! note-off. Emits one note stream, upstream of the Voicer that fans it out to voices.
 //!
 //! - input 0: `set` (`Note`) — a degree note; velocity > 0 = note-on, else note-off. The degree
 //!   is the chord root.
@@ -31,7 +30,7 @@ use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 use crate::vocab::pitch::{Note, Pitch};
 
-// Single-source contract (ADR-0025/0030). `set` is a `Note` event port; `size` a held `Float`.
+// `set` is a `Note` event port; `size` a held `Float`.
 crate::operator_contract!(Chord {
     inputs:  { set:  note,
                size: f32 { 3.0..=4.0, default 3.0, "tones", lin } },

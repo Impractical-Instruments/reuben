@@ -1,7 +1,7 @@
 //! Output — the master sink.
 //!
 //! Passes its input through to its output so the Render loop can tap it as a master
-//! channel (ADR-0009). Mixing many sources / n-channel routing lands later; for the
+//! channel. Mixing many sources / n-channel routing lands later; for the
 //! "first sound" run it is a single-channel passthrough.
 //!
 //! - input 0: `audio` (`Buffer`) — per-sample audio in (the wired master bus).
@@ -10,9 +10,9 @@
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025/0030): one declaration -> typed IN_/OUT_ handles + the
+// Single-source contract: one declaration -> typed IN_/OUT_ handles + the
 // Descriptor. Was the one hand-written descriptor; folded into the macro with the typed-handle
-// switch (ADR-0037) so its ports get handles like every other operator.
+// switch so its ports get handles like every other operator.
 crate::operator_contract!(Output {
     inputs:  { audio: f32_buffer },
     outputs: { audio: f32_buffer },

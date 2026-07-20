@@ -1,4 +1,4 @@
-//! `modulo` — `out = a mod b` (Euclidean), per sample (ADR-0029, ADR-0017, ADR-0033).
+//! `modulo` — `out = a mod b` (Euclidean), per sample.
 //!
 //! The sanctioned way to **wrap a stream into a range**: fold a rising ramp into `[0, b)`, derive a
 //! repeating pattern, keep an accumulator bounded. A dense `Float`→`Float` op whose arithmetic is the
@@ -20,7 +20,7 @@
 //! - input 1: `b` (`Float`) — the modulus. Unwired default `1`; a `0` modulus yields `0`.
 //! - output 0: `out` — `a.rem_euclid(b)`, in `[0, b)` for `b > 0`.
 
-/// The op's scalar math, written once (ADR-0029 pure-fn seam) and generic over the number type: a
+/// The op's scalar math, written once (the pure-fn seam) and generic over the number type: a
 /// Euclidean modulo. The `b == 0` check is `modulo`'s **op-local** guard against a `NaN` (or integer
 /// remainder panic) poisoning the graph; it lives here. Euclidean (vs `%`) so the result is always
 /// non-negative for a positive modulus. `Zero` supplies the guard, `Euclid` the wrap.
@@ -33,7 +33,7 @@ fn mod_fn<T: num_traits::Zero + num_traits::Euclid>(a: T, b: T) -> T {
     }
 }
 
-// One declaration -> ModuloF32Value + ModuloF32Signal (ADR-0033). `b` (the modulus) defaults to 1,
+// One declaration -> ModuloF32Value + ModuloF32Signal. `b` (the modulus) defaults to 1,
 // so an unwired modulus wraps `a` into the unit interval `[0, 1)` rather than dividing by zero.
 crate::number_operator_contract!(Modulo {
     numbers:  [f32],

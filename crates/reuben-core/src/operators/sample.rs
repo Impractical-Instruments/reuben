@@ -1,4 +1,4 @@
-//! Sample player — a one-shot trigger sampler (ADR-0016).
+//! Sample player — a one-shot trigger sampler.
 //!
 //! The first operator to depend on **external decoded audio**: a [`ResourceStore`] built at
 //! load time and bound through [`Operator::bind_resources`], read on the RT path through the
@@ -6,9 +6,9 @@
 //!
 //! It slots into the **same seam as the oscillator**: it lives inside a voice sub-patch, reading
 //! the voice's `freq`/`gate` Signals. Polyphony and steal-oldest come for free from the Voicer
-//! hosting one sub-patch per voice (ADR-0032).
+//! hosting one sub-patch per voice.
 //!
-//! All inputs are Value ports (ADR-0031), each owning its unwired default so `/sample/root 60` needs
+//! All inputs are Value ports, each owning its unwired default so `/sample/root 60` needs
 //! no upstream node; each is read held (the engine block-slices at changes), with `gate` edge-detected
 //! at the change frame.
 //!
@@ -34,7 +34,7 @@ use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 use crate::resources::{ResolvedRefs, ResourceStore, SampleId};
 
-// Single-source contract (ADR-0025): one declaration -> IN_/OUT_/C_ consts + Descriptor, no drift.
+// Single-source contract: one declaration -> IN_/OUT_/C_ consts + Descriptor, no drift.
 crate::operator_contract!(SamplePlayer {
     type_name: "sample",
     inputs:    { freq:    f32 { 0.0..=20000.0, default 0.0, "Hz", lin },
@@ -82,7 +82,7 @@ impl Operator for SamplePlayer {
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
         let engine_sr = io.sample_rate();
-        // Block-rate controls: read once at the top (ADR-0030 `Float` inputs, read held via `io.read`).
+        // Block-rate controls: read once at the top (`Float` inputs, read held via `io.read`).
         let root_hz = Self::midi_hz(io.read(IN_ROOT));
         let gain = io.read(IN_GAIN);
         let start_norm = io.read(IN_START).clamp(0.0, 1.0);
@@ -112,7 +112,7 @@ impl Operator for SamplePlayer {
         let mut rate = self.rate;
         let mut playing = self.playing;
 
-        // `gate`/`freq` are held Values (ADR-0031): the engine block-slices at every change, so this
+        // `gate`/`freq` are held Values: the engine block-slices at every change, so this
         // call sees one constant gate level. Detect the rising edge once at frame 0 (the slice's
         // frame 0 *is* the change frame, so the retrigger stays sample-accurate); `prev_gate` carries
         // the level across slices/blocks. Reading the held values here ends the immutable borrow
@@ -158,7 +158,7 @@ impl Operator for SamplePlayer {
 
     fn spawn(&self) -> Box<dyn Operator> {
         // Carry the shared resource binding forward; reset per-voice playback state so each
-        // voice triggers independently (ADR-0016).
+        // voice triggers independently.
         Box::new(Self {
             store: self.store.clone(),
             sample: self.sample,
@@ -249,7 +249,7 @@ mod tests {
         d.render(n).output(OUT_AUDIO).to_vec()
     }
 
-    /// Drive the now-held-Value `gate` from a dense gate buffer (ADR-0031): the gate is fed by edges,
+    /// Drive the now-held-Value `gate` from a dense gate buffer: the gate is fed by edges,
     /// not a per-sample buffer. Push the first frame unconditionally (a continuous render drops the
     /// latch the prior render left set; an unchanged value dedups), then a change at each 0.5
     /// threshold crossing.

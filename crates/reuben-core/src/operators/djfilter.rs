@@ -12,7 +12,7 @@
 //! an even musical sweep rather than bunching up at the top. One shared Cytomic SVF core
 //! produces both the low-pass and high-pass taps; `position`'s sign selects which one is heard.
 //!
-//! Port types (ADR-0030): every control is a **`F32` input**, each owning its unwired default.
+//! Port types: every control is a **`F32` input**, each owning its unwired default.
 //! When nothing is wired the engine materializes the input from its latched default (so a control
 //! surface can sweep the knob via `/djfilter/position`, bit-identical to the old param behavior);
 //! when an LFO/envelope is wired the source buffer passes through and sweeps the port audio-rate.
@@ -33,7 +33,7 @@ use crate::descriptor::Descriptor;
 use crate::dsp::svf::{Svf, SvfCoeffs};
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
+// Single-source contract: one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Djfilter {
     inputs:  { audio: f32_buffer,
                position:  f32_buffer { -1.0..=1.0,     default 0.0,     "",   lin },
@@ -96,7 +96,7 @@ impl Operator for Djfilter {
         let hp_end = io.read(IN_HP_END);
 
         // `position` is a Signal input — always a buffer (wired source or materialized default),
-        // one read path (ADR-0031). Mode + coefficients are recomputed only when `position`
+        // one read path. Mode + coefficients are recomputed only when `position`
         // actually changes from the previous sample — `target`/`coeffs` are pure, so reusing the
         // cache on an unchanged knob is bit-identical to recomputing it, and a settled or slow knob
         // costs one compare per sample instead of a `tan()`/`powf()`. The cache lives in this call,
@@ -108,8 +108,8 @@ impl Operator for Djfilter {
         let mut c = SvfCoeffs::default();
         // Resolve the per-sample buffers once, outside the loop: a per-iteration `io.read`/
         // `io.write` re-derives the slice from `io`'s input/output tables every sample (a table
-        // index + `Option` unwrap per access) — the ADR-0037 handle layer stopped LLVM hoisting
-        // it. Binding flat locals once restores the pre-handle codegen (ADR-0037 perf fix).
+        // index + `Option` unwrap per access) — the handle layer stopped LLVM hoisting
+        // it. Binding flat locals once restores the pre-handle codegen (perf fix).
         let position = io.read(IN_POSITION);
         let audio = io.read(IN_AUDIO);
         let out = io.write(OUT_AUDIO);
@@ -267,7 +267,7 @@ mod tests {
     #[test]
     fn wired_position_matches_materialized_default() {
         // A flat wired position Float must produce exactly the same output as the same value held
-        // as the input's materialized default — there is one read path now (ADR-0031), so a
+        // as the input's materialized default — there is one read path now, so a
         // constant wired knob equals the held latch.
         let n = 4096;
         let input = sine(6_000.0, n);

@@ -1,4 +1,4 @@
-//! Envelope — a gated ADSR **generator** that emits a linear control signal (ADR-0027).
+//! Envelope — a gated ADSR **generator** that emits a linear control signal.
 //!
 //! Following the modular-synth split (issue #40), the envelope is a pure EG: it generates the
 //! ADSR contour as **linear CV** in `[0, 1]` and emits it on its output — it does **not** apply
@@ -7,7 +7,7 @@
 //! exponential-style amplitude decay) and into a `mul` against the audio. Keeping the EG linear
 //! makes it the flexible primitive — linear *or* any curve is a choice of downstream op.
 //!
-//! All inputs are Value ports (ADR-0031), each owning its unwired default and read held (the engine
+//! All inputs are Value ports, each owning its unwired default and read held (the engine
 //! block-slices at each change). `gate` is edge-detected at the slice's frame 0 (the change frame),
 //! so the A/R trigger stays sample-accurate; an unwired gate reads 0.
 //!
@@ -19,14 +19,14 @@
 //! - output 0: `cv` (`Buffer`) — the ADSR level contour, linear `[0, 1]`.
 //! - output 1: `active` (`Float`) — a held gate: `1.0` from the note-on through the whole release
 //!   tail, `0.0` once the level reaches zero and the envelope is fully idle. This is the canonical
-//!   **voice-liveness** source ADR-0032's Voicer reads to know a voice is truly finished (not merely
+//!   **voice-liveness** source the Voicer reads to know a voice is truly finished (not merely
 //!   gate-off), so a voice in its release tail is never stolen while an idle one exists. Emitted as a
 //!   sparse `MsgWriter` change (one event per true↔false transition), like `euclid.gate`.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
+// Single-source contract: one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Envelope {
     inputs:  { gate:    f32 { 0.0..=1.0, default 0.0, "", lin },
                attack:  f32 { 0.001..=5.0, default 0.01, "s", exp },
@@ -65,7 +65,7 @@ pub struct Envelope {
     /// level *at that instant* so the level always falls to 0 in `release` seconds — regardless
     /// of `sustain`, and correct when the gate falls mid-decay. Persists across blocks.
     release_step: f32,
-    /// Last value emitted on the `active` output (ADR-0032 voice-liveness): `true` from note-on
+    /// Last value emitted on the `active` output (voice-liveness): `true` from note-on
     /// through the release tail, `false` once Idle. Persists across blocks so the held `MsgWriter`
     /// value only changes on a true↔false transition (deduped, sparse).
     active: bool,
@@ -99,7 +99,7 @@ impl Operator for Envelope {
 
         // ADSR times are `Float` inputs, read once at block rate as the held (ZOH) value via
         // `io.read` (each handle carrying its declared default) — the shape is block-rate, exactly
-        // as the old params were (ADR-0030).
+        // as the old params were.
         let sustain = io.read(IN_SUSTAIN).clamp(0.0, 1.0);
         let attack_step = per_sample_step(io.read(IN_ATTACK), sample_rate);
         let decay_step = per_sample_step(io.read(IN_DECAY), sample_rate) * (1.0 - sustain);
@@ -108,7 +108,7 @@ impl Operator for Envelope {
         // release lasts `release` seconds from wherever the level is — never frozen at sustain=0.
         let release_rate = per_sample_step(io.read(IN_RELEASE), sample_rate);
 
-        // `gate` is a held Value (ADR-0031): the engine block-slices at every gate change, so this
+        // `gate` is a held Value: the engine block-slices at every gate change, so this
         // call sees one constant level — read it once and detect the edge against the flag held
         // across the previous slice. The slice's frame 0 *is* the change frame (block-absolute), so
         // the A/R trigger is sample-accurate. An unwired gate reads 0 (gate-off).
@@ -159,7 +159,7 @@ impl Operator for Envelope {
 
             io.write(OUT_CV)[i] = self.level;
 
-            // Voice-liveness (ADR-0032): active for the whole contour incl. the release tail, idle
+            // Voice-liveness: active for the whole contour incl. the release tail, idle
             // only at Stage::Idle (level == 0). Emit a sparse held change on each transition; the
             // MsgWriter dedups, so an unchanging block emits nothing and the latch holds.
             let now_active = self.stage != Stage::Idle;
@@ -199,7 +199,7 @@ mod tests {
         d.render(gate.len()).output(OUT_CV).to_vec()
     }
 
-    /// Drive the now-held-Value `gate` from a dense gate buffer (ADR-0031): the gate is fed by edges,
+    /// Drive the now-held-Value `gate` from a dense gate buffer: the gate is fed by edges,
     /// not a per-sample buffer. Push the first frame's level unconditionally (so a continuous render
     /// drops the latch the previous render left set; an unchanged value dedups), then a change at
     /// each frame the buffer crosses the 0.5 threshold.
@@ -356,7 +356,7 @@ mod tests {
 
     #[test]
     fn active_tracks_liveness_through_the_release_tail() {
-        // ADR-0032 voice-liveness: `active` goes 1.0 at note-on and stays high through the whole
+        // Voice-liveness: `active` goes 1.0 at note-on and stays high through the whole
         // release tail, dropping to 0.0 only once the level reaches zero (fully idle). Sparse: one
         // emit per transition.
         let attack = 0.005;
@@ -393,7 +393,7 @@ mod tests {
         // Fast repeated notes on a mono line: the gate rises again while the envelope is
         // mid-Release. The retrigger must flip the stage back to Attack and ramp from the level
         // *at that instant* — never reset to 0 (an audible click) — so the top arrives in less
-        // than a full attack time. And `active` (ADR-0032 voice-liveness) must emit nothing at
+        // than a full attack time. And `active` (voice-liveness) must emit nothing at
         // the retrigger: the envelope never reached Idle, so the held MsgWriter value never
         // transitions — the Voicer keeps seeing one continuously-live voice.
         let attack = 0.01; // 480 samples

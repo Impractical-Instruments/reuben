@@ -1,4 +1,4 @@
-//! `integrate` — discrete running sum, `out[i] = Σ in[0..=i]`, per sample (ADR-0029).
+//! `integrate` — discrete running sum, `out[i] = Σ in[0..=i]`, per sample.
 //!
 //! A dense `Float`→`Float` op with a **constant one-sample `dt`**: the running Riemann sum of the
 //! input, accumulated across block boundaries. The inverse of [`differentiate`](super::differentiate)
@@ -15,13 +15,13 @@
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025/0029/0030): `in` is a materialized `Float` (default 0).
+// Single-source contract: `in` is a materialized `Float` (default 0).
 crate::operator_contract!(IntegrateF32Signal {
     inputs:  { in: f32_buffer { min..=max, default 0.0, "", lin } },
     outputs: { out: f32_buffer },
 });
 
-/// The op's scalar math, written once (ADR-0029 pure-fn seam): one accumulation step.
+/// The op's scalar math, written once (the pure-fn seam): one accumulation step.
 #[inline]
 fn accumulate(acc: f32, cur: f32) -> f32 {
     acc + cur

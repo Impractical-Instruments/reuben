@@ -8,7 +8,7 @@
 //! block-slices and never drifts (phase held in f64 like the Clock). Designed to drive
 //! another operator's Signal input — e.g. an oscillator's `freq` — for a vibrato/siren drone.
 //!
-//! `rate`/`depth`/`center` are Value inputs (ADR-0031): read held (block-sliced at changes), so a
+//! `rate`/`depth`/`center` are Value inputs: read held (block-sliced at changes), so a
 //! `/lfo/rate` change takes effect at the exact sample of the change and the phase stays continuous
 //! across the cut.
 //!
@@ -21,7 +21,7 @@ use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 use crate::wavetable::{shared_sine, Wavetable};
 
-// Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
+// Single-source contract: one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Lfo {
     inputs:  { rate:   f32 { 0.01..=20.0,        default 5.0,   "Hz", exp },
                depth:  f32 { 0.0..=1000.0,       default 10.0,  "",   lin },
@@ -36,7 +36,7 @@ pub struct Lfo {
     phase: f64,
     /// Shared single-cycle sine table — the modulation shape is a phase-indexed lookup with linear
     /// interpolation rather than a per-sample `sin()` call. Resolved on the cold path so `process`
-    /// only ever reads the already-built table (ADR-0019 RT-safe render).
+    /// only ever reads the already-built table (RT-safe render).
     sine: &'static Wavetable,
 }
 
@@ -212,7 +212,7 @@ mod tests {
 
     #[test]
     fn rate_change_mid_render_is_phase_continuous() {
-        // The module-doc invariant for the ADR-0031 Value inputs: a `/lfo/rate` change
+        // The module-doc invariant for the Value inputs: a `/lfo/rate` change
         // block-slices and takes effect at the exact sample of the change, with the phase
         // continuous across the cut — the modulation speeds up in place, it never jumps.
         // depth 1 / center 0 makes the continuity bound exact: a unit sine at 8 Hz moves at

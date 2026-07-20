@@ -1,7 +1,7 @@
-//! Voicer — hosts N voice sub-patches and plays incoming notes across them (ADR-0032).
+//! Voicer — hosts N voice sub-patches and plays incoming notes across them.
 //!
-//! A **voice is a standalone Instrument patch** referenced by path (an instrument-resource, ADR-0032
-//! §2) with a declared `interface` boundary (`freq`/`gate` in, `audio`/`active` out). The loader
+//! A **voice is a standalone Instrument patch** referenced by path (an instrument-resource)
+//! with a declared `interface` boundary (`freq`/`gate` in, `audio`/`active` out). The loader
 //! builds the patch `voices` times and binds the graphs via [`Operator::bind_voices`]; at
 //! [`Operator::on_instantiate`] (where the [`AudioConfig`] is fixed) the Voicer turns each into a
 //! sub-[`Plan`] plus its own pre-allocated arena. Each block the Voicer:
@@ -16,13 +16,13 @@
 //! 4. sums the voices' `audio` into its single audio output, in fixed voice-index order.
 //!
 //! There is no Lane fan-out: the Voicer is an ordinary operator whose polyphony lives in the hosted
-//! sub-plans (ADR-0032 supersedes the retired per-Lane replication model).
+//! sub-plans (supersedes the retired per-Lane replication model).
 //!
-//! - input 0: `notes` (`Note`) — note events. Velocity 0 is a note-off (ADR-0030).
+//! - input 0: `notes` (`Note`) — note events. Velocity 0 is a note-off.
 //! - input 1: `harmony` (`Harmony`, held) — the tonal context degree notes resolve against.
 //! - output 0: `audio` (`f32_buffer`) — the summed audio of all hosted voices.
 //! - param 0: `voices` — voice-pool size (read by the loader to decide how many sub-patches to build).
-//! - resource `voice` — the voice patch (instrument-resource, ADR-0032 §2).
+//! - resource `voice` — the voice patch (instrument-resource).
 
 use crate::config::AudioConfig;
 use crate::descriptor::Descriptor;
@@ -33,12 +33,12 @@ use crate::plan::{Plan, PlanError};
 use crate::render::{render_plan, RenderScratch, SerialExecutor};
 use crate::vocab::pitch::Pitch;
 
-// Single-source contract (ADR-0025/0030/0032): `notes` is a `Note` event port, `harmony` a held
+// Single-source contract: `notes` is a `Note` event port, `harmony` a held
 // `Harmony`; the one output `audio` is the summed voice mix. `voices` sizes the hosted voice pool —
 // the loader reads it to decide how many voice sub-patches to build, so it is the operator's
-// instantiate-time `Constant` (ADR-0028), declared via `constant: voices`. Polyphony is hosted
+// instantiate-time `Constant`, declared via `constant: voices`. Polyphony is hosted
 // internally (N voice sub-plans summed into `audio`), not fanned out across engine Lanes — the Lane
-// model is gone (ADR-0032).
+// model is gone.
 crate::operator_contract!(Voicer {
     inputs:  { notes: note, harmony: harmony },
     outputs: { audio: f32_buffer },
@@ -66,7 +66,7 @@ struct Voice {
     pitch: Pitch,
     /// Whether the voice is currently holding a note (gate high).
     on: bool,
-    /// Whether the voice is still producing sound (ADR-0032 §5): `true` through the release tail,
+    /// Whether the voice is still producing sound: `true` through the release tail,
     /// `false` once fully idle. Fed back post-render from the voice's `active` interface output (or,
     /// for a patch without one, falls back to `on`). Keeps a tailing voice out of the free pool.
     active: bool,
@@ -86,7 +86,7 @@ impl Default for Voice {
     }
 }
 
-/// The fixed-size note-allocation pool (ADR-0032 §5): assign prefers a **truly free** voice
+/// The fixed-size note-allocation pool: assign prefers a **truly free** voice
 /// (gate-off *and* its release tail finished — `!on && !active`) and otherwise steals the oldest;
 /// release clears the oldest voice holding the note. Keying free-ness on `active` (not just gate)
 /// stops a still-ringing voice being stolen while a silent one exists. The musical brain, carried
@@ -159,7 +159,7 @@ struct VoiceSlot {
 
 #[derive(Default)]
 pub struct Voicer {
-    /// Voice patch graphs bound at load (ADR-0032 §2); drained into `slots` at `on_instantiate`.
+    /// Voice patch graphs bound at load; drained into `slots` at `on_instantiate`.
     graphs: Vec<Graph>,
     /// Note-allocation pool (musical state), parallel by index to `slots`.
     pool: VoicePool,
@@ -182,7 +182,7 @@ pub struct Voicer {
     /// Per-voice "got an event this block" flag (parallel to `pool.voices`), so a voice toggled
     /// on→off within one block still renders its blip even though it ends idle. Cleared per block.
     touched: Vec<bool>,
-    /// Arena buffer index of each voice plan's `audio` interface output (ADR-0032 §4), resolved
+    /// Arena buffer index of each voice plan's `audio` interface output, resolved
     /// once (all voice plans are identical copies). `None` ⇒ no such output; fall back to `master[0]`.
     audio_buf: Option<usize>,
     /// [`Plan::captured`](crate::plan::Plan::captured) slot of each voice plan's `active` interface
@@ -246,7 +246,8 @@ impl Operator for Voicer {
         let block = config.block_size;
         let mut slots = Vec::with_capacity(graphs.len());
         for g in graphs {
-            // Hosted voice plans get **no input-master plumbing** (ADR-0038 §3): the loader's
+            // Hosted voice plans get **no input-master plumbing** (see rules: composition-operators):
+            // the loader's
             // voice-resource pass cleared each copy's channel bindings (hosted inertness is
             // enforced at that one altitude, for every host), so `Plan::instantiate` derives
             // `config.input_channels == 0` and builds no input taps here. Even if a binding
@@ -340,7 +341,7 @@ impl Operator for Voicer {
         let Some(scratch) = scratch.as_mut() else {
             return;
         };
-        // Skip rendering a fully-idle voice (ADR-0032 §5): gate-off, release tail done, untouched
+        // Skip rendering a fully-idle voice: gate-off, release tail done, untouched
         // this block. Only when `active` is observable — without it we can't know the tail, so we
         // render every voice (today's behaviour) to avoid cutting a release.
         let can_skip = active_cap.is_some();
@@ -375,13 +376,13 @@ impl Operator for Voicer {
                 executor,
                 &msg_buf[..count],
                 n,
-                // No input master for a hosted plan (ADR-0038 §3) — and none exists: the
+                // No input master for a hosted plan — and none exists: the
                 // voice graph's channel bindings were cleared at `on_instantiate`.
                 &[],
                 master,
                 outbound,
             );
-            // Read this voice's audio from its `audio` interface output buffer (ADR-0032 §4),
+            // Read this voice's audio from its `audio` interface output buffer,
             // falling back to the master tap for a patch without one (e.g. driven bare).
             let audio = match *audio_buf {
                 Some(b) => slot.arena.get(b),
@@ -392,7 +393,7 @@ impl Operator for Voicer {
                     *o += *s;
                 }
             }
-            // Refresh liveness from the voice's `active` interface output (held Value, ADR-0032 §5);
+            // Refresh liveness from the voice's `active` interface output (held Value);
             // a patch without one keys liveness on the gate, the pre-`active` behaviour.
             pool.voices[i].active = match *active_cap {
                 Some(c) => slot.plan.captured.get(c).copied().unwrap_or(0.0) > 0.5,

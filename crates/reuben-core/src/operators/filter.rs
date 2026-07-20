@@ -1,6 +1,6 @@
-//! Filter — state-variable filter; lowpass / highpass / bandpass (V1.3 `mode`, ADR-0022).
+//! Filter — state-variable filter; lowpass / highpass / bandpass (V1.3 `mode`).
 //!
-//! Port types (ADR-0030): `cutoff` and `resonance` are **`F32` inputs**, each owning its
+//! Port types: `cutoff` and `resonance` are **`F32` inputs**, each owning its
 //! unwired default. When nothing is wired the engine materializes the input from its latched
 //! default (so `/filter/cutoff 3000` needs no upstream node, bit-identical to the old param
 //! behavior); when an LFO or envelope is wired the source buffer passes through and sweeps the
@@ -9,7 +9,7 @@
 //!
 //! `mode` is an **`Enum` input** [`FilterMode`] {`Lp`, `Hp`, `Bp`}: a held, live-switchable choice
 //! read via `io.read(IN_MODE)`. The TPT / Cytomic SVF computes all three responses from the
-//! same integrator state, so `mode` selects the output tap (ADR-0022): `lp = v2`, `bp = v1`,
+//! same integrator state, so `mode` selects the output tap: `lp = v2`, `bp = v1`,
 //! `hp = x - k·bp - lp`. `Lp` is the default and bit-identical to the prior lowpass-only filter.
 //!
 //! - input 0: `audio` (`Buffer`) — the signal to filter.
@@ -23,12 +23,12 @@ use crate::dsp::svf::{Svf, SvfCoeffs, SvfTaps};
 use crate::operator::{Io, Operator};
 use crate::vocab::FilterMode;
 
-// Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts and the Descriptor;
-// `mode` references the shared `FilterMode` vocab enum (no per-op type), so no drift.
+// Single-source contract: one declaration -> IN_/OUT_ consts and the Descriptor; `mode`
+// references the shared `FilterMode` vocab enum (no per-op type), so no drift.
 crate::operator_contract!(Filter {
     inputs:  { audio: f32_buffer,
-               // signal control with a scalar default (ADR-0031 decision (a)): knob-set/unwired it
-               // materializes from 1 kHz, yet an LFO/envelope Signal wires straight in.
+               // signal control with a scalar default: knob-set/unwired it materializes from
+               // 1 kHz, yet an LFO/envelope Signal wires straight in.
                cutoff:    f32_buffer { 20.0..=20_000.0, default 1_000.0, "Hz", exp },
                resonance: f32_buffer { 0.0..=1.0,       default 0.2,     "",   lin },
                mode:      enum(FilterMode) },
@@ -117,7 +117,7 @@ impl Operator for Filter {
         let mut svf = self.svf;
 
         // `cutoff`/`resonance` are Signal inputs — always a buffer (wired source or materialized
-        // default), one read path (ADR-0031). When neither changed this block (`varying` false,
+        // default), one read path. When neither changed this block (`varying` false,
         // both held), compute coefficients once — the old fast path, and the `lp` tap is
         // bit-identical to the prior param-only filter.
         if !io.varying(IN_CUTOFF) && !io.varying(IN_RESONANCE) {
@@ -129,8 +129,8 @@ impl Operator for Filter {
             // Resolve the audio slice and output buffer once, outside the loop. A per-sample
             // `io.read(IN_AUDIO)[i]` / `io.write(OUT_AUDIO)[i]` re-derives the slice from `io`'s
             // input/output tables every iteration (a table index + `Option` unwrap per access);
-            // the ADR-0037 handle layer stopped LLVM from hoisting that out. Binding two flat
-            // locals once restores the pre-handle codegen (ADR-0037 perf fix).
+            // the handle layer stopped LLVM from hoisting that out. Binding two flat locals once
+            // restores the pre-handle codegen.
             let audio = io.read(IN_AUDIO);
             let out = io.write(OUT_AUDIO);
             match mode {
@@ -258,7 +258,7 @@ mod tests {
     #[test]
     fn constant_cutoff_buffer_matches_held_default() {
         // A constant cutoff buffer must produce exactly the same output as the same value held as
-        // the input's materialized default — there is one read path now (ADR-0031), so a flat
+        // the input's materialized default — there is one read path now, so a flat
         // wired control equals the held latch.
         let sr = 48_000.0;
         let n = 4096;
@@ -401,7 +401,7 @@ mod tests {
         }
     }
 
-    // --- V1.3 `mode` param: lowpass / highpass / bandpass (ADR-0022) ---
+    // --- V1.3 `mode` param: lowpass / highpass / bandpass ---
 
     #[test]
     fn default_mode_is_bit_identical_to_lowpass() {

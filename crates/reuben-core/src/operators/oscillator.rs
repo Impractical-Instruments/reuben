@@ -5,7 +5,7 @@
 //!   changes at their frame; when wired (an LFO, a Voicer) the source buffer passes through, so
 //!   `io.read(IN_FREQ)` is always a buffer.
 //! - input 1: `waveform` (`Enum` [`Waveform`] {Sine, Saw}) — held, live-switchable choice read
-//!   via `io.read(IN_WAVEFORM)` (ADR-0030).
+//!   via `io.read(IN_WAVEFORM)`.
 //! - output 0: `audio` (`Buffer`).
 
 use crate::descriptor::Descriptor;
@@ -13,10 +13,9 @@ use crate::operator::{Io, Operator};
 use crate::vocab::Waveform;
 use crate::wavetable::{shared_sine, Wavetable};
 
-// Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts and the Descriptor.
-// `freq` is a signal control with a scalar default (ADR-0031 decision (a)): knob-set or unwired it
-// materializes from 440 Hz, yet an LFO/envelope Signal wires straight in. `waveform` references the
-// shared `Waveform` vocab enum.
+// Single-source contract: one declaration -> IN_/OUT_ consts and the Descriptor. `freq` is a
+// signal control with a scalar default: knob-set or unwired it materializes from 440 Hz, yet an
+// LFO/envelope Signal wires straight in. `waveform` references the shared `Waveform` vocab enum.
 crate::operator_contract!(Oscillator {
     inputs:  { freq:     f32_buffer { 20.0..=20_000.0, default 440.0, "Hz", exp },
                waveform: enum(Waveform) },
@@ -28,7 +27,7 @@ pub struct Oscillator {
     phase: f32,
     /// Shared single-cycle sine table — the sine waveform is a phase-indexed lookup with linear
     /// interpolation rather than a per-sample `sin()` call. Resolved here on the cold path so
-    /// `process` only ever reads the already-built table (ADR-0019 RT-safe render).
+    /// `process` only ever reads the already-built table (RT-safe render).
     sine: &'static Wavetable,
 }
 
@@ -61,12 +60,12 @@ impl Operator for Oscillator {
             0.0
         };
 
-        // Waveform is a held `Enum` choice (ADR-0030) — one read, constant for this call.
+        // Waveform is a held `Enum` choice — one read, constant for this call.
         let is_saw = io.read(IN_WAVEFORM) == Waveform::Saw;
 
         // `freq` is a Signal input, always a length-n buffer (wired source or materialized
-        // latch — the buffer-presence invariant, ADR-0037): one read path, no wired/unwired
-        // branch. The slice borrows the arena, not `io`, so it stays valid alongside the
+        // latch — the buffer-presence invariant): one read path, no wired/unwired branch.
+        // The slice borrows the arena, not `io`, so it stays valid alongside the
         // mutable output borrow below.
         let freq = io.read(IN_FREQ);
         let mut phase = self.phase;
@@ -174,8 +173,8 @@ mod tests {
         );
     }
 
-    /// (1b) ADR-0031 decision (a): `freq` is now a signal port (`f32_buffer`) *carrying* a scalar
-    /// default. With **no** override wired or knob-set, the engine must still materialize the buffer
+    /// (1b) `freq` is a signal port (`f32_buffer`) *carrying* a scalar default. With **no** override
+    /// wired or knob-set, the engine must still materialize the buffer
     /// from that default (440 Hz) — not an empty/zero buffer. Drive it without `set(IN_FREQ, ..)` and
     /// assert the same ~440 tone.
     #[test]
@@ -359,7 +358,7 @@ mod tests {
         rising as f32 / (buf.len() - 1) as f32
     }
 
-    /// (9) Enum delivery, end-to-end (ADR-0030). The default `waveform` is `Sine`; a live
+    /// (9) Enum delivery, end-to-end. The default `waveform` is `Sine`; a live
     /// `/osc/waveform "Saw"` message (resolved by symbol through the engine's enum route + latch)
     /// switches the shape to a near-monotonic ramp, and the latch persists into the next block.
     #[test]
@@ -396,7 +395,7 @@ mod tests {
 
     /// (10) Wired `freq` — a per-sample-varying source buffer actually drives the pitch. The module
     /// doc promises the wired case passes the source buffer through (`io.read(IN_FREQ)` is the
-    /// source, not the materialized latch — ADR-0031 decision (a), the vibrato/FM contract), and
+    /// source, not the materialized latch — the vibrato/FM contract), and
     /// every other test here feeds `freq` via `set`/`push` (the latch path). `drive` is the
     /// wired-buffer seam: feed 220 Hz for the first half-second and 880 Hz for the second, and
     /// count crossings per half. Any constant-frequency fallback fails at least one half — the

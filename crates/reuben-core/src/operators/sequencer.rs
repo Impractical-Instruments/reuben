@@ -1,5 +1,4 @@
-//! Sequencer — a clock-driven step sequencer that emits note Messages (V1.1, ADR-0014; V1.3
-//! gate-mode + 16 steps, ADR-0022; unified model, ADR-0030).
+//! Sequencer — a clock-driven step sequencer that emits note Messages.
 //!
 //! Walks a fixed pattern, one step per beat, driven by the [`Clock`]'s beat `gate`: each rising
 //! edge of the clock input advances to the next step (wrapping at `length`) and **emits a degree
@@ -8,16 +7,16 @@
 //! [`Voicer`](crate::operators::Voicer) (`sequencer.degrees → voicer.notes`) and the sequence is
 //! polyphony-, transpose-, and snap-composable, exactly like notes arriving from outside.
 //!
-//! Unified model (ADR-0030): `length`, `step1`..`step16`, and `pitch` are **held `Float` inputs**,
+//! `length`, `step1`..`step16`, and `pitch` are **held `Float` inputs**,
 //! each owning its unwired default — read via [`Io::read`]. `gate_mode` is a held **`enum`** input
 //! [`GateMode`] {`Degree`, `Gate`}. `clock` is a **`buffer`** input read per-sample via
 //! [`Io::read`] for edge detection.
 //!
-//! Two step interpretations, selected by `gate_mode` (ADR-0022):
+//! Two step interpretations, selected by `gate_mode`:
 //! - **degree mode** (`Degree`, default): each `stepN` *is* the scale degree to play that beat; a
 //!   value below 0 is a rest.
 //! - **gate mode** (`Gate`): each `stepN` reads as a **boolean on/off** (≥ 0.5 = hit) and every
-//!   hit emits the single `pitch` degree. This is the groove-box step grid (ADR-0022).
+//!   hit emits the single `pitch` degree. This is the groove-box step grid.
 //!
 //! - input 0: `clock` (`buffer`) — the Clock's beat gate. A rising edge (crossing 0.5 upward)
 //!   advances the step and emits a note-on; the following falling edge emits the note-off. The
@@ -30,7 +29,7 @@
 //! - output 0: `degrees` (`Note`) — a degree note (velocity 1 = on, 0 = off). The Voicer resolves
 //!   the degree through the tonal context.
 //!
-//! Emits one mono note line, upstream of the downstream Voicer that fans it out to voices (ADR-0032).
+//! Emits one mono note line, upstream of the downstream Voicer that fans it out to voices.
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -38,10 +37,10 @@ use crate::operators::edge::{Edge, EdgeDetector};
 use crate::vocab::pitch::{Note, Pitch};
 use crate::vocab::GateMode;
 
-/// Number of step slots in the pattern (V1.3: expanded 8 → 16, ADR-0022).
+/// Number of step slots in the pattern.
 pub const NUM_STEPS: usize = 16;
 
-// Single-source contract (ADR-0025/0030). `gate_mode` references the shared `GateMode` vocab enum.
+// `gate_mode` references the shared `GateMode` vocab enum.
 crate::operator_contract!(Sequencer {
     inputs:  { clock:  f32 { 0.0..=1.0, default 0.0, "", lin },
                length: f32 { 1.0..=16.0, default 8.0, "steps", lin },
@@ -66,7 +65,7 @@ crate::operator_contract!(Sequencer {
     outputs: { degrees: note },
 });
 
-/// The step-value inputs in pattern order — `step1`..`step16` as typed handles (ADR-0037), so
+/// The step-value inputs in pattern order — `step1`..`step16` as typed handles, so
 /// the per-step snapshot loop reads through the handles the contract emitted (a computed
 /// `IN_STEP1 + k` index would bypass the form typing).
 const IN_STEPS: [crate::operator::In<crate::operator::form::Held<f32>>; NUM_STEPS] = [
@@ -137,7 +136,7 @@ impl Operator for Sequencer {
             }
         };
 
-        // `clock` is a held Value (ADR-0031): the engine block-slices at every clock change, so this
+        // `clock` is a held Value: the engine block-slices at every clock change, so this
         // call sees one constant level. Compare it to the level held across the previous slice for
         // the edge; the slice's frame 0 *is* the change frame (block-absolute), so emitting there is
         // sample-accurate. The held latch carries `prev` across blocks/slices.
@@ -212,7 +211,7 @@ mod tests {
         d.render(clock.len()).emits().to_vec()
     }
 
-    /// Drive the now-held-Value `clock` from a dense gate buffer (ADR-0031): push a held-level
+    /// Drive the now-held-Value `clock` from a dense gate buffer: push a held-level
     /// change at each frame the buffer crosses the 0.5 threshold — the clock is fed by edges, not a
     /// per-sample buffer. `prev` threads the level across split renders; returns the trailing level.
     fn push_clock(d: &mut OpDriver, clock: &[f32], mut prev: f32) -> f32 {
@@ -368,7 +367,7 @@ mod tests {
         approx::assert_relative_eq!(deg(first_on), 0.0);
     }
 
-    // --- V1.3 gate-mode + 16-step expansion (ADR-0022) ---
+    // --- gate-mode + 16-step expansion ---
 
     #[test]
     fn default_descriptor_preserves_eight_step_behavior() {

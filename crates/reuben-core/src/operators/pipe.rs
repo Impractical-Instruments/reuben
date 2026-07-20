@@ -1,4 +1,4 @@
-//! `pipe` — an interface pipe's runtime node (ADR-0038 §2, format v2).
+//! `pipe` — an interface pipe's runtime node (format v2).
 //!
 //! An `interface.inputs` entry is a **named pipe**: it mints an address in the flat node
 //! namespace (`in` → `/in`) and behaves like a source node — internal consumers wire from it
@@ -16,7 +16,7 @@
 //!
 //! - **Signal** (`f32_buffer`): copy the input buffer to the output buffer. Unwired, the input
 //!   materializes from its latch — the declared default, or **silence** for a bare pipe — so an
-//!   unfed pipe renders exactly what ADR-0038 promises.
+//!   unfed pipe renders exactly that.
 //! - **Value** (`f32`, a vocab enum, `harmony`): forward the held latch as a sparse Value write.
 //!   The dedup baseline is **operator state** (not the per-segment `MsgWriter`), so a pipe emits
 //!   its seed once on the first block and then only on change — downstream latches see the same
@@ -63,12 +63,12 @@ impl Operator for Pipe {
     fn process(&mut self, io: &mut Io) {
         match self.kind {
             PortKind::Signal => {
-                // Buffer-presence invariant (ADR-0037): the input is always a dense length-n
-                // buffer (wired share, or materialized default/silence) — the handle read
-                // debug-asserts it — so `copy_from_slice` asserts the equal-length invariant
-                // instead of zip-truncating around a breach. The handle's `0.0` default is
-                // therefore inert — an unfed pipe gets the plan-materialized default/silence,
-                // never this literal.
+                // Buffer-presence invariant (see rules: composition-operators): the input is
+                // always a dense length-n buffer (wired share, or materialized default/silence)
+                // — the handle read debug-asserts it — so `copy_from_slice` asserts the
+                // equal-length invariant instead of zip-truncating around a breach. The handle's
+                // `0.0` default is therefore inert — an unfed pipe gets the plan-materialized
+                // default/silence, never this literal.
                 let src = io.read(In::<SignalF32>::new(0, 0.0));
                 io.write(Out::<SignalF32>::new(0)).copy_from_slice(src);
             }
@@ -102,7 +102,7 @@ impl Operator for Pipe {
 }
 
 // Deliberately NOT `register_operator!`-ed: pipes are declared through `interface.inputs`
-// entries only (ADR-0038); a document cannot name `"type": "pipe"` on a node.
+// entries only; a document cannot name `"type": "pipe"` on a node.
 
 #[cfg(test)]
 mod tests {
@@ -169,7 +169,7 @@ mod tests {
 
     #[test]
     fn spawn_resets_the_dedup_baseline() {
-        // Voice copies spawn from the loader-built template (ADR-0032); a copy must forward
+        // Voice copies spawn from the loader-built template; a copy must forward
         // its first value even when the template already forwarded (and latched) the same one
         // — "spawn starts fresh" (authoring.md), asserted on the SPAWNED copy's behavior.
         let run = |pipe: &mut dyn Operator, v: f32| -> Vec<Emit> {

@@ -1,8 +1,8 @@
-//! `m2s` — the gap-filling Message→Signal shaper (ADR-0017, ADR-0030).
+//! `m2s` — the gap-filling Message→Signal shaper.
 //!
 //! Control is Message-first; a dense CV is the opt-in special case. In the unified model the wire
 //! **already** materializes an `F32` source into a `Buffer` by zero-order hold (the implicit ZOH
-//! bridge, ADR-0030) — that is the old `Snap` mode, now automatic. So `m2s` exists only for the
+//! bridge) — that is the old `Snap` mode, now automatic. So `m2s` exists only for the
 //! gap-*filling* policies the plain step can't express: how to move *between* the held target's
 //! changes. That policy is `mode`, and it lives **here, once** (the reason cutoff/freq/etc. are
 //! Buffer-only — never re-implemented per operator).
@@ -21,8 +21,8 @@
 //! - **glide** — fixed-time linear ramp to the target (`time`); portamento, retargeting on change.
 //!
 //! True linear interpolation *between* targets is excluded — it needs the next value, so it is not
-//! RT-causal without a one-block delay (ADR-0017). State (current value, glide ramp) carries across
-//! blocks. The target `in` is a held Value (ADR-0031): the engine block-slices at every change
+//! RT-causal without a one-block delay. State (current value, glide ramp) carries across
+//! blocks. The target `in` is a held Value: the engine block-slices at every change
 //! frame, so each `process` call reads one constant target and a mid-block retarget stays
 //! sample-accurate; the smoothing itself runs per-sample toward that held target.
 
@@ -30,7 +30,7 @@ use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 use crate::vocab::M2sMode;
 
-// Single-source contract (ADR-0025/0030). `mode` references the shared `M2sMode` vocab enum, whose
+// Single-source contract. `mode` references the shared `M2sMode` vocab enum, whose
 // `#[default]` is `Smooth` — the natural knob feel and the prior default.
 crate::operator_contract!(M2s {
     inputs:  { in:   f32 { min..=max,       default 0.0,     "",   lin },
@@ -83,7 +83,7 @@ impl Operator for M2s {
         let mut glide_left = self.glide_left;
         let mut initialized = self.initialized;
 
-        // `in` is a held Value (ADR-0031): the engine block-slices at every change, so this call sees
+        // `in` is a held Value: the engine block-slices at every change, so this call sees
         // one constant target — read it once. A mid-block retarget arrives as the next slice's frame
         // 0 (the change frame), so the move stays sample-accurate. The smoothing itself runs
         // per-sample below toward that held target. This read ends before the per-sample output write.

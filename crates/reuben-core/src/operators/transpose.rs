@@ -1,4 +1,4 @@
-//! `transpose` — shift every incoming `Note` by a held amount (ADR-0030).
+//! `transpose` — shift every incoming `Note` by a held amount.
 //!
 //! The proof that the unified model carries a real two-message-input operator: a `Note` **Stream**
 //! input plus a `Float` **Held** input, producing a `Note` Stream output. Each note event on

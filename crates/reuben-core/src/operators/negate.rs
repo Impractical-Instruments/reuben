@@ -1,4 +1,4 @@
-//! `negate` — `out = -x`, per sample (ADR-0029, ADR-0017, ADR-0033).
+//! `negate` — `out = -x`, per sample.
 //!
 //! The sanctioned way to **invert a stream**: flip the sign of a CV, phase-invert audio, turn a
 //! rising envelope into a falling one. A dense `Float`→`Float` unary op whose arithmetic is the
@@ -8,14 +8,14 @@
 //! - input 0: `x` (`Float`) — the value to negate. Unwired default `0`.
 //! - output 0: `out` — `-x`.
 
-/// The op's scalar math, written once (ADR-0029 pure-fn seam) and generic over the number type so
+/// The op's scalar math, written once (the pure-fn seam) and generic over the number type so
 /// the macro can instantiate it per `numbers` entry (`f32` today).
 #[inline]
 fn negate_fn<T: core::ops::Neg<Output = T>>(x: T) -> T {
     -x
 }
 
-// One declaration -> NegateF32Value + NegateF32Signal (ADR-0033). A pure unary sign flip; `x`
+// One declaration -> NegateF32Value + NegateF32Signal. A pure unary sign flip; `x`
 // defaults to 0, so an unwired input is silent (`-0 == 0`).
 crate::number_operator_contract!(Negate {
     numbers:  [f32],

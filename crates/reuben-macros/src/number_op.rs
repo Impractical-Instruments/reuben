@@ -1,4 +1,4 @@
-//! `number_operator_contract!` — generate a family of pointwise number operators (ADR-0033).
+//! `number_operator_contract!` — generate a family of pointwise number operators.
 //!
 //! A *stateless pointwise* math op (output sample = fn of this sample's inputs only) whose operands
 //! are numbers (and optionally held enum modes) is pure boilerplate apart from its scalar function
@@ -226,9 +226,9 @@ impl NumberOpInput {
         }
     }
 
-    /// The `process` body for one carrier: read each operand through its typed handle (ADR-0037
-    /// — a held read's default is the handle's declared default, a signal read is a length-n
-    /// buffer indexed directly), call the shared scalar fn, write the output.
+    /// The `process` body for one carrier: read each operand through its typed handle (a held
+    /// read's default is the handle's declared default, a signal read is a length-n buffer
+    /// indexed directly), call the shared scalar fn, write the output.
     fn process_body(&self, carrier: Carrier, model: &ContractModel) -> TokenStream {
         let out_const = Ident::new(&model.outputs[0].const_name, Span::call_site());
         let call = self.call();
@@ -242,7 +242,7 @@ impl NumberOpInput {
             // The one per-sample read is a `number` operand in the signal carrier; enum modes
             // (always held) and value-carrier numbers alike are held reads of the handle default.
             match (&op.kind, carrier) {
-                // The buffer-presence invariant (ADR-0037): a Signal input is always exactly
+                // The buffer-presence invariant: a Signal input is always exactly
                 // `frames` samples, so it indexes directly — no `.get(i).unwrap_or(..)`.
                 (OperandKind::Number { .. }, Carrier::Signal) => looped.push(quote! {
                     let #local = io.read(#in_const)[i];
@@ -633,7 +633,7 @@ mod tests {
             }"#,
         );
         // `b`'s default is the range maximum (1e6), materialized into its `f32` port meta and
-        // carried by its typed handle (the held-read fallback — one datum, ADR-0037).
+        // carried by its typed handle (the held-read fallback — one datum).
         assert!(out.contains("default : 1000000f32"), "{out}");
         assert!(out.contains("In :: new (1 , 1000000f32)"), "{out}");
     }

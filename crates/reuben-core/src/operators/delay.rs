@@ -1,6 +1,6 @@
 //! Delay — feedback echo with a dry/wet mix.
 //!
-//! Port types (ADR-0030): `time`, `feedback`, and `mix` are **`F32` inputs**, each owning its
+//! Port types: `time`, `feedback`, and `mix` are **`F32` inputs**, each owning its
 //! unwired default. When nothing is wired the engine materializes the input from its latched
 //! default; when an LFO or envelope is wired the source buffer passes through. They are read
 //! block-rate via `io.read` (the held ZOH value), and `io.read(IN_AUDIO)` is always a
@@ -22,7 +22,7 @@
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
+// Single-source contract: one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Delay {
     inputs:  { audio: f32_buffer,
                time:     f32 { 0.001..=2.0, default 0.3, "s", lin },
@@ -225,7 +225,7 @@ mod tests {
 
     #[test]
     fn time_beyond_max_clamps_to_the_ring_capacity() {
-        // `time` is a wireable/modulatable Float (ADR-0031) and `set` writes the latch without
+        // `time` is a wireable/modulatable Float and `set` writes the latch without
         // range-clamping, so an out-of-range 5.0 s really reaches `io.read` — the clamp chain on
         // the fractional read head is the only guard keeping the interpolated tap inside the ring.
         // Unclamped, `read_pos` goes negative and saturating-casts to index 0: a wrong-*time* echo
@@ -251,7 +251,7 @@ mod tests {
     #[test]
     fn mid_render_time_change_stays_finite_and_bounded() {
         // Changing `time` while the line is ringing is the modulation path the wireable port
-        // exists for (ADR-0031). Jump the read head hard in both directions across the ring —
+        // exists for. Jump the read head hard in both directions across the ring —
         // 0.5 s -> 1 ms -> 1.9 s — mid-render, with feedback keeping the line charged: the output
         // must stay finite and bounded (no wrapped/garbage read head, no runaway).
         let sr = 48_000.0;

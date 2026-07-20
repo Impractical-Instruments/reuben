@@ -1,4 +1,4 @@
-//! Snap — quantizes absolute note gestures to the nearest in-scale degree (ADR-0013, ADR-0030).
+//! Snap — quantizes absolute note gestures to the nearest in-scale degree.
 //!
 //! The quantizer that sits *upstream* of resolution: an arbitrary absolute (float-MIDI) note →
 //! nearest in-scale `Pitch::Degree`, against the tonal [`Harmony`](crate::vocab::harmony::Harmony) it
@@ -10,7 +10,7 @@
 //!
 //! - input 0: `notes` (`Note`) — incoming note events; an [`Absolute`](crate::vocab::pitch::Pitch::Absolute)
 //!   pitch is snapped, a [`Degree`](crate::vocab::pitch::Pitch::Degree) pitch is already in-scale and is
-//!   passed through (ADR-0030: the Pitch case, not an address, carries the distinction).
+//!   passed through (the Pitch case, not an address, carries the distinction).
 //! - input 1: `harmony` (`Harmony`, held) — the tonal context to snap against.
 //! - input 2: `target` (`enum` [`SnapTarget`]) — quantization target.
 //! - input 3: `direction` (`enum` [`SnapDir`]) — quantization direction.
@@ -18,7 +18,7 @@
 //!   where possible, an [`Absolute`](crate::vocab::pitch::Pitch::Absolute) when a frozen-chord target has
 //!   no degree); wire to a Voicer.
 //!
-//! Emits one note stream, upstream of the Voicer that fans it out to voices (ADR-0032).
+//! Emits one note stream, upstream of the Voicer that fans it out to voices.
 
 use smallvec::SmallVec;
 
@@ -27,7 +27,7 @@ use crate::operator::{Io, Operator};
 use crate::vocab::harmony::SnapPolicy;
 use crate::vocab::pitch::{Note, Pitch};
 
-// Single-source contract (ADR-0025/0030). `target`/`direction` reference the shared `SnapTarget`/
+// `target`/`direction` reference the shared `SnapTarget`/
 // `SnapDir` vocab enums; `harmony` is the held `Harmony` carrier.
 crate::operator_contract!(Snap {
     inputs:  { notes:     note,

@@ -1,5 +1,5 @@
 //! Harmony — the node that owns and broadcasts the tonal context: the current [`Harmony`]
-//! (key/scale/chord) (ADR-0013, ADR-0030).
+//! (key/scale/chord).
 //!
 //! It owns the latched [`Harmony`] and publishes it onto a `harmony` output port; followers (the
 //! Voicer's degree resolution, a snap op) read "what's the key/chord right now" through their
@@ -7,16 +7,16 @@
 //! the box — the same on-ramp as the default Clock — without baking *global* into the core
 //! (multiple harmony nodes = polytonality).
 //!
-//! Per-field **last-write-wins** (ADR-0013):
+//! Per-field **last-write-wins**:
 //! - **Static fields** — `root` and the scale (`degrees` + `s0`..`s11` step offsets) — are held
-//!   `f32` Value inputs (ADR-0031; the good-button: dial the key, shape the scale). A mid-block
-//!   change block-slices `process` at its frame, so the publish stays sample-accurate (ADR-0015).
+//!   `f32` Value inputs (the good-button: dial the key, shape the scale). A mid-block
+//!   change block-slices `process` at its frame, so the publish stays sample-accurate.
 //! - **Dynamic field** — `chord` — arrives on the held `set` (`Harmony`) input: its chord field is
-//!   adopted (LWW). The chord-progression op that drives it is deferred (ADR-0030); the engine
-//!   block-slices a `set` change to the segment boundary, so a chord change lands frame-accurate.
+//!   adopted (LWW). The engine block-slices a `set` change to the segment boundary, so a chord
+//!   change lands frame-accurate.
 //!
-//! The node publishes **on change** (emit-on-change, ADR-0015): the first block, and any (sub)block
-//! where root/scale/chord differ from the last published value — so steady state is allocation-free.
+//! The node publishes **on change**: the first block, and any (sub)block where root/scale/chord
+//! differ from the last published value — so steady state is allocation-free.
 //!
 //! - input `set` (`Harmony`, held) — adopts its `chord` field.
 //! - inputs `root`, `degrees`, `s0`..`s11` (`f32`, held) — the static key/scale fields.
@@ -29,8 +29,8 @@ use crate::vocab::harmony::{Chord, Harmony, ScaleField, SCALE_CAP};
 /// Number of scale step-offset slots (max scale length within a 12-TET period).
 pub const NUM_STEPS: usize = SCALE_CAP;
 
-// Single-source contract (ADR-0025/0030): `set` is a held `Harmony` (its chord is adopted),
-// `root`/`degrees`/`s0`..`s11` are materialized `Float` key/scale fields, `harmony` the output.
+// `set` is a held `Harmony` (its chord is adopted), `root`/`degrees`/`s0`..`s11` are materialized
+// `Float` key/scale fields, `harmony` the output.
 crate::operator_contract!(HarmonyOp {
     type_name: "harmony",
     inputs:  { set:     harmony,
@@ -51,7 +51,7 @@ crate::operator_contract!(HarmonyOp {
     outputs: { harmony: harmony },
 });
 
-/// The scale step-offset inputs in degree order — `s0`..`s11` as typed handles (ADR-0037), so a
+/// The scale step-offset inputs in degree order — `s0`..`s11` as typed handles, so a
 /// loop over degrees reads through the handles the contract emitted (a computed `IN_S0 + k`
 /// index would bypass the form typing).
 const IN_STEPS: [crate::operator::In<crate::operator::form::Held<f32>>; NUM_STEPS] = [
@@ -61,7 +61,7 @@ const IN_STEPS: [crate::operator::In<crate::operator::form::Held<f32>>; NUM_STEP
 pub struct HarmonyOp {
     /// Latched chord, persisted across blocks (LWW from the `set` input's chord field).
     chord: Chord,
-    /// Last value published, to publish only on change (ADR-0015). `None` until the first block,
+    /// Last value published, to publish only on change. `None` until the first block,
     /// which always publishes (so the baseline picks up a non-default config).
     last: Option<Harmony>,
 }
@@ -81,9 +81,9 @@ impl HarmonyOp {
     }
 
     /// Build the current context from the held key/scale inputs + the latched chord. The static
-    /// fields are held Values (ADR-0031): a mid-block `/harmony/root` block-slices `process` at
+    /// fields are held Values: a mid-block `/harmony/root` block-slices `process` at
     /// its change frame, so reading the held value once per (sub)block call is what keeps the
-    /// publish sample-accurate (ADR-0015).
+    /// publish sample-accurate.
     fn current(&self, io: &Io) -> Harmony {
         let root = io.read(IN_ROOT).round() as i32;
         let degrees = (io.read(IN_DEGREES).round() as usize).clamp(1, NUM_STEPS);
@@ -112,7 +112,7 @@ impl Operator for HarmonyOp {
         // to the segment boundary, landing frame-accurate at this call's frame 0.
         self.chord = io.read(IN_SET).chord;
 
-        // Publish on change (ADR-0015), once per (sub)block call: every key/scale field is a
+        // Publish on change, once per (sub)block call: every key/scale field is a
         // held Value, so any mid-block change starts a new slice — frame 0 of *this* call is the
         // change frame, and the `MsgWriter` stamps it block-absolute. Steady state emits nothing
         // (the value compare short-circuits the deduping writer).
@@ -129,7 +129,7 @@ impl Operator for HarmonyOp {
 
     fn on_transplant(&mut self) {
         // Surviving a Swap, this box kept its emit-on-change baseline, but the downstream `harmony`
-        // consumer latch was rebuilt to Harmony::default() (ADR-0046 §4). Clear the baseline so the
+        // consumer latch was rebuilt to Harmony::default(). Clear the baseline so the
         // first post-swap block re-publishes the current context — otherwise the voice it drives is
         // silently retransposed onto the default (C major, root 60). The latched `chord` is real
         // survivor state and is preserved; only the publish baseline resets. RT-safe: one field write.
@@ -174,7 +174,7 @@ mod tests {
     fn on_transplant_re_publishes_the_current_context_not_the_default() {
         // A Swap transplants this surviving `harmony` box while the downstream consumer's held
         // `harmony` latch is rebuilt to Harmony::default() (C major, root 60). Because the op
-        // publishes on change against a baseline in its box (ADR-0015), a plain post-swap block
+        // publishes on change against a baseline in its box, a plain post-swap block
         // would see no change and stay silent — stranding the consumer on that default and silently
         // retransposing the voice. `on_transplant` must clear the baseline so the first post-swap
         // block re-asserts the *current* context (here: root 45, natural minor), not the default.
@@ -270,7 +270,7 @@ mod tests {
                 chord: Chord::empty(),
             }
         );
-        // Emit-on-change (ADR-0015) covers the scale fields too, not just root/chord.
+        // Emit-on-change covers the scale fields too, not just root/chord.
         let quiet = d.render(128).emits().to_vec();
         assert!(quiet.is_empty(), "unchanged scale does not re-publish");
         // `degrees` clamps up to 1: a 0 request still publishes a 1-degree scale (`s0` only).

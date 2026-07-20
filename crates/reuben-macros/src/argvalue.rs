@@ -1,8 +1,7 @@
-//! `#[derive(ArgValue)]` — integrate a shared *vocab* type with the central [`Arg`] enum
-//! (ADR-0030).
+//! `#[derive(ArgValue)]` — integrate a shared *vocab* type with the central [`Arg`] enum.
 //!
-//! The derive generates the glue so a type is defined *once* and reused everywhere (the
-//! divergence ADR-0030 fixes: per-operator enum duplication):
+//! The derive generates the glue so a type is defined *once* and reused everywhere (rather than
+//! duplicating a per-operator enum):
 //!
 //! - **structs** (`Note`, `Harmony`) get a named [`Arg`] variant (`Note` ↔ `Arg::Note`): `From<T>
 //!   for Arg` + `TryFrom<&Arg> for T`, since a struct carries a real per-type shape.
@@ -83,8 +82,8 @@ fn expand_struct(ast: &DeriveInput) -> TokenStream {
 /// An enum vocab type. Routing splits on the payload (leaf-promotion, issue #519): a
 /// **payload-carrying** enum (`Pitch`) gets its own named `Arg` variant like a struct — the index
 /// path would drop its payload; an **all-unit** enum (`SnapTarget`, `GateMode`) type-erases to the
-/// single `Arg::Enum(index)` with the Enum-over-OSC table (symbol primary, index fallback —
-/// ADR-0030's binding, derive-generated).
+/// single `Arg::Enum(index)` with the Enum-over-OSC table (symbol primary, index fallback,
+/// derive-generated).
 fn expand_enum(ast: &DeriveInput, data: &syn::DataEnum) -> TokenStream {
     let name = &ast.ident;
 
@@ -133,7 +132,7 @@ fn expand_enum(ast: &DeriveInput, data: &syn::DataEnum) -> TokenStream {
     });
 
     // Enum integration with the central `Arg`: a vocab enum type-erases to the single
-    // `Arg::Enum(index)` variant (ADR-0030), unlike a struct which gets its own named variant.
+    // `Arg::Enum(index)` variant, unlike a struct which gets its own named variant.
     // `From` packs the index; `TryFrom`/`FromArg` unpack it back through `from_index`. Type
     // identity is the port's, not the value's — so the engine never names this concrete enum.
     let conversions = quote! {
@@ -203,7 +202,7 @@ fn expand_enum(ast: &DeriveInput, data: &syn::DataEnum) -> TokenStream {
                 }
             }
 
-            /// Resolve an [`Arg`](::reuben_core::message::Arg) to this enum (ADR-0030 binding): the
+            /// Resolve an [`Arg`](::reuben_core::message::Arg) to this enum: the
             /// type-erased [`Enum`](::reuben_core::message::Arg::Enum) index (the internal form)
             /// first, then a **symbol** (`Str`), then an **index** fallback (`I32`/`F32`, in range —
             /// the raw inbound-boundary forms). Allocation-free — the boundary/latch path.

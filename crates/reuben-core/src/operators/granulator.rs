@@ -1,4 +1,4 @@
-//! Granulator — a free-running granular cloud over a loaded sound file (ADR-0016).
+//! Granulator — a free-running granular cloud over a loaded sound file.
 //!
 //! Like the [`sample`](super::sample) player it depends on **external decoded audio**: a
 //! [`ResourceStore`] built at load time and bound through [`Operator::bind_resources`], read on the
@@ -12,7 +12,7 @@
 //! allocated up front (RT-safe: `process` never allocates). When the cloud is denser than the pool
 //! can hold, a would-be spawn is **skipped** (density effectively caps at the pool size). Spray
 //! (per-grain start jitter) draws from a seeded inline xorshift32 so renders stay deterministic
-//! (ADR-0001); `spawn` resets it to a fixed seed, like [`noise`](super::noise).
+//! deterministically; `spawn` resets it to a fixed seed, like [`noise`](super::noise).
 //!
 //! Signal inputs latch **per grain at its spawn frame** — modulating `position`/`pitch`/`grain_size`
 //! with an LFO sweeps the cloud, each new grain capturing the value live at its birth.
@@ -34,9 +34,9 @@ use crate::operator::{Io, Operator};
 use crate::resources::{ResolvedRefs, ResourceStore, SampleId};
 use crate::vocab::GrainWindow;
 
-// Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_/C_ consts + Descriptor, no drift.
-// `position`/`grain_size`/`pitch` are signal controls with scalar defaults (ADR-0031 decision (a),
-// like the oscillator's `freq`): knob-set or unwired they materialize from the default, yet an LFO
+// Single-source contract: one declaration -> IN_/OUT_/C_ consts + Descriptor, no drift.
+// `position`/`grain_size`/`pitch` are signal controls with scalar defaults (like the
+// oscillator's `freq`): knob-set or unwired they materialize from the default, yet an LFO
 // Signal wires straight in and is latched per grain. `density`/`spray`/`gain`/`channel` are held
 // Values; `window` references the shared `GrainWindow` vocab enum.
 crate::operator_contract!(Granulator {
@@ -132,7 +132,7 @@ impl Operator for Granulator {
         let n = io.frames();
         let engine_sr = io.sample_rate();
 
-        // Block-rate held controls (ADR-0031): read once at the top.
+        // Block-rate held controls: read once at the top.
         let density = io.read(IN_DENSITY).clamp(1.0, 200.0);
         let spray_ms = io.read(IN_SPRAY).max(0.0);
         let gain = io.read(IN_GAIN);
@@ -229,7 +229,7 @@ impl Operator for Granulator {
 
     fn spawn(&self) -> Box<dyn Operator> {
         // Carry the shared resource binding forward; reset the grain pool, spawn clock, and PRNG seed
-        // so each voice grains independently and reproducibly (ADR-0016).
+        // so each voice grains independently and reproducibly.
         Box::new(Self {
             store: self.store.clone(),
             sample: self.sample,
@@ -478,7 +478,7 @@ mod tests {
 
     #[test]
     fn spray_is_deterministic_and_audible() {
-        // Same seed ⇒ bit-identical renders even with spray on (ADR-0001).
+        // Same seed ⇒ bit-identical renders even with spray on.
         let buf = ramp();
         let params = [0.3, 10.0, 0.0, 60.0, 300.0, 1.0, -1.0];
         let a = run(&mut bound(mono(&buf)), 4096, GrainWindow::Hann, params);

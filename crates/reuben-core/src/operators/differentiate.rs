@@ -1,4 +1,4 @@
-//! `differentiate` — discrete rate of change, `out[i] = in[i] - in[i-1]`, per sample (ADR-0029).
+//! `differentiate` — discrete rate of change, `out[i] = in[i] - in[i-1]`, per sample.
 //!
 //! A dense `Float`→`Float` op with a **constant one-sample `dt`**: the change between adjacent
 //! samples. A constant sampling window is what makes higher-order calculus valid — differentiate a
@@ -18,13 +18,13 @@
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025/0029/0030): `in` is a materialized `Float` (default 0).
+// Single-source contract: `in` is a materialized `Float` (default 0).
 crate::operator_contract!(DifferentiateF32Signal {
     inputs:  { in: f32_buffer { min..=max, default 0.0, "", lin } },
     outputs: { out: f32_buffer },
 });
 
-/// The op's scalar math, written once (ADR-0029 pure-fn seam): the one-sample difference.
+/// The op's scalar math, written once (the pure-fn seam): the one-sample difference.
 #[inline]
 fn step(prev: f32, cur: f32) -> f32 {
     cur - prev

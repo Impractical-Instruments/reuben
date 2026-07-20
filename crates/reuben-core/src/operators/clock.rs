@@ -1,12 +1,12 @@
-//! Clock — base musical timing (ADR-0006): a sample-accurate beat phasor at `tempo`.
+//! Clock — base musical timing: a sample-accurate beat phasor at `tempo`.
 //!
 //! The Clock is where sample-accuracy actually lives. It free-runs on the deterministic
 //! sample timeline, advancing a beat phase by `tempo / 60 / sample_rate` beats per sample,
 //! so beat boundaries land on exact samples regardless of block size — the thing external
 //! OSC arrival times can't honestly give us. It provides *timing only* (tempo + beat grid +
-//! position); groove, swing, and meter are separate concerns (ADR-0006).
+//! position); groove, swing, and meter are separate concerns.
 //!
-//! - input 0: `sync` (`Note` event) — a trigger port (ADR-0030): **any** event re-zeroes the
+//! - input 0: `sync` (`Note` event) — a trigger port: **any** event re-zeroes the
 //!   phase at its (sample-accurate) frame, locating position 1. Read via `io.read(IN_SYNC)` — the port,
 //!   not the address, identifies it, so there is no address-filtering.
 //! - output 0: `phase` (`Buffer`) — beat phasor, a [0, 1) sawtooth that wraps once per beat.
@@ -14,8 +14,7 @@
 //! - output 1: `gate` (`Buffer`) — 1.0 for the first half of each **1/`division` sub-beat**, else
 //!   0.0; its rising edge is a sample-accurate trigger. At the default `division` 1 this is the
 //!   original once-per-beat gate, high for the first half of the beat. At `division` N the gate
-//!   pulses N times per beat — a 16th-note grid is `division` 4 (ADR-0022, the thin slice of
-//!   ADR-0006's deferred subdivision).
+//!   pulses N times per beat — a 16th-note grid is `division` 4.
 //! - input 1: `tempo` (BPM).
 //! - input 2: `division` — gate subdivisions per beat (1 = once per beat, default; 4 = 16ths).
 //!
@@ -27,7 +26,7 @@ use smallvec::SmallVec;
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025/0030): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
+// Single-source contract: one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Clock {
     inputs:  { sync: note,
                tempo:    f32 { 1.0..=999.0, default 120.0, "BPM", lin },
@@ -41,7 +40,7 @@ pub struct Clock {
     /// Held in f64 so the beat grid doesn't drift off the sample timeline over a long
     /// session (f32 accumulation slips audibly within seconds).
     phase: f64,
-    /// Last `gate` level emitted (ADR-0031): `gate` is now a sparse held Value (`MsgWriter`), so it
+    /// Last `gate` level emitted: `gate` is a sparse held Value (`MsgWriter`), so it
     /// emits one change per rising/falling edge instead of filling a dense buffer. Persists across
     /// blocks so the first frame of a block only re-emits if the level actually changed.
     gate_high: bool,
@@ -73,7 +72,7 @@ impl Operator for Clock {
         let division = (io.read(IN_DIVISION).round() as f64).max(1.0);
 
         // Reset frames within this (sub)block, sorted. Any `sync` event re-zeroes the phase at its
-        // exact sample (ADR-0030: the port identifies it, payload ignored) — a sample-accurate
+        // exact sample (the port identifies it, payload ignored) — a sample-accurate
         // position locate.
         let mut resets: SmallVec<[usize; 4]> = SmallVec::new();
         for ev in io.read(IN_SYNC) {
@@ -102,7 +101,7 @@ impl Operator for Clock {
                 phase += dt;
                 // Wrap to [0,1). `dt` is beats/sample (≤ 999/60/sr ≪ 1), so after one increment
                 // `phase < 2` and a single conditional subtraction is exactly `phase.floor()` here
-                // — without the per-sample out-of-line libm `floor` call (hot path, ADR-0019).
+                // — without the per-sample out-of-line libm `floor` call (hot path).
                 if phase >= 1.0 {
                     phase -= 1.0;
                 }
@@ -110,7 +109,7 @@ impl Operator for Clock {
             end = phase;
         }
         {
-            // `gate` is now a sparse held Value (ADR-0031): replay the same accumulator, but emit a
+            // `gate` is a sparse held Value: replay the same accumulator, but emit a
             // `MsgWriter` change only at each rising/falling edge instead of writing every sample.
             // The held level carries across blocks (`self.gate_high`), so frame 0 only re-emits on a
             // genuine change. A downstream Value/materialize bridge ZOH-reconstructs the dense gate.
@@ -134,7 +133,7 @@ impl Operator for Clock {
                 phase += dt;
                 // Wrap to [0,1). `dt` is beats/sample (≤ 999/60/sr ≪ 1), so after one increment
                 // `phase < 2` and a single conditional subtraction is exactly `phase.floor()` here
-                // — without the per-sample out-of-line libm `floor` call (hot path, ADR-0019).
+                // — without the per-sample out-of-line libm `floor` call (hot path).
                 if phase >= 1.0 {
                     phase -= 1.0;
                 }
@@ -176,7 +175,7 @@ mod tests {
             d.push(IN_SYNC, r, Note::new(Pitch::Degree(0), 1.0));
         }
         d.render(n);
-        // `gate` is now a sparse held Value (ADR-0031): ZOH-reconstruct the dense gate from its
+        // `gate` is a sparse held Value: ZOH-reconstruct the dense gate from its
         // edge emits so the edge/bit-identity assertions below read it exactly as before.
         let gate = gate_buffer(d.emits(), n);
         (d.output(OUT_PHASE).to_vec(), gate)
@@ -303,7 +302,7 @@ mod tests {
         assert_eq!(phase[0], 0.0, "spawned clock starts fresh at phase 0");
     }
 
-    // --- V1.3 `division` param: subdivide the gate (ADR-0022) ---
+    // --- V1.3 `division` param: subdivide the gate ---
 
     #[test]
     fn division_one_is_bit_identical_to_the_default_gate() {
@@ -367,7 +366,7 @@ mod tests {
 
     #[test]
     fn tempo_change_mid_render_takes_effect_at_its_frame() {
-        // The module-doc invariant for the ADR-0031 Value inputs: a `tempo` change block-slices
+        // The module-doc invariant for the held Value inputs: a `tempo` change block-slices
         // and takes effect at the *exact sample* of the change (not the next 128-block boundary),
         // with the beat phase continuous across the cut. The change lands mid-beat (phase 0.75)
         // so a phase reset at the slice would be visible — at a beat boundary the wrap masks it.

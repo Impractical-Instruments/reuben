@@ -3,7 +3,7 @@
 //!
 //! Mono in, mono out.
 //!
-//! `room`/`damp`/`mix` are Value inputs (ADR-0031), each owning its unwired default;
+//! `room`/`damp`/`mix` are Value inputs, each owning its unwired default;
 //! `io.read(IN_ROOM)` reads the latched value.
 //!
 //! - input 0: `audio` (`Float`)
@@ -15,7 +15,7 @@
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
-// Single-source contract (ADR-0025): one declaration -> IN_/OUT_ consts + Descriptor, no drift.
+// Single-source contract: one declaration -> IN_/OUT_ consts + Descriptor, no drift.
 crate::operator_contract!(Reverb {
     inputs:  { audio: f32_buffer,
                room: f32 { 0.0..=1.0, default 0.5, "", lin },
@@ -130,7 +130,7 @@ impl Operator for Reverb {
             self.sized_rate = sample_rate;
         }
 
-        // `room`/`damp`/`mix` are `Float` inputs — read the latched block-rate value (ADR-0030).
+        // `room`/`damp`/`mix` are `Float` inputs — read the latched block-rate value.
         let room = io.read(IN_ROOM).clamp(0.0, 1.0);
         let damp = io.read(IN_DAMP).clamp(0.0, 1.0);
         let mix = io.read(IN_MIX).clamp(0.0, 1.0);
