@@ -17,6 +17,7 @@ Code points at topics, never at rules or ADRs: `// see rules: <topic>` (this rep
 ## Topics
 
 <!-- derived — collated from each topic's `> summary`; do not hand-edit out of sync. -->
+- **[Agent framework & MCP](agent-mcp.md)** — How AI agents author reuben — authorability as a first-class constraint, the introspect/validate loop, the authoring skills, and the MCP sidecar whose tool contracts are one OS-free source behind every door.
 - **[Authoring surface & instrument library](authoring-library.md)** — How authoring surfaces and the instrument library sit on top of the graph — decoupled surface docs over interface pipes, Good Buttons, the sample/resource store, library resolution and format versioning, and the launch Toys.
 - **[Composition & operator model](composition-operators.md)** — The one recursive graph — how operators declare and register their contract, how all data flows as one Message/Arg substrate in Value, Event, and Signal forms, and how instruments nest and expose interface pipes.
 - **[Execution & runtime](execution-runtime.md)** — How the unified block graph is scheduled, threaded, swapped, and rendered in real time — the Plan lifecycle, RT boundary, determinism, latch service, and the embed surface.
@@ -33,17 +34,23 @@ Code points at topics, never at rules or ADRs: `// see rules: <topic>` (this rep
 - **Constant** — a plan-time immutable port whose value is fixed at instantiate; changing it rebuilds the graph. · [composition-operators](composition-operators.md)
 - **Coordinator** — the single non-RT writer of graph structure; owns the canonical graph and instrument library and performs every Swap. · [execution-runtime](execution-runtime.md)
 - **CV** — a linear control signal in a normalized range (e.g. an envelope's `[0, 1]` contour), carried untyped on the Signal domain and interpreted by downstream ops. · [signal-time-dsp](signal-time-dsp.md)
+- **Delivery lane** — a grounding consumer (repo skills, MCP clients, web chat), each reducing to transport bindings plus host furniture plus the shared base sauce, fed by push or pull. · [agent-mcp](agent-mcp.md)
+- **Door** — one surface over the OS-free contract types (native CLI, MCP sidecar, web in-page layer, web proxy); no verb means different things behind different doors. · [agent-mcp](agent-mcp.md)
 - **Embed surface** — the portable rim of reuben-core (the `Engine` bridge) that each host shell wraps; the native I/O layer is the removable other side. · [execution-runtime](execution-runtime.md)
 - **Engine** — the portable bridge in reuben-core (`queue_osc` → `fill` → `drain_outbound`) a host shell drives, and the whole vessel (Plan + Renderer + scratch) that a Swap crosses. · [execution-runtime](execution-runtime.md)
 - **Event** — an unlatched, multi-valued, frame-stamped port form (`note`), read as a stream and never sliced. · [composition-operators](composition-operators.md)
 - **format_version** — the document's integer shape marker; absent means 1, save writes the current version, and only a breaking shape change bumps it. · [authoring-library](authoring-library.md)
 - **frame** — a sample offset within a block; the unit of sample-accurate Message timing. · [execution-runtime](execution-runtime.md)
+- **Gist-and-point** — the anti-drift posture for prose that must live in code: carry the one-breath gist and point at the single canonical doc, never restate it. · [agent-mcp](agent-mcp.md)
+- **Input handling** — interpreting musical, mood, or abstract language as patching moves; the shared base grounding identical in every lane. · [agent-mcp](agent-mcp.md)
 - **Good Button** — a curated player-facing control that is hard to make sound bad, built from composition (a fan of `map`s) rather than from new instrument-format machinery. · [authoring-library](authoring-library.md)
 - **Groove** — a per-stream re-timing of a Message stream (swing/feel), applied by a separate Operator, distinct from the Clock's base grid. · [signal-time-dsp](signal-time-dsp.md)
 - **Instantiate** — the off-thread construction of a Plan (topo sort, cluster, allocate the delta); the first half of every Swap, where all allocation lives. · [execution-runtime](execution-runtime.md)
+- **Intent vocabulary** — the one curated, registry-keyed word→move table that grounds musical/mood words (warmer, busier, sadder) as operator-type parameter moves. · [agent-mcp](agent-mcp.md)
 - **Instrument** — a named subgraph that exposes an interface and is reused inside another graph as if it were an operator, with its own identity and state per use. · [composition-operators](composition-operators.md)
 - **interface pipe** — a named boundary entry, the one boundary mechanism at every graph level: an input pipe mints an address, an output pipe is fed from an internal port. · [composition-operators](composition-operators.md)
 - **latch** — the engine-held per-port zero-order-hold of an input's last Message, read by an operator as its constant current value. · [execution-runtime](execution-runtime.md)
+- **Output filter** — the host-owned persona: what the person is shown (sound-not-machine subject, hidden diagnostics, register), maximal on web and absent at skills/MCP. · [agent-mcp](agent-mcp.md)
 - **library index** — the generated one-signature-line-per-instrument projection of the available-set (name + recipe-role + interface face). · [authoring-library](authoring-library.md)
 - **logical channel** — the device-independent channel index a signal pipe binds; a device profile, not the patch, maps it to hardware. · [composition-operators](composition-operators.md)
 - **Message** — the one data unit: `{ address, frame, Arg }`, carrying exactly one `Arg`. · [composition-operators](composition-operators.md)
@@ -52,6 +59,7 @@ Code points at topics, never at rules or ADRs: `// see rules: <topic>` (this rep
 - **Plan** — the runtime artifact: the immutable, already-allocated static parallel schedule (topo-ordered, clustered) that Render executes per block. · [execution-runtime](execution-runtime.md)
 - **recipe-role** — an instrument's reuse story: the first sentence of its `doc` field, trusted for selection only, never for wiring. · [authoring-library](authoring-library.md)
 - **Render** — the hard-realtime, allocation-free per-block execution of the current Plan on the audio thread. · [execution-runtime](execution-runtime.md)
+- **Sidecar** — the disposable per-conversation MCP stdio process the client spawns: pure tools in-process, engine tools forwarded to the user-owned engine. · [agent-mcp](agent-mcp.md)
 - **ResourceStore** — the central store of decoded resource bytes, built by the Coordinator at load and read immutably by Render through one pure `(id, range)` accessor, keyed by logical id. · [authoring-library](authoring-library.md)
 - **Rig** — the outermost graph, the one actually played at top level. · [composition-operators](composition-operators.md)
 - **Scale** — ordered step-offsets within a Tuning's period plus a root, mapping a scale degree to a step index (symbolic → symbolic). · [signal-time-dsp](signal-time-dsp.md)
