@@ -2,11 +2,27 @@
 //! `Response` types the native server (in `reuben play`) and the reuben-mcp client both
 //! serialize, one JSON object per line, one response per request in order.
 //!
-//! This module owns the **envelope only** — no engine, no threads, no sockets. The value
-//! types a response carries ([`SwapReport`](crate::contract::SwapReport),
-//! [`content_hash`](crate::contract::content_hash)) live in [`crate::contract`]
-//! (one schema, two doors); the TCP server is reuben-native's, the client
-//! reuben-mcp's. Framing is newline-delimited JSON
+//! No engine, no threads, no sockets — and the TCP server is reuben-native's, the client
+//! reuben-mcp's.
+//!
+//! # What lives here versus in `contract`
+//!
+//! **`contract` holds what core itself produces; `wire` holds the shape choices this channel
+//! makes.** `Coordinator::swap_document` returns a
+//! [`SwapReport`](crate::contract::SwapReport), so that type — and `Report`, `Diag`,
+//! `DiffSummary`, [`content_hash`](crate::contract::content_hash) — is door-agnostic and lives in
+//! [`crate::contract`], shared by every door. This module owns the envelope (verbs, `reply` tags,
+//! framing) *plus* the payloads that exist only because this channel exists:
+//! [`DiagnosticsReport`], [`Conflict`], and [`DocumentSnapshot`].
+//!
+//! [`Conflict`] is the worked example. Core has no conflict type at all — it reports an `expect`
+//! miss as a `SwapReport { ok: false }` carrying a `Diag`. Promoting that to a distinct answer is
+//! *this channel's* decision, so the type is this channel's. Likewise [`DocumentSnapshot`]: core
+//! exposes `document()` and `installed_hash()` separately, and pairing them is a wire shape. Ask
+//! "would this type still mean anything with the structure channel deleted?" — if no, it belongs
+//! here.
+//!
+//! Framing is newline-delimited JSON
 //! ([`Request::to_ndjson`]/[`Request::from_ndjson`] and the `Response` pair) so the channel
 //! stays netcat-debuggable and std-only.
 //!
@@ -90,34 +106,36 @@ impl Request {
     }
 }
 
-/// An `expect`-guard miss: the swap was rejected and **nothing was installed**. `expected` is the
-/// hash the client asserted was installed; `actual` is the hash of what actually kept playing, so
-/// the client reconciles by re-reading rather than by threading request state.
+/// An `expect`-guard miss: the swap was rejected and **nothing was installed** — the engine is
+/// still playing what it was playing before. Re-read the installed document, then retry against
+/// the hash that is actually installed.
 ///
-/// One type, three doors: the [`Response::Conflict`] wire variant, the reuben-mcp client's
-/// `SwapOutcome::Conflict`, and the `swap` tool's `conflict` field all carry *this* struct, so the
-/// shapes cannot drift. This is a channel shape, not a core one — core expresses the same event as
-/// a `SwapReport { ok: false }` carrying a [`Diag`](crate::contract::Diag) (see
-/// `Coordinator::swap_document`); promoting it to a distinct answer is the structure channel's call.
+// Everything above ships to models — it becomes the `$defs.Conflict` description in the `swap`
+// tool's advertised outputSchema — so it stays about what the model should DO. Notes for humans go
+// below this line, where schemars will not pick them up.
+//
+// One type, three doors: `Response::Conflict`, the reuben-mcp client's `SwapOutcome::Conflict`, and
+// the `swap` tool's `conflict` field all carry this struct, so the shapes cannot drift. Why it is a
+// wire type rather than a contract type: see the module header.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Conflict {
     /// The content hash the client asserted was installed.
     pub expected: String,
-    /// The content hash actually still playing — re-read the document to reconcile.
+    /// The content hash actually still playing — re-read with `get_current_instrument` to
+    /// reconcile, then retry the swap with this as `expect`.
     pub actual: String,
 }
 
-/// The canonical installed document paired with its
-/// [`content_hash`](crate::contract::content_hash) — `get_document`'s answer, and the `swap`
-/// guard's reference point.
+/// The document the engine is currently playing, paired with its content hash — the token to pass
+/// as a later swap's `expect` guard.
 ///
-/// The document is raw JSON, never a parsed doc type: the Coordinator owns the canonical document
-/// and the loader is the single validation authority, so re-validating it on the read side would
-/// make two authorities. One type, three doors — the [`Response::Document`] wire variant, the
-/// reuben-mcp client's return, and the `get_current_instrument` tool's `structuredContent` are all
-/// *this* struct. Core exposes the two halves separately (`document()` and `installed_hash()`);
-/// pairing them is this channel's shape.
+/// The document is raw JSON, exactly as installed: the engine is the single validation authority,
+/// so nothing re-validates it on the way out.
+// Ships to models as `get_current_instrument`'s outputSchema description — human notes below.
+//
+// One type, three doors: `Response::Document`, the reuben-mcp client's return, and the
+// `get_current_instrument` tool's `structuredContent` are all this struct.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DocumentSnapshot {

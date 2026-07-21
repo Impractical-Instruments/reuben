@@ -114,9 +114,11 @@ pub enum SwapOutcome {
 /// above still exercise real serialization, real parsing, and the real
 /// [`Unreachable`](StructureError::Unreachable) mapping.
 ///
-/// Deliberately the *lowest* seam: everything that can be wrong in a way worth testing —
-/// framing, parsing, wrong-variant classification, timeout policy — lives above this line, in
-/// [`StructureClient::exchange_with`]. All that lives below is bytes on a socket.
+/// Deliberately the *lowest* seam. Above this line live the things a fake should exercise rather
+/// than replace: NDJSON framing and parsing plus the unreachable/protocol split
+/// ([`StructureClient::exchange_with`]), and the wrong-variant classification each verb does. Below
+/// it live the socket mechanics — connect, the `set_*_timeout` calls, read-to-newline — which
+/// `tests/structure_client.rs` still drives over real TCP.
 pub trait StructureTransport: Send + Sync + fmt::Debug {
     /// One request line out, one response line back. `read_timeout` is per-call because `ping`
     /// runs on a tighter budget than the other verbs. Any I/O failure — refused connect,

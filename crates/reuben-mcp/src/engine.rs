@@ -83,9 +83,10 @@ impl EngineLink {
     /// returning how many left the socket. UDP is fire-and-forget: a datagram out is "dispatched",
     /// not "received".
     pub fn send_osc(&self, datagrams: &[Vec<u8>]) -> std::io::Result<usize> {
-        // Bind an ephemeral loopback socket per batch — `send` is an infrequent authoring gesture,
-        // so a persistent socket buys nothing and a fresh one can't wedge. UDP `send_to` queues the
-        // datagram; loopback delivery to a live engine does not fail at this layer.
+        // Bind an ephemeral source socket per batch, unbound to an interface so the OS picks the
+        // route to `osc_addr`. `send` is an infrequent authoring gesture, so a persistent socket
+        // buys nothing and a fresh one can't wedge. UDP `send_to` queues the datagram; loopback
+        // delivery to a live engine does not fail at this layer.
         let socket = UdpSocket::bind("0.0.0.0:0")?;
         let mut sent = 0;
         for datagram in datagrams {
@@ -111,5 +112,25 @@ impl Default for EngineLink {
     /// endpoints `reuben play` binds, so the sidecar and engine can never drift.
     fn default() -> Self {
         Self::new(DEFAULT_STRUCTURE_ADDR, default_osc_addr())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_default_link_dials_exactly_what_reuben_play_binds() {
+        // Sidecar and engine share one address const per plane, so they cannot drift. Asserted on
+        // the REAL construction path — `ReubenServer::new` builds this link — rather than on a
+        // `StructureClient::default` no production code ever called (#493).
+        let link = EngineLink::default();
+        assert_eq!(link.structure_endpoint(), DEFAULT_STRUCTURE_ADDR);
+        assert_eq!(link.osc_endpoint(), default_osc_addr());
+        assert!(
+            link.structure_endpoint().starts_with("127.0.0.1:"),
+            "the structure channel must stay loopback-only: {}",
+            link.structure_endpoint()
+        );
     }
 }

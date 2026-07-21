@@ -1204,69 +1204,185 @@ mod tests {
     }
 
     /// [`server_with_osc`] for the tools that never touch the OSC plane.
+    ///
+    /// The socket is leaked rather than dropped: were it closed, a future `send` test written
+    /// against this helper would pass having delivered nothing, because an unconnected UDP
+    /// `send_to` never surfaces a dead peer. Leaking keeps the address live for the process, so
+    /// such a test fails honestly instead of silently.
     fn server_with(transport: FakeTransport) -> ReubenServer {
-        server_with_osc(transport).0
+        let (server, osc) = server_with_osc(transport);
+        std::mem::forget(osc);
+        server
     }
 
-    /// Assert that a payload a tool really returns is described by the `outputSchema` that tool
-    /// really advertises.
+    /// The `outputSchema` a tool actually advertises, pulled off the live router by tool name.
     ///
-    /// Two derives read the same struct — `Serialize` decides what goes on the wire, `JsonSchema`
-    /// decides what we *promise* goes on the wire — and they diverge exactly where attributes are
-    /// involved (`#[serde(flatten)]`, `skip_serializing_if`, `rename`). MCP requires
-    /// `structuredContent` to conform to the declared schema, so a divergence breaks every
-    /// conforming client while every existing test stays green.
-    ///
-    /// Deliberately NOT a snapshot: nothing here records what the schema *is*. Renaming a type,
-    /// re-wording a doc comment, adding a field, or reordering properties all stay green — those
-    /// are API changes, not defects. It goes red only when the promise and the payload disagree.
-    fn assert_payload_conforms<T: Serialize + schemars::JsonSchema + 'static>(
-        what: &str,
-        payload: &T,
-    ) {
-        let schema = serde_json::to_value(
-            rmcp::handler::server::tool::schema_for_output::<T>().expect("an object schema"),
+    /// Read from the router rather than re-deriving it from a type the test names, so the test is
+    /// bound to what the tool *declares*. Re-point a `#[tool(output_schema = …)]` at the wrong type
+    /// and this notices; re-deriving from the type the test picked would not.
+    fn advertised_output_schema(tool: &str) -> serde_json::Value {
+        let server = ReubenServer::new();
+        let declared = server
+            .tool_router
+            .list_all()
+            .into_iter()
+            .find(|t| t.name == tool)
+            .unwrap_or_else(|| panic!("`{tool}` is registered"));
+        serde_json::to_value(
+            declared
+                .output_schema
+                .as_ref()
+                .unwrap_or_else(|| panic!("`{tool}` advertises an outputSchema")),
         )
-        .expect("schema as value");
-        let value = serde_json::to_value(payload).expect("payload as value");
+        .expect("schema as value")
+    }
 
-        let declared: std::collections::BTreeSet<&str> = schema["properties"]
-            .as_object()
-            .map(|o| o.keys().map(String::as_str).collect())
-            .unwrap_or_default();
-        let emitted: std::collections::BTreeSet<&str> = value
-            .as_object()
-            .map(|o| o.keys().map(String::as_str).collect())
-            .unwrap_or_default();
-        let required: std::collections::BTreeSet<&str> = schema["required"]
+    /// Walk a payload against a schema node, following `$ref` into `$defs` and descending into
+    /// nested objects and arrays. Shared sub-schemas (`Conflict`, `Diag`, `DiffSummary`,
+    /// `StatusEndpoints`) are checked at their own level, not just at the top.
+    fn check_conforms(node: &serde_json::Value, value: &serde_json::Value, ctx: &ConformCtx<'_>) {
+        // Resolve `$ref: "#/$defs/Name"` before anything else.
+        let node = match node.get("$ref").and_then(|r| r.as_str()) {
+            Some(r) => match r.strip_prefix("#/$defs/") {
+                Some(name) => &ctx.defs[name],
+                None => return,
+            },
+            None => node,
+        };
+
+        // schemars renders `Option<T>` as `anyOf: [T, {"type": "null"}]`. A present value is the
+        // non-null branch — descend into it, or the whole Option-shaped surface (`conflict`,
+        // `diff`, `guidance`) would go unchecked.
+        if let Some(branches) = node.get("anyOf").or_else(|| node.get("oneOf")) {
+            let mut concrete = branches
+                .as_array()
+                .map(|b| {
+                    b.iter()
+                        .filter(|v| v.get("type").and_then(|t| t.as_str()) != Some("null"))
+                })
+                .into_iter()
+                .flatten();
+            // Exactly one non-null branch is the Option pattern; a genuine union would need real
+            // validation to pick a branch, so leave those to the top-level key checks.
+            if let (Some(only), None) = (concrete.next(), concrete.next()) {
+                check_conforms(only, value, ctx);
+            }
+            return;
+        }
+
+        if let Some(items) = node.get("items") {
+            if let Some(array) = value.as_array() {
+                for element in array {
+                    check_conforms(items, element, ctx);
+                }
+            }
+            return;
+        }
+
+        let Some(emitted_obj) = value.as_object() else {
+            return;
+        };
+        // A schema with no `properties` (e.g. an untyped `serde_json::Value` field like
+        // `document`) constrains nothing — descending would invent requirements.
+        let Some(props) = node.get("properties").and_then(|p| p.as_object()) else {
+            return;
+        };
+
+        let declared: std::collections::BTreeSet<&str> = props.keys().map(String::as_str).collect();
+        let emitted: std::collections::BTreeSet<&str> =
+            emitted_obj.keys().map(String::as_str).collect();
+        let required: std::collections::BTreeSet<&str> = node["required"]
             .as_array()
             .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
             .unwrap_or_default();
 
+        let (tool, case, path) = (ctx.tool, ctx.case, ctx.path.as_str());
         let undeclared: Vec<_> = emitted.difference(&declared).collect();
         assert!(
             undeclared.is_empty(),
-            "{what}: serialized key(s) {undeclared:?} are absent from the advertised \
-             outputSchema — a client validating against it would reject a valid response.\n\
+            "{tool} / {case}{path}: serialized key(s) {undeclared:?} are not declared by the \
+             advertised outputSchema — the tool sends fields it never promised, so a client \
+             cannot rely on the schema to know the shape.\n\
              schema properties: {declared:?}\npayload keys: {emitted:?}"
         );
 
         let promised_but_missing: Vec<_> = required.difference(&emitted).collect();
         assert!(
             promised_but_missing.is_empty(),
-            "{what}: outputSchema marks {promised_but_missing:?} required, but this payload \
-             omits them — a conforming client would reject a response the tool really sends.\n\
+            "{tool} / {case}{path}: outputSchema marks {promised_but_missing:?} required, but \
+             this payload omits them — a conforming client would reject a response the tool \
+             really sends.\n\
              required: {required:?}\npayload keys: {emitted:?}"
+        );
+
+        for (name, sub) in props {
+            if let Some(sub_value) = emitted_obj.get(name) {
+                check_conforms(sub, sub_value, &ctx.child(name));
+            }
+        }
+    }
+
+    /// Where in a payload [`check_conforms`] currently is, for a failure message that names the
+    /// tool, the case, and the exact nested field.
+    struct ConformCtx<'a> {
+        tool: &'a str,
+        case: &'a str,
+        defs: &'a serde_json::Value,
+        path: String,
+    }
+
+    impl<'a> ConformCtx<'a> {
+        /// The same context one field deeper.
+        fn child(&self, field: &str) -> ConformCtx<'a> {
+            ConformCtx {
+                tool: self.tool,
+                case: self.case,
+                defs: self.defs,
+                path: format!("{}.{field}", self.path),
+            }
+        }
+    }
+
+    /// Assert that a payload a tool really returns is described by the `outputSchema` that tool
+    /// really advertises — top level *and* every nested sub-schema.
+    ///
+    /// Two derives read the same struct — `Serialize` decides what goes on the wire, `JsonSchema`
+    /// decides what we *promise* goes on the wire — and they diverge exactly where attributes are
+    /// involved (`#[serde(flatten)]`, `skip_serializing_if`, `rename`, `schemars(skip)`). MCP
+    /// requires `structuredContent` to conform to the declared schema, so a divergence breaks
+    /// every conforming client while every other test stays green.
+    ///
+    /// Deliberately NOT a snapshot: nothing here records what the schema *is*. Renaming a type,
+    /// re-wording a doc comment, adding a field, or reordering properties all stay green — those
+    /// are API changes, not defects. It goes red only when the promise and the payload disagree.
+    fn assert_payload_conforms<T: Serialize>(tool: &str, case: &str, payload: &T) {
+        let schema = advertised_output_schema(tool);
+        let value = serde_json::to_value(payload).expect("payload as value");
+        let defs = schema
+            .get("$defs")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        check_conforms(
+            &schema,
+            &value,
+            &ConformCtx {
+                tool,
+                case,
+                defs: &defs,
+                path: String::new(),
+            },
         );
     }
 
     #[test]
     fn engine_tool_payloads_conform_to_their_advertised_output_schemas() {
         // Every engine tool that returns a structured payload, in every shape it can return one.
-        // The two SwapToolOutput branches are checked separately because `flatten` +
-        // `skip_serializing_if` make them structurally different objects.
+        // The SwapToolOutput branches are checked separately because `flatten` +
+        // `skip_serializing_if` make them structurally different objects, and `engine_status` is
+        // checked both ways because `guidance` is its skip_serializing_if field.
         assert_payload_conforms(
-            "swap (clean install)",
+            "swap",
+            "clean install",
             &SwapToolOutput::installed(SwapReport {
                 report: Report {
                     ok: true,
@@ -1274,15 +1390,34 @@ mod tests {
                     warnings: vec![],
                 },
                 content_hash: "00c0ffee".to_string(),
-                diff: Some(reuben_core::DiffSummary::default()),
+                diff: Some(reuben_core::DiffSummary {
+                    survived: 1,
+                    state_reset: vec!["/osc".to_string()],
+                    added: vec![],
+                    removed: vec![],
+                }),
             }),
         );
         assert_payload_conforms(
-            "swap (validation failure)",
-            &SwapToolOutput::installed(SwapReport::rejected("00c0ffee".to_string())),
+            "swap",
+            "validation failure",
+            &SwapToolOutput::installed(SwapReport {
+                report: Report {
+                    ok: false,
+                    errors: vec![reuben_core::Diag {
+                        node: Some("/osc".to_string()),
+                        port: None,
+                        message: "unknown operator".to_string(),
+                    }],
+                    warnings: vec![],
+                },
+                content_hash: "00c0ffee".to_string(),
+                diff: None,
+            }),
         );
         assert_payload_conforms(
-            "swap (expect-guard miss)",
+            "swap",
+            "expect-guard miss",
             &SwapToolOutput::conflict(Conflict {
                 expected: "0badc0de".to_string(),
                 actual: "00c0ffee".to_string(),
@@ -1290,27 +1425,35 @@ mod tests {
         );
         assert_payload_conforms(
             "get_current_instrument",
+            "installed document",
             &DocumentSnapshot {
                 document: serde_json::json!({ "instrument": "t" }),
                 content_hash: "00c0ffee".to_string(),
             },
         );
-        assert_payload_conforms("get_diagnostics", &DiagnosticsReport::default());
-        assert_payload_conforms(
-            "engine_status",
-            &EngineStatusOutput {
-                reachable: false,
-                endpoints: StatusEndpoints {
-                    structure: DEFAULT_STRUCTURE_ADDR.to_string(),
-                    osc: default_osc_addr(),
+        assert_payload_conforms("get_diagnostics", "counters", &DiagnosticsReport::default());
+        assert_payload_conforms("send", "dispatched", &SendOutput { sent: 2 });
+        for (case, guidance) in [
+            ("unreachable", Some(ENGINE_UNREACHABLE_GUIDANCE.to_string())),
+            ("reachable", None),
+        ] {
+            assert_payload_conforms(
+                "engine_status",
+                case,
+                &EngineStatusOutput {
+                    reachable: guidance.is_none(),
+                    endpoints: StatusEndpoints {
+                        structure: DEFAULT_STRUCTURE_ADDR.to_string(),
+                        osc: default_osc_addr(),
+                    },
+                    sidecar: SidecarInfo {
+                        version: env!("CARGO_PKG_VERSION").to_string(),
+                        format_version: reuben_core::format::FORMAT_VERSION,
+                    },
+                    guidance,
                 },
-                sidecar: SidecarInfo {
-                    version: env!("CARGO_PKG_VERSION").to_string(),
-                    format_version: reuben_core::format::FORMAT_VERSION,
-                },
-                guidance: Some(ENGINE_UNREACHABLE_GUIDANCE.to_string()),
-            },
-        );
+            );
+        }
     }
 
     /// Pull the first text block out of a result's content, for asserting on guidance text.
@@ -1608,6 +1751,15 @@ mod tests {
         );
         assert_eq!(s["conflict"]["expected"], serde_json::json!("0badc0de"));
         assert_eq!(s["conflict"]["actual"], serde_json::json!("00c0ffee"));
+        // The contract `SwapReport::rejected` exists to own: content_hash names what KEEPS
+        // PLAYING (the conflict's `actual`), never the `expected` the client asked for. Reporting
+        // `expected` here would hand the model a hash that is not installed, so its next
+        // expect-guarded swap conflicts again — an unbreakable loop.
+        assert_eq!(
+            s["content_hash"],
+            serde_json::json!("00c0ffee"),
+            "a rejected swap reports the hash still playing, not the one asked for: {s}"
+        );
     }
 
     #[test]
