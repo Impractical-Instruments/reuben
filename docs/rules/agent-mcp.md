@@ -30,8 +30,8 @@ is reserved for the tool that could not do its job. The edit contract is the **w
 report out**: no add-node/rewire surface exists, `send` is ephemeral audition (clobbered at the next
 swap), and the document is durable truth (try-then-commit). No bytes cross the wire — using a sample
 is a filesystem gesture. Where a door's clients can race, the door carries its own optimistic
-`expect` guard — a content-hash compare it makes, in its own answer shape, before calling in — since
-core's swap is unguarded last-write-wins.
+`expect` guard — a content-hash compare it makes before calling in, answered in its own shape —
+since core's swap is unguarded last-write-wins.
 
 The load-bearing invariant under all of this is **one source, many doors**: the contract types and
 introspection live OS-free in `reuben-core`, so the native CLI, the MCP sidecar, the web in-page tool

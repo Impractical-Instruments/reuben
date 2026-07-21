@@ -623,8 +623,20 @@ mod tests {
             "the installed document is unchanged"
         );
 
-        // Installed: the hash advances, and the report agrees with the accessor.
-        let ok = coord.swap_document(&envelope_doc("/eg"));
+        // An outside witness: the target's hash computed through the same public path a client
+        // walks (normalize, then hash), never through the Coordinator. Asserting the report
+        // against `installed_hash()` alone would compare two spellings of one expression and pass
+        // even if the swap committed the *wrong* document; this catches that.
+        let target = envelope_doc("/eg");
+        let resolver = MemoryResolver::new();
+        let witness = content_hash(
+            &NormalizedDoc::from_json(&target, &Registry::builtin(), Some(&resolver))
+                .expect("the target document normalizes"),
+        );
+
+        // Installed: the hash advances to the document that actually went in, and the report and
+        // the accessor both name it.
+        let ok = coord.swap_document(&target);
         assert!(ok.report.ok, "a valid document installs: {:?}", ok.report);
         assert_ne!(
             coord.installed_hash(),
@@ -632,9 +644,13 @@ mod tests {
             "the swap advanced the doc"
         );
         assert_eq!(
-            ok.content_hash,
+            ok.content_hash, witness,
+            "the report names the document it installed"
+        );
+        assert_eq!(
             coord.installed_hash(),
-            "the report's hash is the installed hash"
+            witness,
+            "the accessor names the document it installed"
         );
     }
 

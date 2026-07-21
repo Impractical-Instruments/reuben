@@ -101,6 +101,11 @@ Run everything from the repo root.
      Keep the forces that make the rule the right call; drop superseded alternatives and dead-end
      history. As long as it needs to be, no longer.
 
+   The helper always writes the `Distilled from:` form, which is right for anything absorbed from an
+   ADR. A rule that never passed through one — settled directly in an issue or a PR — ends
+   `Decided in: issue #NNN — settled directly, no ADR.` instead; leave those alone on a sweep rather
+   than back-filling an ADR number to make them match.
+
    **Strictly 1:1 rule↔rationale** (S01 amendment): never point two rules at one rationale file. If
    two rules genuinely share a why, either merge them into one rule or give each its own rationale and
    cross-link with a "see also" — never share the file. The helper enforces this structurally (one

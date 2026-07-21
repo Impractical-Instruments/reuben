@@ -372,9 +372,9 @@ fn dispatch(state: &StructureState, line: &str) -> Response {
 ///    start). A read failure is a rejected [`SwapReport`] (no install, prior retained), not a
 ///    channel `Error`.
 /// 2. **Arbitration**: a stale `expect` rejects with the real installed hash as
-///    [`Response::Conflict`] and does **not** swap. Absent `expect` is last-write-wins. This door
-///    owns the guard outright — core's swap is unguarded last-write-wins (see rules: agent-mcp) —
-///    which is what lets the wire keep its distinct `Conflict` response shape.
+///    [`Response::Conflict`] and does **not** swap. Absent `expect` is last-write-wins. Done here,
+///    not inside `swap_document`, so the wire keeps M1's distinct `Conflict` response shape — and
+///    core's swap owns no guard at all, by design (see rules: agent-mcp).
 /// 3. **Swap**: [`Coordinator::swap_document`] validates + builds a whole new Engine off-thread,
 ///    fills the install mailbox, and returns the real [`SwapReport`] (survivor/reset stats). A
 ///    load/plan error aborts with `ok: false` and the prior hash — the old engine keeps playing

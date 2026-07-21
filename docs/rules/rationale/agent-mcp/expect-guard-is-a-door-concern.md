@@ -6,7 +6,7 @@ Multiple clients are tolerated rather than arbitrated ([user-owned-engine](user-
 so a door whose clients can race needs a cheap way to say "install this only if the engine is still
 playing what I last read". That is the `expect` guard: the client passes the `content_hash` it
 believes is live, and a mismatch rejects the swap naming the hash that *actually* keeps playing.
-No sessions, no leases — one off-thread string compare.
+No sessions, no leases — one string compare, under the lock the door already holds.
 
 **Why the door and not core.** The guard has no logic to centralize. Its entire body is
 `expected != installed_hash()` over an accessor core already exposes publicly; there is no
@@ -19,9 +19,10 @@ as structured fields, which is a wire choice that channel makes
 engine the same way: the native structure channel goes through `Coordinator::swap_document`, but
 the web in-page layer runs a restart-swap with no Coordinator at all and implements its guard in
 JavaScript. A guard parameter on the core swap would therefore be inherited by exactly one of the
-doors that needs one — while every unguarded caller (the CLI load path, every swap test) pays for
-an argument it always passes empty. Kept there, it is production-dead code reachable only from its
-own test, and a second place for the meaning of "matches" to drift.
+doors that needs one — and that door is the *only* non-test caller of the core swap at all;
+everything else that would carry the parameter is a swap test, passing it empty. Kept there, it is
+production-dead code reachable only from its own test, and a second place for the meaning of
+"matches" to drift.
 
 So core's swap stays what it honestly is: a single-writer install with **last-write-wins**
 arbitration. Concurrency is a property of having concurrent clients, and that is a door's
