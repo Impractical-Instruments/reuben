@@ -1205,10 +1205,12 @@ mod tests {
 
     /// [`server_with_osc`] for the tools that never touch the OSC plane.
     ///
-    /// The stand-in endpoint is a process-wide socket held open for the run, not a per-call one
-    /// that gets dropped. A closed socket would be worse than useless here: an unconnected UDP
-    /// `send_to` never surfaces a dead peer, so a future `send` test written against this helper
-    /// would pass having delivered nothing at all. One socket, bound once, keeps that honest.
+    /// The stand-in endpoint is one process-wide socket held open for the run, not a per-call one
+    /// that gets dropped. Dropping it would free the port back to the OS mid-run, where it could be
+    /// recycled into another test's [`server_with_osc`] receiver — and since an unconnected UDP
+    /// `send_to` never surfaces a dead peer, nothing would report the crossed wires. Assert
+    /// delivery through [`server_with_osc`], which hands back the socket; this helper only
+    /// guarantees the address stays inert and bound.
     fn server_with(transport: FakeTransport) -> ReubenServer {
         static SINK: std::sync::OnceLock<UdpSocket> = std::sync::OnceLock::new();
         let addr = SINK
@@ -1273,9 +1275,14 @@ mod tests {
             // non-decreasing cycle — schemars emits exactly that for `struct X(Option<Box<X>>)`,
             // and unguarded recursion would overflow the stack, aborting the whole test binary
             // rather than failing one test. Every other descent is payload-driven and self-bounding.
-            if !ctx.seen.iter().any(|s| s == name) {
-                check_conforms(target, value, &ctx.followed(name));
+            //
+            // Stopping is necessary but must not be quiet: a finite payload under mutually
+            // recursive `$defs` would otherwise skip every occurrence after the first, which is
+            // the silent-skip failure mode this walker exists to refuse. So say so instead.
+            if ctx.seen.iter().any(|s| s == name) {
+                unhandled("a recursive $defs cycle");
             }
+            check_conforms(target, value, &ctx.followed(name));
             return;
         }
 
@@ -1326,8 +1333,8 @@ mod tests {
 
         if let Some(items) = node.get("items") {
             if let Some(array) = value.as_array() {
-                for element in array {
-                    check_conforms(items, element, ctx);
+                for (index, element) in array.iter().enumerate() {
+                    check_conforms(items, element, &ctx.element(index));
                 }
             }
             return;
@@ -1339,13 +1346,20 @@ mod tests {
         // upstream (`schemars(with = …)`, a type swapped for `Value`) looks identical to a field
         // that was always meant to be free-form. So openness must be DECLARED: this list is the
         // assertion that exactly one field across the whole engine-tool surface is untyped.
-        const OPEN_BY_DESIGN: &[&str] = &[
+        // Keyed by (tool, path) so the list says what it means: not "any field called document",
+        // but this one field of this one tool.
+        const OPEN_BY_DESIGN: &[(&str, &str)] = &[
             // The instrument document rides as raw JSON on purpose — the engine is the single
             // validation authority, so the tool surface deliberately does not describe its shape.
-            ".document",
+            ("get_current_instrument", ".document"),
         ];
-        if value.is_object() && !checked_here && !OPEN_BY_DESIGN.contains(&ctx.path.as_str()) {
-            unhandled("an open schema node (no `properties` to check against)");
+        // Arrays as well as objects: an array landing here means its node declared no `items`, so
+        // every element and everything beneath it would go unchecked. `SwapReport`'s `errors` and
+        // `warnings` are exactly that shape, and covering only objects left this hole open on the
+        // array axis — the same fail-open bug, one type away.
+        let composite = value.is_object() || value.is_array();
+        if composite && !checked_here && !OPEN_BY_DESIGN.contains(&(ctx.tool, ctx.path.as_str())) {
+            unhandled("an open schema node (nothing declared to check against)");
         }
     }
 
@@ -1407,6 +1421,16 @@ mod tests {
         fn child(&self, field: &str) -> ConformCtx<'a> {
             ConformCtx {
                 path: format!("{}.{field}", self.path),
+                seen: self.seen.clone(),
+                ..*self
+            }
+        }
+
+        /// The same context at one array element, so a failure names `.errors[2]` rather than
+        /// `.errors` — and so a path identifies exactly one node, which the exemption list relies on.
+        fn element(&self, index: usize) -> ConformCtx<'a> {
+            ConformCtx {
+                path: format!("{}[{index}]", self.path),
                 seen: self.seen.clone(),
                 ..*self
             }
