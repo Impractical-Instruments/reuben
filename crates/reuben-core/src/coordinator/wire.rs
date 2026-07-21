@@ -20,12 +20,13 @@
 //! one literal, and next to the types both ends serialize is where that agreement is hardest to
 //! break — even though the OSC port has nothing to do with this channel.
 //!
-//! [`Conflict`] is the worked example. Core has no conflict type at all — it reports an `expect`
-//! miss as a `SwapReport { ok: false }` carrying a `Diag`. Promoting that to a distinct answer is
-//! *this channel's* decision, so the type is this channel's. Likewise [`DocumentSnapshot`]: core
-//! exposes `document()` and `installed_hash()` separately, and pairing them is a wire shape. Ask
-//! "would this type still mean anything with the structure channel deleted?" — if no, it belongs
-//! here.
+//! [`Conflict`] is the worked example. Core has no conflict type — and no `expect` guard to
+//! produce one: `swap_document` is last-write-wins, and the optimistic-concurrency guard is a door
+//! concern (see rules: agent-mcp). *This channel* decides that its clients get a guard and that a
+//! miss is a distinct answer rather than a rejected report, so the type is this channel's. Likewise
+//! [`DocumentSnapshot`]: core exposes `document()` and `installed_hash()` separately, and pairing
+//! them is a wire shape. Ask "would this type still mean anything with the structure channel
+//! deleted?" — if no, it belongs here.
 //!
 //! Framing is newline-delimited JSON
 //! ([`Request::to_ndjson`]/[`Request::from_ndjson`] and the `Response` pair) so the channel

@@ -1408,7 +1408,7 @@ mod tests {
 
         // `handle_swap`'s order: swap_document → publish (never drops the map) → reclaim engine.
         let commit = |coordinator: &mut Coordinator, json: &str, want_width: usize| {
-            let report = coordinator.swap_document(json, None);
+            let report = coordinator.swap_document(json);
             assert!(report.report.ok, "swap should install: {:?}", report.report);
             let logical = coordinator.installed_channels();
             assert_eq!(

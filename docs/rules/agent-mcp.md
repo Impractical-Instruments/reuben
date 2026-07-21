@@ -29,7 +29,9 @@ under a strict error-layer discipline — **a failed validation is a successful 
 is reserved for the tool that could not do its job. The edit contract is the **whole document in, a
 report out**: no add-node/rewire surface exists, `send` is ephemeral audition (clobbered at the next
 swap), and the document is durable truth (try-then-commit). No bytes cross the wire — using a sample
-is a filesystem gesture.
+is a filesystem gesture. Where a door's clients can race, the door carries its own optimistic
+`expect` guard — a content-hash compare it makes before calling in, answered in its own shape —
+since core's swap is unguarded last-write-wins.
 
 The load-bearing invariant under all of this is **one source, many doors**: the contract types and
 introspection live OS-free in `reuben-core`, so the native CLI, the MCP sidecar, the web in-page tool
@@ -81,6 +83,11 @@ integration tests down to scripted human rituals for the perceptual judgments au
 ### The user owns the engine: the sidecar never spawns or kills reuben play, engine-touching tools fail fast with actionable guidance, and multiple clients are tolerated rather than arbitrated.
 
 [why](rationale/agent-mcp/user-owned-engine.md)
+
+<a id="expect-guard-is-a-door-concern"></a>
+### The optimistic-concurrency expect guard belongs to each door, not to core: a core swap is unguarded last-write-wins, and a door with concurrent clients compares the content hash its client holds against the installed one and answers in its own shape before calling in.
+
+[why](rationale/agent-mcp/expect-guard-is-a-door-concern.md)
 
 <a id="portable-tool-contracts"></a>
 ### The tool contract types and introspection live OS-free in reuben-core, so every door — native CLI, MCP sidecar, web in-page layer, web proxy — generates its schemas from that one source and no verb means different things behind different doors.

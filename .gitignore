@@ -24,5 +24,9 @@
 # Wrangler's local cache (writes account_id into the working tree)
 .wrangler/
 
-# Doc scripts generated files
-/scripts/__pycache__/
+# Python bytecode, wherever it lands. Unanchored on purpose: the rules-doc scripts live in
+# /scripts, but the skills ship their own Python too (absorb-adrs, control-surface), and running
+# any of their test suites drops a __pycache__ next to the source. A /scripts-only rule let two
+# .pyc blobs into #555.
+__pycache__/
+*.py[cod]

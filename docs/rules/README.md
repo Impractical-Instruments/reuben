@@ -180,7 +180,7 @@ and prose:
 ```
 docs/rules/README.md                     index: topic summaries + derived glossary
 docs/rules/<topic>.md                    now-story + rules; each rule links its rationale
-docs/rules/rationale/<topic>/<rule>.md   condensed why + "Distilled from: ADR-NNNN"
+docs/rules/rationale/<topic>/<rule>.md   condensed why + "Distilled from: …" / "Decided in: …"
 docs/adr/                                live ADRs (iteration surface); see docs/adr/README.md
 ```
 
@@ -189,8 +189,10 @@ slug (unique within its topic) as a raw-HTML `<a id>` anchor above the heading, 
 sentence can be reworded without breaking links. Exactly one rationale link.
 
 **Rationale** — the condensed "why" that still applies; superseded/dead-end paths are dropped
-(git keeps them). Ends with a `Distilled from: ADR-NNNN[, ADR-MMMM]` provenance line. One file
-per rule at `rationale/<topic>/<rule>.md`.
+(git keeps them). Ends with a `Distilled from: ADR-NNNN[, ADR-MMMM]` provenance line — or, for a
+rule settled without ever passing through an ADR, `Decided in: issue #NNN — settled directly, no
+ADR.` (a rule is allowed to be born here; do not back-fill an ADR just to satisfy the template).
+One file per rule at `rationale/<topic>/<rule>.md`.
 
 **Code-comment reference** — topic-level only, never a rule slug or ADR number:
 `// see rules: <topic>` in-repo, `// see engine rules: <topic>` cross-repo. Grammar:
