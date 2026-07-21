@@ -1205,14 +1205,21 @@ mod tests {
 
     /// [`server_with_osc`] for the tools that never touch the OSC plane.
     ///
-    /// The socket is leaked rather than dropped: were it closed, a future `send` test written
-    /// against this helper would pass having delivered nothing, because an unconnected UDP
-    /// `send_to` never surfaces a dead peer. Leaking keeps the address live for the process, so
-    /// such a test fails honestly instead of silently.
+    /// The stand-in endpoint is a process-wide socket held open for the run, not a per-call one
+    /// that gets dropped. A closed socket would be worse than useless here: an unconnected UDP
+    /// `send_to` never surfaces a dead peer, so a future `send` test written against this helper
+    /// would pass having delivered nothing at all. One socket, bound once, keeps that honest.
     fn server_with(transport: FakeTransport) -> ReubenServer {
-        let (server, osc) = server_with_osc(transport);
-        std::mem::forget(osc);
-        server
+        static SINK: std::sync::OnceLock<UdpSocket> = std::sync::OnceLock::new();
+        let addr = SINK
+            .get_or_init(|| UdpSocket::bind("127.0.0.1:0").expect("bind the stand-in OSC endpoint"))
+            .local_addr()
+            .expect("stand-in OSC address")
+            .to_string();
+        ReubenServer::with_engine(EngineLink::from_parts(
+            StructureClient::with_transport(transport, Duration::from_secs(5)),
+            addr,
+        ))
     }
 
     /// The `outputSchema` a tool actually advertises, pulled off the live router by tool name.
@@ -1241,31 +1248,78 @@ mod tests {
     /// nested objects and arrays. Shared sub-schemas (`Conflict`, `Diag`, `DiffSummary`,
     /// `StatusEndpoints`) are checked at their own level, not just at the top.
     fn check_conforms(node: &serde_json::Value, value: &serde_json::Value, ctx: &ConformCtx<'_>) {
-        // Resolve `$ref: "#/$defs/Name"` before anything else.
-        let node = match node.get("$ref").and_then(|r| r.as_str()) {
-            Some(r) => match r.strip_prefix("#/$defs/") {
-                Some(name) => &ctx.defs[name],
-                None => return,
-            },
-            None => node,
+        let unhandled = |what: &str| -> ! {
+            panic!(
+                "{} / {}{}: the conformance walker does not implement {what}, so it would skip \
+                 this node and everything beneath it — silently reporting success while checking \
+                 nothing. Teach it this shape rather than dropping the case.\nschema node: {}",
+                ctx.tool,
+                ctx.case,
+                ctx.path,
+                serde_json::to_string(node).unwrap_or_default()
+            )
         };
+
+        // Resolve `$ref: "#/$defs/Name"` before anything else.
+        if let Some(reference) = node.get("$ref").and_then(|r| r.as_str()) {
+            let Some(name) = reference.strip_prefix("#/$defs/") else {
+                // Includes schemars' bare `"$ref": "#"` for a self-recursive root type.
+                unhandled("a $ref outside #/$defs/");
+            };
+            let Some(target) = ctx.defs.get(name) else {
+                unhandled("a $ref to a missing $defs entry");
+            };
+            // Neither `$ref` nor `anyOf` consumes payload, so together they can form a
+            // non-decreasing cycle — schemars emits exactly that for `struct X(Option<Box<X>>)`,
+            // and unguarded recursion would overflow the stack, aborting the whole test binary
+            // rather than failing one test. Every other descent is payload-driven and self-bounding.
+            if !ctx.seen.iter().any(|s| s == name) {
+                check_conforms(target, value, &ctx.followed(name));
+            }
+            return;
+        }
+
+        for keyword in ["allOf", "prefixItems", "not", "if"] {
+            if node.get(keyword).is_some() {
+                unhandled(keyword);
+            }
+        }
+        if node
+            .get("additionalProperties")
+            .is_some_and(|a| a.is_object())
+        {
+            unhandled("additionalProperties-as-schema");
+        }
+
+        // A node may carry `properties` *and* a combinator, so check its own keys before
+        // descending — otherwise a field could ride in unchecked on a sibling keyword.
+        let mut checked_here = false;
+        if let (Some(emitted_obj), Some(props)) = (
+            value.as_object(),
+            node.get("properties").and_then(|p| p.as_object()),
+        ) {
+            check_object(node, props, emitted_obj, ctx);
+            checked_here = true;
+        }
 
         // schemars renders `Option<T>` as `anyOf: [T, {"type": "null"}]`. A present value is the
         // non-null branch — descend into it, or the whole Option-shaped surface (`conflict`,
         // `diff`, `guidance`) would go unchecked.
         if let Some(branches) = node.get("anyOf").or_else(|| node.get("oneOf")) {
-            let mut concrete = branches
+            let concrete: Vec<_> = branches
                 .as_array()
                 .map(|b| {
                     b.iter()
                         .filter(|v| v.get("type").and_then(|t| t.as_str()) != Some("null"))
+                        .collect()
                 })
-                .into_iter()
-                .flatten();
-            // Exactly one non-null branch is the Option pattern; a genuine union would need real
-            // validation to pick a branch, so leave those to the top-level key checks.
-            if let (Some(only), None) = (concrete.next(), concrete.next()) {
-                check_conforms(only, value, ctx);
+                .unwrap_or_default();
+            match concrete.as_slice() {
+                [only] => check_conforms(only, value, ctx),
+                // Null-only: `Option`'s None arm, nothing beneath to descend into.
+                [] => {}
+                // Picking a branch needs real validation, which this walker deliberately is not.
+                _ => unhandled("a multi-branch union"),
             }
             return;
         }
@@ -1279,15 +1333,29 @@ mod tests {
             return;
         }
 
-        let Some(emitted_obj) = value.as_object() else {
-            return;
-        };
-        // A schema with no `properties` (e.g. an untyped `serde_json::Value` field like
-        // `document`) constrains nothing — descending would invent requirements.
-        let Some(props) = node.get("properties").and_then(|p| p.as_object()) else {
-            return;
-        };
+        // An object payload under a schema describing no properties is an OPEN node: it promises
+        // nothing, so there is nothing to check. That is legitimate exactly once — the raw-JSON
+        // document — and is otherwise the silent-vacuum failure mode, because a field going opaque
+        // upstream (`schemars(with = …)`, a type swapped for `Value`) looks identical to a field
+        // that was always meant to be free-form. So openness must be DECLARED: this list is the
+        // assertion that exactly one field across the whole engine-tool surface is untyped.
+        const OPEN_BY_DESIGN: &[&str] = &[
+            // The instrument document rides as raw JSON on purpose — the engine is the single
+            // validation authority, so the tool surface deliberately does not describe its shape.
+            ".document",
+        ];
+        if value.is_object() && !checked_here && !OPEN_BY_DESIGN.contains(&ctx.path.as_str()) {
+            unhandled("an open schema node (no `properties` to check against)");
+        }
+    }
 
+    /// The two key-set assertions, for one object node.
+    fn check_object(
+        node: &serde_json::Value,
+        props: &serde_json::Map<String, serde_json::Value>,
+        emitted_obj: &serde_json::Map<String, serde_json::Value>,
+        ctx: &ConformCtx<'_>,
+    ) {
         let declared: std::collections::BTreeSet<&str> = props.keys().map(String::as_str).collect();
         let emitted: std::collections::BTreeSet<&str> =
             emitted_obj.keys().map(String::as_str).collect();
@@ -1329,16 +1397,29 @@ mod tests {
         case: &'a str,
         defs: &'a serde_json::Value,
         path: String,
+        /// `$defs` entries already followed on this path, so a self-referential schema terminates
+        /// instead of overflowing the stack (which aborts the test binary rather than failing a test).
+        seen: Vec<String>,
     }
 
     impl<'a> ConformCtx<'a> {
         /// The same context one field deeper.
         fn child(&self, field: &str) -> ConformCtx<'a> {
             ConformCtx {
-                tool: self.tool,
-                case: self.case,
-                defs: self.defs,
                 path: format!("{}.{field}", self.path),
+                seen: self.seen.clone(),
+                ..*self
+            }
+        }
+
+        /// The same context, having followed a `$ref` into `$defs`.
+        fn followed(&self, name: &str) -> ConformCtx<'a> {
+            let mut seen = self.seen.clone();
+            seen.push(name.to_string());
+            ConformCtx {
+                path: self.path.clone(),
+                seen,
+                ..*self
             }
         }
     }
@@ -1370,6 +1451,7 @@ mod tests {
                 case,
                 defs: &defs,
                 path: String::new(),
+                seen: Vec::new(),
             },
         );
     }

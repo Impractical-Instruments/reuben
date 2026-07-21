@@ -15,6 +15,11 @@
 //! framing) *plus* the payloads that exist only because this channel exists:
 //! [`DiagnosticsReport`], [`Conflict`], and [`DocumentSnapshot`].
 //!
+//! The rule is about *payload types*. The two endpoint consts ([`DEFAULT_STRUCTURE_ADDR`] and
+//! [`DEFAULT_OSC_PORT`]) are a deliberate exception: they live here because both ends must agree on
+//! one literal, and next to the types both ends serialize is where that agreement is hardest to
+//! break — even though the OSC port has nothing to do with this channel.
+//!
 //! [`Conflict`] is the worked example. Core has no conflict type at all — it reports an `expect`
 //! miss as a `SwapReport { ok: false }` carrying a `Diag`. Promoting that to a distinct answer is
 //! *this channel's* decision, so the type is this channel's. Likewise [`DocumentSnapshot`]: core
@@ -132,7 +137,9 @@ pub struct Conflict {
 ///
 /// The document is raw JSON, exactly as installed: the engine is the single validation authority,
 /// so nothing re-validates it on the way out.
-// Ships to models as `get_current_instrument`'s outputSchema description — human notes below.
+// Only the FIELD docs below reach a model: schemars emits no root `description`, so
+// `get_current_instrument`'s outputSchema root description is null and this block ships nowhere.
+// (`Conflict` is the opposite case — it is referenced from `$defs`, so its block does ship.)
 //
 // One type, three doors: `Response::Document`, the reuben-mcp client's return, and the
 // `get_current_instrument` tool's `structuredContent` are all this struct.
