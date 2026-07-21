@@ -115,7 +115,7 @@ fn master_dips_to_zero_and_recovers_while_survivor_rings_through() {
     let ch = slot.channels();
     let sustain = warm_to_sustain(&mut slot);
 
-    let report = coord.swap_document(&envelope_doc("/env"), None);
+    let report = coord.swap_document(&envelope_doc("/env"));
     assert!(report.report.ok, "swap should succeed: {:?}", report.report);
     assert_eq!(
         report.diff.as_ref().unwrap().survived,
@@ -170,7 +170,7 @@ fn a_non_survivor_is_cut_at_master_zero_and_stays_silent() {
     let ch = slot.channels();
     let sustain = warm_to_sustain(&mut slot);
 
-    let report = coord.swap_document(&envelope_doc("/eg"), None);
+    let report = coord.swap_document(&envelope_doc("/eg"));
     assert!(report.report.ok, "swap should succeed: {:?}", report.report);
     assert_eq!(
         report.diff.as_ref().unwrap().survived,
@@ -215,7 +215,7 @@ fn a_short_duplex_input_dark_degrades_instead_of_panicking_during_the_ramp() {
     );
 
     // Arm a swap so the very next fill runs the master-gain ramp (down → install-at-zero → up).
-    let report = coord.swap_document(&mic_doc(), None);
+    let report = coord.swap_document(&mic_doc());
     assert!(report.report.ok, "swap should install: {:?}", report.report);
 
     let edge = slot.ramp_edge_frames();

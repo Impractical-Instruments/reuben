@@ -153,7 +153,7 @@ fn rewiring_a_decaying_envelopes_neighbors_keeps_it_decaying_no_reattack() {
     );
 
     // Swap: same `/env`, neighbours rewired through `/pass`. `/env` and `/out` survive; `/pass` is new.
-    let report = coord.swap_document(&rewired_neighbors_doc(), None);
+    let report = coord.swap_document(&rewired_neighbors_doc());
     assert!(report.report.ok, "swap should install: {:?}", report.report);
     let diff = report.diff.as_ref().unwrap();
     assert_eq!(diff.survived, 2, "/env and /out survive the rewire");
@@ -240,7 +240,7 @@ fn bumping_voices_resets_the_pool_old_note_silent_fresh_pool_lives() {
     );
 
     // Swap 4 -> 8 voices: a config change, so `/voicer` resets (only `/out` survives).
-    let report = coord.swap_document(&voicer_doc(8), None);
+    let report = coord.swap_document(&voicer_doc(8));
     assert!(report.report.ok, "swap should install: {:?}", report.report);
     let diff = report.diff.as_ref().unwrap();
     assert!(
@@ -346,7 +346,7 @@ fn swap_keeps_a_harmony_driven_voice_in_tune_no_silent_retranspose() {
     render(&mut slot, 12_000);
 
     // Swap the identical document: /harm, /voicer, /out all survive (no reset, no add).
-    let report = coord.swap_document(&harmony_voicer_doc(), None);
+    let report = coord.swap_document(&harmony_voicer_doc());
     assert!(report.report.ok, "swap should install: {:?}", report.report);
     let diff = report.diff.as_ref().unwrap();
     assert_eq!(diff.survived, 3, "harm+voicer+out survive: {diff:?}");
@@ -408,7 +408,7 @@ fn the_install_step_makes_zero_heap_allocation() {
     // Off-thread build: the Coordinator allocates the new Engine + migration table here,
     // OUTSIDE the measured window. Swapping to the identical document keeps both nodes survivors, so
     // the transplant loop genuinely runs (two pointer swaps) inside the window.
-    let report = coord.swap_document(&doc, None);
+    let report = coord.swap_document(&doc);
     assert!(report.report.ok, "swap should install: {:?}", report.report);
     assert_eq!(
         report.diff.as_ref().unwrap().survived,

@@ -96,7 +96,7 @@ fn install_slot_callback_never_allocates_or_frees() {
     // allocates — outside the measured window). The RENDER SIDE then drains it, runs the
     // ramp, transplants the survivors, and posts the retiree across the fills the shared helper
     // measures below.
-    let report = coord.swap_document(&doc, None);
+    let report = coord.swap_document(&doc);
     assert!(report.report.ok, "swap should install: {:?}", report.report);
     assert_eq!(
         report.diff.as_ref().unwrap().survived,

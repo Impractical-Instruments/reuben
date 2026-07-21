@@ -139,13 +139,19 @@ impl Coordinator {
     /// install mailbox, and return a real [`SwapReport`].
     ///
     /// `source` is the document JSON (by-path resolution is a shell concern — the resolver seam —
-    /// kept out of this OS-free core). `expect`, when `Some`, is the installed content hash the
-    /// client believes is live: a mismatch is the optimistic-concurrency guard — the swap is
-    /// rejected, nothing installs, and the report names the *actual* installed hash so the client
-    /// re-reads and reconciles. A load/instantiate error likewise installs nothing. On success the
+    /// kept out of this OS-free core). A load/instantiate error installs nothing. On success the
     /// report carries the real survivor/reset [`DiffSummary`] and the now-installed hash, and the
-    /// canonical document + manifest advance (last-write-wins).
-    pub fn swap_document(&mut self, source: &str, expect: Option<&str>) -> SwapReport {
+    /// canonical document + manifest advance.
+    ///
+    /// **Arbitration here is last-write-wins, and this signature takes no `expect` guard** — the
+    /// optimistic-concurrency guard is a *door* concern (see rules: agent-mcp). A door with
+    /// concurrent clients compares the hash its client holds against
+    /// [`installed_hash`](Coordinator::installed_hash) and answers in its own shape before calling
+    /// in. That compare is the whole guard — not logic worth centralizing — and the doors that
+    /// need it do not all arrive through here (the web lane runs a restart-swap with no
+    /// Coordinator at all). Do not re-add the parameter: it would be a second implementation of
+    /// one decision, reachable only from its own test.
+    pub fn swap_document(&mut self, source: &str) -> SwapReport {
         // Opportunistically clear a previous swap whose retiree has come home, so a caller that
         // drove the render side between swaps can install the next one without a separate reclaim.
         self.mailbox.try_reclaim();
@@ -156,21 +162,6 @@ impl Coordinator {
             Ok(d) => d,
             Err(e) => return self.reject(vec![Diag::from_load(&e)]),
         };
-
-        // Optimistic-concurrency guard: honor `expect` before building anything.
-        if let Some(expected) = expect {
-            let actual = self.installed_hash();
-            if expected != actual {
-                return self.reject(vec![Diag {
-                    node: None,
-                    port: None,
-                    message: format!(
-                        "swap rejected: expected installed document {expected:?}, but {actual:?} \
-                         is installed — a concurrent edit won; re-read and reconcile"
-                    ),
-                }]);
-            }
-        }
 
         // Build the whole new Engine + its manifest off-thread.
         let (engine, new_manifest, warnings) =
@@ -387,7 +378,7 @@ mod tests {
             .expect("initial install");
             let mut rig = RenderRig::new(side);
             rig.render_peak(48_000); // ~1s: past attack+decay, sitting at sustain
-            let report = coord.swap_document(&base, None);
+            let report = coord.swap_document(&base);
             assert!(report.report.ok, "swap should succeed: {:?}", report.report);
             assert_eq!(
                 report.diff.as_ref().unwrap().survived,
@@ -409,7 +400,7 @@ mod tests {
             .expect("initial install");
             let mut rig = RenderRig::new(side);
             rig.render_peak(48_000);
-            let report = coord.swap_document(&envelope_doc("/eg"), None);
+            let report = coord.swap_document(&envelope_doc("/eg"));
             assert!(report.report.ok, "swap should succeed: {:?}", report.report);
             // `/env` removed, `/eg` added, `/out` survives.
             let diff = report.diff.as_ref().unwrap();
@@ -448,7 +439,7 @@ mod tests {
         let mut rig = RenderRig::new(side);
         rig.render_peak(48_000); // ~1s: past attack+decay, sitting at sustain
 
-        let report = coord.swap_document(&envelope_doc_attack(0.05), None);
+        let report = coord.swap_document(&envelope_doc_attack(0.05));
         assert!(report.report.ok, "swap should succeed: {:?}", report.report);
         // Only a runtime param moved: both nodes survive (neither fingerprint changed).
         assert_eq!(
@@ -500,7 +491,7 @@ mod tests {
         // Note-on (midi 69, gate 1), held — a voice rings at sustain.
         rig.queue_osc("/voicer/notes", &[Arg::F32(69.0), Arg::F32(1.0)]);
         rig.render_peak(24_000); // ~0.5s: the voice's envelope reaches sustain
-        let report = coord.swap_document(&voicer_doc(swap_to), None);
+        let report = coord.swap_document(&voicer_doc(swap_to));
         assert!(report.report.ok, "swap should succeed: {:?}", report.report);
         rig.poll_install();
         coord.try_reclaim();
@@ -574,7 +565,7 @@ mod tests {
             // Same path, different content — the document is byte-identical; only the bytes change.
             *buffer.lock().unwrap() = constant_sample(0.25);
         }
-        let report = coord.swap_document(SAMPLE_DOC, None);
+        let report = coord.swap_document(SAMPLE_DOC);
         assert!(report.report.ok, "swap should succeed: {:?}", report.report);
         rig.poll_install();
         coord.try_reclaim();
@@ -599,13 +590,15 @@ mod tests {
         );
     }
 
-    // ---- Concurrency guard + hash, and reclaim ----
+    // ---- Installed hash + geometry, and reclaim ----
 
     #[test]
-    fn expect_guard_rejects_a_stale_swap_and_names_the_installed_hash() {
-        // A swap carrying an `expect` that does not match the installed document is
-        // rejected — nothing installs — and the report names the actually-installed hash so the
-        // client re-reads and reconciles. `None` is last-write-wins and always installs.
+    fn installed_hash_advances_on_install_and_is_retained_by_a_rejected_swap() {
+        // `installed_hash` is the token every door hands its clients, and the one a door with
+        // concurrent clients compares its `expect` against (see rules: agent-mcp — the guard is
+        // the door's, not this method's). What core owes them: the hash advances when a document
+        // installs, and a rejected swap neither advances it nor lies about it — the report names
+        // what *keeps playing*, so a client that re-reads gets the doc it can actually hear.
         let (mut coord, _side, _w) = Coordinator::install_initial(
             &envelope_doc("/env"),
             Registry::builtin(),
@@ -615,11 +608,13 @@ mod tests {
         .expect("initial install");
         let installed = coord.installed_hash();
 
-        let stale = coord.swap_document(&envelope_doc("/eg"), Some("deadbeefdeadbeef"));
-        assert!(!stale.report.ok, "a stale expect is rejected");
-        assert!(stale.diff.is_none(), "a rejected swap installs nothing");
+        // Rejected (the loader refuses it): nothing installs, the hash stays put, and the report
+        // names it.
+        let rejected = coord.swap_document("{ not json");
+        assert!(!rejected.report.ok, "a bad document is rejected");
+        assert!(rejected.diff.is_none(), "a rejected swap installs nothing");
         assert_eq!(
-            stale.content_hash, installed,
+            rejected.content_hash, installed,
             "the report names what keeps playing"
         );
         assert_eq!(
@@ -628,13 +623,18 @@ mod tests {
             "the installed document is unchanged"
         );
 
-        // The matching guard (and LWW `None`) go through.
-        let ok = coord.swap_document(&envelope_doc("/eg"), Some(&installed));
-        assert!(ok.report.ok, "a matching expect installs: {:?}", ok.report);
+        // Installed: the hash advances, and the report agrees with the accessor.
+        let ok = coord.swap_document(&envelope_doc("/eg"));
+        assert!(ok.report.ok, "a valid document installs: {:?}", ok.report);
         assert_ne!(
             coord.installed_hash(),
             installed,
             "the swap advanced the doc"
+        );
+        assert_eq!(
+            ok.content_hash,
+            coord.installed_hash(),
+            "the report's hash is the installed hash"
         );
     }
 
@@ -674,7 +674,7 @@ mod tests {
         );
 
         // A successful swap to an input-binding document advances the reported geometry.
-        let report = coord.swap_document(MIC_PASSTHRU, None);
+        let report = coord.swap_document(MIC_PASSTHRU);
         assert!(report.report.ok, "swap should succeed: {:?}", report.report);
         assert_eq!(
             coord.installed_input_channels(),
@@ -683,7 +683,7 @@ mod tests {
         );
 
         // A rejected swap leaves the geometry unchanged (it names what keeps playing).
-        let rejected = coord.swap_document("{ not json", None);
+        let rejected = coord.swap_document("{ not json");
         assert!(!rejected.report.ok);
         assert_eq!(
             coord.installed_input_channels(),
@@ -706,7 +706,7 @@ mod tests {
         let mut rig = RenderRig::new(side);
 
         // Before the render side drains it, the retiree is not home.
-        let first = coord.swap_document(&envelope_doc("/env"), None);
+        let first = coord.swap_document(&envelope_doc("/env"));
         assert!(first.report.ok);
         assert!(
             coord.try_reclaim().is_none(),
@@ -720,7 +720,7 @@ mod tests {
         );
 
         // With the slot clear, a second swap installs cleanly.
-        let second = coord.swap_document(&envelope_doc("/env"), None);
+        let second = coord.swap_document(&envelope_doc("/env"));
         assert!(
             second.report.ok,
             "second swap installs: {:?}",

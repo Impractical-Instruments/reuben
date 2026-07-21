@@ -372,8 +372,9 @@ fn dispatch(state: &StructureState, line: &str) -> Response {
 ///    start). A read failure is a rejected [`SwapReport`] (no install, prior retained), not a
 ///    channel `Error`.
 /// 2. **Arbitration**: a stale `expect` rejects with the real installed hash as
-///    [`Response::Conflict`] and does **not** swap. Absent `expect` is last-write-wins. Done here
-///    (not inside `swap_document`) so the wire keeps M1's distinct `Conflict` response shape.
+///    [`Response::Conflict`] and does **not** swap. Absent `expect` is last-write-wins. This door
+///    owns the guard outright — core's swap is unguarded last-write-wins (see rules: agent-mcp) —
+///    which is what lets the wire keep its distinct `Conflict` response shape.
 /// 3. **Swap**: [`Coordinator::swap_document`] validates + builds a whole new Engine off-thread,
 ///    fills the install mailbox, and returns the real [`SwapReport`] (survivor/reset stats). A
 ///    load/plan error aborts with `ok: false` and the prior hash — the old engine keeps playing
@@ -395,7 +396,9 @@ fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>
         .lock()
         .expect("coordinator mutex poisoned");
 
-    // 2. Optimistic-concurrency guard: a stale expect is a Conflict, no swap.
+    // 2. Optimistic-concurrency guard: a stale expect is a Conflict, no swap. THE guard for this
+    //    door — core's `swap_document` has none — and it lives inside the lock so the compare and
+    //    the swap below are one critical section.
     if let Some(expected) = &expect {
         let actual = coordinator.installed_hash();
         if expected != &actual {
@@ -406,8 +409,8 @@ fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>
         }
     }
 
-    // 3. Swap via the mailbox. `expect` is already honored above, so pass `None`.
-    let mut report = coordinator.swap_document(&json, None);
+    // 3. Swap via the mailbox. Unguarded by construction: arbitration was settled in step 2.
+    let mut report = coordinator.swap_document(&json);
     if report.report.ok {
         // 4. Publish the new engine's device output map + fold the dark-degrade warning — BEFORE the
         //    engine reclaim (B1). `publish` fills the output-map mailbox (never dropping the map),
