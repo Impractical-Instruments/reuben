@@ -27,6 +27,8 @@
 //! `Io::input`/`Io::output` primitives into the impls that were their only callers). The one
 //! type-erased held read left is [`Io::latch_arg`], the interface pipe's forwarding seam.
 
+pub mod shell;
+
 use std::sync::Arc;
 
 use smallvec::SmallVec;
