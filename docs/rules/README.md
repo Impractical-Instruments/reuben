@@ -180,7 +180,7 @@ and prose:
 ```
 docs/rules/README.md                     index: topic summaries + derived glossary
 docs/rules/<topic>.md                    now-story + rules; each rule links its rationale
-docs/rules/rationale/<topic>/<rule>.md   condensed why + "Distilled from: ADR-NNNN"
+docs/rules/rationale/<topic>/<rule>.md   condensed why + "Distilled from: …" / "Decided in: …"
 docs/adr/                                live ADRs (iteration surface); see docs/adr/README.md
 ```
 
