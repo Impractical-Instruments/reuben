@@ -18,5 +18,5 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .enable_time()
         .build()?;
 
-    runtime.block_on(reuben_mcp::serve_stdio(Box::new(EngineLink::default())))
+    runtime.block_on(reuben_mcp::serve_stdio(EngineLink::default()))
 }

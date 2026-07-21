@@ -15,11 +15,11 @@
 //! [`reuben_native::resources::FsResolver`], and `scaffold_instrument` mints a minimal valid
 //! document by value ([`reuben_core::scaffold_instrument`]); the five engine
 //! tools (`send`/`engine_status`/`swap`/`get_current_instrument`/`get_diagnostics`, #318) reach a
-//! user-owned `reuben play` through the [`EngineChannel`] seam:
+//! user-owned `reuben play` through the [`EngineLink`]'s two planes:
 //!
 //! - `send` → [`reuben_native::osc::encode`] over the OSC/UDP control path (probe-first liveness).
 //! - `engine_status`/`swap`/`get_current_instrument`/`get_diagnostics` → the structure channel's
-//!   four verbs, via [`StructureClient`] behind [`EngineLink`].
+//!   four verbs, via [`StructureClient`] over an injectable [`StructureTransport`].
 //!
 //! Error-layer discipline: a failing validation or a rejected swap is an ORDINARY
 //! result — the tool worked; `isError` is reserved for the can't-do-the-job cases (an unreachable
@@ -49,8 +49,9 @@ use serde::{Deserialize, Serialize};
 
 mod client;
 mod engine;
-pub use client::{DocumentSnapshot, StructureClient, StructureError, SwapOutcome};
-pub use engine::{default_osc_addr, EngineChannel, EngineLink};
+pub use client::{StructureClient, StructureError, StructureTransport, SwapOutcome, TcpTransport};
+pub use engine::{default_osc_addr, EngineLink};
+pub use reuben_core::coordinator::{Conflict, DocumentSnapshot};
 
 /// The tool surface this door advertises, in roster order — the exact spellings
 /// advertised over `tools/list`. Derived from the single-source [`reuben_core::tools::CONTRACTS`]
@@ -434,20 +435,11 @@ pub struct EngineStatusOutput {
     pub guidance: Option<String>,
 }
 
-/// The `expect`-guard miss a [`SwapToolOutput`] carries: re-serialized field-for-
-/// field from the channel's conflict so the model reconciles by re-reading, not by threading state.
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub struct SwapConflict {
-    /// The hash the client asserted was installed.
-    pub expected: String,
-    /// The hash actually still playing — re-read via `get_current_instrument` to reconcile.
-    pub actual: String,
-}
-
 /// Output for `swap`: the shared [`SwapReport`] shape (ok, errors, warnings,
 /// content_hash, and on success the diff summary) plus, on an `expect`-guard miss, `conflict`.
-/// One `outputSchema` spans the install, validation-failure, and guard-miss cases; the flattened
-/// [`SwapReport`] is the same serde type the structure channel serializes (no drift).
+/// One `outputSchema` spans the install, validation-failure, and guard-miss cases; both the
+/// flattened [`SwapReport`] and the [`Conflict`] are the same serde types the structure channel
+/// serializes, so the tool shape and the wire shape cannot drift.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct SwapToolOutput {
     /// The install report: `ok`, `errors`, `warnings`, the installed (or still-playing) content
@@ -456,7 +448,7 @@ pub struct SwapToolOutput {
     pub report: SwapReport,
     /// Present only on an `expect`-guard miss: nothing was installed.
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conflict: Option<SwapConflict>,
+    pub conflict: Option<Conflict>,
 }
 
 impl SwapToolOutput {
@@ -469,64 +461,46 @@ impl SwapToolOutput {
         }
     }
 
-    /// The `expect` guard missed: nothing installed, so `ok: false` with no diff; the
-    /// `content_hash` names what keeps playing (the conflict's `actual`), and `conflict` carries
-    /// both hashes field-for-field for the model to reconcile.
-    fn conflict(expected: String, actual: String) -> Self {
+    /// The `expect` guard missed: nothing installed. The report is
+    /// [`SwapReport::rejected`] — which owns the "`content_hash` names what keeps playing"
+    /// contract — and the channel's own [`Conflict`] rides along verbatim for the model to
+    /// reconcile against.
+    fn conflict(conflict: Conflict) -> Self {
         Self {
-            report: SwapReport {
-                report: Report {
-                    ok: false,
-                    errors: vec![],
-                    warnings: vec![],
-                },
-                content_hash: actual.clone(),
-                diff: None,
-            },
-            conflict: Some(SwapConflict { expected, actual }),
+            report: SwapReport::rejected(conflict.actual.clone()),
+            conflict: Some(conflict),
         }
     }
 }
 
-/// Output for `get_current_instrument`: the Coordinator's canonical installed
-/// document (raw JSON — the engine is the single validation authority) and its content hash.
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub struct CurrentInstrumentOutput {
-    /// The document the engine is currently playing.
-    pub document: serde_json::Value,
-    /// Its content hash — the token a later `swap`'s `expect` guard compares.
-    pub content_hash: String,
-}
-
-/// The reuben MCP server: the declared-roster tool router plus the engine channel seam.
+/// The reuben MCP server: the declared-roster tool router plus the engine link.
 ///
 /// Pure tools (`describe_operators`, `describe_instrument`, `validate`) are always available;
 /// the engine tools (`send`, `swap`, `get_current_instrument`, `get_diagnostics`) reach a
-/// user-owned `reuben play` through [`EngineChannel`] and fail fast when it is unreachable.
+/// user-owned `reuben play` through [`EngineLink`] and fail fast when it is unreachable.
 /// `engine_status` answers "reachable?" and so is never itself an error.
 pub struct ReubenServer {
     tool_router: ToolRouter<ReubenServer>,
-    channel: Box<dyn EngineChannel>,
+    engine: EngineLink,
 }
 
 #[tool_router]
 impl ReubenServer {
-    /// A server backed by the shipping [`EngineLink`] on the shared default endpoints
+    /// A server backed by an [`EngineLink`] on the shared default endpoints
     /// (`reuben_core::coordinator::DEFAULT_STRUCTURE_ADDR` and [`default_osc_addr`]): the engine
     /// tools reach a live `reuben play` over the real structure channel + OSC. The
-    /// binary's composition root (`main`) injects the channel via [`with_channel`](Self::with_channel);
+    /// binary's composition root (`main`) injects the link via [`with_engine`](Self::with_engine);
     /// this is the sensible default.
     pub fn new() -> Self {
-        Self::with_channel(Box::new(EngineLink::default()))
+        Self::with_engine(EngineLink::default())
     }
 
-    /// A server with an explicit engine channel — the seam the unit tests drive with an in-memory
-    /// fake to exercise every engine-tool branch (reachable, unreachable, conflict) without a
-    /// socket.
-    pub fn with_channel(channel: Box<dyn EngineChannel>) -> Self {
+    /// A server with an explicit engine link — the injection point for tests, which pair a fake
+    /// structure transport with a UDP socket they bound themselves.
+    pub fn with_engine(engine: EngineLink) -> Self {
         Self {
             tool_router: Self::tool_router(),
-            channel,
+            engine,
         }
     }
 
@@ -722,10 +696,10 @@ impl ReubenServer {
         }
         // Probe-first: confirm liveness on the structure channel before dispatching,
         // since UDP would swallow a dead port silently. Any ping failure ⇒ the fail-fast result.
-        if self.channel.ping().is_err() {
+        if self.engine.structure().ping().is_err() {
             return Ok(engine_unreachable());
         }
-        match self.channel.send_osc(&datagrams) {
+        match self.engine.send_osc(&datagrams) {
             Ok(sent) => structured_ok(
                 &SendOutput { sent },
                 format!("dispatched {sent} OSC message(s) to the engine"),
@@ -748,12 +722,12 @@ impl ReubenServer {
             .expect("EngineStatusOutput is an object schema")
     )]
     async fn engine_status(&self) -> Result<CallToolResult, McpError> {
-        let reachable = self.channel.ping().is_ok();
+        let reachable = self.engine.structure().ping().is_ok();
         let output = EngineStatusOutput {
             reachable,
             endpoints: StatusEndpoints {
-                structure: self.channel.structure_endpoint(),
-                osc: self.channel.osc_endpoint(),
+                structure: self.engine.structure_endpoint(),
+                osc: self.engine.osc_endpoint(),
             },
             sidecar: SidecarInfo {
                 version: env!("CARGO_PKG_VERSION").to_string(),
@@ -796,7 +770,8 @@ impl ReubenServer {
         Parameters(params): Parameters<SwapParams>,
     ) -> Result<CallToolResult, McpError> {
         match self
-            .channel
+            .engine
+            .structure()
             .swap(DocSource::Path(params.path), params.expect)
         {
             // An install report — success OR ok:false load failure — is an ORDINARY result: the
@@ -807,19 +782,15 @@ impl ReubenServer {
             }
             // An `expect`-guard miss is the guard guarding, not the tool failing:
             // nothing installed, ordinary result carrying the conflict to reconcile.
-            Ok(SwapOutcome::Conflict { expected, actual }) => {
+            Ok(SwapOutcome::Conflict(conflict)) => {
                 let summary = format!(
-                    "swap rejected by the expect guard: the engine is playing {actual}, not the \
-                     expected {expected} — re-read with get_current_instrument and reconcile"
+                    "swap rejected by the expect guard: the engine is playing {}, not the \
+                     expected {} — re-read with get_current_instrument and reconcile",
+                    conflict.actual, conflict.expected
                 );
-                structured_ok(&SwapToolOutput::conflict(expected, actual), summary)
+                structured_ok(&SwapToolOutput::conflict(conflict), summary)
             }
-            Err(why) if why.is_unreachable() => Ok(engine_unreachable()),
-            // The engine answered, but not with a domain report (a channel-level fault): the tool
-            // could not do its job.
-            Err(why) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                "the swap could not be completed: {why}"
-            ))])),
+            Err(why) => Ok(map_structure_err("the swap could not be completed", why)),
         }
     }
 
@@ -829,26 +800,22 @@ impl ReubenServer {
         name = "get_current_instrument",
         description = "Return the document the engine is currently playing, with its content hash (the token a \
                        later swap's `expect` guard compares). Fails fast if no engine is reachable.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<CurrentInstrumentOutput>()
-            .expect("CurrentInstrumentOutput is an object schema")
+        output_schema = rmcp::handler::server::tool::schema_for_output::<DocumentSnapshot>()
+            .expect("DocumentSnapshot is an object schema")
     )]
     async fn get_current_instrument(&self) -> Result<CallToolResult, McpError> {
-        match self.channel.get_document() {
+        match self.engine.structure().get_document() {
             Ok(snapshot) => {
                 let summary = format!(
                     "current instrument (content_hash {})",
                     snapshot.content_hash
                 );
-                let output = CurrentInstrumentOutput {
-                    document: snapshot.document,
-                    content_hash: snapshot.content_hash,
-                };
-                structured_ok(&output, summary)
+                structured_ok(&snapshot, summary)
             }
-            Err(why) if why.is_unreachable() => Ok(engine_unreachable()),
-            Err(why) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                "could not read the current instrument: {why}"
-            ))])),
+            Err(why) => Ok(map_structure_err(
+                "could not read the current instrument",
+                why,
+            )),
         }
     }
 
@@ -862,7 +829,7 @@ impl ReubenServer {
             .expect("DiagnosticsReport is an object schema")
     )]
     async fn get_diagnostics(&self) -> Result<CallToolResult, McpError> {
-        match self.channel.get_diagnostics() {
+        match self.engine.structure().get_diagnostics() {
             Ok(report) => {
                 let summary = format!(
                     "output_xruns={} input_ring_underruns={} input_ring_overruns={} \
@@ -874,12 +841,27 @@ impl ReubenServer {
                 );
                 structured_ok(&report, summary)
             }
-            Err(why) if why.is_unreachable() => Ok(engine_unreachable()),
-            Err(why) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                "could not read the engine diagnostics: {why}"
-            ))])),
+            Err(why) => Ok(map_structure_err(
+                "could not read the engine diagnostics",
+                why,
+            )),
         }
     }
+}
+
+/// The one place a failed structure exchange becomes a tool result, so the three structure-reading
+/// tools cannot classify it differently.
+///
+/// The split is the error-layer discipline: an **unreachable** engine gets the shared fail-fast
+/// result carrying the "start `reuben play`" guidance, because that is the one failure the user can
+/// act on. Anything else — the engine answered, but with a channel-level fault rather than a domain
+/// answer — is the tool genuinely unable to do its job, reported under `context` so the model
+/// learns *which* call died.
+fn map_structure_err(context: &str, why: StructureError) -> CallToolResult {
+    if why.is_unreachable() {
+        return engine_unreachable();
+    }
+    CallToolResult::error(vec![ContentBlock::text(format!("{context}: {why}"))])
 }
 
 impl Default for ReubenServer {
@@ -1105,12 +1087,9 @@ fn validate_summary(report: &Report) -> String {
 
 /// Serve the MCP protocol over stdio until the client closes the connection. The
 /// current_thread runtime is built by `main`; this is the async body it drives. `main` injects the
-/// engine channel (the real [`EngineLink`] in the shipping binary), so the composition root stays
-/// in `main` and tests can serve with a fake channel.
-pub async fn serve_stdio(
-    channel: Box<dyn EngineChannel>,
-) -> Result<(), Box<dyn std::error::Error>> {
-    let service = ReubenServer::with_channel(channel)
+/// [`EngineLink`], so the composition root stays in `main`.
+pub async fn serve_stdio(engine: EngineLink) -> Result<(), Box<dyn std::error::Error>> {
+    let service = ReubenServer::with_engine(engine)
         .serve(rmcp::transport::stdio())
         .await?;
     service.waiting().await?;
@@ -1121,95 +1100,80 @@ pub async fn serve_stdio(
 mod tests {
     use super::*;
 
-    /// An in-memory [`EngineChannel`] the engine-tool unit tests inject to exercise every branch
-    /// (reachable, unreachable, conflict, install) without a live `reuben play` or a socket. Each
-    /// structure verb returns its configured outcome, or the fail-fast [`StructureError::Unreachable`]
-    /// when none is configured — modelling a down engine per verb; `ping` reports `ping_ok`.
-    struct FakeEngine {
-        ping_ok: bool,
-        swap: Option<SwapOutcome>,
-        document: Option<DocumentSnapshot>,
-        diagnostics: Option<DiagnosticsReport>,
+    use reuben_core::coordinator::{Request, Response, DEFAULT_STRUCTURE_ADDR};
+    use std::io;
+    use std::net::UdpSocket;
+    use std::time::Duration;
+
+    /// A [`StructureTransport`] answering with canned NDJSON instead of dialing a socket — the
+    /// seam the engine-tool unit tests inject.
+    ///
+    /// It substitutes only the *bytes on the wire*, so everything above it runs for real: the tool
+    /// body serializes a genuine [`Request`] (parsed here, so a malformed one is a failed test),
+    /// [`StructureClient`] parses a genuine [`Response`], and an unconfigured verb returns the same
+    /// [`io::Error`] a dead socket would — taking the real path to
+    /// [`StructureError::Unreachable`] rather than a hand-written stand-in for it.
+    #[derive(Debug, Default)]
+    struct FakeTransport {
+        ping: Option<Response>,
+        swap: Option<Response>,
+        document: Option<Response>,
+        diagnostics: Option<Response>,
     }
 
-    impl FakeEngine {
-        /// A reachable engine with no verb outcomes configured yet.
+    impl FakeTransport {
+        /// A reachable engine — `ping` answers `pong` — with no other verb configured yet.
         fn reachable() -> Self {
             Self {
-                ping_ok: true,
-                swap: None,
-                document: None,
-                diagnostics: None,
+                ping: Some(Response::Pong),
+                ..Self::default()
             }
         }
 
-        /// A down engine: `ping` fails and every structure verb is unreachable.
+        /// A down engine: every verb, `ping` included, fails the way a refused connect does.
         fn unreachable() -> Self {
-            Self {
-                ping_ok: false,
-                swap: None,
-                document: None,
-                diagnostics: None,
-            }
+            Self::default()
         }
 
-        fn with_swap(mut self, outcome: SwapOutcome) -> Self {
-            self.swap = Some(outcome);
+        fn with_swap(mut self, response: Response) -> Self {
+            self.swap = Some(response);
             self
         }
 
         fn with_document(mut self, snapshot: DocumentSnapshot) -> Self {
-            self.document = Some(snapshot);
+            self.document = Some(Response::Document(snapshot));
             self
         }
 
         fn with_diagnostics(mut self, report: DiagnosticsReport) -> Self {
-            self.diagnostics = Some(report);
+            self.diagnostics = Some(Response::Diagnostics(report));
             self
         }
     }
 
-    /// The fail-fast error a fake verb returns when its outcome is unconfigured — the same
-    /// unreachable case the real client raises on a dead engine.
-    fn down() -> StructureError {
-        StructureError::Unreachable(ENGINE_UNREACHABLE_GUIDANCE.to_string())
-    }
-
-    impl EngineChannel for FakeEngine {
-        fn ping(&self) -> Result<(), StructureError> {
-            if self.ping_ok {
-                Ok(())
-            } else {
-                Err(down())
+    impl StructureTransport for FakeTransport {
+        fn round_trip(&self, line: &str, _read_timeout: Duration) -> io::Result<String> {
+            let request = Request::from_ndjson(line)
+                .expect("the tool body must put a well-formed request line on the wire");
+            let configured = match request {
+                Request::Ping => &self.ping,
+                Request::Swap { .. } => &self.swap,
+                Request::GetDocument => &self.document,
+                Request::GetDiagnostics => &self.diagnostics,
+            };
+            match configured {
+                Some(response) => Ok(response.to_ndjson()),
+                // An unconfigured verb models a down engine, delivered exactly as a dead port
+                // does: an io::Error the client classifies, not a pre-classified StructureError.
+                None => Err(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    "connection refused",
+                )),
             }
         }
 
-        fn swap(
-            &self,
-            _source: DocSource,
-            _expect: Option<String>,
-        ) -> Result<SwapOutcome, StructureError> {
-            self.swap.clone().ok_or_else(down)
-        }
-
-        fn get_document(&self) -> Result<DocumentSnapshot, StructureError> {
-            self.document.clone().ok_or_else(down)
-        }
-
-        fn get_diagnostics(&self) -> Result<DiagnosticsReport, StructureError> {
-            self.diagnostics.ok_or_else(down)
-        }
-
-        fn send_osc(&self, datagrams: &[Vec<u8>]) -> std::io::Result<usize> {
-            Ok(datagrams.len())
-        }
-
-        fn structure_endpoint(&self) -> String {
-            "127.0.0.1:9124".to_string()
-        }
-
-        fn osc_endpoint(&self) -> String {
-            default_osc_addr()
+        fn endpoint(&self) -> &str {
+            DEFAULT_STRUCTURE_ADDR
         }
     }
 
@@ -1221,9 +1185,381 @@ mod tests {
             .block_on(future)
     }
 
-    /// A server whose engine tools reach the given fake channel.
-    fn server_with(fake: FakeEngine) -> ReubenServer {
-        ReubenServer::with_channel(Box::new(fake))
+    /// A server whose structure channel answers from `transport`, paired with the UDP socket
+    /// standing in for the engine's OSC-in endpoint.
+    ///
+    /// The OSC plane is **not** faked: `send` really binds a socket and really dispatches
+    /// datagrams, which really arrive here — so the tests assert on encoded bytes rather than on a
+    /// counter, and nothing leaks to a developer's live `reuben play` on the default port.
+    fn server_with_osc(transport: FakeTransport) -> (ReubenServer, UdpSocket) {
+        let osc = UdpSocket::bind("127.0.0.1:0").expect("bind a stand-in OSC endpoint");
+        osc.set_read_timeout(Some(Duration::from_millis(500)))
+            .expect("bounded read so a missing datagram fails instead of hanging");
+        let osc_addr = osc.local_addr().expect("stand-in OSC address").to_string();
+        let server = ReubenServer::with_engine(EngineLink::from_parts(
+            StructureClient::with_transport(transport, Duration::from_secs(5)),
+            osc_addr,
+        ));
+        (server, osc)
+    }
+
+    /// [`server_with_osc`] for the tools that never touch the OSC plane.
+    ///
+    /// The stand-in endpoint is one process-wide socket held open for the run, not a per-call one
+    /// that gets dropped. Dropping it would free the port back to the OS mid-run, where it could be
+    /// recycled into another test's [`server_with_osc`] receiver — and since an unconnected UDP
+    /// `send_to` never surfaces a dead peer, nothing would report the crossed wires. Assert
+    /// delivery through [`server_with_osc`], which hands back the socket; this helper only
+    /// guarantees the address stays inert and bound.
+    fn server_with(transport: FakeTransport) -> ReubenServer {
+        static SINK: std::sync::OnceLock<UdpSocket> = std::sync::OnceLock::new();
+        let addr = SINK
+            .get_or_init(|| UdpSocket::bind("127.0.0.1:0").expect("bind the stand-in OSC endpoint"))
+            .local_addr()
+            .expect("stand-in OSC address")
+            .to_string();
+        ReubenServer::with_engine(EngineLink::from_parts(
+            StructureClient::with_transport(transport, Duration::from_secs(5)),
+            addr,
+        ))
+    }
+
+    /// The `outputSchema` a tool actually advertises, pulled off the live router by tool name.
+    ///
+    /// Read from the router rather than re-deriving it from a type the test names, so the test is
+    /// bound to what the tool *declares*. Re-point a `#[tool(output_schema = …)]` at the wrong type
+    /// and this notices; re-deriving from the type the test picked would not.
+    fn advertised_output_schema(tool: &str) -> serde_json::Value {
+        let server = ReubenServer::new();
+        let declared = server
+            .tool_router
+            .list_all()
+            .into_iter()
+            .find(|t| t.name == tool)
+            .unwrap_or_else(|| panic!("`{tool}` is registered"));
+        serde_json::to_value(
+            declared
+                .output_schema
+                .as_ref()
+                .unwrap_or_else(|| panic!("`{tool}` advertises an outputSchema")),
+        )
+        .expect("schema as value")
+    }
+
+    /// Walk a payload against a schema node, following `$ref` into `$defs` and descending into
+    /// nested objects and arrays. Shared sub-schemas (`Conflict`, `Diag`, `DiffSummary`,
+    /// `StatusEndpoints`) are checked at their own level, not just at the top.
+    fn check_conforms(node: &serde_json::Value, value: &serde_json::Value, ctx: &ConformCtx<'_>) {
+        let unhandled = |what: &str| -> ! {
+            panic!(
+                "{} / {}{}: the conformance walker does not implement {what}, so it would skip \
+                 this node and everything beneath it — silently reporting success while checking \
+                 nothing. Teach it this shape rather than dropping the case.\nschema node: {}",
+                ctx.tool,
+                ctx.case,
+                ctx.path,
+                serde_json::to_string(node).unwrap_or_default()
+            )
+        };
+
+        // Resolve `$ref: "#/$defs/Name"` before anything else.
+        if let Some(reference) = node.get("$ref").and_then(|r| r.as_str()) {
+            let Some(name) = reference.strip_prefix("#/$defs/") else {
+                // Includes schemars' bare `"$ref": "#"` for a self-recursive root type.
+                unhandled("a $ref outside #/$defs/");
+            };
+            let Some(target) = ctx.defs.get(name) else {
+                unhandled("a $ref to a missing $defs entry");
+            };
+            // Neither `$ref` nor `anyOf` consumes payload, so together they can form a
+            // non-decreasing cycle — schemars emits exactly that for `struct X(Option<Box<X>>)`,
+            // and unguarded recursion would overflow the stack, aborting the whole test binary
+            // rather than failing one test. Every other descent is payload-driven and self-bounding.
+            //
+            // Stopping is necessary but must not be quiet: a finite payload under mutually
+            // recursive `$defs` would otherwise skip every occurrence after the first, which is
+            // the silent-skip failure mode this walker exists to refuse. So say so instead.
+            if ctx.seen.iter().any(|s| s == name) {
+                unhandled("a recursive $defs cycle");
+            }
+            check_conforms(target, value, &ctx.followed(name));
+            return;
+        }
+
+        for keyword in ["allOf", "prefixItems", "not", "if"] {
+            if node.get(keyword).is_some() {
+                unhandled(keyword);
+            }
+        }
+        if node
+            .get("additionalProperties")
+            .is_some_and(|a| a.is_object())
+        {
+            unhandled("additionalProperties-as-schema");
+        }
+
+        // A node may carry `properties` *and* a combinator, so check its own keys before
+        // descending — otherwise a field could ride in unchecked on a sibling keyword.
+        let mut checked_here = false;
+        if let (Some(emitted_obj), Some(props)) = (
+            value.as_object(),
+            node.get("properties").and_then(|p| p.as_object()),
+        ) {
+            check_object(node, props, emitted_obj, ctx);
+            checked_here = true;
+        }
+
+        // schemars renders `Option<T>` as `anyOf: [T, {"type": "null"}]`. A present value is the
+        // non-null branch — descend into it, or the whole Option-shaped surface (`conflict`,
+        // `diff`, `guidance`) would go unchecked.
+        if let Some(branches) = node.get("anyOf").or_else(|| node.get("oneOf")) {
+            let concrete: Vec<_> = branches
+                .as_array()
+                .map(|b| {
+                    b.iter()
+                        .filter(|v| v.get("type").and_then(|t| t.as_str()) != Some("null"))
+                        .collect()
+                })
+                .unwrap_or_default();
+            match concrete.as_slice() {
+                [only] => check_conforms(only, value, ctx),
+                // Null-only: `Option`'s None arm, nothing beneath to descend into.
+                [] => {}
+                // Picking a branch needs real validation, which this walker deliberately is not.
+                _ => unhandled("a multi-branch union"),
+            }
+            return;
+        }
+
+        if let Some(items) = node.get("items") {
+            if let Some(array) = value.as_array() {
+                for (index, element) in array.iter().enumerate() {
+                    check_conforms(items, element, &ctx.element(index));
+                }
+            }
+            return;
+        }
+
+        // An object payload under a schema describing no properties is an OPEN node: it promises
+        // nothing, so there is nothing to check. That is legitimate exactly once — the raw-JSON
+        // document — and is otherwise the silent-vacuum failure mode, because a field going opaque
+        // upstream (`schemars(with = …)`, a type swapped for `Value`) looks identical to a field
+        // that was always meant to be free-form. So openness must be DECLARED: this list is the
+        // assertion that exactly one field across the whole engine-tool surface is untyped.
+        // Keyed by (tool, path) so the list says what it means: not "any field called document",
+        // but this one field of this one tool.
+        const OPEN_BY_DESIGN: &[(&str, &str)] = &[
+            // The instrument document rides as raw JSON on purpose — the engine is the single
+            // validation authority, so the tool surface deliberately does not describe its shape.
+            ("get_current_instrument", ".document"),
+        ];
+        // Arrays as well as objects: an array landing here means its node declared no `items`, so
+        // every element and everything beneath it would go unchecked. `SwapReport`'s `errors` and
+        // `warnings` are exactly that shape, and covering only objects left this hole open on the
+        // array axis — the same fail-open bug, one type away.
+        let composite = value.is_object() || value.is_array();
+        if composite && !checked_here && !OPEN_BY_DESIGN.contains(&(ctx.tool, ctx.path.as_str())) {
+            unhandled("an open schema node (nothing declared to check against)");
+        }
+    }
+
+    /// The two key-set assertions, for one object node.
+    fn check_object(
+        node: &serde_json::Value,
+        props: &serde_json::Map<String, serde_json::Value>,
+        emitted_obj: &serde_json::Map<String, serde_json::Value>,
+        ctx: &ConformCtx<'_>,
+    ) {
+        let declared: std::collections::BTreeSet<&str> = props.keys().map(String::as_str).collect();
+        let emitted: std::collections::BTreeSet<&str> =
+            emitted_obj.keys().map(String::as_str).collect();
+        let required: std::collections::BTreeSet<&str> = node["required"]
+            .as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str()).collect())
+            .unwrap_or_default();
+
+        let (tool, case, path) = (ctx.tool, ctx.case, ctx.path.as_str());
+        let undeclared: Vec<_> = emitted.difference(&declared).collect();
+        assert!(
+            undeclared.is_empty(),
+            "{tool} / {case}{path}: serialized key(s) {undeclared:?} are not declared by the \
+             advertised outputSchema — the tool sends fields it never promised, so a client \
+             cannot rely on the schema to know the shape.\n\
+             schema properties: {declared:?}\npayload keys: {emitted:?}"
+        );
+
+        let promised_but_missing: Vec<_> = required.difference(&emitted).collect();
+        assert!(
+            promised_but_missing.is_empty(),
+            "{tool} / {case}{path}: outputSchema marks {promised_but_missing:?} required, but \
+             this payload omits them — a conforming client would reject a response the tool \
+             really sends.\n\
+             required: {required:?}\npayload keys: {emitted:?}"
+        );
+
+        for (name, sub) in props {
+            if let Some(sub_value) = emitted_obj.get(name) {
+                check_conforms(sub, sub_value, &ctx.child(name));
+            }
+        }
+    }
+
+    /// Where in a payload [`check_conforms`] currently is, for a failure message that names the
+    /// tool, the case, and the exact nested field.
+    struct ConformCtx<'a> {
+        tool: &'a str,
+        case: &'a str,
+        defs: &'a serde_json::Value,
+        path: String,
+        /// `$defs` entries already followed on this path, so a self-referential schema terminates
+        /// instead of overflowing the stack (which aborts the test binary rather than failing a test).
+        seen: Vec<String>,
+    }
+
+    impl<'a> ConformCtx<'a> {
+        /// The same context one field deeper.
+        fn child(&self, field: &str) -> ConformCtx<'a> {
+            ConformCtx {
+                path: format!("{}.{field}", self.path),
+                seen: self.seen.clone(),
+                ..*self
+            }
+        }
+
+        /// The same context at one array element, so a failure names `.errors[2]` rather than
+        /// `.errors` — and so a path identifies exactly one node, which the exemption list relies on.
+        fn element(&self, index: usize) -> ConformCtx<'a> {
+            ConformCtx {
+                path: format!("{}[{index}]", self.path),
+                seen: self.seen.clone(),
+                ..*self
+            }
+        }
+
+        /// The same context, having followed a `$ref` into `$defs`.
+        fn followed(&self, name: &str) -> ConformCtx<'a> {
+            let mut seen = self.seen.clone();
+            seen.push(name.to_string());
+            ConformCtx {
+                path: self.path.clone(),
+                seen,
+                ..*self
+            }
+        }
+    }
+
+    /// Assert that a payload a tool really returns is described by the `outputSchema` that tool
+    /// really advertises — top level *and* every nested sub-schema.
+    ///
+    /// Two derives read the same struct — `Serialize` decides what goes on the wire, `JsonSchema`
+    /// decides what we *promise* goes on the wire — and they diverge exactly where attributes are
+    /// involved (`#[serde(flatten)]`, `skip_serializing_if`, `rename`, `schemars(skip)`). MCP
+    /// requires `structuredContent` to conform to the declared schema, so a divergence breaks
+    /// every conforming client while every other test stays green.
+    ///
+    /// Deliberately NOT a snapshot: nothing here records what the schema *is*. Renaming a type,
+    /// re-wording a doc comment, adding a field, or reordering properties all stay green — those
+    /// are API changes, not defects. It goes red only when the promise and the payload disagree.
+    fn assert_payload_conforms<T: Serialize>(tool: &str, case: &str, payload: &T) {
+        let schema = advertised_output_schema(tool);
+        let value = serde_json::to_value(payload).expect("payload as value");
+        let defs = schema
+            .get("$defs")
+            .cloned()
+            .unwrap_or(serde_json::Value::Null);
+        check_conforms(
+            &schema,
+            &value,
+            &ConformCtx {
+                tool,
+                case,
+                defs: &defs,
+                path: String::new(),
+                seen: Vec::new(),
+            },
+        );
+    }
+
+    #[test]
+    fn engine_tool_payloads_conform_to_their_advertised_output_schemas() {
+        // Every engine tool that returns a structured payload, in every shape it can return one.
+        // The SwapToolOutput branches are checked separately because `flatten` +
+        // `skip_serializing_if` make them structurally different objects, and `engine_status` is
+        // checked both ways because `guidance` is its skip_serializing_if field.
+        assert_payload_conforms(
+            "swap",
+            "clean install",
+            &SwapToolOutput::installed(SwapReport {
+                report: Report {
+                    ok: true,
+                    errors: vec![],
+                    warnings: vec![],
+                },
+                content_hash: "00c0ffee".to_string(),
+                diff: Some(reuben_core::DiffSummary {
+                    survived: 1,
+                    state_reset: vec!["/osc".to_string()],
+                    added: vec![],
+                    removed: vec![],
+                }),
+            }),
+        );
+        assert_payload_conforms(
+            "swap",
+            "validation failure",
+            &SwapToolOutput::installed(SwapReport {
+                report: Report {
+                    ok: false,
+                    errors: vec![reuben_core::Diag {
+                        node: Some("/osc".to_string()),
+                        port: None,
+                        message: "unknown operator".to_string(),
+                    }],
+                    warnings: vec![],
+                },
+                content_hash: "00c0ffee".to_string(),
+                diff: None,
+            }),
+        );
+        assert_payload_conforms(
+            "swap",
+            "expect-guard miss",
+            &SwapToolOutput::conflict(Conflict {
+                expected: "0badc0de".to_string(),
+                actual: "00c0ffee".to_string(),
+            }),
+        );
+        assert_payload_conforms(
+            "get_current_instrument",
+            "installed document",
+            &DocumentSnapshot {
+                document: serde_json::json!({ "instrument": "t" }),
+                content_hash: "00c0ffee".to_string(),
+            },
+        );
+        assert_payload_conforms("get_diagnostics", "counters", &DiagnosticsReport::default());
+        assert_payload_conforms("send", "dispatched", &SendOutput { sent: 2 });
+        for (case, guidance) in [
+            ("unreachable", Some(ENGINE_UNREACHABLE_GUIDANCE.to_string())),
+            ("reachable", None),
+        ] {
+            assert_payload_conforms(
+                "engine_status",
+                case,
+                &EngineStatusOutput {
+                    reachable: guidance.is_none(),
+                    endpoints: StatusEndpoints {
+                        structure: DEFAULT_STRUCTURE_ADDR.to_string(),
+                        osc: default_osc_addr(),
+                    },
+                    sidecar: SidecarInfo {
+                        version: env!("CARGO_PKG_VERSION").to_string(),
+                        format_version: reuben_core::format::FORMAT_VERSION,
+                    },
+                    guidance,
+                },
+            );
+        }
     }
 
     /// Pull the first text block out of a result's content, for asserting on guidance text.
@@ -1391,7 +1727,7 @@ mod tests {
         // engine_status answers "reachable?", so it is NEVER isError — even on a dead
         // engine it reports the down state (reachable:false + guidance) as its deliverable, with the
         // endpoints and sidecar identity still filled in.
-        let result = block_on(server_with(FakeEngine::unreachable()).engine_status())
+        let result = block_on(server_with(FakeTransport::unreachable()).engine_status())
             .expect("engine_status is infallible");
         assert_ne!(
             result.is_error,
@@ -1427,7 +1763,7 @@ mod tests {
     #[test]
     fn engine_status_reachable_reports_true_and_omits_guidance() {
         // The live branch: reachable:true and no guidance key (guidance appears only when down).
-        let result = block_on(server_with(FakeEngine::reachable()).engine_status())
+        let result = block_on(server_with(FakeTransport::reachable()).engine_status())
             .expect("engine_status is infallible");
         assert_ne!(result.is_error, Some(true));
         let s = result
@@ -1459,7 +1795,8 @@ mod tests {
         );
         // (b) The body rejects an empty batch as isError, for a client that skips schema validation.
         let result = block_on(
-            server_with(FakeEngine::reachable()).send(Parameters(SendParams { messages: vec![] })),
+            server_with(FakeTransport::reachable())
+                .send(Parameters(SendParams { messages: vec![] })),
         )
         .expect("send returns a result");
         assert_eq!(
@@ -1473,7 +1810,7 @@ mod tests {
     fn get_current_instrument_unreachable_is_iserror() {
         // A document read against a down engine is a can't-do-the-job isError carrying
         // the "start `reuben play`" guidance (act-then-map on get_document).
-        let result = block_on(server_with(FakeEngine::unreachable()).get_current_instrument())
+        let result = block_on(server_with(FakeTransport::unreachable()).get_current_instrument())
             .expect("returns a result");
         assert_eq!(
             result.is_error,
@@ -1491,10 +1828,10 @@ mod tests {
         // An expect-guard miss is an ORDINARY result (the guard
         // guarding, not the tool failing), NOT isError; nothing is installed (ok:false, no diff),
         // and the conflict names both hashes field-for-field so the model reconciles.
-        let fake = FakeEngine::reachable().with_swap(SwapOutcome::Conflict {
+        let fake = FakeTransport::reachable().with_swap(Response::Conflict(Conflict {
             expected: "0badc0de".to_string(),
             actual: "00c0ffee".to_string(),
-        });
+        }));
         let result = block_on(server_with(fake).swap(Parameters(SwapParams {
             path: "instruments/pad.json".to_string(),
             expect: Some("0badc0de".to_string()),
@@ -1520,6 +1857,15 @@ mod tests {
         );
         assert_eq!(s["conflict"]["expected"], serde_json::json!("0badc0de"));
         assert_eq!(s["conflict"]["actual"], serde_json::json!("00c0ffee"));
+        // The contract `SwapReport::rejected` exists to own: content_hash names what KEEPS
+        // PLAYING (the conflict's `actual`), never the `expected` the client asked for. Reporting
+        // `expected` here would hand the model a hash that is not installed, so its next
+        // expect-guarded swap conflicts again — an unbreakable loop.
+        assert_eq!(
+            s["content_hash"],
+            serde_json::json!("00c0ffee"),
+            "a rejected swap reports the hash still playing, not the one asked for: {s}"
+        );
     }
 
     #[test]
@@ -1541,7 +1887,7 @@ mod tests {
                 removed: vec![],
             }),
         };
-        let fake = FakeEngine::reachable().with_swap(SwapOutcome::Installed(report));
+        let fake = FakeTransport::reachable().with_swap(Response::SwapReport(report));
         let result = block_on(server_with(fake).swap(Parameters(SwapParams {
             path: "instruments/pad.json".to_string(),
             expect: None,
@@ -1567,7 +1913,7 @@ mod tests {
     #[test]
     fn swap_unreachable_is_iserror() {
         // Act-then-map on the mutating verb: a down engine is the fail-fast isError.
-        let result = block_on(server_with(FakeEngine::unreachable()).swap(Parameters(
+        let result = block_on(server_with(FakeTransport::unreachable()).swap(Parameters(
             SwapParams {
                 path: "instruments/pad.json".to_string(),
                 expect: None,
@@ -1580,7 +1926,9 @@ mod tests {
 
     #[test]
     fn send_dispatches_all_messages_when_reachable() {
-        // A reachable send encodes every message and reports the count dispatched.
+        // A reachable send encodes every message and reports the count dispatched — and the
+        // datagrams really leave a socket: this asserts on what ARRIVES at a stand-in OSC endpoint,
+        // so the encoding is proven end-to-end rather than counted through a fake.
         let params = SendParams {
             messages: vec![
                 OscSendMessage {
@@ -1593,8 +1941,8 @@ mod tests {
                 },
             ],
         };
-        let result = block_on(server_with(FakeEngine::reachable()).send(Parameters(params)))
-            .expect("result");
+        let (server, osc) = server_with_osc(FakeTransport::reachable());
+        let result = block_on(server.send(Parameters(params))).expect("result");
         assert_ne!(
             result.is_error,
             Some(true),
@@ -1607,6 +1955,28 @@ mod tests {
                 .expect("structured payload")["sent"],
             serde_json::json!(2)
         );
+
+        // Both datagrams arrived, each carrying its OSC address as the leading string.
+        let mut received = Vec::new();
+        for _ in 0..2 {
+            let mut buf = [0u8; 1024];
+            let (n, _) = osc
+                .recv_from(&mut buf)
+                .expect("a dispatched datagram arrives");
+            received.push(buf[..n].to_vec());
+        }
+        let addresses: Vec<String> = received
+            .iter()
+            .map(|d| {
+                let end = d.iter().position(|&b| b == 0).unwrap_or(d.len());
+                String::from_utf8_lossy(&d[..end]).into_owned()
+            })
+            .collect();
+        assert!(
+            addresses.contains(&"/voice1/cutoff".to_string())
+                && addresses.contains(&"/voice1/notes".to_string()),
+            "both OSC addresses must arrive on the wire: {addresses:?}"
+        );
     }
 
     #[test]
@@ -1618,7 +1988,7 @@ mod tests {
                 args: vec![serde_json::json!(1.0)],
             }],
         };
-        let result = block_on(server_with(FakeEngine::unreachable()).send(Parameters(params)))
+        let result = block_on(server_with(FakeTransport::unreachable()).send(Parameters(params)))
             .expect("result");
         assert_eq!(result.is_error, Some(true));
         assert!(first_text(&result).contains("reuben play"));
@@ -1634,7 +2004,7 @@ mod tests {
                 args: vec![serde_json::json!([1, 2, 3])],
             }],
         };
-        let result = block_on(server_with(FakeEngine::reachable()).send(Parameters(params)))
+        let result = block_on(server_with(FakeTransport::reachable()).send(Parameters(params)))
             .expect("result");
         assert_eq!(
             result.is_error,
@@ -1651,7 +2021,8 @@ mod tests {
             content_hash: "00c0ffee".to_string(),
         };
         let result = block_on(
-            server_with(FakeEngine::reachable().with_document(snapshot)).get_current_instrument(),
+            server_with(FakeTransport::reachable().with_document(snapshot))
+                .get_current_instrument(),
         )
         .expect("result");
         assert_ne!(result.is_error, Some(true));
@@ -1672,7 +2043,7 @@ mod tests {
             input_ring_producer_drops: 96,
         };
         let result = block_on(
-            server_with(FakeEngine::reachable().with_diagnostics(report)).get_diagnostics(),
+            server_with(FakeTransport::reachable().with_diagnostics(report)).get_diagnostics(),
         )
         .expect("result");
         assert_ne!(result.is_error, Some(true));
@@ -1688,7 +2059,7 @@ mod tests {
     #[test]
     fn get_diagnostics_unreachable_is_iserror() {
         let result =
-            block_on(server_with(FakeEngine::unreachable()).get_diagnostics()).expect("result");
+            block_on(server_with(FakeTransport::unreachable()).get_diagnostics()).expect("result");
         assert_eq!(result.is_error, Some(true));
         assert!(first_text(&result).contains("reuben play"));
     }

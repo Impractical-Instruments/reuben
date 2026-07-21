@@ -30,7 +30,9 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-use reuben_core::coordinator::{Coordinator, DiagnosticsReport, DocSource, Request, Response};
+use reuben_core::coordinator::{
+    Conflict, Coordinator, DiagnosticsReport, DocSource, DocumentSnapshot, Request, Response,
+};
 use reuben_core::coordinator::{RenderSide, RenderSlot};
 use reuben_core::resources::MemoryResolver;
 use reuben_core::{content_hash, AudioConfig, NormalizedDoc, Registry};
@@ -188,10 +190,10 @@ fn serves_the_three_verbs_over_loopback_ndjson_in_order() {
 
     send(&mut writer, &Request::GetDocument);
     match read_response(&mut reader) {
-        Response::Document {
+        Response::Document(DocumentSnapshot {
             document,
             content_hash: hash,
-        } => {
+        }) => {
             assert_eq!(document["instrument"], serde_json::json!("t"));
             assert_eq!(hash, base_hash, "the served doc carries its content hash");
             assert_eq!(
@@ -229,10 +231,7 @@ fn responses_come_back_one_per_request_in_pipelined_order() {
         Response::Diagnostics(_)
     ));
     assert_eq!(read_response(&mut reader), Response::Pong);
-    assert!(matches!(
-        read_response(&mut reader),
-        Response::Document { .. }
-    ));
+    assert!(matches!(read_response(&mut reader), Response::Document(_)));
 
     server.shutdown();
     cb.stop();
@@ -327,10 +326,10 @@ fn swap_over_the_wire_installs_via_the_mailbox_with_real_survivor_stats() {
     // get_document reflects the last installed document.
     send(&mut writer, &Request::GetDocument);
     match read_response(&mut reader) {
-        Response::Document {
+        Response::Document(DocumentSnapshot {
             document,
             content_hash: hash,
-        } => {
+        }) => {
             assert_eq!(document["instrument"], serde_json::json!("eg"));
             assert_eq!(hash, expected_hash(&envelope_doc("/eg")));
             assert_ne!(hash, base_hash, "the swap changed the installed document");
@@ -368,7 +367,7 @@ fn swap_by_path_over_the_wire_installs() {
     }
     send(&mut writer, &Request::GetDocument);
     match read_response(&mut reader) {
-        Response::Document { document, .. } => {
+        Response::Document(DocumentSnapshot { document, .. }) => {
             assert_eq!(document["instrument"], serde_json::json!("eg"))
         }
         other => panic!("expected Document, got {other:?}"),
@@ -418,7 +417,7 @@ fn input_binding_swap_over_the_wire_dark_degrades_and_stays_alive() {
     // Still alive afterward: the channel answers, and the mic doc is what's installed.
     send(&mut writer, &Request::GetDocument);
     match read_response(&mut reader) {
-        Response::Document { document, .. } => {
+        Response::Document(DocumentSnapshot { document, .. }) => {
             assert_eq!(document["instrument"], serde_json::json!("mic-passthru"))
         }
         other => panic!("expected Document, got {other:?}"),
@@ -466,9 +465,9 @@ fn swap_of_a_bad_document_over_the_wire_reports_errors_without_installing() {
     // Retain-prior: get_document still returns the original rig.
     send(&mut writer, &Request::GetDocument);
     match read_response(&mut reader) {
-        Response::Document {
+        Response::Document(DocumentSnapshot {
             content_hash: hash, ..
-        } => assert_eq!(hash, base_hash),
+        }) => assert_eq!(hash, base_hash),
         other => panic!("expected Document, got {other:?}"),
     }
 
@@ -495,7 +494,7 @@ fn swap_expect_arbitration_conflicts_then_proceeds_over_the_wire() {
         },
     );
     match read_response(&mut reader) {
-        Response::Conflict { expected, actual } => {
+        Response::Conflict(Conflict { expected, actual }) => {
             assert_eq!(expected, "0badc0de0badc0de");
             assert_eq!(actual, base_hash, "conflict names the real installed hash");
         }

@@ -12,12 +12,12 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use reuben_core::coordinator::{DiagnosticsReport, DocSource, Request, Response};
+use reuben_core::coordinator::{
+    Conflict, DiagnosticsReport, DocSource, DocumentSnapshot, Request, Response,
+};
 use reuben_core::{Diag, DiffSummary, Report, SwapReport};
 
-use reuben_mcp::{
-    default_osc_addr, DocumentSnapshot, EngineChannel, EngineLink, StructureClient, SwapOutcome,
-};
+use reuben_mcp::{default_osc_addr, EngineLink, StructureClient, SwapOutcome};
 
 /// A running loopback NDJSON stub: the address the client dials, plus a receiver of every request
 /// the stub parsed off the wire (so a test can assert the client sent the *right* envelope — e.g.
@@ -186,9 +186,11 @@ fn swap_by_path_round_trips_with_expect_guard() {
 
 #[test]
 fn swap_conflict_is_a_reconcilable_outcome_not_an_error() {
-    let stub = spawn_stub(|_req| Response::Conflict {
-        expected: "0badc0de0badc0de".to_string(),
-        actual: "00c0ffee00c0ffee".to_string(),
+    let stub = spawn_stub(|_req| {
+        Response::Conflict(Conflict {
+            expected: "0badc0de0badc0de".to_string(),
+            actual: "00c0ffee00c0ffee".to_string(),
+        })
     });
     let client = StructureClient::new(stub.addr.to_string());
     let outcome = within(Duration::from_secs(5), "swap conflict", move || {
@@ -201,10 +203,10 @@ fn swap_conflict_is_a_reconcilable_outcome_not_an_error() {
     });
     assert_eq!(
         outcome,
-        SwapOutcome::Conflict {
+        SwapOutcome::Conflict(Conflict {
             expected: "0badc0de0badc0de".to_string(),
             actual: "00c0ffee00c0ffee".to_string(),
-        }
+        })
     );
 }
 
@@ -212,9 +214,11 @@ fn swap_conflict_is_a_reconcilable_outcome_not_an_error() {
 fn get_document_round_trips_the_doc_and_hash() {
     let document = serde_json::json!({ "format_version": 3, "instrument": "warm", "nodes": [] });
     let returned = document.clone();
-    let stub = spawn_stub(move |_req| Response::Document {
-        document: returned.clone(),
-        content_hash: "00c0ffee00c0ffee".to_string(),
+    let stub = spawn_stub(move |_req| {
+        Response::Document(DocumentSnapshot {
+            document: returned.clone(),
+            content_hash: "00c0ffee00c0ffee".to_string(),
+        })
     });
     let client = StructureClient::new(stub.addr.to_string());
     let snapshot = within(Duration::from_secs(5), "get_document", move || {
@@ -349,13 +353,16 @@ fn engine_link_pings_reachable_only_when_the_engine_answers() {
     let link = EngineLink::new(live.addr.to_string(), default_osc_addr());
     assert!(
         within(Duration::from_secs(5), "link live", move || link
+            .structure()
             .ping()
             .is_ok()),
         "a live ping-answering engine must read as reachable"
     );
 
     let dead = EngineLink::new(dead_addr(), default_osc_addr());
-    let err = within(Duration::from_secs(5), "link dead", move || dead.ping());
+    let err = within(Duration::from_secs(5), "link dead", move || {
+        dead.structure().ping()
+    });
     assert!(
         err.is_err_and(|e| e.is_unreachable()),
         "a dead port must read as unreachable"
