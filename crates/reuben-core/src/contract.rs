@@ -161,6 +161,33 @@ pub struct SwapReport {
     pub diff: Option<DiffSummary>,
 }
 
+impl SwapReport {
+    /// The nothing-was-installed report, defined once.
+    ///
+    /// A door that rejects a swap *before* the loader runs — the structure channel's `expect`
+    /// guard, which answers with a [`Conflict`](crate::coordinator::Conflict) rather than a report
+    /// — still owes its caller a `SwapReport`, because the tool surface advertises one flattened
+    /// `outputSchema` spanning the install, validation-failure, and guard-miss cases. This
+    /// constructor is that report: `ok: false` with **no diagnostics of its own** (the `Conflict`
+    /// names the cause, so duplicating it as a `Diag` would say the same thing twice) and no diff
+    /// (nothing changed to summarize).
+    ///
+    /// `content_hash` is **what keeps playing** — the conflict's `actual`, never the `expected` the
+    /// client asked for. That contract is the whole reason this lives here instead of being spelled
+    /// inline at each door.
+    pub fn rejected(content_hash: String) -> Self {
+        Self {
+            report: Report {
+                ok: false,
+                errors: vec![],
+                warnings: vec![],
+            },
+            content_hash,
+            diff: None,
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

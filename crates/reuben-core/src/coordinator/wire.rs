@@ -90,6 +90,43 @@ impl Request {
     }
 }
 
+/// An `expect`-guard miss: the swap was rejected and **nothing was installed**. `expected` is the
+/// hash the client asserted was installed; `actual` is the hash of what actually kept playing, so
+/// the client reconciles by re-reading rather than by threading request state.
+///
+/// One type, three doors: the [`Response::Conflict`] wire variant, the reuben-mcp client's
+/// `SwapOutcome::Conflict`, and the `swap` tool's `conflict` field all carry *this* struct, so the
+/// shapes cannot drift. This is a channel shape, not a core one — core expresses the same event as
+/// a `SwapReport { ok: false }` carrying a [`Diag`](crate::contract::Diag) (see
+/// `Coordinator::swap_document`); promoting it to a distinct answer is the structure channel's call.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct Conflict {
+    /// The content hash the client asserted was installed.
+    pub expected: String,
+    /// The content hash actually still playing — re-read the document to reconcile.
+    pub actual: String,
+}
+
+/// The canonical installed document paired with its
+/// [`content_hash`](crate::contract::content_hash) — `get_document`'s answer, and the `swap`
+/// guard's reference point.
+///
+/// The document is raw JSON, never a parsed doc type: the Coordinator owns the canonical document
+/// and the loader is the single validation authority, so re-validating it on the read side would
+/// make two authorities. One type, three doors — the [`Response::Document`] wire variant, the
+/// reuben-mcp client's return, and the `get_current_instrument` tool's `structuredContent` are all
+/// *this* struct. Core exposes the two halves separately (`document()` and `installed_hash()`);
+/// pairing them is this channel's shape.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct DocumentSnapshot {
+    /// The document the engine is currently playing, as raw JSON.
+    pub document: serde_json::Value,
+    /// Its content hash — the token a later swap's `expect` guard compares.
+    pub content_hash: String,
+}
+
 /// One structure-channel response (one per request, in order), serialized as
 /// a single JSON object tagged by `reply`. The tag rides *inside* the payload object
 /// (`{"reply": "swap_report", "ok": …}`), so a swap's wire shape stays the flat
@@ -104,21 +141,17 @@ pub enum Response {
     /// — `ok`, diagnostics, the **installed** document's content hash,
     /// and on success the diff summary.
     SwapReport(SwapReport),
-    /// `GetDocument`'s answer: the canonical installed document (raw JSON — the canonical
-    /// doc is the Coordinator's, and re-validating it client-side would make two
-    /// authorities) with its content hash, the token a later swap's `expect` compares.
-    Document {
-        document: serde_json::Value,
-        content_hash: String,
-    },
+    /// `GetDocument`'s answer: the [`DocumentSnapshot`] — the canonical installed document with
+    /// its content hash. A newtype variant, so the payload's fields ride *flat* next to the
+    /// `reply` tag exactly as they did when this variant spelled them out inline.
+    Document(DocumentSnapshot),
     /// `GetDiagnostics`' answer: the diagnostics counters.
     Diagnostics(DiagnosticsReport),
-    /// A `Swap` whose `expect` guard missed: nothing installed; `actual` is
-    /// the hash of what actually kept playing — the client re-reads via `GetDocument` and
-    /// reconciles. Both hashes ride the wire with the user-facing field names (the
-    /// schema is `conflict: {expected, actual}`), so the tool surface re-serializes this
-    /// variant field-for-field instead of threading request state.
-    Conflict { expected: String, actual: String },
+    /// A `Swap` whose `expect` guard missed: nothing installed — the [`Conflict`] names both
+    /// hashes so the client re-reads via `GetDocument` and reconciles. A newtype variant, so both
+    /// hashes ride the wire flat next to the `reply` tag under the user-facing field names (the
+    /// tool schema is `conflict: {expected, actual}` — the same struct, not a re-wrap).
+    Conflict(Conflict),
     /// A channel-level failure: an unreadable request, or an engine-side fault that
     /// produced no domain-shaped answer. Distinct from a `SwapReport` with `ok: false`,
     /// which is the channel *working*.
@@ -293,10 +326,10 @@ mod tests {
         assert_eq!(tag(&Response::Pong), "pong");
         assert_eq!(tag(&Response::SwapReport(swap_report())), "swap_report");
         assert_eq!(
-            tag(&Response::Document {
+            tag(&Response::Document(DocumentSnapshot {
                 document: serde_json::json!({}),
                 content_hash: String::new(),
-            }),
+            })),
             "document"
         );
         assert_eq!(
@@ -304,10 +337,10 @@ mod tests {
             "diagnostics"
         );
         assert_eq!(
-            tag(&Response::Conflict {
+            tag(&Response::Conflict(Conflict {
                 expected: String::new(),
                 actual: String::new(),
-            }),
+            })),
             "conflict"
         );
         assert_eq!(
@@ -339,19 +372,19 @@ mod tests {
         let responses = [
             Response::Pong,
             Response::SwapReport(swap_report()),
-            Response::Document {
+            Response::Document(DocumentSnapshot {
                 document: serde_json::json!({
                     "format_version": 3,
                     "instrument": "t",
                     "nodes": []
                 }),
                 content_hash: "00c0ffee00c0ffee".to_string(),
-            },
+            }),
             Response::Diagnostics(diagnostics_report()),
-            Response::Conflict {
+            Response::Conflict(Conflict {
                 expected: "0badc0de0badc0de".to_string(),
                 actual: "00c0ffee00c0ffee".to_string(),
-            },
+            }),
             Response::Error {
                 message: "unreadable request".to_string(),
             },
@@ -405,10 +438,10 @@ mod tests {
         // ticket composes its report from this variant field-for-field instead of threading
         // request state (shapes must not drift).
         let v: serde_json::Value = serde_json::from_str(
-            &Response::Conflict {
+            &Response::Conflict(Conflict {
                 expected: "0badc0de0badc0de".to_string(),
                 actual: "00c0ffee00c0ffee".to_string(),
-            }
+            })
             .to_ndjson(),
         )
         .expect("as value");
@@ -439,10 +472,10 @@ mod tests {
         // Every get_document response carries the installed document's content
         // hash, the token a later swap's expect guard compares.
         let v: serde_json::Value = serde_json::from_str(
-            &Response::Document {
+            &Response::Document(DocumentSnapshot {
                 document: serde_json::json!({ "instrument": "t" }),
                 content_hash: "00c0ffee00c0ffee".to_string(),
-            }
+            })
             .to_ndjson(),
         )
         .expect("as value");

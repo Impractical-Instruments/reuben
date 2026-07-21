@@ -24,12 +24,12 @@
 //! [`crate::ENGINE_UNREACHABLE_GUIDANCE`] ("start `reuben play`") — never a hang, never a panic.
 
 use std::fmt;
-use std::io::{BufRead, BufReader, Write};
+use std::io::{self, BufRead, BufReader, Write};
 use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use reuben_core::coordinator::{
-    DiagnosticsReport, DocSource, Request, Response, DEFAULT_STRUCTURE_ADDR,
+    Conflict, DiagnosticsReport, DocSource, DocumentSnapshot, Request, Response,
 };
 use reuben_core::SwapReport;
 
@@ -95,42 +95,99 @@ impl fmt::Display for StructureError {
 
 impl std::error::Error for StructureError {}
 
-/// The engine's answer to `get_document`: the canonical installed document paired
-/// with its [`content_hash`](reuben_core::content_hash) — the token a later swap's `expect` guard
-/// compares. Reads the raw [`Response::Document`] fields without re-validating: the
-/// engine is the single validation authority.
-#[derive(Debug, Clone, PartialEq)]
-pub struct DocumentSnapshot {
-    /// The installed document as raw JSON — exactly what the engine is playing.
-    pub document: serde_json::Value,
-    /// The installed document's content hash.
-    pub content_hash: String,
-}
-
 /// The outcome of a `swap` that reached the engine (transport failures are [`StructureError`]).
 /// Both are legitimate answers the tool surface (#318) maps as it chooses: an install report
 /// (which itself may carry `ok: false` load errors — the channel *worked*), or an
-/// `expect`-guard conflict the client reconciles by re-reading.
+/// `expect`-guard conflict the client reconciles by re-reading. Both arms carry the wire's own
+/// type, so nothing is re-declared on the way up.
 #[derive(Debug, Clone, PartialEq)]
 pub enum SwapOutcome {
     /// The engine processed the swap and returned its [`SwapReport`] (success or load-failure).
     Installed(SwapReport),
-    /// The `expect` guard missed: nothing installed; `actual` is the hash still playing.
-    Conflict {
-        /// The hash the client asserted was installed.
-        expected: String,
-        /// The hash actually still playing — re-read via `get_document` to reconcile.
-        actual: String,
-    },
+    /// The `expect` guard missed: nothing installed; the [`Conflict`] names what keeps playing.
+    Conflict(Conflict),
 }
 
-/// A client for one engine's loopback structure channel. Cheap to hold and clone (an address plus
-/// two timeouts); it opens a fresh short-lived connection per exchange, so nothing is retained
-/// between calls and a client survives the engine restarting under it.
+/// The one thing a structure channel must be able to do: hand a request line to the engine and
+/// return the response line. **The injectable seam** — the shipping [`TcpTransport`] is the real
+/// loopback socket; a test double returns canned NDJSON (or an [`io::Error`]) so the tool bodies
+/// above still exercise real serialization, real parsing, and the real
+/// [`Unreachable`](StructureError::Unreachable) mapping.
+///
+/// Deliberately the *lowest* seam: everything that can be wrong in a way worth testing —
+/// framing, parsing, wrong-variant classification, timeout policy — lives above this line, in
+/// [`StructureClient::exchange_with`]. All that lives below is bytes on a socket.
+pub trait StructureTransport: Send + Sync + fmt::Debug {
+    /// One request line out, one response line back. `read_timeout` is per-call because `ping`
+    /// runs on a tighter budget than the other verbs. Any I/O failure — refused connect,
+    /// unresolved address, timeout, or a peer that closed before answering — is an
+    /// [`io::Error`]; the caller classifies it.
+    fn round_trip(&self, line: &str, read_timeout: Duration) -> io::Result<String>;
+
+    /// The endpoint this transport dials, for `engine_status` and diagnostics.
+    fn endpoint(&self) -> &str;
+}
+
+/// The shipping [`StructureTransport`]: a fresh, bounded, blocking loopback TCP connection per
+/// exchange. Nothing is retained between calls, so the link survives the engine restarting under
+/// it, and a dead port is refused at once rather than hanging the sidecar.
 #[derive(Debug, Clone)]
-pub struct StructureClient {
+pub struct TcpTransport {
     addr: String,
     connect_timeout: Duration,
+}
+
+impl TcpTransport {
+    /// A transport dialing `addr` (e.g. `127.0.0.1:9124`) with the given connect budget.
+    pub fn new(addr: impl Into<String>, connect_timeout: Duration) -> Self {
+        Self {
+            addr: addr.into(),
+            connect_timeout,
+        }
+    }
+}
+
+impl StructureTransport for TcpTransport {
+    fn round_trip(&self, line: &str, read_timeout: Duration) -> io::Result<String> {
+        // Resolve to a concrete SocketAddr — connect_timeout needs one (and is what bounds the
+        // connect; a plain `connect` could block far longer than our budget).
+        let addr = self.addr.to_socket_addrs()?.next().ok_or_else(|| {
+            io::Error::other(format!("no socket address resolved for {}", self.addr))
+        })?;
+
+        let stream = TcpStream::connect_timeout(&addr, self.connect_timeout)?;
+        stream.set_read_timeout(Some(read_timeout))?;
+        stream.set_write_timeout(Some(read_timeout))?;
+        let _ = stream.set_nodelay(true);
+
+        // Write the one request line. `&TcpStream: Write`, so no try_clone is needed to split the
+        // socket — the reader below borrows the same stream.
+        (&stream).write_all(line.as_bytes())?;
+        (&stream).flush()?;
+
+        // Read exactly one response line (one response per request). A read timeout on
+        // a wedged server surfaces here as an Err, not a hang.
+        let mut reader = BufReader::new(&stream);
+        let mut response = String::new();
+        if reader.read_line(&mut response)? == 0 {
+            return Err(io::Error::new(
+                io::ErrorKind::UnexpectedEof,
+                "the structure channel closed before answering",
+            ));
+        }
+        Ok(response)
+    }
+
+    fn endpoint(&self) -> &str {
+        &self.addr
+    }
+}
+
+/// A client for one engine's loopback structure channel: the NDJSON framing, the response-variant
+/// classification, and the timeout policy, over an injectable [`StructureTransport`].
+#[derive(Debug)]
+pub struct StructureClient {
+    transport: Box<dyn StructureTransport>,
     read_timeout: Duration,
     /// The tighter read budget `ping` uses (its pong is immediate) — never longer than the general
     /// `read_timeout`, and capped at [`DEFAULT_PING_READ_TIMEOUT`]. See [`Self::ping`].
@@ -138,7 +195,7 @@ pub struct StructureClient {
 }
 
 impl StructureClient {
-    /// A client dialing `addr` (e.g. `127.0.0.1:9124`) with the default timeouts.
+    /// A client dialing `addr` (e.g. `127.0.0.1:9124`) over real TCP with the default timeouts.
     pub fn new(addr: impl Into<String>) -> Self {
         Self::with_timeouts(addr, DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT)
     }
@@ -150,9 +207,17 @@ impl StructureClient {
         connect_timeout: Duration,
         read_timeout: Duration,
     ) -> Self {
+        Self::with_transport(TcpTransport::new(addr, connect_timeout), read_timeout)
+    }
+
+    /// A client over an explicit transport — the injection point for tests. `read_timeout` is the
+    /// general per-verb budget; `ping`'s tighter budget is derived from it.
+    pub fn with_transport(
+        transport: impl StructureTransport + 'static,
+        read_timeout: Duration,
+    ) -> Self {
         Self {
-            addr: addr.into(),
-            connect_timeout,
+            transport: Box::new(transport),
             read_timeout,
             // The pong is immediate, so `ping` uses the tighter of the two budgets: never longer
             // than a caller's explicit read timeout (a deliberately tiny one still wins — the
@@ -163,7 +228,7 @@ impl StructureClient {
 
     /// The address this client dials.
     pub fn addr(&self) -> &str {
-        &self.addr
+        self.transport.endpoint()
     }
 
     /// Liveness: `Ok(())` iff the channel answered [`Response::Pong`]. This is what
@@ -188,9 +253,7 @@ impl StructureClient {
     ) -> Result<SwapOutcome, StructureError> {
         match self.exchange(&Request::Swap { source, expect })? {
             Response::SwapReport(report) => Ok(SwapOutcome::Installed(report)),
-            Response::Conflict { expected, actual } => {
-                Ok(SwapOutcome::Conflict { expected, actual })
-            }
+            Response::Conflict(conflict) => Ok(SwapOutcome::Conflict(conflict)),
             Response::Error { message } => Err(StructureError::Channel(message)),
             other => Err(unexpected("swap", "swap_report/conflict", &other)),
         }
@@ -200,13 +263,7 @@ impl StructureClient {
     /// conversation attaches to what's playing in one call.
     pub fn get_document(&self) -> Result<DocumentSnapshot, StructureError> {
         match self.exchange(&Request::GetDocument)? {
-            Response::Document {
-                document,
-                content_hash,
-            } => Ok(DocumentSnapshot {
-                document,
-                content_hash,
-            }),
+            Response::Document(snapshot) => Ok(snapshot),
             Response::Error { message } => Err(StructureError::Channel(message)),
             other => Err(unexpected("get_document", "document", &other)),
         }
@@ -231,62 +288,23 @@ impl StructureClient {
 
     /// [`exchange`](Self::exchange), but with an explicit read/write budget for this one call — so
     /// `ping` can fail fast on its immediate pong without loosening (or tightening) the general
-    /// budget the other verbs share. Connect is always bounded by [`connect_timeout`](Self::connect_timeout);
-    /// any I/O or timeout failure is the fail-fast [`StructureError::Unreachable`].
+    /// budget the other verbs share.
+    ///
+    /// Everything policy-shaped lives here, above the socket: NDJSON out, one line back, and the
+    /// two-way classification — any transport [`io::Error`] is the fail-fast
+    /// [`StructureError::Unreachable`] carrying the "start `reuben play`" guidance, while a line
+    /// that came back but will not parse is a [`StructureError::Protocol`]. A fake transport
+    /// therefore exercises this whole path for real.
     fn exchange_with(
         &self,
         request: &Request,
         read_timeout: Duration,
     ) -> Result<Response, StructureError> {
-        // Resolve to a concrete SocketAddr — connect_timeout needs one (and is what bounds the
-        // connect; a plain `connect` could block far longer than our budget).
-        let addr = self
-            .addr
-            .to_socket_addrs()
-            .map_err(StructureError::unreachable)?
-            .next()
-            .ok_or_else(|| {
-                StructureError::unreachable(format!("no socket address resolved for {}", self.addr))
-            })?;
-
-        let stream = TcpStream::connect_timeout(&addr, self.connect_timeout)
+        let line = self
+            .transport
+            .round_trip(&request.to_ndjson(), read_timeout)
             .map_err(StructureError::unreachable)?;
-        stream
-            .set_read_timeout(Some(read_timeout))
-            .map_err(StructureError::unreachable)?;
-        stream
-            .set_write_timeout(Some(read_timeout))
-            .map_err(StructureError::unreachable)?;
-        let _ = stream.set_nodelay(true);
-
-        // Write the one request line. `&TcpStream: Write`, so no try_clone is needed to split the
-        // socket — the reader below borrows the same stream.
-        (&stream)
-            .write_all(request.to_ndjson().as_bytes())
-            .map_err(StructureError::unreachable)?;
-        (&stream).flush().map_err(StructureError::unreachable)?;
-
-        // Read exactly one response line (one response per request). A read timeout on
-        // a wedged server surfaces here as an Err → Unreachable, not a hang.
-        let mut reader = BufReader::new(&stream);
-        let mut line = String::new();
-        let read = reader
-            .read_line(&mut line)
-            .map_err(StructureError::unreachable)?;
-        if read == 0 {
-            return Err(StructureError::unreachable(
-                "the structure channel closed before answering",
-            ));
-        }
         Response::from_ndjson(&line).map_err(|e| StructureError::Protocol(e.to_string()))
-    }
-}
-
-impl Default for StructureClient {
-    /// A client targeting the shared [`DEFAULT_STRUCTURE_ADDR`] — the same address `reuben play`
-    /// binds, so server and client can never drift.
-    fn default() -> Self {
-        Self::new(DEFAULT_STRUCTURE_ADDR)
     }
 }
 
@@ -322,12 +340,5 @@ mod tests {
         // the engine is up; the request just didn't produce a domain answer.
         assert!(!StructureError::Channel("unreadable request".to_string()).is_unreachable());
         assert!(!StructureError::Protocol("bad json".to_string()).is_unreachable());
-    }
-
-    #[test]
-    fn default_client_targets_the_shared_addr() {
-        // Server and client share one address const (no drift): the default client dials exactly
-        // what `reuben play` binds.
-        assert_eq!(StructureClient::default().addr(), DEFAULT_STRUCTURE_ADDR);
     }
 }

@@ -43,7 +43,9 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use reuben_core::coordinator::{Coordinator, DiagnosticsReport, DocSource, Request, Response};
+use reuben_core::coordinator::{
+    Conflict, Coordinator, DiagnosticsReport, DocSource, DocumentSnapshot, Request, Response,
+};
 use reuben_core::{Diag, SwapReport};
 
 use crate::diagnostics::{Diagnostics, Snapshot};
@@ -343,10 +345,10 @@ fn dispatch(state: &StructureState, line: &str) -> Response {
                 .expect("coordinator mutex poisoned");
             let document = serde_json::to_value(&**coordinator.document())
                 .expect("canonical instrument document serializes to JSON");
-            Response::Document {
+            Response::Document(DocumentSnapshot {
                 document,
                 content_hash: coordinator.installed_hash(),
-            }
+            })
         }
         // RT-safe read: `Relaxed` loads into an owned copy off this (non-audio) thread.
         Ok(Request::GetDiagnostics) => {
@@ -397,10 +399,10 @@ fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>
     if let Some(expected) = &expect {
         let actual = coordinator.installed_hash();
         if expected != &actual {
-            return Response::Conflict {
+            return Response::Conflict(Conflict {
                 expected: expected.clone(),
                 actual,
-            };
+            });
         }
     }
 
@@ -822,12 +824,9 @@ mod tests {
     fn get_document_returns_the_coordinators_doc_and_hash() {
         let (state, cb, base_hash) = swap_fixture(BASE_DOC, 0);
         match dispatch(&state, &Request::GetDocument.to_ndjson()) {
-            Response::Document {
-                document,
-                content_hash: hash,
-            } => {
-                assert_eq!(document["instrument"], serde_json::json!("t"));
-                assert_eq!(hash, base_hash);
+            Response::Document(snapshot) => {
+                assert_eq!(snapshot.document["instrument"], serde_json::json!("t"));
+                assert_eq!(snapshot.content_hash, base_hash);
             }
             other => panic!("expected Document, got {other:?}"),
         }
@@ -975,9 +974,7 @@ mod tests {
         }
         // get_document is unchanged.
         match dispatch(&state, &Request::GetDocument.to_ndjson()) {
-            Response::Document {
-                content_hash: hash, ..
-            } => assert_eq!(hash, base_hash),
+            Response::Document(snapshot) => assert_eq!(snapshot.content_hash, base_hash),
             other => panic!("expected Document, got {other:?}"),
         }
         cb.stop();
@@ -988,17 +985,18 @@ mod tests {
         let (state, cb, base_hash) = swap_fixture(BASE_DOC, 0);
         let req = swap_by_value(&envelope_doc("/env"), Some("0badc0de0badc0de".to_string()));
         match dispatch(&state, &req.to_ndjson()) {
-            Response::Conflict { expected, actual } => {
-                assert_eq!(expected, "0badc0de0badc0de");
-                assert_eq!(actual, base_hash, "conflict names the real installed hash");
+            Response::Conflict(conflict) => {
+                assert_eq!(conflict.expected, "0badc0de0badc0de");
+                assert_eq!(
+                    conflict.actual, base_hash,
+                    "conflict names the real installed hash"
+                );
             }
             other => panic!("expected Conflict, got {other:?}"),
         }
         // The installed document is unchanged.
         match dispatch(&state, &Request::GetDocument.to_ndjson()) {
-            Response::Document {
-                content_hash: hash, ..
-            } => assert_eq!(hash, base_hash),
+            Response::Document(snapshot) => assert_eq!(snapshot.content_hash, base_hash),
             other => panic!("expected Document, got {other:?}"),
         }
         cb.stop();
