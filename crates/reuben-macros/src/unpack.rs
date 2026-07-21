@@ -107,6 +107,10 @@ impl UnpackInput {
                     }
                 }
 
+                // Uncalled, and deliberately kept — see the same note in `number_op.rs`: every
+                // operator in `reuben-core` carries `Default` because
+                // `clippy::new_without_default` demands it, and clippy cannot see into a foreign
+                // macro's expansion to demand it here.
                 impl ::core::default::Default for #struct_ident {
                     fn default() -> Self {
                         Self::new()
