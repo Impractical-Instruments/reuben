@@ -36,8 +36,7 @@ fn div_fn<T: num_traits::Zero + core::ops::Div<Output = T>>(a: T, b: T) -> T {
 // unwired default, so wiring only `a` passes it through. Division is not commutative —
 // the identity rule holds for the divisor only.
 crate::number_operator_contract!(Div {
-    numbers:  [f32],
-    carriers: [value, signal],
+    variants: [f32 value, f32 signal, i32 value],
     inputs:   { a: number { default 0.0 }, b: number { default 1.0 } },
     outputs:  { out },
     function: div_fn(a, b),
@@ -47,7 +46,8 @@ crate::number_operator_contract!(Div {
 mod tests {
     use super::div_f32_signal::{self, DivF32Signal};
     use super::div_f32_value::{self, DivF32Value};
-    use crate::operators::math_test::{signal_out, value_emits};
+    use super::div_i32_value::{self, DivI32Value};
+    use crate::operators::math_test::{i32_value_emits, signal_out, value_emits};
 
     /// Drive the signal form; `None` leaves the port unwired (engine materializes its default).
     fn sig(a: Option<&[f32]>, b: Option<&[f32]>, n: usize) -> Vec<f32> {
@@ -105,5 +105,35 @@ mod tests {
     #[test]
     fn held_zero_divisor_yields_zero() {
         assert_eq!(val(Some(5.0), Some(0.0)), vec![0.0]);
+    }
+
+    /// Drive the `i32` value form; returns the emitted quotient(s) as integers.
+    fn val_i32(a: Option<i32>, b: Option<i32>) -> Vec<i32> {
+        i32_value_emits(DivI32Value::new(), |d| {
+            if let Some(a) = a {
+                d.set(div_i32_value::IN_A, a);
+            }
+            if let Some(b) = b {
+                d.set(div_i32_value::IN_B, b);
+            }
+        })
+    }
+
+    // Integer division **truncates toward zero** — this is the one place where instantiating the
+    // shared `div_fn` at `i32` gives a materially different answer than at `f32`, rather than the
+    // same answer in a different type. Pinned so the difference is documented behaviour an author
+    // can rely on, not a surprise.
+    #[test]
+    fn i32_division_truncates_toward_zero() {
+        assert_eq!(val_i32(Some(7), Some(2)), vec![3]);
+        assert_eq!(val_i32(Some(-7), Some(2)), vec![-3]);
+        assert_eq!(val_i32(Some(12), Some(4)), vec![3]);
+    }
+
+    // The op-local zero guard matters more at `i32` than at `f32`: integer division by zero is a
+    // panic, where the float form would merely produce `inf` before the guard caught it.
+    #[test]
+    fn i32_zero_divisor_yields_zero_not_a_panic() {
+        assert_eq!(val_i32(Some(5), Some(0)), vec![0]);
     }
 }

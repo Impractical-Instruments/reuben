@@ -10,6 +10,11 @@
 //! and `One` supply the guard and the numerator, so it is generic over the number type (the
 //! pure-fn seam).
 //!
+//! **`f32`-only by judgment, not by bounds.** `recip_fn` compiles perfectly well at `i32` — and is
+//! useless there: integer division truncates, so `1 / n` is `0` for every `|n| > 1`, and the whole
+//! operator collapses to "0, or 1, or the guarded 0". This is the failure mode the compiler cannot
+//! catch, so the omission is recorded here rather than left to look like an oversight.
+//!
 //! - input 0: `x` (`Float`) — the value to invert. Unwired default `1` (so `1/1 == 1`, the identity).
 //! - output 0: `out` — `1 / x` (or `0` when `x == 0`).
 
@@ -28,8 +33,7 @@ fn recip_fn<T: num_traits::Zero + num_traits::One + core::ops::Div<Output = T>>(
 // One declaration -> ReciprocalF32Value + ReciprocalF32Signal. `x` defaults to 1 (the
 // multiplicative identity) so an unwired input emits 1 rather than the guarded zero.
 crate::number_operator_contract!(Reciprocal {
-    numbers:  [f32],
-    carriers: [value, signal],
+    variants: [f32 value, f32 signal],
     inputs:   { x: number { default 1.0 } },
     outputs:  { out },
     function: recip_fn(x),

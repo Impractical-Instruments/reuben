@@ -36,8 +36,7 @@ fn mod_fn<T: num_traits::Zero + num_traits::Euclid>(a: T, b: T) -> T {
 // One declaration -> ModuloF32Value + ModuloF32Signal. `b` (the modulus) defaults to 1,
 // so an unwired modulus wraps `a` into the unit interval `[0, 1)` rather than dividing by zero.
 crate::number_operator_contract!(Modulo {
-    numbers:  [f32],
-    carriers: [value, signal],
+    variants: [f32 value, f32 signal, i32 value],
     inputs:   { a: number { default 0.0 }, b: number { default 1.0 } },
     outputs:  { out },
     function: mod_fn(a, b),

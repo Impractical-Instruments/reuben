@@ -35,8 +35,7 @@ fn clamp_fn<T: PartialOrd>(x: T, lo: T, hi: T) -> T {
 // One declaration -> ClampF32Value + ClampF32Signal. The default range is the bipolar
 // audio range [-1, 1], so an unconfigured clamp is a standard hard limiter.
 crate::number_operator_contract!(Clamp {
-    numbers:  [f32],
-    carriers: [value, signal],
+    variants: [f32 value, f32 signal, i32 value],
     inputs:   { x: number { default 0.0 }, lo: number { default -1.0 }, hi: number { default 1.0 } },
     outputs:  { out },
     function: clamp_fn(x, lo, hi),

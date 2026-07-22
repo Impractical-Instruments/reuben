@@ -31,6 +31,19 @@ pub const NUMBER_MIN: f32 = -1_000_000.0;
 /// The upper half of the type-wide default range. See [`NUMBER_MIN`].
 pub const NUMBER_MAX: f32 = 1_000_000.0;
 
+/// [`NUMBER_MIN`]'s integer counterpart, **derived from it** rather than restated (issue #556): one
+/// definition of the type-wide span, so an `i32` operand and an `f32` one cannot drift to different
+/// "effectively unbounded" bounds.
+///
+/// Deliberately not `i32::MIN`/`i32::MAX`, for the reason [`NUMBER_MIN`] gives and one more: the
+/// family's arithmetic then stays far from the type's edges, so an author reading a `±1e6` range on
+/// an integer port is reading the same knob-able promise they read on a float one. (Staying inside
+/// the type is *not* what makes the arithmetic safe — `PointwiseNum` saturates regardless, because
+/// `mul` escapes any range a port can declare.)
+pub const NUMBER_MIN_I32: i32 = NUMBER_MIN as i32;
+/// The upper half of the type-wide default range for an `i32` operand. See [`NUMBER_MIN_I32`].
+pub const NUMBER_MAX_I32: i32 = NUMBER_MAX as i32;
+
 /// How a control responds across its range — the good-button curve. The **one** definition of
 /// the curve axis (issue #217): the macro grammar's `lin`/`exp` keywords, the scaffold JSON's
 /// `"linear"`/`"exponential"` strings, and the runtime descriptor all resolve to this enum, so an

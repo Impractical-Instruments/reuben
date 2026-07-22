@@ -20,8 +20,10 @@ repository = "https://github.com/Impractical-Instruments/reuben"
 [workspace.dependencies]
 slotmap = "1"
 smallvec = "1"
-# Generic numeric traits (Zero/One/Signed/Euclid) so the pointwise math operators are written once
-# over any number type, not pinned to f32.
+# Generic numeric traits (Zero/One/Euclid) so the pointwise math operators are written once over any
+# number type, not pinned to f32. The overflow-prone operations bind the workspace's own
+# `PointwiseNum` instead: num-traits' saturating traits are integer-only, so they cannot express the
+# f32 half of a bound that has to be total at every instantiated type.
 num-traits = "0.2"
 # Compile-time operator self-registration. linkme is the no_std fallback.
 inventory = "0.3"

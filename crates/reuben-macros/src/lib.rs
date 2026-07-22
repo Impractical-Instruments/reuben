@@ -486,10 +486,12 @@ fn parse_f32_meta(input: ParseStream) -> syn::Result<F32Meta> {
     if !meta.is_empty() {
         return Err(meta.error("unexpected tokens in `f32 { .. }` meta"));
     }
+    // The grammar answers in the type-neutral `f64` (a literal is parsed once, projected by
+    // whoever knows the port's type); an `f32 { .. }` port's type is settled right here.
     Ok(F32Meta {
-        min,
-        max,
-        default,
+        min: min as f32,
+        max: max as f32,
+        default: default as f32,
         unit,
         curve,
     })
