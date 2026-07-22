@@ -324,6 +324,22 @@ jobs:
       - name: ADR-in-code + pointer-resolution guard
         run: python3 scripts/check_rules_refs.py .
 
+  # The Sample-alias guard (check_sample_alias.py, #560): the engine's audio element type is named
+  # once in crates/reuben-core/src/sample.rs, and a raw f32 slice or vector buffer form may appear
+  # only there or in the script's justified allowlist (device layer, resource decode, operator DSP
+  # arithmetic, test/bench harnesses). Like `ref-guard`, a stray raw buffer can slip into ANY code
+  # change, so this ALWAYS runs (stdlib-only Python; no toolchain setup). Its unit suite runs here
+  # too so the guard can't silently rot. Gates merges via `ci-passed`'s `needs`.
+  sample-guard:
+    name: no raw f32 buffers (sample-alias guard)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Guard unit test
+        run: cd scripts && python3 -m unittest test_check_sample_alias -v
+      - name: Sample-alias guard (single naming site for the audio element type)
+        run: python3 scripts/check_sample_alias.py .
+
   # Always-green aggregate merge gate. A ruleset can't require the per-path-filtered jobs above
   # directly: when a job is Skipped (nothing it gates changed) the ruleset reads it as "expected but
   # never reported" and wedges the PR (see the comment at the top of this file). So the `dev` ruleset
@@ -337,7 +353,7 @@ jobs:
     # this workflow and CONTRIBUTING refer to the check by one name.
     name: ci-passed
     runs-on: ubuntu-latest
-    needs: [changes, lockstep, check, windows, bench, rules-guards, ref-guard]
+    needs: [changes, lockstep, check, windows, bench, rules-guards, ref-guard, sample-guard]
     if: always()
     steps:
       - name: Fail if any required job failed or was cancelled (skipped is OK)

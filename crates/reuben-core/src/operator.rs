@@ -11,13 +11,13 @@
 //! port whose *type parameter* (a [`form`] marker) fixes the port's read/write shape and whose
 //! value carries the declared default. [`Io::read`] and [`Io::write`] dispatch on the handle:
 //!
-//! - `io.read(IN_FREQ)` on an `In<SignalF32>` → `&[f32]`, always exactly [`Io::frames`] samples
+//! - `io.read(IN_FREQ)` on an `In<SignalF32>` → an [`AudioBuffer`], always exactly [`Io::frames`] samples
 //!   (the buffer-presence invariant — index directly, no `.get(i).unwrap_or(..)` guard);
 //! - `io.read(IN_SUSTAIN)` on an `In<Held<f32>>` (or a held enum / `Harmony`) → the held (ZOH)
 //!   value, **defaulted to the declared descriptor default** — the contract's `default` is the
 //!   read fallback by construction, so no second literal can drift;
 //! - `io.read(IN_NOTES)` on an `In<Event<Note>>` → the sparse, frame-stamped [`EventStream`];
-//! - `io.write(OUT_AUDIO)` on an `Out<SignalF32>` → `&mut [f32]` to fill in place;
+//! - `io.write(OUT_AUDIO)` on an `Out<SignalF32>` → an [`AudioBufferMut`] to fill in place;
 //!   `io.write(OUT_ACTIVE)` on an `Out<Held<f32>>` → a [`MsgWriter`];
 //!   `io.write(OUT_NOTES)` on an `Out<Event<Note>>` → an [`EventWriter`].
 //!
@@ -39,6 +39,7 @@ use crate::graph::Graph;
 use crate::message::{Arg, Emit, Event, FromArg};
 use crate::plan::PlanError;
 use crate::resources::{ResolvedRefs, ResourceStore};
+use crate::sample::{AudioBuffer, AudioBufferMut};
 
 /// A typed, frame-stamped payload yielded by an [`EventStream`] — one decoded Message on a port.
 /// `frame` is segment-relative; `payload` is the Message's [`Arg`] decoded to the
@@ -65,8 +66,8 @@ pub struct Io<'a> {
     /// Dense per-sample buffer per **input** port (a wired [`Buffer`](Arg::F32Buffer) source or a
     /// materialized [`F32`](crate::descriptor::PortType::F32) control), or `None` for a port with
     /// no buffer form. Read per-sample via [`Io::read`] on a Signal handle.
-    inputs: SmallVec<[Option<&'a [f32]>; 20]>,
-    outputs: SmallVec<[&'a mut [f32]; 2]>,
+    inputs: SmallVec<[Option<AudioBuffer<'a>>; 20]>,
+    outputs: SmallVec<[AudioBufferMut<'a>; 2]>,
     /// The held (ZOH) [`Arg`] per **input** port — the unified per-port latch,
     /// collapsing the former Harmony / enum / param lanes. In input-port order; `Copy`-normalized
     /// and constant for this (sub)block (the engine block-slices at held-value changes). Touched
@@ -98,8 +99,8 @@ impl<'a> Io<'a> {
     /// from the arena without an intermediate heap allocation.
     pub(crate) fn new<I, O>(sample_rate: f32, frames: usize, inputs: I, outputs: O) -> Self
     where
-        I: IntoIterator<Item = Option<&'a [f32]>>,
-        O: IntoIterator<Item = &'a mut [f32]>,
+        I: IntoIterator<Item = Option<AudioBuffer<'a>>>,
+        O: IntoIterator<Item = AudioBufferMut<'a>>,
     {
         Self {
             sample_rate,
@@ -314,10 +315,11 @@ pub mod form {
 
     use super::{EventStream, EventWriter, Io, MsgWriter};
     use crate::message::{Arg, FromArg};
+    use crate::sample::{AudioBuffer, AudioBufferMut};
 
     /// The dense Signal form: a `f32_buffer` port (bare audio or a meta-carrying signal
-    /// control). Reads as `&[f32]`, always exactly [`Io::frames`] samples (the buffer-presence
-    /// invariant); writes as `&mut [f32]`.
+    /// control). Reads as an [`AudioBuffer`], always exactly [`Io::frames`] samples (the
+    /// buffer-presence invariant); writes as an [`AudioBufferMut`].
     pub struct SignalF32;
 
     /// The held (ZOH latch) Value form over payload `T`: a `f32` control, a vocab enum, a held
@@ -358,8 +360,8 @@ pub mod form {
 
     impl InForm for SignalF32 {
         type Default = f32;
-        type Read<'a> = &'a [f32];
-        fn read<'a>(io: &Io<'a>, index: usize, _default: f32) -> &'a [f32] {
+        type Read<'a> = AudioBuffer<'a>;
+        fn read<'a>(io: &Io<'a>, index: usize, _default: f32) -> AudioBuffer<'a> {
             let buf = io.inputs.get(index).copied().flatten().unwrap_or(&[]);
             // The buffer-presence invariant: the engine hands every declared
             // f32_buffer input a dense buffer of exactly `frames` samples (unwired bare inputs
@@ -403,10 +405,10 @@ pub mod form {
 
     impl OutForm for SignalF32 {
         type Write<'io, 'a>
-            = &'io mut [f32]
+            = AudioBufferMut<'io>
         where
             'a: 'io;
-        fn write<'io, 'a>(io: &'io mut Io<'a>, index: usize) -> &'io mut [f32] {
+        fn write<'io, 'a>(io: &'io mut Io<'a>, index: usize) -> AudioBufferMut<'io> {
             &mut io.outputs[index][..]
         }
     }
@@ -650,7 +652,7 @@ mod typed_handles {
             48_000.0,
             3,
             [Some(&buf[..])],
-            std::iter::empty::<&mut [f32]>(),
+            std::iter::empty::<AudioBufferMut<'_>>(),
         );
         let read = io.read(SIG);
         assert_eq!(read, &buf[..]);
@@ -666,11 +668,21 @@ mod typed_handles {
     fn read_held_scalar_applies_the_declared_default() {
         const SUSTAIN: In<Held<f32>> = In::new(0, 0.7);
         let latch = [Arg::F32(0.25)];
-        let io =
-            Io::new(48_000.0, 1, [None], std::iter::empty::<&mut [f32]>()).with_latched(&latch);
+        let io = Io::new(
+            48_000.0,
+            1,
+            [None],
+            std::iter::empty::<AudioBufferMut<'_>>(),
+        )
+        .with_latched(&latch);
         assert_eq!(io.read(SUSTAIN), 0.25);
         // Unlatched (a hand-built Io; the engine always seeds) → the declared default.
-        let bare = Io::new(48_000.0, 1, [None], std::iter::empty::<&mut [f32]>());
+        let bare = Io::new(
+            48_000.0,
+            1,
+            [None],
+            std::iter::empty::<AudioBufferMut<'_>>(),
+        );
         assert_eq!(bare.read(SUSTAIN), 0.7);
     }
 
@@ -680,10 +692,20 @@ mod typed_handles {
     fn read_held_enum_decodes_and_defaults() {
         const MODE: In<Held<FilterMode>> = In::new(0, FilterMode::DEFAULT);
         let latch = [Arg::from(FilterMode::Bp)];
-        let io =
-            Io::new(48_000.0, 1, [None], std::iter::empty::<&mut [f32]>()).with_latched(&latch);
+        let io = Io::new(
+            48_000.0,
+            1,
+            [None],
+            std::iter::empty::<AudioBufferMut<'_>>(),
+        )
+        .with_latched(&latch);
         assert_eq!(io.read(MODE), FilterMode::Bp);
-        let bare = Io::new(48_000.0, 1, [None], std::iter::empty::<&mut [f32]>());
+        let bare = Io::new(
+            48_000.0,
+            1,
+            [None],
+            std::iter::empty::<AudioBufferMut<'_>>(),
+        );
         assert_eq!(bare.read(MODE), FilterMode::DEFAULT);
     }
 
@@ -692,7 +714,12 @@ mod typed_handles {
     #[test]
     fn read_held_harmony_defaults_to_c_major() {
         const CTX: In<Held<Harmony>> = In::new(0, Harmony::DEFAULT);
-        let bare = Io::new(48_000.0, 1, [None], std::iter::empty::<&mut [f32]>());
+        let bare = Io::new(
+            48_000.0,
+            1,
+            [None],
+            std::iter::empty::<AudioBufferMut<'_>>(),
+        );
         assert_eq!(bare.read(CTX), Harmony::default());
     }
 
@@ -711,8 +738,13 @@ mod typed_handles {
             },
         ];
         let streams: [&[crate::message::Event]; 1] = [&events];
-        let io =
-            Io::new(48_000.0, 64, [None], std::iter::empty::<&mut [f32]>()).with_streams(&streams);
+        let io = Io::new(
+            48_000.0,
+            64,
+            [None],
+            std::iter::empty::<AudioBufferMut<'_>>(),
+        )
+        .with_streams(&streams);
         let got: Vec<_> = io
             .read(NOTES)
             .map(|s| (s.frame, s.payload.pitch.midi()))
@@ -728,8 +760,13 @@ mod typed_handles {
         let a = Arg::Str("Up".into());
         let events = [crate::message::Event { arg: &a, frame: 2 }];
         let streams: [&[crate::message::Event]; 1] = [&events];
-        let io =
-            Io::new(48_000.0, 8, [None], std::iter::empty::<&mut [f32]>()).with_streams(&streams);
+        let io = Io::new(
+            48_000.0,
+            8,
+            [None],
+            std::iter::empty::<AudioBufferMut<'_>>(),
+        )
+        .with_streams(&streams);
         let got: Vec<_> = io.read(IN).map(|s| (s.frame, s.payload.clone())).collect();
         assert_eq!(got, vec![(2, Arg::Str("Up".into()))]);
     }
@@ -743,7 +780,7 @@ mod typed_handles {
             let mut io = Io::new(
                 48_000.0,
                 4,
-                std::iter::empty::<Option<&[f32]>>(),
+                std::iter::empty::<Option<AudioBuffer<'_>>>(),
                 [&mut buf[..]],
             );
             io.write(AUDIO).copy_from_slice(&[1.0, 2.0, 3.0, 4.0]);
@@ -762,8 +799,8 @@ mod typed_handles {
             let mut io = Io::new(
                 48_000.0,
                 8,
-                std::iter::empty::<Option<&[f32]>>(),
-                std::iter::empty::<&mut [f32]>(),
+                std::iter::empty::<Option<AudioBuffer<'_>>>(),
+                std::iter::empty::<AudioBufferMut<'_>>(),
             )
             .with_emit(&mut sink, 0);
             let mut w = io.write(ACTIVE);
@@ -789,8 +826,8 @@ mod typed_handles {
         Io::new(
             48_000.0,
             8,
-            std::iter::empty::<Option<&[f32]>>(),
-            std::iter::empty::<&mut [f32]>(),
+            std::iter::empty::<Option<AudioBuffer<'_>>>(),
+            std::iter::empty::<AudioBufferMut<'_>>(),
         )
         .with_emit(sink, frame_offset)
     }
@@ -853,8 +890,13 @@ mod typed_handles {
     fn varying_takes_a_handle_or_a_bare_index() {
         const SIG: In<SignalF32> = In::new(0, 0.0);
         let hints = [false];
-        let io =
-            Io::new(48_000.0, 1, [None], std::iter::empty::<&mut [f32]>()).with_varying(&hints);
+        let io = Io::new(
+            48_000.0,
+            1,
+            [None],
+            std::iter::empty::<AudioBufferMut<'_>>(),
+        )
+        .with_varying(&hints);
         assert!(!io.varying(SIG));
         assert!(!io.varying(0));
         assert!(io.varying(7), "out of range is conservatively varying");

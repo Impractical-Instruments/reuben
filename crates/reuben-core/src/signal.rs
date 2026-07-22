@@ -6,6 +6,7 @@
 
 /// One block of audio samples, length == `block_size`.
 ///
-/// Backed by a `Vec<f32>`. The Plan owns the pool of blocks used as edge buffers;
-/// operators receive borrowed (sub)slices during Render and never allocate.
-pub type Block = Vec<f32>;
+/// Backed by a `Vec<Sample>` (the audio element named once in [`crate::sample`]). The Plan owns
+/// the pool of blocks used as edge buffers; operators receive borrowed (sub)slices during Render
+/// and never allocate.
+pub type Block = Vec<crate::sample::Sample>;

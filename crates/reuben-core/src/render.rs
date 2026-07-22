@@ -26,6 +26,7 @@ use crate::descriptor::{Port, PortType};
 use crate::message::{Arg, Emit, Event, Message};
 use crate::operator::Io;
 use crate::plan::{InterfaceOutput, Plan, PlanNode, PortKind};
+use crate::sample::{AudioBufferMut, Sample};
 
 /// Decides the order in which nodes are processed for a block.
 ///
@@ -62,7 +63,7 @@ pub struct RenderScratch {
     /// Per-node scratch: the current node's signal-output buffers, swapped out of `arena` so
     /// inputs (still in `arena`) and outputs are disjointly borrowable. In signal-output port
     /// order. Cleared and refilled per node — capacity retained.
-    out_scratch: Vec<Vec<f32>>,
+    out_scratch: Vec<Vec<Sample>>,
     /// Per-block message routing, one entry per node. Reused; inner Vecs cleared per block.
     routes: Vec<NodeRoute>,
     /// Block-lifetime pool of operator-emitted Messages. Routed events borrow
@@ -105,7 +106,7 @@ impl RenderScratch {
 /// [`Renderer::render_block`] is allocation-free in steady state.
 pub struct Renderer<E: Executor = SerialExecutor> {
     /// Edge buffers, indexed by arena slot; one block long each.
-    arena: Vec<Vec<f32>>,
+    arena: Vec<Vec<Sample>>,
     /// Reusable per-block scratch (everything but the arena), shared across re-entrant renders.
     scratch: RenderScratch,
     /// Throwaway outbound sink for the mono [`Renderer::render_block`] convenience, which has no
@@ -114,7 +115,7 @@ pub struct Renderer<E: Executor = SerialExecutor> {
     /// Per-channel master scratch, one buffer per logical channel, each
     /// `block_size` long. Used by the mono [`Renderer::render_block`] convenience so it can
     /// compute the full N-channel master and hand back channel 0; preallocated and reused.
-    master: Vec<Vec<f32>>,
+    master: Vec<Vec<Sample>>,
     /// The pluggable executor. Decides node order each block.
     executor: E,
     block_size: usize,
@@ -153,7 +154,7 @@ impl<E: Executor> Renderer<E> {
     /// left channel only (use [`Renderer::render_block_multi`] for both). Supplies **no input
     /// master**: a channel-bound input pipe reads zeros here (`render_block_multi` takes the
     /// input buffers). Allocation-free.
-    pub fn render_block(&mut self, plan: &mut Plan, messages: &[Message], out: &mut [f32]) {
+    pub fn render_block(&mut self, plan: &mut Plan, messages: &[Message], out: AudioBufferMut<'_>) {
         debug_assert_eq!(out.len(), self.block_size);
         // Borrow `master`/`outbound_sink` out of `self` so `render_into` can take `&mut self` (both
         // preallocated; `take` swaps in an empty Vec, no allocation). The mono path discards
@@ -192,8 +193,8 @@ impl<E: Executor> Renderer<E> {
         &mut self,
         plan: &mut Plan,
         messages: &[Message],
-        inputs: &[Vec<f32>],
-        out: &mut [Vec<f32>],
+        inputs: &[Vec<Sample>],
+        out: &mut [Vec<Sample>],
         outbound: &mut Vec<Message>,
     ) {
         self.render_into(plan, messages, inputs, out, outbound);
@@ -207,8 +208,8 @@ impl<E: Executor> Renderer<E> {
         &mut self,
         plan: &mut Plan,
         messages: &[Message],
-        inputs: &[Vec<f32>],
-        master: &mut [Vec<f32>],
+        inputs: &[Vec<Sample>],
+        master: &mut [Vec<Sample>],
         outbound: &mut Vec<Message>,
     ) {
         render_plan(
@@ -249,13 +250,13 @@ fn capture_slot(outs: &[InterfaceOutput], node: usize, port: usize) -> Option<us
 #[allow(clippy::too_many_arguments)]
 pub fn render_plan<E: Executor>(
     plan: &mut Plan,
-    arena: &mut [Vec<f32>],
+    arena: &mut [Vec<Sample>],
     scratch: &mut RenderScratch,
     executor: &E,
     messages: &[Message],
     frames: usize,
-    inputs: &[Vec<f32>],
-    master: &mut [Vec<f32>],
+    inputs: &[Vec<Sample>],
+    master: &mut [Vec<Sample>],
     outbound: &mut Vec<Message>,
 ) {
     // Fresh edge buffers each block (upstream writes before downstream reads). Materialize
@@ -470,13 +471,13 @@ impl<E: Executor> Renderer<E> {
     }
 
     /// Read edge-arena buffer `bi` (a node output, or a driven input's scratch). Length `block_size`.
-    pub(crate) fn arena_buffer(&self, bi: usize) -> &[f32] {
+    pub(crate) fn arena_buffer(&self, bi: usize) -> crate::sample::AudioBuffer<'_> {
         &self.arena[bi]
     }
 
     /// Mutable edge-arena buffer `bi`, for writing a driven (time-varying audio-in) buffer before a
     /// [`Renderer::step_node`] call. The slot must be materialize scratch so the per-block clear skips it.
-    pub(crate) fn arena_buffer_mut(&mut self, bi: usize) -> &mut [f32] {
+    pub(crate) fn arena_buffer_mut(&mut self, bi: usize) -> AudioBufferMut<'_> {
         &mut self.arena[bi]
     }
 
@@ -681,8 +682,8 @@ pub(crate) fn local_address<'a>(addr: &'a str, node_addr: &str) -> Option<&'a st
 /// `out_scratch`, and events are zero-copy.
 #[allow(clippy::too_many_arguments)]
 fn process_node(
-    arena: &mut [Vec<f32>],
-    out_scratch: &mut Vec<Vec<f32>>,
+    arena: &mut [Vec<Sample>],
+    out_scratch: &mut Vec<Vec<Sample>>,
     bounds: &mut Vec<usize>,
     route: &mut NodeRoute,
     node: &mut PlanNode,

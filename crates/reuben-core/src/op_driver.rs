@@ -47,6 +47,7 @@ use crate::operator::{Operator, PortIndex};
 use crate::plan::Plan;
 use crate::render::Renderer;
 use crate::resources::{ResolvedRefs, ResourceStore, SampleBuffer};
+use crate::sample::{AudioBuffer, Sample};
 
 /// Production-size render block — the shipped default (matches `bench_support::BLOCK_SIZE`).
 pub const BLOCK_SIZE: usize = 128;
@@ -63,11 +64,11 @@ pub struct OpDriver {
     sample_rate: f32,
     /// Time-varying audio-in buffers: `(input port, scratch arena buffer, samples)`. Written into
     /// the arena each block (the slot is materialize scratch, so the per-block clear skips it).
-    driven: Vec<(usize, usize, Vec<f32>)>,
+    driven: Vec<(usize, usize, Vec<Sample>)>,
     /// Transient events: `(global frame, input port, payload)`. Rebased per block into messages.
     pushes: Vec<(usize, usize, Arg)>,
     /// Per Buffer-output (signal-output ordinal order): the rendered `n` frames after [`render`].
-    outputs: Vec<Vec<f32>>,
+    outputs: Vec<Vec<Sample>>,
     /// Emissions across the whole render, frames rebased block-absolute.
     emits: Vec<Emit>,
     /// Kept alive for the operator's resource binding (the op clones the `Arc`).
@@ -135,7 +136,7 @@ impl OpDriver {
     /// Drive a time-varying audio-in: write `samples` into the input's scratch buffer per block.
     /// Detaches the port from materialize (so `process_node` won't overwrite our data) and marks it
     /// `varying`, so a const-folding op (the filter) takes its modulated path.
-    pub fn drive(&mut self, port: impl PortIndex, samples: &[f32]) -> &mut Self {
+    pub fn drive(&mut self, port: impl PortIndex, samples: AudioBuffer<'_>) -> &mut Self {
         let port = port.index();
         let node = &mut self.plan.nodes[0];
         let bi = node.inputs[port]
@@ -218,7 +219,7 @@ impl OpDriver {
 
     /// The rendered samples on a Buffer output `port` (its `OUT_*` const) — `n` frames after the
     /// last [`render`](OpDriver::render).
-    pub fn output(&self, port: impl PortIndex) -> &[f32] {
+    pub fn output(&self, port: impl PortIndex) -> AudioBuffer<'_> {
         &self.outputs[self.signal_ordinal(port.index())]
     }
 
@@ -230,7 +231,7 @@ impl OpDriver {
     /// All Buffer outputs (signal-output ordinal order), each `n` frames after the last
     /// [`render`](OpDriver::render). For callers that want every output without naming each port
     /// (the micro-bench accumulator).
-    pub fn outputs(&self) -> &[Vec<f32>] {
+    pub fn outputs(&self) -> &[Vec<Sample>] {
         &self.outputs
     }
 
@@ -445,7 +446,7 @@ mod tests {
         use crate::plan::PortKind;
 
         let n = 2 * BLOCK_SIZE + 17; // partial final block: the copy holds per sub-block
-        let samples: Vec<f32> = (0..n).map(|i| ((i * 7) % 31) as f32 / 31.0 - 0.5).collect();
+        let samples: Vec<Sample> = (0..n).map(|i| ((i * 7) % 31) as f32 / 31.0 - 0.5).collect();
         let mut d = OpDriver::from_boxed(
             Box::new(Pipe::new(PortKind::Signal)),
             Pipe::descriptor(),
