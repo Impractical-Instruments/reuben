@@ -1,6 +1,6 @@
 //! The structure channel: a loopback-TCP / NDJSON server.
 //!
-//! This is the engine-side half of the sidecar↔engine control channel:
+//! This is the engine-side half of the sidecar↔engine structure channel:
 //! **TCP on `127.0.0.1`** (loopback-only — structure edits are more powerful than
 //! control, unlike OSC's `0.0.0.0:9000`), carrying **newline-delimited JSON**, one
 //! [`Response`] per [`Request`] in order. A thread in `reuben play` owns it; the client lives
@@ -8,7 +8,7 @@
 //!
 //! M2 (#323) flips the `swap` verb from M1's stop-the-world restart onto the
 //! [`Coordinator`](reuben_core::coordinator::Coordinator)/mailbox path (*same
-//! verb, machinery-only replacement*). The four verbs:
+//! verb, machinery-only replacement*). The five verbs:
 //! - [`Request::Ping`] → [`Response::Pong`] — liveness of the channel itself.
 //! - [`Request::GetDocument`] → the Coordinator's canonical document + its
 //!   [`content_hash`](reuben_core::content_hash). It changes only when a
@@ -26,6 +26,12 @@
 //!   for the new engine through the injected [`RenderConfigPublisher`] seam. A swapped-in engine
 //!   binding input channels no open stream provides **dark-degrades to silence** with a loud
 //!   swap-report warning, never an error or a crash.
+//! - [`Request::Send`] → control traffic: the batch is handed as **one**
+//!   [`ControlBatch`](crate::osc::ControlBatch) to the same mpsc the UDP decode thread feeds,
+//!   converging at the render callback's `queue_osc`. This channel therefore carries no wire format
+//!   of its own past the envelope's flat atoms, and OSC-the-binary-protocol stays at `play`'s
+//!   foreign edge. It is the one verb that does **not** touch the Coordinator — control is not
+//!   structure.
 //!
 //! The Coordinator is single-writer: the structure server holds it behind one
 //! [`Mutex`] so concurrent connections serialize, and the whole `expect`-compare → swap →
@@ -39,16 +45,19 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use reuben_core::coordinator::{
-    Conflict, Coordinator, DiagnosticsReport, DocSource, DocumentSnapshot, Request, Response,
+    Conflict, ControlMessage, Coordinator, DiagnosticsReport, DocSource, DocumentSnapshot, Request,
+    Response, MAX_SEND_BATCH,
 };
 use reuben_core::{Diag, SwapReport};
 
 use crate::diagnostics::{Diagnostics, Snapshot};
+use crate::osc::{ControlBatch, OscIn};
 
 /// How long the accept loop sleeps between polls of its shutdown flag while idle. The listener
 /// is non-blocking so the loop can observe [`StructureServer::shutdown`] without a client ever
@@ -265,26 +274,48 @@ pub(crate) fn dark_degrade_warning(
 /// it owns the canonical document + hash (`swap` advances them, `get_document`/`expect` read
 /// them) and the install mailbox. The `render_config` seam publishes the device output map + the
 /// dark-degrade warning after each swap; `diagnostics` is the live counter surface the callback
-/// feeds (fixed at `play` start — M2 never reopens streams, so it never re-points).
+/// feeds (fixed at `play` start — M2 never reopens streams, so it never re-points); `control` is
+/// the [`Request::Send`] ingress into the render callback.
 #[derive(Clone)]
 pub struct StructureState {
     coordinator: Arc<Mutex<Coordinator>>,
     diagnostics: Arc<Diagnostics>,
     render_config: Arc<dyn RenderConfigPublisher>,
+    /// The control ingress: a producer on the same [`ControlBatch`] channel the UDP decode thread
+    /// feeds, so `send` converges with external OSC at the callback's `queue_osc`.
+    ///
+    /// A bare `Sender` — no `Arc<Mutex<_>>` — because this state is never shared by reference
+    /// across threads: [`accept_loop`] *clones* it per connection and moves the clone in, which is
+    /// exactly std's multi-producer idiom (`play`'s UDP thread takes its producer the same way).
+    ///
+    /// **Required, not a builder step.** Unlike `render_config` there is no working default to fall
+    /// back to, so an unwired ingress could only ever be a wiring mistake reported to a user at
+    /// runtime. Taking it in the constructor makes that mistake a compile error instead.
+    control: Sender<ControlBatch>,
 }
 
 impl StructureState {
     /// Wrap a [`Coordinator`] `play` (or a test) built with [`Coordinator::install_initial`],
-    /// alongside the live [`Diagnostics`] surface. Built with the headless [`HeadlessRenderConfig`]
-    /// (output-only: any input-binding swap dark-degrades) — production wires the real native map
-    /// publisher with [`with_render_config`](Self::with_render_config).
-    pub fn from_coordinator(coordinator: Coordinator, diagnostics: Arc<Diagnostics>) -> Self {
+    /// alongside the live [`Diagnostics`] surface and the control ingress the render callback
+    /// drains — `play` passes a clone of the very sender its UDP decode thread holds, so a `send`
+    /// and an external datagram are indistinguishable downstream.
+    ///
+    /// Built with the headless [`HeadlessRenderConfig`] (output-only: any input-binding swap
+    /// dark-degrades) — production wires the real native map publisher with
+    /// [`with_render_config`](Self::with_render_config). That one *is* a builder step because it has
+    /// a working default; the control ingress has none, so it is a parameter.
+    pub fn from_coordinator(
+        coordinator: Coordinator,
+        diagnostics: Arc<Diagnostics>,
+        control: Sender<ControlBatch>,
+    ) -> Self {
         Self {
             coordinator: Arc::new(Mutex::new(coordinator)),
             diagnostics,
             render_config: Arc::new(HeadlessRenderConfig {
                 opened_input_channels: 0,
             }),
+            control,
         }
     }
 
@@ -355,10 +386,66 @@ fn dispatch(state: &StructureState, line: &str) -> Response {
             Response::Diagnostics(diagnostics_report(&state.diagnostics.snapshot()))
         }
         Ok(Request::Swap { source, expect }) => handle_swap(state, source, expect),
+        Ok(Request::Send { messages }) => handle_send(state, messages),
         Err(e) => Response::Error {
             message: format!("unreadable request: {e}"),
         },
     }
+}
+
+/// Control traffic: hand the batch to the engine's ingress **as one unit** and ack it.
+///
+/// Deliberately thin — there is **no routing logic here**. The batch becomes one
+/// [`ControlBatch`] on the same channel `play`'s UDP decode thread feeds, so the render callback's
+/// `queue_osc` types and routes each message against its destination port exactly as it would an
+/// external datagram. An address matching no node/port is dropped there, silently, which is why the
+/// ack is "queued", never "applied".
+///
+/// **One `send` on the channel, not one per message.** That single push is what makes the whole
+/// documented atomicity true rather than aspirational: concurrent handler threads (one per
+/// connection) cannot interleave message-by-message into each other's gestures, the callback cannot
+/// apply half a gesture to one block and half to the next, and there is no partial-failure window
+/// where some messages are queued but the client is told the batch failed.
+///
+/// The Coordinator is untouched: control is not structure, so a `send` never contends for the
+/// single-writer lock and cannot be starved by an in-flight swap's bounded reclaim poll.
+fn handle_send(state: &StructureState, messages: Vec<ControlMessage>) -> Response {
+    // Bound the batch before it is queued. Its whole cost lands in one render callback, so an
+    // unbounded batch is an RT hazard, not merely a large request. An EMPTY batch is rejected for a
+    // different reason: acking a no-op as success would let a client bug that drops its messages
+    // read as a working send.
+    if messages.is_empty() {
+        return Response::Error {
+            message: "`send` needs at least one message; an empty batch does nothing".to_string(),
+        };
+    }
+    if messages.len() > MAX_SEND_BATCH {
+        return Response::Error {
+            message: format!(
+                "`send` batch of {} exceeds the {MAX_SEND_BATCH}-message limit; split it across \
+                 several sends",
+                messages.len()
+            ),
+        };
+    }
+
+    let batch: ControlBatch = messages
+        .into_iter()
+        .map(|message| OscIn {
+            address: message.address,
+            args: message.args.into_iter().map(Into::into).collect(),
+        })
+        .collect();
+
+    if state.control.send(batch).is_err() {
+        // The receiver is gone: the render callback has stopped for good (audio torn down), so
+        // nothing downstream will ever apply this batch. Say so rather than ack a lie. Nothing was
+        // queued — the batch was one send — so this is a clean all-or-nothing failure.
+        return Response::Error {
+            message: "the engine's control ingress is closed; is audio still running?".to_string(),
+        };
+    }
+    Response::Sent
 }
 
 /// The M2 mailbox-swap install path, device-free up to the
@@ -683,10 +770,10 @@ fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<Ato
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reuben_core::coordinator::{RenderSide, RenderSlot};
+    use crate::test_support::FakeCallback;
+    use reuben_core::coordinator::ControlArg;
     use reuben_core::resources::MemoryResolver;
-    use reuben_core::{AudioConfig, Registry};
-    use std::sync::atomic::AtomicBool;
+    use reuben_core::{Arg, AudioConfig, Registry};
 
     fn cfg() -> AudioConfig {
         AudioConfig::new(48_000.0, 128)
@@ -725,53 +812,13 @@ mod tests {
     const BAD_DOC: &str = r#"{"format_version":3,"instrument":"bad",
         "nodes":[{"type":"no_such_operator","address":"/x"}]}"#;
 
-    /// A background "fake audio callback": it owns the [`RenderSlot`] the real cpal
-    /// callback would and drives it in a loop, draining the install mailbox, running the master-gain
-    /// ramp, box-transplanting survivors, and posting retirees — so a Coordinator-driven swap
-    /// installs **via the mailbox** and its `reclaim` completes, all with no audio device. Rendering
-    /// the *logical* master directly (no device output map — that is the human ritual's half) is
-    /// enough to make the swap real end-to-end.
-    struct FakeCallback {
-        stop: Arc<AtomicBool>,
-        handle: Option<JoinHandle<()>>,
-    }
-
-    impl FakeCallback {
-        fn spawn(side: RenderSide) -> Self {
-            let stop = Arc::new(AtomicBool::new(false));
-            let stop_thread = Arc::clone(&stop);
-            let handle = std::thread::spawn(move || {
-                let mut slot = RenderSlot::new(side);
-                let mut buf = vec![0.0f32; 128 * slot.channels().max(1)];
-                while !stop_thread.load(Ordering::SeqCst) {
-                    let ch = slot.channels().max(1);
-                    if buf.len() != 128 * ch {
-                        buf.resize(128 * ch, 0.0);
-                    }
-                    slot.fill(&mut buf);
-                    // Pace the loop like a device would; fast enough that a swap's ramp completes in
-                    // a few ms, slow enough not to spin a core.
-                    std::thread::sleep(Duration::from_millis(1));
-                }
-                // The slot (and its Engine + mailbox) drops here, off any RT thread.
-            });
-            Self {
-                stop,
-                handle: Some(handle),
-            }
-        }
-
-        fn stop(mut self) {
-            self.stop.store(true, Ordering::SeqCst);
-            if let Some(handle) = self.handle.take() {
-                let _ = handle.join();
-            }
-        }
-    }
-
-    /// A Coordinator-backed [`StructureState`] with a live [`FakeCallback`] draining its mailbox,
-    /// plus the base document's content hash. `opened_input_channels` sets the headless render
-    /// config's input-stream geometry (`0` = output-only, so an input-binding swap dark-degrades).
+    /// A Coordinator-backed [`StructureState`] with a live [`FakeCallback`] draining its mailbox
+    /// and its control ingress, plus the base document's content hash. `opened_input_channels` sets
+    /// the headless render config's input-stream geometry (`0` = output-only, so an input-binding
+    /// swap dark-degrades).
+    ///
+    /// The harness is [`crate::test_support::FakeCallback`], shared with the integration tests, so
+    /// there is exactly one mirror of the real callback's control drain.
     fn swap_fixture(
         base: &str,
         opened_input_channels: usize,
@@ -784,11 +831,12 @@ mod tests {
         )
         .expect("initial install");
         let base_hash = coordinator.installed_hash();
-        let state = StructureState::from_coordinator(coordinator, Diagnostics::new())
+        let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
+        let state = StructureState::from_coordinator(coordinator, Diagnostics::new(), control_tx)
             .with_render_config(Arc::new(HeadlessRenderConfig {
                 opened_input_channels,
             }));
-        (state, FakeCallback::spawn(side), base_hash)
+        (state, FakeCallback::spawn(side, control_rx), base_hash)
     }
 
     fn swap_by_value(target: &str, expect: Option<String>) -> Request {
@@ -846,8 +894,12 @@ mod tests {
         )
         .expect("install");
         let diagnostics = Diagnostics::new();
-        let state = StructureState::from_coordinator(coordinator, Arc::clone(&diagnostics));
-        let cb = FakeCallback::spawn(side);
+        // This verb never touches control, but the ingress is a constructor parameter now — there
+        // is no such thing as a StructureState that cannot serve `send`.
+        let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
+        let state =
+            StructureState::from_coordinator(coordinator, Arc::clone(&diagnostics), control_tx);
+        let cb = FakeCallback::spawn(side, control_rx);
         // Fresh: zeroed.
         assert_eq!(
             dispatch(&state, &Request::GetDiagnostics.to_ndjson()),
@@ -1019,6 +1071,148 @@ mod tests {
     }
 
     #[test]
+    fn send_delivers_the_whole_batch_to_the_engines_queue_osc() {
+        // Control converges where external OSC does. The assertion is on what reached
+        // `queue_osc` — the exact call a decoded UDP datagram reaches — so this proves the door
+        // delivered `{address, [Arg]}` to the engine, not merely that a sink was poked. Distinct
+        // values per atom kind so a mis-mapped variant can't pass.
+        let (state, cb, _) = swap_fixture(BASE_DOC, 0);
+        let request = Request::Send {
+            messages: vec![
+                ControlMessage {
+                    address: "/osc/freq".to_string(),
+                    args: vec![ControlArg::F32(440.5)],
+                },
+                ControlMessage {
+                    address: "/osc/shape".to_string(),
+                    args: vec![ControlArg::Str("Up".to_string()), ControlArg::I32(3)],
+                },
+            ],
+        };
+        assert_eq!(
+            dispatch(&state, &request.to_ndjson()),
+            Response::Sent,
+            "a live engine acks the whole batch"
+        );
+
+        let queued = cb.await_queued(2);
+        assert_eq!(
+            queued,
+            vec![
+                OscIn {
+                    address: "/osc/freq".to_string(),
+                    args: vec![Arg::F32(440.5)],
+                },
+                OscIn {
+                    address: "/osc/shape".to_string(),
+                    args: vec![Arg::Str("Up".into()), Arg::I32(3)],
+                },
+            ],
+            "both messages arrive in order, each atom as its primitive Arg"
+        );
+        cb.stop();
+    }
+
+    #[test]
+    fn send_acks_an_unroutable_address_because_the_engine_drops_it_silently() {
+        // The ack is "queued", never "applied": an address matching no node/port is dropped at the
+        // engine's ingress exactly as a stale external datagram is, and the channel does not
+        // pre-judge it — this door has no routing table and must not grow one.
+        let (state, cb, _) = swap_fixture(BASE_DOC, 0);
+        let request = Request::Send {
+            messages: vec![ControlMessage {
+                address: "/nowhere/at/all".to_string(),
+                args: vec![ControlArg::F32(1.0)],
+            }],
+        };
+        assert_eq!(dispatch(&state, &request.to_ndjson()), Response::Sent);
+        assert_eq!(cb.await_queued(1).len(), 1, "it still reached queue_osc");
+        cb.stop();
+    }
+
+    #[test]
+    fn send_hands_the_batch_to_the_callback_as_one_unit() {
+        // The atomicity the wire promises is a property of HOW the batch is handed over: one push,
+        // so concurrent handler threads cannot interleave into each other's gestures and the
+        // callback cannot split one across two blocks. Asserting on the drained batch SIZES is what
+        // distinguishes that from three single-message pushes that happen to arrive in order.
+        let (state, cb, _) = swap_fixture(BASE_DOC, 0);
+        let request = Request::Send {
+            messages: (0..3)
+                .map(|i| ControlMessage {
+                    address: format!("/osc/p{i}"),
+                    args: vec![ControlArg::I32(i)],
+                })
+                .collect(),
+        };
+        assert_eq!(dispatch(&state, &request.to_ndjson()), Response::Sent);
+        cb.await_queued(3);
+        assert_eq!(
+            cb.drained_batch_sizes(),
+            vec![3],
+            "the gesture crossed as ONE batch, not three separate pushes"
+        );
+        cb.stop();
+    }
+
+    #[test]
+    fn send_rejects_an_empty_batch_rather_than_acking_a_no_op() {
+        // A client bug that drops its messages must not read as a working send. The tool surface
+        // rejects this too, but the channel is its own contract — netcat and any future door reach
+        // it without going through that tool.
+        let (state, cb, _) = swap_fixture(BASE_DOC, 0);
+        let request = Request::Send {
+            messages: Vec::new(),
+        };
+        match dispatch(&state, &request.to_ndjson()) {
+            Response::Error { message } => assert!(
+                message.contains("at least one"),
+                "the error names what is wrong: {message}"
+            ),
+            other => panic!("expected Error, got {other:?}"),
+        }
+        cb.stop();
+    }
+
+    #[test]
+    fn send_rejects_a_batch_over_the_limit_before_it_reaches_the_callback() {
+        // The batch lands whole in one render callback, so its size is an RT concern, not just a
+        // request-size one. The limit is enforced here — the door advertising it is a courtesy, not
+        // the guarantee — and nothing is queued when it trips.
+        let (state, cb, _) = swap_fixture(BASE_DOC, 0);
+        let request = Request::Send {
+            messages: (0..MAX_SEND_BATCH + 1)
+                .map(|i| ControlMessage {
+                    address: format!("/osc/p{i}"),
+                    args: vec![ControlArg::I32(0)],
+                })
+                .collect(),
+        };
+        match dispatch(&state, &request.to_ndjson()) {
+            Response::Error { message } => assert!(
+                message.contains(&MAX_SEND_BATCH.to_string()),
+                "the error names the limit so a client can split: {message}"
+            ),
+            other => panic!("expected Error, got {other:?}"),
+        }
+        assert!(
+            cb.drained_batch_sizes().is_empty(),
+            "an over-limit batch reaches the callback not at all"
+        );
+        // The limit itself is servable — the boundary is inclusive.
+        let ok = Request::Send {
+            messages: (0..MAX_SEND_BATCH)
+                .map(|i| ControlMessage {
+                    address: format!("/osc/p{i}"),
+                    args: vec![ControlArg::I32(0)],
+                })
+                .collect(),
+        };
+        assert_eq!(dispatch(&state, &ok.to_ndjson()), Response::Sent);
+        cb.stop();
+    }
+
+    #[test]
     fn an_unreadable_line_is_a_channel_error() {
         let (state, cb, _) = swap_fixture(BASE_DOC, 0);
         match dispatch(&state, "{not json}\n") {
@@ -1157,7 +1351,8 @@ mod tests {
             cfg(),
         )
         .expect("initial install");
-        let state = StructureState::from_coordinator(coordinator, Diagnostics::new())
+        let (control_tx, _control_rx) = std::sync::mpsc::channel::<ControlBatch>();
+        let state = StructureState::from_coordinator(coordinator, Diagnostics::new(), control_tx)
             .with_render_config(Arc::new(HeadlessRenderConfig {
                 opened_input_channels: 0,
             }));

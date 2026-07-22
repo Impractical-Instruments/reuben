@@ -1,10 +1,13 @@
-//! The two engine-facing planes the five engine tools drive, and the [`EngineLink`] that holds
-//! both.
+//! The engine-facing link the five engine tools drive.
 //!
-//! The planes stay separate on purpose. Structure edits ride a **loopback-only** TCP/NDJSON channel
-//! ([`StructureClient`], #315) because they are more powerful than OSC control; OSC control rides
-//! UDP to an endpoint the engine binds on all interfaces. `EngineLink` owns one handle to each
-//! rather than merging them, so a call site names the plane it is using.
+//! **One plane, not two.** Structure edits and control both ride the **loopback-only** TCP/NDJSON
+//! structure channel ([`StructureClient`], #315). Control used to ride OSC/UDP instead — `send`
+//! encoded datagrams and dispatched them to the endpoint the engine binds on all interfaces — which
+//! meant the sidecar owned an OSC wire format for talking to its own peer. It no longer does: both
+//! ends already speak core's types, and routing converges in core at `Engine::queue_osc` either way,
+//! so `send` now ships `{address, [Arg]}` in this channel's own framing. OSC-the-binary-protocol is
+//! the engine's **foreign** edge (external controllers in, `osc_out` nodes out), not an internal
+//! hop.
 //!
 //! There is no engine-facing trait. The injectable seam is one layer down —
 //! [`StructureTransport`](crate::StructureTransport), the socket itself — so tool-body tests
@@ -13,105 +16,60 @@
 //!
 //! # Act-then-map, not probe-then-act
 //!
-//! The structure-channel tools (`swap`, `get_current_instrument`, `get_diagnostics`) run their
-//! real exchange and map [`StructureError::is_unreachable`] to the fail-fast
-//! [`crate::engine_unreachable`] result — one connection, no TOCTOU window between a separate
-//! liveness probe and the act. `send` is the one probe-first tool: UDP is silent
-//! about a dead port, so it pings the structure channel before dispatching datagrams.
+//! Every engine tool runs its real exchange and maps [`StructureError::is_unreachable`] to the
+//! fail-fast [`crate::engine_unreachable`] result — one connection, no TOCTOU window between a
+//! separate liveness probe and the act. `send` was the one exception, probing first because UDP is
+//! silent about a dead port; riding TCP, its own exchange reports the dead engine, so the probe is
+//! gone and the rule has no exceptions left.
 //!
 //! see rules: agent-mcp
 
-use std::net::UdpSocket;
-
-use reuben_core::coordinator::{DEFAULT_OSC_PORT, DEFAULT_STRUCTURE_ADDR};
+use reuben_core::coordinator::DEFAULT_STRUCTURE_ADDR;
 
 use crate::client::StructureClient;
 
-/// The engine's OSC-in endpoint the sidecar dispatches `send` datagrams to, composed from the
-/// shared [`DEFAULT_OSC_PORT`]. `reuben play` binds OSC-in on `0.0.0.0:<port>`; the sidecar and
-/// engine share a host (the MVP persona), so dialing `127.0.0.1:<port>` reaches it. Only
-/// the port is shared with the binary — the host differs per end — so both derive their address
-/// from the one `DEFAULT_OSC_PORT` const and can never drift on it. Structure edits ride the
-/// separate, loopback-only structure channel ([`DEFAULT_STRUCTURE_ADDR`]) — this is the OSC control
-/// plane, not that.
-pub fn default_osc_addr() -> String {
-    format!("127.0.0.1:{DEFAULT_OSC_PORT}")
-}
-
-/// The two planes an engine tool can reach, held together: the [`StructureClient`] for the
-/// structure channel (loopback TCP/NDJSON, #315) and the engine's OSC-in address for the control
-/// path.
+/// The engine link: a handle to the one channel every engine tool speaks.
 ///
-/// This is a **composition, not an abstraction** — there is no trait, and nothing here forwards.
-/// `send` is the one tool that needs both planes (probe the structure channel, then dispatch
-/// datagrams), which is the whole reason something has to own both handles. Call sites reach
-/// [`structure()`](Self::structure) or [`send_osc`](Self::send_osc) and thereby name the plane they
-/// mean; the injectable seam lives one layer down, at
+/// A thin named wrapper rather than an abstraction — nothing here forwards, and there is no trait.
+/// It survives as a distinct type because the composition root injects it and `engine_status`
+/// reports its endpoint; the injectable seam lives one layer down, at
 /// [`StructureTransport`](crate::StructureTransport).
 ///
-/// Cheap to hold: each structure exchange opens its own short-lived connection and each `send`
-/// binds an ephemeral UDP socket, so nothing is retained between calls and the link survives the
-/// engine restarting under it.
+/// Cheap to hold: each exchange opens its own short-lived connection, so nothing is retained
+/// between calls and the link survives the engine restarting under it.
 #[derive(Debug)]
 pub struct EngineLink {
     structure: StructureClient,
-    osc_addr: String,
 }
 
 impl EngineLink {
-    /// A link dialing `structure_addr` for the structure channel and `osc_addr` for OSC control.
-    pub fn new(structure_addr: impl Into<String>, osc_addr: impl Into<String>) -> Self {
-        Self::from_parts(StructureClient::new(structure_addr), osc_addr)
+    /// A link dialing `structure_addr` for the structure channel.
+    pub fn new(structure_addr: impl Into<String>) -> Self {
+        Self::from_client(StructureClient::new(structure_addr))
     }
 
-    /// A link over an already-built [`StructureClient`] — the injection point for tests, which
-    /// pair a fake structure transport with an `osc_addr` pointing at a UDP socket they bound
-    /// themselves.
-    pub fn from_parts(structure: StructureClient, osc_addr: impl Into<String>) -> Self {
-        Self {
-            structure,
-            osc_addr: osc_addr.into(),
-        }
+    /// A link over an already-built [`StructureClient`] — the injection point for tests, which pair
+    /// it with a fake transport.
+    pub fn from_client(structure: StructureClient) -> Self {
+        Self { structure }
     }
 
-    /// The structure channel — liveness, `swap`, `get_document`, `get_diagnostics`.
+    /// The structure channel — liveness, `send`, `swap`, `get_document`, `get_diagnostics`.
     pub fn structure(&self) -> &StructureClient {
         &self.structure
-    }
-
-    /// Dispatch a batch of already-encoded OSC datagrams to the engine's control endpoint,
-    /// returning how many left the socket. UDP is fire-and-forget: a datagram out is "dispatched",
-    /// not "received".
-    pub fn send_osc(&self, datagrams: &[Vec<u8>]) -> std::io::Result<usize> {
-        // Bind an ephemeral source socket per batch, unbound to an interface so the OS picks the
-        // route to `osc_addr`. `send` is an infrequent authoring gesture, so a persistent socket
-        // buys nothing and a fresh one can't wedge. UDP `send_to` queues the datagram; loopback
-        // delivery to a live engine does not fail at this layer.
-        let socket = UdpSocket::bind("0.0.0.0:0")?;
-        let mut sent = 0;
-        for datagram in datagrams {
-            socket.send_to(datagram, &self.osc_addr)?;
-            sent += 1;
-        }
-        Ok(sent)
     }
 
     /// The structure-channel endpoint address, for `engine_status`.
     pub fn structure_endpoint(&self) -> String {
         self.structure.addr().to_string()
     }
-
-    /// The OSC control endpoint address, for `engine_status`.
-    pub fn osc_endpoint(&self) -> String {
-        self.osc_addr.clone()
-    }
 }
 
 impl Default for EngineLink {
-    /// A link targeting the shared [`DEFAULT_STRUCTURE_ADDR`] and [`default_osc_addr`] — the same
-    /// endpoints `reuben play` binds, so the sidecar and engine can never drift.
+    /// A link targeting the shared [`DEFAULT_STRUCTURE_ADDR`] — the same address `reuben play`
+    /// binds, so the sidecar and engine can never drift.
     fn default() -> Self {
-        Self::new(DEFAULT_STRUCTURE_ADDR, default_osc_addr())
+        Self::new(DEFAULT_STRUCTURE_ADDR)
     }
 }
 
@@ -121,12 +79,11 @@ mod tests {
 
     #[test]
     fn the_default_link_dials_exactly_what_reuben_play_binds() {
-        // Sidecar and engine share one address const per plane, so they cannot drift. Asserted on
-        // the REAL construction path — `ReubenServer::new` builds this link — rather than on a
+        // Sidecar and engine share one address const, so they cannot drift. Asserted on the REAL
+        // construction path — `ReubenServer::new` builds this link — rather than on a
         // `StructureClient::default` no production code ever called (#493).
         let link = EngineLink::default();
         assert_eq!(link.structure_endpoint(), DEFAULT_STRUCTURE_ADDR);
-        assert_eq!(link.osc_endpoint(), default_osc_addr());
         assert!(
             link.structure_endpoint().starts_with("127.0.0.1:"),
             "the structure channel must stay loopback-only: {}",

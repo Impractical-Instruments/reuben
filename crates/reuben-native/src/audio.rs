@@ -6,8 +6,9 @@
 //! **[`RenderSlot`]** rather than an `Engine` directly: the slot owns the live
 //! Engine, drains the install mailbox a swap fills, runs the master-gain ramp, and
 //! box-transplants survivors — so a swap is **gapless**, with no stream teardown (M2, #323).
-//! Incoming decoded OSC ([`OscIn`]) is pulled from an [`std::sync::mpsc::Receiver`] (fed by the
-//! OSC/UDP thread) at the top of each callback and typed to a Message against the Plan.
+//! Incoming control ([`ControlBatch`]) is pulled from an [`std::sync::mpsc::Receiver`] (fed by the
+//! OSC/UDP thread and by the structure channel's `send`) at the top of each callback and typed to a
+//! Message against the Plan. Each item is a whole batch, applied without splitting.
 //!
 //! **Streams are fixed at `play` start**: a swap never reopens a device. The device
 //! output map is rebuilt off-thread for the new engine's logical width (against the *retained*
@@ -62,7 +63,7 @@ use reuben_core::message::Message;
 use reuben_core::{AudioConfig, Diag};
 
 use crate::diagnostics::Diagnostics;
-use crate::osc::OscIn;
+use crate::osc::ControlBatch;
 use crate::profile::DeviceProfile;
 use crate::structure::{dark_degrade_warning, RenderConfigPublisher, RenderLiveness, SwapPollGate};
 
@@ -288,7 +289,7 @@ pub struct LiveAudio {
 /// [`RenderSlot::fill_duplex`]. A swap to an input-binding engine while no input stream is open
 /// **dark-degrades to silence** (the callback feeds `&[]`).
 pub fn start<F>(
-    osc_rx: Receiver<OscIn>,
+    osc_rx: Receiver<ControlBatch>,
     block_size: usize,
     osc_out: Option<Sender<Message>>,
     profile: &DeviceProfile,
@@ -379,10 +380,17 @@ where
                 // acceptable, deliberate exception to "no syscalls in the callback".
                 let callback_start = Instant::now();
 
-                while let Ok(m) = osc_rx.try_recv() {
-                    // Convert flat OSC -> typed Message at the slot's Engine, where the Plan (and so
-                    // each dest port's Arg type) is known.
-                    slot.queue_osc(&m.address, &m.args);
+                // Each item is a whole control BATCH, applied without splitting: one UDP datagram's
+                // messages (an OSC bundle can carry several) or one structure-channel `send`. Taking
+                // the batch as a unit is what lets a multi-control gesture land in one block, so a
+                // paired `(freq, gate)` can never straddle two. Batches are bounded at their
+                // producers, which is what keeps this drain's cost bounded per callback.
+                while let Ok(batch) = osc_rx.try_recv() {
+                    for m in &batch {
+                        // Convert flat args -> typed Message at the slot's Engine, where the Plan
+                        // (and so each dest port's Arg type) is known.
+                        slot.queue_osc(&m.address, &m.args);
+                    }
                 }
 
                 // The current engine's logical output width (a swap may have just changed it), read

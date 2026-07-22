@@ -4,8 +4,8 @@
 //! stdio rides tokio's blocking pool) — and drives the stdio server to completion.
 //!
 //! This is the composition root: it injects the real engine channel — an [`EngineLink`] dialing
-//! the shared `reuben_core::coordinator::DEFAULT_STRUCTURE_ADDR` over the structure channel (#315)
-//! and `reuben_mcp::default_osc_addr` for OSC control — so the engine tools reach a live
+//! the shared `reuben_core::coordinator::DEFAULT_STRUCTURE_ADDR` over the structure channel (#315),
+//! which carries control as well as structure edits — so the engine tools reach a live
 //! `reuben play` and fail fast only when it is genuinely unreachable. The structure
 //! channel is blocking `std::net`, so it needs no tokio `net`/reactor feature; the fence stays intact.
 //!

@@ -134,7 +134,7 @@ and prose:
 - **Swap** — avoid: hot-swap (describes how, not the phase), re-plan, recompile, reload.
 - **Survivor** — avoid: carried node, kept node, matched node.
 - **Restart-swap** — avoid: reload, hot restart.
-- **Structure channel** — avoid: control channel (that is OSC), admin port, command socket.
+- **Structure channel** — avoid: control channel, admin port, command socket. It carries control traffic as well as structure edits, but "control channel" still names the wrong thing: the distinction is loopback authoring door vs. OSC-the-wire foreign edge, not structure vs. control.
 - **Gist-and-point** — avoid: duplicate-then-sync (the sweep is a backstop, not the mechanism), summary copy.
 - **Render** — avoid: block time, process, audio callback (the callback is the host of Render, not Render itself).
 - **Lane** _(retired)_ — don't use it for new work; say Voice, Channel, or Voice instrument. It survives only in frozen ADRs.

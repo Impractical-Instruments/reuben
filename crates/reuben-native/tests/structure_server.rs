@@ -4,10 +4,12 @@
 //! (`127.0.0.1:0`, OS-assigned, so parallel CI jobs never collide), then drives a plain
 //! `TcpStream` client speaking NDJSON.
 //!
-//! The device half is stood in for by a **fake audio callback**: a background thread
-//! owning the [`RenderSlot`] the real cpal callback would, driving it in a loop so a swap installs
-//! **via the install mailbox** (not a stream restart) and the Coordinator's off-thread `reclaim`
-//! completes — all with no audio device. The audible/device-gap half stays a scripted human test
+//! The device half is stood in for by [`FakeCallback`], the crate's shared test harness: a
+//! background thread owning the `RenderSlot` the real cpal callback would, driving it in a loop so a
+//! swap installs **via the install mailbox** (not a stream restart), the Coordinator's off-thread
+//! `reclaim` completes, and control batches drain exactly as `audio.rs` drains them — all with no
+//! audio device. It is shared with the unit tests so there is one mirror of the real callback, not
+//! two that can silently diverge. The audible/device-gap half stays a scripted human test
 //! (`docs/rituals/m2-swap-ramp-duck.md`).
 //!
 //! Behaviors under test:
@@ -20,24 +22,26 @@
 //!   warning and stays alive — not an error, not a crash;
 //! - `expect` arbitration conflicts on a stale hash and proceeds on a matching one;
 //!   a bad document reports errors with no install;
+//! - the **`send`** verb carries a control batch over the same wire and converges at the engine's
+//!   `queue_osc` — the exact call a decoded external OSC datagram reaches;
 //! - the server **shuts down cleanly** — every thread joined — even with an idle client connected.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::Arc;
-use std::thread::JoinHandle;
 use std::time::Duration;
 
 use reuben_core::coordinator::{
-    Conflict, Coordinator, DiagnosticsReport, DocSource, DocumentSnapshot, Request, Response,
+    Conflict, ControlArg, ControlMessage, Coordinator, DiagnosticsReport, DocSource,
+    DocumentSnapshot, Request, Response,
 };
-use reuben_core::coordinator::{RenderSide, RenderSlot};
 use reuben_core::resources::MemoryResolver;
-use reuben_core::{content_hash, AudioConfig, NormalizedDoc, Registry};
+use reuben_core::{content_hash, Arg, AudioConfig, NormalizedDoc, Registry};
 use reuben_native::diagnostics::Diagnostics;
+use reuben_native::osc::{ControlBatch, OscIn};
 use reuben_native::structure::{HeadlessRenderConfig, StructureServer, StructureState};
+use reuben_native::test_support::FakeCallback;
 
 fn cfg() -> AudioConfig {
     AudioConfig::new(48_000.0, 128)
@@ -72,49 +76,14 @@ const MIC_PASSTHRU: &str = r#"{ "format_version": 3, "instrument": "mic-passthru
         "outputs": { "out": { "from": "/mic" } } },
     "nodes": [] }"#;
 
-/// A background "fake audio callback": owns the [`RenderSlot`] the real cpal callback would and
-/// drives it in a loop, draining the install mailbox, running the master-gain ramp, transplanting
-/// survivors, and posting retirees — so a Coordinator-driven swap installs via the mailbox and its
-/// `reclaim` completes, with no audio device.
-struct FakeCallback {
-    stop: Arc<AtomicBool>,
-    handle: Option<JoinHandle<()>>,
-}
-
-impl FakeCallback {
-    fn spawn(side: RenderSide) -> Self {
-        let stop = Arc::new(AtomicBool::new(false));
-        let stop_thread = Arc::clone(&stop);
-        let handle = std::thread::spawn(move || {
-            let mut slot = RenderSlot::new(side);
-            let mut buf = vec![0.0f32; 128 * slot.channels().max(1)];
-            while !stop_thread.load(Ordering::SeqCst) {
-                let ch = slot.channels().max(1);
-                if buf.len() != 128 * ch {
-                    buf.resize(128 * ch, 0.0);
-                }
-                slot.fill(&mut buf);
-                std::thread::sleep(Duration::from_millis(1));
-            }
-            // The slot (Engine + mailbox) drops here, off any RT thread.
-        });
-        Self {
-            stop,
-            handle: Some(handle),
-        }
-    }
-
-    fn stop(mut self) {
-        self.stop.store(true, Ordering::SeqCst);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
-    }
-}
-
-/// A Coordinator-backed [`StructureState`] over `doc`, a live [`FakeCallback`] draining its mailbox,
-/// and the base document's content hash. `opened_input_channels` is the headless render config's
-/// input-stream geometry (`0` = output-only, so an input-binding swap dark-degrades).
+/// A Coordinator-backed [`StructureState`] over `doc`, a live [`FakeCallback`] draining its mailbox
+/// and its control ingress, and the base document's content hash. `opened_input_channels` is the
+/// headless render config's input-stream geometry (`0` = output-only, so an input-binding swap
+/// dark-degrades).
+///
+/// The control sink is wired exactly as `play` wires it — one [`ControlBatch`] channel with the
+/// structure server on the producing end and the callback draining it. The harness is the crate's
+/// [`FakeCallback`], shared with the unit tests, so one mirror of the real callback serves both.
 fn wired(doc: &str, opened_input_channels: usize) -> (StructureState, FakeCallback, String) {
     let (coordinator, side, _warnings) = Coordinator::install_initial(
         doc,
@@ -124,11 +93,12 @@ fn wired(doc: &str, opened_input_channels: usize) -> (StructureState, FakeCallba
     )
     .expect("initial install");
     let base_hash = coordinator.installed_hash();
-    let state = StructureState::from_coordinator(coordinator, Diagnostics::new())
+    let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
+    let state = StructureState::from_coordinator(coordinator, Diagnostics::new(), control_tx)
         .with_render_config(Arc::new(HeadlessRenderConfig {
             opened_input_channels,
         }));
-    (state, FakeCallback::spawn(side), base_hash)
+    (state, FakeCallback::spawn(side, control_rx), base_hash)
 }
 
 /// Read one newline-framed [`Response`] off the wire, asserting the framing.
@@ -248,8 +218,10 @@ fn get_diagnostics_reflects_live_counter_bumps() {
     )
     .expect("install");
     let diagnostics = Diagnostics::new();
-    let state = StructureState::from_coordinator(coordinator, Arc::clone(&diagnostics));
-    let cb = FakeCallback::spawn(side);
+    // This verb never touches control, but the ingress is a constructor parameter now.
+    let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
+    let state = StructureState::from_coordinator(coordinator, Arc::clone(&diagnostics), control_tx);
+    let cb = FakeCallback::spawn(side, control_rx);
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
@@ -514,6 +486,138 @@ fn swap_expect_arbitration_conflicts_then_proceeds_over_the_wire() {
             assert!(report.report.ok, "matching expect installs: {report:?}")
         }
         other => panic!("expected SwapReport, got {other:?}"),
+    }
+
+    server.shutdown();
+    cb.stop();
+}
+
+#[test]
+fn send_over_the_wire_reaches_the_engines_queue_osc() {
+    // Control end-to-end over real loopback TCP: one `send` verb carries the whole batch,
+    // the ack names what the engine queued, and the messages arrive at `queue_osc` — the same call
+    // a decoded external OSC datagram reaches. That convergence is the point of the verb: the
+    // sidecar ships `{address, [Arg]}` in this channel's framing and OSC-the-binary-protocol never
+    // enters the loop.
+    let (state, cb, _) = wired(BASE_DOC, 0);
+    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let client = TcpStream::connect(server.local_addr()).expect("connect");
+    let mut writer = client.try_clone().unwrap();
+    let mut reader = BufReader::new(client);
+
+    // Distinct atom kinds so a mis-mapped variant cannot pass unnoticed.
+    send(
+        &mut writer,
+        &Request::Send {
+            messages: vec![
+                ControlMessage {
+                    address: "/osc/freq".to_string(),
+                    args: vec![ControlArg::F32(440.5)],
+                },
+                ControlMessage {
+                    address: "/osc/shape".to_string(),
+                    args: vec![ControlArg::Str("Up".to_string()), ControlArg::I32(3)],
+                },
+            ],
+        },
+    );
+    assert_eq!(read_response(&mut reader), Response::Sent);
+
+    assert_eq!(
+        cb.await_queued(2),
+        vec![
+            OscIn {
+                address: "/osc/freq".to_string(),
+                args: vec![Arg::F32(440.5)],
+            },
+            OscIn {
+                address: "/osc/shape".to_string(),
+                args: vec![Arg::Str("Up".into()), Arg::I32(3)],
+            },
+        ],
+        "both messages crossed the wire in order, each atom as its primitive Arg"
+    );
+
+    // Control and structure share the channel without interfering: the connection is still good
+    // for a structure verb right after.
+    send(&mut writer, &Request::Ping);
+    assert_eq!(read_response(&mut reader), Response::Pong);
+
+    server.shutdown();
+    cb.stop();
+}
+
+#[test]
+fn concurrent_sends_never_interleave_into_each_others_gestures() {
+    // The atomicity the wire promises, under the condition that breaks a naive implementation:
+    // `accept_loop` runs one handler thread per connection, so three clients dispatch `send`s truly
+    // concurrently. Pushing message-by-message would let their gestures interleave on the shared
+    // ingress (A1, B1, A2, …) — the multi-client workflow is explicitly supported, so this is not a
+    // hypothetical. Handing each batch over as ONE unit is what prevents it.
+    let (state, cb, _) = wired(BASE_DOC, 0);
+    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let addr = server.local_addr();
+
+    const CLIENTS: usize = 3;
+    const GESTURES: usize = 20;
+    const PER_GESTURE: usize = 8;
+
+    let threads: Vec<_> = ["a", "b", "c"]
+        .iter()
+        .map(|who| {
+            let who = who.to_string();
+            std::thread::spawn(move || {
+                let client = TcpStream::connect(addr).expect("connect");
+                let mut writer = client.try_clone().expect("clone");
+                let mut reader = BufReader::new(client);
+                for _ in 0..GESTURES {
+                    let request = Request::Send {
+                        messages: (0..PER_GESTURE)
+                            .map(|i| ControlMessage {
+                                // The address's leading letter tags which client owns the message,
+                                // so a mixed batch is detectable below.
+                                address: format!("/{who}/p{i}"),
+                                args: vec![ControlArg::I32(i as i32)],
+                            })
+                            .collect(),
+                    };
+                    send(&mut writer, &request);
+                    assert_eq!(read_response(&mut reader), Response::Sent);
+                }
+            })
+        })
+        .collect();
+    for t in threads {
+        t.join().expect("client thread");
+    }
+
+    let total = CLIENTS * GESTURES * PER_GESTURE;
+    let queued = cb.await_queued(total);
+    assert_eq!(queued.len(), total, "every message arrived");
+
+    // Every drained batch is exactly one gesture: a short batch would mean one was split, a long
+    // one that two got merged into a single drain slice. Either is an interleave.
+    let sizes = cb.drained_batch_sizes();
+    assert!(
+        sizes.iter().all(|&n| n == PER_GESTURE),
+        "a gesture was split or merged on the ingress: {sizes:?}"
+    );
+    assert_eq!(
+        sizes.len(),
+        CLIENTS * GESTURES,
+        "one batch per gesture, no more and no fewer"
+    );
+
+    // And each batch belongs start-to-finish to one client.
+    for chunk in queued.chunks(PER_GESTURE) {
+        let owners: Vec<&str> = chunk
+            .iter()
+            .map(|m| m.address.split('/').nth(1).expect("owner segment"))
+            .collect();
+        assert!(
+            owners.iter().all(|o| *o == owners[0]),
+            "one batch carried two clients' messages: {owners:?}"
+        );
     }
 
     server.shutdown();

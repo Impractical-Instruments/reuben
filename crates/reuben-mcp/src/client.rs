@@ -1,5 +1,5 @@
 //! The structure-channel client (owned by reuben-mcp): the
-//! sidecar's half of the sidecar↔engine control channel a live `reuben play` presents. It dials
+//! sidecar's half of the sidecar↔engine structure channel a live `reuben play` presents. It dials
 //! the engine's loopback TCP structure channel and exchanges the shared
 //! [`reuben_core::coordinator`] NDJSON envelope — one [`Request`] line out, one [`Response`] line
 //! back, per the one-response-per-request framing — reusing the wire types **verbatim**
@@ -29,7 +29,7 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use reuben_core::coordinator::{
-    Conflict, DiagnosticsReport, DocSource, DocumentSnapshot, Request, Response,
+    Conflict, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot, Request, Response,
 };
 use reuben_core::SwapReport;
 
@@ -47,7 +47,7 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(5);
 
 /// The read budget for `ping` specifically. A pong is **immediate** — the structure server answers
 /// `Ping` with `Pong` doing no work, unlike a `swap`'s off-thread engine rebuild — so
-/// the liveness probe (`engine_status`, and the probe-first `send`) need not inherit the generous
+/// the liveness probe (`engine_status`) need not inherit the generous
 /// [`DEFAULT_READ_TIMEOUT`]: a wedged engine surfaces as unreachable ~5× sooner. Still comfortably
 /// above loopback + scheduler jitter, so a live-but-momentarily-busy engine is never misjudged dead.
 const DEFAULT_PING_READ_TIMEOUT: Duration = Duration::from_secs(1);
@@ -234,8 +234,8 @@ impl StructureClient {
     }
 
     /// Liveness: `Ok(())` iff the channel answered [`Response::Pong`]. This is what
-    /// [`EngineLink`](crate::EngineLink) consults for engine reachability (`engine_status`, and the
-    /// probe-first `send`).
+    /// [`EngineLink`](crate::EngineLink) consults for engine reachability (`engine_status`). Every
+    /// other engine tool acts-then-maps its own exchange instead of probing first.
     pub fn ping(&self) -> Result<(), StructureError> {
         // The pong is immediate, so bound this exchange by the tighter `ping_read_timeout` rather
         // than the general read budget a swap earns — a wedged engine fails fast.
@@ -268,6 +268,23 @@ impl StructureClient {
             Response::Document(snapshot) => Ok(snapshot),
             Response::Error { message } => Err(StructureError::Channel(message)),
             other => Err(unexpected("get_document", "document", &other)),
+        }
+    }
+
+    /// Audition a batch of control values on the running engine.
+    ///
+    /// One exchange carries the whole batch and the engine queues it as one unit, so the gesture
+    /// cannot half-apply and no concurrent client interleaves into the middle of it. The engine
+    /// converges this with external OSC at its own ingress; a message whose address routes nowhere
+    /// is dropped there, so a successful return means "received and queued", not "applied".
+    ///
+    /// An empty or over-long batch is refused by the engine as a
+    /// [`Channel`](StructureError::Channel) error rather than acked.
+    pub fn send(&self, messages: Vec<ControlMessage>) -> Result<(), StructureError> {
+        match self.exchange(&Request::Send { messages })? {
+            Response::Sent => Ok(()),
+            Response::Error { message } => Err(StructureError::Channel(message)),
+            other => Err(unexpected("send", "sent", &other)),
         }
     }
 

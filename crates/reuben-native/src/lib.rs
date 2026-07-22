@@ -33,6 +33,8 @@ pub mod resources;
 pub mod rigs;
 pub mod scaffold;
 pub mod structure;
+#[doc(hidden)]
+pub mod test_support;
 
 pub use reuben_core::Engine;
 

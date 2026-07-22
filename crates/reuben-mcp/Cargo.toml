@@ -23,8 +23,9 @@ path = "src/main.rs"
 # feature is ON here (and ONLY here) so rmcp can derive each tool's `outputSchema` from the
 # reuben-core contract types; the play/CLI build keeps schemars fenced out.
 reuben-core = { path = "../reuben-core", features = ["schemars"] }
-# The OSC encoder (`osc::encode`) and filesystem resource resolver (`resources::FsResolver`) the
-# engine tools will use once the structure-channel client (#315) and the tool bodies (#318) land.
+# The filesystem resource resolver (`resources::FsResolver`) the pure describe/validate tools
+# resolve through. That is the ONLY thing left of this dependency: control used to encode OSC here
+# too, and now rides the structure channel instead.
 reuben-native = { path = "../reuben-native" }
 # stdio server only: `server` + `macros` for the tool router, `transport-io` for the stdio pipe.
 # No HTTP/reqwest/streamable-http transport — the network stack stays out.
