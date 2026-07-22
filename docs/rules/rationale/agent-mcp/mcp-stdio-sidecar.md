@@ -21,7 +21,11 @@ tokio (measured at ~34 lock packages, `transport-io` only, a `current_thread` ru
 stack) **fenced there** so every play/CLI/web build stays std-only. rmcp earns its weight by
 measurement, not by default: hand-rolling ~5 methods wins only for code discarded before the next
 protocol break, and this shim is the epic's durable surface. The separate engine path this implies —
-OSC for control, a separate loopback structure channel for everything else — is the seam the engine
-tools drive ([tool-surface](tool-surface.md)).
+one loopback structure channel carrying both structure edits *and* control — is the seam the engine
+tools drive ([tool-surface](tool-surface.md)). Control originally rode OSC/UDP instead, on the
+grounds that a `send` is the same gesture a hardware knob makes; that split was reversed once it was
+clear the sidecar and the engine are peers who already speak core's types, and that encoding OSC
+between them bought a wire format the engine immediately decoded again. OSC-the-binary-protocol is `reuben play`'s
+**foreign** edge — external controllers in, `osc_out` nodes out — not an internal hop.
 
 Distilled from: ADR-0044

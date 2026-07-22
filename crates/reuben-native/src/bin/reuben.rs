@@ -56,7 +56,8 @@ const BLOCK_SIZE: usize = 256;
 /// and can never drift. `127.0.0.1` only — structure edits are more powerful than OSC control,
 /// so unlike OSC's `0.0.0.0:9000` this must never be network-exposed; a taken port is non-fatal
 /// (see `play`).
-use reuben_core::coordinator::{DEFAULT_OSC_PORT, DEFAULT_STRUCTURE_ADDR as STRUCTURE_BIND};
+use reuben_core::coordinator::DEFAULT_STRUCTURE_ADDR as STRUCTURE_BIND;
+use reuben_native::osc::DEFAULT_OSC_PORT;
 
 #[derive(Parser)]
 #[command(name = "reuben", about = "Play and author reuben instruments.")]
@@ -481,10 +482,15 @@ fn play(
         None => DeviceProfile::default(),
     };
 
-    // The OSC-in channel feeding the audio callback. Streams are fixed for the session
+    // The control channel feeding the audio callback. Streams are fixed for the session
     // — a swap installs via the mailbox and never reopens the callback — so this single
-    // receiver lives in the callback for the whole run and the UDP thread forwards straight through
-    // `osc_tx`. No swappable sink, no lock anywhere near the audio path (M1's restart is gone).
+    // receiver lives in the callback for the whole run and each producer forwards straight through
+    // its own `osc_tx` clone. No swappable sink, no lock anywhere near the audio path (M1's restart
+    // is gone).
+    //
+    // **Two producers, one ingress**: the UDP decode thread below (the foreign edge, where external
+    // controllers arrive) and the structure channel's `send` verb (the loopback authoring door).
+    // Both converge here, so a `send` and an external datagram are indistinguishable downstream.
     let (osc_tx, osc_rx) = mpsc::channel::<osc::OscIn>();
 
     // Log incoming/outgoing OSC only when asked: this runs on the I/O paths, and the stdout
@@ -618,13 +624,17 @@ fn play(
     } = live;
 
     // The structure channel: a loopback-TCP/NDJSON server answering the MCP sidecar's
-    // ping/get_document/get_diagnostics/swap off dedicated std threads (no async runtime keeps
+    // ping/get_document/get_diagnostics/swap/send off dedicated std threads (no async runtime keeps
     // reuben-native tokio-free). It owns the Coordinator — the single writer of graph
     // structure — and publishes each swap's freshly-validated device output map
     // through the native render seam. Non-fatal: audio is the primary function, so a taken port
     // disables the channel with a warning rather than killing playback.
+    //
+    // Its control sink is a clone of the very sender the UDP thread holds, so `send` converges with
+    // external OSC at the callback's `queue_osc` and this door needs no wire format of its own.
     let state = StructureState::from_coordinator(coordinator, diagnostics.clone())
-        .with_render_config(render_config);
+        .with_render_config(render_config)
+        .with_control_sink(osc_tx);
     let structure_server = match structure::StructureServer::bind(STRUCTURE_BIND, state) {
         Ok(server) => {
             println!("structure channel on {}", server.local_addr());

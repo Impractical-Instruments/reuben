@@ -32,6 +32,6 @@ pub use manifest::{build_manifest, Manifest, MigrationTable, NodeIdentity};
 pub use slot::RenderSlot;
 pub use swap::{Coordinator, InstallBundle, RenderSide};
 pub use wire::{
-    Conflict, DiagnosticsReport, DocSource, DocumentSnapshot, Request, Response, DEFAULT_OSC_PORT,
-    DEFAULT_STRUCTURE_ADDR,
+    Conflict, ControlArg, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot, Request,
+    Response, DEFAULT_STRUCTURE_ADDR,
 };

@@ -15,10 +15,12 @@
 //! framing) *plus* the payloads that exist only because this channel exists:
 //! [`DiagnosticsReport`], [`Conflict`], and [`DocumentSnapshot`].
 //!
-//! The rule is about *payload types*. The two endpoint consts ([`DEFAULT_STRUCTURE_ADDR`] and
-//! [`DEFAULT_OSC_PORT`]) are a deliberate exception: they live here because both ends must agree on
-//! one literal, and next to the types both ends serialize is where that agreement is hardest to
-//! break — even though the OSC port has nothing to do with this channel.
+//! The rule is about *payload types*. [`DEFAULT_STRUCTURE_ADDR`] is a deliberate exception: it
+//! lives here because both ends must agree on one literal, and next to the types both ends
+//! serialize is where that agreement is hardest to break. (The engine's OSC-in port used to sit
+//! beside it for the same reason, back when the sidecar dialed OSC. It no longer does — control
+//! rides this channel now, and OSC-the-wire is only `reuben play`'s foreign edge — so the port
+//! moved to `reuben_native::osc`, which owns that edge and is its only consumer.)
 //!
 //! [`Conflict`] is the worked example. Core has no conflict type — and no `expect` guard to
 //! produce one: `swap_document` is last-write-wins, and the optimistic-concurrency guard is a door
@@ -37,6 +39,7 @@
 use serde::{Deserialize, Serialize};
 
 use crate::contract::SwapReport;
+use crate::message::Arg;
 
 /// The structure channel's default loopback bind/target: `127.0.0.1` only —
 /// structure edits are more powerful than OSC control, so unlike OSC's `0.0.0.0:9000` this
@@ -45,15 +48,6 @@ use crate::contract::SwapReport;
 /// reuben-native server (`reuben play`) and the reuben-mcp client bind and dial the *same*
 /// address and can never drift; a taken port is non-fatal on the server side (see `play`).
 pub const DEFAULT_STRUCTURE_ADDR: &str = "127.0.0.1:9124";
-
-/// The default UDP port for the engine's OSC-in control plane. The single source of
-/// truth for the port `reuben play` binds and the reuben-mcp sidecar dials, so the two can never
-/// drift on it. Only the *port* is shared: the engine binds it on `0.0.0.0` (all interfaces) while
-/// the host-sharing sidecar dials it on `127.0.0.1`, so each side composes its own `host:port`
-/// from this one const — unlike the structure channel above, whose full loopback address is fixed.
-/// Kept next to [`DEFAULT_STRUCTURE_ADDR`] as the other endpoint the sidecar and engine must agree
-/// on; a bare `u16` carries no dependency, so reuben-core stays OS-free.
-pub const DEFAULT_OSC_PORT: u16 = 9000;
 
 /// Where a swap's document comes from (accepted **by value or by path**, both
 /// resolver-loaded engine-side; both branches deliberately stay open, and the
@@ -72,7 +66,63 @@ pub enum DocSource {
     Path(String),
 }
 
-/// One structure-channel request (its four verbs), serialized as a single JSON
+/// One control atom on this channel: the **flat primitive form** — a number or a string, and
+/// nothing else.
+///
+/// This is deliberately *not* [`Arg`], the central engine enum. `Arg` also carries `Note`,
+/// `Harmony`, `Pitch`, `Enum`, and a whole `F32Buffer` — a vocabulary a control channel would
+/// immediately have to forbid. Every door ships `{address, [Arg]}` in its **own local framing**
+/// (reuben-web hand-rolls a flat codec, `reuben play`'s foreign edge speaks OSC-the-binary-protocol);
+/// this is the structure channel's, and each converges at
+/// [`Engine::queue_osc`](crate::engine::Engine::queue_osc), where the destination port's declared
+/// type drives the conversion to the single typed `Arg` it carries
+/// ([`osc_in_arg`](crate::boundary::osc_in_arg)). So the primitives are all this type needs to
+/// spell.
+///
+/// **Untagged**, so an atom rides the wire as its bare JSON value — `[800.0, "up", 3]`, not
+/// `[{"f32": 800.0}, …]` — which keeps the channel netcat-debuggable (see the module header) and
+/// makes the `I32`/`F32` split fall out of JSON's own integer-vs-float spelling rather than a rule
+/// each client reimplements.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(untagged)]
+pub enum ControlArg {
+    // VARIANT ORDER IS LOAD-BEARING. Untagged deserialization tries variants top-down and takes the
+    // first that fits, so `I32` must precede `F32`: with `F32` first, the JSON `3` would parse as
+    // `F32(3.0)` and every integer atom would silently arrive as a float. `800.0` still reaches
+    // `F32` because `deserialize_i32` rejects a float-backed number — including the integral-valued
+    // `69.0` of a MIDI note, which serde_json emits with its `.0` intact. Pinned by
+    // `control_args_split_integers_from_floats`.
+    /// An integer atom (a JSON integer within `i32` range).
+    I32(i32),
+    /// A number atom (any other JSON number).
+    F32(f32),
+    /// A string / symbol atom — an enum variant name, typically.
+    Str(String),
+}
+
+impl From<ControlArg> for Arg {
+    fn from(value: ControlArg) -> Self {
+        match value {
+            ControlArg::I32(v) => Arg::I32(v),
+            ControlArg::F32(v) => Arg::F32(v),
+            ControlArg::Str(s) => Arg::Str(s.as_str().into()),
+        }
+    }
+}
+
+/// One control message in a [`Request::Send`] batch: an address plus its flat atoms — the
+/// `{address, [Arg]}` pair every door ships.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ControlMessage {
+    /// The full address, e.g. `/filt/cutoff`. Routed by the engine exactly as an address arriving
+    /// on the foreign OSC edge is; an address matching no node/port is dropped silently.
+    pub address: String,
+    /// The message's atoms, in order.
+    #[serde(default)]
+    pub args: Vec<ControlArg>,
+}
+
+/// One structure-channel request (its five verbs), serialized as a single JSON
 /// object tagged by `verb`: `{"verb": "ping"}`, `{"verb": "swap", "source": …}`, ….
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "verb", rename_all = "snake_case")]
@@ -97,6 +147,18 @@ pub enum Request {
     /// Read the diagnostics counters, exposed past log-only (this channel is their
     /// vehicle).
     GetDiagnostics,
+    /// Audition a batch of control values on the running engine — the **control plane**, riding
+    /// the same channel as the structure verbs.
+    ///
+    /// Batched because the authoring gesture is multi-control: one exchange delivers the whole
+    /// batch, so a gesture cannot half-apply and a concurrent client cannot interleave into the
+    /// middle of it. The engine hands each message to the same ingress a decoded external OSC
+    /// datagram reaches, so routing, typing, and block-quantized timing are identical — this
+    /// channel carries no wire format of its own past [`ControlArg`].
+    Send {
+        /// The messages to apply, in order (a batch of at least one).
+        messages: Vec<ControlMessage>,
+    },
 }
 
 impl Request {
@@ -178,6 +240,16 @@ pub enum Response {
     /// hashes ride the wire flat next to the `reply` tag under the user-facing field names (the
     /// tool schema is `conflict: {expected, actual}` — the same struct, not a re-wrap).
     Conflict(Conflict),
+    /// `Send`'s ack: the engine **received** the batch and queued it for the next rendered block.
+    ///
+    /// Not "applied": an address routing to no node/port is dropped silently at the engine's
+    /// ingress, exactly as an external OSC datagram naming a stale address is. The count is the
+    /// engine's own report of what it queued rather than something the client infers from its
+    /// request — the same reason [`Conflict`] carries both hashes.
+    Sent {
+        /// How many messages were queued.
+        count: usize,
+    },
     /// A channel-level failure: an unreadable request, or an engine-side fault that
     /// produced no domain-shaped answer. Distinct from a `SwapReport` with `ok: false`,
     /// which is the channel *working*.
@@ -292,10 +364,24 @@ mod tests {
         );
     }
 
+    /// A batch exercising all three atom kinds, so a round trip proves each survives.
+    fn control_messages() -> Vec<ControlMessage> {
+        vec![
+            ControlMessage {
+                address: "/filt/cutoff".to_string(),
+                args: vec![ControlArg::F32(800.0)],
+            },
+            ControlMessage {
+                address: "/lfo/shape".to_string(),
+                args: vec![ControlArg::Str("Up".to_string()), ControlArg::I32(3)],
+            },
+        ]
+    }
+
     #[test]
     fn every_request_variant_round_trips_as_one_ndjson_line() {
-        // The four verbs: ping, swap (by value or by path, with the optional
-        // expect guard), get_document, get_diagnostics.
+        // The five verbs: ping, swap (by value or by path, with the optional
+        // expect guard), get_document, get_diagnostics, send.
         let requests = [
             Request::Ping,
             Request::Swap {
@@ -312,10 +398,75 @@ mod tests {
             },
             Request::GetDocument,
             Request::GetDiagnostics,
+            Request::Send {
+                messages: control_messages(),
+            },
         ];
         for req in &requests {
             assert_one_line_round_trip(req);
         }
+    }
+
+    #[test]
+    fn send_carries_its_batch_as_bare_json_atoms() {
+        // The control plane's wire shape is the contract: one `send` verb carrying the whole batch
+        // (so a gesture cannot half-apply), each message an `{address, args}` pair, and each atom
+        // its BARE JSON value — untagged, so the line stays readable over netcat.
+        let v: serde_json::Value = serde_json::from_str(
+            &Request::Send {
+                messages: control_messages(),
+            }
+            .to_ndjson(),
+        )
+        .expect("as value");
+        assert_eq!(
+            v,
+            serde_json::json!({
+                "verb": "send",
+                "messages": [
+                    { "address": "/filt/cutoff", "args": [800.0] },
+                    { "address": "/lfo/shape", "args": ["Up", 3] }
+                ]
+            })
+        );
+    }
+
+    #[test]
+    fn control_args_split_integers_from_floats() {
+        // The variant order in `ControlArg` is load-bearing: untagged deserialization takes the
+        // first variant that fits, so `I32` before `F32` is what keeps a JSON integer an integer.
+        // Flip the order and every one of these integer cases silently becomes an F32.
+        let parse = |json: &str| serde_json::from_str::<ControlArg>(json).expect("atom parses");
+        assert_eq!(parse("3"), ControlArg::I32(3));
+        assert_eq!(parse("-7"), ControlArg::I32(-7));
+        assert_eq!(parse("800.0"), ControlArg::F32(800.0));
+        assert_eq!(parse("0.5"), ControlArg::F32(0.5));
+        assert_eq!(parse("\"Up\""), ControlArg::Str("Up".to_string()));
+
+        // The MIDI-note case, the one most likely to be silently mangled: an f32 with an integral
+        // value must NOT come back as an I32. serde_json emits `69.0` with its `.0` intact and
+        // `deserialize_i32` rejects a float-backed number, so the round trip holds.
+        let line = serde_json::to_string(&ControlArg::F32(69.0)).expect("serializes");
+        assert_eq!(line, "69.0");
+        assert_eq!(parse(&line), ControlArg::F32(69.0));
+
+        // A number too large for i32 falls through to F32 rather than failing the batch.
+        assert_eq!(
+            parse("3000000000"),
+            ControlArg::F32(3_000_000_000_f64 as f32)
+        );
+    }
+
+    #[test]
+    fn control_args_become_the_engines_primitive_args() {
+        // The conversion into the engine's own enum is the whole point of the type: three
+        // primitives in, the three primitive `Arg`s out, and nothing else can be spelled.
+        assert_eq!(Arg::from(ControlArg::I32(3)), Arg::I32(3));
+        assert_eq!(Arg::from(ControlArg::F32(0.5)), Arg::F32(0.5));
+        assert_eq!(
+            Arg::from(ControlArg::Str("Up".to_string())),
+            Arg::Str("Up".into())
+        );
     }
 
     #[test]
@@ -333,6 +484,15 @@ mod tests {
         let v: serde_json::Value =
             serde_json::from_str(&Request::GetDiagnostics.to_ndjson()).expect("as value");
         assert_eq!(v, serde_json::json!({ "verb": "get_diagnostics" }));
+
+        let v: serde_json::Value = serde_json::from_str(
+            &Request::Send {
+                messages: Vec::new(),
+            }
+            .to_ndjson(),
+        )
+        .expect("as value");
+        assert_eq!(v["verb"], serde_json::json!("send"));
     }
 
     #[test]
@@ -362,6 +522,7 @@ mod tests {
             tag(&Response::Diagnostics(diagnostics_report())),
             "diagnostics"
         );
+        assert_eq!(tag(&Response::Sent { count: 2 }), "sent");
         assert_eq!(
             tag(&Response::Conflict(Conflict {
                 expected: String::new(),
@@ -407,6 +568,7 @@ mod tests {
                 content_hash: "00c0ffee00c0ffee".to_string(),
             }),
             Response::Diagnostics(diagnostics_report()),
+            Response::Sent { count: 2 },
             Response::Conflict(Conflict {
                 expected: "0badc0de0badc0de".to_string(),
                 actual: "00c0ffee00c0ffee".to_string(),

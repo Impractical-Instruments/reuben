@@ -8,7 +8,7 @@
 //!
 //! M2 (#323) flips the `swap` verb from M1's stop-the-world restart onto the
 //! [`Coordinator`](reuben_core::coordinator::Coordinator)/mailbox path (*same
-//! verb, machinery-only replacement*). The four verbs:
+//! verb, machinery-only replacement*). The five verbs:
 //! - [`Request::Ping`] → [`Response::Pong`] — liveness of the channel itself.
 //! - [`Request::GetDocument`] → the Coordinator's canonical document + its
 //!   [`content_hash`](reuben_core::content_hash). It changes only when a
@@ -26,6 +26,11 @@
 //!   for the new engine through the injected [`RenderConfigPublisher`] seam. A swapped-in engine
 //!   binding input channels no open stream provides **dark-degrades to silence** with a loud
 //!   swap-report warning, never an error or a crash.
+//! - [`Request::Send`] → the **control plane**: each message is handed to the same
+//!   [`OscIn`](crate::osc::OscIn) mpsc the UDP decode thread feeds, converging at the render
+//!   callback's `queue_osc`. This channel therefore carries no wire format of its own past the
+//!   envelope's flat atoms, and OSC-the-binary-protocol stays at `play`'s foreign edge. It is the
+//!   one verb that does **not** touch the Coordinator — control is not structure.
 //!
 //! The Coordinator is single-writer: the structure server holds it behind one
 //! [`Mutex`] so concurrent connections serialize, and the whole `expect`-compare → swap →
@@ -39,16 +44,19 @@
 use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::mpsc::Sender;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
 use reuben_core::coordinator::{
-    Conflict, Coordinator, DiagnosticsReport, DocSource, DocumentSnapshot, Request, Response,
+    Conflict, ControlMessage, Coordinator, DiagnosticsReport, DocSource, DocumentSnapshot, Request,
+    Response,
 };
 use reuben_core::{Diag, SwapReport};
 
 use crate::diagnostics::{Diagnostics, Snapshot};
+use crate::osc::OscIn;
 
 /// How long the accept loop sleeps between polls of its shutdown flag while idle. The listener
 /// is non-blocking so the loop can observe [`StructureServer::shutdown`] without a client ever
@@ -265,12 +273,25 @@ pub(crate) fn dark_degrade_warning(
 /// it owns the canonical document + hash (`swap` advances them, `get_document`/`expect` read
 /// them) and the install mailbox. The `render_config` seam publishes the device output map + the
 /// dark-degrade warning after each swap; `diagnostics` is the live counter surface the callback
-/// feeds (fixed at `play` start — M2 never reopens streams, so it never re-points).
+/// feeds (fixed at `play` start — M2 never reopens streams, so it never re-points); `control` is
+/// the [`Request::Send`] ingress.
 #[derive(Clone)]
 pub struct StructureState {
     coordinator: Arc<Mutex<Coordinator>>,
     diagnostics: Arc<Diagnostics>,
     render_config: Arc<dyn RenderConfigPublisher>,
+    /// The control-plane ingress: a producer on the same [`OscIn`] channel the UDP decode thread
+    /// feeds, so `send` converges with external OSC at the callback's `queue_osc`.
+    ///
+    /// A bare `Sender` — no `Arc<Mutex<_>>` — because this state is never shared by reference
+    /// across threads: [`accept_loop`] *clones* it per connection and moves the clone in, which is
+    /// exactly std's multi-producer idiom (`play`'s UDP thread takes its producer the same way).
+    ///
+    /// `None` when no ingress is wired. Unlike `render_config`, there is no working default to fall
+    /// back to — no engine to reach means the verb cannot be served — so `dispatch` answers a
+    /// channel-level [`Response::Error`] rather than dropping the batch on the floor. `play` always
+    /// wires one; this is the test-construction path.
+    control: Option<Sender<OscIn>>,
 }
 
 impl StructureState {
@@ -285,6 +306,7 @@ impl StructureState {
             render_config: Arc::new(HeadlessRenderConfig {
                 opened_input_channels: 0,
             }),
+            control: None,
         }
     }
 
@@ -293,6 +315,15 @@ impl StructureState {
     /// the headless dark-degrade warning (the test seam).
     pub fn with_render_config(mut self, render_config: Arc<dyn RenderConfigPublisher>) -> Self {
         self.render_config = render_config;
+        self
+    }
+
+    /// Wire the control-plane ingress: a producer on the [`OscIn`] channel the render callback
+    /// drains. `play` passes a clone of the very sender its UDP decode thread holds, so a `send`
+    /// and an external datagram are indistinguishable downstream. Without this, `send` answers a
+    /// channel-level error.
+    pub fn with_control_sink(mut self, control: Sender<OscIn>) -> Self {
+        self.control = Some(control);
         self
     }
 
@@ -355,10 +386,45 @@ fn dispatch(state: &StructureState, line: &str) -> Response {
             Response::Diagnostics(diagnostics_report(&state.diagnostics.snapshot()))
         }
         Ok(Request::Swap { source, expect }) => handle_swap(state, source, expect),
+        Ok(Request::Send { messages }) => handle_send(state, messages),
         Err(e) => Response::Error {
             message: format!("unreadable request: {e}"),
         },
     }
+}
+
+/// The control plane: hand each message to the engine's ingress and ack the count.
+///
+/// Deliberately thin — there is **no routing logic here**. Each [`ControlMessage`] becomes the flat
+/// [`OscIn`] carrier and goes onto the same channel `play`'s UDP decode thread feeds, so the render
+/// callback's `queue_osc` types and routes it against the destination port exactly as it would an
+/// external datagram. An address matching no node/port is dropped there, silently, which is why the
+/// ack is "queued", never "applied".
+///
+/// The Coordinator is untouched: control is not structure, so a `send` never contends for the
+/// single-writer lock and cannot be starved by an in-flight swap's bounded reclaim poll.
+fn handle_send(state: &StructureState, messages: Vec<ControlMessage>) -> Response {
+    let Some(control) = &state.control else {
+        return Response::Error {
+            message: "this engine has no control ingress wired; `send` is unavailable".to_string(),
+        };
+    };
+    let count = messages.len();
+    for message in messages {
+        let carried = OscIn {
+            address: message.address,
+            args: message.args.into_iter().map(Into::into).collect(),
+        };
+        if control.send(carried).is_err() {
+            // The receiver is gone: the render callback has stopped for good (audio torn down),
+            // so nothing downstream will ever apply this batch. Say so rather than ack a lie.
+            return Response::Error {
+                message: "the engine's control ingress is closed; is audio still running?"
+                    .to_string(),
+            };
+        }
+    }
+    Response::Sent { count }
 }
 
 /// The M2 mailbox-swap install path, device-free up to the
@@ -683,9 +749,9 @@ fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<Ato
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reuben_core::coordinator::{RenderSide, RenderSlot};
+    use reuben_core::coordinator::{ControlArg, RenderSide, RenderSlot};
     use reuben_core::resources::MemoryResolver;
-    use reuben_core::{AudioConfig, Registry};
+    use reuben_core::{Arg, AudioConfig, Registry};
     use std::sync::atomic::AtomicBool;
 
     fn cfg() -> AudioConfig {
@@ -731,19 +797,34 @@ mod tests {
     /// installs **via the mailbox** and its `reclaim` completes, all with no audio device. Rendering
     /// the *logical* master directly (no device output map — that is the human ritual's half) is
     /// enough to make the swap real end-to-end.
+    ///
+    /// It also drains the [`OscIn`] control channel into `slot.queue_osc`, mirroring the real
+    /// callback's loop (`audio.rs`), and **records what it fed** — so a `send` test asserts the door
+    /// delivered `{address, [Arg]}` to the exact call an external datagram reaches, not to a
+    /// stand-in.
     struct FakeCallback {
         stop: Arc<AtomicBool>,
         handle: Option<JoinHandle<()>>,
+        /// Every message handed to `queue_osc`, in order.
+        queued: Arc<Mutex<Vec<OscIn>>>,
     }
 
     impl FakeCallback {
-        fn spawn(side: RenderSide) -> Self {
+        fn spawn(side: RenderSide, control_rx: std::sync::mpsc::Receiver<OscIn>) -> Self {
             let stop = Arc::new(AtomicBool::new(false));
             let stop_thread = Arc::clone(&stop);
+            let queued = Arc::new(Mutex::new(Vec::new()));
+            let queued_thread = Arc::clone(&queued);
             let handle = std::thread::spawn(move || {
                 let mut slot = RenderSlot::new(side);
                 let mut buf = vec![0.0f32; 128 * slot.channels().max(1)];
                 while !stop_thread.load(Ordering::SeqCst) {
+                    // The real callback's control drain, verbatim: flat args in, typed at the
+                    // slot's Engine where the destination port's type is known.
+                    while let Ok(m) = control_rx.try_recv() {
+                        slot.queue_osc(&m.address, &m.args);
+                        queued_thread.lock().expect("queued log").push(m);
+                    }
                     let ch = slot.channels().max(1);
                     if buf.len() != 128 * ch {
                         buf.resize(128 * ch, 0.0);
@@ -758,6 +839,20 @@ mod tests {
             Self {
                 stop,
                 handle: Some(handle),
+                queued,
+            }
+        }
+
+        /// Poll until `n` messages have reached `queue_osc`, then return them. Bounded so a
+        /// regression fails as a red test rather than hanging CI.
+        fn await_queued(&self, n: usize) -> Vec<OscIn> {
+            let deadline = Instant::now() + Duration::from_secs(2);
+            loop {
+                let queued = self.queued.lock().expect("queued log").clone();
+                if queued.len() >= n || Instant::now() >= deadline {
+                    return queued;
+                }
+                std::thread::sleep(Duration::from_millis(1));
             }
         }
 
@@ -769,9 +864,10 @@ mod tests {
         }
     }
 
-    /// A Coordinator-backed [`StructureState`] with a live [`FakeCallback`] draining its mailbox,
-    /// plus the base document's content hash. `opened_input_channels` sets the headless render
-    /// config's input-stream geometry (`0` = output-only, so an input-binding swap dark-degrades).
+    /// A Coordinator-backed [`StructureState`] with a live [`FakeCallback`] draining its mailbox
+    /// and its control channel, plus the base document's content hash. `opened_input_channels` sets
+    /// the headless render config's input-stream geometry (`0` = output-only, so an input-binding
+    /// swap dark-degrades).
     fn swap_fixture(
         base: &str,
         opened_input_channels: usize,
@@ -784,11 +880,13 @@ mod tests {
         )
         .expect("initial install");
         let base_hash = coordinator.installed_hash();
+        let (control_tx, control_rx) = std::sync::mpsc::channel::<OscIn>();
         let state = StructureState::from_coordinator(coordinator, Diagnostics::new())
             .with_render_config(Arc::new(HeadlessRenderConfig {
                 opened_input_channels,
-            }));
-        (state, FakeCallback::spawn(side), base_hash)
+            }))
+            .with_control_sink(control_tx);
+        (state, FakeCallback::spawn(side, control_rx), base_hash)
     }
 
     fn swap_by_value(target: &str, expect: Option<String>) -> Request {
@@ -847,7 +945,10 @@ mod tests {
         .expect("install");
         let diagnostics = Diagnostics::new();
         let state = StructureState::from_coordinator(coordinator, Arc::clone(&diagnostics));
-        let cb = FakeCallback::spawn(side);
+        // This verb never touches control, so the sink stays unwired; the callback just needs a
+        // receiver to drain.
+        let (_control_tx, control_rx) = std::sync::mpsc::channel::<OscIn>();
+        let cb = FakeCallback::spawn(side, control_rx);
         // Fresh: zeroed.
         assert_eq!(
             dispatch(&state, &Request::GetDiagnostics.to_ndjson()),
@@ -1016,6 +1117,96 @@ mod tests {
             other => panic!("expected SwapReport, got {other:?}"),
         }
         cb.stop();
+    }
+
+    #[test]
+    fn send_delivers_the_whole_batch_to_the_engines_queue_osc() {
+        // The control plane converges where external OSC does. The assertion is on what reached
+        // `queue_osc` — the exact call a decoded UDP datagram reaches — so this proves the door
+        // delivered `{address, [Arg]}` to the engine, not merely that a sink was poked. Distinct
+        // values per atom kind so a mis-mapped variant can't pass.
+        let (state, cb, _) = swap_fixture(BASE_DOC, 0);
+        let request = Request::Send {
+            messages: vec![
+                ControlMessage {
+                    address: "/osc/freq".to_string(),
+                    args: vec![ControlArg::F32(440.5)],
+                },
+                ControlMessage {
+                    address: "/osc/shape".to_string(),
+                    args: vec![ControlArg::Str("Up".to_string()), ControlArg::I32(3)],
+                },
+            ],
+        };
+        assert_eq!(
+            dispatch(&state, &request.to_ndjson()),
+            Response::Sent { count: 2 },
+            "the ack names how many the engine queued"
+        );
+
+        let queued = cb.await_queued(2);
+        assert_eq!(
+            queued,
+            vec![
+                OscIn {
+                    address: "/osc/freq".to_string(),
+                    args: vec![Arg::F32(440.5)],
+                },
+                OscIn {
+                    address: "/osc/shape".to_string(),
+                    args: vec![Arg::Str("Up".into()), Arg::I32(3)],
+                },
+            ],
+            "both messages arrive in order, each atom as its primitive Arg"
+        );
+        cb.stop();
+    }
+
+    #[test]
+    fn send_acks_an_unroutable_address_because_the_engine_drops_it_silently() {
+        // The ack is "queued", never "applied": an address matching no node/port is dropped at the
+        // engine's ingress exactly as a stale external datagram is, and the channel does not
+        // pre-judge it — this door has no routing table and must not grow one.
+        let (state, cb, _) = swap_fixture(BASE_DOC, 0);
+        let request = Request::Send {
+            messages: vec![ControlMessage {
+                address: "/nowhere/at/all".to_string(),
+                args: vec![ControlArg::F32(1.0)],
+            }],
+        };
+        assert_eq!(
+            dispatch(&state, &request.to_ndjson()),
+            Response::Sent { count: 1 }
+        );
+        assert_eq!(cb.await_queued(1).len(), 1, "it still reached queue_osc");
+        cb.stop();
+    }
+
+    #[test]
+    fn send_without_a_control_sink_is_a_channel_error() {
+        // No ingress wired means no engine to reach. Answering an error — rather than acking a
+        // batch that goes nowhere — is what keeps the ack meaning something.
+        let (coordinator, _side, _w) = Coordinator::install_initial(
+            BASE_DOC,
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            cfg(),
+        )
+        .expect("initial install");
+        let state = StructureState::from_coordinator(coordinator, Diagnostics::new());
+        let request = Request::Send {
+            messages: vec![ControlMessage {
+                address: "/osc/freq".to_string(),
+                args: vec![ControlArg::F32(440.0)],
+            }],
+        };
+        match dispatch(&state, &request.to_ndjson()) {
+            Response::Error { message } => assert!(
+                message.contains("control ingress"),
+                "the error names what is missing: {message}"
+            ),
+            other => panic!("expected Error, got {other:?}"),
+        }
     }
 
     #[test]

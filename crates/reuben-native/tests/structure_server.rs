@@ -20,23 +20,27 @@
 //!   warning and stays alive — not an error, not a crash;
 //! - `expect` arbitration conflicts on a stale hash and proceeds on a matching one;
 //!   a bad document reports errors with no install;
+//! - the **`send`** verb carries a control batch over the same wire and converges at the engine's
+//!   `queue_osc` — the exact call a decoded external OSC datagram reaches;
 //! - the server **shuts down cleanly** — every thread joined — even with an idle client connected.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::Duration;
 
 use reuben_core::coordinator::{
-    Conflict, Coordinator, DiagnosticsReport, DocSource, DocumentSnapshot, Request, Response,
+    Conflict, ControlArg, ControlMessage, Coordinator, DiagnosticsReport, DocSource,
+    DocumentSnapshot, Request, Response,
 };
 use reuben_core::coordinator::{RenderSide, RenderSlot};
 use reuben_core::resources::MemoryResolver;
-use reuben_core::{content_hash, AudioConfig, NormalizedDoc, Registry};
+use reuben_core::{content_hash, Arg, AudioConfig, NormalizedDoc, Registry};
 use reuben_native::diagnostics::Diagnostics;
+use reuben_native::osc::OscIn;
 use reuben_native::structure::{HeadlessRenderConfig, StructureServer, StructureState};
 
 fn cfg() -> AudioConfig {
@@ -79,16 +83,26 @@ const MIC_PASSTHRU: &str = r#"{ "format_version": 3, "instrument": "mic-passthru
 struct FakeCallback {
     stop: Arc<AtomicBool>,
     handle: Option<JoinHandle<()>>,
+    /// Every message handed to `queue_osc`, in order — what a `send` test asserts on.
+    queued: Arc<Mutex<Vec<OscIn>>>,
 }
 
 impl FakeCallback {
-    fn spawn(side: RenderSide) -> Self {
+    fn spawn(side: RenderSide, control_rx: mpsc::Receiver<OscIn>) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let stop_thread = Arc::clone(&stop);
+        let queued = Arc::new(Mutex::new(Vec::new()));
+        let queued_thread = Arc::clone(&queued);
         let handle = std::thread::spawn(move || {
             let mut slot = RenderSlot::new(side);
             let mut buf = vec![0.0f32; 128 * slot.channels().max(1)];
             while !stop_thread.load(Ordering::SeqCst) {
+                // The real callback's control drain, verbatim (`audio.rs`): flat args in, typed at
+                // the slot's Engine where the destination port's type is known.
+                while let Ok(m) = control_rx.try_recv() {
+                    slot.queue_osc(&m.address, &m.args);
+                    queued_thread.lock().expect("queued log").push(m);
+                }
                 let ch = slot.channels().max(1);
                 if buf.len() != 128 * ch {
                     buf.resize(128 * ch, 0.0);
@@ -101,6 +115,20 @@ impl FakeCallback {
         Self {
             stop,
             handle: Some(handle),
+            queued,
+        }
+    }
+
+    /// Poll until `n` messages have reached `queue_osc`, then return them. Bounded so a regression
+    /// fails as a red test rather than hanging CI.
+    fn await_queued(&self, n: usize) -> Vec<OscIn> {
+        let deadline = std::time::Instant::now() + Duration::from_secs(2);
+        loop {
+            let queued = self.queued.lock().expect("queued log").clone();
+            if queued.len() >= n || std::time::Instant::now() >= deadline {
+                return queued;
+            }
+            std::thread::sleep(Duration::from_millis(1));
         }
     }
 
@@ -112,9 +140,13 @@ impl FakeCallback {
     }
 }
 
-/// A Coordinator-backed [`StructureState`] over `doc`, a live [`FakeCallback`] draining its mailbox,
-/// and the base document's content hash. `opened_input_channels` is the headless render config's
-/// input-stream geometry (`0` = output-only, so an input-binding swap dark-degrades).
+/// A Coordinator-backed [`StructureState`] over `doc`, a live [`FakeCallback`] draining its mailbox
+/// and its control channel, and the base document's content hash. `opened_input_channels` is the
+/// headless render config's input-stream geometry (`0` = output-only, so an input-binding swap
+/// dark-degrades).
+///
+/// The control sink is wired exactly as `play` wires it — one `OscIn` channel with the structure
+/// server on the producing end and the callback draining it.
 fn wired(doc: &str, opened_input_channels: usize) -> (StructureState, FakeCallback, String) {
     let (coordinator, side, _warnings) = Coordinator::install_initial(
         doc,
@@ -124,11 +156,13 @@ fn wired(doc: &str, opened_input_channels: usize) -> (StructureState, FakeCallba
     )
     .expect("initial install");
     let base_hash = coordinator.installed_hash();
+    let (control_tx, control_rx) = mpsc::channel::<OscIn>();
     let state = StructureState::from_coordinator(coordinator, Diagnostics::new())
         .with_render_config(Arc::new(HeadlessRenderConfig {
             opened_input_channels,
-        }));
-    (state, FakeCallback::spawn(side), base_hash)
+        }))
+        .with_control_sink(control_tx);
+    (state, FakeCallback::spawn(side, control_rx), base_hash)
 }
 
 /// Read one newline-framed [`Response`] off the wire, asserting the framing.
@@ -249,7 +283,9 @@ fn get_diagnostics_reflects_live_counter_bumps() {
     .expect("install");
     let diagnostics = Diagnostics::new();
     let state = StructureState::from_coordinator(coordinator, Arc::clone(&diagnostics));
-    let cb = FakeCallback::spawn(side);
+    // This verb never touches control; the callback just needs a receiver to drain.
+    let (_control_tx, control_rx) = mpsc::channel::<OscIn>();
+    let cb = FakeCallback::spawn(side, control_rx);
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
     let mut writer = client.try_clone().unwrap();
@@ -515,6 +551,61 @@ fn swap_expect_arbitration_conflicts_then_proceeds_over_the_wire() {
         }
         other => panic!("expected SwapReport, got {other:?}"),
     }
+
+    server.shutdown();
+    cb.stop();
+}
+
+#[test]
+fn send_over_the_wire_reaches_the_engines_queue_osc() {
+    // The control plane end-to-end over real loopback TCP: one `send` verb carries the whole batch,
+    // the ack names what the engine queued, and the messages arrive at `queue_osc` — the same call
+    // a decoded external OSC datagram reaches. That convergence is the point of the verb: the
+    // sidecar ships `{address, [Arg]}` in this channel's framing and OSC-the-binary-protocol never
+    // enters the loop.
+    let (state, cb, _) = wired(BASE_DOC, 0);
+    let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
+    let client = TcpStream::connect(server.local_addr()).expect("connect");
+    let mut writer = client.try_clone().unwrap();
+    let mut reader = BufReader::new(client);
+
+    // Distinct atom kinds so a mis-mapped variant cannot pass unnoticed.
+    send(
+        &mut writer,
+        &Request::Send {
+            messages: vec![
+                ControlMessage {
+                    address: "/osc/freq".to_string(),
+                    args: vec![ControlArg::F32(440.5)],
+                },
+                ControlMessage {
+                    address: "/osc/shape".to_string(),
+                    args: vec![ControlArg::Str("Up".to_string()), ControlArg::I32(3)],
+                },
+            ],
+        },
+    );
+    assert_eq!(read_response(&mut reader), Response::Sent { count: 2 });
+
+    assert_eq!(
+        cb.await_queued(2),
+        vec![
+            OscIn {
+                address: "/osc/freq".to_string(),
+                args: vec![Arg::F32(440.5)],
+            },
+            OscIn {
+                address: "/osc/shape".to_string(),
+                args: vec![Arg::Str("Up".into()), Arg::I32(3)],
+            },
+        ],
+        "both messages crossed the wire in order, each atom as its primitive Arg"
+    );
+
+    // Control and structure share the channel without interfering: the connection is still good
+    // for a structure verb right after.
+    send(&mut writer, &Request::Ping);
+    assert_eq!(read_response(&mut reader), Response::Pong);
 
     server.shutdown();
     cb.stop();

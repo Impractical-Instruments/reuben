@@ -23,10 +23,28 @@
 use reuben_core::message::Arg;
 use rosc::{OscMessage, OscPacket, OscType};
 
-/// One decoded OSC datagram in **flat primitive form**: an address plus the OSC args as
-/// primitive [`Arg`]s, *before* dest-port-type-driven conversion to the single typed `Arg`. The
-/// engine routes `address` to a node/port and calls [`reuben_core::boundary::osc_in_arg`] with that
-/// port's type to produce the Message.
+/// The UDP port `reuben play` binds for OSC-in — the engine's **foreign edge**, where external
+/// controllers (a hardware knob, a TouchOSC surface) reach it. Bound on `0.0.0.0` (all interfaces),
+/// unlike the loopback-only structure channel.
+///
+/// It lives here, in the OSC codec, because this module *is* that edge and `play` is its only
+/// consumer. It used to live beside `DEFAULT_STRUCTURE_ADDR` in `reuben_core`'s wire envelope, back
+/// when the reuben-mcp sidecar dialed it to deliver `send` — two ends that had to agree on one
+/// literal. The sidecar's control now rides the structure channel, so there is no second end left
+/// to drift from, and core carries no network plumbing.
+pub const DEFAULT_OSC_PORT: u16 = 9000;
+
+/// One inbound control message in **flat primitive form**: an address plus its args as primitive
+/// [`Arg`]s, *before* dest-port-type-driven conversion to the single typed `Arg`. The engine routes
+/// `address` to a node/port and calls [`reuben_core::boundary::osc_in_arg`] with that port's type
+/// to produce the Message.
+///
+/// **Two producers feed this, not one.** [`decode`] mints them from external UDP datagrams (the
+/// foreign edge), and the structure channel's `send` verb mints them from its own NDJSON framing
+/// (`crate::structure`) — every door ships `{address, [Arg]}` in its own framing and converges
+/// here, on one `mpsc` into the render callback's `queue_osc`. So this type is the flat carrier,
+/// not an OSC-specific one; it lives in this module because decoding is where most of them are
+/// born.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OscIn {
     /// OSC address path, e.g. `/voicer/notes`.

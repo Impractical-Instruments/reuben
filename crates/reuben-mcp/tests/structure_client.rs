@@ -17,7 +17,7 @@ use reuben_core::coordinator::{
 };
 use reuben_core::{Diag, DiffSummary, Report, SwapReport};
 
-use reuben_mcp::{default_osc_addr, EngineLink, StructureClient, SwapOutcome};
+use reuben_mcp::{EngineLink, StructureClient, SwapOutcome};
 
 /// A running loopback NDJSON stub: the address the client dials, plus a receiver of every request
 /// the stub parsed off the wire (so a test can assert the client sent the *right* envelope — e.g.
@@ -305,7 +305,7 @@ fn ping_fails_fast_even_when_the_general_read_budget_is_generous() {
     // #374 tightening: a `ping`'s pong is immediate, so the liveness probe must not inherit the
     // generous read budget a real swap earns. Wedge a server, hand the client a deliberately huge
     // general read timeout, and assert `ping` still returns on its own tight budget — otherwise a
-    // hung engine would stall `engine_status` and the probe-first `send` for the full read timeout.
+    // hung engine would stall `engine_status` for the full read timeout.
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind wedged stub");
     let addr = listener.local_addr().expect("wedged addr");
     thread::spawn(move || {
@@ -342,15 +342,15 @@ fn ping_fails_fast_even_when_the_general_read_budget_is_generous() {
 fn engine_link_pings_reachable_only_when_the_engine_answers() {
     // The reachability the engine tools consult: EngineLink.ping() succeeds against a
     // live ping-answering engine and fails (unreachable) against a dead port. This is the real seam
-    // wired into `ReubenServer` — `engine_status` and the probe-first `send` read it, and the four
-    // structure-channel tools act-then-map its unreachable case.
+    // wired into `ReubenServer` — `engine_status` reads it, and every other engine tool
+    // act-then-maps its unreachable case.
     let live = spawn_stub(|req| match req {
         Request::Ping => Response::Pong,
         _ => Response::Error {
             message: "no".to_string(),
         },
     });
-    let link = EngineLink::new(live.addr.to_string(), default_osc_addr());
+    let link = EngineLink::new(live.addr.to_string());
     assert!(
         within(Duration::from_secs(5), "link live", move || link
             .structure()
@@ -359,7 +359,7 @@ fn engine_link_pings_reachable_only_when_the_engine_answers() {
         "a live ping-answering engine must read as reachable"
     );
 
-    let dead = EngineLink::new(dead_addr(), default_osc_addr());
+    let dead = EngineLink::new(dead_addr());
     let err = within(Duration::from_secs(5), "link dead", move || {
         dead.structure().ping()
     });

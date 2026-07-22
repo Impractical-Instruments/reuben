@@ -15,16 +15,18 @@
 //! [`reuben_native::resources::FsResolver`], and `scaffold_instrument` mints a minimal valid
 //! document by value ([`reuben_core::scaffold_instrument`]); the five engine
 //! tools (`send`/`engine_status`/`swap`/`get_current_instrument`/`get_diagnostics`, #318) reach a
-//! user-owned `reuben play` through the [`EngineLink`]'s two planes:
+//! user-owned `reuben play` through the [`EngineLink`] — all five over the structure channel's
+//! verbs, via [`StructureClient`] over an injectable [`StructureTransport`].
 //!
-//! - `send` → [`reuben_native::osc::encode`] over the OSC/UDP control path (probe-first liveness).
-//! - `engine_status`/`swap`/`get_current_instrument`/`get_diagnostics` → the structure channel's
-//!   four verbs, via [`StructureClient`] over an injectable [`StructureTransport`].
+//! **The sidecar speaks no OSC.** `send` used to encode datagrams and dispatch them over UDP to the
+//! engine's OSC-in port; it now rides the same loopback channel the other four do, converging with
+//! external OSC inside core at `Engine::queue_osc`. OSC-the-binary-protocol lives only at `reuben
+//! play`'s foreign edge.
 //!
 //! Error-layer discipline: a failing validation or a rejected swap is an ORDINARY
 //! result — the tool worked; `isError` is reserved for the can't-do-the-job cases (an unreachable
 //! engine, a bad one-of, an unknown operator). `engine_status` is never `isError` — answering
-//! "reachable?" is its job. The four engine-reading/mutating tools use ACT-THEN-MAP: run the real
+//! "reachable?" is its job. The engine-reading/mutating tools use ACT-THEN-MAP: run the real
 //! exchange and map [`StructureError::is_unreachable`] to the fail-fast result, no separate probe.
 //!
 //! see rules: agent-mcp
@@ -41,16 +43,16 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt};
 
-use reuben_core::coordinator::{DiagnosticsReport, DocSource};
+use reuben_core::coordinator::{ControlArg, ControlMessage, DiagnosticsReport, DocSource};
 use reuben_core::introspect::{OperatorInfo, PatchBoundary};
-use reuben_core::{Arg, Registry, Report, SwapReport};
+use reuben_core::{Registry, Report, SwapReport};
 use reuben_native::resources::FsResolver;
 use serde::{Deserialize, Serialize};
 
 mod client;
 mod engine;
 pub use client::{StructureClient, StructureError, StructureTransport, SwapOutcome, TcpTransport};
-pub use engine::{default_osc_addr, EngineLink};
+pub use engine::EngineLink;
 pub use reuben_core::coordinator::{Conflict, DocumentSnapshot};
 
 /// The tool surface this door advertises, in roster order — the exact spellings
@@ -107,8 +109,8 @@ pub const LIBRARY_INDEX_RESOURCE_MIME: &str = "text/markdown";
 const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is the durable \
      truth; keep it in sync with the sound. Start `reuben play` in another terminal first — the \
      engine tools (`send`, `swap`, `get_current_instrument`, `get_diagnostics`) fail fast until it \
-     is reachable. The loop: `send` OSC to audition a change (ephemeral — clobbered at the next \
-     swap), then edit the document and `swap` to make it durable. Creating an instrument from \
+     is reachable. The loop: `send` control values to audition a change (ephemeral — clobbered at \
+     the next swap), then edit the document and `swap` to make it durable. Creating an instrument from \
      scratch? Call `scaffold_instrument` for a guaranteed-valid starting document, then edit and \
      `swap` it. Read `reuben://guide/authoring` \
      for the type system, wiring rules, instrument format, and the authoring loop. Read \
@@ -361,24 +363,24 @@ pub struct DocumentParams {
     pub resolve_from: Option<String>,
 }
 
-/// One OSC message in a `send` batch: an address and its primitive args.
+/// One control message in a `send` batch: an address and its primitive args.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct OscSendMessage {
-    /// The full OSC address, e.g. `/voice1/cutoff`.
+pub struct ControlSendMessage {
+    /// The address, e.g. `/voice1/cutoff`.
     pub address: String,
-    /// The OSC arguments — numbers or strings.
+    /// The arguments — numbers or strings.
     #[serde(default)]
     pub args: Vec<serde_json::Value>,
 }
 
-/// Input for `send`: a batch of **at least one** OSC message (the natural authoring
+/// Input for `send`: a batch of **at least one** control message (the natural authoring
 /// gesture is multi-control). The `length(min = 1)` puts `minItems: 1` in the advertised input
 /// schema; the tool body rejects an empty batch too, for a client that skips schema validation.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SendParams {
-    /// The OSC messages to dispatch, in order (at least one).
+    /// The control messages to apply, in order (at least one).
     #[schemars(length(min = 1))]
-    pub messages: Vec<OscSendMessage>,
+    pub messages: Vec<ControlSendMessage>,
 }
 
 /// Input for `swap`: a `path` (path-only — you can only install what exists on
@@ -392,22 +394,25 @@ pub struct SwapParams {
     pub expect: Option<String>,
 }
 
-/// Output for `send`: how many OSC datagrams were dispatched. The count is
-/// "left the socket", not "received" — UDP promises neither delivery nor application receipt.
+/// Output for `send`: how many messages the engine queued. The count is the engine's
+/// own ack — "received and queued for the next block", not "applied": an address matching no
+/// node/port is dropped at the engine's ingress, exactly as an external OSC datagram naming a stale
+/// address is.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct SendOutput {
-    /// The number of OSC messages dispatched to the engine.
+    /// The number of control messages the engine queued.
     pub sent: usize,
 }
 
-/// The endpoints `engine_status` reports: the loopback structure channel and the
-/// OSC control plane the sidecar talks to.
+/// The endpoint `engine_status` reports. One field, because the sidecar now talks to the engine
+/// over exactly one channel; the engine's OSC-in port is its foreign edge, which this sidecar
+/// neither dials nor owns (`reuben play` prints it at startup for whoever points a controller at
+/// it).
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct StatusEndpoints {
-    /// The structure channel address (`ping`/`swap`/`get_document`/`get_diagnostics`).
+    /// The structure channel address — every engine tool speaks it
+    /// (`ping`/`send`/`swap`/`get_document`/`get_diagnostics`).
     pub structure: String,
-    /// The OSC control endpoint `send` dispatches to.
-    pub osc: String,
 }
 
 /// The sidecar identity `engine_status` reports: its own version and the instrument
@@ -426,7 +431,7 @@ pub struct SidecarInfo {
 pub struct EngineStatusOutput {
     /// Whether a live `reuben play` answered `ping` on the structure channel.
     pub reachable: bool,
-    /// The structure and OSC endpoints this sidecar talks to.
+    /// The endpoint this sidecar talks to.
     pub endpoints: StatusEndpoints,
     /// The sidecar's own identity.
     pub sidecar: SidecarInfo,
@@ -486,17 +491,16 @@ pub struct ReubenServer {
 
 #[tool_router]
 impl ReubenServer {
-    /// A server backed by an [`EngineLink`] on the shared default endpoints
-    /// (`reuben_core::coordinator::DEFAULT_STRUCTURE_ADDR` and [`default_osc_addr`]): the engine
-    /// tools reach a live `reuben play` over the real structure channel + OSC. The
-    /// binary's composition root (`main`) injects the link via [`with_engine`](Self::with_engine);
-    /// this is the sensible default.
+    /// A server backed by an [`EngineLink`] on the shared default endpoint
+    /// (`reuben_core::coordinator::DEFAULT_STRUCTURE_ADDR`): the engine tools reach a live
+    /// `reuben play` over the real structure channel. The binary's composition root (`main`)
+    /// injects the link via [`with_engine`](Self::with_engine); this is the sensible default.
     pub fn new() -> Self {
         Self::with_engine(EngineLink::default())
     }
 
-    /// A server with an explicit engine link — the injection point for tests, which pair a fake
-    /// structure transport with a UDP socket they bound themselves.
+    /// A server with an explicit engine link — the injection point for tests, which pair it with
+    /// a fake structure transport.
     pub fn with_engine(engine: EngineLink) -> Self {
         Self {
             tool_router: Self::tool_router(),
@@ -647,16 +651,19 @@ impl ReubenServer {
 
     // --- Engine tools: reach a user-owned `reuben play` through the channel seam ----------------
 
-    /// Dispatch a batch of OSC control messages. Probe-first (UDP is silent about a
-    /// dead port): every datagram is encoded and validated first, then the structure channel is
-    /// pinged, then the batch is sent; an unreachable engine ⇒ `isError`.
+    /// Audition a batch of control values over the structure channel. Act-then-map: the
+    /// batch is validated locally first (a bad argument is a can't-do-the-job error, caught even
+    /// when the engine is down), then one exchange delivers the whole batch; an unreachable engine
+    /// ⇒ `isError`.
     #[tool(
         name = "send",
-        description = "Send a batch of OSC control messages to audition a change on the running engine. \
+        description = "Send a batch of control messages to audition a change on the running engine. \
                        Ephemeral by design: these values live in render state only and are \
                        CLOBBERED at the next swap — fold any you want to keep into the instrument document \
-                       and swap. The ack means the engine was reachable and the datagrams were dispatched; \
-                       UDP promises neither delivery nor receipt. Fails fast if no engine is reachable.",
+                       and swap. The ack means the engine received the batch and queued it for the next \
+                       rendered block — not that it took effect: an address matching no node/port is \
+                       dropped silently, exactly as it would be arriving from an external controller. \
+                       Fails fast if no engine is reachable.",
         output_schema = rmcp::handler::server::tool::schema_for_output::<SendOutput>()
             .expect("SendOutput is an object schema")
     )]
@@ -668,44 +675,36 @@ impl ReubenServer {
         // against a client that skips schema validation (the schema declares min 1).
         if params.messages.is_empty() {
             return Ok(CallToolResult::error(vec![ContentBlock::text(
-                "`send` requires at least one OSC message.".to_string(),
+                "`send` requires at least one message.".to_string(),
             )]));
         }
-        // Encode every datagram first: a bad address or argument is a can't-do-the-job error,
-        // caught before any dispatch and even when the engine is down.
-        let mut datagrams = Vec::with_capacity(params.messages.len());
+        // Convert the whole batch first: a bad argument is a can't-do-the-job error, caught before
+        // anything reaches the engine and even when the engine is down.
+        let mut messages = Vec::with_capacity(params.messages.len());
         for (i, message) in params.messages.iter().enumerate() {
-            let args = match osc_args_from_json(&message.args) {
-                Ok(args) => args,
+            match control_args_from_json(&message.args) {
+                Ok(args) => messages.push(ControlMessage {
+                    address: message.address.clone(),
+                    args,
+                }),
                 Err(why) => {
                     return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
                         "message {i} (`{}`) has an unsupported argument: {why}",
                         message.address
                     ))]))
                 }
-            };
-            match reuben_native::osc::encode(&message.address, &args) {
-                Ok(bytes) => datagrams.push(bytes),
-                Err(why) => {
-                    return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                        "message {i} (`{}`) could not be encoded as OSC: {why}",
-                        message.address
-                    ))]))
-                }
             }
         }
-        // Probe-first: confirm liveness on the structure channel before dispatching,
-        // since UDP would swallow a dead port silently. Any ping failure ⇒ the fail-fast result.
-        if self.engine.structure().ping().is_err() {
-            return Ok(engine_unreachable());
-        }
-        match self.engine.send_osc(&datagrams) {
+        // Act-then-map: one exchange carries the batch and reports a dead engine itself, so there
+        // is no separate probe and no window between checking and acting.
+        match self.engine.structure().send(messages) {
             Ok(sent) => structured_ok(
                 &SendOutput { sent },
-                format!("dispatched {sent} OSC message(s) to the engine"),
+                format!("the engine queued {sent} control message(s)"),
             ),
-            Err(why) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                "the engine is reachable but the OSC datagrams could not be dispatched: {why}"
+            Err(e) if e.is_unreachable() => Ok(engine_unreachable()),
+            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                "the engine is reachable but the control messages were not accepted: {e}"
             ))])),
         }
     }
@@ -715,7 +714,7 @@ impl ReubenServer {
     /// structure-channel `ping` and reports the endpoints and sidecar identity.
     #[tool(
         name = "engine_status",
-        description = "Report whether the reuben engine is reachable, with the structure/OSC endpoints and the \
+        description = "Report whether the reuben engine is reachable, with the structure endpoint and the \
                        sidecar version + supported instrument format_version. Never an error — a dead engine is \
                        reported as reachable:false with guidance to start it.",
         output_schema = rmcp::handler::server::tool::schema_for_output::<EngineStatusOutput>()
@@ -727,7 +726,6 @@ impl ReubenServer {
             reachable,
             endpoints: StatusEndpoints {
                 structure: self.engine.structure_endpoint(),
-                osc: self.engine.osc_endpoint(),
             },
             sidecar: SidecarInfo {
                 version: env!("CARGO_PKG_VERSION").to_string(),
@@ -937,28 +935,31 @@ impl ServerHandler for ReubenServer {
     }
 }
 
-/// Convert a `send` message's JSON args into the flat primitive [`Arg`]s the OSC encoder packs
-/// (args are `number | string`). An integer within `i32` range maps to `Arg::I32`,
-/// any other number to `Arg::F32`, a string to `Arg::Str`; the engine re-types each against the
-/// destination port at its boundary (dest-port-type-driven, [`reuben_native::osc::encode`]'s
-/// contract). A non-number/non-string arg is a can't-do-the-job error naming the offending value.
-fn osc_args_from_json(args: &[serde_json::Value]) -> Result<Vec<Arg>, String> {
+/// Convert a `send` message's JSON args into the wire's flat [`ControlArg`] atoms
+/// (args are `number | string`). An integer within `i32` range maps to `I32`, any other number to
+/// `F32`, a string to `Str`; the engine re-types each against the destination port at its boundary
+/// (dest-port-type-driven, [`reuben_core::boundary::osc_in_arg`]'s contract).
+///
+/// This exists rather than typing `SendParams::args` as `Vec<ControlArg>` directly so a non-scalar
+/// argument stays the tool's own crafted `isError` — naming the offending value — instead of an
+/// rmcp-layer deserialization failure the model cannot act on.
+fn control_args_from_json(args: &[serde_json::Value]) -> Result<Vec<ControlArg>, String> {
     args.iter()
         .map(|value| match value {
-            serde_json::Value::String(s) => Ok(Arg::Str(s.as_str().into())),
+            serde_json::Value::String(s) => Ok(ControlArg::Str(s.clone())),
             serde_json::Value::Number(n) => {
                 if let Some(i) = n.as_i64() {
                     if let Ok(i) = i32::try_from(i) {
-                        return Ok(Arg::I32(i));
+                        return Ok(ControlArg::I32(i));
                     }
                 }
                 match n.as_f64() {
-                    Some(f) => Ok(Arg::F32(f as f32)),
-                    None => Err(format!("number {value} is out of range for OSC")),
+                    Some(f) => Ok(ControlArg::F32(f as f32)),
+                    None => Err(format!("number {value} is out of range")),
                 }
             }
             other => Err(format!(
-                "{other} is not an OSC argument (expected a number or a string)"
+                "{other} is not a control argument (expected a number or a string)"
             )),
         })
         .collect()
@@ -1102,7 +1103,7 @@ mod tests {
 
     use reuben_core::coordinator::{Request, Response, DEFAULT_STRUCTURE_ADDR};
     use std::io;
-    use std::net::UdpSocket;
+    use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
     /// A [`StructureTransport`] answering with canned NDJSON instead of dialing a socket — the
@@ -1119,13 +1120,21 @@ mod tests {
         swap: Option<Response>,
         document: Option<Response>,
         diagnostics: Option<Response>,
+        /// Whether the engine serves `send`. Not an `Option<Response>` like the others because the
+        /// ack is derived from the batch that arrives, not canned.
+        serves_send: bool,
+        /// Every [`ControlMessage`] that crossed the wire, in order. Shared, so a test can read it
+        /// after the transport has been moved into the client.
+        sent: Arc<Mutex<Vec<ControlMessage>>>,
     }
 
     impl FakeTransport {
-        /// A reachable engine — `ping` answers `pong` — with no other verb configured yet.
+        /// A reachable engine — `ping` answers `pong`, `send` acks — with no other verb configured
+        /// yet.
         fn reachable() -> Self {
             Self {
                 ping: Some(Response::Pong),
+                serves_send: true,
                 ..Self::default()
             }
         }
@@ -1149,17 +1158,44 @@ mod tests {
             self.diagnostics = Some(Response::Diagnostics(report));
             self
         }
+
+        /// A reachable engine that acks whatever batch it is handed, plus the shared log of what
+        /// actually crossed the wire — so a `send` test asserts on the *serialized* batch rather
+        /// than on the tool's own inputs.
+        fn recording_send() -> (Self, Arc<Mutex<Vec<ControlMessage>>>) {
+            let sent = Arc::new(Mutex::new(Vec::new()));
+            let transport = Self {
+                sent: Arc::clone(&sent),
+                ..Self::reachable()
+            };
+            (transport, sent)
+        }
     }
 
     impl StructureTransport for FakeTransport {
         fn round_trip(&self, line: &str, _read_timeout: Duration) -> io::Result<String> {
             let request = Request::from_ndjson(line)
                 .expect("the tool body must put a well-formed request line on the wire");
+            // A `send` on a live engine is answered from the batch that actually arrived — parsed
+            // back off the wire, so the ack can only be right if the serialization was. On a down
+            // engine it falls through to the refused-connect branch like every other verb.
+            if let Request::Send { messages } = request {
+                if self.serves_send {
+                    let count = messages.len();
+                    self.sent.lock().expect("sent log").extend(messages);
+                    return Ok(Response::Sent { count }.to_ndjson());
+                }
+                return Err(io::Error::new(
+                    io::ErrorKind::ConnectionRefused,
+                    "connection refused",
+                ));
+            }
             let configured = match request {
                 Request::Ping => &self.ping,
                 Request::Swap { .. } => &self.swap,
                 Request::GetDocument => &self.document,
                 Request::GetDiagnostics => &self.diagnostics,
+                Request::Send { .. } => unreachable!("handled above"),
             };
             match configured {
                 Some(response) => Ok(response.to_ndjson()),
@@ -1185,43 +1221,17 @@ mod tests {
             .block_on(future)
     }
 
-    /// A server whose structure channel answers from `transport`, paired with the UDP socket
-    /// standing in for the engine's OSC-in endpoint.
+    /// A server whose one engine channel answers from `transport`.
     ///
-    /// The OSC plane is **not** faked: `send` really binds a socket and really dispatches
-    /// datagrams, which really arrive here — so the tests assert on encoded bytes rather than on a
-    /// counter, and nothing leaks to a developer's live `reuben play` on the default port.
-    fn server_with_osc(transport: FakeTransport) -> (ReubenServer, UdpSocket) {
-        let osc = UdpSocket::bind("127.0.0.1:0").expect("bind a stand-in OSC endpoint");
-        osc.set_read_timeout(Some(Duration::from_millis(500)))
-            .expect("bounded read so a missing datagram fails instead of hanging");
-        let osc_addr = osc.local_addr().expect("stand-in OSC address").to_string();
-        let server = ReubenServer::with_engine(EngineLink::from_parts(
-            StructureClient::with_transport(transport, Duration::from_secs(5)),
-            osc_addr,
-        ));
-        (server, osc)
-    }
-
-    /// [`server_with_osc`] for the tools that never touch the OSC plane.
-    ///
-    /// The stand-in endpoint is one process-wide socket held open for the run, not a per-call one
-    /// that gets dropped. Dropping it would free the port back to the OS mid-run, where it could be
-    /// recycled into another test's [`server_with_osc`] receiver — and since an unconnected UDP
-    /// `send_to` never surfaces a dead peer, nothing would report the crossed wires. Assert
-    /// delivery through [`server_with_osc`], which hands back the socket; this helper only
-    /// guarantees the address stays inert and bound.
+    /// Every engine tool — `send` included, now that control rides the structure channel — runs
+    /// through this single seam, so there is no second plane for a test to stand in for and no UDP
+    /// socket to bind. The fake sits at the *socket*, below the NDJSON framing, so a tool body still
+    /// exercises real serialization, real parsing, and the real unreachable classification.
     fn server_with(transport: FakeTransport) -> ReubenServer {
-        static SINK: std::sync::OnceLock<UdpSocket> = std::sync::OnceLock::new();
-        let addr = SINK
-            .get_or_init(|| UdpSocket::bind("127.0.0.1:0").expect("bind the stand-in OSC endpoint"))
-            .local_addr()
-            .expect("stand-in OSC address")
-            .to_string();
-        ReubenServer::with_engine(EngineLink::from_parts(
-            StructureClient::with_transport(transport, Duration::from_secs(5)),
-            addr,
-        ))
+        ReubenServer::with_engine(EngineLink::from_client(StructureClient::with_transport(
+            transport,
+            Duration::from_secs(5),
+        )))
     }
 
     /// The `outputSchema` a tool actually advertises, pulled off the live router by tool name.
@@ -1538,7 +1548,7 @@ mod tests {
             },
         );
         assert_payload_conforms("get_diagnostics", "counters", &DiagnosticsReport::default());
-        assert_payload_conforms("send", "dispatched", &SendOutput { sent: 2 });
+        assert_payload_conforms("send", "queued", &SendOutput { sent: 2 });
         for (case, guidance) in [
             ("unreachable", Some(ENGINE_UNREACHABLE_GUIDANCE.to_string())),
             ("reachable", None),
@@ -1550,7 +1560,6 @@ mod tests {
                     reachable: guidance.is_none(),
                     endpoints: StatusEndpoints {
                         structure: DEFAULT_STRUCTURE_ADDR.to_string(),
-                        osc: default_osc_addr(),
                     },
                     sidecar: SidecarInfo {
                         version: env!("CARGO_PKG_VERSION").to_string(),
@@ -1750,8 +1759,8 @@ mod tests {
             "the down-engine payload carries the `reuben play` guidance: {s}"
         );
         assert!(
-            s["endpoints"]["structure"].is_string() && s["endpoints"]["osc"].is_string(),
-            "the endpoints are reported even when down: {s}"
+            s["endpoints"]["structure"].is_string(),
+            "the endpoint is reported even when down: {s}"
         );
         assert_eq!(
             s["sidecar"]["format_version"],
@@ -1925,24 +1934,29 @@ mod tests {
     }
 
     #[test]
-    fn send_dispatches_all_messages_when_reachable() {
-        // A reachable send encodes every message and reports the count dispatched — and the
-        // datagrams really leave a socket: this asserts on what ARRIVES at a stand-in OSC endpoint,
-        // so the encoding is proven end-to-end rather than counted through a fake.
+    fn send_puts_the_whole_batch_on_the_structure_channel_in_one_exchange() {
+        // The batch crosses as ONE `send` request — not one per message — and the assertion is on
+        // what the fake parsed back OFF THE WIRE, so a serialization regression is caught rather
+        // than a counter being trusted. The JSON args re-type on the way: `1200.0` is a float atom,
+        // `69`/`1` are integers, `"up"` a symbol.
         let params = SendParams {
             messages: vec![
-                OscSendMessage {
+                ControlSendMessage {
                     address: "/voice1/cutoff".to_string(),
                     args: vec![serde_json::json!(1200.0)],
                 },
-                OscSendMessage {
+                ControlSendMessage {
                     address: "/voice1/notes".to_string(),
                     args: vec![serde_json::json!(69), serde_json::json!(1)],
                 },
+                ControlSendMessage {
+                    address: "/lfo/shape".to_string(),
+                    args: vec![serde_json::json!("up")],
+                },
             ],
         };
-        let (server, osc) = server_with_osc(FakeTransport::reachable());
-        let result = block_on(server.send(Parameters(params))).expect("result");
+        let (transport, sent) = FakeTransport::recording_send();
+        let result = block_on(server_with(transport).send(Parameters(params))).expect("result");
         assert_ne!(
             result.is_error,
             Some(true),
@@ -1953,37 +1967,36 @@ mod tests {
                 .structured_content
                 .as_ref()
                 .expect("structured payload")["sent"],
-            serde_json::json!(2)
+            serde_json::json!(3),
+            "the tool relays the engine's own ack count"
         );
 
-        // Both datagrams arrived, each carrying its OSC address as the leading string.
-        let mut received = Vec::new();
-        for _ in 0..2 {
-            let mut buf = [0u8; 1024];
-            let (n, _) = osc
-                .recv_from(&mut buf)
-                .expect("a dispatched datagram arrives");
-            received.push(buf[..n].to_vec());
-        }
-        let addresses: Vec<String> = received
-            .iter()
-            .map(|d| {
-                let end = d.iter().position(|&b| b == 0).unwrap_or(d.len());
-                String::from_utf8_lossy(&d[..end]).into_owned()
-            })
-            .collect();
-        assert!(
-            addresses.contains(&"/voice1/cutoff".to_string())
-                && addresses.contains(&"/voice1/notes".to_string()),
-            "both OSC addresses must arrive on the wire: {addresses:?}"
+        assert_eq!(
+            *sent.lock().expect("sent log"),
+            vec![
+                ControlMessage {
+                    address: "/voice1/cutoff".to_string(),
+                    args: vec![ControlArg::F32(1200.0)],
+                },
+                ControlMessage {
+                    address: "/voice1/notes".to_string(),
+                    args: vec![ControlArg::I32(69), ControlArg::I32(1)],
+                },
+                ControlMessage {
+                    address: "/lfo/shape".to_string(),
+                    args: vec![ControlArg::Str("up".to_string())],
+                },
+            ],
+            "every message crosses in order, each arg as the atom its JSON spelling names"
         );
     }
 
     #[test]
     fn send_unreachable_is_iserror() {
-        // Probe-first: datagrams encode fine, but a down engine fails the ping.
+        // Act-then-map, no probe: the batch converts fine, and the exchange ITSELF reports the down
+        // engine — there is no separate ping to fail first.
         let params = SendParams {
-            messages: vec![OscSendMessage {
+            messages: vec![ControlSendMessage {
                 address: "/voice1/cutoff".to_string(),
                 args: vec![serde_json::json!(1.0)],
             }],
@@ -1996,20 +2009,25 @@ mod tests {
 
     #[test]
     fn send_rejects_a_non_scalar_argument() {
-        // Args are number | string; a nested array is a can't-do-the-job error,
-        // caught before any dispatch (and without needing the engine).
+        // Args are number | string; a nested array is a can't-do-the-job error, caught before
+        // anything reaches the engine (and without needing one). Kept as the tool's own crafted
+        // error rather than an rmcp deserialization failure, so the model is told what was wrong.
         let params = SendParams {
-            messages: vec![OscSendMessage {
+            messages: vec![ControlSendMessage {
                 address: "/voice1/cutoff".to_string(),
                 args: vec![serde_json::json!([1, 2, 3])],
             }],
         };
-        let result = block_on(server_with(FakeTransport::reachable()).send(Parameters(params)))
-            .expect("result");
+        let (transport, sent) = FakeTransport::recording_send();
+        let result = block_on(server_with(transport).send(Parameters(params))).expect("result");
         assert_eq!(
             result.is_error,
             Some(true),
             "an unsupported argument must be isError: {result:?}"
+        );
+        assert!(
+            sent.lock().expect("sent log").is_empty(),
+            "a rejected batch reaches the engine not at all — not partially"
         );
     }
 

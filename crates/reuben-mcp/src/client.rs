@@ -29,7 +29,7 @@ use std::net::{TcpStream, ToSocketAddrs};
 use std::time::Duration;
 
 use reuben_core::coordinator::{
-    Conflict, DiagnosticsReport, DocSource, DocumentSnapshot, Request, Response,
+    Conflict, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot, Request, Response,
 };
 use reuben_core::SwapReport;
 
@@ -268,6 +268,20 @@ impl StructureClient {
             Response::Document(snapshot) => Ok(snapshot),
             Response::Error { message } => Err(StructureError::Channel(message)),
             other => Err(unexpected("get_document", "document", &other)),
+        }
+    }
+
+    /// Audition a batch of control values, returning how many the engine queued.
+    ///
+    /// One exchange carries the whole batch, so the gesture cannot half-apply and no concurrent
+    /// client interleaves into the middle of it. The engine converges this with external OSC at its
+    /// own ingress; a queued message whose address routes nowhere is dropped there, so the count is
+    /// "received", not "applied".
+    pub fn send(&self, messages: Vec<ControlMessage>) -> Result<usize, StructureError> {
+        match self.exchange(&Request::Send { messages })? {
+            Response::Sent { count } => Ok(count),
+            Response::Error { message } => Err(StructureError::Channel(message)),
+            other => Err(unexpected("send", "sent", &other)),
         }
     }
 
