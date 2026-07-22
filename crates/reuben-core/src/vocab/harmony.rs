@@ -43,11 +43,14 @@ pub struct ScaleField {
 }
 
 impl ScaleField {
-    /// Build from a step-offset slice (truncated to [`SCALE_CAP`]; min length 1).
+    /// Build from a step-offset slice (truncated to [`SCALE_CAP`]; min length 1). An **empty**
+    /// slice floors to a 1-degree `[0]` scale — `len` clamps up to 1 while the copy takes only the
+    /// offsets actually supplied, so there is no out-of-range read.
     pub fn new(offs: &[i16]) -> Self {
         let mut offsets = [0i16; SCALE_CAP];
+        let take = offs.len().min(SCALE_CAP);
+        offsets[..take].copy_from_slice(&offs[..take]);
         let len = offs.len().clamp(1, SCALE_CAP);
-        offsets[..len].copy_from_slice(&offs[..len]);
         Self {
             offsets,
             len: len as u8,

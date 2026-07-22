@@ -18,7 +18,8 @@
 //!
 //! - input 0: `set` (`Note`) — a degree note; velocity > 0 = note-on, else note-off. The degree
 //!   is the chord root.
-//! - input 1: `size` (`Float`, held) — chord tones: 3 = triad (default) / 4 = seventh.
+//! - input 1: `size` (`i32`, held) — chord tones: 3 = triad (default) / 4 = seventh. Its
+//!   `3..=MAX_TONES` bound rides the port contract.
 //! - output 0: `degrees` (`Note`) — a degree note per chord tone; wire to a Voicer.
 //!
 //! The third is **scale-relative** (`+2` degrees), so the same op spells a major, minor, or
@@ -30,10 +31,10 @@ use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 use crate::vocab::pitch::{Note, Pitch};
 
-// `set` is a `Note` event port; `size` a held `Float`.
+// `set` is a `Note` event port; `size` a held `i32` (3 = triad .. MAX_TONES = seventh).
 crate::operator_contract!(Chord {
     inputs:  { set:  note,
-               size: f32 { 3.0..=4.0, default 3.0, "tones", lin } },
+               size: i32 { 3..=4, default 3 } },
     outputs: { degrees: note },
 });
 
@@ -82,7 +83,9 @@ impl Operator for Chord {
 
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
-        let size = (io.read(IN_SIZE).round() as usize).clamp(3, MAX_TONES);
+        // `size` is a held `i32`; its `3..=MAX_TONES` bound rides the port contract, and
+        // `chord_tones` floors/caps the count again as it fills the fixed tone array.
+        let size = io.read(IN_SIZE) as usize;
 
         // Snapshot the set events for this (sub)block, sorted by frame — can't read the stream
         // while emitting. Each: (frame, root degree, on?). A non-degree note has no root → skip.

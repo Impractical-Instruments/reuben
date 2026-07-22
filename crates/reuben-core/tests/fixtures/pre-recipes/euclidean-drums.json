@@ -12,24 +12,24 @@
         "unit": "BPM"
       },
       "kick_pulses": {
-        "type": "f32",
-        "default": 4.0,
-        "min": 0.0,
-        "max": 16.0,
+        "type": "i32",
+        "default": 4,
+        "min": 0,
+        "max": 16,
         "unit": "pulses"
       },
       "kick_steps": {
-        "type": "f32",
-        "default": 16.0,
-        "min": 1.0,
-        "max": 16.0,
+        "type": "i32",
+        "default": 16,
+        "min": 1,
+        "max": 16,
         "unit": "steps"
       },
       "kick_rotation": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 15.0,
+        "type": "i32",
+        "default": 0,
+        "min": 0,
+        "max": 15,
         "unit": "steps"
       },
       "kick_decay": {
@@ -52,24 +52,24 @@
         "max": 1.0
       },
       "snare_pulses": {
-        "type": "f32",
-        "default": 2.0,
-        "min": 0.0,
-        "max": 16.0,
+        "type": "i32",
+        "default": 2,
+        "min": 0,
+        "max": 16,
         "unit": "pulses"
       },
       "snare_steps": {
-        "type": "f32",
-        "default": 16.0,
-        "min": 1.0,
-        "max": 16.0,
+        "type": "i32",
+        "default": 16,
+        "min": 1,
+        "max": 16,
         "unit": "steps"
       },
       "snare_rotation": {
-        "type": "f32",
-        "default": 4.0,
-        "min": 0.0,
-        "max": 15.0,
+        "type": "i32",
+        "default": 4,
+        "min": 0,
+        "max": 15,
         "unit": "steps"
       },
       "snare_decay": {
@@ -92,24 +92,24 @@
         "max": 1.0
       },
       "tom_pulses": {
-        "type": "f32",
-        "default": 3.0,
-        "min": 0.0,
-        "max": 16.0,
+        "type": "i32",
+        "default": 3,
+        "min": 0,
+        "max": 16,
         "unit": "pulses"
       },
       "tom_steps": {
-        "type": "f32",
-        "default": 16.0,
-        "min": 1.0,
-        "max": 16.0,
+        "type": "i32",
+        "default": 16,
+        "min": 1,
+        "max": 16,
         "unit": "steps"
       },
       "tom_rotation": {
-        "type": "f32",
-        "default": 2.0,
-        "min": 0.0,
-        "max": 15.0,
+        "type": "i32",
+        "default": 2,
+        "min": 0,
+        "max": 15,
         "unit": "steps"
       },
       "tom_decay": {
@@ -132,24 +132,24 @@
         "max": 1.0
       },
       "hat_pulses": {
-        "type": "f32",
-        "default": 8.0,
-        "min": 0.0,
-        "max": 16.0,
+        "type": "i32",
+        "default": 8,
+        "min": 0,
+        "max": 16,
         "unit": "pulses"
       },
       "hat_steps": {
-        "type": "f32",
-        "default": 16.0,
-        "min": 1.0,
-        "max": 16.0,
+        "type": "i32",
+        "default": 16,
+        "min": 1,
+        "max": 16,
         "unit": "steps"
       },
       "hat_rotation": {
-        "type": "f32",
-        "default": 0.0,
-        "min": 0.0,
-        "max": 15.0,
+        "type": "i32",
+        "default": 0,
+        "min": 0,
+        "max": 15,
         "unit": "steps"
       },
       "hat_decay": {

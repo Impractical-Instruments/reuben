@@ -16,10 +16,13 @@
 //!   original once-per-beat gate, high for the first half of the beat. At `division` N the gate
 //!   pulses N times per beat — a 16th-note grid is `division` 4.
 //! - input 1: `tempo` (BPM).
-//! - input 2: `division` — gate subdivisions per beat (1 = once per beat, default; 4 = 16ths).
+//! - input 2: `division` (`i32`) — gate subdivisions per beat (1 = once per beat, default; 4 =
+//!   16ths). Its `1` floor lives in the port contract (`I32Meta` min), so the gate can never
+//!   collapse.
 //!
 //! `tempo`/`division` are Value inputs: read held, so a change block-slices and takes effect at the
-//! exact sample of the change — and each can be *wired* and modulated.
+//! exact sample of the change — and each can be *wired* and modulated (`division` by an `i32`
+//! source).
 
 use smallvec::SmallVec;
 
@@ -30,7 +33,7 @@ use crate::operator::{Io, Operator};
 crate::operator_contract!(Clock {
     inputs:  { sync: note,
                tempo:    f32 { 1.0..=999.0, default 120.0, "BPM", lin },
-               division: f32 { 1.0..=64.0,  default 1.0,   "",    lin } },
+               division: i32 { 1..=64,      default 1 } },
     outputs: { phase: f32_buffer, gate: f32 { 0.0..=1.0, default 0.0, "gate", lin } },
 });
 
@@ -68,8 +71,9 @@ impl Operator for Clock {
             0.0
         };
         // Gate subdivisions per beat. division 1 = the original once-per-beat gate; N pulses N
-        // times per beat. Rounded and floored at 1 so it never collapses the gate.
-        let division = (io.read(IN_DIVISION).round() as f64).max(1.0);
+        // times per beat. The `1` floor lives in the port's `I32Meta` (clamped before we read), so
+        // the gate never collapses.
+        let division = f64::from(io.read(IN_DIVISION));
 
         // Reset frames within this (sub)block, sorted. Any `sync` event re-zeroes the phase at its
         // exact sample (the port identifies it, payload ignored) — a sample-accurate
