@@ -5,19 +5,26 @@
 //! and its operand defaults. This macro takes that one scalar function plus an operand list and emits
 //! the **whole** family from one `variants:` list.
 //!
-//! Each entry is `<number type> <carrier>` and names exactly one operator to emit:
+//! Each entry is `<number type> [-> <number type>] <carrier>` and names exactly one operator to
+//! emit:
 //!
 //! - the **number type** (`f32`, `i32`) fixes the ports' scalar type and the type the scalar fn is
 //!   instantiated at,
+//! - the optional **`-> <number type>`** gives the *output* type where it differs from the input's
+//!   — a **converter** (`f32 -> i32`), the one shape a single-type entry cannot express. Omitting
+//!   it means "out is in", so no op whose arithmetic stays in one type writes one,
 //! - the **carrier** is `value` (held scalars, output `set` once) or `signal` (per-sample buffers,
 //!   output looped).
 //!
 //! It is a written list rather than a `numbers × carriers` cross product because the product is
 //! **not** full: `i32` has no dense buffer form (`PortTy` has `F32Buffer` and no `I32Buffer` —
 //! issue #560), so `i32 signal` does not exist and is rejected. A cross product would have to carry
-//! a per-number carrier table to say so, and would still not reach the converter operators, whose
-//! input and output types differ. Listing the instantiations says it directly, and a missing entry
-//! is a missing operator rather than a silently-skipped cell.
+//! a per-number carrier table to say so, and could not name a converter at all — a converter is not
+//! a cell of `numbers × carriers` but a *pair* of number types. Listing the instantiations says
+//! both directly, and a missing entry is a missing operator rather than a silently-skipped cell.
+//!
+//! The same rule rejects a bufferless type in **either** position, which is one statement covering
+//! two facts: integer operators are value-only, and so is every converter that produces one.
 //!
 //! For each entry it emits a submodule (isolating the `IN_`/`OUT_` consts) with the contract, a
 //! stateless op carrier (`AddF32SignalOp`) whose `ValueOp`/`SignalOp` impl names the contract's
@@ -41,7 +48,20 @@
 //! });
 //! // -> add::AddF32Value ("add_f32_value") + add::AddF32Signal ("add_f32_signal")
 //! //  + add::AddI32Value ("add_i32_value")
+//!
+//! number_operator_contract!(Round {
+//!     variants: [f32 value, f32 signal, f32 -> i32 value],
+//!     inputs:   { x: number { default 0 } },
+//!     outputs:  { out },
+//!     function: round_fn(x),
+//! });
+//! // -> round::RoundF32Value + round::RoundF32Signal
+//! //  + round::RoundF32I32Value ("round_f32_i32_value")
 //! ```
+//!
+//! The out fragment appears in the name **only where the types differ**, so `add_f32_value` does
+//! not become `add_f32_f32_value`. The type name is the operator's identity on the wire; restating
+//! the matching case would migrate every instrument document in existence.
 //!
 //! **Operand kinds.** A `number` operand follows the carrier (a per-sample buffer in `signal`, a held
 //! scalar in `value`). An `enum(VocabType)` operand is *always held* (enums have no buffer form), in
@@ -55,7 +75,10 @@
 //!
 //! **What restricts an op to a subset of the number types is the scalar fn's own bounds.** `power`
 //! lists only `f32` entries because its `shape` is a concrete `f32` fn; listing `i32 value` for it
-//! fails to compile at the call, which is the point (issue #556).
+//! fails to compile at the call, which is the point (issue #556). The same holds across the arrow:
+//! a converter entry is legal only where the fn can *produce* the output type, so `round`'s
+//! `f32 -> i32` compiles because `RoundInto<i32> for f32` exists, and an unimplemented pairing is
+//! a missing-impl error rather than a wrongly-typed operator.
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
@@ -177,11 +200,33 @@ fn exact_i32(at: Span, v: f64) -> syn::Result<i32> {
     Ok(v as i32)
 }
 
-/// One entry of `variants:` — the operator to emit, as `<number type> <carrier>`.
+/// One entry of `variants:` — the operator to emit, as `<number type> [-> <number type>]
+/// <carrier>`.
 #[derive(Clone, Copy)]
 struct Variant {
-    num: NumKind,
+    /// The type the input ports carry, and the type the scalar fn's operands are read at.
+    num_in: NumKind,
+    /// The type the output port carries, and so the type the scalar fn is instantiated to
+    /// return. Equal to `num_in` for every op whose arithmetic stays in one type; different only
+    /// for a **converter** (`f32 -> i32`), which is the case a single-type entry cannot express.
+    num_out: NumKind,
     carrier: Carrier,
+}
+
+impl Variant {
+    /// The `<in><out?>` fragment pair in the struct name — `F32` where the types match,
+    /// `F32I32` where they differ.
+    ///
+    /// The out fragment is **omitted** when the types are equal, so `add_f32_value` does not
+    /// become `add_f32_f32_value`. That is not cosmetic: the type name is the operator's identity
+    /// on the wire, so restating it would migrate every instrument document in existence.
+    fn name_fragment(self) -> String {
+        if self.num_in == self.num_out {
+            self.num_in.pascal().to_string()
+        } else {
+            format!("{}{}", self.num_in.pascal(), self.num_out.pascal())
+        }
+    }
 }
 
 /// One declared operand.
@@ -235,7 +280,7 @@ impl NumberOpInput {
 
     /// Build, validate, and render one variant: its submodule + re-export.
     fn render_variant(&self, v: Variant) -> syn::Result<TokenStream> {
-        let struct_name = format!("{}{}{}", self.base, v.num.pascal(), v.carrier.pascal());
+        let struct_name = format!("{}{}{}", self.base, v.name_fragment(), v.carrier.pascal());
         let struct_ident = Ident::new(&struct_name, self.base.span());
         let type_name = naming::type_name_from_struct(&struct_name);
         let mod_ident = Ident::new(&type_name, self.base.span());
@@ -299,7 +344,10 @@ impl NumberOpInput {
     /// shell reads and the one the descriptor publishes are the same datum, as they were when
     /// `process` was emitted next to them.
     fn op_impl(&self, op_ident: &Ident, v: Variant, model: &ContractModel) -> TokenStream {
-        let number = v.num.ty();
+        // The operands are read at the input type and the result produced at the output type.
+        // For every op but a converter these are the same token.
+        let number = v.num_in.ty();
+        let number_out = v.num_out.ty();
         let handle_tys = self.inputs.iter().map(|op| match (&op.kind, v.carrier) {
             (OperandKind::Number { .. }, Carrier::Signal) => quote! {
                 ::reuben_core::operator::In<::reuben_core::operator::form::SignalF32>
@@ -327,9 +375,9 @@ impl NumberOpInput {
             Carrier::Value => (
                 quote! { ::reuben_core::operator::shell::ValueOp },
                 quote! {
-                    ::reuben_core::operator::Out<::reuben_core::operator::form::Held<#number>>
+                    ::reuben_core::operator::Out<::reuben_core::operator::form::Held<#number_out>>
                 },
-                quote! { type Value = #number; },
+                quote! { type Value = #number_out; },
             ),
             Carrier::Signal => (
                 quote! { ::reuben_core::operator::shell::SignalOp },
@@ -339,10 +387,10 @@ impl NumberOpInput {
                 quote! {},
             ),
         };
-        // The signal carrier is `f32` by construction — it is the only type with a buffer form,
-        // which is why `variants:` rejects `i32 signal` at the parse.
+        // The signal carrier is `f32` on both sides by construction — it is the only type with a
+        // buffer form, which is why `variants:` rejects a bufferless type in either position.
         let ret = match v.carrier {
-            Carrier::Value => number.clone(),
+            Carrier::Value => number_out.clone(),
             Carrier::Signal => quote! { f32 },
         };
 
@@ -393,7 +441,7 @@ impl NumberOpInput {
                             unit: String::new(),
                             curve: Curve::Linear,
                         })),
-                        Carrier::Value => v.num.meta(op.name.span(), (*min, *max, *default))?,
+                        Carrier::Value => v.num_in.meta(op.name.span(), (*min, *max, *default))?,
                     },
                     // Enum modes are held regardless of carrier.
                     OperandKind::Enum(vocab) => PortTy::Enum(vocab.to_string()),
@@ -413,10 +461,10 @@ impl NumberOpInput {
                 ty: PortTy::F32Buffer(None),
             },
             Carrier::Value => {
-                let (min, max) = v.num.type_wide_range();
+                let (min, max) = v.num_out.type_wide_range();
                 PortSpec {
                     name: self.output.to_string(),
-                    ty: v.num.meta(self.output.span(), (min, max, 0.0))?,
+                    ty: v.num_out.meta(self.output.span(), (min, max, 0.0))?,
                 }
             }
         };
@@ -538,27 +586,30 @@ impl Parse for NumberOpInput {
     }
 }
 
-/// `[f32 value, f32 signal, i32 value]` — the operators to emit, one per entry.
+/// `[f32 value, f32 signal, i32 value, f32 -> i32 value]` — the operators to emit, one per entry.
 ///
-/// Each entry is `<number type> <carrier>`. An entry naming a `signal` carrier for a type with no
-/// buffer form is rejected here rather than emitted: that is the sparsity the old
-/// `numbers × carriers` product could not express, and emitting it would produce an operator whose
-/// name promises an integer signal the engine has no way to carry.
+/// Each entry is `<number type> [-> <number type>] <carrier>`. The arrow gives the **output**
+/// type where it differs from the input's — a converter. Omitting it means "out is in", which is
+/// every op whose arithmetic stays in one type, so no shipping declaration has to write one and
+/// no generated name changes.
+///
+/// An entry naming a `signal` carrier for a type with no buffer form is rejected here rather than
+/// emitted: that is the sparsity the old `numbers × carriers` product could not express, and
+/// emitting it would produce an operator whose name promises an integer signal the engine has no
+/// way to carry. The check reads **both** positions, which is the same statement saying integer
+/// operators are value-only and converters are value-only.
 fn parse_variants(input: ParseStream) -> syn::Result<Vec<Variant>> {
     let body;
     bracketed!(body in input);
     let mut out: Vec<Variant> = Vec::new();
     while !body.is_empty() {
-        let num_kw: Ident = body.parse()?;
-        let num = match num_kw.to_string().as_str() {
-            "f32" => NumKind::F32,
-            "i32" => NumKind::I32,
-            other => {
-                return Err(Error::new(
-                    num_kw.span(),
-                    format!("number type must be `f32` or `i32`, got `{other}`"),
-                ))
-            }
+        let (num_in, in_kw) = parse_num_kind(&body)?;
+        // `-> <type>` marks a converter; without it the output type is the input's.
+        let (num_out, out_kw) = if body.peek(Token![->]) {
+            body.parse::<Token![->]>()?;
+            parse_num_kind(&body)?
+        } else {
+            (num_in, in_kw.clone())
         };
         let car_kw: Ident = body.parse()?;
         let carrier = match car_kw.to_string().as_str() {
@@ -571,25 +622,40 @@ fn parse_variants(input: ParseStream) -> syn::Result<Vec<Variant>> {
                 ))
             }
         };
-        if matches!(carrier, Carrier::Signal) && !num.has_buffer() {
-            return Err(Error::new(
-                car_kw.span(),
-                format!(
-                    "`{num_kw}` has no `signal` carrier: it has no dense buffer form, so there is \
-                     nothing for a per-sample port to carry (issue #560). Integer operators are \
-                     value-only — drop this entry and keep the `{num_kw} value` one."
-                ),
-            ));
+        // The signal carrier is per-sample buffers on *both* sides, so both types need a dense
+        // buffer form. Reported against the offending type's own token, so a converter's error
+        // points at the half that has no buffer rather than at the entry as a whole.
+        if matches!(carrier, Carrier::Signal) {
+            for (num, kw) in [(num_in, &in_kw), (num_out, &out_kw)] {
+                if !num.has_buffer() {
+                    return Err(Error::new(
+                        kw.span(),
+                        format!(
+                            "`{kw}` has no `signal` carrier: it has no dense buffer form, so \
+                             there is nothing for a per-sample port to carry (issue #560). \
+                             Integer operators — and every converter producing one — are \
+                             value-only; drop this entry and keep the `value` one."
+                        ),
+                    ));
+                }
+            }
         }
         // Two entries for the same operator would emit the same module and `register_operator!`
         // twice — a duplicate-symbol error far from its cause.
-        if out.iter().any(|v| v.num == num && v.carrier == carrier) {
+        if out
+            .iter()
+            .any(|v| v.num_in == num_in && v.num_out == num_out && v.carrier == carrier)
+        {
             return Err(Error::new(
-                num_kw.span(),
-                format!("duplicate variant `{num_kw} {car_kw}`"),
+                in_kw.span(),
+                format!("duplicate variant `{in_kw} {car_kw}`"),
             ));
         }
-        out.push(Variant { num, carrier });
+        out.push(Variant {
+            num_in,
+            num_out,
+            carrier,
+        });
         if body.peek(Token![,]) {
             body.parse::<Token![,]>()?;
         }
@@ -598,6 +664,23 @@ fn parse_variants(input: ParseStream) -> syn::Result<Vec<Variant>> {
         return Err(input.error("`variants:` must name at least one operator to emit"));
     }
     Ok(out)
+}
+
+/// One number-type keyword of a `variants:` entry, returned with its token so an error about the
+/// type can be spanned to the position that wrote it (input or output).
+fn parse_num_kind(input: ParseStream) -> syn::Result<(NumKind, Ident)> {
+    let kw: Ident = input.parse()?;
+    let kind = match kw.to_string().as_str() {
+        "f32" => NumKind::F32,
+        "i32" => NumKind::I32,
+        other => {
+            return Err(Error::new(
+                kw.span(),
+                format!("number type must be `f32` or `i32`, got `{other}`"),
+            ))
+        }
+    };
+    Ok((kind, kw))
 }
 
 /// `{ in_a: number { default 0.0 }, curve: enum(MapCurve), .. }`. A `number` operand's `{ .. }`
@@ -987,6 +1070,78 @@ mod tests {
         assert!(i32v.contains("In :: new (2 , 1000000i32)"), "{i32v}");
         assert!(f32v.contains("In :: new (1 , - 1000000f32)"), "{f32v}");
         assert!(i32v.contains("In :: new (1 , - 1000000i32)"), "{i32v}");
+    }
+
+    // A **converter** variant: the input ports carry one type and the output another, which no
+    // single-type entry can express. The output type reaches only the output port and the
+    // instantiated return type — the operands stay at the input type.
+    #[test]
+    fn converter_variant_types_its_output_separately() {
+        let out = render(
+            r#"Round {
+                variants: [f32 value, f32 signal, f32 -> i32 value],
+                inputs:   { x: number { default 0 } },
+                outputs:  { out },
+                function: round_fn(x),
+            }"#,
+        );
+        let conv = variant(&out, "round_f32_i32_value");
+
+        // Input: an `f32` held operand, carrying an `f32` default literal.
+        assert!(conv.contains("form :: Held < f32 > >"), "{conv}");
+        assert!(conv.contains("In :: new (0 , 0f32)"), "{conv}");
+        assert!(conv.contains("Port :: f32 (\"x\""), "{conv}");
+        // Output: an `i32` port, and the scalar fn instantiated to return `i32` — so a fn whose
+        // bounds cannot produce the output type fails to compile at the call.
+        assert!(conv.contains("Port :: i32 (\"out\""), "{conv}");
+        assert!(conv.contains("type Value = i32 ;"), "{conv}");
+
+        // The same-type siblings in the same expansion keep their two-fragment names and are
+        // untouched — the out fragment appears only where the types actually differ.
+        assert!(out.contains("pub mod round_f32_value"), "{out}");
+        assert!(out.contains("pub mod round_f32_signal"), "{out}");
+        assert!(!out.contains("round_f32_f32"), "{out}");
+    }
+
+    // Writing the output type explicitly when it equals the input type is the same operator, by
+    // the same name — the sugar is the omission, not a different emission. This is what keeps
+    // every shipping `*_f32_value` name (and so every instrument document) unchanged.
+    #[test]
+    fn an_explicit_matching_output_type_is_the_plain_variant() {
+        let sugared = render(
+            r#"Add {
+                variants: [f32 value],
+                inputs:   { a: number { default 0 } },
+                outputs:  { out },
+                function: add_fn(a),
+            }"#,
+        );
+        let explicit = render(
+            r#"Add {
+                variants: [f32 -> f32 value],
+                inputs:   { a: number { default 0 } },
+                outputs:  { out },
+                function: add_fn(a),
+            }"#,
+        );
+        assert_eq!(sugared, explicit);
+    }
+
+    // A converter has no `signal` carrier: the carrier is per-sample buffers on *both* sides, and
+    // `i32` has no dense buffer form. The check reads both types, so it rejects a bufferless
+    // output for the same reason — and by the same message — as a bufferless input.
+    #[test]
+    fn converter_signal_carrier_is_rejected() {
+        let out = render(
+            r#"Round {
+                variants: [f32 -> i32 signal],
+                inputs:   { x: number { default 0 } },
+                outputs:  { out },
+                function: round_fn(x),
+            }"#,
+        );
+        assert!(out.contains("compile_error"), "{out}");
+        assert!(out.contains("has no `signal` carrier"), "{out}");
     }
 
     // Two entries naming the same operator would emit the same module and `register_operator!`

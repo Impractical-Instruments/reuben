@@ -1591,7 +1591,9 @@ impl InstrumentDoc {
                     // implicitly, the same directional favour as `F32→F32Buffer` above. The
                     // reverse, `F32→I32`, is lossy (it needs a rounding decision) and stays a hard
                     // error: an explicit quantizer op is the sanctioned path, mirroring the
-                    // `Signal→Value` rule.
+                    // `Signal→Value` rule. The four that name the decision ship —
+                    // `round`/`floor`/`ceil`/`trunc`'s `*_f32_i32_value` converters — so refusing
+                    // here sends the author to a choice, not to a dead end.
                     || matches!(
                         (&from_ty, &to_ty),
                         (PortType::I32 { .. }, PortType::F32)
@@ -3356,6 +3358,37 @@ mod tests {
                 .iter()
                 .any(|c| c.dst == eu && c.dst_port == steps),
             "euclid.steps must be wired from the int pipe"
+        );
+    }
+
+    /// The **reverse** crossing, and the reason the rounding family exists. `f32 -> i32` is lossy
+    /// — it needs a rounding *decision* — so the wire check refuses it outright and the sanctioned
+    /// path is an operator that names which decision (issue #556, `per-wire-form-check`).
+    ///
+    /// Both halves are pinned together deliberately: a test that only asserted the rejection would
+    /// still pass if the crossing were simply impossible, which is the state this replaced.
+    #[test]
+    fn a_float_source_reaches_an_int_port_only_through_a_converter() {
+        let direct = r#"{"format_version":2,"instrument":"t","interface":{
+            "inputs":{"amount":{"type":"f32","min":0,"max":16,"default":4}}},
+            "nodes":[
+              {"type":"add_i32_value","address":"/n","inputs":{"a":{"from":"/amount"}}}]}"#;
+        assert!(
+            matches!(load(direct, &reg()), Err(LoadError::TypeMismatch { .. })),
+            "a bare f32 -> i32 wire must stay a hard error"
+        );
+
+        let converted = r#"{"format_version":2,"instrument":"t","interface":{
+            "inputs":{"amount":{"type":"f32","min":0,"max":16,"default":4}}},
+            "nodes":[
+              {"type":"round_f32_i32_value","address":"/q","inputs":{"x":{"from":"/amount"}}},
+              {"type":"add_i32_value","address":"/n","inputs":{"a":{"from":"/q.out"}}}]}"#;
+        let g = load(converted, &reg()).expect("the converter bridges f32 -> i32");
+        let q = g.find("/q").unwrap();
+        let n = g.find("/n").unwrap();
+        assert!(
+            g.connections.iter().any(|c| c.src == q && c.dst == n),
+            "the converter's i32 output must reach the i32 port"
         );
     }
 

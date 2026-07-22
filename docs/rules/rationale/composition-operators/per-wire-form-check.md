@@ -9,7 +9,7 @@ forms and does exactly one thing. Equal forms wire directly. The **one implicit 
 destination's block buffer at its change frame — a constant `cutoff` or a `voicer.freq` feeding an
 `oscillator.freq`. Its reverse, **Signal→Value**, is a **hard error**: there is no honest implicit
 sample-and-hold (*which* sample?), so crossing it needs an explicit sig→val converter (an envelope
-follower, a quantizer) that does not ship yet — a deliberate, documented gap, not an oversight. Event
+follower) that does not ship yet — a deliberate, documented gap, not an oversight. Event
 mismatches are likewise hard errors needing an explicit latch/change-detect op.
 
 The second sanctioned coercion is the **`i32`→`f32` (and `i32`→`f32_buffer`) numeric widening**. The
@@ -17,8 +17,12 @@ justification is that it is *not a shape crossing*: both are the numeric wiring 
 `i32`→`f32`) the same Value form, and the coercion is **total and lossless** — every `i32` in a
 control range is a distinct `f32`, and the read already goes through `Arg::as_f32`. An explicit
 `int_to_float` node would be pure boilerplate on every integer-control patch. It is **directional**,
-mirroring Value→Signal exactly: `f32`→`i32` stays rejected because it forces a rounding *decision*
-(the quantizer op that would bridge it does not ship yet, same as the envelope follower). This lets an
+mirroring Value→Signal exactly: `f32`→`i32` stays rejected because it forces a rounding *decision*,
+and a decision is exactly what an operator can name where a coercion cannot. The four that name it
+ship: `round_f32_i32_value`, `floor_f32_i32_value`, `ceil_f32_i32_value`, `trunc_f32_i32_value`
+([round.rs](../../../../crates/reuben-core/src/operators/round.rs)) — so the asymmetry is now a
+*choice presented to the author*, not a gap. (The Signal→Value envelope follower is still the
+documented gap.) This lets an
 operator keep its modulatable `f32` ports while a *control* is honestly integer — euclid's
 `steps`/`pulses`/`rotation` are `i32` controls widening into euclid's unchanged `f32` ports; the `f32`
 is the transport, the `i32` is the meaning.
