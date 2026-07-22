@@ -92,3 +92,7 @@ pub use render::{render_plan, RenderScratch, Renderer, SerialExecutor};
 pub use resources::{
     ResolveError, ResolvedRefs, ResourceResolver, ResourceStore, SampleBuffer, SampleId,
 };
+// The audio-rate data vocabulary lives in `signal` (the single naming site for the element type +
+// its owned/borrowed buffer forms). Adopted across the render spine; a raw `f32` buffer elsewhere
+// is caught by scripts/check_sample_alias.py.
+pub use signal::{AudioSample, BlockMut, BlockView};
