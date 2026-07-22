@@ -22,22 +22,35 @@ the per-sample loop in one place is what lets the signal shell hoist each operan
 it, which the emitted-per-variant body could not do — the read sat inside the loop, costing a bounds
 check per operand per sample and blocking vectorization.
 
-Each `variants:` entry is `<number type> <carrier>` and names exactly one operator: `Add` over
-`[f32 value, f32 signal, i32 value]` yields `AddF32Value`, `AddF32Signal`, and `AddI32Value`. It is a
-**written list rather than a `numbers × carriers` product** because the product is not full — `i32`
-has no dense buffer form, so `i32 signal` does not exist and is rejected at the parse. A product
-would need a per-number carrier table to say so, and would still not reach a converter operator,
-whose input and output types differ. Listing the instantiations says it directly, and a missing entry
-is a missing operator rather than a silently-skipped cell. One operand declaration serves every
-entry: a `default 1` is `1.0` in the `f32` instantiations and `1` in the `i32` ones, and a value that
-cannot survive the projection (a fractional default on an op that also lists `i32`) is a compile
-error at the operand.
+Each `variants:` entry is `<number type> [-> <number type>] <carrier>` and names exactly one
+operator: `Add` over `[f32 value, f32 signal, i32 value]` yields `AddF32Value`, `AddF32Signal`, and
+`AddI32Value`. The optional arrow gives the **output** type where it differs from the input's — a
+**converter**: `Round` over `[f32 value, f32 signal, f32 -> i32 value]` adds `RoundF32I32Value`
+(`round_f32_i32_value`). Omitting the arrow means "out is in", so no op whose arithmetic stays in one
+type writes one, and the out fragment appears in the name only where the types actually differ —
+`add_f32_value` is not `add_f32_f32_value`, because the type name is the operator's identity on the
+wire and restating it would migrate every instrument document.
+
+It is a **written list rather than a `numbers × carriers` product** because the product is not full —
+`i32` has no dense buffer form, so `i32 signal` does not exist and is rejected at the parse. A product
+would need a per-number carrier table to say so, and could not name a converter at all: a converter
+is not a cell of that grid but a *pair* of number types. Listing the instantiations says both
+directly, and a missing entry is a missing operator rather than a silently-skipped cell. The
+bufferless check reads both positions, which is one statement covering two facts — integer operators
+are value-only, and so is every converter producing one.
+
+One operand declaration serves every entry: a `default 1` is `1.0` in the `f32` instantiations and
+`1` in the `i32` ones, and a value that cannot survive the projection (a fractional default on an op
+that also lists `i32`) is a compile error at the operand.
 
 The **scalar fn is the only authored math**, and it is what restricts an op to a subset of the number
 types: a fn generic over `T` lets the macro instantiate every type from it; an op whose math is
 type-specific (`power`'s `powf`) writes a concrete `f32` fn and lists only `f32` entries. Naming an
 `i32` variant for such an op **fails to compile at the call site** — the restriction falls out of the
-fn's own signature, not a macro flag. That is a real guarantee rather than a claim: it holds because
+fn's own signature, not a macro flag. The same holds across the arrow: the rounding family's fns are
+generic over their *output* type (`RoundInto<Out>`), so `f32 -> i32` compiles exactly because that
+impl exists, and an unimplemented pairing is a missing-impl error rather than a wrongly-typed
+operator. That is a real guarantee rather than a claim: it holds because
 the declared number type reaches the ports and the instantiation, which it did not before issue #556,
 when the type was consumed at the struct name alone and every generated port was `f32` regardless.
 
