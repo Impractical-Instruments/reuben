@@ -26,6 +26,12 @@ from typing import Any
 # Tool arguments that carry an instrument document or a fragment of one. Anything not named here —
 # an intent word, a node address, a float, a `path` — costs metric (c) nothing, which is the whole
 # point of the metric: it prices freehand JSON, not communication.
+#
+# `write_file` charges ALL of `content`, not just content routed to the answer document. Deliberate:
+# every task writes exactly one file — the instrument document — so in practice there is nothing else
+# to write, and any content the model does emit is freehand structured text it had to produce. The
+# error only ever runs one way (a stray scratch write makes the surface look MORE expensive, never
+# less), so it cannot flatter a prototype's claim — the direction the metric must never be fooled in.
 DOCUMENT_ARGUMENTS: dict[str, tuple[str, ...]] = {
     "write_file": ("content",),
     "validate": ("document",),

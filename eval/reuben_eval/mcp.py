@@ -140,7 +140,13 @@ class Sidecar:
             encoding="utf-8",
             bufsize=1,
         )
-        self._handshake()
+        # If the handshake fails, `__enter__` raises and Python never calls `__exit__`, so the child
+        # and its pipes would leak. Reap it here before propagating.
+        try:
+            self._handshake()
+        except BaseException:
+            self.__exit__(None, None, None)
+            raise
         return self
 
     def __exit__(self, *exc: object) -> None:
@@ -258,23 +264,27 @@ class Sidecar:
         return text
 
     def call_tool(self, name: str, arguments: dict[str, Any]) -> ToolResult:
-        """Call a tool and price the whole result the way a client receives it.
+        """Call a tool and price exactly what a model is fed by the result.
 
         The sidecar answers with BOTH a human `content` string and a `structuredContent` object —
-        `validate` renders "invalid: 1 error(s), 0 warning(s)" alongside the machine report. A real
-        client is handed both, so both are tokenized. Counting only the prose would under-report
-        every result on the roster.
+        `validate` renders "invalid: 1 error(s), 0 warning(s)" alongside the machine report — and a
+        client feeds both to the model. So both are tokenized, via `ToolResult.rendered()`, which is
+        the very string the live tier hands the model (`runner.py`). What is NOT counted is the MCP
+        transport framing around them — the `content`/`type`/`text`/`isError` envelope keys and the
+        JSON-RPC wrapper — because no client shows a model those key names, and counting them would
+        overstate the grounding budget (a real `validate` result: 58 envelope tokens vs 40 the model
+        actually reads). Metric (a) is the model's grounding cost, so it must equal what the model is
+        fed, in both tiers.
         """
         result = self._request("tools/call", {"name": name, "arguments": arguments})
         text = "".join(
             item.get("text", "") for item in result.get("content", []) if item.get("type") == "text"
         )
         structured = result.get("structuredContent")
-        self.ledger.results += cl100k.count(
-            json.dumps(result, separators=(",", ":"), sort_keys=True)
-        )
-        return ToolResult(
+        answer = ToolResult(
             text=text,
             structured=structured if isinstance(structured, dict) else None,
             is_error=bool(result.get("isError")),
         )
+        self.ledger.results += cl100k.count(answer.rendered())
+        return answer

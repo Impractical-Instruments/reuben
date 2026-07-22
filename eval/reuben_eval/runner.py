@@ -16,7 +16,6 @@ The three numbers (#592's yardstick):
 
 from __future__ import annotations
 
-import json
 import tempfile
 from dataclasses import dataclass, field
 from pathlib import Path

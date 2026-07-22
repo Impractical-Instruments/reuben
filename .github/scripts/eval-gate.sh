@@ -12,7 +12,7 @@
 # against the real sidecar with NO inference. So this is the surface's COST FLOOR, and a prototype's
 # claim on the #574 map is checkable before a single token is bought.
 #
-#   FAIL (exit 1): any metric regresses > 10% vs the baseline, or a reference solution stops passing.
+#   FAIL (exit 1): any metric regresses >= 10% vs the baseline, or a reference solution stops passing.
 #   WARN:          3%..10% — job summary + GH annotation, non-blocking.
 #
 # HOW THE BASELINE IS BUILT — the mirror image of perf-gate.sh's swap. There, the HARNESS is held
@@ -56,13 +56,28 @@ export EVAL_DATE="$(git show -s --format=%cI HEAD 2>/dev/null || echo unknown)"
 build_sidecar() { cargo build -p reuben-mcp --quiet; }
 run_eval() { python3 -m reuben_eval.gate "$@"; }
 
-# Per-path so a baseline predating one of these directories restores the rest instead of aborting
-# the whole swap (the same guard perf-gate.sh puts around its bench fixtures).
+# Make the worktree under each surface path match `$ref` EXACTLY, deletions included.
+#
+# A plain `git checkout $ref -- $path` only copies entries that exist in $ref; it never removes a
+# worktree file that $ref lacks. That silently breaks this gate on a PR that DELETES a surface file:
+# swapping to the baseline resurrects the file, and swapping back to HEAD leaves the baseline copy on
+# disk — so the HEAD sidecar would serve a deleted `docs/agents/**` resource or load a deleted
+# `instruments/**` fixture, corrupting the HEAD measurement and the next baseline. (perf-gate.sh's
+# swap has the same blind spot, but its swapped tree is source that goes dead, not live inputs read
+# back at measure time.) So: unstage the path, restore $ref's tree, then `git clean` the leftovers
+# $ref doesn't have. For a no-op PR (bytes identical across refs) this is a wash — nothing to clean,
+# nothing rebuilds — preserving the cheap common case.
+#
+# Per-path, guarded on existence in $ref, so a baseline predating one of these directories restores
+# the rest instead of aborting the whole swap.
 swap_surface() {
   local ref="$1" path
   for path in "${SURFACE[@]}"; do
     if git cat-file -e "${ref}:${path}" 2>/dev/null; then
+      git rm -rq --cached --ignore-unmatch -- "$path" >/dev/null 2>&1 || true
       git checkout "$ref" -- "$path"
+      # -fd removes untracked leftovers; no -x, so .gitignore (target/, etc.) is untouched.
+      git clean -fdq -- "$path"
     fi
   done
 }

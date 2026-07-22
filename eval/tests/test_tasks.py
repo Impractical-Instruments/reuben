@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import copy
 import json
+import pathlib
+import tempfile
 import unittest
 
 from reuben_eval import tasks
@@ -46,6 +48,28 @@ class TestReferenceSolutions(unittest.TestCase):
     def test_repair_task_costs_exactly_one_repair_round(self) -> None:
         """Metric (b)'s floor for `repair` is 1 — its first `validate` IS the diagnosis."""
         self.assertEqual(run_reference(tasks.BY_KEY["repair"]).repair_rounds, 1)
+
+    @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")
+    def test_engine_actually_rejects_the_broken_fixture(self) -> None:
+        """The measured surface must still catch the defect the repair task is built on.
+
+        `test_repair_task_costs_exactly_one_repair_round` already fails if this regresses (the round
+        would drop 1→0), but only indirectly and with a puzzling message. Assert it head-on: if the
+        engine ever stops rejecting the dangling edge, the repair task silently becomes a no-op and
+        its cost drop reads to the gate as an improvement. This is the explicit tripwire.
+        """
+        from reuben_eval.mcp import Sidecar
+
+        with tempfile.TemporaryDirectory(prefix="reuben-broken-") as root:
+            path = pathlib.Path(root) / tasks.DOCUMENT
+            path.write_text(tasks.BROKEN, encoding="utf-8")
+            with Sidecar(pathlib.Path(root)) as sidecar:
+                verdict = sidecar.call_tool("validate", {"path": tasks.DOCUMENT})
+        self.assertIs(
+            (verdict.structured or {}).get("ok"),
+            False,
+            "the engine no longer rejects the BROKEN fixture — the repair task is measuring nothing",
+        )
 
     @unittest.skipUnless(sidecar_available(), "reuben-mcp not built")
     def test_tweak_floor_re_emits_the_whole_document(self) -> None:

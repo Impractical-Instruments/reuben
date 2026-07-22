@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import sys
 from pathlib import Path
@@ -24,6 +25,8 @@ from . import tasks as task_module
 from .runner import run_reference, verify_tokenizer_pins
 
 # Mirrors `.github/scripts/perf-gate.sh` so one idiom covers both trends. see rules: web-product-process
+# Boundaries are inclusive: `_classify` trips at `delta >= PCT` (matching perf-gate's awk), so a
+# regression of exactly the threshold fails rather than sliding through — hence the "≥" in the prose.
 FAIL_PCT = 10.0
 WARN_PCT = 3.0
 
@@ -56,7 +59,7 @@ def _delta(current: float, baseline: float) -> float | None:
 
 
 def _classify(delta: float | None) -> str:
-    if delta is None or delta != delta:  # None or NaN
+    if delta is None or math.isnan(delta):  # no ratio (zero baseline), or NaN
         return "ok"
     if delta >= FAIL_PCT:
         return "FAIL"
@@ -89,7 +92,7 @@ def render(report: dict[str, Any], baseline: dict[str, Any] | None) -> tuple[str
     if baseline is None:
         lines += ["_No baseline — absolute numbers only._", ""]
     else:
-        lines += [f"Baseline compared · fail > {FAIL_PCT:g}% · warn > {WARN_PCT:g}%", ""]
+        lines += [f"Baseline compared · fail ≥ {FAIL_PCT:g}% · warn ≥ {WARN_PCT:g}%", ""]
 
     lines += ["| Task | Metric | Value | Baseline | Δ% | |", "|---|---|---:|---:|---:|:---:|"]
     for key, result in report["tasks"].items():
@@ -107,12 +110,12 @@ def render(report: dict[str, Any], baseline: dict[str, Any] | None) -> tuple[str
                 failed = True
                 print(
                     f"::error title=Agent-surface regression::{key} {label} "
-                    f"{base_value} -> {value} (+{delta:.1f}%, > {FAIL_PCT:g}%)"
+                    f"{base_value} -> {value} (+{delta:.1f}%, ≥ {FAIL_PCT:g}%)"
                 )
             elif status == "WARN":
                 print(
                     f"::warning title=Agent-surface creep::{key} {label} "
-                    f"{base_value} -> {value} (+{delta:.1f}%, > {WARN_PCT:g}%)"
+                    f"{base_value} -> {value} (+{delta:.1f}%, ≥ {WARN_PCT:g}%)"
                 )
             shown = "—" if delta is None else f"{delta:+.1f}"
             lines.append(f"| `{key}` | {label} | {value} | {base_value} | {shown} | {icon} |")
