@@ -40,6 +40,10 @@ crate::operator_contract!(Chord {
 
 /// Max chord tones a single press can hold (seventh = 4; headroom for a future `size`).
 const MAX_TONES: usize = 4;
+
+// The `size` port's contract max is the literal `4`; keep it tied to `MAX_TONES` (the `tones`
+// array bound `chord_tones` fills) so a change to one without the other fails to compile.
+const _: () = assert!(MAX_TONES == 4);
 /// Most simultaneously-held roots we track without spilling to the heap (10 fingers + slop).
 const MAX_HELD: usize = 12;
 

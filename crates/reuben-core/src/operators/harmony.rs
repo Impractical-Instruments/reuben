@@ -32,6 +32,11 @@ use crate::vocab::harmony::{Chord, Harmony, ScaleField, SCALE_CAP};
 /// Number of scale step-offset slots (max scale length within a 12-TET period).
 pub const NUM_STEPS: usize = SCALE_CAP;
 
+// The `degrees` port's contract max is the literal `12`; keep it tied to `SCALE_CAP` (the
+// `offsets` array length the `degrees` cap keeps `offsets[..degrees]` in bounds against) so a
+// change to one without the other fails to compile.
+const _: () = assert!(NUM_STEPS == 12);
+
 // `set` is a held `Harmony` (its chord is adopted), `root`/`degrees`/`s0`..`s11` are held `i32`
 // key/scale fields, `harmony` the output. `root` (MIDI) and `degrees` (count) carry their static
 // bounds in the port contract; the scale offsets are integer indices into step-space.
@@ -89,13 +94,14 @@ impl HarmonyOp {
     /// its change frame, so reading the held value once per (sub)block call is what keeps the
     /// publish sample-accurate.
     fn current(&self, io: &Io) -> Harmony {
-        // Held `i32` fields: `root` (MIDI) and `degrees` (count) carry their bounds in the port
-        // contract — the engine clamps before we read — so no round/clamp here. `degrees` is
-        // `1..=NUM_STEPS` (== `SCALE_CAP`), so `offsets[..degrees]` is in bounds by that contract;
-        // `ScaleField::new` floors the length at 1 regardless. The step offsets fit `i16`
-        // (`-24..=24`).
+        // Held `i32` fields: `root` (MIDI) and `degrees` (count) carry their full range in the port
+        // contract. `degrees` indexes the fixed `offsets` array, so here we keep the two totality
+        // guards the hot path needs — a `1` floor and a `SCALE_CAP` cap — so `offsets[..degrees]`
+        // can never panic even on the `OpDriver` path that writes the latch raw (a negative latch
+        // would otherwise wrap to a huge `usize`; the hot-path-totality rule). The step offsets fit
+        // `i16` (`-24..=24`).
         let root = io.read(IN_ROOT);
-        let degrees = io.read(IN_DEGREES) as usize;
+        let degrees = (io.read(IN_DEGREES).max(1) as usize).min(SCALE_CAP);
         let mut offsets = [0i16; SCALE_CAP];
         for (k, o) in offsets.iter_mut().enumerate().take(degrees) {
             *o = io.read(IN_STEPS[k]) as i16;
@@ -224,6 +230,20 @@ mod tests {
             },
             "the full current context is re-asserted, not Harmony::default()"
         );
+    }
+
+    #[test]
+    fn negative_degrees_degrades_without_panicking() {
+        // A raw negative `degrees` latch — the `OpDriver`/bench path bypasses the port's `1..`
+        // floor — would wrap to a huge `usize` and panic the `offsets[..degrees]` slice on the
+        // render thread. `process` floors at 1 and caps at `SCALE_CAP`, so this degrades to a
+        // 1-degree scale; the point is it renders at all.
+        let mut d = OpDriver::for_type(HarmonyOp::new(), SR);
+        let _ = d.render(128); // consume the default 7-degree publish
+        d.set(IN_DEGREES, -1);
+        let pubs = d.render(128).emits().to_vec();
+        assert_eq!(pubs.len(), 1, "the degrees change publishes once, no panic");
+        assert_eq!(harmony_of(&pubs[0]).scale, ScaleField::new(&[0]));
     }
 
     #[test]

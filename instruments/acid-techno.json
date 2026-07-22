@@ -20,9 +20,9 @@
       },
       "key": {
         "type": "i32",
-        "default": 45.0,
-        "min": 24.0,
-        "max": 72.0,
+        "default": 45,
+        "min": 24,
+        "max": 72,
         "unit": "MIDI"
       },
       "mode": {

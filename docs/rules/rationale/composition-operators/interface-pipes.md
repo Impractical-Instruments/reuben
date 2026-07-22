@@ -34,7 +34,8 @@ ring resampling live input into the engine rate, and warn-plus-zeros **dark-degr
 mismatch (never fatal; structural errors in the document still fail loudly). Live input is a sanctioned
 nondeterministic boundary — the offline path injects known buffers, so render stays reproducible. The
 pipe type set is `f32_buffer`/`f32`/`i32`/`note`/`harmony`/enum; an `i32` pipe is an integer control
-that widens into a consumer's `f32` port ([per-wire-form-check](per-wire-form-check.md)). The flip was
+that wires into a consumer's `i32` port — or widens losslessly into an `f32` one
+([per-wire-form-check](per-wire-form-check.md)). The flip was
 a breaking change, taken as format v2 with in-loader v1→v2 auto-migration that renders bit-identically.
 
 Distilled from: ADR-0038, ADR-0032, ADR-0034

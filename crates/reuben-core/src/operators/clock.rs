@@ -71,9 +71,10 @@ impl Operator for Clock {
             0.0
         };
         // Gate subdivisions per beat. division 1 = the original once-per-beat gate; N pulses N
-        // times per beat. The `1` floor lives in the port's `I32Meta` (clamped before we read), so
-        // the gate never collapses.
-        let division = f64::from(io.read(IN_DIVISION));
+        // times per beat. The port's `I32Meta` carries the `1..=64` range; we keep the `1` floor
+        // here too so a raw latch (the `OpDriver`/bench path) can never collapse the gate to a
+        // stuck level — `phase * 0` would never toggle (the hot-path-totality rule).
+        let division = f64::from(io.read(IN_DIVISION)).max(1.0);
 
         // Reset frames within this (sub)block, sorted. Any `sync` event re-zeroes the phase at its
         // exact sample (the port identifies it, payload ignored) — a sample-accurate
@@ -365,6 +366,20 @@ mod tests {
         assert_eq!(
             phase_edges, 0,
             "phase wraps once per beat, not per sub-beat"
+        );
+    }
+
+    #[test]
+    fn zero_division_does_not_stick_the_gate() {
+        // A raw `division` latch of 0 — the `OpDriver`/bench path bypasses the port's `1..` floor
+        // — would make `(phase * 0).fract()` a constant, sticking the gate at one level after the
+        // first block (silence downstream, no error). `process` floors division at 1, so the beat
+        // gate still toggles. 48000 frames @ 120 BPM = 2 beats → at least two rising edges.
+        let n = 48_000;
+        let (_p, gate) = run_div(n, 120.0, 0.0, &[]);
+        assert!(
+            rising_edges(&gate).len() >= 2,
+            "a zero-division latch must not collapse the gate"
         );
     }
 

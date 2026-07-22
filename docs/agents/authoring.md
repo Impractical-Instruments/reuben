@@ -242,7 +242,8 @@ target-pointing form (no entry points inward anymore):
   enforced against every consumer wire by the ordinary pass-2 wire check. An `i32` pipe is an
   **integer control** ([composition-operators](../rules/composition-operators.md)): a count
   like euclid's `steps`/`pulses`/`rotation`, whole-numbered `default`/`min`/`max` (no `curve`), that
-  widens losslessly into an operator's `f32` port and quantizes live input. A numeric pipe owns
+  wires straight into a consumer's integer (`i32`) port — or widens losslessly into an `f32` one —
+  and quantizes live input. A numeric pipe owns
   engine-enforced `default`/`min`/`max`/`curve` plus a display `unit` — the pipe's whole
   *quantity* contract; presentation (`label`/`widget`) lives in a surface doc, not on the pipe. A
   defaulted pipe unfed materializes its default —

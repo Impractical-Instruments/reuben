@@ -161,6 +161,42 @@ mod tests {
         }
     }
 
+    // Every integer control port converted in #556 PR 2 (#565) is an `i32` value port. One
+    // central assertion so each converted port — not only `euclid.steps` — is pinned to its type;
+    // a silent regression of any one back to `f32` would restore the round-in-`process` dance and
+    // reopen the `F32 -> I32` wire the migration closes.
+    #[test]
+    fn the_converted_integer_control_ports_are_i32() {
+        use crate::descriptor::PortType;
+        let r = Registry::builtin();
+        let is_i32 = |type_name: &str, port: &str| {
+            let d = &r.get(type_name).expect("registered").descriptor;
+            let p = d
+                .inputs
+                .iter()
+                .find(|p| p.name == port)
+                .unwrap_or_else(|| panic!("{type_name} has no input {port:?}"));
+            assert!(
+                matches!(p.ty, PortType::I32 { meta: Some(_) }),
+                "{type_name}.{port} should be an i32 value port, got {:?}",
+                p.ty
+            );
+        };
+        for port in ["steps", "pulses", "rotation"] {
+            is_i32("euclid", port);
+        }
+        for port in [
+            "root", "degrees", "s0", "s1", "s2", "s3", "s4", "s5", "s6", "s7", "s8", "s9", "s10",
+            "s11",
+        ] {
+            is_i32("harmony", port);
+        }
+        is_i32("clock", "division");
+        is_i32("chord", "size");
+        is_i32("sample", "channel");
+        is_i32("granulator", "channel");
+    }
+
     #[test]
     fn every_entry_round_trips() {
         // Each registered entry's stored descriptor name matches its map key, and `make` yields a
