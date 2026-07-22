@@ -12,6 +12,13 @@
 # Perf-gate harvest record (regenerated each run by perf-gate.sh; lives on the bench-history branch)
 /bench-history-record.jsonl
 
+# Eval-gate working files (regenerated each run by eval-gate.sh). The harvest record lives on the
+# bench-history branch beside bench-history.jsonl; the two report JSONs are just the run's
+# HEAD/baseline sides.
+/eval-history-record.jsonl
+/eval-head.json
+/eval-base.json
+
 # Editor / OS
 *.swp
 *.bak

@@ -1,0 +1,25 @@
+# The harness itself is stdlib-only and needs no install — CI runs it straight out of the tree, the
+# same way `.github/scripts/` and `scripts/` run. This file exists for the `dev` extra: `tiktoken`
+# backs the tokenizer differential test, which must NEVER be a gate dependency (a Rust extension,
+# two transitive deps, and a network fetch of the vocabulary at first use).
+#
+#     pip install -e 'eval[dev]' && cd eval && python3 -m unittest discover -s tests
+[project]
+name = "reuben-eval"
+version = "0.0.0"
+description = "Agent-surface measurement harness for reuben: what authoring costs a model."
+requires-python = ">=3.11" # possessive quantifiers in the cl100k pre-tokenizer pattern
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["tiktoken>=0.13.0"]
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["reuben_eval*"]
+
+[tool.setuptools.package-data]
+reuben_eval = ["tokenizer/*.tiktoken", "tokenizer/pins.json"]

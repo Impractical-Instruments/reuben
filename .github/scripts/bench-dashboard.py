@@ -87,6 +87,50 @@ def load(path):
     return order, series
 
 
+# The agent-surface eval trend (#598), harvested beside the bench trend by the same append job.
+# Deliberately a SEPARATE record shape read by a separate loader: `ir` never holds a token count,
+# so the two series can never be plotted on one axis by accident.
+EVAL_FILE = "eval-history.jsonl"
+
+# Which eval metrics get charted, in order: (record key, human label, chart basename, unit label).
+# `tokens_fixed` is the creep number — grounding every turn pays before the model does anything —
+# so it is charted even though it moves rarely. That is the point: when it moves, someone widened
+# a tool description and made every task everywhere more expensive.
+EVAL_METRICS = [
+    ("tokens_total", "grounding tokens", "eval-tokens", "tokens"),
+    ("tokens_fixed", "fixed grounding", "eval-fixed", "tokens"),
+    ("payload_characters", "document chars", "eval-payload", "chars"),
+]
+
+
+def load_eval(path):
+    """Parse `eval-history.jsonl` into (ordered commits, {(metric, task): {commit_index: value}}).
+
+    Its own loader and its own commit `order`: the eval gate and the perf gate can skip on different
+    commits, so the two series legitimately have different x-axes.
+    """
+    order, seen = [], {}
+    series = defaultdict(dict)
+    with open(path, encoding="utf-8") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            r = json.loads(line)
+            if r["sha"] not in seen:
+                seen[r["sha"]] = len(order)
+                order.append({"sha": r["sha"], "date": r["date"]})
+            for metric, _, _, _ in EVAL_METRICS:
+                if metric in r:
+                    series[(metric, r["task"])][seen[r["sha"]]] = r[metric]
+    return order, series
+
+
+def fmt_count(v):
+    """Plain thousands-separated integers — token and character counts are small enough to read."""
+    return f"{v:,.0f}"
+
+
 def real_points(points_by_commit):
     """Series points with leading registration stubs dropped (sorted (idx, ir) list)."""
     items = sorted(points_by_commit.items())
@@ -298,6 +342,66 @@ def series_row(name, points, order):
             f"{delta_cell(latest, first)} | {order[first_i]['date'][:10]} |")
 
 
+def eval_section(outdir, eval_jsonl, label, charts_written):
+    """Render the agent-surface eval trend: charts + a delta table. Returns README lines.
+
+    Best-effort like everything else here — a missing or unreadable eval series drops the section
+    rather than losing the bench dashboard with it.
+    """
+    try:
+        order, series = load_eval(eval_jsonl)
+    except (OSError, json.JSONDecodeError, KeyError) as e:
+        return ["", f"_Agent-surface eval trend unavailable ({type(e).__name__})._", ""]
+    if not order:
+        return []
+
+    tasks = sorted({task for _, task in series})
+    first_day, last_day = order[0]["date"][:10], order[-1]["date"][:10]
+    lines = [
+        "",
+        "## Agent surface — what authoring costs a model",
+        "",
+        "The deterministic tier of the eval harness: each task's **reference solution** (the ideal "
+        + "call sequence a perfect model would make) replayed against the real MCP sidecar with no "
+        + "inference. So these are the surface's **cost floor**, not any model's score.",
+        "",
+    ]
+    for metric, human, basename, unit in EVAL_METRICS:
+        named = [(t, sorted(series[(metric, t)].items())) for t in tasks if (metric, t) in series]
+        if write_chart(
+            outdir, basename, order, named,
+            f"Agent surface — {human}",
+            f"reference-solution floor per task, per {label} commit, {first_day} to {last_day}",
+            1, unit,
+        ):
+            charts_written.append(basename)
+            lines += [picture(basename, f"Agent-surface eval: {human} per task"), ""]
+
+    lines += ["| Task | Metric | Latest | vs prev | vs first | since |", "|---|---|---:|---:|---:|---|"]
+    for task in tasks:
+        for metric, human, _, _ in EVAL_METRICS:
+            pts = sorted(series.get((metric, task), {}).items())
+            if not pts:
+                continue
+            latest = pts[-1][1]
+            prev = pts[-2][1] if len(pts) >= 2 else None
+            lines.append(
+                f"| `{task}` | {human} | {fmt_count(latest)} | {delta_cell(latest, prev)} | "
+                f"{delta_cell(latest, pts[0][1])} | {order[pts[0][0]]['date'][:10]} |"
+            )
+    lines += [
+        "",
+        "- **Fixed grounding** is what every turn of every task pays before the model does "
+        + "anything: the server `instructions` plus every tool schema. It creeps when a tool "
+        + "description or the authoring guide grows, and nothing else watches it.",
+        "- **Document chars** is freehand JSON the model had to emit, **echoes included** — a "
+        + "whole-document re-emit for a one-value tweak costs full price here, which is exactly "
+        + "the cost the surface work is chasing.",
+        "",
+    ]
+    return lines
+
+
 def main():
     if len(sys.argv) not in (3, 4):
         sys.exit("usage: bench-dashboard.py <bench-history.jsonl> <outdir> [branch-label]")
@@ -448,6 +552,12 @@ def main():
         lines += ["", "</details>"]
     else:
         lines.append("_No micro data recorded yet._")
+    # The second series, harvested beside this one on the same trend branch (#598). Absent on a
+    # branch that predates the eval gate, or on a commit where it skipped — the section drops.
+    eval_jsonl = os.path.join(os.path.dirname(jsonl) or ".", EVAL_FILE)
+    if os.path.isfile(eval_jsonl):
+        lines += eval_section(outdir, eval_jsonl, label, charts_written)
+
     lines += [
         "",
         "## Reading notes",

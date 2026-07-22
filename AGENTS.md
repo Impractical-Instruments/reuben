@@ -48,6 +48,7 @@ Prefer LSP over Grep/Glob for code navigation:
 - **[Authoring](docs/agents/authoring.md)** — the instrument-authoring guide: JSON format, type system + wiring, addressing, the authoring loop.
 - **[Operator dev](docs/agents/operator-dev.md)** — operator trait, descriptor macro, adding an operator, RT-safety rules.
 - **[Domain docs](docs/agents/domain.md)** — the now-state architecture is the [rules index](docs/rules/README.md) → topic → rule → rationale; read the index + the relevant topic doc before exploring. `docs/adr/` is the live iteration surface a human periodically folds into rules with the `absorb-adrs` skill.
+- **[Agent-surface eval](eval/README.md)** — what authoring costs a model (grounding tokens, repair rounds, freehand JSON). Gated in CI; run `cd eval && python3 -m reuben_eval.gate` after changing a tool description, the `instructions`, or `docs/agents/`.
 - **[Issue tracker](docs/agents/issue-tracker.md)** — GitHub Issues via `gh`; external PRs are not a triage surface.
 - **[Triage labels](docs/agents/triage-labels.md)** — needs-triage, needs-info, ready-for-agent, ready-for-human, wontfix.
 - **[CONTRIBUTING.md](CONTRIBUTING.md)** · **[Rules index](docs/rules/README.md)** · **[Live ADRs](docs/adr/README.md)** (the iteration surface)
