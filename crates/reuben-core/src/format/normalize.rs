@@ -496,7 +496,7 @@ fn feed_is_signal(feed: &OutputPipeDoc, nodes: &[NodeDoc], registry: &Registry) 
         None if d.outputs.len() == 1 => Some(&d.outputs[0]),
         None => None,
     };
-    matches!(p.map(|p| &p.ty), Some(PortType::F32Buffer))
+    p.is_some_and(|p| p.ty.is_buffer())
 }
 
 /// Whether an already-migrated output pipe feeds from the same port a v1 anonymous tap names —

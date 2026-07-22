@@ -171,7 +171,7 @@ fn signal_output_consts(spec: &OperatorSpec) -> Vec<String> {
         .iter()
         // Only a `f32_buffer` output carries a per-sample buffer the silence stub zeroes;
         // `note`/`harmony`/`enum`/`f32` outputs do not.
-        .filter(|p| matches!(p.ty, PortTy::F32Buffer(_)))
+        .filter(|p| p.ty.is_buffer())
         .map(|p| format!("OUT_{}", screaming(&p.name)))
         .collect()
 }

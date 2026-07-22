@@ -54,8 +54,10 @@ pub enum PortKind {
 /// Event-ness reads the type's [`is_event`](PortType::Vocab) flag rather than the vocab name, so a
 /// second held struct vocab is classified by its declaration, not silently treated as an Event.
 pub(crate) fn port_kind(p: &Port) -> PortKind {
+    if p.ty.is_buffer() {
+        return PortKind::Signal;
+    }
     match &p.ty {
-        PortType::F32Buffer => PortKind::Signal,
         PortType::Vocab { is_event: true, .. } => PortKind::Event,
         // A type-agnostic pass-through (issue #141) is an Event stream: routing then delivers the
         // raw `Arg` unlatched and uncoerced, so the sink can re-emit it verbatim.
@@ -387,7 +389,7 @@ impl Plan {
                 .outputs
                 .iter()
                 .map(|p| {
-                    if matches!(p.ty, PortType::F32Buffer) {
+                    if p.ty.is_buffer() {
                         let i = next_buffer;
                         next_buffer += 1;
                         vec![i]
@@ -480,7 +482,7 @@ impl Plan {
                 .outputs
                 .iter()
                 .enumerate()
-                .filter(|(_, p)| matches!(p.ty, PortType::F32Buffer))
+                .filter(|(_, p)| p.ty.is_buffer())
                 .map(|(port, _)| out_buffers[*key][port].clone())
                 .collect();
 
@@ -496,7 +498,7 @@ impl Plan {
                 .iter()
                 .enumerate()
                 .map(|(port, p)| {
-                    if matches!(p.ty, PortType::F32Buffer) {
+                    if p.ty.is_buffer() {
                         return Vec::new();
                     }
                     graph
@@ -602,8 +604,7 @@ impl Plan {
             .iter()
             .map(|(name, &(key, port))| {
                 let node = index_of[key];
-                let is_signal =
-                    matches!(nodes[node].descriptor.outputs[port].ty, PortType::F32Buffer);
+                let is_signal = nodes[node].descriptor.outputs[port].ty.is_buffer();
                 let (kind, signal_buf, captured_slot) = if is_signal {
                     (PortKind::Signal, Some(out_buffers[key][port][0]), None)
                 } else {

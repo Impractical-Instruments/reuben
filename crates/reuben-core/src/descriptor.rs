@@ -70,6 +70,39 @@ pub enum PortType {
     Arg,
 }
 
+/// The scalar **element** a buffer port's dense per-sample block carries. Today the only buffer
+/// form ([`F32Buffer`](PortType::F32Buffer)) is `f32`-element, so this has a single variant; it
+/// exists so a site can ask *what a buffer carries* by name instead of spelling the variant, and so
+/// a second buffer element type (issue #560) adds a variant here rather than another ad-hoc match.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ElementType {
+    /// A 32-bit float sample — the element of every buffer today.
+    F32,
+}
+
+impl PortType {
+    /// Whether this port carries a **dense per-sample buffer** (a Signal carrier) rather than a
+    /// latched atom — the structural "is this a buffer?" question, true for the buffer variant(s)
+    /// (today only [`F32Buffer`](PortType::F32Buffer)). Prefer this over
+    /// `matches!(ty, PortType::F32Buffer)` at classification sites so buffer-ness reads as a
+    /// question, not a variant spelling (issue #560). Defined as "has an element type", so the two
+    /// predicates cannot drift.
+    pub fn is_buffer(&self) -> bool {
+        self.element_ty().is_some()
+    }
+
+    /// The [`ElementType`] a buffer port's samples carry, or `None` for a non-buffer (latched) port.
+    /// Element-erased classification ([`PortKind::Signal`](crate::plan::PortKind::Signal)) is a
+    /// *form*, not a type; this is the type descriptor for the sites that need the element, and the
+    /// seam a second buffer element type plugs into (issue #560).
+    pub fn element_ty(&self) -> Option<ElementType> {
+        match self {
+            PortType::F32Buffer => Some(ElementType::F32),
+            _ => None,
+        }
+    }
+}
+
 impl core::fmt::Display for PortType {
     /// The short author-facing type name load errors print (`F32`, `F32Buffer`, `Note`,
     /// `Waveform`, …): a vocab port names its concrete type, everything else its `Arg` family.
@@ -491,5 +524,28 @@ impl Descriptor {
             .enumerate()
             .find(|(_, p)| p.name == name)
             .and_then(|(i, p)| p.coerce(raw).map(|a| (i, a)))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The two buffer predicates cannot drift: `is_buffer` is exactly "has an element type", and
+    /// only [`PortType::F32Buffer`] carries one today (`f32`). Every latched form is neither.
+    #[test]
+    fn is_buffer_and_element_ty_agree() {
+        assert!(PortType::F32Buffer.is_buffer());
+        assert_eq!(PortType::F32Buffer.element_ty(), Some(ElementType::F32));
+
+        for ty in [
+            PortType::F32,
+            PortType::I32 { meta: None },
+            PortType::Str,
+            PortType::Arg,
+        ] {
+            assert!(!ty.is_buffer(), "{ty} must not classify as a buffer");
+            assert_eq!(ty.element_ty(), None, "{ty} carries no buffer element");
+        }
     }
 }
