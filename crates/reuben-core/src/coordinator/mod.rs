@@ -33,5 +33,5 @@ pub use slot::RenderSlot;
 pub use swap::{Coordinator, InstallBundle, RenderSide};
 pub use wire::{
     Conflict, ControlArg, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot, Request,
-    Response, DEFAULT_STRUCTURE_ADDR,
+    Response, DEFAULT_STRUCTURE_ADDR, MAX_SEND_BATCH,
 };

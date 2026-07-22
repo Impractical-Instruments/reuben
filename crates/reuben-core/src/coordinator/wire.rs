@@ -66,11 +66,24 @@ pub enum DocSource {
     Path(String),
 }
 
+/// The most messages one [`Request::Send`] may carry.
+///
+/// A batch is delivered to the render callback as **one unit**, so its whole cost lands in a single
+/// audio callback: one `queue_osc` route-and-push per message, onto the `pending` vector the engine
+/// drains each block. That is cheap per message and must stay bounded — an unbounded batch would let
+/// one authoring gesture blow a render deadline, and "Render is RT-safe" is not negotiable. UDP got
+/// this bound for free from the kernel receive buffer; this channel has to state it.
+///
+/// 256 is generous against the real gestures: an authoring move is a handful of controls, and
+/// recalling a whole surface is on the order of a hundred. A client with more to say sends another
+/// batch. Shared here so the door advertising a `maxItems` and the engine enforcing it cannot drift.
+pub const MAX_SEND_BATCH: usize = 256;
+
 /// One control atom on this channel: the **flat primitive form** — a number or a string, and
 /// nothing else.
 ///
 /// This is deliberately *not* [`Arg`], the central engine enum. `Arg` also carries `Note`,
-/// `Harmony`, `Pitch`, `Enum`, and a whole `F32Buffer` — a vocabulary a control channel would
+/// `Harmony`, `Pitch`, `Enum`, and a whole `F32Buffer` — a vocabulary a control wire would
 /// immediately have to forbid. Every door ships `{address, [Arg]}` in its **own local framing**
 /// (reuben-web hand-rolls a flat codec, `reuben play`'s foreign edge speaks OSC-the-binary-protocol);
 /// this is the structure channel's, and each converges at
@@ -147,16 +160,20 @@ pub enum Request {
     /// Read the diagnostics counters, exposed past log-only (this channel is their
     /// vehicle).
     GetDiagnostics,
-    /// Audition a batch of control values on the running engine — the **control plane**, riding
-    /// the same channel as the structure verbs.
+    /// Audition control values on the running engine — control traffic, riding the same channel as
+    /// the structure verbs.
     ///
-    /// Batched because the authoring gesture is multi-control: one exchange delivers the whole
-    /// batch, so a gesture cannot half-apply and a concurrent client cannot interleave into the
-    /// middle of it. The engine hands each message to the same ingress a decoded external OSC
-    /// datagram reaches, so routing, typing, and block-quantized timing are identical — this
-    /// channel carries no wire format of its own past [`ControlArg`].
+    /// Batched because the authoring gesture is multi-control: one exchange delivers the batch, and
+    /// the engine hands it to its ingress as a **single unit**, so the whole gesture reaches the
+    /// same rendered block and no concurrent client interleaves into the middle of it. From there
+    /// it takes the same path a decoded external OSC datagram does, so routing, typing, and
+    /// block-quantized timing are identical — this channel carries no wire format of its own past
+    /// [`ControlArg`].
+    ///
+    /// Between 1 and [`MAX_SEND_BATCH`] messages; the engine rejects anything outside that with
+    /// [`Response::Error`], so an empty batch is a client bug reported rather than a no-op acked.
     Send {
-        /// The messages to apply, in order (a batch of at least one).
+        /// The messages to apply, in order.
         messages: Vec<ControlMessage>,
     },
 }
@@ -240,16 +257,19 @@ pub enum Response {
     /// hashes ride the wire flat next to the `reply` tag under the user-facing field names (the
     /// tool schema is `conflict: {expected, actual}` — the same struct, not a re-wrap).
     Conflict(Conflict),
-    /// `Send`'s ack: the engine **received** the batch and queued it for the next rendered block.
+    /// `Send`'s ack: the engine **received** the whole batch and queued it for the next rendered
+    /// block.
     ///
     /// Not "applied": an address routing to no node/port is dropped silently at the engine's
-    /// ingress, exactly as an external OSC datagram naming a stale address is. The count is the
-    /// engine's own report of what it queued rather than something the client infers from its
-    /// request — the same reason [`Conflict`] carries both hashes.
-    Sent {
-        /// How many messages were queued.
-        count: usize,
-    },
+    /// ingress, exactly as an external OSC datagram naming a stale address is.
+    ///
+    /// A **unit** ack, deliberately. It once carried a `count`, which could only ever equal the
+    /// request's own `messages.len()`: the batch is queued as one unit, so there is no partial
+    /// outcome for a count to describe, and every rejecting path answers [`Error`](Self::Error)
+    /// instead. A field that can hold only one value is not information — it is an invitation to
+    /// read `count < len` as "some were rejected", a signal that can never arrive. (Contrast
+    /// [`Conflict`], whose two hashes earn their place precisely because they can disagree.)
+    Sent,
     /// A channel-level failure: an unreadable request, or an engine-side fault that
     /// produced no domain-shaped answer. Distinct from a `SwapReport` with `ok: false`,
     /// which is the channel *working*.
@@ -409,7 +429,7 @@ mod tests {
 
     #[test]
     fn send_carries_its_batch_as_bare_json_atoms() {
-        // The control plane's wire shape is the contract: one `send` verb carrying the whole batch
+        // The `send` verb's wire shape is the contract: one verb carrying the whole batch
         // (so a gesture cannot half-apply), each message an `{address, args}` pair, and each atom
         // its BARE JSON value — untagged, so the line stays readable over netcat.
         let v: serde_json::Value = serde_json::from_str(
@@ -487,7 +507,7 @@ mod tests {
 
         let v: serde_json::Value = serde_json::from_str(
             &Request::Send {
-                messages: Vec::new(),
+                messages: control_messages(),
             }
             .to_ndjson(),
         )
@@ -522,7 +542,7 @@ mod tests {
             tag(&Response::Diagnostics(diagnostics_report())),
             "diagnostics"
         );
-        assert_eq!(tag(&Response::Sent { count: 2 }), "sent");
+        assert_eq!(tag(&Response::Sent), "sent");
         assert_eq!(
             tag(&Response::Conflict(Conflict {
                 expected: String::new(),
@@ -568,7 +588,7 @@ mod tests {
                 content_hash: "00c0ffee00c0ffee".to_string(),
             }),
             Response::Diagnostics(diagnostics_report()),
-            Response::Sent { count: 2 },
+            Response::Sent,
             Response::Conflict(Conflict {
                 expected: "0badc0de0badc0de".to_string(),
                 actual: "00c0ffee00c0ffee".to_string(),

@@ -482,7 +482,7 @@ fn play(
         None => DeviceProfile::default(),
     };
 
-    // The control channel feeding the audio callback. Streams are fixed for the session
+    // The control ingress feeding the audio callback. Streams are fixed for the session
     // — a swap installs via the mailbox and never reopens the callback — so this single
     // receiver lives in the callback for the whole run and each producer forwards straight through
     // its own `osc_tx` clone. No swappable sink, no lock anywhere near the audio path (M1's restart
@@ -491,7 +491,7 @@ fn play(
     // **Two producers, one ingress**: the UDP decode thread below (the foreign edge, where external
     // controllers arrive) and the structure channel's `send` verb (the loopback authoring door).
     // Both converge here, so a `send` and an external datagram are indistinguishable downstream.
-    let (osc_tx, osc_rx) = mpsc::channel::<osc::OscIn>();
+    let (osc_tx, osc_rx) = mpsc::channel::<osc::ControlBatch>();
 
     // Log incoming/outgoing OSC only when asked: this runs on the I/O paths, and the stdout
     // lock would add latency/jitter if it fired on every message while playing. Off by
@@ -537,8 +537,10 @@ fn play(
     // OSC/UDP receiver thread: decode datagrams and forward Messages straight to the audio callback
     // through `udp_tx`. The callback (and its receiver) live for the whole session now, so a forward
     // never races a swap — the mailbox swap keeps the same callback alive (M2, #323).
-    // Host `0.0.0.0` (all interfaces) + the port shared with the reuben-mcp sidecar's dial target,
-    // derived from the one `DEFAULT_OSC_PORT` const so the two can never drift on it.
+    // Host `0.0.0.0` (all interfaces) on the engine's own OSC-in port. This is the FOREIGN edge —
+    // hardware knobs, TouchOSC, anything speaking OSC-the-binary-protocol. The reuben-mcp sidecar is
+    // not among them: its `send` rides the loopback structure channel below, so this port has one
+    // owner and nothing to drift against.
     let osc_bind = format!("0.0.0.0:{DEFAULT_OSC_PORT}");
     let socket = UdpSocket::bind(&osc_bind).expect("bind OSC socket");
     println!("OSC-in listening on {osc_bind}  (send /voicer/notes [midi, gate])");
@@ -551,13 +553,15 @@ fn play(
         loop {
             match socket.recv_from(&mut buf) {
                 Ok((n, _)) => match osc::decode(&buf[..n]) {
-                    Ok(msgs) => {
-                        for m in msgs {
-                            if log_osc {
+                    Ok(batch) => {
+                        if log_osc {
+                            for m in &batch {
                                 println!("recv {} {:?}", m.address, m.args.as_slice());
                             }
-                            let _ = udp_tx.send(m);
                         }
+                        // One datagram, one batch: a bundle's messages stay together, so the
+                        // callback applies them to the same block — which is what a bundle means.
+                        let _ = udp_tx.send(batch);
                     }
                     Err(e) => eprintln!("OSC decode error: {e}"),
                 },
@@ -632,9 +636,8 @@ fn play(
     //
     // Its control sink is a clone of the very sender the UDP thread holds, so `send` converges with
     // external OSC at the callback's `queue_osc` and this door needs no wire format of its own.
-    let state = StructureState::from_coordinator(coordinator, diagnostics.clone())
-        .with_render_config(render_config)
-        .with_control_sink(osc_tx);
+    let state = StructureState::from_coordinator(coordinator, diagnostics.clone(), osc_tx)
+        .with_render_config(render_config);
     let structure_server = match structure::StructureServer::bind(STRUCTURE_BIND, state) {
         Ok(server) => {
             println!("structure channel on {}", server.local_addr());

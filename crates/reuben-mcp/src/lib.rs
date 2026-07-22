@@ -43,7 +43,9 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt};
 
-use reuben_core::coordinator::{ControlArg, ControlMessage, DiagnosticsReport, DocSource};
+use reuben_core::coordinator::{
+    ControlArg, ControlMessage, DiagnosticsReport, DocSource, MAX_SEND_BATCH,
+};
 use reuben_core::introspect::{OperatorInfo, PatchBoundary};
 use reuben_core::{Registry, Report, SwapReport};
 use reuben_native::resources::FsResolver;
@@ -373,13 +375,20 @@ pub struct ControlSendMessage {
     pub args: Vec<serde_json::Value>,
 }
 
-/// Input for `send`: a batch of **at least one** control message (the natural authoring
-/// gesture is multi-control). The `length(min = 1)` puts `minItems: 1` in the advertised input
-/// schema; the tool body rejects an empty batch too, for a client that skips schema validation.
+/// Input for `send`: a batch of control messages (the natural authoring gesture is multi-control),
+/// bounded at both ends.
+///
+/// The `length` bounds put `minItems`/`maxItems` in the advertised input schema. The upper bound is
+/// [`MAX_SEND_BATCH`] and is an **RT** limit, not a request-size one: the engine applies a batch to
+/// a single render callback, so an unbounded one could blow a deadline. Advertising it here is a
+/// courtesy that lets a model split its own gesture; the engine enforces it regardless, for a client
+/// that skips schema validation — as the tool body does for both bounds.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct SendParams {
-    /// The control messages to apply, in order (at least one).
-    #[schemars(length(min = 1))]
+    /// The control messages to apply, in order.
+    // The literal must equal MAX_SEND_BATCH; schemars takes a literal, not a const. Pinned by
+    // `send_schema_advertises_the_shared_batch_limit`.
+    #[schemars(length(min = 1, max = 256))]
     pub messages: Vec<ControlSendMessage>,
 }
 
@@ -394,10 +403,12 @@ pub struct SwapParams {
     pub expect: Option<String>,
 }
 
-/// Output for `send`: how many messages the engine queued. The count is the engine's
-/// own ack — "received and queued for the next block", not "applied": an address matching no
-/// node/port is dropped at the engine's ingress, exactly as an external OSC datagram naming a stale
-/// address is.
+/// Output for `send`: how many messages were queued.
+///
+/// The engine acks the batch as a unit, so this is the batch's own size — there is no partial
+/// outcome to report, which is why the wire's ack carries no count of its own. "Queued for the next
+/// block", not "applied": an address matching no node/port is dropped at the engine's ingress,
+/// exactly as an external OSC datagram naming a stale address is.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
 pub struct SendOutput {
     /// The number of control messages the engine queued.
@@ -671,12 +682,19 @@ impl ReubenServer {
         &self,
         Parameters(params): Parameters<SendParams>,
     ) -> Result<CallToolResult, McpError> {
-        // Reject an empty batch even though the input schema declares minItems:1 — belt-and-braces
-        // against a client that skips schema validation (the schema declares min 1).
+        // Belt-and-braces against a client that skips schema validation. The engine enforces both
+        // bounds too — this only makes the message a tool-shaped one the model can act on.
         if params.messages.is_empty() {
             return Ok(CallToolResult::error(vec![ContentBlock::text(
                 "`send` requires at least one message.".to_string(),
             )]));
+        }
+        if params.messages.len() > MAX_SEND_BATCH {
+            return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
+                "`send` takes at most {MAX_SEND_BATCH} messages ({} given); split the gesture \
+                 across several sends.",
+                params.messages.len()
+            ))]));
         }
         // Convert the whole batch first: a bad argument is a can't-do-the-job error, caught before
         // anything reaches the engine and even when the engine is down.
@@ -697,8 +715,9 @@ impl ReubenServer {
         }
         // Act-then-map: one exchange carries the batch and reports a dead engine itself, so there
         // is no separate probe and no window between checking and acting.
+        let sent = messages.len();
         match self.engine.structure().send(messages) {
-            Ok(sent) => structured_ok(
+            Ok(()) => structured_ok(
                 &SendOutput { sent },
                 format!("the engine queued {sent} control message(s)"),
             ),
@@ -953,9 +972,18 @@ fn control_args_from_json(args: &[serde_json::Value]) -> Result<Vec<ControlArg>,
                         return Ok(ControlArg::I32(i));
                     }
                 }
+                // Guard the f32 narrowing, not just the JSON type. A magnitude past f32 range
+                // (1e39, say) saturates to infinity, and serde_json writes a non-finite float as
+                // `null` — which no `ControlArg` variant accepts, so the engine would reject the
+                // whole batch with an opaque "did not match any variant". Catching it here is the
+                // difference between a named error about one argument and a mystery about all of
+                // them.
                 match n.as_f64() {
-                    Some(f) => Ok(ControlArg::F32(f as f32)),
-                    None => Err(format!("number {value} is out of range")),
+                    Some(f) if (f as f32).is_finite() => Ok(ControlArg::F32(f as f32)),
+                    Some(_) => Err(format!(
+                        "number {value} is outside the range a control value can carry (f32)"
+                    )),
+                    None => Err(format!("number {value} is not a usable control value")),
                 }
             }
             other => Err(format!(
@@ -1181,9 +1209,8 @@ mod tests {
             // engine it falls through to the refused-connect branch like every other verb.
             if let Request::Send { messages } = request {
                 if self.serves_send {
-                    let count = messages.len();
                     self.sent.lock().expect("sent log").extend(messages);
-                    return Ok(Response::Sent { count }.to_ndjson());
+                    return Ok(Response::Sent.to_ndjson());
                 }
                 return Err(io::Error::new(
                     io::ErrorKind::ConnectionRefused,
@@ -1989,6 +2016,82 @@ mod tests {
             ],
             "every message crosses in order, each arg as the atom its JSON spelling names"
         );
+    }
+
+    #[test]
+    fn send_rejects_a_number_that_cannot_survive_the_f32_wire() {
+        // 1e39 saturates to f32 infinity, which serde_json writes as `null` — a value no
+        // `ControlArg` accepts, so an unguarded conversion would put an unparseable line on the wire
+        // and take the WHOLE batch down with an opaque "did not match any variant". The guard turns
+        // that into a named error about the one bad argument, and nothing is sent.
+        let params = SendParams {
+            messages: vec![
+                ControlSendMessage {
+                    address: "/voice1/cutoff".to_string(),
+                    args: vec![serde_json::json!(1e39)],
+                },
+                ControlSendMessage {
+                    address: "/voice1/gain".to_string(),
+                    args: vec![serde_json::json!(0.5)],
+                },
+            ],
+        };
+        let (transport, sent) = FakeTransport::recording_send();
+        let result = block_on(server_with(transport).send(Parameters(params))).expect("result");
+        assert_eq!(result.is_error, Some(true), "{result:?}");
+        assert!(
+            first_text(&result).contains("/voice1/cutoff"),
+            "the error names the offending message: {}",
+            first_text(&result)
+        );
+        assert!(
+            sent.lock().expect("sent log").is_empty(),
+            "the good message must not go out on its own — the batch is rejected whole"
+        );
+    }
+
+    #[test]
+    fn send_rejects_a_batch_over_the_shared_limit() {
+        // The engine applies a batch inside one render callback, so the cap is an RT bound. The tool
+        // stops an over-long batch before it reaches the wire, naming the limit so a model can split.
+        let params = SendParams {
+            messages: (0..MAX_SEND_BATCH + 1)
+                .map(|i| ControlSendMessage {
+                    address: format!("/voice1/p{i}"),
+                    args: vec![serde_json::json!(0.5)],
+                })
+                .collect(),
+        };
+        let (transport, sent) = FakeTransport::recording_send();
+        let result = block_on(server_with(transport).send(Parameters(params))).expect("result");
+        assert_eq!(result.is_error, Some(true), "{result:?}");
+        assert!(
+            first_text(&result).contains(&MAX_SEND_BATCH.to_string()),
+            "the error names the limit: {}",
+            first_text(&result)
+        );
+        assert!(sent.lock().expect("sent log").is_empty());
+    }
+
+    #[test]
+    fn send_schema_advertises_the_shared_batch_limit() {
+        // `schemars` takes a literal, not a const, so the advertised maxItems and the shared
+        // MAX_SEND_BATCH the engine enforces are two spellings of one number. Pin them together:
+        // drifting them apart would advertise a limit the engine does not honor.
+        let server = ReubenServer::new();
+        let tools = server.tool_router.list_all();
+        let send = tools
+            .iter()
+            .find(|t| t.name == "send")
+            .expect("send is registered");
+        let schema = serde_json::to_value(&send.input_schema).expect("input schema to value");
+        let messages = &schema["properties"]["messages"];
+        assert_eq!(
+            messages["maxItems"],
+            serde_json::json!(MAX_SEND_BATCH),
+            "advertised maxItems must equal the engine-enforced limit: {schema}"
+        );
+        assert_eq!(messages["minItems"], serde_json::json!(1), "{schema}");
     }
 
     #[test]

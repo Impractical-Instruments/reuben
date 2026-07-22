@@ -56,7 +56,7 @@ verb.
 `ControlMessage { address, args }`.
 
 Deliberately **not** core's `Arg`. `Arg` is the central engine enum and also carries `Note`,
-`Harmony`, `Pitch`, `Enum`, and a whole `F32Buffer`: a vocabulary a control channel would
+`Harmony`, `Pitch`, `Enum`, and a whole `F32Buffer`: a vocabulary a control wire would
 immediately have to forbid, which is the web codec's argument verbatim. Nor is `Arg` serializable
 today, and making it so — hanging serde on the type the render thread passes around, for one
 channel's benefit — is the wrong direction. How primitives are spelled on *this* NDJSON channel is
@@ -68,23 +68,46 @@ Two reasons: the channel stays netcat-debuggable, which its framing exists to se
 reimplements — the sidecar had hand-written exactly that policy. **Variant order is load-bearing**
 (`I32` before `F32`), and is pinned by a test.
 
-### 2. The verb is batched, not per-message
+### 2. The verb is batched, and the batch is one unit end to end
 
-`Request::Send { messages: Vec<ControlMessage> }` → `Response::Sent { count }`.
+`Request::Send { messages: Vec<ControlMessage> }` → `Response::Sent`.
 
 The tool contract is already a batch — the authoring gesture is multi-control. Per-message would
 mean N TCP connects and N spawned engine-side threads to replace one `UdpSocket::bind` that
-dispatched N datagrams, and would split one gesture into N independently-failable steps that can
-half-apply. One exchange makes the gesture atomic in flight — *stronger* than the UDP it replaces,
-where `send_to` could already fail mid-batch — and keeps a concurrent client from interleaving into
-the middle of it.
+dispatched N datagrams, and would split one gesture into N independently-failable steps.
 
-The ack is the engine's own count of what it **queued**, not what it applied: an address routing to
-no node/port is dropped at the ingress, exactly as a stale external datagram is.
+Batching only earns its atomicity claim if the batch stays whole *past* the exchange, so the
+render-callback ingress carries a `ControlBatch` (one gesture) rather than a message: `handle_send`
+pushes once. One push is what makes all three promises true rather than aspirational — concurrent
+handler threads cannot interleave into each other's gestures, the callback cannot apply half a
+gesture to one block and half to the next, and there is no partial-failure window where some
+messages are queued but the client is told the batch failed. The UDP producer gets the same
+treatment, which also fixes a latent oddity: an OSC **bundle** means "these are simultaneous", and
+its messages used to be pushed one at a time and could straddle a block.
+
+The ack is a **unit**. A `count` could only ever equal the request's own `messages.len()` — the
+batch is queued as one unit, so no partial outcome exists for a count to describe, and every
+rejecting path answers `Error` instead. A field that can hold exactly one value is not information;
+it invites a client to read `count < len` as "some were rejected", a signal that can never arrive.
+
+"Queued", not "applied": an address routing to no node/port is dropped at the engine's ingress,
+exactly as a stale external datagram is.
+
+### 2b. The batch is bounded at both ends
+
+A batch lands in a single render callback, so its size is an **RT** property, not a request-size
+preference: unbounded, one authoring gesture could blow a render deadline, and "Render is RT-safe"
+is non-negotiable. UDP inherited this bound for free from the kernel receive buffer; this channel
+has to state it. `MAX_SEND_BATCH = 256` is shared so the door advertising a `maxItems` and the engine
+enforcing it cannot drift — the engine enforces regardless, since a door is a courtesy and the
+channel is the contract.
+
+An **empty** batch is refused for a different reason: acking a no-op as success would let a client
+bug that drops its messages read as a working send.
 
 ### 3. The engine side adds an ingress, not a routing path
 
-`StructureState` gains `control: Option<Sender<OscIn>>`, and `play` hands it a **clone of the very
+`StructureState` gains `control: Sender<ControlBatch>`, and `play` hands it a **clone of the very
 sender its UDP decode thread holds**. Both producers feed one receiver, so a `send` and an external
 datagram are indistinguishable downstream and there is no second routing path to keep in step. A
 bare `Sender` suffices — the accept loop clones the state per connection rather than sharing it by
@@ -100,6 +123,13 @@ trait only because it has two genuinely different implementations.
 disappears and the rule has none left. `engine_status` reports one endpoint; the engine's OSC-in
 port is its foreign edge, which the sidecar neither dials nor owns.
 
+The JSON→`ControlArg` conversion stays in the sidecar rather than typing the tool parameter as
+`Vec<ControlArg>` directly, so a bad argument is the tool's own named error instead of an rmcp-layer
+deserialization failure. It guards the **f32 narrowing** too, not just the JSON type: a magnitude
+past f32 range saturates to infinity, serde_json writes a non-finite float as `null`, and no
+`ControlArg` variant accepts `null` — so one bad argument would otherwise take the whole batch down
+with an opaque "did not match any variant".
+
 `DEFAULT_OSC_PORT` moves from `reuben_core::coordinator::wire` to `reuben_native::osc`. It lived in
 core justified as the literal "the sidecar and engine must both agree on" — with the sidecar no
 longer dialing it, there is no second end to drift from, `play` is its only consumer, and core
@@ -107,6 +137,11 @@ carries no network plumbing.
 
 `osc.rs`/`rosc` stay in `reuben-native`, where `play` is now their only consumer — external
 controllers and `osc_out`, which is their actual job.
+
+The ingress is a **constructor parameter**, not a builder step. `render_config` is a builder step
+because it has a working headless default; an unwired control ingress has none, so it could only ever
+be a wiring mistake surfaced to a user at runtime. Taking it in `StructureState::from_coordinator`
+makes that mistake a compile error.
 
 ## Consequences
 

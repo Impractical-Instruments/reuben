@@ -44,7 +44,7 @@ pub const DEFAULT_OSC_PORT: u16 = 9000;
 /// (`crate::structure`) — every door ships `{address, [Arg]}` in its own framing and converges
 /// here, on one `mpsc` into the render callback's `queue_osc`. So this type is the flat carrier,
 /// not an OSC-specific one; it lives in this module because decoding is where most of them are
-/// born.
+/// born. They travel in [`ControlBatch`]es, never singly.
 #[derive(Debug, Clone, PartialEq)]
 pub struct OscIn {
     /// OSC address path, e.g. `/voicer/notes`.
@@ -53,11 +53,26 @@ pub struct OscIn {
     pub args: Vec<Arg>,
 }
 
-/// Decode a single UDP datagram of OSC into zero or more flat [`OscIn`]s.
+/// One unit of control traffic on the way to the render callback: the messages of a single gesture,
+/// applied together.
 ///
-/// A bundle yields one `OscIn` per contained message (recursively). Unsupported argument types
+/// The callback takes a batch **whole** — it never applies part of one and defers the rest — so a
+/// multi-control gesture reaches one rendered block and a paired `(freq, gate)` cannot straddle two.
+/// That holds for both producers: one UDP datagram (an OSC bundle may carry several messages, and
+/// a bundle means "these are simultaneous") and one structure-channel `send`.
+///
+/// **Producers must bound what they push.** A batch's whole cost lands in one callback, so an
+/// unbounded one would blow a render deadline; `send` is capped at
+/// [`MAX_SEND_BATCH`](reuben_core::coordinator::MAX_SEND_BATCH) and a UDP datagram is capped by the
+/// receive buffer it arrived in.
+pub type ControlBatch = Vec<OscIn>;
+
+/// Decode a single UDP datagram of OSC into one [`ControlBatch`] — zero or more flat [`OscIn`]s.
+///
+/// A bundle yields one `OscIn` per contained message (recursively), and they stay in one batch, so
+/// the callback applies a bundle's messages to the same block. Unsupported argument types
 /// (blob, nil, time, color, midi, …) are dropped from the arg list.
-pub fn decode(bytes: &[u8]) -> Result<Vec<OscIn>, rosc::OscError> {
+pub fn decode(bytes: &[u8]) -> Result<ControlBatch, rosc::OscError> {
     let (_, packet) = rosc::decoder::decode_udp(bytes)?;
     let mut out = Vec::new();
     flatten(packet, &mut out);
