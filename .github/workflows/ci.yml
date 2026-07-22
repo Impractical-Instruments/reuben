@@ -204,9 +204,18 @@ jobs:
     name: perf gate (macro + micro Ir)
     runs-on: ubuntu-latest
     needs: changes
-    # Same draft-skip as `check`, AND'd with the workspace path gate. Runs in parallel — nobody waits
-    # on valgrind for fmt/test.
-    if: needs.changes.outputs.bench == 'true' && (github.event_name == 'push' || github.event.pull_request.draft == false)
+    # Same draft-skip as `check`, then the path gate OR an unconditional run on every push to main/dev.
+    # The path gate alone punched holes in the bench trend: a push to main/dev that moved no benched
+    # path (docs-only, rules-doc, …) skipped this job, so `bench-history` below found no artifact and
+    # recorded no point. Recording a history point for EVERY main/dev push is the intent the
+    # concurrency block already encodes (SHA-unique group, cancellation off); this clause makes the
+    # per-job gate honor it. PRs and other-branch pushes stay purely path-gated. Runs in parallel —
+    # nobody waits on valgrind for fmt/test.
+    if: >-
+      (github.event_name == 'push' || github.event.pull_request.draft == false)
+      && (needs.changes.outputs.bench == 'true'
+          || (github.event_name == 'push'
+              && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/dev')))
     env:
       CARGO_TERM_COLOR: always
       CARGO_INCREMENTAL: 0
@@ -373,9 +382,10 @@ jobs:
   # `bench-history`, dev to `bench-history-dev` (never main/dev themselves — no tree churn, no CI
   # re-trigger). The two trends are fully isolated, so watching dev's trend before promoting to main
   # never touches main's series. `needs: bench` + `always()` so the point is recorded even when the
-  # gate failed; never runs for PRs or forks. When `bench` is path-skipped (a push that changed
-  # nothing it benches), this still runs but finds no artifact and the append script no-ops —
-  # correctly recording no new point, since no benched code moved.
+  # gate failed; never runs for PRs or forks. `bench` now runs unconditionally on every main/dev push
+  # (its `if` above), so on these branches the artifact is always present and every push records a
+  # point — no path-skip gaps. The download stays `continue-on-error` as a belt-and-suspenders guard:
+  # if the harness ever fails to emit an artifact, the append script no-ops rather than redding here.
   bench-history:
     name: persist bench history
     runs-on: ubuntu-latest
