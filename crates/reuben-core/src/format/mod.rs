@@ -2095,8 +2095,12 @@ fn literal_arg(
     match value {
         InputValue::Wire { .. } => Ok(None),
         InputValue::Number(v) => {
-            if desc.materialized_input(port_name).is_none() && desc.enum_input(port_name).is_none()
-            {
+            // One predicate for all three settable kinds — a materialized `f32` control, an
+            // `i32` control, an enum by index — because it is derived from `Port::coerce`, the
+            // conversion this literal is about to go through. Two hand-kept checks here
+            // (`materialized_input` + `enum_input`) missed integer ports entirely: the first
+            // reads the `F32Meta` slot, and an `i32` port's meta is not there (issue #569).
+            if !desc.accepts_number_literal(port_name) {
                 return Err(LoadError::UnknownInput {
                     node: err_node.to_string(),
                     input: err_input.to_string(),
@@ -3014,6 +3018,86 @@ mod tests {
         let saved2 = NormalizedDoc::from_graph(&g2, "test", &reg());
         assert_eq!(saved1, saved2);
         assert_eq!(saved1.nodes.len(), 2);
+    }
+
+    /// Issue #569: a numeric literal must set an **`i32`** input port, not be rejected as an
+    /// unknown input. The gate used to ask `materialized_input`, which reads the `F32Meta`
+    /// struct field — where an integer port carries its meta *inside* `PortType::I32` — so every
+    /// port of the ten `*_i32_value` operators was invisible to it and `"a": 3` failed at load
+    /// naming a port that plainly exists.
+    ///
+    /// The stored override is `Arg::I32`, which is the assertion that matters: the literal went
+    /// through the same `Port::coerce` seam a wire or an OSC message does, rather than being
+    /// admitted as a raw `F32`.
+    #[test]
+    fn a_numeric_literal_sets_an_i32_input_port() {
+        let json = r#"{"instrument":"t","nodes":[
+            {"type":"add_i32_value","address":"/k","inputs":{"a":3,"b":4}}]}"#;
+        let g = load(json, &reg()).expect("load");
+        let key = g.find("/k").unwrap();
+        let d = &g.nodes[key].descriptor;
+        let a = d.inputs.iter().position(|p| p.name == "a").unwrap();
+        let b = d.inputs.iter().position(|p| p.name == "b").unwrap();
+        assert_eq!(
+            g.nodes[key].value_overrides,
+            vec![(a, Arg::I32(3)), (b, Arg::I32(4))]
+        );
+    }
+
+    /// The literal reaches the integer port through the *same* coercion the runtime uses, so it
+    /// rounds and clamps identically — a fractional literal is not an `as i32` truncation, and a
+    /// literal past the type-wide `±1e6` sentinel pins to it rather than storing a value the
+    /// port would refuse from OSC (issue #569).
+    #[test]
+    fn an_i32_port_literal_rounds_and_clamps_like_the_runtime() {
+        let json = r#"{"instrument":"t","nodes":[
+            {"type":"add_i32_value","address":"/k","inputs":{"a":3.7,"b":9999999}}]}"#;
+        let g = load(json, &reg()).expect("load");
+        let key = g.find("/k").unwrap();
+        let stored: Vec<_> = g.nodes[key]
+            .value_overrides
+            .iter()
+            .map(|(_, arg)| arg.clone())
+            .collect();
+        // 3.7 rounds to 4 (not truncated to 3); 9_999_999 clamps to the i32 type-wide max.
+        assert_eq!(stored, vec![Arg::I32(4), Arg::I32(1_000_000)]);
+    }
+
+    /// The save path writes an `Arg::I32` override back as a plain number, so the reader had to
+    /// accept a number on an `i32` port for `load → save → load` to close. Before issue #569 the
+    /// two halves disagreed: whatever the writer emitted, the reader refused it. Pinned as a
+    /// round trip rather than a save assertion, because it is the *pairing* that was broken.
+    #[test]
+    fn an_i32_port_literal_survives_a_save_reload_round_trip() {
+        let json = r#"{"instrument":"t","nodes":[
+            {"type":"add_i32_value","address":"/k","inputs":{"a":3,"b":4}}]}"#;
+        let g1 = load(json, &reg()).expect("load");
+        let saved = NormalizedDoc::from_graph(&g1, "t", &reg());
+        assert_eq!(saved.nodes[0].inputs["a"], InputValue::Number(3.0));
+        let g2 = saved.build(&reg()).expect("the saved document reloads");
+        let key = g2.find("/k").unwrap();
+        assert_eq!(
+            g2.nodes[key].value_overrides,
+            g1.nodes[g1.find("/k").unwrap()].value_overrides
+        );
+    }
+
+    /// The widened gate must not start admitting literals on ports that genuinely take none: a
+    /// bare audio buffer has no scalar to set, and an unknown name is still unknown (issue #569).
+    #[test]
+    fn a_literal_on_a_portless_or_bare_buffer_input_is_still_unknown() {
+        let bare_buffer = r#"{"instrument":"t","nodes":[
+            {"type":"output","address":"/o","inputs":{"audio":1.0}}]}"#;
+        assert!(matches!(
+            load(bare_buffer, &reg()),
+            Err(LoadError::UnknownInput { .. })
+        ));
+        let nonesuch = r#"{"instrument":"t","nodes":[
+            {"type":"add_i32_value","address":"/k","inputs":{"nope":1}}]}"#;
+        assert!(matches!(
+            load(nonesuch, &reg()),
+            Err(LoadError::UnknownInput { .. })
+        ));
     }
 
     #[test]
