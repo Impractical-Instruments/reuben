@@ -12,8 +12,15 @@ abstraction is a **declaration macro that emits the whole family**, not a call h
 
 `number_operator_contract!` takes a base name, the number type(s), the carriers, an operand list, and
 a scalar-fn call-shape, and for each `numbers × carriers` pair emits a submodule (isolating the
-`IN_`/`OUT_` consts) with the contract, the struct, the `Operator` impl, `register_operator!`, and a
-contract-derived `defaults_are_data` test ([number_op.rs](../../../../crates/reuben-macros/src/number_op.rs)).
+`IN_`/`OUT_` consts) with the contract, a stateless op carrier whose `ValueOp`/`SignalOp` impl names
+those very consts as its handles, a `pub type` alias binding that carrier to its shell,
+`register_operator!`, and a contract-derived `defaults_are_data` test
+([number_op.rs](../../../../crates/reuben-macros/src/number_op.rs)).
+`process` itself is **not** emitted: it belongs to the two shells
+([shell.rs](../../../../crates/reuben-core/src/operator/shell.rs)), written once per carrier. Keeping
+the per-sample loop in one place is what lets the signal shell hoist each operand's slice read out of
+it, which the emitted-per-variant body could not do — the read sat inside the loop, costing a bounds
+check per operand per sample and blocking vectorization.
 `Add` over `[f32] × [value, signal]` yields `AddF32Value` and `AddF32Signal`. The **two axes are kept
 separate** — `numbers` (the type) and `carriers` (value/signal) — so an op can be value-only or
 signal-only by omitting a carrier, and a new number type is one entry, not a doubling. The **scalar fn

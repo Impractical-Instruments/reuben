@@ -181,8 +181,10 @@ Other notes:
   one-file-per-op).
 - **Pointwise number ops use a higher-level macro.** `add`, `mul`, `power`, `map` are each a single
   `crate::number_operator_contract!(..)` call over one scalar fn, which generates **both carriers**
-  (`*F32Value` + `*F32Signal`) — their contracts, `Operator` impls, registration, and a
-  defaults-are-data test. The criterion:
+  (`*F32Value` + `*F32Signal`) — their contracts, a `ValueOp`/`SignalOp` impl naming the contract's
+  handle consts, registration, and a defaults-are-data test. Each carrier's name is a `pub type`
+  alias for the matching **shell** ([`operator::shell`](../../crates/reuben-core/src/operator/shell.rs)),
+  which owns `process`; the macro does not emit one. The criterion:
   an op is macro-eligible iff it is **stateless pointwise** (output sample = fn of this sample's
   inputs only) **and** every operand is a number or held enum mode. `differentiate`/`integrate` are
   **stateful** (they carry state across blocks), so they stay hand-written `operator_contract!` ops
