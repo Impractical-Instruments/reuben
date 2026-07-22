@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-r"""Unit tests for check_sample_alias — the Sample/AudioBuffer naming guard.
+r"""Unit tests for check_sample_alias — the AudioSample/BlockView naming guard.
 
 Fixture trees are built with tempfile; the guard is imported as a bare module (tests run from
 `scripts/`, mirroring the engine's skill-test idiom). Each test asserts the exact problem count so a
@@ -69,9 +69,9 @@ class SampleAliasGuardTest(unittest.TestCase):
         self.assertEqual(p, [])
 
     def test_naming_site_is_exempt(self):
-        # sample.rs is allowed to name the raw forms — it is the one definition site.
-        body = f"pub type AudioBuffer<'a> = &'a [{F32}];\n"
-        p = self._problems({"crates/reuben-core/src/sample.rs": body})
+        # signal.rs is allowed to name the raw forms — it is the one definition site.
+        body = f"pub type BlockView<'a> = &'a [{F32}];\n"
+        p = self._problems({"crates/reuben-core/src/signal.rs": body})
         self.assertEqual(p, [])
 
     def test_allowlisted_file_is_exempt(self):

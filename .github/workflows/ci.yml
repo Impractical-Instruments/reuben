@@ -325,7 +325,7 @@ jobs:
         run: python3 scripts/check_rules_refs.py .
 
   # The Sample-alias guard (check_sample_alias.py, #560): the engine's audio element type is named
-  # once in crates/reuben-core/src/sample.rs, and a raw f32 slice or vector buffer form may appear
+  # once in crates/reuben-core/src/signal.rs, and a raw f32 slice or vector buffer form may appear
   # only there or in the script's justified allowlist (device layer, resource decode, operator DSP
   # arithmetic, test/bench harnesses). Like `ref-guard`, a stray raw buffer can slip into ANY code
   # change, so this ALWAYS runs (stdlib-only Python; no toolchain setup). Its unit suite runs here

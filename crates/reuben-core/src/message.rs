@@ -15,7 +15,7 @@
 //! Message stream read three ways: as a stream of events, as a held (zero-order-hold) value,
 //! or, for a [`Buffer`](Arg::F32Buffer) payload, as a dense per-sample block.
 
-use crate::sample::AudioBuffer;
+use crate::signal::BlockView;
 use crate::vocab::harmony::Harmony;
 use crate::vocab::pitch::{Note, Pitch};
 use std::sync::Arc;
@@ -26,8 +26,8 @@ use std::sync::Arc;
 /// deliberately not generalized further now.
 ///
 /// On the hot path the engine keeps buffers in its per-edge arena and hands operators
-/// borrowed [`AudioBuffer`](crate::sample::AudioBuffer) /
-/// [`AudioBufferMut`](crate::sample::AudioBufferMut) (zero-copy across an edge, disjoint within a
+/// borrowed [`BlockView`](crate::signal::BlockView) /
+/// [`BlockMut`](crate::signal::BlockMut) (zero-copy across an edge, disjoint within a
 /// node). This owned form is the conceptual / boundary representation that completes the [`Arg`]
 /// enum.
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -189,7 +189,7 @@ impl From<i32> for Arg {
 /// Decode a borrowed [`Arg`] into an operator's requested payload type — the read side of the
 /// typed handle read (`io.read`). One trait spans every payload an
 /// operator reads: the OSC primitives (`f32`/`i32`/`&str`), the dense [`Buffer`](Arg::F32Buffer) as a
-/// borrowed [`AudioBuffer`](crate::sample::AudioBuffer), and the shared *vocab* concrete types (whose
+/// borrowed [`BlockView`](crate::signal::BlockView), and the shared *vocab* concrete types (whose
 /// impl `#[derive(ArgValue)]` generates, delegating to their `TryFrom<&Arg>`).
 ///
 /// The `'a` lifetime lets a payload **borrow** from the Arg (a `&'a str`, an audio buffer) so a
@@ -225,7 +225,7 @@ impl<'a> FromArg<'a> for &'a str {
     }
 }
 
-impl<'a> FromArg<'a> for AudioBuffer<'a> {
+impl<'a> FromArg<'a> for BlockView<'a> {
     fn from_arg(arg: &'a Arg) -> Option<Self> {
         match arg {
             Arg::F32Buffer(b) => Some(b.as_slice()),

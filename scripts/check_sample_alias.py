@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 r"""Sample-alias guard — keep the engine's audio element type named in exactly one place.
 
-`crates/reuben-core/src/sample.rs` is the single naming site: it declares `Sample`, `AudioBuffer`
-(`&[Sample]`), and `AudioBufferMut` (`&mut [Sample]`). Every genuinely-audio buffer in the render
-spine flows through those aliases. This guard fails if a raw `f32` slice (`&[f32]`, `&mut [f32]`,
-any `[f32]` slice form) or a raw `f32` vector (`Vec<f32>`) appears anywhere OUTSIDE the naming site
-and an explicit, justified allowlist. Fixed-size arrays (`[f32; N]`) and scalars (`f32`) are NOT
-flagged — only the buffer forms the alias exists to name.
+`crates/reuben-core/src/signal.rs` is the single naming site: it declares `AudioSample`, `BlockView`
+(`&[AudioSample]`), and `BlockMut` (`&mut [AudioSample]`) — the borrowed views of an owned `Block`.
+Every genuinely-audio buffer in the render spine flows through those aliases. This guard fails if a
+raw `f32` slice (`&[f32]`, `&mut [f32]`, any `[f32]` slice form) or a raw `f32` vector (`Vec<f32>`)
+appears anywhere OUTSIDE the naming site and an explicit, justified allowlist. Fixed-size arrays
+(`[f32; N]`) and scalars (`f32`) are NOT flagged — only the buffer forms the alias exists to name.
 
 Why a text linter and not clippy's `disallowed-types`: a primitive slice/Vec of a primitive has no
 nameable type *path* to disallow (`[f32]` is not a nominal type). The naming discipline is therefore
@@ -35,7 +35,7 @@ CODE_EXTS = {".rs", ".py", ".mjs", ".js", ".ts", ".jsx", ".tsx", ".go", ".c", ".
 SKIP_DIRS = {".git", "target", "node_modules", "dist", "build", "engine"}
 
 # The one place the audio element type is named — exempt by definition.
-NAMING_SITE = "crates/reuben-core/src/sample.rs"
+NAMING_SITE = "crates/reuben-core/src/signal.rs"
 
 # Justified allowlist: paths (files, or dir prefixes ending in "/") where a raw `f32` buffer/Vec is
 # legitimate. Kept tight — each entry names *why* the `f32` there is not a logical audio buffer that
@@ -112,12 +112,12 @@ def collect_problems(root_arg: str = ".") -> list[str]:
         for i, line in enumerate(text.splitlines(), 1):
             if SLICE_RE.search(line):
                 problems.append(
-                    f"{rel}:{i}: raw f32 slice — use AudioBuffer/AudioBufferMut from "
-                    f"reuben_core::sample (or add a justified allowlist entry)"
+                    f"{rel}:{i}: raw f32 slice — use BlockView/BlockMut from "
+                    f"reuben_core::signal (or add a justified allowlist entry)"
                 )
             if VEC_RE.search(line):
                 problems.append(
-                    f"{rel}:{i}: raw Vec<f32> — use Vec<Sample> from reuben_core::sample "
+                    f"{rel}:{i}: raw Vec<f32> — use Vec<AudioSample> from reuben_core::signal "
                     f"(or add a justified allowlist entry)"
                 )
     return problems
