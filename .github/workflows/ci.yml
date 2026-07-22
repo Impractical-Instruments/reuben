@@ -323,7 +323,12 @@ jobs:
         with:
           fetch-depth: 0 # the gate swaps the measured surface to the baseline commit
 
-      # reuben-mcp pulls in reuben-core but not cpal, so no ALSA headers are needed here.
+      # reuben-mcp depends on reuben-native for the filesystem resource resolver, and reuben-native
+      # links cpal — so this job needs the ALSA headers just like `check` does, even though it never
+      # opens an audio device.
+      - name: Install ALSA dev headers (cpal, via reuben-native)
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
+
       - name: Setup pinned Rust toolchain
         uses: ./.github/actions/setup-rust
 
