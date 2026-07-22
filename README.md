@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend: callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**53 commits** · 2026-07-12 → 2026-07-21 · 3249 data points · last: `32d85db` (2026-07-21T21:42:33-04:00)
+**54 commits** · 2026-07-12 → 2026-07-21 · 3322 data points · last: `b6c6b65` (2026-07-21T22:11:17-04:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -91,29 +91,29 @@ Deterministic CI performance trend: callgrind **instruction counts (Ir)** for re
 | `unpack_note` | 594k | ±0.0% | +0.1% | 2026-07-20 |
 | `overhead` | 565k | ±0.0% | -0.8% | 2026-07-12 |
 | `clamp_f32_value` | 556k | ±0.0% | -0.2% | 2026-07-12 |
-| `clamp_i32_value` | 553k | — | ±0.0% | 2026-07-21 |
+| `clamp_i32_value` | 553k | ±0.0% | ±0.0% | 2026-07-21 |
 | `pitch2freq` | 552k | ±0.0% | ±0.0% | 2026-07-20 |
 | `modulo_f32_value` | 549k | ±0.0% | -0.3% | 2026-07-12 |
 | `power_f32_value` | 545k | ±0.0% | -0.3% | 2026-07-12 |
-| `modulo_i32_value` | 536k | — | ±0.0% | 2026-07-21 |
+| `modulo_i32_value` | 536k | ±0.0% | ±0.0% | 2026-07-21 |
 | `div_f32_value` | 535k | ±0.0% | -0.4% | 2026-07-12 |
 | `add_f32_value` | 535k | ±0.0% | -0.3% | 2026-07-12 |
 | `max_f32_value` | 535k | ±0.0% | -0.3% | 2026-07-12 |
 | `min_f32_value` | 535k | ±0.0% | -0.3% | 2026-07-12 |
 | `mul_f32_value` | 535k | ±0.0% | -0.3% | 2026-07-12 |
 | `sub_f32_value` | 535k | ±0.0% | -0.3% | 2026-07-12 |
-| `div_i32_value` | 533k | — | ±0.0% | 2026-07-21 |
-| `sub_i32_value` | 533k | — | ±0.0% | 2026-07-21 |
-| `add_i32_value` | 533k | — | ±0.0% | 2026-07-21 |
-| `mul_i32_value` | 532k | — | ±0.0% | 2026-07-21 |
-| `max_i32_value` | 532k | — | ±0.0% | 2026-07-21 |
-| `min_i32_value` | 532k | — | ±0.0% | 2026-07-21 |
+| `div_i32_value` | 533k | ±0.0% | ±0.0% | 2026-07-21 |
+| `sub_i32_value` | 533k | ±0.0% | ±0.0% | 2026-07-21 |
+| `add_i32_value` | 533k | ±0.0% | ±0.0% | 2026-07-21 |
+| `mul_i32_value` | 532k | ±0.0% | ±0.0% | 2026-07-21 |
+| `max_i32_value` | 532k | ±0.0% | ±0.0% | 2026-07-21 |
+| `min_i32_value` | 532k | ±0.0% | ±0.0% | 2026-07-21 |
 | `snap` | 527k | ±0.0% | ±0.0% | 2026-07-12 |
 | `reciprocal_f32_value` | 514k | ±0.0% | -0.4% | 2026-07-12 |
 | `abs_f32_value` | 513k | ±0.0% | -0.3% | 2026-07-12 |
 | `negate_f32_value` | 513k | ±0.0% | -0.3% | 2026-07-12 |
-| `negate_i32_value` | 513k | — | ±0.0% | 2026-07-21 |
-| `abs_i32_value` | 512k | — | ±0.0% | 2026-07-21 |
+| `negate_i32_value` | 513k | ±0.0% | ±0.0% | 2026-07-21 |
+| `abs_i32_value` | 512k | ±0.0% | ±0.0% | 2026-07-21 |
 | `transpose` | 508k | ±0.0% | -0.1% | 2026-07-12 |
 | `chord` | 497k | ±0.0% | -0.1% | 2026-07-12 |
 | `osc_out` | 448k | ±0.0% | ±0.0% | 2026-07-12 |
