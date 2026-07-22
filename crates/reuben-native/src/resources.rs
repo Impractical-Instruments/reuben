@@ -116,6 +116,22 @@ impl ResourceResolver for FsResolver {
             .map_err(|e| ResolveError::NotFound(format!("{}: {e}", path.display())))
     }
 
+    /// Write JSON text back to a document path — the write half of the seam, resolving
+    /// `source` to the same location [`resolve_text`](Self::resolve_text) reads from
+    /// (`base_dir.join`, through which the loader's canonical absolute path passes
+    /// unchanged). Missing parent directories are created so a new document lands where the
+    /// author addressed it. This is the mechanism that makes the MCP sidecar a process which
+    /// writes to disk; the stance change that documents it belongs in the ADR ticket.
+    fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
+        let path = self.base_dir.join(source);
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent)
+                .map_err(|e| ResolveError::Write(format!("{}: {e}", parent.display())))?;
+        }
+        std::fs::write(&path, text)
+            .map_err(|e| ResolveError::Write(format!("{}: {e}", path.display())))
+    }
+
     /// Canonical identity = the winning absolute path, lexically normalized. Sibling-first:
     /// resolve relative to the referencing document's directory (`referrer` is that document's
     /// canonical id; the top level uses `base_dir`); if nothing exists there and a
@@ -220,6 +236,82 @@ mod tests {
             resolver.resolve("does_not_exist_xyz.wav"),
             Err(ResolveError::NotFound(_))
         ));
+    }
+
+    /// The write half round-trips through `resolve_text`, creating a missing parent directory
+    /// so a brand-new document lands where the author addressed it.
+    #[test]
+    fn write_text_creates_parents_and_round_trips() {
+        let base = std::env::temp_dir().join("reuben_write_text_test");
+        let _ = std::fs::remove_dir_all(&base);
+        let resolver = FsResolver::new(&base);
+
+        // A nested source whose parent does not exist yet.
+        resolver
+            .write_text("nested/patch.json", "{\"version\":3}")
+            .expect("write");
+        assert_eq!(
+            resolver
+                .resolve_text("nested/patch.json")
+                .expect("read back"),
+            "{\"version\":3}"
+        );
+        // An overwrite replaces in place — one source, one identity.
+        resolver
+            .write_text("nested/patch.json", "{\"version\":4}")
+            .expect("overwrite");
+        assert_eq!(
+            resolver
+                .resolve_text("nested/patch.json")
+                .expect("read back"),
+            "{\"version\":4}"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The loader hands both halves a **canonical absolute** source (it canonicalizes before
+    /// calling `resolve_text`), and `base_dir.join` passes an absolute path through unchanged —
+    /// so a write addressed by the canonical id lands where a read by that same id looks.
+    #[test]
+    fn write_text_round_trips_a_canonical_absolute_source() {
+        let base = std::env::temp_dir().join("reuben_write_text_abs_test");
+        let _ = std::fs::remove_dir_all(&base);
+        let resolver = FsResolver::new(&base);
+
+        // What the loader would pass: the canonical (absolute) form of the source.
+        let canon = resolver.canonical("song.json", None);
+        assert!(
+            Path::new(&canon).is_absolute(),
+            "canonical ids are absolute"
+        );
+        resolver.write_text(&canon, "{\"v\":3}").expect("write abs");
+        assert_eq!(
+            resolver.resolve_text(&canon).expect("read abs"),
+            "{\"v\":3}"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A write that cannot land surfaces `ResolveError::Write` — not a panic, and not the
+    /// read-side `NotFound`. Here an ancestor of the target is a regular file, so the parent
+    /// `create_dir_all` fails.
+    #[test]
+    fn write_text_reports_write_error_when_parent_cannot_be_created() {
+        let base = std::env::temp_dir().join("reuben_write_text_err_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(&base).unwrap();
+        // "blocker" is a file; writing "blocker/child.json" needs it to be a directory.
+        std::fs::write(base.join("blocker"), b"x").unwrap();
+
+        let resolver = FsResolver::new(&base);
+        let err = resolver
+            .write_text("blocker/child.json", "{}")
+            .expect_err("must fail");
+        assert!(matches!(err, ResolveError::Write(_)), "got {err:?}");
+
+        let _ = std::fs::remove_dir_all(&base);
     }
 
     /// Stat-only mode reports availability without decoding: a file whose bytes are not WAV at
