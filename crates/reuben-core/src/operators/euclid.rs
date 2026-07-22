@@ -16,19 +16,22 @@
 //! `rotation` rotates the ring of hits: at rotation `r`, step `s` plays the base pattern's step
 //! `s + r`. E(4,16) is four-on-the-floor (steps 0,4,8,12); E(3,8) is the tresillo (0,3,6).
 //!
-//! `steps`, `pulses`, and `rotation` are **held `Float` inputs**, each
-//! owning its unwired default — read block-rate via [`Io::read`] (rounded to an integer, then
-//! clamped/wrapped). `clock` is a **`buffer`** input read per-sample via [`Io::read`] for edge
-//! detection. Edge behaviour is forgiving for live knob-twiddling and modulation: `pulses` clamps
-//! to `0..=steps` (0 = silence, `steps` = every step hits) and `rotation` wraps modulo `steps`.
+//! `steps`, `pulses`, and `rotation` are **held `i32` inputs**, each
+//! owning its unwired default — read block-rate via [`Io::read`] as a whole number. `steps` carries
+//! its `1..=NUM_STEPS` bound in its `I32Meta`, so the engine clamps it before `process` sees it (a
+//! wired `i32` source, an author literal, and a live message all quantize + clamp through that
+//! contract); the remaining bounds are *dynamic* and stay in `process`. `clock` is a **`buffer`**
+//! input read per-sample via [`Io::read`] for edge detection. Edge behaviour is forgiving for live
+//! knob-twiddling and modulation: `pulses` clamps to `0..=steps` (0 = silence, `steps` = every step
+//! hits) and `rotation` wraps modulo `steps`.
 //!
 //! - input 0: `clock` (`buffer`) — the Clock's beat gate. A rising edge (crossing 0.5 upward)
 //!   advances the step and, on a pulse, emits a gate-on; the following falling edge emits the
 //!   gate-off. The clock's previous level is held across blocks, so an edge straddling a block
 //!   boundary fires exactly once.
-//! - input 1: `steps` (`Float`) — total steps in the pattern (default 16).
-//! - input 2: `pulses` (`Float`) — active steps to distribute (default 4).
-//! - input 3: `rotation` (`Float`) — rotation offset in steps (default 0).
+//! - input 1: `steps` (`i32`) — total steps in the pattern (default 16).
+//! - input 2: `pulses` (`i32`) — active steps to distribute (default 4).
+//! - input 3: `rotation` (`i32`) — rotation offset in steps (default 0).
 //! - output 0: `gate` (`Float`) — a sparse gate: F32 `1.0` on a pulse step's rising clock edge,
 //!   F32 `0.0` on the following falling edge.
 //!
@@ -38,16 +41,22 @@ use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 use crate::operators::edge::{Edge, EdgeDetector};
 
-/// Maximum number of steps in the pattern — the `steps` input clamps to this.
+/// Maximum number of steps in the pattern — the `steps` port's `I32Meta` max, and the ceiling the
+/// contract literal below must match (the macro parses only integer literals, so the tie is
+/// re-established by the compile-time assert rather than by referencing this const in the macro).
 pub const NUM_STEPS: usize = 16;
+
+// The `steps`/`pulses` contract bounds below are the literal `16`; keep them tied to `NUM_STEPS` so
+// changing one without the other fails to compile rather than silently drifting.
+const _: () = assert!(NUM_STEPS == 16);
 
 // One declaration -> IN_/OUT_ consts + Descriptor.
 crate::operator_contract!(Euclid {
     type_name: "euclid",
     inputs:  { clock:    f32 { 0.0..=1.0, default 0.0, "", lin },
-               steps:    f32 { 1.0..=16.0, default 16.0, "steps",  lin },
-               pulses:   f32 { 0.0..=16.0, default 4.0,  "pulses", lin },
-               rotation: f32 { 0.0..=15.0, default 0.0,  "steps",  lin } },
+               steps:    i32 { 1..=16, default 16 },
+               pulses:   i32 { 0..=16, default 4 },
+               rotation: i32 { 0..=15, default 0 } },
     outputs: { gate: f32 { 0.0..=1.0, default 0.0, "gate", lin } },
 });
 
@@ -99,10 +108,15 @@ impl Operator for Euclid {
     }
 
     fn process(&mut self, io: &mut Io) {
-        // Held controls, constant for this (sub)block (the engine block-slices at changes).
-        let total = (io.read(IN_STEPS).round() as i64).clamp(1, NUM_STEPS as i64);
-        let pulses = (io.read(IN_PULSES).round() as i64).clamp(0, total);
-        let rotation = (io.read(IN_ROTATION).round() as i64).rem_euclid(total);
+        // Held `i32` controls, constant for this (sub)block (the engine block-slices at changes).
+        // `steps` carries its full `1..=NUM_STEPS` *range* in the port contract; here we keep only
+        // the one floor the hot path needs to stay total — `total >= 1` — so the `rem_euclid(total)`
+        // divisor is never zero even on the `OpDriver`/bench path that writes the latch raw (the
+        // hot-path-totality rule; see operator-dev.md). The dynamic bounds — `pulses` against the
+        // live `total`, `rotation` modulo it — stay too.
+        let total = i64::from(io.read(IN_STEPS)).max(1);
+        let pulses = i64::from(io.read(IN_PULSES)).clamp(0, total);
+        let rotation = i64::from(io.read(IN_ROTATION)).rem_euclid(total);
 
         // `clock` is a held Value: the engine block-slices at every clock change, so this
         // call sees one constant level. Compare it to the level held across the previous slice to
@@ -257,6 +271,21 @@ mod tests {
     }
 
     #[test]
+    fn zero_steps_degrades_to_one_without_panicking() {
+        // A raw `steps` latch of 0 — the `OpDriver`/bench path writes the latch without the
+        // port's `1..` floor — must not make `rem_euclid(total)` panic on the render thread.
+        // `process` floors `total` at 1, so this degrades to a single-step pattern.
+        let period = 64;
+        let clock = beat_gate(period, 2);
+        let emits = run(&clock, 0.0, 1.0, 0.0);
+        // total=1, pulses=1 → the single step hits each beat; the point is it renders (no panic).
+        assert!(
+            !emits.is_empty(),
+            "a zero-steps latch must still render, not panic"
+        );
+    }
+
+    #[test]
     fn pulses_clamp_to_steps() {
         // pulses 99 clamps to steps -> every step hits, same as pulses == steps (no panic/wrap).
         let period = 64;
@@ -350,26 +379,40 @@ mod tests {
     #[test]
     fn descriptor_defaults_match_the_frozen_contract() {
         // The contract freeze the rig builder wires against: default E(4,16), single Float gate out.
+        // `steps`/`pulses`/`rotation` are now `i32` ports — pin the *type* and the bounds moved into
+        // `I32Meta`, not just `number_default` (which also answers `Some` for an `f32` port, so it
+        // would not catch a regression to `f32`; issue #565 review).
+        use crate::descriptor::{I32Meta, PortType};
         let desc = Euclid::descriptor();
         assert_eq!(
-            desc.inputs[IN_STEPS.index()].meta.as_ref().unwrap().default,
-            16.0
+            desc.inputs[IN_STEPS.index()].ty,
+            PortType::I32 {
+                meta: Some(I32Meta {
+                    min: 1,
+                    max: NUM_STEPS as i32,
+                    default: 16
+                })
+            }
         );
         assert_eq!(
-            desc.inputs[IN_PULSES.index()]
-                .meta
-                .as_ref()
-                .unwrap()
-                .default,
-            4.0
+            desc.inputs[IN_PULSES.index()].ty,
+            PortType::I32 {
+                meta: Some(I32Meta {
+                    min: 0,
+                    max: NUM_STEPS as i32,
+                    default: 4
+                })
+            }
         );
         assert_eq!(
-            desc.inputs[IN_ROTATION.index()]
-                .meta
-                .as_ref()
-                .unwrap()
-                .default,
-            0.0
+            desc.inputs[IN_ROTATION.index()].ty,
+            PortType::I32 {
+                meta: Some(I32Meta {
+                    min: 0,
+                    max: 15,
+                    default: 0
+                })
+            }
         );
         assert_eq!(desc.outputs.len(), 1, "one gate output");
     }

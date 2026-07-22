@@ -154,9 +154,13 @@ Each wire is checked **locally** at Instantiate against the two ports' forms (`c
   discrete choice, not a per-sample signal).
 - **`i32 → f32` / `i32 → f32_buffer`** is an **implicit numeric widening**
   ([composition-operators](../rules/composition-operators.md)): an integer source wires
-  straight into a float sink (a `steps` `i32` control into euclid's `f32` port), lossless and read
+  straight into a float sink (an `i32` count into an `f32` control), lossless and read
   via `Arg::as_f32`. Its reverse **`f32 → i32` is a hard error** — lossy, needing an explicit
-  quantizer — the same directional favour as `Value → Signal`.
+  quantizer (a `round`/`floor`/`ceil`/`trunc` converter) — the same directional favour as
+  `Value → Signal`. This is why the integer *control* ports — euclid's `steps`/`pulses`/`rotation`,
+  `harmony.root`/`degrees`, `clock.division`, `chord.size`, the sampler/granulator `channel` — are
+  themselves `i32`: an `i32` pipe or source wires in cleanly, and a genuine `f32` modulation must
+  route through an explicit converter rather than silently truncating.
 - **`Event` mismatched** against a Signal/Value is an error (needs an explicit latch / change-detect).
 
 Every *other* cross-*type* crossing still needs an operator: `f32 → enum` is a quantizer; `f32 →
@@ -238,7 +242,8 @@ target-pointing form (no entry points inward anymore):
   enforced against every consumer wire by the ordinary pass-2 wire check. An `i32` pipe is an
   **integer control** ([composition-operators](../rules/composition-operators.md)): a count
   like euclid's `steps`/`pulses`/`rotation`, whole-numbered `default`/`min`/`max` (no `curve`), that
-  widens losslessly into an operator's `f32` port and quantizes live input. A numeric pipe owns
+  wires straight into a consumer's integer (`i32`) port — or widens losslessly into an `f32` one —
+  and quantizes live input. A numeric pipe owns
   engine-enforced `default`/`min`/`max`/`curve` plus a display `unit` — the pipe's whole
   *quantity* contract; presentation (`label`/`widget`) lives in a surface doc, not on the pipe. A
   defaulted pipe unfed materializes its default —

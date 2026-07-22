@@ -20,8 +20,8 @@
 //! - input 2: `root` (MIDI) — the pitch at which the sample plays at its natural rate.
 //! - input 3: `gain` (linear) — output scale.
 //! - input 4: `start` (normalized 0..1) — playback start offset into the buffer.
-//! - input 5: `channel` — `-1` downmixes (averages) all channels; `≥0` picks that channel. A
-//!   continuous/structural selector (rounded in `process`), not an `Enum`.
+//! - input 5: `channel` (`i32`) — `-1` downmixes (averages) all channels; `≥0` picks that channel.
+//!   A structural selector (the `-1` sentinel + a channel index), so `i32`, not an `Enum`.
 //! - output 0: `audio` (`Buffer`).
 //!
 //! Pitch (the per-hit rate) is **latched at the trigger frame** and fixed for that hit; live
@@ -42,7 +42,7 @@ crate::operator_contract!(SamplePlayer {
                  root:    f32 { 0.0..=127.0, default 60.0, "MIDI", lin },
                  gain:    f32 { 0.0..=4.0,   default 1.0,  "",     lin },
                  start:   f32 { 0.0..=1.0,   default 0.0,  "",     lin },
-                 channel: f32 { -1.0..=31.0, default -1.0, "",     lin } },
+                 channel: i32 { -1..=31, default -1 } },
     outputs:   { audio: f32_buffer },
     resources: { sample },
 });
@@ -187,7 +187,7 @@ fn silence(io: &mut Io, n: usize) {
 fn interp(
     store: &ResourceStore,
     id: SampleId,
-    channel: f32,
+    channel: i32,
     chans: usize,
     frames: usize,
     idx: usize,
@@ -197,7 +197,7 @@ fn interp(
         if fr >= frames {
             return 0.0;
         }
-        if channel < 0.0 {
+        if channel < 0 {
             let mut sum = 0.0;
             for ch in 0..chans {
                 sum += store.sample(id, ch, fr);

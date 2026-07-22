@@ -43,11 +43,14 @@ pub struct ScaleField {
 }
 
 impl ScaleField {
-    /// Build from a step-offset slice (truncated to [`SCALE_CAP`]; min length 1).
+    /// Build from a step-offset slice (truncated to [`SCALE_CAP`]; min length 1). An **empty**
+    /// slice floors to a 1-degree `[0]` scale — `len` clamps up to 1 while the copy takes only the
+    /// offsets actually supplied, so there is no out-of-range read.
     pub fn new(offs: &[i16]) -> Self {
         let mut offsets = [0i16; SCALE_CAP];
+        let take = offs.len().min(SCALE_CAP);
+        offsets[..take].copy_from_slice(&offs[..take]);
         let len = offs.len().clamp(1, SCALE_CAP);
-        offsets[..len].copy_from_slice(&offs[..len]);
         Self {
             offsets,
             len: len as u8,
@@ -377,6 +380,23 @@ mod tests {
 
     fn c_major() -> Harmony {
         Harmony::default()
+    }
+
+    // `ScaleField::new` documents "min length 1": an empty offset slice floors to a 1-degree
+    // `[0]` scale rather than panicking on the `&offs[..len]` copy. Pins that contract directly
+    // (harmony's `degrees` floor keeps its own reads off this edge, but the type must hold it).
+    #[test]
+    fn scale_field_from_empty_floors_to_one_degree() {
+        let s = ScaleField::new(&[]);
+        assert_eq!(s, ScaleField::new(&[0]));
+    }
+
+    // The other end: an over-long slice truncates to `SCALE_CAP`, no out-of-range read.
+    #[test]
+    fn scale_field_truncates_past_the_cap() {
+        let long: Vec<i16> = (0..(SCALE_CAP as i16 + 4)).collect();
+        let s = ScaleField::new(&long);
+        assert_eq!(s, ScaleField::new(&long[..SCALE_CAP]));
     }
 
     fn approx(a: f32, b: f32) {

@@ -9,8 +9,11 @@
 //!
 //! Per-field **last-write-wins**:
 //! - **Static fields** — `root` and the scale (`degrees` + `s0`..`s11` step offsets) — are held
-//!   `f32` Value inputs (the good-button: dial the key, shape the scale). A mid-block
-//!   change block-slices `process` at its frame, so the publish stays sample-accurate.
+//!   `i32` Value inputs (the good-button: dial the key, shape the scale). They are integer
+//!   quantities by construction — a MIDI root, a degree count, and step offsets into an integer
+//!   step-space (microtonality lives in the [`Tuning`](crate::vocab::tuning) layer, not here) — so
+//!   `i32` carries them without the round-in-`process` dance. A mid-block change block-slices
+//!   `process` at its frame, so the publish stays sample-accurate.
 //! - **Dynamic field** — `chord` — arrives on the held `set` (`Harmony`) input: its chord field is
 //!   adopted (LWW). The engine block-slices a `set` change to the segment boundary, so a chord
 //!   change lands frame-accurate.
@@ -19,7 +22,7 @@
 //! differ from the last published value — so steady state is allocation-free.
 //!
 //! - input `set` (`Harmony`, held) — adopts its `chord` field.
-//! - inputs `root`, `degrees`, `s0`..`s11` (`f32`, held) — the static key/scale fields.
+//! - inputs `root`, `degrees`, `s0`..`s11` (`i32`, held) — the static key/scale fields.
 //! - output `harmony` (`harmony`) — the latched tonal context followers read.
 
 use crate::descriptor::Descriptor;
@@ -29,32 +32,38 @@ use crate::vocab::harmony::{Chord, Harmony, ScaleField, SCALE_CAP};
 /// Number of scale step-offset slots (max scale length within a 12-TET period).
 pub const NUM_STEPS: usize = SCALE_CAP;
 
-// `set` is a held `Harmony` (its chord is adopted), `root`/`degrees`/`s0`..`s11` are materialized
-// `Float` key/scale fields, `harmony` the output.
+// The `degrees` port's contract max is the literal `12`; keep it tied to `SCALE_CAP` (the
+// `offsets` array length the `degrees` cap keeps `offsets[..degrees]` in bounds against) so a
+// change to one without the other fails to compile.
+const _: () = assert!(NUM_STEPS == 12);
+
+// `set` is a held `Harmony` (its chord is adopted), `root`/`degrees`/`s0`..`s11` are held `i32`
+// key/scale fields, `harmony` the output. `root` (MIDI) and `degrees` (count) carry their static
+// bounds in the port contract; the scale offsets are integer indices into step-space.
 crate::operator_contract!(HarmonyOp {
     type_name: "harmony",
     inputs:  { set:     harmony,
-               root:    f32 { 0.0..=127.0,      default 60.0,  "MIDI",  lin },
-               degrees: f32 { 1.0..=12.0,       default 7.0,   "steps", lin },
-               s0:      f32 { -24.0..=24.0,     default 0.0,   "steps", lin },
-               s1:      f32 { -24.0..=24.0,     default 2.0,   "steps", lin },
-               s2:      f32 { -24.0..=24.0,     default 4.0,   "steps", lin },
-               s3:      f32 { -24.0..=24.0,     default 5.0,   "steps", lin },
-               s4:      f32 { -24.0..=24.0,     default 7.0,   "steps", lin },
-               s5:      f32 { -24.0..=24.0,     default 9.0,   "steps", lin },
-               s6:      f32 { -24.0..=24.0,     default 11.0,  "steps", lin },
-               s7:      f32 { -24.0..=24.0,     default 0.0,   "steps", lin },
-               s8:      f32 { -24.0..=24.0,     default 0.0,   "steps", lin },
-               s9:      f32 { -24.0..=24.0,     default 0.0,   "steps", lin },
-               s10:     f32 { -24.0..=24.0,     default 0.0,   "steps", lin },
-               s11:     f32 { -24.0..=24.0,     default 0.0,   "steps", lin } },
+               root:    i32 { 0..=127, default 60 },
+               degrees: i32 { 1..=12,  default 7 },
+               s0:      i32 { -24..=24, default 0 },
+               s1:      i32 { -24..=24, default 2 },
+               s2:      i32 { -24..=24, default 4 },
+               s3:      i32 { -24..=24, default 5 },
+               s4:      i32 { -24..=24, default 7 },
+               s5:      i32 { -24..=24, default 9 },
+               s6:      i32 { -24..=24, default 11 },
+               s7:      i32 { -24..=24, default 0 },
+               s8:      i32 { -24..=24, default 0 },
+               s9:      i32 { -24..=24, default 0 },
+               s10:     i32 { -24..=24, default 0 },
+               s11:     i32 { -24..=24, default 0 } },
     outputs: { harmony: harmony },
 });
 
 /// The scale step-offset inputs in degree order — `s0`..`s11` as typed handles, so a
 /// loop over degrees reads through the handles the contract emitted (a computed `IN_S0 + k`
 /// index would bypass the form typing).
-const IN_STEPS: [crate::operator::In<crate::operator::form::Held<f32>>; NUM_STEPS] = [
+const IN_STEPS: [crate::operator::In<crate::operator::form::Held<i32>>; NUM_STEPS] = [
     IN_S0, IN_S1, IN_S2, IN_S3, IN_S4, IN_S5, IN_S6, IN_S7, IN_S8, IN_S9, IN_S10, IN_S11,
 ];
 
@@ -85,11 +94,17 @@ impl HarmonyOp {
     /// its change frame, so reading the held value once per (sub)block call is what keeps the
     /// publish sample-accurate.
     fn current(&self, io: &Io) -> Harmony {
-        let root = io.read(IN_ROOT).round() as i32;
-        let degrees = (io.read(IN_DEGREES).round() as usize).clamp(1, NUM_STEPS);
+        // Held `i32` fields: `root` (MIDI) and `degrees` (count) carry their full range in the port
+        // contract. `degrees` indexes the fixed `offsets` array, so here we keep the two totality
+        // guards the hot path needs — a `1` floor and a `SCALE_CAP` cap — so `offsets[..degrees]`
+        // can never panic even on the `OpDriver` path that writes the latch raw (a negative latch
+        // would otherwise wrap to a huge `usize`; the hot-path-totality rule). The step offsets fit
+        // `i16` (`-24..=24`).
+        let root = io.read(IN_ROOT);
+        let degrees = (io.read(IN_DEGREES).max(1) as usize).min(SCALE_CAP);
         let mut offsets = [0i16; SCALE_CAP];
         for (k, o) in offsets.iter_mut().enumerate().take(degrees) {
-            *o = io.read(IN_STEPS[k]).round() as i16;
+            *o = io.read(IN_STEPS[k]) as i16;
         }
         Harmony {
             root,
@@ -180,10 +195,10 @@ mod tests {
         // block re-asserts the *current* context (here: root 45, natural minor), not the default.
         let mut d = OpDriver::for_type(HarmonyOp::new(), SR);
         let _ = d.render(128); // consume the initial default publish
-        d.set(IN_ROOT, 45.0)
-            .set(IN_S2, 3.0) // natural-minor third, so the scale differs from the C-major default
-            .set(IN_S5, 8.0)
-            .set(IN_S6, 10.0);
+        d.set(IN_ROOT, 45)
+            .set(IN_S2, 3) // natural-minor third, so the scale differs from the C-major default
+            .set(IN_S5, 8)
+            .set(IN_S6, 10);
         let moved = d.render(128).emits().to_vec();
         assert_eq!(moved.len(), 1, "the root/scale move publishes once");
         assert_eq!(harmony_of(&moved[0]).root, 45);
@@ -218,6 +233,20 @@ mod tests {
     }
 
     #[test]
+    fn negative_degrees_degrades_without_panicking() {
+        // A raw negative `degrees` latch — the `OpDriver`/bench path bypasses the port's `1..`
+        // floor — would wrap to a huge `usize` and panic the `offsets[..degrees]` slice on the
+        // render thread. `process` floors at 1 and caps at `SCALE_CAP`, so this degrades to a
+        // 1-degree scale; the point is it renders at all.
+        let mut d = OpDriver::for_type(HarmonyOp::new(), SR);
+        let _ = d.render(128); // consume the default 7-degree publish
+        d.set(IN_DEGREES, -1);
+        let pubs = d.render(128).emits().to_vec();
+        assert_eq!(pubs.len(), 1, "the degrees change publishes once, no panic");
+        assert_eq!(harmony_of(&pubs[0]).scale, ScaleField::new(&[0]));
+    }
+
+    #[test]
     fn chord_from_set_publishes() {
         let mut d = OpDriver::for_type(HarmonyOp::new(), SR);
         let _ = d.render(128); // consume the initial publish
@@ -236,7 +265,7 @@ mod tests {
     fn root_change_publishes() {
         let mut d = OpDriver::for_type(HarmonyOp::new(), SR);
         let _ = d.render(128);
-        d.set(IN_ROOT, 62.0); // move to D (refills the materialized `root` buffer)
+        d.set(IN_ROOT, 62); // move to D
         let pubs = d.render(128).emits().to_vec();
         assert_eq!(pubs.len(), 1);
         assert_eq!(harmony_of(&pubs[0]).root, 62);
@@ -252,13 +281,13 @@ mod tests {
         // truncated, never leaked into the published scale.
         let mut d = OpDriver::for_type(HarmonyOp::new(), SR);
         let _ = d.render(128); // consume the initial default publish
-        d.set(IN_DEGREES, 5.0)
-            .set(IN_S0, 0.0)
-            .set(IN_S1, 3.0)
-            .set(IN_S2, 5.0)
-            .set(IN_S3, 7.0)
-            .set(IN_S4, 10.0)
-            .set(IN_S5, 24.0); // past `degrees` — must not reach the scale
+        d.set(IN_DEGREES, 5)
+            .set(IN_S0, 0)
+            .set(IN_S1, 3)
+            .set(IN_S2, 5)
+            .set(IN_S3, 7)
+            .set(IN_S4, 10)
+            .set(IN_S5, 24); // past `degrees` — must not reach the scale
         let pubs = d.render(128).emits().to_vec();
         assert_eq!(pubs.len(), 1, "one publish for the scale change");
         assert_eq!(pubs[0].frame, 0);
@@ -273,8 +302,10 @@ mod tests {
         // Emit-on-change covers the scale fields too, not just root/chord.
         let quiet = d.render(128).emits().to_vec();
         assert!(quiet.is_empty(), "unchanged scale does not re-publish");
-        // `degrees` clamps up to 1: a 0 request still publishes a 1-degree scale (`s0` only).
-        d.set(IN_DEGREES, 0.0);
+        // A 0-degree request still publishes a 1-degree scale: `ScaleField::new` floors the length
+        // at 1 (the `I32Meta` `1..=12` bound clamps live input up front in the engine; here the
+        // floor is the last line of defence).
+        d.set(IN_DEGREES, 0);
         let pubs = d.render(128).emits().to_vec();
         assert_eq!(pubs.len(), 1);
         assert_eq!(harmony_of(&pubs[0]).scale, ScaleField::new(&[0]));

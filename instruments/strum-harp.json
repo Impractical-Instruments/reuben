@@ -20,10 +20,10 @@
         "max": 4.0
       },
       "key": {
-        "type": "f32",
-        "default": 60.0,
-        "min": 48.0,
-        "max": 60.0
+        "type": "i32",
+        "default": 60,
+        "min": 48,
+        "max": 60
       },
       "brightness": {
         "type": "f32",

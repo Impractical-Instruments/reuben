@@ -3084,6 +3084,29 @@ mod tests {
         );
     }
 
+    /// #556 PR 2: a port converted from `f32` to `i32` (here `euclid.steps`) is a **hard** load
+    /// error for an `f32`-source wire — `F32 -> I32` narrows and there is no implicit narrowing
+    /// (#556 decision 1). The sanctioned path is an `i32` source (or a `round` converter),
+    /// proven to load by the sibling case. This is the guard that the contract actually bites
+    /// after the conversion — a literal still coerces (rounds + clamps), but a *wire* must carry
+    /// the type.
+    #[test]
+    fn a_converted_i32_port_refuses_an_f32_wire() {
+        // `add_f32_value.out` is a Value `F32`; `euclid.steps` is now a Value `i32` → narrowing.
+        let f32_src = r#"{"instrument":"t","nodes":[
+            {"type":"add_f32_value","address":"/a","inputs":{"a":8.0,"b":8.0}},
+            {"type":"euclid","address":"/e","inputs":{"steps":{"from":"/a.out"}}}]}"#;
+        assert!(matches!(
+            load(f32_src, &reg()),
+            Err(LoadError::TypeMismatch { .. })
+        ));
+        // An `i32` source wires straight in — the sanctioned integer path (`i32 -> i32`).
+        let i32_src = r#"{"instrument":"t","nodes":[
+            {"type":"add_i32_value","address":"/a","inputs":{"a":8,"b":8}},
+            {"type":"euclid","address":"/e","inputs":{"steps":{"from":"/a.out"}}}]}"#;
+        assert!(load(i32_src, &reg()).is_ok());
+    }
+
     /// The widened gate must not start admitting literals on ports that genuinely take none: a
     /// bare audio buffer has no scalar to set, and an unknown name is still unknown (issue #569).
     #[test]

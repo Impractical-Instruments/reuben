@@ -19,10 +19,10 @@
         "unit": "BPM"
       },
       "key": {
-        "type": "f32",
-        "default": 45.0,
-        "min": 24.0,
-        "max": 72.0,
+        "type": "i32",
+        "default": 45,
+        "min": 24,
+        "max": 72,
         "unit": "MIDI"
       },
       "mode": {
@@ -1089,9 +1089,9 @@
       }
     },
     {
-      "type": "add_f32_value",
+      "type": "add_i32_value",
       "address": "/key_up",
-      "doc": "Pad root = key + 12 (one octave up) so the pad sits above the bass.",
+      "doc": "Pad root = key + 12 (one octave up) so the pad sits above the bass. Integer end-to-end: `/key` (i32) + 12 -> pad `harmony.root` (i32).",
       "inputs": {
         "a": {
           "from": "/key"

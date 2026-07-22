@@ -23,7 +23,7 @@
 //! - input 3: `density` (Hz) — grains spawned per second (spawn interval = `sample_rate / density`).
 //! - input 4: `spray` (ms) — max ± random jitter applied to each grain's start position.
 //! - input 5: `gain` (linear) — output scale.
-//! - input 6: `channel` — `-1` downmixes (averages) all channels; `≥0` picks that channel.
+//! - input 6: `channel` (`i32`) — `-1` downmixes (averages) all channels; `≥0` picks that channel.
 //! - input 7: `window` ([`GrainWindow`]) — the grain amplitude envelope (Hann/Triangle/Tukey/Rect).
 //! - output 0: `audio` (`Buffer`) — the summed grain cloud.
 
@@ -37,8 +37,9 @@ use crate::vocab::GrainWindow;
 // Single-source contract: one declaration -> IN_/OUT_/C_ consts + Descriptor, no drift.
 // `position`/`grain_size`/`pitch` are signal controls with scalar defaults (like the
 // oscillator's `freq`): knob-set or unwired they materialize from the default, yet an LFO
-// Signal wires straight in and is latched per grain. `density`/`spray`/`gain`/`channel` are held
-// Values; `window` references the shared `GrainWindow` vocab enum.
+// Signal wires straight in and is latched per grain. `density`/`spray`/`gain` are held f32 Values;
+// `channel` is a held `i32` (the `-1` downmix sentinel + a channel index); `window` references the
+// shared `GrainWindow` vocab enum.
 crate::operator_contract!(Granulator {
     type_name: "granulator",
     inputs: { position: f32_buffer { 0.0..=1.0, default 0.0, "", lin },
@@ -47,7 +48,7 @@ crate::operator_contract!(Granulator {
               density: f32 { 1.0..=200.0, default 20.0, "Hz", exp },
               spray: f32 { 0.0..=1000.0, default 0.0, "ms", lin },
               gain: f32 { 0.0..=4.0, default 1.0, "", lin },
-              channel: f32 { -1.0..=31.0, default -1.0, "", lin },
+              channel: i32 { -1..=31, default -1 },
               window: enum(GrainWindow) },
     outputs: { audio: f32_buffer },
     resources: { sample },
@@ -281,7 +282,7 @@ fn window_env(window: GrainWindow, x: f32) -> f32 {
 fn interp(
     store: &ResourceStore,
     id: SampleId,
-    channel: f32,
+    channel: i32,
     chans: usize,
     frames: usize,
     playhead: f64,
@@ -296,7 +297,7 @@ fn interp(
         if fr >= frames {
             return 0.0;
         }
-        if channel < 0.0 {
+        if channel < 0 {
             let mut sum = 0.0;
             for ch in 0..chans {
                 sum += store.sample(id, ch, fr);
