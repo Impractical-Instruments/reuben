@@ -66,10 +66,11 @@ Run all `reuben`/`cargo` commands from the repo root.
    2. **Register a micro-bench workload** (#30) — a forcing function in
       [`bench_support.rs`](../../../crates/reuben-core/src/bench_support.rs) (`#[cfg(feature = "bench")]`,
       so plain `cargo test` **won't** catch it — only CI's `check` job does) requires every registered
-      operator to have one. Add, **alphabetically**, in lockstep: a `w("<op>", Recipe::<R>)` entry in
-      `WORKLOADS`, the matching `"<op>"` line in `MICRO_IAI_KINDS`, and the matching
-      `#[bench::<op>(args = ("<op>",), setup = OpHarness::for_kind)]` attribute in
-      [`benches/micro_iai.rs`](../../../crates/reuben-core/benches/micro_iai.rs). Pick the `Recipe` that
+      operator to have one. Add, **alphabetically**, in two places: a `w("<op>", Recipe::<R>)` entry in
+      `WORKLOADS`, and a `<bench id> => "<op>",` line in the `micro_bench_ops!` census in
+      [`benches/micro_iai.rs`](../../../crates/reuben-core/benches/micro_iai.rs). The bench id is
+      **permanent** — CI's perf gate matches HEAD against the baseline by it, so renaming one later
+      silently drops that operator from the gate. Pick the `Recipe` that
       exercises your real per-sample path, not an idle early-out: `Default` (held defaults — most
       oscillators/filters/math), `Gate` (a `gate` input), `Clocked` (a `clock`-driven stepper, e.g.
       `sequencer`/`euclid`), `Notes`/`ChordSet` (note-event sinks), `Value` (a driven `in`),
@@ -132,7 +133,7 @@ Run all `reuben`/`cargo` commands from the repo root.
 | Thing | Action |
 |---|---|
 | New Operator: Rust impl + descriptor + tests + registration | **author** (TDD `process`, close the gate) |
-| Micro-bench workload (`bench_support.rs` + `micro_iai.rs`) | **register** the new op's `WORKLOADS`/`MICRO_IAI_KINDS`/`#[bench]` entries (part of the gate; CI's `check` job reds without it) |
+| Micro-bench workload (`bench_support.rs` + `micro_iai.rs`) | **register** the new op's `WORKLOADS` entry + its `micro_bench_ops!` census line (part of the gate; CI's `check` job reds without it) |
 | Instrument/Rig graphs | **never** — that is the `patcher` skill |
 | Surface docs (`surfaces/*.json`) | **never** — that is the `control-surface` skill |
 | authoring.md / operator-dev.md / ARCHITECTURE / README / domain terms | **never inline** — hand to `sync-docs` |
