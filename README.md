@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend: callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**63 commits** · 2026-07-12 → 2026-07-22 · 4075 data points · last: `8257258` (2026-07-22T19:40:22-04:00)
+**64 commits** · 2026-07-12 → 2026-07-22 · 4160 data points · last: `bc9093e` (2026-07-22T19:41:10-04:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -154,18 +154,18 @@ The deterministic tier of the eval harness: each task's **reference solution** (
 
 | Task | Metric | Latest | vs prev | vs first | since |
 |---|---|---:|---:|---:|---|
-| `from_scratch` | grounding tokens | 4,818 | — | ±0.0% | 2026-07-22 |
-| `from_scratch` | fixed grounding | 4,767 | — | ±0.0% | 2026-07-22 |
-| `from_scratch` | document chars | 594 | — | ±0.0% | 2026-07-22 |
-| `nudge` | grounding tokens | 6,283 | — | ±0.0% | 2026-07-22 |
-| `nudge` | fixed grounding | 4,767 | — | ±0.0% | 2026-07-22 |
-| `nudge` | document chars | 2,098 | — | ±0.0% | 2026-07-22 |
-| `repair` | grounding tokens | 4,822 | — | ±0.0% | 2026-07-22 |
-| `repair` | fixed grounding | 4,767 | — | ±0.0% | 2026-07-22 |
-| `repair` | document chars | 2,098 | — | ±0.0% | 2026-07-22 |
-| `tweak` | grounding tokens | 4,780 | — | ±0.0% | 2026-07-22 |
-| `tweak` | fixed grounding | 4,767 | — | ±0.0% | 2026-07-22 |
-| `tweak` | document chars | 2,097 | — | ±0.0% | 2026-07-22 |
+| `from_scratch` | grounding tokens | 4,818 | ±0.0% | ±0.0% | 2026-07-22 |
+| `from_scratch` | fixed grounding | 4,767 | ±0.0% | ±0.0% | 2026-07-22 |
+| `from_scratch` | document chars | 594 | ±0.0% | ±0.0% | 2026-07-22 |
+| `nudge` | grounding tokens | 6,283 | ±0.0% | ±0.0% | 2026-07-22 |
+| `nudge` | fixed grounding | 4,767 | ±0.0% | ±0.0% | 2026-07-22 |
+| `nudge` | document chars | 2,098 | ±0.0% | ±0.0% | 2026-07-22 |
+| `repair` | grounding tokens | 4,822 | ±0.0% | ±0.0% | 2026-07-22 |
+| `repair` | fixed grounding | 4,767 | ±0.0% | ±0.0% | 2026-07-22 |
+| `repair` | document chars | 2,098 | ±0.0% | ±0.0% | 2026-07-22 |
+| `tweak` | grounding tokens | 4,780 | ±0.0% | ±0.0% | 2026-07-22 |
+| `tweak` | fixed grounding | 4,767 | ±0.0% | ±0.0% | 2026-07-22 |
+| `tweak` | document chars | 2,097 | ±0.0% | ±0.0% | 2026-07-22 |
 
 - **Fixed grounding** is what every turn of every task pays before the model does anything: the server `instructions` plus every tool schema. It creeps when a tool description or the authoring guide grows, and nothing else watches it.
 - **Document chars** is freehand JSON the model had to emit, **echoes included** — a whole-document re-emit for a one-value tweak costs full price here, which is exactly the cost the surface work is chasing.
