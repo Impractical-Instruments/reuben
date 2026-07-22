@@ -17,6 +17,7 @@
 //! Codecs and filesystem IO stay out of this portable crate: the
 //! [`ResourceResolver`] trait is the seam `reuben-native` fills with a WAV decoder.
 
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::fmt;
 use std::sync::Arc;
@@ -182,6 +183,10 @@ pub enum ResolveError {
     NotFound(String),
     /// The bytes could not be decoded.
     Decode(String),
+    /// The source could not be written — a read-only resolver was asked to write, or the
+    /// write itself failed (permissions, missing parent, full disk). Distinct from
+    /// [`NotFound`](Self::NotFound): the source is addressable, the *store* refused it.
+    Write(String),
 }
 
 impl fmt::Display for ResolveError {
@@ -189,6 +194,7 @@ impl fmt::Display for ResolveError {
         match self {
             ResolveError::NotFound(s) => write!(f, "not found: {s}"),
             ResolveError::Decode(s) => write!(f, "decode failed: {s}"),
+            ResolveError::Write(s) => write!(f, "write failed: {s}"),
         }
     }
 }
@@ -229,6 +235,21 @@ pub trait ResourceResolver {
     fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
         Err(ResolveError::NotFound(source.to_string()))
     }
+
+    /// Write `text` **back** to `source` — the symmetric half of [`resolve_text`](Self::resolve_text),
+    /// so a document is a resource the same way a voice patch is: the door that resolved a
+    /// source can also persist to it. `source` is opaque and door-resolved (a filesystem path
+    /// natively, a store key on web), which is what keeps the path-addressed document API one
+    /// contract behind every door — the `#portable-tool-contracts` invariant (see rules: agent-mcp).
+    ///
+    /// The loader canonicalizes `source` before calling [`resolve_text`](Self::resolve_text),
+    /// and a write receives that **same** canonical form, so two spellings of one source stay
+    /// one identity. Defaults to [`ResolveError::Write`] so a read-only resolver stays
+    /// read-only; the filesystem resolver and in-memory resolver override it.
+    fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
+        let _ = text;
+        Err(ResolveError::Write(format!("read-only resolver: {source}")))
+    }
 }
 
 /// An in-memory [`ResourceResolver`]: sources are exact map keys, nothing touches a
@@ -238,9 +259,14 @@ pub trait ResourceResolver {
 ///
 /// Identity is the literal key ([`ResourceResolver::canonical`] stays the identity default),
 /// so a nested patch's references name library keys, not relative paths.
+///
+/// `texts` sits behind a [`RefCell`] so [`write_text`](ResourceResolver::write_text) can
+/// persist through the trait's `&self` — the same way `FsResolver` writes a file without
+/// exclusive access. `!Sync`, which is fine: the resolver is used single-threaded within a
+/// load, and the coordinator only ever needs it `Send` (a `RefCell` of `Send` data is `Send`).
 #[derive(Debug, Clone, Default)]
 pub struct MemoryResolver {
-    texts: BTreeMap<String, String>,
+    texts: RefCell<BTreeMap<String, String>>,
     samples: BTreeMap<String, SampleBuffer>,
 }
 
@@ -251,7 +277,7 @@ impl MemoryResolver {
 
     /// Register instrument JSON (or any text resource) under `key`.
     pub fn insert_text(&mut self, key: impl Into<String>, text: impl Into<String>) -> &mut Self {
-        self.texts.insert(key.into(), text.into());
+        self.texts.get_mut().insert(key.into(), text.into());
         self
     }
 
@@ -272,9 +298,19 @@ impl ResourceResolver for MemoryResolver {
 
     fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
         self.texts
+            .borrow()
             .get(source)
             .cloned()
             .ok_or_else(|| ResolveError::NotFound(source.to_string()))
+    }
+
+    /// Persist `text` under the (canonical) key — the non-file door writing its map. Symmetric
+    /// with [`resolve_text`](Self::resolve_text): what you write is what a later resolve reads.
+    fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
+        self.texts
+            .borrow_mut()
+            .insert(source.to_string(), text.to_string());
+        Ok(())
     }
 }
 
@@ -312,5 +348,30 @@ mod tests {
         assert_eq!(s.channels(id), 1);
         assert_eq!(s.frames(id), 2);
         assert_eq!(s.sample(id, 0, 0), 0.5);
+    }
+
+    #[test]
+    fn memory_resolver_write_text_round_trips_through_shared_ref() {
+        let r = MemoryResolver::new();
+        // Write through `&self` — the trait's write half, no `&mut` needed.
+        let resolver: &dyn ResourceResolver = &r;
+        resolver.write_text("patch.json", "{\"v\":3}").unwrap();
+        assert_eq!(resolver.resolve_text("patch.json").unwrap(), "{\"v\":3}");
+        // A second write to the same source overwrites — one source, one identity.
+        resolver.write_text("patch.json", "{\"v\":4}").unwrap();
+        assert_eq!(resolver.resolve_text("patch.json").unwrap(), "{\"v\":4}");
+    }
+
+    #[test]
+    fn read_only_resolver_refuses_writes() {
+        // A resolver that overrides nothing keeps the default read-only write.
+        struct ReadOnly;
+        impl ResourceResolver for ReadOnly {
+            fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+                Err(ResolveError::NotFound(source.to_string()))
+            }
+        }
+        let err = ReadOnly.write_text("anything", "x").unwrap_err();
+        assert!(matches!(err, ResolveError::Write(_)), "got {err:?}");
     }
 }
