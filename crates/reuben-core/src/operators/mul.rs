@@ -15,19 +15,25 @@
 //! - input 1: `b` (`Float`) — second operand. Unwired default `1`.
 //! - output 0: `out` — `a * b`.
 
-/// The op's scalar math, written once (the pure-fn seam) and generic over the number type so
-/// the macro can instantiate it per `numbers` entry (`f32` today).
+use crate::operators::pointwise::PointwiseNum;
+
+/// The op's scalar math, written once (the pure-fn seam) and generic over the number type so the
+/// macro can instantiate it per `variants:` entry.
+///
+/// [`PointwiseNum`] rather than `core::ops::Mul`, and here it is load-bearing rather than
+/// precautionary: `mul` is the one family member the declared operand range cannot bound. Two
+/// operands at the type-wide `±1e6` sentinel multiply to `1e12`, past `i32::MAX` — a debug-build
+/// panic on the render thread. It saturates instead, as the `f32` instance saturates to `inf`.
 #[inline]
-fn mul_fn<T: core::ops::Mul<Output = T>>(a: T, b: T) -> T {
-    a * b
+fn mul_fn<T: PointwiseNum>(a: T, b: T) -> T {
+    a.mul(b)
 }
 
 // One declaration -> MulF32Value + MulF32Signal. The multiplicative identity `1` is the
 // operands' declared default, so wiring only one side passes it through. The generated
 // `defaults_are_data` test pins that `1` — a forgotten default would fail it, not silently zero.
 crate::number_operator_contract!(Mul {
-    numbers:  [f32],
-    carriers: [value, signal],
+    variants: [f32 value, f32 signal, i32 value],
     inputs:   { a: number { default 1.0 }, b: number { default 1.0 } },
     outputs:  { out },
     function: mul_fn(a, b),
@@ -37,7 +43,8 @@ crate::number_operator_contract!(Mul {
 mod tests {
     use super::mul_f32_signal::{self, MulF32Signal};
     use super::mul_f32_value::{self, MulF32Value};
-    use crate::operators::math_test::{signal_out, value_emits};
+    use super::mul_i32_value::{self, MulI32Value};
+    use crate::operators::math_test::{i32_value_emits, signal_out, value_emits};
 
     /// Drive the signal form; `None` leaves the port unwired (engine materializes its identity `1`).
     fn sig(a: Option<&[f32]>, b: Option<&[f32]>, n: usize) -> Vec<f32> {
@@ -85,5 +92,35 @@ mod tests {
     #[test]
     fn unwired_held_b_is_unity() {
         assert_eq!(val(Some(7.0), None), vec![7.0]);
+    }
+
+    /// Drive the `i32` value form; returns the emitted product(s) as integers.
+    fn val_i32(a: Option<i32>, b: Option<i32>) -> Vec<i32> {
+        i32_value_emits(MulI32Value::new(), |d| {
+            if let Some(a) = a {
+                d.set(mul_i32_value::IN_A, a);
+            }
+            if let Some(b) = b {
+                d.set(mul_i32_value::IN_B, b);
+            }
+        })
+    }
+
+    #[test]
+    fn products_held_i32_operands() {
+        assert_eq!(val_i32(Some(4), Some(3)), vec![12]);
+        assert_eq!(val_i32(Some(-4), Some(3)), vec![-12]);
+        // The same multiplicative identity `1` as the f32 carriers.
+        assert_eq!(val_i32(Some(7), None), vec![7]);
+    }
+
+    // `mul` is the family member the port range cannot bound: two operands at the type-wide `±1e6`
+    // sentinel — both perfectly legal, both survivors of the inbound clamp — multiply to `1e12`,
+    // past `i32::MAX`. Saturating is what keeps that off the render thread as a value rather than
+    // a debug-build panic. This is the case that motivated `PointwiseNum`.
+    #[test]
+    fn i32_product_saturates_rather_than_overflowing() {
+        assert_eq!(val_i32(Some(1_000_000), Some(1_000_000)), vec![i32::MAX]);
+        assert_eq!(val_i32(Some(-1_000_000), Some(1_000_000)), vec![i32::MIN]);
     }
 }

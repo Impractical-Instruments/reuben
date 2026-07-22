@@ -29,8 +29,7 @@ fn max_fn<T: PartialOrd>(a: T, b: T) -> T {
 // One declaration -> MaxF32Value + MaxF32Signal. `b` defaults to the range minimum so an
 // unwired second operand is a no-op (`max(a, -1e6) == a`), passing `a` through.
 crate::number_operator_contract!(Max {
-    numbers:  [f32],
-    carriers: [value, signal],
+    variants: [f32 value, f32 signal, i32 value],
     inputs:   { a: number { default 0.0 }, b: number { default min } },
     outputs:  { out },
     function: max_fn(a, b),

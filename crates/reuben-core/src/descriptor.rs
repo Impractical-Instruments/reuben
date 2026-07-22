@@ -331,6 +331,21 @@ impl Port {
             _ => None,
         }
     }
+
+    /// This port's declared **numeric** unwired default, whichever meta slot carries it: the
+    /// [`F32Meta`] field for an `f32`/`f32_buffer` port, the [`I32Meta`] *inside*
+    /// [`PortType::I32`] for an integer one. `None` for a port with no number default (a bare
+    /// audio buffer, an enum, a `Note` stream).
+    ///
+    /// The two homes are a wart of the descriptor's shape, not a distinction a caller asking
+    /// "what does this port default to" should have to know. Widened to `f64` so both answer in
+    /// one type — every value either slot can hold is exact there.
+    pub fn number_default(&self) -> Option<f64> {
+        match &self.ty {
+            PortType::I32 { meta } => meta.as_ref().map(|m| f64::from(m.default)),
+            _ => self.meta.as_ref().map(|m| f64::from(m.default)),
+        }
+    }
 }
 
 /// A declared **resource slot**: external data (a sample) a node depends on, named so the

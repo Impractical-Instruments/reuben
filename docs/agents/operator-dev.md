@@ -180,15 +180,23 @@ Other notes:
   ports get typed handles too). One operator per module (the old `math.rs` was split
   one-file-per-op).
 - **Pointwise number ops use a higher-level macro.** `add`, `mul`, `power`, `map` are each a single
-  `crate::number_operator_contract!(..)` call over one scalar fn, which generates **both carriers**
-  (`*F32Value` + `*F32Signal`) — their contracts, a `ValueOp`/`SignalOp` impl naming the contract's
-  handle consts, registration, and a defaults-are-data test. Each carrier's name is a `pub type`
+  `crate::number_operator_contract!(..)` call over one scalar fn, which generates every operator its
+  `variants:` list names — their contracts, a `ValueOp`/`SignalOp` impl naming the contract's
+  handle consts, registration, and a defaults-are-data test. Each name is a `pub type`
   alias for the matching **shell** ([`operator::shell`](../../crates/reuben-core/src/operator/shell.rs)),
   which owns `process`; the macro does not emit one. The criterion:
   an op is macro-eligible iff it is **stateless pointwise** (output sample = fn of this sample's
   inputs only) **and** every operand is a number or held enum mode. `differentiate`/`integrate` are
   **stateful** (they carry state across blocks), so they stay hand-written `operator_contract!` ops
   and are **signal-only** (a value form would shatter their continuous one-sample-`dt` stream).
+- **`variants:` is a written list, one entry per operator**, each `<number type> <carrier>` —
+  `[f32 value, f32 signal, i32 value]` yields `AddF32Value`, `AddF32Signal`, `AddI32Value`. Not a
+  `numbers × carriers` product: `i32` has no dense buffer form, so `i32 signal` is rejected, and
+  integer ops are value-only. What decides whether an op *can* list a number type is its scalar fn's
+  own bounds — listing `i32 value` for a concrete-`f32` fn like `power`'s fails to compile, which is
+  the intended guard. The five operations that can overflow (add/sub/mul/neg/abs) bind
+  [`PointwiseNum`](../../crates/reuben-core/src/operators/pointwise.rs) rather than `core::ops`, so
+  they saturate instead of panicking on the render thread at `i32`.
 - **Product vocab types get their `unpack` from a census macro.** `crate::unpack_op!(Note { pitch:
   pitch, velocity: f32 })` in `operators/unpack.rs` generates an `unpack_<type>` op that reads the
   whole value as a `Note` event on `in` and emits each field as a held `Value` — the Event→Value

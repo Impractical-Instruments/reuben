@@ -39,6 +39,8 @@ pub mod output;
 pub mod pan;
 pub mod pipe;
 pub mod pitch2freq;
+/// The total arithmetic the generated number operators' scalar fns are written over (issue #556).
+pub mod pointwise;
 pub mod power;
 pub mod reciprocal;
 pub mod resonator;

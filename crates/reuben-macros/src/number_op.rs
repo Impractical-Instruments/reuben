@@ -3,18 +3,27 @@
 //! A *stateless pointwise* math op (output sample = fn of this sample's inputs only) whose operands
 //! are numbers (and optionally held enum modes) is pure boilerplate apart from its scalar function
 //! and its operand defaults. This macro takes that one scalar function plus an operand list and emits
-//! the **whole** family across two axes:
+//! the **whole** family from one `variants:` list.
 //!
-//! - `numbers` — the number type(s) the op supports (`f32` today; `i32`, … later). Each becomes a
-//!   variant whose buffers/scalars are that concrete type.
-//! - `carriers` — `value` (held scalars, output `set` once) and/or `signal` (per-sample buffers,
-//!   output looped). Omit one for a single-form op.
+//! Each entry is `<number type> <carrier>` and names exactly one operator to emit:
 //!
-//! For each `numbers × carriers` pair it emits a submodule (isolating the `IN_`/`OUT_` consts) with
-//! the contract, a stateless op carrier (`AddF32SignalOp`) whose `ValueOp`/`SignalOp` impl names the
-//! contract's handle consts and the shared scalar fn, a `pub type` aliasing that carrier to the
-//! carrier's **shell**, `register_operator!`, and a contract-derived `defaults_are_data` test. The
-//! alias is re-exported at the call site.
+//! - the **number type** (`f32`, `i32`) fixes the ports' scalar type and the type the scalar fn is
+//!   instantiated at,
+//! - the **carrier** is `value` (held scalars, output `set` once) or `signal` (per-sample buffers,
+//!   output looped).
+//!
+//! It is a written list rather than a `numbers × carriers` cross product because the product is
+//! **not** full: `i32` has no dense buffer form (`PortTy` has `F32Buffer` and no `I32Buffer` —
+//! issue #560), so `i32 signal` does not exist and is rejected. A cross product would have to carry
+//! a per-number carrier table to say so, and would still not reach the converter operators, whose
+//! input and output types differ. Listing the instantiations says it directly, and a missing entry
+//! is a missing operator rather than a silently-skipped cell.
+//!
+//! For each entry it emits a submodule (isolating the `IN_`/`OUT_` consts) with the contract, a
+//! stateless op carrier (`AddF32SignalOp`) whose `ValueOp`/`SignalOp` impl names the contract's
+//! handle consts and the shared scalar fn, a `pub type` aliasing that carrier to the carrier's
+//! **shell**, `register_operator!`, and a contract-derived `defaults_are_data` test. The alias is
+//! re-exported at the call site.
 //!
 //! (Plain code spans, not intra-doc links: this crate cannot depend on `reuben-core`, where
 //! `operator::shell` lives — the dependency runs the other way.)
@@ -25,23 +34,34 @@
 //!
 //! ```ignore
 //! number_operator_contract!(Add {
-//!     numbers:  [f32],
-//!     carriers: [value, signal],
-//!     inputs:   { in_a: number { default 0.0 }, in_b: number { default 0.0 } },
+//!     variants: [f32 value, f32 signal, i32 value],
+//!     inputs:   { in_a: number { default 0 }, in_b: number { default 0 } },
 //!     outputs:  { out },
 //!     function: add_fn(in_a, in_b),
 //! });
-//! // -> add::AddF32Value (type_name "add_f32_value") + add::AddF32Signal ("add_f32_signal")
+//! // -> add::AddF32Value ("add_f32_value") + add::AddF32Signal ("add_f32_signal")
+//! //  + add::AddI32Value ("add_i32_value")
 //! ```
 //!
 //! **Operand kinds.** A `number` operand follows the carrier (a per-sample buffer in `signal`, a held
 //! scalar in `value`). An `enum(VocabType)` operand is *always held* (enums have no buffer form), in
 //! both carriers. The scalar fn receives every operand by the names in the `function:` call-shape.
+//!
+//! **One operand declaration serves every variant.** A declared range or `default` is written
+//! type-neutrally and projected per number type, so an operand's `default 1` is `1.0` in the `f32`
+//! instantiations and `1` in the `i32` ones. A value that cannot survive the projection — a
+//! fractional `default 0.5` on an op that also lists an `i32` variant — is a compile error at the
+//! operand, not a silent truncation.
+//!
+//! **What restricts an op to a subset of the number types is the scalar fn's own bounds.** `power`
+//! lists only `f32` entries because its `shape` is a concrete `f32` fn; listing `i32 value` for it
+//! fails to compile at the call, which is the point (issue #556).
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
 use reuben_contract::{
-    naming, Curve, F32Meta, OperatorSpec, PortSpec, PortTy, NUMBER_MAX, NUMBER_MIN,
+    naming, Curve, F32Meta, I32Meta, OperatorSpec, PortSpec, PortTy, NUMBER_MAX, NUMBER_MAX_I32,
+    NUMBER_MIN, NUMBER_MIN_I32,
 };
 use syn::ext::IdentExt;
 use syn::parse::{Parse, ParseStream};
@@ -61,7 +81,7 @@ pub(crate) fn expand(input: TokenStream) -> TokenStream {
 }
 
 /// Which carrier a generated variant uses.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Carrier {
     /// Held scalars in, one held scalar out (`set` once). Block-slicing keeps it sample-accurate.
     Value,
@@ -79,11 +99,102 @@ impl Carrier {
     }
 }
 
+/// The number type a variant instantiates at — the ports' scalar type and the type the shared
+/// scalar fn is called at.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NumKind {
+    F32,
+    I32,
+}
+
+impl NumKind {
+    /// The PascalCase fragment in the struct name — `AddF32Value`'s `F32`.
+    fn pascal(self) -> &'static str {
+        match self {
+            NumKind::F32 => "F32",
+            NumKind::I32 => "I32",
+        }
+    }
+
+    /// The Rust type the handles and the scalar fn are written at.
+    fn ty(self) -> TokenStream {
+        match self {
+            NumKind::F32 => quote! { f32 },
+            NumKind::I32 => quote! { i32 },
+        }
+    }
+
+    /// Whether this type has a dense per-sample buffer form, and so a `signal` carrier. Only `f32`
+    /// does: [`PortTy`] has `F32Buffer` and no integer counterpart (issue #560).
+    fn has_buffer(self) -> bool {
+        matches!(self, NumKind::F32)
+    }
+
+    /// The type-wide default range — the `min`/`max` grammar sentinel resolved at this type.
+    fn type_wide_range(self) -> (f64, f64) {
+        match self {
+            NumKind::F32 => (f64::from(NUMBER_MIN), f64::from(NUMBER_MAX)),
+            NumKind::I32 => (f64::from(NUMBER_MIN_I32), f64::from(NUMBER_MAX_I32)),
+        }
+    }
+
+    /// Project a type-neutral operand bound/default onto this number type's port meta, as one
+    /// `(min, max, default)` triple. `Err` when the declared value has no exact representation
+    /// here — a fractional literal in an `i32` instantiation, which `as i32` would silently
+    /// truncate. `at` locates the error on the operand that declared it.
+    fn meta(self, at: Span, (min, max, default): (f64, f64, f64)) -> syn::Result<PortTy> {
+        Ok(match self {
+            NumKind::F32 => PortTy::F32(F32Meta {
+                min: min as f32,
+                max: max as f32,
+                default: default as f32,
+                unit: String::new(),
+                curve: Curve::Linear,
+            }),
+            NumKind::I32 => PortTy::I32(I32Meta {
+                min: exact_i32(at, min)?,
+                max: exact_i32(at, max)?,
+                default: exact_i32(at, default)?,
+            }),
+        })
+    }
+}
+
+/// A declared operand bound/default, narrowed to `i32` only if it lands exactly on one. The
+/// alternative — `as i32` — turns a `default 0.5` into `0` with no diagnostic, which is precisely
+/// the class of silent miscompile the `numbers:` axis used to produce (issue #556).
+fn exact_i32(at: Span, v: f64) -> syn::Result<i32> {
+    if v.fract() != 0.0 || v < f64::from(i32::MIN) || v > f64::from(i32::MAX) {
+        return Err(Error::new(
+            at,
+            format!(
+                "`{v}` is not an `i32`: this operand's bound/default must be a whole number \
+                 within i32 for the op's `i32` variants (drop the `i32` entries from `variants:` \
+                 if the op is float-only)"
+            ),
+        ));
+    }
+    Ok(v as i32)
+}
+
+/// One entry of `variants:` — the operator to emit, as `<number type> <carrier>`.
+#[derive(Clone, Copy)]
+struct Variant {
+    num: NumKind,
+    carrier: Carrier,
+}
+
 /// One declared operand.
 enum OperandKind {
     /// A number operand: follows the carrier. `default` falls back to the number type's zero; the
-    /// range falls back to the type-wide [`NUMBER_MIN`]/[`NUMBER_MAX`].
-    Number { min: f32, max: f32, default: f32 },
+    /// range falls back to the type-wide sentinel ([`NUMBER_MIN`]/[`NUMBER_MAX`] at `f32`).
+    ///
+    /// Held as `f64` — **type-neutral**, because one operand declaration serves every entry in
+    /// `variants:`, which may instantiate at more than one number type. The projection onto a
+    /// concrete type happens per variant, in [`NumKind::meta`], where a value that does not fit
+    /// that type is an error rather than a silent cast. `f64` is exact for every `f32` literal and
+    /// every `i32`, so the neutral form loses nothing on the way through.
+    Number { min: f64, max: f64, default: f64 },
     /// A held enum mode operand, naming its shared `vocab` type. Always held, both carriers.
     Enum(Ident),
 }
@@ -95,10 +206,12 @@ struct Operand {
 }
 
 struct NumberOpInput {
-    /// The op family base, e.g. `Add` — combined with number + carrier into `AddF32Value`.
+    /// The op family base, e.g. `Add` — combined with each variant's number + carrier into
+    /// `AddF32Value`.
     base: Ident,
-    numbers: Vec<Ident>,
-    carriers: Vec<Carrier>,
+    /// The operators to emit, one per entry — see the module doc on why this is a written list
+    /// rather than a `numbers × carriers` product.
+    variants: Vec<Variant>,
     inputs: Vec<Operand>,
     /// The single output's name (un-raw'd).
     output: Ident,
@@ -110,31 +223,24 @@ struct NumberOpInput {
 
 impl NumberOpInput {
     fn render(&self) -> TokenStream {
-        let mut variants = Vec::new();
-        for number in &self.numbers {
-            for &carrier in &self.carriers {
-                match self.render_variant(number, carrier) {
-                    Ok(toks) => variants.push(toks),
-                    Err(e) => return e.to_compile_error(),
-                }
+        let mut rendered = Vec::new();
+        for &v in &self.variants {
+            match self.render_variant(v) {
+                Ok(toks) => rendered.push(toks),
+                Err(e) => return e.to_compile_error(),
             }
         }
-        quote! { #(#variants)* }
+        quote! { #(#rendered)* }
     }
 
-    /// Build, validate, and render one `number × carrier` variant: its submodule + re-export.
-    fn render_variant(&self, number: &Ident, carrier: Carrier) -> syn::Result<TokenStream> {
-        let struct_name = format!(
-            "{}{}{}",
-            self.base,
-            number.to_string().to_uppercase(),
-            carrier.pascal()
-        );
+    /// Build, validate, and render one variant: its submodule + re-export.
+    fn render_variant(&self, v: Variant) -> syn::Result<TokenStream> {
+        let struct_name = format!("{}{}{}", self.base, v.num.pascal(), v.carrier.pascal());
         let struct_ident = Ident::new(&struct_name, self.base.span());
         let type_name = naming::type_name_from_struct(&struct_name);
         let mod_ident = Ident::new(&type_name, self.base.span());
 
-        let spec = self.to_spec(&type_name, carrier);
+        let spec = self.to_spec(&type_name, v)?;
         if let Err(err) = reuben_contract::validate(&spec) {
             return Err(Error::new(self.base.span(), err.message));
         }
@@ -150,13 +256,13 @@ impl NumberOpInput {
         // v0 when disassembling or profiling these.)
         let op_ident = Ident::new(&format!("{struct_name}Op"), self.base.span());
         let contract = render_contract(&op_ident, &model);
-        let op_impl = self.op_impl(&op_ident, number, carrier, &model);
-        let shell = match carrier {
+        let op_impl = self.op_impl(&op_ident, v, &model);
+        let shell = match v.carrier {
             Carrier::Value => quote! { ::reuben_core::operator::shell::ValueShell },
             Carrier::Signal => quote! { ::reuben_core::operator::shell::SignalShell },
         };
 
-        let defaults_test = self.defaults_test(&struct_ident, &model);
+        let defaults_test = self.defaults_test(&struct_ident);
 
         Ok(quote! {
             pub mod #mod_ident {
@@ -192,14 +298,9 @@ impl NumberOpInput {
     /// `HANDLES` **is** the contract-emitted const tuple — `(IN_A, IN_B)` — so the port index the
     /// shell reads and the one the descriptor publishes are the same datum, as they were when
     /// `process` was emitted next to them.
-    fn op_impl(
-        &self,
-        op_ident: &Ident,
-        number: &Ident,
-        carrier: Carrier,
-        model: &ContractModel,
-    ) -> TokenStream {
-        let handle_tys = self.inputs.iter().map(|op| match (&op.kind, carrier) {
+    fn op_impl(&self, op_ident: &Ident, v: Variant, model: &ContractModel) -> TokenStream {
+        let number = v.num.ty();
+        let handle_tys = self.inputs.iter().map(|op| match (&op.kind, v.carrier) {
             (OperandKind::Number { .. }, Carrier::Signal) => quote! {
                 ::reuben_core::operator::In<::reuben_core::operator::form::SignalF32>
             },
@@ -222,7 +323,7 @@ impl NumberOpInput {
         let locals = self.inputs.iter().map(|op| raw(&op.name));
         let call = self.call();
 
-        let (trait_path, out_ty, extra) = match carrier {
+        let (trait_path, out_ty, extra) = match v.carrier {
             Carrier::Value => (
                 quote! { ::reuben_core::operator::shell::ValueOp },
                 quote! {
@@ -238,8 +339,10 @@ impl NumberOpInput {
                 quote! {},
             ),
         };
-        let ret = match carrier {
-            Carrier::Value => quote! { #number },
+        // The signal carrier is `f32` by construction — it is the only type with a buffer form,
+        // which is why `variants:` rejects `i32 signal` at the parse.
+        let ret = match v.carrier {
+            Carrier::Value => number.clone(),
             Carrier::Signal => quote! { f32 },
         };
 
@@ -266,54 +369,64 @@ impl NumberOpInput {
         }
     }
 
-    /// The per-variant [`OperatorSpec`] (ports typed for this carrier), reusing the shared validator
-    /// + builder so the contract is identical to a hand-written `operator_contract!`.
-    fn to_spec(&self, type_name: &str, carrier: Carrier) -> OperatorSpec {
-        let num_meta = |min: f32, max: f32, default: f32| F32Meta {
-            min,
-            max,
-            default,
-            unit: String::new(),
-            curve: Curve::Linear,
-        };
+    /// The per-variant [`OperatorSpec`] — ports typed for **this variant's number type and
+    /// carrier** — reusing the shared validator + builder so the contract is identical to a
+    /// hand-written `operator_contract!`.
+    ///
+    /// This is where the declared number type reaches the ports. It used to hardcode `F32Meta` /
+    /// `PortTy::F32` / `PortTy::F32Buffer` and never read the declared type at all, so a
+    /// non-`f32` entry generated an operator *named* for that type whose every port was `f32` —
+    /// a well-formed contract, wrong on the wire, caught by nothing (issue #556).
+    fn to_spec(&self, type_name: &str, v: Variant) -> syn::Result<OperatorSpec> {
         let inputs = self
             .inputs
             .iter()
             .map(|op| {
                 let ty = match &op.kind {
-                    OperandKind::Number { min, max, default } => match carrier {
+                    OperandKind::Number { min, max, default } => match v.carrier {
                         // Signal: a per-sample buffer carrying its scalar default + knob range.
-                        Carrier::Signal => PortTy::F32Buffer(Some(num_meta(*min, *max, *default))),
-                        Carrier::Value => PortTy::F32(num_meta(*min, *max, *default)),
+                        // `f32` by construction — `variants:` rejects a bufferless type here.
+                        Carrier::Signal => PortTy::F32Buffer(Some(F32Meta {
+                            min: *min as f32,
+                            max: *max as f32,
+                            default: *default as f32,
+                            unit: String::new(),
+                            curve: Curve::Linear,
+                        })),
+                        Carrier::Value => v.num.meta(op.name.span(), (*min, *max, *default))?,
                     },
                     // Enum modes are held regardless of carrier.
                     OperandKind::Enum(vocab) => PortTy::Enum(vocab.to_string()),
                 };
-                PortSpec {
+                Ok(PortSpec {
                     name: op.name.to_string(),
                     ty,
-                }
+                })
             })
-            .collect();
-        let output = match carrier {
-            // The signal output is a bare buffer; the value output is a held scalar with the
-            // type-wide range so an unwired downstream still materialises a sane default.
+            .collect::<syn::Result<Vec<_>>>()?;
+        // The signal output is a bare buffer; the value output is a held scalar with the type-wide
+        // range so an unwired downstream still materialises a sane default. Zero is the identity
+        // the range is centred on at either number type.
+        let output = match v.carrier {
             Carrier::Signal => PortSpec {
                 name: self.output.to_string(),
                 ty: PortTy::F32Buffer(None),
             },
-            Carrier::Value => PortSpec {
-                name: self.output.to_string(),
-                ty: PortTy::F32(num_meta(NUMBER_MIN, NUMBER_MAX, 0.0)),
-            },
+            Carrier::Value => {
+                let (min, max) = v.num.type_wide_range();
+                PortSpec {
+                    name: self.output.to_string(),
+                    ty: v.num.meta(self.output.span(), (min, max, 0.0))?,
+                }
+            }
         };
-        OperatorSpec {
+        Ok(OperatorSpec {
             type_name: type_name.to_string(),
             inputs,
             outputs: vec![output],
             constants: Vec::new(),
             resources: Vec::new(),
-        }
+        })
     }
 
     /// The scalar fn call, `func(arg, arg, ..)`, args referencing the operand locals (raw idents so
@@ -327,24 +440,31 @@ impl NumberOpInput {
     /// The contract-derived `defaults_are_data` test: every number operand's descriptor default
     /// equals its declared default. (A forgotten non-zero identity — e.g. a `mul` operand left at
     /// the zero fallback — fails here rather than silently zeroing patches.)
-    fn defaults_test(&self, struct_ident: &Ident, model: &ContractModel) -> TokenStream {
-        let checks = self
-            .inputs
-            .iter()
-            .zip(&model.inputs)
-            .filter_map(|(op, _)| match &op.kind {
-                OperandKind::Number { default, .. } => {
-                    let name = op.name.to_string();
-                    let def = proc_macro2::Literal::f32_unsuffixed(*default);
-                    Some(quote! {
-                        let (_, meta) = d.settable_inputs()
-                            .find(|(n, _)| *n == #name)
-                            .expect(concat!(#name, " is a settable number operand"));
-                        assert_eq!(meta.default, #def, #name);
-                    })
-                }
-                OperandKind::Enum(_) => None,
-            });
+    ///
+    /// Asserted through [`Port::number_default`], which reads whichever meta slot this variant's
+    /// number type uses — so the one test body serves every variant, and an operand whose declared
+    /// default did *not* survive the projection onto the port would fail here as a mismatch even if
+    /// [`NumKind::meta`] had let it through.
+    fn defaults_test(&self, struct_ident: &Ident) -> TokenStream {
+        let checks = self.inputs.iter().filter_map(|op| match &op.kind {
+            OperandKind::Number { default, .. } => {
+                let name = op.name.to_string();
+                // The declared default in the neutral `f64` the accessor answers in, so the
+                // comparison does not depend on which number type this variant instantiated at.
+                let def = proc_macro2::Literal::f64_unsuffixed(*default);
+                Some(quote! {
+                    let p = d.inputs.iter()
+                        .find(|p| p.name == #name)
+                        .expect(concat!(#name, " is a declared input"));
+                    assert_eq!(
+                        p.number_default(),
+                        Some(#def),
+                        concat!(#name, " default is contract data"),
+                    );
+                })
+            }
+            OperandKind::Enum(_) => None,
+        });
         quote! {
             #[cfg(test)]
             mod generated_defaults {
@@ -374,8 +494,7 @@ impl Parse for NumberOpInput {
         let body;
         braced!(body in input);
 
-        let mut numbers = None;
-        let mut carriers = None;
+        let mut variants = None;
         let mut inputs = None;
         let mut output = None;
         let mut func = None;
@@ -385,8 +504,7 @@ impl Parse for NumberOpInput {
             let key: Ident = body.parse()?;
             body.parse::<Token![:]>()?;
             match key.to_string().as_str() {
-                "numbers" => numbers = Some(parse_ident_array(&body)?),
-                "carriers" => carriers = Some(parse_carriers(&body)?),
+                "variants" => variants = Some(parse_variants(&body)?),
                 "inputs" => inputs = Some(parse_operands(&body)?),
                 "outputs" => output = Some(parse_single_output(&body)?),
                 "function" => {
@@ -397,7 +515,9 @@ impl Parse for NumberOpInput {
                 other => {
                     return Err(Error::new(
                         key.span(),
-                        format!("unknown field `{other}` (expected numbers/carriers/inputs/outputs/function)"),
+                        format!(
+                            "unknown field `{other}` (expected variants/inputs/outputs/function)"
+                        ),
                     ))
                 }
             }
@@ -409,8 +529,7 @@ impl Parse for NumberOpInput {
         let missing = |f: &str| Error::new(base.span(), format!("missing `{f}:` field"));
         Ok(NumberOpInput {
             base: base.clone(),
-            numbers: numbers.ok_or_else(|| missing("numbers"))?,
-            carriers: carriers.ok_or_else(|| missing("carriers"))?,
+            variants: variants.ok_or_else(|| missing("variants"))?,
             inputs: inputs.ok_or_else(|| missing("inputs"))?,
             output: output.ok_or_else(|| missing("outputs"))?,
             func: func.ok_or_else(|| missing("function"))?,
@@ -419,40 +538,64 @@ impl Parse for NumberOpInput {
     }
 }
 
-/// `[f32, i32]` — a bracketed, comma-separated ident list.
-fn parse_ident_array(input: ParseStream) -> syn::Result<Vec<Ident>> {
+/// `[f32 value, f32 signal, i32 value]` — the operators to emit, one per entry.
+///
+/// Each entry is `<number type> <carrier>`. An entry naming a `signal` carrier for a type with no
+/// buffer form is rejected here rather than emitted: that is the sparsity the old
+/// `numbers × carriers` product could not express, and emitting it would produce an operator whose
+/// name promises an integer signal the engine has no way to carry.
+fn parse_variants(input: ParseStream) -> syn::Result<Vec<Variant>> {
     let body;
     bracketed!(body in input);
-    let mut out = Vec::new();
+    let mut out: Vec<Variant> = Vec::new();
     while !body.is_empty() {
-        out.push(body.parse::<Ident>()?);
-        if body.peek(Token![,]) {
-            body.parse::<Token![,]>()?;
-        }
-    }
-    Ok(out)
-}
-
-/// `[value, signal]` — bracketed carrier keywords.
-fn parse_carriers(input: ParseStream) -> syn::Result<Vec<Carrier>> {
-    let body;
-    bracketed!(body in input);
-    let mut out = Vec::new();
-    while !body.is_empty() {
-        let kw: Ident = body.parse()?;
-        out.push(match kw.to_string().as_str() {
+        let num_kw: Ident = body.parse()?;
+        let num = match num_kw.to_string().as_str() {
+            "f32" => NumKind::F32,
+            "i32" => NumKind::I32,
+            other => {
+                return Err(Error::new(
+                    num_kw.span(),
+                    format!("number type must be `f32` or `i32`, got `{other}`"),
+                ))
+            }
+        };
+        let car_kw: Ident = body.parse()?;
+        let carrier = match car_kw.to_string().as_str() {
             "value" => Carrier::Value,
             "signal" => Carrier::Signal,
             other => {
                 return Err(Error::new(
-                    kw.span(),
+                    car_kw.span(),
                     format!("carrier must be `value` or `signal`, got `{other}`"),
                 ))
             }
-        });
+        };
+        if matches!(carrier, Carrier::Signal) && !num.has_buffer() {
+            return Err(Error::new(
+                car_kw.span(),
+                format!(
+                    "`{num_kw}` has no `signal` carrier: it has no dense buffer form, so there is \
+                     nothing for a per-sample port to carry (issue #560). Integer operators are \
+                     value-only — drop this entry and keep the `{num_kw} value` one."
+                ),
+            ));
+        }
+        // Two entries for the same operator would emit the same module and `register_operator!`
+        // twice — a duplicate-symbol error far from its cause.
+        if out.iter().any(|v| v.num == num && v.carrier == carrier) {
+            return Err(Error::new(
+                num_kw.span(),
+                format!("duplicate variant `{num_kw} {car_kw}`"),
+            ));
+        }
+        out.push(Variant { num, carrier });
         if body.peek(Token![,]) {
             body.parse::<Token![,]>()?;
         }
+    }
+    if out.is_empty() {
+        return Err(input.error("`variants:` must name at least one operator to emit"));
     }
     Ok(out)
 }
@@ -491,12 +634,17 @@ fn parse_operands(input: ParseStream) -> syn::Result<Vec<Operand>> {
 }
 
 /// The optional `{ [LO..=HI,] [default D] }` on a `number` operand. Missing range -> type-wide
-/// [`NUMBER_MIN`]/[`NUMBER_MAX`]; missing default -> `0.0` (the number type's zero). A range endpoint
+/// [`NUMBER_MIN`]/[`NUMBER_MAX`]; missing default -> `0` (the number type's zero). A range endpoint
 /// may be written `min`/`max` (the type-wide sentinel), and `default` may be written `default max` /
 /// `default min` to park the operand at its own range edge (issue #127) — e.g. `min`'s no-op `b`.
+///
+/// Answers in the type-neutral `f64`: this one declaration serves every entry in `variants:`, so
+/// the number type is not known here. An omitted range falls back to the `f32` sentinel and stays
+/// correct at every type, because [`NUMBER_MIN_I32`] is *derived from* [`NUMBER_MIN`] — projecting
+/// the fallback onto `i32` lands exactly on the integer sentinel rather than merely near it.
 fn parse_number_meta(input: ParseStream) -> syn::Result<OperandKind> {
-    let mut min = NUMBER_MIN;
-    let mut max = NUMBER_MAX;
+    let mut min = f64::from(NUMBER_MIN);
+    let mut max = f64::from(NUMBER_MAX);
     let mut default = 0.0;
     if input.peek(syn::token::Brace) {
         let meta;
@@ -592,8 +740,7 @@ mod tests {
     fn binary_op_emits_both_carriers() {
         let out = render(
             r#"Add {
-                numbers:  [f32],
-                carriers: [value, signal],
+                variants: [f32 value, f32 signal],
                 inputs:   { in_a: number { default 0.0 }, in_b: number { default 0.0 } },
                 outputs:  { out },
                 function: add_fn(in_a, in_b),
@@ -636,8 +783,7 @@ mod tests {
     fn carriers_differ_only_in_form_and_shell() {
         let out = render(
             r#"Add {
-                numbers:  [f32],
-                carriers: [value, signal],
+                variants: [f32 value, f32 signal],
                 inputs:   { in_a: number { default 0.0 }, in_b: number { default 0.0 } },
                 outputs:  { out },
                 function: add_fn(in_a, in_b),
@@ -672,8 +818,7 @@ mod tests {
     fn handles_are_the_contract_consts() {
         let out = render(
             r#"Add {
-                numbers:  [f32],
-                carriers: [value],
+                variants: [f32 value],
                 inputs:   { in_a: number { default 0.0 }, in_b: number { default 0.0 } },
                 outputs:  { out },
                 function: add_fn(in_a, in_b),
@@ -696,8 +841,7 @@ mod tests {
     fn enum_operand_is_always_held() {
         let out = render(
             r#"Map {
-                numbers:  [f32],
-                carriers: [value, signal],
+                variants: [f32 value, f32 signal],
                 inputs:   { in: number { default 0.0 }, curve: enum(MapCurve) },
                 outputs:  { out },
                 function: remap(in, curve),
@@ -725,8 +869,7 @@ mod tests {
     fn default_sentinel_parks_at_the_range_edge() {
         let out = render(
             r#"Min {
-                numbers:  [f32],
-                carriers: [value],
+                variants: [f32 value],
                 inputs:   { a: number { default 0.0 }, b: number { default max } },
                 outputs:  { out },
                 function: min_fn(a, b),
@@ -743,8 +886,7 @@ mod tests {
     fn single_carrier_emits_one_variant() {
         let out = render(
             r#"Thing {
-                numbers:  [f32],
-                carriers: [signal],
+                variants: [f32 signal],
                 inputs:   { in_a: number { default 0.0 } },
                 outputs:  { out },
                 function: id_fn(in_a),
@@ -752,5 +894,114 @@ mod tests {
         );
         assert!(out.contains("pub mod thing_f32_signal"), "{out}");
         assert!(!out.contains("thing_f32_value"), "{out}");
+    }
+
+    // **The bug this macro had**: the declared number type reached the struct name and nothing
+    // else, so an `i32` entry emitted an operator *named* `add_i32_value` whose every port was
+    // `f32` — a well-formed contract, wrong on the wire, caught by nothing (issue #556). Pin the
+    // whole path from the declaration to the ports: the port type, the handle form, the emitted
+    // default literal, and the type the scalar fn is called at.
+    #[test]
+    fn i32_variant_types_its_ports_i32() {
+        let out = render(
+            r#"Add {
+                variants: [f32 value, i32 value],
+                inputs:   { a: number { default 0 }, b: number { default 0 } },
+                outputs:  { out },
+                function: add_fn(a, b),
+            }"#,
+        );
+        let i32v = variant(&out, "add_i32_value");
+
+        // Ports: `Port::i32` with an `I32Meta`, and nowhere an `F32Meta` — the specific
+        // miscompile was an i32-named operator publishing f32 ports.
+        assert!(i32v.contains("Port :: i32 (\"a\""), "{i32v}");
+        assert!(i32v.contains("I32Meta"), "{i32v}");
+        assert!(!i32v.contains("F32Meta"), "{i32v}");
+        assert!(!i32v.contains("Port :: f32"), "{i32v}");
+
+        // Handles: held `i32`, carrying an `i32`-suffixed default literal (not `0f32`).
+        assert!(i32v.contains("form :: Held < i32 > >"), "{i32v}");
+        assert!(i32v.contains("In :: new (0 , 0i32)"), "{i32v}");
+        // The scalar fn is instantiated at i32 through the output type, so a fn whose bounds
+        // exclude i32 fails to compile at the call site rather than silently running at f32.
+        assert!(i32v.contains("type Value = i32 ;"), "{i32v}");
+
+        // The f32 sibling in the same expansion is untouched — one operand declaration, projected
+        // per variant.
+        let f32v = variant(&out, "add_f32_value");
+        assert!(f32v.contains("form :: Held < f32 > >"), "{f32v}");
+        assert!(f32v.contains("In :: new (0 , 0f32)"), "{f32v}");
+    }
+
+    // `i32` has no dense buffer form, so `i32 signal` names an operator the engine could not
+    // carry. Rejected at the parse — the sparsity a `numbers × carriers` product could not
+    // express without a per-number carrier table.
+    #[test]
+    fn i32_signal_is_rejected() {
+        let out = render(
+            r#"Add {
+                variants: [i32 signal],
+                inputs:   { a: number { default 0 }, b: number { default 0 } },
+                outputs:  { out },
+                function: add_fn(a, b),
+            }"#,
+        );
+        assert!(out.contains("compile_error"), "{out}");
+        assert!(out.contains("has no `signal` carrier"), "{out}");
+    }
+
+    // A declared bound/default that is not a whole number cannot be an `i32` port's. Erroring
+    // beats `as i32`, which would turn `default 0.5` into `0` with no diagnostic — the same class
+    // of silent miscompile the axis used to produce.
+    #[test]
+    fn fractional_default_is_rejected_for_an_i32_variant() {
+        let out = render(
+            r#"Add {
+                variants: [f32 value, i32 value],
+                inputs:   { a: number { default 0.5 }, b: number { default 0 } },
+                outputs:  { out },
+                function: add_fn(a, b),
+            }"#,
+        );
+        assert!(out.contains("compile_error"), "{out}");
+        assert!(out.contains("is not an `i32`"), "{out}");
+    }
+
+    // The same operand declaration serves every variant, so a range written once lands on both
+    // types — and the `min`/`max` sentinel resolves to each type's own type-wide bound.
+    #[test]
+    fn one_operand_declaration_projects_onto_both_types() {
+        let out = render(
+            r#"Clamp {
+                variants: [f32 value, i32 value],
+                inputs:   { x: number { default 0 }, lo: number { default min }, hi: number { default max } },
+                outputs:  { out },
+                function: clamp_fn(x, lo, hi),
+            }"#,
+        );
+        let f32v = variant(&out, "clamp_f32_value");
+        let i32v = variant(&out, "clamp_i32_value");
+        // The type-wide sentinel at each type: `±1e6` as an f32 literal, `±1_000_000` as an i32.
+        assert!(f32v.contains("In :: new (2 , 1000000f32)"), "{f32v}");
+        assert!(i32v.contains("In :: new (2 , 1000000i32)"), "{i32v}");
+        assert!(f32v.contains("In :: new (1 , - 1000000f32)"), "{f32v}");
+        assert!(i32v.contains("In :: new (1 , - 1000000i32)"), "{i32v}");
+    }
+
+    // Two entries naming the same operator would emit the same module and `register_operator!`
+    // twice — caught here rather than as a duplicate-symbol error far from its cause.
+    #[test]
+    fn duplicate_variant_is_rejected() {
+        let out = render(
+            r#"Add {
+                variants: [f32 value, f32 value],
+                inputs:   { a: number { default 0 }, b: number { default 0 } },
+                outputs:  { out },
+                function: add_fn(a, b),
+            }"#,
+        );
+        assert!(out.contains("compile_error"), "{out}");
+        assert!(out.contains("duplicate variant"), "{out}");
     }
 }

@@ -10,23 +10,53 @@ everything *around* it, ~90 lines per carrier. With four ops sharing one shape (
 call a scalar fn, write the output) and a stated future of more number types (`i32`, …), the right
 abstraction is a **declaration macro that emits the whole family**, not a call helper.
 
-`number_operator_contract!` takes a base name, the number type(s), the carriers, an operand list, and
-a scalar-fn call-shape, and for each `numbers × carriers` pair emits a submodule (isolating the
-`IN_`/`OUT_` consts) with the contract, a stateless op carrier whose `ValueOp`/`SignalOp` impl names
-those very consts as its handles, a `pub type` alias binding that carrier to its shell,
-`register_operator!`, and a contract-derived `defaults_are_data` test
+`number_operator_contract!` takes a base name, a `variants:` list, an operand list, and a scalar-fn
+call-shape, and for each variant emits a submodule (isolating the `IN_`/`OUT_` consts) with the
+contract, a stateless op carrier whose `ValueOp`/`SignalOp` impl names those very consts as its
+handles, a `pub type` alias binding that carrier to its shell, `register_operator!`, and a
+contract-derived `defaults_are_data` test
 ([number_op.rs](../../../../crates/reuben-macros/src/number_op.rs)).
 `process` itself is **not** emitted: it belongs to the two shells
 ([shell.rs](../../../../crates/reuben-core/src/operator/shell.rs)), written once per carrier. Keeping
 the per-sample loop in one place is what lets the signal shell hoist each operand's slice read out of
 it, which the emitted-per-variant body could not do — the read sat inside the loop, costing a bounds
 check per operand per sample and blocking vectorization.
-`Add` over `[f32] × [value, signal]` yields `AddF32Value` and `AddF32Signal`. The **two axes are kept
-separate** — `numbers` (the type) and `carriers` (value/signal) — so an op can be value-only or
-signal-only by omitting a carrier, and a new number type is one entry, not a doubling. The **scalar fn
-is the only authored math**: a fn generic over `T` lets the macro instantiate every number type from
-it; an op whose math needs type-specific ops (`power`'s NaN guard) writes a concrete `f32` fn and
-lists `[f32]` only — the restriction falls out of the fn's own signature, not a macro flag.
+
+Each `variants:` entry is `<number type> <carrier>` and names exactly one operator: `Add` over
+`[f32 value, f32 signal, i32 value]` yields `AddF32Value`, `AddF32Signal`, and `AddI32Value`. It is a
+**written list rather than a `numbers × carriers` product** because the product is not full — `i32`
+has no dense buffer form, so `i32 signal` does not exist and is rejected at the parse. A product
+would need a per-number carrier table to say so, and would still not reach a converter operator,
+whose input and output types differ. Listing the instantiations says it directly, and a missing entry
+is a missing operator rather than a silently-skipped cell. One operand declaration serves every
+entry: a `default 1` is `1.0` in the `f32` instantiations and `1` in the `i32` ones, and a value that
+cannot survive the projection (a fractional default on an op that also lists `i32`) is a compile
+error at the operand.
+
+The **scalar fn is the only authored math**, and it is what restricts an op to a subset of the number
+types: a fn generic over `T` lets the macro instantiate every type from it; an op whose math is
+type-specific (`power`'s `powf`) writes a concrete `f32` fn and lists only `f32` entries. Naming an
+`i32` variant for such an op **fails to compile at the call site** — the restriction falls out of the
+fn's own signature, not a macro flag. That is a real guarantee rather than a claim: it holds because
+the declared number type reaches the ports and the instantiation, which it did not before issue #556,
+when the type was consumed at the struct name alone and every generated port was `f32` regardless.
+
+Generic bounds are chosen for **totality across the instantiated types**, not just for what compiles.
+The five operations that can leave a type's range — add, sub, mul, neg, abs — are bound on
+`PointwiseNum` ([pointwise.rs](../../../../crates/reuben-core/src/operators/pointwise.rs)) rather than
+the corresponding `core::ops` traits, because `i32`'s operators panic on overflow in a debug build
+where `f32`'s yield `inf`, and `process` runs on the render thread. `PointwiseNum` saturates at each
+type's limits, making `inf` and `i32::MAX` the same answer in two types. The declared port range does
+not substitute for this: every inbound value is clamped to it, but `mul` still escapes — two operands
+at the type-wide `±1e6` sentinel multiply past `i32::MAX`.
+
+Which *number types* an op lists is a separate judgment from eligibility, and only one of its failure
+modes is mechanical. Bounds that reject the type are a compile error (`power` at `i32`). An op that
+compiles but is semantically useless is the author's call, recorded in the module doc (`reciprocal`
+at `i32`, where `1/n` is `0` for every `|n| > 1`). An op that compiles but needs a different
+algorithm is a separate operator (`map`'s normalized fraction needs reassociating for integers). The
+family ships every type an op can answer correctly rather than only the ones with a demonstrated
+consumer: a partial family has to be probed, where a complete one can be learned.
 
 The eligibility criterion is the load-bearing boundary: an op is macro-eligible — and gets both
 carriers — **iff it is stateless pointwise** (an output sample is a function of this sample's inputs

@@ -28,8 +28,7 @@ fn min_fn<T: PartialOrd>(a: T, b: T) -> T {
 // One declaration -> MinF32Value + MinF32Signal. `b` defaults to the range maximum so an
 // unwired second operand is a no-op (`min(a, +1e6) == a`), passing `a` through.
 crate::number_operator_contract!(Min {
-    numbers:  [f32],
-    carriers: [value, signal],
+    variants: [f32 value, f32 signal, i32 value],
     inputs:   { a: number { default 0.0 }, b: number { default max } },
     outputs:  { out },
     function: min_fn(a, b),

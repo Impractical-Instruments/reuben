@@ -15,12 +15,18 @@
 //! - input 1: `b` (`Float`) — second operand. Unwired default `0`.
 //! - output 0: `out` — `a + b`.
 
-/// The op's scalar math, written once (the pure-fn seam) and generic over the number type so
-/// the macro can instantiate it per `numbers` entry (`f32` today). A future sparse/`Note`-field
-/// shell (issue #83) reuses this rather than re-deriving the arithmetic.
+use crate::operators::pointwise::PointwiseNum;
+
+/// The op's scalar math, written once (the pure-fn seam) and generic over the number type so the
+/// macro can instantiate it per `variants:` entry. A future sparse/`Note`-field shell (issue #83)
+/// reuses this rather than re-deriving the arithmetic.
+///
+/// [`PointwiseNum`] rather than `core::ops::Add`: the sum must be total at every instantiated type,
+/// and `i32`'s `+` panics on overflow in a debug build (a render-thread panic) where `f32`'s
+/// yields `inf`.
 #[inline]
-fn add_fn<T: core::ops::Add<Output = T>>(a: T, b: T) -> T {
-    a + b
+fn add_fn<T: PointwiseNum>(a: T, b: T) -> T {
+    a.add(b)
 }
 
 // One declaration -> AddF32Value + AddF32Signal, each with its contract, Operator impl,
@@ -28,8 +34,7 @@ fn add_fn<T: core::ops::Add<Output = T>>(a: T, b: T) -> T {
 // unwired default, so wiring only one side passes it through. Port names `a`/`b` are
 // preserved from the hand-written contract, so existing instrument wiring is untouched.
 crate::number_operator_contract!(Add {
-    numbers:  [f32],
-    carriers: [value, signal],
+    variants: [f32 value, f32 signal, i32 value],
     inputs:   { a: number { default 0.0 }, b: number { default 0.0 } },
     outputs:  { out },
     function: add_fn(a, b),
@@ -39,7 +44,8 @@ crate::number_operator_contract!(Add {
 mod tests {
     use super::add_f32_signal::{self, AddF32Signal};
     use super::add_f32_value::{self, AddF32Value};
-    use crate::operators::math_test::{signal_out, value_emits};
+    use super::add_i32_value::{self, AddI32Value};
+    use crate::operators::math_test::{i32_value_emits, signal_out, value_emits};
 
     /// Drive the signal form through the real engine; returns `out`. `Some(buf)` drives a buffer,
     /// `None` leaves the port unwired so the engine materializes its additive-identity default `0`.
@@ -89,5 +95,37 @@ mod tests {
     fn unwired_b_passes_held_a_through() {
         // Additive identity 0: wiring only `in_a` emits it unchanged.
         assert_eq!(val(Some(5.0), None), vec![5.0]);
+    }
+
+    /// Drive the `i32` value form; returns the emitted sum(s) as integers.
+    fn val_i32(a: Option<i32>, b: Option<i32>) -> Vec<i32> {
+        i32_value_emits(AddI32Value::new(), |d| {
+            if let Some(a) = a {
+                d.set(add_i32_value::IN_A, a);
+            }
+            if let Some(b) = b {
+                d.set(add_i32_value::IN_B, b);
+            }
+        })
+    }
+
+    // The `i32` instantiation runs the same `add_fn` at the integer type, through the real engine.
+    // That the emit is an `Arg::I32` at all is the contract assertion — before the `variants:` axis
+    // carried its type, an operator named `add_i32_value` had `f32` ports and emitted `Arg::F32`
+    // (issue #556).
+    #[test]
+    fn sums_held_i32_operands() {
+        assert_eq!(val_i32(Some(3), Some(4)), vec![7]);
+        assert_eq!(val_i32(Some(-5), Some(2)), vec![-3]);
+        // Same additive identity as the f32 carriers: an unwired operand passes the other through.
+        assert_eq!(val_i32(Some(5), None), vec![5]);
+    }
+
+    // Integer overflow saturates rather than panicking (debug) or wrapping (release) — `process`
+    // runs on the render thread, where a panic is fatal. See `operators::pointwise`.
+    #[test]
+    fn i32_sum_saturates_rather_than_overflowing() {
+        assert_eq!(val_i32(Some(i32::MAX), Some(1)), vec![i32::MAX]);
+        assert_eq!(val_i32(Some(i32::MIN), Some(-1)), vec![i32::MIN]);
     }
 }

@@ -14,19 +14,24 @@
 //! - input 1: `b` (`Float`) — the subtrahend. Unwired default `0`.
 //! - output 0: `out` — `a - b`.
 
-/// The op's scalar math, written once (the pure-fn seam) and generic over the number type so
-/// the macro can instantiate it per `numbers` entry (`f32` today).
+use crate::operators::pointwise::PointwiseNum;
+
+/// The op's scalar math, written once (the pure-fn seam) and generic over the number type so the
+/// macro can instantiate it per `variants:` entry.
+///
+/// [`PointwiseNum`] rather than `core::ops::Sub`: the difference must be total at every
+/// instantiated type, and `i32`'s `-` panics on overflow in a debug build (a render-thread panic)
+/// where `f32`'s yields `-inf`.
 #[inline]
-fn sub_fn<T: core::ops::Sub<Output = T>>(a: T, b: T) -> T {
-    a - b
+fn sub_fn<T: PointwiseNum>(a: T, b: T) -> T {
+    a.sub(b)
 }
 
 // One declaration -> SubF32Value + SubF32Signal. The subtractive identity `0` is `b`'s
 // unwired default, so wiring only `a` passes it through. Note the family's identity rule
 // holds for the second operand only — subtraction is not commutative, unlike add/mul.
 crate::number_operator_contract!(Sub {
-    numbers:  [f32],
-    carriers: [value, signal],
+    variants: [f32 value, f32 signal, i32 value],
     inputs:   { a: number { default 0.0 }, b: number { default 0.0 } },
     outputs:  { out },
     function: sub_fn(a, b),

@@ -8,18 +8,22 @@
 //! - input 0: `x` (`Float`) — the value to negate. Unwired default `0`.
 //! - output 0: `out` — `-x`.
 
-/// The op's scalar math, written once (the pure-fn seam) and generic over the number type so
-/// the macro can instantiate it per `numbers` entry (`f32` today).
+use crate::operators::pointwise::PointwiseNum;
+
+/// The op's scalar math, written once (the pure-fn seam) and generic over the number type so the
+/// macro can instantiate it per `variants:` entry.
+///
+/// [`PointwiseNum`] rather than `core::ops::Neg`: `-i32::MIN` is not representable and panics in a
+/// debug build, where `f32` has a sign bit and no such edge.
 #[inline]
-fn negate_fn<T: core::ops::Neg<Output = T>>(x: T) -> T {
-    -x
+fn negate_fn<T: PointwiseNum>(x: T) -> T {
+    x.neg()
 }
 
 // One declaration -> NegateF32Value + NegateF32Signal. A pure unary sign flip; `x`
 // defaults to 0, so an unwired input is silent (`-0 == 0`).
 crate::number_operator_contract!(Negate {
-    numbers:  [f32],
-    carriers: [value, signal],
+    variants: [f32 value, f32 signal, i32 value],
     inputs:   { x: number { default 0.0 } },
     outputs:  { out },
     function: negate_fn(x),

@@ -3,24 +3,27 @@
 //! The sanctioned way to **rectify a stream**: full-wave rectification of audio, taking the
 //! magnitude of a bipolar CV, folding a signal into the positive half-plane. A dense `Float`→`Float`
 //! unary op whose arithmetic is the generic [`abs_fn`], called once per sample by the signal shell
-//! and once per change by the value shell (issue #83). Needs only [`Signed`](num_traits::Signed), so
-//! it is generic over any signed number type.
+//! and once per change by the value shell (issue #83).
 //!
 //! - input 0: `x` (`Float`) — the value to rectify. Unwired default `0`.
 //! - output 0: `out` — `|x|`.
 
-/// The op's scalar math, written once (the pure-fn seam) and generic over any signed number:
-/// [`Signed::abs`](num_traits::Signed::abs), which delegates to `f32::abs` for the `f32` instance.
+use crate::operators::pointwise::PointwiseNum;
+
+/// The op's scalar math, written once (the pure-fn seam) and generic over the number type so the
+/// macro can instantiate it per `variants:` entry.
+///
+/// [`PointwiseNum`] rather than `num_traits::Signed`: `i32::MIN.abs()` is not representable and
+/// panics in a debug build, where `f32::abs` is a bit clear with no such edge.
 #[inline]
-fn abs_fn<T: num_traits::Signed>(x: T) -> T {
+fn abs_fn<T: PointwiseNum>(x: T) -> T {
     x.abs()
 }
 
 // One declaration -> AbsF32Value + AbsF32Signal. A pure unary magnitude; `x` defaults to
 // 0, so an unwired input is silent.
 crate::number_operator_contract!(Abs {
-    numbers:  [f32],
-    carriers: [value, signal],
+    variants: [f32 value, f32 signal, i32 value],
     inputs:   { x: number { default 0.0 } },
     outputs:  { out },
     function: abs_fn(x),

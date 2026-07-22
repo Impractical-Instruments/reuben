@@ -14,8 +14,9 @@
 //! and `exponent` are number operands following the carrier — in the signal form `exponent` is now
 //! read **per sample** (a uniform buffer operand) rather than once block-rate; functionally identical
 //! for a held control (block-slicing re-runs on change), and it drops the bespoke block-rate read.
-//! The op is `f32`-only: its scalar [`shape`] uses `f32`-specific `max`/`powf` for the unipolar NaN
-//! guard, so it lists `numbers: [f32]`.
+//! The op is `f32`-only: its scalar [`shape`] is a concrete `f32` fn, so it lists only `f32`
+//! entries in `variants:`. Naming an `i32` one would fail to compile at this call rather than
+//! silently instantiate at the wrong type — the restriction is the fn's signature, not a flag.
 //!
 //! - input 0: `x` (`Float`) — the value to shape; treated as unipolar (negatives clamp to 0 so a
 //!   fractional exponent never yields NaN). Unwired default 0.
@@ -25,7 +26,14 @@
 
 /// The op's scalar math, written once (the pure-fn seam): a unipolar power curve. The
 /// `max(0.0)` is `power`'s **op-local** NaN guard (a fractional exponent over a negative base is
-/// NaN); it lives here, inherited by no other op. `f32`-specific, hence `power` is `f32`-only.
+/// NaN); it lives here, inherited by no other op.
+///
+/// Concrete `f32`, hence `power` is `f32`-only — but **`powf` is the reason, not `max`**. `x.max(0)`
+/// is `PartialOrd` + a zero and generalizes trivially. The deeper obstacle is that `power`'s
+/// operands are not the same type at every instantiation: `f32: Pow<f32>` while `i32: Pow<u32>`, and
+/// `i32: Pow<i32>` deliberately does not exist (a negative exponent has no integer answer). An
+/// integer power is therefore a separate operator with a separate signature, not this fn at another
+/// type — see issue #561.
 #[inline]
 fn shape(x: f32, exponent: f32) -> f32 {
     x.max(0.0).powf(exponent)
@@ -36,8 +44,7 @@ fn shape(x: f32, exponent: f32) -> f32 {
 // form). Port names x/exponent and the type_names are preserved -> no instrument/schema churn beyond
 // `exponent`'s form (Value -> Signal-with-meta), which a held source still materialises.
 crate::number_operator_contract!(Power {
-    numbers:  [f32],
-    carriers: [value, signal],
+    variants: [f32 value, f32 signal],
     inputs:   { x: number { default 0.0 }, exponent: number { 0.0..=8.0, default 2.0 } },
     outputs:  { out },
     function: shape(x, exponent),
