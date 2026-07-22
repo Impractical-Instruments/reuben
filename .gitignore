@@ -17,6 +17,7 @@
 *.bak
 .DS_Store
 .idea/
+.junie/
 
 # Claude Code worktrees
 /.claude/worktrees/
