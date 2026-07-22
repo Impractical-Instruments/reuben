@@ -179,83 +179,6 @@ pub const WORKLOADS: &[Workload] = &[
     w("voicer", Recipe::Notes),
 ];
 
-/// The operator kinds the iai CI gate benches — the canonical mirror of `micro_iai.rs`'s
-/// compile-time `#[bench::…]` list (#30). iai's `harness = false` bench can't host a
-/// normal test to introspect its own attributes, so the list lives here, where the
-/// [`tests::iai_list_covers_every_workload`] forcing function (in the `check` job) asserts it equals
-/// [`WORKLOADS`]. Adding an operator therefore reds `check` until both this list and the matching
-/// `#[bench::<kind>]` attribute beside it are added. Keep both in sync (and alphabetical).
-pub const MICRO_IAI_KINDS: &[&str] = &[
-    "abs_f32_signal",
-    "abs_f32_value",
-    "abs_i32_value",
-    "add_f32_signal",
-    "add_f32_value",
-    "add_i32_value",
-    "chord",
-    "clamp_f32_signal",
-    "clamp_f32_value",
-    "clamp_i32_value",
-    "clock",
-    "compressor",
-    "delay",
-    "differentiate_f32_signal",
-    "div_f32_signal",
-    "div_f32_value",
-    "div_i32_value",
-    "djfilter",
-    "envelope",
-    "euclid",
-    "filter",
-    "granulator",
-    "harmony",
-    "integrate_f32_signal",
-    "lfo",
-    "m2s",
-    "map_f32_signal",
-    "map_f32_value",
-    "max_f32_signal",
-    "max_f32_value",
-    "max_i32_value",
-    "min_f32_signal",
-    "min_f32_value",
-    "min_i32_value",
-    "modulo_f32_signal",
-    "modulo_f32_value",
-    "modulo_i32_value",
-    "mul_f32_signal",
-    "mul_f32_value",
-    "mul_i32_value",
-    "negate_f32_signal",
-    "negate_f32_value",
-    "negate_i32_value",
-    "noise",
-    "osc_out",
-    "oscillator",
-    "output",
-    "overhead",
-    "pan",
-    "pitch2freq",
-    "power_f32_signal",
-    "power_f32_value",
-    "reciprocal_f32_signal",
-    "reciprocal_f32_value",
-    "resonator",
-    "reverb",
-    "sample",
-    "saturator",
-    "sequencer",
-    "snap",
-    "strum",
-    "sub_f32_signal",
-    "sub_f32_value",
-    "sub_i32_value",
-    "subpatch",
-    "transpose",
-    "unpack_note",
-    "voicer",
-];
-
 /// `overhead` — the zero-DSP measurement point (follow-up to the OpDriver reframe).
 ///
 /// Every micro case measures `step_node` = the operator's own `process` **plus** the engine's
@@ -518,20 +441,77 @@ mod tests {
         assert!(driver.emits().is_empty(), "overhead must emit nothing");
     }
 
-    /// Forcing function, half 2 (#30): the iai CI gate ([`MICRO_IAI_KINDS`] / `micro_iai.rs`'s
-    /// `#[bench::…]` list) must cover every workload, so a new operator can't be benched locally
-    /// (criterion auto-iterates `WORKLOADS`) yet escape the gate. Lives here, not beside the iai
-    /// bench, because a `harness = false` bench can't host a libtest. On failure: add the missing
-    /// `#[bench::<kind>(args = ("<kind>",), setup = OpHarness::for_kind)]` attribute in
-    /// `micro_iai.rs` *and* the matching [`MICRO_IAI_KINDS`] entry.
+    /// The kinds `micro_iai.rs`'s `micro_bench_ops!` census names, read out of that file's own
+    /// source.
+    ///
+    /// The census cannot be a const here for `micro_iai.rs` to consume: the perf gate swaps
+    /// `reuben-core/src` to the baseline ref while keeping the HEAD bench, so a census in this file
+    /// would vanish from under the run (the same constraint that keeps the skip list in the
+    /// harness). And it cannot be introspected from the bench either, since a `harness = false`
+    /// bench hosts no libtest. Reading the source is what lets the list exist exactly once: the
+    /// alternative was a hand-kept `MICRO_IAI_KINDS` mirror, which two lists can drift *together*
+    /// and still satisfy.
+    ///
+    /// The scan is bounded to the `micro_bench_ops! {` invocation block rather than run over the
+    /// whole file, because the file *talks about* its own line shape: matching `=> "…"` anywhere
+    /// picked up `"<operator kind>"` and `"kind"` out of the doc comments. Block delimiters are
+    /// structural, so prose above and below cannot leak in whatever the docs say.
+    fn iai_census_kinds() -> BTreeSet<&'static str> {
+        const SRC: &str = include_str!("../benches/micro_iai.rs");
+        SRC.lines()
+            .skip_while(|l| !l.starts_with("micro_bench_ops! {"))
+            .skip(1)
+            .take_while(|l| !l.starts_with('}'))
+            .filter_map(|l| {
+                let (_, rest) = l.split_once("=> \"")?;
+                let (kind, _) = rest.split_once('"')?;
+                Some(kind)
+            })
+            .collect()
+    }
+
+    /// Forcing function, half 2 (#30): the iai CI gate must cover every workload, so a new operator
+    /// can't be benched locally (criterion auto-iterates `WORKLOADS`) yet escape the gate. Lives
+    /// here, not beside the iai bench, because a `harness = false` bench can't host a libtest. On
+    /// failure: add the missing `<id> => "<kind>",` line to `micro_iai.rs`'s `micro_bench_ops!`.
     #[test]
     fn iai_list_covers_every_workload() {
         let benched: BTreeSet<&str> = WORKLOADS.iter().map(|w| w.kind).collect();
-        let gated: BTreeSet<&str> = MICRO_IAI_KINDS.iter().copied().collect();
         assert_eq!(
-            benched, gated,
-            "MICRO_IAI_KINDS (and micro_iai.rs's #[bench] list) is out of sync with WORKLOADS"
+            benched,
+            iai_census_kinds(),
+            "micro_iai.rs's `micro_bench_ops!` census is out of sync with WORKLOADS"
         );
+    }
+
+    /// The scan backing [`iai_census_kinds`] is the one part of the forcing function with no
+    /// compiler behind it, so pin its shape directly rather than trusting the comparison above to
+    /// notice. A scan that reads *too little* is caught there (it would demand entries already
+    /// present); a scan that reads *too much* is what actually happened on the first attempt, when
+    /// an unbounded scan pulled `"<operator kind>"` out of a doc comment.
+    #[test]
+    fn iai_census_scan_reads_exactly_the_census() {
+        let kinds = iai_census_kinds();
+        assert!(
+            kinds.len() > 50,
+            "the census scan found only {} kinds — the `<id> => \"<kind>\",` shape in \
+             micro_iai.rs likely changed and the scan no longer matches it",
+            kinds.len()
+        );
+        // Every operator kind is a snake_case type name. Prose swept up from a comment would not
+        // be, which is the failure this guards.
+        for k in &kinds {
+            assert!(
+                !k.is_empty()
+                    && k.bytes()
+                        .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_'),
+                "{k:?} is not an operator kind — the census scan is reading past the \
+                 `micro_bench_ops! {{ .. }}` block"
+            );
+        }
+        // The bench-only case is in the census but never in the registry, so it is the one kind
+        // whose presence proves the scan reaches lines the registry could not have supplied.
+        assert!(kinds.contains(overhead::KIND), "{kinds:?}");
     }
 
     /// Every workload builds and renders a full block schedule without panicking — a cheap smoke

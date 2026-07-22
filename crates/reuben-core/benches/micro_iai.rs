@@ -9,12 +9,19 @@
 //! asked to skip (a PR-new operator with no baseline — see [`setup`]), so that operator is dropped
 //! from the comparison instead of crashing the baseline run.
 //!
-//! iai's `#[bench::…]` list is compile-time, so it can't iterate the registry — and a
-//! `harness = false` bench can't host a libtest to introspect itself. The list below must therefore
-//! mirror `bench_support::MICRO_IAI_KINDS` exactly; the #30 forcing function
-//! (`bench_support::tests::iai_list_covers_every_workload`, in the `check` job) asserts that const
-//! equals `WORKLOADS`, so adding an operator reds CI until both this list and `MICRO_IAI_KINDS` gain
-//! the new kind.
+//! iai's `#[bench::…]` list is compile-time, so it can't iterate the registry (which is
+//! `inventory`-collected, and so only readable at runtime). **This file is therefore the one
+//! hand-maintained census of benched operators** — one `id => "kind"` line each, expanded into the
+//! attributes by [`micro_bench_ops!`].
+//!
+//! It lives *here*, in the never-swapped bench harness, rather than in `bench_support`, for the same
+//! reason the skip list does (see [`setup`]): the perf gate swaps `reuben-core/src` to the baseline
+//! ref, so a census in `bench_support` would be swapped out from under the run.
+//!
+//! The #30 forcing function (`bench_support::tests::iai_list_covers_every_workload`, in the `check`
+//! job) reads the list back out of this file's source with `include_str!` and asserts it equals
+//! `WORKLOADS` — so adding an operator still reds CI until it is benched, but the census that used
+//! to be duplicated into a `MICRO_IAI_KINDS` const is now read from the one place it is written.
 
 use iai_callgrind::{library_benchmark, library_benchmark_group, main, LibraryBenchmarkConfig};
 use reuben_core::bench_support::OpHarness;
@@ -40,77 +47,94 @@ fn setup(kind: &str) -> Option<OpHarness> {
     (!skip).then(|| OpHarness::for_kind(kind))
 }
 
-#[library_benchmark]
-#[bench::abs(args = ("abs_f32_signal",), setup = setup)]
-#[bench::abs_value(args = ("abs_f32_value",), setup = setup)]
-#[bench::abs_i32_value(args = ("abs_i32_value",), setup = setup)]
-#[bench::add(args = ("add_f32_signal",), setup = setup)]
-#[bench::add_value(args = ("add_f32_value",), setup = setup)]
-#[bench::add_i32_value(args = ("add_i32_value",), setup = setup)]
-#[bench::chord(args = ("chord",), setup = setup)]
-#[bench::clamp(args = ("clamp_f32_signal",), setup = setup)]
-#[bench::clamp_value(args = ("clamp_f32_value",), setup = setup)]
-#[bench::clamp_i32_value(args = ("clamp_i32_value",), setup = setup)]
-#[bench::clock(args = ("clock",), setup = setup)]
-#[bench::compressor(args = ("compressor",), setup = setup)]
-#[bench::delay(args = ("delay",), setup = setup)]
-#[bench::differentiate(args = ("differentiate_f32_signal",), setup = setup)]
-#[bench::div(args = ("div_f32_signal",), setup = setup)]
-#[bench::div_value(args = ("div_f32_value",), setup = setup)]
-#[bench::div_i32_value(args = ("div_i32_value",), setup = setup)]
-#[bench::djfilter(args = ("djfilter",), setup = setup)]
-#[bench::envelope(args = ("envelope",), setup = setup)]
-#[bench::euclid(args = ("euclid",), setup = setup)]
-#[bench::filter(args = ("filter",), setup = setup)]
-#[bench::granulator(args = ("granulator",), setup = setup)]
-#[bench::harmony(args = ("harmony",), setup = setup)]
-#[bench::integrate(args = ("integrate_f32_signal",), setup = setup)]
-#[bench::lfo(args = ("lfo",), setup = setup)]
-#[bench::m2s(args = ("m2s",), setup = setup)]
-#[bench::map(args = ("map_f32_signal",), setup = setup)]
-#[bench::map_value(args = ("map_f32_value",), setup = setup)]
-#[bench::max(args = ("max_f32_signal",), setup = setup)]
-#[bench::max_value(args = ("max_f32_value",), setup = setup)]
-#[bench::max_i32_value(args = ("max_i32_value",), setup = setup)]
-#[bench::min(args = ("min_f32_signal",), setup = setup)]
-#[bench::min_value(args = ("min_f32_value",), setup = setup)]
-#[bench::min_i32_value(args = ("min_i32_value",), setup = setup)]
-#[bench::modulo(args = ("modulo_f32_signal",), setup = setup)]
-#[bench::modulo_value(args = ("modulo_f32_value",), setup = setup)]
-#[bench::modulo_i32_value(args = ("modulo_i32_value",), setup = setup)]
-#[bench::mul(args = ("mul_f32_signal",), setup = setup)]
-#[bench::mul_value(args = ("mul_f32_value",), setup = setup)]
-#[bench::mul_i32_value(args = ("mul_i32_value",), setup = setup)]
-#[bench::negate(args = ("negate_f32_signal",), setup = setup)]
-#[bench::negate_value(args = ("negate_f32_value",), setup = setup)]
-#[bench::negate_i32_value(args = ("negate_i32_value",), setup = setup)]
-#[bench::noise(args = ("noise",), setup = setup)]
-#[bench::osc_out(args = ("osc_out",), setup = setup)]
-#[bench::oscillator(args = ("oscillator",), setup = setup)]
-#[bench::output(args = ("output",), setup = setup)]
-#[bench::overhead(args = ("overhead",), setup = setup)]
-#[bench::pan(args = ("pan",), setup = setup)]
-#[bench::pitch2freq(args = ("pitch2freq",), setup = setup)]
-#[bench::power(args = ("power_f32_signal",), setup = setup)]
-#[bench::power_value(args = ("power_f32_value",), setup = setup)]
-#[bench::reciprocal(args = ("reciprocal_f32_signal",), setup = setup)]
-#[bench::reciprocal_value(args = ("reciprocal_f32_value",), setup = setup)]
-#[bench::resonator(args = ("resonator",), setup = setup)]
-#[bench::reverb(args = ("reverb",), setup = setup)]
-#[bench::sample(args = ("sample",), setup = setup)]
-#[bench::saturator(args = ("saturator",), setup = setup)]
-#[bench::sequencer(args = ("sequencer",), setup = setup)]
-#[bench::snap(args = ("snap",), setup = setup)]
-#[bench::strum(args = ("strum",), setup = setup)]
-#[bench::sub(args = ("sub_f32_signal",), setup = setup)]
-#[bench::sub_value(args = ("sub_f32_value",), setup = setup)]
-#[bench::sub_i32_value(args = ("sub_i32_value",), setup = setup)]
-#[bench::subpatch(args = ("subpatch",), setup = setup)]
-#[bench::transpose(args = ("transpose",), setup = setup)]
-#[bench::unpack_note(args = ("unpack_note",), setup = setup)]
-#[bench::voicer(args = ("voicer",), setup = setup)]
-fn process(harness: Option<OpHarness>) -> f32 {
-    black_box(harness.map_or(0.0, OpHarness::render))
+/// Expand the operator census into the `#[library_benchmark]` fn and its `#[bench::<id>]` cases.
+///
+/// One line per benched operator, `<bench id> => "<operator kind>"`. The **id is not derived from
+/// the kind**: iai names each callgrind case by its id, and the CI perf gate matches HEAD against
+/// the baseline by that name — so renaming an id unmatches that operator's history and silently
+/// drops it from the gate (the #104 masking bug, in slower motion). The ids are therefore carried
+/// verbatim from when each bench was added, however inconsistent they look beside their kinds.
+macro_rules! micro_bench_ops {
+    ($($id:ident => $kind:literal),* $(,)?) => {
+        #[library_benchmark]
+        $(#[bench::$id(args = ($kind,), setup = setup)])*
+        fn process(harness: Option<OpHarness>) -> f32 {
+            black_box(harness.map_or(0.0, OpHarness::render))
+        }
+    };
+}
+
+// The census: every benched operator, plus the bench-only `overhead` case. Keep alphabetical by
+// kind, for diffing against the registry's stable order.
+micro_bench_ops! {
+    abs              => "abs_f32_signal",
+    abs_value        => "abs_f32_value",
+    abs_i32_value    => "abs_i32_value",
+    add              => "add_f32_signal",
+    add_value        => "add_f32_value",
+    add_i32_value    => "add_i32_value",
+    chord            => "chord",
+    clamp            => "clamp_f32_signal",
+    clamp_value      => "clamp_f32_value",
+    clamp_i32_value  => "clamp_i32_value",
+    clock            => "clock",
+    compressor       => "compressor",
+    delay            => "delay",
+    differentiate    => "differentiate_f32_signal",
+    div              => "div_f32_signal",
+    div_value        => "div_f32_value",
+    div_i32_value    => "div_i32_value",
+    djfilter         => "djfilter",
+    envelope         => "envelope",
+    euclid           => "euclid",
+    filter           => "filter",
+    granulator       => "granulator",
+    harmony          => "harmony",
+    integrate        => "integrate_f32_signal",
+    lfo              => "lfo",
+    m2s              => "m2s",
+    map              => "map_f32_signal",
+    map_value        => "map_f32_value",
+    max              => "max_f32_signal",
+    max_value        => "max_f32_value",
+    max_i32_value    => "max_i32_value",
+    min              => "min_f32_signal",
+    min_value        => "min_f32_value",
+    min_i32_value    => "min_i32_value",
+    modulo           => "modulo_f32_signal",
+    modulo_value     => "modulo_f32_value",
+    modulo_i32_value => "modulo_i32_value",
+    mul              => "mul_f32_signal",
+    mul_value        => "mul_f32_value",
+    mul_i32_value    => "mul_i32_value",
+    negate           => "negate_f32_signal",
+    negate_value     => "negate_f32_value",
+    negate_i32_value => "negate_i32_value",
+    noise            => "noise",
+    osc_out          => "osc_out",
+    oscillator       => "oscillator",
+    output           => "output",
+    overhead         => "overhead",
+    pan              => "pan",
+    pitch2freq       => "pitch2freq",
+    power            => "power_f32_signal",
+    power_value      => "power_f32_value",
+    reciprocal       => "reciprocal_f32_signal",
+    reciprocal_value => "reciprocal_f32_value",
+    resonator        => "resonator",
+    reverb           => "reverb",
+    sample           => "sample",
+    saturator        => "saturator",
+    sequencer        => "sequencer",
+    snap             => "snap",
+    strum            => "strum",
+    sub              => "sub_f32_signal",
+    sub_value        => "sub_f32_value",
+    sub_i32_value    => "sub_i32_value",
+    subpatch         => "subpatch",
+    transpose        => "transpose",
+    unpack_note      => "unpack_note",
+    voicer           => "voicer",
 }
 
 library_benchmark_group!(name = micro; benchmarks = process);
