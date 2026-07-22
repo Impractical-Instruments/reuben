@@ -9,3 +9,10 @@
 # Binary assets — never touch their bytes.
 *.tosc binary
 *.wav binary
+# The vendored tokenizer vocab is base64 text, but it is hash-pinned to an exact byte sequence
+# (eval/reuben_eval/tokenizer/pins.json) and the eval gate refuses to run if a byte moves. Mark it
+# binary so no eol/`text=auto` normalization can ever touch it and break the pin. It is committed
+# plainly, NOT via LFS: 1.6 MB, frozen since 2022, written once and never rewritten — LFS would add
+# CI/contributor friction and a new gate-break mode (an unfetched pointer stub failing the hash) for
+# no benefit the sha256 pin doesn't already give. see rules: agent-mcp
+*.tiktoken binary
