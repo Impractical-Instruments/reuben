@@ -170,14 +170,29 @@ note ""
 # micro census minus the baseline's, and hand the list to the bench via REUBEN_MICRO_BENCH_SKIP. The
 # harness skips exactly these, symmetrically on BOTH the baseline and PR runs, so a brand-new operator
 # is excluded from the comparison (nothing to compare it against) while every operator that existed at
-# the base is still benched and gated. `MICRO_IAI_KINDS` mirrors the registry (forcing function #30),
-# so it's an exact, build-free census of each side's operators. macro_iai ignores the var.
-# First range only (awk exits at the const's closing `];`): sed's restarting /a/,/b/ ranges re-open
-# at every later MICRO_IAI_KINDS mention (e.g. in test text) and would sweep quoted snake_case
+# the base is still benched and gated. `WORKLOADS` mirrors the registry (forcing function #30), so
+# it's an exact, build-free census of each side's operators. macro_iai ignores the var.
+#
+# Read from `WORKLOADS`, NOT the micro census: #568 deleted the `MICRO_IAI_KINDS` const this used to
+# scan and moved the iai census into `benches/micro_iai.rs`, leaving this scan matching nothing. An
+# empty census silently produced an empty skip list, so the first PR to add an operator afterwards
+# (#571) panicked the baseline run with `unknown operator kind`. `WORKLOADS` is the marker that
+# survived that refactor, lives in the file this already reads from both sides, and is the registry
+# itself by forcing function — which is what actually decides whether `for_kind` panics.
+#
+# First range only (awk exits at the const's closing `];` at column 0): sed's restarting /a/,/b/
+# ranges re-open at every later mention of the anchor in prose, and would sweep quoted snake_case
 # strings from the rest of the file into the census as phantom kinds.
-micro_kinds() { awk '/MICRO_IAI_KINDS/{f=1} f&&/];/{exit} f{print}' | grep -oE '"[a-z0-9_]+"' | tr -d '"' | LC_ALL=C sort -u; }
+micro_kinds() { awk '/^pub const WORKLOADS/{f=1} f&&/^\];/{exit} f{print}' | grep -oE '"[a-z0-9_]+"' | tr -d '"' | LC_ALL=C sort -u; }
 head_kinds="$(micro_kinds <"crates/${PKG}/src/bench_support.rs")"
 base_kinds="$(git show "${BASE_SHA}:crates/${PKG}/src/bench_support.rs" 2>/dev/null | micro_kinds)"
+# A census that reads as empty is never legitimate — it means the anchor moved again, and carrying on
+# would hand the bench an empty skip list and reproduce exactly the failure above. Fail loudly here,
+# where the message says what broke, rather than as a panic deep in the baseline bench run.
+if [ -z "$head_kinds" ]; then
+  printf '::error title=Operator census not found::micro_kinds() read no operators from crates/%s/src/bench_support.rs — the WORKLOADS anchor has moved. Fix the scan; an empty census silently disables the PR-new-operator skip.\n' "$PKG"
+  exit 1
+fi
 REUBEN_MICRO_BENCH_SKIP="$(comm -23 <(printf '%s\n' "$head_kinds") <(printf '%s\n' "$base_kinds") | paste -sd, -)"
 export REUBEN_MICRO_BENCH_SKIP
 if [ -n "$REUBEN_MICRO_BENCH_SKIP" ]; then
