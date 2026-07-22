@@ -2,7 +2,7 @@
 
 Deterministic CI performance trend: callgrind **instruction counts (Ir)** for rendering **1 s of audio** (375 × 128-frame blocks @ 48 kHz), recorded on every direct push to `dev`. Instruction counts don't jitter — every visible move is a real code change (or a toolchain bump).
 
-**62 commits** · 2026-07-12 → 2026-07-22 · 3990 data points · last: `cd8d430` (2026-07-22T17:56:54-04:00)
+**63 commits** · 2026-07-12 → 2026-07-22 · 4075 data points · last: `8257258` (2026-07-22T19:40:22-04:00)
 
 *Companion trend: the **main** series lives on the [`bench-history`](https://github.com/Impractical-Instruments/reuben/tree/bench-history) branch.*
 
@@ -132,6 +132,44 @@ Deterministic CI performance trend: callgrind **instruction counts (Ir)** for re
 | `subpatch` | 414k | ±0.0% | -0.7% | 2026-07-12 |
 
 </details>
+
+## Agent surface — what authoring costs a model
+
+The deterministic tier of the eval harness: each task's **reference solution** (the ideal call sequence a perfect model would make) replayed against the real MCP sidecar with no inference. So these are the surface's **cost floor**, not any model's score.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="charts/eval-tokens-dark.svg">
+  <img alt="Agent-surface eval: grounding tokens per task" src="charts/eval-tokens-light.svg">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="charts/eval-fixed-dark.svg">
+  <img alt="Agent-surface eval: fixed grounding per task" src="charts/eval-fixed-light.svg">
+</picture>
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="charts/eval-payload-dark.svg">
+  <img alt="Agent-surface eval: document chars per task" src="charts/eval-payload-light.svg">
+</picture>
+
+| Task | Metric | Latest | vs prev | vs first | since |
+|---|---|---:|---:|---:|---|
+| `from_scratch` | grounding tokens | 4,818 | — | ±0.0% | 2026-07-22 |
+| `from_scratch` | fixed grounding | 4,767 | — | ±0.0% | 2026-07-22 |
+| `from_scratch` | document chars | 594 | — | ±0.0% | 2026-07-22 |
+| `nudge` | grounding tokens | 6,283 | — | ±0.0% | 2026-07-22 |
+| `nudge` | fixed grounding | 4,767 | — | ±0.0% | 2026-07-22 |
+| `nudge` | document chars | 2,098 | — | ±0.0% | 2026-07-22 |
+| `repair` | grounding tokens | 4,822 | — | ±0.0% | 2026-07-22 |
+| `repair` | fixed grounding | 4,767 | — | ±0.0% | 2026-07-22 |
+| `repair` | document chars | 2,098 | — | ±0.0% | 2026-07-22 |
+| `tweak` | grounding tokens | 4,780 | — | ±0.0% | 2026-07-22 |
+| `tweak` | fixed grounding | 4,767 | — | ±0.0% | 2026-07-22 |
+| `tweak` | document chars | 2,097 | — | ±0.0% | 2026-07-22 |
+
+- **Fixed grounding** is what every turn of every task pays before the model does anything: the server `instructions` plus every tool schema. It creeps when a tool description or the authoring guide grows, and nothing else watches it.
+- **Document chars** is freehand JSON the model had to emit, **echoes included** — a whole-document re-emit for a one-value tweak costs full price here, which is exactly the cost the surface work is chasing.
+
 
 ## Reading notes
 
