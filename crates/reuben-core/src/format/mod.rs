@@ -622,8 +622,7 @@ impl fmt::Display for LoadError {
                 )?;
                 // The one near-miss worth a hint: audio into a scalar control looks plausible
                 // (the legal ZOH bridge runs the other way) — point at the sanctioned path.
-                if matches!(**from_type, PortType::F32Buffer) && matches!(**to_type, PortType::F32)
-                {
+                if from_type.is_buffer() && matches!(**to_type, PortType::F32) {
                     write!(
                         f,
                         " — no implicit sample-and-hold; wire an explicit sig→val converter \
@@ -1019,7 +1018,7 @@ fn load_doc_guarded(
                         // things (this pipe is silent; that binding is inert).
                         for (name, (key, _)) in &loaded.graph.interface.inputs {
                             let p = &loaded.graph.nodes[*key].descriptor.inputs[0];
-                            if matches!(p.ty, PortType::F32Buffer) && p.meta.is_none() {
+                            if p.ty.is_buffer() && p.meta.is_none() {
                                 warnings.push(LoadWarning::UnwiredPipe {
                                     node: n.address.clone(),
                                     name: name.clone(),
@@ -1524,7 +1523,7 @@ impl InstrumentDoc {
             // message pipes are silent-by-nature streams.
             for fp in &face.inputs {
                 let p = &graph.nodes[fp.node].descriptor.inputs[fp.port];
-                let bare_signal = matches!(p.ty, PortType::F32Buffer) && p.meta.is_none();
+                let bare_signal = p.ty.is_buffer() && p.meta.is_none();
                 if bare_signal && !n.inputs.contains_key(&fp.name) {
                     warnings.push(LoadWarning::UnwiredPipe {
                         node: n.address.clone(),
@@ -1654,7 +1653,7 @@ impl InstrumentDoc {
                     &graph.nodes[key].descriptor.outputs[idx],
                     None,
                 )?;
-                let signal = matches!(ty, PortType::F32Buffer);
+                let signal = ty.is_buffer();
                 match feed.channel {
                     Some(_) if !signal => {
                         return Err(LoadError::InterfacePipe {

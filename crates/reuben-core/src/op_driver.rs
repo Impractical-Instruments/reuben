@@ -40,7 +40,7 @@
 use std::sync::Arc;
 
 use crate::config::AudioConfig;
-use crate::descriptor::{Descriptor, PortType};
+use crate::descriptor::Descriptor;
 use crate::graph::Graph;
 use crate::message::{Arg, Emit, Message};
 use crate::operator::{Operator, PortIndex};
@@ -257,7 +257,7 @@ impl OpDriver {
     fn signal_ordinal(&self, port: usize) -> usize {
         self.descriptor.outputs[..port]
             .iter()
-            .filter(|p| matches!(p.ty, PortType::F32Buffer))
+            .filter(|p| p.ty.is_buffer())
             .count()
     }
 }

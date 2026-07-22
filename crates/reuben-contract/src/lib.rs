@@ -129,6 +129,17 @@ pub enum PortTy {
     Arg,
 }
 
+impl PortTy {
+    /// Whether this authoring type declares a **dense per-sample buffer** (a Signal carrier) rather
+    /// than a latched atom — the structural "is this a buffer?" question, true for the buffer
+    /// variant(s) (today only [`F32Buffer`](PortTy::F32Buffer), meta or not). Prefer this over
+    /// `matches!(ty, PortTy::F32Buffer(_))` at classification sites so buffer-ness reads as a
+    /// question, not a variant spelling (issue #560).
+    pub fn is_buffer(&self) -> bool {
+        matches!(self, PortTy::F32Buffer(_))
+    }
+}
+
 /// The legal `ty` words of the flat wire shape, for the deserialize error message — the same
 /// set the old stringly `PORT_TYPES` const enumerated, now owned by [`PortTy`].
 const PORT_TY_WORDS: [&str; 8] = [
