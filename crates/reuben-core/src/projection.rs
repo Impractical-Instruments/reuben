@@ -818,18 +818,24 @@ impl<'a> Projector<'a> {
     /// Why one node's reference through `slot` is dark, if it is — **the** single answer the index,
     /// the zoom and the resources view all read, so the three cannot disagree about a node.
     ///
-    /// Three ways to be dark, and all three have to be here: the load found the id unresolvable
-    /// (keyed by id); the load could not fetch a `voice`/`patch` child at all (keyed by node, see
-    /// [`collect_dark`]); or the document simply has no row for the id — which is document-level
-    /// truth and therefore survives a `loadable: false` projection, where the other two are unknown.
+    /// Three ways to be dark, and all three have to be here: the document has no row for the id;
+    /// the load found the entry itself unresolvable (keyed by slot and id); or the load could not
+    /// fetch a `voice`/`patch` child at all (keyed by slot and canonical **source** — see
+    /// [`collect_dark`] for why neither the node nor the id identifies that one).
+    ///
+    /// The table-miss goes first even though the loader has its own warning for it, because that
+    /// warning's text names the **first** node that referenced the id — rendered on a second node's
+    /// zoom it points at a node the agent is not looking at, and may not have asked for. The
+    /// node-neutral sentence is the more accurate one to put on a per-node line. It is also the
+    /// only branch that is document-level truth, so it is the one that survives `loadable: false`.
     fn dark_reason(&self, node: &str, slot: &str, id: &str) -> Option<String> {
         let facts = self.facts();
-        if let Some(why) = facts.dark_refs.get(&(slot.to_string(), id.to_string())) {
-            return Some(why.clone());
-        }
         let Some(source) = self.doc.resources.get(id) else {
             return Some(format!("{id:?} is not in the resources table"));
         };
+        if let Some(why) = facts.dark_refs.get(&(slot.to_string(), id.to_string())) {
+            return Some(why.clone());
+        }
         // The loader canonicalizes a source before fetching it and reports the canonical form, so
         // the lookup has to canonicalize too — the same call `boundary_of` makes.
         if let Some(why) = facts
@@ -1240,11 +1246,12 @@ fn build_consumers(doc: &NormalizedDoc, registry: &Registry) -> BTreeMap<String,
 ///
 /// The subtlety is which failures are "this document's". A `sample` that will not resolve is
 /// reported flat, but a `voice`/`patch` **source this document could not fetch at all** is wrapped
-/// in [`LoadWarning::Nested`] even though no child was ever read — the wrapper names the
+/// in [`LoadWarning::Nested`] even though no child was ever read — the wrapper names a
 /// *referencing* node, not a nesting level. Skipping every `Nested` therefore reported a dangling
 /// voice reference as resolved, on a document that loads, in three of the four views. So a direct
-/// `Nested(ResolveFailed { slot: voice | patch })` is unwrapped and attributed to its node, while a
-/// child's own failure — flat `sample` inside the wrapper, or a second `Nested` — stays skipped.
+/// `Nested(ResolveFailed { slot: voice | patch })` is unwrapped and filed under the **source** it
+/// failed to fetch, while a child's own failure — a flat `sample` inside the wrapper, or a second
+/// `Nested` — stays skipped.
 fn collect_dark(w: &LoadWarning, facts: &mut LoadFacts) {
     match w {
         LoadWarning::MissingResource { slot, id, .. }
@@ -2044,6 +2051,25 @@ mod tests {
             let res = p.resources().render();
             assert!(res.contains("DARK:"), "{slot}: {res}");
         }
+    }
+
+    /// A reason rendered on a node's own line must be about **that** node. The loader's
+    /// missing-resource warning names the first node that referenced the id, so quoting it on a
+    /// second node's zoom points the agent at a node it did not ask about and cannot see.
+    #[test]
+    fn a_shared_missing_id_does_not_quote_another_nodes_name() {
+        const TWO_REFS: &str = r#"{
+            "format_version": 3, "instrument": "h",
+            "nodes": [{"type": "voicer", "address": "/v0", "voice": "lead"},
+                      {"type": "voicer", "address": "/v7", "voice": "lead"}]
+        }"#;
+        let p = projector(TWO_REFS);
+        // Both are dark — that verdict was never in question.
+        assert_eq!(p.index().render().matches("dark:voice").count(), 2);
+        let zoom = p.zoom(&Selection::names(["/v7"])).render();
+        assert!(zoom.contains("voice=lead DARK:"), "{zoom}");
+        assert!(zoom.contains("is not in the resources table"), "{zoom}");
+        assert!(!zoom.contains("/v0"), "{zoom}");
     }
 
     /// The loader dedups a child fetch by canonical source and warns **once**, naming only the
