@@ -24,15 +24,17 @@ from typing import Any
 from . import tasks as task_module
 from .runner import run_reference, verify_tokenizer_pins
 
-# Mirrors `.github/scripts/perf-gate.sh` so one idiom covers both trends. see rules: web-product-process
-# Boundaries are inclusive: `_classify` trips at `delta >= PCT` (matching perf-gate's awk), so a
-# regression of exactly the threshold fails rather than sliding through — hence the "≥" in the prose.
-FAIL_PCT = 10.0
-WARN_PCT = 3.0
+# Two VISIBILITY tiers, not verdicts: a grounding metric that regresses annotates and lands on the
+# trend, but never fails the build. A gate that FAILs on roster growth encodes "the library must not
+# grow" — a non-goal — so only a broken reference solution or an uncomputable metric fails here (see
+# `render`). #612. Boundaries are inclusive at `delta >= PCT`, matching perf-gate's awk — hence "≥".
+JUMP_PCT = 10.0
+CREEP_PCT = 3.0
 
-# The gated numbers, in report order. `tokens.fixed` is called out separately from `tokens.total`
+# The reported numbers, in report order. `tokens.fixed` is called out separately from `tokens.total`
 # because it is the one that creeps invisibly: every added paragraph of tool description is paid on
-# every turn of every task, by every model, forever.
+# every turn of every task, by every model, forever. The per-tool schema-density line below keeps
+# that creep legible — capability growth holds density flat; bloat pushes it up.
 METRICS = (
     ("tokens_total", "grounding tokens", lambda r: r["tokens"]["total"]),
     ("tokens_fixed", "fixed grounding", lambda r: r["tokens"]["fixed"]),
@@ -59,13 +61,49 @@ def _delta(current: float, baseline: float) -> float | None:
 
 
 def _classify(delta: float | None) -> str:
+    """Visibility tier for a metric delta — never a verdict. `jump` and `creep` both annotate and
+    ride the trend; neither fails the build. Only a broken reference solution or an uncomputable
+    metric does that (`render`). #612."""
     if delta is None or math.isnan(delta):  # no ratio (zero baseline), or NaN
         return "ok"
-    if delta >= FAIL_PCT:
-        return "FAIL"
-    if delta >= WARN_PCT:
-        return "WARN"
+    if delta >= JUMP_PCT:
+        return "jump"
+    if delta >= CREEP_PCT:
+        return "creep"
     return "ok"
+
+
+def _density_lines(report: dict[str, Any], baseline: dict[str, Any] | None) -> list[str]:
+    """The per-tool schema-density readout: schema bytes ÷ tool count.
+
+    The one line that separates roster GROWTH (more tools, flat density — a capability decision) from
+    schema BLOAT (denser schemas, no new tool — the invisible regression). It is constant across
+    tasks (one roster, one sidecar), so it is read from any one of them. #612.
+    """
+    tasks = report.get("tasks", {})
+    if not tasks:
+        return []
+    head = next(iter(tasks.values()))["tokens"]
+    tools, sbytes, density = head["tool_count"], head["schemas_bytes"], head["schema_density"]
+    line = f"**Per-tool schema density:** {density:.0f} B/tool — {tools} tools, {sbytes:,} B of schema"
+
+    base_tasks = (baseline or {}).get("tasks", {})
+    if base_tasks:
+        base = next(iter(base_tasks.values()))["tokens"]
+        b_tools = base.get("tool_count")
+        b_density = base.get("schema_density")
+        if b_tools is not None and b_density is not None:
+            # Compare at the precision the reader sees (`:.0f`), so the label can never contradict
+            # the two numbers printed beside it — a sub-1-B/tool drift is noise, not "denser".
+            d, bd = round(density), round(b_density)
+            roster = (
+                "more tools" if tools > b_tools else "same roster" if tools == b_tools else "fewer tools"
+            )
+            shape = (
+                "denser schemas" if d > bd else "flat density" if d == bd else "leaner schemas"
+            )
+            line += f" · baseline {b_density:.0f} B/tool over {b_tools} tools ({roster}, {shape})"
+    return ["", line, ""]
 
 
 def render(report: dict[str, Any], baseline: dict[str, Any] | None) -> tuple[str, bool]:
@@ -92,9 +130,10 @@ def render(report: dict[str, Any], baseline: dict[str, Any] | None) -> tuple[str
     if baseline is None:
         lines += ["_No baseline — absolute numbers only._", ""]
     else:
-        lines += [f"Baseline compared · fail ≥ {FAIL_PCT:g}% · warn ≥ {WARN_PCT:g}%", ""]
+        lines += [f"Baseline compared · reported for visibility · jump ≥ {JUMP_PCT:g}% · creep ≥ {CREEP_PCT:g}%", ""]
 
     lines += ["| Task | Metric | Value | Baseline | Δ% | |", "|---|---|---:|---:|---:|:---:|"]
+    warned = False
     for key, result in report["tasks"].items():
         base_task = (baseline or {}).get("tasks", {}).get(key)
         for _, label, extract in METRICS:
@@ -105,27 +144,28 @@ def render(report: dict[str, Any], baseline: dict[str, Any] | None) -> tuple[str
             base_value = extract(base_task)
             delta = _delta(value, base_value)
             status = _classify(delta)
-            icon = {"FAIL": "❌", "WARN": "⚠️", "ok": "✅"}[status]
-            if status == "FAIL":
-                failed = True
+            # Both tiers are non-blocking: a bigger surface is a decision to make with eyes open, not
+            # a build to break. They annotate and ride the trend; `failed` is untouched here. #612.
+            icon = {"jump": "🔺", "creep": "⚠️", "ok": "✅"}[status]
+            if status in ("jump", "creep"):
+                warned = True
+                pct = JUMP_PCT if status == "jump" else CREEP_PCT
                 print(
-                    f"::error title=Agent-surface regression::{key} {label} "
-                    f"{base_value} -> {value} (+{delta:.1f}%, ≥ {FAIL_PCT:g}%)"
-                )
-            elif status == "WARN":
-                print(
-                    f"::warning title=Agent-surface creep::{key} {label} "
-                    f"{base_value} -> {value} (+{delta:.1f}%, ≥ {WARN_PCT:g}%)"
+                    f"::warning title=Agent-surface {status}::{key} {label} "
+                    f"{base_value} -> {value} (+{delta:.1f}%, ≥ {pct:g}%)"
                 )
             shown = "—" if delta is None else f"{delta:+.1f}"
             lines.append(f"| `{key}` | {label} | {value} | {base_value} | {shown} | {icon} |")
 
+    lines += _density_lines(report, baseline)
+
     lines.append("")
-    lines.append(
-        "**Result: ❌ the agent surface got more expensive.**"
-        if failed
-        else "**Result: ✅ the agent surface held.**"
-    )
+    if failed:
+        lines.append("**Result: ❌ a reference solution no longer passes — the surface is broken, not merely bigger.**")
+    elif warned:
+        lines.append("**Result: ⚠️ the agent surface grew — recorded on the trend, not blocked. See annotations.**")
+    else:
+        lines.append("**Result: ✅ the agent surface held.**")
     lines.append("")
     return "\n".join(lines), failed
 
@@ -144,6 +184,9 @@ def history_records(report: dict[str, Any], identity: dict[str, str]) -> list[di
             "passed": result["passed"],
             "tokens_total": result["tokens"]["total"],
             "tokens_fixed": result["tokens"]["fixed"],
+            "tool_count": result["tokens"]["tool_count"],
+            "schemas_bytes": result["tokens"]["schemas_bytes"],
+            "schema_density": result["tokens"]["schema_density"],
             "repair_rounds": result["repair_rounds"],
             "payload_characters": result["payload_characters"],
         }
