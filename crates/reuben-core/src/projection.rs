@@ -709,9 +709,12 @@ struct LoadFacts {
     loadable: bool,
     /// Resource ids that did not resolve → why.
     dark_ids: BTreeMap<String, String>,
-    /// Node addresses the loader called dark for a reason that is not an id — today only a
-    /// `subpatch` carrying no `patch` reference.
-    dark_nodes: BTreeMap<String, String>,
+    /// Darkness the loader reports against a **node** rather than an id → `(slot, why)`. Two
+    /// shapes land here: a `subpatch` carrying no `patch` reference at all, and — the one that
+    /// matters — this document's own failure to fetch a `voice`/`patch` child, which the loader
+    /// wraps in `Nested` and keys inconsistently (the `voice` arm's inner `id` is the canonical
+    /// source, the `patch` arm's is the logical id), so the node address is the only reliable key.
+    dark_nodes: BTreeMap<String, (String, String)>,
 }
 
 /// The projection source: one mint, at most one load, from which every view is cut. Doors hold this
@@ -794,18 +797,35 @@ impl<'a> Projector<'a> {
     fn dark_slot(&self, node: &NodeDoc) -> Option<String> {
         for (slot, r) in node.resource_refs() {
             let Some(id) = r else { continue };
-            // Either the load said the id went dark, or the document itself has no row for it —
-            // the second is true whether or not the document loaded, so the marker survives a
-            // `loadable: false` projection.
-            if self.facts().dark_ids.contains_key(id) || !self.doc.resources.contains_key(id) {
+            if self.dark_reason(&node.address, slot, id).is_some() {
                 return Some(slot.to_string());
             }
         }
-        // A `subpatch` carrying no `patch` reference at all: dark with no id to blame it on.
+        // No reference to hang it on — a `subpatch` carrying no `patch` at all.
         self.facts()
             .dark_nodes
             .get(&node.address)
-            .map(|_| "patch".to_string())
+            .map(|(slot, _)| slot.clone())
+    }
+
+    /// Why one node's reference through `slot` is dark, if it is — **the** single answer the index,
+    /// the zoom and the resources view all read, so the three cannot disagree about a node.
+    ///
+    /// Three ways to be dark, and all three have to be here: the load found the id unresolvable
+    /// (keyed by id); the load could not fetch a `voice`/`patch` child at all (keyed by node, see
+    /// [`collect_dark`]); or the document simply has no row for the id — which is document-level
+    /// truth and therefore survives a `loadable: false` projection, where the other two are unknown.
+    fn dark_reason(&self, node: &str, slot: &str, id: &str) -> Option<String> {
+        if let Some(why) = self.facts().dark_ids.get(id) {
+            return Some(why.clone());
+        }
+        if !self.doc.resources.contains_key(id) {
+            return Some(format!("{id:?} is not in the resources table"));
+        }
+        match self.facts().dark_nodes.get(node) {
+            Some((s, why)) if s == slot => Some(why.clone()),
+            _ => None,
+        }
     }
 
     /// The **node index** — every node, one line each.
@@ -880,11 +900,7 @@ impl<'a> Projector<'a> {
             .filter_map(|(slot, r)| r.as_ref().map(|id| (slot, id)))
             .map(|(slot, id)| {
                 let source = self.doc.resources.get(id).cloned();
-                let dark = self.facts().dark_ids.get(id).cloned().or_else(|| {
-                    source
-                        .is_none()
-                        .then(|| format!("{id:?} is not in the resources table"))
-                });
+                let dark = self.dark_reason(&n.address, slot, id);
                 ResourceRef {
                     slot: slot.to_string(),
                     id: id.clone(),
@@ -950,7 +966,7 @@ impl<'a> Projector<'a> {
                 self.facts()
                     .dark_nodes
                     .get(&n.address)
-                    .map(|why| message(why)),
+                    .map(|(_, why)| message(why)),
             ),
         };
         NodeZoom {
@@ -1058,6 +1074,10 @@ impl<'a> Projector<'a> {
     /// The **resources view**.
     pub fn resources(&self) -> ResourcesView {
         let mut refs: BTreeMap<&str, Vec<ResourceUse>> = BTreeMap::new();
+        // An id is dark if ANY of its referencing nodes found it so — the loader reports a
+        // `voice`/`patch` fetch failure against the referencing node, so the table row can only
+        // learn about it through the refs.
+        let mut dark: BTreeMap<&str, String> = BTreeMap::new();
         let mut dangling: Vec<ResourceRef> = Vec::new();
         for n in &self.doc.nodes {
             for (slot, r) in n.resource_refs() {
@@ -1067,6 +1087,9 @@ impl<'a> Projector<'a> {
                         slot: slot.to_string(),
                         node: n.address.clone(),
                     });
+                    if let Some(why) = self.dark_reason(&n.address, slot, id) {
+                        dark.entry(id).or_insert(why);
+                    }
                 } else {
                     dangling.push(ResourceRef {
                         slot: slot.to_string(),
@@ -1087,7 +1110,7 @@ impl<'a> Projector<'a> {
                     id: id.clone(),
                     source: source.clone(),
                     refs: refs.get(id.as_str()).cloned().unwrap_or_default(),
-                    dark: self.facts().dark_ids.get(id).cloned(),
+                    dark: dark.get(id.as_str()).cloned(),
                 })
                 .collect(),
             dangling,
@@ -1195,20 +1218,39 @@ fn build_consumers(doc: &NormalizedDoc, registry: &Registry) -> BTreeMap<String,
     out
 }
 
-/// Fold one load warning into the dark tables. Only *this* document's own resource failures count:
-/// a [`LoadWarning::Nested`] is the child's problem, surfaced when the child is projected, and the
+/// Fold one load warning into the dark tables. Only *this* document's own resource failures count
+/// — a genuinely nested one is the child's problem, surfaced when the child is projected, and the
 /// remaining warnings are `validate`'s business, not the projection's.
+///
+/// The subtlety is which failures are "this document's". A `sample` that will not resolve is
+/// reported flat, but a `voice`/`patch` **source this document could not fetch at all** is wrapped
+/// in [`LoadWarning::Nested`] even though no child was ever read — the wrapper names the
+/// *referencing* node, not a nesting level. Skipping every `Nested` therefore reported a dangling
+/// voice reference as resolved, on a document that loads, in three of the four views. So a direct
+/// `Nested(ResolveFailed { slot: voice | patch })` is unwrapped and attributed to its node, while a
+/// child's own failure — flat `sample` inside the wrapper, or a second `Nested` — stays skipped.
 fn collect_dark(
     w: &LoadWarning,
     ids: &mut BTreeMap<String, String>,
-    nodes: &mut BTreeMap<String, String>,
+    nodes: &mut BTreeMap<String, (String, String)>,
 ) {
     match w {
         LoadWarning::MissingResource { id, .. } | LoadWarning::ResolveFailed { id, .. } => {
             ids.entry(id.clone()).or_insert_with(|| w.to_string());
         }
         LoadWarning::NoPatchRef { node } => {
-            nodes.entry(node.clone()).or_insert_with(|| w.to_string());
+            nodes
+                .entry(node.clone())
+                .or_insert_with(|| ("patch".to_string(), w.to_string()));
+        }
+        LoadWarning::Nested { node, warning } => {
+            if let LoadWarning::ResolveFailed { slot, .. } = warning.as_ref() {
+                if matches!(*slot, "voice" | "patch") {
+                    nodes
+                        .entry(node.clone())
+                        .or_insert_with(|| (slot.to_string(), warning.to_string()));
+                }
+            }
         }
         _ => {}
     }
@@ -1941,6 +1983,84 @@ mod tests {
         assert_eq!(real.consumers[0].port.as_deref(), Some("audio"));
         let bystander = z.nodes.iter().find(|n| n.address == "/my").unwrap();
         assert!(bystander.consumers.is_empty(), "{:?}", bystander.consumers);
+    }
+
+    /// A `voice`/`patch` child this document could not fetch **at all** is dark, and every view
+    /// has to say so. The loader wraps that failure in `Nested` even though no child was ever read
+    /// — the wrapper names the referencing node, not a nesting level — so skipping every `Nested`
+    /// reported a dangling voice reference as *resolved*, on a document that LOADS, in three of
+    /// the four views. Loading means "no DARK" is a positive claim, not an unknown.
+    #[test]
+    fn a_child_source_this_document_cannot_fetch_is_dark_in_every_view() {
+        const HOSTS: &[(&str, &str, &str)] = &[
+            (
+                "voice",
+                "/v",
+                r#"{"format_version": 3, "instrument": "h", "resources": {"r": "nowhere.json"},
+                    "nodes": [{"type": "voicer", "address": "/v", "voice": "r"}]}"#,
+            ),
+            (
+                "patch",
+                "/s",
+                r#"{"format_version": 3, "instrument": "h", "resources": {"r": "nowhere.json"},
+                    "nodes": [{"type": "subpatch", "address": "/s", "patch": "r"}]}"#,
+            ),
+        ];
+        for (slot, addr, json) in HOSTS {
+            let p = projector(json);
+            // The document LOADS — a resolve failure is a warning — so there is no caveat to hide
+            // behind and "no marker" would be an assertion that the reference is fine.
+            let index = p.index().render();
+            assert!(!index.contains("DOES NOT LOAD"), "{slot}: {index}");
+            assert!(index.contains(&format!("dark:{slot}")), "{slot}: {index}");
+            let zoom = p.zoom(&Selection::names([*addr])).render();
+            assert!(
+                zoom.contains(&format!("{slot}=r -> nowhere.json DARK:")),
+                "{zoom}"
+            );
+            let res = p.resources().render();
+            assert!(res.contains("DARK:"), "{slot}: {res}");
+        }
+    }
+
+    /// ...and the child's OWN failures stay the child's. A subpatch whose document reads fine but
+    /// whose own sample is missing is reported through the same `Nested` wrapper; treating that as
+    /// the parent's darkness would mark a perfectly good reference dark.
+    #[test]
+    fn a_childs_own_resource_failure_is_not_the_parents_darkness() {
+        const HOST: &str = r#"{
+            "format_version": 3,
+            "instrument": "host",
+            "resources": { "c": "child.json" },
+            "nodes": [ {"type": "subpatch", "address": "/s", "patch": "c"} ]
+        }"#;
+        const CHILD: &str = r#"{
+            "format_version": 3,
+            "instrument": "child",
+            "resources": { "s": "gone.wav" },
+            "interface": { "outputs": { "audio": {"from": "/sp.audio"} } },
+            "nodes": [ {"type": "sample", "address": "/sp", "sample": "s"} ]
+        }"#;
+        struct ChildWithBadSample;
+        impl ResourceResolver for ChildWithBadSample {
+            fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+                Err(ResolveError::NotFound(source.to_string()))
+            }
+            fn resolve_text(&self, _: &str) -> Result<String, ResolveError> {
+                Ok(CHILD.to_string())
+            }
+        }
+        let registry = Registry::builtin();
+        let p = Projector::new(HOST, &registry, &ChildWithBadSample).expect("mints");
+        assert!(
+            !p.index().render().contains("dark:"),
+            "{}",
+            p.index().render()
+        );
+        let zoom = p.zoom(&Selection::names(["/s"])).render();
+        assert!(!zoom.contains("DARK:"), "{zoom}");
+        // The parent's reference is sound, so the child's face still describes.
+        assert!(zoom.contains("boundary: child"), "{zoom}");
     }
 
     /// The addressable set is the loader's, not an approximation of it. A node addressed
