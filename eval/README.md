@@ -31,6 +31,15 @@ cargo build -p reuben-mcp
 cd eval && python3 -m reuben_eval.gate
 ```
 
+The gate is **visibility, not a verdict**. A grounding metric that regresses lands as a warning
+annotation and a point on the trend — never a build failure. A gate that FAILs on roster growth
+would encode "the library must not grow", a non-goal
+([#612](https://github.com/Impractical-Instruments/reuben/issues/612)); only two things fail it — a
+reference solution that stops passing (a real engine break) or a metric the harness can't compute. A
+derived **per-tool schema density** (schema bytes ÷ tool count) sits beside the totals so capability
+growth (more tools, flat density) reads differently from bloat (denser schemas, no new tool) — the
+one genuinely invisible regression.
+
 **The live tier is a ladder anchored to hardware bands** — 8 / 16 / 32 GB of unified memory. The
 question is not "does it pass" but **where the pass line sits**; a prototype earns its place by
 moving that line down a band. Run on demand, never in CI.

@@ -12,8 +12,12 @@
 # against the real sidecar with NO inference. So this is the surface's COST FLOOR, and a prototype's
 # claim on the #574 map is checkable before a single token is bought.
 #
-#   FAIL (exit 1): any metric regresses >= 10% vs the baseline, or a reference solution stops passing.
-#   WARN:          3%..10% — job summary + GH annotation, non-blocking.
+#   FAIL (exit 1): a reference solution stops passing (a real engine/fixture break), or a metric the
+#                  harness cannot compute (a broken gate). Roster SIZE never fails the build — a gate
+#                  that FAILs on growth encodes "the library must not grow", a non-goal. #612.
+#   WARN:          any grounding metric regresses vs the baseline — job summary + GH annotation +
+#                  trend, non-blocking. Growth is a decision to make with eyes open; the per-tool
+#                  schema-density number tells capability growth (more tools) apart from bloat.
 #
 # HOW THE BASELINE IS BUILT — the mirror image of perf-gate.sh's swap. There, the HARNESS is held
 # fixed and the ENGINE SOURCE moves to the baseline ref. Here the same rule applies, and the split is
@@ -127,6 +131,6 @@ rc=$?
 cd "$WORK"
 
 if [ "$rc" -ne 0 ]; then
-  note "**Result: ❌ the agent surface got more expensive, or a reference solution stopped passing.**"
+  note "**Result: ❌ a reference solution stopped passing, or the gate could not run — not a size regression.**"
 fi
 exit "$rc"

@@ -61,10 +61,16 @@ class Ledger:
     and `schemas` are the **fixed** grounding cost paid on every single turn — the number that
     creeps when someone adds a paragraph to a tool description. `resources` is opt-in grounding the
     model chose to read. `results` scales with how much work the task took.
+
+    `schemas_bytes` and `tool_count` are the same schema payload measured two ways, kept so a report
+    can derive `schema_density` — the number that tells roster GROWTH (more tools, flat density)
+    apart from schema BLOAT (a wordier schema, no new tool). #612.
     """
 
     instructions: int = 0
     schemas: int = 0
+    schemas_bytes: int = 0
+    tool_count: int = 0
     resources: int = 0
     results: int = 0
     resource_uris: list[str] = field(default_factory=list)
@@ -78,10 +84,19 @@ class Ledger:
     def total(self) -> int:
         return self.instructions + self.schemas + self.resources + self.results
 
+    @property
+    def schema_density(self) -> float:
+        """Schema bytes per tool. Growth-by-capability holds this flat; bloat pushes it up. 0.0 on
+        an empty roster (no tools => no meaningful ratio)."""
+        return self.schemas_bytes / self.tool_count if self.tool_count else 0.0
+
     def as_dict(self) -> dict[str, Any]:
         return {
             "instructions": self.instructions,
             "schemas": self.schemas,
+            "schemas_bytes": self.schemas_bytes,
+            "tool_count": self.tool_count,
+            "schema_density": self.schema_density,
             "resources": self.resources,
             "results": self.results,
             "fixed": self.fixed,
@@ -234,7 +249,12 @@ class Sidecar:
         # the model speaks, and its size is what a wordier tool description actually costs.
         listed = self._request("tools/list").get("tools", [])
         self.tools = {tool["name"]: tool for tool in listed}
-        self.ledger.schemas = cl100k.count(json.dumps(listed, separators=(",", ":"), sort_keys=True))
+        schema_json = json.dumps(listed, separators=(",", ":"), sort_keys=True)
+        self.ledger.schemas = cl100k.count(schema_json)
+        # The same payload in bytes, plus the roster size: the pair a report divides into
+        # per-tool density, so a wordier schema reads differently from one more verb. #612.
+        self.ledger.schemas_bytes = len(schema_json.encode("utf-8"))
+        self.ledger.tool_count = len(listed)
 
     # -- surface ------------------------------------------------------------------------------
 
