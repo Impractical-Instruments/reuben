@@ -25,7 +25,7 @@ use crate::AudioConfig;
 use serde::Serialize;
 
 /// One operator's self-description, flattened from its [`Descriptor`] for agent grounding.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct OperatorInfo {
     pub type_name: String,
@@ -44,7 +44,7 @@ pub struct OperatorInfo {
 /// — an immutable port set in a node's `config` block, never wired in `inputs`. Optional metadata
 /// appears only where the port's type carries it: `default`/`min`/`max`/`unit`/`curve` for a swept
 /// scalar, `default`/`min`/`max` for an integer, `default`/`variants` for an enum.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct PortInfo {
     pub name: String,
@@ -170,7 +170,7 @@ impl PortInfo {
     /// suppressed — it states no authoring intent, and it would swamp the listing (every bare
     /// math operand carries it). Everything is read off the same flattened fields the full
     /// JSON view serializes, so the two modes cannot disagree about a port.
-    fn signature_fragment(&self) -> String {
+    pub fn signature_fragment(&self) -> String {
         let mut s = format!("{}:{}", self.name, self.kind);
         if !self.variants.is_empty() {
             s.push_str(&format!("[{}]", self.variants.join(",")));
@@ -312,7 +312,7 @@ pub fn describe_compact(registry: &Registry, which: Option<&str>) -> Result<Vec<
 /// it plus optional min/max range overrides (a subset of that port's range). Both carry the entry's
 /// presentational fields (label/unit/widget). This is the introspection view of the boundary face a
 /// `subpatch` node presents (P6, #121).
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct PatchBoundary {
     /// The document's `instrument` name.
@@ -470,7 +470,7 @@ pub fn library_index_line(
 /// whitespace or end-of-text, so a `.` inside a token (`patches/space.json`, `e.g.`… followed by
 /// more of the same sentence) never truncates. A doc with no sentence-ending period is one
 /// sentence — returned whole.
-fn first_sentence(doc: &str) -> String {
+pub(crate) fn first_sentence(doc: &str) -> String {
     let text = doc.split_whitespace().collect::<Vec<_>>().join(" ");
     let end = text
         .char_indices()

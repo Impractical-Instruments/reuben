@@ -1,0 +1,189 @@
+=== index ===
+instrument acid-techno (53 nodes, format 3, projection 1)
+doc: Acid techno rig: a four-on-the-floor 16-step drum machine (kick, snare, closed + open hi-hat), a TB-303-style monophonic acid bass synth sequencer, and a detuned three-saw pad playing sustained whole-note chords. [+1326 chars: zoom /]
+/clock clock
+/pad_clock clock
+/kick sequencer
+/kick_v voicer
+/kick_trim m2s
+/kick_amp mul_f32_signal
+/snare sequencer
+/snare_v voicer
+/snare_trim m2s
+/snare_amp mul_f32_signal
+/chh sequencer
+/chh_v voicer
+/chh_trim m2s
+/chh_amp mul_f32_signal
+/ohh sequencer
+/ohh_v voicer
+/ohh_trim m2s
+/ohh_amp mul_f32_signal
+/dsum1 add_f32_signal
+/dsum2 add_f32_signal
+/dsum3 add_f32_signal
+/dsat saturator
+/drums_vol_cv m2s
+/drums_out mul_f32_signal
+/bass_harmony harmony
+/key_up add_i32_value
+/pad_harmony harmony
+/bass_seq sequencer
+/bass_mode transpose
+/bass_unpack unpack_note
+/bass_freq pitch2freq
+/bass_glide m2s
+/bass_osc oscillator
+/bass_env envelope
+/bass_env_amt mul_f32_signal
+/bass_cutoff map_f32_signal
+/bass_filter filter
+/bass_ampcurve power_f32_signal
+/bass_vca mul_f32_signal
+/bass_vol_cv m2s
+/bass_out mul_f32_signal
+/pad_seq sequencer
+/pad_mode transpose
+/pad_chord chord
+/pad_v voicer
+/pad_vol_cv m2s
+/pad_out mul_f32_signal
+/pad_pump compressor
+/mix1 add_f32_signal
+/mix2 add_f32_signal
+/master_verb reverb
+/master_sat saturator
+/out output
+
+=== zoom / ===
+instrument acid-techno (53 nodes, format 3, projection 1)
+doc: Acid techno rig: a four-on-the-floor 16-step drum machine (kick, snare, closed + open hi-hat), a TB-303-style monophonic acid bass synth sequencer, and a detuned three-saw pad playing sustained whole-note chords. The bass is a single inline mono synth (saw -> resonant lowpass -> env, note line unpacked to freq/gate at rig level rather than voiced) so its 303 controls are live: /glide/in slides the pitch between notes (portamento), /squelch/in is the filter resonance (the whistling acid tone), /filter_env/in is the filter-envelope amount (how far the cutoff sweep opens), and /filter_decay/in is the envelope decay (the length of the squelch tail). Drums and bass share a 16th-note clock; the pad triggers one chord per bar. The `key` pipe (/key/in) sets the absolute tonic of a shared natural-minor harmony (bass at the root, pad one octave up). The `mode` pipe (/mode/in, 0-6) is the modal chord/scale selector: it transposes both the bass line and the pad chord by that many scale degrees, so one knob re-roots them together within the key -- the modal, chord-player-style move. Each instrument has its own volume pipe (/drums_vol/in, /bass_vol/in, /pad_vol/in); ride tempo 60-180 BPM with /tempo/in. Program the lanes with /kick_step1..16 /snare_step* /chh_step* /ohh_step* (boolean) and the bass with /bass_step1..16 (scale degrees, -1 = rest). The pad is sidechain-pumped by the kick (a `compressor` at /pad_pump keyed off the raw kick voice), so the chords breathe with the four-on-the-floor -- the signature acid-techno pump.
+
+=== zoom /clock /kick_v /out ===
+/clock clock
+doc: 16th-note grid for drums + bass. division=4 -> 4 pulses per beat.
+in: division=4, tempo<-/tempo
+out: gate->/kick.clock, gate->/snare.clock, gate->/chh.clock, gate->/ohh.clock, gate->/bass_seq.clock
+/kick_v voicer
+doc: Hosts the kick-voice; the lane gate fires it.
+config: voices=1
+in: notes<-/kick
+out: audio->/kick_amp.a, audio->/pad_pump.sidechain
+res: voice=kick-voice -> voices/kick-voice.json
+boundary: kick-voice (attack:value s 0.001..5=0.001, base:value Hz 20..1000=48, decay:value s 0.001..5=0.1, gate:value 0..1=0, release:value s 0.001..5=0.08, sustain:value 0..1=0, sweep:value Hz 0..2000=220) -> active:value active 0..1=0, audio:signal
+/out output
+in: audio<-/master_sat
+out: audio->pipe:out
+
+=== zoom --type harmony ===
+/bass_harmony harmony
+doc: Tonal context for the bass (natural minor). KEY/CHORD SELECTOR: the `key` pipe (/key/in) sets `root`; the whole bass line and the pad re-spell live when it changes.
+in: degrees=7, root<-/key, s0=0, s1=2, s2=3, s3=5, s4=7, s5=8, s6=10
+out: harmony->/bass_freq.harmony
+/pad_harmony harmony
+doc: Tonal context for the pad (same natural minor, one octave up). Re-spells with /key.
+in: degrees=7, root<-/key_up, s0=0, s1=2, s2=3, s3=5, s4=7, s5=8, s6=10
+out: harmony->/pad_v.harmony
+
+=== pipes ===
+pipes in (90):
+bass_step1:f32 degree -1..24=0
+bass_step10:f32 degree -1..24=7
+bass_step11:f32 degree -1..24=-1
+bass_step12:f32 degree -1..24=5
+bass_step13:f32 degree -1..24=0
+bass_step14:f32 degree -1..24=-1
+bass_step15:f32 degree -1..24=3
+bass_step16:f32 degree -1..24=7
+bass_step2:f32 degree -1..24=-1
+bass_step3:f32 degree -1..24=0
+bass_step4:f32 degree -1..24=7
+bass_step5:f32 degree -1..24=0
+bass_step6:f32 degree -1..24=-1
+bass_step7:f32 degree -1..24=3
+bass_step8:f32 degree -1..24=0
+bass_step9:f32 degree -1..24=0
+bass_vol:f32 0..1=0.8
+chh_step1:f32 0..1=0
+chh_step10:f32 0..1=1
+chh_step11:f32 0..1=0
+chh_step12:f32 0..1=1
+chh_step13:f32 0..1=0
+chh_step14:f32 0..1=1
+chh_step15:f32 0..1=0
+chh_step16:f32 0..1=1
+chh_step2:f32 0..1=1
+chh_step3:f32 0..1=0
+chh_step4:f32 0..1=1
+chh_step5:f32 0..1=0
+chh_step6:f32 0..1=1
+chh_step7:f32 0..1=0
+chh_step8:f32 0..1=1
+chh_step9:f32 0..1=0
+drums_vol:f32 0..1=0.8
+filter_decay:f32 s 0.01..1=0.16
+filter_env:f32 0..1=1
+glide:f32 s 0..0.5=0.06
+key:i32 MIDI 24..72=45
+kick_step1:f32 0..1=1
+kick_step10:f32 0..1=0
+kick_step11:f32 0..1=0
+kick_step12:f32 0..1=0
+kick_step13:f32 0..1=1
+kick_step14:f32 0..1=0
+kick_step15:f32 0..1=0
+kick_step16:f32 0..1=0
+kick_step2:f32 0..1=0
+kick_step3:f32 0..1=0
+kick_step4:f32 0..1=0
+kick_step5:f32 0..1=1
+kick_step6:f32 0..1=0
+kick_step7:f32 0..1=0
+kick_step8:f32 0..1=0
+kick_step9:f32 0..1=1
+mode:f32 degree 0..6=0
+ohh_step1:f32 0..1=0
+ohh_step10:f32 0..1=0
+ohh_step11:f32 0..1=1
+ohh_step12:f32 0..1=0
+ohh_step13:f32 0..1=0
+ohh_step14:f32 0..1=0
+ohh_step15:f32 0..1=1
+ohh_step16:f32 0..1=0
+ohh_step2:f32 0..1=0
+ohh_step3:f32 0..1=1
+ohh_step4:f32 0..1=0
+ohh_step5:f32 0..1=0
+ohh_step6:f32 0..1=0
+ohh_step7:f32 0..1=1
+ohh_step8:f32 0..1=0
+ohh_step9:f32 0..1=0
+pad_vol:f32 0..1=0.5
+snare_step1:f32 0..1=0
+snare_step10:f32 0..1=0
+snare_step11:f32 0..1=0
+snare_step12:f32 0..1=0
+snare_step13:f32 0..1=1
+snare_step14:f32 0..1=0
+snare_step15:f32 0..1=0
+snare_step16:f32 0..1=0
+snare_step2:f32 0..1=0
+snare_step3:f32 0..1=0
+snare_step4:f32 0..1=0
+snare_step5:f32 0..1=1
+snare_step6:f32 0..1=0
+snare_step7:f32 0..1=0
+snare_step8:f32 0..1=0
+snare_step9:f32 0..1=0
+squelch:f32 0..1=0.72
+tempo:f32 BPM 60..180=130
+pipes out (1):
+out<-/out.audio
+
+=== resources ===
+resources (5):
+acid-pad-voice -> voices/acid-pad-voice.json voice:/pad_v
+hat-voice -> voices/hat-voice.json voice:/chh_v
+kick-voice -> voices/kick-voice.json voice:/kick_v
+openhat-voice -> voices/openhat-voice.json voice:/ohh_v
+snare-voice -> voices/snare-voice.json voice:/snare_v
