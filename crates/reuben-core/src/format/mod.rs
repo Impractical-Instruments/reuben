@@ -463,8 +463,11 @@ impl NodeDoc {
     /// typed `sample`/`voice`/`patch` fields surfaced as one `(slot, ref)` list. The single place the
     /// format maps its fields to descriptor [`ResourceSlot`](crate::descriptor::ResourceSlot)
     /// names, so generic resource validation iterates this rather than enumerating known slots arm
-    /// by arm — a new slot extends this list and nothing downstream.
-    fn resource_refs(&self) -> [(&'static str, &Option<String>); 3] {
+    /// by arm — a new slot extends this list and nothing downstream. `pub(crate)` so the
+    /// [`projection`](crate::projection) reads the same list rather than keeping its own copy: its
+    /// dark markers, `res:` lines and resources view all have to start covering a new slot the
+    /// moment one is added here.
+    pub(crate) fn resource_refs(&self) -> [(&'static str, &Option<String>); 3] {
         [
             ("sample", &self.sample),
             ("voice", &self.voice),
@@ -2647,7 +2650,7 @@ fn same_wire_type(from: &PortType, to: &PortType) -> bool {
 
 /// Split a wire-ref string into `(node, Some(port))` (`"/osc.audio"`) or `(node, None)` (`"/osc"`,
 /// the sole-output sugar). Node addresses carry no `.`, so the last `.` separates node from port.
-fn parse_wire(reference: &str) -> (&str, Option<&str>) {
+pub(crate) fn parse_wire(reference: &str) -> (&str, Option<&str>) {
     match reference.rsplit_once('.') {
         Some((node, port)) => (node, Some(port)),
         None => (reference, None),

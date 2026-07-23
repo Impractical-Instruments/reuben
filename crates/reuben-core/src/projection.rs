@@ -18,9 +18,10 @@
 //! - [`Projector::index`] — one line per node (`address type`, plus a dark-resource marker), under
 //!   a header carrying the instrument's role line. The map.
 //! - [`Projector::zoom`] — one node or a selection: its inputs (literal values **and** wire
-//!   sources), its `config` constants, its `doc`, its resource ref, a nested child's boundary, and
+//!   sources), its `config` constants, its `doc`, its resource refs, a nested child's boundary, and
 //!   **its consumers** — the reverse edges, without which the agent is blind to the blast radius of
-//!   every destructive verb.
+//!   every destructive verb. Anything the node ought to show and cannot gets a `note` saying why;
+//!   nothing goes missing quietly.
 //! - [`Projector::pipes`] — the `interface` boundary: each pipe's type/range/curve/unit/channel.
 //! - [`Projector::resources`] — the `id → source` table, who references each id, and whether it
 //!   resolved.
@@ -31,12 +32,13 @@
 //! when the agent needs to see is the worst possible failure — with `loadable: false` in the header
 //! saying so.
 
+use std::cell::{OnceCell, RefCell};
 use std::collections::{BTreeMap, BTreeSet};
 
 use serde::Serialize;
 
 use crate::format::{
-    load_instrument_doc, ConfigValue, InputValue, InterfaceEntry, LoadWarning, NodeDoc,
+    load_instrument_doc, parse_wire, ConfigValue, InputValue, InterfaceEntry, LoadWarning, NodeDoc,
     NormalizedDoc, PipeDefault,
 };
 use crate::introspect::{describe_patch, first_sentence, PatchBoundary};
@@ -63,9 +65,10 @@ pub const PROJECTION_LEGEND: &str =
     "Document projection. Index: one `address type` line per node, \
 `dark:<slot>` marks an unresolved resource. Zoom: `in:` bindings (`name<-/source` wired, \
 `name=value` literal), `config:` plan-time constants, `out:` consumers as `port->/node.input` or \
-`port->pipe:name` (the blast radius of removing the node), `res:` its resource ref, `boundary:` a \
-nested child's pipes. Pipes: `name:type unit exp lo..hi=default chN` for an input pipe, \
-`name<-/node.port chN` for an output pipe. Zoom `/` for the document's full doc text.";
+`port->pipe:name` (the blast radius of removing the node), `res:` its resource refs, `boundary:` a \
+nested child's pipes, `note:` something expected but absent, and why. Pipes: \
+`name:type unit exp lo..hi=default chN` for an input pipe, `name<-/node.port chN` for an output \
+pipe. Zoom `/` for the document's full doc text.";
 
 /// Which members a view is cut for — one grammar shared by node zoom and the pipe view, because
 /// the verbs are both address-shaped and type-shaped (a nudge targets operator types; a
@@ -153,7 +156,10 @@ impl DocHeader {
         let mut out = self.line();
         if let Some(doc) = self.doc.as_deref() {
             let role = first_sentence(doc);
-            let rest = doc.split_whitespace().collect::<Vec<_>>().join(" ").len() - role.len();
+            // Characters, not bytes: the agent spends this number deciding whether the rest of the
+            // doc is worth a turn, and this codebase's prose is full of em-dashes and arrows.
+            let whole = doc.split_whitespace().collect::<Vec<_>>().join(" ");
+            let rest = whole.chars().count() - role.chars().count();
             out.push_str(&format!("\ndoc: {role}"));
             if rest > 0 {
                 out.push_str(&format!(" [+{rest} chars: zoom {DOC_ADDRESS}]"));
@@ -309,13 +315,21 @@ pub struct NodeZoom {
     pub inputs: Vec<InputEdge>,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub consumers: Vec<OutEdge>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub resource: Option<ResourceRef>,
+    /// **Every** resource reference the node carries, not just the first — the index's dark marker
+    /// scans all three slots, so a zoom showing one could contradict it.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub resources: Vec<ResourceRef>,
     /// A nested child's face — **never its internals**. The format is not recursive (a child is a
     /// resource id), so the projection mirrors the *document*: an opaque node plus the boundary it
     /// presents. The child's own nodes are reached by projecting the child document.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub boundary: Option<PatchBoundary>,
+    /// Why something the agent would expect on this node is **absent** — today, only a nested
+    /// child whose reference is fine but whose document will not resolve or describe. Dropping
+    /// that silently would be exactly the failure this surface exists to prevent, and a dark `res:`
+    /// line does *not* cover it: the reference resolved, the document did not.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub note: Option<String>,
 }
 
 impl NodeZoom {
@@ -333,11 +347,12 @@ impl NodeZoom {
         line("config", render_list(&self.config, InputEdge::render));
         line("in", render_list(&self.inputs, InputEdge::render));
         line("out", render_list(&self.consumers, OutEdge::render));
-        if let Some(r) = &self.resource {
-            line("res", r.render());
-        }
+        line("res", render_list(&self.resources, ResourceRef::render));
         if let Some(b) = &self.boundary {
             line("boundary", render_boundary(b));
+        }
+        if let Some(n) = &self.note {
+            line("note", n.clone());
         }
         out
     }
@@ -372,8 +387,9 @@ impl Zoom {
 }
 
 /// One `interface` pipe. Both directions share this shape because [`InterfaceEntry`] is one
-/// untagged union — either pipe form can appear in either map, and a reader that assumed otherwise
-/// would be one malformed document away from lying.
+/// untagged union: serde will put either pipe form in either map, and while the mint rejects a
+/// misfiled entry today, a reader that hard-assumes direction is one gate change away from lying
+/// about a document rather than merely omitting from it.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct PipeInfo {
@@ -457,22 +473,24 @@ pub struct PipeView {
 
 impl PipeView {
     pub fn render(&self) -> String {
-        let mut out = String::new();
+        let mut lines: Vec<String> = Vec::new();
         for (label, pipes) in [("in", &self.inputs), ("out", &self.outputs)] {
             if pipes.is_empty() {
                 continue;
             }
-            out.push_str(&format!("pipes {label} ({}):", pipes.len()));
-            for p in pipes.iter() {
-                out.push_str(&format!("\n{}", p.render()));
-            }
-            out.push('\n');
+            lines.push(format!("pipes {label} ({}):", pipes.len()));
+            lines.extend(pipes.iter().map(PipeInfo::render));
+        }
+        // An instrument with no `interface` (a plain rig) must still answer with a *sentence*: an
+        // empty string is indistinguishable from a truncated or failed call, and every other view
+        // emits a header even when it has nothing under it.
+        if lines.is_empty() {
+            lines.push("pipes (0): this document declares no interface".to_string());
         }
         if !self.unmatched.is_empty() {
-            out.push_str(&format!("no match: {}\n", self.unmatched.join(", ")));
+            lines.push(format!("no match: {}", self.unmatched.join(", ")));
         }
-        out.pop();
-        out
+        lines.join("\n")
     }
 }
 
@@ -507,7 +525,18 @@ pub struct ResourcesView {
 
 impl ResourcesView {
     pub fn render(&self) -> String {
-        let mut lines = vec![format!("resources ({}):", self.entries.len())];
+        // The header counts BOTH kinds, and every dangling line is labelled: a count that
+        // disagreed with the line count, over rows in two different grammars, is a table an agent
+        // cannot parse.
+        let mut lines = vec![if self.dangling.is_empty() {
+            format!("resources ({}):", self.entries.len())
+        } else {
+            format!(
+                "resources ({} listed, {} dangling):",
+                self.entries.len(),
+                self.dangling.len()
+            )
+        }];
         for e in &self.entries {
             let mut s = format!("{} -> {}", e.id, e.source);
             if e.refs.is_empty() {
@@ -521,36 +550,51 @@ impl ResourcesView {
             lines.push(s);
         }
         for d in &self.dangling {
-            lines.push(d.render());
+            lines.push(format!("dangling {}", d.render()));
         }
         lines.join("\n")
     }
 }
 
-/// The projection source: one mint, one load, from which every view is cut. Doors hold this for a
-/// turn so a verb can echo the zoom of what it touched without re-parsing.
+/// What only a real load can tell the projection: whether the document builds, and which resource
+/// references went dark doing it.
+#[derive(Default)]
+struct LoadFacts {
+    loadable: bool,
+    /// Resource ids that did not resolve → why.
+    dark_ids: BTreeMap<String, String>,
+    /// Node addresses the loader called dark for a reason that is not an id — today only a
+    /// `subpatch` carrying no `patch` reference.
+    dark_nodes: BTreeMap<String, String>,
+}
+
+/// The projection source: one mint, at most one load, from which every view is cut. Doors hold this
+/// for a turn so a verb can echo the zoom of what it touched without re-parsing.
+///
+/// The load is **lazy and memoized**, and so is each nested child's boundary. That is not
+/// micro-optimization: a load resolves and decodes every referenced sample, and describing a child
+/// mints and loads a whole second document. On the one surface whose entire justification is
+/// per-turn cost, a `pipes` call must not pay for a WAV decode, and `zoom --type voicer` on a
+/// five-voice rig must not load the same voice document five times over.
 pub struct Projector<'a> {
     doc: NormalizedDoc,
     registry: &'a Registry,
     resolver: &'a dyn ResourceResolver,
-    loadable: bool,
-    /// Resource ids that did not resolve this load → why. Empty when the document did not load at
-    /// all (the load is what discovers darkness).
-    dark_ids: BTreeMap<String, String>,
-    /// Node addresses the loader itself called dark for a reason that is not an id — today only a
-    /// `subpatch` carrying no `patch` reference.
-    dark_nodes: BTreeMap<String, String>,
-    /// `source node address` → its consumers. Built once: every node's inputs, plus every output
-    /// pipe's feed, inverted.
+    /// Filled on the first view that needs a dark marker; `pipes` never touches it.
+    load: OnceCell<LoadFacts>,
+    /// Canonical child source → its described face (or why it has none).
+    boundaries: RefCell<BTreeMap<String, Result<PatchBoundary, String>>>,
+    /// `source node address` → its consumers. Built eagerly: inverting the document's own edges is
+    /// pure in-memory work with no IO, and every view but `pipes` wants it.
     consumers: BTreeMap<String, Vec<OutEdge>>,
 }
 
 impl<'a> Projector<'a> {
-    /// Mint the document and load it once. The mint is required — without a parseable document
-    /// there is no structure to project — but the **load is best-effort**: a document that fails to
-    /// load still projects, with `loadable: false` in the header and no dark-resource markers,
-    /// because `validate` is the single authority on validity and going blind is the worst way to
-    /// report invalidity.
+    /// Mint the document. The mint is required — without a parseable document there is no structure
+    /// to project — but the **load is best-effort and deferred**: a document that fails to load
+    /// still projects, with `loadable: false` in the header and no dark-resource markers, because
+    /// `validate` is the single authority on validity and going blind is the worst way to report
+    /// invalidity.
     pub fn new(
         json: &str,
         registry: &'a Registry,
@@ -560,21 +604,31 @@ impl<'a> Projector<'a> {
         // shape to read, so this is the one thing the projection cannot degrade past.
         let doc =
             NormalizedDoc::from_json(json, registry, Some(resolver)).map_err(|e| e.to_string())?;
-        let loaded = load_instrument_doc(&doc, registry, resolver).ok();
-        let mut dark_ids = BTreeMap::new();
-        let mut dark_nodes = BTreeMap::new();
-        for w in loaded.iter().flat_map(|l| l.warnings.iter()) {
-            collect_dark(w, &mut dark_ids, &mut dark_nodes);
-        }
         let consumers = build_consumers(&doc, registry);
         Ok(Projector {
             doc,
             registry,
             resolver,
-            loadable: loaded.is_some(),
-            dark_ids,
-            dark_nodes,
+            load: OnceCell::new(),
+            boundaries: RefCell::new(BTreeMap::new()),
             consumers,
+        })
+    }
+
+    /// Load the document once, on the first view that needs to know what went dark.
+    fn facts(&self) -> &LoadFacts {
+        self.load.get_or_init(|| {
+            let Ok(loaded) = load_instrument_doc(&self.doc, self.registry, self.resolver) else {
+                return LoadFacts::default();
+            };
+            let mut facts = LoadFacts {
+                loadable: true,
+                ..LoadFacts::default()
+            };
+            for w in &loaded.warnings {
+                collect_dark(w, &mut facts.dark_ids, &mut facts.dark_nodes);
+            }
+            facts
         })
     }
 
@@ -585,23 +639,25 @@ impl<'a> Projector<'a> {
             projection_version: PROJECTION_VERSION,
             nodes: self.doc.nodes.len(),
             doc: self.doc.doc.clone(),
-            loadable: self.loadable,
+            loadable: self.facts().loadable,
         }
     }
 
     /// The dark marker for one node: the first resource slot whose reference did not resolve, or
     /// the loader's own node-level darkness.
     fn dark_slot(&self, node: &NodeDoc) -> Option<String> {
-        for (slot, id) in resource_refs(node) {
+        for (slot, r) in node.resource_refs() {
+            let Some(id) = r else { continue };
             // Either the load said the id went dark, or the document itself has no row for it —
             // the second is true whether or not the document loaded, so the marker survives a
             // `loadable: false` projection.
-            if self.dark_ids.contains_key(id) || !self.doc.resources.contains_key(id) {
+            if self.facts().dark_ids.contains_key(id) || !self.doc.resources.contains_key(id) {
                 return Some(slot.to_string());
             }
         }
         // A `subpatch` carrying no `patch` reference at all: dark with no id to blame it on.
-        self.dark_nodes
+        self.facts()
+            .dark_nodes
             .get(&node.address)
             .map(|_| "patch".to_string())
     }
@@ -667,22 +723,76 @@ impl<'a> Projector<'a> {
         }
     }
 
+    /// Every resource reference a node carries, in the format's own slot order — **all** of them,
+    /// not the first: the index's dark marker scans every slot, so a zoom that showed only one
+    /// could tell the agent a node is dark and then show it a healthy resource.
+    fn refs_of(&self, n: &NodeDoc) -> Vec<ResourceRef> {
+        n.resource_refs()
+            .into_iter()
+            .filter_map(|(slot, r)| r.as_ref().map(|id| (slot, id)))
+            .map(|(slot, id)| {
+                let source = self.doc.resources.get(id).cloned();
+                let dark = self.facts().dark_ids.get(id).cloned().or_else(|| {
+                    source
+                        .is_none()
+                        .then(|| format!("{id:?} is not in the resources table"))
+                });
+                ResourceRef {
+                    slot: slot.to_string(),
+                    id: id.clone(),
+                    source,
+                    dark,
+                }
+            })
+            .collect()
+    }
+
+    /// A nested child's face, memoized per source: `zoom --type voicer` on a five-voice rig would
+    /// otherwise resolve, mint and load each child document once per zoom, and again on the next
+    /// zoom of the same node. Returns the failure rather than dropping it — see [`NodeZoom::note`].
+    fn boundary_of(&self, r: &ResourceRef) -> Result<PatchBoundary, String> {
+        let Some(source) = r.source.as_deref() else {
+            return Err(format!("{:?} is not in the resources table", r.id));
+        };
+        let id = self.resolver.canonical(source, None);
+        if let Some(hit) = self.boundaries.borrow().get(&id) {
+            return hit.clone();
+        }
+        // Resolved through the same seam the loader uses — and **rebased on the child**, so the
+        // child's own nested references resolve next to it exactly as they do under a real load.
+        // Without that, a child that itself nests describes every re-exported port as dark, which
+        // would be the projection lying rather than omitting.
+        let described = self
+            .resolver
+            .resolve_text(&id)
+            .map_err(|e| format!("{source:?} did not resolve: {e}"))
+            .and_then(|text| {
+                let rebased = Rebased {
+                    inner: self.resolver,
+                    referrer: id.clone(),
+                };
+                describe_patch(&text, self.registry, &rebased)
+                    .map_err(|e| format!("{source:?} did not describe: {e}"))
+            });
+        self.boundaries.borrow_mut().insert(id, described.clone());
+        described
+    }
+
     fn zoom_node(&self, i: usize) -> NodeZoom {
         let n = &self.doc.nodes[i];
-        let resource = resource_refs(n).into_iter().next().map(|(slot, id)| {
-            let source = self.doc.resources.get(id).cloned();
-            let dark = self.dark_ids.get(id).cloned().or_else(|| {
-                source
-                    .is_none()
-                    .then(|| format!("{id:?} is not in the resources table"))
-            });
-            ResourceRef {
-                slot: slot.to_string(),
-                id: id.clone(),
-                source,
-                dark,
-            }
-        });
+        let resources = self.refs_of(n);
+        // At most one nesting reference per node in practice (a Voicer's `voice`, a subpatch's
+        // `patch`); the first is the one whose face this node presents.
+        let nested = resources.iter().find(|r| r.slot != "sample");
+        let (boundary, note) = match nested.map(|r| (r, self.boundary_of(r))) {
+            Some((_, Ok(b))) => (Some(b), None),
+            // A dark ref already explains itself on the `res:` line — no second complaint. The
+            // note is for the case the `res:` line CANNOT cover: the reference resolved, and the
+            // document behind it still did not describe.
+            Some((r, Err(_))) if r.dark.is_some() => (None, None),
+            Some((_, Err(why))) => (None, Some(format!("no boundary: {why}"))),
+            None => (None, None),
+        };
         NodeZoom {
             address: n.address.clone(),
             type_name: n.type_name.clone(),
@@ -721,26 +831,9 @@ impl<'a> Projector<'a> {
                 })
                 .collect(),
             consumers: self.consumers.get(&n.address).cloned().unwrap_or_default(),
-            // The child's face, resolved through the same seam the loader uses — and **rebased on
-            // the child**, so the child's own nested references resolve next to it exactly as they
-            // do under a real load. Without that a child that itself nests describes every
-            // re-exported port as dark, which would be the projection lying rather than omitting.
-            // A child that will not resolve or will not describe leaves no boundary; the dark ref
-            // already says why.
-            boundary: resource
-                .as_ref()
-                .filter(|r| r.slot != "sample" && r.dark.is_none())
-                .and_then(|r| r.source.as_deref())
-                .and_then(|source| {
-                    let id = self.resolver.canonical(source, None);
-                    let text = self.resolver.resolve_text(&id).ok()?;
-                    let rebased = Rebased {
-                        inner: self.resolver,
-                        referrer: id,
-                    };
-                    describe_patch(&text, self.registry, &rebased).ok()
-                }),
-            resource,
+            resources,
+            boundary,
+            note,
         }
     }
 
@@ -791,7 +884,8 @@ impl<'a> Projector<'a> {
         let mut refs: BTreeMap<&str, Vec<String>> = BTreeMap::new();
         let mut dangling: Vec<ResourceRef> = Vec::new();
         for n in &self.doc.nodes {
-            for (slot, id) in resource_refs(n) {
+            for (slot, r) in n.resource_refs() {
+                let Some(id) = r else { continue };
                 if self.doc.resources.contains_key(id) {
                     refs.entry(id)
                         .or_default()
@@ -818,7 +912,7 @@ impl<'a> Projector<'a> {
                     id: id.clone(),
                     source: source.clone(),
                     refs: refs.get(id.as_str()).cloned().unwrap_or_default(),
-                    dark: self.dark_ids.get(id).cloned(),
+                    dark: self.facts().dark_ids.get(id).cloned(),
                 })
                 .collect(),
             dangling,
@@ -855,28 +949,6 @@ impl ResourceResolver for Rebased<'_> {
     }
 }
 
-/// One node's resource references paired with their slots, in the format's own slot order — the
-/// read-side twin of the format's private `resource_refs`.
-fn resource_refs(n: &NodeDoc) -> Vec<(&'static str, &String)> {
-    [
-        ("sample", &n.sample),
-        ("voice", &n.voice),
-        ("patch", &n.patch),
-    ]
-    .into_iter()
-    .filter_map(|(slot, r)| r.as_ref().map(|id| (slot, id)))
-    .collect()
-}
-
-/// Split a wire-ref into `(node, port)` — the last `.` separates, because node addresses carry
-/// none (the same rule the loader's own `parse_wire` uses).
-fn split_wire(reference: &str) -> (&str, Option<&str>) {
-    match reference.rsplit_once('.') {
-        Some((node, port)) => (node, Some(port)),
-        None => (reference, None),
-    }
-}
-
 /// Invert the document's edges once: every node input and every output pipe's feed, keyed by the
 /// **source** node. The sole-output sugar is resolved against the registry so a consumer that
 /// wrote `"/kick"` still reports which port it took.
@@ -891,7 +963,9 @@ fn build_consumers(doc: &NormalizedDoc, registry: &Registry) -> BTreeMap<String,
     };
     let mut out: BTreeMap<String, Vec<OutEdge>> = BTreeMap::new();
     let mut record = |reference: &str, node: Option<String>, input: String| {
-        let (src, port) = split_wire(reference);
+        // The loader's own splitting rule, not a copy of it: two readers disagreeing about
+        // where a wire-ref divides would key consumers under the wrong source node.
+        let (src, port) = parse_wire(reference);
         let port = port.map(str::to_string).or_else(|| sole_output(src));
         out.entry(src.to_string())
             .or_default()
@@ -904,7 +978,16 @@ fn build_consumers(doc: &NormalizedDoc, registry: &Registry) -> BTreeMap<String,
             }
         }
     }
-    for (name, e) in doc.interface.iter().flat_map(|i| i.outputs.iter()) {
+    // Both interface maps, matched by **shape** rather than by which map the entry sits in — the
+    // same way `pipe_info` reads them. `InterfaceEntry` is one untagged union, so a `Feed`
+    // deserializes into `inputs` at the serde layer; the mint rejects that today, so this arm is
+    // defensive rather than reachable. It costs two lines and keeps the projection's two readers of
+    // the union from ever disagreeing about a document's edges if that gate moves.
+    for (name, e) in doc
+        .interface
+        .iter()
+        .flat_map(|i| i.inputs.iter().chain(i.outputs.iter()))
+    {
         if let Some(feed) = e.feed() {
             record(&feed.from, None, name.clone());
         }
@@ -1280,6 +1363,98 @@ mod tests {
         assert!(index.contains("/osc oscillator"), "{index}");
     }
 
+    /// A node can carry more than one resource reference, and the index's dark marker scans all of
+    /// them — so the zoom has to as well, or the index says "dark" while the zoom shows a healthy
+    /// resource and never mentions the broken one.
+    #[test]
+    fn a_zoom_lists_every_resource_ref_the_index_marked_on() {
+        const TWO_REFS: &str = r#"{
+            "format_version": 3,
+            "instrument": "two-refs",
+            "resources": { "kit": "kit.wav" },
+            "nodes": [
+                {"type": "subpatch", "address": "/n", "sample": "kit", "patch": "nowhere"}
+            ]
+        }"#;
+        let p = projector(TWO_REFS);
+        assert!(p.index().render().contains("/n subpatch dark:patch"));
+        let zoom = p.zoom(&Selection::names(["/n"])).render();
+        assert!(zoom.contains("sample=kit -> kit.wav"), "{zoom}");
+        assert!(zoom.contains("patch=nowhere DARK:"), "{zoom}");
+    }
+
+    /// A child whose *reference* is fine but whose *document* will not describe leaves no boundary.
+    /// The dark `res:` line does not cover that case — the reference resolved — so the absence gets
+    /// its own note. Dropping it is the silent omission this surface exists to prevent.
+    #[test]
+    fn a_child_that_will_not_describe_says_so_instead_of_vanishing() {
+        const HOST: &str = r#"{
+            "format_version": 3,
+            "instrument": "host",
+            "resources": { "broken": "broken.json" },
+            "nodes": [ {"type": "voicer", "address": "/v", "voice": "broken"} ]
+        }"#;
+        /// Hands back a document no loader will accept.
+        struct BrokenChild;
+        impl ResourceResolver for BrokenChild {
+            fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+                Err(ResolveError::NotFound(source.to_string()))
+            }
+            fn resolve_text(&self, _: &str) -> Result<String, ResolveError> {
+                Ok("{ not an instrument".to_string())
+            }
+        }
+        let registry = Registry::builtin();
+        let p = Projector::new(HOST, &registry, &BrokenChild).expect("mints");
+        let zoom = p.zoom(&Selection::names(["/v"])).render();
+        assert!(zoom.contains("res: voice=broken -> broken.json"), "{zoom}");
+        assert!(zoom.contains("note: no boundary:"), "{zoom}");
+    }
+
+    /// Every view answers in sentences. An empty string is indistinguishable from a truncated or
+    /// failed call, and a rig with no `interface` is an ordinary document.
+    #[test]
+    fn a_document_with_no_interface_still_answers_the_pipe_view() {
+        const NO_IFACE: &str = r#"{
+            "format_version": 3,
+            "instrument": "bare",
+            "nodes": [ {"type": "oscillator", "address": "/osc"} ]
+        }"#;
+        assert_eq!(
+            projector(NO_IFACE).pipes(&Selection::All).render(),
+            "pipes (0): this document declares no interface"
+        );
+    }
+
+    /// The resources header counts what the block actually lists, and dangling refs — a different
+    /// grammar from the table rows — are labelled as such.
+    #[test]
+    fn the_resources_header_counts_dangling_refs_too() {
+        let rendered = projector(DARK).resources().render();
+        let mut lines = rendered.lines();
+        assert_eq!(lines.next().unwrap(), "resources (1 listed, 1 dangling):");
+        assert_eq!(lines.clone().count(), 2);
+        assert!(lines.any(|l| l.starts_with("dangling voice=missing-voice")));
+    }
+
+    /// The `[+N chars]` budget the agent spends its turn on counts **characters**; this codebase's
+    /// prose is full of multi-byte punctuation, and bytes would inflate it.
+    #[test]
+    fn the_remaining_doc_budget_is_counted_in_characters() {
+        const EMDASH: &str = r#"{
+            "format_version": 3,
+            "instrument": "wide",
+            "doc": "First. \u2014\u2014\u2014\u2014",
+            "nodes": [ {"type": "oscillator", "address": "/osc"} ]
+        }"#;
+        // " ————" after the role line: one space + four 3-byte em-dashes = 5 chars, 13 bytes.
+        assert!(
+            projector(EMDASH).index().render().contains("[+5 chars"),
+            "{}",
+            projector(EMDASH).index().render()
+        );
+    }
+
     /// The completeness guard: walk the **real** format types and prove every leaf field is
     /// consciously dispositioned by [`FIELD_COVERAGE`]. A new format field with no view fails
     /// here, which is the whole point — a read surface this permanent cannot be defended by
@@ -1318,43 +1493,52 @@ mod tests {
                 active.remove(&name);
                 return;
             }
+            // Every structural keyword on this node is followed, and NONE of them short-circuits
+            // the others. A guard that under-enumerates stays green while the format grows a field
+            // with no view — the exact failure it exists to make impossible — and schemars is free
+            // to emit `allOf`/`anyOf` beside `properties` for shapes we do not use today.
+            let mut structural = false;
             for key in ["anyOf", "oneOf", "allOf"] {
-                if let Some(arr) = node.get(key).and_then(Value::as_array) {
-                    let mut recursed = false;
-                    for sub in arr {
-                        if sub.get("type").and_then(Value::as_str) == Some("null") {
-                            continue;
-                        }
-                        walk(sub, defs, path, out, active);
-                        recursed = true;
+                for sub in node
+                    .get(key)
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                {
+                    if sub.get("type").and_then(Value::as_str) == Some("null") {
+                        continue;
                     }
-                    if recursed {
-                        return;
-                    }
+                    walk(sub, defs, path, out, active);
+                    structural = true;
                 }
             }
-            if let Some(props) = node.get("properties").and_then(Value::as_object) {
-                for (k, v) in props {
-                    let child = if path.is_empty() {
-                        k.clone()
-                    } else {
-                        format!("{path}.{k}")
-                    };
-                    walk(v, defs, &child, out, active);
-                }
-                return;
+            for (k, v) in node
+                .get("properties")
+                .and_then(Value::as_object)
+                .into_iter()
+                .flatten()
+            {
+                let child = if path.is_empty() {
+                    k.clone()
+                } else {
+                    format!("{path}.{k}")
+                };
+                walk(v, defs, &child, out, active);
+                structural = true;
             }
             if let Some(ap) = node.get("additionalProperties") {
                 if ap.as_object().map(|o| !o.is_empty()).unwrap_or(false) {
                     walk(ap, defs, &format!("{path}{{}}"), out, active);
-                    return;
+                    structural = true;
                 }
             }
             if let Some(items) = node.get("items") {
                 walk(items, defs, &format!("{path}[]"), out, active);
-                return;
+                structural = true;
             }
-            out.insert(path.to_string());
+            if !structural {
+                out.insert(path.to_string());
+            }
         }
 
         /// Every leaf field-path of the real [`InstrumentDoc`], enumerated mechanically — zero
@@ -1406,6 +1590,24 @@ mod tests {
             let mut future = format_fields();
             future.insert("nodes[].tempo_hint".to_string());
             assert_eq!(undispositioned(&future).len(), 1);
+        }
+
+        /// ...and the walker itself does not under-enumerate. The teeth test above injects into the
+        /// already-walked set, so it cannot catch a walker that skipped a subtree; this walks a
+        /// schema whose node carries `allOf` **beside** `properties` — a shape schemars is free to
+        /// emit — and asserts both branches are enumerated. A walker that short-circuits on the
+        /// first structural keyword silently stops covering whole types while staying green, which
+        /// is the one thing this guard cannot be allowed to do.
+        #[test]
+        fn the_walker_follows_sibling_keywords_rather_than_the_first_one() {
+            let schema: Value = serde_json::json!({
+                "properties": { "direct": { "type": "string" } },
+                "allOf": [ { "properties": { "merged": { "type": "string" } } } ]
+            });
+            let mut out = BTreeSet::new();
+            walk(&schema, &Map::new(), "", &mut out, &mut BTreeSet::new());
+            assert!(out.contains("direct"), "{out:?}");
+            assert!(out.contains("merged"), "{out:?}");
         }
     }
 }
