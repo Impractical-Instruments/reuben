@@ -1,0 +1,220 @@
+{
+  "format_version": 3,
+  "instrument": "acid-pad-voice",
+  "doc": "Detuned three-saw pad voice: three saw oscillators at the note freq and +/-~12 cents feed a slow-attack, long-release ADSR through a warm lowpass -- a lush, wide chord voice that swells and rings out. Hosted N-up by a voicer that resolves chord degrees through the host's harmony; the long release lets whole-note chords overlap into a sustained wash. interface: freq/gate in, audio/active out.",
+  "interface": {
+    "inputs": {
+      "freq": {
+        "type": "f32_buffer",
+        "default": 220.0,
+        "min": 20.0,
+        "max": 20000.0,
+        "curve": "exp",
+        "unit": "Hz"
+      },
+      "gate": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      }
+    },
+    "outputs": {
+      "active": {
+        "from": "/env.active"
+      },
+      "audio": {
+        "from": "/out.audio"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "type": "oscillator",
+      "address": "/osc_a",
+      "doc": "Centre saw at the note freq.",
+      "inputs": {
+        "freq": {
+          "from": "/freq"
+        },
+        "waveform": "Saw"
+      }
+    },
+    {
+      "type": "m2s",
+      "address": "/det_up",
+      "doc": "Constant detune ratio (+~12 cents) as a CV Signal, so the up-saw beats against the centre.",
+      "inputs": {
+        "in": 1.007,
+        "mode": "Smooth",
+        "time": 0.05
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/freq_up",
+      "doc": "note freq * up-detune ratio.",
+      "inputs": {
+        "a": {
+          "from": "/freq"
+        },
+        "b": {
+          "from": "/det_up"
+        }
+      }
+    },
+    {
+      "type": "oscillator",
+      "address": "/osc_b",
+      "doc": "Sharp-detuned saw.",
+      "inputs": {
+        "freq": {
+          "from": "/freq_up"
+        },
+        "waveform": "Saw"
+      }
+    },
+    {
+      "type": "m2s",
+      "address": "/det_dn",
+      "doc": "Constant detune ratio (-~12 cents).",
+      "inputs": {
+        "in": 0.993,
+        "mode": "Smooth",
+        "time": 0.05
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/freq_dn",
+      "doc": "note freq * down-detune ratio.",
+      "inputs": {
+        "a": {
+          "from": "/freq"
+        },
+        "b": {
+          "from": "/det_dn"
+        }
+      }
+    },
+    {
+      "type": "oscillator",
+      "address": "/osc_c",
+      "doc": "Flat-detuned saw.",
+      "inputs": {
+        "freq": {
+          "from": "/freq_dn"
+        },
+        "waveform": "Saw"
+      }
+    },
+    {
+      "type": "add_f32_signal",
+      "address": "/sum1",
+      "doc": "centre (a) + up (b).",
+      "inputs": {
+        "a": {
+          "from": "/osc_a"
+        },
+        "b": {
+          "from": "/osc_b"
+        }
+      }
+    },
+    {
+      "type": "add_f32_signal",
+      "address": "/sum2",
+      "doc": "(centre+up) (a) + down (b) -> the full detuned saw stack.",
+      "inputs": {
+        "a": {
+          "from": "/sum1"
+        },
+        "b": {
+          "from": "/osc_c"
+        }
+      }
+    },
+    {
+      "type": "envelope",
+      "address": "/env",
+      "doc": "Slow-attack, long-release pad ADSR (linear CV). The long release rings whole-note chords into a sustained wash.",
+      "inputs": {
+        "attack": 0.08,
+        "decay": 0.5,
+        "gate": {
+          "from": "/gate"
+        },
+        "release": 2.2,
+        "sustain": 0.7
+      }
+    },
+    {
+      "type": "power_f32_signal",
+      "address": "/envcurve",
+      "doc": "x-squared perceptual volume curve on the linear env CV.",
+      "inputs": {
+        "x": {
+          "from": "/env.cv"
+        }
+      }
+    },
+    {
+      "type": "m2s",
+      "address": "/trim",
+      "doc": "Constant ~1/3 headroom trim (three summed saws) as a CV.",
+      "inputs": {
+        "in": 0.33,
+        "mode": "Smooth",
+        "time": 0.02
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/vca1",
+      "doc": "saw stack (a) * shaped env CV (b).",
+      "inputs": {
+        "a": {
+          "from": "/sum2"
+        },
+        "b": {
+          "from": "/envcurve"
+        }
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/vca",
+      "doc": "enveloped stack (a) * headroom trim (b).",
+      "inputs": {
+        "a": {
+          "from": "/vca1"
+        },
+        "b": {
+          "from": "/trim"
+        }
+      }
+    },
+    {
+      "type": "filter",
+      "address": "/lp",
+      "doc": "Warm lowpass to round off the saw buzz into a pad.",
+      "inputs": {
+        "audio": {
+          "from": "/vca"
+        },
+        "cutoff": 2200.0,
+        "mode": "Lp",
+        "resonance": 0.15
+      }
+    },
+    {
+      "type": "output",
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/lp"
+        }
+      }
+    }
+  ]
+}

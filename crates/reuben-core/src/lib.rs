@@ -43,6 +43,7 @@ pub mod message;
 pub mod operator;
 pub mod operators;
 pub mod plan;
+pub mod projection;
 pub mod registry;
 pub mod render;
 pub mod resources;

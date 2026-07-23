@@ -1,0 +1,149 @@
+{
+  "format_version": 3,
+  "instrument": "snare-voice",
+  "doc": "Noise+tone snare body: one gate-fired envelope shapes both a noise body (through the nested shaped-vca) and a short tonal sine ring (a second VCA fed the shaped-vca's tapped `cv`); their sum is the snare. Every former baked literal is a defaulted interface pipe (canonical names): `tone` sets the ring frequency, `attack`/`decay`/`sustain`/`release` reshape the one contour that drives both halves. Hosted by a voicer only `gate` is drivable (per-voice params aren't host-addressable); statically nested via `subpatch`, every pipe is reachable on the boundary face. interface: gate in (+ tone/contour pipes), audio/active out.",
+  "resources": {
+    "shaped-vca": "shaped-vca.json"
+  },
+  "interface": {
+    "inputs": {
+      "gate": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "tone": {
+        "type": "f32",
+        "default": 185.0,
+        "min": 20.0,
+        "max": 2000.0,
+        "unit": "Hz"
+      },
+      "attack": {
+        "type": "f32",
+        "default": 0.001,
+        "min": 0.001,
+        "max": 5.0,
+        "unit": "s"
+      },
+      "decay": {
+        "type": "f32",
+        "default": 0.08,
+        "min": 0.001,
+        "max": 5.0,
+        "unit": "s"
+      },
+      "sustain": {
+        "type": "f32",
+        "default": 0.0,
+        "min": 0.0,
+        "max": 1.0
+      },
+      "release": {
+        "type": "f32",
+        "default": 0.06,
+        "min": 0.001,
+        "max": 5.0,
+        "unit": "s"
+      }
+    },
+    "outputs": {
+      "active": {
+        "from": "/vca.active"
+      },
+      "audio": {
+        "from": "/out.audio"
+      }
+    }
+  },
+  "nodes": [
+    {
+      "type": "noise",
+      "address": "/noise",
+      "doc": "Snare noise body."
+    },
+    {
+      "type": "subpatch",
+      "address": "/vca",
+      "doc": "The nested shaped-vca on the noise body; its tapped `cv` output also shapes the tonal ring below (one envelope, two VCAs). Contour pipes forward this body's own pipes.",
+      "inputs": {
+        "attack": {
+          "from": "/attack"
+        },
+        "audio": {
+          "from": "/noise"
+        },
+        "decay": {
+          "from": "/decay"
+        },
+        "gate": {
+          "from": "/gate"
+        },
+        "release": {
+          "from": "/release"
+        },
+        "sustain": {
+          "from": "/sustain"
+        }
+      },
+      "patch": "shaped-vca"
+    },
+    {
+      "type": "m2s",
+      "address": "/tone_cv",
+      "doc": "Materializes the `tone` pipe (ring frequency, Hz) into a Signal.",
+      "inputs": {
+        "in": {
+          "from": "/tone"
+        }
+      }
+    },
+    {
+      "type": "oscillator",
+      "address": "/osc",
+      "doc": "Tonal component (sine) under the noise.",
+      "inputs": {
+        "freq": {
+          "from": "/tone_cv"
+        },
+        "waveform": "Sine"
+      }
+    },
+    {
+      "type": "mul_f32_signal",
+      "address": "/tone_vca",
+      "doc": "VCA: tone (a) * the shaped amp CV tapped from the nested shaped-vca (b).",
+      "inputs": {
+        "a": {
+          "from": "/osc"
+        },
+        "b": {
+          "from": "/vca.cv"
+        }
+      }
+    },
+    {
+      "type": "add_f32_signal",
+      "address": "/mix",
+      "doc": "snare = noise body (a) + tonal ring (b).",
+      "inputs": {
+        "a": {
+          "from": "/vca.audio"
+        },
+        "b": {
+          "from": "/tone_vca"
+        }
+      }
+    },
+    {
+      "type": "output",
+      "address": "/out",
+      "inputs": {
+        "audio": {
+          "from": "/mix"
+        }
+      }
+    }
+  ]
+}
