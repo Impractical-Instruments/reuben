@@ -306,8 +306,9 @@ impl InputEdge {
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct OutEdge {
-    /// The output port this edge leaves from. `None` when the consumer used the sole-output sugar
-    /// *and* the port could not be resolved from the registry (an unknown operator type).
+    /// The output port this edge leaves from. `None` only when the consumer used the sole-output
+    /// sugar and the port could be resolved from neither the source's descriptor nor, for a nested
+    /// node whose ports live on its child's face, that boundary.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub port: Option<String>,
     /// The consuming node's address — absent when the consumer is an interface output pipe.
@@ -338,6 +339,11 @@ pub struct ResourceRef {
     /// The descriptor slot the reference targets: `"sample"`, `"voice"` or `"patch"`.
     pub slot: String,
     pub id: String,
+    /// The node making the reference — carried where the reference is listed away from its node
+    /// (the resources view's dangling list). A dangling id is precisely the one an agent has to go
+    /// fix, so "which node?" must be a **field**, not a sentence it has to parse out of `dark`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub node: Option<String>,
     /// The `resources` table's source for this id — `None` when the id is not in the table.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
@@ -349,6 +355,9 @@ pub struct ResourceRef {
 impl ResourceRef {
     fn render(&self) -> String {
         let mut s = format!("{}={}", self.slot, token(&self.id));
+        if let Some(node) = &self.node {
+            s.push_str(&format!(" on {}", token(node)));
+        }
         if let Some(src) = &self.source {
             s.push_str(&format!(" -> {}", token(src)));
         }
@@ -465,10 +474,12 @@ impl Zoom {
                 n => format!("nodes (0 of {n} shown)"),
             });
         }
-        // The header already carries this when the selection asked for it; otherwise the caveat
-        // has to ride the view, because a `res:` line with no DARK reads as resolved and on a
-        // non-loading document nothing ever checked.
-        if !self.loadable && self.header.is_none() {
+        // Unconditional on `loadable`, NOT on the header's absence. The header's own
+        // `DOES NOT LOAD` marker says the document is broken; it does not say that every `res:`
+        // line below it went unchecked, and those are different facts. Making the caveat depend on
+        // the header meant that merely adding `/` to a selection — "show me the doc and this node"
+        // — silently downgraded what the agent was told about the node.
+        if !self.loadable {
             blocks.insert(0, LOAD_CAVEAT.to_string());
         }
         blocks.join("\n")
@@ -566,6 +577,13 @@ pub struct PipeView {
 impl PipeView {
     pub fn render(&self) -> String {
         let mut lines: Vec<String> = Vec::new();
+        let shown = self.inputs.len() + self.outputs.len();
+        // A section header is a SHOWN count. Under a selection that says nothing about how many
+        // pipes the document has, and `pipes in (1):` on a 91-pipe instrument reads as the total —
+        // so when the view is a subset, it says so before the subset.
+        if shown < self.declared {
+            lines.push(format!("pipes ({shown} of {} shown):", self.declared));
+        }
         for (label, pipes) in [("in", &self.inputs), ("out", &self.outputs)] {
             if pipes.is_empty() {
                 continue;
@@ -580,16 +598,28 @@ impl PipeView {
             ));
         }
         // A view must always answer with a *sentence*: an empty string is indistinguishable from a
-        // truncated or failed call. And it has to answer the right one — "there is no interface
-        // here" and "your selection matched none of them" send the agent in opposite directions,
-        // so the count that distinguishes them is the document's, not the selection's.
+        // truncated or failed call. Only one case can still reach here — a document with no
+        // `interface` at all, where there was no subset line to draw either — and it is a
+        // different answer from "your selection matched none of them", which sends the agent
+        // somewhere else entirely.
         if lines.is_empty() {
-            lines.push(match self.declared {
-                0 => "pipes (0): this document declares no interface".to_string(),
-                n => format!("pipes (0 of {n} shown)"),
-            });
+            lines.push("pipes (0): this document declares no interface".to_string());
         }
         lines.join("\n")
+    }
+}
+
+/// One node's use of a resource id: which node, through which slot.
+#[derive(Debug, Clone, Serialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+pub struct ResourceUse {
+    pub slot: String,
+    pub node: String,
+}
+
+impl ResourceUse {
+    fn render(&self) -> String {
+        format!("{}:{}", self.slot, token(&self.node))
     }
 }
 
@@ -601,10 +631,12 @@ pub struct ResourceEntry {
     /// The source the id names — a filesystem path natively, a store key on web. **Opaque**: only
     /// the door's resolver interprets it.
     pub source: String,
-    /// `"{slot}:{node address}"` per referencing node, in document order. Empty means the entry is
-    /// unreferenced — legal, and ignored by the loader, but worth seeing.
+    /// Who references this id, in document order. Empty means the entry is unreferenced — legal,
+    /// and ignored by the loader, but worth seeing. Structured rather than pre-rendered: baking
+    /// the text view's quoting into the data model would hand a door an address it has to unescape
+    /// and split, while every other address in this surface's serde shape is raw.
     #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub refs: Vec<String>,
+    pub refs: Vec<ResourceUse>,
     /// Why the id did not resolve this load, when it did not.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dark: Option<String>,
@@ -650,7 +682,7 @@ impl ResourcesView {
             if e.refs.is_empty() {
                 s.push_str(" unreferenced");
             } else {
-                s.push_str(&format!(" {}", e.refs.join(", ")));
+                s.push_str(&format!(" {}", render_list(&e.refs, ResourceUse::render)));
             }
             if let Some(why) = &e.dark {
                 s.push_str(&format!(" DARK: {}", message(why)));
@@ -850,6 +882,8 @@ impl<'a> Projector<'a> {
                 ResourceRef {
                     slot: slot.to_string(),
                     id: id.clone(),
+                    // Implicit: this ref is being rendered on its own node's zoom.
+                    node: None,
                     source,
                     dark,
                 }
@@ -950,7 +984,22 @@ impl<'a> Projector<'a> {
                     },
                 })
                 .collect(),
-            consumers: self.consumers.get(&n.address).cloned().unwrap_or_default(),
+            consumers: {
+                let mut edges = self.consumers.get(&n.address).cloned().unwrap_or_default();
+                // A `subpatch` declares no outputs of its own — its ports are the child's face —
+                // so `build_consumers` cannot resolve sole-output sugar into one from the registry
+                // alone. It is resolvable here, where this node's boundary is already in hand, and
+                // the answer would otherwise print as `?` on the line directly above the boundary
+                // that names it.
+                if let Some(b) = &boundary {
+                    if let [only] = b.outputs.as_slice() {
+                        for e in edges.iter_mut().filter(|e| e.port.is_none()) {
+                            e.port = Some(only.name.clone());
+                        }
+                    }
+                }
+                edges
+            },
             resources,
             boundary,
             note,
@@ -1002,24 +1051,23 @@ impl<'a> Projector<'a> {
 
     /// The **resources view**.
     pub fn resources(&self) -> ResourcesView {
-        let mut refs: BTreeMap<&str, Vec<String>> = BTreeMap::new();
+        let mut refs: BTreeMap<&str, Vec<ResourceUse>> = BTreeMap::new();
         let mut dangling: Vec<ResourceRef> = Vec::new();
         for n in &self.doc.nodes {
             for (slot, r) in n.resource_refs() {
                 let Some(id) = r else { continue };
                 if self.doc.resources.contains_key(id) {
-                    refs.entry(id)
-                        .or_default()
-                        .push(format!("{slot}:{}", token(&n.address)));
+                    refs.entry(id).or_default().push(ResourceUse {
+                        slot: slot.to_string(),
+                        node: n.address.clone(),
+                    });
                 } else {
                     dangling.push(ResourceRef {
                         slot: slot.to_string(),
                         id: id.clone(),
+                        node: Some(n.address.clone()),
                         source: None,
-                        dark: Some(format!(
-                            "{:?} referenced by {} is not in the resources table",
-                            id, n.address
-                        )),
+                        dark: Some("not in the resources table".to_string()),
                     });
                 }
             }
@@ -1075,6 +1123,22 @@ impl ResourceResolver for Rebased<'_> {
 /// **source** node. The sole-output sugar is resolved against the registry so a consumer that
 /// wrote `"/kick"` still reports which port it took.
 fn build_consumers(doc: &NormalizedDoc, registry: &Registry) -> BTreeMap<String, Vec<OutEdge>> {
+    // The addresses a reference can name **whole**: every node, plus the address each input pipe
+    // mints into the same flat namespace. Nothing forbids a `.` in either — a v1 interface entry
+    // named `"my.tone"` migrates to a pipe minting `/my.tone` verbatim — so the loader resolves an
+    // exact address BEFORE the last-`.` split, and so must this. Splitting first files the edge
+    // under `/my`: a consumer fabricated on a node that has none, and hidden from the node that
+    // does. In the one view the agent trusts to tell it what a removal breaks, that is a lie.
+    let addressable: BTreeSet<&str> = doc
+        .nodes
+        .iter()
+        .map(|n| n.address.as_str())
+        .chain(
+            doc.interface
+                .iter()
+                .flat_map(|i| i.inputs.keys().map(String::as_str)),
+        )
+        .collect();
     let sole_output = |address: &str| -> Option<String> {
         let ty = &doc.nodes.iter().find(|n| n.address == address)?.type_name;
         let desc = &registry.get(ty)?.descriptor;
@@ -1085,9 +1149,15 @@ fn build_consumers(doc: &NormalizedDoc, registry: &Registry) -> BTreeMap<String,
     };
     let mut out: BTreeMap<String, Vec<OutEdge>> = BTreeMap::new();
     let mut record = |reference: &str, node: Option<String>, input: String| {
-        // The loader's own splitting rule, not a copy of it: two readers disagreeing about
-        // where a wire-ref divides would key consumers under the wrong source node.
-        let (src, port) = parse_wire(reference);
+        let (src, port) = if addressable.contains(reference)
+            || reference
+                .strip_prefix('/')
+                .is_some_and(|name| addressable.contains(name))
+        {
+            (reference, None)
+        } else {
+            parse_wire(reference)
+        };
         let port = port.map(str::to_string).or_else(|| sole_output(src));
         out.entry(src.to_string())
             .or_default()
@@ -1468,15 +1538,21 @@ mod tests {
             p.pipes(&Selection::All).render(),
             "pipes in (1):\nlevel:f32 dB exp 0..1=0.5\npipes out (1):\nout<-/amp ch0"
         );
-        // The type predicate cuts input pipes (an output pipe declares no type of its own).
+        // The type predicate cuts input pipes (an output pipe declares no type of its own) — and
+        // the render says how much it cut, so `pipes in (1):` is never read as the document total.
         let by_type = p.pipes(&Selection::Type("f32".into()));
         assert_eq!(by_type.inputs.len(), 1);
         assert!(by_type.outputs.is_empty());
+        assert!(
+            by_type.render().starts_with("pipes (1 of 2 shown):"),
+            "{}",
+            by_type.render()
+        );
         // A selection that filters everything out must not claim the document has no interface —
         // it has one, the agent just asked for the wrong name.
         let miss = p.pipes(&Selection::names(["nope"]));
         assert_eq!(miss.unmatched, ["nope".to_string()]);
-        assert_eq!(miss.render(), "no match: nope");
+        assert_eq!(miss.render(), "pipes (0 of 2 shown):\nno match: nope");
     }
 
     #[test]
@@ -1489,7 +1565,11 @@ mod tests {
         // The table row nobody references is still listed; the dangling ref gets its own line.
         let res = p.resources().render();
         assert!(res.contains("unused -> nowhere.json unreferenced"), "{res}");
-        assert!(res.contains("voice=missing-voice DARK:"), "{res}");
+        // ...and it names the node making it, which is the node the agent has to go fix.
+        assert!(
+            res.contains("dangling voice=missing-voice on /v DARK:"),
+            "{res}"
+        );
     }
 
     /// The projection is not a second validation authority: a document that will not load still
@@ -1820,6 +1900,95 @@ mod tests {
         assert_eq!(resolver.0.get() - before, 1);
         p.zoom(&Selection::All);
         assert_eq!(resolver.0.get() - before, 1);
+    }
+
+    /// Nothing forbids a `.` in a node address — a v1 interface entry named `"my.tone"` migrates
+    /// to a pipe minting `/my.tone` verbatim — so the loader resolves an exact address BEFORE the
+    /// last-`.` split, and the reverse edges must too. Splitting first fabricates a consumer on
+    /// `/my` and hides the real one on `/my.tone`: `remove_node /my.tone` would be reported as
+    /// breaking nothing while it breaks `/lvl`.
+    #[test]
+    fn a_dotted_address_is_matched_whole_before_the_last_dot_split() {
+        const DOTTED: &str = r#"{
+            "format_version": 3,
+            "instrument": "dotted",
+            "nodes": [
+                {"type": "oscillator", "address": "/my"},
+                {"type": "oscillator", "address": "/my.tone"},
+                {"type": "mul_f32_signal", "address": "/lvl",
+                 "inputs": {"a": {"from": "/my.tone"}}}
+            ]
+        }"#;
+        let p = projector(DOTTED);
+        // The document loads, so this is a real wire the engine makes — not a malformed edge case.
+        assert!(!p.index().render().contains("DOES NOT LOAD"));
+        let z = p.zoom(&Selection::names(["/my", "/my.tone"]));
+        let real = z.nodes.iter().find(|n| n.address == "/my.tone").unwrap();
+        assert_eq!(real.consumers.len(), 1, "{:?}", real.consumers);
+        assert_eq!(real.consumers[0].port.as_deref(), Some("audio"));
+        let bystander = z.nodes.iter().find(|n| n.address == "/my").unwrap();
+        assert!(bystander.consumers.is_empty(), "{:?}", bystander.consumers);
+    }
+
+    /// A `subpatch` declares no outputs of its own — its ports are its child's face — so sugar
+    /// into one cannot be resolved from the registry. The answer is on the boundary line directly
+    /// below, so printing `?` would be withholding something already in hand.
+    #[test]
+    fn sole_output_sugar_into_a_nest_resolves_from_the_childs_face() {
+        const HOST: &str = r#"{
+            "format_version": 3,
+            "instrument": "host",
+            "resources": { "c": "child.json" },
+            "nodes": [
+                {"type": "subpatch", "address": "/s", "patch": "c"},
+                {"type": "mul_f32_signal", "address": "/lvl", "inputs": {"a": {"from": "/s"}}}
+            ]
+        }"#;
+        const CHILD: &str = r#"{
+            "format_version": 3,
+            "instrument": "child",
+            "interface": { "outputs": { "audio": {"from": "/osc.audio"} } },
+            "nodes": [ {"type": "oscillator", "address": "/osc"} ]
+        }"#;
+        struct Child;
+        impl ResourceResolver for Child {
+            fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+                Err(ResolveError::NotFound(source.to_string()))
+            }
+            fn resolve_text(&self, _: &str) -> Result<String, ResolveError> {
+                Ok(CHILD.to_string())
+            }
+        }
+        let registry = Registry::builtin();
+        let p = Projector::new(HOST, &registry, &Child).expect("mints");
+        let zoom = p.zoom(&Selection::names(["/s"])).render();
+        assert!(zoom.contains("out: audio->/lvl.a"), "{zoom}");
+        assert!(!zoom.contains("?->"), "{zoom}");
+    }
+
+    /// The caveat rides the view, not the header's absence: the header's `DOES NOT LOAD` says the
+    /// document is broken, not that every `res:` line below it went unchecked. Making one depend
+    /// on the other meant adding `/` to a selection silently downgraded what the agent was told.
+    #[test]
+    fn asking_for_the_document_too_does_not_suppress_the_load_caveat() {
+        const BROKEN: &str = r#"{
+            "format_version": 3,
+            "instrument": "broken",
+            "resources": { "kit": "nowhere.wav" },
+            "nodes": [
+                {"type": "sample", "address": "/sp", "sample": "kit"},
+                {"type": "oscillator", "address": "/osc", "inputs": {"freq": {"from": "/nope.out"}}}
+            ]
+        }"#;
+        let p = projector(BROKEN);
+        assert!(p
+            .zoom(&Selection::names(["/sp"]))
+            .render()
+            .starts_with(LOAD_CAVEAT));
+        assert!(p
+            .zoom(&Selection::names(["/", "/sp"]))
+            .render()
+            .starts_with(LOAD_CAVEAT));
     }
 
     /// The completeness guard: walk the **real** format types and prove every leaf field is
