@@ -707,13 +707,20 @@ impl ResourcesView {
 #[derive(Default)]
 struct LoadFacts {
     loadable: bool,
-    /// Resource ids that did not resolve → why.
-    dark_ids: BTreeMap<String, String>,
-    /// Darkness the loader reports against a **node** rather than an id → `(slot, why)`. Two
-    /// shapes land here: a `subpatch` carrying no `patch` reference at all, and — the one that
-    /// matters — this document's own failure to fetch a `voice`/`patch` child, which the loader
-    /// wraps in `Nested` and keys inconsistently (the `voice` arm's inner `id` is the canonical
-    /// source, the `patch` arm's is the logical id), so the node address is the only reliable key.
+    /// `(slot, resource id)` → why, for a failure the loader reports against the **entry**. Keyed
+    /// by slot as well as id because one id may be bound in two slots and only one of them fail —
+    /// an id-only key attributes a failed `sample` decode to a `patch` that spliced perfectly.
+    dark_refs: BTreeMap<(String, String), String>,
+    /// `(slot, canonical source)` → why, for a child document this load could not **fetch**.
+    ///
+    /// The loader dedups that fetch by canonical source and warns once, naming only the first
+    /// referencing node — so neither the node nor the id identifies the failure: N `subpatch`
+    /// nodes reusing one child, or two `resources` ids pointing at one file, all go dark together
+    /// and only the source they share is common to them. Keying by node marks the first and calls
+    /// the rest resolved.
+    dark_sources: BTreeMap<(String, String), String>,
+    /// Node address → `(slot, why)`, for darkness with **no id to blame at all** — today only a
+    /// `subpatch` carrying no `patch` reference.
     dark_nodes: BTreeMap<String, (String, String)>,
 }
 
@@ -775,7 +782,7 @@ impl<'a> Projector<'a> {
                 ..LoadFacts::default()
             };
             for w in &loaded.warnings {
-                collect_dark(w, &mut facts.dark_ids, &mut facts.dark_nodes);
+                collect_dark(w, &mut facts);
             }
             facts
         })
@@ -816,13 +823,22 @@ impl<'a> Projector<'a> {
     /// [`collect_dark`]); or the document simply has no row for the id — which is document-level
     /// truth and therefore survives a `loadable: false` projection, where the other two are unknown.
     fn dark_reason(&self, node: &str, slot: &str, id: &str) -> Option<String> {
-        if let Some(why) = self.facts().dark_ids.get(id) {
+        let facts = self.facts();
+        if let Some(why) = facts.dark_refs.get(&(slot.to_string(), id.to_string())) {
             return Some(why.clone());
         }
-        if !self.doc.resources.contains_key(id) {
+        let Some(source) = self.doc.resources.get(id) else {
             return Some(format!("{id:?} is not in the resources table"));
+        };
+        // The loader canonicalizes a source before fetching it and reports the canonical form, so
+        // the lookup has to canonicalize too — the same call `boundary_of` makes.
+        if let Some(why) = facts
+            .dark_sources
+            .get(&(slot.to_string(), self.resolver.canonical(source, None)))
+        {
+            return Some(why.clone());
         }
-        match self.facts().dark_nodes.get(node) {
+        match facts.dark_nodes.get(node) {
             Some((s, why)) if s == slot => Some(why.clone()),
             _ => None,
         }
@@ -1229,26 +1245,33 @@ fn build_consumers(doc: &NormalizedDoc, registry: &Registry) -> BTreeMap<String,
 /// voice reference as resolved, on a document that loads, in three of the four views. So a direct
 /// `Nested(ResolveFailed { slot: voice | patch })` is unwrapped and attributed to its node, while a
 /// child's own failure — flat `sample` inside the wrapper, or a second `Nested` — stays skipped.
-fn collect_dark(
-    w: &LoadWarning,
-    ids: &mut BTreeMap<String, String>,
-    nodes: &mut BTreeMap<String, (String, String)>,
-) {
+fn collect_dark(w: &LoadWarning, facts: &mut LoadFacts) {
     match w {
-        LoadWarning::MissingResource { id, .. } | LoadWarning::ResolveFailed { id, .. } => {
-            ids.entry(id.clone()).or_insert_with(|| w.to_string());
+        LoadWarning::MissingResource { slot, id, .. }
+        | LoadWarning::ResolveFailed { slot, id, .. } => {
+            facts
+                .dark_refs
+                .entry((slot.to_string(), id.clone()))
+                .or_insert_with(|| w.to_string());
         }
         LoadWarning::NoPatchRef { node } => {
-            nodes
+            facts
+                .dark_nodes
                 .entry(node.clone())
                 .or_insert_with(|| ("patch".to_string(), w.to_string()));
         }
-        LoadWarning::Nested { node, warning } => {
-            if let LoadWarning::ResolveFailed { slot, .. } = warning.as_ref() {
+        LoadWarning::Nested { warning, .. } => {
+            if let LoadWarning::ResolveFailed { slot, source, .. } = warning.as_ref() {
                 if matches!(*slot, "voice" | "patch") {
-                    nodes
-                        .entry(node.clone())
-                        .or_insert_with(|| (slot.to_string(), warning.to_string()));
+                    // By SOURCE, not by the node the wrapper names or the inner `id`: the loader
+                    // dedups this fetch by canonical source and warns once, and the two arms do not
+                    // even agree on what the inner `id` is (the `voice` arm puts the canonical
+                    // source there, the `patch` arm the logical id). The source is the one thing
+                    // every reference that went dark together has in common.
+                    facts
+                        .dark_sources
+                        .entry((slot.to_string(), source.clone()))
+                        .or_insert_with(|| warning.to_string());
                 }
             }
         }
@@ -2021,6 +2044,84 @@ mod tests {
             let res = p.resources().render();
             assert!(res.contains("DARK:"), "{slot}: {res}");
         }
+    }
+
+    /// The loader dedups a child fetch by canonical source and warns **once**, naming only the
+    /// first referencing node — so every later reuse of the same child would be reported as
+    /// resolved if darkness were keyed by node. Reusing one child patch from several `subpatch`
+    /// nodes is the case the loader's own dedup exists for.
+    #[test]
+    fn every_reference_to_an_unfetchable_child_goes_dark_not_just_the_first() {
+        // Two nodes, one id.
+        const SHARED_ID: &str = r#"{
+            "format_version": 3, "instrument": "h", "resources": {"r": "nowhere.json"},
+            "nodes": [{"type": "subpatch", "address": "/a", "patch": "r"},
+                      {"type": "subpatch", "address": "/b", "patch": "r"}]
+        }"#;
+        // Two ids, one source — the id cannot be the key either.
+        const SHARED_SOURCE: &str = r#"{
+            "format_version": 3, "instrument": "h",
+            "resources": {"r1": "nowhere.json", "r2": "nowhere.json"},
+            "nodes": [{"type": "subpatch", "address": "/a", "patch": "r1"},
+                      {"type": "subpatch", "address": "/b", "patch": "r2"}]
+        }"#;
+        for json in [SHARED_ID, SHARED_SOURCE] {
+            let p = projector(json);
+            let index = p.index().render();
+            // Both nodes dissolve dark in the real load, and the document still loads — so a
+            // missing marker is a claim that the reference is fine.
+            assert!(!index.contains("DOES NOT LOAD"), "{index}");
+            assert_eq!(index.matches("dark:patch").count(), 2, "{index}");
+            assert_eq!(p.zoom(&Selection::All).render().matches("DARK:").count(), 2);
+            let res = p.resources().render();
+            assert_eq!(
+                res.matches("DARK:").count(),
+                res.lines().count() - 1,
+                "{res}"
+            );
+        }
+    }
+
+    /// One id bound in two slots, only one of which failed: a failure is attributed to the slot
+    /// that had it. Keyed by id alone, a sample that would not decode marked a `patch` dark that
+    /// had spliced perfectly — and quoted the sample's reason on the patch's line.
+    #[test]
+    fn a_failure_in_one_slot_does_not_darken_another_slot_on_the_same_id() {
+        const BOTH_SLOTS: &str = r#"{
+            "format_version": 3,
+            "instrument": "h",
+            "resources": { "r": "child.json" },
+            "nodes": [
+                {"type": "sample", "address": "/s", "sample": "r"},
+                {"type": "subpatch", "address": "/p", "patch": "r"}
+            ]
+        }"#;
+        const CHILD: &str = r#"{
+            "format_version": 3, "instrument": "child",
+            "interface": { "outputs": { "audio": {"from": "/osc.audio"} } },
+            "nodes": [ {"type": "oscillator", "address": "/osc"} ]
+        }"#;
+        /// Text resolves (so the patch splices); audio decode does not (so the sample is dark).
+        struct TextOnly;
+        impl ResourceResolver for TextOnly {
+            fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+                Err(ResolveError::NotFound(source.to_string()))
+            }
+            fn resolve_text(&self, _: &str) -> Result<String, ResolveError> {
+                Ok(CHILD.to_string())
+            }
+        }
+        let registry = Registry::builtin();
+        let p = Projector::new(BOTH_SLOTS, &registry, &TextOnly).expect("mints");
+        let index = p.index().render();
+        assert!(index.contains("/s sample dark:sample"), "{index}");
+        assert!(
+            index.contains("/p subpatch\n") || index.ends_with("/p subpatch"),
+            "{index}"
+        );
+        let zoom = p.zoom(&Selection::names(["/p"])).render();
+        assert!(!zoom.contains("DARK:"), "{zoom}");
+        assert!(zoom.contains("boundary: child"), "{zoom}");
     }
 
     /// ...and the child's OWN failures stay the child's. A subpatch whose document reads fine but
