@@ -68,7 +68,37 @@ pub const PROJECTION_LEGEND: &str =
 `port->pipe:name` (the blast radius of removing the node), `res:` its resource refs, `boundary:` a \
 nested child's pipes, `note:` something expected but absent, and why. Pipes: \
 `name:type unit exp lo..hi=default chN` for an input pipe, `name<-/node.port chN` for an output \
-pipe. Zoom `/` for the document's full doc text.";
+pipe. Zoom `/` for the document's full doc text. A name carrying whitespace or a separator is \
+\"quoted\"; a view that can say nothing says why, never nothing.";
+
+/// What a view says when the document did not load: every resolved/dark judgement below it was
+/// never made. `validate` is the authority on *why*; this only stops the views that report
+/// resolution state from presenting "unchecked" as "fine".
+const LOAD_CAVEAT: &str = "DOCUMENT DOES NOT LOAD — resource resolution unchecked; run validate";
+
+/// One document-controlled string, rendered so it cannot forge structure.
+///
+/// The projection is a **grammar an agent parses** — `address type`, `name<-source`,
+/// `port->/node.input`, comma-separated lists — and nothing validates a node address, an
+/// instrument name, a pipe name or a resource id against that grammar: the mint gates the
+/// document's *version and shape*, not its spelling. A node addressed `"in: freq=999"` loads
+/// cleanly through the real engine path and would otherwise emit a line indistinguishable from a
+/// real input binding on the node above it, and a newline anywhere forges an entire second record.
+///
+/// So: bare when the token is unambiguous, Rust-debug-quoted (which escapes newlines, tabs and
+/// quotes) the moment it contains whitespace or any separator the grammar spends. Ordinary
+/// documents are untouched, so this costs nothing on the size budget — it only ever fires on a
+/// spelling that would have lied.
+fn token(s: &str) -> String {
+    let ambiguous = s.is_empty()
+        || s.chars()
+            .any(|c| c.is_whitespace() || matches!(c, ',' | ':' | '<' | '>' | '='));
+    if ambiguous {
+        format!("{s:?}")
+    } else {
+        s.to_string()
+    }
+}
 
 /// Which members a view is cut for — one grammar shared by node zoom and the pipe view, because
 /// the verbs are both address-shaped and type-shaped (a nudge targets operator types; a
@@ -112,7 +142,7 @@ impl Scalar {
     fn render(&self) -> String {
         match self {
             Scalar::Number(n) => n.to_string(),
-            Scalar::Symbol(s) => s.clone(),
+            Scalar::Symbol(s) => token(s),
         }
     }
 }
@@ -140,7 +170,10 @@ impl DocHeader {
     fn line(&self) -> String {
         let mut s = format!(
             "instrument {} ({} nodes, format {}, projection {}",
-            self.instrument, self.nodes, self.format_version, self.projection_version
+            token(&self.instrument),
+            self.nodes,
+            self.format_version,
+            self.projection_version
         );
         if !self.loadable {
             s.push_str(", DOES NOT LOAD — run validate");
@@ -208,7 +241,7 @@ impl NodeIndex {
     pub fn render(&self) -> String {
         let mut out = self.header.render_role();
         for n in &self.nodes {
-            out.push_str(&format!("\n{} {}", n.address, n.type_name));
+            out.push_str(&format!("\n{} {}", token(&n.address), token(&n.type_name)));
             if let Some(slot) = &n.dark {
                 out.push_str(&format!(" dark:{slot}"));
             }
@@ -234,11 +267,11 @@ pub struct InputEdge {
 impl InputEdge {
     fn render(&self) -> String {
         match (&self.source, &self.value) {
-            (Some(src), _) => format!("{}<-{src}", self.name),
-            (None, Some(v)) => format!("{}={}", self.name, v.render()),
+            (Some(src), _) => format!("{}<-{}", token(&self.name), token(src)),
+            (None, Some(v)) => format!("{}={}", token(&self.name), v.render()),
             // Unreachable through `InputValue` (a binding is a wire or a literal), rendered rather
             // than panicked so a future third form degrades visibly instead of vanishing.
-            (None, None) => format!("{}=?", self.name),
+            (None, None) => format!("{}=?", token(&self.name)),
         }
     }
 }
@@ -262,10 +295,14 @@ pub struct OutEdge {
 
 impl OutEdge {
     fn render(&self) -> String {
-        let port = self.port.as_deref().unwrap_or("?");
+        let port = self
+            .port
+            .as_deref()
+            .map(token)
+            .unwrap_or_else(|| "?".to_string());
         match &self.node {
-            Some(node) => format!("{port}->{node}.{}", self.input),
-            None => format!("{port}->pipe:{}", self.input),
+            Some(node) => format!("{port}->{}.{}", token(node), token(&self.input)),
+            None => format!("{port}->pipe:{}", token(&self.input)),
         }
     }
 }
@@ -287,9 +324,9 @@ pub struct ResourceRef {
 
 impl ResourceRef {
     fn render(&self) -> String {
-        let mut s = format!("{}={}", self.slot, self.id);
+        let mut s = format!("{}={}", self.slot, token(&self.id));
         if let Some(src) = &self.source {
-            s.push_str(&format!(" -> {src}"));
+            s.push_str(&format!(" -> {}", token(src)));
         }
         if let Some(why) = &self.dark {
             s.push_str(&format!(" DARK: {why}"));
@@ -335,7 +372,7 @@ pub struct NodeZoom {
 impl NodeZoom {
     /// One node's block: the header line, then only the lines it has anything to say on.
     pub fn render(&self) -> String {
-        let mut out = format!("{} {}", self.address, self.type_name);
+        let mut out = format!("{} {}", token(&self.address), token(&self.type_name));
         let mut line = |label: &str, body: String| {
             if !body.is_empty() {
                 out.push_str(&format!("\n{label}: {body}"));
@@ -366,6 +403,13 @@ pub struct Zoom {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub header: Option<DocHeader>,
     pub nodes: Vec<NodeZoom>,
+    /// How many nodes there were to select from, so "nothing matched" can be told apart from
+    /// "there is nothing here".
+    pub declared: usize,
+    /// Whether the document loads. Carried on the view, not only on the optional header: a zoom's
+    /// `res:` lines report resolution state, and when the load never completed that state is
+    /// **unknown** rather than clean.
+    pub loadable: bool,
     /// Selection terms that matched nothing. Reported, never silent — "no such node" is a fact the
     /// agent's next verb depends on.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -375,12 +419,27 @@ pub struct Zoom {
 impl Zoom {
     pub fn render(&self) -> String {
         let mut blocks: Vec<String> = Vec::new();
+        // The header already says this when the selection asked for it; otherwise the caveat has
+        // to ride the view, because a `res:` line with no DARK reads as resolved and on a
+        // non-loading document nothing ever checked.
+        if !self.loadable && self.header.is_none() {
+            blocks.push(LOAD_CAVEAT.to_string());
+        }
         if let Some(h) = &self.header {
             blocks.push(h.render_full());
         }
         blocks.extend(self.nodes.iter().map(NodeZoom::render));
         if !self.unmatched.is_empty() {
             blocks.push(format!("no match: {}", self.unmatched.join(", ")));
+        }
+        // Never the empty string — it is indistinguishable from a truncated or failed call — but
+        // only when nothing else was said: a `/` zoom asked for the document, not for nodes, and
+        // "0 of 53 shown" would read as a failure rather than an answer.
+        if blocks.is_empty() {
+            blocks.push(match self.declared {
+                0 => "nodes (0): this document has no nodes".to_string(),
+                n => format!("nodes (0 of {n} shown)"),
+            });
         }
         blocks.join("\n")
     }
@@ -426,18 +485,18 @@ impl PipeInfo {
     /// `name:type unit exp lo..hi=default` — plus `chN` for a channel binding, so one notation
     /// covers ports and pipes.
     fn render(&self) -> String {
-        let mut s = self.name.clone();
+        let mut s = token(&self.name);
         if let Some(ty) = &self.ty {
-            s.push_str(&format!(":{ty}"));
+            s.push_str(&format!(":{}", token(ty)));
         }
         if let Some(from) = &self.from {
-            s.push_str(&format!("<-{from}"));
+            s.push_str(&format!("<-{}", token(from)));
         }
         if let Some(t) = &self.v1_target {
-            s.push_str(&format!(" v1-target:{t}"));
+            s.push_str(&format!(" v1-target:{}", token(t)));
         }
         if let Some(u) = &self.unit {
-            s.push_str(&format!(" {u}"));
+            s.push_str(&format!(" {}", token(u)));
         }
         if self.curve.as_deref() == Some("exp") {
             s.push_str(" exp");
@@ -466,6 +525,9 @@ impl PipeInfo {
 pub struct PipeView {
     pub inputs: Vec<PipeInfo>,
     pub outputs: Vec<PipeInfo>,
+    /// How many pipes the document declares in total, so "the selection matched nothing" can be
+    /// told apart from "this document has no interface" — two very different next moves.
+    pub declared: usize,
     /// Selection terms that matched no pipe in either map.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub unmatched: Vec<String>,
@@ -481,14 +543,18 @@ impl PipeView {
             lines.push(format!("pipes {label} ({}):", pipes.len()));
             lines.extend(pipes.iter().map(PipeInfo::render));
         }
-        // An instrument with no `interface` (a plain rig) must still answer with a *sentence*: an
-        // empty string is indistinguishable from a truncated or failed call, and every other view
-        // emits a header even when it has nothing under it.
-        if lines.is_empty() {
-            lines.push("pipes (0): this document declares no interface".to_string());
-        }
         if !self.unmatched.is_empty() {
             lines.push(format!("no match: {}", self.unmatched.join(", ")));
+        }
+        // A view must always answer with a *sentence*: an empty string is indistinguishable from a
+        // truncated or failed call. And it has to answer the right one — "there is no interface
+        // here" and "your selection matched none of them" send the agent in opposite directions,
+        // so the count that distinguishes them is the document's, not the selection's.
+        if lines.is_empty() {
+            lines.push(match self.declared {
+                0 => "pipes (0): this document declares no interface".to_string(),
+                n => format!("pipes (0 of {n} shown)"),
+            });
         }
         lines.join("\n")
     }
@@ -521,6 +587,11 @@ pub struct ResourcesView {
     /// to hang off, so it gets its own list rather than vanishing.
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub dangling: Vec<ResourceRef>,
+    /// Whether the document loads. This is the view whose entire job is resolved/dark state, and
+    /// resolution is discovered **by loading**: on a document that does not load, "no DARK" means
+    /// *nobody checked*, not *it resolves*. Reporting the first as the second would be the
+    /// projection lying rather than omitting.
+    pub loadable: bool,
 }
 
 impl ResourcesView {
@@ -528,7 +599,11 @@ impl ResourcesView {
         // The header counts BOTH kinds, and every dangling line is labelled: a count that
         // disagreed with the line count, over rows in two different grammars, is a table an agent
         // cannot parse.
-        let mut lines = vec![if self.dangling.is_empty() {
+        let mut lines = Vec::new();
+        if !self.loadable {
+            lines.push(LOAD_CAVEAT.to_string());
+        }
+        lines.push(if self.dangling.is_empty() {
             format!("resources ({}):", self.entries.len())
         } else {
             format!(
@@ -536,9 +611,9 @@ impl ResourcesView {
                 self.entries.len(),
                 self.dangling.len()
             )
-        }];
+        });
         for e in &self.entries {
-            let mut s = format!("{} -> {}", e.id, e.source);
+            let mut s = format!("{} -> {}", token(&e.id), token(&e.source));
             if e.refs.is_empty() {
                 s.push_str(" unreferenced");
             } else {
@@ -719,6 +794,8 @@ impl<'a> Projector<'a> {
         Zoom {
             header,
             nodes: matched.iter().map(|&i| self.zoom_node(i)).collect(),
+            declared: self.doc.nodes.len(),
+            loadable: self.facts().loadable,
             unmatched,
         }
     }
@@ -875,6 +952,7 @@ impl<'a> Projector<'a> {
         PipeView {
             inputs,
             outputs,
+            declared: iface.inputs.len() + iface.outputs.len(),
             unmatched,
         }
     }
@@ -889,7 +967,7 @@ impl<'a> Projector<'a> {
                 if self.doc.resources.contains_key(id) {
                     refs.entry(id)
                         .or_default()
-                        .push(format!("{slot}:{}", n.address));
+                        .push(format!("{slot}:{}", token(&n.address)));
                 } else {
                     dangling.push(ResourceRef {
                         slot: slot.to_string(),
@@ -916,6 +994,7 @@ impl<'a> Projector<'a> {
                 })
                 .collect(),
             dangling,
+            loadable: self.facts().loadable,
         }
     }
 }
@@ -974,6 +1053,9 @@ fn build_consumers(doc: &NormalizedDoc, registry: &Registry) -> BTreeMap<String,
     for n in &doc.nodes {
         for (name, v) in &n.inputs {
             if let InputValue::Wire { from } = v {
+                // An input pipe mints `/{pipe}` into the flat node namespace, so some of these
+                // land under a key that is a *pipe* rather than a node. Nothing reads those today
+                // — the pipe view carries no consumer field — which is the open question on #610.
                 record(from, Some(n.address.clone()), name.clone());
             }
         }
@@ -1329,10 +1411,11 @@ mod tests {
         let by_type = p.pipes(&Selection::Type("f32".into()));
         assert_eq!(by_type.inputs.len(), 1);
         assert!(by_type.outputs.is_empty());
-        assert_eq!(
-            p.pipes(&Selection::names(["nope"])).unmatched,
-            ["nope".to_string()]
-        );
+        // A selection that filters everything out must not claim the document has no interface —
+        // it has one, the agent just asked for the wrong name.
+        let miss = p.pipes(&Selection::names(["nope"]));
+        assert_eq!(miss.unmatched, ["nope".to_string()]);
+        assert_eq!(miss.render(), "no match: nope");
     }
 
     #[test]
@@ -1455,6 +1538,130 @@ mod tests {
         );
     }
 
+    /// A view whose job is resolved/dark state must not report *unchecked* as *fine*. Resolution
+    /// is discovered by loading; when the load never completed, the honest answer is a caveat.
+    #[test]
+    fn resolution_state_is_caveated_when_the_document_does_not_load() {
+        // Same missing resource in both, but the second also carries a broken wire, so it never
+        // loads and nothing ever checked the resource.
+        const LOADS: &str = r#"{
+            "format_version": 3,
+            "instrument": "loads",
+            "resources": { "kit": "nowhere.wav" },
+            "nodes": [ {"type": "sample", "address": "/sp", "sample": "kit"} ]
+        }"#;
+        const BROKEN: &str = r#"{
+            "format_version": 3,
+            "instrument": "broken",
+            "resources": { "kit": "nowhere.wav" },
+            "nodes": [
+                {"type": "sample", "address": "/sp", "sample": "kit"},
+                {"type": "oscillator", "address": "/osc", "inputs": {"freq": {"from": "/nope.out"}}}
+            ]
+        }"#;
+        let good = projector(LOADS);
+        assert!(good.resources().render().contains("DARK:"));
+        assert!(!good.resources().render().contains(LOAD_CAVEAT));
+
+        let bad = projector(BROKEN);
+        let res = bad.resources().render();
+        assert!(res.starts_with(LOAD_CAVEAT), "{res}");
+        // ...and the same caveat rides a zoom, whose `res:` line reports the same unchecked state.
+        let zoom = bad.zoom(&Selection::names(["/sp"])).render();
+        assert!(zoom.starts_with(LOAD_CAVEAT), "{zoom}");
+    }
+
+    /// Every view answers in sentences — including a zoom of a document with no nodes, which is
+    /// the very first document an agent creates.
+    #[test]
+    fn a_zoom_never_renders_the_empty_string() {
+        const FRESH: &str = r#"{"format_version": 3, "instrument": "fresh", "nodes": []}"#;
+        assert_eq!(
+            projector(FRESH).zoom(&Selection::All).render(),
+            "nodes (0): this document has no nodes"
+        );
+        // A document that HAS nodes, asked for none of them, says so differently.
+        assert_eq!(
+            projector(TINY).zoom(&Selection::Names(Vec::new())).render(),
+            "nodes (0 of 3 shown)"
+        );
+    }
+
+    /// The projection is a grammar an agent parses, and nothing validates a document's spelling
+    /// against it. A node addressed `"in: freq=999"` loads cleanly through the real engine path;
+    /// unquoted, it would forge a line indistinguishable from a real input binding.
+    #[test]
+    fn a_document_cannot_forge_projection_structure_with_its_own_names() {
+        const FORGED: &str = r#"{
+            "format_version": 3,
+            "instrument": "for\nged",
+            "nodes": [
+                {"type": "oscillator", "address": "in: freq=999"},
+                {"type": "m2s", "address": "/kick drum"}
+            ]
+        }"#;
+        let p = projector(FORGED);
+        let index = p.index().render();
+        // The forging document still loads — quoting is the only thing standing between the
+        // agent and a phantom record.
+        assert!(!index.contains("DOES NOT LOAD"), "{index}");
+        // The newline in the instrument name is escaped, not emitted — it cannot split the header.
+        assert!(index.contains(r#"instrument "for\nged""#), "{index}");
+        assert!(index.contains(r#""in: freq=999" oscillator"#), "{index}");
+        assert!(index.contains(r#""/kick drum" m2s"#), "{index}");
+        // One line per node plus the one-line header: nothing forged a record of its own.
+        assert_eq!(index.lines().count(), 3);
+    }
+
+    /// The memoized boundary is cut once per **source**, not per referencing node: two voicers on
+    /// one voice document, and two resource ids pointing at one source, describe it once.
+    #[test]
+    fn a_child_boundary_is_described_once_per_source() {
+        const SHARED: &str = r#"{
+            "format_version": 3,
+            "instrument": "shared",
+            "resources": { "a": "voice.json", "b": "voice.json" },
+            "nodes": [
+                {"type": "voicer", "address": "/v1", "voice": "a"},
+                {"type": "voicer", "address": "/v2", "voice": "a"},
+                {"type": "voicer", "address": "/v3", "voice": "b"}
+            ]
+        }"#;
+        const VOICE: &str = r#"{
+            "format_version": 3,
+            "instrument": "voice",
+            "interface": {
+                "inputs": { "freq": {"type": "f32", "default": 440.0} },
+                "outputs": { "audio": {"from": "/osc.audio"} }
+            },
+            "nodes": [ {"type": "oscillator", "address": "/osc", "inputs": {"freq": {"from": "/freq"}}} ]
+        }"#;
+        /// Counts how many times the child document is actually read.
+        struct Counting(std::cell::Cell<usize>);
+        impl ResourceResolver for Counting {
+            fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+                Err(ResolveError::NotFound(source.to_string()))
+            }
+            fn resolve_text(&self, _: &str) -> Result<String, ResolveError> {
+                self.0.set(self.0.get() + 1);
+                Ok(VOICE.to_string())
+            }
+        }
+        let registry = Registry::builtin();
+        let resolver = Counting(std::cell::Cell::new(0));
+        let p = Projector::new(SHARED, &registry, &resolver).expect("mints");
+        // Force the lazy load first — it reads the children itself; what is being counted here is
+        // the *boundary* describe, which is a second, separate read of the same documents.
+        p.index();
+        let before = resolver.0.get();
+        let all = p.zoom(&Selection::All);
+        // Three voicers, one source — and zooming again costs nothing more.
+        assert_eq!(all.nodes.iter().filter(|n| n.boundary.is_some()).count(), 3);
+        assert_eq!(resolver.0.get() - before, 1);
+        p.zoom(&Selection::All);
+        assert_eq!(resolver.0.get() - before, 1);
+    }
+
     /// The completeness guard: walk the **real** format types and prove every leaf field is
     /// consciously dispositioned by [`FIELD_COVERAGE`]. A new format field with no view fails
     /// here, which is the whole point — a read surface this permanent cannot be defended by
@@ -1481,23 +1688,23 @@ mod tests {
             if node.get("type").and_then(Value::as_str) == Some("null") {
                 return;
             }
+            // Every structural keyword on this node is followed, and NONE of them short-circuits
+            // the others — `$ref` included, which schemars already emits with siblings (a `$ref`
+            // beside a `description`). A guard that under-enumerates stays green while the format
+            // grows a field with no view, the exact failure it exists to make impossible.
+            let mut structural = false;
             if let Some(r) = node.get("$ref").and_then(Value::as_str) {
                 let name = r.rsplit('/').next().unwrap_or(r).to_string();
-                if !active.insert(name.clone()) {
+                if active.insert(name.clone()) {
+                    if let Some(def) = defs.get(&name) {
+                        walk(def, defs, path, out, active);
+                    }
+                    active.remove(&name);
+                } else {
                     out.insert(format!("{path} → <recursive {name}>"));
-                    return;
                 }
-                if let Some(def) = defs.get(&name) {
-                    walk(def, defs, path, out, active);
-                }
-                active.remove(&name);
-                return;
+                structural = true;
             }
-            // Every structural keyword on this node is followed, and NONE of them short-circuits
-            // the others. A guard that under-enumerates stays green while the format grows a field
-            // with no view — the exact failure it exists to make impossible — and schemars is free
-            // to emit `allOf`/`anyOf` beside `properties` for shapes we do not use today.
-            let mut structural = false;
             for key in ["anyOf", "oneOf", "allOf"] {
                 for sub in node
                     .get(key)
@@ -1608,6 +1815,26 @@ mod tests {
             walk(&schema, &Map::new(), "", &mut out, &mut BTreeSet::new());
             assert!(out.contains("direct"), "{out:?}");
             assert!(out.contains("merged"), "{out:?}");
+        }
+
+        /// ...and `$ref` is one of those keywords, not an early exit. schemars already emits a
+        /// `$ref` beside a sibling (`description`), so a `$ref` that returned before the rest
+        /// would be a subtree the guard stops covering the moment that sibling is structural.
+        #[test]
+        fn the_walker_follows_keywords_sitting_beside_a_ref() {
+            let mut defs = Map::new();
+            defs.insert(
+                "Inner".to_string(),
+                serde_json::json!({"properties": {"via_ref": {"type": "string"}}}),
+            );
+            let schema: Value = serde_json::json!({
+                "$ref": "#/$defs/Inner",
+                "properties": { "beside_ref": { "type": "string" } }
+            });
+            let mut out = BTreeSet::new();
+            walk(&schema, &defs, "", &mut out, &mut BTreeSet::new());
+            assert!(out.contains("via_ref"), "{out:?}");
+            assert!(out.contains("beside_ref"), "{out:?}");
         }
     }
 }
