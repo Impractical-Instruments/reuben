@@ -248,6 +248,12 @@ pub struct IndexEntry {
     /// the one decision-state marker the index carries. Reachability and silence stay `validate`
     /// warnings; the marker set is deliberately small and reviewed, because every marker is a
     /// per-node cost on the highest-frequency read.
+    ///
+    /// On a document that does not load, only the document-level half is knowable (an id with no
+    /// row in the `resources` table), so a marker may be **absent** where a load would have found
+    /// one. The index does not repeat the zoom's load caveat for that — a marker it *does* show is
+    /// never false, and the header's `DOES NOT LOAD` is already on the line above. That is a
+    /// byte-budget choice on the most-read view, not an oversight.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub dark: Option<String>,
 }
@@ -1123,20 +1129,23 @@ impl ResourceResolver for Rebased<'_> {
 /// **source** node. The sole-output sugar is resolved against the registry so a consumer that
 /// wrote `"/kick"` still reports which port it took.
 fn build_consumers(doc: &NormalizedDoc, registry: &Registry) -> BTreeMap<String, Vec<OutEdge>> {
-    // The addresses a reference can name **whole**: every node, plus the address each input pipe
-    // mints into the same flat namespace. Nothing forbids a `.` in either — a v1 interface entry
-    // named `"my.tone"` migrates to a pipe minting `/my.tone` verbatim — so the loader resolves an
-    // exact address BEFORE the last-`.` split, and so must this. Splitting first files the edge
-    // under `/my`: a consumer fabricated on a node that has none, and hidden from the node that
-    // does. In the one view the agent trusts to tell it what a removal breaks, that is a lie.
-    let addressable: BTreeSet<&str> = doc
+    // The addresses a reference can name **whole**: exactly what the loader keys its own
+    // exact-match-first on — every node address as written, plus `/{name}` for each input pipe,
+    // which is the address the mint puts in the same flat namespace. Nothing forbids a `.` in
+    // either (a v1 interface entry named `"my.tone"` migrates to a pipe minting `/my.tone`
+    // verbatim), so an exact address resolves BEFORE the last-`.` split. Getting this set wrong in
+    // either direction is a lie in the one view the agent trusts to tell it what a removal breaks:
+    // too narrow and the edge lands on `/my` instead of `/my.tone`; too broad and it lands on a
+    // key no node has, vanishing from the view entirely. Neither is a shape to approximate — the
+    // rule is copied from the loader, so it is written the way the loader writes it.
+    let addressable: BTreeSet<String> = doc
         .nodes
         .iter()
-        .map(|n| n.address.as_str())
+        .map(|n| n.address.clone())
         .chain(
             doc.interface
                 .iter()
-                .flat_map(|i| i.inputs.keys().map(String::as_str)),
+                .flat_map(|i| i.inputs.keys().map(|name| format!("/{name}"))),
         )
         .collect();
     let sole_output = |address: &str| -> Option<String> {
@@ -1149,11 +1158,7 @@ fn build_consumers(doc: &NormalizedDoc, registry: &Registry) -> BTreeMap<String,
     };
     let mut out: BTreeMap<String, Vec<OutEdge>> = BTreeMap::new();
     let mut record = |reference: &str, node: Option<String>, input: String| {
-        let (src, port) = if addressable.contains(reference)
-            || reference
-                .strip_prefix('/')
-                .is_some_and(|name| addressable.contains(name))
-        {
+        let (src, port) = if addressable.contains(reference) {
             (reference, None)
         } else {
             parse_wire(reference)
@@ -1736,6 +1741,10 @@ mod tests {
         const FORGED: &str = r#"{
             "format_version": 3,
             "instrument": "for\nged",
+            "resources": { "kit\nfake -> evil.wav sample:/x": "boom\nresources (0):" },
+            "interface": {
+                "inputs": { "lvl\nfake:f32 0..1=0": {"type": "f32", "default": 0.5} }
+            },
             "nodes": [
                 {"type": "oscillator", "address": "in: freq=999"},
                 {"type": "m2s", "address": "/kick drum"}
@@ -1753,10 +1762,14 @@ mod tests {
         // One line per node plus the one-line header: nothing forged a record of its own.
         assert_eq!(index.lines().count(), 3);
         // ...and the same holds for every OTHER view. Asserting this on the index alone is how
-        // three forgeable paths survived a review round.
+        // three forgeable paths survived a review round — and a fixture with no `interface` and no
+        // `resources` makes the pipe and resource arms vacuous, which is how they survived
+        // another. Each view below has real, hostile content to render.
         assert_eq!(p.zoom(&Selection::All).render().lines().count(), 2);
-        assert_eq!(p.pipes(&Selection::All).render().lines().count(), 1);
-        assert_eq!(p.resources().render().lines().count(), 1);
+        // Header + the one pipe. The pipe's own name would otherwise forge a second pipe row.
+        assert_eq!(p.pipes(&Selection::All).render().lines().count(), 2);
+        // Header + the one entry. Its id and its source would each forge a row.
+        assert_eq!(p.resources().render().lines().count(), 2);
         // A selection term is caller text, and a door forwards agent- or user-authored names.
         assert_eq!(
             p.zoom(&Selection::names(["no\nmatch: forged"]))
@@ -1928,6 +1941,40 @@ mod tests {
         assert_eq!(real.consumers[0].port.as_deref(), Some("audio"));
         let bystander = z.nodes.iter().find(|n| n.address == "/my").unwrap();
         assert!(bystander.consumers.is_empty(), "{:?}", bystander.consumers);
+    }
+
+    /// The addressable set is the loader's, not an approximation of it. A node addressed
+    /// slashlessly (`my.audio`) is legal and loads; the loader's `by_addr` holds it verbatim, so
+    /// `{"from": "/my.audio"}` does **not** whole-match and splits into `/my` port `audio`. A
+    /// projection that whole-matched anyway would file the edge under a key no node has, and the
+    /// consumer would vanish from the reverse-edge view altogether.
+    #[test]
+    fn a_slashless_address_does_not_whole_match_a_slashed_reference() {
+        const SLASHLESS: &str = r#"{
+            "format_version": 3,
+            "instrument": "slashless",
+            "nodes": [
+                {"type": "oscillator", "address": "/my"},
+                {"type": "oscillator", "address": "my.audio"},
+                {"type": "mul_f32_signal", "address": "/lvl",
+                 "inputs": {"a": {"from": "/my.audio"}}}
+            ]
+        }"#;
+        let p = projector(SLASHLESS);
+        // The engine accepts this document, so the edge it makes is the edge to report.
+        assert!(!p.index().render().contains("DOES NOT LOAD"));
+        let z = p.zoom(&Selection::All);
+        let by = |addr: &str| {
+            z.nodes
+                .iter()
+                .find(|n| n.address == addr)
+                .unwrap()
+                .consumers
+                .clone()
+        };
+        assert_eq!(by("/my").len(), 1, "{:?}", by("/my"));
+        assert_eq!(by("/my")[0].port.as_deref(), Some("audio"));
+        assert!(by("my.audio").is_empty(), "{:?}", by("my.audio"));
     }
 
     /// A `subpatch` declares no outputs of its own — its ports are its child's face — so sugar
