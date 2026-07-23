@@ -81,6 +81,7 @@ pub fn scaffold_instrument(name: Option<&str>) -> serde_json::Value {
 
 /// A complete instrument document.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct InstrumentDoc {
     /// Document format version. Absent means 1 — every document written before
@@ -156,6 +157,7 @@ impl PartialEq for MigrationNotes {
 /// the [`NormalizedDoc`] mint; they are illegal in a v2 document. Resolved at
 /// [`build`](NormalizedDoc::build) into [`Interface`].
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct InterfaceDoc {
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -173,6 +175,7 @@ pub struct InterfaceDoc {
 /// keeps pointed field-level serde errors ("unknown field `lable`") instead of collapsing into
 /// one opaque untagged no-variant error.
 #[derive(Debug, Clone, PartialEq, Serialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum InterfaceEntry {
     /// A v2 **input pipe**: declared type + optional channel binding + metadata.
@@ -188,6 +191,7 @@ pub enum InterfaceEntry {
 /// A pipe's declared unwired/seed value: a number (`f32` / `f32_buffer` pipes) or a vocab-enum
 /// variant **symbol** (enum pipes) — mirroring [`InputValue`]'s literal forms.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum PipeDefault {
     Number(f64),
@@ -197,6 +201,7 @@ pub enum PipeDefault {
 /// A declared curve on an input pipe's numeric range (the good-button sweep hint), the document
 /// spelling of [`Curve`]: `"lin"` or `"exp"` — the same tokens the operator contract macro uses.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub enum CurveDoc {
     #[serde(rename = "lin")]
     Lin,
@@ -223,6 +228,7 @@ impl From<CurveDoc> for Curve {
 /// the graph is played at top level; `channel` on a message pipe is a load error.
 /// `label`/`unit`/`widget` are presentational (describe / control-surface generation).
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct InputPipeDoc {
     /// The declared `Arg` type: `"f32_buffer"` (Signal), `"f32"` (held Value), `"i32"` (held
@@ -266,6 +272,7 @@ pub struct InputPipeDoc {
 /// presentational; `min`/`max` presentational overrides obey the subset law against
 /// the feeding port's engine-enforced range.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct OutputPipeDoc {
     /// The internal `/node.port` (or sole-output `/node`) wire-ref feeding this pipe.
@@ -295,6 +302,7 @@ pub struct OutputPipeDoc {
 /// presentational overrides. Parses so migration can rewrite it into the pipe forms; never
 /// written back (save writes v2). `deny_unknown_fields` keeps its field-level errors pointed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct InterfaceMeta {
     /// The internal `/node.port` wire-ref this external name resolves to.
@@ -390,6 +398,7 @@ impl<'de> Deserialize<'de> for InterfaceEntry {
 
 /// One operator instance.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(deny_unknown_fields)]
 pub struct NodeDoc {
     /// Operator type name (must be registered, e.g. `"oscillator"`).
@@ -463,6 +472,7 @@ impl NodeDoc {
 /// [`Symbol`](Self::Symbol) (an `Enum` variant name); a JSON number is a [`Number`](Self::Number)
 /// (a `Float`/param value, or an `Enum` index fallback).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum InputValue {
     /// A wire-ref to a source output: `"/node.port"`, or `"/node"` when the source has exactly
@@ -480,6 +490,7 @@ pub enum InputValue {
 /// JSON string is a [`Symbol`](Self::Symbol) (an `Enum` constant, none today). Floats are accepted
 /// and rounded so `8` and `8.0` both name 8 voices.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum ConfigValue {
     /// An `Int` constant (e.g. `voices`), applied rounded.
@@ -491,6 +502,7 @@ pub enum ConfigValue {
 /// A reference to one node's port, by names. Used only in `outputs` (a master tap);
 /// node-to-node wiring lives in [`NodeDoc::inputs`] as a [`InputValue::Wire`].
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct PortRef {
     pub node: String,
     pub port: String,

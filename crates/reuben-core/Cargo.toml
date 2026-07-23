@@ -42,6 +42,11 @@ iai-callgrind = "0.16"
 [[example]]
 name = "first_sound"
 
+# THROWAWAY wayfinder #600 feasibility tracer: proves the projection completeness guard.
+[[example]]
+name = "projection_coverage_proof"
+required-features = ["schemars"]
+
 # Macro render_block benches. `harness = false` — both bring their own main().
 [[bench]]
 name = "macro_criterion"
