@@ -26,7 +26,7 @@
 //! **door** concern (`agent-mcp.md#expect-guard-is-a-door-concern`): core's write stays unguarded
 //! last-write-wins, the post-write hash is always returned, and the door does the content-hash compare.
 //!
-//! see engine rules: agent-mcp
+//! see rules: agent-mcp
 
 use std::collections::BTreeMap;
 use std::fmt;
