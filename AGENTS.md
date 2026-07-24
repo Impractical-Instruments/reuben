@@ -33,20 +33,51 @@ core · single-writer Coordinator. Details + enforcing tests:
 Use the project's exact terms (Operator, Instrument, Rig, Plan, Swap, Voice…).
 The [rules index](docs/rules/README.md) carries the glossary — don't drift to synonyms its [Avoid these synonyms](docs/rules/README.md#avoid-these-synonyms) list calls out.
 
+## Repo map
+
+Five crates. `reuben-core` is ~35k lines — enter through the module that owns the concept, not a search.
+
+| Crate | Owns |
+| --- | --- |
+| `reuben-core` | The portable, OS-free engine. No OS dependencies. |
+| `reuben-native` | The removable native layer: cpal audio + input, OSC/UDP decode, the `reuben` CLI. |
+| `reuben-mcp` | The per-conversation MCP stdio sidecar. The only member allowed an async runtime (rmcp + tokio). |
+| `reuben-contract` | The single source of an Operator's port/constant contract, shared by the macro and scaffold. |
+| `reuben-macros` | `operator_contract!` — emits the index consts *and* the `Descriptor` from one declaration. |
+
+Inside `reuben-core` (the full version is the `src/lib.rs` doc comment): data model `signal`
+(audio-rate) + `message` (OSC-shaped) · authoring `operator` + `descriptor` · composition
+`graph` → `plan` (Instantiate) → `render` (per-block) · musical `vocab` + `tuning` · the
+Operator set in `operators/`.
+
+Most-wanted specifics: Swap lifecycle `coordinator/` · instrument JSON `format/` · the agent's
+whole view of a document `projection.rs` · type name → constructor `registry.rs`.
+
 ## Code navigation
+
 Prefer LSP over Grep/Glob for code navigation:
+
 - goToDefinition / goToImplementation to locate source
 - findReferences before any rename or signature change — enumerate all call sites first
 - workspaceSymbol / documentSymbol to find definitions
 - hover for type info without reading the file
 - check diagnostics after every edit; fix type errors before moving on
-  Use Grep only for non-code text: comments, string literals, config values.
-  Never use Grep to find a function or type definition.
+
+Use Grep only for non-code text: comments, string literals, config values.
+**Never use Grep to find a function or type definition.**
+
+These files punish a whole-file Read — `documentSymbol` first, then read only the range you need:
+`reuben-core/src/format/mod.rs` (4.8k lines) · `reuben-core/src/projection.rs` (2.5k) ·
+`reuben-mcp/src/lib.rs` (2.2k) · `reuben-native/src/audio.rs` (1.5k) · `reuben-core/src/plan.rs` (1.5k).
+
+Search is pre-scoped by [`.ignore`](.ignore) — build output, `.git`, caches, binary fixtures.
+Don't bypass it with `--no-ignore`; nothing it hides is a source of truth.
 
 ## Guides
 
 - **[Authoring](docs/agents/authoring.md)** — the instrument-authoring guide: JSON format, type system + wiring, addressing, the authoring loop.
 - **[Operator dev](docs/agents/operator-dev.md)** — operator trait, descriptor macro, adding an operator, RT-safety rules.
+- **[Intent vocabulary](docs/agents/vocabulary.md)** — the word→move table turning intent language ("warmer", "busier", "sadder") into parameter moves. Generated from `vocabulary.json`; also served as `reuben://guide/vocabulary`.
 - **[Domain docs](docs/agents/domain.md)** — the now-state architecture is the [rules index](docs/rules/README.md) → topic → rule → rationale; read the index + the relevant topic doc before exploring. `docs/adr/` is the live iteration surface a human periodically folds into rules with the `absorb-adrs` skill.
 - **[Agent-surface eval](eval/README.md)** — what authoring costs a model (grounding tokens, repair rounds, freehand JSON). Gated in CI; run `cd eval && python3 -m reuben_eval.gate` after changing a tool description, the `instructions`, or `docs/agents/`.
 - **[Issue tracker](docs/agents/issue-tracker.md)** — GitHub Issues via `gh`; external PRs are not a triage surface.
