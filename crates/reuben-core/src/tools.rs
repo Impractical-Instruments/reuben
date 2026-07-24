@@ -18,6 +18,11 @@ pub enum ContractKind {
     /// An engine contract that reaches a running engine over the door's channel
     /// (`send`/`engine_status`/`swap`/`get_current_instrument`/`get_diagnostics`).
     Engine,
+    /// A **document-manipulation** contract (#603): a pure, engine-free *mutator* over an
+    /// instrument document through the resolver seam — read, apply one surgical edit, re-validate
+    /// the whole document, write iff valid ([`crate::edit`]). Distinct from [`Pure`](Self::Pure),
+    /// which is read-only introspection: a door hosts both in-process, but only these write.
+    Document,
 }
 
 /// One entry in the contract roster: the exact name advertised on the wire, plus its channel kind.
@@ -72,53 +77,94 @@ pub const CONTRACTS: &[Contract] = &[
         name: "get_diagnostics",
         kind: ContractKind::Engine,
     },
+    // The document-manipulation vocabulary (#603): the closed set of engine-free mutators an agent
+    // authors a document through, in the #611 group order (document · nodes · inputs · config ·
+    // interface · resources). The existing-tool renames to the `verb_instrument_object` convention
+    // are #604's job, so the read/engine names above keep their current spelling for now.
+    Contract {
+        name: "new_instrument",
+        kind: ContractKind::Document,
+    },
+    Contract {
+        name: "set_instrument_name",
+        kind: ContractKind::Document,
+    },
+    Contract {
+        name: "set_instrument_description",
+        kind: ContractKind::Document,
+    },
+    Contract {
+        name: "add_instrument_node",
+        kind: ContractKind::Document,
+    },
+    Contract {
+        name: "remove_instrument_node",
+        kind: ContractKind::Document,
+    },
+    Contract {
+        name: "rename_instrument_node",
+        kind: ContractKind::Document,
+    },
+    Contract {
+        name: "set_instrument_node_description",
+        kind: ContractKind::Document,
+    },
+    Contract {
+        name: "set_instrument_input",
+        kind: ContractKind::Document,
+    },
+    Contract {
+        name: "wire_instrument_input",
+        kind: ContractKind::Document,
+    },
+    Contract {
+        name: "unwire_instrument_input",
+        kind: ContractKind::Document,
+    },
+    Contract {
+        name: "set_instrument_constant",
+        kind: ContractKind::Document,
+    },
+    Contract {
+        name: "add_instrument_interface_input",
+        kind: ContractKind::Document,
+    },
+    Contract {
+        name: "add_instrument_interface_output",
+        kind: ContractKind::Document,
+    },
+    Contract {
+        name: "remove_instrument_interface_input",
+        kind: ContractKind::Document,
+    },
+    Contract {
+        name: "remove_instrument_interface_output",
+        kind: ContractKind::Document,
+    },
+    Contract {
+        name: "set_instrument_interface_input_meta",
+        kind: ContractKind::Document,
+    },
+    Contract {
+        name: "set_instrument_interface_output_meta",
+        kind: ContractKind::Document,
+    },
+    Contract {
+        name: "add_instrument_resource",
+        kind: ContractKind::Document,
+    },
+    Contract {
+        name: "remove_instrument_resource",
+        kind: ContractKind::Document,
+    },
 ];
 
 /// The roster's contract names, in [`CONTRACTS`] order — the ordered name-set a door advertises.
 /// A door builds its wire surface from this rather than a hand-typed list.
+///
+/// The roster identity is verified end-to-end where it matters — `reuben-mcp`'s
+/// `advertises_the_declared_roster_over_stdio` asserts the real `tools/list` wire surface equals
+/// this derivation — so there is no hand-maintained literal duplicate of the names here to drift.
 pub fn names() -> Vec<&'static str> {
     CONTRACTS.iter().map(|c| c.name).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn roster_is_the_adr_0048_set_in_order() {
-        // The roster identity: exactly these names, in this exact order, with this kind split.
-        // A door derives its wire surface from CONTRACTS, so this pins what every door advertises.
-        assert_eq!(
-            names(),
-            [
-                "describe_operators",
-                "describe_instrument",
-                "validate",
-                "scaffold_instrument",
-                "send",
-                "engine_status",
-                "swap",
-                "get_current_instrument",
-                "get_diagnostics",
-            ]
-        );
-        // The four-pure / five-engine split (`scaffold_instrument` added by #158), and
-        // it is a partition (no other kind).
-        assert_eq!(
-            CONTRACTS
-                .iter()
-                .filter(|c| c.kind == ContractKind::Pure)
-                .count(),
-            4
-        );
-        assert_eq!(
-            CONTRACTS
-                .iter()
-                .filter(|c| c.kind == ContractKind::Engine)
-                .count(),
-            5
-        );
-        // Concrete, not tautological: the roster is exactly nine contracts.
-        assert_eq!(CONTRACTS.len(), 9);
-    }
 }

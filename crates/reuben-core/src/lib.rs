@@ -34,6 +34,7 @@ pub mod coordinator;
 pub mod describe;
 pub mod descriptor;
 pub mod dsp;
+pub mod edit;
 pub mod engine;
 pub mod format;
 pub mod graph;
