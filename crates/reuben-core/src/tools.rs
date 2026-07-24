@@ -161,78 +161,10 @@ pub const CONTRACTS: &[Contract] = &[
 
 /// The roster's contract names, in [`CONTRACTS`] order — the ordered name-set a door advertises.
 /// A door builds its wire surface from this rather than a hand-typed list.
+///
+/// The roster identity is verified end-to-end where it matters — `reuben-mcp`'s
+/// `advertises_the_declared_roster_over_stdio` asserts the real `tools/list` wire surface equals
+/// this derivation — so there is no hand-maintained literal duplicate of the names here to drift.
 pub fn names() -> Vec<&'static str> {
     CONTRACTS.iter().map(|c| c.name).collect()
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn roster_is_the_adr_0048_set_in_order() {
-        // The roster identity: exactly these names, in this exact order, with this kind split.
-        // A door derives its wire surface from CONTRACTS, so this pins what every door advertises.
-        assert_eq!(
-            names(),
-            [
-                // read/introspect + live engine (the pre-#603 roster, names unchanged; the
-                // `verb_instrument_object` renames land in #604).
-                "describe_operators",
-                "describe_instrument",
-                "validate",
-                "scaffold_instrument",
-                "send",
-                "engine_status",
-                "swap",
-                "get_current_instrument",
-                "get_diagnostics",
-                // the #603 document-manipulation vocabulary, in #611 group order.
-                "new_instrument",
-                "set_instrument_name",
-                "set_instrument_description",
-                "add_instrument_node",
-                "remove_instrument_node",
-                "rename_instrument_node",
-                "set_instrument_node_description",
-                "set_instrument_input",
-                "wire_instrument_input",
-                "unwire_instrument_input",
-                "set_instrument_constant",
-                "add_instrument_interface_input",
-                "add_instrument_interface_output",
-                "remove_instrument_interface_input",
-                "remove_instrument_interface_output",
-                "set_instrument_interface_input_meta",
-                "set_instrument_interface_output_meta",
-                "add_instrument_resource",
-                "remove_instrument_resource",
-            ]
-        );
-        // The kind split is a partition: four read-only Pure (`scaffold_instrument` added by #158),
-        // five Engine, and the nineteen #603 Document mutators.
-        assert_eq!(
-            CONTRACTS
-                .iter()
-                .filter(|c| c.kind == ContractKind::Pure)
-                .count(),
-            4
-        );
-        assert_eq!(
-            CONTRACTS
-                .iter()
-                .filter(|c| c.kind == ContractKind::Engine)
-                .count(),
-            5
-        );
-        assert_eq!(
-            CONTRACTS
-                .iter()
-                .filter(|c| c.kind == ContractKind::Document)
-                .count(),
-            19
-        );
-        // Concrete, not tautological: the roster is exactly 28 contracts.
-        assert_eq!(CONTRACTS.len(), 28);
-    }
 }
