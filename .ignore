@@ -1,0 +1,27 @@
+# Paths no agent (or `rg`) should traverse. gitignore syntax, but honored
+# independently of .gitignore — it still applies when a tool ignores VCS rules,
+# and it covers paths .gitignore deliberately un-ignores (the fixture binaries).
+#
+# This file scopes *search*. Blocking the Read tool outright is a separate
+# concern; see the permissions.deny rules in .claude/settings.json.
+
+# Cargo build output. Tens of GB of intermediate artifacts, rebuilt on demand —
+# never a source of truth for anything.
+target/
+
+# Git's object store. Use git commands; the packfiles are not readable text.
+.git/
+
+# Python bytecode and test caches dropped by the skills' own test suites.
+__pycache__/
+.pytest_cache/
+
+# Wrangler's local cache.
+.wrangler/
+
+# Vendored BPE merge ranks for the eval tokenizer: 1.7 MB of opaque table.
+eval/reuben_eval/tokenizer/*.tiktoken
+
+# Editor state.
+.idea/
+.junie/

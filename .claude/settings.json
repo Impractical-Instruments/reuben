@@ -1,4 +1,23 @@
 {
+  "permissions": {
+    "deny": [
+      "Read(./target/**)",
+      "Read(./.git/**)",
+      "Read(./**/__pycache__/**)",
+      "Read(./**/.pytest_cache/**)",
+      "Read(./**/*.wav)",
+      "Read(./**/*.tosc)",
+      "Read(./**/*.tiktoken)"
+    ]
+  },
+  "sandbox": {
+    "filesystem": {
+      "allowRead": [
+        "target",
+        ".git"
+      ]
+    }
+  },
   "hooks": {
     "SessionStart": [
       {
