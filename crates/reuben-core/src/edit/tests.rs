@@ -25,6 +25,24 @@ fn seed() -> String {
     .to_string()
 }
 
+/// [`seed`] plus a declared interface **input** pipe that `/osc.freq` consumes — the shape that
+/// makes a pipe removal or a colliding rename dangle, since the pipe mints `/cutoff`.
+fn seed_with_pipe() -> String {
+    json!({
+        "format_version": 3,
+        "instrument": "test",
+        "nodes": [
+            { "type": "oscillator", "address": "/osc", "inputs": { "freq": { "from": "/cutoff" } } },
+            { "type": "mul_f32_signal", "address": "/amp", "inputs": { "a": { "from": "/osc" }, "b": 0.5 } }
+        ],
+        "interface": {
+            "inputs": { "cutoff": { "type": "f32", "min": 20.0, "max": 20000.0, "default": 440.0 } },
+            "outputs": { "main": { "from": "/amp" } }
+        }
+    })
+    .to_string()
+}
+
 fn resolver_with(json: &str) -> MemoryResolver {
     let mut r = MemoryResolver::new();
     r.insert_text(SRC, json);
@@ -122,6 +140,36 @@ fn remove_node_cascades_and_reports_what_it_broke() {
     assert!(after["nodes"][0]["inputs"].get("a").is_none());
 }
 
+/// A pipe mints `/<name>` into the node namespace, so removing a *consumed* pipe dangles exactly
+/// like removing a consumed node — and gets the same cascade rather than a rejected write.
+#[test]
+fn remove_interface_input_cascades_over_its_minted_address() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_pipe());
+
+    let result = remove_instrument_interface_input(SRC, "cutoff", &registry, &resolver)
+        .expect("remove pipe");
+
+    assert!(
+        result.report.ok,
+        "the cascade leaves a valid document: {:?}",
+        result.report
+    );
+    assert!(result.written, "the cascade is written, not rejected");
+    assert!(
+        result
+            .notes
+            .iter()
+            .any(|n| n.contains("/osc.freq") && n.contains("/cutoff")),
+        "notes report the unwired consumer: {:?}",
+        result.notes
+    );
+    let after = readback(&resolver);
+    assert!(after["interface"]["inputs"].get("cutoff").is_none());
+    // /osc.freq reverted to the operator default rather than dangling on a dead address.
+    assert!(after["nodes"][0]["inputs"].get("freq").is_none());
+}
+
 #[test]
 fn rename_node_rewires_consumers() {
     let registry = Registry::builtin();
@@ -140,6 +188,40 @@ fn rename_node_rewires_consumers() {
     let after = readback(&resolver);
     // /amp.a now points at the new address.
     assert_eq!(after["nodes"][1]["inputs"]["a"]["from"], json!("/source"));
+}
+
+/// The precondition a verb reports must be the one that actually failed: renaming a node that
+/// isn't there says so, rather than reporting the destination's collision for an edit that could
+/// never have run.
+#[test]
+fn rename_node_reports_the_precondition_that_failed() {
+    let registry = Registry::builtin();
+    let resolver = resolver_with(&seed_with_pipe());
+
+    let missing_source = rename_instrument_node(SRC, "/ghost", "/osc", &registry, &resolver)
+        .expect_err("no such node");
+    assert!(
+        missing_source.to_string().contains("/ghost"),
+        "the absent source is the failure, not the taken destination: {missing_source}"
+    );
+
+    // The interface's input pipes mint into the same address namespace, so a collision there is
+    // the same precondition — named as the pipe it is, not left to the loader.
+    let minted =
+        rename_instrument_node(SRC, "/osc", "/cutoff", &registry, &resolver).expect_err("minted");
+    assert!(
+        minted.to_string().contains("interface input `cutoff`"),
+        "the minted-address collision names the pipe: {minted}"
+    );
+
+    // Renaming to the address it already has is a no-op, not a self-collision.
+    let noop = rename_instrument_node(SRC, "/osc", "/osc", &registry, &resolver).expect("no-op");
+    assert!(noop.report.ok && noop.written);
+    assert!(
+        noop.notes.iter().any(|n| n.contains("nothing to rename")),
+        "the no-op is reported, not miscalled a collision: {:?}",
+        noop.notes
+    );
 }
 
 // --- one-shot add --------------------------------------------------------------------------------

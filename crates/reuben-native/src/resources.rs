@@ -122,14 +122,34 @@ impl ResourceResolver for FsResolver {
     /// unchanged). Missing parent directories are created so a new document lands where the
     /// author addressed it. This is the mechanism that makes the MCP sidecar a process which
     /// writes to disk; the stance change that documents it belongs in the ADR ticket.
+    ///
+    /// **Write-then-rename, not truncate-in-place.** Every document verb funnels through here, so
+    /// this is the author's only copy of an instrument being replaced on the interactive path. A
+    /// truncating write that dies half-way (crash, full disk, IO error) would leave unparseable
+    /// bytes where a valid document was, and the next verb would fail at the read with nothing to
+    /// fall back on. The new text lands in a sibling temp file first — same directory, so the
+    /// `rename` is a same-filesystem atomic replace — and the temp is cleaned up if it cannot be
+    /// put in place. The reader therefore sees the old document or the new one, never a fragment.
     fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
         let path = self.base_dir.join(source);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| ResolveError::Write(format!("{}: {e}", parent.display())))?;
         }
-        std::fs::write(&path, text)
-            .map_err(|e| ResolveError::Write(format!("{}: {e}", path.display())))
+        let file_name = path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .ok_or_else(|| {
+                ResolveError::Write(format!("{}: not a writable file path", path.display()))
+            })?;
+        // The pid keeps two sidecars writing the same document off each other's temp file.
+        let temp = path.with_file_name(format!(".{file_name}.{}.tmp", std::process::id()));
+        std::fs::write(&temp, text)
+            .map_err(|e| ResolveError::Write(format!("{}: {e}", temp.display())))?;
+        std::fs::rename(&temp, &path).map_err(|e| {
+            let _ = std::fs::remove_file(&temp);
+            ResolveError::Write(format!("{}: {e}", path.display()))
+        })
     }
 
     /// Canonical identity = the winning absolute path, lexically normalized. Sibling-first:
@@ -266,6 +286,30 @@ mod tests {
                 .expect("read back"),
             "{\"version\":4}"
         );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// The write goes through a sibling temp file and renames it into place, so a reader never
+    /// observes a truncated document — and the temp does not survive a successful write.
+    #[test]
+    fn write_text_leaves_no_temp_file_behind() {
+        let base = std::env::temp_dir().join("reuben_write_text_atomic_test");
+        let _ = std::fs::remove_dir_all(&base);
+        let resolver = FsResolver::new(&base);
+
+        resolver
+            .write_text("patch.json", "{\"version\":3}")
+            .unwrap();
+        resolver
+            .write_text("patch.json", "{\"version\":4}")
+            .unwrap();
+
+        let names: Vec<String> = std::fs::read_dir(&base)
+            .expect("base dir")
+            .map(|e| e.expect("entry").file_name().to_string_lossy().into_owned())
+            .collect();
+        assert_eq!(names, ["patch.json"], "a temp file survived: {names:?}");
 
         let _ = std::fs::remove_dir_all(&base);
     }

@@ -19,9 +19,11 @@
 //! # Write-iff-valid, cascade, and the door's guard
 //!
 //! There are no transactions: a lone unwired node loads clean and renders silence, so
-//! `new → add → add → wire → wire` is valid at every step. The one destructive verb —
-//! [`remove_instrument_node`] — would leave dangling wire-refs, so it **cascades**: it auto-unwires
-//! every consumer and **reports exactly what it broke** in [`EditResult::notes`]; [`rename_instrument_node`]
+//! `new → add → add → wire → wire` is valid at every step. The destructive verbs — the two that
+//! delete an address the rest of the document names, [`remove_instrument_node`] and
+//! [`remove_instrument_interface_input`] (whose pipe minted `/<name>`) — would leave dangling
+//! wire-refs, so they **cascade**: they auto-unwire every consumer and **report exactly what they
+//! broke** in [`EditResult::notes`]; [`rename_instrument_node`]
 //! rewrites those refs instead of dropping them, same channel. The `expect`-hash write guard is a
 //! **door** concern (`agent-mcp.md#expect-guard-is-a-door-concern`): core's write stays unguarded
 //! last-write-wins, the post-write hash is always returned, and the door does the content-hash compare.
@@ -288,6 +290,46 @@ fn rewrite_wire(from: &str, old: &str, new: &str) -> Option<String> {
     }
 }
 
+/// Unwire every reference to `address` — node inputs wired from it, interface outputs fed from it —
+/// returning a note per severed connection. The cascade the two address-removing verbs share:
+/// [`remove_instrument_node`] deletes a node address, [`remove_instrument_interface_input`] deletes
+/// the `/<name>` address its pipe minted, and either way a surviving wire-ref is a **fatal**
+/// `LoadError::UnknownNode`, not a warning — so the removal severs and reports rather than leaving
+/// the author a rejected write and a discovery exercise.
+fn cascade_unwire(doc: &mut InstrumentDoc, address: &str) -> Vec<String> {
+    let mut notes = Vec::new();
+    for node in &mut doc.nodes {
+        let hits: Vec<String> = node
+            .inputs
+            .iter()
+            .filter(|(_, v)| matches!(v, InputValue::Wire { from } if wire_targets(from, address)))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for input in hits {
+            if let Some(InputValue::Wire { from }) = node.inputs.remove(&input) {
+                notes.push(format!("unwired {}.{input} (was {from})", node.address));
+            }
+        }
+    }
+    if let Some(iface) = &mut doc.interface {
+        let hits: Vec<String> = iface
+            .outputs
+            .iter()
+            .filter(|(_, e)| matches!(e, InterfaceEntry::Feed(f) if wire_targets(&f.from, address)))
+            .map(|(k, _)| k.clone())
+            .collect();
+        for name in hits {
+            if let Some(InterfaceEntry::Feed(f)) = iface.outputs.remove(&name) {
+                notes.push(format!(
+                    "removed interface output `{name}` (fed from {})",
+                    f.from
+                ));
+            }
+        }
+    }
+    notes
+}
+
 /// Find a node index by address, or the precondition error naming it absent.
 fn node_index(doc: &InstrumentDoc, address: &str) -> Result<usize, EditError> {
     doc.nodes
@@ -427,42 +469,7 @@ pub fn remove_instrument_node(
     edit_existing(source, registry, resolver, |doc| {
         let idx = node_index(doc, address)?;
         doc.nodes.remove(idx);
-        let mut notes = Vec::new();
-        // Unwire every node input wired from the departing node.
-        for node in &mut doc.nodes {
-            let hits: Vec<String> = node
-                .inputs
-                .iter()
-                .filter(
-                    |(_, v)| matches!(v, InputValue::Wire { from } if wire_targets(from, address)),
-                )
-                .map(|(k, _)| k.clone())
-                .collect();
-            for input in hits {
-                if let Some(InputValue::Wire { from }) = node.inputs.remove(&input) {
-                    notes.push(format!("unwired {}.{input} (was {from})", node.address));
-                }
-            }
-        }
-        // Drop every interface output fed from the departing node.
-        if let Some(iface) = &mut doc.interface {
-            let hits: Vec<String> = iface
-                .outputs
-                .iter()
-                .filter(
-                    |(_, e)| matches!(e, InterfaceEntry::Feed(f) if wire_targets(&f.from, address)),
-                )
-                .map(|(k, _)| k.clone())
-                .collect();
-            for name in hits {
-                if let Some(InterfaceEntry::Feed(f)) = iface.outputs.remove(&name) {
-                    notes.push(format!(
-                        "removed interface output `{name}` (fed from {})",
-                        f.from
-                    ));
-                }
-            }
-        }
+        let notes = cascade_unwire(doc, address);
         Ok(Applied {
             echo: Echo::Index,
             notes,
@@ -472,7 +479,8 @@ pub fn remove_instrument_node(
 
 /// Rename a node, **rewiring** every consumer to the new address (the cascade posture of
 /// [`remove_instrument_node`], but preserving rather than dropping the connections). Refuses if the
-/// target address is already taken.
+/// target address is already taken — by a node, or by the `/<name>` an interface input pipe mints.
+/// Renaming a node to the address it already has is a no-op, reported in `notes`.
 pub fn rename_instrument_node(
     source: &str,
     from: &str,
@@ -481,12 +489,36 @@ pub fn rename_instrument_node(
     resolver: &dyn ResourceResolver,
 ) -> Result<EditResult, EditError> {
     edit_existing(source, registry, resolver, |doc| {
+        // Source first: a rename of a node that isn't there must say *that*, not report the
+        // destination's precondition for an edit that could never have run.
+        let idx = node_index(doc, from)?;
+        if from == to {
+            return Ok(Applied {
+                echo: Echo::Nodes(Selection::names([to])),
+                notes: vec![format!(
+                    "`{from}` is already its address; nothing to rename"
+                )],
+            });
+        }
         if doc.nodes.iter().any(|n| n.address == to) {
             return Err(EditError::Target(format!(
                 "a node already exists at address `{to}`"
             )));
         }
-        let idx = node_index(doc, from)?;
+        // The interface's input pipes mint `/<name>` into the same address namespace, so a
+        // collision there is the same precondition — caught here, where the message can name the
+        // pipe, rather than downstream as a bare `duplicate node address`.
+        if let Some(pipe) = to.strip_prefix('/') {
+            if doc
+                .interface
+                .as_ref()
+                .is_some_and(|i| i.inputs.contains_key(pipe))
+            {
+                return Err(EditError::Target(format!(
+                    "the interface input `{pipe}` already mints the address `{to}`"
+                )));
+            }
+        }
         doc.nodes[idx].address = to.to_string();
         let mut notes = Vec::new();
         for node in &mut doc.nodes {
@@ -703,7 +735,10 @@ pub fn add_instrument_interface_output(
     })
 }
 
-/// Remove an interface input pipe.
+/// Remove an interface input pipe, **cascading** the breakage exactly as
+/// [`remove_instrument_node`] does: the pipe minted `/<name>` as an address internal nodes consume
+/// from, so every consumer is auto-unwired and reported in `notes` rather than left dangling for the
+/// loader to reject.
 pub fn remove_instrument_interface_input(
     source: &str,
     name: &str,
@@ -717,7 +752,11 @@ pub fn remove_instrument_interface_input(
                 "no interface input `{name}` to remove"
             )));
         }
-        Ok(Applied::clean(Echo::Pipes(Selection::All)))
+        let notes = cascade_unwire(doc, &format!("/{name}"));
+        Ok(Applied {
+            echo: Echo::Pipes(Selection::All),
+            notes,
+        })
     })
 }
 

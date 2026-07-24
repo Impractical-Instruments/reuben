@@ -48,6 +48,7 @@ use reuben_core::coordinator::{
 };
 use reuben_core::edit::{self, EditError, EditResult};
 use reuben_core::introspect::{OperatorInfo, PatchBoundary};
+use reuben_core::projection::Projector;
 use reuben_core::{
     content_hash, Diag, NormalizedDoc, Registry, Report, ResourceResolver, SwapReport,
 };
@@ -1782,8 +1783,10 @@ fn edit_resolver(source: &str) -> (FsResolver, String) {
 /// The **door-side** `expect`-hash write guard (`agent-mcp.md#expect-guard-is-a-door-concern`):
 /// core's write stays unguarded last-write-wins, and here the door compares the caller's `expect`
 /// to the source's current content hash. `Some` is the ready-to-return ordinary result for a miss
-/// (nothing written, the real hash returned so the caller can reconcile); `None` means proceed. A
-/// read/mint failure here is not the guard's business — it returns `None` and lets the verb surface it.
+/// (nothing written, the real hash returned **and the current node index in `zoom`**, so "re-read it
+/// and reconcile" costs no extra round trip — the door already read and minted the document to
+/// compute the hash); `None` means proceed. A read/mint failure here is not the guard's business —
+/// it returns `None` and lets the verb surface it.
 fn edit_expect_conflict(
     expect: &Option<String>,
     name: &str,
@@ -1791,14 +1794,20 @@ fn edit_expect_conflict(
 ) -> Option<Result<CallToolResult, McpError>> {
     let expected = expect.as_ref()?;
     let registry = Registry::builtin();
-    let actual = resolver
-        .resolve_text(name)
+    let json = resolver.resolve_text(name).ok()?;
+    let actual = NormalizedDoc::from_json(&json, &registry, Some(resolver))
         .ok()
-        .and_then(|json| NormalizedDoc::from_json(&json, &registry, Some(resolver)).ok())
         .map(|doc| content_hash(&doc))?;
     if &actual == expected {
         return None;
     }
+    // The guard fires exactly when the caller's picture of the document is stale, so hand back the
+    // view it must reconcile against. The index (not a zoom) because no verb ran: nothing was
+    // touched, so there is no narrower thing to show.
+    let zoom = match Projector::new(&json, &registry, resolver) {
+        Ok(p) => p.index().render(),
+        Err(e) => format!("(projection unavailable: {e})"),
+    };
     let rejected = EditResult {
         report: Report {
             ok: false,
@@ -1815,7 +1824,7 @@ fn edit_expect_conflict(
         written: false,
         hash: actual,
         notes: Vec::new(),
-        zoom: String::new(),
+        zoom,
     };
     Some(structured_ok(
         &rejected,
@@ -3099,6 +3108,13 @@ mod tests {
         );
         // The file is untouched.
         assert_eq!(std::fs::read_to_string(&path).unwrap(), before);
+        // The guard tells the caller to re-read and reconcile, so it hands back the current view
+        // rather than an empty zoom that would cost a second round trip to fill.
+        let zoom = s["zoom"].as_str().expect("a zoom string");
+        assert!(
+            zoom.contains("/osc"),
+            "the guard echoes the current node index: {zoom:?}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }
