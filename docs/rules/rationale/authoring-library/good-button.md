@@ -26,7 +26,7 @@ range-shaped* control assembled from the graph, not a raw internal parameter thr
 
 (The carrier-era scaffolding around the original Good Button — the Message-vs-Signal control domain,
 the `m2s` converter, the one-port-one-type sweep — is retired to
-[composition-operators](composition-operators.md); what survives here is the curated-control principle
+[composition-operators](../../composition-operators.md); what survives here is the curated-control principle
 and its composition-not-format-machinery construction.)
 
 Distilled from: ADR-0017

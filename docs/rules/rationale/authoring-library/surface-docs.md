@@ -12,7 +12,7 @@ engine never read**, so removing it is render-safe by construction.
 
 The resolution picks **one boundary**: every player-facing control is an `interface` **input pipe**
 — a named entry with a declared type, engine-enforced against every consumer wire (the pipe/device
-layer lives in [composition-operators](composition-operators.md); this rule only builds the surface
+layer lives in [composition-operators](../../composition-operators.md); this rule only builds the surface
 *on top of* it). A surface references pipes **by name**; the instrument's `interface` block *is* the
 contract, so a control sends OSC to the pipe's minted `/<name>/in` address that `describe` already
 uses. Pipe types cover the whole widget set — `f32`/`f32_buffer` back faders and toggles, `note`

@@ -14,9 +14,9 @@ instruments).
 
 The binding is **instrument-blind and registry-keyed**: rows key on operator types + input names
 only — the registry-owned vocabulary — and never name an instrument, a file, or a pipe. The join to
-the concrete instrument happens **in context**: under the whole-document edit contract the agent
-already holds the document, whose nodes name their operator types, so the model matches rows to nodes
-itself ([whole-document-edit](whole-document-edit.md)). A recipe-authoring guideline carries the
+the concrete instrument happens **in context**: the structural projection the agent reads names each
+node's operator type, so the model matches rows to nodes
+itself ([document-projection](document-projection.md)). A recipe-authoring guideline carries the
 transfer to nested instruments — a face pipe uses the same name the move targets (`cutoff`, `decay`,
 …) — so type-keyed vocabulary reaches faces by name. Freshness is split by what each check can own:
 **referential** truth is mechanical — a staleness test parses every move and asserts its operator

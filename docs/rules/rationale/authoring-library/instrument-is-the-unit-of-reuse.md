@@ -6,7 +6,7 @@ Terminology had begun to fork: "recipe" was being minted as a new kind of thing,
 kind of document, `voices/` treated as a category — while the format knows only **instruments**. The
 correction is one noun. The unit of reuse is a **validated instrument document with a defaulted
 interface-pipe face**, consumed by-reference through the existing `subpatch` node
-([composition-operators](composition-operators.md)) — no new format kind, no new directory
+([composition-operators](../../composition-operators.md)) — no new format kind, no new directory
 semantics, no library mechanism beyond `resources` + resolution. The nesting machinery for reuse
 already exists and was built for exactly this; the standing preference is to use the engine plumbing,
 not invent beside it.
