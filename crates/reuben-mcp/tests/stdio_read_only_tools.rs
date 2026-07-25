@@ -1,12 +1,13 @@
 //! Integration tests for the read-only tools over stdio (#316 verification): spawn the real
 //! shim binary, complete the `initialize` handshake, and drive a `tools/call` for
-//! `describe_operators` / `describe_instrument` / `validate` over newline-delimited JSON-RPC —
-//! the actual protocol boundary the client sees, not an in-process shortcut.
+//! `describe_operators` / `describe_instrument` / `validate_instrument` over newline-delimited
+//! JSON-RPC — the actual protocol boundary the client sees, not an in-process shortcut.
 //!
 //! These assert the error-layer discipline: `isError` is reserved for
-//! can't-do-the-job cases (unreadable path, ambiguous one-of, unknown operator, a document with
-//! no boundary to describe), while a *failing validation* is an ordinary result carrying an
-//! `ok:false` report. Every call is bounded by a watchdog so a protocol regression fails loudly
+//! can't-do-the-job cases (unreadable source, unknown operator, a document with no boundary to
+//! describe), while a *failing validation* is an ordinary result carrying an `ok:false` report.
+//! Since #604 a document is always named by `source` — there is no inline arm — so every case here
+//! seeds a real file. Every call is bounded by a watchdog so a protocol regression fails loudly
 //! instead of hanging CI.
 
 use std::io::{Read, Write};
@@ -158,17 +159,39 @@ fn describe_operators_compact_returns_signatures() {
     );
 }
 
-#[test]
-fn validate_broken_doc_is_ok_false_not_iserror() {
-    // The crux: a failing validation is the tool *working*. An inline document with a
-    // typo'd operator type validates to `ok:false` with a node-named Diag — an ordinary result,
-    // NOT isError.
-    let doc = serde_json::json!({
+/// Write `document` into a fresh temp directory and return its path — the only way to hand these
+/// tools a document now that there is no inline arm (#604).
+fn seeded(case: &str, document: serde_json::Value) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join(format!("reuben_mcp_read_only_{case}"));
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create the case directory");
+    let path = dir.join("instrument.json");
+    std::fs::write(
+        &path,
+        serde_json::to_string_pretty(&document).expect("serialize"),
+    )
+    .expect("seed");
+    path
+}
+
+/// A document that mints but does not load: the operator type is typo'd.
+fn typo_document() -> serde_json::Value {
+    serde_json::json!({
         "instrument": "typo",
         "nodes": [ { "type": "oscilllator", "address": "/osc" } ],
         "outputs": []
-    });
-    let result = call_tool("validate", serde_json::json!({ "document": doc }));
+    })
+}
+
+#[test]
+fn validate_broken_doc_is_ok_false_not_iserror() {
+    // The crux: a failing validation is the tool *working*. A document with a typo'd operator type
+    // validates to `ok:false` with a node-named Diag — an ordinary result, NOT isError.
+    let path = seeded("validate_broken", typo_document());
+    let result = call_tool(
+        "validate_instrument",
+        serde_json::json!({ "source": path.to_string_lossy() }),
+    );
     assert!(
         !is_error(&result),
         "a failed validation is an ordinary result, never isError: {result}"
@@ -187,53 +210,64 @@ fn validate_broken_doc_is_ok_false_not_iserror() {
 }
 
 #[test]
-fn describe_instrument_unloadable_is_iserror() {
-    // Corollary: a document that fails to load has no boundary to describe, so
-    // describe_instrument is isError (the message points the user at `validate`).
-    let doc = serde_json::json!({
-        "instrument": "typo",
-        "nodes": [ { "type": "oscilllator", "address": "/osc" } ],
-        "outputs": []
-    });
-    let result = call_tool(
-        "describe_instrument",
-        serde_json::json!({ "document": doc }),
+fn describe_instrument_projects_an_unloadable_document_but_has_no_boundary_for_it() {
+    // Two different answers about the same broken document, and #604/#608 split them deliberately.
+    // The structural views still project it — going blind is the worst way to report invalidity,
+    // and `validate_instrument` is the single authority on validity...
+    let path = seeded("describe_unloadable", typo_document());
+    let source = serde_json::json!({ "source": path.to_string_lossy() });
+    let result = call_tool("describe_instrument", source.clone());
+    assert!(
+        !is_error(&result),
+        "an unloadable document still has structure to read: {result}"
     );
+    let text = result["structuredContent"]["text"]
+        .as_str()
+        .unwrap_or_else(|| panic!("the index view must carry rendered text: {result}"));
+    assert!(
+        text.contains("/osc"),
+        "the index projects the nodes it has: {text}"
+    );
+
+    // ...but the *boundary* is the resolved face a host sees, and a document that will not load has
+    // none. That case stays isError, pointing at the authority and at the view that does answer.
+    let mut boundary = source;
+    boundary["view"] = serde_json::json!("boundary");
+    let result = call_tool("describe_instrument", boundary);
     assert!(
         is_error(&result),
-        "an unloadable document must be isError for describe_instrument: {result}"
+        "an unloadable document has no boundary to describe: {result}"
     );
     let text = result["content"][0]["text"]
         .as_str()
         .unwrap_or_else(|| panic!("isError result must carry guidance text: {result}"));
     assert!(
-        text.contains("validate"),
-        "the guidance must point the user at `validate`: {text}"
+        text.contains("validate_instrument"),
+        "the guidance must point at the validation authority: {text}"
     );
 }
 
 #[test]
-fn one_of_path_and_document_both_present_is_iserror() {
-    // Exactly one of `path` or `document`. Both present is an ambiguous one-of —
-    // a can't-do-the-job error, not a deliverable.
-    let doc = serde_json::json!({ "instrument": "x", "nodes": [], "outputs": [] });
-    let result = call_tool(
-        "validate",
-        serde_json::json!({ "path": "some/instrument.json", "document": doc }),
+fn a_missing_source_is_iserror_and_there_is_no_inline_document_arm() {
+    // The one-of retired with #604: an unreadable `source` is the only can't-do-the-job shape left,
+    // and `document` is not a field any more — passing one is a schema violation, not a second way
+    // in. Both must fail; neither may quietly succeed.
+    let missing = call_tool(
+        "validate_instrument",
+        serde_json::json!({ "source": "definitely/not/here.json" }),
     );
     assert!(
-        is_error(&result),
-        "both path and document present must be isError: {result}"
+        is_error(&missing),
+        "an unreadable source must be isError: {missing}"
     );
-}
 
-#[test]
-fn one_of_neither_path_nor_document_is_iserror() {
-    // The other half of the one-of: neither given is equally unworkable.
-    let result = call_tool("validate", serde_json::json!({}));
+    let inline = call_tool(
+        "validate_instrument",
+        serde_json::json!({ "document": typo_document() }),
+    );
     assert!(
-        is_error(&result),
-        "neither path nor document present must be isError: {result}"
+        is_error(&inline),
+        "there is no inline `document` arm to validate through: {inline}"
     );
 }
 

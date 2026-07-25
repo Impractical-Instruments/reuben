@@ -31,15 +31,21 @@ Nesting is an authoring concept only; at runtime everything inlines into one fla
 A conversational edit works on one thing: the **instrument document**. Its semantics
 ([agent-mcp](../rules/agent-mcp.md)):
 
-- **The document is durable truth.** The unit of edit is the whole document: edit the JSON, validate it (the engine's own load path is the single
-  validation authority), and swap it in. What the document says is what plays after the next
-  Swap — and what saves, shares, and reloads.
-- **`send` is ephemeral audition.** A live control message (`/filt/cutoff 1500`) changes
+- **The document is durable truth.** What the document says is what plays after the next Swap —
+  and what saves, shares, and reloads.
+- **You never touch the document's bytes.** Do not open, read, or write an instrument file: name it
+  by its `source` and let the tools do it. Read its structure with `describe_instrument`; change it
+  one verb at a time (`add_instrument_node`, `wire_instrument_input`, `set_instrument_input`…).
+  Every verb re-validates the **whole** document through the engine's own load path — still the
+  single validation authority — and **writes only if it is valid**, so a rejected edit leaves the
+  file exactly as it was. Then swap it in.
+- **Sending is ephemeral audition.** A live control message (`/filt/cutoff 1500`) changes
   render state only — sweep a cutoff, try a tempo. The next Swap re-reads inputs from the
-  installed document, so an un-folded tweak is **clobbered by design**.
-- **Try, then commit.** `send` to explore; when a value is a keeper, fold it into the
-  document and swap. Never let the sound and the document drift apart — the document is the
-  save source of truth.
+  installed document, so an un-folded tweak is **clobbered by design**. (The MCP tool is
+  `send_live_controls`; the name says which half of the loop it is on.)
+- **Try, then commit.** Send to explore; when a value is a keeper, fold it into the document with
+  `set_instrument_input` and swap. Never let the sound and the document drift apart — the document
+  is the save source of truth.
 - **Renames reset state.** At Swap a node keeps its state iff a node with the same
   fully-qualified address *and* the same operator type exists on both sides.
   Renaming an address, or changing the operator type at an address, is a remove + add;
@@ -49,8 +55,9 @@ A conversational edit works on one thing: the **instrument document**. Its seman
 Two pieces of loop conduct, in every lane
 ([agent-mcp](../rules/agent-mcp.md)):
 
-- **Sanity-check that it's audible.** `validate` proves the graph is *legal*, **not that it
-  makes sound** — a disconnected oscillator or an unfed output pipe validates clean and
+- **Sanity-check that it's audible.** Validating (`reuben validate` on the CLI,
+  `validate_instrument` on the MCP/web surfaces — every document verb runs it for you before
+  writing) proves the graph is *legal*, **not that it makes sound** — a disconnected oscillator or an unfed output pipe validates clean and
   renders silence. Before reporting a reshape done, check generator→output reach: is there a
   path from a sound source to a declared `interface` output, and are the voicer's
   `freq`/`gate` reaching the voice chain? Warnings (an unresolvable sample, a dark subpatch)
@@ -59,14 +66,15 @@ Two pieces of loop conduct, in every lane
   from the live operator set, not from memory or a sketch; a guessed name costs a repair
   round.
 
-One more piece of authoring conduct that rides the same whole-document re-emission
+One more piece of authoring conduct — and the one the incremental surface made *deliberate*
 ([authoring-library](../rules/authoring-library.md)):
 
-- **Keep `doc` true when you reshape.** An instrument's reuse story — its **recipe-role** —
-  is the first sentence of its own top-level `doc` field: what it is, and when to reach for
-  it. Under the whole-document contract every reshape re-emits `doc` too, mechanically
-  re-presenting the role line for revision on every edit — keep it true: revise it whenever
-  the reshape changes what the instrument is or when it earns reaching for. The role is
+- **Keep the description true when you reshape.** An instrument's reuse story — its
+  **recipe-role** — is the first sentence of its own top-level description (`doc` on disk,
+  `description` in the views): what it is, and when to reach for it. The whole-document contract
+  used to re-present it for revision on every edit, because every edit re-emitted it. A surgical
+  verb does not, so nothing will remind you: after a reshape that changes what the instrument *is*
+  or when it earns reaching for, say so with `set_instrument_description`. The role is
   trusted for **selection only**; the `interface` block stays the mechanically-enforced
   face, so a stale role line can cost a bad-sounding pick, never a mis-wired document.
 
@@ -191,12 +199,14 @@ top-level `connections` array** and **no per-node `params` map** (both fold into
 **no anonymous master `outputs` array** (v1-only — it dissolved into named `interface.outputs`
 entries; the loader migrates old documents).
 
-**Creating an instrument from scratch? Start with `scaffold-instrument`, not a blank file** — every
-lane offers it (`reuben scaffold-instrument` on the CLI, the `scaffold_instrument` tool on the MCP/web
-surfaces). It returns a guaranteed-valid minimal document (`{ "format_version": 3, "instrument":
-<name>, "nodes": [] }`), which you then edit and swap — turning first-creation into the
-reshape-from-template path, so you never stall guessing the required top-level shape
-([#146](https://github.com/Impractical-Instruments/reuben/issues/146)).
+**Creating an instrument from scratch? Start with `new_instrument`, not a blank file** — every
+lane offers it (`reuben new-instrument <path>` on the CLI, the `new_instrument` tool on the MCP/web
+surfaces). It *writes* a guaranteed-valid minimal document (`{ "format_version": 3, "instrument":
+<name>, "nodes": [] }`) at the source you name, refusing to overwrite an existing one, and hands
+back its projection — so you never stall guessing the required top-level shape
+([#146](https://github.com/Impractical-Instruments/reuben/issues/146)). From there it is
+`add_instrument_node` and `wire_instrument_input` the rest of the way; the JSON below is what those
+verbs write, and is here so you can *read* a document, not so you can emit one.
 
 Each entry in a node's **`inputs`** map is one of:
 

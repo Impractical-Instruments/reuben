@@ -5,12 +5,14 @@
 Accepted (2026-07-22). Decided through issue
 [#583](https://github.com/Impractical-Instruments/reuben/issues/583), spun out of the
 efficient-agent-authoring series ([#574](https://github.com/Impractical-Instruments/reuben/issues/574)).
-Landing across children: the `write_text` resolver seam
-([#601](https://github.com/Impractical-Instruments/reuben/issues/601)) is merged; the structural
-projection ([#600](https://github.com/Impractical-Instruments/reuben/issues/600)), the closed verb
+Landed across children: the `write_text` resolver seam
+([#601](https://github.com/Impractical-Instruments/reuben/issues/601)), the structural
+projection ([#600](https://github.com/Impractical-Instruments/reuben/issues/600),
+[#608](https://github.com/Impractical-Instruments/reuben/issues/608)), the closed verb
 vocabulary and its CI guard ([#603](https://github.com/Impractical-Instruments/reuben/issues/603)),
 and retiring the doc-in-context tool arms
-([#604](https://github.com/Impractical-Instruments/reuben/issues/604)) are still in flight.
+([#604](https://github.com/Impractical-Instruments/reuben/issues/604)) — with which the decision
+below is fully in force rather than merely available.
 
 **This reverses [whole-document-edit](../rules/rationale/agent-mcp/whole-document-edit.md)**
 (distilled from ADR-0045) and **extends

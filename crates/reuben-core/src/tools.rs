@@ -13,10 +13,11 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ContractKind {
     /// A pure introspection contract, answerable in-process with no live engine
-    /// (`describe_operators`/`describe_instrument`/`validate`).
+    /// (`describe_operators`/`describe_instrument`/`validate_instrument`).
     Pure,
     /// An engine contract that reaches a running engine over the door's channel
-    /// (`send`/`engine_status`/`swap`/`get_current_instrument`/`get_diagnostics`).
+    /// (`send_live_controls`/`get_engine_status`/`swap_instrument`/`get_current_instrument`/
+    /// `get_engine_diagnostics`).
     Engine,
     /// A **document-manipulation** contract (#603): a pure, engine-free *mutator* over an
     /// instrument document through the resolver seam — read, apply one surgical edit, re-validate
@@ -36,10 +37,16 @@ pub struct Contract {
 }
 
 /// The contract roster, in canonical wire order: the pure contracts first, then the
-/// engine contracts. `scaffold_instrument` (#158, closes #146) joins the pure group as the
-/// first-creation start move — a read-only producer of a guaranteed-valid minimal document. This
-/// is the authority every door derives its advertised name-set and count from; the order here is
-/// the order on the wire.
+/// engine contracts, then the document vocabulary. This is the authority every door derives its
+/// advertised name-set and count from; the order here is the order on the wire.
+///
+/// Every name follows the #611 `verb_instrument_object` convention, and **no contract carries an
+/// instrument document by value** (#604): a document is named by an opaque `source` the door's
+/// resolver interprets, and read back as a [`projection`](crate::projection). That is what makes
+/// `#no-resource-bytes` a property of this roster rather than a capability of it — there is no
+/// longer an arm through which instrument JSON can reach a model's context. `scaffold_instrument`
+/// retired here: it returned a seed *by value*, and [`crate::edit::new_instrument`] lands the same
+/// seed at a source instead.
 pub const CONTRACTS: &[Contract] = &[
     Contract {
         name: "describe_operators",
@@ -50,23 +57,19 @@ pub const CONTRACTS: &[Contract] = &[
         kind: ContractKind::Pure,
     },
     Contract {
-        name: "validate",
+        name: "validate_instrument",
         kind: ContractKind::Pure,
     },
     Contract {
-        name: "scaffold_instrument",
-        kind: ContractKind::Pure,
-    },
-    Contract {
-        name: "send",
+        name: "send_live_controls",
         kind: ContractKind::Engine,
     },
     Contract {
-        name: "engine_status",
+        name: "get_engine_status",
         kind: ContractKind::Engine,
     },
     Contract {
-        name: "swap",
+        name: "swap_instrument",
         kind: ContractKind::Engine,
     },
     Contract {
@@ -74,13 +77,12 @@ pub const CONTRACTS: &[Contract] = &[
         kind: ContractKind::Engine,
     },
     Contract {
-        name: "get_diagnostics",
+        name: "get_engine_diagnostics",
         kind: ContractKind::Engine,
     },
     // The document-manipulation vocabulary (#603): the closed set of engine-free mutators an agent
     // authors a document through, in the #611 group order (document · nodes · inputs · config ·
-    // interface · resources). The existing-tool renames to the `verb_instrument_object` convention
-    // are #604's job, so the read/engine names above keep their current spelling for now.
+    // interface · resources).
     Contract {
         name: "new_instrument",
         kind: ContractKind::Document,

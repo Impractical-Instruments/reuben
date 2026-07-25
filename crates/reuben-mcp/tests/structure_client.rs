@@ -218,6 +218,7 @@ fn get_document_round_trips_the_doc_and_hash() {
         Response::Document(DocumentSnapshot {
             document: returned.clone(),
             content_hash: "00c0ffee00c0ffee".to_string(),
+            source: Some("voices/warm.json".to_string()),
         })
     });
     let client = StructureClient::new(stub.addr.to_string());
@@ -229,6 +230,7 @@ fn get_document_round_trips_the_doc_and_hash() {
         DocumentSnapshot {
             document,
             content_hash: "00c0ffee00c0ffee".to_string(),
+            source: Some("voices/warm.json".to_string()),
         }
     );
 }

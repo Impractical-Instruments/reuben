@@ -213,10 +213,17 @@ pub struct Conflict {
 }
 
 /// The document the engine is currently playing, paired with its content hash — the token to pass
-/// as a later swap's `expect` guard.
+/// as a later swap's `expect` guard — and the `source` it was installed from.
 ///
 /// The document is raw JSON, exactly as installed: the engine is the single validation authority,
 /// so nothing re-validates it on the way out.
+///
+/// **This is a channel type, not an agent-facing one.** #604 retired every arm that hands instrument
+/// JSON to a model, so the `document` here reaches a *door*, never a context: the MCP door projects
+/// it and returns the projection. The channel keeps carrying the whole document because its other
+/// consumers (a host embedding the engine, a test) are programs, and because `source` alone cannot
+/// answer "what is playing?" — the file may have moved on since the swap, which is precisely what
+/// pairing `source` with the installed `content_hash` lets the agent detect.
 // Only the FIELD docs below reach a model: schemars emits no root `description`, so
 // `get_current_instrument`'s outputSchema root description is null and this block ships nowhere.
 // (`Conflict` is the opposite case — it is referenced from `$defs`, so its block does ship.)
@@ -230,6 +237,15 @@ pub struct DocumentSnapshot {
     pub document: serde_json::Value,
     /// Its content hash — the token a later swap's `expect` guard compares.
     pub content_hash: String,
+    /// Where the playing document was installed from, when the engine knows: the `source` of the
+    /// last successful swap, or the document `reuben play` started on. `None` after an install by
+    /// value (which has no source) and for the built-in default rig.
+    ///
+    /// The drift signal lives in the *pair*: an agent that edits this source and does not swap sees
+    /// its own hash diverge from the installed one. Optional so a snapshot minted before this field
+    /// existed still deserializes.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
 }
 
 /// One structure-channel response (one per request, in order), serialized as
@@ -535,6 +551,7 @@ mod tests {
             tag(&Response::Document(DocumentSnapshot {
                 document: serde_json::json!({}),
                 content_hash: String::new(),
+                source: None,
             })),
             "document"
         );
@@ -586,6 +603,7 @@ mod tests {
                     "nodes": []
                 }),
                 content_hash: "00c0ffee00c0ffee".to_string(),
+                source: Some("voices/lead.json".to_string()),
             }),
             Response::Diagnostics(diagnostics_report()),
             Response::Sent,
@@ -683,6 +701,7 @@ mod tests {
             &Response::Document(DocumentSnapshot {
                 document: serde_json::json!({ "instrument": "t" }),
                 content_hash: "00c0ffee00c0ffee".to_string(),
+                source: None,
             })
             .to_ndjson(),
         )

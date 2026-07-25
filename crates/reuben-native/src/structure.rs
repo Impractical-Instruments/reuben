@@ -292,6 +292,16 @@ pub struct StructureState {
     /// back to, so an unwired ingress could only ever be a wiring mistake reported to a user at
     /// runtime. Taking it in the constructor makes that mistake a compile error instead.
     control: Sender<ControlBatch>,
+    /// Where the playing document came from: the `source` of the last successful swap, or the path
+    /// `play` started on. `None` for an install by value and for the built-in default rig, which
+    /// have no source to name.
+    ///
+    /// Door-side state, not the Coordinator's: core installs *document text* and has no notion of
+    /// where it came from, and giving it one would put a door's addressing scheme inside the
+    /// OS-free engine. Its own `Mutex` rather than a field behind the Coordinator's, because it is
+    /// only ever written under the Coordinator lock (so the pair still advances together) and read
+    /// beside it — no path takes this lock first, so the ordering cannot invert.
+    installed_source: Arc<Mutex<Option<String>>>,
 }
 
 impl StructureState {
@@ -316,6 +326,7 @@ impl StructureState {
                 opened_input_channels: 0,
             }),
             control,
+            installed_source: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -324,6 +335,18 @@ impl StructureState {
     /// the headless dark-degrade warning (the test seam).
     pub fn with_render_config(mut self, render_config: Arc<dyn RenderConfigPublisher>) -> Self {
         self.render_config = render_config;
+        self
+    }
+
+    /// Name the source the *initial* document was installed from — `play`'s path argument. A
+    /// builder step because it has a working default (`None`, the built-in rig): every later swap
+    /// re-points it from the `source` it installed, so this only ever answers for the run's first
+    /// document.
+    pub fn with_installed_source(self, source: Option<String>) -> Self {
+        *self
+            .installed_source
+            .lock()
+            .expect("installed-source mutex poisoned") = source;
         self
     }
 
@@ -379,6 +402,13 @@ fn dispatch(state: &StructureState, line: &str) -> Response {
             Response::Document(DocumentSnapshot {
                 document,
                 content_hash: coordinator.installed_hash(),
+                // Read under the Coordinator lock too, so the source and the hash a caller compares
+                // it against can never come from different installs.
+                source: state
+                    .installed_source
+                    .lock()
+                    .expect("installed-source mutex poisoned")
+                    .clone(),
             })
         }
         // RT-safe read: `Relaxed` loads into an owned copy off this (non-audio) thread.
@@ -472,6 +502,14 @@ fn handle_send(state: &StructureState, messages: Vec<ControlMessage>) -> Respons
 /// 5. **Reclaim** the retired Engine off-thread (deferred free), clearing the mailbox for
 ///    the next swap.
 fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>) -> Response {
+    // Name the source before resolving consumes it — recorded only if the install below succeeds, so
+    // a rejected swap leaves `get_document` still naming what is actually playing. An install by
+    // value has no source to name.
+    let installed_from = match &source {
+        DocSource::Path(path) => Some(path.clone()),
+        DocSource::Document(_) => None,
+    };
+
     // 1. Resolve the source to JSON text. A read failure is a domain rejection (no install).
     let json = match resolve_source(source) {
         Ok(json) => json,
@@ -499,6 +537,13 @@ fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>
     // 3. Swap via the mailbox. Unguarded by construction: arbitration was settled in step 2.
     let mut report = coordinator.swap_document(&json);
     if report.report.ok {
+        // The installed document advanced, so the source that named it does too — under the
+        // Coordinator lock, so the two never disagree about which install a reader is looking at.
+        *state
+            .installed_source
+            .lock()
+            .expect("installed-source mutex poisoned") = installed_from;
+
         // 4. Publish the new engine's device output map + fold the dark-degrade warning — BEFORE the
         //    engine reclaim (B1). `publish` fills the output-map mailbox (never dropping the map),
         //    so the map is in flight *before* the callback installs the new engine; the callback

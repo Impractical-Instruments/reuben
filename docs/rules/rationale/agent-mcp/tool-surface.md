@@ -3,12 +3,21 @@
 [Rule](../../agent-mcp.md#tool-surface)
 
 The surface is a **fixed roster** against a fixed process model: the pure tools
-(`describe_operators`, `describe_instrument`, `validate`, `scaffold_instrument`) answer in-process
-and are always available; the engine tools (`send`, `engine_status`, `swap`,
-`get_current_instrument`, `get_diagnostics`) reach the user-owned engine and fail fast when it is
-absent ([mcp-stdio-sidecar](mcp-stdio-sidecar.md), [user-owned-engine](user-owned-engine.md)). The
-roster is stable across milestones by design — M1 vs M2 change what stands *behind* `swap`, never any
-tool's name, schema, or result shape — so an agent's contract does not move under it.
+(`describe_operators`, `describe_instrument`, `validate_instrument`) answer in-process and are always
+available, as do the document verbs; the engine tools (`send_live_controls`, `get_engine_status`,
+`swap_instrument`, `get_current_instrument`, `get_engine_diagnostics`) reach the user-owned engine and
+fail fast when it is absent ([mcp-stdio-sidecar](mcp-stdio-sidecar.md),
+[user-owned-engine](user-owned-engine.md)). The roster is stable across milestones by design — M1 vs
+M2 change what stands *behind* the swap, never any tool's name, schema, or result shape — so an
+agent's contract does not move under it.
+
+Two later amendments, both from ADR-0066 and its children: the roster gained the closed **document
+vocabulary** — nineteen engine-free mutators, a third channel kind beside pure and engine — and it
+**stopped carrying documents**. No arm takes or returns instrument JSON: a document is named by an
+opaque `source` and read back as a projection, `scaffold_instrument` (which returned a seed by value)
+is retired in favour of `new_instrument` writing that seed to a source, and the names moved to the
+`verb_instrument_object` convention. The stability claim above survives it because that was one
+deliberate, ADR-recorded break, not drift.
 
 The load-bearing discipline is the **error layering**, because models act on it. Three layers:
 protocol errors for malformed calls; `isError: true` only when the tool **could not do its job**
@@ -17,7 +26,7 @@ guidance); and ordinary results for the deliverable — *including* `{ok: false}
 validation is a successful call:** a report naming the offending node is the tool *working*, and a
 rejected swap is the guard guarding, not the tool failing. Conflating the two is exactly wrong —
 models read `isError` as "back off / retry differently," precisely the opposite of acting on a
-diagnostic they should fix. `engine_status` is therefore never `isError` for a dead engine:
+diagnostic they should fix. `get_engine_status` is therefore never `isError` for a dead engine:
 answering "reachable?" *is* its job. Every tool declares an `outputSchema` and returns
 `structuredContent` (the model's payload) plus a human text gloss; reports are `Report = {ok,
 errors: Diag[], warnings: Diag[]}` with `Diag = {node?, port?, message}`, so warnings localize to a
