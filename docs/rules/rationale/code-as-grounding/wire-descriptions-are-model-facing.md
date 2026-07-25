@@ -10,13 +10,14 @@ that loads the tool. The sweep's own linter had to carve it out: `///` was put o
 `check_rules_refs.py`'s reach precisely because a field doc and a comment are textually identical and
 governed differently.
 
-Dumping the real `tools/list` from the sidecar is what made the size of it visible. Across 27 tools
-and 135 distinct descriptions, eight carried markup written for a Rust reader and shipped to a model:
+Dumping the real `tools/list` from the sidecar is what made the size of it visible. Across the whole
+advertised roster, eight descriptions carried markup written for a Rust reader and shipped to a model:
 `[`projection`](crate::projection)`, `[`Descriptor::inputs`]`, `(#608)`, `(`reuben_core::format`)`.
 The model can resolve none of it. It cannot follow `crate::projection`, cannot look up an issue, and
 has no access to a module named `reuben_core::format` — it pays tokens for the brackets and skips
 them. And the leverage is lopsided: one of the eight, `EditResult`'s `zoom` field, is repeated across
-every document verb's `outputSchema`, so a single reworded sentence moved 19 advertised copies.
+every document verb's `outputSchema`, so a single reworded sentence moved an advertised copy of it
+on every one of them.
 
 Nothing is traded away to fix it. Plain backticks render in `cargo doc` exactly as well as a link
 does for the sentence's meaning; what is lost is a hyperlink, and what is gained is prose a model can

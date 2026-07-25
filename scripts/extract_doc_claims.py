@@ -6,12 +6,13 @@ something is single-sourced. This walks the governed docs, extracts each such st
 **claim**, and splits them by whether a machine can decide the claim at all:
 
   DECIDABLE — resolved here, and a failure fails the build:
-    path        a backticked path (contains `/`) resolves to a real file, exactly or by suffix
-    identifier  a backticked snake_case/CamelCase name appears somewhere in source
-    guard       a `Guarded by: <path>::<test_fn>` line names a test function that exists
+    path          a backticked path (contains `/`) resolves to a real file, exactly or by suffix
+    identifier    a backticked snake_case/CamelCase name appears somewhere in source
+    guard         a `Guarded by: <path>::<test_fn>` line names a test function that exists
+    roster-count  no doc states how many tools/verbs/contracts there are — see ROSTER_COUNT_RE
 
   UNDECIDABLE — extracted, ranked, and routed to a reviewer; never gates:
-    count            "the same eight contracts" — a machine cannot know what to count
+    count            "two spellings" — a machine cannot know what to count
     single-sourcing  "generated from one source" — the claim is about a mechanism, not a token
 
 The split is the point. A gate that guesses at the undecidable half trains people to ignore it; a
@@ -75,6 +76,21 @@ COUNT_RE = re.compile(
     r"\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|"
     r"fifteen|sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|\d{1,4})\s+"
     r"([a-z][a-z-]{3,}s)\b")
+# The one count that is banned outright rather than routed. A roster count — "the same eight
+# contracts", "across 27 tools", "the nineteen verbs" — goes stale the next time a verb ships, and
+# the sentence around it has never needed the total to make its point: "the same contracts" and
+# "across the advertised roster" say the same thing and cannot rot. Checking the number instead
+# would mean teaching a stdlib script to count `CONTRACTS` through four doors; removing the drift
+# surface is cheaper and stays correct.
+#
+# Three and up: a pair is architecture, not a roster — "the two verbs over typed handles", "the one
+# contract validator" — and banning those would be a house style, not a defect check. Operator
+# counts are deliberately out of scope: the ones in the corpus are past-tense evidence of a linking
+# bug ("36 of 53 registered"), where the concrete number IS the argument being made.
+ROSTER_COUNT_RE = re.compile(
+    r"\b(three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|"
+    r"sixteen|seventeen|eighteen|nineteen|twenty|thirty|forty|fifty|\d{1,4})\s+"
+    r"(?:[a-z]+\s+)?(?:tools?|verbs?|contracts?)\b", re.I)
 SINGLE_SOURCE_RE = re.compile(
     r"\b(single-sourced?|single source|one source|generated from|derived from|source of truth|"
     r"one declaration|exactly one place|cannot drift|never drift)\b", re.I)
@@ -131,8 +147,10 @@ class Index:
         return any(p == bare or (not exact and p.endswith("/" + bare)) for p in self.paths)
 
     def has_test_fn(self, path: str, fn: str) -> bool:
+        """`def` as well as `fn`: the guards over the doc corpus itself are Python scripts with
+        Python tests, so a rule about one can only name a `def`."""
         candidates = [p for p in self.paths if p == path or p.endswith("/" + path)]
-        pattern = re.compile(rf"\bfn\s+{re.escape(fn)}\b")
+        pattern = re.compile(rf"\b(?:fn|def)\s+{re.escape(fn)}\b")
         return any(pattern.search(Path(self.root, p).read_text(encoding="utf-8", errors="ignore"))
                    for p in candidates)
 
@@ -259,12 +277,21 @@ def extract(path: Path, root: Path, idx: Index) -> list[Claim]:
                                 "ok" if ok else "unresolved",
                                 "" if ok else "names no such test function"))
 
+        bare = line.replace("`", "")
+        for m in ROSTER_COUNT_RE.finditer(bare):
+            n = m.group(1)
+            if n.isdigit() and int(n) < 3:
+                continue
+            claims.append(Claim("roster-count", rel, lineno, m.group(0), True, "unresolved",
+                                "a roster count drifts the next verb that ships — "
+                                "say what the sentence needs, not how many"))
+
         # A count is only worth a reviewer's time when the line also names something nameable —
-        # "the same eight `contracts`" is checkable, "two devices" is architecture and never will be.
+        # "the same eight `resources`" is checkable, "two devices" is architecture and never will be.
         if re.search(r"`[^`]+`", line):
-            # Backticks come off first: docs write "the same eight `contracts`", and leaving the
+            # Backticks come off first: docs write "the same eight `resources`", and leaving the
             # markup in place breaks the number-then-noun match on exactly the countable cases.
-            for m in COUNT_RE.finditer(line.replace("`", "")):
+            for m in COUNT_RE.finditer(bare):
                 claims.append(Claim("count", rel, lineno, m.group(0), False, "needs-review",
                                     "counts something the line names"))
 

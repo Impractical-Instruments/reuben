@@ -131,9 +131,12 @@ Run everything from the repo root.
    docs. (The pre-commit hook runs this `--write` automatically on any `docs/rules/` commit; running
    it yourself keeps the tree clean before you self-check.)
 
-6. **Delete the absorbed ADR file(s).** `git rm docs/adr/00xx-*.md` for each ADR fully distilled
-   (including `FULL`-superseded culls). The `Distilled from:` line in the rationale is now the only
-   surviving pointer to the ADR number; git history keeps the rest.
+6. **Delete the absorbed ADR file(s), and clear the markers they placed.** `git rm
+   docs/adr/00xx-*.md` for each ADR fully distilled (including `FULL`-superseded culls), then drop
+   every `Superseded by: ADR-00xx (pending absorption)` line naming one of them — the rule you just
+   rewrote no longer has a pending anything. The `Distilled from:` line in the rationale is now the
+   only surviving pointer to the ADR number; git history keeps the rest. The links guard fails on a
+   marker naming a deleted ADR, so step 7 catches this if you forget.
 
 7. **Self-check — both guards green before you're done:**
 

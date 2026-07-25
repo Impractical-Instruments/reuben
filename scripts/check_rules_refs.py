@@ -34,6 +34,17 @@ Five checks:
      Both this and check 2 run over the comment-folded view, so a pointer rustfmt wrapped across
      a line break is still read whole.
      see rules: code-as-grounding
+  6. A parity marker records a reason. A test whose job is that two lists match is evidence that
+     generation was not attempted, so it carries a marker naming why one list cannot be generated
+     from the other; this check holds every marker that exists to a substantive reason
+     (MIN_PARITY_REASON_WORDS) and rejects a mis-cased spelling rather than skipping it, the same
+     way check 5 handles a capitalised pointer.
+
+     What it deliberately does NOT do is find parity tests that carry no marker. That is the
+     undecidable half: `assert_eq!(a.len(), b.len())` is a round-trip everywhere it appears in
+     this workspace, and the parity test that motivated the rule matches no name or shape pattern
+     at all — a detector with that ratio is one people learn to filter out. The reason is demanded
+     at writing time instead, while the author still knows whether generation was tried.
 
 Exit non-zero on any violation. Stdlib only. Wired into CI in both repos (S19, epic #165) now
 that the code is clean.
@@ -80,6 +91,15 @@ RULE_ANCHOR_RE = re.compile(r"\b[a-z0-9-]+\.md#[a-z0-9-]+")
 POINTER_ANCHOR_RE = re.compile(r"^#([a-z0-9-]+)")
 POINTER_PARENS_RE = re.compile(r"^[\s.:—-]*\(\s*([a-z0-9-]+(?:\s*,\s*[a-z0-9-]+)*)\s*[,)]")
 POINTER_COMMAS_RE = re.compile(r"^((?:\s*,\s*[a-z0-9-]+)+)")
+# Check 6's marker and the bar it has to clear. The reason has to be a sentence about *this* pair
+# of lists — "the door builds it at runtime, so the test is the only place both exist" — and a word
+# count is the cheapest thing separating one from a rubber stamp (`yes`, `n/a`, `see above`). Five
+# words is the shortest real answer anyone has needed to give. The marker is spelled in the regex
+# rather than written out here: this file is scanned by its own check.
+PARITY_RE = re.compile(r"\bParity:[ \t]*([^\n]*)")
+PARITY_ANYCASE_RE = re.compile(r"\bparity:[ \t]*", re.IGNORECASE)
+MIN_PARITY_REASON_WORDS = 5
+
 # Which token opens a comment, by extension. Keyed off the suffix rather than sniffed generically:
 # `#` opens a comment in the shell/Python half and is an attribute (`#[…]`) or a raw-string delimiter
 # (`r#"…"#`) in Rust, and guessing wrong turns code into prose.
@@ -222,6 +242,48 @@ def comment_ref_problems(rel: str, text: str) -> list[str]:
     return problems
 
 
+def folded_with_lines(text: str, opener: str = "//"):
+    """`(folded prose, line_at)` — the comment-folded view plus a resolver from a folded offset
+    back to the 1-based source line, so a problem names the line a reader has to go edit."""
+    folded, idx = fold_comments(text, opener)
+    line_starts = [0] + [i + 1 for i, c in enumerate(text) if c == "\n"]
+
+    def line_at(pos: int) -> int:
+        src = idx[pos] if pos < len(idx) else len(text)
+        lo, hi = 0, len(line_starts) - 1
+        while lo < hi:
+            mid = (lo + hi + 1) // 2
+            lo, hi = (mid, hi) if line_starts[mid] <= src else (lo, mid - 1)
+        return lo + 1
+
+    return folded, line_at
+
+
+def parity_problems(rel: str, text: str, opener: str = "//") -> list[str]:
+    """Check 6 for one file: every parity marker that exists records a substantive reason.
+
+    Runs over the comment-folded view for the same two reasons checks 2 and 5 do — a reason
+    wrapped across a line break is counted whole, and a marker inside a string literal (this
+    guard's own fixtures) is data rather than prose.
+    """
+    problems = []
+    folded, line_at = folded_with_lines(text, opener)
+    for m in PARITY_ANYCASE_RE.finditer(folded):
+        i = line_at(m.start())
+        marker = folded[m.start():m.end()].strip()
+        if not marker.startswith("Parity:"):
+            problems.append(f"{rel}:{i}: mis-cased `{marker}` — the marker is capitalised, and only "
+                            f"that spelling is validated")
+            continue
+        reason = PARITY_RE.match(folded, m.start()).group(1).strip()
+        if len(reason.split()) < MIN_PARITY_REASON_WORDS:
+            problems.append(f"{rel}:{i}: parity marker records no reason ({reason!r}) — name why "
+                            f"one list cannot be generated from the other, in at least "
+                            f"{MIN_PARITY_REASON_WORDS} words; a test asserting two lists match is "
+                            f"evidence about the design, and this is where it says so")
+    return problems
+
+
 def pointer_problems(rel: str, text: str, is_topic, opener: str = "//") -> list[str]:
     """Checks 2 and 5 for one file: every `see rules:` pointer resolves, and stops at its topic.
 
@@ -230,17 +292,7 @@ def pointer_problems(rel: str, text: str, is_topic, opener: str = "//") -> list[
     resolves to a topic doc; the two checks share it so they agree on what a topic is.
     """
     problems = []
-    folded, idx = fold_comments(text, opener)
-    line_starts = [0] + [i + 1 for i, c in enumerate(text) if c == "\n"]
-
-    def line_at(pos: int) -> int:
-        """The 1-based source line holding folded offset `pos`."""
-        src = idx[pos] if pos < len(idx) else len(text)
-        lo, hi = 0, len(line_starts) - 1
-        while lo < hi:
-            mid = (lo + hi + 1) // 2
-            lo, hi = (mid, hi) if line_starts[mid] <= src else (lo, mid - 1)
-        return lo + 1
+    folded, line_at = folded_with_lines(text, opener)
 
     for m in SEE_ANYCASE_RE.finditer(folded):
         i = line_at(m.start())
@@ -303,8 +355,9 @@ def main(root_arg: str = ".") -> int:
         if path.suffix == ".rs":
             errors.extend(module_doc_problems(rel, text))
             errors.extend(comment_ref_problems(rel, text))
-        errors.extend(pointer_problems(rel, text, is_topic,
-                                       "#" if path.suffix in HASH_EXTS else "//"))
+        opener = "#" if path.suffix in HASH_EXTS else "//"
+        errors.extend(pointer_problems(rel, text, is_topic, opener))
+        errors.extend(parity_problems(rel, text, opener))
         for i, line in enumerate(text.splitlines(), 1):
             if ADR_RE.search(line):
                 errors.append(f"{rel}:{i}: ADR reference in code — point at a topic: `see rules: <topic>`")

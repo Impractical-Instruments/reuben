@@ -105,6 +105,10 @@ jobs:
               - '.github/scripts/eval-gate.sh'
             rules:
               - 'docs/rules/**'
+              # The supersession gate reads the ADRs: an ADR overturning a rule must mark it in the
+              # same change. That change touches docs/adr/ and NOT docs/rules/ — which is the whole
+              # defect — so without this line the check would skip exactly the commit it exists for.
+              - 'docs/adr/**'
               - 'scripts/check_rules_derive.py'
               - 'scripts/check_rules_links.py'
               - 'scripts/check_rules_refs.py'

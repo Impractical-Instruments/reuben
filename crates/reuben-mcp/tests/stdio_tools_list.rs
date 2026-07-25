@@ -90,6 +90,11 @@ fn advertises_the_declared_roster_over_stdio() {
             "tools/list is missing `{expected}`; advertised: {advertised:?}"
         );
     }
+    // Parity: the advertised list is produced by a separate process over stdio, so it can only be
+    // observed and never generated — this is the one place both sides exist at once. What that
+    // buys is narrower than the green check suggests: the expected names come from the
+    // single-source roster, so this proves the door advertises them, not that anything behind a
+    // name agrees across doors.
     assert_eq!(
         advertised.len(),
         reuben_mcp::tool_names().len(),

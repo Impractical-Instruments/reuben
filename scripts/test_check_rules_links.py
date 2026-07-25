@@ -377,5 +377,91 @@ class CorpusIntegrityTest(unittest.TestCase):
         )
 
 
+class SupersessionTest(unittest.TestCase):
+    """Checks (g) + (h): a rule an ADR has overturned says so, and the marker dies with the ADR.
+
+    The live corpus has no ADRs, so this class is the only place these two run against real
+    input. Every `ADR-<n>` token is composed rather than written, for the same reason the module
+    header explains — these fixtures are code, and code does not name ADRs.
+    """
+
+    ADR = f"ADR-{1:04d}"
+    RATIONALE = ["rationale/clock/tempo-is-immutable.md"]
+
+    def _problems(self, adrs: dict[str, str], topic: str = WELL_FORMED):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            build(root, {"clock.md": topic}, self.RATIONALE)
+            adr_dir = root / "docs" / "adr"
+            adr_dir.mkdir(parents=True, exist_ok=True)
+            for name, body in adrs.items():
+                (adr_dir / name).write_text(body, encoding="utf-8")
+            return check_rules_links.collect_problems(str(root))
+
+    def marked(self, adr: str | None = None) -> str:
+        """WELL_FORMED with the supersession marker on its one rule."""
+        marker = f"Superseded by: {adr or self.ADR} (pending absorption)"
+        return WELL_FORMED.replace("### Tempo is immutable within a block.\n",
+                                   f"### Tempo is immutable within a block.\n\n{marker}\n")
+
+    # --- (g) an ADR that overturns a rule marks it ---
+
+    def test_an_adr_naming_an_unmarked_rule_fails(self):
+        problems = self._problems({"0001-tempo.md": "# Tempo\n\nOverturns `clock.md#tempo-is-immutable`.\n"})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("no marker", problems[0])
+        self.assertIn(self.ADR, problems[0])
+
+    def test_a_marked_rule_satisfies_the_adr(self):
+        self.assertEqual(
+            self._problems({"0001-tempo.md": "# Tempo\n\nOverturns [it](../rules/clock.md#tempo-is-immutable).\n"},
+                           topic=self.marked()),
+            [])
+
+    def test_an_adr_naming_only_a_topic_trips_nothing(self):
+        # The escape hatch, and the reason naming an anchor can be read as overturning it: an ADR
+        # that wants context points at the topic, the way every other pointer in the corpus does.
+        self.assertEqual(
+            self._problems({"0001-tempo.md": "# Tempo\n\nSee [clock](../rules/clock.md).\n"}), [])
+
+    def test_the_same_anchor_named_twice_is_one_finding(self):
+        body = ("# Tempo\n\nOverturns `clock.md#tempo-is-immutable`.\n\n"
+                "As established, `clock.md#tempo-is-immutable` no longer holds.\n")
+        self.assertEqual(len(self._problems({"0001-tempo.md": body})), 1)
+
+    def test_an_anchor_inside_a_fenced_block_is_not_a_claim(self):
+        body = "# Tempo\n\n```md\n[why](clock.md#tempo-is-immutable)\n```\n"
+        self.assertEqual(self._problems({"0001-tempo.md": body}), [])
+
+    def test_the_adr_readme_is_not_an_adr(self):
+        # It is the surface's own prose; it explains the lifecycle and may name anything.
+        self.assertEqual(
+            self._problems({"README.md": "# ADRs\n\ne.g. `clock.md#tempo-is-immutable`.\n"}), [])
+
+    def test_an_adr_naming_an_unknown_topic_fails(self):
+        problems = self._problems({"0001-tempo.md": "# T\n\nOverturns `nope.md#tempo-is-immutable`.\n"})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("not a topic doc", problems[0])
+
+    def test_an_adr_naming_an_unknown_anchor_fails(self):
+        problems = self._problems({"0001-tempo.md": "# T\n\nOverturns `clock.md#no-such-rule`.\n"})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("not a rule anchor", problems[0])
+
+    # --- (h) the marker dies with the ADR ---
+
+    def test_a_marker_naming_a_dead_adr_fails(self):
+        # What absorption leaves behind: the ADR is deleted, the rule still claims to be pending.
+        problems = self._problems({}, topic=self.marked())
+        self.assertEqual(len(problems), 1)
+        self.assertIn("not a live ADR", problems[0])
+
+    def test_a_marker_naming_a_different_live_adr_still_fails(self):
+        problems = self._problems({"0001-tempo.md": "# T\n\nSee [clock](../rules/clock.md).\n"},
+                                  topic=self.marked(adr=f"ADR-{9:04d}"))
+        self.assertEqual(len(problems), 1)
+        self.assertIn("not a live ADR", problems[0])
+
+
 if __name__ == "__main__":
     unittest.main()
