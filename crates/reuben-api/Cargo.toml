@@ -12,7 +12,7 @@ default = ["authoring", "render"]
 # The authoring/control half: document verbs, introspection, and the result shapes a door
 # advertises. Serde-shaped and schema-derived, because everything here is serialized to a
 # consumer; nothing here is on the audio callback's path, so the cost is irrelevant.
-authoring = ["dep:serde", "dep:schemars"]
+authoring = ["dep:serde", "dep:serde_json", "dep:schemars"]
 # The render half: what a host drives per block. Carries no serialization — a conversion
 # here would be paid once per block, which is the whole cost.
 render = []
@@ -23,6 +23,9 @@ fs-resolver = ["dep:hound"]
 [dependencies]
 reuben-core = { path = "../reuben-core" }
 serde = { workspace = true, optional = true }
+# The free-form leaves of the authoring surface — a node input's literal, a constant's value —
+# where the document format's own union is what the model sends and the engine type-checks.
+serde_json = { workspace = true, optional = true }
 schemars = { workspace = true, optional = true }
 # WAV decode for the reference filesystem resolver, and only for it.
 hound = { workspace = true, optional = true }

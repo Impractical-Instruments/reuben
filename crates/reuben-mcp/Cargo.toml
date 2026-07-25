@@ -19,13 +19,20 @@ name = "reuben-mcp"
 path = "src/main.rs"
 
 [dependencies]
-# Pure introspection + the contract serde types. The `schemars`
-# feature is ON here (and ONLY here) so rmcp can derive each tool's `outputSchema` from the
-# reuben-core contract types; the play/CLI build keeps schemars fenced out.
+# Two things now: the engine tools' structure-channel wire types and the reports they advertise,
+# and `tools::names()` — the declared roster, which covers every tool, authoring included, and which
+# no phase has assigned to the window. The authoring half names core for nothing else. The
+# `schemars` feature is ON here (and ONLY here) so rmcp can derive the engine tools' `outputSchema`
+# from those wire types; the play/CLI build keeps schemars fenced out. Both go when the engine half
+# moves behind the window and the roster finds a home.
 reuben-core = { path = "../reuben-core", features = ["schemars"] }
-# The reference filesystem resolver (`FsResolver`) the pure describe/validate tools and the
-# document verbs resolve through. The sidecar drives no audio, so it takes no render half.
-reuben-api = { path = "../reuben-api", default-features = false, features = ["fs-resolver"] }
+# The window: the authoring verbs the pure tools and the document verbs are, plus the reference
+# filesystem resolver (`FsResolver`) filling their resource seam. The sidecar drives no audio, so it
+# takes no render half.
+reuben-api = { path = "../reuben-api", default-features = false, features = [
+    "authoring",
+    "fs-resolver",
+] }
 # stdio server only: `server` + `macros` for the tool router, `transport-io` for the stdio pipe.
 # No HTTP/reqwest/streamable-http transport — the network stack stays out.
 rmcp = { workspace = true, features = ["server", "macros", "transport-io"] }

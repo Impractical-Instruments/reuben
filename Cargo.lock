@@ -1194,6 +1194,7 @@ dependencies = [
  "reuben-core",
  "schemars",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

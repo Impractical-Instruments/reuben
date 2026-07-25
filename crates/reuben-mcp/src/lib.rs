@@ -1,9 +1,19 @@
 //! reuben-mcp — the per-conversation MCP stdio sidecar.
 //!
 //! A [`ServerHandler`] with a tool router over the [`reuben_core::tools::CONTRACTS`] roster, in
-//! three families: the pure introspection tools and the nineteen document verbs answer in-process
-//! through a [`reuben_api::FsResolver`], while the five engine tools reach a
-//! user-owned `reuben play` through [`EngineLink`].
+//! three families: the pure introspection tools and the document verbs answer in-process through
+//! [`reuben_api::authoring`], over a [`reuben_api::FsResolver`] filling its resource seam, while
+//! the engine tools reach a user-owned `reuben play` through [`EngineLink`].
+//!
+//! What is left here is the MCP-shaped part and only that: the roster, the transport, and the
+//! two-way map between a window answer and a `CallToolResult`. The argument shapes, the result
+//! shapes, the guards and the glosses belong to the window, so a second door inherits them rather
+//! than reimplementing them.
+//!
+//! The per-tool `description` sentences are the exception, and not by choice: rmcp's `#[tool]`
+//! takes a string **literal** there, so it cannot name a const the window owns. Every other piece
+//! of advertised prose — the field descriptions, the `$defs` descriptions, the one-line glosses —
+//! rides the window's types.
 //!
 //! see rules: agent-mcp
 
@@ -19,18 +29,14 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt};
 
+use reuben_api::authoring::{self, Answer, EditResult, Refusal};
 use reuben_api::FsResolver;
 use reuben_core::coordinator::{
     ControlArg, ControlMessage, DiagnosticsReport, DocSource, MAX_SEND_BATCH,
 };
-use reuben_core::edit::{self, EditError, EditResult};
-use reuben_core::introspect::{OperatorInfo, PatchBoundary};
-use reuben_core::projection::{Projector, Selection};
-use reuben_core::{
-    content_hash, Diag, NormalizedDoc, Registry, Report, ResourceResolver, SwapReport,
-};
+use reuben_core::projection::Projector;
+use reuben_core::{Registry, SwapReport};
 use serde::{Deserialize, Serialize};
-use std::collections::BTreeMap;
 
 mod client;
 mod engine;
@@ -261,101 +267,6 @@ pub fn engine_unreachable() -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(ENGINE_UNREACHABLE_GUIDANCE)])
 }
 
-/// Input for `describe_operators`: an optional `name` filter, mirroring
-/// [`reuben_core::introspect::describe`]'s `Option<&str>`, plus the `compact` mode switch.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct DescribeOperatorsParams {
-    /// Restrict to one operator type; omit to list every registered operator.
-    #[serde(default)]
-    pub name: Option<String>,
-    /// Compact mode: one generated signature line per operator instead of full
-    /// port objects — the same registry truth, projected for grounding budgets. Default false.
-    #[serde(default)]
-    pub compact: bool,
-}
-
-/// Output for `describe_operators`: the operator set under an object root (MCP
-/// requires one), in exactly one of the verb's two projections of the same registry truth
-/// — `operators` (full port objects, the default) or `signatures` (the compact
-/// mode), keyed by the `compact` param. Both mirror [`reuben_core::introspect::describe`] /
-/// [`describe_compact`](reuben_core::introspect::describe_compact).
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub struct DescribeOperatorsOutput {
-    /// Full mode: one entry per registered operator (or the single filtered one), in registry
-    /// order. Absent in compact mode.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub operators: Option<Vec<OperatorInfo>>,
-    /// Compact mode: one generated signature line per operator —
-    /// `name(inputs; config: constants; res: resource-slots) -> outputs`. Absent in full mode.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub signatures: Option<Vec<String>>,
-}
-
-/// Input for `validate_instrument`: the document to validate, named by its opaque `source`.
-///
-/// The inline `document` arm this once carried retired with #604 — a model that can hand the tool a
-/// whole document is a model that had to hold one. `source` is opaque and door-resolved (a path
-/// here), exactly as it is on every document verb.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct InstrumentSourceParams {
-    /// The instrument document (a path for this door). Nested references resolve sibling-first
-    /// from its directory, then the library root.
-    pub source: String,
-}
-
-/// Which view of a document `describe_instrument` cuts. The four projection views, plus the
-/// host-facing boundary — the one question the projection does not answer, because it needs the
-/// *resolved* face of nested children rather than what this document declares.
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
-#[serde(rename_all = "snake_case")]
-pub enum InstrumentView {
-    /// Every node, one `address type` line each — the cheapest whole-document read, and the default.
-    #[default]
-    Index,
-    /// Node zoom: literal input values and wire sources, config, description, resource ref, nested
-    /// boundary, and the consumers reading each node.
-    Nodes,
-    /// The `interface` pipes this document declares, with ranges, curves and metadata.
-    Pipes,
-    /// The resources table and which node uses each entry through which slot.
-    Resources,
-    /// The boundary a *host instrument* wires against when nesting this one.
-    Boundary,
-}
-
-/// Input for `describe_instrument`: a `source`, a view, and the projection's one selection grammar.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct DescribeInstrumentParams {
-    /// The instrument document (a path for this door).
-    pub source: String,
-    /// Which view to cut; omit for the node index.
-    #[serde(default)]
-    pub view: InstrumentView,
-    /// Narrow `nodes`/`pipes` to these node addresses or pipe names (`/` is the document header).
-    /// A term matching nothing is reported back, never silently dropped.
-    #[serde(default)]
-    pub select: Vec<String>,
-    /// Narrow `nodes`/`pipes` by declared type instead of by name. Pass this **or** `select`,
-    /// never both.
-    #[serde(default, rename = "type")]
-    pub type_name: Option<String>,
-}
-
-/// Output for `describe_instrument`: the rendered view.
-///
-/// One rendered string rather than four structured shapes, for the reason the projection exists at
-/// all — the compact line grammar *is* the deliverable, and four alternative payloads would put
-/// three schemas a caller never uses into every turn's grounding (#612). It is the same channel
-/// [`EditResult::zoom`](reuben_core::edit::EditResult) echoes through, so an agent reads a document
-/// and reads back its own edit in one grammar.
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub struct InstrumentViewOutput {
-    /// Which view this is — echoed so a caller that defaulted it knows what it got.
-    pub view: String,
-    /// The rendered view.
-    pub text: String,
-}
-
 /// One control message in a `send` batch: an address and its primitive args.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
 pub struct ControlSendMessage {
@@ -505,310 +416,6 @@ pub struct CurrentInstrumentOutput {
     pub projection: String,
 }
 
-// --- Document-manipulation verb inputs -----------------------------------------------------------
-//
-// One flat input struct per verb; every mutating one carries an optional `expect` write guard, and
-// they all answer with core's single `EditResult`. see rules: agent-mcp
-
-/// Input for `new_instrument`: where to create the document, and its name.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct NewInstrumentParams {
-    /// Where to create the document (a path for this door). Refuses to overwrite an existing one.
-    pub source: String,
-    /// The `instrument` name for the new document.
-    pub name: String,
-}
-
-/// Input for `set_instrument_name`.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SetInstrumentNameParams {
-    /// The document to edit.
-    pub source: String,
-    /// The new instrument name.
-    pub name: String,
-    /// Optional content-hash write guard: a mismatch rejects the write.
-    #[serde(default)]
-    pub expect: Option<String>,
-}
-
-/// Input for `set_instrument_description`.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SetInstrumentDescriptionParams {
-    /// The document to edit.
-    pub source: String,
-    /// The description; omit to clear it.
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub expect: Option<String>,
-}
-
-/// Input for `add_instrument_node` — the one-shot, zoom-mirroring add: the node lands fully formed.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct AddInstrumentNodeParams {
-    /// The document to edit.
-    pub source: String,
-    /// The node's OSC address (e.g. `/osc`), unique within the instrument.
-    pub address: String,
-    /// The operator type (must be registered, e.g. `oscillator`).
-    #[serde(rename = "type")]
-    pub type_name: String,
-    /// Inputs by name: a literal (number or enum symbol) or a wire-ref `{"from": "/node.port"}`.
-    #[serde(default)]
-    pub inputs: BTreeMap<String, serde_json::Value>,
-    /// Instantiate-time constants by name (plan-time `config`, never wired).
-    #[serde(default)]
-    pub config: BTreeMap<String, serde_json::Value>,
-    /// Optional node description.
-    #[serde(default)]
-    pub description: Option<String>,
-    /// Optional `sample` resource id (sample-player operators only).
-    #[serde(default)]
-    pub sample: Option<String>,
-    /// Optional `voice` resource id (Voicer only).
-    #[serde(default)]
-    pub voice: Option<String>,
-    /// Optional `patch` resource id (subpatch only).
-    #[serde(default)]
-    pub patch: Option<String>,
-    #[serde(default)]
-    pub expect: Option<String>,
-}
-
-/// Input for `remove_instrument_node` — cascades: unwires every consumer, reports what it broke.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct RemoveInstrumentNodeParams {
-    /// The document to edit.
-    pub source: String,
-    /// The address of the node to remove.
-    pub address: String,
-    #[serde(default)]
-    pub expect: Option<String>,
-}
-
-/// Input for `rename_instrument_node` — rewires every consumer to the new address.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct RenameInstrumentNodeParams {
-    /// The document to edit.
-    pub source: String,
-    /// The node's current address.
-    pub from: String,
-    /// The node's new address (must be free).
-    pub to: String,
-    #[serde(default)]
-    pub expect: Option<String>,
-}
-
-/// Input for `set_instrument_node_description`.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SetInstrumentNodeDescriptionParams {
-    /// The document to edit.
-    pub source: String,
-    /// The address of the node.
-    pub address: String,
-    /// The description; omit to clear it.
-    #[serde(default)]
-    pub description: Option<String>,
-    #[serde(default)]
-    pub expect: Option<String>,
-}
-
-/// Input for `set_instrument_input`: set a node input to a **literal** value.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SetInstrumentInputParams {
-    /// The document to edit.
-    pub source: String,
-    /// The address of the node.
-    pub address: String,
-    /// The input name.
-    pub input: String,
-    /// The literal value: a number, or an enum symbol string. (Wiring is `wire_instrument_input`.)
-    pub value: serde_json::Value,
-    #[serde(default)]
-    pub expect: Option<String>,
-}
-
-/// Input for `wire_instrument_input`: wire a node input from a source port.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct WireInstrumentInputParams {
-    /// The document to edit.
-    pub source: String,
-    /// The address of the consuming node.
-    pub address: String,
-    /// The input name.
-    pub input: String,
-    /// The source wire-ref: `/node.port`, or `/node` for a sole-output source.
-    pub from: String,
-    #[serde(default)]
-    pub expect: Option<String>,
-}
-
-/// Input for `unwire_instrument_input`: revert a node input to its descriptor default.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct UnwireInstrumentInputParams {
-    /// The document to edit.
-    pub source: String,
-    /// The address of the node.
-    pub address: String,
-    /// The input name to clear.
-    pub input: String,
-    #[serde(default)]
-    pub expect: Option<String>,
-}
-
-/// Input for `set_instrument_constant`: set an instantiate-time constant on a node.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SetInstrumentConstantParams {
-    /// The document to edit.
-    pub source: String,
-    /// The address of the node.
-    pub address: String,
-    /// The constant name.
-    pub name: String,
-    /// The constant value: a number, or a symbol string.
-    pub value: serde_json::Value,
-    #[serde(default)]
-    pub expect: Option<String>,
-}
-
-/// Input for `add_instrument_interface_input`: add a boundary input pipe.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct AddInstrumentInterfaceInputParams {
-    /// The document to edit.
-    pub source: String,
-    /// The pipe name (mints an address `/name` internal nodes consume from).
-    pub name: String,
-    /// The declared `Arg` type: `f32_buffer`, `f32`, `i32`, `note`, `harmony`, `pitch`, or an enum
-    /// type name.
-    #[serde(rename = "type")]
-    pub type_name: String,
-    /// Optional logical input channel (signal pipes only).
-    #[serde(default)]
-    pub channel: Option<usize>,
-    /// Optional unwired/seed value: a number, or an enum symbol string.
-    #[serde(default)]
-    pub default: Option<serde_json::Value>,
-    /// Optional engine-enforced range floor.
-    #[serde(default)]
-    pub min: Option<f64>,
-    /// Optional engine-enforced range ceiling.
-    #[serde(default)]
-    pub max: Option<f64>,
-    /// Optional sweep curve: `lin` or `exp`.
-    #[serde(default)]
-    pub curve: Option<String>,
-    /// Optional display unit (e.g. `Hz`).
-    #[serde(default)]
-    pub unit: Option<String>,
-    #[serde(default)]
-    pub expect: Option<String>,
-}
-
-/// Input for `add_instrument_interface_output`: add a master-tap output pipe.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct AddInstrumentInterfaceOutputParams {
-    /// The document to edit.
-    pub source: String,
-    /// The pipe name.
-    pub name: String,
-    /// The internal port feeding this output: `/node.port` (or `/node` sole-output sugar).
-    pub from: String,
-    /// Optional master output channel (omitted = broadcast).
-    #[serde(default)]
-    pub channel: Option<usize>,
-    /// Optional presentational range floor.
-    #[serde(default)]
-    pub min: Option<f64>,
-    /// Optional presentational range ceiling.
-    #[serde(default)]
-    pub max: Option<f64>,
-    /// Optional display unit.
-    #[serde(default)]
-    pub unit: Option<String>,
-    #[serde(default)]
-    pub expect: Option<String>,
-}
-
-/// Input for `remove_instrument_interface_input` / `remove_instrument_interface_output`.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct RemoveInstrumentInterfacePipeParams {
-    /// The document to edit.
-    pub source: String,
-    /// The pipe name to remove.
-    pub name: String,
-    #[serde(default)]
-    pub expect: Option<String>,
-}
-
-/// Input for `set_instrument_interface_input_meta`: update an input pipe's metadata (each provided
-/// field is written; omitted fields are unchanged).
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SetInstrumentInterfaceInputMetaParams {
-    /// The document to edit.
-    pub source: String,
-    /// The input pipe name.
-    pub name: String,
-    #[serde(default)]
-    pub channel: Option<usize>,
-    #[serde(default)]
-    pub default: Option<serde_json::Value>,
-    #[serde(default)]
-    pub min: Option<f64>,
-    #[serde(default)]
-    pub max: Option<f64>,
-    /// Sweep curve: `lin` or `exp`.
-    #[serde(default)]
-    pub curve: Option<String>,
-    #[serde(default)]
-    pub unit: Option<String>,
-    #[serde(default)]
-    pub expect: Option<String>,
-}
-
-/// Input for `set_instrument_interface_output_meta`: update an output pipe's metadata.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SetInstrumentInterfaceOutputMetaParams {
-    /// The document to edit.
-    pub source: String,
-    /// The output pipe name.
-    pub name: String,
-    #[serde(default)]
-    pub channel: Option<usize>,
-    #[serde(default)]
-    pub min: Option<f64>,
-    #[serde(default)]
-    pub max: Option<f64>,
-    #[serde(default)]
-    pub unit: Option<String>,
-    #[serde(default)]
-    pub expect: Option<String>,
-}
-
-/// Input for `add_instrument_resource`: add an id→source entry to the resources table.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct AddInstrumentResourceParams {
-    /// The document to edit.
-    pub source: String,
-    /// The logical resource id (what a node's `sample`/`voice`/`patch` references).
-    pub id: String,
-    /// The resource source (a file path for this door).
-    #[serde(rename = "resource_source")]
-    pub resource_source: String,
-    #[serde(default)]
-    pub expect: Option<String>,
-}
-
-/// Input for `remove_instrument_resource`.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct RemoveInstrumentResourceParams {
-    /// The document to edit.
-    pub source: String,
-    /// The resource id to remove.
-    pub id: String,
-    #[serde(default)]
-    pub expect: Option<String>,
-}
-
 /// The reuben MCP server: the declared-roster tool router plus the engine link.
 ///
 /// Pure tools (`describe_operators`, `describe_instrument`, `validate`) are always available;
@@ -841,11 +448,8 @@ impl ReubenServer {
 
     // --- Pure tools: always available -----------------------------------------------------------
 
-    /// List the operator set: delegates to [`reuben_core::introspect::describe`]
-    /// (or its compact signature-line mode when `compact` is set) and returns
-    /// `{ operators }` / `{ signatures }`, mirroring the `Option<&str>` filter exactly.
-    /// Engine-free — always available. An unknown `name` is a can't-do-the-job error:
-    /// there is no such operator to describe.
+    /// List the operator set. Engine-free — always available, and the one authoring tool that needs
+    /// no resource store at all.
     #[tool(
         name = "describe_operators",
         description = "List the registered operators and their ports/params, optionally filtered by name. \
@@ -853,57 +457,17 @@ impl ReubenServer {
                        name(inputs; config: constants; res: resource-slots) -> outputs, each port as \
                        name:kind with enum [variants], unit, exp for an exponential curve, lo..hi, =default \
                        — instead of full port objects; the full mode stays the zoom for port detail.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<DescribeOperatorsOutput>()
-            .expect("DescribeOperatorsOutput is an object schema")
+        output_schema = rmcp::handler::server::tool::schema_for_output::<authoring::Operators>()
+            .expect("Operators is an object schema")
     )]
     async fn describe_operators(
         &self,
-        Parameters(params): Parameters<DescribeOperatorsParams>,
+        Parameters(p): Parameters<authoring::DescribeOperators>,
     ) -> Result<CallToolResult, McpError> {
-        let registry = Registry::builtin();
-        if params.compact {
-            return match reuben_core::introspect::describe_compact(
-                &registry,
-                params.name.as_deref(),
-            ) {
-                Ok(signatures) => {
-                    let summary = format!("{} operator signature(s) (compact)", signatures.len());
-                    structured_ok(
-                        &DescribeOperatorsOutput {
-                            operators: None,
-                            signatures: Some(signatures),
-                        },
-                        summary,
-                    )
-                }
-                // An unknown name is isError, not an empty deliverable.
-                Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
-            };
-        }
-        match reuben_core::introspect::describe(&registry, params.name.as_deref()) {
-            Ok(operators) => {
-                let summary = describe_operators_summary(&operators);
-                structured_ok(
-                    &DescribeOperatorsOutput {
-                        operators: Some(operators),
-                        signatures: None,
-                    },
-                    summary,
-                )
-            }
-            // An unknown name is isError, not an empty deliverable.
-            Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(message)])),
-        }
+        answered(authoring::describe_operators(&p))
     }
 
-    /// Read a structural view of an instrument document. Resolves the opaque `source`, mints a
-    /// [`Projector`] over a stat-only resolver, and renders the asked-for view; `boundary` instead
-    /// delegates to [`reuben_core::introspect::describe_patch`] for the resolved host-facing face.
-    ///
-    /// A document that fails to **load** still projects (`loadable: false` in the header); only one
-    /// that cannot be *minted* — unreadable, unparseable, wrong format version — is `isError`.
-    ///
-    /// see rules: agent-mcp
+    /// Read a structural view of an instrument document.
     #[tool(
         name = "describe_instrument",
         description = "Read an instrument document's structure: `index` (every node, one line each — the default), \
@@ -911,106 +475,30 @@ impl ReubenServer {
                        pipes with ranges and curves), `resources`, or `boundary` (the face a host sees when \
                        nesting it). Narrow `nodes`/`pipes` with `select` (addresses or pipe names; `/` is the \
                        document itself) or `type`. This is how you read a document — never open the file.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<InstrumentViewOutput>()
-            .expect("InstrumentViewOutput is an object schema")
+        output_schema = rmcp::handler::server::tool::schema_for_output::<authoring::DocumentView>()
+            .expect("DocumentView is an object schema")
     )]
     async fn describe_instrument(
         &self,
-        Parameters(params): Parameters<DescribeInstrumentParams>,
+        Parameters(p): Parameters<authoring::DescribeInstrument>,
     ) -> Result<CallToolResult, McpError> {
-        let (json, resolver) = match load_source(&params.source) {
-            Ok(loaded) => loaded,
-            Err(err) => return Ok(err),
-        };
-        let registry = Registry::builtin();
-
-        // The grammar is core's ([`Selection::from_terms`]), so this door cannot invent its own
-        // answer for select-and-type-at-once. Checked **before** the view splits, because the
-        // boundary path below has no selection to build and would otherwise accept terms it then
-        // ignores — the same silent-precedence trap this call exists to close, one branch further
-        // in. A caller that named terms a view cannot honour has not asked a coherent question.
-        let selection = match Selection::from_terms(&params.select, params.type_name.as_deref()) {
-            Ok(selection) => selection,
-            Err(why) => return Ok(cannot_do_the_job(why)),
-        };
-        if params.view == InstrumentView::Boundary && selection != Selection::All {
-            return Ok(cannot_do_the_job(
-                "the `boundary` view is the whole face a host wires against — it takes no `select` \
-                 or `type`. Drop them, or read `view: \"pipes\"`, which is selectable.",
-            ));
-        }
-
-        // The boundary is not a projection: it needs children *loaded* to inherit an output pipe's
-        // type, so it keeps its own path — and its own "no boundary to describe" failure.
-        if params.view == InstrumentView::Boundary {
-            return match reuben_core::introspect::describe_patch(&json, &registry, &resolver) {
-                Ok(boundary) => {
-                    let summary = describe_instrument_summary(&boundary);
-                    structured_ok(
-                        &InstrumentViewOutput {
-                            view: "boundary".to_string(),
-                            text: render_boundary(&boundary),
-                        },
-                        summary,
-                    )
-                }
-                Err(message) => Ok(cannot_load(format!(
-                    "{message}\n\nThe document could not be loaded, so there is no boundary to \
-                     describe. Run `validate_instrument` for the full report of errors and \
-                     warnings, or read `view: \"index\"` — the structural views project even when \
-                     the document does not load."
-                ))),
-            };
-        }
-
-        let projector = match Projector::new(&json, &registry, &resolver) {
-            Ok(p) => p,
-            Err(message) => return Ok(cannot_load(message)),
-        };
-        let (view, text) = match params.view {
-            InstrumentView::Index => ("index", projector.index().render()),
-            InstrumentView::Nodes => ("nodes", projector.zoom(&selection).render()),
-            InstrumentView::Pipes => ("pipes", projector.pipes(&selection).render()),
-            InstrumentView::Resources => ("resources", projector.resources().render()),
-            InstrumentView::Boundary => unreachable!("handled above"),
-        };
-        let summary = format!("{view} view of {} ({} chars)", params.source, text.len());
-        structured_ok(
-            &InstrumentViewOutput {
-                view: view.to_string(),
-                text,
-            },
-            summary,
-        )
+        answered(authoring::describe_instrument(&p, &store(&p.source)))
     }
 
-    /// Validate an instrument document through the engine's own load + instantiate path:
-    /// resolves the opaque `source`, then delegates to [`reuben_core::introspect::validate`] over a
-    /// stat-only resolver (no audio decode). Engine-free — always available. Error-layer
-    /// discipline: a *failing* validation is an ordinary result carrying
-    /// `{ ok: false, errors, warnings }` — the tool worked; only the can't-do-the-job case (an
-    /// unreadable source) is isError.
+    /// Validate an instrument document through the engine's own load + instantiate path.
     #[tool(
         name = "validate_instrument",
         description = "Validate an instrument document (load + instantiate); returns a report of errors and warnings. \
                        The single authority on whether a document is legal — every document verb re-validates \
                        through it before writing.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<Report>()
+        output_schema = rmcp::handler::server::tool::schema_for_output::<authoring::Report>()
             .expect("Report is an object schema")
     )]
     async fn validate_instrument(
         &self,
-        Parameters(params): Parameters<InstrumentSourceParams>,
+        Parameters(p): Parameters<authoring::ValidateInstrument>,
     ) -> Result<CallToolResult, McpError> {
-        let (json, resolver) = match load_source(&params.source) {
-            Ok(loaded) => loaded,
-            Err(err) => return Ok(err),
-        };
-        let registry = Registry::builtin();
-        let report = reuben_core::introspect::validate(&json, &registry, &resolver);
-        let summary = validate_summary(&report);
-        // Ordinary result even when `report.ok` is false: a report is the tool working.
-        structured_ok(&report, summary)
+        answered(authoring::validate_instrument(&p, &store(&p.source)))
     }
 
     // --- Engine tools: reach a user-owned `reuben play` through the channel seam ----------------
@@ -1240,385 +728,271 @@ impl ReubenServer {
 
     // --- Document tools: engine-free mutators over an instrument document -------------------------
     //
-    // Each applies one edit through the resolver seam, re-validates the whole document through the
-    // loader, writes iff valid, and returns the post-write hash plus the projection of what it
-    // touched. see rules: agent-mcp
+    // One roster entry per window verb, and nothing else. There is deliberately nothing else here:
+    // the `expect` guard, the write-iff-valid pipeline, the projection echo and the one-line gloss
+    // all live behind `authoring`, so a second door gets them without a second copy. What the door
+    // still owns is the roster spelling, the advertised schema, and the isError decision.
+    // see rules: agent-mcp
 
-    /// Create a new, valid, minimal instrument document at `source` — the from-scratch start move,
-    /// written to disk in one call (refuses to overwrite an existing document).
     #[tool(
         name = "new_instrument",
         description = "Create a new valid minimal instrument document at `source` and write it. The from-scratch \
                        start move; refuses to overwrite an existing document. Then edit it with the other \
                        document tools and swap it.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<EditResult>()
-            .expect("EditResult is an object schema")
+        output_schema = edit_result_schema()
     )]
     async fn new_instrument(
         &self,
-        Parameters(p): Parameters<NewInstrumentParams>,
+        Parameters(p): Parameters<authoring::NewInstrument>,
     ) -> Result<CallToolResult, McpError> {
-        run_edit(&p.source, &None, |src, reg, res| {
-            edit::new_instrument(src, &p.name, reg, res)
-        })
+        answered(authoring::new_instrument(&p, &store(&p.source)))
     }
 
-    /// Rename the instrument (its top-level `instrument` name).
     #[tool(
         name = "set_instrument_name",
         description = "Set the instrument's top-level name.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<EditResult>()
-            .expect("EditResult is an object schema")
+        output_schema = edit_result_schema()
     )]
     async fn set_instrument_name(
         &self,
-        Parameters(p): Parameters<SetInstrumentNameParams>,
+        Parameters(p): Parameters<authoring::SetInstrumentName>,
     ) -> Result<CallToolResult, McpError> {
-        run_edit(&p.source, &p.expect, |src, reg, res| {
-            edit::set_instrument_name(src, &p.name, reg, res)
-        })
+        answered(authoring::set_instrument_name(&p, &store(&p.source)))
     }
 
-    /// Set (or clear) the instrument's human/agent description.
     #[tool(
         name = "set_instrument_description",
         description = "Set (or, omitting `description`, clear) the instrument's note.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<EditResult>()
-            .expect("EditResult is an object schema")
+        output_schema = edit_result_schema()
     )]
     async fn set_instrument_description(
         &self,
-        Parameters(p): Parameters<SetInstrumentDescriptionParams>,
+        Parameters(p): Parameters<authoring::SetInstrumentDescription>,
     ) -> Result<CallToolResult, McpError> {
-        run_edit(&p.source, &p.expect, |src, reg, res| {
-            edit::set_instrument_description(src, p.description.as_deref(), reg, res)
-        })
+        answered(authoring::set_instrument_description(&p, &store(&p.source)))
     }
 
-    /// Add a node fully formed in one call (address + type, plus inputs/config/description/resource).
     #[tool(
         name = "add_instrument_node",
         description = "Add a node in one call: required `address` and `type`, plus optional inputs (literal or \
                        wire-ref), config constants, description, and a sample/voice/patch resource id. Atomic — \
                        a wire to a missing source or a duplicate address rejects the whole call.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<EditResult>()
-            .expect("EditResult is an object schema")
+        output_schema = edit_result_schema()
     )]
     async fn add_instrument_node(
         &self,
-        Parameters(p): Parameters<AddInstrumentNodeParams>,
+        Parameters(p): Parameters<authoring::AddInstrumentNode>,
     ) -> Result<CallToolResult, McpError> {
-        run_edit(&p.source, &p.expect, |src, reg, res| {
-            edit::add_instrument_node(
-                src,
-                &p.address,
-                &p.type_name,
-                p.inputs.clone(),
-                p.config.clone(),
-                p.description.as_deref(),
-                p.sample.as_deref(),
-                p.voice.as_deref(),
-                p.patch.as_deref(),
-                reg,
-                res,
-            )
-        })
+        answered(authoring::add_instrument_node(&p, &store(&p.source)))
     }
 
-    /// Remove a node, cascading: auto-unwire every consumer and report what broke.
     #[tool(
         name = "remove_instrument_node",
         description = "Remove a node. Cascades: auto-unwires every consumer wired from it and drops every \
                        interface output fed from it, reporting exactly what it broke — no unwire-first dance.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<EditResult>()
-            .expect("EditResult is an object schema")
+        output_schema = edit_result_schema()
     )]
     async fn remove_instrument_node(
         &self,
-        Parameters(p): Parameters<RemoveInstrumentNodeParams>,
+        Parameters(p): Parameters<authoring::RemoveInstrumentNode>,
     ) -> Result<CallToolResult, McpError> {
-        run_edit(&p.source, &p.expect, |src, reg, res| {
-            edit::remove_instrument_node(src, &p.address, reg, res)
-        })
+        answered(authoring::remove_instrument_node(&p, &store(&p.source)))
     }
 
-    /// Rename a node, rewiring every consumer to the new address.
     #[tool(
         name = "rename_instrument_node",
         description = "Rename a node from one address to another (which must be free), rewiring every consumer \
                        to the new address and reporting each rewire.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<EditResult>()
-            .expect("EditResult is an object schema")
+        output_schema = edit_result_schema()
     )]
     async fn rename_instrument_node(
         &self,
-        Parameters(p): Parameters<RenameInstrumentNodeParams>,
+        Parameters(p): Parameters<authoring::RenameInstrumentNode>,
     ) -> Result<CallToolResult, McpError> {
-        run_edit(&p.source, &p.expect, |src, reg, res| {
-            edit::rename_instrument_node(src, &p.from, &p.to, reg, res)
-        })
+        answered(authoring::rename_instrument_node(&p, &store(&p.source)))
     }
 
-    /// Set (or clear) a node's description.
     #[tool(
         name = "set_instrument_node_description",
         description = "Set (or, omitting `description`, clear) a node's note.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<EditResult>()
-            .expect("EditResult is an object schema")
+        output_schema = edit_result_schema()
     )]
     async fn set_instrument_node_description(
         &self,
-        Parameters(p): Parameters<SetInstrumentNodeDescriptionParams>,
+        Parameters(p): Parameters<authoring::SetInstrumentNodeDescription>,
     ) -> Result<CallToolResult, McpError> {
-        run_edit(&p.source, &p.expect, |src, reg, res| {
-            edit::set_instrument_node_description(
-                src,
-                &p.address,
-                p.description.as_deref(),
-                reg,
-                res,
-            )
-        })
+        answered(authoring::set_instrument_node_description(
+            &p,
+            &store(&p.source),
+        ))
     }
 
-    /// Set a node input to a literal value (number or enum symbol) — the point-edit.
     #[tool(
         name = "set_instrument_input",
         description = "Set a node input to a literal value: a number, or an enum symbol string. The one-value \
                        point-edit — no re-emitting the whole document. Use wire_instrument_input to connect a port.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<EditResult>()
-            .expect("EditResult is an object schema")
+        output_schema = edit_result_schema()
     )]
     async fn set_instrument_input(
         &self,
-        Parameters(p): Parameters<SetInstrumentInputParams>,
+        Parameters(p): Parameters<authoring::SetInstrumentInput>,
     ) -> Result<CallToolResult, McpError> {
-        run_edit(&p.source, &p.expect, |src, reg, res| {
-            edit::set_instrument_input(src, &p.address, &p.input, p.value.clone(), reg, res)
-        })
+        answered(authoring::set_instrument_input(&p, &store(&p.source)))
     }
 
-    /// Wire a node input from a source port.
     #[tool(
         name = "wire_instrument_input",
         description = "Wire a node input from a source port: `from` is `/node.port`, or `/node` for a sole-output source.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<EditResult>()
-            .expect("EditResult is an object schema")
+        output_schema = edit_result_schema()
     )]
     async fn wire_instrument_input(
         &self,
-        Parameters(p): Parameters<WireInstrumentInputParams>,
+        Parameters(p): Parameters<authoring::WireInstrumentInput>,
     ) -> Result<CallToolResult, McpError> {
-        run_edit(&p.source, &p.expect, |src, reg, res| {
-            edit::wire_instrument_input(src, &p.address, &p.input, &p.from, reg, res)
-        })
+        answered(authoring::wire_instrument_input(&p, &store(&p.source)))
     }
 
-    /// Unwire a node input, reverting it to the operator's default.
     #[tool(
         name = "unwire_instrument_input",
         description = "Clear a node input, reverting it to the operator's descriptor default.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<EditResult>()
-            .expect("EditResult is an object schema")
+        output_schema = edit_result_schema()
     )]
     async fn unwire_instrument_input(
         &self,
-        Parameters(p): Parameters<UnwireInstrumentInputParams>,
+        Parameters(p): Parameters<authoring::UnwireInstrumentInput>,
     ) -> Result<CallToolResult, McpError> {
-        run_edit(&p.source, &p.expect, |src, reg, res| {
-            edit::unwire_instrument_input(src, &p.address, &p.input, reg, res)
-        })
+        answered(authoring::unwire_instrument_input(&p, &store(&p.source)))
     }
 
-    /// Set an instantiate-time constant on a node.
     #[tool(
         name = "set_instrument_constant",
         description = "Set an instantiate-time constant on a node (a plan-time `config` value like a Voicer's `voices`).",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<EditResult>()
-            .expect("EditResult is an object schema")
+        output_schema = edit_result_schema()
     )]
     async fn set_instrument_constant(
         &self,
-        Parameters(p): Parameters<SetInstrumentConstantParams>,
+        Parameters(p): Parameters<authoring::SetInstrumentConstant>,
     ) -> Result<CallToolResult, McpError> {
-        run_edit(&p.source, &p.expect, |src, reg, res| {
-            edit::set_instrument_constant(src, &p.address, &p.name, p.value.clone(), reg, res)
-        })
+        answered(authoring::set_instrument_constant(&p, &store(&p.source)))
     }
 
-    /// Add an interface input pipe.
     #[tool(
         name = "add_instrument_interface_input",
         description = "Add a boundary input pipe: a declared-type input that mints an address `/name` internal \
                        nodes consume from, with optional channel, default, min/max, curve (lin/exp), and unit.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<EditResult>()
-            .expect("EditResult is an object schema")
+        output_schema = edit_result_schema()
     )]
     async fn add_instrument_interface_input(
         &self,
-        Parameters(p): Parameters<AddInstrumentInterfaceInputParams>,
+        Parameters(p): Parameters<authoring::AddInstrumentInterfaceInput>,
     ) -> Result<CallToolResult, McpError> {
-        run_edit(&p.source, &p.expect, |src, reg, res| {
-            edit::add_instrument_interface_input(
-                src,
-                &p.name,
-                &p.type_name,
-                p.channel,
-                p.default.clone(),
-                p.min,
-                p.max,
-                p.curve.as_deref(),
-                p.unit.as_deref(),
-                reg,
-                res,
-            )
-        })
+        answered(authoring::add_instrument_interface_input(
+            &p,
+            &store(&p.source),
+        ))
     }
 
-    /// Add an interface output pipe (a master tap).
     #[tool(
         name = "add_instrument_interface_output",
         description = "Add a master-tap output pipe fed from an internal port (`from` = `/node.port` or `/node`), \
                        with optional channel, min/max, and unit.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<EditResult>()
-            .expect("EditResult is an object schema")
+        output_schema = edit_result_schema()
     )]
     async fn add_instrument_interface_output(
         &self,
-        Parameters(p): Parameters<AddInstrumentInterfaceOutputParams>,
+        Parameters(p): Parameters<authoring::AddInstrumentInterfaceOutput>,
     ) -> Result<CallToolResult, McpError> {
-        run_edit(&p.source, &p.expect, |src, reg, res| {
-            edit::add_instrument_interface_output(
-                src,
-                &p.name,
-                &p.from,
-                p.channel,
-                p.min,
-                p.max,
-                p.unit.as_deref(),
-                reg,
-                res,
-            )
-        })
+        answered(authoring::add_instrument_interface_output(
+            &p,
+            &store(&p.source),
+        ))
     }
 
-    /// Remove an interface input pipe.
     #[tool(
         name = "remove_instrument_interface_input",
         description = "Remove a boundary input pipe by name.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<EditResult>()
-            .expect("EditResult is an object schema")
+        output_schema = edit_result_schema()
     )]
     async fn remove_instrument_interface_input(
         &self,
-        Parameters(p): Parameters<RemoveInstrumentInterfacePipeParams>,
+        Parameters(p): Parameters<authoring::RemoveInstrumentInterfacePipe>,
     ) -> Result<CallToolResult, McpError> {
-        run_edit(&p.source, &p.expect, |src, reg, res| {
-            edit::remove_instrument_interface_input(src, &p.name, reg, res)
-        })
+        answered(authoring::remove_instrument_interface_input(
+            &p,
+            &store(&p.source),
+        ))
     }
 
-    /// Remove an interface output pipe.
     #[tool(
         name = "remove_instrument_interface_output",
         description = "Remove a master-tap output pipe by name.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<EditResult>()
-            .expect("EditResult is an object schema")
+        output_schema = edit_result_schema()
     )]
     async fn remove_instrument_interface_output(
         &self,
-        Parameters(p): Parameters<RemoveInstrumentInterfacePipeParams>,
+        Parameters(p): Parameters<authoring::RemoveInstrumentInterfacePipe>,
     ) -> Result<CallToolResult, McpError> {
-        run_edit(&p.source, &p.expect, |src, reg, res| {
-            edit::remove_instrument_interface_output(src, &p.name, reg, res)
-        })
+        answered(authoring::remove_instrument_interface_output(
+            &p,
+            &store(&p.source),
+        ))
     }
 
-    /// Update an interface input pipe's metadata.
     #[tool(
         name = "set_instrument_interface_input_meta",
         description = "Update an input pipe's metadata (channel, default, min/max, curve lin/exp, unit); each \
                        provided field is written, omitted fields are unchanged.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<EditResult>()
-            .expect("EditResult is an object schema")
+        output_schema = edit_result_schema()
     )]
     async fn set_instrument_interface_input_meta(
         &self,
-        Parameters(p): Parameters<SetInstrumentInterfaceInputMetaParams>,
+        Parameters(p): Parameters<authoring::SetInstrumentInterfaceInputMeta>,
     ) -> Result<CallToolResult, McpError> {
-        run_edit(&p.source, &p.expect, |src, reg, res| {
-            edit::set_instrument_interface_input_meta(
-                src,
-                &p.name,
-                p.channel,
-                p.default.clone(),
-                p.min,
-                p.max,
-                p.curve.as_deref(),
-                p.unit.as_deref(),
-                reg,
-                res,
-            )
-        })
+        answered(authoring::set_instrument_interface_input_meta(
+            &p,
+            &store(&p.source),
+        ))
     }
 
-    /// Update an interface output pipe's metadata.
     #[tool(
         name = "set_instrument_interface_output_meta",
         description = "Update an output pipe's metadata (channel, min/max, unit); each provided field is \
                        written, omitted fields are unchanged.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<EditResult>()
-            .expect("EditResult is an object schema")
+        output_schema = edit_result_schema()
     )]
     async fn set_instrument_interface_output_meta(
         &self,
-        Parameters(p): Parameters<SetInstrumentInterfaceOutputMetaParams>,
+        Parameters(p): Parameters<authoring::SetInstrumentInterfaceOutputMeta>,
     ) -> Result<CallToolResult, McpError> {
-        run_edit(&p.source, &p.expect, |src, reg, res| {
-            edit::set_instrument_interface_output_meta(
-                src,
-                &p.name,
-                p.channel,
-                p.min,
-                p.max,
-                p.unit.as_deref(),
-                reg,
-                res,
-            )
-        })
+        answered(authoring::set_instrument_interface_output_meta(
+            &p,
+            &store(&p.source),
+        ))
     }
 
-    /// Add a resource to the document's id→source table.
     #[tool(
         name = "add_instrument_resource",
         description = "Add a resource entry: a logical `id` (what a node's sample/voice/patch references) mapped \
                        to a `resource_source` (a file path for this door).",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<EditResult>()
-            .expect("EditResult is an object schema")
+        output_schema = edit_result_schema()
     )]
     async fn add_instrument_resource(
         &self,
-        Parameters(p): Parameters<AddInstrumentResourceParams>,
+        Parameters(p): Parameters<authoring::AddInstrumentResource>,
     ) -> Result<CallToolResult, McpError> {
-        run_edit(&p.source, &p.expect, |src, reg, res| {
-            edit::add_instrument_resource(src, &p.id, &p.resource_source, reg, res)
-        })
+        answered(authoring::add_instrument_resource(&p, &store(&p.source)))
     }
 
-    /// Remove a resource from the document's id→source table.
     #[tool(
         name = "remove_instrument_resource",
         description = "Remove a resource entry by id.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<EditResult>()
-            .expect("EditResult is an object schema")
+        output_schema = edit_result_schema()
     )]
     async fn remove_instrument_resource(
         &self,
-        Parameters(p): Parameters<RemoveInstrumentResourceParams>,
+        Parameters(p): Parameters<authoring::RemoveInstrumentResource>,
     ) -> Result<CallToolResult, McpError> {
-        run_edit(&p.source, &p.expect, |src, reg, res| {
-            edit::remove_instrument_resource(src, &p.id, reg, res)
-        })
+        answered(authoring::remove_instrument_resource(&p, &store(&p.source)))
     }
 }
 
@@ -1770,59 +1144,35 @@ fn structured_ok<T: Serialize>(value: &T, summary: String) -> Result<CallToolRes
     Ok(result)
 }
 
-/// The isError result for a document that will not load: an unreadable source, or bytes that will
-/// not mint.
-fn cannot_load(message: impl Into<String>) -> CallToolResult {
-    cannot_do_the_job(message)
+/// The one place a window answer becomes a tool result, so no two tools classify one differently.
+///
+/// An [`Answer`] is ordinary: the structured payload is what the model acts on, the window's gloss
+/// is what a human reading the transcript sees. A [`Refusal`] is `isError` — the call could not do
+/// its job, so the model must act on the message rather than treat it as a deliverable. Note what
+/// is *not* here: a rejected edit and a failing validation are Answers, because the tool worked.
+/// see rules: agent-mcp
+fn answered<T: Serialize>(answer: Result<Answer<T>, Refusal>) -> Result<CallToolResult, McpError> {
+    match answer {
+        Ok(answer) => structured_ok(&answer.output, answer.summary),
+        Err(refusal) => Ok(CallToolResult::error(vec![ContentBlock::text(
+            refusal.message,
+        )])),
+    }
 }
 
-/// The isError result for a call whose *arguments* do not describe a coherent request. Same shape as
-/// [`cannot_load`], named separately because a helper called `cannot_load` answering "that question
-/// is not well formed" would misdescribe its own result. see rules: agent-mcp
-fn cannot_do_the_job(message: impl Into<String>) -> CallToolResult {
-    CallToolResult::error(vec![ContentBlock::text(message.into())])
+/// The one `outputSchema` every document verb advertises. Derived here rather than at each
+/// `#[tool]`, so the roster cannot grow a verb promising a different shape. The attribute itself
+/// still repeats per tool — rmcp's macro needs it there — but what it names is decided once.
+fn edit_result_schema() -> std::sync::Arc<rmcp::model::JsonObject> {
+    rmcp::handler::server::tool::schema_for_output::<EditResult>()
+        .expect("EditResult is an object schema")
 }
 
-/// Read an opaque document `source` into its JSON text plus a stat-only [`FsResolver`] — the read
-/// half of what [`edit_resolver`] does for the verbs, and the same interpretation of `source` (a
-/// path, for this door). `Err` is the ready-to-return `isError` for an unreadable source.
-fn load_source(source: &str) -> Result<(String, FsResolver), CallToolResult> {
-    let path = Path::new(source);
-    let json = std::fs::read_to_string(path).map_err(|e| {
-        cannot_load(format!(
-            "could not read instrument source {}: {e}",
-            path.display()
-        ))
-    })?;
-    // Root at the file's directory (sibling-first, library-root fallback), stat-only so
-    // introspection reports port metadata without decoding any referenced audio.
-    Ok((json, FsResolver::for_instrument(path).stat_only()))
-}
-
-/// Render a [`PatchBoundary`] in the projection's line grammar, so `view: "boundary"` reads like
-/// every other view even though it is cut by a different code path.
-fn render_boundary(boundary: &PatchBoundary) -> String {
-    let mut lines = vec![format!("{} (boundary)", boundary.instrument)];
-    if boundary.is_empty() {
-        lines.push("no interface — nests, but exposes nothing to wire".to_string());
-    }
-    for (label, ports) in [("in", &boundary.inputs), ("out", &boundary.outputs)] {
-        for p in ports.iter() {
-            lines.push(format!("{label} {}", p.signature_fragment()));
-        }
-    }
-    for (label, dark) in [
-        ("in", &boundary.dark_inputs),
-        ("out", &boundary.dark_outputs),
-    ] {
-        for d in dark.iter() {
-            lines.push(format!("{label} {d} (dark — unresolved this load)"));
-        }
-    }
-    for w in &boundary.warnings {
-        lines.push(format!("warning: {}", w.message));
-    }
-    lines.join("\n")
+/// The FS door's reading of an opaque document `source`: a filesystem path. Stat-only because no
+/// authoring path renders — introspection reports port metadata without decoding referenced audio.
+/// see rules: agent-mcp
+fn store(source: &str) -> FsResolver {
+    FsResolver::for_document(source).stat_only()
 }
 
 /// The node index of what the engine is actually playing, cut from the snapshot the structure
@@ -1843,152 +1193,6 @@ fn project_installed(snapshot: &DocumentSnapshot) -> String {
     match Projector::new(&json, &Registry::builtin(), &resolver) {
         Ok(p) => p.index().render(),
         Err(e) => format!("(projection unavailable: {e})"),
-    }
-}
-
-/// The FS door's interpretation of an opaque document `source`: a filesystem path. Roots a resolver
-/// at the file's directory (so nested references resolve sibling-first, like the read tools) and
-/// returns the resolver-relative name the [`edit`] verbs read and write through.
-///
-/// see rules: agent-mcp
-fn edit_resolver(source: &str) -> (FsResolver, String) {
-    let path = Path::new(source);
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| source.to_string());
-    (FsResolver::for_instrument(path).stat_only(), name)
-}
-
-/// The **door-side** `expect`-hash write guard: compare the caller's `expect` against the source's
-/// current content hash.
-///
-/// `Some` is the ready-to-return ordinary result for a miss — nothing written, the real hash and the
-/// current node index returned, so reconciling costs no extra round trip. `None` means proceed, and
-/// is also what a read/mint failure returns: that is the verb's to surface, not the guard's.
-///
-/// see rules: agent-mcp
-fn edit_expect_conflict(
-    expect: &Option<String>,
-    name: &str,
-    resolver: &FsResolver,
-) -> Option<Result<CallToolResult, McpError>> {
-    let expected = expect.as_ref()?;
-    let registry = Registry::builtin();
-    let json = resolver.resolve_text(name).ok()?;
-    let actual = NormalizedDoc::from_json(&json, &registry, Some(resolver))
-        .ok()
-        .map(|doc| content_hash(&doc))?;
-    if &actual == expected {
-        return None;
-    }
-    // The index, not a zoom: no verb ran, so there is no narrower thing to show.
-    let zoom = match Projector::new(&json, &registry, resolver) {
-        Ok(p) => p.index().render(),
-        Err(e) => format!("(projection unavailable: {e})"),
-    };
-    let rejected = EditResult {
-        report: Report {
-            ok: false,
-            errors: vec![Diag {
-                node: None,
-                port: None,
-                message: format!(
-                    "expect guard: the document is now {actual}, not the expected {expected} — \
-                     re-read it and reconcile before writing"
-                ),
-            }],
-            warnings: Vec::new(),
-        },
-        written: false,
-        hash: actual,
-        notes: Vec::new(),
-        zoom,
-    };
-    Some(structured_ok(
-        &rejected,
-        "write rejected by the expect guard — nothing changed".to_string(),
-    ))
-}
-
-/// Run one document-manipulation verb: interpret the `source`, apply the `expect` guard, invoke the
-/// core verb, and map its outcome — a rejected edit is an ordinary result, an [`EditError`] is
-/// `isError`. Every mutating tool body is one call to this. see rules: agent-mcp
-fn run_edit(
-    source: &str,
-    expect: &Option<String>,
-    verb: impl FnOnce(&str, &Registry, &FsResolver) -> Result<EditResult, EditError>,
-) -> Result<CallToolResult, McpError> {
-    let (resolver, name) = edit_resolver(source);
-    if let Some(conflict) = edit_expect_conflict(expect, &name, &resolver) {
-        return conflict;
-    }
-    let registry = Registry::builtin();
-    match verb(&name, &registry, &resolver) {
-        Ok(result) => {
-            let summary = edit_summary(&result);
-            structured_ok(&result, summary)
-        }
-        Err(why) => Ok(cannot_load(why.to_string())),
-    }
-}
-
-/// One-line human gloss of a document-manipulation result.
-fn edit_summary(result: &EditResult) -> String {
-    if result.written {
-        let base = format!("written (content_hash {})", result.hash);
-        match result.notes.len() {
-            0 => base,
-            n => format!("{base}; {n} cascade note(s)"),
-        }
-    } else {
-        format!(
-            "not written — {} error(s); the document is unchanged (content_hash {})",
-            result.report.errors.len(),
-            result.hash
-        )
-    }
-}
-
-/// One-line human gloss of an operator listing: a single operator's port counts, or the roster.
-fn describe_operators_summary(operators: &[OperatorInfo]) -> String {
-    match operators {
-        [one] => format!(
-            "{}: {} input(s), {} output(s)",
-            one.type_name,
-            one.inputs.len(),
-            one.outputs.len()
-        ),
-        many => {
-            let names: Vec<&str> = many.iter().map(|o| o.type_name.as_str()).collect();
-            format!("{} operators: {}", many.len(), names.join(", "))
-        }
-    }
-}
-
-/// One-line human gloss of a described instrument boundary.
-fn describe_instrument_summary(boundary: &PatchBoundary) -> String {
-    format!(
-        "{}: {} boundary input(s), {} output(s)",
-        boundary.instrument,
-        boundary.inputs.len(),
-        boundary.outputs.len()
-    )
-}
-
-/// One-line human gloss of a validation report.
-fn validate_summary(report: &Report) -> String {
-    if report.ok {
-        match report.warnings.len() {
-            0 => "valid".to_string(),
-            n => format!("valid ({n} warning(s))"),
-        }
-    } else {
-        format!(
-            "invalid: {} error(s), {} warning(s)",
-            report.errors.len(),
-            report.warnings.len()
-        )
     }
 }
 
@@ -2397,7 +1601,7 @@ mod tests {
             "swap_instrument",
             "clean install",
             &SwapToolOutput::installed(SwapReport {
-                report: Report {
+                report: reuben_core::Report {
                     ok: true,
                     errors: vec![],
                     warnings: vec![],
@@ -2415,7 +1619,7 @@ mod tests {
             "swap_instrument",
             "validation failure",
             &SwapToolOutput::installed(SwapReport {
-                report: Report {
+                report: reuben_core::Report {
                     ok: false,
                     errors: vec![reuben_core::Diag {
                         node: Some("/osc".to_string()),
@@ -2586,7 +1790,7 @@ mod tests {
         // FLATTENS the contract SwapReport, so the tool's structuredContent and the structure
         // channel's response are the same serde type and cannot drift.
         let report = SwapReport {
-            report: Report {
+            report: reuben_core::Report {
                 ok: true,
                 errors: vec![],
                 warnings: vec![],
@@ -2773,7 +1977,7 @@ mod tests {
         // (nothing survived), which is what the web lane always reports and what a native swap
         // reports when no node survives.
         let report = SwapReport {
-            report: Report {
+            report: reuben_core::Report {
                 ok: true,
                 errors: vec![],
                 warnings: vec![],
@@ -3191,15 +2395,15 @@ mod tests {
         std::fs::write(&path, seed_instrument()).unwrap();
 
         let server = ReubenServer::new();
-        let result = block_on(
-            server.set_instrument_input(Parameters(SetInstrumentInputParams {
+        let result = block_on(server.set_instrument_input(Parameters(
+            authoring::SetInstrumentInput {
                 source: path.display().to_string(),
                 address: "/osc".to_string(),
                 input: "freq".to_string(),
                 value: serde_json::json!(440.0),
                 expect: None,
-            })),
-        )
+            },
+        )))
         .expect("set_instrument_input returns a result");
 
         assert_ne!(
@@ -3242,15 +2446,15 @@ mod tests {
         let before = std::fs::read_to_string(&path).unwrap();
 
         let server = ReubenServer::new();
-        let result = block_on(
-            server.set_instrument_input(Parameters(SetInstrumentInputParams {
+        let result = block_on(server.set_instrument_input(Parameters(
+            authoring::SetInstrumentInput {
                 source: path.display().to_string(),
                 address: "/osc".to_string(),
                 input: "freq".to_string(),
                 value: serde_json::json!(440.0),
                 expect: Some("deadbeefdeadbeef".to_string()),
-            })),
-        )
+            },
+        )))
         .expect("returns a result");
 
         assert_ne!(
@@ -3290,15 +2494,15 @@ mod tests {
         std::fs::write(&path, seed_instrument()).unwrap();
 
         let server = ReubenServer::new();
-        let result = block_on(
-            server.set_instrument_input(Parameters(SetInstrumentInputParams {
+        let result = block_on(server.set_instrument_input(Parameters(
+            authoring::SetInstrumentInput {
                 source: path.display().to_string(),
                 address: "/ghost".to_string(),
                 input: "freq".to_string(),
                 value: serde_json::json!(1.0),
                 expect: None,
-            })),
-        )
+            },
+        )))
         .expect("returns a result");
         assert_eq!(
             result.is_error,
