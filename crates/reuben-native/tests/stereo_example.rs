@@ -4,9 +4,9 @@
 
 use std::path::PathBuf;
 
+use reuben_api::FsResolver;
 use reuben_core::vocab::pitch::{Note, Pitch};
 use reuben_core::{load_instrument, AudioConfig, Message, Plan};
-use reuben_native::resources::FsResolver;
 use reuben_native::Engine;
 
 fn fixtures_dir() -> PathBuf {

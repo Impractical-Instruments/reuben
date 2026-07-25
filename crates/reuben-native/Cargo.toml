@@ -9,13 +9,16 @@ description = "Removable native layer for reuben: live audio (cpal) + OSC-in (UD
 
 [dependencies]
 reuben-core = { path = "../reuben-core" }
+# The reference filesystem resolver (`FsResolver`), which brings `hound` with it. Only the
+# resolver: the CLI moves onto the rest of the window later, and `default-features = false`
+# keeps the halves it does not drive out of this build.
+reuben-api = { path = "../reuben-api", default-features = false, features = ["fs-resolver"] }
 # Shared operator-contract spec types + validation, single-sourced with the macro.
 reuben-contract = { path = "../reuben-contract" }
 cpal.workspace = true
 rosc.workspace = true
 # Input-callback -> render-thread SPSC ring (P5/#182).
 rtrb.workspace = true
-hound.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 clap.workspace = true

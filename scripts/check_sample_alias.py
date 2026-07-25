@@ -47,7 +47,7 @@ ALLOWLIST = (
     "crates/reuben-native/src/input.rs",   # capture ring buffer + resampler; device frames
     # --- Resource decode: audio files decode to planar per-channel `Vec<Vec<f32>>` before they
     #     ever become engine buffers.
-    "crates/reuben-native/src/resources.rs",  # symphonia decode -> planar channels
+    "crates/reuben-api/src/fs_resolver.rs",  # WAV decode -> planar channels
     "crates/reuben-core/src/resources.rs",    # SampleBuffer holds decoded per-channel data
     # --- Operator DSP arithmetic: inside a `process`/kernel the `f32` is the number under the
     #     math (and per-operator unit tests fabricate raw input/expected buffers).

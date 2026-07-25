@@ -59,6 +59,7 @@ jobs:
               - 'crates/reuben-contract/**'
               - 'crates/reuben-macros/**'
               - 'crates/reuben-core/**'
+              - 'crates/reuben-api/**'
               - 'crates/reuben-native/**'
               - 'crates/reuben-mcp/**'
               - 'Cargo.toml'
@@ -175,6 +176,13 @@ jobs:
       # red the build, and that must not quietly stop happening if a dependent drops the feature.
       - name: Test
         run: cargo test --workspace --features reuben-core/bench,reuben-core/schemars
+
+      # The render-only build of the window, which no in-tree consumer compiles: the browser
+      # worklet is the only host that takes it, and it lives in another repository behind a
+      # submodule pin. Without this step the authoring/render fence would be an intention that
+      # first fails for someone else, on a bump, days later.
+      - name: Render-only feature fence (reuben-api)
+        run: cargo check -p reuben-api --no-default-features --features render
 
       # Skill scripts that inline an engine contract ship their own Python tests (control-surface's
       # `gen_surface.py` today); its live-engine boundary test runs `reuben describe` via `cargo
@@ -334,12 +342,6 @@ jobs:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0 # the gate swaps the measured surface to the baseline commit
-
-      # reuben-mcp depends on reuben-native for the filesystem resource resolver, and reuben-native
-      # links cpal — so this job needs the ALSA headers just like `check` does, even though it never
-      # opens an audio device.
-      - name: Install ALSA dev headers (cpal, via reuben-native)
-        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libasound2-dev
 
       - name: Setup pinned Rust toolchain
         uses: ./.github/actions/setup-rust

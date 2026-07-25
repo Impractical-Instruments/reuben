@@ -15,7 +15,7 @@ use std::path::{Path, PathBuf};
 use reuben_core::introspect::library_index_line;
 use reuben_core::registry::Registry;
 
-use crate::resources::FsResolver;
+use reuben_api::FsResolver;
 
 /// Generate the library index over every `*.json` instrument document under `instruments_dir`
 /// (recursively — roles are read off the interface, never off a path, so subdirectories carry
