@@ -26,7 +26,7 @@ pub mod integrate;
 pub mod lfo;
 pub mod m2s;
 pub mod map;
-/// Shared test helpers for the generated number operators (issue #104).
+/// Shared test helpers for the generated number operators.
 #[cfg(test)]
 pub mod math_test;
 pub mod max;
@@ -41,14 +41,14 @@ pub mod output;
 pub mod pan;
 pub mod pipe;
 pub mod pitch2freq;
-/// The total arithmetic the generated number operators' scalar fns are written over (issue #556).
+/// The total arithmetic the generated number operators' scalar fns are written over.
 pub mod pointwise;
 pub mod power;
 pub mod reciprocal;
 pub mod resonator;
 pub mod reverb;
 pub mod round;
-/// The rounding the generated converter operators cross number types with (issue #556).
+/// The rounding the generated converter operators cross number types with.
 pub mod rounding;
 pub mod sample;
 pub mod saturator;

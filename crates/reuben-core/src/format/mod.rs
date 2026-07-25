@@ -1,21 +1,13 @@
-//! Instrument format — the JSON canonical document (**v2**, **v3**).
+//! Instrument format — the JSON canonical document (**v2**, **v3**). See rules:
+//! authoring-library (format-versioning, normalized-doc-gate, document-is-save-source).
 //!
-//! An instrument is plain data: a list of operator `nodes`, each carrying one `inputs` map
-//! and an optional `config` block, plus an `interface` block of named boundary
-//! **pipes**. A node's `inputs` entry is either a **literal** (a number, or an
-//! `Enum` symbol like `"Hp"`) or a **wire-ref** to another node's output
+//! A node's `inputs` entry is either a **literal** or a **wire-ref** to another node's output
 //! (`{ "from": "/osc.audio" }`, or `{ "from": "/osc" }` when the source has a single output —
-//! an interface input pipe is such a source: `{ "from": "/in" }`). `config` carries
-//! instantiate-time **`Constant`s** (e.g. a voicer's `voices`). Master output is the Signal
-//! `interface.outputs` pipes (`"main_l": {"from": "/pan.left", "channel": 0}`); the v1
-//! anonymous `outputs` block migrates into them at parse. Ports are referenced by **name**
-//! (from the operator's [`Descriptor`](crate::descriptor::Descriptor)), not by brittle index.
-//! Optional `doc` fields carry human/agent notes. Validity is defined by the loader itself
-//!: [`load`] is the single authority on what a legal document is.
-//!
-//! [`load`] turns JSON into a [`Graph`] (resolving types via a [`Registry`]);
-//! [`NormalizedDoc::from_graph`] goes the other way. Loading is an authoring step, not a realtime
-//! path — it lives in the portable core but never runs on the audio thread.
+//! an interface input pipe is such a source: `{ "from": "/in" }`). Ports are referenced by
+//! **name** (from the operator's [`Descriptor`](crate::descriptor::Descriptor)), not by index.
+//! [`load`] turns JSON into a [`Graph`] (resolving types via a [`Registry`]); [`load`] is the
+//! single authority on what a legal document is, and [`NormalizedDoc::from_graph`] goes the
+//! other way.
 
 mod normalize;
 
@@ -49,10 +41,6 @@ fn default_format_version() -> u32 {
 
 /// The instrument name [`crate::edit::new_instrument`]'s callers fall back to when the author names
 /// none — the one place the default is spelled, so the CLI and MCP doors cannot drift.
-///
-/// The scaffold it used to name is gone: `scaffold_instrument` returned a valid seed **by value**,
-/// which is exactly the doc-in-context arm #604 retired. The seed itself survives unchanged inside
-/// [`crate::edit::new_instrument`], which writes it to a `source` instead of handing it back.
 pub const SCAFFOLD_DEFAULT_NAME: &str = "untitled";
 
 /// A complete instrument document.
@@ -505,9 +493,8 @@ pub struct PortRef {
 pub enum LoadError {
     /// The JSON itself was malformed.
     Json(serde_json::Error),
-    /// The document declares a `format_version` newer than this engine understands
-    ///: its shape can't be trusted, so refusing beats misloading. Older versions
-    /// migrate at parse; only the future is unreadable.
+    /// The document declares a `format_version` newer than this engine understands.
+    /// see rules: authoring-library
     UnsupportedVersion { found: u32, supported: u32 },
     /// A node names an operator type that isn't registered.
     UnknownType { address: String, type_name: String },
@@ -528,19 +515,15 @@ pub enum LoadError {
     },
     /// A `config` name is not a declared [`Constant`](Descriptor::constants).
     UnknownConfig { node: String, name: String },
-    /// A `Constant` (e.g. `voices`) appears in `inputs` — it must live in `config`, since changing
-    /// it would rebuild the graph.
+    /// A `Constant` (e.g. `voices`) appears in `inputs` — it must live in `config`.
+    /// see rules: composition-operators
     ConstantInInputs { node: String, name: String },
     /// A wire-ref uses the sole-output sugar (`"/node"`) but the source has more than one output,
     /// so the intended port is ambiguous.
     AmbiguousWire { node: String, reference: String },
-    /// A wire joins two ports of incompatible [`PortType`]s (e.g. `Note` → `Buffer`) — the illegal
-    /// wiring. Equal types are fine, an `F32` source into a `Buffer` port is the one
-    /// implicit ZOH bridge (the reverse, `Buffer` → `F32`, is Signal→Value and rejected:
-    /// no implicit sample-and-hold), and an [`Arg`](PortType::Arg) pass-through input takes any
-    /// source with an OSC form; everything else is rejected here. On a nested boundary wire,
-    /// `from`/`to` name the **boundary** port (`/sub.audio`), never the prefixed internals
-    ///.
+    /// A wire joins two ports of incompatible [`PortType`]s. On a nested boundary wire, `from`/`to`
+    /// name the **boundary** port (`/sub.audio`), never the prefixed internals.
+    /// see rules: composition-operators
     TypeMismatch {
         from: String,
         from_type: Box<PortType>,
@@ -750,14 +733,12 @@ pub enum LoadWarning {
     /// still works when the same patch is played at top level, so this is a warning, not an
     /// error. Wrapped in [`Nested`](Self::Nested) with the hosting node.
     InertChannelBinding { name: String },
-    /// The node carried a retired v2 `control` block — UI
-    /// metadata the engine never read. Ignored, never fatal: sound is unaffected; presentation
-    /// lives in a surface doc now. Re-saving the document strips it.
+    /// The node carried a retired v2 `control` block, dropped. Ignored, never fatal: sound is
+    /// unaffected. see rules: authoring-library
     DeprecatedControlBlock { node: String },
-    /// The interface entry carried retired pipe presentation — `label`/`widget`. Ignored,
-    /// never fatal: the pipe keeps its quantity contract
-    /// (`type`/`default`/`min`/`max`/`curve`/`unit`); presentation lives in a surface doc now.
-    /// Re-saving the document strips it. `field` names which retired field was dropped.
+    /// The interface entry carried retired pipe presentation (`label`/`widget`), dropped; `field`
+    /// names which. Ignored, never fatal: the pipe keeps its quantity contract.
+    /// see rules: authoring-library
     DeprecatedPipePresentation { name: String, field: &'static str },
 }
 
@@ -1236,9 +1217,8 @@ impl InstrumentDoc {
     ) -> Result<Loaded, LoadError> {
         let mut graph = Graph::new();
         let mut warnings = Vec::new();
-        // No anonymous-`outputs` re-check here: every route to this build starts from a
-        // [`NormalizedDoc`], whose mint migrated the block away (v1) or refused it under a
-        // v2+ stamp (`check_pipe_shape`) — the invariant is carried by the type.
+        // No anonymous-`outputs` re-check: every route here starts from a `NormalizedDoc`.
+        // see rules: authoring-library
         debug_assert!(
             self.outputs.is_empty(),
             "a normalized document carries no anonymous outputs"
@@ -1572,14 +1552,13 @@ impl InstrumentDoc {
                 // op is the sanctioned path). It is rejected *here*, not left to the plan's form
                 // check, so a mistyped wire into a nested boundary fails at load named in boundary
                 // terms (`/sub.audio`) instead of surfacing at instantiate as a FormMismatch on
-                // the prefixed internals. A type-agnostic `Arg` pass-through input
-                // (issue #141) is **capability-keyed**: it accepts any source whose type has an
+                // the prefixed internals. A type-agnostic `Arg` pass-through input is
+                // **capability-keyed**: it accepts any source whose type has an
                 // external OSC form (`boundary::has_osc_form`, the single statement shared with
                 // the plan check) — the primitives, a vocab enum, `Note`'s registered flat form.
                 // A `Buffer` never emits Messages (audio stays off the wire) and
-                // `Harmony` has no OSC form (it registers no converter; its wire form is issue
-                // #209) — a wire that could never send anything is rejected here, not left
-                // silently dead. Anything else is illegal.
+                // `Harmony` has no OSC form (it registers no converter) — a wire that could never
+                // send anything is rejected here, not left silently dead. Anything else is illegal.
                 let compatible = same_wire_type(&from_ty, &to_ty)
                     || matches!((&from_ty, &to_ty), (PortType::F32, PortType::F32Buffer))
                     // Numeric widening: an `I32` source into an `F32`/`F32Buffer` sink
@@ -1789,31 +1768,25 @@ impl InstrumentDoc {
                     doc: None,
                     config,
                     inputs,
-                    // Logical resource ids round-trip from the ids stashed at build (`sample`,
-                    // `voice`). The decoded bytes/sub-graphs are bound
-                    // out-of-band and are *not* reconstructed here — reload re-resolves from the id.
-                    // No `patch`: a subpatch dissolves at build, so a built graph
-                    // holds only the flattened equivalent — this save emits the inlined child
-                    // nodes, not the reference. Reference-preserving save is the library thread
-                    // (P7, #122); the *document*-level round-trip keeps `patch` via serde.
+                    // Resource ids round-trip from the ids stashed at build; the decoded
+                    // bytes/sub-graphs are bound out-of-band and are not reconstructed here.
                     sample: node.sample_id.clone(),
                     voice: node.voice_id.clone(),
+                    // A subpatch dissolves at build, so from_graph only emits the inlined
+                    // children, never the reference — see rules: authoring-library
+                    // (document-is-save-source).
                     patch: None,
-                    // Control metadata lives on the document, not the built Graph, so the
-                    // save-from-graph path does not reconstruct it; document-level round-trip
-                    // (load → re-serialize) preserves it via serde.
+                    // Presentation lives in a surface doc now, not the graph.
                     control: None,
                 }
             })
             .collect();
         nodes.sort_by(|a, b| a.address.cmp(&b.address));
 
-        // Reconstruct the boundary in v2 pipe form. Inputs re-derive each pipe's
-        // declaration from its synthesized descriptor; outputs re-emit the canonical explicit
-        // `/node.port` feed (never the sole-output sugar) plus its channel binding, so a
-        // load → save → reload round-trip is stable. Presentational fields (label/unit/widget)
-        // live on the *document*, like `control` — the built Graph doesn't hold them, so this
-        // path can't reconstruct them; the document-level round-trip preserves them via serde.
+        // Reconstruct the boundary in v2 pipe form: outputs re-emit the canonical explicit
+        // `/node.port` feed (never the sole-output sugar) plus channel binding, so a
+        // load -> save -> reload round-trip is stable. Presentational fields (label/unit/widget)
+        // aren't reconstructed here — see rules: authoring-library.
         let iface = &graph.interface;
         let out_ref = |(key, port): &(crate::graph::NodeKey, usize)| {
             let n = &graph.nodes[*key];
@@ -2098,7 +2071,7 @@ fn literal_arg(
             // `i32` control, an enum by index — because it is derived from `Port::coerce`, the
             // conversion this literal is about to go through. Two hand-kept checks here
             // (`materialized_input` + `enum_input`) missed integer ports entirely: the first
-            // reads the `F32Meta` slot, and an `i32` port's meta is not there (issue #569).
+            // reads the `F32Meta` slot, and an `i32` port's meta is not there.
             if !desc.accepts_number_literal(port_name) {
                 return Err(LoadError::UnknownInput {
                     node: err_node.to_string(),
@@ -2371,14 +2344,6 @@ fn check_range_override(
     Ok(())
 }
 
-/// Synthesize an input pipe's per-entry [`Descriptor`] from its declaration: one
-/// `in` port the boundary feeds and one `out` port consumers wire from, both of the **declared**
-/// `Arg` type — the existing pass-2 wire check then enforces that type against every consumer,
-/// no new checker. A numeric pipe's declared `default`/`min`/`max`/`curve` become the port's own
-/// engine-enforced [`F32Meta`] (an unwired signal pipe materializes `default`; a **bare** signal
-/// pipe materializes silence). Validation is local and pointed: unknown type, numeric metadata
-/// on a message pipe, an incoherent range, or a `channel` on anything but a signal pipe
-/// (hardware channels carry signals).
 /// Upper bound (exclusive) on a logical `channel` binding, input or output.
 /// Logical widths derive as `max bound channel + 1` and size **real per-channel buffers**
 /// (the engine's input staging, the render master), so an unbounded document value would turn
@@ -2401,6 +2366,14 @@ fn check_logical_channel(name: &str, ch: usize) -> Result<(), LoadError> {
     Ok(())
 }
 
+/// Synthesize an input pipe's per-entry [`Descriptor`] from its declaration: one
+/// `in` port the boundary feeds and one `out` port consumers wire from, both of the **declared**
+/// `Arg` type — the existing pass-2 wire check then enforces that type against every consumer,
+/// no new checker. A numeric pipe's declared `default`/`min`/`max`/`curve` become the port's own
+/// engine-enforced [`F32Meta`] (an unwired signal pipe materializes `default`; a **bare** signal
+/// pipe materializes silence). Validation is local and pointed: unknown type, numeric metadata
+/// on a message pipe, an incoherent range, or a `channel` on anything but a signal pipe
+/// (hardware channels carry signals).
 fn pipe_descriptor(name: &str, pipe: &InputPipeDoc) -> Result<(Descriptor, PortKind), LoadError> {
     let err = |reason: String| LoadError::InterfacePipe {
         name: name.to_string(),
@@ -2836,7 +2809,7 @@ mod tests {
         ));
     }
 
-    /// The type-agnostic `Arg` pass-through (issue #141): `osc_out.in` accepts any Message-domain
+    /// The type-agnostic `Arg` pass-through: `osc_out.in` accepts any Message-domain
     /// source — a Value `f32` (a Good Button `map` echo) and a `Note` stream both wire in — but a
     /// `Buffer` (audio) source is still a TypeMismatch (audio never crosses the boundary).
     #[test]
@@ -2865,7 +2838,7 @@ mod tests {
 
     /// Legality into the pass-through is capability-keyed (`boundary::has_osc_form`): `Harmony`
     /// has no external OSC form (the boundary opt-out — it registers no converter; its wire
-    /// form is deferred to issue #209), so the wire could never send anything and is rejected
+    /// form is not yet decided), so the wire could never send anything and is rejected
     /// at load, not left silently dead.
     #[test]
     fn arg_passthrough_rejects_a_source_with_no_osc_form() {
@@ -3019,7 +2992,7 @@ mod tests {
         assert_eq!(saved1.nodes.len(), 2);
     }
 
-    /// Issue #569: a numeric literal must set an **`i32`** input port, not be rejected as an
+    /// A numeric literal must set an **`i32`** input port, not be rejected as an
     /// unknown input. The gate used to ask `materialized_input`, which reads the `F32Meta`
     /// struct field — where an integer port carries its meta *inside* `PortType::I32` — so every
     /// port of the ten `*_i32_value` operators was invisible to it and `"a": 3` failed at load
@@ -3046,7 +3019,7 @@ mod tests {
     /// The literal reaches the integer port through the *same* coercion the runtime uses, so it
     /// rounds and clamps identically — a fractional literal is not an `as i32` truncation, and a
     /// literal past the type-wide `±1e6` sentinel pins to it rather than storing a value the
-    /// port would refuse from OSC (issue #569).
+    /// port would refuse from OSC.
     #[test]
     fn an_i32_port_literal_rounds_and_clamps_like_the_runtime() {
         let json = r#"{"instrument":"t","nodes":[
@@ -3063,8 +3036,8 @@ mod tests {
     }
 
     /// The save path writes an `Arg::I32` override back as a plain number, so the reader had to
-    /// accept a number on an `i32` port for `load → save → load` to close. Before issue #569 the
-    /// two halves disagreed: whatever the writer emitted, the reader refused it. Pinned as a
+    /// accept a number on an `i32` port for `load → save → load` to close. The two halves used to
+    /// disagree: whatever the writer emitted, the reader refused it. Pinned as a
     /// round trip rather than a save assertion, because it is the *pairing* that was broken.
     #[test]
     fn an_i32_port_literal_survives_a_save_reload_round_trip() {
@@ -3081,9 +3054,9 @@ mod tests {
         );
     }
 
-    /// #556 PR 2: a port converted from `f32` to `i32` (here `euclid.steps`) is a **hard** load
-    /// error for an `f32`-source wire — `F32 -> I32` narrows and there is no implicit narrowing
-    /// (#556 decision 1). The sanctioned path is an `i32` source (or a `round` converter),
+    /// A port converted from `f32` to `i32` (here `euclid.steps`) is a **hard** load
+    /// error for an `f32`-source wire — `F32 -> I32` narrows and there is no implicit narrowing.
+    /// The sanctioned path is an `i32` source (or a `round` converter),
     /// proven to load by the sibling case. This is the guard that the contract actually bites
     /// after the conversion — a literal still coerces (rounds + clamps), but a *wire* must carry
     /// the type.
@@ -3105,7 +3078,7 @@ mod tests {
     }
 
     /// The widened gate must not start admitting literals on ports that genuinely take none: a
-    /// bare audio buffer has no scalar to set, and an unknown name is still unknown (issue #569).
+    /// bare audio buffer has no scalar to set, and an unknown name is still unknown.
     #[test]
     fn a_literal_on_a_portless_or_bare_buffer_input_is_still_unknown() {
         let bare_buffer = r#"{"instrument":"t","nodes":[
@@ -3383,7 +3356,7 @@ mod tests {
 
     /// The **reverse** crossing, and the reason the rounding family exists. `f32 -> i32` is lossy
     /// — it needs a rounding *decision* — so the wire check refuses it outright and the sanctioned
-    /// path is an operator that names which decision (issue #556, `per-wire-form-check`).
+    /// path is an operator that names which decision (`per-wire-form-check`).
     ///
     /// Both halves are pinned together deliberately: a test that only asserted the rejection would
     /// still pass if the crossing were simply impossible, which is the state this replaced.
@@ -4244,9 +4217,8 @@ mod tests {
         );
     }
 
-    // The old `a_v2_stamped_doc_handed_to_load_instrument_doc_is_shape_checked` smuggle test
-    // (#189 F8a) is a compile error now — neither `load_instrument_doc` nor `build` accepts a
-    // raw `InstrumentDoc`, which is the win. Its coverage lives at the one door left:
+    // Neither `load_instrument_doc` nor `build` accepts a raw `InstrumentDoc`, so a version-smuggle
+    // attempt is now a compile error; its coverage lives at the one door left:
     // `normalize::tests::from_doc_refuses_v1_forms_under_a_current_stamp`.
 
     #[test]
@@ -4755,8 +4727,8 @@ mod tests {
     #[test]
     fn patch_ref_round_trips_through_the_document() {
         // The nested reference lives in the *document*: parse → re-serialize preserves `patch`
-        // via serde. (A built graph holds only the flattened equivalent — see the test below;
-        // reference-preserving save from a built graph is the library thread, P7/#122.)
+        // via serde. A built graph holds only the flattened equivalent — see the test below.
+        // see rules: authoring-library
         let doc = NormalizedDoc::from_json(PARENT_WITH_SUBPATCH, &reg(), None).expect("parse");
         let reparsed =
             NormalizedDoc::from_json(&doc.to_json_pretty(), &reg(), None).expect("reparse");
@@ -4767,8 +4739,8 @@ mod tests {
     #[test]
     fn from_graph_saves_the_flattened_equivalent() {
         // The subpatch dissolves at build, so saving a built graph emits the inlined
-        // child nodes under their prefixed addresses — no `subpatch` node, no `patch` ref. The
-        // deliberate P4 shape; reference-preserving save is P7 (#122).
+        // child nodes under their prefixed addresses — no `subpatch` node, no `patch` ref: the
+        // deliberate one-way flatten. see rules: authoring-library
         let loaded = load_instrument(PARENT_WITH_SUBPATCH, &reg(), &PatchResolver(VOICE_IFACE))
             .expect("load");
         let saved = NormalizedDoc::from_graph(&loaded.graph, "p", &reg());

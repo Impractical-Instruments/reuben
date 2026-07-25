@@ -11,6 +11,8 @@
 //! - inputs: none.
 //! - output 0: `out` (`Buffer`) — uniform white noise in ~[-1, 1], roughly zero-mean.
 //! - params: none.
+//!
+//! see rules: signal-time-dsp
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};

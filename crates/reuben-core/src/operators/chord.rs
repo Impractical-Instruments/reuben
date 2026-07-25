@@ -24,6 +24,8 @@
 //!
 //! The third is **scale-relative** (`+2` degrees), so the same op spells a major, minor, or
 //! diminished triad depending on where the root sits in the scale — the diatonic I–vii° set.
+//!
+//! see rules: signal-time-dsp
 
 use smallvec::SmallVec;
 

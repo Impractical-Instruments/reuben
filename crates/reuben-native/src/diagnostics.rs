@@ -1,28 +1,20 @@
-//! Shared diagnostics counter surface (P6/#183).
+//! Shared diagnostics counter surface.
 //!
 //! reuben's xrun policy is **fixed and observable, not configurable**: an output render
 //! deadline miss plays the device's own silence and is counted; nothing about rendering
-//! changes because of it. This module is the *one* place those counts live, so that P5's
-//! input-ring underrun/overrun counters (#182) land as new fields here rather than a second,
-//! parallel counter surface. The design asks for "periodic and/or exit" logging; this pass ships
-//! periodic logging ([`spawn_periodic_logger`]) since `reuben play` has no clean shutdown path
-//! today (it parks the main thread forever; Ctrl-C is an uncaught `SIGINT`) — wiring a
-//! process-exit hook is a separate, deliberately out-of-scope concern for a diagnostics-only
-//! pass. [`log_snapshot`] is exposed as a free function precisely so an exit hook can call it
-//! later without any change to this module. An OSC diagnostic endpoint is explicitly a later
-//! step, not built here.
+//! changes because of it. This module is the *one* place those counts live, so the input-ring
+//! underrun/overrun counters are fields here rather than a second, parallel counter surface.
 //!
-//! [`Diagnostics`] is designed to be bumped from an RT thread (the output callback, and P5's
-//! input-ring producer/consumer, #182) and read from an ordinary thread: every field is an
-//! [`AtomicU64`], every write is a single `fetch_add`, and reads take a [`Snapshot`] copy so a
-//! logger never holds a reference into the live struct.
+//! [`Diagnostics`] is designed to be bumped from an RT thread and read from an ordinary one: every
+//! field is an [`AtomicU64`], every write a single `fetch_add`, and reads take a [`Snapshot`]
+//! copy so a logger never holds a reference into the live struct.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
 /// Atomic counters for the conditions reuben must "know and say": an output
-/// render that missed its deadline, and (from P5 onward) the input ring's empty-read and
+/// render that missed its deadline, and the input ring's empty-read and
 /// full-write events. Shared via `Arc` between whichever RT thread(s) bump a counter and
 /// whatever logs it.
 ///
@@ -33,12 +25,12 @@ use std::time::Duration;
 /// matters because [`Diagnostics::record_output_xrun`] can be called from the render callback.
 #[derive(Debug, Default)]
 pub struct Diagnostics {
-    /// Output render callbacks that missed their real-time budget (P6, #183): the callback's
+    /// Output render callbacks that missed their real-time budget: the callback's
     /// own render + mapping work took longer than the audio time it was producing. The device
     /// still played *something* (its own underrun silence) — this only counts
     /// that the miss happened.
     pub output_xruns: AtomicU64,
-    /// Input-ring underruns (P5, #182), counted in **frames**: the ring ran empty while the
+    /// Input-ring underruns, counted in **frames**: the ring ran empty while the
     /// output callback was pulling logical input, and this many input frames were read as
     /// zeros instead (the empty→zeros policy). Silence delivered while *re*-priming
     /// after a dry spell is counted too (per callback, as its input-frame demand) — a
@@ -46,7 +38,7 @@ pub struct Diagnostics {
     /// startup prefill is uncounted: silence before the ring has ever flowed is expected,
     /// not an underrun.
     pub input_ring_underruns: AtomicU64,
-    /// Input-ring overruns (P5, #182), counted in **frames**: the *consumer-side* drop-oldest
+    /// Input-ring overruns, counted in **frames**: the *consumer-side* drop-oldest
     /// trim discarded this many of the oldest queued frames because ring fill crossed the
     /// high-water mark (the full→drop-oldest policy). Diagnosis: input is arriving
     /// faster than the drift servo's ±0.5% authority can absorb (a real rate mismatch), or an
@@ -54,7 +46,7 @@ pub struct Diagnostics {
     /// the output callback stalled outright — counts in
     /// [`Self::input_ring_producer_drops`] instead.
     pub input_ring_overruns: AtomicU64,
-    /// Producer-side backstop drops (P5, #182), counted in **frames**: the ring was
+    /// Producer-side backstop drops, counted in **frames**: the ring was
     /// completely full when the input callback tried to commit, so the *incoming* (newest)
     /// frame was dropped — the only move a producer has in an SPSC ring. Diagnosis: the
     /// consumer (the output callback) has stalled outright and nothing is draining; distinct
@@ -127,7 +119,8 @@ impl Snapshot {
 }
 
 /// Emit one snapshot to stderr. Shared wording for periodic and exit logging so both read the
-/// same line format.
+/// same line format. Exposed as a free function precisely so an exit hook can call it later with
+/// no change to this module.
 pub fn log_snapshot(s: &Snapshot) {
     eprintln!(
         "diagnostics: output_xruns={} input_ring_underruns={} input_ring_overruns={} \
@@ -139,7 +132,9 @@ pub fn log_snapshot(s: &Snapshot) {
 /// Spawn a background thread that logs a [`Diagnostics`] snapshot every `interval`, but only
 /// when something counted has changed since the last log — a healthy run stays silent instead
 /// of spamming stderr. Not RT: this thread never touches the audio callback's control flow, it
-/// only reads the shared atomics on a plain sleep loop.
+/// only reads the shared atomics on a plain sleep loop. Logging is periodic only: `reuben play`
+/// has no clean shutdown path today (it parks the main thread forever; Ctrl-C is an uncaught
+/// `SIGINT`), so there is no exit hook to log from yet.
 ///
 /// The returned `JoinHandle` runs for the life of the process (the loop never exits); callers
 /// keep it only to signal intent that the thread is deliberately detached-in-practice, matching
@@ -197,7 +192,6 @@ mod tests {
         };
         assert!(b.changed_since(&a));
         assert!(!a.changed_since(&a));
-        // The input-ring counters (P5) gate logging too, not just output xruns.
         let c = Snapshot {
             input_ring_underruns: 1,
             ..Snapshot::default()
@@ -231,8 +225,6 @@ mod tests {
 
     #[test]
     fn overruns_and_producer_drops_are_separate_diagnoses() {
-        // The consumer-side trim (rate mismatch / stall recovery) and the producer backstop
-        // (stalled output callback) must never merge into one number — opposite fixes.
         let d = Diagnostics::new();
         d.record_input_ring_overrun_frames(3);
         let s = d.snapshot();

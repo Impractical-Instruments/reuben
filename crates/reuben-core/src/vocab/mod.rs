@@ -1,18 +1,16 @@
 //! vocab — the shared concrete types that ride the central [`Arg`](crate::message::Arg).
+//! see rules: composition-operators
 //!
-//! These are the **domain vocabulary**: defined once and reused across operators, which is
-//! what lets [`Arg`](crate::message::Arg) stay a *closed* enum while still carrying rich types
-//! (a `SnapTarget` duplicated per-operator was the smell this removes). Each type carries
-//! `#[derive(ArgValue)]` (`crate::ArgValue`), which generates its `Arg` integration —
-//! `From`/`TryFrom` — plus, for enums, the Enum-over-OSC table (`VARIANTS` / `from_symbol` /
-//! `resolve_arg` / `enum_meta`).
+//! Each type carries `#[derive(ArgValue)]` (`crate::ArgValue`), which generates its `Arg`
+//! integration — `From`/`TryFrom` — plus, for enums, the Enum-over-OSC table (`VARIANTS` /
+//! `from_symbol` / `resolve_arg` / `enum_meta`).
 //!
 //! Adding a domain type = define it here (or beside its logic), derive `ArgValue`, and add one
 //! variant to [`Arg`](crate::message::Arg). A struct type that should cross the OSC boundary
 //! also hand-implements [`OscArg`](crate::message::OscArg) (its flat multi-arg form,
 //! `from_osc`/`to_osc`) and self-registers the converter beside that impl with
-//! `crate::register_osc_form!` (epic #146) — [`Note`] does; [`Harmony`] deliberately does
-//! neither (the boundary opt-out; its wire form is issue #209).
+//! `crate::register_osc_form!` — [`Note`] does; [`Harmony`] deliberately does
+//! neither (the boundary opt-out; it has no external wire form yet).
 //!
 //! Types live next to their behavior — [`Harmony`] and its resolver in the [`harmony`]
 //! submodule, [`Pitch`]/[`Note`] in [`pitch`] — and are re-exported here so a

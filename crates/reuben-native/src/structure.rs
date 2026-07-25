@@ -6,9 +6,8 @@
 //! [`Response`] per [`Request`] in order. A thread in `reuben play` owns it; the client lives
 //! in `reuben-mcp`. Zero new dependencies beyond std, cross-platform, netcat-debuggable.
 //!
-//! M2 (#323) flips the `swap` verb from M1's stop-the-world restart onto the
-//! [`Coordinator`](reuben_core::coordinator::Coordinator)/mailbox path (*same
-//! verb, machinery-only replacement*). The five verbs:
+//! The `swap` verb rides the
+//! [`Coordinator`](reuben_core::coordinator::Coordinator)/mailbox path. The five verbs:
 //! - [`Request::Ping`] → [`Response::Pong`] — liveness of the channel itself.
 //! - [`Request::GetDocument`] → the Coordinator's canonical document + its
 //!   [`content_hash`](reuben_core::content_hash). It changes only when a
@@ -84,7 +83,7 @@ const READ_POLL: Duration = Duration::from_millis(250);
 const SWAP_RECLAIM_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// How many callback periods of silence the swap's install/reclaim poll tolerates before concluding
-/// audio has *stopped* (issue #373 note 2). The grace is derived from the render callback's own
+/// audio has *stopped*. The grace is derived from the render callback's own
 /// period rather than a fixed wall-clock so a large-buffer / low-rate device (whose callbacks are
 /// legitimately far apart) is never mistaken for a stopped one: at 4× the period a live callback has
 /// always ticked at least once within the window. See [`SwapPollGate`].
@@ -120,7 +119,7 @@ fn liveness_grace(period: Option<Duration>, hard: Duration) -> Duration {
     }
 }
 
-/// Fast-bail gate for a swap's bounded install/reclaim poll (issue #373 note 2).
+/// Fast-bail gate for a swap's bounded install/reclaim poll.
 ///
 /// Both polls run under the Coordinator lock and, absent this gate, spin to a fixed ~500ms deadline
 /// whenever the render side is not consuming — which starves `get_document` and the next swap when
@@ -181,7 +180,7 @@ impl SwapPollGate {
 }
 
 /// Publish the render-side config for a freshly-installed engine and report any dark-degrade
-/// warnings — the **native device seam** of the M2 swap.
+/// warnings — the **native device seam** of the mailbox swap.
 ///
 /// After [`Coordinator::swap_document`] commits, this rebuilds the device **output map**
 /// off-thread against the *retained* device channel count (streams are fixed at `play` start)
@@ -205,7 +204,7 @@ pub trait RenderConfigPublisher: Send + Sync {
     /// The render callback's [`RenderLiveness`] (callback counter + period), or `None` if this
     /// publisher drives no live render thread. A swap's [`SwapPollGate`] samples it to tell a running
     /// device from a stopped one and bail early instead of holding the Coordinator lock to the full
-    /// [`SWAP_RECLAIM_TIMEOUT`] (issue #373 note 2).
+    /// [`SWAP_RECLAIM_TIMEOUT`].
     ///
     /// **Deliberately has no default.** The gate's correctness for a real device hinges on this being
     /// wired, so every publisher must decide rather than silently inherit `None`. The invariant: a
@@ -274,7 +273,7 @@ pub(crate) fn dark_degrade_warning(
 /// it owns the canonical document + hash (`swap` advances them, `get_document`/`expect` read
 /// them) and the install mailbox. The `render_config` seam publishes the device output map + the
 /// dark-degrade warning after each swap; `diagnostics` is the live counter surface the callback
-/// feeds (fixed at `play` start — M2 never reopens streams, so it never re-points); `control` is
+/// feeds (fixed at `play` start — streams are never reopened, so it never re-points); `control` is
 /// the [`Request::Send`] ingress into the render callback.
 #[derive(Clone)]
 pub struct StructureState {
@@ -367,9 +366,9 @@ impl StructureState {
 /// could silently drift. The **exhaustive destructure** below is the compile-time coupling that
 /// prevents it: add a counter to [`Snapshot`] and this `let Snapshot { .. }` stops compiling
 /// (non-exhaustive, no `..`); add a field to [`DiagnosticsReport`] and the struct literal stops
-/// compiling (missing field). Either drift is a build break here, not a runtime surprise
-/// (follow-up from #310's review). The behavioral half — that each counter maps to the *right*
-/// field — is [`tests::diagnostics_report_maps_every_counter_field_for_field`].
+/// compiling (missing field). Either drift is a build break here, not a runtime surprise. The
+/// behavioral half — that each counter maps to the *right* field — is
+/// [`tests::diagnostics_report_maps_every_counter_field_for_field`].
 pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
     let Snapshot {
         output_xruns,
@@ -482,7 +481,7 @@ fn handle_send(state: &StructureState, messages: Vec<ControlMessage>) -> Respons
     Response::Sent
 }
 
-/// The M2 mailbox-swap install path, device-free up to the
+/// The mailbox-swap install path, device-free up to the
 /// [`RenderConfigPublisher`] call. Everything runs under the Coordinator lock so the
 /// `expect`-compare and the swap are one atomic critical section (a compare-and-swap)
 /// — concurrent swaps from multiple connections serialize, and neither `get_document` nor another
@@ -494,7 +493,7 @@ fn handle_send(state: &StructureState, messages: Vec<ControlMessage>) -> Respons
 ///    channel `Error`.
 /// 2. **Arbitration**: a stale `expect` rejects with the real installed hash as
 ///    [`Response::Conflict`] and does **not** swap. Absent `expect` is last-write-wins. Done here,
-///    not inside `swap_document`, so the wire keeps M1's distinct `Conflict` response shape — and
+///    not inside `swap_document`, so the wire keeps its own distinct `Conflict` response shape — and
 ///    core's swap owns no guard at all, by design (see rules: agent-mcp).
 /// 3. **Swap**: [`Coordinator::swap_document`] validates + builds a whole new Engine off-thread,
 ///    fills the install mailbox, and returns the real [`SwapReport`] (survivor/reset stats). A
@@ -549,7 +548,7 @@ fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>
             .expect("installed-source mutex poisoned") = installed_from;
 
         // 4. Publish the new engine's device output map + fold the dark-degrade warning — BEFORE the
-        //    engine reclaim (B1). `publish` fills the output-map mailbox (never dropping the map),
+        //    engine reclaim. `publish` fills the output-map mailbox (never dropping the map),
         //    so the map is in flight *before* the callback installs the new engine; the callback
         //    then promotes it the moment the engine reaches the new width, keeping the two mailboxes
         //    in lockstep with no desync window. Publishing after the reclaim would leave a block
@@ -565,7 +564,7 @@ fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>
         //    also proves the callback is consuming — the retiree comes home at the ramp
         //    zero-crossing — so `publish`'s bounded install poll above can never wedge. The render
         //    liveness lets the reclaim bail early if audio has genuinely stopped rather than hold
-        //    this lock to the full deadline (issue #373 note 2).
+        //    this lock to the full deadline.
         reclaim_retired_engine(&mut coordinator, || state.render_config.render_liveness());
     }
     Response::SwapReport(report)
@@ -598,7 +597,7 @@ fn rejected_swap(coordinator: &Arc<Mutex<Coordinator>>, message: String) -> Resp
 /// posted back and **drop it here, off the audio thread** — the deferred free. Polls the
 /// retire slot with a 1ms back-off (the caller supplies the clock; core is OS-free), bounded by the
 /// [`SwapPollGate`]: at most [`SWAP_RECLAIM_TIMEOUT`] while the callback keeps ticking, but only the
-/// liveness grace once `liveness` shows audio has stopped ticking (issue #373 note 2). A timeout is
+/// liveness grace once `liveness` shows audio has stopped ticking. A timeout is
 /// not fatal: the swap already committed, so it just leaves the retiree in flight for the next swap's
 /// opportunistic reclaim — the "audio isn't consuming swaps" case.
 fn reclaim_retired_engine(
@@ -619,17 +618,13 @@ fn reclaim_retired_engine(
 /// Resolve a [`DocSource`] to its JSON text: inline JSON re-serialized to a string,
 /// or a file read. Resource paths inside the document resolve through **the Coordinator's own
 /// resolver**, anchored once at `play` start against the initial instrument's directory + the
-/// library root.
-///
-/// **Behavior change from M1 (sanctioned by the single-writer Coordinator design).** M1 re-anchored
-/// a by-*path* swap at the swapped file's own directory (`FsResolver::for_instrument`). The
-/// Coordinator now owns a single resolver (the Registry handle, the resolver, …), and M2's `swap_document`
-/// uses exactly that one resolver — so M2 does **not** re-anchor per swap source. By-*value* swaps
-/// (the MCP primary flow) are unchanged: their resources always resolved against the play-start
-/// anchor. A by-*path* swap's *relative* resources now resolve against that anchor + the library
-/// root rather than the file's own directory; an unresolvable one dark-degrades to a `LoadWarning`
-/// (or, if structurally required, a clean `ok:false` reject), never a crash. A read/serialize
-/// failure here is a human message the caller turns into a rejected swap.
+/// library root — the single-writer Coordinator owns one resolver, so a by-*path* swap does
+/// **not** re-anchor at the swapped file's own directory. By-*value* swaps (the MCP primary flow)
+/// are unaffected: their resources always resolved against the play-start anchor. A by-*path*
+/// swap's *relative* resources resolve against that anchor + the library root rather than the
+/// file's own directory; an unresolvable one dark-degrades to a `LoadWarning` (or, if structurally
+/// required, a clean `ok:false` reject), never a crash. A read/serialize failure here is a human
+/// message the caller turns into a rejected swap.
 fn resolve_source(source: DocSource) -> Result<String, String> {
     match source {
         DocSource::Document(value) => serde_json::to_string(&value)
@@ -834,8 +829,8 @@ mod tests {
         "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
 
     /// A held envelope whose CV is the master output (rings at sustain) — a swap to the identical
-    /// document keeps `/env` + `/out` survivors, so the real diff carries `survived: 2` (impossible
-    /// under M1's all-cold restart), the load-bearing proof the mailbox migration ran.
+    /// document keeps `/env` + `/out` survivors, so the real diff carries `survived: 2`, the
+    /// load-bearing proof the mailbox swap ran rather than a cold restart.
     fn envelope_doc(env_addr: &str) -> String {
         format!(
             r#"{{ "format_version": 3, "instrument": "eg",
@@ -933,7 +928,7 @@ mod tests {
         cb.stop();
     }
 
-    /// The `source` half of the snapshot (#604): seeded by `play`'s path, re-pointed by a
+    /// The `source` half of the snapshot: seeded by `play`'s path, re-pointed by a
     /// successful by-path swap, and — the part worth a test — **left alone by a rejected one**, so
     /// `get_document` never names a document that is not playing.
     #[test]
@@ -1061,10 +1056,10 @@ mod tests {
 
     #[test]
     fn swap_installs_via_the_mailbox_with_real_survivor_stats() {
-        // The heart of M2: a swap to the identical envelope document keeps both
-        // nodes survivors, so the real migration diff carries `survived: 2` — impossible under M1's
-        // all-cold restart (which hard-codes `survived: 0`). The swap installed via the mailbox (the
-        // FakeCallback drained it; `reclaim` completing is the proof), no stream teardown involved.
+        // A swap to the identical envelope document keeps both nodes survivors, so the real
+        // migration diff carries `survived: 2` — impossible under an all-cold restart (which would
+        // hard-code `survived: 0`). The swap installed via the mailbox (the FakeCallback drained
+        // it; `reclaim` completing is the proof), no stream teardown involved.
         let base = envelope_doc("/env");
         let (state, cb, base_hash) = swap_fixture(&base, 0);
 
@@ -1088,7 +1083,7 @@ mod tests {
     fn swap_to_a_renamed_node_resets_it_and_reports_a_smaller_survivor_count() {
         // The reset half: renaming the envelope makes it a remove+add, so only `/out` survives —
         // `survived: 1`, with `/env` removed and `/eg` added. Real survivor semantics from the
-        // manifest diff, not M1's blanket zero.
+        // manifest diff, not a blanket zero.
         let (state, cb, _base_hash) = swap_fixture(&envelope_doc("/env"), 0);
         match dispatch(
             &state,
@@ -1110,7 +1105,7 @@ mod tests {
     fn back_to_back_swaps_both_install_proving_off_thread_reclaim() {
         // One swap in flight: a second swap can only install once the first's retiree
         // has come home and been reclaimed. Both succeeding is the behavioral proof the mailbox +
-        // off-thread reclaim cycle actually turned over — the M2 mechanism, not a restart.
+        // off-thread reclaim cycle actually turned over, not a restart.
         let (state, cb, _) = swap_fixture(&envelope_doc("/env"), 0);
         for target in [
             envelope_doc("/env"),
@@ -1405,7 +1400,7 @@ mod tests {
             Duration::from_millis(372),
             "4×93ms sits between the bounds"
         );
-        // Ceiling: a large-buffer / low-rate device (256ms period, comment #1's example) would want
+        // Ceiling: a large-buffer / low-rate device (256ms period) would want
         // 4×256ms = 1.024s, clamped to the hard deadline — never cut off earlier than the old bound.
         assert_eq!(
             liveness_grace(Some(Duration::from_millis(256)), hard),
@@ -1458,7 +1453,7 @@ mod tests {
             "still bounded by the hard deadline"
         );
 
-        // Dies mid-poll (comment #2): ticks once, then goes flat — bail a grace after the LAST tick,
+        // Dies mid-poll: ticks once, then goes flat — bail a grace after the LAST tick,
         // not the full deadline. Last tick observed at 40ms ⇒ bail by ~90ms.
         let mut stalled = SwapPollGate::start_at(live(7), t0, hard);
         assert!(!stalled.give_up_at(Some(8), t0 + Duration::from_millis(40)));
@@ -1484,7 +1479,7 @@ mod tests {
     fn swap_reclaim_bails_fast_when_no_render_side_consumes() {
         // With nothing draining the mailbox (audio has stopped), the engine reclaim would otherwise
         // spin the full SWAP_RECLAIM_TIMEOUT under the Coordinator lock, stalling get_document and
-        // the next swap (issue #373 note 2). No FakeCallback here — the render side is dropped, so
+        // the next swap. No FakeCallback here — the render side is dropped, so
         // the retiree never comes home — so the liveness gate must bail at the grace instead.
         let (coordinator, _side, _w) = Coordinator::install_initial(
             BASE_DOC,

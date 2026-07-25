@@ -4,10 +4,7 @@
 //! arithmetic. Operators own control semantics (which inputs exist, how they're read,
 //! when coefficients are recomputed) and embed these components for the sample math.
 //!
-//! Components are **value-oriented** on purpose: state types are small `Copy` structs a
-//! `process` loop copies into a local, ticks in registers, and writes back to the operator
-//! once per block. Threading state as a value is what lets LLVM keep it out of memory —
-//! mutating operator fields through `&mut self` inside the sample loop spills every
-//! sample instead (#169).
+//! Components are **value-oriented**: state is a small `Copy` struct a `process` loop
+//! copies to a local, ticks in registers, and writes back once per block (see [`svf`]).
 
 pub mod svf;

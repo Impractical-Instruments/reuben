@@ -1,14 +1,10 @@
 //! Gate/clock **edge detection** — the shared primitive behind every clock-driven operator.
 //!
-//! `clock`/`gate` are held Values: the engine block-slices at every change, so an
-//! operator sees one constant level per (sub)block and detects an edge by comparing that level to
-//! the one held across the previous slice — the slice's frame 0 *is* the change frame, so emitting
-//! there is sample-accurate. That "compare the held level to the previous, fire on the crossing"
-//! logic was copy-pasted (with its bare `0.5` threshold and a `prev_clock`/`prev_gate` latch field)
-//! into every clock-driven operator. [`EdgeDetector`] captures it once.
-//!
-//! It is a `Copy` latch of a single `f32` — allocation-free and trivially cheap, so it is fine to
-//! run on the render hot path.
+//! `clock`/`gate` are held Values: the engine block-slices at every change, so an operator sees one
+//! constant level per (sub)block and detects an edge by comparing it to the level held across the
+//! previous slice — the slice's frame 0 *is* the change frame, so emitting there is
+//! sample-accurate. [`EdgeDetector`] captures that compare-and-latch once for every clock-driven
+//! operator to share, as a `Copy` latch of a single `f32` cheap enough for the render hot path.
 
 /// Threshold at or above which a held gate/clock level counts as **on**.
 ///

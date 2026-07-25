@@ -1,32 +1,16 @@
-//! The **closed document-manipulation vocabulary**: the finite set of verbs an agent uses to
-//! author an instrument document without ever touching its bytes (#583, #603). Each verb is a pure
-//! `(source, …) -> EditResult` function — read the document through the resolver seam
-//! ([`ResourceResolver::resolve_text`]), apply one surgical edit, re-validate the **whole** document
-//! through the loader, **write iff valid** ([`ResourceResolver::write_text`]), and echo back the
-//! post-write content hash plus the [`projection`](crate::projection) of what the verb touched.
-//! All engine-free — always-available pure tools, never reaching a live engine.
-//!
-//! # The vocabulary is derived, and its completeness is guarded
-//!
-//! #583 closed the escape hatch: the agent may not emit document bytes, so **anything no verb can
-//! reach is unreachable**. That makes completeness a *correctness* requirement, not a nicety. The
-//! guard is mechanical — [`VERB_COVERAGE`] dispositions every leaf field of the format into the verb
-//! that writes it (or an explicit `omit:` reason), and a schemars field-walk fails the build the
-//! moment the format grows a field no verb reaches. This is the write-side mirror of the projection's
-//! read-side [`FIELD_COVERAGE`](crate::projection::FIELD_COVERAGE): together they prove the agent can
-//! both *see* and *reach* every field the format can express.
-//!
-//! # Write-iff-valid, cascade, and the door's guard
+//! The closed document-manipulation vocabulary: the finite set of verbs an agent uses to author an
+//! instrument document without ever touching its bytes. Each verb is a pure
+//! `(source, …) -> EditResult` function that funnels through [`edit_existing`]/[`finish`]: read,
+//! apply one surgical edit, re-validate the whole document, write iff valid, and echo back the
+//! post-write hash plus the [`projection`](crate::projection) of what the verb touched. All
+//! engine-free — always-available pure tools, never reaching a live engine.
 //!
 //! There are no transactions: a lone unwired node loads clean and renders silence, so
-//! `new → add → add → wire → wire` is valid at every step. The destructive verbs — the two that
-//! delete an address the rest of the document names, [`remove_instrument_node`] and
-//! [`remove_instrument_interface_input`] (whose pipe minted `/<name>`) — would leave dangling
-//! wire-refs, so they **cascade**: they auto-unwire every consumer and **report exactly what they
-//! broke** in [`EditResult::notes`]; [`rename_instrument_node`]
-//! rewrites those refs instead of dropping them, same channel. The `expect`-hash write guard is a
-//! **door** concern (`agent-mcp.md#expect-guard-is-a-door-concern`): core's write stays unguarded
-//! last-write-wins, the post-write hash is always returned, and the door does the content-hash compare.
+//! `new → add → add → wire → wire` is valid at every step. [`remove_instrument_node`] and
+//! [`remove_instrument_interface_input`] delete an address the rest of the document may still name,
+//! so they cascade: they auto-unwire every consumer and report exactly what they broke in
+//! [`EditResult::notes`]; [`rename_instrument_node`] rewrites those refs instead of dropping them.
+//! [`VERB_COVERAGE`] proves every leaf field of the format has a verb that can write it.
 //!
 //! see rules: agent-mcp
 
@@ -46,9 +30,7 @@ use crate::projection::{Projector, Selection};
 use crate::resources::{ResolveError, ResourceResolver};
 use crate::Registry;
 
-/// The result of one document-manipulation verb — the shape every verb returns: the validation
-/// report (`ok` iff the edit was written), the content hash of what is **now persisted**, any
-/// cascade/degrade notes the edit produced, and the rendered projection of what it touched.
+/// The shape every document-manipulation verb returns.
 ///
 /// Derives `schemars::JsonSchema` behind the default-off `schemars` feature so a door can advertise
 /// it as one `outputSchema`; the play/CLI build never compiles schemars.
@@ -409,8 +391,8 @@ pub fn set_instrument_description(
 
 // --- node verbs ----------------------------------------------------------------------------------
 
-/// Add a node **fully formed in one call** — the zoom-mirroring add (#611): required `address` +
-/// `type`, plus the same shape a node zoom reads back (inputs literal-or-wired, config constants,
+/// Add a node **fully formed in one call**, mirroring the shape a node zoom reads back: required
+/// `address` + `type`, plus inputs literal-or-wired, config constants,
 /// description, and any resource-slot reference). Atomic under write-iff-valid: a wire to a missing
 /// source, or a duplicate address, rejects the whole call.
 #[allow(clippy::too_many_arguments)]

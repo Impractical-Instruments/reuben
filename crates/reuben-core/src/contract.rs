@@ -1,11 +1,8 @@
-//! The contract serde types every conversational door serializes (one schema,
-//! two doors): [`Diag`]/[`Report`], the swap [`DiffSummary`] and [`SwapReport`],
-//! and the [`content_hash`] over a document's canonical bytes.
-//!
-//! These live OS-free in core — not in reuben-native or reuben-mcp — so the wasm lane reuses
-//! the exact types the native lane serializes. Every type derives serde both ways, plus
-//! `schemars::JsonSchema` behind the default-off `schemars` feature so rmcp can emit
-//! `outputSchema` without the play/CLI build paying for it (feature fencing).
+//! The contract serde types every conversational door serializes: [`Diag`]/[`Report`], the swap
+//! [`DiffSummary`] and [`SwapReport`], and the [`content_hash`] over a document's canonical
+//! bytes. Every type derives serde both ways, plus `schemars::JsonSchema` behind the default-off
+//! `schemars` feature so rmcp can emit `outputSchema` without the play/CLI build paying for it.
+//! see rules: agent-mcp
 
 use serde::{Deserialize, Serialize};
 
@@ -14,14 +11,12 @@ use crate::format::{LoadError, LoadWarning, NormalizedDoc};
 /// The content identity of a normalized document: a hash over the canonical
 /// [`to_json_pretty`](crate::format::InstrumentDoc::to_json_pretty) bytes — the exact bytes
 /// a save writes — so two equal [`NormalizedDoc`]s hash equal regardless of how their source
-/// text was formatted. Every `SwapReport`/`get_document` response carries it; a swap's
-/// `expect` guard compares it; a future store may dedup by it — but a store
-/// deduping by it must byte-verify: the hash is not cryptographic, so equal tokens are a
-/// candidate match, not proof of identical content.
+/// text was formatted. A door's `expect` guard compares it — see rules: agent-mcp
+/// (expect-guard-is-a-door-concern).
 ///
-/// The string is an **opaque token**: compare it for equality, never parse it. The algorithm
-/// is deliberately unspecified in the contract (the mechanism is left epic-level) and
-/// carries no cryptographic claim — it guards against accident (a stale `expect`), not attack.
+/// The string is an **opaque token**: compare it for equality, never parse it. It carries no
+/// cryptographic claim, so a future dedup-by-hash consumer must byte-verify a match rather than
+/// trust it.
 pub fn content_hash(doc: &NormalizedDoc) -> String {
     format!("{:016x}", fnv1a_64(doc.to_json_pretty().as_bytes()))
 }
@@ -118,6 +113,9 @@ impl Diag {
 /// Outcome of validating (or swap-validating) an instrument document:
 /// loadable + cycle-free means `ok`. Resource problems are advisory `warnings`
 /// and do not flip `ok`; a `{ok: false}` report is a tool *working*, not a tool failure.
+// The `///` above is NOT a comment: it is the advertised `$defs/Report` schema `description` on 19
+// tools, so a model reads it. Keep it prose a model can act on — no pointers, no rustdoc links, and
+// nothing added here that you would not say to a model. see rules: code-as-grounding
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Report {
@@ -146,9 +144,8 @@ pub struct DiffSummary {
 /// What a `swap` returns: the validation [`Report`], the
 /// **installed** document's [`content_hash`] (on `ok: false` nothing installed — the hash
 /// still names what keeps playing), and, on success, the [`DiffSummary`]. The `Report`
-/// flattens so the wire shape is one flat object — this one serde type is both the structure
-/// channel's response and the MCP tool's `structuredContent` (shapes must not
-/// drift).
+/// flattens so the wire shape is one flat object — see rules: agent-mcp
+/// (portable-tool-contracts).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct SwapReport {
@@ -162,19 +159,12 @@ pub struct SwapReport {
 }
 
 impl SwapReport {
-    /// The nothing-was-installed report, defined once.
-    ///
-    /// A door that rejects a swap *before* the loader runs — the structure channel's `expect`
-    /// guard, which answers with a [`Conflict`](crate::coordinator::Conflict) rather than a report
-    /// — still owes its caller a `SwapReport`, because the tool surface advertises one flattened
-    /// `outputSchema` spanning the install, validation-failure, and guard-miss cases. This
-    /// constructor is that report: `ok: false` with **no diagnostics of its own** (the `Conflict`
-    /// names the cause, so duplicating it as a `Diag` would say the same thing twice) and no diff
-    /// (nothing changed to summarize).
+    /// The nothing-was-installed report, defined once — see rules: agent-mcp
+    /// (expect-guard-is-a-door-concern) for why a door needs this shape even when it rejects a
+    /// swap before the loader runs.
     ///
     /// `content_hash` is **what keeps playing** — the conflict's `actual`, never the `expected` the
-    /// client asked for. That contract is the whole reason this lives here instead of being spelled
-    /// inline at each door.
+    /// client asked for.
     pub fn rejected(content_hash: String) -> Self {
         Self {
             report: Report {

@@ -251,9 +251,9 @@ mod tests {
 
     #[test]
     fn channel_plus_default_pipe_describes_both_truthfully() {
-        // #190 F1: a `channel` + `default` pipe is *both* a device input and a knob — the
-        // engine honors the default as the unfed fallback (and keeps the pipe
-        // message-drivable), so describe advertising both is the truth, not a lie.
+        // A `channel` + `default` pipe is *both* a device input and a knob — the engine honors
+        // the default as the unfed fallback (and keeps the pipe message-drivable), so describe
+        // advertising both is the truth, not a lie.
         let b = boundary(
             r#"{"format_version":2,"instrument":"t","interface":{
                 "inputs":{"lvl":{"type":"f32_buffer","channel":0,

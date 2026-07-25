@@ -1,11 +1,7 @@
 //! Envelope — a gated ADSR **generator** that emits a linear control signal.
 //!
-//! Following the modular-synth split (issue #40), the envelope is a pure EG: it generates the
-//! ADSR contour as **linear CV** in `[0, 1]` and emits it on its output — it does **not** apply
-//! itself as a VCA. Shaping that contour into a perceptually-natural volume curve, and applying
-//! it to audio, are downstream concerns: route `cv` through a curve op (e.g. `power` for an
-//! exponential-style amplitude decay) and into a `mul` against the audio. Keeping the EG linear
-//! makes it the flexible primitive — linear *or* any curve is a choice of downstream op.
+//! A pure EG: it emits the ADSR contour as **linear CV** in `[0, 1]` and does **not** apply itself
+//! as a VCA — route `cv` through a curve op (e.g. `power`) and into a `mul` against the audio.
 //!
 //! All inputs are Value ports, each owning its unwired default and read held (the engine
 //! block-slices at each change). `gate` is edge-detected at the slice's frame 0 (the change frame),
@@ -22,6 +18,8 @@
 //!   **voice-liveness** source the Voicer reads to know a voice is truly finished (not merely
 //!   gate-off), so a voice in its release tail is never stolen while an idle one exists. Emitted as a
 //!   sparse `MsgWriter` change (one event per true↔false transition), like `euclid.gate`.
+//!
+//! see rules: signal-time-dsp
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};

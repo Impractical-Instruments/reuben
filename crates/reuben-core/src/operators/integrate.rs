@@ -1,16 +1,12 @@
 //! `integrate` — discrete running sum, `out[i] = Σ in[0..=i]`, per sample.
 //!
-//! A dense `Float`→`Float` op with a **constant one-sample `dt`**: the running Riemann sum of the
-//! input, accumulated across block boundaries. The inverse of [`differentiate`](super::differentiate)
-//! — integrate a constant and you get a linear ramp; integrate a ramp and you get a parabola. As
-//! with `differentiate`, the sampling window is literally one sample (no `sr` scaling); conversion
-//! to a real time base ("·seconds") is a **separate, deferred** op, so the accumulator grows by the
-//! raw sample value each step.
-//!
-//! The accumulator carries across blocks; `spawn` resets it to 0.
+//! The inverse of [`differentiate`](super::differentiate) — integrate a constant and you get a
+//! linear ramp; integrate a ramp and you get a parabola.
 //!
 //! - input 0: `in` (`Float`) — the signal to integrate. Unwired default 0.
 //! - output 0: `out` (`Buffer`) — the running sum including the current sample.
+//!
+//! see rules: signal-time-dsp
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -21,7 +17,7 @@ crate::operator_contract!(IntegrateF32Signal {
     outputs: { out: f32_buffer },
 });
 
-/// The op's scalar math, written once (the pure-fn seam): one accumulation step.
+/// The op's scalar math: one accumulation step.
 #[inline]
 fn accumulate(acc: f32, cur: f32) -> f32 {
     acc + cur

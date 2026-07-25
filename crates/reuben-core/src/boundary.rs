@@ -10,14 +10,14 @@
 //! **port's declared [`PortType`]** drives [`osc_in_arg`]. A primitive port wraps the single arg; a
 //! vocab enum resolves it via its [`EnumMeta`](crate::descriptor::EnumMeta); a struct vocab type
 //! unpacks the flat form via the converter it registered with [`register_osc_form!`] (its
-//! [`OscArg::from_osc`], keyed by the port's declared type name — port-authority, epic #146). A
+//! [`OscArg::from_osc`], keyed by the port's declared type name). A
 //! [`Buffer`](Arg::F32Buffer) port has no OSC form, so audio cannot cross, and a struct type
-//! that registers no form (`Harmony`; its wire form is issue #209) cannot either — the opt-out
+//! that registers no form (`Harmony`) cannot either — the opt-out
 //! is by construction / by omission.
 //!
-//! **The converter registry** ([`OscForm`], issues #204/#205): struct vocab converters
+//! **The converter registry** ([`OscForm`]): struct vocab converters
 //! self-register at their definition site and are collected by `inventory` into a link-time
-//! slice (the operator-registry self-registration pattern). [`osc_form_by_name`] serves the inbound decode; [`has_form`]
+//! slice, the same self-registration pattern as the operator registry. [`osc_form_by_name`] serves the inbound decode; [`has_form`]
 //! serves [`has_osc_form`]'s capability key. Only those two sides are registry-backed:
 //! outbound ([`osc_out_args`]) stays a **closed exhaustive match** over [`Arg`] — see
 //! [`OscForm`]'s docs for why — with the
@@ -29,7 +29,7 @@
 use crate::descriptor::{Port, PortType};
 use crate::message::{Arg, OscArg};
 
-/// A compile-time OSC-form registration for a **struct vocab type** (issue #204, epic #146),
+/// A compile-time OSC-form registration for a **struct vocab type**,
 /// submitted at the type's definition site via [`register_osc_form!`] and collected by
 /// `inventory` into a link-time slice — the same self-registration pattern as the operator
 /// registry's [`OpReg`](crate::registry::OpReg). Keyed by
@@ -52,8 +52,8 @@ pub struct OscForm {
 
 inventory::collect!(OscForm);
 
-/// Register a struct vocab type's external OSC form at compile time (issue #204, mirroring
-/// [`register_operator!`](crate::registry)).
+/// Register a struct vocab type's external OSC form at compile time, mirroring
+/// [`register_operator!`](crate::registry).
 ///
 /// Invoke **by path** next to the type's [`OscArg`] impl: `crate::register_osc_form!(Note);`.
 /// The submitted entry wraps `<T as OscArg>::from_osc(args).map(Arg::from)`, so it requires
@@ -130,7 +130,7 @@ pub fn osc_in_arg(p: &Port, args: &[Arg]) -> Option<Arg> {
         PortType::Vocab {
             enum_meta: Some(e), ..
         } => args.first().and_then(|a| e.resolve_arg(a)),
-        // A struct vocab type: look up its registered converter ([`OscForm`], issue #205) by the
+        // A struct vocab type: look up its registered converter ([`OscForm`]) by the
         // port's declared type name and unpack the flat form. A name with no registration
         // (e.g. `Harmony`) has no OSC form — opt-out by not calling `register_osc_form!`.
         PortType::Vocab {
@@ -138,11 +138,10 @@ pub fn osc_in_arg(p: &Port, args: &[Arg]) -> Option<Arg> {
             name,
             ..
         } => osc_form_by_name(name).and_then(|f| (f.from_osc)(args)),
-        // A type-agnostic pass-through (issue #141, the `osc_out` sink's input): a single atom
+        // A type-agnostic pass-through (the `osc_out` sink's input): a single atom
         // with a verbatim single-Arg form — numeric or string — crosses as-is: the OSC
-        // echo/loopback path (fader/encoder/label feedback). The string atom joined once
-        // `Arg::Str` went `Arc<str>`-backed (issues #206/#207): forwarding it through
-        // `osc_out.process()` is now a refcount bump, not a heap clone. A
+        // echo/loopback path (fader/encoder/label feedback). Forwarding a string atom through
+        // `osc_out.process()` is a refcount bump on its `Arc<str>` backing, not a heap clone. A
         // multi-arg list still has no unambiguous single-Arg form (the port names no vocab type
         // to unpack it), so it drops — a typed destination port decodes those.
         PortType::Arg => match args {
@@ -153,8 +152,8 @@ pub fn osc_in_arg(p: &Port, args: &[Arg]) -> Option<Arg> {
 }
 
 /// Whether a wire of this declared [`PortType`] can ever cross the outbound boundary — the
-/// **capability key** for legality into a type-agnostic [`Arg`](PortType::Arg) pass-through input
-/// (issue #141). This is the single statement of "has an external OSC form": the load-time
+/// **capability key** for legality into a type-agnostic [`Arg`](PortType::Arg) pass-through input.
+/// This is the single statement of "has an external OSC form": the load-time
 /// compat check (`format.rs`) and the plan-time form check (`plan.rs`) both consume it, so
 /// legality and [`osc_out_args`] cannot drift — a type is wireable into the pass-through **iff**
 /// the drain produces a non-empty form for it. A wire that could never send anything is a
@@ -163,8 +162,8 @@ pub fn has_osc_form(ty: &PortType) -> bool {
     match ty {
         // The OSC atoms cross verbatim.
         PortType::F32 | PortType::I32 { .. } | PortType::Str => true,
-        // A type-erased vocab enum leaves as its bare index today; symbol-on-the-wire is
-        // issue #147 (drain-side source-port resolution).
+        // A type-erased vocab enum leaves as its bare index today; symbol-on-the-wire needs
+        // drain-side source-port resolution and is not built.
         PortType::Vocab {
             enum_meta: Some(_), ..
         } => true,
@@ -202,9 +201,9 @@ pub fn osc_out_args(arg: &Arg, out: &mut Vec<Arg>) -> bool {
         // A type-erased vocab enum (`Arg::Enum`) goes out as its bare **index**: at the boundary
         // there is no port context to recover the symbol from (type identity lives in the port, not
         // the value). Symbol-on-the-wire for outbound enums needs the sink's wired *source-port*
-        // `enum_meta` resolved at the engine drain — issue #147, not here.
+        // `enum_meta` resolved at the engine drain, which is not built.
         Arg::Enum(i) => out.push(Arg::I32(*i as i32)),
-        // No external OSC form. `Pitch` is wire-internal (leaf-promotion, issue #519): like
+        // No external OSC form. `Pitch` is wire-internal: like
         // `Harmony`, it rides the internal wire only — no controller sends a bare pitch, so
         // there is no `OscArg`/`register_osc_form!` for it and nothing to encode here.
         Arg::Harmony(_) | Arg::Pitch(_) | Arg::F32Buffer(_) => {}
@@ -340,8 +339,8 @@ mod tests {
         assert_eq!(osc_in_arg(&p, &flat), Some(Arg::Note(n)));
     }
 
-    /// A type-erased outbound enum serializes as its bare index (symbol-on-the-wire lands with
-    /// issue #147's drain-side source-port resolution). The boundary has no port context, so it
+    /// A type-erased outbound enum serializes as its bare index (symbol-on-the-wire needs
+    /// drain-side source-port resolution and is not built). The boundary has no port context, so it
     /// cannot recover the variant symbol from a bare `Arg::Enum`.
     #[test]
     fn enum_out_sends_index() {
@@ -351,10 +350,10 @@ mod tests {
         assert_eq!(flat, vec![Arg::I32(up.to_index() as i32)]);
     }
 
-    /// The type-agnostic pass-through port (issue #141, `osc_out.in`): a **single numeric or
-    /// string** atom crosses verbatim — the OSC echo/loopback path (the string atom joined in
-    /// issue #207, once `Arc<str>` backing made its forward a refcount bump, issue #206) — while
-    /// a multi-arg list drops (no vocab type to unpack it into one Arg).
+    /// The type-agnostic pass-through port (`osc_out.in`): a **single numeric or
+    /// string** atom crosses verbatim — the OSC echo/loopback path, forwarding a string atom as
+    /// an `Arc<str>` refcount bump — while a multi-arg list drops (no vocab type to unpack it
+    /// into one Arg).
     #[test]
     fn arg_passthrough_port_crosses_a_single_numeric_or_string_atom_verbatim() {
         let p = Port::arg("in");
@@ -370,8 +369,8 @@ mod tests {
         assert_eq!(osc_in_arg(&p, &[]), None);
     }
 
-    /// Inbound string echo (issue #207): a single `Str` atom round-trips through an `arg` port —
-    /// in via [`osc_in_arg`] (an `Arc` clone, RT-safe since issue #206), back out via
+    /// Inbound string echo: a single `Str` atom round-trips through an `arg` port —
+    /// in via [`osc_in_arg`] (an `Arc` clone, RT-safe), back out via
     /// [`osc_out_args`] as the same single flat atom. Multi-arg lists — string ones included —
     /// still drop on the way in: without a typed destination port there is no unambiguous
     /// single-`Arg` form.
@@ -392,7 +391,7 @@ mod tests {
         assert_eq!(osc_in_arg(&p, &[Arg::F32(1.0), Arg::Str("x".into())]), None);
     }
 
-    /// The capability key (issue #141): a type is wireable into the pass-through **iff**
+    /// The capability key: a type is wireable into the pass-through **iff**
     /// [`osc_out_args`] produces a non-empty external form for it. The second half locks the
     /// "cannot drift" claim in [`has_osc_form`]'s docs: for a value of every `Arg` variant, the
     /// drain reports a form (`true`) exactly where the key grants one.
@@ -402,12 +401,12 @@ mod tests {
         assert!(has_osc_form(&PortType::F32));
         assert!(has_osc_form(&PortType::I32 { meta: None }));
         assert!(has_osc_form(&PortType::Str));
-        // A vocab enum leaves as its index (symbols: issue #147).
+        // A vocab enum leaves as its index (symbol-on-the-wire is not built).
         assert!(has_osc_form(
             &Port::enumerated(FilterMode::enum_meta("mode")).ty
         ));
         // Note packs its registered flat form; Harmony registers none — the boundary opt-out
-        // (its wire form is deferred to issue #209).
+        // (it has no external wire form yet).
         assert!(has_osc_form(&PortType::Vocab {
             name: "Note",
             is_event: true,
@@ -435,7 +434,7 @@ mod tests {
             &Arg::Note(Note::new(Pitch::Absolute(60.0), 0.5)),
             &mut flat,
         ));
-        // Wire-internal leaves emit no external form (leaf-promotion, issue #519): `Pitch` rides
+        // Wire-internal leaves emit no external form: `Pitch` rides
         // the internal wire only, like `Harmony`.
         assert!(!osc_out_args(&Arg::Pitch(Pitch::Degree(0)), &mut flat));
         assert!(!osc_out_args(
@@ -448,7 +447,7 @@ mod tests {
         ));
     }
 
-    /// The converter registry (issue #204): `Note` self-registers its flat form via
+    /// The converter registry: `Note` self-registers its flat form via
     /// `register_osc_form!`, so the lookup finds it by its `PortType::Vocab` name; `Harmony`
     /// (no `OscArg` impl — the boundary opt-out) is absent by omission.
     #[test]
@@ -470,10 +469,10 @@ mod tests {
         assert_eq!(before, names.len(), "duplicate OscForm type_name");
     }
 
-    /// Consistency (issue #204): the registry's `from_osc` agrees with the hand-baked `"Note"`
+    /// Consistency: the registry's `from_osc` agrees with the hand-baked `"Note"`
     /// arm for representative flat args — degree (int pitch), absolute (float pitch), missing
     /// velocity, and malformed forms (empty list, non-numeric pitch atom). Locks the additive
-    /// registry to the behavior the dispatch rewire (issue #205) must preserve.
+    /// registry to the behavior the dispatch must preserve.
     #[test]
     fn registered_note_form_agrees_with_the_hand_baked_arm() {
         let form = osc_form_by_name("Note").expect("Note registered");

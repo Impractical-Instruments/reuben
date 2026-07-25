@@ -11,11 +11,13 @@
 //!
 //! - input 0: `x` (`Float`) — the value to truncate. Unwired default `0`.
 //! - output 0: `out` — `x` with its fraction dropped, toward zero.
+//!
+//! see rules: composition-operators
 
 use crate::operators::rounding::RoundInto;
 
-/// The op's scalar math, written once (the pure-fn seam) and generic over the **output** type so
-/// the macro can instantiate it per `variants:` entry.
+/// The op's scalar math, generic over the **output** type so the macro can instantiate it per
+/// `variants:` entry.
 #[inline]
 fn trunc_fn<T: RoundInto<U>, U>(x: T) -> U {
     x.trunc_into()

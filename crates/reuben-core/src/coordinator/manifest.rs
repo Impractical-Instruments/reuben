@@ -1,18 +1,7 @@
-//! The installed-Plan **manifest** and the swap **survivor key**.
-//!
-//! The Coordinator keeps, for every node of the installed Plan, its **fully-qualified address**,
-//! its **operator type**, and an **instantiate-time identity fingerprint** — a content hash over
-//! the node's normalized `config` block **plus the content identity of everything it resolved at
-//! Instantiate**: resource bytes and hosted sub-documents, recursively. A node in a
-//! new Plan is a **survivor** iff it matches an old node on all three; the fingerprint is the
-//! gate that makes a changed constant (a voicer's `voices` pool size), changed resource content
-//! (a sample re-uploaded at the same path), or changed hosted document behave exactly like a type
-//! change — a state reset, because the transplanted box would otherwise silently undo the edit.
-//!
-//! Crucially the fingerprint covers **only** instantiate-time inputs — `config` + resolved content
-//! — never the node's runtime `inputs`/params: rewired inputs and changed params leave a survivor
-//! a survivor, because those latches live in the Plan (the new Plan's values win), not in the
-//! operator box. That asymmetry is the whole point of the split.
+//! The installed-Plan **manifest** and the swap **survivor key** — per node, its fully-qualified
+//! address, operator type, and instantiate-time identity fingerprint (a content hash over its
+//! normalized `config` plus everything it resolved at Instantiate). [`Manifest::diff`] turns two
+//! manifests into the migration table the render side transplants by box swap.
 //!
 //! This is off-thread load-time work (no RT constraint) and, like the rest of core, OS-free.
 //!
@@ -52,8 +41,8 @@ pub struct Manifest {
 }
 
 /// The precomputed **migration table**: the `(old index, new index)` survivor pairs
-/// the render side transplants by box swap. Owned here — the render-side install slot (ticket
-/// #321) only *consumes* it — so the survivor semantics (which nodes survive, how indices map)
+/// the render side transplants by box swap. Owned here — the render-side install slot only
+/// *consumes* it — so the survivor semantics (which nodes survive, how indices map)
 /// stay on the Coordinator side.
 #[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct MigrationTable {

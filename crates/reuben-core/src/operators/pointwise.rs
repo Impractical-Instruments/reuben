@@ -1,31 +1,8 @@
-//! `PointwiseNum` — the arithmetic the pointwise number family is written over.
+//! `PointwiseNum` — the saturating arithmetic the pointwise number family's scalar fns are
+//! generic over, so `f32` and `i32` both total every op rather than panicking, wrapping, or
+//! relying on the declared port range (which `mul` alone can escape).
 //!
-//! The math operators' scalar fns are generic so one fn body serves every number type the family
-//! instantiates at (issue #556). Plain `core::ops` bounds would be enough to *compile* at `i32` —
-//! and that is the trap. `a + b` on `i32` panics on overflow in a debug build and wraps in a
-//! release one; the same expression on `f32` yields `inf`. So the operand types disagree about
-//! what happens past the limit, and only one of the two answers is legal on the render thread:
-//! **`process` must not panic** (see the invariants in `docs/agents/authoring.md`).
-//!
-//! This trait makes the two agree. `f32` keeps IEEE semantics — overflow *is* saturation to
-//! `±inf` — and `i32` saturates at `i32::MIN`/`i32::MAX` rather than panicking or wrapping. The
-//! family's arithmetic is then total for every type it instantiates at.
-//!
-//! # Why the declared range is not enough
-//!
-//! Every value reaching a held input is already clamped to that port's declared range, whether it
-//! arrives over a wire or from OSC (`render::held_arg`,
-//! [`Port::coerce`](crate::descriptor::Port::coerce)). With the type-wide `±1e6` sentinel that
-//! bounds `add`/`sub` at `±2e6` and `abs`/`negate` at `1e6`, all inside `i32`.
-//!
-//! It does **not** bound `mul`: `1e6 × 1e6` is `1e12`, past `i32::MAX` (`2.147e9`). One operator in
-//! the family already escapes the clamp, so relying on the clamp would mean every future operand
-//! range is load-bearing for RT-safety — a constraint nothing checks and no author would think to
-//! preserve. Saturating here makes the guarantee a property of the arithmetic instead.
-//!
-//! Only the five operations that can leave the range live here. `div` and `modulo` guard their
-//! zero case in their own scalar fn (integer division by zero is a panic, not an `inf`), and
-//! `min`/`max`/`clamp` are pass-throughs that cannot manufacture a new magnitude.
+//! see rules: composition-operators
 
 /// A number type the pointwise math family can instantiate at, with **total** arithmetic: every
 /// operation returns a value of the type for every input, saturating at the type's limits rather

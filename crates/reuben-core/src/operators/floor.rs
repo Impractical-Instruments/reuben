@@ -11,11 +11,13 @@
 //!
 //! - input 0: `x` (`Float`) — the value to floor. Unwired default `0`.
 //! - output 0: `out` — the greatest whole number `<= x`.
+//!
+//! see rules: composition-operators
 
 use crate::operators::rounding::RoundInto;
 
-/// The op's scalar math, written once (the pure-fn seam) and generic over the **output** type so
-/// the macro can instantiate it per `variants:` entry.
+/// The op's scalar math, generic over the **output** type so the macro can instantiate it per
+/// `variants:` entry.
 #[inline]
 fn floor_fn<T: RoundInto<U>, U>(x: T) -> U {
     x.floor_into()

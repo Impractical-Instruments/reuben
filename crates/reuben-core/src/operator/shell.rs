@@ -1,29 +1,17 @@
 //! The **operator shells** — `process`, written once per carrier.
 //!
 //! A *stateless pointwise* operator's `process` is pure mechanism: read each operand through its
-//! typed handle, call the scalar fn, write the output. `number_operator_contract!` used to emit
-//! that body into every generated variant; the shells own it instead, so there is exactly one
+//! typed handle, call the scalar fn, write the output. The shells hold that logic once — one
 //! `process` for the value carrier ([`ValueShell`]) and one for the signal carrier
-//! ([`SignalShell`]) however many operators exist.
+//! ([`SignalShell`]) — because keeping the per-sample loop in one place is what lets
+//! [`SignalShell`] hoist each operand's slice read out of it — see rules: composition-operators
+//! (pointwise-number-operators) for why this beats a `process` emitted per operator.
 //!
-//! An op supplies only what is genuinely its own: which handles to read ([`ValueOp::HANDLES`]) and
-//! the scalar fn ([`ValueOp::apply`]). The handles are the **contract-emitted consts themselves**
-//! (`IN_A`, `IN_B`, …), so the port index a shell reads and the port index the descriptor
-//! publishes cannot drift — they are one datum, exactly as they were when `process` was emitted
-//! alongside them.
-//!
-//! # Why this beats an emitted `process` on the render thread
-//!
-//! [`SignalShell`] reads every operand's slice **once, before** the sample loop — legal because
-//! [`Io::read`] returns the block lifetime `'a`, not the `&self` borrow. LLVM then proves the
-//! iteration space and vectorizes the loop. The emitted body read `io.read(IN_A)[i]` *inside* the
-//! loop, where the `Io` accessor blocked hoisting and left a bounds check per operand per sample
-//! (issue #556).
-//!
-//! The binary ops — `add`, `sub`, `mul`, `min`, `max`, `clamp` — were fully scalar because of it;
-//! the unary ones and `map`/`div`/`power` vectorized in part regardless, and gain here too. The
-//! one op that cannot is `modulo`: `rem_euclid` lowers to a libm call inside the loop, opaque to
-//! the vectorizer. It still wins, because hoisting removes the per-sample checks either way.
+//! The binary ops — `add`, `sub`, `mul`, `min`, `max`, `clamp` — were fully scalar before the
+//! hoist; the unary ones and `map`/`div`/`power` vectorized in part regardless, and gain here too.
+//! `modulo` still cannot, because `rem_euclid` lowers to a libm call inside the loop, opaque to
+//! the vectorizer — it still wins from the hoist, since that removes the per-sample bounds check
+//! either way.
 
 use std::marker::PhantomData;
 

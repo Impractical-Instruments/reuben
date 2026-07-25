@@ -1,11 +1,9 @@
-//! Pitch & Note — symbolic pitch and the note vocab type.
+//! Pitch & Note — symbolic pitch and the note vocab type. see rules: signal-time-dsp
 //!
-//! [`Pitch`] is symbolic: **either** a scale degree (resolved to Hz through the active
-//! [`Harmony`](crate::vocab::harmony::Harmony), so it re-spells live) **or** an absolute float-MIDI
-//! coordinate (60.0 = middle C, a 12-TET coordinate). Modelled as an enum so the two cannot
-//! both be set or both be absent — the old `{ degree: Option<i32>, midi: f32 }` struct had
-//! invalid states. A [`Tuning`](crate::tuning::Tuning) resolves an absolute pitch to
-//! Hz; Pitch never holds a frequency itself.
+//! [`Pitch`] is **either** a scale degree (resolved to Hz through the active
+//! [`Harmony`](crate::vocab::harmony::Harmony)) **or** an absolute float-MIDI coordinate (60.0 =
+//! middle C). A [`Tuning`](crate::tuning::Tuning) resolves an absolute pitch to Hz; Pitch never
+//! holds a frequency itself.
 //!
 //! [`Note`] is the atomic vocab payload of an `Arg::Note`: a Pitch plus a velocity, riding
 //! **one** [`Arg`](crate::message::Arg) because a Message carries exactly one.
@@ -115,6 +113,6 @@ impl crate::message::OscArg for Note {
     }
 }
 
-// Self-register the flat form with the boundary's converter registry (issue #204), next to the
+// Self-register the flat form with the boundary's converter registry, next to the
 // `OscArg` impl it wraps — how the boundary's struct decode finds `Note` by port-type name.
 crate::register_osc_form!(Note);

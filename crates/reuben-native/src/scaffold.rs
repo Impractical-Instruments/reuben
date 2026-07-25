@@ -1,17 +1,10 @@
 //! `scaffold-operator`: generate a new Operator's Rust skeleton and wire its
-//! registration sites from a contract spec.
+//! registration sites from a contract spec. see rules: composition-operators
 //!
-//! The deterministic, error-prone half of authoring an Operator is mechanical: a new file in
-//! `operators/`, plus sorted inserts into `operators/mod.rs`. Registration itself is compile-time
-//! and self-contained: the generated file carries its own `register_operator!` line,
-//! so the scaffold no longer edits `registry.rs`. Like the `describe`/`validate` introspection,
-//! this lives as pure functions over source **text** — the binary does the filesystem
-//! I/O around them — so the tricky sorted-insertion logic is tested directly.
-//!
-//! The contract itself (ports/params) is emitted as a single `operator_contract!` call:
-//! the scaffold no longer writes a hand const block *and* a `Descriptor` literal that could drift.
-//! The spec types and the validator are shared with that macro via the `reuben-contract` crate —
-//! one validator, not a scaffold copy and a macro copy that could themselves diverge.
+//! A new file in `operators/`, plus sorted inserts into `operators/mod.rs`; the generated file
+//! carries its own `register_operator!` line, so `registry.rs` is untouched. This lives as pure
+//! functions over source **text** — the binary does the filesystem I/O around them — so the
+//! sorted-insertion logic is tested directly.
 
 use std::path::Path;
 use std::process::Command;
@@ -296,9 +289,9 @@ fn render_f32_meta(m: &F32Meta) -> String {
 }
 
 /// One port in the macro grammar — see [`render_macro_ports`]. Exhaustive over the shared
-/// [`PortTy`] (issue #217). (The stringly-era renderer fell a meta-carrying `f32_buffer`
-/// through the bare-type arm, silently dropping its declared default/range from the generated
-/// contract; the enum's payload makes that unrepresentable.)
+/// [`PortTy`]: a prior stringly-typed renderer fell a meta-carrying `f32_buffer` through the
+/// bare-type arm, silently dropping its declared default/range from the generated contract;
+/// the enum's payload makes that unrepresentable.
 fn render_macro_port(p: &PortSpec) -> String {
     match &p.ty {
         // A materialized scalar control carries its `{ .. }` meta.
@@ -619,8 +612,8 @@ mod tests {
 
     #[test]
     fn rejects_bad_port_type_and_curve() {
-        // Both now fail at the JSON parse (issue #217): the port type and the curve are enums,
-        // so `run_scaffold`'s deserialize rejects them before `validate()` ever runs.
+        // Both fail at the JSON parse: the port type and the curve are enums, so
+        // `run_scaffold`'s deserialize rejects them before `validate()` ever runs.
         let bad_type = r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"audio"} ] }"#;
         let e = serde_json::from_str::<OperatorSpec>(bad_type)
             .expect_err("unknown port type must fail at deserialize");

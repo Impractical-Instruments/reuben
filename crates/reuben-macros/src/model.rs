@@ -6,7 +6,7 @@
 use reuben_contract::{naming, OperatorSpec, PortSpec};
 
 /// One resolved port: its index const (`IN_FREQ`), its ordinal, and the declared [`PortSpec`]
-/// carried through **unchanged** (issue #217) — the model layer holds only what it computes
+/// carried through **unchanged** — the model layer holds only what it computes
 /// (naming + indexing); the port itself has one home. Ports number **sequentially** within
 /// inputs/outputs (declaration order).
 #[derive(Debug, Clone, PartialEq)]
@@ -64,7 +64,6 @@ mod tests {
         serde_json::from_str(json).expect("valid spec")
     }
 
-    // One f32_buffer input -> IN_AUDIO at ordinal 0.
     #[test]
     fn single_buffer_input_is_ordinal_zero() {
         let m = build(&spec(
@@ -101,7 +100,6 @@ mod tests {
         );
     }
 
-    // Constants are ports too: they number with `C_` consts and keep their i32 meta.
     #[test]
     fn constants_index_sequentially_as_ports() {
         let m = build(&spec(
@@ -117,7 +115,6 @@ mod tests {
         );
     }
 
-    // The full filter port vocabulary: f32_buffer, f32-with-meta, enum naming its vocab type.
     #[test]
     fn resolves_the_filter_ports() {
         let m = build(&spec(

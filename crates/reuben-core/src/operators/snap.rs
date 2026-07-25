@@ -19,6 +19,8 @@
 //!   no degree); wire to a Voicer.
 //!
 //! Emits one note stream, upstream of the Voicer that fans it out to voices.
+//!
+//! see rules: signal-time-dsp
 
 use smallvec::SmallVec;
 
@@ -126,7 +128,7 @@ mod tests {
 
     #[test]
     fn snaps_gesture_to_nearest_scale_degree() {
-        // C major; 64.8 → F (degree 3) at Nearest (worked example §5).
+        // C major; 64.8 → F (degree 3) at Nearest.
         let on = (10, Note::new(Pitch::Absolute(64.8), 1.0));
         let emits = run(
             Harmony::default(),

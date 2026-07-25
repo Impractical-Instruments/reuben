@@ -23,6 +23,8 @@
 //! - output 0: `audio` (`f32_buffer`) — the summed audio of all hosted voices.
 //! - param 0: `voices` — voice-pool size (read by the loader to decide how many sub-patches to build).
 //! - resource `voice` — the voice patch (instrument-resource).
+//!
+//! see rules: composition-operators
 
 use crate::config::AudioConfig;
 use crate::descriptor::Descriptor;

@@ -1,19 +1,9 @@
 //! `differentiate` — discrete rate of change, `out[i] = in[i] - in[i-1]`, per sample.
 //!
-//! A dense `Float`→`Float` op with a **constant one-sample `dt`**: the change between adjacent
-//! samples. A constant sampling window is what makes higher-order calculus valid — differentiate a
-//! signal twice and you get acceleration, which is only meaningful when `dt` does not vary (an
-//! irregular sparse Δt cannot guarantee that). Conversion to a real time base ("change per second",
-//! "per beat") is a **separate, deferred** op — `dt` is literally one sample here.
-//!
-//! Gesture velocity (the prior Message-domain behavior) is recovered by materializing the gesture
-//! into a dense CV first (`m2s`/slew) and then differentiating it.
-//!
-//! The very first sample of an instance has no predecessor, so it seeds `last = in[0]` and emits
-//! `0` — no startup spike. The predecessor carries across block boundaries; `spawn` resets it.
-//!
 //! - input 0: `in` (`Float`) — the signal to differentiate. Unwired default 0.
 //! - output 0: `out` (`Buffer`) — `in[i] - in[i-1]`.
+//!
+//! see rules: signal-time-dsp
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -24,7 +14,7 @@ crate::operator_contract!(DifferentiateF32Signal {
     outputs: { out: f32_buffer },
 });
 
-/// The op's scalar math, written once (the pure-fn seam): the one-sample difference.
+/// The op's scalar math: the one-sample difference.
 #[inline]
 fn step(prev: f32, cur: f32) -> f32 {
     cur - prev

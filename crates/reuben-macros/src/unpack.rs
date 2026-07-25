@@ -3,12 +3,11 @@
 //!
 //! A product vocab type (`Note { pitch, velocity }`) can be *destructured on the wire* by an
 //! operator that reads the whole value as an **Event** stream on `in` and emits each field as a
-//! **held `Value`** (the Event→Value latch). This is pure boilerplate apart
-//! from the type and its field→wire-form list, so this macro takes that one declaration and emits
-//! the whole operator: the contract (via the shared [`render_contract`](crate::render_contract), so
-//! it is byte-identical in shape to a hand-written `operator_contract!` op), an empty-but-for-latch
-//! struct, the `Operator` impl whose `process` is the Voicer's frame-sorted latch,
-//! `register_operator!`, and the re-export.
+//! **held `Value`** (the Event→Value latch). One declaration emits the whole operator: the
+//! contract (via the shared [`render_contract`](crate::render_contract), so it is byte-identical in
+//! shape to a hand-written `operator_contract!` op), an empty-but-for-latch struct, the `Operator`
+//! impl whose `process` is the Voicer's frame-sorted latch, `register_operator!`, and the
+//! re-export. see rules: composition-operators
 //!
 //! ```ignore
 //! unpack_op!(Note {
@@ -277,8 +276,6 @@ mod tests {
         assert!(out.contains("register_operator ! (UnpackNote)"), "{out}");
     }
 
-    // The input is a `Note` event on `in`; each field is a held Value output — `pitch` a `Pitch`
-    // leaf, `velocity` an `f32` — with the field name verbatim as the port.
     #[test]
     fn ports_are_the_note_event_in_and_the_held_fields() {
         let out = render(r#"Note { pitch: pitch, velocity: f32 }"#);
@@ -298,8 +295,6 @@ mod tests {
         assert!(out.contains("Port :: f32 (\"velocity\""), "{out}");
     }
 
-    // The `process` is the Voicer's frame-sorted latch: snapshot the event stream, sort by frame,
-    // baseline-then-per-event `set` on each field's writer.
     #[test]
     fn process_is_a_frame_sorted_latch() {
         let out = render(r#"Note { pitch: pitch, velocity: f32 }"#);
@@ -313,7 +308,6 @@ mod tests {
         assert!(out.contains("self . held . r#velocity"), "{out}");
     }
 
-    // An unknown field form is a spanned error, not a silent miscompile.
     #[test]
     fn unknown_field_form_errors() {
         let out = render(r#"Note { pitch: harmony }"#);

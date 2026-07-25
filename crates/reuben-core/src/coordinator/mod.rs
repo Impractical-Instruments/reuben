@@ -1,21 +1,8 @@
-//! The Coordinator region's RT boundary machinery.
-//!
-//! This module is the non-RT side of the Swap lifecycle: the Coordinator is the single
-//! writer of graph structure, and everything it hands the render side crosses
-//! lock-free. Two primitives sit underneath: the [`mailbox`] pair — the single-slot atomic
-//! channel a Swap rides — and [`wire`], the structure channel's shared NDJSON
-//! `Request`/`Response` envelope, serialized identically by the native server
-//! and the reuben-mcp client.
-//!
-//! Like the rest of reuben-core, this module is OS-free: no clock, no threads, no I/O.
-//!
-//! The Coordinator's higher-level pieces live here on top of the primitives: [`manifest`] (the installed-Plan
-//! manifest, the survivor-key fingerprint, and the migration table), [`swap`] (the
-//! passive [`Coordinator`] struct — `swap_document` builds a whole new Engine off-thread,
-//! precomputes the migration table, and fills the install mailbox; single-writer via `&mut self`),
-//! and [`slot`] (the RT counterpart — the [`RenderSlot`] each shell drives instead of calling
-//! `Engine::fill` directly: it drains the install mailbox, runs the master-gain ramp,
-//! box-transplants the survivors, and posts the retiree, all allocation-/lock-/drop-free).
+//! The Coordinator region's RT boundary machinery: [`mailbox`] (the single-slot atomic swap
+//! channel) and [`wire`] (the NDJSON `Request`/`Response` envelope shared by the native server
+//! and the reuben-mcp client) are the primitives; [`manifest`] (survivor fingerprint + migration
+//! table), [`swap`] (the off-thread [`Coordinator`]), and [`slot`] (the RT-side [`RenderSlot`])
+//! build on them.
 //!
 //! see rules: execution-runtime
 

@@ -1,19 +1,13 @@
 //! Harmony — the node that owns and broadcasts the tonal context: the current [`Harmony`]
 //! (key/scale/chord).
 //!
-//! It owns the latched [`Harmony`] and publishes it onto a `harmony` output port; followers (the
-//! Voicer's degree resolution, a snap op) read "what's the key/chord right now" through their
-//! held `harmony` input handle. A single default instance in a Rig makes everything agree out of
-//! the box — the same on-ramp as the default Clock — without baking *global* into the core
-//! (multiple harmony nodes = polytonality).
-//!
 //! Per-field **last-write-wins**:
 //! - **Static fields** — `root` and the scale (`degrees` + `s0`..`s11` step offsets) — are held
-//!   `i32` Value inputs (the good-button: dial the key, shape the scale). They are integer
-//!   quantities by construction — a MIDI root, a degree count, and step offsets into an integer
-//!   step-space (microtonality lives in the [`Tuning`](crate::vocab::tuning) layer, not here) — so
-//!   `i32` carries them without the round-in-`process` dance. A mid-block change block-slices
-//!   `process` at its frame, so the publish stays sample-accurate.
+//!   `i32` Value inputs. They are integer quantities by construction — a MIDI root, a degree
+//!   count, and step offsets into an integer step-space (microtonality lives in the
+//!   [`Tuning`](crate::vocab::tuning) layer, not here) — so `i32` carries them without the
+//!   round-in-`process` dance. A mid-block change block-slices `process` at its frame, so the
+//!   publish stays sample-accurate.
 //! - **Dynamic field** — `chord` — arrives on the held `set` (`Harmony`) input: its chord field is
 //!   adopted (LWW). The engine block-slices a `set` change to the segment boundary, so a chord
 //!   change lands frame-accurate.
@@ -24,6 +18,8 @@
 //! - input `set` (`Harmony`, held) — adopts its `chord` field.
 //! - inputs `root`, `degrees`, `s0`..`s11` (`i32`, held) — the static key/scale fields.
 //! - output `harmony` (`harmony`) — the latched tonal context followers read.
+//!
+//! see rules: signal-time-dsp
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};

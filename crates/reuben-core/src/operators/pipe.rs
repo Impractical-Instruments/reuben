@@ -1,11 +1,7 @@
 //! `pipe` — an interface pipe's runtime node (format v2).
 //!
-//! An `interface.inputs` entry is a **named pipe**: it mints an address in the flat node
-//! namespace (`in` → `/in`) and behaves like a source node — internal consumers wire from it
-//! (`{"from": "/in"}`, fan-out free), and whatever feeds the boundary (a parent edge through the
-//! synthesized face, a Voicer driving a voice, external OSC, or — P3 — the core input master)
-//! lands on its single `in` port. This operator is that node: a pure single-port pass-through,
-//! `in` → `out`, in the declared type's form.
+//! This operator is a pure single-port pass-through, `in` → `out`, in the declared type's form —
+//! the node an `interface.inputs` entry becomes.
 //!
 //! It is **loader-built, not registered**: a pipe exists only because an `interface.inputs`
 //! entry declared it, its descriptor is synthesized per entry (the declared `Arg` type, range,
@@ -22,6 +18,8 @@
 //!   its seed once on the first block and then only on change — downstream latches see the same
 //!   change frames a direct wire would have delivered.
 //! - **Event** (`note`): re-emit every routed event at its frame, verbatim.
+//!
+//! see rules: composition-operators
 
 use crate::descriptor::{Descriptor, Port};
 use crate::message::Arg;

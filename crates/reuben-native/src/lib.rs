@@ -1,26 +1,12 @@
-//! reuben-native — the removable native layer.
+//! reuben-native — the removable native layer. see rules: execution-runtime
 //!
-//! This crate is the seam where OS-specific I/O lives. It wraps the portable
-//! [`reuben_core`] embed surface ([`reuben_core::engine`] — construct, `queue_osc`,
-//! `fill`/`fill_duplex`, `drain_outbound`) with:
-//! - [`osc`] — decoding external OSC/UDP packets into core [`Message`](reuben_core::Message)s.
-//! - [`audio`] — a cpal output stream driving the engine live.
-//! - [`input`] — the cpal input stream (P5/#182): a lock-free SPSC ring from
-//!   the input callback into the output callback, resampled + drift-compensated into the
-//!   engine rate, with the device→logical input channel map.
-//! - [`diagnostics`] — the shared xrun/ring counter surface and its periodic
-//!   stderr logging; [`audio`] feeds it output-deadline misses, [`input`] feeds it input-ring
-//!   underruns, overruns, and producer-backstop drops.
-//! - [`structure`] — the loopback-TCP/NDJSON structure channel: a std thread in
-//!   `reuben play` answering `ping`/`get_document`/`get_diagnostics`/`swap` for the MCP sidecar.
-//! - [`resources`] — a filesystem + WAV [`ResourceResolver`](reuben_core::resources::ResourceResolver)
-//!   decoding sample data for the sample player.
-//! - [`rigs`] — ready-made instrument graphs (the default playable rig for now).
-//! - [`profile`] — the device profile (`--io-map`): logical↔device channel
-//!   maps, device selection, and sample-rate/buffer-size preferences, outside the patch.
-//!
-//! The portable core does all the DSP; everything here is I/O glue and is meant to be
-//! swappable per platform (or removed entirely when embedding the core elsewhere).
+//! Wraps the portable [`reuben_core`] embed surface (construct, `queue_osc`, `fill`/`fill_duplex`,
+//! `drain_outbound`) with OS-specific I/O: [`osc`] decodes external OSC/UDP into
+//! [`Message`](reuben_core::Message)s, [`audio`] drives a cpal output stream, [`input`] is the
+//! cpal input ring feeding it, [`diagnostics`] is the shared xrun/ring counter surface,
+//! [`structure`] is the loopback structure channel the MCP sidecar talks to, [`resources`]
+//! resolves sample data, [`rigs`] holds the default playable rig, and [`profile`] is the
+//! device profile (`--io-map`).
 
 pub mod audio;
 pub mod cli;

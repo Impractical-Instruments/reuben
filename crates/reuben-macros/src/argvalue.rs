@@ -1,22 +1,15 @@
 //! `#[derive(ArgValue)]` — integrate a shared *vocab* type with the central [`Arg`] enum.
 //!
-//! The derive generates the glue so a type is defined *once* and reused everywhere (rather than
-//! duplicating a per-operator enum):
-//!
-//! - **structs** (`Note`, `Harmony`) get a named [`Arg`] variant (`Note` ↔ `Arg::Note`): `From<T>
-//!   for Arg` + `TryFrom<&Arg> for T`, since a struct carries a real per-type shape.
-//! - **unit enums** (`SnapTarget`, `GateMode`) type-erase to the **single** `Arg::Enum(index)`
-//!   variant — `From`/`TryFrom`/`FromArg` pack and unpack the bare index — *plus* the
-//!   Enum-over-OSC table (`VARIANTS` / `DEFAULT_INDEX` / `from_index` / `to_index` / `from_symbol`
-//!   / `resolve_arg`), and an `enum_meta()` that builds the descriptor's [`EnumMeta`] from the
-//!   same tokens (so the type and its metadata cannot drift). The held read needs no per-enum
-//!   glue: the engine's blanket `Held<T>` form impl covers any `FromArg + Copy` type. Type
-//!   identity lives in the port, never the value — so adding an enum names no central engine
-//!   site.
+//! A **struct** (`Note`, `Harmony`) gets its own named [`Arg`] variant: `From<T> for Arg` +
+//! `TryFrom<&Arg> for T`. A **payload-carrying enum** (`Pitch`) takes the same path, as an opaque
+//! `Copy` leaf. An **all-unit enum** (`SnapTarget`, `GateMode`) instead type-erases to the single
+//! `Arg::Enum(index)` variant — plus the Enum-over-OSC table (`VARIANTS` / `DEFAULT_INDEX` /
+//! `from_index` / `to_index` / `from_symbol` / `resolve_arg`) and an `enum_meta()` built from the
+//! same tokens. see rules: composition-operators
 //!
 //! The OSC flat-multi-arg conversion for structs (`Note ↔ /note pitch vel`) is not derived
 //! here: the type hand-implements `OscArg` beside its definition and self-registers the
-//! converter with the boundary's registry (`register_osc_form!` in `boundary.rs`, epic #146).
+//! converter with the boundary's registry (`register_osc_form!` in `boundary.rs`).
 //!
 //! [`Arg`]: ../../reuben_core/message/enum.Arg.html
 //! [`EnumMeta`]: ../../reuben_core/descriptor/struct.EnumMeta.html
@@ -42,8 +35,8 @@ pub fn expand(input: TokenStream) -> TokenStream {
 
 /// `From<T> for Arg` + `TryFrom<&Arg> for T` for a leaf vocab type whose Rust name is its own
 /// `Arg` variant. Structs always take this path; so do **payload-carrying** enums (`Pitch`), which
-/// promote to a named leaf rather than lose their payload (leaf-promotion, issue #519 — see
-/// [`expand_enum`]). Only all-unit enums skip it, type-erasing to `Arg::Enum` instead.
+/// promote to a named leaf rather than lose their payload — see [`expand_enum`]. Only all-unit
+/// enums skip it, type-erasing to `Arg::Enum` instead.
 ///
 /// The generated `Arg::#name(v)` assumes a matching `Arg` variant exists: emitting this for a type
 /// with no hand-added `Arg::#name` fails to compile with a "no variant named" error pointing into
@@ -79,11 +72,10 @@ fn expand_struct(ast: &DeriveInput) -> TokenStream {
     arg_conversions(&ast.ident)
 }
 
-/// An enum vocab type. Routing splits on the payload (leaf-promotion, issue #519): a
-/// **payload-carrying** enum (`Pitch`) gets its own named `Arg` variant like a struct — the index
-/// path would drop its payload; an **all-unit** enum (`SnapTarget`, `GateMode`) type-erases to the
-/// single `Arg::Enum(index)` with the Enum-over-OSC table (symbol primary, index fallback,
-/// derive-generated).
+/// An enum vocab type. Routing splits on the payload: a **payload-carrying** enum (`Pitch`) gets
+/// its own named `Arg` variant like a struct — the index path would drop its payload; an
+/// **all-unit** enum (`SnapTarget`, `GateMode`) type-erases to the single `Arg::Enum(index)` with
+/// the Enum-over-OSC table (symbol primary, index fallback, derive-generated).
 fn expand_enum(ast: &DeriveInput, data: &syn::DataEnum) -> TokenStream {
     let name = &ast.ident;
 
@@ -92,13 +84,6 @@ fn expand_enum(ast: &DeriveInput, data: &syn::DataEnum) -> TokenStream {
             .to_compile_error();
     }
 
-    // A **payload-carrying** enum (any non-unit variant, e.g. `Pitch { Degree(i32),
-    // Absolute(f32) }`) cannot type-erase to the bare `Arg::Enum` index — the payload would be
-    // lost. Instead it rides as its **own** named `Arg` variant, an opaque `Copy` leaf, exactly
-    // like a struct (leaf-promotion, issue #519): whole-enum in, whole-enum out, its internal
-    // case invisible to the wire. Only an **all-unit** enum takes the index-table path below.
-    // Like a struct leaf, this requires a hand-added `Arg::#name` variant in `message.rs` — see
-    // `arg_conversions`.
     if data
         .variants
         .iter()
@@ -131,10 +116,6 @@ fn expand_enum(ast: &DeriveInput, data: &syn::DataEnum) -> TokenStream {
         quote! { #s => ::core::option::Option::Some(Self::#v) }
     });
 
-    // Enum integration with the central `Arg`: a vocab enum type-erases to the single
-    // `Arg::Enum(index)` variant, unlike a struct which gets its own named variant.
-    // `From` packs the index; `TryFrom`/`FromArg` unpack it back through `from_index`. Type
-    // identity is the port's, not the value's — so the engine never names this concrete enum.
     let conversions = quote! {
         impl ::core::convert::From<#name> for ::reuben_core::message::Arg {
             fn from(v: #name) -> Self {
@@ -240,7 +221,6 @@ mod tests {
         );
         assert!(out.contains("Arg :: Note (v)"), "{out}");
         assert!(out.contains("TryFrom"), "{out}");
-        // No enum table for a struct.
         assert!(!out.contains("VARIANTS"), "{out}");
     }
 
@@ -256,7 +236,6 @@ mod tests {
         assert!(out.contains("fn from_symbol"), "{out}");
         assert!(out.contains("fn resolve_arg"), "{out}");
         assert!(out.contains("fn enum_meta"), "{out}");
-        // The enum type-erases to `Arg::Enum(index)`, not a per-type `Arg::SnapTarget` variant.
         assert!(!out.contains("Arg :: SnapTarget"), "{out}");
         assert!(
             out.contains("Arg :: Enum (v . to_index () as u32)"),
@@ -278,8 +257,6 @@ mod tests {
 
     #[test]
     fn payload_enum_gets_named_arg_variant() {
-        // A payload-carrying enum is a first-class leaf: its own named `Arg` variant (like a
-        // struct), never the lossy `Arg::Enum(index)` (issue #519).
         let out = render("enum Pitch { Degree(i32), Absolute(f32) }");
         assert!(
             out.contains("impl :: core :: convert :: From < Pitch >"),
@@ -287,7 +264,6 @@ mod tests {
         );
         assert!(out.contains("Arg :: Pitch (v)"), "{out}");
         assert!(out.contains("TryFrom"), "{out}");
-        // No index table and no type-erasure — a payload enum is opaque, not indexable.
         assert!(!out.contains("VARIANTS"), "{out}");
         assert!(!out.contains("Arg :: Enum"), "{out}");
         assert!(!out.contains("compile_error !"), "{out}");

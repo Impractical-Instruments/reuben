@@ -1,21 +1,7 @@
-//! Resources — decoded audio as a shared, bank-ready read service.
+//! Resources — decoded audio, held in a central [`ResourceStore`] and read by pure
+//! `(id, channel, frame)` accessors.
 //!
-//! The sample player is the first operator that depends on **external bytes** (an audio
-//! file) which must be resolved and decoded before render. Three existing contracts make
-//! that awkward — zero-arg type-erased construction, `f32`-only params, and an
-//! allocation-free RT `process` — so decoded audio does not live on the operator's
-//! construction path. Instead it lives in a central [`ResourceStore`] built by the
-//! Coordinator at load time (single-writer) and read **immutable** by Render.
-//!
-//! The accessors here are written as **pure functions of `(id, channel, frame)`**: the
-//! resident v1.1 implementation indexes a decoded buffer, and the future streaming "audio
-//! bank" consults a warm-block cache behind the *same* signatures, so the operator never
-//! re-plumbs. Determinism is preserved because a read always returns the same
-//! float for the same arguments; a bank that falls behind underruns (an xrun) rather than
-//! substituting silence.
-//!
-//! Codecs and filesystem IO stay out of this portable crate: the
-//! [`ResourceResolver`] trait is the seam `reuben-native` fills with a WAV decoder.
+//! see rules: authoring-library
 
 use std::cell::RefCell;
 use std::collections::BTreeMap;
@@ -85,9 +71,9 @@ impl SampleBuffer {
     }
 }
 
-/// The decoded-resource store: built by the loader/Coordinator, read immutable by Render
-/// Resident-only in v1.1 — every resource is decoded up front and
-/// held forever; the accessors' signatures are what the future streaming bank reuses.
+/// The decoded-resource store: built by the loader/Coordinator, read immutable by Render.
+/// Resident-only in v1.1 — every resource is decoded up front and held forever.
+/// see rules: authoring-library
 #[derive(Debug, Default)]
 pub struct ResourceStore {
     /// `Arc` so several stores can share one decoded buffer: each subpatch reuse and voice
@@ -140,10 +126,8 @@ impl ResourceStore {
         self.buf(id).sample_rate()
     }
 
-    /// One decoded sample at `(id, channel, frame)`; `0.0` out of range. A **pure
-    /// function** — the bank-ready read seam: the resident impl indexes the
-    /// buffer; the future bank consults a warm-block cache behind this same signature, so
-    /// the player is unchanged when streaming lands.
+    /// One decoded sample at `(id, channel, frame)`; `0.0` out of range. A pure function of
+    /// its arguments — the bank-ready read seam. see rules: authoring-library
     pub fn sample(&self, id: SampleId, channel: usize, frame: usize) -> f32 {
         self.buf(id).sample(channel, frame)
     }
@@ -174,9 +158,7 @@ impl ResolvedRefs {
 }
 
 /// Why resolving a resource failed. Always surfaced as a
-/// [`LoadWarning`](crate::format::LoadWarning) — never fatal: a missing or bad
-/// sample binds to an empty buffer and the node plays silence, so one broken file never
-/// takes down a live rig.
+/// [`LoadWarning`](crate::format::LoadWarning) — never fatal. see rules: authoring-library
 #[derive(Debug, Clone)]
 pub enum ResolveError {
     /// The source could not be opened or read.
@@ -201,13 +183,9 @@ impl fmt::Display for ResolveError {
 
 impl std::error::Error for ResolveError {}
 
-/// Resolves a logical source (a file path today) to a decoded [`SampleBuffer`].
-///
-/// The seam that keeps codecs and filesystem IO out of the portable core (the
-/// boundary-adapter pattern): `reuben-native` provides the WAV/filesystem
-/// implementation, and compressed formats or non-file sources (a bundle, a network — the
-/// "library" thread) drop in behind the same trait without touching core. Resolution is an
-/// eager, non-RT authoring step.
+/// Resolves a logical source (a file path today) to a decoded [`SampleBuffer`]. An eager,
+/// non-RT authoring step; `reuben-native` provides the WAV/filesystem implementation.
+/// see rules: authoring-library
 pub trait ResourceResolver {
     /// Decode `source` (e.g. a path from the instrument's `resources` table) to a buffer.
     fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError>;
@@ -236,11 +214,9 @@ pub trait ResourceResolver {
         Err(ResolveError::NotFound(source.to_string()))
     }
 
-    /// Write `text` **back** to `source` — the symmetric half of [`resolve_text`](Self::resolve_text),
-    /// so a document is a resource the same way a voice patch is: the door that resolved a
-    /// source can also persist to it. `source` is opaque and door-resolved (a filesystem path
-    /// natively, a store key on web), which is what keeps the path-addressed document API one
-    /// contract behind every door — the `#portable-tool-contracts` invariant (see rules: agent-mcp).
+    /// Write `text` **back** to `source` — the symmetric half of [`resolve_text`](Self::resolve_text):
+    /// the door that resolved a source can also persist to it. `source` is opaque and
+    /// door-resolved (a filesystem path natively, a store key on web). see rules: agent-mcp
     ///
     /// The loader canonicalizes `source` before calling [`resolve_text`](Self::resolve_text),
     /// and a write receives that **same** canonical form, so two spellings of one source stay

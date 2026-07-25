@@ -27,6 +27,8 @@
 //! Pitch (the per-hit rate) is **latched at the trigger frame** and fixed for that hit; live
 //! pitch-tracking is a deferred param. The fractional playhead is a per-voice `f64` cursor,
 //! persistent across blocks (like the oscillator's phase) and reset by [`Operator::spawn`].
+//!
+//! see rules: authoring-library
 
 use std::sync::Arc;
 

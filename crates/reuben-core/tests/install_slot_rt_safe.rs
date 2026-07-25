@@ -1,18 +1,13 @@
-//! RT-safety invariant for the install slot (ticket #321):
-//! a render callback driven through [`RenderSlot`] performs **zero** heap allocation and **zero**
-//! frees — both at steady state (no swap pending) and across a full swap, where the callback drains
-//! the install bundle, runs the master-gain ramp, box-transplants the survivors, and posts the
-//! retiree. Every one of those is a pointer swap: the transplant is `mem::swap` over the operator
-//! boxes, and the retiree is posted **in the same box** the install arrived in, so its
-//! allocation is reused, never freed on the render thread (the only free is the Coordinator's
-//! off-thread reclaim, outside every measured window here).
+//! RT-safety invariant for the install slot: a render callback driven through [`RenderSlot`]
+//! performs **zero** heap allocation and **zero** frees — at steady state and across a full
+//! swap (drain the install bundle, run the master-gain ramp, box-transplant the survivors, post
+//! the retiree). Every one of those is a pointer swap: the transplant is `mem::swap` over the
+//! operator boxes, and the retiree is posted **in the same box** it arrived in, so its
+//! allocation is reused, never freed on the render thread — the only free is the Coordinator's
+//! off-thread reclaim, outside every measured window here.
 //!
-//! Like `rt_safe.rs` / `coordinator_rt_safe.rs`, this file is its own single-test binary. Counting
-//! is armed per-thread by the shared [`rt_alloc`] harness (ticket #344) — each measured window arms
-//! this thread only around the ops under test — so an allocation on a libtest harness thread cannot
-//! interleave into a window and perturb the count under parallel load. The full-swap window, its
-//! `16 blocks > 2×ramp` sizing, and the live-probe/reclaim non-vacuity checks it shares with
-//! `m2_swap_harness.rs` live in the shared [`swap_rt_safe`] helper.
+//! Counted by the shared [`rt_alloc`] harness; window sizing and live-probe/reclaim checks live
+//! in the shared [`swap_rt_safe`] helper.
 
 mod rt_alloc;
 mod swap_rt_safe;

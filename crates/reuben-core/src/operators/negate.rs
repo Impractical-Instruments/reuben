@@ -1,17 +1,13 @@
 //! `negate` — `out = -x`, per sample.
 //!
-//! The sanctioned way to **invert a stream**: flip the sign of a CV, phase-invert audio, turn a
-//! rising envelope into a falling one. A dense `Float`→`Float` unary op whose arithmetic is the
-//! generic [`negate_fn`], called once per sample by the signal shell and once per change by the value
-//! shell (issue #83).
+//! Flip the sign of a CV, phase-invert audio, turn a rising envelope into a falling one.
 //!
 //! - input 0: `x` (`Float`) — the value to negate. Unwired default `0`.
 //! - output 0: `out` — `-x`.
 
 use crate::operators::pointwise::PointwiseNum;
 
-/// The op's scalar math, written once (the pure-fn seam) and generic over the number type so the
-/// macro can instantiate it per `variants:` entry.
+/// The op's scalar math, generic over the number type via [`PointwiseNum`].
 ///
 /// [`PointwiseNum`] rather than `core::ops::Neg`: `-i32::MIN` is not representable and panics in a
 /// debug build, where `f32` has a sign bit and no such edge.

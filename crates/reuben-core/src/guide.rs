@@ -1,15 +1,13 @@
-//! The authoring guide's `lanes:` section tags and the mechanical lane cut.
+//! The authoring guide's `lanes:` section tags and the mechanical lane cut (see rules: agent-mcp,
+//! cross-lane-grounding).
 //!
-//! `docs/agents/authoring.md` is authored once and delivered per lane: the repo
-//! skills point at it, the MCP sidecar serves it in-band, and the web lane bundles a
-//! build-time slice — the full guide **minus checkout-only sections** (the filesystem
-//! sample workflow, the ADR index). The slice is never hand-paraphrased: every Markdown
-//! heading carries a trailing `<!-- lanes: ... -->` tag naming the lanes its section ships
-//! to, and [`lane_cut`] keeps exactly the sections tagged for the requested lane — a
-//! deterministic function of the tags + the guide, emitted by
-//! `cargo run -p reuben-core --example guide_cut -- <lane>` and held honest by the
-//! `guide_lanes` test (an untagged or unknown-lane heading fails, so a new section cannot
-//! silently skip the cut).
+//! `docs/agents/authoring.md` is authored once; the web lane bundles a build-time slice — the full
+//! guide minus checkout-only sections (the filesystem sample workflow, the ADR index). The slice is
+//! never hand-paraphrased: every Markdown heading carries a trailing `<!-- lanes: ... -->` tag
+//! naming the lanes its section ships to, and [`lane_cut`] keeps exactly the sections tagged for
+//! the requested lane — a deterministic function of the tags + the guide, emitted by
+//! `cargo run -p reuben-core --example guide_cut -- <lane>` and held honest by the `guide_lanes`
+//! test (an untagged or unknown-lane heading fails, so a new section cannot silently skip the cut).
 
 use std::fmt;
 

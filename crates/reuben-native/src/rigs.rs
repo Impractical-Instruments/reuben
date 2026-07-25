@@ -1,10 +1,9 @@
-//! Ready-made instrument graphs.
+//! Ready-made instrument graphs. see rules: authoring-library
 //!
-//! The default rig is defined as **data** (`instruments/default.json`), loaded through the core
-//! registry — not hand-built in Rust. Notes arrive as OSC at `/voicer/notes [midi, gate]`. The
-//! rig's `voicer` hosts a voice sub-patch (`voices/default-voice.json`); both files are
-//! embedded and resolved in-memory so the binary stays self-contained. Load a different instrument
-//! file to swap the whole rig.
+//! The default rig is `instruments/default.json`, loaded through the core registry. Notes arrive
+//! as OSC at `/voicer/notes [midi, gate]`. The rig's `voicer` hosts a voice sub-patch
+//! (`voices/default-voice.json`); both files are embedded and resolved in-memory so the binary
+//! stays self-contained.
 
 use reuben_core::resources::{ResolveError, ResourceResolver, SampleBuffer};
 use reuben_core::{load_instrument, Graph, Registry};

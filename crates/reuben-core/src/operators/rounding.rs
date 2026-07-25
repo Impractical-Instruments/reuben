@@ -33,6 +33,8 @@
 //! resolves to the inherent one inside the `impl` body, so `fn round(self) -> f32 { self.round() }`
 //! would silently mean something different from what it reads as. The `_into` suffix keeps the
 //! recursion impossible rather than merely absent.
+//!
+//! see rules: composition-operators
 
 /// A number type that can be rounded **into** `Out` — the seam the rounding operators' scalar fns
 /// are written over, so one fn body serves the same-type operator and the converter alike.

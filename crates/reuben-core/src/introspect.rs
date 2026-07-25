@@ -4,14 +4,7 @@
 //! audio hardware, and project an instrument's `library_index_line` — the generated library
 //! index's signature line.
 //!
-//! Descended from `reuben-native`'s CLI module so one implementation serves every consumer:
-//! the CLI re-exports this module as `reuben_native::cli`, and the MCP sidecar and the web
-//! player call it directly. Everything here is a pure function over [`Registry`] + JSON
-//! through the real load/plan code paths, so introspection can never drift from what the
-//! engine accepts. `validate` returns the contract [`Report`] every door serializes;
-//! the view types derive `schemars::JsonSchema` behind the same
-//! default-off `schemars` feature as the contract types, so rmcp can emit `outputSchema`
-//! without the play/CLI build paying for it.
+//! see rules: agent-mcp
 
 use crate::contract::{Diag, Report};
 use crate::describe::{describe_boundary, BoundaryPortDesc};
@@ -83,9 +76,8 @@ pub struct PortInfo {
 
 fn port_kind(ty: &PortType) -> &'static str {
     match ty {
-        // The glossary's two numeric forms: a held `f32` is a Value, a dense
-        // `f32_buffer` is a Signal. Wire-compatible one way only — a Value source materializes
-        // into a Signal input; a Signal into a Value input is a hard plan error.
+        // The two numeric port forms — Value vs Signal — wire one way only.
+        // see rules: composition-operators
         PortType::F32 => "value",
         PortType::F32Buffer => "signal",
         PortType::Vocab { name: "Note", .. } => "message",
@@ -98,7 +90,7 @@ fn port_kind(ty: &PortType) -> &'static str {
         PortType::Vocab { .. } => "vocab",
         PortType::I32 { .. } => "int",
         PortType::Str => "string",
-        // The type-agnostic pass-through (issue #141) — any Arg, the `osc_out` sink's input.
+        // The type-agnostic pass-through — any Arg, the `osc_out` sink's input.
         PortType::Arg => "arg",
     }
 }
@@ -245,9 +237,8 @@ impl OperatorInfo {
     }
 
     fn from_descriptor(d: &Descriptor) -> Self {
-        // One input surface: runtime inputs, then plan-time `Constant` ports flagged
-        // `constant`. A port's `kind` + metadata already distinguish scalar / integer / enum, so
-        // there is no separate `params`/`enums`/`constants` split to keep in sync.
+        // One input surface: runtime inputs, then plan-time constants.
+        // see rules: composition-operators
         let mut inputs: Vec<PortInfo> = d
             .inputs
             .iter()
@@ -297,8 +288,7 @@ res: slots name `resources` entries the node binds. Describe one operator by nam
 /// line per operator instead of full port objects. It delegates to [`describe`] and renders its
 /// flattened view, so the two modes cannot list different operator sets — a new operator appears
 /// in both by construction (never a hand-written digest). Full describe remains the
-/// in-session zoom tool; this is the listing that earns a place in a bundled prefix
-/// (~2–3k tokens full-registry vs ~9.9k, reuben-web#96 corrected figures).
+/// in-session zoom tool; this is the listing sized to fit a bundled prefix.
 pub fn describe_compact(registry: &Registry, which: Option<&str>) -> Result<Vec<String>, String> {
     Ok(describe(registry, which)?
         .iter()
@@ -311,7 +301,7 @@ pub fn describe_compact(registry: &Registry, which: Option<&str>) -> Result<Vec<
 /// type/range/default, an output pipe inheriting type and metadata from the internal port feeding
 /// it plus optional min/max range overrides (a subset of that port's range). Both carry the entry's
 /// presentational fields (label/unit/widget). This is the introspection view of the boundary face a
-/// `subpatch` node presents (P6, #121).
+/// `subpatch` node presents.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct PatchBoundary {
@@ -594,10 +584,8 @@ mod tests {
         }
     }
 
-    // The #146 seed's own test moved with the seed: `scaffold_instrument` returned it by value and
-    // retired with #604, so what has to hold — the minimal document clears the same `validate` path
-    // a first-creation stall fails — is now asserted where the seed lives, on
-    // `edit::new_instrument` (`edit/tests.rs`).
+    // The seed-creation test that used to live here moved with the seed to
+    // `edit::new_instrument` (`edit/tests.rs`), which now asserts the same validate path.
 
     #[test]
     fn validate_accepts_a_worked_instrument() {
@@ -829,8 +817,7 @@ mod tests {
             .outputs
             .iter()
             .any(|p| p.name == "audio" && p.kind == "signal"));
-        // `waveform` is an Enum input — one input surface, no separate `enums` list; its
-        // variants + default symbol ride on the same `PortInfo`.
+        // `waveform` is an Enum input; its variants + default symbol ride on the same `PortInfo`.
         let waveform = osc
             .inputs
             .iter()
@@ -843,7 +830,7 @@ mod tests {
 
     #[test]
     fn describe_speaks_the_glossary_for_the_two_numeric_forms() {
-        // Issue #176: a held `f32` is a Value, a dense `f32_buffer` is a Signal — `describe` must
+        // A held `f32` is a Value, a dense `f32_buffer` is a Signal — `describe` must
         // not collapse both into `"signal"`. The envelope has both:
         // its gate/ADSR inputs are held Values, its `cv` output a per-sample Signal.
         let ops = describe(&Registry::builtin(), Some("envelope")).expect("describe envelope");
@@ -941,9 +928,8 @@ mod tests {
 
     #[test]
     fn compact_signature_carries_the_wiring_essentials() {
-        // The signature line carries what wiring needs (grounding-audit option 2a's shape):
-        // port kinds, a swept scalar's unit/curve/range/default, an enum's variants + default,
-        // and the named outputs.
+        // The signature line carries what wiring needs: port kinds, a swept scalar's
+        // unit/curve/range/default, an enum's variants + default, and the named outputs.
         let line = &describe_compact(&Registry::builtin(), Some("filter")).expect("filter")[0];
 
         assert!(line.contains("audio:signal"), "input kind: {line}");
@@ -1008,22 +994,20 @@ mod tests {
         assert!(!line.contains("->"), "no arrow on a sink: {line}");
     }
 
-    // IGNORED — issue #563. This asserts a flat ~122-chars-per-operator tax against a fixed
+    // IGNORED. This asserts a flat ~122-chars-per-operator tax against a fixed
     // 6,000-char ceiling, so it fails after roughly five more operators regardless of whether
-    // they carry any new information. It blocked #556's number-operator work, which is both a
+    // they carry any new information. It blocks number-operator-family growth, which is both a
     // developer-experience and a measured render-thread performance improvement. The ceiling is
     // a real AI-grounding constraint, but the lever is the *projection* — progressive disclosure
     // of the library, or family-aware summarization — not the operator count. Re-enable with a
-    // guard that scales with the registry (see #563 for what must replace it).
+    // guard that scales with the registry.
     //
     // While this is ignored, NOTHING watches the size of the compact listing.
     #[test]
     #[ignore = "issue #563: flat per-operator budget blocks library growth; needs a scaling guard"]
     fn compact_full_registry_fits_the_grounding_budget() {
-        // R2's sizing-sanity acceptance (reuben#459), zero-token per the tier-1 rules: the
-        // re-baseline correction table (reuben-web#96) measured full-registry describe at
-        // ~9.9k tok and calibrated dense text at ≈ chars/2.0–2.2, so ≤6,000 chars keeps the
-        // compact listing ≤ ~3k tok at the conservative end of the audit's 2–3k target
+        // Full-registry describe measured ~9.9k tokens at ≈ chars/2.0–2.2, so ≤6,000 chars keeps
+        // the compact listing ≤ ~3k tok at the conservative end of a 2–3k token target
         // (5,399 chars ≈ 2.5–2.7k tok when this landed). The relative gate scales with the
         // registry: compact must stay under a third of the full minified view, or it no longer
         // earns the name.
@@ -1037,8 +1021,8 @@ mod tests {
         let compact_chars = compact.chars().count();
         assert!(
             compact_chars <= 6_000,
-            "compact full-registry listing must stay ≤ ~3k tok (≤6,000 chars at chars/2.0, \
-             reuben-web#96); measured {compact_chars} chars"
+            "compact full-registry listing must stay ≤ ~3k tok (≤6,000 chars at chars/2.0); \
+             measured {compact_chars} chars"
         );
         assert!(
             compact_chars * 3 <= full.chars().count(),
@@ -1068,7 +1052,7 @@ mod tests {
         let gate = b.inputs.iter().find(|p| p.name == "gate").expect("gate");
         assert_eq!(
             gate.kind, "value",
-            "gate inherits the envelope's held f32 Value, not a Signal (#176)"
+            "gate inherits the envelope's held f32 Value, not a Signal"
         );
         assert!(
             b.outputs.iter().any(|p| p.name == "audio"),
@@ -1126,7 +1110,7 @@ mod tests {
 
     #[test]
     fn describe_patch_refuses_a_range_the_engine_would_not_honor() {
-        // Review F1's poster child: presenting a Hz port as a 0..100 "%" knob. The engine would
+        // Presenting a Hz port as a 0..100 "%" knob: the engine would
         // reinterpret those values as raw Hz and clamp to [20..20000] — the advertised contract is
         // a lie, so the loader rejects it and `describe` surfaces the boundary-named error.
         let json = r#"{
@@ -1295,7 +1279,7 @@ decay:f32 s=0.1, gate:f32=0, release:f32 s=0.08, sustain:f32=0, sweep:f32 Hz=220
 
     #[test]
     fn a_boundary_with_only_dark_ports_is_not_empty() {
-        // Review A: the empty-boundary banner once checked three of the four port collections, so a
+        // The empty-boundary banner once checked three of the four port collections, so a
         // patch whose only entries went dark (unavailable nested child) printed "exposes nothing to
         // wire" and then listed the dark outputs it just denied. `is_empty` owns the definition.
         let json = r#"{

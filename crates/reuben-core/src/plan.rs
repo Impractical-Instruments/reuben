@@ -59,7 +59,7 @@ pub(crate) fn port_kind(p: &Port) -> PortKind {
     }
     match &p.ty {
         PortType::Vocab { is_event: true, .. } => PortKind::Event,
-        // A type-agnostic pass-through (issue #141) is an Event stream: routing then delivers the
+        // A type-agnostic pass-through is an Event stream: routing then delivers the
         // raw `Arg` unlatched and uncoerced, so the sink can re-emit it verbatim.
         PortType::Arg => PortKind::Event,
         _ => PortKind::Value,
@@ -105,7 +105,7 @@ pub struct PlanNode {
     pub address: String,
     /// The operator instance (single-element `Vec`; the per-Lane fan-out is gone).
     /// `pub(crate)`: the survivor transplant ([`Plan::transplant_survivors`]) is the only writer
-    /// that moves these boxes, and it lives on `Plan` — no caller reaches in to swap them (#495).
+    /// that moves these boxes, and it lives on `Plan` — no caller reaches in to swap them.
     pub(crate) ops: Vec<Box<dyn Operator>>,
     pub descriptor: Descriptor,
     /// For each input port (full input-port order): the source's arena buffer index (a one-element
@@ -266,7 +266,7 @@ pub struct Plan {
     pub config: AudioConfig,
     /// Nodes in topological execution order. `pub(crate)`: the survivor migration seam
     /// ([`Plan::transplant_survivors`]) is the one interface that mutates node state across a Swap;
-    /// no caller indexes `.nodes[..].ops` directly (#495).
+    /// no caller indexes `.nodes[..].ops` directly.
     pub(crate) nodes: Vec<PlanNode>,
     /// Total number of edge buffers in the arena.
     pub num_buffers: usize,
@@ -316,7 +316,7 @@ impl Plan {
     /// single typed [`Message`] it routes to, driven by the **destination port's Arg type**
     /// (the boundary). Resolves the address to a node + input port via
     /// [`crate::render::resolve_port`] — the *same* resolver the render routing path uses, so a
-    /// nested node behind a prefix-matching ancestor stays reachable on both paths (issue #165) —
+    /// nested node behind a prefix-matching ancestor stays reachable on both paths —
     /// then calls [`crate::boundary::osc_in_arg`] with that [`Port`] to type the flat args (the
     /// port's `meta` is what lets a scalar-defaulted `f32_buffer` control like `djfilter.position`
     /// cross, while bare audio does not). `None` if no node/port matches or the args don't fit the
@@ -671,30 +671,20 @@ impl Plan {
     }
 
     /// Transplant survivor operator boxes from a `from` Plan into this (freshly built) one, per a
-    /// precomputed migration table. Each `(old_index, new_index)` pair moves the
-    /// surviving box — the operator instance *is* its state, including a voicer's
-    /// hosted voice sub-plans — from `from.nodes[old_index]` into `self.nodes[new_index]`; the
-    /// displaced cold box (the fresh Plan's node for that slot) lands back in `from` and frees
-    /// off-thread with it. The new Plan's wiring and latches (which live in the [`PlanNode`], not
-    /// the box) stay this Plan's, so a survivor re-reads its inputs from the *new* document.
+    /// precomputed migration table: each `(old_index, new_index)` pair moves the box —
+    /// `from.nodes[old_index]` → `self.nodes[new_index]` — and the displaced cold box lands back in
+    /// `from` to free off-thread with it. Wiring and latches stay this Plan's; only the box moves.
+    /// See rules: execution-runtime (survivor-migration, engine-swap-unit).
     ///
-    /// This is the single seam that mutates survivor state across a Swap, so the **pairing
-    /// invariant** concentrates here: each pair must share operator type + instantiate-time
-    /// identity, guaranteed by the survivor key the
-    /// [`MigrationTable`](crate::coordinator::manifest::MigrationTable) carries, so the
-    /// transplanted box's internal layout matches its new Plan node. A wrong-but-in-bounds pairing
-    /// is a caller bug the bounds `debug_assert!` cannot catch (strengthening it to a per-pair type
-    /// check is deferred, #495).
-    ///
-    /// The bare `&[(usize, usize)]` signature keeps this primitive from importing the coordinator
-    /// (preserving the one-way `coordinator → plan/engine` layering): the migration *table* (which
-    /// pairs, computed how) is a Coordinator concept. [`crate::engine::Engine`] forwards straight to
-    /// here; the coordinator call sites unwrap the survivor slice from their
-    /// [`MigrationTable`](crate::coordinator::manifest::MigrationTable) at the seam where the table
-    /// already lives.
+    /// Caller contract: each pair must already share operator type + instantiate-time identity (the
+    /// survivor key a [`MigrationTable`](crate::coordinator::manifest::MigrationTable) guarantees) —
+    /// a wrong-but-in-bounds pairing is a caller bug the bounds `debug_assert!` cannot catch. The
+    /// bare `&[(usize, usize)]` signature keeps this primitive from importing the coordinator (the
+    /// one-way `coordinator → plan/engine` layering); [`crate::engine::Engine`] forwards straight to
+    /// here.
     ///
     /// **RT-safe:** a bounded loop of [`std::mem::swap`] over `Vec<Box<dyn Operator>>` — pointer
-    /// swaps only, no allocation, no drop, no lock. Runs at the render-callback top (ticket #321).
+    /// swaps only, no allocation, no drop, no lock. Runs at the render-callback top.
     pub(crate) fn transplant_survivors(&mut self, from: &mut Plan, pairs: &[(usize, usize)]) {
         for &(old_index, new_index) in pairs {
             debug_assert!(
@@ -705,11 +695,8 @@ impl Plan {
                 &mut from.nodes[old_index].ops,
                 &mut self.nodes[new_index].ops,
             );
-            // The survivor's box carried its emit-on-change dedup baselines, but the new
-            // Plan reset every downstream consumer latch to its declared default. Let each
-            // transplanted op re-assert its on-change held outputs on the first post-swap block, so a
-            // consumer is not stranded on that default (default no-op; only publishers like `harmony`
-            // act). RT-safe: a bounded loop of small baseline resets, no allocation.
+            // Re-assert on-change held outputs so a consumer isn't stranded on the post-transplant
+            // reset default (see rules: execution-runtime). RT-safe: bounded loop, no allocation.
             for op in &mut self.nodes[new_index].ops {
                 op.on_transplant();
             }
@@ -717,8 +704,8 @@ impl Plan {
     }
 }
 
-/// Collapse pass-through **interface pipes** out of the execution schedule
-/// (issue #189). A pipe is an authoring/format concept — a named boundary entry that mints an
+/// Collapse pass-through **interface pipes** out of the execution schedule.
+/// A pipe is an authoring/format concept — a named boundary entry that mints an
 /// address — and rendering one as a real node costs a full per-node engine pass every block
 /// (routing, segmenting, an arena buffer + copy for a signal pipe), multiplied by the Voicer's
 /// per-voice plans. This pass removes each dissolvable pipe node and rewires around it so the
@@ -855,15 +842,11 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
     }
 }
 
-/// The planner's only form job: a **local per-wire check**. For each connection, compare
-/// the source output's declared form against the destination input's and reject the illegal
-/// crossings — there is no topological solver, no propagation. The legal combinations are
-/// like→like (`Signal→Signal`, `Value→Value`, `Event→Event`) and the one implicit coercion
-/// `Value→Signal` (materialized downstream). Everything else is a hard error: `Signal→Value` needs
-/// an explicit sig→val converter, and any `Event` mismatch needs an explicit latch / change-detect.
-/// One destination-side exception: a type-agnostic [`Arg`](PortType::Arg) pass-through input
-/// (issue #141) accepts any Event *or* Value source **whose type has an external OSC form**
-/// ([`has_osc_form`](crate::boundary::has_osc_form)); a Signal or no-form source is rejected.
+/// Local per-wire form check — see rules: composition-operators.
+/// One destination-side exception local to this checker: a type-agnostic
+/// [`Arg`](PortType::Arg) pass-through input accepts any Event *or* Value source **whose type has
+/// an external OSC form** ([`has_osc_form`](crate::boundary::has_osc_form)); a Signal or no-form
+/// source is rejected.
 fn check_wire_forms(graph: &Graph) -> Result<(), PlanError> {
     use PortKind::{Event, Signal, Value};
     for c in &graph.connections {
@@ -876,7 +859,7 @@ fn check_wire_forms(graph: &Graph) -> Result<(), PlanError> {
             continue;
         };
         let reason = match (port_kind(src), port_kind(dst)) {
-            // A type-agnostic pass-through input (issue #141) spans the Event/Value split:
+            // A type-agnostic pass-through input spans the Event/Value split:
             // any Message-domain source whose type has an external OSC form wires in, both
             // delivered as raw Events (capability-keyed via `boundary::has_osc_form`, the
             // single statement shared with the load-time check). A no-form type (`Harmony`)
@@ -970,7 +953,7 @@ mod port_kind_tests {
     use crate::descriptor::Port;
     use crate::vocab::SnapDir;
 
-    // The fix for #107: event-ness is read from the type's `is_event` flag, not a `name == "Harmony"`
+    // Event-ness is read from the type's `is_event` flag, not a `name == "Harmony"`
     // check. A held struct vocab is a Value; only a declared-event vocab (`Note`) is an Event — so a
     // second held struct vocab would be classified by its declaration, never silently as an Event.
     #[test]
@@ -990,22 +973,14 @@ mod port_kind_tests {
     }
 }
 
-/// Wire-form oracle + per-wire checker fixtures.
+/// Wire-form oracle + per-wire checker fixtures — see rules: composition-operators. These
+/// fixtures wire **synthetic single-port operators** (one declared form each) so a plan's buffer
+/// count isolates the wire under test:
+/// [`signal_buffer_count`] == declared-Signal ports + materialized Value→Signal edges.
 ///
-/// Built test-first as the spine's substrate (impl-prep §1). A port's **form** is *declared* by its
-/// [`PortType`] — `f32` = Value, `f32_buffer` = Signal, a struct vocab (`Note`) = Event — and the
-/// planner's only form job is a **local per-wire check**: Value→Signal materializes, Signal→Value is
-/// a hard error, like→like is direct. These fixtures pin that check.
-///
-/// The fixtures wire **synthetic single-port operators** (one declared form each) so a plan's
-/// buffer count isolates the wire under test: [`signal_buffer_count`] == declared-Signal ports +
-/// materialized Value→Signal edges. Real operators carry their forms after the step-4 sweep; until
-/// then these probes are the oracle.
-///
-/// Relocated from `tests/wire_forms.rs` into a unit module (#495): the fixtures reach into
-/// [`Plan::nodes`] (now `pub(crate)`), which they always did — they are unit checks of
-/// `instantiate`'s wiring, not black-box integration tests, so they live where they can see the
-/// crate internals they assert on.
+/// A unit module rather than `tests/wire_forms.rs` because the fixtures reach into
+/// [`Plan::nodes`] (`pub(crate)`) — they are unit checks of `instantiate`'s wiring, not black-box
+/// integration tests, so they live where they can see the crate internals they assert on.
 #[cfg(test)]
 mod wire_forms {
     use super::{port_kind, Plan, PlanError, PortKind};
@@ -1048,9 +1023,8 @@ mod wire_forms {
         Port::f32_buffer(name)
     }
 
-    /// A Value port — a latched single value. Modelled with `I32` so it classifies Value *now*; until
-    /// the step-4 sweep `F32` still classifies Signal (decision A), so a genuine numeric Value source
-    /// is `I32` here. The real `f32`-Value fixtures (C/E/F: `tempo`, gate spine) arrive at step 4.
+    /// A Value port — a latched single value, modelled with `I32` (a bare `F32` also classifies
+    /// Value, per `port_kind`, but `I32` keeps this fixture unambiguous against the Signal fixtures).
     fn value(name: &'static str) -> Port {
         Port {
             name,
@@ -1069,14 +1043,14 @@ mod wire_forms {
         Port::note(name)
     }
 
-    /// A type-agnostic pass-through port — any `Arg`, delivered as a raw Event stream (issue #141:
-    /// `osc_out.in`).
+    /// A type-agnostic pass-through port — any `Arg`, delivered as a raw Event stream
+    /// (`osc_out.in`).
     fn passthrough(name: &'static str) -> Port {
         Port::arg(name)
     }
 
     // ------------------------------------------------------------------------------------------
-    // Oracle probes (impl-prep §1).
+    // Oracle probes.
     // ------------------------------------------------------------------------------------------
 
     /// The declared form of an input port, read from the plan's precomputed classification.
@@ -1100,7 +1074,7 @@ mod wire_forms {
     }
 
     // ------------------------------------------------------------------------------------------
-    // Step 0 — oracle substrate (tracer bullets).
+    // Oracle substrate (tracer bullets).
     // ------------------------------------------------------------------------------------------
 
     #[test]
@@ -1150,8 +1124,7 @@ mod wire_forms {
     }
 
     // ------------------------------------------------------------------------------------------
-    // Step 1 — per-wire form checker (impl-prep §2). Synthetic ports isolate each form crossing; the
-    // real-port versions (C/E/F numeric Value spine) light up at step 4 as operators migrate.
+    // Per-wire form checker. Synthetic ports isolate each form crossing.
     // ------------------------------------------------------------------------------------------
 
     fn dst_idx(plan: &Plan) -> usize {
@@ -1301,7 +1274,7 @@ mod wire_forms {
     }
 
     // ------------------------------------------------------------------------------------------
-    // The type-agnostic pass-through (issue #141) — `osc_out.in`. It classifies Event (raw, unlatched
+    // The type-agnostic pass-through — `osc_out.in`. It classifies Event (raw, unlatched
     // delivery) and is the one destination that spans the Event/Value split: any Message-domain
     // source wires in; only a Signal source is rejected (audio never crosses the boundary).
     // ------------------------------------------------------------------------------------------
@@ -1326,7 +1299,7 @@ mod wire_forms {
     }
 
     /// A vocab-enum Value source wires in as well — the wire that makes the boundary's outbound enum
-    /// arm reachable at all (issue #141: enums could never flow outbound before).
+    /// arm reachable at all (enums could never flow outbound before this passthrough wire).
     #[test]
     fn enum_value_into_passthrough_is_legal() {
         let plan = wire(value_enum("mode"), passthrough("in")).expect("enum Value→Arg is legal");
@@ -1337,8 +1310,8 @@ mod wire_forms {
     /// A no-OSC-form Value source (`Harmony`, the documented boundary opt-out) is equally a hard
     /// error: legality into the pass-through is capability-keyed (`boundary::has_osc_form`), so a
     /// wire that could never send anything is rejected at plan, not left silently dead. Struct
-    /// converters landed with the boundary registry (`register_osc_form!`, epic #146); `Harmony`
-    /// registers none — its wire form is deferred to issue #209.
+    /// converters land through the boundary registry (`register_osc_form!`); `Harmony`
+    /// registers none — its wire form is a deferred boundary decision.
     #[test]
     fn harmony_into_passthrough_is_a_hard_error_naming_the_opt_out() {
         let harmony = Port {
@@ -1381,7 +1354,7 @@ mod wire_forms {
     }
 }
 
-/// Unit tests for the survivor-migration seam (#495). The transplant is the one primitive that
+/// Unit tests for the survivor-migration seam. The transplant is the one primitive that
 /// mutates survivor state across a Swap; these prove the box (whose identity *is* the operator's
 /// state) moves, and that a mispaired-out-of-bounds table trips the debug guard.
 #[cfg(test)]

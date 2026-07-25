@@ -1,36 +1,9 @@
-//! The M2 swap-correctness + RT-safety harness (ticket #324) — the epic's
-//! **terminal** off-device verification of the gapless mailbox swap.
+//! The terminal off-device verification of the gapless mailbox swap: a live [`Coordinator`]
+//! builds and installs swaps off-thread, and the production [`RenderSlot`] runs the same
+//! callback-side install step the audio callback calls. Part (a) is Coordinator-direct
+//! behavioral survivor/reset; part (b) is install-path allocation-counting.
 //!
-//! This module drives the **real** RT path: a live [`Coordinator`] builds and installs swaps
-//! off-thread (bypassing the TCP structure channel — decision 1's `reuben-native` live-server test
-//! owns that seam), and the production [`RenderSlot`] runs the **same callback-side install step the
-//! audio callback calls** — [`RenderSlot::fill`]/`fill_duplex`, which peeks the install mailbox, runs
-//! the master-gain ramp, box-transplants the survivors via [`Engine::transplant_survivors`],
-//! and posts the retiree. It is NOT the synchronous `RenderRig` stand-in in `swap.rs` (a pre-#321
-//! test shim); driving the production slot is exactly what the survivor/reset case asks for.
-//!
-//! Two shapes land here:
-//!
-//! - **Coordinator-direct behavioral survivor/reset** (part a). Operator state is opaque
-//!   (the operator instance *is* the state — no extraction trait), so survivor/reset is
-//!   asserted **behaviorally in rendered audio**:
-//!   * a swap that *rewires an already-decaying envelope's neighbors* leaves the envelope a survivor
-//!     — its box transplants with its in-progress decay, so the output keeps decaying smoothly with
-//!     **no re-attack transient** (rewired neighbors leave a survivor a
-//!     survivor);
-//!   * a swap that *bumps `voices`* on the same address is a different instantiation
-//!     (`voices` is an instantiate-time Constant), so the voicer **resets** — its old held note falls
-//!     silent and a fresh pool takes its place.
-//!
-//! - **Install-path allocation-counting** (part b). The callback-side install step (mailbox
-//!   drain + migration-table pointer-swap loop) is wrapped in the process's thread-local
-//!   allocation-counting harness ([`rt_alloc::measure`], ticket #344) and asserted to make **zero**
-//!   heap allocation and **zero** frees — the binary RT-safety invariant, not a trend.
-//!
-//! The behavioral assertions **red on a broken migration table** (a survivor that fails to transplant
-//! re-attacks from cold — the decay assertion trips); the alloc assertion **reds on any heap touch**
-//! in the install step. Both bites were verified against the real machinery while authoring this
-//! harness.
+//! see rules: agent-mcp
 
 mod rt_alloc;
 mod swap_rt_safe;
@@ -382,14 +355,8 @@ fn swap_keeps_a_harmony_driven_voice_in_tune_no_silent_retranspose() {
 
 #[test]
 fn the_install_step_makes_zero_heap_allocation() {
-    // The callback-side install step — drain the install bundle, run the
-    // master-gain ramp, box-transplant the survivors, post the retiree — must be **heap-neutral** on
-    // the render thread: no allocation and no free. This wraps the exact fills the audio callback
-    // makes in the process's THREAD-LOCAL counting harness (`rt_alloc::measure`, ticket #344), NOT a
-    // process-global counter: counting is armed only on this thread for the duration of the closure,
-    // so a sibling test allocating on another thread during the same window can never perturb the
-    // result. A simple envelope→output graph is used so a freshly built Engine renders alloc-free
-    // from its very first block (no first-render pool growth to muddy the window).
+    // A simple envelope→output graph is used so a freshly built Engine renders alloc-free from
+    // its very first block (no first-render pool growth to muddy the window).
     let doc = decaying_envelope_doc("/env");
     let (mut coord, mut slot) = setup(&doc);
     let ch = slot.channels();

@@ -4,8 +4,7 @@
 //! nested document's *boundary*; this one projects **one document's structure**, because the agent
 //! never reads instrument JSON (see rules: agent-mcp). Every door cuts its views from the contract
 //! types here, so what the CLI, the MCP sidecar and the web in-page layer show an agent cannot
-//! drift — cross-door drift is a compile error, not a runtime surprise
-//! (`#portable-tool-contracts`).
+//! drift — cross-door drift is a compile error, not a runtime surprise.
 //!
 //! Four views, **lossless in aggregate**: every field of the document format is reachable through
 //! *some* view (index ∪ node-zoom ∪ pipe-view ∪ resources-view), while any single view is
@@ -27,8 +26,8 @@
 //!   resolved.
 //!
 //! Every view is a pure function of the document (plus the registry and the resolver), and none of
-//! them judges the document: `validate` remains the single authority on whether it loads
-//! (`#loader-single-authority`). A document that fails to load still projects — going blind exactly
+//! them judges the document: `validate` remains the single authority on whether it loads.
+//! A document that fails to load still projects — going blind exactly
 //! when the agent needs to see is the worst possible failure — with `loadable: false` in the header
 //! saying so.
 
@@ -51,7 +50,7 @@ use crate::resources::{ResolveError, ResourceResolver};
 /// can mark a re-baseline instead of silently comparing two different surfaces. Bumped only on a
 /// breaking shape change; a new optional line is additive.
 ///
-/// v2 (#604, executing #611's call): the `doc` field is presented as **`description`**. The
+/// v2: the `doc` field is presented as **`description`**. The
 /// projection owns the agent-facing vocabulary — `doc` is a disk spelling, and a surface whose whole
 /// job is being read by a model should not make it learn two words for one thing. The disk field is
 /// untouched; a format migration across ~20 fixtures is not worth a cosmetic win.
@@ -148,8 +147,8 @@ impl Selection {
     /// Lives here because "one selection grammar shared by zoom and pipes" is a claim about the
     /// *projection*, and a door that re-derives it re-derives its edge cases too: the first two
     /// doors to grow this surface disagreed about both-at-once — one a hard error, the other a
-    /// silent precedence — which is exactly the divergence `#portable-tool-contracts` forbids, and
-    /// a silent precedence is the worse half (a caller that meant the ignored field is told
+    /// silent precedence — which is exactly the kind of cross-door divergence the contract types
+    /// forbid, and a silent precedence is the worse half (a caller that meant the ignored field is told
     /// nothing). Both-at-once is an `Err` for everyone: it is not a puzzle to resolve, it is a
     /// caller that has not decided what it is asking for.
     pub fn from_terms(names: &[String], type_name: Option<&str>) -> Result<Self, String> {
@@ -1252,7 +1251,7 @@ fn build_consumers(doc: &NormalizedDoc, registry: &Registry) -> BTreeMap<String,
             if let InputValue::Wire { from } = v {
                 // An input pipe mints `/{pipe}` into the flat node namespace, so some of these
                 // land under a key that is a *pipe* rather than a node. Nothing reads those today
-                // — the pipe view carries no consumer field — which is the open question on #610.
+                // — the pipe view carries no consumer field, which is still an open question.
                 record(from, Some(n.address.clone()), name.clone());
             }
         }
@@ -1576,7 +1575,7 @@ mod tests {
             "instrument tiny (3 nodes, format 3, projection 2)"
         );
         // The role line is the description's FIRST sentence; the rest is reachable, not resident.
-        // `description`, not `doc`: the projection owns the agent-facing vocabulary (#611), and the
+        // `description`, not `doc`: the projection owns the agent-facing vocabulary, and the
         // disk spelling stops at the mint.
         let role = lines.next().unwrap();
         assert!(role.starts_with("description: A tiny thing."), "{role}");

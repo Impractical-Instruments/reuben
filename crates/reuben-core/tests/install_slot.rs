@@ -1,17 +1,10 @@
-//! Behavioral harness for the RT-side install slot (ticket #321).
+//! Coordinator-direct behavioral harness for the RT-side install slot's master-gain ramp
+//! (fade-down → install-at-zero → fade-up over ~2× the ramp): a survivor keeps ringing through
+//! the ramp, a non-survivor's cut lands at master-zero (inaudible) and stays cold after, and
+//! steady state (no swap pending) passes the Engine's audio through unchanged. Driven through
+//! the production [`RenderSlot`], not a synchronous test stand-in.
 //!
-//! Coordinator-direct: a real [`Coordinator`] builds and installs swaps off-thread while a real
-//! [`RenderSlot`] drives the render side — the production RT path, not the synchronous `RenderRig`
-//! stand-in in `swap.rs`. These tests observe the **rendered buffer** to prove the master-gain
-//! ramp's sonic contract:
-//!
-//! - the master output **dips to zero and recovers over ~2× the ramp** (fade-down →
-//!   install-at-zero → fade-up), hitting exactly zero at the install frame;
-//! - a **survivor keeps ringing** through the up-ramp (its held level rides the box transplant);
-//! - a **non-survivor's cut lands at master-zero** — inaudible — and its fresh cold box is silent
-//!   after the ramp;
-//! - **steady state is transparent**: with no swap pending the slot passes the Engine's audio
-//!   through unchanged (no dip, no ramp) — the fast path.
+//! see rules: agent-mcp
 
 use reuben_core::coordinator::{Coordinator, RenderSlot};
 use reuben_core::resources::MemoryResolver;

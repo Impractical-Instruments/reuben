@@ -295,9 +295,7 @@ fn new_instrument_creates_a_valid_document_and_refuses_to_overwrite() {
     let result = new_instrument(SRC, "fresh", &registry, &resolver).expect("new");
     assert!(result.report.ok);
     assert!(result.written);
-    // The #146 seed, exactly: the minimal required document and nothing else. Asserted here since
-    // #604 retired `scaffold_instrument` — this verb is now the only place the seed is minted, and
-    // the point of it is that first-creation never has to guess the required shape.
+    // The minimal required document and nothing else — see rules: agent-mcp
     assert_eq!(
         readback(&resolver),
         json!({ "format_version": 3, "instrument": "fresh", "nodes": [] }),

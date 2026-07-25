@@ -16,6 +16,8 @@
 //! - input 1: `depth` — modulation amplitude (added to / subtracted from `center`).
 //! - input 2: `center` — bias / offset the modulation swings around.
 //! - output 0: `out` (`Buffer`) — `center + depth * sin(2π·phase)`.
+//!
+//! see rules: signal-time-dsp
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};

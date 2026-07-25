@@ -1,17 +1,10 @@
-//! Filesystem + WAV resource resolution — the native side of the resource seam.
+//! Filesystem + WAV resource resolution — the native side of the resource seam. see rules:
+//! authoring-library
 //!
-//! The portable core defines [`SampleBuffer`] / [`ResourceResolver`] but stays codec-free.
-//! This module fills the seam with a filesystem [`ResourceResolver`]
-//! that decodes **WAV** (`hound`; PCM int + float — tiny, deterministic, no codec
-//! licensing). Compressed formats and non-file sources drop in behind the same trait later.
-//!
-//! Paths in a resource table resolve **relative to the referencing document's directory** (a
-//! sample or sub-patch lives next to the file that names it), falling back to a configurable
-//! [library root](FsResolver::with_root) — so a project keeps local references working while
-//! shared patches come from one place. Identity is the resolver's job:
-//! [`FsResolver::canonical`] lexically normalizes the winning absolute path, so `a.json`,
-//! `./a.json`, and `x/../a.json` are one cycle-guard/dedup key. Symlinks are *not* chased —
-//! canonicalization never does IO beyond the sibling-vs-root existence probe.
+//! Fills the [`ResourceResolver`] seam with a filesystem resolver that decodes **WAV**
+//! (`hound`; PCM int + float); compressed formats and non-file sources drop in behind the same
+//! trait later. [`FsResolver::canonical`] lexically normalizes the winning absolute path, so
+//! `a.json`, `./a.json`, and `x/../a.json` are one cycle-guard/dedup key.
 
 use std::path::{Component, Path, PathBuf};
 
@@ -120,8 +113,7 @@ impl ResourceResolver for FsResolver {
     /// `source` to the same location [`resolve_text`](Self::resolve_text) reads from
     /// (`base_dir.join`, through which the loader's canonical absolute path passes
     /// unchanged). Missing parent directories are created so a new document lands where the
-    /// author addressed it. This is the mechanism that makes the MCP sidecar a process which
-    /// writes to disk; the stance change that documents it belongs in the ADR ticket.
+    /// author addressed it.
     ///
     /// **Write-then-rename, not truncate-in-place.** Every document verb funnels through here, so
     /// this is the author's only copy of an instrument being replaced on the interactive path. A
@@ -442,8 +434,6 @@ mod tests {
 
     #[test]
     fn resolve_text_reads_a_patch_file_and_builds_a_subgraph() {
-        // The instrument-kind resource seam: write a voice patch, resolve its path to
-        // text via FsResolver, and build it into a sub-Graph through core's `resolve_instrument`.
         let dir = std::env::temp_dir();
         let path = dir.join("reuben_test_voice.json");
         std::fs::write(

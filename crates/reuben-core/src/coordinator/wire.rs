@@ -218,8 +218,8 @@ pub struct Conflict {
 /// The document is raw JSON, exactly as installed: the engine is the single validation authority,
 /// so nothing re-validates it on the way out.
 ///
-/// **This is a channel type, not an agent-facing one.** #604 retired every arm that hands instrument
-/// JSON to a model, so the `document` here reaches a *door*, never a context: the MCP door projects
+/// **This is a channel type, not an agent-facing one.** Every arm that hands instrument
+/// JSON to a model has been retired, so the `document` here reaches a *door*, never a context: the MCP door projects
 /// it and returns the projection. The channel keeps carrying the whole document because its other
 /// consumers (a host embedding the engine, a test) are programs, and because `source` alone cannot
 /// answer "what is playing?" — the file may have moved on since the swap, which is precisely what

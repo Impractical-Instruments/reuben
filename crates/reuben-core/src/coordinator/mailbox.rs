@@ -2,8 +2,8 @@
 //!
 //! Two hand-rolled single-slot mailboxes on [`AtomicPtr`]: an **install slot** the
 //! Coordinator fills and the render side drains, and a **retire slot** the render side
-//! fills and the Coordinator drains. The payload is generic/opaque — the install bundle
-//! (Engine + output map) is a later ticket; this is just the channel primitive.
+//! fills and the Coordinator drains. The payload type is generic/opaque — this is just the
+//! channel primitive; [`crate::coordinator::swap::InstallBundle`] is the concrete payload.
 //!
 //! see rules: execution-runtime
 
@@ -273,15 +273,11 @@ impl<T: Send> CoordinatorMailbox<T> {
 
 impl<T: Send> RenderMailbox<T> {
     /// Whether an install is waiting to be drained — a plain `Acquire` load, no RMW, no
-    /// alloc/free/lock (RT-safe).
-    ///
-    /// The install slot ramp "sees the pending Engine in the install slot
-    /// but does not consume it immediately": the render side peeks with this to *begin*
-    /// the master-gain down-ramp, then drains with [`take_install`](Self::take_install)
-    /// only when the ramp reaches zero. Peeking (a load) rather than draining (a `swap`)
-    /// on the steady-state miss keeps the empty callback from stealing the install slot's
-    /// cache line from the Coordinator on every poll — the same reason
-    /// [`try_reclaim`](CoordinatorMailbox::try_reclaim) peeks the retire slot first.
+    /// alloc/free/lock (RT-safe). The render side peeks with this to begin the master-gain
+    /// down-ramp, then drains with [`take_install`](Self::take_install) once the ramp reaches
+    /// zero; peeking rather than draining on the steady-state miss avoids stealing the install
+    /// slot's cache line, the same reason [`try_reclaim`](CoordinatorMailbox::try_reclaim)
+    /// peeks the retire slot first — see rules: execution-runtime.
     pub fn has_install(&self) -> bool {
         self.shared.install.is_occupied()
     }

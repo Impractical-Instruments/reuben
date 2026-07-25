@@ -1,8 +1,7 @@
-//! Tier-1 staleness gate for the generated library index (patch-pipeline R4):
-//! the committed `instruments/index.md` must equal a fresh generation over the checkout's
-//! available-set — the same regenerate-and-compare pattern as the schema's
-//! `committed_schema_is_in_sync`. Registry- or instrument-varying content is generated or
-//! CI-keyed, never hand-kept.
+//! Staleness gate for the generated library index: the committed `instruments/index.md` must
+//! equal a fresh generation over the checkout's available-set — the same regenerate-and-compare
+//! pattern as the vocabulary's `committed_rendered_view_is_in_sync`. Registry- or
+//! instrument-varying content is generated or CI-keyed, never hand-kept.
 
 use std::path::PathBuf;
 

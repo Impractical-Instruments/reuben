@@ -5,10 +5,10 @@
 //! bad), of serialization, of connection type-checking, and of AI grounding — the `describe`
 //! projections are derived from these descriptors.
 
-// The scalar-control metadata types are owned by `reuben-contract` (issue #217): one
-// `F32Meta`/`I32Meta`/`Curve` definition shared by the contract spec, the macro, and this
-// runtime descriptor. Re-exported here so the macro-emitted path
-// `::reuben_core::descriptor::F32Meta` and every in-crate `descriptor::` consumer keep working.
+// The scalar-control metadata types are owned by `reuben-contract`: one `F32Meta`/`I32Meta`/
+// `Curve` definition shared by the contract spec, the macro, and this runtime descriptor.
+// Re-exported here so the macro-emitted path `::reuben_core::descriptor::F32Meta` and every
+// in-crate `descriptor::` consumer keep working.
 pub use reuben_contract::{Curve, F32Meta, I32Meta};
 
 /// What a port carries — **the port's [`Arg`](crate::message::Arg) type**. Replaces
@@ -28,9 +28,9 @@ pub enum PortType {
     /// integer (a count like the voicer's `voices` pool size), carrying its range + default in
     /// [`I32Meta`]; `None` for a bare integer atom with no declared range.
     I32 { meta: Option<I32Meta> },
-    /// A string / symbol atom — cold / boundary paths only. Its `Arg` is `Arc<str>`-backed
-    /// (issue #206), so forwarding one across the render thread is a refcount bump;
-    /// construction still allocates and stays on the cold paths.
+    /// A string / symbol atom — cold / boundary paths only. Its `Arg` is `Arc<str>`-backed,
+    /// so forwarding one across the render thread is a refcount bump; construction still
+    /// allocates and stays on the cold paths.
     Str,
     /// A dense per-sample signal (audio): the **only** Arg with a buffer form. A `Buffer`-source
     /// wired into a scalar port is illegal — it needs an explicit sampler op. Not
@@ -52,7 +52,7 @@ pub enum PortType {
         is_event: bool,
         enum_meta: Option<EnumMeta>,
     },
-    /// A **type-agnostic pass-through** (issue #141): the port carries *any*
+    /// A **type-agnostic pass-through**: the port carries *any*
     /// [`Arg`](crate::message::Arg), committing to no vocab type. Classified as an
     /// [Event](crate::plan::PortKind::Event) stream, so routing delivers the raw `Arg` unlatched
     /// and uncoerced; the operator reads and re-emits it through `Raw` handles (`io.read` on an
@@ -64,7 +64,7 @@ pub enum PortType {
     /// port is the type authority. Legality is capability-keyed
     /// ([`has_osc_form`](crate::boundary::has_osc_form)): any Event or Value source whose type
     /// has an external OSC form wires in — for a struct vocab type that means a converter
-    /// registered via `register_osc_form!` ([`OscForm`](crate::boundary::OscForm), epic #146);
+    /// registered via `register_osc_form!` ([`OscForm`](crate::boundary::OscForm));
     /// a no-form source (`Harmony`, which registers none) is rejected at load/plan, and a
     /// Signal (audio) source likewise — audio stays off the wire by construction.
     Arg,
@@ -73,7 +73,7 @@ pub enum PortType {
 /// The scalar **element** a buffer port's dense per-sample block carries. Today the only buffer
 /// form ([`F32Buffer`](PortType::F32Buffer)) is `f32`-element, so this has a single variant; it
 /// exists so a site can ask *what a buffer carries* by name instead of spelling the variant, and so
-/// a second buffer element type (issue #560) adds a variant here rather than another ad-hoc match.
+/// a second buffer element type adds a variant here rather than another ad-hoc match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ElementType {
     /// A 32-bit float sample — the element of every buffer today.
@@ -85,7 +85,7 @@ impl PortType {
     /// latched atom — the structural "is this a buffer?" question, true for the buffer variant(s)
     /// (today only [`F32Buffer`](PortType::F32Buffer)). Prefer this over
     /// `matches!(ty, PortType::F32Buffer)` at classification sites so buffer-ness reads as a
-    /// question, not a variant spelling (issue #560). Defined as "has an element type", so the two
+    /// question, not a variant spelling. Defined as "has an element type", so the two
     /// predicates cannot drift.
     pub fn is_buffer(&self) -> bool {
         self.element_ty().is_some()
@@ -94,7 +94,7 @@ impl PortType {
     /// The [`ElementType`] a buffer port's samples carry, or `None` for a non-buffer (latched) port.
     /// Element-erased classification ([`PortKind::Signal`](crate::plan::PortKind::Signal)) is a
     /// *form*, not a type; this is the type descriptor for the sites that need the element, and the
-    /// seam a second buffer element type plugs into (issue #560).
+    /// seam a second buffer element type plugs into.
     pub fn element_ty(&self) -> Option<ElementType> {
         match self {
             PortType::F32Buffer => Some(ElementType::F32),
@@ -244,7 +244,7 @@ impl Port {
         }
     }
 
-    /// A type-agnostic pass-through port — [`PortType::Arg`] (issue #141): carries any
+    /// A type-agnostic pass-through port — [`PortType::Arg`]: carries any
     /// [`Arg`](crate::message::Arg) as a raw Event stream. The `osc_out` sink's input form.
     pub const fn arg(name: &'static str) -> Self {
         Self {
@@ -280,7 +280,7 @@ impl Port {
     }
 
     /// A held `Pitch` leaf port — a latched Value, like `harmony`. The output an
-    /// `unpack_<type>` operator emits for a `Pitch` field; `resolve` (#523) reads it.
+    /// `unpack_<type>` operator emits for a `Pitch` field; `resolve` reads it.
     pub const fn pitch(name: &'static str) -> Self {
         Self::vocab(name, "Pitch", false)
     }
@@ -301,7 +301,7 @@ impl Port {
     /// A bounded scalar **integer** port carrying its range + default in [`I32Meta`].
     /// Today the form a plan-time [`Constant`](Descriptor::constants) count takes (the voicer's
     /// `voices` pool size); a settable integer whose value rides the wire as [`Arg::I32`].
-    /// Parallel to [`f32`](Self::f32): the port owns its name, the meta is nameless (#213).
+    /// Parallel to [`f32`](Self::f32): the port owns its name, the meta is nameless.
     pub fn i32(name: &'static str, meta: I32Meta) -> Self {
         Self {
             name,
@@ -472,8 +472,8 @@ impl Descriptor {
     /// rather than by restating which port types accept one. The restatement is what broke: the
     /// gate used to read [`materialized_input`](Self::materialized_input), which answers out of
     /// the [`F32Meta`] struct field, so every `i32` port — whose meta lives *inside*
-    /// [`PortType::I32`] — was invisible and a literal on one was refused as an unknown input
-    /// (issue #569). Deriving the predicate from the conversion keeps the two from drifting again
+    /// [`PortType::I32`] — was invisible and a literal on one was refused as an unknown input.
+    /// Deriving the predicate from the conversion keeps the two from drifting again
     /// the next time a number type lands.
     ///
     /// Probed with a canonical in-range value rather than the author's, because this answers
@@ -490,7 +490,7 @@ impl Descriptor {
     /// signal port with a scalar default — paired with that meta.
     ///
     /// **Not** the set an author may write a numeric literal on, despite the name: it answers out
-    /// of the `F32Meta` slot alone, so it omits every [`I32`](PortType::I32) control (issue #569).
+    /// of the `F32Meta` slot alone, so it omits every [`I32`](PortType::I32) control.
     /// Use [`accepts_number_literal`](Self::accepts_number_literal) for that question. Currently
     /// callerless.
     pub fn settable_inputs(&self) -> impl Iterator<Item = (&'static str, &F32Meta)> {

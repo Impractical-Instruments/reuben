@@ -1,21 +1,15 @@
-//! Device profile: a small JSON file, loaded with `--io-map <file>` on `play`,
-//! that binds an instrument's *logical* master channels to a real device's channels, selects a
-//! non-default device by name substring, and states sample-rate/buffer-size **preferences** the
-//! engine requests against the device's supported configs. reuben never fights the device: the
-//! outcome is granted, then adopted, then logged (`audio.rs`'s job) — never forced.
-//!
-//! Patches never learn device geography; this file is the one place logical↔device binding is
-//! spelled out, kept outside the patch so
-//! the same instrument plays on any rig.
+//! Device profile: the `--io-map <file>` document — binds an instrument's *logical* master
+//! channels to a real device's channels, selects a non-default device by name substring, and
+//! states sample-rate/buffer-size preferences the engine requests against the device's supported
+//! configs. see rules: composition-operators
 //!
 //! **Structural** problems (malformed JSON, an unknown field, a map key/value that isn't a
 //! channel index) are load errors — [`ProfileError`], surfaced by [`DeviceProfile::load`].
 //! Once a profile parses, it is never a load error again: a map entry naming a channel that
 //! turns out not to exist on the real device is a **reality mismatch**, handled by warn +
 //! degrade at the point the mismatch is discovered (`audio.rs`'s output path; `crate::input`'s
-//! input path). `input.*` is applied by the input stream
-//! (P5, [#182](https://github.com/Impractical-Instruments/reuben/issues/182)), which opens
-//! only when the played instrument binds input channels.
+//! input path). `input.*` is applied by the input stream, which opens only when the played
+//! instrument binds input channels.
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -48,7 +42,7 @@ pub struct SideProfile {
 pub struct DeviceProfile {
     #[serde(default)]
     pub output: SideProfile,
-    /// Applied by the input stream (`crate::input`, P5/#182), which opens only when the
+    /// Applied by the input stream (`crate::input`), which opens only when the
     /// played instrument binds input channels — see the module doc.
     #[serde(default)]
     pub input: SideProfile,
@@ -102,7 +96,7 @@ impl DeviceProfile {
         Ok(profile)
     }
 
-    /// The schema's `"minimum": 1` bound on `sample_rate`/`buffer_size` (review finding #3) —
+    /// The schema's `"minimum": 1` bound on `sample_rate`/`buffer_size` —
     /// `0` isn't a meaningful preference for either (cpal has no "silent"/"unbuffered" mode),
     /// so it's rejected here rather than flowing through to `negotiate_output_config`.
     fn validate(&self) -> Result<(), ProfileError> {
@@ -119,7 +113,7 @@ impl DeviceProfile {
         Ok(())
     }
 
-    /// True when the profile carries any `input.*` field (P5). `play` uses this
+    /// True when the profile carries any `input.*` field. `play` uses this
     /// to note that input settings take effect only when the played instrument binds input
     /// channels — an instrument without input pipes never opens an input device.
     pub fn has_input(&self) -> bool {
@@ -203,8 +197,8 @@ mod tests {
         let path = Path::new("/nonexistent/io-map.json");
         let err = DeviceProfile::load(path).expect_err("missing file should error");
         assert!(matches!(err, ProfileError::Io(_, _)));
-        // Finding #7: the path should reach the user via Display, matching read_instrument's
-        // "read <path>: <e>" convention elsewhere in this crate.
+        // The path reaches the user via Display, matching read_instrument's "read <path>: <e>"
+        // convention elsewhere in this crate.
         assert!(err.to_string().contains(&path.display().to_string()));
     }
 

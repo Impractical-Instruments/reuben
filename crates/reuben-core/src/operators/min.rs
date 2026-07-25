@@ -1,21 +1,19 @@
 //! `min` — `out = min(a, b)`, per sample.
 //!
-//! The sanctioned way to **take the lower of two streams**: a ceiling on CV, the upper half of a
-//! clamp, a duck/sidechain floor. A dense `Float`→`Float` op whose arithmetic is the f32 [`min_fn`],
-//! called once per sample by the signal shell and once per change by the value shell (issue #83).
+//! A ceiling on CV, the upper half of a clamp, a duck/sidechain floor.
 //!
 //! Unlike add/mul there is no finite identity, so `b`'s unwired default is the **range maximum**
-//! (`+1e6`): `min(a, +1e6) == a` for any in-range signal, so wiring only `a` passes it through. The
-//! comparison needs only `PartialOrd`, so [`min_fn`] is generic over the number type (the
-//! pure-fn seam).
+//! (`+1e6`): `min(a, +1e6) == a` for any in-range signal, so wiring only `a` passes it through.
 //!
 //! - input 0: `a` (`Float`) — first operand. Unwired default `0`.
 //! - input 1: `b` (`Float`) — second operand. Unwired default `+1e6` (the range max — a no-op).
 //! - output 0: `out` — `min(a, b)`.
+//!
+//! see rules: composition-operators
 
-/// The op's scalar math, written once (the pure-fn seam) and generic over any `PartialOrd`
-/// number: the lesser of the two operands (ties return `a`). Hand-written rather than [`Ord::min`] so
-/// it covers `f32`, which is only `PartialOrd`.
+/// The op's scalar math, generic over any `PartialOrd` number: the lesser of the two operands
+/// (ties return `a`). Hand-written rather than [`Ord::min`] so it covers `f32`, which is only
+/// `PartialOrd`.
 #[inline]
 fn min_fn<T: PartialOrd>(a: T, b: T) -> T {
     if b < a {

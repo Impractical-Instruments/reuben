@@ -40,6 +40,8 @@
 //! - input 5: `damping` (`Float`) — ring time 0..1.
 //! - input 6: `position` (`Float`) — excitation comb 0..1.
 //! - output 0: `out` (`Buffer`) — the pure-wet resonator output.
+//!
+//! see rules: signal-time-dsp
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};

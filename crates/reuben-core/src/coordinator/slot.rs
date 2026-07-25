@@ -1,29 +1,10 @@
-//! The RT-side install slot: the render-side unit each shell drives
-//! **instead of calling [`Engine::fill`] directly**.
+//! The RT-side install slot: the render-side unit each shell drives instead of calling
+//! [`Engine::fill`] directly.
 //!
 //! [`RenderSlot`] owns the live [`Engine`], the install-mailbox consumer ([`RenderMailbox`]), and
-//! the master-gain **ramp state**. Per callback it:
-//!
-//! 1. **peeks** the install slot ([`RenderMailbox::has_install`], one atomic load) and, if a swap
-//!    is waiting and no ramp is running, begins a **raised-cosine master-gain down-ramp** — it does
-//!    *not* consume the bundle yet ("begin the ramp at the callback top; install when
-//!    it reaches zero");
-//! 2. renders the current Engine and applies the ramp scalar as **one multiply per output sample**
-//!    on the interleaved logical master — the master-gain machinery lives here so
-//!    both shells (native callback, web worklet) inherit it. At steady state (gain == 1.0) there is
-//!    no per-sample multiply at all: the fast path is a bare [`Engine::fill_duplex`];
-//! 3. when the down-ramp reaches **zero** it **installs at zero** — drains the bundle, box-transplants
-//!    the survivors via [`Engine::transplant_survivors`] (the blessed `mem::swap`
-//!    primitive from #320), swaps the new Engine in, and posts the retiree back through the mailbox
-//!    for **off-thread reclaim** — then ramps back up.
-//!
-//! **Everything on this path is RT-safe**: no alloc, lock, syscall, or drop on the render
-//! thread. The transplant is a bounded pointer-swap loop; the retiree is posted in the **same box**
-//! the install arrived in (its allocation is reused, never freed here); the only heap free is the
-//! Coordinator's off-thread reclaim of that box. Non-survivors' fresh boxes start cold but are
-//! silenced under the ramp (their hard cut lands at master-zero — inaudible); survivors
-//! keep voice/gate state and ring through the up-ramp. The ~15ms hanging-note window (a note-off lost
-//! in the discard window) is accepted.
+//! the master-gain ramp state that ducks a Swap install to silence. The per-callback contract is
+//! documented on [`RenderSlot::fill_duplex`]; everything on this path is RT-safe (no alloc, lock,
+//! syscall, or drop on the render thread).
 //!
 //! see rules: execution-runtime
 
@@ -74,7 +55,7 @@ impl MasterGainRamp {
         let edge = edge.max(1);
         let mut curve = Vec::with_capacity(edge + 1);
         for i in 0..=edge {
-            let t = i as f32 / edge as f32; // 0.0 ..= 1.0
+            let t = i as f32 / edge as f32;
             curve.push(0.5 * (1.0 + (std::f32::consts::PI * t).cos()));
         }
         // Exact endpoints (guard against cos rounding): full open at 0, dead silent at edge.
@@ -229,12 +210,12 @@ impl RenderSlot {
         let frames = out.len() / ch.max(1);
         let edge = self.ramp.edge;
 
-        // KNOWN LIMITATION (to be resolved by #323's `drain_outbound` wiring): each `render_segment`
-        // is a fresh `Engine::fill_duplex`, which clears the Engine's outbound. When one callback
-        // runs two segments on the *same* (post-install) Engine — an up→steady transition — the
-        // steady segment's fill clears the up segment's outbound OSC, dropping it. This is a
-        // segmentation artifact, distinct from the deliberate install-time discard of the
-        // retiring Engine's outbound.
+        // KNOWN LIMITATION (deferred: needs `drain_outbound` wiring across segments): each
+        // `render_segment` is a fresh `Engine::fill_duplex`, which clears the Engine's outbound.
+        // When one callback runs two segments on the *same* (post-install) Engine — an up→steady
+        // transition — the steady segment's fill clears the up segment's outbound OSC, dropping
+        // it. This is a segmentation artifact, distinct from the deliberate install-time discard
+        // of the retiring Engine's outbound.
         let mut f = 0;
         while f < frames {
             match self.ramp.phase {
@@ -249,7 +230,6 @@ impl RenderSlot {
                     self.ramp.pos += seg;
                     f += seg;
                     if self.ramp.pos == edge {
-                        // Master is at (heading to) zero: install now, then ramp up.
                         self.install_at_zero();
                         self.ramp.phase = Phase::Up;
                     }

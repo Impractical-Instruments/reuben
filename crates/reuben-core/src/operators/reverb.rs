@@ -11,6 +11,8 @@
 //! - input 2: `damp` (`Float`) — high-frequency damping (0..1).
 //! - input 3: `mix` (`Float`) — dry/wet (0..1).
 //! - output 0: `audio` (`Float`) — dry+wet mix.
+//!
+//! see rules: signal-time-dsp
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};

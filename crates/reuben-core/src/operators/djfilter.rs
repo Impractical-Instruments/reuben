@@ -28,6 +28,8 @@
 //! - input 5: `hp_start` (`Float`, Hz) — high-pass cutoff at North (open end of the CW sweep).
 //! - input 6: `hp_end`   (`Float`, Hz) — high-pass cutoff fully CW (position +1).
 //! - output 0: `audio` (`Float`) — filtered output.
+//!
+//! see rules: signal-time-dsp
 
 use crate::descriptor::Descriptor;
 use crate::dsp::svf::{Svf, SvfCoeffs};
@@ -48,7 +50,7 @@ crate::operator_contract!(Djfilter {
 #[derive(Default)]
 pub struct Djfilter {
     /// Shared SVF core (`dsp::svf`), continuous across calls / block slices. `process`
-    /// copies it to a local, ticks that, and writes it back once per block (#169).
+    /// copies it to a local, ticks that, and writes it back once per block.
     svf: Svf,
 }
 
@@ -115,7 +117,7 @@ impl Operator for Djfilter {
         let out = io.write(OUT_AUDIO);
         // Block-local copy of the SVF state, stored back once after the loop: ticking
         // `self.svf` directly spills the two integrators to memory every sample; the local
-        // stays in registers, leaving ~1 data-write per sample — the output store (#169).
+        // stays in registers, leaving ~1 data-write per sample — the output store.
         let mut svf = self.svf;
         for i in 0..n {
             let pos = position[i];

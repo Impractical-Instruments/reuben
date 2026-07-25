@@ -161,10 +161,10 @@ mod tests {
         }
     }
 
-    // Every integer control port converted in #556 PR 2 (#565) is an `i32` value port. One
-    // central assertion so each converted port — not only `euclid.steps` — is pinned to its type;
-    // a silent regression of any one back to `f32` would restore the round-in-`process` dance and
-    // reopen the `F32 -> I32` wire the migration closes.
+    // Every integer control port is an `i32` value port. One central assertion so each one — not
+    // only `euclid.steps` — is pinned to its type; a silent regression of any one back to `f32`
+    // would restore the round-in-`process` dance and reopen the F32→I32 wire that widening exists
+    // to avoid (see rules: composition-operators).
     #[test]
     fn the_converted_integer_control_ports_are_i32() {
         use crate::descriptor::PortType;

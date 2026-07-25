@@ -1,4 +1,4 @@
-//! No-dangling-references seed (seeded by the schema deletion — reuben#458):
+//! No-dangling-references seed (seeded by the schema deletion):
 //! every artifact or tool the repo's live text names must actually ship. The instrument JSON
 //! Schema was deleted outright — its one real job, the registry guard, moved to same-commit
 //! native≡wasm describe parity in the lane that builds the wasm — so nothing
@@ -13,12 +13,11 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 /// The retired schema machinery's greppable tokens — the committed schema file, the
-/// generator example, the MCP resource URI, the loose noun phrase (review round 1 found it
-/// surviving in skill frontmatter, untouched by the three exact tokens), and the two
-/// schema-regen verb phrasings (review round 10 found one in create-operator, reuben#481:
-/// the regeneration step was deleted with the schema). Built by concatenation
-/// so this file never trips over its own needles. Lowercase: matching lowercases each line,
-/// so capitalized prose forms are caught too.
+/// generator example, the MCP resource URI, the loose noun phrase (found surviving in skill
+/// frontmatter, untouched by the three exact tokens), and the two schema-regen verb phrasings
+/// (one found in create-operator, where the regeneration step was deleted with the schema).
+/// Built by concatenation so this file never trips over its own needles. Lowercase: matching
+/// lowercases each line, so capitalized prose forms are caught too.
 fn retired_tokens() -> [String; 6] {
     [
         ["instrument", ".schema.json"].concat(),

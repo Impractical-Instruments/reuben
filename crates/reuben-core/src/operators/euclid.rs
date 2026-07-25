@@ -36,6 +36,8 @@
 //!   F32 `0.0` on the following falling edge.
 //!
 //! Emits a single mono trigger line, upstream of any Voicer that fans it out to voices.
+//!
+//! see rules: signal-time-dsp
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
@@ -379,9 +381,9 @@ mod tests {
     #[test]
     fn descriptor_defaults_match_the_frozen_contract() {
         // The contract freeze the rig builder wires against: default E(4,16), single Float gate out.
-        // `steps`/`pulses`/`rotation` are now `i32` ports — pin the *type* and the bounds moved into
-        // `I32Meta`, not just `number_default` (which also answers `Some` for an `f32` port, so it
-        // would not catch a regression to `f32`; issue #565 review).
+        // `steps`/`pulses`/`rotation` are `i32` ports — pin the *type* and the bounds in `I32Meta`,
+        // not just `number_default` (which also answers `Some` for an `f32` port, so it would not
+        // catch a regression to `f32`).
         use crate::descriptor::{I32Meta, PortType};
         let desc = Euclid::descriptor();
         assert_eq!(

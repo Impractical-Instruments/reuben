@@ -36,6 +36,8 @@
 //! - input 6: `makeup` (dB) — output gain applied after compression.
 //! - input 7: `key_hp` (Hz) — high-pass on the key before detection (20 Hz ≈ off).
 //! - output 0: `audio` — the compressed / ducked signal.
+//!
+//! see rules: signal-time-dsp
 
 use crate::descriptor::Descriptor;
 use crate::dsp::svf::{Svf, SvfCoeffs};
@@ -68,7 +70,7 @@ pub struct Compressor {
     /// slices, reset on `spawn`.
     env: f32,
     /// Sidechain-key high-pass state (shared Cytomic SVF), continuous across blocks. Copied to a
-    /// local for the block loop and written back once (#169).
+    /// local for the block loop and written back once.
     svf: Svf,
 }
 

@@ -1,30 +1,16 @@
-//! Integration: the M2 structure channel end-to-end over a real loopback TCP
-//! socket. Starts a [`StructureServer`] wired to a real [`Coordinator`] — everything `reuben play`
-//! wires up except the cpal device (there is none in CI) — binds an **ephemeral** port
-//! (`127.0.0.1:0`, OS-assigned, so parallel CI jobs never collide), then drives a plain
-//! `TcpStream` client speaking NDJSON.
+//! Integration: the structure channel end-to-end over a real loopback TCP socket. Starts a
+//! [`StructureServer`] wired to a real [`Coordinator`] — everything `reuben play` wires up except
+//! the cpal device (there is none in CI) — binds an **ephemeral** port (`127.0.0.1:0`,
+//! OS-assigned, so parallel CI jobs never collide), then drives a plain `TcpStream` client
+//! speaking NDJSON. The device half is stood in for by [`FakeCallback`] (`crate::test_support`,
+//! shared with the unit tests so there is one mirror of the real callback, not two that can
+//! diverge); the audible/device-gap half stays a scripted human ritual
+//! (`docs/rituals/m2-swap-ramp-duck.md`). see rules: execution-runtime
 //!
-//! The device half is stood in for by [`FakeCallback`], the crate's shared test harness: a
-//! background thread owning the `RenderSlot` the real cpal callback would, driving it in a loop so a
-//! swap installs **via the install mailbox** (not a stream restart), the Coordinator's off-thread
-//! `reclaim` completes, and control batches drain exactly as `audio.rs` drains them — all with no
-//! audio device. It is shared with the unit tests so there is one mirror of the real callback, not
-//! two that can silently diverge. The audible/device-gap half stays a scripted human test
-//! (`docs/rituals/m2-swap-ramp-duck.md`).
-//!
-//! Behaviors under test:
-//! - the three non-mutating verbs answer over the wire, one framed response per request, in order;
-//! - the **`swap`** verb installs a new document over the wire **via the
-//!   mailbox** — `get_document` then reports the new doc + hash, and the [`SwapReport`] carries
-//!   **real** survivor stats (`survived: 2` for an identical-document swap — impossible under M1's
-//!   all-cold restart, which hard-codes `survived: 0`);
-//! - an **input-binding swap onto an output-only stream** dark-degrades to silence with a loud
-//!   warning and stays alive — not an error, not a crash;
-//! - `expect` arbitration conflicts on a stale hash and proceeds on a matching one;
-//!   a bad document reports errors with no install;
-//! - the **`send`** verb carries a control batch over the same wire and converges at the engine's
-//!   `queue_osc` — the exact call a decoded external OSC datagram reaches;
-//! - the server **shuts down cleanly** — every thread joined — even with an idle client connected.
+//! Exercises: the three non-mutating verbs over the wire in order; `swap` installing via the
+//! mailbox with real survivor stats and `expect` arbitration; an input-binding swap onto an
+//! output-only stream dark-degrading to silence with a warning; `send` converging at the engine's
+//! `queue_osc`; and a clean shutdown with an idle client connected.
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::TcpStream;
@@ -250,10 +236,10 @@ fn get_diagnostics_reflects_live_counter_bumps() {
 
 #[test]
 fn swap_over_the_wire_installs_via_the_mailbox_with_real_survivor_stats() {
-    // The heart of M2: a swap to the identical envelope document installs over the wire through the
+    // A swap to the identical envelope document installs over the wire through the
     // mailbox — the FakeCallback drains it (its `reclaim` completing is the proof, and no
-    // SwapInstaller/stream restart exists to invoke) — and the real diff carries `survived: 2`
-    // (both nodes), impossible under M1's all-cold restart. `get_document` then reports the new doc.
+    // stream restart is invoked) — and the real diff carries `survived: 2`
+    // (both nodes), impossible under an all-cold restart. `get_document` then reports the new doc.
     let base = envelope_doc("/env");
     let (state, cb, base_hash) = wired(&base, 0);
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");

@@ -1,11 +1,10 @@
 //! Format v3: presentation decouples from the instrument document.
 //!
-//! v3 removes the two retired presentation carriers — the per-node `control` block
-//! (the per-node `control` block) and `label`/`widget` on interface pipes (as amended) — with the
-//! ignore-with-warning migration: a v2 document (or a v3 document still
-//! carrying leftovers) loads, the loader drops the retired fields and emits a `LoadWarning`
-//! naming each, and save writes clean v3. Sound is unaffected by construction (the engine
-//! never read any of them) — asserted here bit-identically.
+//! v3 removes the two retired presentation carriers — the per-node `control` block and
+//! `label`/`widget` on interface pipes — with the ignore-with-warning migration: a v2 document
+//! (or a v3 document still carrying leftovers) loads, the loader drops the retired fields and
+//! emits a `LoadWarning` naming each, and save writes clean v3. Sound is unaffected by
+//! construction (the engine never read any of them) — asserted here bit-identically.
 
 use reuben_core::format::LoadWarning;
 use reuben_core::message::Message;
@@ -281,8 +280,8 @@ fn v1_doc_migrates_through_to_v3_and_save_writes_v3() {
 
 #[test]
 fn control_block_carrying_doc_renders_bit_identical_to_the_stripped_doc() {
-    // The P1 guard: `control` was an opaque passthrough the engine never read, so dropping it
-    // is render-safe by construction — asserted, not assumed.
+    // See rules: authoring-library#surface-docs — `control` was an opaque passthrough the
+    // engine never read, so dropping it is render-safe by construction; asserted, not assumed.
     let with = render(V2_WITH_CONTROL, |_| Vec::new());
     let without = render(V2_WITHOUT_CONTROL, |_| Vec::new());
     assert_nonsilent(&with, "control-carrying doc");

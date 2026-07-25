@@ -201,9 +201,9 @@ fn render_block_is_allocation_free_after_warmup() {
         "nested-instrument steady-state allocated {nested_held} time(s)"
     );
 
-    // (4) The input master (P3): a channel-bound input pipe's per-block feed is a
+    // (4) The input master: a channel-bound input pipe's per-block feed is a
     // copy into a scratch buffer allocated at plan build — rendering with injected input must
-    // be exactly as allocation-free as the output side (issue #180's RT-safety clause).
+    // be exactly as allocation-free as the output side.
     const MIC: &str = r#"{
         "format_version": 2,
         "instrument": "mic_through",

@@ -1,14 +1,12 @@
-//! Live audio out via cpal.
+//! Live audio out via cpal. see rules: execution-runtime
 //!
-//! Opens an output device (the host default, or a [`DeviceProfile`]'s `output.device`
-//! substring selection), builds a [`Coordinator`] + its RT-side [`RenderSlot`]
-//! matched to the device sample rate, and renders inside the audio callback by driving the
-//! **[`RenderSlot`]** rather than an `Engine` directly: the slot owns the live
-//! Engine, drains the install mailbox a swap fills, runs the master-gain ramp, and
-//! box-transplants survivors — so a swap is **gapless**, with no stream teardown (M2, #323).
-//! Incoming control ([`ControlBatch`]) is pulled from an [`std::sync::mpsc::Receiver`] (fed by the
-//! OSC/UDP thread and by the structure channel's `send`) at the top of each callback and typed to a
-//! Message against the Plan. Each item is a whole batch, applied without splitting.
+//! Opens an output device (the host default, or a [`DeviceProfile`]'s `output.device` substring
+//! selection), builds a [`Coordinator`] + its RT-side [`RenderSlot`] matched to the device sample
+//! rate, and renders inside the audio callback by driving the [`RenderSlot`] rather than an
+//! `Engine` directly. Incoming control ([`ControlBatch`]) is pulled from an
+//! [`std::sync::mpsc::Receiver`] (fed by the OSC/UDP thread and by the structure channel's `send`)
+//! at the top of each callback and typed to a Message against the Plan; each item is a whole
+//! batch, applied without splitting.
 //!
 //! **Streams are fixed at `play` start**: a swap never reopens a device. The device
 //! output map is rebuilt off-thread for the new engine's logical width (against the *retained*
@@ -17,32 +15,22 @@
 //! The callback installs the new map only when the engine's width has caught up to it, so map and
 //! buffer always agree; the transition block is ducked by the ramp.
 //!
-//! This module owns the **logical→device channel map**: the engine renders the
-//! instrument's *logical* master channels (left/right/…), and [`map_frame`] places them onto
-//! whatever channel count the real device has — a straight copy when they match, a downmix
-//! for a mono device, and zero-fill for a device with more channels than the instrument uses.
-//! An explicit `output.map` in the profile **overrides** that implicit policy entirely
-//! ([`OutputMap::Explicit`]); no profile (or an empty map) keeps [`map_frame`]'s
-//! behavior, bit-identical to before. Core never learns the device's channel count.
+//! This module owns the **logical→device channel map**: [`map_frame`] places the instrument's
+//! *logical* master channels onto the real device's channel count (an explicit `output.map` in the
+//! profile overrides that implicit policy — [`OutputMap::Explicit`]), and
+//! [`negotiate_output_config`] requests the profile's sample-rate/buffer-size preferences against
+//! the device's supported configs and adopts whatever is granted. see rules: composition-operators
 //!
-//! `sample_rate`/`buffer_size` in the profile are **preferences**: [`negotiate_output_config`]
-//! requests them against the device's supported configs and adopts whatever is granted,
-//! logging the outcome — reuben never fights the device.
+//! It also measures the callback against its own real-time budget: a render that takes longer than
+//! the audio time it produced is an output xrun, counted through the shared
+//! [`crate::diagnostics::Diagnostics`] surface.
 //!
-//! It also measures the callback against its own real-time budget (P6/#183): a
-//! render that takes longer than the audio time it produced is an output xrun, counted through
-//! the shared [`crate::diagnostics::Diagnostics`] surface — the device still plays its own
-//! underrun silence, reuben only observes and counts it (fixed policy, no recovery mode).
-//!
-//! When the played instrument binds input channels, [`start`] also opens the
-//! input side (P5/#182, [`crate::input`]): a cpal input stream feeding a lock-free SPSC ring
-//! that this module's output callback drains — resampled and drift-compensated into the
-//! engine rate — into [`RenderSlot::fill_duplex`]. An instrument without input pipes never
-//! touches an input device. A swap to an input-binding engine while no input stream is open
+//! When the played instrument binds input channels, [`start`] also opens the input side
+//! ([`crate::input`]): a cpal input stream feeding a lock-free SPSC ring that this module's output
+//! callback drains — resampled and drift-compensated into the engine rate — into
+//! [`RenderSlot::fill_duplex`]. A swap to an input-binding engine while no input stream is open
 //! **dark-degrades to silence** (the callback feeds `&[]`); the loud warning rode the swap
 //! report, raised on the structure thread at swap time.
-//!
-//! see rules: execution-runtime
 //!
 //! The returned [`Streams`] must be kept alive for audio to keep playing.
 
@@ -71,8 +59,8 @@ use crate::structure::{dark_degrade_warning, RenderConfigPublisher, RenderLivene
 /// emits a line when something changed, so a healthy run stays quiet at this cadence regardless.
 const DIAGNOSTICS_LOG_INTERVAL: Duration = Duration::from_secs(5);
 
-/// How long [`NativeRenderConfig::publish`] polls to install a swap's output map before giving up
-/// (B1). The map mailbox is one-in-flight: install is refused until the *previous*
+/// How long [`NativeRenderConfig::publish`] polls to install a swap's output map before giving up.
+/// The map mailbox is one-in-flight: install is refused until the *previous*
 /// swap's displaced map has come home, which the live render callback posts within ~one master-gain
 /// ramp. This bound only bites when audio has genuinely stopped — and even then
 /// [`apply_output_map`]'s total read keeps a stale-width map *panic*-free (it never indexes out of
@@ -80,7 +68,7 @@ const DIAGNOSTICS_LOG_INTERVAL: Duration = Duration::from_secs(5);
 /// until the next swap re-syncs. Generous, matching the structure channel's engine-reclaim bound.
 const RENDER_CONFIG_INSTALL_TIMEOUT: Duration = Duration::from_millis(500);
 
-/// A render-callback liveness heartbeat (issue #373 note 2). The audio callback [`tick`s](Self::tick)
+/// A render-callback liveness heartbeat. The audio callback [`tick`s](Self::tick)
 /// it once per callback — two relaxed atomic stores, the same RT-safe pattern as the diagnostics
 /// counters (no alloc, lock, or syscall) — recording both a monotonic count (so an off-thread swap
 /// can tell a running device from a stopped one) and the callback's period (so the swap can size its
@@ -161,8 +149,8 @@ pub enum AudioError {
     Build(cpal::BuildStreamError),
     /// Starting playback failed.
     Play(cpal::PlayStreamError),
-    /// The played instrument binds input channels but there is no default input device
-    /// (P5/#182). Fatal by design — a deliberate, recorded carve-out: the
+    /// The played instrument binds input channels but there is no default input device.
+    /// Fatal by design — a deliberate, recorded carve-out: the
     /// instrument explicitly asked for live input, so playing silently without a device
     /// would violate the "know and say" policy (the dark-degrade path covers *channel* mismatches
     /// on a device that did open, not the absence of any device).
@@ -238,7 +226,7 @@ impl std::error::Error for AudioError {}
 
 /// The live cpal streams [`start`] returns — keep the whole struct alive for audio to keep
 /// flowing. `input` is `Some` only when the played instrument binds input channels:
-/// an instrument without input pipes never touches an input device (P5/#182).
+/// an instrument without input pipes never touches an input device.
 pub struct Streams {
     pub output: Stream,
     pub input: Option<Stream>,
@@ -264,30 +252,20 @@ pub struct LiveAudio {
     pub warnings: Vec<LoadWarning>,
 }
 
-/// Start live playback on an output device, per `profile`.
+/// Start live playback on an output device, per `profile` (see the module doc for the swap/output-
+/// map/input-side architecture).
 ///
 /// `block_size` is the core render block size; `build` constructs the [`Coordinator`] + its RT
 /// [`RenderSide`] once the device sample rate is known (so the Plan's tuning matches the hardware)
-/// — typically a call to [`Coordinator::install_initial`]. The RT-side [`RenderSlot`] built from
-/// that `RenderSide` is what the callback drives, draining the install mailbox a swap
-/// fills; the Coordinator is returned for the structure channel. `osc_out` is the optional OSC-out
-/// sink: when `Some`, the callback forwards each outbound Message to it (a sender thread
-/// encodes + UDP-sends, off the audio thread); when `None`, outbound is drained and dropped, with
-/// one warning the first time a rig sends. `profile` selects the devices, negotiates
-/// sample-rate/buffer-size preferences, and overrides the channel maps — pass
-/// [`DeviceProfile::default`] for today's behavior (default devices, identity maps).
-///
-/// **Streams are fixed for the session**: a swap never reopens a device. The device
-/// output map is rebuilt off-thread for each swapped-in engine (against the *retained* device
-/// channel count) and shipped across a parallel render mailbox the callback drains — see
-/// [`NativeRenderConfig`], returned as [`LiveAudio::render_config`].
-///
-/// When the built engine binds input channels, the input side opens too (P5/#182,
-/// [`crate::input`]): a cpal input stream on the profile's `input.device` (default input device
-/// otherwise) feeds a lock-free ring; each output callback pulls that ring through the
-/// resampling/drift-compensating [`crate::input::InputStage`] and hands the result to
-/// [`RenderSlot::fill_duplex`]. A swap to an input-binding engine while no input stream is open
-/// **dark-degrades to silence** (the callback feeds `&[]`).
+/// — typically a call to [`Coordinator::install_initial`]; the Coordinator is returned for the
+/// structure channel. `osc_out` is the optional OSC-out sink: when `Some`, the callback forwards
+/// each outbound Message to it (a sender thread encodes + UDP-sends, off the audio thread); when
+/// `None`, outbound is drained and dropped, with one warning the first time a rig sends. `profile`
+/// selects the devices, negotiates sample-rate/buffer-size preferences, and overrides the channel
+/// maps — pass [`DeviceProfile::default`] for today's behavior (default devices, identity maps).
+/// The device output map is returned as [`LiveAudio::render_config`] ([`NativeRenderConfig`]). When
+/// the built engine binds input channels, the input side opens on the profile's `input.device`
+/// (default input device otherwise) through [`crate::input::InputStage`].
 pub fn start<F>(
     osc_rx: Receiver<ControlBatch>,
     block_size: usize,
@@ -345,13 +323,13 @@ where
     let diag_for_callback = Arc::clone(&diagnostics);
     crate::diagnostics::spawn_periodic_logger(Arc::clone(&diagnostics), DIAGNOSTICS_LOG_INTERVAL);
 
-    // Render-callback liveness heartbeat (issue #373 note 2): the callback ticks it every block so a
+    // Render-callback liveness heartbeat: the callback ticks it every block so a
     // swap's off-thread reclaim/install poll can tell a running device from a stopped one. Seeded
     // with the nominal block period so the poll's grace is sane before the first callback lands.
     let heartbeat = RenderHeartbeat::new(callback_budget(block_size, sample_rate));
     let heartbeat_for_callback = heartbeat.clone();
 
-    // Input opens ONLY when the *initial* played instrument binds input channels (P5);
+    // Input opens ONLY when the *initial* played instrument binds input channels;
     // its width is fixed for the session. A later swap that binds input while no matching stream is
     // open dark-degrades (the callback feeds `&[]`); the warning rode the swap report.
     let opened_input_channels = in_channels;
@@ -408,9 +386,8 @@ where
                 let in_channels = slot.input_channels();
                 let frames = data.len() / channels;
 
-                // Liveness heartbeat (issue #373 note 2): two relaxed atomic stores recording that
-                // this callback ran and how long a block it is, so an off-thread swap poll can tell a
-                // running device from a stopped one and size its grace to this device's block rate.
+                // Tick the liveness heartbeat (see its construction above) with this callback's
+                // actual block length.
                 heartbeat_for_callback.tick(callback_budget(frames, sample_rate));
 
                 if buf.len() < frames * logical {
@@ -581,7 +558,7 @@ impl OutputMapSlot {
     }
 }
 
-/// The production [`RenderConfigPublisher`]: the native device seam of the M2 swap.
+/// The production [`RenderConfigPublisher`]: the native device seam of the swap.
 /// After [`Coordinator::swap_document`] commits, [`publish`](RenderConfigPublisher::publish)
 /// rebuilds the device output map off-thread for the new engine's logical width against the
 /// *retained* `device_channels`, ships it across the render mailbox for the callback to install
@@ -599,8 +576,7 @@ pub struct NativeRenderConfig {
     /// Logical input channels the (fixed) input stream provides; `0` for an output-only stream.
     opened_input_channels: usize,
     /// The render callback's liveness heartbeat — shared with the callback so `publish`'s bounded
-    /// install poll (and the structure thread's reclaim) can bail early when audio has stopped
-    /// (issue #373 note 2).
+    /// install poll (and the structure thread's reclaim) can bail early when audio has stopped.
     heartbeat: RenderHeartbeat,
 }
 
@@ -612,7 +588,7 @@ impl RenderConfigPublisher for NativeRenderConfig {
         let mut cfg = Box::new(RenderConfig { map, logical });
         {
             let mut mailbox = self.mailbox.lock().expect("render config mailbox poisoned");
-            // Ship the new map, and **never drop it** (B1). A dropped map desyncs the two mailboxes:
+            // Ship the new map, and **never drop it**. A dropped map desyncs the two mailboxes:
             // the engine advances to the new width while the callback's active map stays at the old
             // one, and `apply_output_map` is then handed a stale-width map. The map mailbox is
             // one-in-flight, so `install` is refused until the *previous* swap's
@@ -626,7 +602,7 @@ impl RenderConfigPublisher for NativeRenderConfig {
             // — not misroute-free: a callback recovering after the drop routes at the stale width, at
             // full gain, until the next swap re-syncs (impossible under live audio; self-healing).
             // The heartbeat lets the poll give up at the liveness grace when the callback has stopped
-            // ticking rather than spin the full deadline under the lock (issue #373 note 2).
+            // ticking rather than spin the full deadline under the lock.
             let mut gate =
                 SwapPollGate::start(self.render_liveness(), RENDER_CONFIG_INSTALL_TIMEOUT);
             loop {
@@ -703,14 +679,14 @@ pub(crate) fn find_named_device(
 }
 
 /// The case-insensitive substring match behind [`find_named_device`], pulled out so it has a
-/// unit test that doesn't need a real [`cpal::Host`] (review finding #6) — `needle` is
+/// unit test that doesn't need a real [`cpal::Host`] — `needle` is
 /// already lowercased by the caller (once per call, not per device).
 pub(crate) fn device_name_matches(name: &str, needle_lower: &str) -> bool {
     name.to_lowercase().contains(needle_lower)
 }
 
-/// The outcome of matching a requested output sample rate against a device's supported configs
-/// (review finding #2): a rate match is only "granted" at the device *default's* channel
+/// The outcome of matching a requested output sample rate against a device's supported configs:
+/// a rate match is only "granted" at the device *default's* channel
 /// count — a config that matches the rate but not the channel count would otherwise silently
 /// hand back a different channel count than the caller (and `build_output_map`'s validation)
 /// expect.
@@ -726,7 +702,7 @@ enum RateNegotiation {
 }
 
 /// Pure selection logic for [`negotiate_output_config`]'s sample-rate branch: no device I/O, so
-/// it has a unit test that doesn't need a real [`cpal::Device`] (review finding #6). Prefers an
+/// it has a unit test that doesn't need a real [`cpal::Device`]. Prefers an
 /// F32 config at `want` Hz whose channel count matches `default_channels`; only falls back to a
 /// different channel count if nothing at `want` Hz matches it.
 fn negotiate_rate(
@@ -860,7 +836,7 @@ enum OutputMap {
         pairs: Vec<(usize, usize)>,
         /// `true` at index `d` for every device channel a pair targets, precomputed once here
         /// so [`apply_output_map`] can zero *only* the unmapped channels instead of zeroing the
-        /// whole frame and then overwriting the mapped ones every callback (review finding #5).
+        /// whole frame and then overwriting the mapped ones every callback.
         mapped: Vec<bool>,
     },
 }
@@ -871,7 +847,7 @@ enum OutputMap {
 /// counts once, here (the [`validate_map_pairs`] kernel shared with the input side): a pair
 /// naming a channel that doesn't exist on either side is a reality mismatch —
 /// warned about now and dropped, not fatal. Two *different* logical channels naming the
-/// *same* device channel are also a reality mismatch (review finding #1): both pairs are kept
+/// *same* device channel are also a reality mismatch: both pairs are kept
 /// (so the mapping is still fully described), but colliding targets are warned about once,
 /// here ([`for_each_duplicate_target`]), since [`apply_output_map`] applies pairs in
 /// ascending-logical order and the higher logical channel silently wins otherwise.
@@ -939,7 +915,7 @@ pub(crate) fn validate_map_pairs(
     (pairs, mask)
 }
 
-/// The duplicate-target collision rule shared by `output.map` (review finding #1) and its
+/// The duplicate-target collision rule shared by `output.map` and its
 /// input dual: group validated `(source, target)` pairs by target and hand every collision
 /// (two or more sources feeding one target) to `warn` as
 /// `(target, sources_in_application_order, winner)`. Both sides apply pairs in ascending
@@ -1092,7 +1068,7 @@ mod tests {
 
     #[test]
     fn no_profile_output_is_bit_identical_to_map_frame() {
-        // The load-bearing assertion (issue #181): with no profile, `apply_output_map`
+        // The load-bearing assertion: with no profile, `apply_output_map`
         // must render exactly what `map_frame` renders today, sample-for-sample, for every shape
         // existing instruments hit (stereo, mono downmix, extra device channels, dropped extras).
         let cases: &[(&[f32], usize)] = &[
@@ -1332,7 +1308,7 @@ mod tests {
 
     #[test]
     fn back_to_back_width_changing_swaps_keep_the_output_map_in_lockstep() {
-        // Regression for B1: a real `NativeRenderConfig` shipping maps across the render mailbox to
+        // Regression test: a real `NativeRenderConfig` shipping maps across the render mailbox to
         // an `OutputMapSlot`-driven fake callback (the real callback structure, not the map-less
         // `RenderSlot::fill` fake), fired through two consecutive *width-changing* swaps — a widen
         // (2→4) then a narrow (4→2) — with a device `output.map` referencing logical channel 3.
@@ -1446,14 +1422,14 @@ mod tests {
         assert!(
             !desync.load(Ordering::SeqCst),
             "the device output map stayed in lockstep with the engine width across two \
-             width-changing swaps (B1) — no dropped map, no stale-width apply"
+             width-changing swaps — no dropped map, no stale-width apply"
         );
     }
 
     #[test]
     fn publish_bails_fast_when_the_callback_has_stopped() {
         // No render side drains `_map_render`, so after the first install the one-in-flight mailbox
-        // refuses every later install — the "audio has stopped" case (issue #373 note 2). With the
+        // refuses every later install — the "audio has stopped" case. With the
         // heartbeat frozen, the second publish must bail at the liveness grace, well under the full
         // RENDER_CONFIG_INSTALL_TIMEOUT it would otherwise hold under the Coordinator lock.
         let (map_coord, _map_render) = swap_pair::<RenderConfig>();
@@ -1481,7 +1457,7 @@ mod tests {
     fn publish_honors_the_full_deadline_while_the_callback_is_live() {
         // The complement of the fast-bail: a *live* callback (heartbeat advancing) but a mailbox
         // that never drains must keep the poll on the full deadline, not the grace — this is what
-        // makes the fix a liveness gate rather than a blindly shorter bound (issue #373 note 2).
+        // makes the fix a liveness gate rather than a blindly shorter bound.
         use std::sync::atomic::AtomicBool;
         let (map_coord, _map_render) = swap_pair::<RenderConfig>();
         let heartbeat = RenderHeartbeat::default();

@@ -28,12 +28,10 @@
 //! Gated to test/bench builds: it reaches `Renderer`'s `pub(crate)` `step_node` seam, which is not
 //! part of the public render API.
 //!
-//! **Input injection**: at the single-node level, [`drive`](OpDriver::drive) is
-//! the known-buffer seam — it is how a loader-built signal `Pipe` (an interface input pipe's
-//! runtime node) is driven with deterministic audio in tests. At the *graph* level, the same
-//! carve-out is [`Renderer::render_block_multi`]'s `inputs` parameter: the offline render path
-//! injects known buffers per logical input channel, so a render with injected input stays
-//! bit-reproducible while live device input remains the sanctioned nondeterministic boundary.
+//! **Input injection**: [`drive`](OpDriver::drive) is the single-node known-buffer seam — it is
+//! how a loader-built signal `Pipe` (an interface input pipe's runtime node) is driven with
+//! deterministic audio in tests, the same carve-out as [`Renderer::render_block_multi`]'s `inputs`
+//! parameter at the graph level.
 //!
 //! see rules: execution-runtime
 
@@ -190,7 +188,6 @@ impl OpDriver {
                 })
                 .collect();
 
-            // Refresh each driven audio-in buffer with this block's slice.
             for (_, bi, samples) in &self.driven {
                 let dst = self.renderer.arena_buffer_mut(*bi);
                 for (f, slot) in dst.iter_mut().enumerate().take(frames) {
@@ -200,7 +197,6 @@ impl OpDriver {
 
             self.renderer.step_node(&mut self.plan, 0, frames, &msgs);
 
-            // Capture this block's output buffers and emissions.
             for (ord, bufs) in self.plan.nodes[0].outputs.iter().enumerate() {
                 let src = self.renderer.arena_buffer(bufs[0]);
                 self.outputs[ord][start..start + frames].copy_from_slice(&src[..frames]);
@@ -270,7 +266,7 @@ mod tests {
     use crate::operators::{oscillator, Oscillator};
     use crate::registry::Registry;
 
-    /// **Behavioral / end-to-end fidelity pin** (issue #89), the output-equivalence complement to the
+    /// **Behavioral / end-to-end fidelity pin**, the output-equivalence complement to the
     /// *structural* wire-form pin in `tests/wire_forms.rs`.
     ///
     /// The structural pin proves `OpDriver`'s wiring arrays (`latched` / `varying` / input-buffer
@@ -296,7 +292,6 @@ mod tests {
         const BLOCKS: usize = 4;
         const N: usize = BLOCKS * BLOCK_SIZE;
 
-        // --- Driver side: oscillator through OpDriver's `step_node` seam. ---
         let mut d = OpDriver::for_type(Oscillator::new(), SR);
         d.set(oscillator::IN_FREQ, FREQ);
         d.render(N);

@@ -1,4 +1,4 @@
-//! Shared test helpers for the generated number operators (issue #104).
+//! Shared test helpers for the generated number operators.
 //!
 //! Every `number_operator_contract!` op tests the same two shapes — drive a value-carrier op and
 //! read its emitted scalar, or drive a signal-carrier op and read its output buffer. The extractor
@@ -36,7 +36,7 @@ pub fn i32_emit(e: &Emit) -> i32 {
     }
 }
 
-/// Drive an **`i32` value**-carrier op — [`value_emits`]'s integer twin (issue #556), returning the
+/// Drive an **`i32` value**-carrier op — [`value_emits`]'s integer twin, returning the
 /// emitted `i32` value(s) rather than `f32`. The emitted `Arg` variant is itself the assertion that
 /// the operator's ports are typed `i32`: an operator that only *named* itself `i32` would emit
 /// `Arg::F32` here and panic in [`i32_emit`].

@@ -45,7 +45,7 @@ struct Fixture {
 /// (the lfo + m2s + math modulation stack), sampler-arp (sample + clock + sequencer, the
 /// non-oscillator path), and autotune — the tonal-context path (harmony → snap → voicer), which
 /// exercises the `hz`/`snap`/`chord_tone` resolver and context-driven block-slicing nothing else
-/// here touches (#30).
+/// here touches.
 const FIXTURES: &[Fixture] = &[
     Fixture {
         name: "reverb",
@@ -124,7 +124,7 @@ pub struct BenchState {
 }
 
 /// Resolves a fixture's resources from `benches/fixtures/`, so voices *bind* and the bench
-/// renders the real hosted-voice workload (#102) — not the degraded empty-voicer path `load()` gives.
+/// renders the real hosted-voice workload — not the degraded empty-voicer path `load()` gives.
 /// `resolve_text` reads a voice patch's JSON; `resolve` decodes a WAV (mirrors
 /// `reuben-native`'s `FsResolver`, using the `hound` dev-dependency) so `sampler-arp`'s sample player
 /// reads real data instead of idling on an empty buffer. Setup-only IO — the timed `render` reads
@@ -193,9 +193,9 @@ pub fn build_state(name: &str) -> BenchState {
     let fx = fixture(name);
     let loaded =
         load_instrument(fx.json, &Registry::builtin(), &FixturesDir).expect("fixture loads");
-    // The bug this fixes (#102) was invisible because nothing checked the workload was real: a
-    // resource that fails to resolve degrades to silence + a warning, not an error. Treat any
-    // warning as fatal so the bench can't silently fall back to the empty workload again.
+    // A resource that fails to resolve degrades to silence + a warning rather than failing the
+    // load (see rules: authoring-library), so a warning here would mean the bench silently
+    // rendered the degraded empty-voicer workload instead of the real one. Treat it as fatal.
     assert!(
         loaded.warnings.is_empty(),
         "fixture {name:?} loaded with resource warnings (bench would render a degraded workload): {:?}",

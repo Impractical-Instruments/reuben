@@ -1,25 +1,22 @@
 //! reuben-contract — the single source of an operator's port/constant contract.
 //!
-//! Every operator declares its ports and constants **once**. Two consumers turn that one
-//! declaration into code: the [`operator_contract!`](../reuben_macros) proc-macro (which emits
-//! the `IN_`/`OUT_`/`C_` index consts and the `Descriptor`) and the
-//! [`scaffold`](../reuben_native) (which emits the macro call for a brand-new operator). Both
-//! must agree on what a *valid* contract is and how names map to consts, so that shared logic —
-//! the spec types, the naming rules, and [`validate`] — lives here, in a crate both depend on.
-//! Putting it anywhere else would re-create the very drift this layer exists to remove.
+//! Every operator declares its ports and constants once; the
+//! [`operator_contract!`](../reuben_macros) proc-macro and the [`scaffold`](../reuben_native) both
+//! turn that one declaration into code, so the spec types, the naming rules, and [`validate`] live
+//! here, in a crate both depend on. see rules: composition-operators
 //!
 //! A port carries an **[`Arg`](reuben_core::message::Arg) type**, named by
 //! [`PortSpec::ty`]: `f32_buffer` (a dense per-sample signal), `f32` (a materialized scalar control
 //! with a `{ .. }` meta block), `i32` (a bounded integer control / constant), `enum` (a held vocab
 //! enum, naming its shared `vocab` type), `note`, `harmony`, or `arg` (the type-agnostic
-//! pass-through, issue #141). The retired `Shape`/legacy-`kind` two-surface world is gone.
+//! pass-through). The retired `Shape`/legacy-`kind` two-surface world is gone.
 
 use serde::Deserialize;
 
 pub mod naming;
 
 /// The type-wide default range for a `number` operand — the **one** definition of the `±1e6`
-/// sentinel both macros reference (issue #127). It is *descriptor metadata* (a control-surface fader
+/// sentinel both macros reference. It is *descriptor metadata* (a control-surface fader
 /// span and a loader validation/clamp bound), **not** a numeric type bound: `f32::MAX` (`3.4e38`) is
 /// deliberately not used, because you can't sweep a knob across it, exponential curve-mapping over it
 /// is meaningless, and a `default` that must validate inside `[min, max]` near `f32::MAX` invites
@@ -31,21 +28,20 @@ pub const NUMBER_MIN: f32 = -1_000_000.0;
 /// The upper half of the type-wide default range. See [`NUMBER_MIN`].
 pub const NUMBER_MAX: f32 = 1_000_000.0;
 
-/// [`NUMBER_MIN`]'s integer counterpart, **derived from it** rather than restated (issue #556): one
+/// [`NUMBER_MIN`]'s integer counterpart, **derived from it** rather than restated: one
 /// definition of the type-wide span, so an `i32` operand and an `f32` one cannot drift to different
 /// "effectively unbounded" bounds.
 ///
 /// Deliberately not `i32::MIN`/`i32::MAX`, for the reason [`NUMBER_MIN`] gives and one more: the
 /// family's arithmetic then stays far from the type's edges, so an author reading a `±1e6` range on
-/// an integer port is reading the same knob-able promise they read on a float one. (Staying inside
-/// the type is *not* what makes the arithmetic safe — `PointwiseNum` saturates regardless, because
-/// `mul` escapes any range a port can declare.)
+/// an integer port is reading the same knob-able promise they read on a float one — staying inside
+/// the type is not what makes the arithmetic safe (see rules: composition-operators).
 pub const NUMBER_MIN_I32: i32 = NUMBER_MIN as i32;
 /// The upper half of the type-wide default range for an `i32` operand. See [`NUMBER_MIN_I32`].
 pub const NUMBER_MAX_I32: i32 = NUMBER_MAX as i32;
 
 /// How a control responds across its range — the good-button curve. The **one** definition of
-/// the curve axis (issue #217): the macro grammar's `lin`/`exp` keywords, the scaffold JSON's
+/// the curve axis: the macro grammar's `lin`/`exp` keywords, the scaffold JSON's
 /// `"linear"`/`"exponential"` strings, and the runtime descriptor all resolve to this enum, so an
 /// unknown curve is unrepresentable past the parse/deserialize boundary.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Deserialize)]
@@ -59,7 +55,7 @@ pub enum Curve {
 
 /// The `{ min, max, default, unit, curve }` block on a `f32` port: its unwired
 /// default, range, and display metadata. Required on a `f32` port (a bare per-sample wire is
-/// `f32_buffer`, not `f32`). The **one** definition (issue #217): the macro AST, the model layer,
+/// `f32_buffer`, not `f32`). The **one** definition: the macro AST, the model layer,
 /// and the runtime descriptor all use this type — the owning
 /// [`Port`](reuben_core::descriptor::Port) carries the name, so a control's name lives in
 /// exactly one place.
@@ -83,7 +79,7 @@ impl F32Meta {
 
 /// The `{ min, max, default }` block on an `i32` port: a bounded integer control /
 /// constant (a count like `voices`). No unit/curve — a count is not a swept knob. Like
-/// [`F32Meta`], the one definition (issue #217), nameless: the owning port carries the name.
+/// [`F32Meta`], the one definition, nameless: the owning port carries the name.
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 pub struct I32Meta {
     pub min: i32,
@@ -97,8 +93,8 @@ impl I32Meta {
     }
 }
 
-/// A port's [`Arg`](reuben_core::message::Arg) type — **payload-carrying**
-/// (issue #217): the type and the meta it takes are one datum, so "meta iff type" is
+/// A port's [`Arg`](reuben_core::message::Arg) type — **payload-carrying**: the type and the
+/// meta it takes are one datum, so "meta iff type" is
 /// unrepresentable rather than validated. The one authoring-side taxonomy: the proc-macro's
 /// grammar parses into it, the scaffold's JSON deserializes into it (via the flat wire shape —
 /// see [`PortSpec`]'s `Deserialize`), and both render/emit from it.
@@ -124,7 +120,7 @@ pub enum PortTy {
     /// a struct vocab type: wire-internal only (no external OSC form). The held-Value output an
     /// `unpack_<type>` operator emits for a `Pitch` field, consumed by `resolve`.
     Pitch,
-    /// `arg` — a type-agnostic pass-through carrying any `Arg` (issue #141). Input-only
+    /// `arg` — a type-agnostic pass-through carrying any `Arg`. Input-only
     /// ([`validate`] enforces it — legality needs list context).
     Arg,
 }
@@ -134,7 +130,7 @@ impl PortTy {
     /// than a latched atom — the structural "is this a buffer?" question, true for the buffer
     /// variant(s) (today only [`F32Buffer`](PortTy::F32Buffer), meta or not). Prefer this over
     /// `matches!(ty, PortTy::F32Buffer(_))` at classification sites so buffer-ness reads as a
-    /// question, not a variant spelling (issue #560).
+    /// question, not a variant spelling.
     pub fn is_buffer(&self) -> bool {
         matches!(self, PortTy::F32Buffer(_))
     }
@@ -153,7 +149,7 @@ const PORT_TY_WORDS: [&str; 8] = [
     "arg",
 ];
 
-/// A port in the contract — its name plus its payload-carrying [`PortTy`] (issue #217).
+/// A port in the contract — its name plus its payload-carrying [`PortTy`].
 ///
 /// Deserializes from the **flat wire shape** the scaffold JSON has always used —
 /// `{"name":"cutoff","ty":"f32","f32":{..}}` — via [`PortSpecFlat`]: a shape-invalid port (an
@@ -167,7 +163,7 @@ pub struct PortSpec {
 }
 
 /// The flat JSON wire shape of a port — the scaffold's authoring format, unchanged from the
-/// stringly era (issue #217). Private: it exists only to give [`PortSpec`]'s `Deserialize` the
+/// stringly era. Private: it exists only to give [`PortSpec`]'s `Deserialize` the
 /// old surface (`deny_unknown_fields` keeps it closed) while the in-memory shape is [`PortTy`].
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -314,7 +310,7 @@ fn is_ident(name: &str) -> bool {
 
 /// Validate one port's **data** rules: coherent ranges, in-range defaults, an
 /// identifier-shaped vocab type, `arg` input-only. Shape rules ("meta iff type") no longer live
-/// here — the payload-carrying [`PortTy`] makes a shape mismatch unrepresentable (issue #217),
+/// here — the payload-carrying [`PortTy`] makes a shape mismatch unrepresentable,
 /// rejected at the macro's parse or the scaffold JSON's deserialize.
 fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractError> {
     // One range rule for both numeric metas — `f32` and `i32` share the check and the message
@@ -355,7 +351,7 @@ fn validate_port(at: Locus, label: &str, p: &PortSpec) -> Result<(), ContractErr
                 ));
             }
         }
-        // `arg` is **input-only** (issue #141): it is legal only where the operator treats the
+        // `arg` is input-only: it is legal only where the operator treats the
         // payload as opaque — a pure carrier's inbound port. An `arg` output would put an untyped
         // source on the graph, and a typed input downstream of it would need plan-time type flow
         // *through* the carrier to recover the true source type — machinery no operator has
@@ -491,16 +487,11 @@ mod tests {
 
     #[test]
     fn rejects_the_reserved_pipe_type_name() {
-        // Interface pipes are loader-built: the name is reserved so a scaffolded
-        // `pipe` operator fails before any code is generated.
         let e = err(r#"{ "type_name": "pipe" }"#);
         assert_eq!(e.locus, Locus::TypeName);
         assert!(e.message.contains("reserved"), "{}", e.message);
     }
 
-    /// The deserialize-time rejection of a shape-invalid port JSON (issue #217): the payload-
-    /// carrying [`PortTy`] makes "meta iff type" unrepresentable, so the scaffold's JSON path
-    /// fails at parse — before `validate()` — with the reason in the error text.
     fn de_err(json: &str) -> String {
         serde_json::from_str::<OperatorSpec>(json)
             .expect_err("shape-invalid port JSON must fail to deserialize")
@@ -511,13 +502,11 @@ mod tests {
     fn rejects_unknown_port_type_at_deserialize() {
         let msg = de_err(r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"audio"} ] }"#);
         assert!(msg.contains("audio"), "{msg}");
-        // The error names the legal set, like the old validate() message did.
         assert!(
             msg.contains("f32_buffer") && msg.contains("harmony"),
             "{msg}"
         );
-        // Precedence matches the old validator: an unknown type wins over a stray meta block —
-        // the type is the more fundamental mistake.
+        // An unknown type wins over a stray meta block — the type is the more fundamental mistake.
         let both = de_err(
             r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"audio","f32":{"min":0,"max":1,"default":0}} ] }"#,
         );
@@ -526,33 +515,26 @@ mod tests {
 
     #[test]
     fn rejects_shape_invalid_ports_at_deserialize() {
-        // `f32` needs a meta block.
         let bare_float = de_err(r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"f32"} ] }"#);
         assert!(bare_float.contains("meta"), "{bare_float}");
 
-        // `i32` needs its integer meta block.
         let bare_int =
             de_err(r#"{ "type_name": "x", "constants": [ {"name":"voices","ty":"i32"} ] }"#);
         assert!(bare_int.contains("meta"), "{bare_int}");
 
-        // `enum` must name its vocab type.
         let no_vocab = de_err(r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"enum"} ] }"#);
         assert!(no_vocab.contains("vocab"), "{no_vocab}");
 
-        // A port that is neither `f32` nor `f32_buffer` can't carry f32 meta (the optional
-        // meta block is extended to `f32_buffer`).
         let stray_meta = de_err(
             r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"note","f32":{"min":0,"max":1,"default":0}} ] }"#,
         );
         assert!(stray_meta.contains("f32"), "{stray_meta}");
 
-        // Only an `i32` port carries the integer meta block.
         let stray_int = de_err(
             r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"note","i32":{"min":0,"max":1,"default":0}} ] }"#,
         );
         assert!(stray_int.contains("i32"), "{stray_int}");
 
-        // Only an `enum` port names a vocab type.
         let stray_vocab = de_err(
             r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"note","vocab":"FilterMode"} ] }"#,
         );
@@ -561,7 +543,6 @@ mod tests {
 
     #[test]
     fn rejects_unknown_port_fields_at_deserialize() {
-        // The flat wire shape is closed: a typo'd or stray key is an error, not silently dropped.
         let msg =
             de_err(r#"{ "type_name": "x", "inputs": [ {"name":"a","ty":"note","meta":1} ] }"#);
         assert!(msg.contains("meta"), "{msg}");
@@ -578,8 +559,8 @@ mod tests {
             r#"{ "type_name": "x", "constants": [ {"name":"voices","ty":"i32","i32":{"min":1,"max":32,"default":99}} ] }"#,
         );
         assert!(oob.message.contains("outside"), "{}", oob.message);
-        // (A bare `i32` with no meta block is a *shape* error now — rejected at deserialize;
-        // see `rejects_shape_invalid_ports_at_deserialize`.)
+        // A bare `i32` with no meta block is a shape error; see
+        // `rejects_shape_invalid_ports_at_deserialize`.
     }
 
     #[test]
@@ -606,8 +587,6 @@ mod tests {
 
     #[test]
     fn accepts_the_full_port_vocabulary() {
-        // A filter-shaped contract plus the discrete carriers: f32_buffer, f32-with-meta, enum
-        // (naming its vocab type), note, harmony.
         assert!(validate(&spec(
             r#"{ "type_name": "filter",
                  "inputs": [
@@ -623,9 +602,7 @@ mod tests {
 
     #[test]
     fn rejects_bad_ranges_on_f32_ports() {
-        // (The shape rules — meta iff type, vocab iff enum — are deserialize-time now; see
-        // `rejects_shape_invalid_ports_at_deserialize`. validate() keeps the data rules.)
-        // An `f32_buffer` *may* carry a meta block (a signal control with a scalar default), and
+        // An `f32_buffer` may carry a meta block (a signal control with a scalar default), and
         // a bad range in it is still validated.
         assert!(validate(&spec(
             r#"{ "type_name": "x", "inputs": [ {"name":"freq","ty":"f32_buffer","f32":{"min":20,"max":20000,"default":440,"unit":"Hz","curve":"exponential"}} ] }"#,
@@ -643,9 +620,6 @@ mod tests {
         assert!(oob.message.contains("outside"), "{}", oob.message);
     }
 
-    // The curve axis is an enum (issue #217): a curve that is neither "linear" nor
-    // "exponential" is unrepresentable, so the scaffold's JSON path fails at deserialize time
-    // (the macro's `lin`/`exp` keywords map to [`Curve`] at parse and never reach here).
     #[test]
     fn unknown_curve_fails_to_deserialize() {
         let e = serde_json::from_str::<OperatorSpec>(
@@ -659,8 +633,8 @@ mod tests {
         );
     }
 
-    // The deserialized curve is the enum, with an omitted curve defaulting to linear — the same
-    // default the macro grammar applies to an omitted curve keyword.
+    // An omitted curve defaults to linear — the same default the macro grammar applies to an
+    // omitted curve keyword.
     #[test]
     fn curve_deserializes_to_the_enum_and_defaults_linear() {
         let s = spec(
@@ -674,12 +648,9 @@ mod tests {
         };
         assert_eq!(meta(0).curve, Curve::Exponential);
         assert_eq!(meta(1).curve, Curve::Linear);
-        // An omitted unit is the empty string.
         assert_eq!(meta(1).unit, "");
     }
 
-    // The flat wire shape folds into the payload-carrying [`PortTy`] (issue #217): the meta and
-    // the vocab name ride inside the type, so "meta iff type" holds by construction.
     #[test]
     fn ports_deserialize_to_the_payload_carrying_ty() {
         let s = spec(
@@ -706,7 +677,7 @@ mod tests {
 
     #[test]
     fn arg_is_input_only() {
-        // The type-agnostic pass-through (issue #141) is legal as an input...
+        // The type-agnostic pass-through is legal as an input...
         assert!(validate(&spec(
             r#"{ "type_name": "osc_out", "inputs": [ {"name":"in","ty":"arg"} ] }"#
         ))

@@ -1,8 +1,6 @@
-//! CI regression gate, micro layer (#30): deterministic instruction count of each operator's
-//! `process` over the fixed 1 s schedule, via callgrind. Same rationale as `macro_iai` — counts are
-//! CPU-independent and byte-stable, so the same-toolchain compare in CI flags a per-operator
-//! regression without wall-clock flake. The macro layer catches a graph getting slower;
-//! this layer says which operator.
+//! CI regression gate, micro layer (see rules: web-product-process): deterministic instruction
+//! count of each operator's `process` over the fixed 1 s schedule, via callgrind. The macro layer
+//! catches a graph getting slower; this layer says which operator.
 //!
 //! The [`setup`] wrapper builds the harness (alloc, resource decode, event construction) outside the
 //! measured region; only the render loop is counted. It returns `None` for a kind the CI perf gate
@@ -18,10 +16,10 @@
 //! reason the skip list does (see [`setup`]): the perf gate swaps `reuben-core/src` to the baseline
 //! ref, so a census in `bench_support` would be swapped out from under the run.
 //!
-//! The #30 forcing function (`bench_support::tests::iai_list_covers_every_workload`, in the `check`
-//! job) reads the list back out of this file's source with `include_str!` and asserts it equals
-//! `WORKLOADS` — so adding an operator still reds CI until it is benched, but the census that used
-//! to be duplicated into a `MICRO_IAI_KINDS` const is now read from the one place it is written.
+//! `bench_support::tests::iai_list_covers_every_workload` (in the `check` job) reads the list back
+//! out of this file's source with `include_str!` and asserts it equals `WORKLOADS` — so adding an
+//! operator still reds CI until it is benched, but the census that used to be duplicated into a
+//! `MICRO_IAI_KINDS` const is now read from the one place it is written.
 
 use iai_callgrind::{library_benchmark, library_benchmark_group, main, LibraryBenchmarkConfig};
 use reuben_core::bench_support::OpHarness;
@@ -32,8 +30,8 @@ use std::hint::black_box;
 ///
 /// The gate reuses THIS (HEAD) bench against the baseline commit's swapped-in `src/`. An operator the
 /// PR added — or renamed — isn't in the baseline registry, so `OpHarness::for_kind` would panic there
-/// and abort the whole micro layer (the masking bug on #104: one renamed operator skipped EVERY
-/// operator's gate). The gate lists those baseline-absent kinds and passes the *same* value to both
+/// and abort the whole micro layer (one renamed operator once skipped EVERY operator's gate this
+/// way). The gate lists those baseline-absent kinds and passes the *same* value to both
 /// the baseline and PR runs, so a new operator is skipped symmetrically — it has no baseline to
 /// compare against — while every operator that existed at the base is still benched.
 ///
@@ -52,8 +50,8 @@ fn setup(kind: &str) -> Option<OpHarness> {
 /// One line per benched operator, `<bench id> => "<operator kind>"`. The **id is not derived from
 /// the kind**: iai names each callgrind case by its id, and the CI perf gate matches HEAD against
 /// the baseline by that name — so renaming an id unmatches that operator's history and silently
-/// drops it from the gate (the #104 masking bug, in slower motion). The ids are therefore carried
-/// verbatim from when each bench was added, however inconsistent they look beside their kinds.
+/// drops it from the gate. The ids are therefore carried verbatim from when each bench was added,
+/// however inconsistent they look beside their kinds.
 macro_rules! micro_bench_ops {
     ($($id:ident => $kind:literal),* $(,)?) => {
         #[library_benchmark]
