@@ -1,9 +1,17 @@
 //! What the authoring verbs answer with — the window's own result shapes, and the conversions that
 //! fill them from the engine's.
 //!
-//! Every `///` in this file is advertised prose: schemars lifts it into the `description` a door
-//! puts in front of a model. Keep it to what the field *means* and what to do with it; notes for
-//! humans go in `//` comments, which schemars does not pick up.
+//! Two kinds of `///` live here and only one reaches a model. **Every field doc is advertised**,
+//! and so is the **type** doc of any type that appears as a nested `$defs` entry ([`Diag`],
+//! [`Report`]) — schemars lifts both into the `description` a door puts in front of a model. A
+//! type used only as a tool's *root* output ([`EditResult`], [`Operators`], [`DocumentView`]) has
+//! its type doc dropped, so that one is for Rust readers. The distinction is not stable: making a
+//! root type nest inside another promotes its doc onto the wire.
+//!
+//! So write every `///` here as if it ships. Advertised prose takes no rustdoc link syntax, no
+//! issue numbers and no crate paths — a model can resolve none of them; notes for humans go in
+//! `//` comments, which schemars does not pick up. Guarded end-to-end over the real advertised
+//! surface by `advertised_prose_is_model_facing`. see rules: code-as-grounding
 //!
 //! see rules: agent-mcp
 
@@ -129,9 +137,9 @@ pub struct Operators {
 ///
 /// One rendered string rather than five structured shapes, for the reason the projection exists at
 /// all — the compact line grammar *is* the deliverable, and four alternative payloads would put
-/// schemas a caller never uses into every turn's grounding. It is the same channel
-/// [`EditResult::zoom`] echoes through, so an agent reads a document and reads back its own edit in
-/// one grammar.
+/// schemas a caller never uses into every turn's grounding. It is the same channel a document
+/// verb's `zoom` echoes through, so an agent reads a document and reads back its own edit in one
+/// grammar.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct DocumentView {
     /// Which view this is — echoed so a caller that defaulted it knows what it got.
@@ -142,13 +150,13 @@ pub struct DocumentView {
 
 // --- filling the window's shapes from the engine's ------------------------------------------------
 //
-// One direction only: nothing here parses a window shape back into an engine one, because the
-// window is where the engine's answers stop. Compiler-checked for types and not for meaning — two
-// fields can agree on shape and disagree on what they mean while both compile, which is the
-// residue the boundary is bought with. see rules: agent-mcp
+// `pub(crate)` associated functions rather than `From` impls: a public `impl From<reuben_core::…>`
+// would put the engine's types in this crate's public API and its rustdoc, which is the leak the
+// boundary exists to close. One direction only — the window is where the engine's answers stop.
+// see rules: agent-mcp
 
-impl From<&core_contract::Diag> for Diag {
-    fn from(d: &core_contract::Diag) -> Self {
+impl Diag {
+    pub(crate) fn from_core(d: &core_contract::Diag) -> Self {
         Diag {
             node: d.node.clone(),
             port: d.port.clone(),
@@ -157,20 +165,20 @@ impl From<&core_contract::Diag> for Diag {
     }
 }
 
-impl From<core_contract::Report> for Report {
-    fn from(r: core_contract::Report) -> Self {
+impl Report {
+    pub(crate) fn from_core(r: core_contract::Report) -> Self {
         Report {
             ok: r.ok,
-            errors: r.errors.iter().map(Diag::from).collect(),
-            warnings: r.warnings.iter().map(Diag::from).collect(),
+            errors: r.errors.iter().map(Diag::from_core).collect(),
+            warnings: r.warnings.iter().map(Diag::from_core).collect(),
         }
     }
 }
 
-impl From<core_edit::EditResult> for EditResult {
-    fn from(r: core_edit::EditResult) -> Self {
+impl EditResult {
+    pub(crate) fn from_core(r: core_edit::EditResult) -> Self {
         EditResult {
-            report: r.report.into(),
+            report: Report::from_core(r.report),
             written: r.written,
             hash: r.hash,
             notes: r.notes,
@@ -179,8 +187,8 @@ impl From<core_edit::EditResult> for EditResult {
     }
 }
 
-impl From<&core_introspect::PortInfo> for PortInfo {
-    fn from(p: &core_introspect::PortInfo) -> Self {
+impl PortInfo {
+    pub(crate) fn from_core(p: &core_introspect::PortInfo) -> Self {
         PortInfo {
             name: p.name.clone(),
             kind: p.kind.clone(),
@@ -196,12 +204,12 @@ impl From<&core_introspect::PortInfo> for PortInfo {
     }
 }
 
-impl From<&core_introspect::OperatorInfo> for OperatorInfo {
-    fn from(o: &core_introspect::OperatorInfo) -> Self {
+impl OperatorInfo {
+    pub(crate) fn from_core(o: &core_introspect::OperatorInfo) -> Self {
         OperatorInfo {
             type_name: o.type_name.clone(),
-            inputs: o.inputs.iter().map(PortInfo::from).collect(),
-            outputs: o.outputs.iter().map(PortInfo::from).collect(),
+            inputs: o.inputs.iter().map(PortInfo::from_core).collect(),
+            outputs: o.outputs.iter().map(PortInfo::from_core).collect(),
             resources: o.resources.clone(),
         }
     }

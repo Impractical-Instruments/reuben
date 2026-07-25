@@ -7,10 +7,8 @@
 //! between — the registry, the `expect` guard, the validation pipeline, the projection echo, the
 //! one-line gloss — is the window's.
 //!
-//! The types are the window's own, not the engine's: nothing here is a projection of what
-//! `reuben_core` happens to expose, so the engine stays free to pick representations serde is bad
-//! at. The cost is a conversion layer, which is real code and compiler-checked; what it cannot
-//! check is *meaning*, and that residue is the price of the boundary.
+//! The types a door serializes are the window's own, not the engine's; the two types crossing the
+//! resource seam are the engine's, re-exported. [`resources`] states that split and why.
 //!
 //! see rules: agent-mcp
 
@@ -20,6 +18,6 @@ mod result;
 mod verbs;
 
 pub use args::*;
-pub use resources::{ResourceError, Resources, SampleBuffer};
+pub use resources::{ResolveError, Resources, SampleBuffer};
 pub use result::{Diag, DocumentView, EditResult, OperatorInfo, Operators, PortInfo, Report};
 pub use verbs::*;

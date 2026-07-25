@@ -182,7 +182,19 @@ impl ResourceResolver for FsResolver {
     /// [library root](FsResolver::with_root) is configured, a hit under the root wins instead.
     /// A miss in both canonicalizes to the sibling candidate, so the eventual `NotFound`
     /// warning names the path the author most likely meant.
+    ///
+    /// A [document-scoped](FsResolver::for_document) resolver answers for its own document here
+    /// too, and must: identity has to agree with where [`locate`](FsResolver::locate) actually
+    /// reads and writes, or a document that references itself would be keyed under a path it does
+    /// not live at and slip the cycle guard.
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
+        if referrer.is_none() {
+            if let Some((named, path)) = &self.document {
+                if named == source {
+                    return path.display().to_string();
+                }
+            }
+        }
         let base = referrer
             .and_then(|r| Path::new(r).parent())
             .filter(|p| !p.as_os_str().is_empty())
@@ -203,21 +215,21 @@ impl ResourceResolver for FsResolver {
 /// The same resolver seen through the window's own seam, so a door that drives
 /// [`authoring`](crate::authoring) never has to name the engine's.
 ///
-/// Two impls rather than one because the two traits are load-bearing at different depths for two
-/// more phases: `reuben-native` still calls the engine directly, and it resolves through this
-/// same type. When it comes through the window, the engine-side impl goes.
+/// Two impls of the same four methods for two more phases: `reuben-native` still calls the engine
+/// directly and resolves through this same type. The engine-side impl goes when it comes through
+/// the window.
 #[cfg(feature = "authoring")]
 impl crate::authoring::Resources for FsResolver {
-    fn read_samples(&self, source: &str) -> Result<SampleBuffer, crate::authoring::ResourceError> {
-        self.resolve(source).map_err(Into::into)
+    fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        self.resolve(source)
     }
 
-    fn read_text(&self, source: &str) -> Result<String, crate::authoring::ResourceError> {
-        ResourceResolver::resolve_text(self, source).map_err(Into::into)
+    fn read_text(&self, source: &str) -> Result<String, ResolveError> {
+        ResourceResolver::resolve_text(self, source)
     }
 
-    fn write_text(&self, source: &str, text: &str) -> Result<(), crate::authoring::ResourceError> {
-        ResourceResolver::write_text(self, source, text).map_err(Into::into)
+    fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
+        ResourceResolver::write_text(self, source, text)
     }
 
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
@@ -416,6 +428,18 @@ mod tests {
         assert_eq!(
             resolver.resolve_text("voice.json").expect("sibling"),
             "{\"v\":9}"
+        );
+        // Identity agrees with location. If it did not, a self-referencing document would be keyed
+        // under a path it does not live at, and the cycle guard would not recognize the loop.
+        assert_eq!(
+            Path::new(&resolver.canonical(&source, None)),
+            base.join("kit/inst.json"),
+            "the document's canonical id is where it actually lives"
+        );
+        // Only the document's own spelling is aliased — a sibling still canonicalizes normally.
+        assert_eq!(
+            Path::new(&resolver.canonical("voice.json", None)),
+            base.join("kit/voice.json")
         );
 
         let _ = std::fs::remove_dir_all(&base);

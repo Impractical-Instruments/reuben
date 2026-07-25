@@ -1,9 +1,9 @@
 //! reuben-mcp — the per-conversation MCP stdio sidecar.
 //!
 //! A [`ServerHandler`] with a tool router over the [`reuben_core::tools::CONTRACTS`] roster, in
-//! three families: the pure introspection tools and the nineteen document verbs answer in-process
-//! through [`reuben_api::authoring`], over a [`reuben_api::FsResolver`] filling its resource seam,
-//! while the five engine tools reach a user-owned `reuben play` through [`EngineLink`].
+//! three families: the pure introspection tools and the document verbs answer in-process through
+//! [`reuben_api::authoring`], over a [`reuben_api::FsResolver`] filling its resource seam, while
+//! the engine tools reach a user-owned `reuben play` through [`EngineLink`].
 //!
 //! What is left here is the MCP-shaped part and only that: the roster, the transport, and the
 //! two-way map between a window answer and a `CallToolResult`. The argument shapes, the result
@@ -13,8 +13,7 @@
 //! The per-tool `description` sentences are the exception, and not by choice: rmcp's `#[tool]`
 //! takes a string **literal** there, so it cannot name a const the window owns. Every other piece
 //! of advertised prose — the field descriptions, the `$defs` descriptions, the one-line glosses —
-//! rides the window's types. When a second door needs the same sentences, that is the constraint
-//! to solve, not a licence to copy them.
+//! rides the window's types.
 //!
 //! see rules: agent-mcp
 
@@ -729,7 +728,7 @@ impl ReubenServer {
 
     // --- Document tools: engine-free mutators over an instrument document -------------------------
     //
-    // Nineteen roster entries over one window verb each. There is deliberately nothing else here:
+    // One roster entry per window verb, and nothing else. There is deliberately nothing else here:
     // the `expect` guard, the write-iff-valid pipeline, the projection echo and the one-line gloss
     // all live behind `authoring`, so a second door gets them without a second copy. What the door
     // still owns is the roster spelling, the advertised schema, and the isError decision.
@@ -1161,8 +1160,9 @@ fn answered<T: Serialize>(answer: Result<Answer<T>, Refusal>) -> Result<CallTool
     }
 }
 
-/// The one `outputSchema` all nineteen document verbs advertise. Derived here rather than at each
-/// `#[tool]`, so the roster cannot grow a twentieth verb promising a different shape.
+/// The one `outputSchema` every document verb advertises. Derived here rather than at each
+/// `#[tool]`, so the roster cannot grow a verb promising a different shape. The attribute itself
+/// still repeats per tool — rmcp's macro needs it there — but what it names is decided once.
 fn edit_result_schema() -> std::sync::Arc<rmcp::model::JsonObject> {
     rmcp::handler::server::tool::schema_for_output::<EditResult>()
         .expect("EditResult is an object schema")

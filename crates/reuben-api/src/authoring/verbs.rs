@@ -1,4 +1,4 @@
-//! The verbs themselves: three pure reads and nineteen document edits, each taking the window's own
+//! The verbs themselves: the pure reads and the document edits, each taking the window's own
 //! argument struct and answering with the window's own result shape.
 //!
 //! Every mutating verb funnels through [`run_edit`], which owns the two things a door would
@@ -80,7 +80,7 @@ pub fn describe_operators(args: &DescribeOperators) -> Result<Answer<Operators>,
     let summary = describe_operators_summary(&operators);
     Ok(Answer {
         output: Operators {
-            operators: Some(operators.iter().map(OperatorInfo::from).collect()),
+            operators: Some(operators.iter().map(OperatorInfo::from_core).collect()),
             signatures: None,
         },
         summary,
@@ -163,7 +163,7 @@ pub fn validate_instrument(
     let resolver = Adapter(resources);
     let json = read_document(&args.source, resources)?;
     let registry = Registry::builtin();
-    let report = Report::from(core_introspect::validate(&json, &registry, &resolver));
+    let report = Report::from_core(core_introspect::validate(&json, &registry, &resolver));
     let summary = validate_summary(&report);
     Ok(Answer {
         output: report,
@@ -178,6 +178,8 @@ pub fn new_instrument(
     args: &NewInstrument,
     resources: &dyn Resources,
 ) -> Result<Answer<EditResult>, Refusal> {
+    // The one verb with no `expect` field to pass: there is no prior document to have raced with,
+    // and the refusal-to-overwrite below is the guard that fits a create.
     run_edit(&args.source, &None, resources, |src, reg, res| {
         core_edit::new_instrument(src, &args.name, reg, res)
     })
@@ -457,7 +459,7 @@ fn run_edit(
     if let Some(conflict) = expect_conflict(expect, source, &registry, &resolver) {
         return Ok(conflict);
     }
-    let result = EditResult::from(
+    let result = EditResult::from_core(
         verb(source, &registry, &resolver).map_err(|why| Refusal::new(why.to_string()))?,
     );
     let summary = edit_summary(&result);
@@ -467,15 +469,18 @@ fn run_edit(
     })
 }
 
-/// The optimistic-concurrency `expect` guard: compare the caller's expected content hash against
-/// the source's current one.
+/// The document verbs' optimistic-concurrency `expect` guard: compare the caller's expected content
+/// hash against the **source's** current one, before writing to it.
+///
+/// Not the swap guard, which compares against the hash the engine has **installed** and is a
+/// different question with a different answer shape (`expect-guard-is-a-door-concern` governs that
+/// one, and it stays where it is — nothing here touches it). The two are easy to conflate because
+/// they share a field name and a hash format.
 ///
 /// `Some` is the ready-to-return ordinary answer for a miss — nothing written, the real hash and
 /// the current node index handed back, so reconciling costs no extra round trip. `None` means
 /// proceed, and is also what a read or mint failure returns: that is the verb's to surface, not the
 /// guard's.
-///
-/// It lives here, once, rather than in each door — see rules: agent-mcp.
 fn expect_conflict(
     expect: &Option<String>,
     source: &str,
@@ -610,5 +615,161 @@ fn edit_summary(result: &EditResult) -> String {
             result.report.errors.len(),
             result.hash
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::resources::{ResolveError, SampleBuffer};
+    use super::*;
+    use std::cell::RefCell;
+    use std::collections::BTreeMap;
+
+    /// A store with no filesystem under it: sources are exact keys.
+    ///
+    /// The point is not convenience. `Resources` is the seam a host that is *not* a filesystem
+    /// fills — the browser is the one this repo is headed for — and until something implements it
+    /// without a path in sight, "host-implemented" is a claim with no evidence. This is the
+    /// evidence, and it is also what lets the guard below be tested without temp files.
+    #[derive(Default)]
+    struct MemoryStore {
+        texts: RefCell<BTreeMap<String, String>>,
+    }
+
+    impl MemoryStore {
+        fn with(source: &str, text: &str) -> Self {
+            let store = Self::default();
+            store
+                .texts
+                .borrow_mut()
+                .insert(source.to_string(), text.to_string());
+            store
+        }
+
+        fn read(&self, source: &str) -> String {
+            self.texts.borrow()[source].clone()
+        }
+    }
+
+    impl Resources for MemoryStore {
+        fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+            Err(ResolveError::NotFound(source.to_string()))
+        }
+
+        fn read_text(&self, source: &str) -> Result<String, ResolveError> {
+            self.texts
+                .borrow()
+                .get(source)
+                .cloned()
+                .ok_or_else(|| ResolveError::NotFound(source.to_string()))
+        }
+
+        fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
+            self.texts
+                .borrow_mut()
+                .insert(source.to_string(), text.to_string());
+            Ok(())
+        }
+    }
+
+    const SEED: &str = r#"{
+        "format_version": 3,
+        "instrument": "guard-test",
+        "nodes": [ { "type": "oscillator", "address": "/osc", "inputs": { "freq": 220.0 } } ]
+    }"#;
+
+    fn set_freq(source: &str, value: f64, expect: Option<&str>) -> SetInstrumentInput {
+        SetInstrumentInput {
+            source: source.to_string(),
+            address: "/osc".to_string(),
+            input: "freq".to_string(),
+            value: serde_json::json!(value),
+            expect: expect.map(str::to_string),
+        }
+    }
+
+    /// An unguarded edit writes, and hands back the hash a guarded follow-up must quote.
+    #[test]
+    fn an_edit_writes_through_the_store_and_returns_the_new_hash() {
+        let store = MemoryStore::with("inst.json", SEED);
+        let answer = set_instrument_input(&set_freq("inst.json", 440.0, None), &store)
+            .expect("an edit to a real node is not a refusal");
+
+        assert!(answer.output.written, "{:?}", answer.output);
+        assert!(answer.output.report.ok);
+        assert!(store.read("inst.json").contains("440"));
+        assert!(
+            answer.summary.contains(&answer.output.hash),
+            "the gloss quotes the hash a guarded write will need: {}",
+            answer.summary
+        );
+    }
+
+    /// A guard quoting the current hash proceeds — the case a guard that always rejected would
+    /// still pass the miss test below.
+    #[test]
+    fn the_expect_guard_lets_a_current_hash_through() {
+        let store = MemoryStore::with("inst.json", SEED);
+        let hash = set_instrument_input(&set_freq("inst.json", 440.0, None), &store)
+            .expect("first write")
+            .output
+            .hash;
+
+        let answer = set_instrument_input(&set_freq("inst.json", 880.0, Some(&hash)), &store)
+            .expect("a matching guard is not a refusal");
+        assert!(answer.output.written, "{:?}", answer.output);
+        assert!(store.read("inst.json").contains("880"));
+    }
+
+    /// A guard quoting a stale hash rejects — as an ordinary answer, not a refusal: the verb
+    /// worked, and its report is what the caller reconciles against. Nothing is written.
+    #[test]
+    fn the_expect_guard_rejects_a_stale_hash_without_writing() {
+        let store = MemoryStore::with("inst.json", SEED);
+        let before = store.read("inst.json");
+
+        let answer = set_instrument_input(
+            &set_freq("inst.json", 440.0, Some("deadbeefdeadbeef")),
+            &store,
+        )
+        .expect("a guard miss is an answer, not a refusal");
+
+        assert!(!answer.output.written);
+        assert!(!answer.output.report.ok);
+        assert_eq!(store.read("inst.json"), before, "nothing was written");
+        // The real hash, so reconciling costs no extra round trip — and it is the *actual* one,
+        // never the expected one the caller already holds.
+        assert_ne!(answer.output.hash, "deadbeefdeadbeef");
+        assert!(
+            answer.output.zoom.contains("/osc"),
+            "the guard echoes the current index: {:?}",
+            answer.output.zoom
+        );
+    }
+
+    /// A precondition that cannot hold is a refusal, not a rejected edit — the split every door
+    /// renders as its own can't-do-the-job signal.
+    #[test]
+    fn a_missing_target_is_a_refusal_not_a_rejected_edit() {
+        let store = MemoryStore::with("inst.json", SEED);
+        let mut args = set_freq("inst.json", 440.0, None);
+        args.address = "/ghost".to_string();
+
+        let refusal = set_instrument_input(&args, &store).expect_err("no such node");
+        assert!(refusal.message.contains("/ghost"), "{refusal}");
+    }
+
+    /// A source the store does not hold is a refusal naming the source as the caller spelled it.
+    #[test]
+    fn an_unreadable_source_is_a_refusal() {
+        let store = MemoryStore::default();
+        let refusal = validate_instrument(
+            &ValidateInstrument {
+                source: "nope.json".to_string(),
+            },
+            &store,
+        )
+        .expect_err("nothing to validate");
+        assert!(refusal.message.contains("nope.json"), "{refusal}");
     }
 }

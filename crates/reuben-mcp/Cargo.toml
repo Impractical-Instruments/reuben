@@ -19,15 +19,16 @@ name = "reuben-mcp"
 path = "src/main.rs"
 
 [dependencies]
-# The five engine tools only: the structure-channel wire types and the reports they advertise. The
-# authoring half no longer names core at all — it comes through reuben-api. The `schemars` feature
-# is ON here (and ONLY here) so rmcp can derive the engine tools' `outputSchema` from those wire
-# types; the play/CLI build keeps schemars fenced out. Both go when the engine half moves behind
-# the window.
+# Two things now: the engine tools' structure-channel wire types and the reports they advertise,
+# and `tools::names()` — the declared roster, which covers every tool, authoring included, and which
+# no phase has assigned to the window. The authoring half names core for nothing else. The
+# `schemars` feature is ON here (and ONLY here) so rmcp can derive the engine tools' `outputSchema`
+# from those wire types; the play/CLI build keeps schemars fenced out. Both go when the engine half
+# moves behind the window and the roster finds a home.
 reuben-core = { path = "../reuben-core", features = ["schemars"] }
-# The window: the authoring verbs the pure tools and the nineteen document verbs are, plus the
-# reference filesystem resolver (`FsResolver`) filling their resource seam. The sidecar drives no
-# audio, so it takes no render half.
+# The window: the authoring verbs the pure tools and the document verbs are, plus the reference
+# filesystem resolver (`FsResolver`) filling their resource seam. The sidecar drives no audio, so it
+# takes no render half.
 reuben-api = { path = "../reuben-api", default-features = false, features = [
     "authoring",
     "fs-resolver",

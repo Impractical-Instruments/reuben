@@ -7,41 +7,14 @@
 //!
 //! see rules: authoring-library
 
-use std::fmt;
-
-use reuben_core::resources::{ResolveError, ResourceResolver};
+use reuben_core::resources::ResourceResolver;
 
 /// Decoded audio, planar per channel at the file's native rate.
-///
-/// Re-exported rather than redeclared: it is a buffer a host fills, not a shape anything
-/// serializes, so a window-owned twin would buy nothing and cost a copy per resource.
 pub use reuben_core::resources::SampleBuffer;
 
-/// Why a host could not produce a resource. Never fatal to a load — a document whose sample is
-/// missing loads and reports the failure as a warning.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ResourceError {
-    /// The source could not be opened or read.
-    NotFound(String),
-    /// The bytes could not be decoded.
-    Decode(String),
-    /// The source could not be written: a read-only store was asked to write, or the write itself
-    /// failed. Distinct from [`NotFound`](Self::NotFound) — the source is addressable, the store
-    /// refused it.
-    Write(String),
-}
-
-impl fmt::Display for ResourceError {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        match self {
-            ResourceError::NotFound(s) => write!(f, "not found: {s}"),
-            ResourceError::Decode(s) => write!(f, "decode failed: {s}"),
-            ResourceError::Write(s) => write!(f, "write failed: {s}"),
-        }
-    }
-}
-
-impl std::error::Error for ResourceError {}
+/// Why a host could not produce a resource: not there, not decodable, not writable. Never fatal to
+/// a load — a document whose sample is missing loads and reports the failure as a warning.
+pub use reuben_core::resources::ResolveError;
 
 /// The host's answer to "what does this `source` name?".
 ///
@@ -52,22 +25,22 @@ impl std::error::Error for ResourceError {}
 /// write through a read-only store fails rather than silently dropping the edit.
 pub trait Resources {
     /// Decode `source` to audio.
-    fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResourceError>;
+    fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError>;
 
     /// Read `source` as text: an instrument document, its own or a nested child's.
     ///
-    /// Defaults to [`NotFound`](ResourceError::NotFound) so a sample-only store need not
+    /// Defaults to [`NotFound`](ResolveError::NotFound) so a sample-only store need not
     /// implement it.
-    fn read_text(&self, source: &str) -> Result<String, ResourceError> {
-        Err(ResourceError::NotFound(source.to_string()))
+    fn read_text(&self, source: &str) -> Result<String, ResolveError> {
+        Err(ResolveError::NotFound(source.to_string()))
     }
 
     /// Persist `text` back to `source` — the symmetric half of [`read_text`](Self::read_text), and
     /// the only way a document verb's edit becomes durable. Defaults to refusing, so a read-only
     /// store stays read-only.
-    fn write_text(&self, source: &str, text: &str) -> Result<(), ResourceError> {
+    fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
         let _ = text;
-        Err(ResourceError::Write(format!("read-only store: {source}")))
+        Err(ResolveError::Write(format!("read-only store: {source}")))
     }
 
     /// The canonical identity of `source` — the key that decides whether two spellings are one
@@ -83,42 +56,26 @@ pub trait Resources {
     }
 }
 
-impl From<ResolveError> for ResourceError {
-    fn from(e: ResolveError) -> Self {
-        match e {
-            ResolveError::NotFound(s) => ResourceError::NotFound(s),
-            ResolveError::Decode(s) => ResourceError::Decode(s),
-            ResolveError::Write(s) => ResourceError::Write(s),
-        }
-    }
-}
-
-impl From<ResourceError> for ResolveError {
-    fn from(e: ResourceError) -> Self {
-        match e {
-            ResourceError::NotFound(s) => ResolveError::NotFound(s),
-            ResourceError::Decode(s) => ResolveError::Decode(s),
-            ResourceError::Write(s) => ResolveError::Write(s),
-        }
-    }
-}
-
-/// Presents a window-owned [`Resources`] as the engine's own resolver seam — the whole of what
-/// "the API declares its own resolver trait" costs at runtime, once per resolve on an off-thread
-/// path.
+/// Presents a window-owned [`Resources`] as the engine's own resolver seam.
+///
+/// The window declares the *trait*, because that is what a host implements against and it must be
+/// nameable without naming the engine. It does not declare the two types crossing it: a decoded
+/// buffer and a resolve failure are things a host hands **in**, not shapes the window serializes
+/// **out**, so a twin would buy nothing and cost a conversion per resource. The wire types — the
+/// ones a model reads — are the window's own; these are re-exports.
 pub(crate) struct Adapter<'a>(pub &'a dyn Resources);
 
 impl ResourceResolver for Adapter<'_> {
     fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
-        self.0.read_samples(source).map_err(Into::into)
+        self.0.read_samples(source)
     }
 
     fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
-        self.0.read_text(source).map_err(Into::into)
+        self.0.read_text(source)
     }
 
     fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
-        self.0.write_text(source, text).map_err(Into::into)
+        self.0.write_text(source, text)
     }
 
     fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
