@@ -9,9 +9,13 @@ description = "Removable native layer for reuben: live audio (cpal) + OSC-in (UD
 
 [dependencies]
 reuben-core = { path = "../reuben-core" }
-# The reference filesystem resolver (`FsResolver`), which brings `hound` with it. The resolver is
-# all this crate takes from the window today.
-reuben-api = { path = "../reuben-api", default-features = false, features = ["fs-resolver"] }
+# The window: the authoring verbs the `describe`/`validate`/`new-instrument` subcommands are, plus
+# the reference filesystem resolver (`FsResolver`, which brings `hound` with it) filling their
+# resource seam. No render half — this crate still drives the engine directly for `play`.
+reuben-api = { path = "../reuben-api", default-features = false, features = [
+    "authoring",
+    "fs-resolver",
+] }
 # Shared operator-contract spec types + validation, single-sourced with the macro.
 reuben-contract = { path = "../reuben-contract" }
 cpal.workspace = true

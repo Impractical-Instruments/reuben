@@ -16,16 +16,14 @@ use std::thread;
 
 use clap::{Parser, Subcommand};
 
+use reuben_api::authoring::{
+    self, Diag, PortInfo, Refusal, COMPACT_DESCRIBE_LEGEND, SCAFFOLD_DEFAULT_NAME,
+};
 use reuben_api::FsResolver;
 use reuben_core::boundary;
 use reuben_core::coordinator::Coordinator;
-use reuben_core::edit;
 use reuben_core::message::Message;
-use reuben_core::projection::{Projector, Selection};
-use reuben_core::{Registry, SCAFFOLD_DEFAULT_NAME};
-use reuben_native::cli::{
-    describe, describe_compact, describe_patch, validate, COMPACT_DESCRIBE_LEGEND,
-};
+use reuben_core::Registry;
 use reuben_native::profile::DeviceProfile;
 use reuben_native::rigs::DEFAULT_JSON;
 use reuben_native::structure::StructureState;
@@ -90,8 +88,9 @@ enum Command {
         #[arg(long)]
         compact: bool,
         /// Which view of an instrument to cut (instrument paths only). The same views the
-        /// `describe_instrument` tool serves, so both doors read a document the same way — though
-        /// `--json` here emits each view's structured shape, for programs rather than models.
+        /// `describe_instrument` tool serves, off the same verb, so both doors read a document the
+        /// same way. `--json` wraps the rendered view — except `boundary`, whose structured shape
+        /// is what control-surface tooling consumes.
         #[arg(long, value_enum, default_value_t = InstrumentView::Index)]
         view: InstrumentView,
         /// Narrow `--view nodes`/`pipes` to these node addresses or pipe names. A name matching
@@ -137,8 +136,11 @@ enum Command {
     },
 }
 
-/// Which structural view of an instrument `describe <path>` cuts — the
-/// [`projection`](reuben_core::projection) views, plus the host-facing boundary.
+/// Which structural view of an instrument `describe <path>` cuts.
+///
+/// The window's view set, spelled as a `clap` flag: the enum has to live here because the flag
+/// grammar is the door's — what each view *means* is decided once behind the window, and
+/// [`window_view`] is the only place the two spellings meet.
 #[derive(Copy, Clone, PartialEq, Eq, clap::ValueEnum)]
 enum InstrumentView {
     /// Every node, one `address type` line each — the cheapest whole-document read.
@@ -153,6 +155,17 @@ enum InstrumentView {
     /// The boundary as a *host instrument* sees it — the nesting face, not the document's own
     /// structure. The one view that is not a projection.
     Boundary,
+}
+
+/// The flag spelling to the window's view.
+fn window_view(view: InstrumentView) -> authoring::InstrumentView {
+    match view {
+        InstrumentView::Index => authoring::InstrumentView::Index,
+        InstrumentView::Nodes => authoring::InstrumentView::Nodes,
+        InstrumentView::Pipes => authoring::InstrumentView::Pipes,
+        InstrumentView::Resources => authoring::InstrumentView::Resources,
+        InstrumentView::Boundary => authoring::InstrumentView::Boundary,
+    }
 }
 
 fn main() -> ExitCode {
@@ -174,13 +187,15 @@ fn main() -> ExitCode {
             view,
             select,
             select_type,
-        } => match selection(&select, select_type.as_deref()) {
-            Ok(selection) => cmd_describe(op.as_deref(), json, compact, view, selection, root),
-            Err(why) => {
-                eprintln!("error: {why}");
-                ExitCode::FAILURE
-            }
-        },
+        } => cmd_describe(
+            op.as_deref(),
+            json,
+            compact,
+            view,
+            select,
+            select_type,
+            root,
+        ),
         Command::Validate { path, json } => cmd_validate(&path, json, root),
         Command::ScaffoldOperator {
             spec,
@@ -193,45 +208,78 @@ fn main() -> ExitCode {
     }
 }
 
-/// The projection's one selection grammar, off the CLI's two flags — core's
-/// [`Selection::from_terms`], not a second copy of the rule. `clap`'s `conflicts_with` refuses
-/// both-at-once first with a nicer message, so the `Err` arm is belt-and-braces; what matters is
-/// that neither door decides the semantics for itself.
-fn selection(names: &[String], type_name: Option<&str>) -> Result<Selection, String> {
-    Selection::from_terms(names, type_name)
+/// What a command needs of a referenced sample — the one axis on which two commands want different
+/// resolvers behind the same source.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum Samples {
+    /// Decode them. `validate` is the dry run of the load `play` will do for real, so a sample that
+    /// is present but undecodable has to surface here as the warning `play` would hit; stat-ing it
+    /// would report a document legal that cannot be heard.
+    Decode,
+    /// Check availability without decoding. The introspection reads report port metadata and never
+    /// touch audio, so decoding every referenced WAV to describe a boundary is pure waste.
+    Availability,
+}
+
+/// The CLI door's reading of an opaque document `source`: a filesystem path, with the library root
+/// as the fallback for anything it references. see rules: agent-mcp
+fn store(source: &str, root: Option<PathBuf>, samples: Samples) -> FsResolver {
+    let store = FsResolver::for_document(source);
+    let store = match root {
+        Some(root) => store.with_root(root),
+        None => store,
+    };
+    match samples {
+        Samples::Decode => store,
+        Samples::Availability => store.stat_only(),
+    }
+}
+
+/// A [`Refusal`] is the CLI's can't-do-the-job signal: the window's message on stderr and a
+/// non-zero exit — the same split the sidecar renders as `isError`. What is *not* here: a rejected
+/// edit and a failing validation come back as ordinary answers, and each command decides its own
+/// exit code from the report it was handed.
+fn refused(refusal: &Refusal) -> ExitCode {
+    eprintln!("error: {refusal}");
+    ExitCode::FAILURE
+}
+
+/// One `--json` payload on stdout. The shape is whatever the window answered with; the framing —
+/// pretty-printed, one value, no envelope — is the door's.
+fn print_json<T: serde::Serialize>(value: &T) {
+    println!(
+        "{}",
+        serde_json::to_string_pretty(value).expect("serialize a window answer")
+    );
 }
 
 /// `new-instrument`: land a guaranteed-valid minimal instrument document **at a path** — the
 /// first-creation start move. see rules: agent-mcp
 ///
-/// This is [`edit::new_instrument`], the very verb the sidecar calls, so both doors create a
-/// document by exactly one procedure and the result is validated and written by the same code.
+/// The window's `new_instrument`, the very verb the sidecar calls, so both doors create a document
+/// by exactly one procedure and the result is validated and written by the same code.
 fn cmd_new_instrument(path: &Path, name: Option<&str>, json: bool) -> ExitCode {
-    let (resolver, source) = edit_resolver(path);
-    let result = match edit::new_instrument(
-        &source,
-        name.unwrap_or(SCAFFOLD_DEFAULT_NAME),
-        &Registry::builtin(),
-        &resolver,
+    let source = path.display().to_string();
+    let answer = match authoring::new_instrument(
+        &authoring::NewInstrument {
+            source: source.clone(),
+            name: name.unwrap_or(SCAFFOLD_DEFAULT_NAME).to_string(),
+        },
+        &store(&source, None, Samples::Availability),
     ) {
-        Ok(result) => result,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::FAILURE;
-        }
+        Ok(answer) => answer,
+        Err(refusal) => return refused(&refusal),
     };
+    let result = answer.output;
 
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&result).expect("serialize edit result")
-        );
+        print_json(&result);
     } else {
         for e in &result.report.errors {
             print_diag("error", e);
         }
         if result.written {
-            println!("created {} (content_hash {})", path.display(), result.hash);
+            println!("created {source} (content_hash {})", result.hash);
             println!("{}", result.zoom);
         }
     }
@@ -241,17 +289,6 @@ fn cmd_new_instrument(path: &Path, name: Option<&str>, json: bool) -> ExitCode {
     } else {
         ExitCode::FAILURE
     }
-}
-
-/// The CLI door's interpretation of an opaque document `source`: a filesystem path. Mirrors the MCP
-/// door's `edit_resolver` — a resolver rooted at the file's directory plus the resolver-relative
-/// name the [`edit`] verbs read and write through — so one verb contract serves both doors.
-fn edit_resolver(path: &Path) -> (FsResolver, String) {
-    let name = path
-        .file_name()
-        .map(|n| n.to_string_lossy().into_owned())
-        .unwrap_or_else(|| path.display().to_string());
-    (FsResolver::for_instrument(path).stat_only(), name)
 }
 
 /// `scaffold-operator`: generate a new operator skeleton + registration from a contract spec.
@@ -286,7 +323,7 @@ fn cmd_scaffold(spec: &Path, core_root: &Path, json: bool) -> ExitCode {
 }
 
 /// Render one port line of `describe` output, shared by the operator and patch-boundary views.
-fn print_ports(dir: &str, ps: &[reuben_native::cli::PortInfo]) {
+fn print_ports(dir: &str, ps: &[PortInfo]) {
     for p in ps {
         let mut s = format!("  {dir} {} : {}", p.name, p.kind);
         if p.constant {
@@ -316,8 +353,9 @@ fn print_ports(dir: &str, ps: &[reuben_native::cli::PortInfo]) {
 
 /// Read an instrument file to its JSON text, paired with a resolver rooted at its directory —
 /// resource paths (samples, nested instruments) resolve relative to the referencing file,
-/// falling back to the library `root` when configured. The one loading preamble behind
-/// `describe`, `validate`, and `play`.
+/// falling back to the library `root` when configured. `play`'s loading preamble: it hands the
+/// text and the resolver to the Coordinator, which is a different need from the authoring
+/// commands', where the window reads the document itself through [`store`].
 fn read_instrument(path: &Path, root: Option<PathBuf>) -> Result<(String, FsResolver), String> {
     let json =
         std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
@@ -344,7 +382,8 @@ fn cmd_describe(
     json: bool,
     compact: bool,
     view: InstrumentView,
-    select: Selection,
+    select: Vec<String>,
+    select_type: Option<String>,
     root: Option<PathBuf>,
 ) -> ExitCode {
     // A path-shaped argument is an instrument: cut the asked-for view of it.
@@ -359,33 +398,51 @@ fn cmd_describe(
                 return ExitCode::FAILURE;
             }
             if view == InstrumentView::Boundary {
-                return cmd_describe_patch(Path::new(arg), json, root);
+                return cmd_describe_boundary(arg, json, root);
             }
-            return cmd_project(Path::new(arg), view, select, json, root);
+            return cmd_project(arg, view, select, select_type, json, root);
         }
     }
 
-    if compact {
-        return cmd_describe_compact(op, json);
-    }
+    cmd_describe_operators(op, json, compact)
+}
 
-    let ops = match describe(&Registry::builtin(), op) {
-        Ok(ops) => ops,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::FAILURE;
-        }
+/// `describe [op]`: the operator set, or one operator, off the window's `describe_operators`.
+///
+/// The window answers both modes under one object because a tool result needs an object root; a
+/// shell consumer wants the bare list it can pipe, so the door unwraps the mode it asked for. The
+/// framing is the door's, the content is not.
+fn cmd_describe_operators(name: Option<&str>, json: bool, compact: bool) -> ExitCode {
+    let answer = match authoring::describe_operators(&authoring::DescribeOperators {
+        name: name.map(str::to_string),
+        compact,
+    }) {
+        Ok(answer) => answer,
+        Err(refusal) => return refused(&refusal),
     };
 
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&ops).expect("serialize describe")
-        );
+    // Compact mode: one generated signature line per operator. Human output prints the notation
+    // legend first, so the listing is a self-describing artifact a bundle can carry; `--json` emits
+    // the bare line array for machine consumers that compose their own framing.
+    if compact {
+        let signatures = answer.output.signatures.unwrap_or_default();
+        if json {
+            print_json(&signatures);
+            return ExitCode::SUCCESS;
+        }
+        println!("{COMPACT_DESCRIBE_LEGEND}");
+        for line in &signatures {
+            println!("{line}");
+        }
         return ExitCode::SUCCESS;
     }
 
-    for o in &ops {
+    let operators = answer.output.operators.unwrap_or_default();
+    if json {
+        print_json(&operators);
+        return ExitCode::SUCCESS;
+    }
+    for o in &operators {
         println!("{}", o.type_name);
         print_ports("in ", &o.inputs);
         print_ports("out", &o.outputs);
@@ -396,39 +453,10 @@ fn cmd_describe(
     ExitCode::SUCCESS
 }
 
-/// `describe --compact`: the generated signature-line mode of the operator view —
-/// one line per operator off the same registry truth as the full mode, never a hand-written
-/// digest. Human output prints the notation legend first, so the listing is the
-/// self-describing bundle-able artifact the web build consumes; `--json` emits the bare line
-/// array for machine consumers that compose their own framing.
-fn cmd_describe_compact(op: Option<&str>, json: bool) -> ExitCode {
-    let lines = match describe_compact(&Registry::builtin(), op) {
-        Ok(lines) => lines,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&lines).expect("serialize compact describe")
-        );
-        return ExitCode::SUCCESS;
-    }
-
-    println!("{COMPACT_DESCRIBE_LEGEND}");
-    for line in &lines {
-        println!("{line}");
-    }
-    ExitCode::SUCCESS
-}
-
 /// One diagnostic on stderr, the loader's localization in brackets when it named one:
 /// `error [/osc freq]: …` / `warning [/voicer]: …` / `error: …`. Errors and warnings share
 /// this shape — warnings are localized Diags too.
-fn print_diag(level: &str, d: &reuben_core::contract::Diag) {
+fn print_diag(level: &str, d: &Diag) {
     match (&d.node, &d.port) {
         (Some(n), Some(p)) => eprintln!("{level} [{n} {p}]: {}", d.message),
         (Some(n), None) => eprintln!("{level} [{n}]: {}", d.message),
@@ -443,37 +471,24 @@ fn print_diag(level: &str, d: &reuben_core::contract::Diag) {
 /// overrides (a subset of that port's range), both decorated by the entry's presentational fields
 /// (label/unit/widget).
 ///
-/// The one view that is **not** a projection, and the one whose `--json` shape is deliberately not
-/// the MCP door's: this emits the structured [`PatchBoundary`] that the control-surface tooling
-/// consumes, where the sidecar renders it as a line. Same question, two consumers — a program here,
-/// a model there.
-fn cmd_describe_patch(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCode {
-    let (instrument_json, resolver) = match read_instrument(path, root) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-
-    // Introspection never renders audio: stat samples for availability instead of decoding them.
-    let boundary = match describe_patch(
-        &instrument_json,
-        &Registry::builtin(),
-        &resolver.stat_only(),
+/// The one view that is **not** a projection, and the one whose `--json` is deliberately not the
+/// rendered line the sidecar shows a model: this emits the window's structured boundary, which the
+/// control-surface tooling consumes. Same question, two consumers — a program here, a model there —
+/// and one window verb behind both, so they cannot describe different pipes.
+fn cmd_describe_boundary(source: &str, json: bool, root: Option<PathBuf>) -> ExitCode {
+    let answer = match authoring::describe_boundary(
+        &authoring::DescribeBoundary {
+            source: source.to_string(),
+        },
+        &store(source, root, Samples::Availability),
     ) {
-        Ok(b) => b,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::FAILURE;
-        }
+        Ok(answer) => answer,
+        Err(refusal) => return refused(&refusal),
     };
+    let boundary = answer.output;
 
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&boundary).expect("serialize boundary")
-        );
+        print_json(&boundary);
         return ExitCode::SUCCESS;
     }
 
@@ -495,81 +510,67 @@ fn cmd_describe_patch(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCod
     ExitCode::SUCCESS
 }
 
-/// `describe <patch.json> --view index|nodes|pipes|resources`: the structural
-/// [`projection`](reuben_core::projection) — the agent's whole view of a document, and the CLI
-/// door's mirror of what `describe_instrument` serves over MCP.
+/// `describe <patch.json> --view index|nodes|pipes|resources`: the structural projection — the
+/// agent's whole view of a document, off the same window verb `describe_instrument` serves over
+/// MCP, selection grammar included.
+///
+/// `--json` wraps the rendered view rather than emitting a per-view structured shape: the compact
+/// line grammar is the projection's deliverable, and a door does not carry a second serialization
+/// of it. see rules: agent-mcp
 ///
 /// A document that fails to load still projects (`loadable: false` in the header): `validate` is
 /// the single authority on validity, and going blind is the worst way to report invalidity. So this
 /// exits 0 on an unloadable document — it answered the question it was asked.
 fn cmd_project(
-    path: &Path,
+    source: &str,
     view: InstrumentView,
-    select: Selection,
+    select: Vec<String>,
+    select_type: Option<String>,
     json: bool,
     root: Option<PathBuf>,
 ) -> ExitCode {
-    let (instrument_json, resolver) = match read_instrument(path, root) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
-    // Introspection never renders audio: stat samples for availability instead of decoding them.
-    let resolver = resolver.stat_only();
-    let registry = Registry::builtin();
-    let projector = match Projector::new(&instrument_json, &registry, &resolver) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::FAILURE;
-        }
+    // `clap`'s `conflicts_with` refuses select-and-type-at-once first with a nicer message; the
+    // window refuses it too, and that is the one that decides the grammar. Neither door reads the
+    // terms for itself.
+    let answer = match authoring::describe_instrument(
+        &authoring::DescribeInstrument {
+            source: source.to_string(),
+            view: window_view(view),
+            select,
+            type_name: select_type,
+        },
+        &store(source, root, Samples::Availability),
+    ) {
+        Ok(answer) => answer,
+        Err(refusal) => return refused(&refusal),
     };
 
-    // Each view renders itself; `--json` emits the structured shape behind the same rendering.
-    macro_rules! emit {
-        ($v:expr) => {{
-            let v = $v;
-            if json {
-                println!(
-                    "{}",
-                    serde_json::to_string_pretty(&v).expect("serialize projection view")
-                );
-            } else {
-                println!("{}", v.render());
-            }
-        }};
-    }
-    match view {
-        InstrumentView::Index => emit!(projector.index()),
-        InstrumentView::Nodes => emit!(projector.zoom(&select)),
-        InstrumentView::Pipes => emit!(projector.pipes(&select)),
-        InstrumentView::Resources => emit!(projector.resources()),
-        // Routed to `cmd_describe_patch` before it reaches here.
-        InstrumentView::Boundary => unreachable!("the boundary view is not a projection"),
+    if json {
+        print_json(&answer.output);
+    } else {
+        println!("{}", answer.output.text);
     }
     ExitCode::SUCCESS
 }
 
-/// `validate`: report whether an instrument loads + plans cleanly. Exit 1 only on hard errors;
-/// warnings (e.g. an unresolved sample) are advisory and keep exit 0.
+/// `validate`: report whether an instrument loads + plans cleanly, through the window's
+/// `validate_instrument` — the single authority every document verb re-validates through. Exit 1
+/// only on hard errors; warnings (e.g. an unresolved sample) are advisory and keep exit 0.
 fn cmd_validate(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCode {
-    let (instrument_json, resolver) = match read_instrument(path, root) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("error: {e}");
-            return ExitCode::FAILURE;
-        }
+    let source = path.display().to_string();
+    let answer = match authoring::validate_instrument(
+        &authoring::ValidateInstrument {
+            source: source.clone(),
+        },
+        &store(&source, root, Samples::Decode),
+    ) {
+        Ok(answer) => answer,
+        Err(refusal) => return refused(&refusal),
     };
-
-    let report = validate(&instrument_json, &Registry::builtin(), &resolver);
+    let report = answer.output;
 
     if json {
-        println!(
-            "{}",
-            serde_json::to_string_pretty(&report).expect("serialize report")
-        );
+        print_json(&report);
     } else {
         for e in &report.errors {
             print_diag("error", e);

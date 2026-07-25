@@ -10,10 +10,10 @@
 //! shapes, the guards and the glosses belong to the window, so a second door inherits them rather
 //! than reimplementing them.
 //!
-//! The per-tool `description` sentences are the exception, and not by choice: rmcp's `#[tool]`
-//! takes a string **literal** there, so it cannot name a const the window owns. Every other piece
-//! of advertised prose — the field descriptions, the `$defs` descriptions, the one-line glosses —
-//! rides the window's types.
+//! That includes the per-tool `description` sentences, which the window owns too. rmcp's `#[tool]`
+//! does take a string **literal** there and cannot name a const, so the attribute is left off and
+//! [`stamp_window_prose`] writes the window's sentence onto the built router instead — the same
+//! prose the CLI and the browser read, rather than a copy per door.
 //!
 //! see rules: agent-mcp
 
@@ -35,6 +35,7 @@ use reuben_core::coordinator::{
     ControlArg, ControlMessage, DiagnosticsReport, DocSource, MAX_SEND_BATCH,
 };
 use reuben_core::projection::Projector;
+use reuben_core::tools::ContractKind;
 use reuben_core::{Registry, SwapReport};
 use serde::{Deserialize, Serialize};
 
@@ -440,8 +441,10 @@ impl ReubenServer {
     /// A server with an explicit engine link — the injection point for tests, which pair it with
     /// a fake structure transport.
     pub fn with_engine(engine: EngineLink) -> Self {
+        let mut tool_router = Self::tool_router();
+        stamp_window_prose(&mut tool_router);
         Self {
-            tool_router: Self::tool_router(),
+            tool_router,
             engine,
         }
     }
@@ -452,11 +455,6 @@ impl ReubenServer {
     /// no resource store at all.
     #[tool(
         name = "describe_operators",
-        description = "List the registered operators and their ports/params, optionally filtered by name. \
-                       Set compact:true for one generated signature line per operator — \
-                       name(inputs; config: constants; res: resource-slots) -> outputs, each port as \
-                       name:kind with enum [variants], unit, exp for an exponential curve, lo..hi, =default \
-                       — instead of full port objects; the full mode stays the zoom for port detail.",
         output_schema = rmcp::handler::server::tool::schema_for_output::<authoring::Operators>()
             .expect("Operators is an object schema")
     )]
@@ -470,11 +468,6 @@ impl ReubenServer {
     /// Read a structural view of an instrument document.
     #[tool(
         name = "describe_instrument",
-        description = "Read an instrument document's structure: `index` (every node, one line each — the default), \
-                       `nodes` (a node's inputs, wire sources, config and consumers), `pipes` (the interface \
-                       pipes with ranges and curves), `resources`, or `boundary` (the face a host sees when \
-                       nesting it). Narrow `nodes`/`pipes` with `select` (addresses or pipe names; `/` is the \
-                       document itself) or `type`. This is how you read a document — never open the file.",
         output_schema = rmcp::handler::server::tool::schema_for_output::<authoring::DocumentView>()
             .expect("DocumentView is an object schema")
     )]
@@ -488,9 +481,6 @@ impl ReubenServer {
     /// Validate an instrument document through the engine's own load + instantiate path.
     #[tool(
         name = "validate_instrument",
-        description = "Validate an instrument document (load + instantiate); returns a report of errors and warnings. \
-                       The single authority on whether a document is legal — every document verb re-validates \
-                       through it before writing.",
         output_schema = rmcp::handler::server::tool::schema_for_output::<authoring::Report>()
             .expect("Report is an object schema")
     )]
@@ -729,16 +719,13 @@ impl ReubenServer {
     // --- Document tools: engine-free mutators over an instrument document -------------------------
     //
     // One roster entry per window verb, and nothing else. There is deliberately nothing else here:
-    // the `expect` guard, the write-iff-valid pipeline, the projection echo and the one-line gloss
-    // all live behind `authoring`, so a second door gets them without a second copy. What the door
-    // still owns is the roster spelling, the advertised schema, and the isError decision.
-    // see rules: agent-mcp
+    // the `expect` guard, the write-iff-valid pipeline, the projection echo, the one-line gloss and
+    // the advertised sentence all live behind `authoring`, so a second door gets them without a
+    // second copy. What the door still owns is the roster spelling, the advertised schema, and the
+    // isError decision. see rules: agent-mcp
 
     #[tool(
         name = "new_instrument",
-        description = "Create a new valid minimal instrument document at `source` and write it. The from-scratch \
-                       start move; refuses to overwrite an existing document. Then edit it with the other \
-                       document tools and swap it.",
         output_schema = edit_result_schema()
     )]
     async fn new_instrument(
@@ -750,7 +737,6 @@ impl ReubenServer {
 
     #[tool(
         name = "set_instrument_name",
-        description = "Set the instrument's top-level name.",
         output_schema = edit_result_schema()
     )]
     async fn set_instrument_name(
@@ -762,7 +748,6 @@ impl ReubenServer {
 
     #[tool(
         name = "set_instrument_description",
-        description = "Set (or, omitting `description`, clear) the instrument's note.",
         output_schema = edit_result_schema()
     )]
     async fn set_instrument_description(
@@ -774,9 +759,6 @@ impl ReubenServer {
 
     #[tool(
         name = "add_instrument_node",
-        description = "Add a node in one call: required `address` and `type`, plus optional inputs (literal or \
-                       wire-ref), config constants, description, and a sample/voice/patch resource id. Atomic — \
-                       a wire to a missing source or a duplicate address rejects the whole call.",
         output_schema = edit_result_schema()
     )]
     async fn add_instrument_node(
@@ -788,8 +770,6 @@ impl ReubenServer {
 
     #[tool(
         name = "remove_instrument_node",
-        description = "Remove a node. Cascades: auto-unwires every consumer wired from it and drops every \
-                       interface output fed from it, reporting exactly what it broke — no unwire-first dance.",
         output_schema = edit_result_schema()
     )]
     async fn remove_instrument_node(
@@ -801,8 +781,6 @@ impl ReubenServer {
 
     #[tool(
         name = "rename_instrument_node",
-        description = "Rename a node from one address to another (which must be free), rewiring every consumer \
-                       to the new address and reporting each rewire.",
         output_schema = edit_result_schema()
     )]
     async fn rename_instrument_node(
@@ -814,7 +792,6 @@ impl ReubenServer {
 
     #[tool(
         name = "set_instrument_node_description",
-        description = "Set (or, omitting `description`, clear) a node's note.",
         output_schema = edit_result_schema()
     )]
     async fn set_instrument_node_description(
@@ -829,8 +806,6 @@ impl ReubenServer {
 
     #[tool(
         name = "set_instrument_input",
-        description = "Set a node input to a literal value: a number, or an enum symbol string. The one-value \
-                       point-edit — no re-emitting the whole document. Use wire_instrument_input to connect a port.",
         output_schema = edit_result_schema()
     )]
     async fn set_instrument_input(
@@ -842,7 +817,6 @@ impl ReubenServer {
 
     #[tool(
         name = "wire_instrument_input",
-        description = "Wire a node input from a source port: `from` is `/node.port`, or `/node` for a sole-output source.",
         output_schema = edit_result_schema()
     )]
     async fn wire_instrument_input(
@@ -854,7 +828,6 @@ impl ReubenServer {
 
     #[tool(
         name = "unwire_instrument_input",
-        description = "Clear a node input, reverting it to the operator's descriptor default.",
         output_schema = edit_result_schema()
     )]
     async fn unwire_instrument_input(
@@ -866,7 +839,6 @@ impl ReubenServer {
 
     #[tool(
         name = "set_instrument_constant",
-        description = "Set an instantiate-time constant on a node (a plan-time `config` value like a Voicer's `voices`).",
         output_schema = edit_result_schema()
     )]
     async fn set_instrument_constant(
@@ -878,8 +850,6 @@ impl ReubenServer {
 
     #[tool(
         name = "add_instrument_interface_input",
-        description = "Add a boundary input pipe: a declared-type input that mints an address `/name` internal \
-                       nodes consume from, with optional channel, default, min/max, curve (lin/exp), and unit.",
         output_schema = edit_result_schema()
     )]
     async fn add_instrument_interface_input(
@@ -894,8 +864,6 @@ impl ReubenServer {
 
     #[tool(
         name = "add_instrument_interface_output",
-        description = "Add a master-tap output pipe fed from an internal port (`from` = `/node.port` or `/node`), \
-                       with optional channel, min/max, and unit.",
         output_schema = edit_result_schema()
     )]
     async fn add_instrument_interface_output(
@@ -910,7 +878,6 @@ impl ReubenServer {
 
     #[tool(
         name = "remove_instrument_interface_input",
-        description = "Remove a boundary input pipe by name.",
         output_schema = edit_result_schema()
     )]
     async fn remove_instrument_interface_input(
@@ -925,7 +892,6 @@ impl ReubenServer {
 
     #[tool(
         name = "remove_instrument_interface_output",
-        description = "Remove a master-tap output pipe by name.",
         output_schema = edit_result_schema()
     )]
     async fn remove_instrument_interface_output(
@@ -940,8 +906,6 @@ impl ReubenServer {
 
     #[tool(
         name = "set_instrument_interface_input_meta",
-        description = "Update an input pipe's metadata (channel, default, min/max, curve lin/exp, unit); each \
-                       provided field is written, omitted fields are unchanged.",
         output_schema = edit_result_schema()
     )]
     async fn set_instrument_interface_input_meta(
@@ -956,8 +920,6 @@ impl ReubenServer {
 
     #[tool(
         name = "set_instrument_interface_output_meta",
-        description = "Update an output pipe's metadata (channel, min/max, unit); each provided field is \
-                       written, omitted fields are unchanged.",
         output_schema = edit_result_schema()
     )]
     async fn set_instrument_interface_output_meta(
@@ -972,8 +934,6 @@ impl ReubenServer {
 
     #[tool(
         name = "add_instrument_resource",
-        description = "Add a resource entry: a logical `id` (what a node's sample/voice/patch references) mapped \
-                       to a `resource_source` (a file path for this door).",
         output_schema = edit_result_schema()
     )]
     async fn add_instrument_resource(
@@ -985,7 +945,6 @@ impl ReubenServer {
 
     #[tool(
         name = "remove_instrument_resource",
-        description = "Remove a resource entry by id.",
         output_schema = edit_result_schema()
     )]
     async fn remove_instrument_resource(
@@ -993,6 +952,47 @@ impl ReubenServer {
         Parameters(p): Parameters<authoring::RemoveInstrumentResource>,
     ) -> Result<CallToolResult, McpError> {
         answered(authoring::remove_instrument_resource(&p, &store(&p.source)))
+    }
+}
+
+/// Write the window's sentence onto every authoring tool the router carries.
+///
+/// The sentences belong to [`reuben_api::authoring::prose`] with the argument and result types
+/// they describe, but rmcp's `#[tool]` takes a string **literal** for `description` and so cannot
+/// name a const. Stamping the built router is the way to hold both: the attribute is left off
+/// entirely, and what the door advertises is decided in one place for every door. Without this the
+/// macro falls back to each method's rustdoc, which is written for a Rust reader — so
+/// `advertises_the_window_prose` asserts the stamp actually landed rather than trusting it.
+///
+/// The engine tools keep their own `description` until their half comes through the window.
+/// see rules: agent-mcp
+fn stamp_window_prose(router: &mut ToolRouter<ReubenServer>) {
+    for (name, sentence) in reuben_api::authoring::prose::DESCRIPTIONS {
+        let route = router
+            .map
+            .get_mut(*name)
+            .unwrap_or_else(|| panic!("the window serves `{name}`, but no tool advertises it"));
+        route.attr.description = Some((*sentence).into());
+    }
+
+    // The other direction, and the one that bites later. The roster is the authority on which
+    // contracts exist; the prose table is a lookup over it, so a `Pure` or `Document` contract
+    // added without a sentence keeps rmcp's rustdoc fallback and advertises Rust-reader prose to a
+    // model — with the stamp loop above, the roster test and the schema test all still green,
+    // because each of them iterates a list the new verb is absent from. Refuse to start instead.
+    for contract in reuben_core::tools::CONTRACTS {
+        let served_by_the_window = matches!(
+            contract.kind,
+            ContractKind::Pure | ContractKind::Document // the engine half is phase 3's
+        );
+        let has_sentence = reuben_api::authoring::prose::DESCRIPTIONS
+            .iter()
+            .any(|(name, _)| *name == contract.name);
+        assert!(
+            !served_by_the_window || has_sentence,
+            "`{}` is an authoring contract with no sentence in the window's prose table",
+            contract.name
+        );
     }
 }
 

@@ -126,6 +126,73 @@ fn every_tool_advertises_an_output_schema() {
     }
 }
 
+#[test]
+fn the_prose_table_covers_the_authoring_roster() {
+    // In-process and spawning nothing, because the wire test below cannot report this well: the
+    // door asserts the same coverage at construction, so a missing sentence stops the shim from
+    // starting and every stdio test fails with "no response" instead of naming the verb.
+    //
+    // The roster is the authority on which contracts exist; the window's table is a lookup over it.
+    // The engine half is not here yet — that is phase 3. see rules: agent-mcp
+    let expected: std::collections::BTreeSet<&str> = reuben_core::tools::CONTRACTS
+        .iter()
+        .filter(|c| {
+            matches!(
+                c.kind,
+                reuben_core::tools::ContractKind::Pure | reuben_core::tools::ContractKind::Document
+            )
+        })
+        .map(|c| c.name)
+        .collect();
+    let advertised: std::collections::BTreeSet<&str> = reuben_api::authoring::prose::DESCRIPTIONS
+        .iter()
+        .map(|(name, _)| *name)
+        .collect();
+    assert_eq!(
+        expected, advertised,
+        "every authoring contract needs a sentence in the window's prose table, and only those"
+    );
+}
+
+#[test]
+fn advertises_the_window_prose() {
+    // The window owns each authoring verb's sentence, and the door stamps it onto the built router
+    // because rmcp's `#[tool]` takes only a literal. Left unstamped, the macro falls back to the
+    // method's rustdoc — prose written for a Rust reader, and a silent regression the roster and
+    // schema tests would both pass through. So this reads the real wire and demands the window's
+    // string exactly. see rules: agent-mcp
+    let out = drive(&[TOOLS_LIST]);
+    let response = response_with_id(&out, 2);
+    let tools = response["result"]["tools"]
+        .as_array()
+        .unwrap_or_else(|| panic!("tools/list result missing a tools array:\n{response}"));
+
+    for (name, sentence) in reuben_api::authoring::prose::DESCRIPTIONS {
+        let tool = tools
+            .iter()
+            .find(|t| t["name"] == serde_json::json!(name))
+            .unwrap_or_else(|| panic!("tools/list missing `{name}`"));
+        assert_eq!(
+            tool["description"].as_str(),
+            Some(*sentence),
+            "`{name}` must advertise the window's sentence, not a door-local copy"
+        );
+    }
+
+    // Every remaining tool still says something: the engine half keeps its own `description` until
+    // its verbs come through the window, and this is what would notice one going missing.
+    for name in reuben_mcp::tool_names() {
+        let tool = tools
+            .iter()
+            .find(|t| t["name"] == serde_json::json!(name))
+            .unwrap_or_else(|| panic!("tools/list missing `{name}`"));
+        assert!(
+            tool["description"].as_str().is_some_and(|d| !d.is_empty()),
+            "`{name}` advertises no description: {tool}"
+        );
+    }
+}
+
 /// The banned markup, as (label, detector). Hand-rolled rather than a regex dependency: the three
 /// shapes are each a single scan.
 type Detector = (&'static str, fn(&str) -> bool);
