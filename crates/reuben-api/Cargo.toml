@@ -16,9 +16,8 @@ authoring = ["dep:serde", "dep:schemars"]
 # The render half: what a host drives per block. Carries no serialization — a conversion
 # here would be paid once per block, which is the whole cost.
 render = []
-# The shareable reference filesystem resolver. Off by default: the resolver is the one call
-# *in*, the host implements it, and shipping ours unprivileged is what keeps that true. A host
-# whose sources are not files (the browser) writes its own instead.
+# The shareable reference filesystem resolver, for a host whose sources are files. Off by
+# default — the resource seam is host-implemented; this is one implementation, not the seam.
 fs-resolver = ["dep:hound"]
 
 [dependencies]

@@ -20,6 +20,18 @@ block *is* the cost. Those are different enough to keep separable and not differ
 crates: they share the window's identity, and a consumer that wants both would otherwise take two
 dependencies to get one boundary.
 
+**[ADR-0068](0068-reuben-api-declares-its-own-types.md)'s "the API declares its own types" stops at
+the render boundary.** That decision was argued about *wire* types — things serialized and
+advertised to a model — and a render handle is not one. Declaring an API-owned `RenderSlot` would
+buy no decoupling, because nothing about a render handle is a serialization concern, and it would
+cost a conversion on every block. The perf gate would reject that on the merits, and it would be
+right to. So the authoring half declares its own types and the render half **re-exports**, with an
+`#[inline]` passthrough as the most it may cost.
+
+The limit is written down here rather than left to be inferred, because the failure mode is
+somebody applying the earlier decision uniformly in good faith and discovering the cost as an
+instruction-count regression with no record of why the boundary was ever drawn.
+
 **`default = ["authoring", "render"]`.** A bare dependency line gets the whole window. The one
 consumer that must not compile the authoring surface is the browser worklet, which lives in another
 repository and takes `default-features = false, features = ["render"]` — an explicit line it would

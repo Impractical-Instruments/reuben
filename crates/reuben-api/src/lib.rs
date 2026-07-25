@@ -16,9 +16,8 @@
 //!
 //! The resource resolver is the one call *in*: samples and nested documents are never handed to the
 //! engine as bytes, so the engine calls back out through a seam the host provides.
-//! [`fs_resolver`] is a filesystem implementation to share rather than reimplement — behind a
-//! default-off feature, because a resolver that arrives switched on is one a host inherits instead
-//! of choosing.
+//! [`fs_resolver`] is a filesystem implementation to share rather than reimplement, behind a
+//! default-off feature — the seam is the contract, and this is one implementation of it.
 //!
 //! see rules: agent-mcp
 

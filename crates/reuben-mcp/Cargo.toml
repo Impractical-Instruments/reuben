@@ -24,8 +24,7 @@ path = "src/main.rs"
 # reuben-core contract types; the play/CLI build keeps schemars fenced out.
 reuben-core = { path = "../reuben-core", features = ["schemars"] }
 # The reference filesystem resolver (`FsResolver`) the pure describe/validate tools and the
-# document verbs resolve through. `default-features = false` because the sidecar drives no audio:
-# the render half of the window never compiles here.
+# document verbs resolve through. The sidecar drives no audio, so it takes no render half.
 reuben-api = { path = "../reuben-api", default-features = false, features = ["fs-resolver"] }
 # stdio server only: `server` + `macros` for the tool router, `transport-io` for the stdio pipe.
 # No HTTP/reqwest/streamable-http transport — the network stack stays out.
