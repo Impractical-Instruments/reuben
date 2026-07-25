@@ -1,4 +1,4 @@
-# Why: The MCP tool surface is a fixed roster split into always-available pure tools and fail-fast engine tools, returning structured Report/Diag results where a failed validation is a successful call, and shipping resources but no prompts.
+# Why: The MCP tool surface is a fixed roster of three kinds — always-available pure tools, engine-free document verbs, and fail-fast engine tools — returning structured Report/Diag results where a failed validation is a successful call, and shipping resources but no prompts.
 
 [Rule](../../agent-mcp.md#tool-surface)
 
@@ -11,13 +11,14 @@ fail fast when it is absent ([mcp-stdio-sidecar](mcp-stdio-sidecar.md),
 M2 change what stands *behind* the swap, never any tool's name, schema, or result shape — so an
 agent's contract does not move under it.
 
-Two later amendments, both from ADR-0066 and its children: the roster gained the closed **document
-vocabulary** — nineteen engine-free mutators, a third channel kind beside pure and engine — and it
-**stopped carrying documents**. No arm takes or returns instrument JSON: a document is named by an
-opaque `source` and read back as a projection, `scaffold_instrument` (which returned a seed by value)
-is retired in favour of `new_instrument` writing that seed to a source, and the names moved to the
-`verb_instrument_object` convention. The stability claim above survives it because that was one
-deliberate, ADR-recorded break, not drift.
+Two later amendments arrived together, when the edit contract became the closed document vocabulary
+([document-verbs](document-verbs.md)): the roster gained that vocabulary — nineteen engine-free
+mutators, a **third** channel kind beside pure and engine — and it **stopped carrying documents**. No
+arm takes or returns instrument JSON: a document is named by an opaque `source` and read back as a
+projection, `scaffold_instrument` (which returned a seed by value) is retired in favour of
+`new_instrument` writing that seed to a source, and the names moved to the `verb_instrument_object`
+convention. The stability claim above survives it because that was one deliberate, recorded break,
+not drift.
 
 The load-bearing discipline is the **error layering**, because models act on it. Three layers:
 protocol errors for malformed calls; `isError: true` only when the tool **could not do its job**
@@ -40,4 +41,4 @@ that would instantly duplicate the repo skills — the drift the grounding singl
 prevent ([grounding-single-source](grounding-single-source.md)). The server `instructions` field
 carries only the one-paragraph workflow gist and points at the guide.
 
-Distilled from: ADR-0048
+Distilled from: ADR-0048, ADR-0066

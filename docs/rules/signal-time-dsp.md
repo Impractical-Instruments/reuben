@@ -8,7 +8,13 @@ The core speaks exactly one language: the **OSC-shaped Message** — an address,
 typed payload (its `Message`/`Arg` substrate is the [composition-operators](composition-operators.md)
 topic's to define). Every foreign protocol — MIDI, Ableton Link, OSC tempo sync from a foreign
 clock — is converted to and from that shape by an isolated, removable **boundary adapter**, so no
-operator ever branches on protocol and each adapter detaches with the native layer. Addresses are
+operator ever branches on protocol and each adapter detaches with the native layer. OSC-*shaped* is a
+claim about the data, not about a socket: **OSC-the-binary-protocol lives only at the engine's foreign
+edge** — external controllers in, `osc_out` nodes out. Every door reaching the engine from inside our
+own system (the loopback authoring channel, the browser's in-page layer) ships the same flat
+`{address, args}` form in whatever framing suits it, and all of them converge at the one control
+ingress, where the destination port's declared type drives the conversion to the single typed `Arg`.
+Addresses are
 hierarchical: every operator, port, and param is auto-addressable by its **structural path** through
 the graph nesting (`/lead-synth/filter/cutoff`), and an instrument additionally publishes a curated
 set of **exposed** named addresses — its public control surface — that survive internal rewiring.
@@ -139,6 +145,11 @@ higher-order calculus valid.
 
 [why](rationale/signal-time-dsp/pitch-to-freq-operator.md)
 
+<a id="osc-foreign-edge"></a>
+### OSC-the-binary-protocol lives only at the engine's foreign edge — external controllers in, osc_out nodes out — while every door ships the same flat {address, args} form in its own local framing and converges at the engine's one control ingress.
+
+[why](rationale/signal-time-dsp/osc-foreign-edge.md)
+
 ## Terms
 
 <!-- Each term this topic defines. Collated into the rules index glossary. One per topic. -->
@@ -150,3 +161,4 @@ higher-order calculus valid.
 - **Tonal context** — the latched key/scale/chord/tuning value, owned by a context Operator, that followers resolve pitch against.
 - **Snap** — quantizing an arbitrary pitch to the nearest in-scale degree under a caller-supplied policy, upstream of resolution.
 - **CV** — a linear control signal in a normalized range (e.g. an envelope's `[0, 1]` contour), carried untyped on the Signal domain and interpreted by downstream ops.
+- **Foreign edge** — the only place OSC-the-binary-protocol appears: external controllers arriving at `reuben play` and `osc_out` nodes leaving it; every internal door frames the same flat `{address, args}` form its own way.
