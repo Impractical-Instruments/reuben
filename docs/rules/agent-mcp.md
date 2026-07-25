@@ -100,6 +100,8 @@ integration tests down to scripted human rituals for the perceptual judgments au
 
 [why](rationale/agent-mcp/contract-holds-what-core-produces.md)
 
+Superseded by: ADR-0068 (pending absorption)
+
 <a id="structure-channel-is-loopback-only"></a>
 ### The structure channel binds loopback only, because structure edits are strictly more powerful than OSC control — and its one default address is shared with the wire types both ends serialize so the server and client can never drift apart.
 
@@ -109,6 +111,8 @@ integration tests down to scripted human rituals for the perceptual judgments au
 ### The tool contract types and introspection live OS-free in reuben-core, so every door — native CLI, MCP sidecar, web in-page layer, web proxy — generates its schemas from that one source and no verb means different things behind different doors.
 
 [why](rationale/agent-mcp/portable-tool-contracts.md)
+
+Superseded by: ADR-0068 (pending absorption)
 
 <a id="document-verbs"></a>
 ### The agent authors through a closed vocabulary of path-addressed, stateless, engine-free document verbs, each applying one surgical edit to the named source, re-validating the whole document through the loader, and writing only if it is valid.
