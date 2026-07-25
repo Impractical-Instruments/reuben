@@ -295,7 +295,14 @@ fn new_instrument_creates_a_valid_document_and_refuses_to_overwrite() {
     let result = new_instrument(SRC, "fresh", &registry, &resolver).expect("new");
     assert!(result.report.ok);
     assert!(result.written);
-    assert_eq!(readback(&resolver)["instrument"], json!("fresh"));
+    // The #146 seed, exactly: the minimal required document and nothing else. Asserted here since
+    // #604 retired `scaffold_instrument` — this verb is now the only place the seed is minted, and
+    // the point of it is that first-creation never has to guess the required shape.
+    assert_eq!(
+        readback(&resolver),
+        json!({ "format_version": 3, "instrument": "fresh", "nodes": [] }),
+        "new_instrument writes exactly the minimal valid document"
+    );
 
     // A second new at the same source refuses rather than clobbering.
     let err = new_instrument(SRC, "other", &registry, &resolver).expect_err("no overwrite");

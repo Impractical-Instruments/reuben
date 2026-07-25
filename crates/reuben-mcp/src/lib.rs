@@ -10,13 +10,23 @@
 //! A [`ServerHandler`] declaring the `tools` and `resources` capabilities plus an `instructions`
 //! field, and a tool router with the full declared contract set (the
 //! [`reuben_core::tools::CONTRACTS`] roster). The pure tools
-//! (`describe_operators`/`describe_instrument`/`validate`, #316, plus `scaffold_instrument`, #158)
-//! are engine-free — `describe`/`validate` descend to [`reuben_core::introspect`] over a
-//! [`reuben_native::resources::FsResolver`], and `scaffold_instrument` mints a minimal valid
-//! document by value ([`reuben_core::scaffold_instrument`]); the five engine
-//! tools (`send`/`engine_status`/`swap`/`get_current_instrument`/`get_diagnostics`, #318) reach a
-//! user-owned `reuben play` through the [`EngineLink`] — all five over the structure channel's
-//! verbs, via [`StructureClient`] over an injectable [`StructureTransport`].
+//! (`describe_operators`/`describe_instrument`/`validate_instrument`, #316) are engine-free,
+//! descending to [`reuben_core::introspect`] and [`reuben_core::projection`] over a
+//! [`reuben_native::resources::FsResolver`]; the nineteen document verbs (#603) mutate a document
+//! through the same resolver seam; the five engine tools
+//! (`send_live_controls`/`get_engine_status`/`swap_instrument`/`get_current_instrument`/
+//! `get_engine_diagnostics`, #318) reach a user-owned `reuben play` through the [`EngineLink`] —
+//! all five over the structure channel's verbs, via [`StructureClient`] over an injectable
+//! [`StructureTransport`].
+//!
+//! **No arm carries an instrument document** (#604). Every tool names a document by an opaque
+//! `source` and answers with a [`projection`](reuben_core::projection) of it, so instrument JSON
+//! never reaches a model's context: `describe_instrument` projects instead of returning the
+//! document, `validate_instrument` takes a source instead of an inline document,
+//! `get_current_instrument` projects what the *engine* holds, and `scaffold_instrument` — which
+//! returned a seed by value — is gone, replaced by `new_instrument` writing the same seed to a
+//! source. That is what makes `#no-resource-bytes` a property of this door rather than a
+//! capability of it.
 //!
 //! **The sidecar speaks no OSC.** `send` used to encode datagrams and dispatch them over UDP to the
 //! engine's OSC-in port; it now rides the same loopback channel the other four do, converging with
@@ -48,7 +58,7 @@ use reuben_core::coordinator::{
 };
 use reuben_core::edit::{self, EditError, EditResult};
 use reuben_core::introspect::{OperatorInfo, PatchBoundary};
-use reuben_core::projection::Projector;
+use reuben_core::projection::{Projector, Selection};
 use reuben_core::{
     content_hash, Diag, NormalizedDoc, Registry, Report, ResourceResolver, SwapReport,
 };
@@ -114,12 +124,16 @@ pub const LIBRARY_INDEX_RESOURCE_MIME: &str = "text/markdown";
 /// resources. The finalized prose is single-sourced by the content-pass (#311); this is the
 /// real-but-refinable surface text.
 const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is the durable \
-     truth; keep it in sync with the sound. Start `reuben play` in another terminal first — the \
-     engine tools (`send`, `swap`, `get_current_instrument`, `get_diagnostics`) fail fast until it \
-     is reachable. The loop: `send` control values to audition a change (ephemeral — clobbered at \
-     the next swap), then edit the document and `swap` to make it durable. Creating an instrument from \
-     scratch? Call `scaffold_instrument` for a guaranteed-valid starting document, then edit and \
-     `swap` it. Read `reuben://guide/authoring` \
+     truth; keep it in sync with the sound. **Never open, read or write an instrument file \
+     yourself** — name it by `source` and let these tools do it: `describe_instrument` reads its \
+     structure, the `*_instrument_*` verbs edit it one change at a time, and each one re-validates \
+     the whole document and writes only if it is valid. Start `reuben play` in another terminal \
+     first — the engine tools (`send_live_controls`, `swap_instrument`, `get_current_instrument`, \
+     `get_engine_diagnostics`) fail fast until it is reachable. The loop: `send_live_controls` to \
+     audition a change (ephemeral — clobbered at the next swap), then edit the document and \
+     `swap_instrument` to make it durable. Creating an instrument from scratch? Call \
+     `new_instrument` to land a guaranteed-valid seed at a source, then add nodes and wire them. \
+     Read `reuben://guide/authoring` \
      for the type system, wiring rules, instrument format, and the authoring loop. Read \
      `reuben://guide/vocabulary` for the word→move table translating intent language (\"warmer\", \
      \"busier\", \"sadder\") into parameter moves. Read `reuben://guide/library-index` for the \
@@ -334,40 +348,70 @@ pub struct DescribeOperatorsOutput {
     pub signatures: Option<Vec<String>>,
 }
 
-/// Input for `scaffold_instrument` (#158, closes #146): an optional `name` for the minted
-/// document. Omit it for the default (`untitled`, [`reuben_core::SCAFFOLD_DEFAULT_NAME`]).
+/// Input for `validate_instrument`: the document to validate, named by its opaque `source`.
+///
+/// The inline `document` arm this once carried retired with #604 — a model that can hand the tool a
+/// whole document is a model that had to hold one. `source` is opaque and door-resolved (a path
+/// here), exactly as it is on every document verb.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct ScaffoldInstrumentParams {
-    /// The `instrument` name of the scaffolded document; omit for the default (`untitled`).
-    #[serde(default)]
-    pub name: Option<String>,
+pub struct InstrumentSourceParams {
+    /// The instrument document (a path for this door). Nested references resolve sibling-first
+    /// from its directory, then the library root.
+    pub source: String,
 }
 
-/// Output for `scaffold_instrument` (#158): the guaranteed-valid minimal instrument document,
-/// returned **by value** under an object root (MCP requires one). The model edits this seed and
-/// swaps it — first-creation as reshape-from-template, not authoring from a blank file (the
-/// document travels by value; writing it to disk stays native-only).
+/// Which view of a document `describe_instrument` cuts. The four
+/// [`projection`](reuben_core::projection) views (#608), plus the host-facing boundary — the one
+/// question the projection does not answer, because it needs the *resolved* face of nested children
+/// rather than what this document declares.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "snake_case")]
+pub enum InstrumentView {
+    /// Every node, one `address type` line each — the cheapest whole-document read, and the default.
+    #[default]
+    Index,
+    /// Node zoom: literal input values and wire sources, config, description, resource ref, nested
+    /// boundary, and the consumers reading each node.
+    Nodes,
+    /// The `interface` pipes this document declares, with ranges, curves and metadata.
+    Pipes,
+    /// The resources table and which node uses each entry through which slot.
+    Resources,
+    /// The boundary a *host instrument* wires against when nesting this one.
+    Boundary,
+}
+
+/// Input for `describe_instrument`: a `source`, a view, and the projection's one selection grammar.
+#[derive(Debug, Deserialize, schemars::JsonSchema)]
+pub struct DescribeInstrumentParams {
+    /// The instrument document (a path for this door).
+    pub source: String,
+    /// Which view to cut; omit for the node index.
+    #[serde(default)]
+    pub view: InstrumentView,
+    /// Narrow `nodes`/`pipes` to these node addresses or pipe names (`/` is the document header).
+    /// A term matching nothing is reported back, never silently dropped.
+    #[serde(default)]
+    pub select: Vec<String>,
+    /// Narrow `nodes`/`pipes` by declared type instead of by name. Pass this **or** `select`,
+    /// never both.
+    #[serde(default, rename = "type")]
+    pub type_name: Option<String>,
+}
+
+/// Output for `describe_instrument`: the rendered view.
+///
+/// One rendered string rather than four structured shapes, for the reason the projection exists at
+/// all — the compact line grammar *is* the deliverable, and four alternative payloads would put
+/// three schemas a caller never uses into every turn's grounding (#612). It is the same channel
+/// [`EditResult::zoom`](reuben_core::edit::EditResult) echoes through, so an agent reads a document
+/// and reads back its own edit in one grammar.
 #[derive(Debug, Serialize, schemars::JsonSchema)]
-pub struct ScaffoldInstrumentOutput {
-    /// A minimal valid document: `{ "format_version": 3, "instrument": <name>, "nodes": [] }`.
-    pub document: serde_json::Value,
-}
-
-/// Input for the read-only document tools `describe_instrument` and `validate`:
-/// exactly one of `path` or `document`, with an optional `resolve_from` anchor for nested
-/// references. The one-of and the resolver rooting are enforced by the tool body (#318).
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct DocumentParams {
-    /// Path to an instrument file; the resolver roots at its directory (sibling-first, then the
-    /// library root). Mutually exclusive with `document`.
-    #[serde(default)]
-    pub path: Option<String>,
-    /// An inline instrument document. Mutually exclusive with `path`.
-    #[serde(default)]
-    pub document: Option<serde_json::Value>,
-    /// Directory anchoring nested references for an inline `document` (defaults to the sidecar cwd).
-    #[serde(default)]
-    pub resolve_from: Option<String>,
+pub struct InstrumentViewOutput {
+    /// Which view this is — echoed so a caller that defaulted it knows what it got.
+    pub view: String,
+    /// The rendered view.
+    pub text: String,
 }
 
 /// One control message in a `send` batch: an address and its primitive args.
@@ -492,6 +536,31 @@ impl SwapToolOutput {
             conflict: Some(conflict),
         }
     }
+}
+
+/// Output for `get_current_instrument`: what the engine is playing, without the document.
+///
+/// The tool's question — "what is the engine playing?" — used to be answered with the document
+/// itself, the last and largest doc-in-context arm (#604). It cannot simply answer `{ source, hash }`
+/// either: `swap` installs *from* a source, and the agent may have edited that source since, so
+/// re-reading it would answer a different question. So the projection here is cut from **what is
+/// actually installed** — the document the engine handed back over the structure channel, which
+/// reaches this door and stops here.
+///
+/// The drift signal then comes free: compare `content_hash` against the hash any document verb
+/// returns for `source`. Equal means the file and the sound agree; different means the source has
+/// moved on and a `swap_instrument` would change what you hear.
+#[derive(Debug, Serialize, schemars::JsonSchema)]
+pub struct CurrentInstrumentOutput {
+    /// Where the playing document was installed from, when the engine knows it. Absent after an
+    /// install by value and for `reuben play`'s built-in default rig.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
+    /// The installed document's content hash — the token a later `swap_instrument`'s `expect` guard
+    /// compares, and the drift signal against `source`'s current hash.
+    pub content_hash: String,
+    /// The node index of the **installed** graph, rendered in the projection's line grammar.
+    pub projection: String,
 }
 
 // --- Document-manipulation verb inputs (#603) ----------------------------------------------------
@@ -886,56 +955,115 @@ impl ReubenServer {
         }
     }
 
-    /// Describe an instrument document's boundary as a host instrument will see it:
-    /// resolves the one-of `path`/`document`, then delegates to
-    /// [`reuben_core::introspect::describe_patch`] over a stat-only resolver and returns a
-    /// [`PatchBoundary`]. Engine-free — always available. A document that fails to
-    /// load has no boundary to describe, so it is isError pointing at `validate`.
+    /// Read a structural view of an instrument document — the read half of the document surface
+    /// (#604). Resolves the opaque `source`, mints a [`Projector`] over a stat-only resolver, and
+    /// returns the asked-for view rendered in the projection's line grammar; `boundary` instead
+    /// delegates to [`reuben_core::introspect::describe_patch`] for the resolved host-facing face.
+    /// Engine-free — always available.
+    ///
+    /// A document that fails to **load** still projects (`loadable: false` in the header): going
+    /// blind is the worst way to report invalidity, and `validate_instrument` is the single
+    /// authority on it. Only a document that cannot be *minted* — unreadable, unparseable, wrong
+    /// format version — has no structure to show, and that is isError.
     #[tool(
         name = "describe_instrument",
-        description = "Describe an instrument document's boundary (inputs/outputs) as a host instrument sees it.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<PatchBoundary>()
-            .expect("PatchBoundary is an object schema")
+        description = "Read an instrument document's structure: `index` (every node, one line each — the default), \
+                       `nodes` (a node's inputs, wire sources, config and consumers), `pipes` (the interface \
+                       pipes with ranges and curves), `resources`, or `boundary` (the face a host sees when \
+                       nesting it). Narrow `nodes`/`pipes` with `select` (addresses or pipe names; `/` is the \
+                       document itself) or `type`. This is how you read a document — never open the file.",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<InstrumentViewOutput>()
+            .expect("InstrumentViewOutput is an object schema")
     )]
     async fn describe_instrument(
         &self,
-        Parameters(params): Parameters<DocumentParams>,
+        Parameters(params): Parameters<DescribeInstrumentParams>,
     ) -> Result<CallToolResult, McpError> {
-        let (json, resolver) = match load_document(&params) {
+        let (json, resolver) = match load_source(&params.source) {
             Ok(loaded) => loaded,
             Err(err) => return Ok(err),
         };
         let registry = Registry::builtin();
-        match reuben_core::introspect::describe_patch(&json, &registry, &resolver) {
-            Ok(boundary) => {
-                let summary = describe_instrument_summary(&boundary);
-                structured_ok(&boundary, summary)
-            }
-            // No boundary to describe — direct the user to `validate`.
-            Err(message) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                "{message}\n\nThe document could not be loaded, so there is no boundary to \
-                 describe. Run `validate` for the full report of errors and warnings."
-            ))])),
+
+        // The grammar is core's ([`Selection::from_terms`]), so this door cannot invent its own
+        // answer for select-and-type-at-once. Checked **before** the view splits, because the
+        // boundary path below has no selection to build and would otherwise accept terms it then
+        // ignores — the same silent-precedence trap this call exists to close, one branch further
+        // in. A caller that named terms a view cannot honour has not asked a coherent question.
+        let selection = match Selection::from_terms(&params.select, params.type_name.as_deref()) {
+            Ok(selection) => selection,
+            Err(why) => return Ok(cannot_do_the_job(why)),
+        };
+        if params.view == InstrumentView::Boundary && selection != Selection::All {
+            return Ok(cannot_do_the_job(
+                "the `boundary` view is the whole face a host wires against — it takes no `select` \
+                 or `type`. Drop them, or read `view: \"pipes\"`, which is selectable.",
+            ));
         }
+
+        // The boundary is not a projection: it needs children *loaded* to inherit an output pipe's
+        // type, so it keeps its own path — and its own "no boundary to describe" failure.
+        if params.view == InstrumentView::Boundary {
+            return match reuben_core::introspect::describe_patch(&json, &registry, &resolver) {
+                Ok(boundary) => {
+                    let summary = describe_instrument_summary(&boundary);
+                    structured_ok(
+                        &InstrumentViewOutput {
+                            view: "boundary".to_string(),
+                            text: render_boundary(&boundary),
+                        },
+                        summary,
+                    )
+                }
+                Err(message) => Ok(cannot_load(format!(
+                    "{message}\n\nThe document could not be loaded, so there is no boundary to \
+                     describe. Run `validate_instrument` for the full report of errors and \
+                     warnings, or read `view: \"index\"` — the structural views project even when \
+                     the document does not load."
+                ))),
+            };
+        }
+
+        let projector = match Projector::new(&json, &registry, &resolver) {
+            Ok(p) => p,
+            Err(message) => return Ok(cannot_load(message)),
+        };
+        let (view, text) = match params.view {
+            InstrumentView::Index => ("index", projector.index().render()),
+            InstrumentView::Nodes => ("nodes", projector.zoom(&selection).render()),
+            InstrumentView::Pipes => ("pipes", projector.pipes(&selection).render()),
+            InstrumentView::Resources => ("resources", projector.resources().render()),
+            InstrumentView::Boundary => unreachable!("handled above"),
+        };
+        let summary = format!("{view} view of {} ({} chars)", params.source, text.len());
+        structured_ok(
+            &InstrumentViewOutput {
+                view: view.to_string(),
+                text,
+            },
+            summary,
+        )
     }
 
     /// Validate an instrument document through the engine's own load + instantiate path:
-    /// resolves the one-of `path`/`document`, then delegates to
-    /// [`reuben_core::introspect::validate`] over a stat-only resolver (no audio decode).
-    /// Engine-free — always available. Error-layer discipline: a
-    /// *failing* validation is an ordinary result carrying `{ ok: false, errors, warnings }` — the
-    /// tool worked; only the can't-do-the-job cases (bad one-of, unreadable path) are isError.
+    /// resolves the opaque `source`, then delegates to [`reuben_core::introspect::validate`] over a
+    /// stat-only resolver (no audio decode). Engine-free — always available. Error-layer
+    /// discipline: a *failing* validation is an ordinary result carrying
+    /// `{ ok: false, errors, warnings }` — the tool worked; only the can't-do-the-job case (an
+    /// unreadable source) is isError.
     #[tool(
-        name = "validate",
-        description = "Validate an instrument document (load + instantiate); returns a report of errors and warnings.",
+        name = "validate_instrument",
+        description = "Validate an instrument document (load + instantiate); returns a report of errors and warnings. \
+                       The single authority on whether a document is legal — every document verb re-validates \
+                       through it before writing.",
         output_schema = rmcp::handler::server::tool::schema_for_output::<Report>()
             .expect("Report is an object schema")
     )]
-    async fn validate(
+    async fn validate_instrument(
         &self,
-        Parameters(params): Parameters<DocumentParams>,
+        Parameters(params): Parameters<InstrumentSourceParams>,
     ) -> Result<CallToolResult, McpError> {
-        let (json, resolver) = match load_document(&params) {
+        let (json, resolver) = match load_source(&params.source) {
             Ok(loaded) => loaded,
             Err(err) => return Ok(err),
         };
@@ -946,30 +1074,6 @@ impl ReubenServer {
         structured_ok(&report, summary)
     }
 
-    /// Scaffold a guaranteed-valid minimal instrument document (#158, closes #146) — the
-    /// first-creation start move. Authoring a top-level document from scratch stalls because the
-    /// required top-level `instrument` name is easy to omit and `validate` then rejects the
-    /// document; handing back a valid seed turns first-creation into the reshape-from-template path
-    /// that already works (edit this document, then `swap` it). Engine-free — always available,
-    /// read-only, and returns the document **by value**.
-    #[tool(
-        name = "scaffold_instrument",
-        description = "Return a guaranteed-valid minimal instrument document to edit then swap — the start move for creating an instrument from scratch.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<ScaffoldInstrumentOutput>()
-            .expect("ScaffoldInstrumentOutput is an object schema")
-    )]
-    async fn scaffold_instrument(
-        &self,
-        Parameters(params): Parameters<ScaffoldInstrumentParams>,
-    ) -> Result<CallToolResult, McpError> {
-        let document = reuben_core::scaffold_instrument(params.name.as_deref());
-        let name = document["instrument"].as_str().unwrap_or("untitled");
-        let summary = format!(
-            "scaffolded minimal instrument {name:?} — edit its `nodes`/`interface`, then swap it"
-        );
-        structured_ok(&ScaffoldInstrumentOutput { document }, summary)
-    }
-
     // --- Engine tools: reach a user-owned `reuben play` through the channel seam ----------------
 
     /// Audition a batch of control values over the structure channel. Act-then-map: the
@@ -977,7 +1081,7 @@ impl ReubenServer {
     /// when the engine is down), then one exchange delivers the whole batch; an unreachable engine
     /// ⇒ `isError`.
     #[tool(
-        name = "send",
+        name = "send_live_controls",
         description = "Send a batch of control messages to audition a change on the running engine. \
                        Ephemeral by design: these values live in render state only and are \
                        CLOBBERED at the next swap — fold any you want to keep into the instrument document \
@@ -988,7 +1092,7 @@ impl ReubenServer {
         output_schema = rmcp::handler::server::tool::schema_for_output::<SendOutput>()
             .expect("SendOutput is an object schema")
     )]
-    async fn send(
+    async fn send_live_controls(
         &self,
         Parameters(params): Parameters<SendParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -1042,14 +1146,14 @@ impl ReubenServer {
     /// answering "reachable?" is its job; `guidance` appears when the engine is down. Wraps the
     /// structure-channel `ping` and reports the endpoints and sidecar identity.
     #[tool(
-        name = "engine_status",
+        name = "get_engine_status",
         description = "Report whether the reuben engine is reachable, with the structure endpoint and the \
                        sidecar version + supported instrument format_version. Never an error — a dead engine is \
                        reported as reachable:false with guidance to start it.",
         output_schema = rmcp::handler::server::tool::schema_for_output::<EngineStatusOutput>()
             .expect("EngineStatusOutput is an object schema")
     )]
-    async fn engine_status(&self) -> Result<CallToolResult, McpError> {
+    async fn get_engine_status(&self) -> Result<CallToolResult, McpError> {
         let reachable = self.engine.structure().ping().is_ok();
         let output = EngineStatusOutput {
             reachable,
@@ -1080,7 +1184,7 @@ impl ReubenServer {
     /// `ok: false` load report or an `expect` conflict is an ORDINARY result (the guard guarding,
     /// not the tool failing).
     #[tool(
-        name = "swap",
+        name = "swap_instrument",
         description = "Install an instrument document from disk as the playing engine (path-only). A gapless \
                        mailbox swap: the new Engine is built and validated off-thread, then \
                        installed under a ~20ms master-gain duck — no silent gap. A node at the same \
@@ -1092,7 +1196,7 @@ impl ReubenServer {
         output_schema = rmcp::handler::server::tool::schema_for_output::<SwapToolOutput>()
             .expect("SwapToolOutput is an object schema")
     )]
-    async fn swap(
+    async fn swap_instrument(
         &self,
         Parameters(params): Parameters<SwapParams>,
     ) -> Result<CallToolResult, McpError> {
@@ -1121,23 +1225,43 @@ impl ReubenServer {
         }
     }
 
-    /// Read the canonical installed document. Act-then-map: an unreachable engine ⇒
-    /// `isError`. Forwards the structure-channel `get_document` and returns `{ document, content_hash }`.
+    /// Report what the engine is playing, as a projection of the **installed** graph. Act-then-map:
+    /// an unreachable engine ⇒ `isError`. Forwards the structure-channel `get_document` and projects
+    /// the snapshot here — the document reaches this door and stops (#604).
+    ///
+    /// Projected from engine memory, never by re-reading `source`: the two can differ, and which
+    /// one is playing is exactly the question. A projection failure degrades to a note rather than
+    /// failing the call — the hash is the load-bearing half, and a snapshot the projector cannot
+    /// mint is a *finding* about what is installed, not a broken tool.
     #[tool(
         name = "get_current_instrument",
-        description = "Return the document the engine is currently playing, with its content hash (the token a \
-                       later swap's `expect` guard compares). Fails fast if no engine is reachable.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<DocumentSnapshot>()
-            .expect("DocumentSnapshot is an object schema")
+        description = "Report what the engine is playing: the source it was installed from, the installed content \
+                       hash, and the node index of the live graph. Compare the hash against the one a document \
+                       verb returns for that source to see whether your edits have been swapped in yet. Fails \
+                       fast if no engine is reachable.",
+        output_schema = rmcp::handler::server::tool::schema_for_output::<CurrentInstrumentOutput>()
+            .expect("CurrentInstrumentOutput is an object schema")
     )]
     async fn get_current_instrument(&self) -> Result<CallToolResult, McpError> {
         match self.engine.structure().get_document() {
             Ok(snapshot) => {
-                let summary = format!(
-                    "current instrument (content_hash {})",
-                    snapshot.content_hash
-                );
-                structured_ok(&snapshot, summary)
+                let summary = match &snapshot.source {
+                    Some(source) => {
+                        format!("playing {source} (content_hash {})", snapshot.content_hash)
+                    }
+                    None => format!(
+                        "playing an instrument installed by value (content_hash {})",
+                        snapshot.content_hash
+                    ),
+                };
+                structured_ok(
+                    &CurrentInstrumentOutput {
+                        projection: project_installed(&snapshot),
+                        source: snapshot.source,
+                        content_hash: snapshot.content_hash,
+                    },
+                    summary,
+                )
             }
             Err(why) => Ok(map_structure_err(
                 "could not read the current instrument",
@@ -1149,13 +1273,13 @@ impl ReubenServer {
     /// Read the engine diagnostics counters. Act-then-map: an unreachable engine ⇒
     /// `isError`. Forwards the structure-channel `get_diagnostics` and returns the four counters.
     #[tool(
-        name = "get_diagnostics",
+        name = "get_engine_diagnostics",
         description = "Return the engine's running diagnostics counters since start: output_xruns (events) plus \
                        input_ring underruns/overruns/producer_drops (frames). Fails fast if no engine is reachable.",
         output_schema = rmcp::handler::server::tool::schema_for_output::<DiagnosticsReport>()
             .expect("DiagnosticsReport is an object schema")
     )]
-    async fn get_diagnostics(&self) -> Result<CallToolResult, McpError> {
+    async fn get_engine_diagnostics(&self) -> Result<CallToolResult, McpError> {
         match self.engine.structure().get_diagnostics() {
             Ok(report) => {
                 let summary = format!(
@@ -1725,44 +1849,87 @@ fn structured_ok<T: Serialize>(value: &T, summary: String) -> Result<CallToolRes
     Ok(result)
 }
 
-/// The isError result for a can't-do-the-job document-loading failure: an ambiguous
-/// or missing one-of, or an unreadable path. `isError` tells the model to act on the guidance
-/// rather than treat the payload as a deliverable.
+/// The isError result for a can't-do-the-job document-loading failure: an unreadable source, or
+/// bytes that will not mint. `isError` tells the model to act on the guidance rather than treat the
+/// payload as a deliverable.
 fn cannot_load(message: impl Into<String>) -> CallToolResult {
+    cannot_do_the_job(message)
+}
+
+/// The isError result for a call whose *arguments* do not describe a coherent request — the other
+/// half of what `#tool-surface` reserves `isError` for. Same shape as [`cannot_load`], named
+/// separately because the two say different things to a model: one means "that document is not
+/// readable", the other "that question is not well formed", and a helper called `cannot_load`
+/// answering the second would misdescribe its own result.
+fn cannot_do_the_job(message: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(message.into())])
 }
 
-/// Resolve a [`DocumentParams`] one-of into the instrument JSON plus a stat-only [`FsResolver`]
-/// Exactly one of `path`/`document` is required. `Ok` carries the JSON
-/// text and a resolver rooted for nested references; `Err` is the ready-to-return `isError` result
-/// for a bad one-of or an unreadable path — the can't-do-the-job cases.
-fn load_document(params: &DocumentParams) -> Result<(String, FsResolver), CallToolResult> {
-    match (&params.path, &params.document) {
-        (Some(_), Some(_)) => Err(cannot_load(
-            "provide exactly one of `path` or `document`, not both",
-        )),
-        (None, None) => Err(cannot_load("provide exactly one of `path` or `document`")),
-        (Some(path), None) => {
-            let path = Path::new(path);
-            let json = std::fs::read_to_string(path).map_err(|e| {
-                cannot_load(format!(
-                    "could not read instrument path {}: {e}",
-                    path.display()
-                ))
-            })?;
-            // Root at the file's directory (sibling-first, library-root fallback), stat-only so
-            // introspection reports port metadata without decoding any referenced audio.
-            Ok((json, FsResolver::for_instrument(path).stat_only()))
+/// Read an opaque document `source` into its JSON text plus a stat-only [`FsResolver`] — the read
+/// half of what [`edit_resolver`] does for the verbs, and the same interpretation of `source` (a
+/// path, for this door). `Err` is the ready-to-return `isError` for an unreadable source.
+///
+/// The inline-`document` arm this replaced was #604's largest read-side violation: it let a model
+/// hand over a document it must therefore have been holding.
+fn load_source(source: &str) -> Result<(String, FsResolver), CallToolResult> {
+    let path = Path::new(source);
+    let json = std::fs::read_to_string(path).map_err(|e| {
+        cannot_load(format!(
+            "could not read instrument source {}: {e}",
+            path.display()
+        ))
+    })?;
+    // Root at the file's directory (sibling-first, library-root fallback), stat-only so
+    // introspection reports port metadata without decoding any referenced audio.
+    Ok((json, FsResolver::for_instrument(path).stat_only()))
+}
+
+/// Render a [`PatchBoundary`] in the projection's line grammar, so `view: "boundary"` reads like
+/// every other view even though it is cut by a different code path.
+fn render_boundary(boundary: &PatchBoundary) -> String {
+    let mut lines = vec![format!("{} (boundary)", boundary.instrument)];
+    if boundary.is_empty() {
+        lines.push("no interface — nests, but exposes nothing to wire".to_string());
+    }
+    for (label, ports) in [("in", &boundary.inputs), ("out", &boundary.outputs)] {
+        for p in ports.iter() {
+            lines.push(format!("{label} {}", p.signature_fragment()));
         }
-        (None, Some(document)) => {
-            let json = serde_json::to_string(document).map_err(|e| {
-                cannot_load(format!("inline `document` is not serializable JSON: {e}"))
-            })?;
-            // Anchor nested references at `resolve_from`, defaulting to the sidecar cwd; stat-only
-            // for the same reason as the path branch.
-            let base = params.resolve_from.as_deref().unwrap_or(".");
-            Ok((json, FsResolver::new(base).stat_only()))
+    }
+    for (label, dark) in [
+        ("in", &boundary.dark_inputs),
+        ("out", &boundary.dark_outputs),
+    ] {
+        for d in dark.iter() {
+            lines.push(format!("{label} {d} (dark — unresolved this load)"));
         }
+    }
+    for w in &boundary.warnings {
+        lines.push(format!("warning: {}", w.message));
+    }
+    lines.join("\n")
+}
+
+/// The node index of what the engine is actually playing, cut from the snapshot the structure
+/// channel handed back.
+///
+/// Resolver rooting is best-effort: nested references anchor at the installed `source`'s directory
+/// when the engine named one, else the sidecar cwd — the same anchor `reuben play` used for a
+/// document it loaded from there. A projection failure comes back as a note **in place of** the
+/// view: `get_current_instrument`'s load-bearing answer is the hash, and a document the projector
+/// cannot mint is worth saying so about, not worth failing the call over.
+fn project_installed(snapshot: &DocumentSnapshot) -> String {
+    let json = match serde_json::to_string(&snapshot.document) {
+        Ok(json) => json,
+        Err(e) => return format!("(projection unavailable: {e})"),
+    };
+    let resolver = match snapshot.source.as_deref() {
+        Some(source) => FsResolver::for_instrument(Path::new(source)).stat_only(),
+        None => FsResolver::new(".").stat_only(),
+    };
+    match Projector::new(&json, &Registry::builtin(), &resolver) {
+        Ok(p) => p.index().render(),
+        Err(e) => format!("(projection unavailable: {e})"),
     }
 }
 
@@ -2324,7 +2491,7 @@ mod tests {
         // `skip_serializing_if` make them structurally different objects, and `engine_status` is
         // checked both ways because `guidance` is its skip_serializing_if field.
         assert_payload_conforms(
-            "swap",
+            "swap_instrument",
             "clean install",
             &SwapToolOutput::installed(SwapReport {
                 report: Report {
@@ -2342,7 +2509,7 @@ mod tests {
             }),
         );
         assert_payload_conforms(
-            "swap",
+            "swap_instrument",
             "validation failure",
             &SwapToolOutput::installed(SwapReport {
                 report: Report {
@@ -2359,7 +2526,7 @@ mod tests {
             }),
         );
         assert_payload_conforms(
-            "swap",
+            "swap_instrument",
             "expect-guard miss",
             &SwapToolOutput::conflict(Conflict {
                 expected: "0badc0de".to_string(),
@@ -2369,19 +2536,24 @@ mod tests {
         assert_payload_conforms(
             "get_current_instrument",
             "installed document",
-            &DocumentSnapshot {
-                document: serde_json::json!({ "instrument": "t" }),
+            &CurrentInstrumentOutput {
+                source: Some("voices/t.json".to_string()),
                 content_hash: "00c0ffee".to_string(),
+                projection: "instrument t · format 3 · 0 nodes".to_string(),
             },
         );
-        assert_payload_conforms("get_diagnostics", "counters", &DiagnosticsReport::default());
-        assert_payload_conforms("send", "queued", &SendOutput { sent: 2 });
+        assert_payload_conforms(
+            "get_engine_diagnostics",
+            "counters",
+            &DiagnosticsReport::default(),
+        );
+        assert_payload_conforms("send_live_controls", "queued", &SendOutput { sent: 2 });
         for (case, guidance) in [
             ("unreachable", Some(ENGINE_UNREACHABLE_GUIDANCE.to_string())),
             ("reachable", None),
         ] {
             assert_payload_conforms(
-                "engine_status",
+                "get_engine_status",
                 case,
                 &EngineStatusOutput {
                     reachable: guidance.is_none(),
@@ -2517,7 +2689,7 @@ mod tests {
     }
 
     #[test]
-    fn swap_result_serializes_report_hash_and_diff() {
+    fn swap_instrument_result_serializes_report_hash_and_diff() {
         // A successful swap serializes as the shared SwapReport shape —
         // { ok, errors, warnings, content_hash, diff } — with no `conflict` key. The tool output
         // FLATTENS the contract SwapReport, so the tool's structuredContent and the structure
@@ -2559,11 +2731,11 @@ mod tests {
     }
 
     #[test]
-    fn engine_status_dead_engine_is_not_iserror_and_has_guidance() {
+    fn get_engine_status_dead_engine_is_not_iserror_and_has_guidance() {
         // engine_status answers "reachable?", so it is NEVER isError — even on a dead
         // engine it reports the down state (reachable:false + guidance) as its deliverable, with the
         // endpoints and sidecar identity still filled in.
-        let result = block_on(server_with(FakeTransport::unreachable()).engine_status())
+        let result = block_on(server_with(FakeTransport::unreachable()).get_engine_status())
             .expect("engine_status is infallible");
         assert_ne!(
             result.is_error,
@@ -2597,9 +2769,9 @@ mod tests {
     }
 
     #[test]
-    fn engine_status_reachable_reports_true_and_omits_guidance() {
+    fn get_engine_status_reachable_reports_true_and_omits_guidance() {
         // The live branch: reachable:true and no guidance key (guidance appears only when down).
-        let result = block_on(server_with(FakeTransport::reachable()).engine_status())
+        let result = block_on(server_with(FakeTransport::reachable()).get_engine_status())
             .expect("engine_status is infallible");
         assert_ne!(result.is_error, Some(true));
         let s = result
@@ -2614,14 +2786,14 @@ mod tests {
     }
 
     #[test]
-    fn send_rejects_empty_messages() {
+    fn send_live_controls_rejects_empty_messages() {
         // (a) The advertised input schema declares minItems:1.
         let router_server = ReubenServer::new();
         let send = router_server
             .tool_router
             .list_all()
             .into_iter()
-            .find(|t| t.name == "send")
+            .find(|t| t.name == "send_live_controls")
             .expect("send is registered");
         let schema = serde_json::to_value(&send.input_schema).expect("input schema to value");
         assert_eq!(
@@ -2632,7 +2804,7 @@ mod tests {
         // (b) The body rejects an empty batch as isError, for a client that skips schema validation.
         let result = block_on(
             server_with(FakeTransport::reachable())
-                .send(Parameters(SendParams { messages: vec![] })),
+                .send_live_controls(Parameters(SendParams { messages: vec![] })),
         )
         .expect("send returns a result");
         assert_eq!(
@@ -2660,7 +2832,7 @@ mod tests {
     }
 
     #[test]
-    fn swap_expect_mismatch_returns_conflict_no_install() {
+    fn swap_instrument_expect_mismatch_returns_conflict_no_install() {
         // An expect-guard miss is an ORDINARY result (the guard
         // guarding, not the tool failing), NOT isError; nothing is installed (ok:false, no diff),
         // and the conflict names both hashes field-for-field so the model reconciles.
@@ -2668,7 +2840,7 @@ mod tests {
             expected: "0badc0de".to_string(),
             actual: "00c0ffee".to_string(),
         }));
-        let result = block_on(server_with(fake).swap(Parameters(SwapParams {
+        let result = block_on(server_with(fake).swap_instrument(Parameters(SwapParams {
             path: "instruments/pad.json".to_string(),
             expect: Some("0badc0de".to_string()),
         })))
@@ -2705,7 +2877,7 @@ mod tests {
     }
 
     #[test]
-    fn swap_relays_diff_summary_verbatim() {
+    fn swap_instrument_relays_diff_summary_verbatim() {
         // The tool relays the channel's diff unchanged. Fixture: an all-cold swap
         // (nothing survived), which is what the web lane always reports and what a native swap
         // reports when no node survives.
@@ -2724,7 +2896,7 @@ mod tests {
             }),
         };
         let fake = FakeTransport::reachable().with_swap(Response::SwapReport(report));
-        let result = block_on(server_with(fake).swap(Parameters(SwapParams {
+        let result = block_on(server_with(fake).swap_instrument(Parameters(SwapParams {
             path: "instruments/pad.json".to_string(),
             expect: None,
         })))
@@ -2747,21 +2919,21 @@ mod tests {
     }
 
     #[test]
-    fn swap_unreachable_is_iserror() {
+    fn swap_instrument_unreachable_is_iserror() {
         // Act-then-map on the mutating verb: a down engine is the fail-fast isError.
-        let result = block_on(server_with(FakeTransport::unreachable()).swap(Parameters(
-            SwapParams {
+        let result = block_on(server_with(FakeTransport::unreachable()).swap_instrument(
+            Parameters(SwapParams {
                 path: "instruments/pad.json".to_string(),
                 expect: None,
-            },
-        )))
+            }),
+        ))
         .expect("swap returns a result");
         assert_eq!(result.is_error, Some(true));
         assert!(first_text(&result).contains("reuben play"));
     }
 
     #[test]
-    fn send_puts_the_whole_batch_on_the_structure_channel_in_one_exchange() {
+    fn send_live_controls_puts_the_whole_batch_on_the_structure_channel_in_one_exchange() {
         // The batch crosses as ONE `send` request — not one per message — and the assertion is on
         // what the fake parsed back OFF THE WIRE, so a serialization regression is caught rather
         // than a counter being trusted. The JSON args re-type on the way: `1200.0` is a float atom,
@@ -2783,7 +2955,8 @@ mod tests {
             ],
         };
         let (transport, sent) = FakeTransport::recording_send();
-        let result = block_on(server_with(transport).send(Parameters(params))).expect("result");
+        let result = block_on(server_with(transport).send_live_controls(Parameters(params)))
+            .expect("result");
         assert_ne!(
             result.is_error,
             Some(true),
@@ -2819,7 +2992,7 @@ mod tests {
     }
 
     #[test]
-    fn send_rejects_a_number_that_cannot_survive_the_f32_wire() {
+    fn send_live_controls_rejects_a_number_that_cannot_survive_the_f32_wire() {
         // 1e39 saturates to f32 infinity, which serde_json writes as `null` — a value no
         // `ControlArg` accepts, so an unguarded conversion would put an unparseable line on the wire
         // and take the WHOLE batch down with an opaque "did not match any variant". The guard turns
@@ -2837,7 +3010,8 @@ mod tests {
             ],
         };
         let (transport, sent) = FakeTransport::recording_send();
-        let result = block_on(server_with(transport).send(Parameters(params))).expect("result");
+        let result = block_on(server_with(transport).send_live_controls(Parameters(params)))
+            .expect("result");
         assert_eq!(result.is_error, Some(true), "{result:?}");
         assert!(
             first_text(&result).contains("/voice1/cutoff"),
@@ -2851,7 +3025,7 @@ mod tests {
     }
 
     #[test]
-    fn send_rejects_a_batch_over_the_shared_limit() {
+    fn send_live_controls_rejects_a_batch_over_the_shared_limit() {
         // The engine applies a batch inside one render callback, so the cap is an RT bound. The tool
         // stops an over-long batch before it reaches the wire, naming the limit so a model can split.
         let params = SendParams {
@@ -2863,7 +3037,8 @@ mod tests {
                 .collect(),
         };
         let (transport, sent) = FakeTransport::recording_send();
-        let result = block_on(server_with(transport).send(Parameters(params))).expect("result");
+        let result = block_on(server_with(transport).send_live_controls(Parameters(params)))
+            .expect("result");
         assert_eq!(result.is_error, Some(true), "{result:?}");
         assert!(
             first_text(&result).contains(&MAX_SEND_BATCH.to_string()),
@@ -2874,7 +3049,7 @@ mod tests {
     }
 
     #[test]
-    fn send_schema_advertises_the_shared_batch_limit() {
+    fn send_live_controls_schema_advertises_the_shared_batch_limit() {
         // `schemars` takes a literal, not a const, so the advertised maxItems and the shared
         // MAX_SEND_BATCH the engine enforces are two spellings of one number. Pin them together:
         // drifting them apart would advertise a limit the engine does not honor.
@@ -2882,7 +3057,7 @@ mod tests {
         let tools = server.tool_router.list_all();
         let send = tools
             .iter()
-            .find(|t| t.name == "send")
+            .find(|t| t.name == "send_live_controls")
             .expect("send is registered");
         let schema = serde_json::to_value(&send.input_schema).expect("input schema to value");
         let messages = &schema["properties"]["messages"];
@@ -2895,7 +3070,7 @@ mod tests {
     }
 
     #[test]
-    fn send_unreachable_is_iserror() {
+    fn send_live_controls_unreachable_is_iserror() {
         // Act-then-map, no probe: the batch converts fine, and the exchange ITSELF reports the down
         // engine — there is no separate ping to fail first.
         let params = SendParams {
@@ -2904,14 +3079,16 @@ mod tests {
                 args: vec![serde_json::json!(1.0)],
             }],
         };
-        let result = block_on(server_with(FakeTransport::unreachable()).send(Parameters(params)))
-            .expect("result");
+        let result = block_on(
+            server_with(FakeTransport::unreachable()).send_live_controls(Parameters(params)),
+        )
+        .expect("result");
         assert_eq!(result.is_error, Some(true));
         assert!(first_text(&result).contains("reuben play"));
     }
 
     #[test]
-    fn send_rejects_a_non_scalar_argument() {
+    fn send_live_controls_rejects_a_non_scalar_argument() {
         // Args are number | string; a nested array is a can't-do-the-job error, caught before
         // anything reaches the engine (and without needing one). Kept as the tool's own crafted
         // error rather than an rmcp deserialization failure, so the model is told what was wrong.
@@ -2922,7 +3099,8 @@ mod tests {
             }],
         };
         let (transport, sent) = FakeTransport::recording_send();
-        let result = block_on(server_with(transport).send(Parameters(params))).expect("result");
+        let result = block_on(server_with(transport).send_live_controls(Parameters(params)))
+            .expect("result");
         assert_eq!(
             result.is_error,
             Some(true),
@@ -2935,11 +3113,19 @@ mod tests {
     }
 
     #[test]
-    fn get_current_instrument_returns_document_and_hash() {
-        let doc = serde_json::json!({ "format_version": 3, "instrument": "warm", "nodes": [] });
+    fn get_current_instrument_projects_the_installed_graph_and_never_returns_it() {
+        // #604's last doc-in-context arm: the tool answers "what is playing?" with a projection of
+        // what the ENGINE holds, plus the source and hash to reconcile against. The document the
+        // structure channel handed back reaches this door and stops here.
+        let doc = serde_json::json!({
+            "format_version": 3,
+            "instrument": "warm",
+            "nodes": [{ "type": "oscillator", "address": "/osc", "inputs": { "freq": 220.0 } }],
+        });
         let snapshot = DocumentSnapshot {
             document: doc.clone(),
             content_hash: "00c0ffee".to_string(),
+            source: Some("voices/warm.json".to_string()),
         };
         let result = block_on(
             server_with(FakeTransport::reachable().with_document(snapshot))
@@ -2952,11 +3138,21 @@ mod tests {
             .as_ref()
             .expect("structured payload");
         assert_eq!(s["content_hash"], serde_json::json!("00c0ffee"));
-        assert_eq!(s["document"]["instrument"], serde_json::json!("warm"));
+        assert_eq!(s["source"], serde_json::json!("voices/warm.json"));
+        let projection = s["projection"].as_str().expect("a rendered projection");
+        assert!(
+            projection.contains("/osc") && projection.contains("oscillator"),
+            "the projection is of the installed graph: {projection}"
+        );
+        assert_eq!(
+            s.get("document"),
+            None,
+            "the installed document must never ride back to the model"
+        );
     }
 
     #[test]
-    fn get_diagnostics_returns_the_four_counters() {
+    fn get_engine_diagnostics_returns_the_four_counters() {
         let report = DiagnosticsReport {
             output_xruns: 2,
             input_ring_underruns: 480,
@@ -2964,7 +3160,8 @@ mod tests {
             input_ring_producer_drops: 96,
         };
         let result = block_on(
-            server_with(FakeTransport::reachable().with_diagnostics(report)).get_diagnostics(),
+            server_with(FakeTransport::reachable().with_diagnostics(report))
+                .get_engine_diagnostics(),
         )
         .expect("result");
         assert_ne!(result.is_error, Some(true));
@@ -2978,11 +3175,90 @@ mod tests {
     }
 
     #[test]
-    fn get_diagnostics_unreachable_is_iserror() {
-        let result =
-            block_on(server_with(FakeTransport::unreachable()).get_diagnostics()).expect("result");
+    fn get_engine_diagnostics_unreachable_is_iserror() {
+        let result = block_on(server_with(FakeTransport::unreachable()).get_engine_diagnostics())
+            .expect("result");
         assert_eq!(result.is_error, Some(true));
         assert!(first_text(&result).contains("reuben play"));
+    }
+
+    #[test]
+    fn no_advertised_schema_carries_an_instrument_document() {
+        // #604's whole claim, as a build-time property rather than a cleanup that happened once:
+        // *no* arm on this roster takes or returns an instrument document. A document is named by an
+        // opaque `source` and read back as a projection, so instrument JSON cannot reach a model's
+        // context through this door at all.
+        //
+        // It bites on the field NAME, walked over every input and output schema including `$defs`,
+        // because that is how the retired arms spelled it (`validate(document=…)`,
+        // `describe_instrument(document=…)`, `scaffold_instrument -> { document }`,
+        // `get_current_instrument -> { document }`) and how a re-introduction would spell it too.
+        fn walk(node: &serde_json::Value, tool: &str, whose: &str, path: &str) {
+            match node {
+                serde_json::Value::Object(map) => {
+                    if let Some(serde_json::Value::Object(props)) = map.get("properties") {
+                        for name in props.keys() {
+                            assert_ne!(
+                                name, "document",
+                                "{tool}'s {whose} schema carries a `document` field at {path} — \
+                                 #604 retired every arm that moves instrument JSON; name the \
+                                 document by `source` and answer with a projection"
+                            );
+                        }
+                    }
+                    for (key, child) in map {
+                        walk(child, tool, whose, &format!("{path}/{key}"));
+                    }
+                }
+                serde_json::Value::Array(items) => {
+                    for (i, child) in items.iter().enumerate() {
+                        walk(child, tool, whose, &format!("{path}/{i}"));
+                    }
+                }
+                _ => {}
+            }
+        }
+
+        // Teeth: a walker that cannot find a `document` field would pass this test forever. Prove it
+        // bites on the shape a real schema has — nested under `$defs`, as `scaffold_instrument`'s
+        // retired output was — before trusting it on the roster.
+        let planted = serde_json::json!({
+            "type": "object",
+            "properties": { "result": { "$ref": "#/$defs/Snapshot" } },
+            "$defs": { "Snapshot": {
+                "type": "object",
+                "properties": { "document": { "type": "object" }, "hash": { "type": "string" } },
+            } },
+        });
+        assert!(
+            std::panic::catch_unwind(|| walk(&planted, "planted", "output", "")).is_err(),
+            "the walk must catch a document field nested in $defs"
+        );
+
+        let server = ReubenServer::new();
+        let tools = server.tool_router.list_all();
+        assert_eq!(
+            tools.len(),
+            tool_names().len(),
+            "the walk below must cover the whole roster"
+        );
+        for tool in tools {
+            let name = tool.name.to_string();
+            walk(
+                &serde_json::to_value(&tool.input_schema).expect("input schema as value"),
+                &name,
+                "input",
+                "",
+            );
+            if let Some(output) = &tool.output_schema {
+                walk(
+                    &serde_json::to_value(output).expect("output schema as value"),
+                    &name,
+                    "output",
+                    "",
+                );
+            }
+        }
     }
 
     #[test]

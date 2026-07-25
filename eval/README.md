@@ -11,7 +11,7 @@ until they exist:
 | | metric | what moves it |
 |---|---|---|
 | **(a)** | **grounding tokens** | everything the sidecar hands back — server `instructions`, tool schemas, resources read, every tool result |
-| **(b)** | **repair rounds** | `validate` calls that came back `ok: false` |
+| **(b)** | **repair rounds** | `validate_instrument` calls that came back `ok: false` |
 | **(c)** | **document characters** | instrument-document payload the model had to emit, **echoes included** |
 
 ## Two tiers over one door
@@ -61,9 +61,9 @@ committed `instruments/` fixtures, so the workload moves with the engine:
 | `nudge` | apply an intent word ("warmer") | `voices/default-voice.json` |
 | `repair` | fix a document that won't load | `voices/default-voice.json`, one edge dangled |
 
-**Pass is `validate` clean AND a structural assertion.** `validate` owns legality — the harness never
+**Pass is `validate_instrument` clean AND a structural assertion.** It owns legality — the harness never
 re-implements it — and the assertion owns "did the asked-for thing actually happen". Both are
-needed: `scaffold_instrument` already emits a valid document, so *change nothing* would otherwise
+needed: `new_instrument` already lands a valid document, so *change nothing* would otherwise
 score as success. `tests/test_tasks.py` is the forcing function; every test in it is a negative,
 proving the assertions reject the degenerate passes.
 
@@ -73,11 +73,17 @@ blind to it would miss the thing the map is chasing.
 
 ## Why the harness ships file tools
 
-`swap` is path-only and the roster has no document-read tool, so a real authoring client necessarily
-brings its own filesystem access — that is the file-sightedness `#no-resource-bytes` mandates and
-[#583](https://github.com/Impractical-Instruments/reuben/issues/583) proposes to reverse. `read_file`
-/ `write_file` / `read_guide` stand in for the host's own tools. This is modelling the client, not
-inventing a fourth door: the reuben surface under measurement is still exactly the sidecar's roster.
+It used to be a necessity: `swap` was path-only and the roster had no document-read tool, so a real
+authoring client necessarily brought its own filesystem access.
+[#603](https://github.com/Impractical-Instruments/reuben/issues/603) and
+[#604](https://github.com/Impractical-Instruments/reuben/issues/604) removed that necessity — the
+roster now reads a document (`describe_instrument`) and writes one (the nineteen verbs) without the
+model ever seeing its bytes. `read_file` / `write_file` / `read_guide` stay for the opposite reason:
+a real client *still has* them, so leaving them on the namespace is what lets the harness see a model
+reach for them anyway. Their presence is a measurement now, not a crutch — and
+[#624](https://github.com/Impractical-Instruments/reuben/issues/624) carries the open call about
+whether the reference solutions should still use them. This is modelling the client, not inventing a
+fourth door: the reuben surface under measurement is still exactly the sidecar's roster.
 
 ## The tokenizer is pinned, and that is the point
 

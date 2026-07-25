@@ -4,9 +4,9 @@ The shapes are frozen by #592: from-scratch construction, single-value tweak, in
 repair-from-broken. Each is bound to a committed `instruments/` fixture where one fits, so the
 workload moves with the engine rather than rotting in a private copy.
 
-**Pass is `validate` clean AND a structural assertion.** `validate` owns legality — the harness
+**Pass is `validate_instrument` clean AND a structural assertion.** It owns legality — the harness
 never re-implements it (`#loader-single-authority`) — and the assertion owns "did the asked-for
-thing actually happen". Both are needed: `scaffold_instrument` already emits a valid document, so
+thing actually happen". Both are needed: `new_instrument` already lands a valid document, so
 "change nothing" would otherwise score as success on the from-scratch task.
 
 The assertions are deliberately strict about *collateral damage*. A single-value tweak that also
@@ -145,7 +145,7 @@ VOICE_DOCUMENT: dict[str, Any] = json.loads(VOICE)
 def _broken_voice() -> str:
     """`default-voice` with one dangling edge — a real fixture with one real defect.
 
-    A typo'd source address is the most common repair a model actually meets, and `validate`
+    A typo'd source address is the most common repair a model actually meets, and `validate_instrument`
     reports it precisely ("reference to unknown node"), so the repair is deterministic rather than
     a matter of taste.
     """
@@ -231,13 +231,13 @@ TASKS: list[Task] = [
         ),
         seed={},
         reference=[
-            Step("mcp", "scaffold_instrument", {"name": "tone"}),
+            Step("mcp", "new_instrument", {"source": DOCUMENT, "name": "tone"}),
             Step(
                 "host",
                 "write_file",
                 {"path": DOCUMENT, "content": json.dumps(_from_scratch_document(), indent=2) + "\n"},
             ),
-            Step("mcp", "validate", {"path": DOCUMENT}),
+            Step("mcp", "validate_instrument", {"source": DOCUMENT}),
         ],
         assertion=_assert_from_scratch,
     ),
@@ -253,7 +253,7 @@ TASKS: list[Task] = [
             Step("host", "read_file", {"path": DOCUMENT}),
             # The document payload is filled in by `_finish_reference_solutions` below.
             Step("host", "write_file", {"path": DOCUMENT, "content": ""}),
-            Step("mcp", "validate", {"path": DOCUMENT}),
+            Step("mcp", "validate_instrument", {"source": DOCUMENT}),
         ],
         assertion=_assert_tweak,
     ),
@@ -269,7 +269,7 @@ TASKS: list[Task] = [
             Step("resource", "read", {"uri": "reuben://guide/vocabulary"}),
             Step("host", "read_file", {"path": DOCUMENT}),
             Step("host", "write_file", {"path": DOCUMENT, "content": ""}),
-            Step("mcp", "validate", {"path": DOCUMENT}),
+            Step("mcp", "validate_instrument", {"source": DOCUMENT}),
         ],
         assertion=_assert_nudge,
     ),
@@ -282,10 +282,10 @@ TASKS: list[Task] = [
         ),
         seed={DOCUMENT: BROKEN},
         reference=[
-            Step("mcp", "validate", {"path": DOCUMENT}),
+            Step("mcp", "validate_instrument", {"source": DOCUMENT}),
             Step("host", "read_file", {"path": DOCUMENT}),
             Step("host", "write_file", {"path": DOCUMENT, "content": ""}),
-            Step("mcp", "validate", {"path": DOCUMENT}),
+            Step("mcp", "validate_instrument", {"source": DOCUMENT}),
         ],
         assertion=_assert_repair,
     ),
@@ -296,7 +296,7 @@ def _finish_reference_solutions() -> None:
     """Fill in the whole-document payloads the tweak/nudge/repair references must emit.
 
     Written here rather than inline so each reference is unmistakably *the ideal sequence*: read
-    once, emit the corrected document once, validate by path. That is the surface's cost floor, and
+    once, emit the corrected document once, validate by source. That is the surface's cost floor, and
     metric (c) prices it at one full document — which is exactly the number #576 and #583 exist to
     move.
     """

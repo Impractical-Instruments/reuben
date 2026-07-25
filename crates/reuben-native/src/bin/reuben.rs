@@ -1,6 +1,6 @@
 //! `reuben` — the command-line entry point.
 //!
-//! Four subcommands:
+//! Five subcommands:
 //! - `reuben play [path] [--io-map <file>]` — render an instrument live, driven by OSC over UDP.
 //!   With no path it plays the built-in default rig. `--io-map` loads a device profile:
 //!   logical↔device channel maps, device selection by name substring, and sample-rate/
@@ -12,22 +12,25 @@
 //!   /voicer/notes  [69.0, 0.0]   # note-off (gate 0)
 //!   ```
 //!
-//! - `reuben describe [op|patch.json] [--json] [--compact]` — print the operator set, one
-//!   operator's ports/params/resource slots, or — given an instrument JSON path — that
-//!   instrument's `interface` boundary as a host sees it (an input pipe from its own declared
-//!   type/range, an output pipe inheriting from the port feeding it, both carrying the entry's
-//!   presentational fields). The introspection half of the Patcher skill. `--compact` is the
-//!   generated signature-line mode of the operator view: one line per operator, legend first —
-//!   the bundle-able grounding artifact the web build consumes.
+//! - `reuben describe [op|patch.json] [--json] [--compact] [--view V] [--select …|--select-type T]`
+//!   — print the operator set, one operator's ports/params/resource slots, or — given an instrument
+//!   JSON path — a structural view of that instrument. The introspection half of the Patcher skill.
+//!   `--compact` is the generated signature-line mode of the operator view: one line per operator,
+//!   legend first — the bundle-able grounding artifact the web build consumes. `--view` picks
+//!   between the four projection views (`index` — the default — `nodes`, `pipes`, `resources`) and
+//!   `boundary`, the `interface` face a *host* wires against. The same views `describe_instrument`
+//!   serves over MCP; `--json` emits each one's structured shape, since this door's consumers are
+//!   programs (the control-surface tooling reads `--view boundary --json`).
 //! - `reuben validate <path> [--json]` — load + plan an instrument with no audio device and
 //!   report structural/wiring errors. Exit 1 if invalid; warnings alone stay exit 0.
 //! - `reuben scaffold-operator --spec <path> [--json]` — generate a new Operator's Rust skeleton
 //!   from a contract spec and wire its registration. The codegen half of the create-operator
 //!   skill.
-//! - `reuben scaffold-instrument [--name <name>] [--json]` — print a guaranteed-valid minimal
-//!   instrument document (`{format_version, instrument, nodes:[]}`) to edit then swap — the
-//!   first-creation start move (#146). Default output is pretty-printed; `--json` emits it as a
-//!   single compact line. Both pipe cleanly into `reuben validate`.
+//! - `reuben new-instrument <path> [--name <name>] [--json]` — create a guaranteed-valid minimal
+//!   instrument document (`{format_version, instrument, nodes:[]}`) **at that path** — the
+//!   first-creation start move (#146). Refuses to overwrite. It replaces `scaffold-instrument`,
+//!   which printed the seed to stdout: #604 retired every arm that hands instrument JSON to an
+//!   agent, and a CLI printing a document is that arm wearing a shell.
 
 use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
@@ -39,8 +42,10 @@ use clap::{Parser, Subcommand};
 
 use reuben_core::boundary;
 use reuben_core::coordinator::Coordinator;
+use reuben_core::edit;
 use reuben_core::message::Message;
-use reuben_core::Registry;
+use reuben_core::projection::{Projector, Selection};
+use reuben_core::{Registry, SCAFFOLD_DEFAULT_NAME};
 use reuben_native::cli::{
     describe, describe_compact, describe_patch, validate, COMPACT_DESCRIBE_LEGEND,
 };
@@ -94,9 +99,9 @@ enum Command {
         io_map: Option<PathBuf>,
     },
     /// Print the operator set, one operator's ports/params/resources, or — given an instrument
-    /// JSON path — that instrument's `interface` boundary as a host sees it.
+    /// JSON path — a structural view of that instrument.
     Describe {
-        /// Operator type to describe, or an instrument JSON path (its nested boundary). A path
+        /// Operator type to describe, or an instrument JSON path (its structural views). A path
         /// is recognized by shape — ends in `.json` or contains a separator; a bare name is
         /// always an operator. Omit to list every operator.
         op: Option<String>,
@@ -108,6 +113,19 @@ enum Command {
         /// view only; full describe stays the zoom for port detail.
         #[arg(long)]
         compact: bool,
+        /// Which view of an instrument to cut (instrument paths only). The same views the
+        /// `describe_instrument` tool serves, so both doors read a document the same way — though
+        /// `--json` here emits each view's structured shape, for programs rather than models.
+        #[arg(long, value_enum, default_value_t = InstrumentView::Index)]
+        view: InstrumentView,
+        /// Narrow `--view nodes`/`pipes` to these node addresses or pipe names. A name matching
+        /// nothing is reported, never silently dropped.
+        #[arg(long, value_name = "NAME", num_args = 1..)]
+        select: Vec<String>,
+        /// Narrow `--view nodes`/`pipes` by declared type instead of by name — mutually exclusive
+        /// with `--select`.
+        #[arg(long, value_name = "TYPE", conflicts_with = "select")]
+        select_type: Option<String>,
     },
     /// Load + plan an instrument (no audio) and report errors/warnings.
     Validate {
@@ -129,16 +147,36 @@ enum Command {
         #[arg(long)]
         json: bool,
     },
-    /// Print a guaranteed-valid minimal instrument document to edit then swap — the start move for
-    /// creating an instrument from scratch (#146).
-    ScaffoldInstrument {
-        /// The `instrument` name for the scaffolded document (default `untitled`).
+    /// Create a guaranteed-valid minimal instrument document at a path — the start move for
+    /// creating an instrument from scratch (#146). Refuses to overwrite an existing document.
+    NewInstrument {
+        /// Where to create the document.
+        path: PathBuf,
+        /// The `instrument` name for the new document (default `untitled`).
         #[arg(long)]
         name: Option<String>,
-        /// Emit the document as a single compact JSON line instead of pretty-printed.
+        /// Emit machine-readable JSON instead of a human summary.
         #[arg(long)]
         json: bool,
     },
+}
+
+/// Which structural view of an instrument `describe <path>` cuts — the
+/// [`projection`](reuben_core::projection) views, plus the host-facing boundary.
+#[derive(Copy, Clone, PartialEq, Eq, clap::ValueEnum)]
+enum InstrumentView {
+    /// Every node, one `address type` line each — the cheapest whole-document read.
+    Index,
+    /// Node zoom: inputs (literal and wired), config, description, resource ref, and the
+    /// consumers reading each node.
+    Nodes,
+    /// The `interface` pipes a host wires against, with their ranges and metadata.
+    Pipes,
+    /// The resources table and who references each entry.
+    Resources,
+    /// The boundary as a *host instrument* sees it — the nesting face, not the document's own
+    /// structure. The one view that is not a projection.
+    Boundary,
 }
 
 fn main() -> ExitCode {
@@ -153,34 +191,94 @@ fn main() -> ExitCode {
             play(path, osc_out, io_map, root);
             ExitCode::SUCCESS
         }
-        Command::Describe { op, json, compact } => cmd_describe(op.as_deref(), json, compact, root),
+        Command::Describe {
+            op,
+            json,
+            compact,
+            view,
+            select,
+            select_type,
+        } => match selection(&select, select_type.as_deref()) {
+            Ok(selection) => cmd_describe(op.as_deref(), json, compact, view, selection, root),
+            Err(why) => {
+                eprintln!("error: {why}");
+                ExitCode::FAILURE
+            }
+        },
         Command::Validate { path, json } => cmd_validate(&path, json, root),
         Command::ScaffoldOperator {
             spec,
             core_root,
             json,
         } => cmd_scaffold(&spec, &core_root, json),
-        Command::ScaffoldInstrument { name, json } => {
-            cmd_scaffold_instrument(name.as_deref(), json)
+        Command::NewInstrument { path, name, json } => {
+            cmd_new_instrument(&path, name.as_deref(), json)
         }
     }
 }
 
-/// `scaffold-instrument`: print a guaranteed-valid minimal instrument document (#146) to stdout —
-/// the first-creation start move. The document is the deliverable, so it is always JSON: default
-/// pretty-printed for a human to edit, `--json` as one compact line for a machine. Both pipe
-/// cleanly into `reuben validate`. Single-sourced in `reuben_core` and returned by value; this
-/// door adds the native gesture of writing it out.
-fn cmd_scaffold_instrument(name: Option<&str>, json: bool) -> ExitCode {
-    let document = reuben_core::scaffold_instrument(name);
-    let text = if json {
-        serde_json::to_string(&document)
+/// The projection's one selection grammar, off the CLI's two flags — core's
+/// [`Selection::from_terms`], not a second copy of the rule. `clap`'s `conflicts_with` refuses
+/// both-at-once first with a nicer message, so the `Err` arm is belt-and-braces; what matters is
+/// that neither door decides the semantics for itself.
+fn selection(names: &[String], type_name: Option<&str>) -> Result<Selection, String> {
+    Selection::from_terms(names, type_name)
+}
+
+/// `new-instrument`: land a guaranteed-valid minimal instrument document (#146) **at a path** — the
+/// first-creation start move.
+///
+/// It replaces `scaffold-instrument`, which printed the document to stdout. That was the same
+/// doc-in-context arm #604 retired on the MCP door, wearing a shell: an agent driving the CLI paid
+/// for the whole seed in its context and then had to re-emit it to write it. The seed is unchanged —
+/// this is [`edit::new_instrument`], the very verb the sidecar calls, so both doors create a
+/// document by exactly one procedure and the result is validated and written by the same code.
+fn cmd_new_instrument(path: &Path, name: Option<&str>, json: bool) -> ExitCode {
+    let (resolver, source) = edit_resolver(path);
+    let result = match edit::new_instrument(
+        &source,
+        name.unwrap_or(SCAFFOLD_DEFAULT_NAME),
+        &Registry::builtin(),
+        &resolver,
+    ) {
+        Ok(result) => result,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    if json {
+        println!(
+            "{}",
+            serde_json::to_string_pretty(&result).expect("serialize edit result")
+        );
     } else {
-        serde_json::to_string_pretty(&document)
+        for e in &result.report.errors {
+            print_diag("error", e);
+        }
+        if result.written {
+            println!("created {} (content_hash {})", path.display(), result.hash);
+            println!("{}", result.zoom);
+        }
     }
-    .expect("serialize scaffold document");
-    println!("{text}");
-    ExitCode::SUCCESS
+
+    if result.written {
+        ExitCode::SUCCESS
+    } else {
+        ExitCode::FAILURE
+    }
+}
+
+/// The CLI door's interpretation of an opaque document `source`: a filesystem path. Mirrors the MCP
+/// door's `edit_resolver` — a resolver rooted at the file's directory plus the resolver-relative
+/// name the [`edit`] verbs read and write through — so one verb contract serves both doors.
+fn edit_resolver(path: &Path) -> (FsResolver, String) {
+    let name = path
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.display().to_string());
+    (FsResolver::for_instrument(path).stat_only(), name)
 }
 
 /// `scaffold-operator`: generate a new operator skeleton + registration from a contract spec.
@@ -265,11 +363,18 @@ fn is_patch_path(arg: &str) -> bool {
         || arg.chars().any(std::path::is_separator)
 }
 
-/// `describe`: dump the operator set, one operator, or — for an instrument JSON path — that
-/// instrument's boundary as a host sees it, as human text or JSON. `--compact`
+/// `describe`: dump the operator set, one operator, or — for an instrument JSON path — the
+/// `--view` the caller asked for (the node index by default), as human text or JSON. `--compact`
 /// switches the operator view to the generated signature-line mode.
-fn cmd_describe(op: Option<&str>, json: bool, compact: bool, root: Option<PathBuf>) -> ExitCode {
-    // A path-shaped argument is an instrument: describe its boundary.
+fn cmd_describe(
+    op: Option<&str>,
+    json: bool,
+    compact: bool,
+    view: InstrumentView,
+    select: Selection,
+    root: Option<PathBuf>,
+) -> ExitCode {
+    // A path-shaped argument is an instrument: cut the asked-for view of it.
     if let Some(arg) = op {
         if is_patch_path(arg) {
             if compact {
@@ -280,7 +385,10 @@ fn cmd_describe(op: Option<&str>, json: bool, compact: bool, root: Option<PathBu
                 );
                 return ExitCode::FAILURE;
             }
-            return cmd_describe_patch(Path::new(arg), json, root);
+            if view == InstrumentView::Boundary {
+                return cmd_describe_patch(Path::new(arg), json, root);
+            }
+            return cmd_project(Path::new(arg), view, select, json, root);
         }
     }
 
@@ -356,11 +464,16 @@ fn print_diag(level: &str, d: &reuben_core::contract::Diag) {
     }
 }
 
-/// `describe <patch.json>`: the nested-instrument boundary view — the `interface` pipes a host
-/// wires against: an input pipe's own declared type/range/default, an output pipe's
+/// `describe <patch.json> --view boundary`: the nested-instrument boundary view — the `interface`
+/// pipes a host wires against: an input pipe's own declared type/range/default, an output pipe's
 /// type and metadata inherited from the internal port feeding it plus optional min/max range
 /// overrides (a subset of that port's range), both decorated by the entry's presentational fields
 /// (label/unit/widget).
+///
+/// The one view that is **not** a projection, and the one whose `--json` shape is deliberately not
+/// the MCP door's: this emits the structured [`PatchBoundary`] that the control-surface tooling
+/// consumes, where the sidecar renders it as a line. Same question, two consumers — a program here,
+/// a model there.
 fn cmd_describe_patch(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCode {
     let (instrument_json, resolver) = match read_instrument(path, root) {
         Ok(r) => r,
@@ -405,6 +518,63 @@ fn cmd_describe_patch(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCod
     }
     for d in &boundary.dark_outputs {
         println!("  out {d} : (dark — unresolved this load)");
+    }
+    ExitCode::SUCCESS
+}
+
+/// `describe <patch.json> --view index|nodes|pipes|resources`: the structural
+/// [`projection`](reuben_core::projection) — the agent's whole view of a document, and the CLI
+/// door's mirror of what `describe_instrument` serves over MCP (#604, #608).
+///
+/// A document that fails to load still projects (`loadable: false` in the header): `validate` is
+/// the single authority on validity, and going blind is the worst way to report invalidity. So this
+/// exits 0 on an unloadable document — it answered the question it was asked.
+fn cmd_project(
+    path: &Path,
+    view: InstrumentView,
+    select: Selection,
+    json: bool,
+    root: Option<PathBuf>,
+) -> ExitCode {
+    let (instrument_json, resolver) = match read_instrument(path, root) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+    // Introspection never renders audio: stat samples for availability instead of decoding them.
+    let resolver = resolver.stat_only();
+    let registry = Registry::builtin();
+    let projector = match Projector::new(&instrument_json, &registry, &resolver) {
+        Ok(p) => p,
+        Err(e) => {
+            eprintln!("error: {e}");
+            return ExitCode::FAILURE;
+        }
+    };
+
+    // Each view renders itself; `--json` emits the structured shape behind the same rendering.
+    macro_rules! emit {
+        ($v:expr) => {{
+            let v = $v;
+            if json {
+                println!(
+                    "{}",
+                    serde_json::to_string_pretty(&v).expect("serialize projection view")
+                );
+            } else {
+                println!("{}", v.render());
+            }
+        }};
+    }
+    match view {
+        InstrumentView::Index => emit!(projector.index()),
+        InstrumentView::Nodes => emit!(projector.zoom(&select)),
+        InstrumentView::Pipes => emit!(projector.pipes(&select)),
+        InstrumentView::Resources => emit!(projector.resources()),
+        // Routed to `cmd_describe_patch` before it reaches here.
+        InstrumentView::Boundary => unreachable!("the boundary view is not a projection"),
     }
     ExitCode::SUCCESS
 }
@@ -579,6 +749,10 @@ fn play(
     // Coordinator owns this resolver for the session; a by-path swap resolves its resources through
     // it too — M2 does not re-anchor per swap source, so a by-path document's
     // relative resources resolve against the initial anchor + the library root.
+    // The source name `get_document` reports for the run's first document, so an agent joining a
+    // session it did not start can still tell *which file* is playing. The built-in default rig has
+    // no source to name.
+    let initial_source = path.as_ref().map(|p| p.display().to_string());
     let (instrument_json, resolver) = match path {
         Some(path) => {
             println!("instrument: {}", path.display());
@@ -637,7 +811,8 @@ fn play(
     // Its control sink is a clone of the very sender the UDP thread holds, so `send` converges with
     // external OSC at the callback's `queue_osc` and this door needs no wire format of its own.
     let state = StructureState::from_coordinator(coordinator, diagnostics.clone(), osc_tx)
-        .with_render_config(render_config);
+        .with_render_config(render_config)
+        .with_installed_source(initial_source);
     let structure_server = match structure::StructureServer::bind(STRUCTURE_BIND, state) {
         Ok(server) => {
             println!("structure channel on {}", server.local_addr());

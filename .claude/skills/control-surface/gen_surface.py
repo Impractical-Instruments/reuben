@@ -325,11 +325,17 @@ def find_reuben(script: Path, override: str | None) -> str:
 
 
 def run_describe(reuben_bin: str, inst_path: Path) -> dict:
-    """Invoke `reuben describe <instrument> --json` and parse its boundary view. Raises with the
-    binary's own stderr on failure so a bad patch reads the same as it would on the CLI."""
+    """Invoke `reuben describe <instrument> --view boundary --json` and parse it. Raises with the
+    binary's own stderr on failure so a bad patch reads the same as it would on the CLI.
+
+    `--view boundary` is explicit because #604 gave `describe <path>` the structural projection
+    views and made the node index its default. A surface binds widgets to the *resolved face* — an
+    output pipe's inherited type, a nested child's dark markers — which only the boundary carries;
+    the projection reports what the document declares.
+    """
     try:
         proc = subprocess.run(
-            [reuben_bin, "describe", str(inst_path), "--json"],
+            [reuben_bin, "describe", str(inst_path), "--view", "boundary", "--json"],
             capture_output=True, text=True,
         )
     except FileNotFoundError:
@@ -338,7 +344,9 @@ def run_describe(reuben_bin: str, inst_path: Path) -> dict:
             f"`--reuben PATH`, or feed a pre-captured `--describe FILE`."
         )
     if proc.returncode != 0:
-        raise SystemExit(f"`reuben describe {inst_path}` failed: {proc.stderr.strip()}")
+        raise SystemExit(
+            f"`reuben describe {inst_path} --view boundary` failed: {proc.stderr.strip()}"
+        )
     return json.loads(proc.stdout)
 
 

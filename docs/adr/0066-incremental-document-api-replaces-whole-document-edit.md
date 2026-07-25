@@ -5,12 +5,14 @@
 Accepted (2026-07-22). Decided through issue
 [#583](https://github.com/Impractical-Instruments/reuben/issues/583), spun out of the
 efficient-agent-authoring series ([#574](https://github.com/Impractical-Instruments/reuben/issues/574)).
-Landing across children: the `write_text` resolver seam
-([#601](https://github.com/Impractical-Instruments/reuben/issues/601)) is merged; the structural
-projection ([#600](https://github.com/Impractical-Instruments/reuben/issues/600)), the closed verb
+Landed across children: the `write_text` resolver seam
+([#601](https://github.com/Impractical-Instruments/reuben/issues/601)), the structural
+projection ([#600](https://github.com/Impractical-Instruments/reuben/issues/600),
+[#608](https://github.com/Impractical-Instruments/reuben/issues/608)), the closed verb
 vocabulary and its CI guard ([#603](https://github.com/Impractical-Instruments/reuben/issues/603)),
 and retiring the doc-in-context tool arms
-([#604](https://github.com/Impractical-Instruments/reuben/issues/604)) are still in flight.
+([#604](https://github.com/Impractical-Instruments/reuben/issues/604)) — with which the decision
+below is fully in force rather than merely available.
 
 **This reverses [whole-document-edit](../rules/rationale/agent-mcp/whole-document-edit.md)**
 (distilled from ADR-0045) and **extends
@@ -170,3 +172,23 @@ authoring would become inexpressible.
 The read/write asymmetry with `#no-resource-bytes` is now uniform: on every lane — native, MCP,
 web — no reuben-owned bytes ride the agent's context, the agent references by opaque source, and the
 host (the door's resolver) moves the bytes. Documents simply joined samples under that posture.
+
+### On absorption: what in `docs/rules/` this falsifies
+
+Written down because nothing mechanical catches it — `check_rules_refs` validates links and
+anchors, not whether a rule names a verb that still exists. Four clauses in
+[agent-mcp.md](../rules/agent-mcp.md) are now false, and the corresponding rationale bodies were
+corrected as their children landed while the **rule headings and the Now paragraph were left for
+this absorption**:
+
+1. **`#whole-document-edit`** — the rule this ADR reverses. Its heading still states the
+   whole-document-in-report-out contract and "no incremental edit-command surface", which is the
+   opposite of what ships.
+2. **`#deterministic-scaffolds`** — its heading names `scaffold-instrument`, a verb #604 deleted.
+   The substance survives unchanged under the name `new-instrument`; only the spelling and the
+   "hands the author a frame" phrasing (it now *writes* the frame) need re-cutting.
+3. **The Now paragraph** (agent-mcp.md, "The edit contract is the whole document in, a report out:
+   no add-node/rewire surface exists…") — same reversal as 1, plus its `scaffold_instrument`
+   mention.
+4. **`#tool-surface`** — still true as written, but its roster is now three kinds (pure · engine ·
+   document), not two.

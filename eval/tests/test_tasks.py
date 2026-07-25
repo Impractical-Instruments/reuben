@@ -1,9 +1,9 @@
 """The harness's forcing function: prove the assertions actually reject the degenerate passes.
 
 A structural assertion that never fails is worse than no assertion — it reports a green ladder while
-measuring nothing. #592 named the specific trap: `scaffold_instrument` already emits a valid
-document, so "change nothing" would score as success on the from-scratch task unless something
-checks the asked-for thing happened.
+measuring nothing. #592 named the specific trap: `new_instrument` already lands a valid document,
+so "change nothing" would score as success on the from-scratch task unless something checks the
+asked-for thing happened.
 
 So every test here is the *negative*: feed the assertion a document that a lazy or damaging model
 would plausibly produce, and require it to raise.
@@ -64,7 +64,7 @@ class TestReferenceSolutions(unittest.TestCase):
             path = pathlib.Path(root) / tasks.DOCUMENT
             path.write_text(tasks.BROKEN, encoding="utf-8")
             with Sidecar(pathlib.Path(root)) as sidecar:
-                verdict = sidecar.call_tool("validate", {"path": tasks.DOCUMENT})
+                verdict = sidecar.call_tool("validate_instrument", {"source": tasks.DOCUMENT})
         self.assertIs(
             (verdict.structured or {}).get("ok"),
             False,
@@ -85,7 +85,8 @@ class TestReferenceSolutions(unittest.TestCase):
 
 class TestFromScratchAssertion(unittest.TestCase):
     def test_scaffold_alone_is_not_a_pass(self) -> None:
-        """The degenerate pass #592 called out: a valid but empty document."""
+        """The degenerate pass #592 called out: a valid but empty document — what
+        `new_instrument` lands, unchanged."""
         with self.assertRaises(AssertionError):
             tasks._assert_from_scratch({"format_version": 3, "instrument": "tone", "nodes": []})
 
@@ -199,28 +200,39 @@ class TestPayloadLedger(unittest.TestCase):
     """Metric (c): echoes count, small structured arguments cost nothing."""
 
     def test_echoes_are_charged(self) -> None:
+        # An echo is a model writing a document it has already emitted once — the re-emit #583
+        # exists to kill. Both writes are charged: the second is not free for being a repeat.
         ledger = PayloadLedger()
-        document = tasks.VOICE_DOCUMENT
         ledger.charge("write_file", {"path": "a.json", "content": tasks.VOICE})
-        ledger.charge("validate", {"document": document})
+        ledger.charge("write_file", {"path": "a.json", "content": tasks.VOICE})
         self.assertGreater(ledger.characters, len(tasks.VOICE))
-        self.assertEqual(set(ledger.per_tool), {"write_file", "validate"})
+        self.assertEqual(set(ledger.per_tool), {"write_file"})
 
     def test_intent_sized_arguments_cost_nothing(self) -> None:
         """A word, a node address and a float are what this map wants the model emitting."""
         ledger = PayloadLedger()
-        ledger.charge("validate", {"path": "instrument.json"})
-        ledger.charge("send", {"messages": [{"address": "/filt/cutoff", "args": [800.0]}]})
-        ledger.charge("scaffold_instrument", {"name": "tone"})
+        ledger.charge("validate_instrument", {"source": "instrument.json"})
+        ledger.charge(
+            "send_live_controls", {"messages": [{"address": "/filt/cutoff", "args": [800.0]}]}
+        )
+        ledger.charge("new_instrument", {"source": "instrument.json", "name": "tone"})
+        ledger.charge("set_instrument_input", {"source": "instrument.json",
+                                               "address": "/filter", "port": "cutoff",
+                                               "value": 800.0})
         self.assertEqual(ledger.characters, 0)
 
     def test_encoding_does_not_change_the_price(self) -> None:
-        """A document costs the same whether emitted as a JSON string or a parsed object."""
+        """A document costs the same whether emitted as a JSON string or a parsed object.
+
+        Still reachable with one door: a model can hand `write_file` a parsed object instead of the
+        string its schema asks for. Pricing that cheaper would make the wrong move look like the
+        cheap one.
+        """
         compact = json.dumps(tasks.VOICE_DOCUMENT, separators=(",", ":"))
         as_string = PayloadLedger()
         as_string.charge("write_file", {"content": compact})
         as_object = PayloadLedger()
-        as_object.charge("validate", {"document": tasks.VOICE_DOCUMENT})
+        as_object.charge("write_file", {"content": tasks.VOICE_DOCUMENT})
         self.assertEqual(as_string.characters, as_object.characters)
 
 

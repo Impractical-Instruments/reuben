@@ -29,17 +29,22 @@ Run all `reuben` commands from the repo root.
      `enum`=a shared `vocab` enum, `message`=a `Note` stream, `harmony`=`Harmony`),
      settable inputs (`min`/`max`/`default`/`unit`/`curve`), enum inputs (`variants`+`default`),
      resource slots.
-   - `cargo run -q -p reuben-native --bin reuben -- describe <patch.json> --json` — a nested
-     instrument's **boundary**: its `interface` pipes as if they were operator
+   - `cargo run -q -p reuben-native --bin reuben -- describe <patch.json> --view boundary --json` —
+     a nested instrument's **boundary**: its `interface` pipes as if they were operator
      ports, each with its **declared** `Arg` type, range, default, and unit.
      This is what a `subpatch` node referencing that file exposes — wire against these names,
      never the child's internals.
+   - `cargo run -q -p reuben-native --bin reuben -- describe <patch.json>` — the same document's own
+     structure instead of its face: `--view index` (the default) lists every node one line each,
+     `--view nodes --select /osc` zooms one, `--view pipes` reads the interface, `--view resources`
+     the resources table.
 
-2. **Draft the graph.** **Creating from scratch? Start from a scaffold, never a blank file.**
-   `cargo run -q -p reuben-native --bin reuben -- scaffold-instrument --name <name>` prints a
-   guaranteed-valid minimal document (`{format_version, instrument, nodes:[]}`) — edit its `nodes`
-   and `interface`, then validate. This sidesteps the first-creation stall where a from-nothing
-   document omits the required top-level `instrument` field (#146). Then check `instruments/index.md`
+2. **Draft the graph.** **Creating from scratch? Start from a seed, never a blank file.**
+   `cargo run -q -p reuben-native --bin reuben -- new-instrument <path> --name <name>` writes a
+   guaranteed-valid minimal document (`{format_version, instrument, nodes:[]}`) at that path,
+   refusing to overwrite — edit its `nodes` and `interface`, then validate. This sidesteps the
+   first-creation stall where a from-nothing document omits the required top-level `instrument`
+   field (#146). Then check `instruments/index.md`
    (the generated library index — one line per available instrument: role + face signature) for a
    close-enough instrument before drafting a chain from scratch, or draft against an existing
    `instruments/*.json` (e.g. `chord-player.json`) rather than a blank file. Reuse mechanics

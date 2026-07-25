@@ -163,7 +163,12 @@ fn serves_the_three_verbs_over_loopback_ndjson_in_order() {
         Response::Document(DocumentSnapshot {
             document,
             content_hash: hash,
+            source,
         }) => {
+            assert_eq!(
+                source, None,
+                "this harness installs by value, which has no source to name"
+            );
             assert_eq!(document["instrument"], serde_json::json!("t"));
             assert_eq!(hash, base_hash, "the served doc carries its content hash");
             assert_eq!(
@@ -301,7 +306,12 @@ fn swap_over_the_wire_installs_via_the_mailbox_with_real_survivor_stats() {
         Response::Document(DocumentSnapshot {
             document,
             content_hash: hash,
+            source,
         }) => {
+            assert_eq!(
+                source, None,
+                "a by-value swap leaves no source behind either"
+            );
             assert_eq!(document["instrument"], serde_json::json!("eg"));
             assert_eq!(hash, expected_hash(&envelope_doc("/eg")));
             assert_ne!(hash, base_hash, "the swap changed the installed document");

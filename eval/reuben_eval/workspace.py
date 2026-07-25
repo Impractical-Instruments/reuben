@@ -1,18 +1,17 @@
 """The task workspace and the two host file tools. see rules: agent-mcp
 
-**Why the harness ships file tools at all.** The sidecar's `swap` is path-only and there is no
-document-read tool on the roster, so a real authoring client necessarily brings its own
-filesystem access — that is precisely the file-sightedness `#no-resource-bytes` mandates and #583
-proposes to reverse. Modelling that client is not inventing a fourth door: the reuben surface being
-measured is still exactly the sidecar's roster. `read_file`/`write_file` stand in for the host's
-`Read`/`Write`, and they are deliberately dumb — whole-document in, whole-document out — because
-`#whole-document-edit` is the constraint under measurement, not one the harness may quietly relax.
+**Why the harness ships file tools at all.** It used to be a necessity: `swap` was path-only and the
+roster had no document-read tool, so a real authoring client necessarily brought its own filesystem
+access. #603 and #604 removed that necessity — the roster now reads a document (`describe_instrument`)
+and writes one (the nineteen verbs) without the model ever seeing its bytes. They stay for the
+opposite reason: a real client *still has* `Read`/`Write`, so leaving them on the namespace is what
+lets the harness see a model reach for them anyway. Their presence is now a measurement, not a
+crutch — and #624 carries the open call about whether the reference solutions should still use them.
 
-**Metric (c) is collected here.** Document-payload characters are counted on every argument whose
-schema type is an instrument document or a fragment of one — `write_file(content=…)` and
-`validate(document=…)` alike — **including echoes**. A model that copies a document out of a tool
-result and back into the next call pays full price, because killing that re-emit is the single
-largest win #576 and #583 claim.
+**Metric (c) is collected here.** Document-payload characters are counted on every argument that
+carries an instrument document or a fragment of one, **including echoes**. A model that copies a
+document out of a tool result and back into the next call pays full price, because killing that
+re-emit is the single largest win #576 and #583 claim.
 """
 
 from __future__ import annotations
@@ -32,10 +31,14 @@ from typing import Any
 # to write, and any content the model does emit is freehand structured text it had to produce. The
 # error only ever runs one way (a stray scratch write makes the surface look MORE expensive, never
 # less), so it cannot flatter a prototype's claim — the direction the metric must never be fooled in.
+#
+# Only `write_file` remains after #604: the sidecar's inline `document` arms — `validate(document=…)`
+# and `describe_instrument(document=…)` — are gone, so the roster no longer offers *any* way to send
+# a document to reuben. That is the point of #583, and it means metric (c) now measures exactly one
+# thing: whether the model still routes a document through the host's file tools instead of the
+# verbs. A run that reaches zero here has stopped emitting instrument JSON altogether.
 DOCUMENT_ARGUMENTS: dict[str, tuple[str, ...]] = {
     "write_file": ("content",),
-    "validate": ("document",),
-    "describe_instrument": ("document",),
 }
 
 # MCP resources are not tools, so a client has to surface them to the model somehow — Claude Code
@@ -128,9 +131,8 @@ class PayloadLedger:
             value = arguments.get(name)
             if value is None:
                 continue
-            # A document may arrive as a JSON string (`write_file`) or as a parsed object
-            # (`validate(document=…)`). Both are the same emission; normalise so the two doors
-            # are priced identically and neither is cheaper by accident of encoding.
+            # A document may arrive as a JSON string (`write_file`) or as a parsed object. Both are
+            # the same emission; normalise so neither is cheaper by accident of encoding.
             text = value if isinstance(value, str) else json.dumps(value, separators=(",", ":"))
             self.characters += len(text)
             self.per_tool[tool] = self.per_tool.get(tool, 0) + len(text)

@@ -9,7 +9,7 @@ The three numbers (#592's yardstick):
 - **(a) tokens/turn** — everything the sidecar hands back, tokenized with the pinned vendored
   cl100k_base: server `instructions`, tool schemas, resources read, every tool result. Counted off
   the wire, never estimated.
-- **(b) validate-repair rounds** — how many `validate` calls came back `ok:false`. The repair task's
+- **(b) validate-repair rounds** — how many `validate_instrument` calls came back `ok:false`. The repair task's
   floor is 1: its first validate *is* the diagnosis.
 - **(c) freehand-JSON characters** — document-payload characters the model emitted, echoes included.
 """
@@ -117,7 +117,7 @@ class Session:
             result = answer.rendered()
             # Metric (b). Read off the structured report, never the prose: "invalid: 1 error(s)" is
             # a human string a wording change could silently stop matching.
-            if name == "validate" and (answer.structured or {}).get("ok") is False:
+            if name == "validate_instrument" and (answer.structured or {}).get("ok") is False:
                 self.repair_rounds += 1
         else:
             # An invented tool name still costs a round — that is a real failure mode of small
@@ -133,20 +133,20 @@ class Session:
         return text
 
     def judge(self) -> Outcome:
-        """Score the run: `validate` clean on the produced document, then the structural assertion.
+        """Score the run: `validate_instrument` clean on the produced document, then the structural assertion.
 
-        `validate` is called here by the harness itself, not trusted from the transcript — a model
+        `validate_instrument` is called here by the harness itself, not trusted from the transcript — a model
         that validated an earlier draft and then broke the file must not score a pass.
         """
-        # Snapshot the ledger BEFORE scoring: the harness's own adjudicating `validate` is not a
+        # Snapshot the ledger BEFORE scoring: the harness's own adjudicating `validate_instrument` is not a
         # cost the model paid, and folding it into metric (a) would tax every task by a constant.
         tokens = self.sidecar.ledger.as_dict()
         failure: str | None = None
         try:
             document = self.workspace.read_document(self.task.document)
-            verdict = self.sidecar.call_tool("validate", {"path": self.task.document})
+            verdict = self.sidecar.call_tool("validate_instrument", {"source": self.task.document})
             if (verdict.structured or {}).get("ok") is not True:
-                failure = f"validate rejected the produced document: {verdict.rendered()[:300]}"
+                failure = f"validate_instrument rejected the produced document: {verdict.rendered()[:300]}"
             else:
                 self.task.assertion(document)
         except AssertionError as error:

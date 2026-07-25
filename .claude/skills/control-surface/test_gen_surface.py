@@ -742,7 +742,7 @@ class LiveEngineBoundaryTest(unittest.TestCase):
         # for `describe`).
         cmd = ["cargo", "run", "-q", "-p", "reuben-native", "--bin", "reuben",
                "--features", "reuben-core/bench", "--",
-               "describe", str(self.SPACE), "--json"]
+               "describe", str(self.SPACE), "--view", "boundary", "--json"]
         try:
             proc = subprocess.run(cmd, cwd=self.REPO_ROOT, capture_output=True, text=True,
                                   timeout=self.CARGO_TIMEOUT)
