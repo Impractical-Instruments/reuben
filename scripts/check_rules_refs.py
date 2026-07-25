@@ -61,10 +61,7 @@ SWEPT_CRATES = {
     "crates/reuben-contract",
     "crates/reuben-macros",
     "crates/reuben-native",
-    # reuben-core is swept but NOT yet ratcheted: `src/signal.rs`'s 31-line module doc is the one
-    # remaining blocker, carrying the canonical-naming-site rationale for the audio element type
-    # (guarded by scripts/check_sample_alias.py) that no topic distils yet. Add the crate here in
-    # the PR that lands that rule.
+    "crates/reuben-core",
 }
 
 # The unpointed `//!` budget. Ten lines is room for what a module doc legitimately owes a reader —
