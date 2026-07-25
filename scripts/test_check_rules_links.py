@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unit tests for check_rules_links — the rule<->rationale link guard.
+"""Unit tests for check_rules_links — the corpus structural-integrity guard.
 
 Fixture trees are built with tempfile; the guard is imported as a bare module (tests run from
 `scripts/`, mirroring the engine's skill-test idiom). Each test asserts the exact problem count
@@ -12,19 +12,29 @@ from pathlib import Path
 
 import check_rules_links
 
+# `ADR-<n>` is banned in code by check_rules_refs — provenance lives in a rationale file, not in a
+# source file — and these fixtures are code. Composing the token keeps the fixture the real shape
+# without planting a live reference for that linter to find.
+PROVENANCE = f"Distilled from: ADR-{1:04d}"
+# The minimum a rationale needs to satisfy checks (e) and (f), so a fixture aimed at one check
+# does not trip the others.
+RATIONALE_BODY = f"# Why\n\nBecause.\n\n{PROVENANCE}\n"
+
 
 def build(root: Path, topics: dict[str, str], rationales=()):
     """Create docs/rules/ with a README and the given {name.md: body} topic docs, plus any
-    rationale files (paths relative to docs/rules/)."""
+    rationale files. A rationale is either a path (given the default body) or a
+    (path, body) pair; paths are relative to docs/rules/."""
     rules = root / "docs" / "rules"
     rules.mkdir(parents=True, exist_ok=True)
     (rules / "README.md").write_text("# reuben rules index\n", encoding="utf-8")
     for name, body in topics.items():
         (rules / name).write_text(body, encoding="utf-8")
-    for rel in rationales:
+    for entry in rationales:
+        rel, body = entry if isinstance(entry, tuple) else (entry, RATIONALE_BODY)
         p = rules / rel
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text("# Why\n", encoding="utf-8")
+        p.write_text(body, encoding="utf-8")
 
 
 WELL_FORMED = """# Clock
@@ -238,6 +248,133 @@ No rules here yet.
         self.assertEqual(len(problems), 1)
         self.assertIn("tempo-is-immutable", problems[0])
         self.assertNotIn("block-is-atomic", problems[0])
+
+
+class CorpusIntegrityTest(unittest.TestCase):
+    """Checks (d)-(f): the rungs below the topic docs, previously unwalked."""
+
+    def _problems(self, topics, rationales=()):
+        with tempfile.TemporaryDirectory() as d:
+            root = Path(d)
+            build(root, topics, rationales)
+            return check_rules_links.collect_problems(str(root))
+
+    def _clock(self, rationale_body):
+        return self._problems(
+            {"clock.md": WELL_FORMED},
+            rationales=[("rationale/clock/tempo-is-immutable.md", rationale_body)],
+        )
+
+    # --- (d) link targets ---
+
+    def test_rationale_link_to_missing_file(self):
+        # The defect this check exists for: an absorption pass deletes a rule and its rationale,
+        # and a sibling rationale still links the file. Previously green.
+        problems = self._clock(
+            f"# Why\n\nSee [gone](gone.md).\n\n{PROVENANCE}\n")
+        self.assertEqual(len(problems), 1)
+        self.assertIn("gone.md", problems[0])
+
+    def test_rationale_link_to_missing_anchor(self):
+        # The file resolves but the rule slug inside it does not — the half of the same defect
+        # that survives when only the anchor is renamed.
+        problems = self._clock(
+            f"# Why\n\n[Rule](../../clock.md#renamed-away)\n\n{PROVENANCE}\n")
+        self.assertEqual(len(problems), 1)
+        self.assertIn("renamed-away", problems[0])
+
+    def test_rationale_backlink_to_real_anchor_is_green(self):
+        self.assertEqual(
+            self._clock(
+                f"# Why\n\n[Rule](../../clock.md#tempo-is-immutable)\n\n{PROVENANCE}\n"),
+            [],
+        )
+
+    def test_link_inside_inline_code_is_not_a_link(self):
+        # A rationale quoting the Markdown a doc comment shipped is prose about markup, not a
+        # link. Reading it as one is a false positive that would force a bogus doc edit.
+        self.assertEqual(
+            self._clock(
+                "# Why\n\nIt shipped `[`projection`](crate::projection)` to a model.\n\n"
+                f"{PROVENANCE}\n"),
+            [],
+        )
+
+    def test_link_inside_fenced_block_is_not_a_link(self):
+        self.assertEqual(
+            self._clock(
+                f"# Why\n\n```md\n[example](nowhere.md)\n```\n\n{PROVENANCE}\n"),
+            [],
+        )
+
+    def test_external_link_is_not_resolved(self):
+        self.assertEqual(
+            self._clock(
+                f"# Why\n\n[issue](https://example.test/1)\n\n{PROVENANCE}\n"),
+            [],
+        )
+
+    def test_missing_why_target_reports_once_not_twice(self):
+        # Check (c) owns a topic's [why] links; check (d) must not report the same break again.
+        problems = self._problems({"clock.md": WELL_FORMED})
+        self.assertEqual(len(problems), 1)
+        self.assertIn("[why]", problems[0])
+
+    # --- (e) bijection ---
+
+    def test_orphan_rationale(self):
+        problems = self._problems(
+            {"clock.md": WELL_FORMED},
+            rationales=["rationale/clock/tempo-is-immutable.md",
+                        "rationale/clock/left-behind.md"],
+        )
+        self.assertEqual(len(problems), 1)
+        self.assertIn("left-behind.md", problems[0])
+        self.assertIn("orphan", problems[0])
+
+    def test_rationale_shared_by_two_rules(self):
+        body = """# Clock
+
+> How musical time works.
+
+## Rules
+
+<a id="tempo-is-immutable"></a>
+### Tempo is immutable within a block.
+
+[why](rationale/clock/tempo-is-immutable.md)
+
+<a id="block-is-atomic"></a>
+### A block renders atomically.
+
+[why](rationale/clock/tempo-is-immutable.md)
+"""
+        problems = self._problems(
+            {"clock.md": body}, rationales=["rationale/clock/tempo-is-immutable.md"])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("linked by 2 rules", problems[0])
+
+    def test_rationale_under_a_directory_that_is_not_a_topic(self):
+        # A topic doc renamed without moving its rationale directory.
+        body = WELL_FORMED.replace(
+            "rationale/clock/tempo-is-immutable.md", "rationale/timing/tempo-is-immutable.md")
+        problems = self._problems(
+            {"clock.md": body}, rationales=["rationale/timing/tempo-is-immutable.md"])
+        self.assertEqual(len(problems), 1)
+        self.assertIn("not a topic doc", problems[0])
+
+    # --- (f) provenance ---
+
+    def test_rationale_without_provenance(self):
+        problems = self._clock("# Why\n\nBecause.\n")
+        self.assertEqual(len(problems), 1)
+        self.assertIn("provenance", problems[0])
+
+    def test_decided_in_satisfies_provenance(self):
+        self.assertEqual(
+            self._clock("# Why\n\nBecause.\n\nDecided in: issue #12 — settled directly, no ADR.\n"),
+            [],
+        )
 
 
 if __name__ == "__main__":

@@ -212,6 +212,13 @@ One file per rule at `rationale/<topic>/<rule>.md`.
 **Progressive-disclosure ladder** — index → topic → rule → rationale. Stop at the shallowest
 level that answers the question; open a rationale only when you need the why.
 
+**Structural integrity** — `check_rules_links.py` walks the whole corpus in CI, not just the topic
+docs: every link resolves (file *and* `#anchor`), rationale↔rule is a bijection, and every rationale
+carries its provenance line. A rule anchor is therefore a **public identity** — rationale files link
+each other and link back up to their rule, so renaming or deleting an anchor is a corpus-wide edit,
+and the guard fails until it is one. This is what stops an absorption pass from leaving live prose
+pointing at a rule that no longer exists.
+
 **Derived index** — the Topics list and Glossary above are collated from the topic docs; do not
 hand-edit them. The `pre-commit` hook regenerates them (`check_rules_derive.py --write`) whenever a
 commit touches `docs/rules/`, and CI runs `--check` as a backstop. Run `scripts/install-hooks.sh`

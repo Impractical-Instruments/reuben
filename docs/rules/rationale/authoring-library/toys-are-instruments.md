@@ -28,7 +28,7 @@ composition-over-machinery bet end to end: synthesized drums (kick = oscillator 
 envelope; snare = noise + tonal component; hat = noise → highpass → envelope) rather than committed
 binary one-shots, so even the drum machine is a graph. The specific operators the Toys forced
 (`noise`, `chord`, `strum`, the sequencer's `gate_mode`, the clock's `division`) live with the
-operator model in [composition-operators](composition-operators.md) — what belongs here is that the
+operator model in [composition-operators](../../composition-operators.md) — what belongs here is that the
 beginner-facing library is composed instruments, never bespoke format.
 
 Distilled from: ADR-0022
