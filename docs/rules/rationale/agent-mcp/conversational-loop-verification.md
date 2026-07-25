@@ -14,6 +14,13 @@ prove, reusing conventions the repo already has:
   round-trip — a types-only test would pass a protocol bug like NDJSON line-splitting. The wire
   framing and `reply`-tag names are additionally pinned as literals at the unit level in
   `coordinator/wire.rs`, where a rename reds a fast test with no live server to stand up.
+- **A test double substitutes the lowest layer it can.** For the sidecar's engine tools that is the
+  socket itself (`StructureTransport`), below the NDJSON framing — so everything above the fake runs
+  for real: a tool body serializes a genuine request, the client parses a genuine response, and an
+  unreachable engine is reached through the real classification path. A fake placed higher, at an
+  engine-facing trait, would replace exactly the code most worth exercising — framing, parsing, and
+  the unreachable/protocol split — and would keep passing while the real path was broken. So the seam
+  goes at the bytes, and there is deliberately no engine-facing trait above it.
 - **Swap correctness** is proven **off-device**, Coordinator-direct: bypass the channel, invoke the
   same install-check the audio callback calls, render blocks, and assert **behaviorally** (a
   rewired-neighbor envelope keeps decaying smoothly with no re-attack; a voice-count bump resets the
@@ -33,4 +40,5 @@ human test (precise instructions + copy/paste commands) rather than leave an uns
 manually." No new CI job or bench workload is added — the automated items ride the existing test
 step.
 
-Distilled from: ADR-0053
+Distilled from: ADR-0053. The lowest-seam bullet was harvested from `reuben-mcp` code comments in
+issue #635, where it was the only copy.

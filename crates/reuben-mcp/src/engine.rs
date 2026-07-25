@@ -1,26 +1,5 @@
-//! The engine-facing link the five engine tools drive.
-//!
-//! **One plane, not two.** Structure edits and control both ride the **loopback-only** TCP/NDJSON
-//! structure channel ([`StructureClient`], #315). Control used to ride OSC/UDP instead — `send`
-//! encoded datagrams and dispatched them to the endpoint the engine binds on all interfaces — which
-//! meant the sidecar owned an OSC wire format for talking to its own peer. It no longer does: both
-//! ends already speak core's types, and routing converges in core at `Engine::queue_osc` either way,
-//! so `send` now ships `{address, [Arg]}` in this channel's own framing. OSC-the-binary-protocol is
-//! the engine's **foreign** edge (external controllers in, `osc_out` nodes out), not an internal
-//! hop.
-//!
-//! There is no engine-facing trait. The injectable seam is one layer down —
-//! [`StructureTransport`](crate::StructureTransport), the socket itself — so tool-body tests
-//! exercise real NDJSON serialization, real parsing, and the real unreachable classification
-//! instead of a hand-written stand-in for them.
-//!
-//! # Act-then-map, not probe-then-act
-//!
-//! Every engine tool runs its real exchange and maps [`StructureError::is_unreachable`] to the
-//! fail-fast [`crate::engine_unreachable`] result — one connection, no TOCTOU window between a
-//! separate liveness probe and the act. `send` was the one exception, probing first because UDP is
-//! silent about a dead port; riding TCP, its own exchange reports the dead engine, so the probe is
-//! gone and the rule has no exceptions left.
+//! The engine-facing link the five engine tools drive: the one loopback structure channel carrying
+//! both structure edits and control.
 //!
 //! see rules: agent-mcp
 
@@ -30,12 +9,7 @@ use crate::client::StructureClient;
 
 /// The engine link: a handle to the one channel every engine tool speaks.
 ///
-/// A thin named wrapper rather than an abstraction — nothing here forwards, and there is no trait.
-/// It survives as a distinct type because the composition root injects it and `engine_status`
-/// reports its endpoint; the injectable seam lives one layer down, at
-/// [`StructureTransport`](crate::StructureTransport).
-///
-/// Cheap to hold: each exchange opens its own short-lived connection, so nothing is retained
+/// Cheap to hold — each exchange opens its own short-lived connection, so nothing is retained
 /// between calls and the link survives the engine restarting under it.
 #[derive(Debug)]
 pub struct EngineLink {
@@ -79,9 +53,7 @@ mod tests {
 
     #[test]
     fn the_default_link_dials_exactly_what_reuben_play_binds() {
-        // Sidecar and engine share one address const, so they cannot drift. Asserted on the REAL
-        // construction path — `ReubenServer::new` builds this link — rather than on a
-        // `StructureClient::default` no production code ever called (#493).
+        // Asserted on the REAL construction path — the one `ReubenServer::new` builds.
         let link = EngineLink::default();
         assert_eq!(link.structure_endpoint(), DEFAULT_STRUCTURE_ADDR);
         assert!(

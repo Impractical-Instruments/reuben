@@ -1,27 +1,12 @@
-//! The structure-channel client (owned by reuben-mcp): the
-//! sidecar's half of the sidecar↔engine structure channel a live `reuben play` presents. It dials
-//! the engine's loopback TCP structure channel and exchanges the shared
-//! [`reuben_core::coordinator`] NDJSON envelope — one [`Request`] line out, one [`Response`] line
-//! back, per the one-response-per-request framing — reusing the wire types **verbatim**
-//! (no re-declaration).
+//! The sidecar's half of the sidecar↔engine structure channel: one [`Request`] line out, one
+//! [`Response`] line back over the shared [`reuben_core::coordinator`] NDJSON envelope.
 //!
-//! # Transport: `std::net` with timeouts, not `tokio::net`
+//! Two module-wide invariants a caller may rely on: every exchange is bounded (blocking
+//! [`std::net`] under an explicit [`connect_timeout`](TcpStream::connect_timeout) plus read/write
+//! timeouts), and every transport failure becomes a [`StructureError::Unreachable`] carrying
+//! [`crate::ENGINE_UNREACHABLE_GUIDANCE`] — so this module never hangs and never panics.
 //!
-//! reuben-mcp is the workspace's only async member, but the tokio it carries is the
-//! `current_thread` runtime fenced to `sync/rt/time/io-std` — **no `net` feature, no OS reactor**
-//! (that feature set is measured sufficient; adding `net` pulls mio and a reactor for nothing).
-//! So the channel is blocking [`std::net::TcpStream`] bounded by an explicit
-//! [`connect_timeout`](TcpStream::connect_timeout) and read/write timeouts. Each exchange is one
-//! short, bounded, blocking round trip — cheap enough to run directly, and crucially unable to
-//! hang the sidecar: a dead port is refused at once, and a *wedged* server (accepts, never
-//! answers) trips the read timeout instead of blocking forever.
 //! see rules: agent-mcp
-//!
-//! # Fail fast
-//!
-//! The shim never spawns `reuben play`. A connect failure, a resolution failure, or a timeout is
-//! a [`StructureError::Unreachable`] whose message carries the actionable
-//! [`crate::ENGINE_UNREACHABLE_GUIDANCE`] ("start `reuben play`") — never a hang, never a panic.
 
 use std::fmt;
 use std::io::{self, BufRead, BufReader, Write};
@@ -52,11 +37,7 @@ const DEFAULT_READ_TIMEOUT: Duration = Duration::from_secs(5);
 /// above loopback + scheduler jitter, so a live-but-momentarily-busy engine is never misjudged dead.
 const DEFAULT_PING_READ_TIMEOUT: Duration = Duration::from_secs(1);
 
-/// A failed structure-channel exchange. [`Unreachable`](Self::Unreachable) is the fail-fast case
-/// — connect/timeout/I/O died — and its message names the fix; the other two are the
-/// channel answering but unusably: [`Channel`](Self::Channel) is a server-sent [`Response::Error`]
-/// (a channel-level fault, distinct from a domain answer that reports failure), and
-/// [`Protocol`](Self::Protocol) is an unparseable or wrong-variant response.
+/// A failed structure-channel exchange.
 #[derive(Debug)]
 pub enum StructureError {
     /// The engine could not be reached (connect refused, address unresolved, or a read/write
@@ -70,14 +51,13 @@ pub enum StructureError {
 }
 
 impl StructureError {
-    /// Build the fail-fast unreachable error, prefixing the shared actionable guidance so any
-    /// caller that surfaces the message tells the user how to fix it.
+    /// Build the unreachable error, prefixing the shared guidance so any caller that surfaces the
+    /// message is actionable. Keeps the cause for debugging.
     fn unreachable(cause: impl fmt::Display) -> Self {
         StructureError::Unreachable(format!("{ENGINE_UNREACHABLE_GUIDANCE} (cause: {cause})"))
     }
 
-    /// Whether this is the unreachable-engine case — the branch the fail-fast guidance is for, and
-    /// the branch an engine tool maps to the "start `reuben play`" result (act-then-map, #318).
+    /// Whether this is the unreachable-engine case. see rules: agent-mcp
     pub fn is_unreachable(&self) -> bool {
         matches!(self, StructureError::Unreachable(_))
     }
@@ -95,11 +75,8 @@ impl fmt::Display for StructureError {
 
 impl std::error::Error for StructureError {}
 
-/// The outcome of a `swap` that reached the engine (transport failures are [`StructureError`]).
-/// Both are legitimate answers the tool surface (#318) maps as it chooses: an install report
-/// (which itself may carry `ok: false` load errors — the channel *worked*), or an
-/// `expect`-guard conflict the client reconciles by re-reading. Both arms carry the wire's own
-/// type, so nothing is re-declared on the way up.
+/// The outcome of a `swap` that reached the engine — both arms are answers, not failures
+/// (transport failures are [`StructureError`]). see rules: agent-mcp
 #[derive(Debug, Clone, PartialEq)]
 pub enum SwapOutcome {
     /// The engine processed the swap and returned its [`SwapReport`] (success or load-failure).
@@ -109,16 +86,13 @@ pub enum SwapOutcome {
 }
 
 /// The one thing a structure channel must be able to do: hand a request line to the engine and
-/// return the response line. **The injectable seam** — the shipping [`TcpTransport`] is the real
-/// loopback socket; a test double returns canned NDJSON (or an [`io::Error`]) so the tool bodies
-/// above still exercise real serialization, real parsing, and the real
-/// [`Unreachable`](StructureError::Unreachable) mapping.
+/// return the response line.
 ///
-/// Deliberately the *lowest* seam. Above this line live the things a fake should exercise rather
-/// than replace: NDJSON framing and parsing plus the unreachable/protocol split
-/// ([`StructureClient::exchange_with`]), and the wrong-variant classification each verb does. Below
-/// it live the socket mechanics — connect, the `set_*_timeout` calls, read-to-newline — which
-/// `tests/structure_client.rs` still drives over real TCP.
+/// **The injectable seam**, and deliberately the lowest one: everything above it — framing,
+/// parsing, the unreachable/protocol split — is exercised rather than replaced by a test double.
+/// Below it live the socket mechanics, which `tests/structure_client.rs` drives over real TCP.
+///
+/// see rules: agent-mcp
 pub trait StructureTransport: Send + Sync + fmt::Debug {
     /// One request line out, one response line back. `read_timeout` is per-call because `ping`
     /// runs on a tighter budget than the other verbs. Any I/O failure — refused connect,
@@ -131,8 +105,7 @@ pub trait StructureTransport: Send + Sync + fmt::Debug {
 }
 
 /// The shipping [`StructureTransport`]: a fresh, bounded, blocking loopback TCP connection per
-/// exchange. Nothing is retained between calls, so the link survives the engine restarting under
-/// it, and a dead port is refused at once rather than hanging the sidecar.
+/// exchange, retaining nothing between calls.
 #[derive(Debug, Clone)]
 pub struct TcpTransport {
     addr: String,
@@ -167,8 +140,7 @@ impl StructureTransport for TcpTransport {
         (&stream).write_all(line.as_bytes())?;
         (&stream).flush()?;
 
-        // Read exactly one response line (one response per request). A read timeout on
-        // a wedged server surfaces here as an Err, not a hang.
+        // Read exactly one response line (one response per request).
         let mut reader = BufReader::new(&stream);
         let mut response = String::new();
         if reader.read_line(&mut response)? == 0 {
@@ -202,8 +174,7 @@ impl StructureClient {
         Self::with_timeouts(addr, DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT)
     }
 
-    /// A client with explicit connect/read timeouts — the seam the wedged-server test drives to
-    /// prove a silent engine trips the read timeout fast instead of hanging.
+    /// A client with explicit connect/read timeouts.
     pub fn with_timeouts(
         addr: impl Into<String>,
         connect_timeout: Duration,
@@ -233,21 +204,17 @@ impl StructureClient {
         self.transport.endpoint()
     }
 
-    /// Liveness: `Ok(())` iff the channel answered [`Response::Pong`]. This is what
-    /// [`EngineLink`](crate::EngineLink) consults for engine reachability (`engine_status`). Every
-    /// other engine tool acts-then-maps its own exchange instead of probing first.
+    /// Liveness: `Ok(())` iff the channel answered [`Response::Pong`]. The only probe on the
+    /// channel — every other verb acts and maps its own failure. see rules: agent-mcp
     pub fn ping(&self) -> Result<(), StructureError> {
-        // The pong is immediate, so bound this exchange by the tighter `ping_read_timeout` rather
-        // than the general read budget a swap earns — a wedged engine fails fast.
         match self.exchange_with(&Request::Ping, self.ping_read_timeout)? {
             Response::Pong => Ok(()),
             other => Err(unexpected("ping", "pong", &other)),
         }
     }
 
-    /// Install a document, accepted **by value or by path** — both branches are
-    /// exposed here; which the tool surface offers is #318's call. An optional
-    /// `expect` content-hash guard rejects the swap on mismatch.
+    /// Install a document, by value or by path. An optional `expect` content-hash guard rejects
+    /// the swap on mismatch.
     pub fn swap(
         &self,
         source: DocSource,
@@ -261,8 +228,7 @@ impl StructureClient {
         }
     }
 
-    /// Read the canonical installed document and its content hash: a fresh
-    /// conversation attaches to what's playing in one call.
+    /// Read the canonical installed document and its content hash.
     pub fn get_document(&self) -> Result<DocumentSnapshot, StructureError> {
         match self.exchange(&Request::GetDocument)? {
             Response::Document(snapshot) => Ok(snapshot),
@@ -273,13 +239,11 @@ impl StructureClient {
 
     /// Audition a batch of control values on the running engine.
     ///
-    /// One exchange carries the whole batch and the engine queues it as one unit, so the gesture
-    /// cannot half-apply and no concurrent client interleaves into the middle of it. The engine
-    /// converges this with external OSC at its own ingress; a message whose address routes nowhere
-    /// is dropped there, so a successful return means "received and queued", not "applied".
-    ///
-    /// An empty or over-long batch is refused by the engine as a
+    /// `Ok` means "received and queued", NOT "applied": a message whose address routes nowhere is
+    /// dropped at the engine's ingress. An empty or over-long batch is refused by the engine as a
     /// [`Channel`](StructureError::Channel) error rather than acked.
+    ///
+    /// see rules: agent-mcp
     pub fn send(&self, messages: Vec<ControlMessage>) -> Result<(), StructureError> {
         match self.exchange(&Request::Send { messages })? {
             Response::Sent => Ok(()),
@@ -297,23 +261,15 @@ impl StructureClient {
         }
     }
 
-    /// One request → one response over a fresh connection (the NDJSON framing), bounded by the
-    /// general [`read_timeout`](Self::read_timeout) — the budget every verb but `ping` uses (a real
-    /// swap's off-thread rebuild earns it). `ping` calls [`exchange_with`](Self::exchange_with)
-    /// directly with its tighter budget.
+    /// One request → one response on the general budget, which every verb but `ping` uses.
     fn exchange(&self, request: &Request) -> Result<Response, StructureError> {
         self.exchange_with(request, self.read_timeout)
     }
 
-    /// [`exchange`](Self::exchange), but with an explicit read/write budget for this one call — so
-    /// `ping` can fail fast on its immediate pong without loosening (or tightening) the general
-    /// budget the other verbs share.
+    /// [`exchange`](Self::exchange) with an explicit per-call read/write budget.
     ///
-    /// Everything policy-shaped lives here, above the socket: NDJSON out, one line back, and the
-    /// two-way classification — any transport [`io::Error`] is the fail-fast
-    /// [`StructureError::Unreachable`] carrying the "start `reuben play`" guidance, while a line
-    /// that came back but will not parse is a [`StructureError::Protocol`]. A fake transport
-    /// therefore exercises this whole path for real.
+    /// The policy layer, above the socket: framing out, one line back, and the split between a
+    /// transport failure (unreachable) and a line that came back unparseable (protocol).
     fn exchange_with(
         &self,
         request: &Request,
@@ -338,8 +294,6 @@ mod tests {
 
     #[test]
     fn unreachable_error_carries_the_start_reuben_play_guidance() {
-        // The fail-fast contract: the unreachable message names the fix, whatever
-        // the underlying cause, so a caller that surfaces it is actionable.
         let err = StructureError::unreachable("connection refused");
         assert!(err.is_unreachable());
         let shown = err.to_string();
@@ -355,8 +309,6 @@ mod tests {
 
     #[test]
     fn channel_and_protocol_errors_are_not_unreachable() {
-        // A server that answers (even with Response::Error) is not the fail-fast unreachable case —
-        // the engine is up; the request just didn't produce a domain answer.
         assert!(!StructureError::Channel("unreadable request".to_string()).is_unreachable());
         assert!(!StructureError::Protocol("bad json".to_string()).is_unreachable());
     }

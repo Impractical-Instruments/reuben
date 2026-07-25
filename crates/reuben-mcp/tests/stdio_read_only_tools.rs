@@ -1,14 +1,11 @@
-//! Integration tests for the read-only tools over stdio (#316 verification): spawn the real
-//! shim binary, complete the `initialize` handshake, and drive a `tools/call` for
-//! `describe_operators` / `describe_instrument` / `validate_instrument` over newline-delimited
-//! JSON-RPC — the actual protocol boundary the client sees, not an in-process shortcut.
+//! Integration tests for the read-only tools over stdio: spawn the real shim binary, complete the
+//! `initialize` handshake, and drive a `tools/call` over newline-delimited JSON-RPC — the actual
+//! protocol boundary a client sees, not an in-process shortcut.
 //!
-//! These assert the error-layer discipline: `isError` is reserved for
-//! can't-do-the-job cases (unreadable source, unknown operator, a document with no boundary to
-//! describe), while a *failing validation* is an ordinary result carrying an `ok:false` report.
-//! Since #604 a document is always named by `source` — there is no inline arm — so every case here
-//! seeds a real file. Every call is bounded by a watchdog so a protocol regression fails loudly
-//! instead of hanging CI.
+//! Every case seeds a real file, since a document is always named by `source`, and every call is
+//! bounded by a watchdog so a protocol regression fails loudly instead of hanging CI.
+//!
+//! see rules: agent-mcp
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
@@ -124,9 +121,8 @@ fn describe_operators_no_filter_lists_all() {
 
 #[test]
 fn describe_operators_compact_returns_signatures() {
-    // reuben#459: `compact:true` switches the verb to its generated signature-line
-    // projection — `{ signatures: [...] }`, one line per registered operator, with the full port
-    // objects absent (their token weight is the point). Same registry truth, same count.
+    // `compact:true` switches the verb to its signature-line projection: one line per registered
+    // operator, with the full port objects absent (their token weight is the point).
     let result = call_tool("describe_operators", serde_json::json!({ "compact": true }));
     assert!(
         !is_error(&result),
@@ -160,7 +156,7 @@ fn describe_operators_compact_returns_signatures() {
 }
 
 /// Write `document` into a fresh temp directory and return its path — the only way to hand these
-/// tools a document now that there is no inline arm (#604).
+/// tools a document, since there is no inline arm.
 fn seeded(case: &str, document: serde_json::Value) -> std::path::PathBuf {
     let dir = std::env::temp_dir().join(format!("reuben_mcp_read_only_{case}"));
     let _ = std::fs::remove_dir_all(&dir);
@@ -211,9 +207,8 @@ fn validate_broken_doc_is_ok_false_not_iserror() {
 
 #[test]
 fn describe_instrument_projects_an_unloadable_document_but_has_no_boundary_for_it() {
-    // Two different answers about the same broken document, and #604/#608 split them deliberately.
-    // The structural views still project it — going blind is the worst way to report invalidity,
-    // and `validate_instrument` is the single authority on validity...
+    // Two different answers about the same broken document: the structural views still project
+    // it, but the boundary view cannot be cut from a document that will not load.
     let path = seeded("describe_unloadable", typo_document());
     let source = serde_json::json!({ "source": path.to_string_lossy() });
     let result = call_tool("describe_instrument", source.clone());
@@ -280,9 +275,8 @@ fn an_incoherent_selection_is_refused_rather_than_silently_narrowed() {
 
 #[test]
 fn a_missing_source_is_iserror_and_there_is_no_inline_document_arm() {
-    // The one-of retired with #604: an unreadable `source` is the only can't-do-the-job shape left,
-    // and `document` is not a field any more — passing one is a schema violation, not a second way
-    // in. Both must fail; neither may quietly succeed.
+    // An unreadable `source` is the only can't-do-the-job shape left, and `document` is not a
+    // field — passing one is a schema violation, not a second way in. Neither may quietly succeed.
     let missing = call_tool(
         "validate_instrument",
         serde_json::json!({ "source": "definitely/not/here.json" }),
@@ -355,8 +349,8 @@ fn read_only_tools_advertise_output_schemas() {
         .as_array()
         .unwrap_or_else(|| panic!("tools/list missing a tools array:\n{response}"));
 
-    // The read-only tools are exactly the Pure contracts — derived from the
-    // single-source roster (#157), not a hand-typed list, so Wave 2 adds a CONTRACTS entry rather
+    // The read-only tools are exactly the Pure contracts, derived from the single-source roster
+    // rather than a hand-typed list — so a new tool is a CONTRACTS entry rather
     // than editing a parallel literal here.
     let read_only = reuben_core::tools::CONTRACTS
         .iter()

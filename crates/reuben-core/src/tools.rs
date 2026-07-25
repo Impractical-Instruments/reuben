@@ -1,12 +1,11 @@
 //! The engine's agent-tool **contract roster** — the single source of truth for *which* contracts
 //! the tool surface exposes, and in what order.
 //!
-//! This declares the roster *identity* — names and channel kind — and nothing else. Descriptions,
-//! input/output schemas, and the tool bodies stay per-door (they are host-flavoured and, for the
-//! MCP door, carry rmcp/schemars machinery reuben-core must never depend on). "Contracts live in
-//! core": the roster is OS-free and depends on no engine or protocol type, so every
-//! door can derive its name-set and count from [`CONTRACTS`] instead of hand-typing a parallel
-//! literal. Adding a verb becomes one entry here rather than a roster edit in every door.
+//! Roster *identity* only: names and channel kind. Descriptions and the tool bodies stay per-door;
+//! output schemas derive from the contract types behind core's optional `schemars` feature. Adding
+//! a verb is one entry here rather than a roster edit in every door.
+//!
+//! see rules: agent-mcp
 
 /// Which channel a contract is served over. Roster metadata only — it does not carry
 /// the tool's behaviour, just how the door reaches it.

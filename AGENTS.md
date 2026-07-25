@@ -28,6 +28,22 @@ Determinism · RT-safe Render (`process` never allocates/locks/blocks) · OSC-on
 core · single-writer Coordinator. Details + enforcing tests:
 [authoring.md](docs/agents/authoring.md#invariants-you-must-not-break).
 
+## Comments (every code change)
+
+**Rationale is a rule; mechanics is a comment; restating the code is neither.** Before writing a
+comment, decide which of the three it is:
+
+- **Rationale** — argues a position, explains a tradeoff, or states a constraint that binds beyond
+  this file → it belongs in a `docs/rules/` topic, and the comment becomes `// see rules: <topic>`.
+- **Mechanics** — a local fact the code cannot state itself (`SAFETY:`, an invariant a caller must
+  uphold, why a constant is *this* number, a non-obvious step, the signature-level `///`) → keep it.
+- **Restatement** — anything `hover`, `goToDefinition`, `findReferences`, or a grep would answer →
+  don't write it. It is a second copy that can go stale while the build stays green.
+
+Never cite an issue or ADR number in a comment; provenance lives in the rationale file. Guarded
+per swept crate by `scripts/check_rules_refs.py`. Full rule:
+[Code as a grounding surface](docs/rules/code-as-grounding.md).
+
 ## Language
 
 Use the project's exact terms (Operator, Instrument, Rig, Plan, Swap, Voice…).
@@ -67,11 +83,15 @@ Use Grep only for non-code text: comments, string literals, config values.
 **Never use Grep to find a function or type definition.**
 
 These files punish a whole-file Read — `documentSymbol` first, then read only the range you need:
-`reuben-core/src/format/mod.rs` (4.8k lines) · `reuben-core/src/projection.rs` (2.5k) ·
-`reuben-mcp/src/lib.rs` (2.2k) · `reuben-native/src/audio.rs` (1.5k) · `reuben-core/src/plan.rs` (1.5k).
+`reuben-core/src/format/mod.rs` (4.8k lines) · `reuben-mcp/src/lib.rs` (3.3k) ·
+`reuben-core/src/projection.rs` (2.5k) · `reuben-native/src/audio.rs` (1.5k) ·
+`reuben-core/src/plan.rs` (1.5k).
 
 Search is pre-scoped by [`.ignore`](.ignore) — build output, `.git`, caches, binary fixtures.
 Don't bypass it with `--no-ignore`; nothing it hides is a source of truth.
+
+Both of the above are rules, not preferences — see
+[Code as a grounding surface](docs/rules/code-as-grounding.md).
 
 ## Guides
 
