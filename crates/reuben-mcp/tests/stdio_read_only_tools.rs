@@ -248,6 +248,37 @@ fn describe_instrument_projects_an_unloadable_document_but_has_no_boundary_for_i
 }
 
 #[test]
+fn an_incoherent_selection_is_refused_rather_than_silently_narrowed() {
+    // The selection grammar is core's (`Selection::from_terms`) precisely so both doors answer
+    // this the same way. Silently honouring one field and dropping the other is the trap: the
+    // caller that meant the dropped one gets a plausible answer to a question it did not ask.
+    let path = seeded("incoherent_selection", typo_document());
+    let source = path.to_string_lossy().to_string();
+
+    let both = call_tool(
+        "describe_instrument",
+        serde_json::json!({
+            "source": source, "view": "nodes", "select": ["/osc"], "type": "oscillator"
+        }),
+    );
+    assert!(
+        is_error(&both),
+        "select and type together must be refused, not resolved by precedence: {both}"
+    );
+
+    // Same rule one branch further in: `boundary` builds no selection at all, so terms it cannot
+    // honour must be refused there too rather than quietly ignored.
+    let boundary = call_tool(
+        "describe_instrument",
+        serde_json::json!({ "source": source, "view": "boundary", "select": ["/osc"] }),
+    );
+    assert!(
+        is_error(&boundary),
+        "the boundary view takes no selection; terms it ignores must be an error: {boundary}"
+    );
+}
+
+#[test]
 fn a_missing_source_is_iserror_and_there_is_no_inline_document_arm() {
     // The one-of retired with #604: an unreadable `source` is the only can't-do-the-job shape left,
     // and `document` is not a field any more — passing one is a schema violation, not a second way

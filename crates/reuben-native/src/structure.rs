@@ -945,7 +945,12 @@ mod tests {
             }
         }
 
-        let dir = std::env::temp_dir().join("reuben_installed_source_test");
+        // Process-unique: a fixed name collides between concurrent checkouts, and this test
+        // deletes the directory it is about to use.
+        let dir = std::env::temp_dir().join(format!(
+            "reuben_installed_source_test_{}",
+            std::process::id()
+        ));
         let _ = std::fs::remove_dir_all(&dir);
         std::fs::create_dir_all(&dir).expect("case dir");
         let good = dir.join("next.json");

@@ -1624,6 +1624,28 @@ mod tests {
         assert!(rendered.contains("in: in<-/level"), "{rendered}");
     }
 
+    /// The grammar every door builds its selection through. Pinned here because the whole reason it
+    /// moved into core is that two doors independently grew it and disagreed about both-at-once —
+    /// so "both is an error" is a contract, not an implementation detail, and a regression to
+    /// silent precedence must not ship green.
+    #[test]
+    fn from_terms_is_the_one_answer_both_doors_get() {
+        assert_eq!(Selection::from_terms(&[], None), Ok(Selection::All));
+        assert_eq!(
+            Selection::from_terms(&[], Some("oscillator")),
+            Ok(Selection::Type("oscillator".to_string()))
+        );
+        assert_eq!(
+            Selection::from_terms(&["/osc".to_string()], None),
+            Ok(Selection::names(["/osc"]))
+        );
+        // Both at once is refused, and the refusal names what it saw — a caller that meant one of
+        // them learns which one was in danger of being dropped.
+        let both = Selection::from_terms(&["/osc".to_string()], Some("filter"))
+            .expect_err("names and a type together is not a coherent selection");
+        assert!(both.contains("/osc") && both.contains("filter"), "{both}");
+    }
+
     #[test]
     fn zoom_by_type_multi_matches_and_reports_a_type_nobody_has() {
         let p = projector(TINY);

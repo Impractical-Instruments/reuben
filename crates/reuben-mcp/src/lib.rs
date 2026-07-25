@@ -985,6 +985,22 @@ impl ReubenServer {
         };
         let registry = Registry::builtin();
 
+        // The grammar is core's ([`Selection::from_terms`]), so this door cannot invent its own
+        // answer for select-and-type-at-once. Checked **before** the view splits, because the
+        // boundary path below has no selection to build and would otherwise accept terms it then
+        // ignores — the same silent-precedence trap this call exists to close, one branch further
+        // in. A caller that named terms a view cannot honour has not asked a coherent question.
+        let selection = match Selection::from_terms(&params.select, params.type_name.as_deref()) {
+            Ok(selection) => selection,
+            Err(why) => return Ok(cannot_do_the_job(why)),
+        };
+        if params.view == InstrumentView::Boundary && selection != Selection::All {
+            return Ok(cannot_do_the_job(
+                "the `boundary` view is the whole face a host wires against — it takes no `select` \
+                 or `type`. Drop them, or read `view: \"pipes\"`, which is selectable.",
+            ));
+        }
+
         // The boundary is not a projection: it needs children *loaded* to inherit an output pipe's
         // type, so it keeps its own path — and its own "no boundary to describe" failure.
         if params.view == InstrumentView::Boundary {
@@ -1011,12 +1027,6 @@ impl ReubenServer {
         let projector = match Projector::new(&json, &registry, &resolver) {
             Ok(p) => p,
             Err(message) => return Ok(cannot_load(message)),
-        };
-        // The grammar is core's (`Selection::from_terms`), so this door cannot invent its own
-        // answer for select-and-type-at-once.
-        let selection = match Selection::from_terms(&params.select, params.type_name.as_deref()) {
-            Ok(selection) => selection,
-            Err(why) => return Ok(cannot_load(why)),
         };
         let (view, text) = match params.view {
             InstrumentView::Index => ("index", projector.index().render()),
@@ -1843,6 +1853,15 @@ fn structured_ok<T: Serialize>(value: &T, summary: String) -> Result<CallToolRes
 /// bytes that will not mint. `isError` tells the model to act on the guidance rather than treat the
 /// payload as a deliverable.
 fn cannot_load(message: impl Into<String>) -> CallToolResult {
+    cannot_do_the_job(message)
+}
+
+/// The isError result for a call whose *arguments* do not describe a coherent request — the other
+/// half of what `#tool-surface` reserves `isError` for. Same shape as [`cannot_load`], named
+/// separately because the two say different things to a model: one means "that document is not
+/// readable", the other "that question is not well formed", and a helper called `cannot_load`
+/// answering the second would misdescribe its own result.
+fn cannot_do_the_job(message: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(message.into())])
 }
 
