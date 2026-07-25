@@ -16,7 +16,7 @@ use reuben_core::{content_hash, NormalizedDoc, Registry};
 
 use super::args::*;
 use super::resources::{Adapter, Resources};
-use super::result::{Diag, DocumentView, EditResult, OperatorInfo, Operators, Report};
+use super::result::{Boundary, Diag, DocumentView, EditResult, OperatorInfo, Operators, Report};
 
 /// A verb's answer: the payload a door advertises to its caller, and the one-line gloss it shows a
 /// human reading the transcript.
@@ -115,15 +115,7 @@ pub fn describe_instrument(
     // The boundary is not a projection: it needs children *loaded* to inherit an output pipe's
     // type, so it keeps its own path — and its own "no boundary to describe" failure.
     if args.view == InstrumentView::Boundary {
-        let boundary =
-            core_introspect::describe_patch(&json, &registry, &resolver).map_err(|message| {
-                Refusal::new(format!(
-                    "{message}\n\nThe document could not be loaded, so there is no boundary to \
-                     describe. Run `validate_instrument` for the full report of errors and \
-                     warnings, or read `view: \"index\"` — the structural views project even when \
-                     the document does not load."
-                ))
-            })?;
+        let boundary = boundary_of(&json, &registry, &resolver)?;
         let summary = describe_boundary_summary(&boundary);
         return Ok(Answer {
             output: DocumentView {
@@ -150,6 +142,45 @@ pub fn describe_instrument(
             text,
         },
         summary,
+    })
+}
+
+/// Read a document's nesting face **structurally** — the same question
+/// [`describe_instrument`] answers as a rendered line under `view: "boundary"`, in the shape a
+/// program consumes instead of the shape a model reads.
+///
+/// Both are one code path down to the engine call, so the surface a control-surface generator
+/// builds against and the surface a model is told about cannot describe different pipes.
+pub fn describe_boundary(
+    args: &DescribeBoundary,
+    resources: &dyn Resources,
+) -> Result<Answer<Boundary>, Refusal> {
+    let resolver = Adapter(resources);
+    let json = read_document(&args.source, resources)?;
+    let boundary = boundary_of(&json, &Registry::builtin(), &resolver)?;
+    let summary = describe_boundary_summary(&boundary);
+    Ok(Answer {
+        output: Boundary::from_core(&boundary),
+        summary,
+    })
+}
+
+/// The engine's boundary description, with the one refusal both boundary reads share: a document
+/// that will not **load** has no boundary at all, because an output pipe's type is inherited from
+/// the internal port feeding it and nothing was built to inherit from. The message says what to
+/// reach for instead, since going blind is the worst answer to "this did not load".
+fn boundary_of(
+    json: &str,
+    registry: &Registry,
+    resolver: &dyn ResourceResolver,
+) -> Result<PatchBoundary, Refusal> {
+    core_introspect::describe_patch(json, registry, resolver).map_err(|message| {
+        Refusal::new(format!(
+            "{message}\n\nThe document could not be loaded, so there is no boundary to \
+             describe. Run `validate_instrument` for the full report of errors and \
+             warnings, or read `view: \"index\"` — the structural views project even when \
+             the document does not load."
+        ))
     })
 }
 
@@ -757,6 +788,86 @@ mod tests {
 
         let refusal = set_instrument_input(&args, &store).expect_err("no such node");
         assert!(refusal.message.contains("/ghost"), "{refusal}");
+    }
+
+    /// A document with a face to read: one input pipe carrying declared metadata, one output tap.
+    const NESTABLE: &str = r#"{
+        "format_version": 3,
+        "instrument": "nestable",
+        "nodes": [ { "type": "oscillator", "address": "/osc" } ],
+        "interface": {
+            "inputs": { "freq": { "type": "f32_buffer", "default": 220.0, "min": 20.0,
+                                  "max": 20000.0, "curve": "exp", "unit": "Hz" } },
+            "outputs": { "out": { "from": "/osc.audio" } }
+        }
+    }"#;
+
+    /// The two boundary reads are one answer in two shapes: a program takes the structured pipes,
+    /// a model takes the rendered line. They run different code above the engine call, which is
+    /// exactly how a door ends up believing in pipes the other door does not serve — so this pins
+    /// them to the same names.
+    #[test]
+    fn both_boundary_reads_describe_the_same_pipes() {
+        let store = MemoryStore::with("nestable.json", NESTABLE);
+
+        let structured = describe_boundary(
+            &DescribeBoundary {
+                source: "nestable.json".to_string(),
+            },
+            &store,
+        )
+        .expect("a loadable document has a boundary")
+        .output;
+        let rendered = describe_instrument(
+            &DescribeInstrument {
+                source: "nestable.json".to_string(),
+                view: InstrumentView::Boundary,
+                ..Default::default()
+            },
+            &store,
+        )
+        .expect("the same document, the same verb")
+        .output;
+
+        assert_eq!(structured.instrument, "nestable");
+        let names: Vec<&str> = structured
+            .inputs
+            .iter()
+            .chain(&structured.outputs)
+            .map(|p| p.name.as_str())
+            .collect();
+        assert_eq!(names, ["freq", "out"], "{structured:?}");
+        for name in names {
+            assert!(
+                rendered.text.contains(name),
+                "the rendered face is missing `{name}`: {}",
+                rendered.text
+            );
+        }
+        // The declared metadata survives the trip through the window's own port shape — the thing
+        // a control surface builds its widget range out of.
+        let freq = &structured.inputs[0];
+        assert_eq!((freq.min, freq.max), (Some(20.0), Some(20000.0)));
+        assert_eq!(freq.unit, "Hz");
+        assert_eq!(freq.curve.as_deref(), Some("exponential"));
+    }
+
+    /// A document that will not load has no boundary either way: an output pipe's type is
+    /// inherited from the port feeding it, and nothing was built to inherit from.
+    #[test]
+    fn a_boundary_read_of_an_unloadable_document_is_a_refusal() {
+        let store = MemoryStore::with("broken.json", r#"{"format_version": 3}"#);
+        let refusal = describe_boundary(
+            &DescribeBoundary {
+                source: "broken.json".to_string(),
+            },
+            &store,
+        )
+        .expect_err("nothing to describe");
+        assert!(
+            refusal.message.contains("validate_instrument"),
+            "the refusal says what to reach for instead: {refusal}"
+        );
     }
 
     /// A source the store does not hold is a refusal naming the source as the caller spelled it.

@@ -13,11 +13,25 @@
 //! see rules: agent-mcp
 
 mod args;
+pub mod prose;
 mod resources;
 mod result;
 mod verbs;
 
 pub use args::*;
 pub use resources::{ResolveError, Resources, SampleBuffer};
-pub use result::{Diag, DocumentView, EditResult, OperatorInfo, Operators, PortInfo, Report};
+pub use result::{
+    Boundary, Diag, DocumentView, EditResult, OperatorInfo, Operators, PortInfo, Report,
+};
 pub use verbs::*;
+
+/// The notation key for the compact operator listing, so a door shipping that listing as
+/// standalone grounding can say what its punctuation means. The engine's, re-exported rather than
+/// restated: a second copy of a legend for a generated notation is a second copy that can describe
+/// the notation wrongly.
+pub use reuben_core::introspect::COMPACT_DESCRIBE_LEGEND;
+
+/// The `instrument` name a new document gets when its author does not choose one — what a door
+/// fills [`NewInstrument::name`] with for a caller that omitted it. A value, not a type: the
+/// engine's constant is the one authority on it.
+pub use reuben_core::SCAFFOLD_DEFAULT_NAME;

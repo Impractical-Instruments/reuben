@@ -133,6 +133,42 @@ pub struct Operators {
     pub signatures: Option<Vec<String>>,
 }
 
+/// The face a host instrument wires against when it nests this one: one port per `interface`
+/// name, described as if the whole document were an Operator. An input pipe is typed by its own
+/// declaration; an output pipe inherits type and metadata from the internal port feeding it, then
+/// takes whatever range and unit the entry overrides.
+///
+/// The rendered line grammar every other read answers in is what a model gets; this is the
+/// structured shape, for a program building a control surface off the same question.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct Boundary {
+    /// The document's `instrument` name.
+    pub instrument: String,
+    pub inputs: Vec<PortInfo>,
+    pub outputs: Vec<PortInfo>,
+    /// Declared boundary ports whose internal target went dark this load (an unavailable nested
+    /// child) — real ports the description cannot type.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dark_inputs: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub dark_outputs: Vec<String>,
+    /// Non-fatal load warnings (unresolved resources and the like), advisory as in validation and
+    /// localized the same way.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub warnings: Vec<Diag>,
+}
+
+impl Boundary {
+    /// No boundary port of any kind — typed or dark, either direction. The instrument nests but
+    /// exposes nothing to wire.
+    pub fn is_empty(&self) -> bool {
+        self.inputs.is_empty()
+            && self.outputs.is_empty()
+            && self.dark_inputs.is_empty()
+            && self.dark_outputs.is_empty()
+    }
+}
+
 /// A structural read of a document: the rendered view.
 ///
 /// One rendered string rather than five structured shapes, for the reason the projection exists at
@@ -200,6 +236,19 @@ impl PortInfo {
             curve: p.curve.clone(),
             variants: p.variants.clone(),
             channel: p.channel,
+        }
+    }
+}
+
+impl Boundary {
+    pub(crate) fn from_core(b: &core_introspect::PatchBoundary) -> Self {
+        Boundary {
+            instrument: b.instrument.clone(),
+            inputs: b.inputs.iter().map(PortInfo::from_core).collect(),
+            outputs: b.outputs.iter().map(PortInfo::from_core).collect(),
+            dark_inputs: b.dark_inputs.clone(),
+            dark_outputs: b.dark_outputs.clone(),
+            warnings: b.warnings.iter().map(Diag::from_core).collect(),
         }
     }
 }

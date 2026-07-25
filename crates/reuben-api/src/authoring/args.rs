@@ -79,6 +79,13 @@ pub struct DescribeInstrument {
     pub type_name: Option<String>,
 }
 
+/// Arguments for `describe_boundary`: the document whose nesting face to read.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct DescribeBoundary {
+    /// The instrument document (a path for this door).
+    pub source: String,
+}
+
 /// Arguments for `validate_instrument`: the document to validate, named by its opaque `source`.
 ///
 // There is no inline `document` arm: a model that can hand the verb a whole document is a model
