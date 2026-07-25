@@ -3,12 +3,12 @@
 
 use std::path::PathBuf;
 
+use reuben_api::FsResolver;
 use reuben_core::message::Message;
 use reuben_core::plan::Plan;
 use reuben_core::render::Renderer;
 use reuben_core::vocab::pitch::{Note, Pitch};
 use reuben_core::{load_instrument, AudioConfig, Registry};
-use reuben_native::resources::FsResolver;
 
 /// Absolute path to this crate's frozen test fixtures, independent of test CWD.
 fn fixtures_dir() -> PathBuf {

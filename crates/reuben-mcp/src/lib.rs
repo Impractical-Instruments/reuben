@@ -2,7 +2,7 @@
 //!
 //! A [`ServerHandler`] with a tool router over the [`reuben_core::tools::CONTRACTS`] roster, in
 //! three families: the pure introspection tools and the nineteen document verbs answer in-process
-//! through a [`reuben_native::resources::FsResolver`], while the five engine tools reach a
+//! through a [`reuben_api::FsResolver`], while the five engine tools reach a
 //! user-owned `reuben play` through [`EngineLink`].
 //!
 //! see rules: agent-mcp
@@ -19,6 +19,7 @@ use rmcp::model::{
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt};
 
+use reuben_api::FsResolver;
 use reuben_core::coordinator::{
     ControlArg, ControlMessage, DiagnosticsReport, DocSource, MAX_SEND_BATCH,
 };
@@ -28,7 +29,6 @@ use reuben_core::projection::{Projector, Selection};
 use reuben_core::{
     content_hash, Diag, NormalizedDoc, Registry, Report, ResourceResolver, SwapReport,
 };
-use reuben_native::resources::FsResolver;
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 

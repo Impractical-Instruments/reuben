@@ -1187,6 +1187,16 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6f6ff9a378485b298a5286656da665ba74413d36db0979633275d2e708145d4"
 
 [[package]]
+name = "reuben-api"
+version = "0.0.0"
+dependencies = [
+ "hound",
+ "reuben-core",
+ "schemars",
+ "serde",
+]
+
+[[package]]
 name = "reuben-contract"
 version = "0.0.0"
 dependencies = [
@@ -1228,8 +1238,8 @@ dependencies = [
 name = "reuben-mcp"
 version = "0.0.0"
 dependencies = [
+ "reuben-api",
  "reuben-core",
- "reuben-native",
  "rmcp",
  "schemars",
  "serde",
@@ -1244,8 +1254,8 @@ dependencies = [
  "approx",
  "clap",
  "cpal",
- "hound",
  "libc",
+ "reuben-api",
  "reuben-contract",
  "reuben-core",
  "rosc",

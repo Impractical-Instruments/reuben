@@ -8,8 +8,8 @@
 
 use std::path::Path;
 
+use reuben_api::FsResolver;
 use reuben_core::{load_instrument, Registry};
-use reuben_native::resources::FsResolver;
 
 const LEAF: &str = r#"{
     "instrument": "leaf",

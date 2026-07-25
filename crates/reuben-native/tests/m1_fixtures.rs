@@ -11,9 +11,9 @@
 
 use std::path::{Path, PathBuf};
 
+use reuben_api::FsResolver;
 use reuben_core::introspect::validate;
 use reuben_core::Registry;
-use reuben_native::resources::FsResolver;
 
 /// Absolute path into this crate's `tests/fixtures/m1/` tree.
 fn fixture(name: &str) -> PathBuf {

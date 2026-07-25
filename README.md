@@ -15,6 +15,10 @@ This repo is the **engine and its SDK**:
   ([execution-runtime](docs/rules/execution-runtime.md)): construct from a document, push
   OSC in, pull audio out. No OS dependency; compiles to `wasm32-unknown-unknown` untouched. This
   is what you link against to put reuben inside something else.
+- **`reuben-api`** — the one window between the engine and every consumer, in two feature halves:
+  `authoring` (document work, off-thread) and `render` (what a host drives per block), so a host
+  compiles only the one it drives. Ships a default-off filesystem resolver to share rather than
+  reimplement.
 - **`reuben-native`** — the `reuben` CLI and its audio/OSC/filesystem host.
 - **`reuben-mcp`** — a stdio MCP sidecar, so an agent can author instruments against a live engine
   ([agent-mcp](docs/rules/agent-mcp.md)).

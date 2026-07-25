@@ -4,9 +4,9 @@
 
 use std::path::PathBuf;
 
+use reuben_api::FsResolver;
 use reuben_core::Registry;
 use reuben_native::cli::validate;
-use reuben_native::resources::FsResolver;
 
 /// Absolute path to this crate's frozen test fixtures (docs that are test coverage,
 /// not library instruments).

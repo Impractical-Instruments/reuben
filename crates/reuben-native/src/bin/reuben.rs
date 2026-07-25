@@ -16,6 +16,7 @@ use std::thread;
 
 use clap::{Parser, Subcommand};
 
+use reuben_api::FsResolver;
 use reuben_core::boundary;
 use reuben_core::coordinator::Coordinator;
 use reuben_core::edit;
@@ -26,7 +27,6 @@ use reuben_native::cli::{
     describe, describe_compact, describe_patch, validate, COMPACT_DESCRIBE_LEGEND,
 };
 use reuben_native::profile::DeviceProfile;
-use reuben_native::resources::FsResolver;
 use reuben_native::rigs::DEFAULT_JSON;
 use reuben_native::structure::StructureState;
 use reuben_native::{audio, osc, scaffold, structure};

@@ -5,7 +5,8 @@ single-purpose DSP units patched into playable Instruments and Rigs. OSC is the
 lingua franca, in and out.
 
 **Stack:** Rust workspace (Cargo). Core: `reuben-core` (the portable engine + its C-ABI embed
-surface); binary: `reuben-native`; MCP sidecar: `reuben-mcp`. This repo is the **SDK** — the
+surface); the window every consumer goes through: `reuben-api`; binary: `reuben-native`; MCP
+sidecar: `reuben-mcp`. This repo is the **SDK** — the
 browser player and its chat-authoring agent were extracted to the private `reuben-web` repo,
 which consumes this one as a submodule.
 
@@ -51,11 +52,12 @@ The [rules index](docs/rules/README.md) carries the glossary — don't drift to 
 
 ## Repo map
 
-Five crates. `reuben-core` is ~35k lines — enter through the module that owns the concept, not a search.
+Six crates. `reuben-core` is ~35k lines — enter through the module that owns the concept, not a search.
 
 | Crate | Owns |
 | --- | --- |
 | `reuben-core` | The portable, OS-free engine. No OS dependencies. |
+| `reuben-api` | The one window every consumer goes through. Two feature halves — `authoring` (off-thread, serialized) and `render` (what a host drives per block) — plus the default-off `fs-resolver` reference implementation of the resource seam. |
 | `reuben-native` | The removable native layer: cpal audio + input, OSC/UDP decode, the `reuben` CLI. |
 | `reuben-mcp` | The per-conversation MCP stdio sidecar. The only member allowed an async runtime (rmcp + tokio). |
 | `reuben-contract` | The single source of an Operator's port/constant contract, shared by the macro and scaffold. |
