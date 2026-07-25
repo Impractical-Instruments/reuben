@@ -344,7 +344,9 @@ def run_describe(reuben_bin: str, inst_path: Path) -> dict:
             f"`--reuben PATH`, or feed a pre-captured `--describe FILE`."
         )
     if proc.returncode != 0:
-        raise SystemExit(f"`reuben describe {inst_path}` failed: {proc.stderr.strip()}")
+        raise SystemExit(
+            f"`reuben describe {inst_path} --view boundary` failed: {proc.stderr.strip()}"
+        )
     return json.loads(proc.stdout)
 
 

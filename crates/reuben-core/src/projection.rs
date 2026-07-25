@@ -50,7 +50,12 @@ use crate::resources::{ResolveError, ResourceResolver};
 /// wire consumer — and specifically the agent-cost trend, whose numbers *are* projection bytes —
 /// can mark a re-baseline instead of silently comparing two different surfaces. Bumped only on a
 /// breaking shape change; a new optional line is additive.
-pub const PROJECTION_VERSION: u32 = 1;
+///
+/// v2 (#604, executing #611's call): the `doc` field is presented as **`description`**. The
+/// projection owns the agent-facing vocabulary — `doc` is a disk spelling, and a surface whose whole
+/// job is being read by a model should not make it learn two words for one thing. The disk field is
+/// untouched; a format migration across ~20 fixtures is not worth a cosmetic win.
+pub const PROJECTION_VERSION: u32 = 2;
 
 /// The address that zooms the **document itself** rather than a node: its full `doc`, its name, and
 /// its versions. Node addresses are routing prefixes with a segment after the slash, so the bare
@@ -136,6 +141,29 @@ impl Selection {
     pub fn names<I: IntoIterator<Item = S>, S: Into<String>>(names: I) -> Self {
         Selection::Names(names.into_iter().map(Into::into).collect())
     }
+
+    /// Build the grammar from the two fields a door exposes — a name list and a type predicate.
+    /// Neither means [`All`](Self::All).
+    ///
+    /// Lives here because "one selection grammar shared by zoom and pipes" is a claim about the
+    /// *projection*, and a door that re-derives it re-derives its edge cases too: the first two
+    /// doors to grow this surface disagreed about both-at-once — one a hard error, the other a
+    /// silent precedence — which is exactly the divergence `#portable-tool-contracts` forbids, and
+    /// a silent precedence is the worse half (a caller that meant the ignored field is told
+    /// nothing). Both-at-once is an `Err` for everyone: it is not a puzzle to resolve, it is a
+    /// caller that has not decided what it is asking for.
+    pub fn from_terms(names: &[String], type_name: Option<&str>) -> Result<Self, String> {
+        match (names.is_empty(), type_name) {
+            (true, None) => Ok(Selection::All),
+            (true, Some(ty)) => Ok(Selection::Type(ty.to_string())),
+            (false, None) => Ok(Selection::names(names.iter().cloned())),
+            (false, Some(ty)) => Err(format!(
+                "select by name or by type, not both — got names {} and type {}",
+                render_list(names, |n| token(n)),
+                token(ty)
+            )),
+        }
+    }
 }
 
 /// A literal value in a document: a number or a vocab-enum/`Symbol` name. The one shape
@@ -172,8 +200,10 @@ pub struct DocHeader {
     /// Node count — the document's size at a glance, so the agent knows what an index costs before
     /// asking for one.
     pub nodes: usize,
+    /// The document's authorial note — `doc` on disk, `description` here (see
+    /// [`PROJECTION_VERSION`]).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub doc: Option<String>,
+    pub description: Option<String>,
     /// Whether the document loads through the real engine path. `false` does **not** make the
     /// projection wrong — it means the dark-resource markers are unknown, and that `validate` (the
     /// single authority) has something to say.
@@ -196,19 +226,19 @@ impl DocHeader {
         s
     }
 
-    /// The header as an index prefixes it: the identity line plus the **role line** — the `doc`'s
-    /// first sentence, the same projection the library index takes. Intent stays *reachable*, not
-    /// *resident*: when the doc says more, the line says how much more and where to get it.
+    /// The header as an index prefixes it: the identity line plus the **role line** — the
+    /// description's first sentence, the same projection the library index takes. Intent stays
+    /// *reachable*, not *resident*: when it says more, the line says how much more and where to get it.
     fn render_role(&self) -> String {
         let mut out = self.line();
-        // A `doc` of "" or "   " is not intent, and a bare `doc:` line is a wasted line on the
-        // highest-frequency read.
+        // A description of "" or "   " is not intent, and a bare `description:` line is a wasted
+        // line on the highest-frequency read.
         if let Some(whole) = self.one_line_doc() {
             let role = first_sentence(&whole);
             // Characters, not bytes: the agent spends this number deciding whether the rest of the
-            // doc is worth a turn, and this codebase's prose is full of em-dashes and arrows.
+            // text is worth a turn, and this codebase's prose is full of em-dashes and arrows.
             let rest = whole.chars().count() - role.chars().count();
-            out.push_str(&format!("\ndoc: {role}"));
+            out.push_str(&format!("\ndescription: {role}"));
             if rest > 0 {
                 out.push_str(&format!(" [+{rest} chars: zoom {DOC_ADDRESS}]"));
             }
@@ -216,12 +246,12 @@ impl DocHeader {
         out
     }
 
-    /// The header as the document zoom renders it: the identity line plus the **whole** `doc`,
-    /// whitespace-normalized onto one line.
+    /// The header as the document zoom renders it: the identity line plus the **whole**
+    /// description, whitespace-normalized onto one line.
     fn render_full(&self) -> String {
         let mut out = self.line();
         if let Some(whole) = self.one_line_doc() {
-            out.push_str(&format!("\ndoc: {whole}"));
+            out.push_str(&format!("\ndescription: {whole}"));
         }
         out
     }
@@ -230,7 +260,7 @@ impl DocHeader {
     /// document's `doc` is the one place the projection deliberately carries prose rather than a
     /// token, so normalizing it here is what keeps it from spanning records.
     fn one_line_doc(&self) -> Option<String> {
-        self.doc
+        self.description
             .as_deref()
             .map(|d| d.split_whitespace().collect::<Vec<_>>().join(" "))
             .filter(|d| !d.is_empty())
@@ -381,8 +411,9 @@ pub struct NodeZoom {
     pub address: String,
     #[serde(rename = "type")]
     pub type_name: String,
+    /// The node's authorial note — `doc` on disk, `description` here (see [`PROJECTION_VERSION`]).
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub doc: Option<String>,
+    pub description: Option<String>,
     /// Plan-time `Constant`s — a **different verb** from inputs (they are set in the node's
     /// `config` block and never wired), so they render as their own line.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -417,8 +448,11 @@ impl NodeZoom {
                 out.push_str(&format!("\n{label}: {body}"));
             }
         };
-        if let Some(doc) = &self.doc {
-            line("doc", doc.split_whitespace().collect::<Vec<_>>().join(" "));
+        if let Some(text) = &self.description {
+            line(
+                "description",
+                text.split_whitespace().collect::<Vec<_>>().join(" "),
+            );
         }
         line("config", render_list(&self.config, InputEdge::render));
         line("in", render_list(&self.inputs, InputEdge::render));
@@ -794,7 +828,7 @@ impl<'a> Projector<'a> {
             format_version: self.doc.format_version,
             projection_version: PROJECTION_VERSION,
             nodes: self.doc.nodes.len(),
-            doc: self.doc.doc.clone(),
+            description: self.doc.doc.clone(),
             loadable: self.facts().loadable,
         }
     }
@@ -994,7 +1028,7 @@ impl<'a> Projector<'a> {
         NodeZoom {
             address: n.address.clone(),
             type_name: n.type_name.clone(),
-            doc: n.doc.clone(),
+            description: n.doc.clone(),
             config: n
                 .config
                 .iter()
@@ -1539,13 +1573,15 @@ mod tests {
         let mut lines = rendered.lines();
         assert_eq!(
             lines.next().unwrap(),
-            "instrument tiny (3 nodes, format 3, projection 1)"
+            "instrument tiny (3 nodes, format 3, projection 2)"
         );
-        // The role line is the doc's FIRST sentence; the rest is reachable, not resident.
-        let doc = lines.next().unwrap();
-        assert!(doc.starts_with("doc: A tiny thing."), "{doc}");
-        assert!(doc.ends_with("chars: zoom /]"), "{doc}");
-        assert!(!doc.contains("second sentence"), "{doc}");
+        // The role line is the description's FIRST sentence; the rest is reachable, not resident.
+        // `description`, not `doc`: the projection owns the agent-facing vocabulary (#611), and the
+        // disk spelling stops at the mint.
+        let role = lines.next().unwrap();
+        assert!(role.starts_with("description: A tiny thing."), "{role}");
+        assert!(role.ends_with("chars: zoom /]"), "{role}");
+        assert!(!role.contains("second sentence"), "{role}");
         assert_eq!(
             lines.collect::<Vec<_>>(),
             ["/osc oscillator", "/lvl m2s", "/amp mul_f32_signal"]
@@ -1567,7 +1603,7 @@ mod tests {
         let rendered = projector(TINY).zoom(&Selection::names(["/osc"])).render();
         assert_eq!(
             rendered,
-            "/osc oscillator\ndoc: the tone\nin: freq=220, waveform=Saw\nout: audio->/amp.a"
+            "/osc oscillator\ndescription: the tone\nin: freq=220, waveform=Saw\nout: audio->/amp.a"
         );
     }
 
@@ -1934,8 +1970,11 @@ mod tests {
             "nodes": []
         }"#;
         let p = projector(BLANK);
-        assert!(!p.index().render().contains("doc:"));
-        assert!(!p.zoom(&Selection::names(["/"])).render().contains("doc:"));
+        assert!(!p.index().render().contains("description:"));
+        assert!(!p
+            .zoom(&Selection::names(["/"]))
+            .render()
+            .contains("description:"));
     }
 
     /// The memoized boundary is cut once per **source**, not per referencing node: two voicers on

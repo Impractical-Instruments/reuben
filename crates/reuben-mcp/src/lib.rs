@@ -393,7 +393,8 @@ pub struct DescribeInstrumentParams {
     /// A term matching nothing is reported back, never silently dropped.
     #[serde(default)]
     pub select: Vec<String>,
-    /// Narrow `nodes`/`pipes` by declared type instead of by name. Ignored when `select` is given.
+    /// Narrow `nodes`/`pipes` by declared type instead of by name. Pass this **or** `select`,
+    /// never both.
     #[serde(default, rename = "type")]
     pub type_name: Option<String>,
 }
@@ -1011,7 +1012,12 @@ impl ReubenServer {
             Ok(p) => p,
             Err(message) => return Ok(cannot_load(message)),
         };
-        let selection = selection_of(&params.select, params.type_name.as_deref());
+        // The grammar is core's (`Selection::from_terms`), so this door cannot invent its own
+        // answer for select-and-type-at-once.
+        let selection = match Selection::from_terms(&params.select, params.type_name.as_deref()) {
+            Ok(selection) => selection,
+            Err(why) => return Ok(cannot_load(why)),
+        };
         let (view, text) = match params.view {
             InstrumentView::Index => ("index", projector.index().render()),
             InstrumentView::Nodes => ("nodes", projector.zoom(&selection).render()),
@@ -1857,16 +1863,6 @@ fn load_source(source: &str) -> Result<(String, FsResolver), CallToolResult> {
     // Root at the file's directory (sibling-first, library-root fallback), stat-only so
     // introspection reports port metadata without decoding any referenced audio.
     Ok((json, FsResolver::for_instrument(path).stat_only()))
-}
-
-/// The projection's one selection grammar, off `describe_instrument`'s two fields: explicit names
-/// win over a type predicate, and neither means everything.
-fn selection_of(names: &[String], type_name: Option<&str>) -> Selection {
-    match (names, type_name) {
-        ([], None) => Selection::All,
-        ([], Some(ty)) => Selection::Type(ty.to_string()),
-        (names, _) => Selection::names(names.iter().cloned()),
-    }
 }
 
 /// Render a [`PatchBoundary`] in the projection's line grammar, so `view: "boundary"` reads like

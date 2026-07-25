@@ -384,8 +384,10 @@ it, and the TouchOSC emitter and any host-side renderer read from it. The declar
 }
 ```
 
-`reuben describe <patch.json>` prints the boundary a host wires against — each pipe with its
-declared type, range, default, and unit.
+`reuben describe <patch.json> --view boundary` prints the boundary a host wires against — each
+pipe with its declared type, range, default, and unit. (A bare `describe <patch.json>` is the node
+index; `--view pipes` is this document's *declared* interface, while `boundary` is the resolved face
+a host sees, with nested children loaded.)
 `instruments/patches/space.json` (nestable effect) + `instruments/mic-space.json` (its host,
 behind a live-input pipe) are the worked pair.
 
@@ -445,15 +447,18 @@ stays checkout-side.
 ## The sample workflow: "use this sample" is a filesystem gesture <!-- lanes: skills,mcp -->
 
 No resource bytes cross the tool surface — there is no upload tool, by decision
-([agent-mcp](../rules/agent-mcp.md)). The agent handles the bytes itself:
+([agent-mcp](../rules/agent-mcp.md)). **Sample bytes are the one thing you still handle yourself**:
+the no-bytes rule now also covers instrument documents, but its original sample clause is unchanged,
+so this is a filesystem gesture followed by two ordinary verbs.
 
 1. **Write the bytes yourself, next to the instrument.** Copy, move, or synthesize the WAV
    **sibling to the instrument document** with your own file tools. Sibling-first resolution
    ([authoring-library](../rules/authoring-library.md)) makes
    next-to-the-document the blessed location.
-2. **Reference it by logical id + relative path.** Add a `resources` entry mapping a logical
-   id to the file's path relative to the document (`"resources": { "pluck": "pluck.wav" }`),
-   and point the node at the id through its `sample` field. Resolution semantics — relative
+2. **Reference it by logical id + relative path — with the verbs, not by hand.**
+   `add_instrument_resource` maps a logical id to the file's path relative to the document
+   (`pluck` → `pluck.wav`), and the node points at that id through its `sample` field —
+   `add_instrument_node(…, sample: "pluck")` on a new node. Resolution semantics — relative
    to the naming document, library-root fallback — are in the `resources` paragraph above.
 3. **Missing = silence + a node-localized warning.** A missing or unreadable resource is
    never fatal: the node degrades to silence and `validate` (which stats the file) reports a

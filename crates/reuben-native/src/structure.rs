@@ -342,11 +342,15 @@ impl StructureState {
     /// builder step because it has a working default (`None`, the built-in rig): every later swap
     /// re-points it from the `source` it installed, so this only ever answers for the run's first
     /// document.
-    pub fn with_installed_source(self, source: Option<String>) -> Self {
-        *self
-            .installed_source
-            .lock()
-            .expect("installed-source mutex poisoned") = source;
+    ///
+    /// **Replaces the cell rather than writing through it**, so the "only ever written under the
+    /// Coordinator lock" invariant on that field has no exception to carve out. Writing through the
+    /// lock would be correct only by argument — that this runs before `bind`, on a state nobody has
+    /// cloned yet — and `StructureState` is `Clone` and this is `pub`, so the argument is one call
+    /// site away from being false. Taking `self` by value makes it structurally true instead: a
+    /// builder step can only run before there is anyone to race.
+    pub fn with_installed_source(mut self, source: Option<String>) -> Self {
+        self.installed_source = Arc::new(Mutex::new(source));
         self
     }
 
@@ -927,6 +931,94 @@ mod tests {
             other => panic!("expected Document, got {other:?}"),
         }
         cb.stop();
+    }
+
+    /// The `source` half of the snapshot (#604): seeded by `play`'s path, re-pointed by a
+    /// successful by-path swap, and — the part worth a test — **left alone by a rejected one**, so
+    /// `get_document` never names a document that is not playing.
+    #[test]
+    fn installed_source_follows_the_install_and_a_rejected_swap_leaves_it_alone() {
+        fn source_of(state: &StructureState) -> Option<String> {
+            match dispatch(state, &Request::GetDocument.to_ndjson()) {
+                Response::Document(snapshot) => snapshot.source,
+                other => panic!("expected Document, got {other:?}"),
+            }
+        }
+
+        let dir = std::env::temp_dir().join("reuben_installed_source_test");
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).expect("case dir");
+        let good = dir.join("next.json");
+        std::fs::write(&good, envelope_doc("/eg")).expect("seed the swap target");
+
+        let (coordinator, side, _warnings) = Coordinator::install_initial(
+            BASE_DOC,
+            Registry::builtin(),
+            Box::new(MemoryResolver::new()),
+            cfg(),
+        )
+        .expect("initial install");
+        let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
+        let state = StructureState::from_coordinator(coordinator, Diagnostics::new(), control_tx)
+            .with_render_config(Arc::new(HeadlessRenderConfig {
+                opened_input_channels: 0,
+            }))
+            .with_installed_source(Some("initial.json".to_string()));
+        let cb = FakeCallback::spawn(side, control_rx);
+
+        // `play`'s path answers for the run's first document.
+        assert_eq!(source_of(&state), Some("initial.json".to_string()));
+
+        // A swap that installs re-points it.
+        let by_path = Request::Swap {
+            source: DocSource::Path(good.to_string_lossy().into_owned()),
+            expect: None,
+        };
+        match dispatch(&state, &by_path.to_ndjson()) {
+            Response::SwapReport(report) => assert!(report.report.ok, "{report:?}"),
+            other => panic!("expected SwapReport, got {other:?}"),
+        }
+        assert_eq!(source_of(&state), Some(good.to_string_lossy().into_owned()));
+
+        // A swap that does NOT install must not re-point it — the whole point of recording the
+        // source only inside the `ok` branch. An unreadable path never reaches the Coordinator.
+        let missing = Request::Swap {
+            source: DocSource::Path(dir.join("nope.json").to_string_lossy().into_owned()),
+            expect: None,
+        };
+        match dispatch(&state, &missing.to_ndjson()) {
+            Response::SwapReport(report) => assert!(!report.report.ok, "{report:?}"),
+            other => panic!("expected SwapReport, got {other:?}"),
+        }
+        assert_eq!(
+            source_of(&state),
+            Some(good.to_string_lossy().into_owned()),
+            "a rejected swap must leave `source` naming what is actually playing"
+        );
+
+        // ...and neither does one the loader rejects, which *does* reach the Coordinator.
+        let broken = dir.join("broken.json");
+        std::fs::write(
+            &broken,
+            r#"{"format_version":3,"instrument":"b","nodes":[{"type":"nope","address":"/x"}]}"#,
+        )
+        .expect("seed the broken target");
+        let bad_doc = Request::Swap {
+            source: DocSource::Path(broken.to_string_lossy().into_owned()),
+            expect: None,
+        };
+        match dispatch(&state, &bad_doc.to_ndjson()) {
+            Response::SwapReport(report) => assert!(!report.report.ok, "{report:?}"),
+            other => panic!("expected SwapReport, got {other:?}"),
+        }
+        assert_eq!(
+            source_of(&state),
+            Some(good.to_string_lossy().into_owned()),
+            "an ok:false load must leave `source` on the retained document"
+        );
+
+        cb.stop();
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

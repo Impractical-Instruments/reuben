@@ -1,6 +1,6 @@
 //! `reuben` — the command-line entry point.
 //!
-//! Four subcommands:
+//! Five subcommands:
 //! - `reuben play [path] [--io-map <file>]` — render an instrument live, driven by OSC over UDP.
 //!   With no path it plays the built-in default rig. `--io-map` loads a device profile:
 //!   logical↔device channel maps, device selection by name substring, and sample-rate/
@@ -18,8 +18,9 @@
 //!   `--compact` is the generated signature-line mode of the operator view: one line per operator,
 //!   legend first — the bundle-able grounding artifact the web build consumes. `--view` picks
 //!   between the four projection views (`index` — the default — `nodes`, `pipes`, `resources`) and
-//!   `boundary`, the `interface` face a *host* wires against; the CLI door's mirror of what
-//!   `describe_instrument` serves over MCP.
+//!   `boundary`, the `interface` face a *host* wires against. The same views `describe_instrument`
+//!   serves over MCP; `--json` emits each one's structured shape, since this door's consumers are
+//!   programs (the control-surface tooling reads `--view boundary --json`).
 //! - `reuben validate <path> [--json]` — load + plan an instrument with no audio device and
 //!   report structural/wiring errors. Exit 1 if invalid; warnings alone stay exit 0.
 //! - `reuben scaffold-operator --spec <path> [--json]` — generate a new Operator's Rust skeleton
@@ -112,8 +113,9 @@ enum Command {
         /// view only; full describe stays the zoom for port detail.
         #[arg(long)]
         compact: bool,
-        /// Which view of an instrument to cut (instrument paths only). The same four views the
-        /// `describe_instrument` tool serves, so both doors read a document the same way.
+        /// Which view of an instrument to cut (instrument paths only). The same views the
+        /// `describe_instrument` tool serves, so both doors read a document the same way — though
+        /// `--json` here emits each view's structured shape, for programs rather than models.
         #[arg(long, value_enum, default_value_t = InstrumentView::Index)]
         view: InstrumentView,
         /// Narrow `--view nodes`/`pipes` to these node addresses or pipe names. A name matching
@@ -196,14 +198,13 @@ fn main() -> ExitCode {
             view,
             select,
             select_type,
-        } => cmd_describe(
-            op.as_deref(),
-            json,
-            compact,
-            view,
-            selection(&select, select_type.as_deref()),
-            root,
-        ),
+        } => match selection(&select, select_type.as_deref()) {
+            Ok(selection) => cmd_describe(op.as_deref(), json, compact, view, selection, root),
+            Err(why) => {
+                eprintln!("error: {why}");
+                ExitCode::FAILURE
+            }
+        },
         Command::Validate { path, json } => cmd_validate(&path, json, root),
         Command::ScaffoldOperator {
             spec,
@@ -216,14 +217,12 @@ fn main() -> ExitCode {
     }
 }
 
-/// The projection's one selection grammar, off the CLI's two flags: explicit names, a type
-/// predicate, or everything. `clap` has already refused the both-at-once case.
-fn selection(names: &[String], type_name: Option<&str>) -> Selection {
-    match (names, type_name) {
-        ([], None) => Selection::All,
-        ([], Some(ty)) => Selection::Type(ty.to_string()),
-        (names, _) => Selection::names(names.iter().cloned()),
-    }
+/// The projection's one selection grammar, off the CLI's two flags — core's
+/// [`Selection::from_terms`], not a second copy of the rule. `clap`'s `conflicts_with` refuses
+/// both-at-once first with a nicer message, so the `Err` arm is belt-and-braces; what matters is
+/// that neither door decides the semantics for itself.
+fn selection(names: &[String], type_name: Option<&str>) -> Result<Selection, String> {
+    Selection::from_terms(names, type_name)
 }
 
 /// `new-instrument`: land a guaranteed-valid minimal instrument document (#146) **at a path** — the
@@ -364,8 +363,8 @@ fn is_patch_path(arg: &str) -> bool {
         || arg.chars().any(std::path::is_separator)
 }
 
-/// `describe`: dump the operator set, one operator, or — for an instrument JSON path — that
-/// instrument's boundary as a host sees it, as human text or JSON. `--compact`
+/// `describe`: dump the operator set, one operator, or — for an instrument JSON path — the
+/// `--view` the caller asked for (the node index by default), as human text or JSON. `--compact`
 /// switches the operator view to the generated signature-line mode.
 fn cmd_describe(
     op: Option<&str>,
@@ -465,11 +464,16 @@ fn print_diag(level: &str, d: &reuben_core::contract::Diag) {
     }
 }
 
-/// `describe <patch.json>`: the nested-instrument boundary view — the `interface` pipes a host
-/// wires against: an input pipe's own declared type/range/default, an output pipe's
+/// `describe <patch.json> --view boundary`: the nested-instrument boundary view — the `interface`
+/// pipes a host wires against: an input pipe's own declared type/range/default, an output pipe's
 /// type and metadata inherited from the internal port feeding it plus optional min/max range
 /// overrides (a subset of that port's range), both decorated by the entry's presentational fields
 /// (label/unit/widget).
+///
+/// The one view that is **not** a projection, and the one whose `--json` shape is deliberately not
+/// the MCP door's: this emits the structured [`PatchBoundary`] that the control-surface tooling
+/// consumes, where the sidecar renders it as a line. Same question, two consumers — a program here,
+/// a model there.
 fn cmd_describe_patch(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCode {
     let (instrument_json, resolver) = match read_instrument(path, root) {
         Ok(r) => r,
