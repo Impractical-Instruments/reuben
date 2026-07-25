@@ -704,12 +704,10 @@ impl Plan {
     }
 }
 
-/// Collapse pass-through **interface pipes** out of the execution schedule.
-/// A pipe is an authoring/format concept — a named boundary entry that mints an
-/// address — and rendering one as a real node costs a full per-node engine pass every block
-/// (routing, segmenting, an arena buffer + copy for a signal pipe), multiplied by the Voicer's
-/// per-voice plans. This pass removes each dissolvable pipe node and rewires around it so the
-/// rendered schedule is what a hand-flattened patch would have been:
+/// Collapse pass-through **interface pipes** out of the execution schedule, so the rendered
+/// schedule is what a hand-flattened patch would have been. see rules: execution-runtime
+///
+/// Each dissolvable pipe node is removed and rewired around:
 ///
 /// - its single consumer takes the pipe's **feeder wire** directly (zero-copy for signals), or —
 ///   when the boundary feeds the pipe by message (a Voicer, external OSC) — the consumer's own
@@ -844,9 +842,8 @@ fn dissolve_interface_pipes(graph: &mut Graph) -> Vec<DissolvedPipe> {
 
 /// Local per-wire form check — see rules: composition-operators.
 /// One destination-side exception local to this checker: a type-agnostic
-/// [`Arg`](PortType::Arg) pass-through input accepts any Event *or* Value source **whose type has
-/// an external OSC form** ([`has_osc_form`](crate::boundary::has_osc_form)); a Signal or no-form
-/// source is rejected.
+/// [`Arg`](PortType::Arg) pass-through input spans the Event/Value split, admitting any source
+/// [`has_osc_form`](crate::boundary::has_osc_form) accepts.
 fn check_wire_forms(graph: &Graph) -> Result<(), PlanError> {
     use PortKind::{Event, Signal, Value};
     for c in &graph.connections {
@@ -859,12 +856,8 @@ fn check_wire_forms(graph: &Graph) -> Result<(), PlanError> {
             continue;
         };
         let reason = match (port_kind(src), port_kind(dst)) {
-            // A type-agnostic pass-through input spans the Event/Value split:
-            // any Message-domain source whose type has an external OSC form wires in, both
-            // delivered as raw Events (capability-keyed via `boundary::has_osc_form`, the
-            // single statement shared with the load-time check). A no-form type (`Harmony`)
-            // would make a wire that can never send anything — hard error, same philosophy
-            // as the Signal arm below.
+            // Both admitted kinds are delivered as raw Events. `has_osc_form` is the single
+            // statement shared with the load-time check.
             (Event | Value, Event) if matches!(dst.ty, PortType::Arg) => {
                 if crate::boundary::has_osc_form(&src.ty) {
                     continue;

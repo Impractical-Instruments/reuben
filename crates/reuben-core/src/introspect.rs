@@ -994,13 +994,9 @@ mod tests {
         assert!(!line.contains("->"), "no arrow on a sink: {line}");
     }
 
-    // IGNORED. This asserts a flat ~122-chars-per-operator tax against a fixed
-    // 6,000-char ceiling, so it fails after roughly five more operators regardless of whether
-    // they carry any new information. It blocks number-operator-family growth, which is both a
-    // developer-experience and a measured render-thread performance improvement. The ceiling is
-    // a real AI-grounding constraint, but the lever is the *projection* — progressive disclosure
-    // of the library, or family-aware summarization — not the operator count. Re-enable with a
-    // guard that scales with the registry.
+    // IGNORED for its absolute 6,000-char arm, which is a flat ~122-chars-per-operator tax that
+    // fails after roughly five more operators regardless of what they carry.
+    // see rules: agent-mcp
     //
     // While this is ignored, NOTHING watches the size of the compact listing.
     #[test]

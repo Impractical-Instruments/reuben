@@ -123,14 +123,18 @@ pub struct Report {
     pub warnings: Vec<Diag>,
 }
 
-/// The swap diff summary (keyed by the survivor fingerprint):
-/// what happened to the sounding graph, *announced* rather than discovered by ear.
-/// `state_reset` lists addresses present in both documents whose node did **not** survive
-/// (a type change or an instantiate-time fingerprint change); `added`/`removed` catch
-/// whole-document re-emission accidents — a param tweak reporting `removed: ["/voice1"]`
-/// is a typo'd address caught while still fixable. The native lane's gapless swap fills in
-/// real survivor stats; the web lane's restart-swap rebuilds every node cold,
-/// reported honestly as `survived: 0` behind this same shape.
+/// What happened to the sounding graph across a swap, keyed by the survivor fingerprint.
+/// `state_reset` lists addresses present in both documents whose node did **not** survive (a type
+/// change, or an instantiate-time fingerprint change) — those nodes were rebuilt cold and lost
+/// their state. `added`/`removed` are relative to what was playing, so a param tweak that reports
+/// `removed: ["/voice1"]` means the address was mistyped. A door that rebuilds every node reports
+/// `survived: 0`.
+///
+// Everything above ships to models as the `$defs.DiffSummary` description in the `swap` tool's
+// advertised outputSchema, so it stays about what the fields mean. Notes for humans go below this
+// line, where schemars will not pick them up.
+//
+// see rules: execution-runtime
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DiffSummary {

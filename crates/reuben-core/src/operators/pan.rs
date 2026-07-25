@@ -43,11 +43,10 @@ impl Operator for Pan {
     fn process(&mut self, io: &mut Io) {
         let n = io.frames();
 
-        // `audio`/`pan` are Signal inputs — always a buffer (wired source or materialized default),
-        // one read path. Resolve both once (see filter.rs): each read returns a
-        // block-lifetime slice, so they coexist with the output writes and avoid re-deriving the
-        // slice per sample. The two writes stay in the loop — `io.write` takes `&mut io`, so
-        // `OUT_LEFT` and `OUT_RIGHT` can't both be held; a split-borrow accessor is future work.
+        // Flat locals for the block loop (see rules: execution-runtime): each read returns a
+        // block-lifetime slice, so both coexist with the output writes. The two writes are the
+        // exception and stay in the loop — `io.write` takes `&mut io`, so `OUT_LEFT` and
+        // `OUT_RIGHT` can't both be held; a split-borrow accessor is future work.
         let audio = io.read(IN_AUDIO);
         let pan_buf = io.read(IN_PAN);
         for i in 0..n {

@@ -144,8 +144,7 @@ impl Operator for Reverb {
         let wet = mix;
         let dry = 1.0 - mix;
 
-        // Resolve the audio input and output buffers once (see filter.rs): index flat locals
-        // rather than re-deriving each slice from `io` per sample.
+        // Flat locals for the block loop. see rules: execution-runtime
         let audio = io.read(IN_AUDIO);
         let out = io.write(OUT_AUDIO);
         for i in 0..n {

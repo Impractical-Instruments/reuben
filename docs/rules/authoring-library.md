@@ -69,6 +69,11 @@ generated surface, one per distinct player gesture, never new format machinery.
 
 [why](rationale/authoring-library/surface-docs.md)
 
+<a id="advertised-range-is-a-subset"></a>
+### An interface override may narrow what a port advertises but never widen it past what the engine enforces: a range override must be a non-inverted subset of the inner port's range, while label, unit, and widget rename freely because they cannot lie about a value the engine will accept.
+
+[why](rationale/authoring-library/advertised-range-is-a-subset.md)
+
 <a id="default-surface"></a>
 ### With no surface file, a default surface is auto-derived from the wireable input pipes so every instrument is instantly playable with zero configuration.
 

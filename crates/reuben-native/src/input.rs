@@ -1,84 +1,27 @@
-//! Live audio input via cpal: the cross-thread, cross-clock path
-//! from a real input device into the engine's logical input master.
+//! Live audio input via cpal: the cross-thread, cross-clock path from a real input device into
+//! the engine's logical input master. The input callback produces into a lock-free SPSC ring
+//! ([`InputMap`] mapping device frames onto logical channels); [`InputStage`], owned by the
+//! output callback, drains it and resamples to the engine rate at a servoed ratio.
+//! see rules: host-shell-io
 //!
-//! ## Shape
-//!
-//! The engine stays hosted in the **output** callback, rendering at the output device's rate
-//! (the clock anchor). The input device runs its own callback on its own clock;
-//! the two meet at a lock-free SPSC ring (`rtrb`):
-//!
-//! - **Producer** (the input callback): maps each device frame onto the instrument's *logical*
-//!   input channels ([`InputMap`], the dual of `audio.rs`'s output `map_frame` — identity by
-//!   default, a profile's `input.map` overrides; a logical channel the device/map can't supply
-//!   reads silence with a one-time startup warning), then commits it to the ring
-//!   **whole frames at a time** so the consumer never observes a torn frame.
-//! - **Consumer** ([`InputStage`], owned by the output callback): pops device-rate frames and
-//!   resamples them to the engine rate with a drift-servoed ratio, filling the interleaved
-//!   logical input block that [`reuben_core::engine::Engine::fill_duplex`] consumes.
-//!
-//! Both callbacks are RT-safe after startup: no allocation, no locks, no blocking — the ring
-//! is preallocated, the resampler's state is two frames, and every policy decision is
+//! Two invariants callers depend on: the producer commits **whole frames at a time**, so the
+//! consumer never observes a torn frame; and both callbacks are RT-safe after startup — the ring
+//! is preallocated, [`LinearResampler`]'s state is two frames, and every policy decision is
 //! arithmetic on values already in cache.
 //!
-//! ## Resampler choice
+//! Constants worth their specific values:
 //!
-//! **Linear interpolation** over a two-frame window ([`LinearResampler`]). Rationale: it is
-//! trivially RT-safe (no FIR history, no allocation, no library), it is *bit-exact* in the
-//! dominant case (equal rates → ratio 1.0 → straight passthrough while the servo is
-//! centered), and at the tiny ratio deviations drift compensation produces (|1 − r| ≤ 0.5%)
-//! its passband error sits far below the noise floor of any live mic path. Modest starting
-//! quality is allowed by design; a windowed-sinc upgrade can replace [`LinearResampler`]
-//! without touching the ring, the servo, or the policies. For genuinely mismatched rates
-//! (44.1k mic into a 48k engine) linear interpolation images above ~17 kHz — audible on
-//! bright synthetic material, acceptable for voice/instrument capture, and the recorded
-//! starting point.
+//! - [`DriftServo::MAX_CORRECTION`] is 0.5% ≈ 8.6 cents — the largest ratio correction that stays
+//!   inaudible as pitch shift on live input, so a mismatch wider than the servo can absorb
+//!   surfaces as a counted overrun rather than an audible detune.
+//! - [`RING_FLOOR_BLOCKS`] (= 2) is the servo's target residual, ~10.7 ms at the 256/48k defaults
+//!   — deep enough to ride out an input device's own delivery granularity.
+//! - [`HIGH_WATER_SLACK_BLOCKS`] bounds a stalled-consumer excursion at ~96 ms at defaults: far
+//!   above the floor on purpose, so normal jitter never trips the trim.
 //!
-//! ## Drift compensation
-//!
-//! Two devices are two clocks (the USB-mic argument): even at the same nominal rate they
-//! drift, so any fixed ratio eventually starves or floods the ring. The [`DriftServo`]
-//! measures the ring's **residual** fill after each output callback drains it and steers the
-//! resample ratio to hold that residual at a fixed floor ([`RING_FLOOR_BLOCKS`] core blocks).
-//! Servoing the *residual* (not the pre-consumption fill) makes the loop independent of the
-//! callback size, which cpal varies freely. The correction is clamped to
-//! ±[`DriftServo::MAX_CORRECTION`] (0.5% ≈ 8.6 cents, inaudible on live input) and one-pole
-//! smoothed so producer-chunk granularity doesn't jitter the pitch.
-//!
-//! ## Fixed policies + counters (know and say, never improvise)
-//!
-//! Live input is a sanctioned nondeterministic boundary with a warn-plus-zeros dark-degrade
-//! policy on any reality mismatch — never fatal. see rules: composition-operators
-//!
-//! - **Ring empty → zeros**, counted per missing input frame (`input_ring_underruns`). The
-//!   stage then re-enters warmup so a stalled input device re-primes cleanly — and the zeros
-//!   delivered *while* re-priming are still counted (per callback, as its input-frame
-//!   demand), so a glitching device's silence is fully accounted for. Only the initial
-//!   startup prefill is free: silence before the ring has ever flowed is expected, not an
-//!   underrun.
-//! - **Ring full → drop oldest**, counted per dropped frame (`input_ring_overruns`): the
-//!   consumer trims the *oldest* frames back down to the floor when fill crosses the
-//!   high-water mark (floor + [`HIGH_WATER_SLACK_BLOCKS`] core blocks). Drop-oldest is
-//!   necessarily a consumer-side act in an SPSC ring; if the consumer is stalled outright the
-//!   producer's only possible move is to drop the *incoming* frame — the backstop, counted
-//!   separately (`input_ring_producer_drops`) because it means the opposite diagnosis: a
-//!   stalled output callback, not a rate mismatch.
-//!
-//! ## Latency budget (ring sizing)
-//!
-//! Added input latency on top of the device's own buffering:
-//!
-//! - ring floor: [`RING_FLOOR_BLOCKS`] (= 2) core blocks — ~10.7 ms at the 256/48k defaults;
-//! - resampler lookahead: 1 input frame (~0.02 ms);
-//! - input staging in [`reuben_core::engine::Engine::fill_duplex`]: 1 core block (~5.3 ms).
-//!
-//! Total ≈ 3 core blocks (~16 ms at defaults) — modest, and dominated by deliberate safety
-//! margin: the floor must ride out the input device's own delivery granularity, and the
-//! staging block is what makes the core pull causal. The ring's *capacity* is much larger
-//! (floor + [`RING_HEADROOM_SECS`] of headroom) but capacity is not latency: an uncounted
-//! bulk trim re-anchors fill at (demand + floor) every time warmup completes (startup, and
-//! every re-prime), the servo holds it there, and the high-water trim bounds any excursion a
-//! stalled output callback leaves behind at floor + [`HIGH_WATER_SLACK_BLOCKS`] blocks
-//! (~96 ms at defaults) rather than letting it sit as sustained added latency.
+//! Added latency is floor + 1 input frame of resampler lookahead + 1 core block of staging in
+//! [`reuben_core::engine::Engine::fill_duplex`] ≈ 3 core blocks (~16 ms at defaults). The ring's
+//! capacity is much larger ([`RING_HEADROOM_SECS`]) and is headroom, not latency.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;

@@ -1250,8 +1250,8 @@ fn build_consumers(doc: &NormalizedDoc, registry: &Registry) -> BTreeMap<String,
         for (name, v) in &n.inputs {
             if let InputValue::Wire { from } = v {
                 // An input pipe mints `/{pipe}` into the flat node namespace, so some of these
-                // land under a key that is a *pipe* rather than a node. Nothing reads those today
-                // — the pipe view carries no consumer field, which is still an open question.
+                // land under a key that is a *pipe* rather than a node. No current view reads
+                // those entries.
                 record(from, Some(n.address.clone()), name.clone());
             }
         }

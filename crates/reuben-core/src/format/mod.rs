@@ -2279,15 +2279,15 @@ pub fn doc_value(port: &crate::descriptor::Port, arg: &Arg) -> DocValue {
     }
 }
 
-/// Enforce the presentational-override law: a `min`/`max` override decorates
-/// presentation but must stay **truthful**, because `describe` publishes it as the boundary
-/// contract and no engine path reconciles it with the range the engine actually clamps to. It
-/// must land on a port with a numeric range, stay within the engine-enforced bounds, and not
-/// invert; `effective` (inputs only — v1 migration) additionally pins the effective default
-/// inside the advertised range. `label`/`unit`/`widget` are unconstrained — they rename, they
-/// cannot lie about a value the engine will accept. In v2 this law governs `interface.outputs`
-/// overrides and v1 input entries at migration; a v2 **input pipe owns its range outright**
-///, validated in [`pipe_descriptor`] instead.
+/// Enforce the presentational-override law — see rules: authoring-library.
+///
+/// A `min`/`max` override must land on a port with a numeric range, stay within the
+/// engine-enforced bounds, and not invert; `effective` (inputs only — v1 migration) additionally
+/// pins the effective default inside the advertised range. Nothing downstream reconciles a false
+/// range: `describe` publishes it as the boundary contract as-is.
+///
+/// Scope: in v2 this governs `interface.outputs` overrides and v1 input entries at migration. A v2
+/// input pipe owns its range outright, validated in [`pipe_descriptor`] instead.
 fn check_range_override(
     name: &str,
     min_o: Option<f64>,

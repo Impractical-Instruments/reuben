@@ -96,6 +96,11 @@ installer-free release archives cut from a `v*` tag.
 
 [why](rationale/web-product-process/perf-benchmark-gate.md)
 
+<a id="micro-bench-drives-the-real-path"></a>
+### A per-operator micro-bench drives that operator's real per-sample path rather than an early-out idle path, and the census of what is benched is one source the tests hold in sync with the registry.
+
+[why](rationale/web-product-process/micro-bench-drives-the-real-path.md)
+
 ## Terms
 
 - **SDK** — this (BSD-3-Clause) repo: the engine core, native CLI, MCP sidecar, and instrument/surface library that the product consumes.

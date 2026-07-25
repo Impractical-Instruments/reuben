@@ -95,6 +95,16 @@ integration tests down to scripted human rituals for the perceptual judgments au
 
 [why](rationale/agent-mcp/expect-guard-is-a-door-concern.md)
 
+<a id="contract-holds-what-core-produces"></a>
+### A serde type belongs to the contract if core itself produces it and to a door's wire module if it exists only because that door exists — the test being whether the type would still mean anything with the door deleted.
+
+[why](rationale/agent-mcp/contract-holds-what-core-produces.md)
+
+<a id="structure-channel-is-loopback-only"></a>
+### The structure channel binds loopback only, because structure edits are strictly more powerful than OSC control — and its one default address is shared with the wire types both ends serialize so the server and client can never drift apart.
+
+[why](rationale/agent-mcp/structure-channel-is-loopback-only.md)
+
 <a id="portable-tool-contracts"></a>
 ### The tool contract types and introspection live OS-free in reuben-core, so every door — native CLI, MCP sidecar, web in-page layer, web proxy — generates its schemas from that one source and no verb means different things behind different doors.
 
@@ -144,6 +154,11 @@ integration tests down to scripted human rituals for the perceptual judgments au
 ### There is no instrument JSON Schema for agent grounding; an agent grounds on prose rules, operator ports, and the validator loop, and registry truth is guarded by same-commit native-versus-wasm describe parity.
 
 [why](rationale/agent-mcp/grounding-not-schema.md)
+
+<a id="grounding-budget-is-relative"></a>
+### A grounding projection's size is gated relative to the full view it compresses, never as a flat per-item cap — so the lever on a budget the registry has outgrown is the projection's own compression, not the number of operators.
+
+[why](rationale/agent-mcp/grounding-budget-is-relative.md)
 
 <a id="conversational-loop-verification"></a>
 ### The conversational authoring loop is verified by a fixed menu — live-channel integration tests, Coordinator-direct behavioral swap checks, allocation-counting for RT-safety, and scripted human rituals where automation cannot reach.

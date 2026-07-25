@@ -78,13 +78,12 @@ fn forwards_a_wired_value_source_for_control_feedback() {
     );
 }
 
-/// The frame on an outbound Message is **block-absolute** (timing + feedback):
-/// the render loop stamps operator emissions by adding each segment's start (`with_emit(..,
-/// seg_start)`), and the outbound drain forwards that frame verbatim — it must neither re-stamp
-/// nor lose the offset. Two held changes to the map's `in` split its block into segments [0,100)
-/// and [100,256); the second emission is produced at segment-relative frame 0, so a regression
-/// passing 0 instead of `seg_start` would surface it at frame 0 — this pins that it surfaces at
-/// 100. (The values differ so each frame is tied to its own emission.)
+/// Outbound frames are block-absolute. see rules: signal-time-dsp
+///
+/// Two held changes to the map's `in` split its block into segments [0,100) and [100,256); the
+/// second emission is produced at segment-relative frame 0, so a regression passing 0 instead of
+/// `seg_start` would surface it at frame 0 — this pins that it surfaces at 100. (The values
+/// differ so each frame is tied to its own emission.)
 #[test]
 fn outbound_message_carries_its_block_absolute_frame() {
     let cfg = AudioConfig::new(48_000.0, 256);

@@ -1,9 +1,5 @@
-//! Shared diagnostics counter surface.
-//!
-//! reuben's xrun policy is **fixed and observable, not configurable**: an output render
-//! deadline miss plays the device's own silence and is counted; nothing about rendering
-//! changes because of it. This module is the *one* place those counts live, so the input-ring
-//! underrun/overrun counters are fields here rather than a second, parallel counter surface.
+//! Shared diagnostics counter surface — the one place every counted degradation lands, output
+//! and input alike. see rules: host-shell-io
 //!
 //! [`Diagnostics`] is designed to be bumped from an RT thread and read from an ordinary one: every
 //! field is an [`AtomicU64`], every write a single `fetch_add`, and reads take a [`Snapshot`]

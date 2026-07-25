@@ -6,7 +6,7 @@
 //!
 //! The one shared SVF — `filter` and `djfilter` both embed it. [`SvfCoeffs`] precomputes
 //! from (cutoff, resonance, sample rate) outside the sample loop; [`Svf`] is a tiny `Copy`
-//! value threaded through the block in registers (the [`crate::dsp`] pattern).
+//! value threaded through the block in registers ([`crate::dsp`]).
 
 /// Precomputed TPT / zero-delay-feedback SVF coefficients for one (cutoff, resonance,
 /// sample rate) triple. Compute via [`SvfCoeffs::new`] whenever a control changes; reuse

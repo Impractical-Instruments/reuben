@@ -1,18 +1,8 @@
 //! The core input master and its logical channel. see rules: composition-operators
 //!
-//! Top-level signal input pipes with a `channel` binding read the **logical input master**:
-//! the caller hands `render_block_multi` one buffer per logical input channel and each bound
-//! pipe copies its channel — the dual of the output master. These tests pin the whole
-//! contract through the real load → instantiate → render path:
-//!
-//! - a bound pipe carries the injected channel, sample-exact, across blocks;
-//! - fan-out at the master (two pipes, one channel), like output broadcast;
-//! - dark-degrade: an unsupplied channel falls back to the pipe's declared default (a
-//!   bare pipe reads **zeros**) and stays message-drivable; a short buffer's tail reads zeros;
-//! - determinism: offline render with injected input is **bit-reproducible**;
-//! - inertness: nested (subpatch-inlined) and Voicer-hosted channel bindings never
-//!   reach the input master — the parent/host edge feeds the pipe, unfed renders silence —
-//!   with the load warnings that make each dark path honest.
+//! These pin the whole contract through the real load → instantiate → render path: sample-exact
+//! carriage, fan-out at the master, dark-degrade to the declared default, offline
+//! bit-reproducibility, and the inertness of nested and Voicer-hosted channel bindings.
 
 use reuben_core::message::{Arg, Message};
 use reuben_core::plan::Plan;

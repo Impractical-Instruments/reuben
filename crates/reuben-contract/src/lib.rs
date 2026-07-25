@@ -390,11 +390,10 @@ pub fn validate(spec: &OperatorSpec) -> Result<(), ContractError> {
             format!("type_name {name:?} must be snake_case: a lowercase letter then [a-z0-9_]"),
         ));
     }
-    // Reserved: interface pipes are **loader-built** — declared through
-    // `interface.inputs` entries, never a registered operator — and the save path identifies
-    // pipe nodes by this type name. Refused here (the one validator: macro + scaffold) so a
-    // scaffolded/hand-written `pipe` operator fails before any code is generated; the registry
+    // Refused here — the one validator both the macro and the scaffold pass through — so a
+    // scaffolded or hand-written `pipe` operator fails before any code is generated. The registry
     // carries the same reservation for embedders registering descriptors directly.
+    // see rules: composition-operators
     if name == "pipe" {
         return Err(ContractError::new(
             Locus::TypeName,

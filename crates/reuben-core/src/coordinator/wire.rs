@@ -7,46 +7,27 @@
 //!
 //! # What lives here versus in `contract`
 //!
-//! **`contract` holds what core itself produces; `wire` holds the shape choices this channel
-//! makes.** `Coordinator::swap_document` returns a
-//! [`SwapReport`](crate::contract::SwapReport), so that type — and `Report`, `Diag`,
-//! `DiffSummary`, [`content_hash`](crate::contract::content_hash) — is door-agnostic and lives in
-//! [`crate::contract`], shared by every door. This module owns the envelope (verbs, `reply` tags,
-//! framing) *plus* the payloads that exist only because this channel exists:
-//! [`DiagnosticsReport`], [`Conflict`], and [`DocumentSnapshot`].
+//! This module owns the envelope (verbs, `reply` tags, framing) plus the payloads that exist only
+//! because this channel exists: [`DiagnosticsReport`], [`Conflict`], and [`DocumentSnapshot`].
+//! Door-agnostic types core itself produces — [`SwapReport`](crate::contract::SwapReport),
+//! `Report`, `Diag`, `DiffSummary`, [`content_hash`](crate::contract::content_hash) — live in
+//! [`crate::contract`]. see rules: agent-mcp
 //!
-//! The rule is about *payload types*. [`DEFAULT_STRUCTURE_ADDR`] is a deliberate exception: it
-//! lives here because both ends must agree on one literal, and next to the types both ends
-//! serialize is where that agreement is hardest to break. (The engine's OSC-in port used to sit
-//! beside it for the same reason, back when the sidecar dialed OSC. It no longer does — control
-//! rides this channel now, and OSC-the-wire is only `reuben play`'s foreign edge — so the port
-//! moved to `reuben_native::osc`, which owns that edge and is its only consumer.)
-//!
-//! [`Conflict`] is the worked example. Core has no conflict type — and no `expect` guard to
-//! produce one: `swap_document` is last-write-wins, and the optimistic-concurrency guard is a door
-//! concern (see rules: agent-mcp). *This channel* decides that its clients get a guard and that a
-//! miss is a distinct answer rather than a rejected report, so the type is this channel's. Likewise
-//! [`DocumentSnapshot`]: core exposes `document()` and `installed_hash()` separately, and pairing
-//! them is a wire shape. Ask "would this type still mean anything with the structure channel
-//! deleted?" — if no, it belongs here.
+//! That split governs *payload types*; [`DEFAULT_STRUCTURE_ADDR`] is a deliberate exception.
 //!
 //! Framing is newline-delimited JSON
 //! ([`Request::to_ndjson`]/[`Request::from_ndjson`] and the `Response` pair) so the channel
 //! stays netcat-debuggable and std-only.
-//!
-//! see rules: execution-runtime
 
 use serde::{Deserialize, Serialize};
 
 use crate::contract::SwapReport;
 use crate::message::Arg;
 
-/// The structure channel's default loopback bind/target: `127.0.0.1` only —
-/// structure edits are more powerful than OSC control, so unlike OSC's `0.0.0.0:9000` this
-/// channel must never be network-exposed. The concrete port is epic-level detail; a fixed
-/// default suffices for M1. Shared here — next to the wire types both ends serialize — so the
+/// The structure channel's default loopback bind/target: `127.0.0.1` only, shared here so the
 /// reuben-native server (`reuben play`) and the reuben-mcp client bind and dial the *same*
-/// address and can never drift; a taken port is non-fatal on the server side (see `play`).
+/// address. A taken port is non-fatal on the server side (see `play`).
+/// see rules: agent-mcp
 pub const DEFAULT_STRUCTURE_ADDR: &str = "127.0.0.1:9124";
 
 /// Where a swap's document comes from (accepted **by value or by path**, both
@@ -200,8 +181,8 @@ impl Request {
 // below this line, where schemars will not pick them up.
 //
 // One type, three doors: `Response::Conflict`, the reuben-mcp client's `SwapOutcome::Conflict`, and
-// the `swap` tool's `conflict` field all carry this struct, so the shapes cannot drift. Why it is a
-// wire type rather than a contract type: see the module header.
+// the `swap` tool's `conflict` field all carry this struct, so the shapes cannot drift. It is the
+// worked example of the contract-versus-wire split — see the module header.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Conflict {
