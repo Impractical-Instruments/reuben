@@ -13,34 +13,34 @@
 <text x="56" y="46" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" fill="#898781">tokens</text>
 <line x1="64" y1="306" x2="730" y2="306" stroke="#383835" stroke-width="1"/>
 <text x="64.0" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-22</text>
-<text x="217.7" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-23</text>
-<text x="320.2" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-24</text>
-<text x="627.5" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-25</text>
-<path d="M64.0,244.3 L115.2,244.3 L166.5,244.3 L217.7,244.3 L268.9,244.3 L320.2,244.3 L371.4,244.3 L422.6,74.7 L473.8,74.7 L525.1,74.7 L576.3,79.7 L627.5,79.7 L678.8,79.7 L730.0,80.1" fill="none" stroke="#3987e5" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="730.0" cy="80.1" r="6" fill="#1a1a19"/>
-<circle cx="730.0" cy="80.1" r="4" fill="#3987e5"/>
-<path d="M64.0,225.6 L115.2,225.6 L166.5,225.6 L217.7,225.6 L268.9,225.6 L320.2,225.6 L371.4,225.6 L422.6,56.0 L473.8,56.0 L525.1,56.0 L576.3,61.3 L627.5,61.3 L678.8,61.3 L730.0,61.7" fill="none" stroke="#199e70" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="730.0" cy="61.7" r="6" fill="#1a1a19"/>
-<circle cx="730.0" cy="61.7" r="4" fill="#199e70"/>
-<path d="M64.0,244.3 L115.2,244.3 L166.5,244.3 L217.7,244.3 L268.9,244.3 L320.2,244.3 L371.4,244.3 L422.6,74.7 L473.8,74.7 L525.1,74.7 L576.3,80.0 L627.5,80.0 L678.8,80.0 L730.0,80.4" fill="none" stroke="#c98500" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="730.0" cy="80.4" r="6" fill="#1a1a19"/>
-<circle cx="730.0" cy="80.4" r="4" fill="#c98500"/>
-<path d="M64.0,244.8 L115.2,244.8 L166.5,244.8 L217.7,244.8 L268.9,244.8 L320.2,244.8 L371.4,244.8 L422.6,75.2 L473.8,75.2 L525.1,75.2 L576.3,80.5 L627.5,80.5 L678.8,80.5 L730.0,80.9" fill="none" stroke="#008300" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
-<circle cx="730.0" cy="80.9" r="6" fill="#1a1a19"/>
-<circle cx="730.0" cy="80.9" r="4" fill="#008300"/>
-<circle cx="745.0" cy="58.2" r="3.5" fill="#199e70"/>
-<text x="753.0" y="61.7" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#ffffff">nudge</text>
-<text x="753.0" y="73.7" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#c3c2b7">19k</text>
-<line x1="736.0" y1="80.1" x2="740.0" y2="89.7" stroke="#383835" stroke-width="1"/>
-<circle cx="745.0" cy="86.2" r="3.5" fill="#3987e5"/>
-<text x="753.0" y="89.7" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#ffffff">from_scratch</text>
-<text x="753.0" y="101.7" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#c3c2b7">18k</text>
-<line x1="736.0" y1="80.4" x2="740.0" y2="117.7" stroke="#383835" stroke-width="1"/>
-<circle cx="745.0" cy="114.2" r="3.5" fill="#c98500"/>
-<text x="753.0" y="117.7" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#ffffff">repair</text>
-<text x="753.0" y="129.7" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#c3c2b7">18k</text>
-<line x1="736.0" y1="80.9" x2="740.0" y2="145.7" stroke="#383835" stroke-width="1"/>
-<circle cx="745.0" cy="142.2" r="3.5" fill="#008300"/>
-<text x="753.0" y="145.7" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#ffffff">tweak</text>
-<text x="753.0" y="157.7" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#c3c2b7">18k</text>
+<text x="206.7" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-23</text>
+<text x="301.9" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-24</text>
+<text x="587.3" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-25</text>
+<path d="M64.0,244.3 L111.6,244.3 L159.1,244.3 L206.7,244.3 L254.3,244.3 L301.9,244.3 L349.4,244.3 L397.0,74.7 L444.6,74.7 L492.1,74.7 L539.7,79.7 L587.3,79.7 L634.9,79.7 L682.4,80.1 L730.0,82.4" fill="none" stroke="#3987e5" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="730.0" cy="82.4" r="6" fill="#1a1a19"/>
+<circle cx="730.0" cy="82.4" r="4" fill="#3987e5"/>
+<path d="M64.0,225.6 L111.6,225.6 L159.1,225.6 L206.7,225.6 L254.3,225.6 L301.9,225.6 L349.4,225.6 L397.0,56.0 L444.6,56.0 L492.1,56.0 L539.7,61.3 L587.3,61.3 L634.9,61.3 L682.4,61.7 L730.0,64.0" fill="none" stroke="#199e70" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="730.0" cy="64.0" r="6" fill="#1a1a19"/>
+<circle cx="730.0" cy="64.0" r="4" fill="#199e70"/>
+<path d="M64.0,244.3 L111.6,244.3 L159.1,244.3 L206.7,244.3 L254.3,244.3 L301.9,244.3 L349.4,244.3 L397.0,74.7 L444.6,74.7 L492.1,74.7 L539.7,80.0 L587.3,80.0 L634.9,80.0 L682.4,80.4 L730.0,82.7" fill="none" stroke="#c98500" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="730.0" cy="82.7" r="6" fill="#1a1a19"/>
+<circle cx="730.0" cy="82.7" r="4" fill="#c98500"/>
+<path d="M64.0,244.8 L111.6,244.8 L159.1,244.8 L206.7,244.8 L254.3,244.8 L301.9,244.8 L349.4,244.8 L397.0,75.2 L444.6,75.2 L492.1,75.2 L539.7,80.5 L587.3,80.5 L634.9,80.5 L682.4,80.9 L730.0,83.2" fill="none" stroke="#008300" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<circle cx="730.0" cy="83.2" r="6" fill="#1a1a19"/>
+<circle cx="730.0" cy="83.2" r="4" fill="#008300"/>
+<circle cx="745.0" cy="60.5" r="3.5" fill="#199e70"/>
+<text x="753.0" y="64.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#ffffff">nudge</text>
+<text x="753.0" y="76.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#c3c2b7">19k</text>
+<line x1="736.0" y1="82.4" x2="740.0" y2="92.0" stroke="#383835" stroke-width="1"/>
+<circle cx="745.0" cy="88.5" r="3.5" fill="#3987e5"/>
+<text x="753.0" y="92.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#ffffff">from_scratch</text>
+<text x="753.0" y="104.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#c3c2b7">17k</text>
+<line x1="736.0" y1="82.7" x2="740.0" y2="120.0" stroke="#383835" stroke-width="1"/>
+<circle cx="745.0" cy="116.5" r="3.5" fill="#c98500"/>
+<text x="753.0" y="120.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#ffffff">repair</text>
+<text x="753.0" y="132.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#c3c2b7">17k</text>
+<line x1="736.0" y1="83.2" x2="740.0" y2="148.0" stroke="#383835" stroke-width="1"/>
+<circle cx="745.0" cy="144.5" r="3.5" fill="#008300"/>
+<text x="753.0" y="148.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" fill="#ffffff">tweak</text>
+<text x="753.0" y="160.0" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" style="font-variant-numeric: tabular-nums" fill="#c3c2b7">17k</text>
 </svg>
