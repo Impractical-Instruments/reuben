@@ -1,4 +1,4 @@
-# Why: The mechanical half of authoring is deterministic codegen behind a reuben verb — scaffold-operator, scaffold-instrument — that hands the author a guaranteed-valid or compiling starting frame, leaving only the creative half.
+# Why: The mechanical half of authoring is deterministic codegen behind a reuben verb — scaffold-operator, new-instrument — that lands a guaranteed-valid or compiling starting frame, leaving only the creative half.
 
 [Rule](../../agent-mcp.md#deterministic-scaffolds)
 
@@ -14,7 +14,7 @@ time, behind a first-class `reuben` verb that a human authoring by hand benefits
   the author starts Stage B (behavior, test-first) with "make this pass" as the obvious first step; a
   green-on-arrival stub would invite shipping a silent operator. The error-prone part is *editing
   Rust source*, which is far more robust as tested Rust than as a regex script outside the crate.
-- **new-instrument** (`scaffold-instrument` until ADR-0066's children retired the by-value return)
+- **new-instrument** (spelled `scaffold-instrument` until the by-value return was retired)
   mints a guaranteed-valid minimal document by **serializing an `InstrumentDoc`** (so the emitted
   field spelling can only match the real serde contract — there is no parallel hand-written JSON
   literal to drift). First-creation stalled because a fresh top-level document easily omits the
@@ -29,4 +29,4 @@ The whole value is guaranteed-valid output with no moving parts: neither is a sm
 do not consult the registry to pick starter operators), and neither writes DSP or picks a sound —
 that stays the creative half the skills own ([authoring-skills](authoring-skills.md)).
 
-Distilled from: ADR-0021, ADR-0060
+Distilled from: ADR-0021, ADR-0060, ADR-0066

@@ -16,22 +16,28 @@ so there is no second, drifting schema gate. What the loop cannot catch — that
 actually *audible*, that a compiled operator actually *sounds right* — is the skills' job, carried as
 moderate semantic guidance. The mechanical, error-prone half of authoring (new-operator boilerplate
 across Rust files, the required top-level fields of a fresh document) is **deterministic codegen**
-behind `reuben scaffold-operator` / `scaffold_instrument`, so the author is left only the creative
-half and starts from a guaranteed-valid or compiling frame.
+behind `reuben scaffold-operator` / `new_instrument`, so the author is left only the creative half and
+starts from a guaranteed-valid or compiling frame.
 
 Conversational authoring rides an **MCP sidecar**: a disposable per-conversation stdio process the
 client spawns, hosting the pure tools in-process and forwarding the engine tools to a long-lived,
 **user-owned** `reuben play` — so the sound survives conversation death and the shim never spawns or
 kills the engine. rmcp and tokio are fenced in that one crate; the rest of the workspace stays
-std-only. The tool surface is a fixed roster: pure tools always available, engine tools that fail
-fast with "start `reuben play`" when it is absent, all returning structured `Report`/`Diag` results
-under a strict error-layer discipline — **a failed validation is a successful call**, and `isError`
-is reserved for the tool that could not do its job. The edit contract is the **whole document in, a
-report out**: no add-node/rewire surface exists, `send` is ephemeral audition (clobbered at the next
-swap), and the document is durable truth (try-then-commit). No bytes cross the wire — using a sample
-is a filesystem gesture. Where a door's clients can race, the door carries its own optimistic
-`expect` guard — a content-hash compare it makes before calling in, answered in its own shape —
-since core's swap is unguarded last-write-wins.
+std-only. The tool surface is a fixed roster of three kinds: pure tools and engine-free **document
+verbs**, both always available, plus engine tools that fail fast with "start `reuben play`" when it is
+absent — all returning structured `Report`/`Diag` results under a strict error-layer discipline —
+**a failed validation is a successful call**, and `isError` is reserved for the tool that could not do
+its job. The edit contract is that closed **document vocabulary**: path-addressed, stateless verbs
+that each apply one surgical edit to a named `source`, re-validate the *whole* document through the
+loader, and write only if it is valid — never the whole document in and out, which cost a model every
+byte it was not changing. The read side matches: the agent's whole view is a set of partial
+**structural projections** (index, node zoom carrying reverse edges, pipes, resources), lossless only
+in aggregate, so a turn pays for the nodes it touches rather than the file. `send` stays ephemeral
+audition (clobbered at the next swap) against a document that is durable truth — try-then-commit. **No
+reuben-owned bytes ride the agent's context** on any lane: a sample is a filesystem gesture, a document
+is named by an opaque source the door's resolver moves. Where a door's clients can race, the door
+carries its own optimistic `expect` guard — a content-hash compare it makes before calling in,
+answered in its own shape — since core's swap is unguarded last-write-wins.
 
 The load-bearing invariant under all of this is **one source, many doors**: the contract types and
 introspection live OS-free in `reuben-core`, so the native CLI, the MCP sidecar, the web in-page tool
@@ -70,7 +76,7 @@ integration tests down to scripted human rituals for the perceptual judgments au
 [why](rationale/agent-mcp/authoring-skills.md)
 
 <a id="deterministic-scaffolds"></a>
-### The mechanical half of authoring is deterministic codegen behind a reuben verb — scaffold-operator, scaffold-instrument — that hands the author a guaranteed-valid or compiling starting frame, leaving only the creative half.
+### The mechanical half of authoring is deterministic codegen behind a reuben verb — scaffold-operator, new-instrument — that lands a guaranteed-valid or compiling starting frame, leaving only the creative half.
 
 [why](rationale/agent-mcp/deterministic-scaffolds.md)
 
@@ -94,18 +100,28 @@ integration tests down to scripted human rituals for the perceptual judgments au
 
 [why](rationale/agent-mcp/portable-tool-contracts.md)
 
-<a id="whole-document-edit"></a>
-### A conversational edit is the whole instrument document in and a report out — with no incremental edit-command surface — where send is ephemeral audition and the document is the durable truth (try-then-commit).
+<a id="document-verbs"></a>
+### The agent authors through a closed vocabulary of path-addressed, stateless, engine-free document verbs, each applying one surgical edit to the named source, re-validating the whole document through the loader, and writing only if it is valid.
 
-[why](rationale/agent-mcp/whole-document-edit.md)
+[why](rationale/agent-mcp/document-verbs.md)
+
+<a id="document-projection"></a>
+### The agent never loads a reuben-owned document into its context: its whole view is a set of partial structural projections — index, node zoom with reverse edges, pipes, resources — single-sourced in reuben-core and lossless only in aggregate.
+
+[why](rationale/agent-mcp/document-projection.md)
+
+<a id="try-then-commit"></a>
+### `send` is ephemeral live audition, clobbered at the next swap, and the document is the durable truth — so the authoring loop is try-then-commit.
+
+[why](rationale/agent-mcp/try-then-commit.md)
 
 <a id="tool-surface"></a>
-### The MCP tool surface is a fixed roster split into always-available pure tools and fail-fast engine tools, returning structured Report/Diag results where a failed validation is a successful call, and shipping resources but no prompts.
+### The MCP tool surface is a fixed roster of three kinds — always-available pure tools, engine-free document verbs, and fail-fast engine tools — returning structured Report/Diag results where a failed validation is a successful call, and shipping resources but no prompts.
 
 [why](rationale/agent-mcp/tool-surface.md)
 
 <a id="no-resource-bytes"></a>
-### No tool accepts resource bytes: using a sample is a filesystem gesture the agent performs with its own file tools, and in the browser bytes reach the engine only through the staging seam.
+### No reuben-owned bytes ride the agent's context: using a sample is a filesystem gesture the agent performs with its own file tools, a document is moved by the door's resolver behind an opaque source, and in the browser bytes reach the engine only through the staging seam.
 
 [why](rationale/agent-mcp/no-resource-bytes.md)
 
@@ -143,3 +159,5 @@ integration tests down to scripted human rituals for the perceptual judgments au
 - **Input handling** — interpreting musical, mood, or abstract language as patching moves; the shared base grounding identical in every lane.
 - **Output filter** — the host-owned persona: what the person is shown (sound-not-machine subject, hidden diagnostics, register), maximal on web and absent at skills/MCP.
 - **Delivery lane** — a grounding consumer (repo skills, MCP clients, web chat), each reducing to transport bindings plus host furniture plus the shared base sauce, fed by push or pull.
+- **Document verb** — one member of the closed, format-derived vocabulary an agent authors with: a stateless `(source, …)` mutator that applies one surgical edit, re-validates the whole document, and writes iff valid.
+- **Structural projection** — the agent's whole view of a document: partial per view (index, node zoom with reverse edges, pipes, resources), lossless only in aggregate, and single-sourced in reuben-core.

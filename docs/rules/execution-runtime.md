@@ -41,6 +41,13 @@ not merely sinks — they **emit** Messages over statically-wired typed edges, d
 the same block in topological order through preallocated, allocation-free emit pools, so note data can
 be re-processed (sequencer → voicer, transposers, tonal-context snap) rather than dead-ending as CV.
 
+Control arriving from outside — an external controller, an authoring door — enters through the embed
+surface's one queueing ingress, and it enters as a **batch**: one gesture crosses and is pushed as a
+single unit, so it cannot be interleaved by another producer, cannot straddle a block boundary, and
+cannot land half-applied. Because a whole batch lands in one render callback, its size is an RT
+property rather than a request-size preference, and it is bounded at a fixed maximum the engine
+enforces regardless of what any door advertises.
+
 ## Rules
 
 <a id="unified-block-graph"></a>
@@ -117,6 +124,11 @@ be re-processed (sequencer → voicer, transposers, tonal-context snap) rather t
 ### A live Swap is wrapped in a fixed engine-side master-gain ramp: fade to zero, install, fade back up.
 
 [why](rationale/execution-runtime/swap-gain-ramp.md)
+
+<a id="control-batch-atomicity"></a>
+### A control gesture crosses into the engine as one bounded batch pushed in a single unit, so it never straddles a block, never lands half-applied, and never exceeds the size bound Render's deadline requires.
+
+[why](rationale/execution-runtime/control-batch-atomicity.md)
 
 ## Terms
 

@@ -11,7 +11,7 @@ thing actually happen". Both are needed: `new_instrument` already lands a valid 
 
 The assertions are deliberately strict about *collateral damage*. A single-value tweak that also
 drops the document's `doc` prose is a failure, not a pass — that damage is exactly what
-whole-document re-emission (`#whole-document-edit`) causes, and a metric blind to it would let the
+whole-document re-emission causes (see rules: agent-mcp), and a metric blind to it would let the
 thing this map is chasing pass unnoticed.
 """
 
