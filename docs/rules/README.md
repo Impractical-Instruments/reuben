@@ -59,6 +59,7 @@ not by hope:
 ## Glossary
 
 <!-- derived — collated from each topic's `## Terms`, linking the defining topic. -->
+- **Advertised description** — prose a door hands a model over the wire: a tool or schema `description`, a resource description, the server `instructions`. Generated from a doc comment, but governed as model-facing prose rather than as a comment. · [code-as-grounding](code-as-grounding.md)
 - **Arg** — the single closed-enum payload a Message carries: OSC primitives, shared vocab types (`Note`, `Harmony`), an erased enum index, or the dense `Buffer`. · [composition-operators](composition-operators.md)
 - **available-set** — the set of instruments a session can reference. · [authoring-library](authoring-library.md)
 - **Block** — the fixed-size processing quantum; each block computes message- and signal-domain data in one dependency-ordered pass. · [execution-runtime](execution-runtime.md)

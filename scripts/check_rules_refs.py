@@ -21,11 +21,9 @@ Five checks:
      retelling history rather than stating mechanics. A rule anchor is the deeper half of the same
      mistake: code points at topics only.
 
-     `///` is deliberately out of reach here: a FIELD doc on a `JsonSchema`-deriving type becomes
-     that field's advertised schema `description` — model-facing wire surface, not comment prose —
-     and this linter cannot tell the two apart textually. (A struct-level doc on a tool's `…Params`
-     is not: rmcp advertises the `#[tool(description = …)]` string instead. Verify either way by
-     diffing `tools/list` before and after.) Sweep those by hand, gated by `eval/`.
+     `///` is deliberately out of reach here: this linter cannot tell a comment from an advertised
+     description textually, and the two are governed differently — see rules: code-as-grounding.
+     The wire half is guarded from the door's own output, in reuben-mcp's stdio integration test.
   5. A `see rules: <topic>` pointer stops at the topic. Check 4's `RULE_ANCHOR_RE` only sees the
      `<file>.md#<rule>` spelling; prose reaches a rule three other ways — `<topic>#<rule>`,
      a parenthesised `(<rule>, <rule>)` trailing the topic, and a comma-continued list — and

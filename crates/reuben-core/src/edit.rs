@@ -47,11 +47,11 @@ pub struct EditResult {
     /// successful write, the unchanged prior document on a rejected one. The token a later
     /// `expect`-guarded write compares — opaque, compare-only.
     pub hash: String,
-    /// What the edit broke or degraded on the way — the cascade a [`remove_instrument_node`]
-    /// unwired, the refs a [`rename_instrument_node`] rewrote. Empty for a clean surgical edit.
+    /// What the edit broke or degraded on the way — the cascade a `remove_instrument_node`
+    /// unwired, the refs a `rename_instrument_node` rewrote. Empty for a clean surgical edit.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub notes: Vec<String>,
-    /// The rendered [`projection`](crate::projection) of what the verb touched — the node zoom of
+    /// The rendered projection of what the verb touched — the node zoom of
     /// an added node, the pipe view of a changed pipe, the index after a removal. The agent's read
     /// of the result, in the same compact grammar it reads the rest of the document through.
     pub zoom: String,

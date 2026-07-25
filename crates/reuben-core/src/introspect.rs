@@ -17,13 +17,12 @@ use crate::AudioConfig;
 
 use serde::Serialize;
 
-/// One operator's self-description, flattened from its [`Descriptor`] for agent grounding.
+/// One operator's self-description, flattened from its descriptor for agent grounding.
 #[derive(Debug, Clone, Serialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct OperatorInfo {
     pub type_name: String,
-    /// The whole input surface as one list (mirrors [`Descriptor::inputs`] +
-    /// [`constants`](Descriptor::constants)): runtime inputs first, then plan-time `Constant` ports
+    /// The whole input surface as one list: runtime inputs first, then plan-time `Constant` ports
     /// marked `constant: true`. There is no separate `params`/`enums`/`constants` split — a port's
     /// `kind` and its optional metadata already say whether it is a scalar, integer, or enum.
     pub inputs: Vec<PortInfo>,
@@ -32,8 +31,8 @@ pub struct OperatorInfo {
     pub resources: Vec<String>,
 }
 
-/// One port, flattened from its [`Port`] for agent grounding. Inputs and outputs share this shape;
-/// a plan-time [`Constant`](Descriptor::constants) is just an input with `constant: true`
+/// One port, flattened for agent grounding. Inputs and outputs share this shape;
+/// a plan-time `Constant` is just an input with `constant: true`
 /// — an immutable port set in a node's `config` block, never wired in `inputs`. Optional metadata
 /// appears only where the port's type carries it: `default`/`min`/`max`/`unit`/`curve` for a swept
 /// scalar, `default`/`min`/`max` for an integer, `default`/`variants` for an enum.
@@ -41,7 +40,7 @@ pub struct OperatorInfo {
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct PortInfo {
     pub name: String,
-    /// The port's [`PortType`] as the glossary's word: `"value"` (a held `f32` Value),
+    /// The port's type as the glossary's word: `"value"` (a held `f32` Value),
     /// `"signal"` (a dense `f32_buffer` Signal), `"int"`, `"enum"`, `"message"` (Note),
     /// `"harmony"` (Harmony), `"vocab"`, or `"string"`. The two numeric kinds are one wiring
     /// family with a single implicit bridge: `value` → `signal` materializes;

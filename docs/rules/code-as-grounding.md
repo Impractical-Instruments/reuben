@@ -23,6 +23,16 @@ answers what `goToDefinition`, `findReferences`, or a `grep` would answer — is
 is not moved and it is not harvested: there is nothing there that the code does not already say, and
 every copy of it is a line that can go stale while the build stays green.
 
+The three-way split classifies what prose *says*; a second axis classifies where it *goes*. A doc
+comment on a field of a `JsonSchema`-deriving type **is** that field's advertised `description`, and
+the same sentence that serves a Rust reader through `cargo doc` is shipped verbatim to a model in
+every turn that loads the schema. That makes it model-facing prose, and it must read as prose:
+rustdoc link syntax the model cannot resolve, an issue number pointing at a closed argument, and an
+internal crate path naming a module it has no access to are all noise it pays tokens to skip. Nothing
+is lost for the Rust reader — plain backticks render fine in `cargo doc`. The kind is orthogonal to
+the split: a wire description is usually **mechanics** and stays, but how it is *worded* is governed
+here.
+
 Restatement is the largest of the three and the most expensive, because it is invisible. A wrong
 rationale comment at least contradicts a rule someone might check; a restatement that has drifted from
 the code beside it looks exactly like a restatement that has not, and agents read comments in
@@ -36,7 +46,10 @@ convenience; it is a second copy competing with them.
 The discipline is **guarded, not merely documented**: an unenforced convention decays back to the
 level it started at. `scripts/check_rules_refs.py` fails the build on a module doc long enough to be
 carrying rationale that names no topic, and on a pointer that reaches past its topic to a rule — in
-every crate in the workspace.
+every crate in the workspace. The wire half is guarded from the other side: an integration test
+spawns the real sidecar and scans every description it advertises across `tools/list`,
+`resources/list`, and the server `instructions`, so the check reads the door's own output and cannot
+drift from what a client actually receives.
 
 ## Rules
 
@@ -44,6 +57,11 @@ every crate in the workspace.
 ### A comment never restates the code or answers what LSP, grep, or glob would answer: rationale moves to a rules topic and the comment points at it, mechanics the code cannot state itself stays, and restatement is deleted rather than moved.
 
 [why](rationale/code-as-grounding/comments-never-restate-code.md)
+
+<a id="wire-descriptions-are-model-facing"></a>
+### A doc comment generated into a wire surface is model-facing prose, not a comment: an advertised description carries no rustdoc link syntax, no issue number, and no internal crate path — and the guard reads what the door advertises, rather than what a type declares.
+
+[why](rationale/code-as-grounding/wire-descriptions-are-model-facing.md)
 
 <a id="lsp-first-navigation"></a>
 ### Code is navigated LSP-first — definitions, references, symbols, and hover — and text search is reserved for non-code text, so the language server is the one authority on what the code says.
@@ -57,5 +75,6 @@ every crate in the workspace.
 
 ## Terms
 
+- **Advertised description** — prose a door hands a model over the wire: a tool or schema `description`, a resource description, the server `instructions`. Generated from a doc comment, but governed as model-facing prose rather than as a comment.
 - **Mechanics** — the one kind of prose a comment may carry: the local, non-obvious fact the code cannot state itself (a `SAFETY:` justification, a caller-upheld invariant, why a constant is this number).
 - **Restatement** — comment prose that re-describes the code or answers what LSP or a search would answer; the third comment kind, deleted outright rather than moved to a rule.
