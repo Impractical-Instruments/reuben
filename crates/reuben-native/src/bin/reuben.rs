@@ -208,16 +208,31 @@ fn main() -> ExitCode {
     }
 }
 
+/// What a command needs of a referenced sample — the one axis on which two commands want different
+/// resolvers behind the same source.
+#[derive(Copy, Clone, PartialEq, Eq)]
+enum Samples {
+    /// Decode them. `validate` is the dry run of the load `play` will do for real, so a sample that
+    /// is present but undecodable has to surface here as the warning `play` would hit; stat-ing it
+    /// would report a document legal that cannot be heard.
+    Decode,
+    /// Check availability without decoding. The introspection reads report port metadata and never
+    /// touch audio, so decoding every referenced WAV to describe a boundary is pure waste.
+    Availability,
+}
+
 /// The CLI door's reading of an opaque document `source`: a filesystem path, with the library root
-/// as the fallback for anything it references. Stat-only because no authoring path renders —
-/// introspection reports port metadata without decoding referenced audio. see rules: agent-mcp
-fn store(source: &str, root: Option<PathBuf>) -> FsResolver {
+/// as the fallback for anything it references. see rules: agent-mcp
+fn store(source: &str, root: Option<PathBuf>, samples: Samples) -> FsResolver {
     let store = FsResolver::for_document(source);
-    match root {
+    let store = match root {
         Some(root) => store.with_root(root),
         None => store,
+    };
+    match samples {
+        Samples::Decode => store,
+        Samples::Availability => store.stat_only(),
     }
-    .stat_only()
 }
 
 /// A [`Refusal`] is the CLI's can't-do-the-job signal: the window's message on stderr and a
@@ -250,7 +265,7 @@ fn cmd_new_instrument(path: &Path, name: Option<&str>, json: bool) -> ExitCode {
             source: source.clone(),
             name: name.unwrap_or(SCAFFOLD_DEFAULT_NAME).to_string(),
         },
-        &store(&source, None),
+        &store(&source, None, Samples::Availability),
     ) {
         Ok(answer) => answer,
         Err(refusal) => return refused(&refusal),
@@ -338,8 +353,9 @@ fn print_ports(dir: &str, ps: &[PortInfo]) {
 
 /// Read an instrument file to its JSON text, paired with a resolver rooted at its directory —
 /// resource paths (samples, nested instruments) resolve relative to the referencing file,
-/// falling back to the library `root` when configured. The one loading preamble behind
-/// `describe`, `validate`, and `play`.
+/// falling back to the library `root` when configured. `play`'s loading preamble: it hands the
+/// text and the resolver to the Coordinator, which is a different need from the authoring
+/// commands', where the window reads the document itself through [`store`].
 fn read_instrument(path: &Path, root: Option<PathBuf>) -> Result<(String, FsResolver), String> {
     let json =
         std::fs::read_to_string(path).map_err(|e| format!("read {}: {e}", path.display()))?;
@@ -464,7 +480,7 @@ fn cmd_describe_boundary(source: &str, json: bool, root: Option<PathBuf>) -> Exi
         &authoring::DescribeBoundary {
             source: source.to_string(),
         },
-        &store(source, root),
+        &store(source, root, Samples::Availability),
     ) {
         Ok(answer) => answer,
         Err(refusal) => return refused(&refusal),
@@ -498,10 +514,9 @@ fn cmd_describe_boundary(source: &str, json: bool, root: Option<PathBuf>) -> Exi
 /// agent's whole view of a document, off the same window verb `describe_instrument` serves over
 /// MCP, selection grammar included.
 ///
-/// `--json` wraps the rendered view rather than emitting a per-view structured shape, because the
-/// compact line grammar *is* the projection's deliverable: four alternative payloads would be a
-/// second serialization of the document that only this door had, free to drift from the one every
-/// other consumer reads.
+/// `--json` wraps the rendered view rather than emitting a per-view structured shape: the compact
+/// line grammar is the projection's deliverable, and a door does not carry a second serialization
+/// of it. see rules: agent-mcp
 ///
 /// A document that fails to load still projects (`loadable: false` in the header): `validate` is
 /// the single authority on validity, and going blind is the worst way to report invalidity. So this
@@ -524,7 +539,7 @@ fn cmd_project(
             select,
             type_name: select_type,
         },
-        &store(source, root),
+        &store(source, root, Samples::Availability),
     ) {
         Ok(answer) => answer,
         Err(refusal) => return refused(&refusal),
@@ -547,7 +562,7 @@ fn cmd_validate(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCode {
         &authoring::ValidateInstrument {
             source: source.clone(),
         },
-        &store(&source, root),
+        &store(&source, root, Samples::Decode),
     ) {
         Ok(answer) => answer,
         Err(refusal) => return refused(&refusal),

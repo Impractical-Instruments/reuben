@@ -35,6 +35,7 @@ use reuben_core::coordinator::{
     ControlArg, ControlMessage, DiagnosticsReport, DocSource, MAX_SEND_BATCH,
 };
 use reuben_core::projection::Projector;
+use reuben_core::tools::ContractKind;
 use reuben_core::{Registry, SwapReport};
 use serde::{Deserialize, Serialize};
 
@@ -972,6 +973,26 @@ fn stamp_window_prose(router: &mut ToolRouter<ReubenServer>) {
             .get_mut(*name)
             .unwrap_or_else(|| panic!("the window serves `{name}`, but no tool advertises it"));
         route.attr.description = Some((*sentence).into());
+    }
+
+    // The other direction, and the one that bites later. The roster is the authority on which
+    // contracts exist; the prose table is a lookup over it, so a `Pure` or `Document` contract
+    // added without a sentence keeps rmcp's rustdoc fallback and advertises Rust-reader prose to a
+    // model — with the stamp loop above, the roster test and the schema test all still green,
+    // because each of them iterates a list the new verb is absent from. Refuse to start instead.
+    for contract in reuben_core::tools::CONTRACTS {
+        let served_by_the_window = matches!(
+            contract.kind,
+            ContractKind::Pure | ContractKind::Document // the engine half is phase 3's
+        );
+        let has_sentence = reuben_api::authoring::prose::DESCRIPTIONS
+            .iter()
+            .any(|(name, _)| *name == contract.name);
+        assert!(
+            !served_by_the_window || has_sentence,
+            "`{}` is an authoring contract with no sentence in the window's prose table",
+            contract.name
+        );
     }
 }
 

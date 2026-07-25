@@ -1,22 +1,15 @@
 //! The one sentence each authoring verb is advertised by — the tool-level `description` a door
 //! puts in front of a model.
 //!
-//! It lives here for the reason every other piece of advertised prose does: a door that copies it
-//! owns a second copy free to drift, and there is more than one door. What a door still decides is
-//! how to *carry* it — MCP stamps these onto its tool roster, a generated wrapper writes them into
-//! its manifest.
-//!
-//! Not every door has a place to put them. The native CLI's five subcommands are not the roster:
-//! `describe` alone serves two verbs, `play` and `scaffold-operator` serve none, so its `--help`
-//! prose is its own and single-sourcing it would mean writing a merged sentence twice instead of
-//! once. A door advertising the roster verb-for-verb takes these.
+//! What a door still decides is how to *carry* it — MCP stamps these onto its tool roster, a
+//! generated wrapper writes them into its manifest — and a door whose surface is not the roster
+//! (the native CLI's five merged subcommands) advertises its own help instead.
+//! see rules: agent-mcp
 //!
 //! Every string here ships to a model, under the same rule the argument and result docs follow: no
 //! rustdoc link syntax, no issue numbers, no crate paths — a model can resolve none of them. Notes
 //! for humans go in `//` comments. Guarded over the real advertised surface by
 //! `advertised_prose_is_model_facing`. see rules: code-as-grounding
-//!
-//! see rules: agent-mcp
 
 // --- pure reads -----------------------------------------------------------------------------------
 
@@ -106,12 +99,13 @@ pub const ADD_INSTRUMENT_RESOURCE: &str =
 
 pub const REMOVE_INSTRUMENT_RESOURCE: &str = "Remove a resource entry by id.";
 
-/// Every authoring verb's roster name paired with its sentence — what a door iterates to advertise
+/// Every **roster** contract's name paired with its sentence — what a door iterates to advertise
 /// the whole set without naming each verb.
 ///
-/// Roster **order** is not decided here: the contract roster is, and a door advertises in its
-/// order. This is a lookup, and a door that finds a roster name missing from it is looking at a
-/// verb the window does not serve yet.
+/// A lookup over the contract roster, which is the authority on both which verbs exist and what
+/// order they advertise in; neither is decided here. Not every window verb appears: `describe_boundary`
+/// answers a door that reads a document structurally rather than a roster entry, so it has no
+/// advertised sentence to own.
 pub const DESCRIPTIONS: &[(&str, &str)] = &[
     ("describe_operators", DESCRIBE_OPERATORS),
     ("describe_instrument", DESCRIBE_INSTRUMENT),

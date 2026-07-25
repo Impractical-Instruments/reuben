@@ -127,6 +127,34 @@ fn every_tool_advertises_an_output_schema() {
 }
 
 #[test]
+fn the_prose_table_covers_the_authoring_roster() {
+    // In-process and spawning nothing, because the wire test below cannot report this well: the
+    // door asserts the same coverage at construction, so a missing sentence stops the shim from
+    // starting and every stdio test fails with "no response" instead of naming the verb.
+    //
+    // The roster is the authority on which contracts exist; the window's table is a lookup over it.
+    // The engine half is not here yet — that is phase 3. see rules: agent-mcp
+    let expected: std::collections::BTreeSet<&str> = reuben_core::tools::CONTRACTS
+        .iter()
+        .filter(|c| {
+            matches!(
+                c.kind,
+                reuben_core::tools::ContractKind::Pure | reuben_core::tools::ContractKind::Document
+            )
+        })
+        .map(|c| c.name)
+        .collect();
+    let advertised: std::collections::BTreeSet<&str> = reuben_api::authoring::prose::DESCRIPTIONS
+        .iter()
+        .map(|(name, _)| *name)
+        .collect();
+    assert_eq!(
+        expected, advertised,
+        "every authoring contract needs a sentence in the window's prose table, and only those"
+    );
+}
+
+#[test]
 fn advertises_the_window_prose() {
     // The window owns each authoring verb's sentence, and the door stamps it onto the built router
     // because rmcp's `#[tool]` takes only a literal. Left unstamped, the macro falls back to the
