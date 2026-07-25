@@ -29,7 +29,9 @@ is an argument, and an argument names what it rejected — `In`/`Out` "not `InPo
 `pitch2freq` over the rejected `degree_to_freq`, the `upload_sample` tool that was turned down. Those
 identifiers must NOT exist, so requiring them to resolve inverts the corpus's own meaning. Identifier
 claims therefore gate on now-state docs and route to review inside `rationale/`. Path claims gate
-everywhere: a rejected *name* is common, a rejected *file path* is not.
+everywhere: a rejected *name* is common, a rejected *file path* is not — and in the **entry docs**
+(AGENTS.md and friends) they must resolve in full, because that surface is read as navigation and an
+agent opens what it names.
 
 Stdlib only. Green on an empty tree. Usage:
 
@@ -116,12 +118,17 @@ class Index:
     paths: list[str] = field(default_factory=list)     # posix, relative to root
     tokens: set[str] = field(default_factory=set)      # every identifier in every source file
 
-    def resolves_path(self, token: str) -> bool:
-        """Exact match, or a unique-enough suffix — docs legitimately write `format/normalize.rs`
-        for a file that lives at `crates/reuben-core/src/format/normalize.rs`, and demanding the
-        full path would be a house style this repo does not have."""
+    def resolves_path(self, token: str, exact: bool = False) -> bool:
+        """Exact match, or — unless `exact` — a unique-enough suffix. Docs legitimately write
+        `format/normalize.rs` for a file that lives at
+        `crates/reuben-core/src/format/normalize.rs`, and demanding the full path everywhere would
+        be a house style this repo does not have.
+
+        The entry docs are the exception (`exact=True`): AGENTS.md and README.md are a *navigation*
+        surface, so an agent opens the path they name rather than reading it as a reference. A path
+        that resolves only by suffix is one an agent cannot open."""
         bare = token.split(":")[0].removeprefix("./")
-        return any(p == bare or p.endswith("/" + bare) for p in self.paths)
+        return any(p == bare or (not exact and p.endswith("/" + bare)) for p in self.paths)
 
     def has_test_fn(self, path: str, fn: str) -> bool:
         candidates = [p for p in self.paths if p == path or p.endswith("/" + path)]
@@ -210,6 +217,7 @@ def extract(path: Path, root: Path, idx: Index) -> list[Claim]:
     # A rationale argues; everything else states the now. See the module docstring.
     is_argument = "rationale" in path.parts
     is_topic = path.parent == root / "docs" / "rules" and path.name != "README.md"
+    is_entry_doc = path.parent == root and path.name in GOVERNED_ROOT_FILES
     claims: list[Claim] = []
 
     text = path.read_text(encoding="utf-8", errors="ignore")
@@ -223,11 +231,12 @@ def extract(path: Path, root: Path, idx: Index) -> list[Claim]:
                                     "ok" if idx.resolves_path(token) else "needs-review",
                                     "" if idx.resolves_path(token)
                                     else "bare filename matching no file — claim or example?"))
-            elif idx.resolves_path(token):
+            elif idx.resolves_path(token, exact=is_entry_doc):
                 claims.append(Claim("path", rel, lineno, token, True, "ok"))
             else:
-                claims.append(Claim("path", rel, lineno, token, True,
-                                    "unresolved", "no such file, by full path or suffix"))
+                claims.append(Claim("path", rel, lineno, token, True, "unresolved",
+                                    "not an openable path — an entry doc names paths in full"
+                                    if is_entry_doc else "no such file, by full path or suffix"))
 
         for token in identifiers_in(line):
             if token in idx.tokens:

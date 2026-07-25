@@ -224,9 +224,11 @@ root Markdown, the skills) and types every statement that could be *wrong*. Path
 and `Guarded by:` lines are decided mechanically and gate CI on every commit — a rename is what
 falsifies them, so the check cannot be filtered on doc paths. Counts and single-sourcing claims are
 extracted, ranked and routed to a reviewer (`--review`); they never gate, because a gate that
-guesses at them is one people learn to ignore. Note the asymmetry a rationale earns: it argues, and
-an argument names what it *rejected*, so an identifier absent from source is a finding in a rule and
-routine in a rationale.
+guesses at them is one people learn to ignore. Two asymmetries are deliberate: a rationale *argues*,
+and an argument names what it **rejected**, so an identifier absent from source is a finding in a
+rule and routine in a rationale; and the entry docs (`AGENTS.md`, `README.md`) must name every path
+in full, because that surface is read as navigation and an agent opens what it names — elsewhere a
+prose-relative `format/normalize.rs` resolves by suffix and is fine.
 
 **Derived index** — the Topics list and Glossary above are collated from the topic docs; do not
 hand-edit them. The `pre-commit` hook regenerates them (`check_rules_derive.py --write`) whenever a

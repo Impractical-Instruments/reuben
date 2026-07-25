@@ -63,8 +63,23 @@ class ClaimLedgerTest(unittest.TestCase):
     def test_path_resolves_by_suffix(self):
         # Docs write the short form for a file that lives deeper; that is not a defect.
         claim = self._one(
-            {"AGENTS.md": "Enter at `format/normalize.rs`.\n",
+            {"docs/agents/guide.md": "Enter at `format/normalize.rs`.\n",
              "crates/core/src/format/normalize.rs": "fn main() {}\n"}, "path")
+        self.assertEqual((claim.decidable, claim.status), (True, "ok"))
+
+    def test_entry_doc_path_must_resolve_in_full(self):
+        # AGENTS.md is navigation: an agent opens what it names, so a suffix that resolves for a
+        # reader but not for `Read` is a defect there even though it passes anywhere else.
+        claim = self._one(
+            {"AGENTS.md": "Enter at `reuben-core/src/plan.rs`.\n",
+             "crates/reuben-core/src/plan.rs": "fn main() {}\n"}, "path")
+        self.assertEqual((claim.decidable, claim.status), (True, "unresolved"))
+        self.assertIn("openable", claim.note)
+
+    def test_entry_doc_full_path_passes(self):
+        claim = self._one(
+            {"AGENTS.md": "Enter at `crates/reuben-core/src/plan.rs`.\n",
+             "crates/reuben-core/src/plan.rs": "fn main() {}\n"}, "path")
         self.assertEqual((claim.decidable, claim.status), (True, "ok"))
 
     def test_path_with_slash_that_resolves_nowhere_fails(self):
