@@ -1,4 +1,4 @@
-//! The P2 rewrite guard (see rules: authoring-library, surface-docs): every shipped
+//! The P2 rewrite guard (see rules: authoring-library): every shipped
 //! control-block instrument, rewritten to interface pipes and a surface doc, renders
 //! **bit-identically** to its pre-rewrite v2 original — at rest (a pipe with a declared default
 //! is the old literal) and under driven input (the same gesture, sent to the old node address on

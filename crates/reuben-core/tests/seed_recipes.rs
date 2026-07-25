@@ -1,4 +1,4 @@
-//! The seed-recipe guard (see rules: authoring-library, instrument-is-the-unit-of-reuse):
+//! The seed-recipe guard (see rules: authoring-library):
 //! euclidean-drums, re-expressed through the seed recipes (`voices/kick-voice.json` ×2,
 //! `voices/snare-voice.json`, `voices/hat-voice.json`, each through `patches/dj-strip.json`),
 //! renders **bit-identically** to the pre-recipe inline version — at rest and under driven

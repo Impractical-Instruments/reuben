@@ -11,8 +11,7 @@ use crate::format::{LoadError, LoadWarning, NormalizedDoc};
 /// The content identity of a normalized document: a hash over the canonical
 /// [`to_json_pretty`](crate::format::InstrumentDoc::to_json_pretty) bytes — the exact bytes
 /// a save writes — so two equal [`NormalizedDoc`]s hash equal regardless of how their source
-/// text was formatted. A door's `expect` guard compares it — see rules: agent-mcp
-/// (expect-guard-is-a-door-concern).
+/// text was formatted. A door's `expect` guard compares it — see rules: agent-mcp.
 ///
 /// The string is an **opaque token**: compare it for equality, never parse it. It carries no
 /// cryptographic claim, so a future dedup-by-hash consumer must byte-verify a match rather than
@@ -144,8 +143,7 @@ pub struct DiffSummary {
 /// What a `swap` returns: the validation [`Report`], the
 /// **installed** document's [`content_hash`] (on `ok: false` nothing installed — the hash
 /// still names what keeps playing), and, on success, the [`DiffSummary`]. The `Report`
-/// flattens so the wire shape is one flat object — see rules: agent-mcp
-/// (portable-tool-contracts).
+/// flattens so the wire shape is one flat object — see rules: agent-mcp.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct SwapReport {
@@ -159,9 +157,8 @@ pub struct SwapReport {
 }
 
 impl SwapReport {
-    /// The nothing-was-installed report, defined once — see rules: agent-mcp
-    /// (expect-guard-is-a-door-concern) for why a door needs this shape even when it rejects a
-    /// swap before the loader runs.
+    /// The nothing-was-installed report, defined once — see rules: agent-mcp for why a door needs
+    /// this shape even when it rejects a swap before the loader runs.
     ///
     /// `content_hash` is **what keeps playing** — the conflict's `actual`, never the `expected` the
     /// client asked for.

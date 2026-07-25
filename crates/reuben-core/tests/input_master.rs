@@ -1,4 +1,4 @@
-//! The core input master (see rules: composition-operators, logical channel).
+//! The core input master and its logical channel. see rules: composition-operators
 //!
 //! Top-level signal input pipes with a `channel` binding read the **logical input master**:
 //! the caller hands `render_block_multi` one buffer per logical input channel and each bound

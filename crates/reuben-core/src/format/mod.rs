@@ -1,5 +1,4 @@
-//! Instrument format — the JSON canonical document (**v2**, **v3**). See rules:
-//! authoring-library (format-versioning, normalized-doc-gate, document-is-save-source).
+//! Instrument format — the JSON canonical document (**v2**, **v3**). see rules: authoring-library
 //!
 //! A node's `inputs` entry is either a **literal** or a **wire-ref** to another node's output
 //! (`{ "from": "/osc.audio" }`, or `{ "from": "/osc" }` when the source has a single output —
@@ -1774,7 +1773,6 @@ impl InstrumentDoc {
                     voice: node.voice_id.clone(),
                     // A subpatch dissolves at build, so from_graph only emits the inlined
                     // children, never the reference — see rules: authoring-library
-                    // (document-is-save-source).
                     patch: None,
                     // Presentation lives in a surface doc now, not the graph.
                     control: None,

@@ -674,7 +674,7 @@ impl Plan {
     /// precomputed migration table: each `(old_index, new_index)` pair moves the box —
     /// `from.nodes[old_index]` → `self.nodes[new_index]` — and the displaced cold box lands back in
     /// `from` to free off-thread with it. Wiring and latches stay this Plan's; only the box moves.
-    /// See rules: execution-runtime (survivor-migration, engine-swap-unit).
+    /// see rules: execution-runtime
     ///
     /// Caller contract: each pair must already share operator type + instantiate-time identity (the
     /// survivor key a [`MigrationTable`](crate::coordinator::manifest::MigrationTable) guarantees) —

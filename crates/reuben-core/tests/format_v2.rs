@@ -3,7 +3,7 @@
 //! A v1 document auto-migrated at parse and its hand-written native-v2 equivalent must produce
 //! the same output on every observable surface (master channels, outbound OSC-out messages,
 //! captured Value interface outputs), across three host positions: top-level, subpatch-nested,
-//! and Voicer-hosted. See rules: authoring-library (format-versioning, normalized-doc-gate).
+//! and Voicer-hosted. see rules: authoring-library
 //!
 //! The frozen-document corpus embeds v1 originals verbatim from git history against their
 //! rewritten v2 forms under `tests/fixtures/`, pinning the migration the library rewrite rode on.

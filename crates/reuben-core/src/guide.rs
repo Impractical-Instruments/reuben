@@ -1,5 +1,4 @@
-//! The authoring guide's `lanes:` section tags and the mechanical lane cut (see rules: agent-mcp,
-//! cross-lane-grounding).
+//! The authoring guide's `lanes:` section tags and the mechanical lane cut. see rules: agent-mcp
 //!
 //! `docs/agents/authoring.md` is authored once; the web lane bundles a build-time slice — the full
 //! guide minus checkout-only sections (the filesystem sample workflow, the ADR index). The slice is

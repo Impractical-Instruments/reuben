@@ -41,8 +41,8 @@ pub struct Contract {
 ///
 /// Every name follows the `verb_instrument_object` convention, and no contract carries an
 /// instrument document by value: a document is named by an opaque `source` the door's resolver
-/// interprets, and read back as a [`projection`](crate::projection) — see rules: agent-mcp
-/// (no-resource-bytes). `scaffold_instrument` retired here: it returned a seed *by value*, and
+/// interprets, and read back as a [`projection`](crate::projection) — see rules: agent-mcp.
+/// `scaffold_instrument` retired here: it returned a seed *by value*, and
 /// [`crate::edit::new_instrument`] lands the same seed at a source instead.
 pub const CONTRACTS: &[Contract] = &[
     Contract {

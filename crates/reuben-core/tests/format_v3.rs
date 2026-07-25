@@ -280,8 +280,8 @@ fn v1_doc_migrates_through_to_v3_and_save_writes_v3() {
 
 #[test]
 fn control_block_carrying_doc_renders_bit_identical_to_the_stripped_doc() {
-    // See rules: authoring-library#surface-docs — `control` was an opaque passthrough the
-    // engine never read, so dropping it is render-safe by construction; asserted, not assumed.
+    // see rules: authoring-library — `control` was an opaque passthrough the engine never read,
+    // so dropping it is render-safe by construction; asserted, not assumed.
     let with = render(V2_WITH_CONTROL, |_| Vec::new());
     let without = render(V2_WITHOUT_CONTROL, |_| Vec::new());
     assert_nonsilent(&with, "control-carrying doc");

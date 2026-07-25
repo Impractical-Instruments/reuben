@@ -5,7 +5,7 @@
 //! `process` for the value carrier ([`ValueShell`]) and one for the signal carrier
 //! ([`SignalShell`]) — because keeping the per-sample loop in one place is what lets
 //! [`SignalShell`] hoist each operand's slice read out of it — see rules: composition-operators
-//! (pointwise-number-operators) for why this beats a `process` emitted per operator.
+//! for why this beats a `process` emitted per operator.
 //!
 //! The binary ops — `add`, `sub`, `mul`, `min`, `max`, `clamp` — were fully scalar before the
 //! hoist; the unary ones and `map`/`div`/`power` vectorized in part regardless, and gain here too.

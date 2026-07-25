@@ -1,5 +1,5 @@
-//! The one normalization seam: gate + migrate + strip + stamp, behind [`NormalizedDoc`]. See
-//! rules: authoring-library (normalized-doc-gate, format-versioning).
+//! The one normalization seam: gate + migrate + strip + stamp, behind [`NormalizedDoc`].
+//! see rules: authoring-library
 
 use super::*;
 
@@ -72,9 +72,9 @@ impl NormalizedDoc {
         Self::normalize(doc, registry, resolver, ctx, referrer)
     }
 
-    /// Gate + migrate + strip + stamp, held by this type. See rules: authoring-library
-    /// (normalized-doc-gate, format-versioning). Stamping last: a migrated doc never saves back
-    /// under its old version number.
+    /// Gate + migrate + strip + stamp, held by this type. see rules: authoring-library
+    ///
+    /// Stamping last: a migrated doc never saves back under its old version number.
     fn normalize(
         mut doc: InstrumentDoc,
         registry: &Registry,
@@ -117,8 +117,10 @@ impl NormalizedDoc {
             .graph)
     }
 
-    /// Derive a document from a built [`Graph`] — the flatten/export path, not save. See rules:
-    /// authoring-library (document-is-save-source). Use it to export a self-contained flat
+    /// Derive a document from a built [`Graph`] — the flatten/export path, not save.
+    /// see rules: authoring-library
+    ///
+    /// Use it to export a self-contained flat
     /// instrument or to materialize a programmatically built graph; don't round-trip an edited
     /// *nested* instrument through it. Nodes are emitted in a stable order, and within a node
     /// `config`/`inputs` keys are sorted (BTreeMap), so output is deterministic. A `Constant`
