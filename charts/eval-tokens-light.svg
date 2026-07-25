@@ -13,19 +13,19 @@
 <text x="56" y="46" text-anchor="end" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="10" fill="#898781">tokens</text>
 <line x1="64" y1="306" x2="730" y2="306" stroke="#c3c2b7" stroke-width="1"/>
 <text x="64.0" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-22</text>
-<text x="245.6" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-23</text>
-<text x="366.7" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-24</text>
-<text x="730.0" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-25</text>
-<path d="M64.0,244.3 L124.5,244.3 L185.1,244.3 L245.6,244.3 L306.2,244.3 L366.7,244.3 L427.3,244.3 L487.8,74.7 L548.4,74.7 L608.9,74.7 L669.5,79.7 L730.0,79.7" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<text x="230.5" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-23</text>
+<text x="341.5" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-24</text>
+<text x="674.5" y="322" text-anchor="middle" font-family='system-ui, -apple-system, "Segoe UI", sans-serif' font-size="11" style="font-variant-numeric: tabular-nums" fill="#898781">07-25</text>
+<path d="M64.0,244.3 L119.5,244.3 L175.0,244.3 L230.5,244.3 L286.0,244.3 L341.5,244.3 L397.0,244.3 L452.5,74.7 L508.0,74.7 L563.5,74.7 L619.0,79.7 L674.5,79.7 L730.0,79.7" fill="none" stroke="#2a78d6" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="730.0" cy="79.7" r="6" fill="#fcfcfb"/>
 <circle cx="730.0" cy="79.7" r="4" fill="#2a78d6"/>
-<path d="M64.0,225.6 L124.5,225.6 L185.1,225.6 L245.6,225.6 L306.2,225.6 L366.7,225.6 L427.3,225.6 L487.8,56.0 L548.4,56.0 L608.9,56.0 L669.5,61.3 L730.0,61.3" fill="none" stroke="#1baf7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M64.0,225.6 L119.5,225.6 L175.0,225.6 L230.5,225.6 L286.0,225.6 L341.5,225.6 L397.0,225.6 L452.5,56.0 L508.0,56.0 L563.5,56.0 L619.0,61.3 L674.5,61.3 L730.0,61.3" fill="none" stroke="#1baf7a" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="730.0" cy="61.3" r="6" fill="#fcfcfb"/>
 <circle cx="730.0" cy="61.3" r="4" fill="#1baf7a"/>
-<path d="M64.0,244.3 L124.5,244.3 L185.1,244.3 L245.6,244.3 L306.2,244.3 L366.7,244.3 L427.3,244.3 L487.8,74.7 L548.4,74.7 L608.9,74.7 L669.5,80.0 L730.0,80.0" fill="none" stroke="#eda100" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M64.0,244.3 L119.5,244.3 L175.0,244.3 L230.5,244.3 L286.0,244.3 L341.5,244.3 L397.0,244.3 L452.5,74.7 L508.0,74.7 L563.5,74.7 L619.0,80.0 L674.5,80.0 L730.0,80.0" fill="none" stroke="#eda100" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="730.0" cy="80.0" r="6" fill="#fcfcfb"/>
 <circle cx="730.0" cy="80.0" r="4" fill="#eda100"/>
-<path d="M64.0,244.8 L124.5,244.8 L185.1,244.8 L245.6,244.8 L306.2,244.8 L366.7,244.8 L427.3,244.8 L487.8,75.2 L548.4,75.2 L608.9,75.2 L669.5,80.5 L730.0,80.5" fill="none" stroke="#008300" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+<path d="M64.0,244.8 L119.5,244.8 L175.0,244.8 L230.5,244.8 L286.0,244.8 L341.5,244.8 L397.0,244.8 L452.5,75.2 L508.0,75.2 L563.5,75.2 L619.0,80.5 L674.5,80.5 L730.0,80.5" fill="none" stroke="#008300" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
 <circle cx="730.0" cy="80.5" r="6" fill="#fcfcfb"/>
 <circle cx="730.0" cy="80.5" r="4" fill="#008300"/>
 <circle cx="745.0" cy="57.8" r="3.5" fill="#1baf7a"/>
