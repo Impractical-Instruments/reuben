@@ -415,6 +415,26 @@ jobs:
       - name: ADR-in-code + pointer-resolution guard
         run: python3 scripts/check_rules_refs.py .
 
+  # The doc-claim ledger (extract_doc_claims.py, #634): every file path and code identifier the
+  # governed docs name resolves against the real tree, and a `Guarded by:` line names a test that
+  # exists. Only that decidable half gates — the counts and single-sourcing claims it also extracts
+  # are routed to a reviewer by `--review` and never fail a build, because a gate that guesses at
+  # the undecidable half is a gate people learn to ignore.
+  #
+  # ALWAYS runs, for the same reason as the ref-linter above and unlike the path-filtered
+  # rules-guards: a doc claim is falsified by a RENAME. The commit that breaks it touches code and
+  # not one line of docs, so any path filter built from doc paths would miss exactly the change
+  # that caused the defect.
+  doc-claims:
+    name: doc claims resolve (claim ledger)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Claim-ledger unit tests
+        run: cd scripts && python3 -m unittest test_extract_doc_claims -v
+      - name: Doc-claim gate
+        run: python3 scripts/extract_doc_claims.py --check .
+
   # The Sample-alias guard (check_sample_alias.py, #560): the engine's audio element type is named
   # once in crates/reuben-core/src/signal.rs, and a raw f32 slice or vector buffer form may appear
   # only there or in the script's justified allowlist (device layer, resource decode, operator DSP
@@ -445,7 +465,8 @@ jobs:
     name: ci-passed
     runs-on: ubuntu-latest
     needs:
-      [changes, lockstep, check, windows, bench, eval-gate, rules-guards, ref-guard, sample-guard]
+      [changes, lockstep, check, windows, bench, eval-gate, rules-guards, ref-guard, sample-guard,
+       doc-claims]
     if: always()
     steps:
       - name: Fail if any required job failed or was cancelled (skipped is OK)

@@ -219,6 +219,15 @@ each other and link back up to their rule, so renaming or deleting an anchor is 
 and the guard fails until it is one. This is what stops an absorption pass from leaving live prose
 pointing at a rule that no longer exists.
 
+**Claim ledger** — `extract_doc_claims.py` reads the governed docs (this corpus, `docs/agents/`, the
+root Markdown, the skills) and types every statement that could be *wrong*. Paths, code identifiers
+and `Guarded by:` lines are decided mechanically and gate CI on every commit — a rename is what
+falsifies them, so the check cannot be filtered on doc paths. Counts and single-sourcing claims are
+extracted, ranked and routed to a reviewer (`--review`); they never gate, because a gate that
+guesses at them is one people learn to ignore. Note the asymmetry a rationale earns: it argues, and
+an argument names what it *rejected*, so an identifier absent from source is a finding in a rule and
+routine in a rationale.
+
 **Derived index** — the Topics list and Glossary above are collated from the topic docs; do not
 hand-edit them. The `pre-commit` hook regenerates them (`check_rules_derive.py --write`) whenever a
 commit touches `docs/rules/`, and CI runs `--check` as a backstop. Run `scripts/install-hooks.sh`

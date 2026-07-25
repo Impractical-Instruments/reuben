@@ -286,7 +286,7 @@ directly on the code you write here:
     code reachable from a `fn process` body (plus the per-block render path —
     `render_block`/`render_into`/`process_node` — and the message drain/route that runs on
     the audio thread). **Cold** = everything else: `descriptor()`/`operator_contract!`,
-    `new`/`Default`/`spawn`/`bind_resources`, `RenderContext` preallocation, and the whole
+    `new`/`Default`/`spawn`/`bind_resources`, `RenderScratch` preallocation, and the whole
     Coordinator region (Instantiate, Swap-construction, (de)serialization, reclaim) plus the
     patcher/schema/CLI. The line cuts *through* a single file — `spawn` allocates by design
     inches from an alloc-free `process`. Judge each by which thread runs it.
