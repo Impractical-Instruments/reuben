@@ -21,6 +21,12 @@ pub struct FsResolver {
     /// every referenced WAV would be pure waste. Patch text still reads for real: nested
     /// boundaries can't be described without building the nested graph.
     stat_only: bool,
+    /// Set by [`for_document`](Self::for_document): the one source that names the document
+    /// itself, and where it actually lives. The base dir is the document's *directory*, so that
+    /// its siblings resolve — which leaves the document's own path unreachable by joining. Rather
+    /// than making every caller strip the directory off before handing the source back, the
+    /// resolver keeps the caller's spelling and answers to it.
+    document: Option<(String, PathBuf)>,
 }
 
 impl FsResolver {
@@ -32,6 +38,7 @@ impl FsResolver {
             base_dir: absolute(base_dir.into()),
             root: None,
             stat_only: false,
+            document: None,
         }
     }
 
@@ -54,10 +61,35 @@ impl FsResolver {
         Self::new(base)
     }
 
+    /// A resolver scoped to one document, addressed by the opaque `source` a caller sent — the
+    /// filesystem door's reading of a `source`, which is a path here.
+    ///
+    /// Nested references resolve from the document's own directory (sibling-first, as
+    /// [`for_instrument`](Self::for_instrument)), and the document itself answers to `source`
+    /// exactly as spelled, however many directory components that spelling carries.
+    pub fn for_document(source: &str) -> Self {
+        let path = Path::new(source);
+        Self {
+            // Absolute, like the base dir: where a document lands must not depend on the process
+            // working directory drifting between the read and the write.
+            document: Some((source.to_string(), absolute(path.to_path_buf()))),
+            ..Self::for_instrument(path)
+        }
+    }
+
     /// Only stat samples instead of decoding them; missing files still report `NotFound`.
     pub fn stat_only(mut self) -> Self {
         self.stat_only = true;
         self
+    }
+
+    /// Where a text source lives: the scoped document's own path when the source names it,
+    /// otherwise a sibling of it.
+    fn locate(&self, source: &str) -> PathBuf {
+        match &self.document {
+            Some((named, path)) if named == source => path.clone(),
+            _ => self.base_dir.join(source),
+        }
     }
 }
 
@@ -104,7 +136,7 @@ impl ResourceResolver for FsResolver {
     /// Read a patch path (an instrument-kind resource) to its JSON text, relative to
     /// the base dir like a sample. Core then builds it into a sub-`Graph`.
     fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
-        let path = self.base_dir.join(source);
+        let path = self.locate(source);
         std::fs::read_to_string(&path)
             .map_err(|e| ResolveError::NotFound(format!("{}: {e}", path.display())))
     }
@@ -123,7 +155,7 @@ impl ResourceResolver for FsResolver {
     /// `rename` is a same-filesystem atomic replace — and the temp is cleaned up if it cannot be
     /// put in place. The reader therefore sees the old document or the new one, never a fragment.
     fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
-        let path = self.base_dir.join(source);
+        let path = self.locate(source);
         if let Some(parent) = path.parent() {
             std::fs::create_dir_all(parent)
                 .map_err(|e| ResolveError::Write(format!("{}: {e}", parent.display())))?;
@@ -165,6 +197,31 @@ impl ResourceResolver for FsResolver {
             }
         }
         sibling.display().to_string()
+    }
+}
+
+/// The same resolver seen through the window's own seam, so a door that drives
+/// [`authoring`](crate::authoring) never has to name the engine's.
+///
+/// Two impls rather than one because the two traits are load-bearing at different depths for two
+/// more phases: `reuben-native` still calls the engine directly, and it resolves through this
+/// same type. When it comes through the window, the engine-side impl goes.
+#[cfg(feature = "authoring")]
+impl crate::authoring::Resources for FsResolver {
+    fn read_samples(&self, source: &str) -> Result<SampleBuffer, crate::authoring::ResourceError> {
+        self.resolve(source).map_err(Into::into)
+    }
+
+    fn read_text(&self, source: &str) -> Result<String, crate::authoring::ResourceError> {
+        ResourceResolver::resolve_text(self, source).map_err(Into::into)
+    }
+
+    fn write_text(&self, source: &str, text: &str) -> Result<(), crate::authoring::ResourceError> {
+        ResourceResolver::write_text(self, source, text).map_err(Into::into)
+    }
+
+    fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
+        ResourceResolver::canonical(self, source, referrer)
     }
 }
 
@@ -325,6 +382,40 @@ mod tests {
         assert_eq!(
             resolver.resolve_text(&canon).expect("read abs"),
             "{\"v\":3}"
+        );
+
+        let _ = std::fs::remove_dir_all(&base);
+    }
+
+    /// A document-scoped resolver answers to the source **as the caller spelled it**, however many
+    /// directory components that carries, while its siblings still resolve from the document's own
+    /// directory. The two pull in opposite directions — the base dir has to be the directory for
+    /// siblings to work, which is exactly what puts the document itself out of join's reach — so a
+    /// multi-segment source is the case that decides it, and the one an absolute-path test would
+    /// pass while a relative caller silently wrote to the wrong place.
+    #[test]
+    fn a_document_scoped_resolver_reads_and_writes_a_multi_segment_source() {
+        let base = std::env::temp_dir().join("reuben_for_document_test");
+        let _ = std::fs::remove_dir_all(&base);
+        std::fs::create_dir_all(base.join("kit")).unwrap();
+        std::fs::write(base.join("kit/inst.json"), "{\"v\":3}").unwrap();
+        std::fs::write(base.join("kit/voice.json"), "{\"v\":9}").unwrap();
+
+        // The source as a caller spells it: two segments, relative to `base`.
+        let source = format!("{}/kit/inst.json", base.display());
+        let resolver = FsResolver::for_document(&source);
+
+        assert_eq!(resolver.resolve_text(&source).expect("read"), "{\"v\":3}");
+        resolver.write_text(&source, "{\"v\":4}").expect("write");
+        assert_eq!(
+            std::fs::read_to_string(base.join("kit/inst.json")).unwrap(),
+            "{\"v\":4}",
+            "the write landed on the document the caller named"
+        );
+        // A sibling still resolves from the document's directory, not from the source's spelling.
+        assert_eq!(
+            resolver.resolve_text("voice.json").expect("sibling"),
+            "{\"v\":9}"
         );
 
         let _ = std::fs::remove_dir_all(&base);
