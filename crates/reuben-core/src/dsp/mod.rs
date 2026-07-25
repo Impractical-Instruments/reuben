@@ -4,7 +4,7 @@
 //! arithmetic. Operators own control semantics (which inputs exist, how they're read,
 //! when coefficients are recomputed) and embed these components for the sample math.
 //!
-//! Components are **value-oriented**: state is a small `Copy` struct a `process` loop
-//! copies to a local, ticks in registers, and writes back once per block (see [`svf`]).
+//! Components are **value-oriented**: state is a small `Copy` struct rather than a `&mut self`
+//! object, so a `process` loop can hold it in registers. see rules: execution-runtime
 
 pub mod svf;

@@ -1,16 +1,11 @@
-//! OpDriver — drive a single operator through the **real engine** for tests and benches
-//! (candidate #1, the OpDriver reframe).
+//! OpDriver — drive a single operator through the **real engine** for tests and benches.
+//! see rules: composition-operators
 //!
-//! An operator's unit tests need to feed it inputs and read its outputs. The temptation is a
-//! hand-rolled `run()` per operator that builds an [`Io`](crate::operator::Io) directly — but that
-//! is a *third* independent implementation of "descriptor → wired `Io`", alongside
-//! [`Plan::instantiate`](crate::plan::Plan::instantiate) (the real seeding) and
-//! [`process_node`](crate::render) (the real per-node step). Three impls drift.
-//!
-//! `OpDriver` removes the duplication: it builds a one-node [`Graph`], instantiates a real [`Plan`],
-//! and steps it with a real [`Renderer`] via [`Renderer::step_node`]. It is purely an
-//! **injection + observation** harness over the production substrate — drift is impossible by
-//! construction. Ports are addressed by the operator's generated `IN_*` / `OUT_*` consts.
+//! It builds a one-node [`Graph`], instantiates a real [`Plan`], and steps it with a real
+//! [`Renderer`] via [`Renderer::step_node`] — purely an **injection + observation** harness over
+//! the production substrate, never a second wiring path beside
+//! [`Plan::instantiate`](crate::plan::Plan::instantiate) and [`process_node`](crate::render).
+//! Ports are addressed by the operator's generated `IN_*` / `OUT_*` consts.
 //!
 //! Surface (all by-const port addressing):
 //! - [`set`](OpDriver::set) — a held control (scalar / enum / `Harmony`) **or** a constant audio-in;

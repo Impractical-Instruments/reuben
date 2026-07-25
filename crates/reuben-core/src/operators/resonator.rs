@@ -323,10 +323,8 @@ impl Operator for Resonator {
         // Mallet noise colour: bright → a more open lowpass on the burst.
         let lp_alpha = 0.1 + 0.9 * brightness.clamp(0.0, 1.0);
 
-        // `in` is a Signal — always a buffer (wired source or materialized silence). Resolve it and
-        // the output buffer once (see filter.rs): the input read returns a block-lifetime slice, so
-        // it coexists with the output's mutable borrow, and indexing flat locals avoids re-deriving
-        // each slice from `io` per sample.
+        // Flat locals for the block loop (see rules: execution-runtime): the input read returns a
+        // block-lifetime slice, so it coexists with the output's mutable borrow.
         let audio = io.read(IN_IN);
         let out = io.write(OUT_OUT);
         for i in 0..n {

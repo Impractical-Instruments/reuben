@@ -131,8 +131,7 @@ impl Operator for SamplePlayer {
         }
         self.prev_gate = g;
 
-        // Resolve the output buffer once (see filter.rs): index a flat local rather than
-        // re-deriving the slice from `io` per sample.
+        // Flat local for the block loop. see rules: execution-runtime
         let out = io.write(OUT_AUDIO);
         for out_sample in out.iter_mut().take(n) {
             let s = if playing {

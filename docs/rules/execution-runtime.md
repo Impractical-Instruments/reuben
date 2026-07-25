@@ -73,10 +73,25 @@ be re-processed (sequencer → voicer, transposers, tonal-context snap) rather t
 
 [why](rationale/execution-runtime/plan-lifecycle.md)
 
+<a id="pipes-dissolve-at-instantiate"></a>
+### Pass-through interface pipes are collapsed out of the schedule at Instantiate so the rendered graph is what a hand-flattened patch would have been, and a pipe survives as a node only where dissolving it would change behavior.
+
+[why](rationale/execution-runtime/pipes-dissolve-at-instantiate.md)
+
+<a id="swap-announces-what-changed"></a>
+### A Swap announces what happened to the sounding graph — survivors, state resets, additions, removals — so a structural accident is read rather than discovered by ear, and a door that rebuilds every node reports that honestly in the same shape.
+
+[why](rationale/execution-runtime/swap-announces-what-changed.md)
+
 <a id="render-is-allocation-free"></a>
 ### Render only reads an immutable Plan and never allocates, frees, or blocks; all allocation lives off-thread in Swap.
 
 [why](rationale/execution-runtime/render-is-allocation-free.md)
+
+<a id="block-loop-runs-on-locals"></a>
+### A `process` block loop runs on flat locals — per-call DSP state is copied in and written back once, and each `io.read`/`io.write` resolves to a slice before the loop — because `&mut self` fields and the handle layer's per-access table lookup each defeat LLVM's register promotion.
+
+[why](rationale/execution-runtime/block-loop-runs-on-locals.md)
 
 <a id="single-writer-coordinator"></a>
 ### A single-writer Coordinator owns all graph structure, and everything else crosses the RT boundary to a read-only Render by lock-free message passing.

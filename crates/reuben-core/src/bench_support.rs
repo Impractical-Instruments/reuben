@@ -1,11 +1,10 @@
-//! Per-operator micro-benchmark bridge.
+//! Per-operator micro-benchmark bridge. see rules: web-product-process
 //!
 //! The macro layer ([`benches/macro_*`](../../benches)) benches end-to-end `render_block` of a
 //! real instrument; this module drives one operator's [`Operator::process`] directly, through the
-//! real engine via [`OpDriver`](crate::op_driver), bypassing the graph, so a regression is
-//! attributable to that operator. [`WORKLOADS`] is the single source of truth for which operators
-//! are benched and how; [`tests`] forces it to stay in sync with the registry and with
-//! `micro_iai.rs`'s CI census.
+//! real engine via [`OpDriver`](crate::op_driver), so a regression is attributable to that
+//! operator. [`WORKLOADS`] is the single source of truth for which operators are benched and how;
+//! [`tests`] forces it to stay in sync with the registry and with `micro_iai.rs`'s CI census.
 
 use crate::descriptor::{Descriptor, PortType};
 use crate::op_driver::OpDriver;

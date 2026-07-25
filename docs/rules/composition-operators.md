@@ -100,6 +100,11 @@ the patch — maps onto the rig.
 
 [why](rationale/composition-operators/per-wire-form-check.md)
 
+<a id="arg-passthrough-is-capability-keyed"></a>
+### A type-agnostic `arg` pass-through input is legal only where the operator treats the payload as opaque, and what may wire into it is keyed on the source type's registered external OSC form — so a form-less type and audio are both rejected at load and plan by one shared statement.
+
+[why](rationale/composition-operators/arg-passthrough-is-capability-keyed.md)
+
 <a id="constants-are-immutable-ports"></a>
 ### A node's surface is inputs, outputs, constants, and resources; a Constant is a plan-time immutable port whose change rebuilds the graph, structurally distinct from a runtime Input, with no separate param concept.
 
@@ -120,6 +125,16 @@ the patch — maps onto the rig.
 
 [why](rationale/composition-operators/interface-pipes.md)
 
+<a id="logical-input-master"></a>
+### A channel-bound signal input pipe reads the logical input master only at the top level — nested and Voicer-hosted bindings are inert, fed by their parent edge instead — and an unsupplied channel dark-degrades to the pipe's declared default while staying message-drivable.
+
+[why](rationale/composition-operators/logical-input-master.md)
+
+<a id="pipe-is-a-reserved-type-name"></a>
+### `pipe` is a reserved operator `type_name`: interface pipes are loader-built from `interface` entries and never registered operators, and the one contract validator refuses the name so a scaffolded or embedder-registered `pipe` fails before it can shadow them.
+
+[why](rationale/composition-operators/pipe-is-a-reserved-type-name.md)
+
 <a id="payload-enum-arg-leaves"></a>
 ### A vocab enum that carries a payload is promoted to its own named `Arg` variant as an opaque `Copy` leaf, while an all-unit enum type-erases to `Arg::Enum(index)` — `#[derive(ArgValue)]` routes each enum by whether any variant carries a payload.
 
@@ -129,6 +144,16 @@ the patch — maps onto the rig.
 ### Each product vocab type gets a generated `unpack_<type>` operator from a one-line `unpack_op!` census entry that reuses the shared contract internals and self-registers through inventory, emitting every field as a ZOH-held Value defaulting to the type's `Default`.
 
 [why](rationale/composition-operators/product-type-unpack-operators.md)
+
+<a id="one-blanket-held-read"></a>
+### Every vocab enum's held read comes from core's one blanket `InForm for Held<T>` impl, so the derive generates no per-type read glue and there is a single place the zero-order-hold read can be changed.
+
+[why](rationale/composition-operators/one-blanket-held-read.md)
+
+<a id="single-io-wiring-path"></a>
+### "Descriptor → wired `Io`" has exactly two implementations — the Plan's instantiate and Render's per-node step — so a test or bench harness drives an operator through the real Plan and Renderer rather than becoming a third.
+
+[why](rationale/composition-operators/single-io-wiring-path.md)
 
 ## Terms
 

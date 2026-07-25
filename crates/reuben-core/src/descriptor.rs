@@ -56,17 +56,15 @@ pub enum PortType {
     /// [`Arg`](crate::message::Arg), committing to no vocab type. Classified as an
     /// [Event](crate::plan::PortKind::Event) stream, so routing delivers the raw `Arg` unlatched
     /// and uncoerced; the operator reads and re-emits it through `Raw` handles (`io.read` on an
-    /// `In<Raw>`, `io.write` on an `Out<Raw>`). The form the `osc_out` boundary sink's input takes, so any
-    /// Message-domain value (a scalar echo, a vocab enum, a `Note`) can reach the wire and the
-    /// type-driven expansion happens at the boundary ([`osc_out_args`](crate::boundary::osc_out_args)).
-    /// **Input-only** (the contract validator fails an `arg` output/constant closed), and legal
-    /// only where the operator treats the payload as opaque — a pure carrier: the wired *source*
-    /// port is the type authority. Legality is capability-keyed
-    /// ([`has_osc_form`](crate::boundary::has_osc_form)): any Event or Value source whose type
-    /// has an external OSC form wires in — for a struct vocab type that means a converter
-    /// registered via `register_osc_form!` ([`OscForm`](crate::boundary::OscForm));
-    /// a no-form source (`Harmony`, which registers none) is rejected at load/plan, and a
-    /// Signal (audio) source likewise — audio stays off the wire by construction.
+    /// `In<Raw>`, `io.write` on an `Out<Raw>`). The form the `osc_out` boundary sink's input takes,
+    /// with the type-driven expansion happening at the boundary
+    /// ([`osc_out_args`](crate::boundary::osc_out_args)).
+    ///
+    /// **Input-only** — the contract validator closes an `arg` output or constant — and what may
+    /// wire in is keyed on [`has_osc_form`](crate::boundary::has_osc_form), the one predicate the
+    /// load-time and plan-time checks share. A struct vocab type opts in by registering a
+    /// converter via `register_osc_form!` ([`OscForm`](crate::boundary::OscForm)).
+    /// see rules: composition-operators
     Arg,
 }
 

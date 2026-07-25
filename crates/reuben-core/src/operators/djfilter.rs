@@ -108,16 +108,11 @@ impl Operator for Djfilter {
         let mut last_pos = f32::NAN;
         let mut use_hp = false;
         let mut c = SvfCoeffs::default();
-        // Resolve the per-sample buffers once, outside the loop: a per-iteration `io.read`/
-        // `io.write` re-derives the slice from `io`'s input/output tables every sample (a table
-        // index + `Option` unwrap per access) — the handle layer stopped LLVM hoisting
-        // it. Binding flat locals once restores the pre-handle codegen (perf fix).
+        // Flat locals for the block loop, SVF stored back once after it.
+        // see rules: execution-runtime
         let position = io.read(IN_POSITION);
         let audio = io.read(IN_AUDIO);
         let out = io.write(OUT_AUDIO);
-        // Block-local copy of the SVF state, stored back once after the loop: ticking
-        // `self.svf` directly spills the two integrators to memory every sample; the local
-        // stays in registers, leaving ~1 data-write per sample — the output store.
         let mut svf = self.svf;
         for i in 0..n {
             let pos = position[i];

@@ -87,8 +87,8 @@ impl Operator for Saturator {
         };
         let level = io.read(IN_LEVEL).clamp(LEVEL_MIN, LEVEL_MAX);
 
-        // Resolve every slice once, outside the loop (the handle re-derivation cost — same hoist
-        // as the filter). All are exactly `n` frames (buffer-presence invariant).
+        // Flat locals for the block loop (see rules: execution-runtime). All are exactly `n`
+        // frames (buffer-presence invariant).
         let audio = io.read(IN_AUDIO);
         let drive = io.read(IN_DRIVE);
         let warmth = io.read(IN_WARMTH);

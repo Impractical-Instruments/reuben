@@ -79,6 +79,11 @@ higher-order calculus valid.
 
 [why](rationale/signal-time-dsp/musical-timetags.md)
 
+<a id="outbound-frames-are-block-absolute"></a>
+### An outbound Message carries a block-absolute frame: the render loop stamps each operator emission by adding its segment's start, and the outbound drain forwards that frame verbatim — never re-stamping it and never losing the offset.
+
+[why](rationale/signal-time-dsp/outbound-frames-are-block-absolute.md)
+
 <a id="two-layer-pitch"></a>
 ### Pitch is a two-layer model — a symbolic degree within the active Scale (with float MIDI available as a 12-TET coordinate) resolved to Hz by a Tuning — and 12-TET is just the default Tuning.
 

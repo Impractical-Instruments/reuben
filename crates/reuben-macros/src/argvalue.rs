@@ -242,8 +242,8 @@ mod tests {
             "{out}"
         );
         assert!(out.contains("Arg :: Enum (i) =>"), "{out}");
-        // No per-enum read glue: every enum's held read is covered by reuben-core's blanket
-        // `InForm for Held<T>` impl, so the derive emits no `IoInput` impl.
+        // No per-enum read glue is generated. Asserted negatively on purpose: adding it would be
+        // an easy, plausible-looking change. see rules: composition-operators
         assert!(!out.contains("IoInput"), "{out}");
         assert!(!out.contains("input_held"), "{out}");
     }

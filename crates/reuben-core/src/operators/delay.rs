@@ -75,8 +75,7 @@ impl Operator for Delay {
         let delay_samples = (time * sample_rate).clamp(1.0, (cap - 1) as f32);
 
         let len = self.buf.len();
-        // Resolve the audio input and output buffers once (see filter.rs): indexing flat locals
-        // avoids re-deriving each slice from `io` on every sample.
+        // Flat locals for the block loop. see rules: execution-runtime
         let audio = io.read(IN_AUDIO);
         let out = io.write(OUT_AUDIO);
         for i in 0..n {

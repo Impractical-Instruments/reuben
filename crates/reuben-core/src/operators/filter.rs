@@ -111,11 +111,7 @@ impl Operator for Filter {
         let sample_rate = io.sample_rate();
         let mode = io.read(IN_MODE);
 
-        // Copy the SVF state to a local for the whole block and store it back once at the
-        // end. Ticking `self.svf` directly would write the two integrators to memory every
-        // sample (LLVM won't promote fields behind `&mut self` across the loop); the local
-        // is register-promoted, dropping `process` to ~1 data-write per sample — just the
-        // output store.
+        // Block-local SVF, stored back once after the loop. see rules: execution-runtime
         let mut svf = self.svf;
 
         // `cutoff`/`resonance` are Signal inputs — always a buffer (wired source or materialized
