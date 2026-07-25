@@ -19,6 +19,10 @@
 /eval-head.json
 /eval-base.json
 
+# Live-tier eval reports (`reuben_eval.live --json`, e.g. the --json live-16gb.json in its usage
+# line). Per-machine, per-rung run output — nothing reads them back.
+/eval/live-*.json
+
 # Editor / OS
 *.swp
 *.bak
