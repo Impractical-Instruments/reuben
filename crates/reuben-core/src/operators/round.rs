@@ -15,17 +15,18 @@
 //!   that names which decision (see `per-wire-form-check`). `floor`/`ceil`/`trunc` are the other
 //!   three answers.
 //!
-//! There is no `f32 -> i32 signal`: `i32` has no dense buffer form (issue #560), so every
-//! converter is value-only.
+//! There is no `f32 -> i32 signal`: `i32` has no dense buffer form, so every converter is
+//! value-only.
 //!
 //! - input 0: `x` (`Float`) — the value to round. Unwired default `0`.
 //! - output 0: `out` — `x` rounded to nearest, halves away from zero (`-2.5` → `-3`, `2.5` → `3`).
+//!
+//! see rules: composition-operators
 
 use crate::operators::rounding::RoundInto;
 
-/// The op's scalar math, written once (the pure-fn seam) and generic over the **output** type so
-/// the macro can instantiate it per `variants:` entry — the same body serves the `f32` rounding
-/// and the `i32` converter.
+/// The op's scalar math, generic over the **output** type so the macro can instantiate it per
+/// `variants:` entry — the same body serves the `f32` rounding and the `i32` converter.
 #[inline]
 fn round_fn<T: RoundInto<U>, U>(x: T) -> U {
     x.round_into()

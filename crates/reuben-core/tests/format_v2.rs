@@ -1,31 +1,12 @@
 //! Format v2: the migration renders **bit-identically**.
 //!
-//! The direction flip is a pure format change — a v1 document auto-migrated at parse and its
-//! hand-written native-v2 equivalent must produce the *same output*, on **every** observable
-//! surface: master signal channels, the outbound (OSC-out) message vector, and captured Value
-//! interface outputs. These tests render both forms through the real engine and compare
-//! exactly, across the three host positions (top-level played, subpatch-nested, Voicer-hosted):
+//! A v1 document auto-migrated at parse and its hand-written native-v2 equivalent must produce
+//! the same output on every observable surface (master channels, outbound OSC-out messages,
+//! captured Value interface outputs), across three host positions: top-level, subpatch-nested,
+//! and Voicer-hosted. see rules: authoring-library
 //!
-//! - a **Voicer-hosted** synth: the voice's `freq`/`gate` interface inputs become
-//!   pipes the Voicer drives by message — note-ons/offs at mid-block frames exercise value-pipe
-//!   forwarding and signal-pipe materialization timing;
-//! - a **nested** effect: boundary wires, boundary literals, and defaulted control
-//!   pipes through the synthesized face — including an out-of-display-range literal, pinning
-//!   that v1's presentational `min`/`max` did not become engine clamps;
-//! - **master-tap fidelity** (review #189 F1): duplicate v1 anonymous taps stay duplicated,
-//!   channel-pinned taps claim a same-port boundary entry instead of doubling into
-//!   pinned + broadcast, and boundary-only outputs stay exact when hosted;
-//! - the **message path**: a migrated Value pipe driving an envelope whose `active` feeds both
-//!   an `osc_out` (outbound) and a Value interface output (captured);
-//! - migration-loss shapes (aliased entries, internally-wired targets, minted-address
-//!   collisions, dotted entry names) load with pointed warnings, never fatally, never silently;
-//! - a **frozen-document corpus**: the v1 originals of three representative instruments
-//!   (embedded verbatim from git history) against their rewritten v2 forms, frozen under
-//!   `tests/fixtures/` since the library cull.
-//!
-//! This is the discipline the instrument rewrite rode on: the library suite
-//! (first_sound, groovebox, stereo_pan, …) keeps asserting behavior on the rewritten v2 files,
-//! and this file pins v1 ≡ v2 at the sample/message level.
+//! The frozen-document corpus embeds v1 originals verbatim from git history against their
+//! rewritten v2 forms under `tests/fixtures/`, pinning the migration the library rewrite rode on.
 
 use reuben_core::format::LoadWarning;
 use reuben_core::message::{Arg, Message};
@@ -242,8 +223,8 @@ fn migration_produces_exactly_the_native_v2_document() {
 // A nested effect: the child's boundary — an audio input, a swept tone control with
 // a child literal and v1 *presentational* min/max, a Value mix control — spelled v1 (targets)
 // and v2 (pipes). The v1 `tone` narrowing (200..8000) was display-only: the engine enforced the
-// inner cutoff's 20..20000 — so the native-v2 equivalent declares the inner range (the migrated
-// pipe's engine-enforced range must not clamp harder than v1 did — review #189 F5).
+// inner cutoff's 20..20000, so the native-v2 equivalent declares the inner range — the migrated
+// pipe's engine-enforced range must not clamp harder than v1 did.
 const SPACE_V1: &str = r#"{
   "instrument": "space",
   "interface": {
@@ -329,9 +310,9 @@ fn migrated_nested_effect_renders_bit_identical_to_native_v2() {
 
 #[test]
 fn out_of_display_range_control_is_not_clamped_harder_than_v1() {
-    // Review #189 F5: v1's `tone` min/max (200..8000) were presentational — a literal 15000
-    // reached the inner cutoff, clamped only by the cutoff's own 20..20000. The migrated pipe
-    // must behave the same (its engine range is the inner port's), NOT clamp at 8000.
+    // v1's `tone` min/max (200..8000) were presentational — a literal 15000 reached the inner
+    // cutoff, clamped only by the cutoff's own 20..20000. The migrated pipe must behave the
+    // same (its engine range is the inner port's), NOT clamp at 8000.
     let mut v1 = MemoryResolver::new();
     v1.insert_text("space.json", SPACE_V1);
     let mut v2 = MemoryResolver::new();
@@ -412,7 +393,7 @@ fn migrated_channel_taps_render_bit_identical_to_native_v2() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Master-tap fidelity (review #189 F1): the migrated tap multiset is exactly v1's.
+// Master-tap fidelity: the migrated tap multiset is exactly v1's.
 // ---------------------------------------------------------------------------------------------
 
 #[test]
@@ -467,8 +448,8 @@ fn duplicate_v1_taps_stay_duplicated() {
 
 #[test]
 fn pinned_taps_claim_a_same_port_boundary_entry_instead_of_doubling() {
-    // Review #189 F1's worst case: v1 pinned taps on a port an interface entry also feeds.
-    // The v1 render was ONLY the pinned taps (interface entries never tapped in v1); the old
+    // The worst case for master-tap fidelity: v1 pinned taps on a port an interface entry also
+    // feeds. The v1 render was ONLY the pinned taps (interface entries never tapped in v1); the old
     // exact-(port,channel) dedup missed (None != Some(0)) and produced pinned + broadcast —
     // doubled amplitude with bleed onto both channels. Claiming fixes it: the entry becomes
     // the ch-0 tap, the second tap generates its own entry.
@@ -651,7 +632,7 @@ fn boundary_only_v1_output_played_top_level_is_the_accepted_warned_divergence() 
 }
 
 // ---------------------------------------------------------------------------------------------
-// Migration-loss shapes (review #189 F2/F4/F6): loud, degraded, never fatal, never silent.
+// Migration-loss shapes: loud, degraded, never fatal, never silent.
 // ---------------------------------------------------------------------------------------------
 
 #[test]
@@ -698,11 +679,11 @@ fn aliased_v1_entries_keep_the_first_and_warn_on_the_rest() {
 
 #[test]
 fn internally_wired_value_target_drops_loudly_and_the_voice_keeps_loading() {
-    // Review #189 F2: v1 legally merged a host-driven boundary name with an internal wire on
-    // Value/Event inputs (`/env.gate` below takes /env2.active internally AND was exposed as
-    // `gate`). The flip cannot express the merge — the entry drops, but with a Migration
-    // warning naming it (the Voicer's gate goes dead, which the author must hear about), and
-    // the hosting instrument still loads.
+    // v1 legally merged a host-driven boundary name with an internal wire on Value/Event
+    // inputs (`/env.gate` below takes /env2.active internally AND was exposed as `gate`). The
+    // flip cannot express the merge — the entry drops, but with a Migration warning naming it
+    // (the Voicer's gate goes dead, which the author must hear about), and the hosting
+    // instrument still loads.
     const MERGED_VOICE: &str = r#"{
       "instrument": "voice",
       "interface": {
@@ -737,9 +718,9 @@ fn internally_wired_value_target_drops_loudly_and_the_voice_keeps_loading() {
 
 #[test]
 fn a_node_at_a_minted_address_steps_aside_with_its_references() {
-    // Review #189 F4: entry "filter" mints /filter — an address the document's own /filter
-    // node holds. Legal v1 (entries minted nothing); fatal DuplicateAddress would break
-    // the legal-v1-keeps-loading rule. The node renames aside and every reference follows.
+    // Entry "filter" mints /filter — an address the document's own /filter node holds. Legal
+    // v1 (entries minted nothing); fatal DuplicateAddress would break the legal-v1-keeps-loading
+    // rule. The node renames aside and every reference follows.
     const COLLIDING: &str = r#"{
       "instrument": "colliding",
       "interface": { "inputs": { "filter": "/filter.cutoff" } },
@@ -790,9 +771,8 @@ fn a_node_at_a_minted_address_steps_aside_with_its_references() {
 
 #[test]
 fn dotted_v1_entry_names_mint_and_resolve() {
-    // Review #189 F4: a dotted v1 entry name ("my.tone" — just a map key in v1) mints
-    // /my.tone; the flipped consumer ref must resolve to the pipe, not misparse as node "/my"
-    // port "tone".
+    // A dotted v1 entry name ("my.tone" — just a map key in v1) mints /my.tone; the flipped
+    // consumer ref must resolve to the pipe, not misparse as node "/my" port "tone".
     const DOTTED: &str = r#"{
       "instrument": "dotted",
       "interface": { "inputs": { "my.tone": "/f.cutoff" } },
@@ -814,10 +794,10 @@ fn dotted_v1_entry_names_mint_and_resolve() {
 
 #[test]
 fn arg_target_entries_drop_loudly_instead_of_refusing_the_document() {
-    // Review #189 F6: v1 accepted interface entries targeting ANY input port by inheritance —
-    // including `osc_out.in` (the type-agnostic Arg pass-through). The pipe model has no Arg
-    // form, so the entry drops with a warning; the document keeps loading, and
-    // the rest of its boundary is intact.
+    // v1 accepted interface entries targeting ANY input port by inheritance — including
+    // `osc_out.in` (the type-agnostic Arg pass-through). The pipe model has no Arg form, so the
+    // entry drops with a warning; the document keeps loading, and the rest of its boundary is
+    // intact.
     const ARG_TARGET: &str = r#"{
       "instrument": "argy",
       "interface": { "inputs": { "send": "/tap.in", "cutoff": "/f.cutoff" } },
@@ -846,7 +826,7 @@ fn arg_target_entries_drop_loudly_instead_of_refusing_the_document() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// The message path (review #189 F7): outbound messages and captured Value outputs, asserted.
+// The message path: outbound messages and captured Value outputs, asserted.
 // ---------------------------------------------------------------------------------------------
 
 // A migrated Value pipe (`gate`) drives an envelope whose `active` feeds BOTH an `osc_out`
@@ -904,14 +884,14 @@ fn message_path_through_a_migrated_value_pipe_is_bit_identical() {
 }
 
 // ---------------------------------------------------------------------------------------------
-// Frozen-document corpus (review #189 F7): v1 originals from git history vs their rewritten v2
-// forms, frozen under `tests/fixtures/` (they were library instruments until the library cull;
-// migration inputs must not track live files). Coverage: three representative families — a Voicer rig with a master effect
-// and an anonymous broadcast tap (reverb), a channel-pinned stereo rig (stereo-autopan), and
-// the nesting + presentational-range chain (nested-space → patches/space.json). Sample-backed
-// documents (sampler*, granulator, …) are excluded: their fidelity rides on the same machinery
-// (voicer + pipes + taps) but needs decoded audio fixtures; the loader paths they add
-// (ResourceStore binding) are format-version-independent.
+// Frozen-document corpus: v1 originals from git history vs their rewritten v2 forms, frozen
+// under `tests/fixtures/` (they were library instruments until the library cull; migration
+// inputs must not track live files). Coverage: three representative families — a Voicer rig
+// with a master effect and an anonymous broadcast tap (reverb), a channel-pinned stereo rig
+// (stereo-autopan), and the nesting + presentational-range chain (nested-space →
+// patches/space.json). Sample-backed documents (sampler*, granulator, …) are excluded: their
+// fidelity rides on the same machinery (voicer + pipes + taps) but needs decoded audio
+// fixtures; the loader paths they add (ResourceStore binding) are format-version-independent.
 // ---------------------------------------------------------------------------------------------
 
 /// Resolves nested refs from the frozen `tests/fixtures/` tree (the v2 side of the corpus).

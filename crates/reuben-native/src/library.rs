@@ -1,13 +1,9 @@
-//! The generated **library index** over the available-set (patch-pipeline R4).
+//! The generated **library index** over the available-set. see rules: authoring-library
 //!
-//! Discovery for instrument reuse is one signature line per instrument — name, recipe-role
-//! line, interface face — projected mechanically by
-//! [`reuben_core::introspect::library_index_line`]. This module is the IO glue around that
-//! pure projection: sweep every instrument document under a directory (the repo's
-//! `instruments/`, today's whole available-set), project each line through the real load path,
-//! and aggregate deterministically. There is **no curated list**: the index is generated or it
-//! doesn't exist, and the committed artifact (`instruments/index.md`) is staleness-tested
-//! against a fresh generation exactly like every generated grounding view.
+//! This module is the IO glue around the pure projection
+//! [`reuben_core::introspect::library_index_line`]: sweep every instrument document under a
+//! directory (the repo's `instruments/`, today's whole available-set), project each line through
+//! the real load path, and aggregate deterministically.
 //!
 //! Regenerate with `cargo run -p reuben-native --example gen_library_index` after any
 //! instrument change; the `library_index_is_in_sync` test fails while the committed file is

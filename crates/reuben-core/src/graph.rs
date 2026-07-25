@@ -2,8 +2,7 @@
 //!
 //! A Graph is plain data: operator instances (nodes) plus connections between their
 //! ports. It carries no execution order — that is produced by Instantiate
-//! ([`crate::plan::Plan::instantiate`]). Node identity is a stable slotmap key, so a
-//! future Swap can match surviving operators across re-Instantiate.
+//! ([`crate::plan::Plan::instantiate`]).
 //!
 //! see rules: composition-operators
 
@@ -51,8 +50,7 @@ pub struct Node {
     /// A `subpatch` node's `patch` id has no counterpart here: the node **dissolves** at build
     /// (nesting P4) — its child's nodes are spliced in with prefixed addresses and no
     /// node survives to carry the reference. A built graph is the *flattened* instrument;
-    /// reference-preserving save is the library thread (P7,
-    /// [#122](https://github.com/Impractical-Instruments/reuben/issues/122)).
+    /// reference-preserving save is deferred to the library thread (P7).
     pub voice_id: Option<String>,
 }
 

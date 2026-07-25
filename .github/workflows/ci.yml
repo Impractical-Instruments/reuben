@@ -403,7 +403,7 @@ jobs:
         run: python3 scripts/check_rules_links.py .
 
   # The rules reference-linter (check_rules_refs.py, S01 + wired in S19/#185): no ADR-NNNN survives in
-  # code, and every `see rules: <topic>` comment resolves to a real topic doc. Unlike the derive/link
+  # code, and every `see rules: <topic>` comment resolves to a real topic doc and stops there. Unlike the derive/link
   # guards (path-filtered to docs/rules/**), a reintroduced ADR ref or a broken topic pointer can hide
   # in ANY code change, so this ALWAYS runs. The absorb-adrs skill — the tool that stamps `Distilled
   # from:` provenance — is exempt by the guard's SKILL_ALLOWLIST.

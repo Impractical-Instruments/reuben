@@ -1,20 +1,15 @@
-//! The R3 seed-recipe guard: euclidean-drums, re-expressed through the seed
-//! recipes (`voices/kick-voice.json` ×2 — the tom is the same body overridden —
+//! The seed-recipe guard (see rules: authoring-library):
+//! euclidean-drums, re-expressed through the seed recipes (`voices/kick-voice.json` ×2,
 //! `voices/snare-voice.json`, `voices/hat-voice.json`, each through `patches/dj-strip.json`),
 //! renders **bit-identically** to the pre-recipe inline version — at rest and under driven
-//! input on the unchanged top-level pipes. The pre-recipe originals are snapshotted verbatim
-//! under `tests/fixtures/pre-recipes/`; this is the format_v3_rewrite.rs shipped-corpus
-//! discipline, applied to the recipe re-expression instead of a format rewrite.
+//! input on the unchanged top-level pipes. Pre-recipe originals are snapshotted under
+//! `tests/fixtures/pre-recipes/` (the format_v3_rewrite.rs shipped-corpus discipline, applied
+//! to recipe re-expression).
 //!
-//! Alongside the headline assertion:
-//! - each promoted drum voice (baked literals → defaulted interface pipes, rebuilt on the
-//!   nested `shaped-vca`) renders bit-identically to its pre-promotion snapshot under the
-//!   same gate gestures — the promotion is a pure refactor, so the voicer hosts (groovebox)
-//!   hear nothing;
-//! - every seed document validates through the real engine load path (`load_instrument` +
-//!   `Plan::instantiate`), warning-free except the sanctioned top-level bare-`audio`
-//!   `UnboundInputPipe` on the two processors (the same shape `patches/space.json` has —
-//!   nothing can feed a bare signal pipe at top level).
+//! Also covered: each promoted drum voice renders bit-identical to its pre-promotion snapshot
+//! (baked literals → defaulted pipes is a pure refactor), and every seed document validates
+//! warning-free through the real engine load path (the sanctioned bare-`audio`
+//! `UnboundInputPipe` on the two processors aside).
 
 mod common;
 

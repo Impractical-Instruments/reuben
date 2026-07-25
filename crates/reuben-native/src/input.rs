@@ -1,5 +1,5 @@
-//! Live audio input via cpal (P5/#182): the cross-thread, cross-clock path
-//! from a real input device into the engine's logical input master (P3).
+//! Live audio input via cpal: the cross-thread, cross-clock path
+//! from a real input device into the engine's logical input master.
 //!
 //! ## Shape
 //!
@@ -46,6 +46,9 @@
 //!
 //! ## Fixed policies + counters (know and say, never improvise)
 //!
+//! Live input is a sanctioned nondeterministic boundary with a warn-plus-zeros dark-degrade
+//! policy on any reality mismatch — never fatal. see rules: composition-operators
+//!
 //! - **Ring empty → zeros**, counted per missing input frame (`input_ring_underruns`). The
 //!   stage then re-enters warmup so a stalled input device re-primes cleanly — and the zeros
 //!   delivered *while* re-priming are still counted (per callback, as its input-frame
@@ -60,13 +63,13 @@
 //!   separately (`input_ring_producer_drops`) because it means the opposite diagnosis: a
 //!   stalled output callback, not a rate mismatch.
 //!
-//! ## Latency budget (ring sizing, documented per P5)
+//! ## Latency budget (ring sizing)
 //!
 //! Added input latency on top of the device's own buffering:
 //!
 //! - ring floor: [`RING_FLOOR_BLOCKS`] (= 2) core blocks — ~10.7 ms at the 256/48k defaults;
 //! - resampler lookahead: 1 input frame (~0.02 ms);
-//! - P3's input staging in [`reuben_core::engine::Engine::fill_duplex`]: 1 core block (~5.3 ms).
+//! - input staging in [`reuben_core::engine::Engine::fill_duplex`]: 1 core block (~5.3 ms).
 //!
 //! Total ≈ 3 core blocks (~16 ms at defaults) — modest, and dominated by deliberate safety
 //! margin: the floor must ride out the input device's own delivery granularity, and the
@@ -116,7 +119,7 @@ const HIGH_WATER_SLACK_BLOCKS: usize = 16;
 /// counters say so if that rate is genuinely garbage.
 const MAX_GEOMETRY_INPUT_RATE: f64 = 1_536_000.0;
 
-/// Open the input side (P5/#182): select the device the profile asks for, build the
+/// Open the input side: select the device the profile asks for, build the
 /// device→logical [`InputMap`], size + allocate the SPSC ring, and build (not yet play) the
 /// cpal input stream. Returns the stream (caller keeps it alive and `play()`s it once the
 /// output side is running) and the [`InputStage`] the output callback pulls logical input
@@ -134,7 +137,7 @@ const MAX_GEOMETRY_INPUT_RATE: f64 = 1_536_000.0;
 /// a non-f32 default (i16 is common on ALSA) negotiates an f32 config from
 /// `supported_input_configs` ([`find_f32_input_config`]) — like the output side, the format
 /// is only fatal when the *hardware* genuinely has no f32 path. The profile's
-/// `sample_rate`/`buffer_size` preferences are output-side (P4) — the resampler absorbs
+/// `sample_rate`/`buffer_size` preferences are output-side — the resampler absorbs
 /// whatever rate the input device runs at, which is by design.
 pub(crate) fn open_input(
     host: &cpal::Host,
@@ -474,8 +477,8 @@ fn build_input_map(map: &BTreeMap<usize, usize>, device: usize, logical: usize) 
     InputMap::Explicit { pairs, fed }
 }
 
-/// Linear-interpolation resampler over interleaved frames (the recorded P5 choice — see the
-/// module doc). Holds a two-frame window (`prev`, `cur` = source frames `s[j]`, `s[j+1]`) and
+/// Linear-interpolation resampler over interleaved frames (see the module doc's "Resampler
+/// choice" section). Holds a two-frame window (`prev`, `cur` = source frames `s[j]`, `s[j+1]`) and
 /// a fractional `phase` ∈ [0, 1); each output frame emits `lerp(prev, cur, phase)` and
 /// advances `phase` by the ratio (input frames per output frame), pulling source frames as
 /// the window slides. RT-safe: state is two preallocated frames; `process` never allocates.
@@ -1010,7 +1013,7 @@ mod tests {
 
     #[test]
     fn f32_negotiation_prefers_the_default_channel_count() {
-        // An i16-default ALSA device that also supports f32 (the review's case) must
+        // An i16-default ALSA device that also supports f32 must
         // negotiate, not refuse — and prefer the default config's channel count.
         let configs = vec![
             range(1, 44_100, 48_000, SampleFormat::F32),

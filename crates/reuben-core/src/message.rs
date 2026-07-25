@@ -1,19 +1,5 @@
-//! Message — the one OSC-shaped carrier the core speaks.
-//!
-//! A **Message** is `address + timestamp + exactly one Arg`. It is close to the OSC spec
-//! without its binary representation, with three deliberate divergences:
-//!
-//! - an internal **timestamp** (`frame`, a sample offset within the current Render block),
-//!   which OSC Messages lack — incoming external OSC is stamped "now" (frame 0);
-//! - **exactly one [`Arg`]**, not many — which is *why* concrete-type Args exist: two scalars
-//!   (a note's pitch + velocity) cannot be two args, so they pack into one `Arg::Note`;
-//! - **concrete-type Args** instead of OSC's primitives-or-blob — human-readable and a
-//!   compile-time data contract.
-//!
-//! Everything the core used to carry on seven separate lanes — dense audio, sparse events,
-//! the harmony struct, held enums, params, materialized floats, the outbound sink — is one
-//! Message stream read three ways: as a stream of events, as a held (zero-order-hold) value,
-//! or, for a [`Buffer`](Arg::F32Buffer) payload, as a dense per-sample block.
+//! Message — the one OSC-shaped carrier the core speaks: `address + timestamp + exactly one Arg`.
+//! see rules: composition-operators
 
 use crate::signal::BlockView;
 use crate::vocab::harmony::Harmony;
@@ -62,16 +48,14 @@ impl<T> Signal<T> {
     }
 }
 
-/// The single typed payload of a [`Message`].
+/// The single typed payload of a [`Message`]. see rules: composition-operators
 ///
 /// A **closed, central** enum with three families:
 /// - **OSC primitives** — [`F32`](Arg::F32) / [`I32`](Arg::I32) / [`Str`](Arg::Str);
-/// - **shared *vocab* types** — defined once and reused everywhere (a `FilterMode` duplicated
-///   per-operator would be the smell). Each [`vocab`](crate::vocab) type's `#[derive(ArgValue)]`
-///   folds it in: a **struct** with a real per-type shape gets its own variant
+/// - **shared *vocab* types**, each [`vocab`](crate::vocab) type's `#[derive(ArgValue)]` folding
+///   it in: a **struct** with a real per-type shape gets its own variant
 ///   ([`Note`](Arg::Note), [`Harmony`](Arg::Harmony)); every **enum** type-erases to the single
-///   [`Enum`](Arg::Enum) index variant, its identity carried by the port, so adding an
-///   enum grows neither this enum nor any other central site;
+///   [`Enum`](Arg::Enum) index variant, its identity carried by the port;
 /// - the optimized dense payload — [`Buffer`](Arg::F32Buffer), a [`Signal`]'s samples.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Arg {
@@ -79,10 +63,10 @@ pub enum Arg {
     F32(f32),
     I32(i32),
     /// A string / symbol atom, backed by `Arc<str>` so cloning on the render thread is a
-    /// refcount bump, never a heap allocation (issue #206). Construction (`Arc::from`) still
+    /// refcount bump, never a heap allocation. Construction (`Arc::from`) still
     /// allocates — it happens only on cold paths (the OSC decode thread, instrument load).
     ///
-    /// **Render-thread dealloc analysis (issue #206).** A clone is RT-safe, but the *last*
+    /// **Render-thread dealloc analysis.** A clone is RT-safe, but the *last*
     /// `Arc` drop frees the backing allocation on whichever thread holds it. Where each
     /// reachable last drop lands:
     ///
@@ -132,19 +116,20 @@ pub enum Arg {
     // which generates this variant's `From`/`TryFrom` glue. More land as operators migrate.
     Note(Note),
     Harmony(Harmony),
-    /// A symbolic [`Pitch`] riding the wire on its own (leaf-promotion, issue #519). A
-    /// payload-carrying vocab enum promoted to a first-class **named** `Arg` variant — never the
-    /// lossy type-erased [`Enum`](Arg::Enum) index, which would drop the `Degree`/`Absolute`
-    /// payload. Wire-internal only (no external OSC form, like [`Harmony`](Arg::Harmony)); the
-    /// output of `break(Note)`, consumed by `resolve`.
+    /// A symbolic [`Pitch`] riding the wire on its own — leaf-promoted rather than type-erased
+    /// through [`Enum`](Arg::Enum), which would drop the `Degree`/`Absolute` payload.
+    /// see rules: composition-operators
+    ///
+    /// Wire-internal only (no external OSC form, like [`Harmony`](Arg::Harmony)); the field
+    /// `unpack_note` emits on its `pitch` output, consumed by `pitch2freq`.
     Pitch(Pitch),
 
-    /// Any **vocab enum** value, type-erased to its bare variant **index**. One
-    /// variant for *every* enum: type identity lives in the port descriptor's
-    /// [`EnumMeta`](crate::descriptor::EnumMeta), never in the value — so adding an enum touches
-    /// no central engine site. The operator names the concrete type in its handle's form
-    /// (`io.read` on an `In<Held<FilterMode>>` → `FilterMode::from_index`), and port-authority guarantees a
-    /// latch slot only ever holds its own port's enum, so a bare index cannot mis-decode.
+    /// Any **vocab enum** value, type-erased to its bare variant **index**; type identity lives
+    /// in the port descriptor's [`EnumMeta`](crate::descriptor::EnumMeta). see rules: composition-operators
+    ///
+    /// The operator names the concrete type in its handle's form (`io.read` on an
+    /// `In<Held<FilterMode>>` → `FilterMode::from_index`), and port-authority guarantees a latch
+    /// slot only ever holds its own port's enum, so a bare index cannot mis-decode.
     Enum(u32),
 
     // The optimized dense payload.
@@ -235,7 +220,7 @@ impl<'a> FromArg<'a> for BlockView<'a> {
 }
 
 /// The identity decode: `&Arg` requests the raw, type-erased payload itself. The read behind a
-/// type-agnostic [`Arg`](crate::descriptor::PortType::Arg) pass-through port (issue #141) — the
+/// type-agnostic [`Arg`](crate::descriptor::PortType::Arg) pass-through port — the
 /// `osc_out` sink forwards whatever arrives without committing to a vocab type.
 impl<'a> FromArg<'a> for &'a Arg {
     fn from_arg(arg: &'a Arg) -> Option<Self> {
@@ -366,7 +351,7 @@ mod tests {
         assert_eq!(FilterMode::from_arg(&Arg::F32(1.0)), None);
     }
 
-    /// Leaf-promotion (issue #519): a **payload-carrying** vocab enum rides as its own named
+    /// Leaf-promotion: a **payload-carrying** vocab enum rides as its own named
     /// `Arg::Pitch` variant, and the payload survives the round-trip — the very thing the
     /// type-erased `Arg::Enum(index)` path drops. Both cases are preserved distinctly.
     #[test]

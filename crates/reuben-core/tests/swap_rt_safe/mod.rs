@@ -1,17 +1,13 @@
-//! Shared callback-side install-step RT-safety skeleton for the two swap allocation tests
-//! (`install_slot_rt_safe.rs` from #321, `m2_swap_harness.rs` from #324).
+//! Shared callback-side install-step RT-safety skeleton for the swap allocation tests
+//! (`install_slot_rt_safe.rs`, `m2_swap_harness.rs`).
 //!
-//! Both post a full document swap to a production [`RenderSlot`], then fill the exact BLOCK-sized
-//! buffers the audio callback fills across the master-gain ramp, and assert the callback-side
-//! install step — drain the install bundle, run the ramp, box-transplant the survivors, post the
-//! retiree — is **heap-neutral** on the render thread (zero allocs, zero frees) and that
-//! the measured window was **non-vacuous** (the ramp genuinely ran and completed, and a real
-//! retiree came home for the Coordinator to reclaim). This module holds that skeleton, the
-//! `16 blocks > 2×ramp` window constant, and the live-counter probe in one place.
-//!
-//! Counting is armed per-thread by [`crate::rt_alloc::measure`] (ticket #344), so a sibling test
-//! allocating on another thread during the same wall-clock window can never perturb the result.
-//! Every test binary that declares `mod swap_rt_safe;` must also declare `mod rt_alloc;`.
+//! Both post a full swap to a production [`RenderSlot`], fill BLOCK-sized buffers across the
+//! master-gain ramp, and assert the callback-side install step — drain, ramp, box-transplant,
+//! post the retiree — is **heap-neutral** and the window was **non-vacuous** (ramp ran and
+//! completed, a retiree came home). Holds that skeleton, the `16 blocks > 2×ramp` window
+//! constant, and the live-counter probe. Counting is armed per-thread by
+//! [`crate::rt_alloc::measure`]; every binary declaring `mod swap_rt_safe;` must also declare
+//! `mod rt_alloc;`.
 #![allow(dead_code)] // not every including binary calls every helper.
 
 use reuben_core::coordinator::{Coordinator, RenderSlot};

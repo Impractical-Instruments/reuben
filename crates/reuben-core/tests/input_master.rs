@@ -1,4 +1,4 @@
-//! The core input master (P3 — issue #180).
+//! The core input master and its logical channel. see rules: composition-operators
 //!
 //! Top-level signal input pipes with a `channel` binding read the **logical input master**:
 //! the caller hands `render_block_multi` one buffer per logical input channel and each bound
@@ -391,9 +391,9 @@ fn hosted_voice_channel_binding_is_inert_and_warns() {
 
 #[test]
 fn top_level_bare_pipe_without_a_channel_warns_unbound() {
-    // issue #180: an unbound-but-declared bare signal pipe at top level renders
-    // zeros — nothing can ever feed it — so the load says so. A channel-bound pipe, a
-    // defaulted (control) signal pipe, and a Value pipe are all fine.
+    // An unbound-but-declared bare signal pipe at top level renders zeros — nothing can ever
+    // feed it — so the load says so. A channel-bound pipe, a defaulted (control) signal pipe,
+    // and a Value pipe are all fine.
     let none = MemoryResolver::new();
     const UNBOUND: &str = r#"{
       "format_version": 2,
@@ -448,7 +448,7 @@ fn top_level_bare_pipe_without_a_channel_warns_unbound() {
 
 #[test]
 fn channel_bound_default_pipe_falls_back_to_its_default_unfed() {
-    // #190 F1: `channel` + `default` on one pipe must not kill the knob.
+    // `channel` + `default` on one pipe must not kill the knob.
     // Unfed, the declared default materializes (not zeros) and messages still sweep it;
     // fed, device audio wins for the block; unfed again, the held control resumes.
     const LEVEL: &str = r#"{
@@ -512,7 +512,7 @@ fn channel_bound_default_pipe_falls_back_to_its_default_unfed() {
     );
 }
 
-// A voice patch whose `freq` pipe carries a channel binding — the #190 F2 regression shape.
+// A voice patch whose `freq` pipe carries a channel binding.
 const BOUND_FREQ_VOICE: &str = r#"{
   "format_version": 2,
   "instrument": "bound_voice",
@@ -576,12 +576,11 @@ fn render_bound_freq_host(blocks: usize, inputs: &[Vec<f32>]) -> Vec<Vec<f32>> {
 
 #[test]
 fn hosted_voice_with_channel_bound_freq_stays_message_fed() {
-    // #190 F2 — the regression the review proved unprotected: a hosted voice whose `freq`
-    // pipe carries a channel binding must stay *message-fed* (the Voicer drives freq/gate
-    // by message). Hosted inertness is enforced once, in the loader's voice-resource pass
-    // (bindings cleared for every copy); if that enforcement is lost and bindings ever
-    // detach a hosted pipe from its message-fed materialize path again, the voice goes
-    // musically dead and this note stops sounding.
+    // A hosted voice whose `freq` pipe carries a channel binding must stay *message-fed* (the
+    // Voicer drives freq/gate by message). Hosted inertness is enforced once, in the loader's
+    // voice-resource pass (bindings cleared for every copy); if that enforcement is lost and
+    // bindings ever detach a hosted pipe from its message-fed materialize path again, the voice
+    // goes musically dead and this note stops sounding.
     let unfed = render_bound_freq_host(4, &[]);
     assert!(
         unfed[0].iter().any(|s| s.abs() > 0.01),
@@ -605,7 +604,7 @@ fn hosted_voice_with_channel_bound_freq_stays_message_fed() {
 
 #[test]
 fn out_of_range_channel_is_a_pointed_load_error() {
-    // #190 F3: `"channel": 100000000` must fail the load with a pointed error, not size a
+    // `"channel": 100000000` must fail the load with a pointed error, not size a
     // ~50 GB staging allocation in the engine. Both sides are bounded the same way.
     let none = MemoryResolver::new();
     const IN_HUGE: &str = r#"{
@@ -664,9 +663,9 @@ fn out_of_range_channel_is_a_pointed_load_error() {
 
 #[test]
 fn subpatch_inlined_channel_binding_warns_inert() {
-    // #190 F4: the warning symmetry — a subpatch-inlined child's channel binding is
-    // discarded at splice, exactly as inert as under a Voicer, and must say so the same
-    // way (`InertChannelBinding`, nested in the hosting node).
+    // The warning symmetry: a subpatch-inlined child's channel binding is discarded at splice,
+    // exactly as inert as under a Voicer, and must say so the same way (`InertChannelBinding`,
+    // nested in the hosting node).
     const PARENT: &str = r#"{
       "format_version": 2,
       "instrument": "host",

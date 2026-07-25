@@ -1,10 +1,5 @@
-//! The one normalization seam: **gate + migrate + strip + stamp**, behind
-//! [`NormalizedDoc`] — a document proven current-shaped. The version gate refuses the future,
-//! the v1→v2 migration engine flips target-form `interface` entries into pipes,
-//! the v2→v3 strip drains retired presentation, and the stamp writes the current
-//! version — all exactly once, at the mint. The newtype's field is private to this module, so
-//! the only way to hold a `NormalizedDoc` is to have passed through here: the two-migrations
-//! footgun otherwise guarded with prose and re-checks is unrepresentable by type.
+//! The one normalization seam: gate + migrate + strip + stamp, behind [`NormalizedDoc`].
+//! see rules: authoring-library
 
 use super::*;
 
@@ -12,15 +7,12 @@ use super::*;
 /// stamped [`FORMAT_VERSION`]. The only type [`build`](Self::build) and the load paths accept —
 /// mintable solely by this module ([`from_json`](Self::from_json) for text,
 /// [`from_doc`](Self::from_doc) for a hand-deserialized [`InstrumentDoc`],
-/// [`from_graph`](Self::from_graph) for a built graph), so normalization runs exactly once per
-/// document. Read access is by [`Deref`](std::ops::Deref); there is deliberately no
-/// `DerefMut` — the data model can still represent v1-only shapes, so mutation exits via
+/// [`from_graph`](Self::from_graph) for a built graph). Read access is by
+/// [`Deref`](std::ops::Deref); there is deliberately no `DerefMut` — mutation exits via
 /// [`into_inner`](Self::into_inner) and re-enters through the gate.
 ///
 /// The resolver is **not** captured in the type: minting with resolver A and building with
-/// resolver B remains the caller's contract, exactly as before (`describe_patch` passes the
-/// same resolver to both). What the type makes unrepresentable is per-document double
-/// migration.
+/// resolver B remains the caller's contract (`describe_patch` passes the same resolver to both).
 #[derive(Debug, Clone, PartialEq)]
 pub struct NormalizedDoc(InstrumentDoc);
 
@@ -33,13 +25,9 @@ impl std::ops::Deref for NormalizedDoc {
 
 impl NormalizedDoc {
     /// Parse a document from JSON (no operator resolution yet) and normalize it to the current
-    /// format version — **the** parse entry, replacing the old resolver-less/resolver-fed
-    /// `from_json` pair with one mint. A v1 entry re-exporting a nested boundary port needs the
-    /// child document to type its pipe: with `Some(resolver)` it migrates to the child's real
-    /// declared type; with `None` it types `"f32"` as the documented fallback (degrades dark at
-    /// build) — behaviorally, `None` is an always-failing resolver, so there is one
-    /// migration to reason about, parameterized by resolver, never two entry points to diverge
-    /// through.
+    /// format version. A v1 entry re-exporting a nested boundary port needs the child document
+    /// to type its pipe: with `Some(resolver)` it migrates to the child's real declared type;
+    /// with `None` it types `"f32"` as the documented fallback (degrades dark at build).
     pub fn from_json(
         json: &str,
         registry: &Registry,
@@ -49,11 +37,9 @@ impl NormalizedDoc {
     }
 
     /// The explicit gate for a document a host already holds — built through the public
-    /// `Deserialize`, or edited after [`into_inner`](Self::into_inner). Consumes the raw doc
-    /// and normalizes it exactly as [`from_json`](Self::from_json) would have: refuse the
-    /// future, migrate the past, strip retired presentation, stamp. This replaces the old
-    /// defensive clone-and-re-migrate inside the load path — the hypothetical raw-doc host now
-    /// has a visible door instead of a silent re-run.
+    /// `Deserialize`, or edited after [`into_inner`](Self::into_inner). Normalizes the raw doc
+    /// exactly as [`from_json`](Self::from_json) would: refuse the future, migrate the past,
+    /// strip retired presentation, stamp.
     pub fn from_doc(
         doc: InstrumentDoc,
         registry: &Registry,
@@ -86,13 +72,9 @@ impl NormalizedDoc {
         Self::normalize(doc, registry, resolver, ctx, referrer)
     }
 
-    /// Gate + migrate + strip + stamp, held by this type. The
-    /// version gate lives at the mint so every load path — top-level, voice, subpatch, raw doc
-    /// — refuses a too-new document before touching its shape; an older version migrates to
-    /// current here; a current-version document is shape-checked (no v1 forms may hide under a
-    /// v2+ stamp). Stamping last is what makes "save always writes the current version" a
-    /// mechanism, not a coincidence — a migrated doc never saves back under its old version
-    /// number.
+    /// Gate + migrate + strip + stamp, held by this type. see rules: authoring-library
+    ///
+    /// Stamping last: a migrated doc never saves back under its old version number.
     fn normalize(
         mut doc: InstrumentDoc,
         registry: &Registry,
@@ -135,16 +117,15 @@ impl NormalizedDoc {
             .graph)
     }
 
-    /// Derive a document from a built [`Graph`] — the explicit **flatten/export** path, not the
-    /// save path: the document is the source of truth, so saving means serializing
-    /// the [`InstrumentDoc`] you loaded/edited (nested references survive via serde), while
-    /// `from_graph` of a built graph deliberately emits the flattened equivalent — every
-    /// spliced subpatch appears as its inlined nodes, the reference dissolved. Use it to
-    /// export a self-contained flat instrument or to materialize a programmatically built
-    /// graph; don't round-trip an edited *nested* instrument through it. Nodes are emitted in
-    /// a stable order, and within a node `config`/`inputs` keys are sorted (BTreeMap), so output is
-    /// deterministic. A `Constant` override goes to `config`; a materialized `Float` override, an
-    /// `Enum` choice (as its symbol), and every inbound wire go to `inputs`.
+    /// Derive a document from a built [`Graph`] — the flatten/export path, not save.
+    /// see rules: authoring-library
+    ///
+    /// Use it to export a self-contained flat
+    /// instrument or to materialize a programmatically built graph; don't round-trip an edited
+    /// *nested* instrument through it. Nodes are emitted in a stable order, and within a node
+    /// `config`/`inputs` keys are sorted (BTreeMap), so output is deterministic. A `Constant`
+    /// override goes to `config`; a materialized `Float` override, an `Enum` choice (as its
+    /// symbol), and every inbound wire go to `inputs`.
     pub fn from_graph(graph: &Graph, instrument: impl Into<String>, registry: &Registry) -> Self {
         Self::from_doc(
             InstrumentDoc::from_graph_doc(graph, instrument),
@@ -857,17 +838,16 @@ mod tests {
 
     #[test]
     fn a_resolverless_mint_falls_back_to_f32_for_a_reexported_child_pipe() {
-        // The documented degrade-dark half of the old from_json/from_json_with divergence:
-        // with no resolver the child is unreachable, so the re-exported pipe types "f32".
+        // No resolver: the child is unreachable, so the re-exported pipe falls back to the
+        // documented "f32" type rather than failing the mint.
         let doc = NormalizedDoc::from_json(V1_REEXPORT_HOST, &reg(), None).expect("mint");
         assert_eq!(pipe_type(&doc, "freq"), "f32");
     }
 
     #[test]
     fn a_resolver_fed_mint_types_a_reexported_child_pipe_for_real() {
-        // The other half: the same document minted with the resolver derives the child's
-        // declared type. One mint entry, two resolver arguments — no second entry point to
-        // diverge through.
+        // With a resolver, the same document derives the child's real declared type instead of
+        // falling back.
         let doc = NormalizedDoc::from_json(V1_REEXPORT_HOST, &reg(), Some(&ChildResolver(CHILD)))
             .expect("mint");
         assert_eq!(pipe_type(&doc, "freq"), "f32_buffer");
@@ -875,11 +855,8 @@ mod tests {
 
     #[test]
     fn from_doc_refuses_v1_forms_under_a_current_stamp() {
-        // Fail-closed (#189 F8a, respelled from load_doc_guarded's defensive re-migrate): a
-        // hand-deserialized doc stamped v2 smuggling the v1-only anonymous `outputs` block
-        // must refuse at the gate, not tap twice. The old smuggle routes — handing the raw
-        // doc to `load_instrument_doc` or calling `build` on it — are compile errors now;
-        // this gate is the one door left.
+        // Fail-closed: a hand-deserialized doc stamped v2 but still smuggling the v1-only
+        // anonymous `outputs` block must refuse at the gate rather than load unchecked.
         let smuggled: InstrumentDoc = serde_json::from_str(
             r#"{"format_version":2,"instrument":"s",
                 "interface":{"outputs":{"out":{"from":"/osc.audio"}}},
@@ -925,8 +902,8 @@ mod tests {
 
     #[test]
     fn from_doc_strips_retired_presentation_under_a_current_stamp() {
-        // At the gate: a current-stamped doc still carrying pipe presentation is
-        // stripped (ignore-with-warning), replacing load_doc_guarded's clone-and-re-migrate.
+        // A current-stamped doc still carrying pipe presentation is stripped at the gate
+        // (ignore-with-warning), not refused.
         let raw: InstrumentDoc = serde_json::from_str(
             r#"{"format_version":3,"instrument":"t",
                 "interface":{"inputs":{"freq":{"type":"f32","label":"Frequency"}}},

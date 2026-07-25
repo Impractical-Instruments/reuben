@@ -4,14 +4,9 @@
 //! single [`Svf::tick`] yields the lowpass, bandpass, and highpass taps together
 //! ([`SvfTaps`]); callers pick the tap(s) they need and LLVM dead-codes the rest.
 //!
-//! This is the one shared SVF — `filter` and `djfilter` both embed it (#169) — and it is
-//! shaped for the render thread:
-//!
-//! - [`SvfCoeffs`] is precomputed from (cutoff, resonance, sample rate) outside the sample
-//!   loop; [`Svf::tick`] is pure arithmetic, no `tan`.
-//! - [`Svf`] is a tiny `Copy` value. A `process` loop copies it to a local, ticks that,
-//!   and stores it back once per block — keeping the integrators in registers instead of
-//!   spilling them to the operator's fields every sample (#169).
+//! The one shared SVF — `filter` and `djfilter` both embed it. [`SvfCoeffs`] precomputes
+//! from (cutoff, resonance, sample rate) outside the sample loop; [`Svf`] is a tiny `Copy`
+//! value threaded through the block in registers (the [`crate::dsp`] pattern).
 
 /// Precomputed TPT / zero-delay-feedback SVF coefficients for one (cutoff, resonance,
 /// sample rate) triple. Compute via [`SvfCoeffs::new`] whenever a control changes; reuse
@@ -55,7 +50,7 @@ pub struct SvfTaps {
 ///
 /// Deliberately a plain `Copy` value: in a `process` loop, do
 /// `let mut svf = self.svf; … svf.tick(…) …; self.svf = svf;` so the state lives in
-/// registers for the whole block and hits memory once (#169).
+/// registers for the whole block and hits memory once.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Svf {
     ic1eq: f32,
@@ -175,7 +170,7 @@ mod tests {
     fn state_threads_across_value_copies() {
         // Copying the state out mid-stream and resuming from the copy is seamless: one
         // continuous run equals two half runs threaded through the copied value. This is
-        // exactly the once-per-block writeback pattern operators use (#169).
+        // exactly the once-per-block writeback pattern operators use.
         let n = 512;
         let input = sine(440.0, n);
         let c = SvfCoeffs::new(1_000.0, 0.3, SR);

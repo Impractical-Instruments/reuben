@@ -11,23 +11,22 @@
 //! so it is **always held** (enums have no buffer form). The affine math is the module-level
 //! [`remap`] fn (the pure-fn seam), which owns the curve test.
 //!
-//! **`f32`-only for now.** `remap` is a concrete `f32` fn, so an `i32` entry would not compile —
-//! but the deeper reason is that the affine math would need *rewriting*, not re-instantiating: it
-//! normalizes to a `[0,1]` fraction before scaling, and that fraction truncates to `0` or `1` in
-//! integer arithmetic. An integer remap has to reassociate to multiply before dividing. That is a
-//! different algorithm, so it is a separate operator — see issue #562.
+//! **`f32`-only for now**: `remap` normalizes to a `[0,1]` fraction before scaling, which
+//! truncates to `0` or `1` in integer arithmetic — an integer remap needs a different,
+//! reassociated algorithm, so it would be a separate operator rather than another `variants:` entry.
 //!
 //! - input 0: `in` (`Float`) — the value to remap (per-sample).
 //! - inputs 1–4: `in_min`, `in_max`, `out_min`, `out_max` (`Float`).
 //! - input 5: `curve` (`Enum` [`MapCurve`] {Linear, Exponential}).
 //! - output 0: `out` — the remapped value.
+//!
+//! see rules: composition-operators
 
 use crate::vocab::MapCurve;
 
 /// Affine (optionally exponential) remap of `v` from `[in_min, in_max]` onto `[out_min, out_max]`,
-/// clamped to the input range. The op's scalar math, written once (the pure-fn seam). The
-/// `curve` mode lives here: exponential is used only when both output bounds are positive (it is
-/// meaningless across zero), else it falls back to linear.
+/// clamped to the input range. The `curve` mode lives here: exponential is used only when both
+/// output bounds are positive (it is meaningless across zero), else it falls back to linear.
 fn remap(v: f32, in_min: f32, in_max: f32, out_min: f32, out_max: f32, curve: MapCurve) -> f32 {
     let span = in_max - in_min;
     let t = if span.abs() < 1e-12 {

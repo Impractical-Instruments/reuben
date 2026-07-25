@@ -1,10 +1,12 @@
-//! Integration test for the reuben-mcp structure-channel client (#315 verification): stand up a
+//! Integration test for the reuben-mcp structure-channel client: stand up a
 //! minimal loopback NDJSON stub speaking the shared `reuben_core::coordinator` wire envelope, and
 //! drive the client's four verbs over the real TCP boundary — the same socket a live `reuben play`
 //! server presents. `ping` returns Pong; `swap` (by value AND by path) and `get_document`
 //! round-trip a document; a connect against a dead port fails fast with the "start `reuben play`"
 //! guidance, not a hang or panic. Every case is bounded by a watchdog so a wedged
 //! client fails loudly instead of hanging CI.
+//!
+//! see rules: agent-mcp
 
 use std::io::{BufRead, BufReader, Write};
 use std::net::{SocketAddr, TcpListener};
@@ -304,10 +306,10 @@ fn wedged_server_read_times_out_instead_of_hanging() {
 
 #[test]
 fn ping_fails_fast_even_when_the_general_read_budget_is_generous() {
-    // #374 tightening: a `ping`'s pong is immediate, so the liveness probe must not inherit the
-    // generous read budget a real swap earns. Wedge a server, hand the client a deliberately huge
-    // general read timeout, and assert `ping` still returns on its own tight budget — otherwise a
-    // hung engine would stall `engine_status` for the full read timeout.
+    // A `ping`'s pong is immediate, so the liveness probe must not inherit the generous read
+    // budget a real swap earns. Wedge a server, hand the client a deliberately huge general read
+    // timeout, and assert `ping` still returns on its own tight budget — otherwise a hung engine
+    // would stall `engine_status` for the full read timeout.
     let listener = TcpListener::bind("127.0.0.1:0").expect("bind wedged stub");
     let addr = listener.local_addr().expect("wedged addr");
     thread::spawn(move || {

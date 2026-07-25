@@ -1,43 +1,9 @@
 //! reuben-mcp — the per-conversation MCP stdio sidecar.
 //!
-//! The MCP client spawns this shim over stdio; it hosts the pure introspection tools in-process
-//! and reaches a user-owned `reuben play` for the engine tools. This crate is the FIRST workspace
-//! member allowed an async runtime: rmcp + tokio live here and nowhere else, fenced out of every
-//! other member so the play/CLI/web builds stay std-only.
-//!
-//! # Tool surface
-//!
-//! A [`ServerHandler`] declaring the `tools` and `resources` capabilities plus an `instructions`
-//! field, and a tool router with the full declared contract set (the
-//! [`reuben_core::tools::CONTRACTS`] roster). The pure tools
-//! (`describe_operators`/`describe_instrument`/`validate_instrument`, #316) are engine-free,
-//! descending to [`reuben_core::introspect`] and [`reuben_core::projection`] over a
-//! [`reuben_native::resources::FsResolver`]; the nineteen document verbs (#603) mutate a document
-//! through the same resolver seam; the five engine tools
-//! (`send_live_controls`/`get_engine_status`/`swap_instrument`/`get_current_instrument`/
-//! `get_engine_diagnostics`, #318) reach a user-owned `reuben play` through the [`EngineLink`] —
-//! all five over the structure channel's verbs, via [`StructureClient`] over an injectable
-//! [`StructureTransport`].
-//!
-//! **No arm carries an instrument document** (#604). Every tool names a document by an opaque
-//! `source` and answers with a [`projection`](reuben_core::projection) of it, so instrument JSON
-//! never reaches a model's context: `describe_instrument` projects instead of returning the
-//! document, `validate_instrument` takes a source instead of an inline document,
-//! `get_current_instrument` projects what the *engine* holds, and `scaffold_instrument` — which
-//! returned a seed by value — is gone, replaced by `new_instrument` writing the same seed to a
-//! source. That is what makes `#no-resource-bytes` a property of this door rather than a
-//! capability of it.
-//!
-//! **The sidecar speaks no OSC.** `send` used to encode datagrams and dispatch them over UDP to the
-//! engine's OSC-in port; it now rides the same loopback channel the other four do, converging with
-//! external OSC inside core at `Engine::queue_osc`. OSC-the-binary-protocol lives only at `reuben
-//! play`'s foreign edge.
-//!
-//! Error-layer discipline: a failing validation or a rejected swap is an ORDINARY
-//! result — the tool worked; `isError` is reserved for the can't-do-the-job cases (an unreachable
-//! engine, a bad one-of, an unknown operator). `engine_status` is never `isError` — answering
-//! "reachable?" is its job. The engine-reading/mutating tools use ACT-THEN-MAP: run the real
-//! exchange and map [`StructureError::is_unreachable`] to the fail-fast result, no separate probe.
+//! A [`ServerHandler`] with a tool router over the [`reuben_core::tools::CONTRACTS`] roster, in
+//! three families: the pure introspection tools and the nineteen document verbs answer in-process
+//! through a [`reuben_native::resources::FsResolver`], while the five engine tools reach a
+//! user-owned `reuben play` through [`EngineLink`].
 //!
 //! see rules: agent-mcp
 
@@ -72,57 +38,42 @@ pub use client::{StructureClient, StructureError, StructureTransport, SwapOutcom
 pub use engine::EngineLink;
 pub use reuben_core::coordinator::{Conflict, DocumentSnapshot};
 
-/// The tool surface this door advertises, in roster order — the exact spellings
-/// advertised over `tools/list`. Derived from the single-source [`reuben_core::tools::CONTRACTS`]
-/// roster (#157) rather than a hand-typed literal, so the wire surface can only change by changing
-/// the roster; the integration test asserts `tools/list` matches this same derivation.
+/// The tool surface this door advertises, in roster order — the exact spellings on `tools/list`,
+/// so the wire surface can only change by changing the roster. see rules: agent-mcp
 pub fn tool_names() -> Vec<&'static str> {
     reuben_core::tools::names()
 }
 
-/// The actionable guidance an engine tool returns when the engine is unreachable:
-/// the shim never spawns `reuben play`, so it names the fix instead.
+/// The actionable guidance an engine tool returns when the engine is unreachable.
 pub const ENGINE_UNREACHABLE_GUIDANCE: &str =
     "The reuben engine is not reachable. Start it in another terminal with `reuben play`, then retry.";
 
-/// The `reuben://guide/authoring` resource URI: the
-/// authoring guide, `docs/agents/authoring.md`, read from the checkout at request time.
-/// The authority for the URI advertised over `resources/list`; the integration
-/// test asserts the wire surface matches. (The instrument-JSON-Schema resource this once served
-/// beside was deleted outright.)
+/// The `reuben://guide/authoring` resource URI: the authoring guide, `docs/agents/authoring.md`.
+/// The authority for what `resources/list` advertises.
 pub const GUIDE_RESOURCE_URI: &str = "reuben://guide/authoring";
 
 /// The MIME type advertised for [`GUIDE_RESOURCE_URI`]: the authoring guide is CommonMark prose.
 pub const GUIDE_RESOURCE_MIME: &str = "text/markdown";
 
 /// The `reuben://guide/vocabulary` resource URI: the rendered intent→parameter vocabulary,
-/// `docs/agents/vocabulary.md` (generated and staleness-tested against the registry by R5, #462),
-/// read from the checkout at request time — the same posture as [`GUIDE_RESOURCE_URI`].
+/// `docs/agents/vocabulary.md` — generated, and staleness-tested against the registry elsewhere.
 pub const VOCABULARY_RESOURCE_URI: &str = "reuben://guide/vocabulary";
 
 /// The MIME type advertised for [`VOCABULARY_RESOURCE_URI`]: the rendered vocabulary is
 /// CommonMark prose.
 pub const VOCABULARY_RESOURCE_MIME: &str = "text/markdown";
 
-/// The library-index resource URI: the generated
-/// signature-line index over the available instrument set, `instruments/index.md` (generated and
-/// staleness-tested against `instruments/` by R4, #461), read from the checkout at request time
-/// — the same posture as [`GUIDE_RESOURCE_URI`]. No exact URI is mandated;
-/// this lives in the same `guide/` namespace as [`GUIDE_RESOURCE_URI`] and
-/// [`VOCABULARY_RESOURCE_URI`] — one namespace for all agent-read grounding, rather than minting
-/// a second category for what is, from a client's view, just another pointed-at document.
+/// The library-index resource URI: the generated signature-line index over the available
+/// instrument set, `instruments/index.md`. Shares the `guide/` namespace with the other two —
+/// one namespace for all agent-read grounding.
 pub const LIBRARY_INDEX_RESOURCE_URI: &str = "reuben://guide/library-index";
 
 /// The MIME type advertised for [`LIBRARY_INDEX_RESOURCE_URI`]: the generated index is CommonMark
 /// prose.
 pub const LIBRARY_INDEX_RESOURCE_MIME: &str = "text/markdown";
 
-/// The server `instructions`: the one-breath authoring gist. It carries the workflow
-/// semantics — the document is durable truth; `send` to audition, doc-edit + `swap` to keep; start
-/// `reuben play` first — and *points* at `reuben://guide/authoring` rather than restating the
-/// contract (gist-and-point). It also points once each at the vocabulary and library-index
-/// resources. The finalized prose is single-sourced by the content-pass (#311); this is the
-/// real-but-refinable surface text.
+/// The server `instructions`: the one-breath authoring gist, pointing at the three guide
+/// resources rather than restating them. see rules: agent-mcp
 const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is the durable \
      truth; keep it in sync with the sound. **Never open, read or write an instrument file \
      yourself** — name it by `source` and let these tools do it: `describe_instrument` reads its \
@@ -139,38 +90,30 @@ const INSTRUCTIONS: &str = "reuben authoring sidecar. The instrument document is
      \"busier\", \"sadder\") into parameter moves. Read `reuben://guide/library-index` for the \
      available instruments to reuse by reference through a `subpatch` node.";
 
-/// Default absolute path to the authoring guide (`docs/agents/authoring.md`), anchored at build
-/// time to this crate's manifest dir (workspace-root-relative). The file is READ AT REQUEST TIME —
-/// never `include_str!` — so a sidecar built yesterday still serves today's guide;
-/// only the path is compile-time, valid in the checkout the sidecar is built and run from (the MVP
-/// persona). Matches the repo convention for locating workspace files
-/// (`CARGO_MANIFEST_DIR`). A deploy that runs the sidecar *outside* that checkout overrides it with
-/// [`AUTHORING_GUIDE_ENV`] (see [`ResourceEntry::resolve_path`]).
+/// Default absolute path to the authoring guide (`docs/agents/authoring.md`). Only the *path* is
+/// compile-time — the file itself is read at request time — and it is valid only in the checkout
+/// the sidecar was built in; a deploy outside one overrides it with [`AUTHORING_GUIDE_ENV`].
+///
+/// see rules: agent-mcp
 const AUTHORING_GUIDE_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../docs/agents/authoring.md"
 );
 
-/// Default absolute path to the rendered vocabulary (`docs/agents/vocabulary.md`), anchored at
-/// build time to this crate's manifest dir — the same checkout-relative, read-at-request-time
-/// posture as [`AUTHORING_GUIDE_PATH`]. Overridden for a non-checkout deploy by
-/// [`VOCABULARY_ENV`] (see [`ResourceEntry::resolve_path`]).
+/// Default absolute path to the rendered vocabulary (`docs/agents/vocabulary.md`) — the same
+/// posture as [`AUTHORING_GUIDE_PATH`], overridden by [`VOCABULARY_ENV`].
 const VOCABULARY_PATH: &str = concat!(
     env!("CARGO_MANIFEST_DIR"),
     "/../../docs/agents/vocabulary.md"
 );
 
-/// Default absolute path to the generated library index (`instruments/index.md`), anchored at
-/// build time to this crate's manifest dir — the same checkout-relative, read-at-request-time
-/// posture as [`AUTHORING_GUIDE_PATH`]. Overridden for a non-checkout deploy by
-/// [`LIBRARY_INDEX_ENV`] (see [`ResourceEntry::resolve_path`]).
+/// Default absolute path to the generated library index (`instruments/index.md`) — the same
+/// posture as [`AUTHORING_GUIDE_PATH`], overridden by [`LIBRARY_INDEX_ENV`].
 const LIBRARY_INDEX_PATH: &str = concat!(env!("CARGO_MANIFEST_DIR"), "/../../instruments/index.md");
 
-/// Env override for the authoring-guide path: point the `reuben://guide/authoring` resource at an
-/// explicit file for a **non-checkout deploy** — a shipped sidecar binary whose compile-time
-/// [`AUTHORING_GUIDE_PATH`] points into a build checkout that need not exist where it runs.
-/// Unset keeps the compile-time default. Mirrors the `REUBEN_INSTRUMENT_ROOT`
-/// convention (a `REUBEN_*` path override resolved from the environment).
+/// Env override for the authoring-guide path, for a **non-checkout deploy**: a shipped sidecar
+/// binary whose [`AUTHORING_GUIDE_PATH`] points into a build checkout that need not exist where it
+/// runs. Unset keeps the compile-time default.
 pub const AUTHORING_GUIDE_ENV: &str = "REUBEN_AUTHORING_GUIDE";
 
 /// Env override for the vocabulary path, mirroring [`AUTHORING_GUIDE_ENV`] for
@@ -563,11 +506,10 @@ pub struct CurrentInstrumentOutput {
     pub projection: String,
 }
 
-// --- Document-manipulation verb inputs (#603) ----------------------------------------------------
+// --- Document-manipulation verb inputs -----------------------------------------------------------
 //
-// One flat input struct per verb (flat schemas beat a dispatching verb-enum for a small model,
-// #611). Every mutating verb carries an optional `expect` content-hash write guard; the output is
-// the single `EditResult` shape from core. `source` is the opaque, door-resolved document handle.
+// One flat input struct per verb; every mutating one carries an optional `expect` write guard, and
+// they all answer with core's single `EditResult`. see rules: agent-mcp
 
 /// Input for `new_instrument`: where to create the document, and its name.
 #[derive(Debug, Deserialize, schemars::JsonSchema)]
@@ -955,16 +897,14 @@ impl ReubenServer {
         }
     }
 
-    /// Read a structural view of an instrument document — the read half of the document surface
-    /// (#604). Resolves the opaque `source`, mints a [`Projector`] over a stat-only resolver, and
-    /// returns the asked-for view rendered in the projection's line grammar; `boundary` instead
+    /// Read a structural view of an instrument document. Resolves the opaque `source`, mints a
+    /// [`Projector`] over a stat-only resolver, and renders the asked-for view; `boundary` instead
     /// delegates to [`reuben_core::introspect::describe_patch`] for the resolved host-facing face.
-    /// Engine-free — always available.
     ///
-    /// A document that fails to **load** still projects (`loadable: false` in the header): going
-    /// blind is the worst way to report invalidity, and `validate_instrument` is the single
-    /// authority on it. Only a document that cannot be *minted* — unreadable, unparseable, wrong
-    /// format version — has no structure to show, and that is isError.
+    /// A document that fails to **load** still projects (`loadable: false` in the header); only one
+    /// that cannot be *minted* — unreadable, unparseable, wrong format version — is `isError`.
+    ///
+    /// see rules: agent-mcp
     #[tool(
         name = "describe_instrument",
         description = "Read an instrument document's structure: `index` (every node, one line each — the default), \
@@ -1225,14 +1165,14 @@ impl ReubenServer {
         }
     }
 
-    /// Report what the engine is playing, as a projection of the **installed** graph. Act-then-map:
-    /// an unreachable engine ⇒ `isError`. Forwards the structure-channel `get_document` and projects
-    /// the snapshot here — the document reaches this door and stops (#604).
+    /// Report what the engine is playing, as a projection of the **installed** graph: the snapshot
+    /// the structure channel hands back reaches this door and stops here.
     ///
-    /// Projected from engine memory, never by re-reading `source`: the two can differ, and which
-    /// one is playing is exactly the question. A projection failure degrades to a note rather than
-    /// failing the call — the hash is the load-bearing half, and a snapshot the projector cannot
-    /// mint is a *finding* about what is installed, not a broken tool.
+    /// Projected from engine memory, never by re-reading `source` — the two can differ, and which
+    /// one is playing is exactly the question. A projection failure degrades to a note in place of
+    /// the view rather than failing the call; the hash is the load-bearing half.
+    ///
+    /// see rules: agent-mcp
     #[tool(
         name = "get_current_instrument",
         description = "Report what the engine is playing: the source it was installed from, the installed content \
@@ -1299,12 +1239,11 @@ impl ReubenServer {
         }
     }
 
-    // --- Document tools: engine-free mutators over an instrument document (#603) -----------------
+    // --- Document tools: engine-free mutators over an instrument document -------------------------
     //
-    // Each reads through the resolver seam, applies one surgical edit, re-validates the whole
-    // document through the loader, writes iff valid, and returns the post-write hash plus the
-    // projection of what it touched. Always available (no engine). A rejected *edit* is an ordinary
-    // result carrying the report; only a can't-do-the-job error is `isError`.
+    // Each applies one edit through the resolver seam, re-validates the whole document through the
+    // loader, writes iff valid, and returns the post-write hash plus the projection of what it
+    // touched. see rules: agent-mcp
 
     /// Create a new, valid, minimal instrument document at `source` — the from-scratch start move,
     /// written to disk in one call (refuses to overwrite an existing document).
@@ -1684,14 +1623,9 @@ impl ReubenServer {
     }
 }
 
-/// The one place a failed structure exchange becomes a tool result, so the three structure-reading
-/// tools cannot classify it differently.
-///
-/// The split is the error-layer discipline: an **unreachable** engine gets the shared fail-fast
-/// result carrying the "start `reuben play`" guidance, because that is the one failure the user can
-/// act on. Anything else — the engine answered, but with a channel-level fault rather than a domain
-/// answer — is the tool genuinely unable to do its job, reported under `context` so the model
-/// learns *which* call died.
+/// The one place a failed structure exchange becomes a tool result, so no two tools classify it
+/// differently: unreachable ⇒ the shared fail-fast guidance, anything else ⇒ `isError` under
+/// `context`, which names *which* call died. see rules: agent-mcp
 fn map_structure_err(context: &str, why: StructureError) -> CallToolResult {
     if why.is_unreachable() {
         return engine_unreachable();
@@ -1707,11 +1641,8 @@ impl Default for ReubenServer {
 
 #[tool_handler(router = self.tool_router)]
 impl ServerHandler for ReubenServer {
-    /// Declare the `tools` and `resources` capabilities and the `instructions` field.
-    /// Providing `get_info` ourselves is what lets us add `resources` beside the tool
-    /// router's `tools`; the `resources` capability is a **static** set — no subscribe/listChanged
-    /// — served by [`list_resources`](Self::list_resources) /
-    /// [`read_resource`](Self::read_resource).
+    /// Declare the `tools` and `resources` capabilities and the `instructions` field. Providing
+    /// `get_info` ourselves is what lets `resources` sit beside the tool router's `tools`.
     fn get_info(&self) -> ServerInfo {
         let mut info = ServerInfo::default();
         info.protocol_version = ProtocolVersion::LATEST;
@@ -1724,10 +1655,8 @@ impl ServerHandler for ReubenServer {
         info
     }
 
-    /// The static resource set: the authoring guide,
-    /// the intent vocabulary, and the library index. No `subscribe`/`listChanged` — the
-    /// capability builder declares neither, and this list never changes over a session, so there
-    /// is no cursor to page.
+    /// The static resource set. No `subscribe`/`listChanged`, and no cursor to page — the list
+    /// never changes over a session.
     async fn list_resources(
         &self,
         _request: Option<PaginatedRequestParams>,
@@ -1746,10 +1675,8 @@ impl ServerHandler for ReubenServer {
         ))
     }
 
-    /// Read one static resource, served at request
-    /// time: each is read from disk — never `include_str!`, so a sidecar built
-    /// yesterday still serves today's content — at its checkout path (env-overridable per
-    /// resource, else the compile-time checkout path). An unknown URI is `resource_not_found`.
+    /// Read one static resource from disk at request time, at its env-overridable checkout path.
+    /// An unknown URI is `resource_not_found`. see rules: agent-mcp
     async fn read_resource(
         &self,
         request: ReadResourceRequestParams,
@@ -1759,9 +1686,8 @@ impl ServerHandler for ReubenServer {
         match RESOURCES.iter().find(|r| r.uri == uri) {
             Some(entry) => Ok(ReadResourceResult::new(vec![entry.read_contents()?])),
             None => Err(McpError::resource_not_found(
-                // Name what IS served straight off the roster (single-sourced, so a 4th row can't be
-                // added while this message keeps listing only the original three), read as an English
-                // Oxford list so the prose matches the pre-refactor "X, Y, and Z" bit-for-bit.
+                // Named straight off the roster, so a 4th row cannot be added while this message
+                // keeps listing three.
                 format!(
                     "unknown resource `{uri}`; this server serves {}",
                     served_resource_uris()
@@ -1772,14 +1698,13 @@ impl ServerHandler for ReubenServer {
     }
 }
 
-/// Convert a `send` message's JSON args into the wire's flat [`ControlArg`] atoms
-/// (args are `number | string`). An integer within `i32` range maps to `I32`, any other number to
-/// `F32`, a string to `Str`; the engine re-types each against the destination port at its boundary
-/// (dest-port-type-driven, [`reuben_core::boundary::osc_in_arg`]'s contract).
+/// Convert a `send` message's JSON args into the wire's flat [`ControlArg`] atoms. The engine
+/// re-types each against the destination port at its boundary
+/// ([`reuben_core::boundary::osc_in_arg`]'s contract).
 ///
-/// This exists rather than typing `SendParams::args` as `Vec<ControlArg>` directly so a non-scalar
-/// argument stays the tool's own crafted `isError` — naming the offending value — instead of an
-/// rmcp-layer deserialization failure the model cannot act on.
+/// Hand-written rather than typing `SendParams::args` as `Vec<ControlArg>`, so a non-scalar argument
+/// is this tool's own `isError` naming the offending value, not an rmcp deserialization failure the
+/// model cannot act on.
 fn control_args_from_json(args: &[serde_json::Value]) -> Result<Vec<ControlArg>, String> {
     args.iter()
         .map(|value| match value {
@@ -1790,12 +1715,10 @@ fn control_args_from_json(args: &[serde_json::Value]) -> Result<Vec<ControlArg>,
                         return Ok(ControlArg::I32(i));
                     }
                 }
-                // Guard the f32 narrowing, not just the JSON type. A magnitude past f32 range
-                // (1e39, say) saturates to infinity, and serde_json writes a non-finite float as
-                // `null` — which no `ControlArg` variant accepts, so the engine would reject the
-                // whole batch with an opaque "did not match any variant". Catching it here is the
-                // difference between a named error about one argument and a mystery about all of
-                // them.
+                // Guard the f32 narrowing, not just the JSON type: a magnitude past f32 range
+                // saturates to infinity, which serde_json writes as `null` — a value no
+                // `ControlArg` accepts, so the engine would reject the whole batch with an opaque
+                // "did not match any variant".
                 match n.as_f64() {
                     Some(f) if (f as f32).is_finite() => Ok(ControlArg::F32(f as f32)),
                     Some(_) => Err(format!(
@@ -1835,10 +1758,9 @@ fn swap_summary(report: &SwapReport) -> String {
     }
 }
 
-/// Build an ordinary (non-error) result carrying BOTH a structured payload and a human-readable
-/// text block. The structured content is what the model acts on; the text is the
-/// gloss for a human reading the transcript. A serialization failure is a genuine internal fault,
-/// so it surfaces as a protocol error rather than an `isError` deliverable.
+/// Build an ordinary (non-error) result carrying BOTH a structured payload — what the model acts on
+/// — and a one-line text gloss for a human reading the transcript. A serialization failure is an
+/// internal fault, so it surfaces as a protocol error, not as an `isError` deliverable.
 fn structured_ok<T: Serialize>(value: &T, summary: String) -> Result<CallToolResult, McpError> {
     let structured = serde_json::to_value(value).map_err(|e| {
         McpError::internal_error(format!("failed to serialize tool output: {e}"), None)
@@ -1849,18 +1771,15 @@ fn structured_ok<T: Serialize>(value: &T, summary: String) -> Result<CallToolRes
     Ok(result)
 }
 
-/// The isError result for a can't-do-the-job document-loading failure: an unreadable source, or
-/// bytes that will not mint. `isError` tells the model to act on the guidance rather than treat the
-/// payload as a deliverable.
+/// The isError result for a document that will not load: an unreadable source, or bytes that will
+/// not mint.
 fn cannot_load(message: impl Into<String>) -> CallToolResult {
     cannot_do_the_job(message)
 }
 
-/// The isError result for a call whose *arguments* do not describe a coherent request — the other
-/// half of what `#tool-surface` reserves `isError` for. Same shape as [`cannot_load`], named
-/// separately because the two say different things to a model: one means "that document is not
-/// readable", the other "that question is not well formed", and a helper called `cannot_load`
-/// answering the second would misdescribe its own result.
+/// The isError result for a call whose *arguments* do not describe a coherent request. Same shape as
+/// [`cannot_load`], named separately because a helper called `cannot_load` answering "that question
+/// is not well formed" would misdescribe its own result. see rules: agent-mcp
 fn cannot_do_the_job(message: impl Into<String>) -> CallToolResult {
     CallToolResult::error(vec![ContentBlock::text(message.into())])
 }
@@ -1868,9 +1787,6 @@ fn cannot_do_the_job(message: impl Into<String>) -> CallToolResult {
 /// Read an opaque document `source` into its JSON text plus a stat-only [`FsResolver`] — the read
 /// half of what [`edit_resolver`] does for the verbs, and the same interpretation of `source` (a
 /// path, for this door). `Err` is the ready-to-return `isError` for an unreadable source.
-///
-/// The inline-`document` arm this replaced was #604's largest read-side violation: it let a model
-/// hand over a document it must therefore have been holding.
 fn load_source(source: &str) -> Result<(String, FsResolver), CallToolResult> {
     let path = Path::new(source);
     let json = std::fs::read_to_string(path).map_err(|e| {
@@ -1914,10 +1830,8 @@ fn render_boundary(boundary: &PatchBoundary) -> String {
 /// channel handed back.
 ///
 /// Resolver rooting is best-effort: nested references anchor at the installed `source`'s directory
-/// when the engine named one, else the sidecar cwd — the same anchor `reuben play` used for a
-/// document it loaded from there. A projection failure comes back as a note **in place of** the
-/// view: `get_current_instrument`'s load-bearing answer is the hash, and a document the projector
-/// cannot mint is worth saying so about, not worth failing the call over.
+/// when the engine named one, else the sidecar cwd. A projection failure comes back as a note in
+/// place of the view rather than as an error.
 fn project_installed(snapshot: &DocumentSnapshot) -> String {
     let json = match serde_json::to_string(&snapshot.document) {
         Ok(json) => json,
@@ -1935,9 +1849,9 @@ fn project_installed(snapshot: &DocumentSnapshot) -> String {
 
 /// The FS door's interpretation of an opaque document `source`: a filesystem path. Roots a resolver
 /// at the file's directory (so nested references resolve sibling-first, like the read tools) and
-/// returns the resolver-relative name the [`edit`] verbs read and write through. The verb contract
-/// is byte-identical across doors — a browser door interprets its own opaque `source` the same way —
-/// so `#portable-tool-contracts` survives and the page needs no filesystem.
+/// returns the resolver-relative name the [`edit`] verbs read and write through.
+///
+/// see rules: agent-mcp
 fn edit_resolver(source: &str) -> (FsResolver, String) {
     let path = Path::new(source);
     let name = path
@@ -1947,13 +1861,14 @@ fn edit_resolver(source: &str) -> (FsResolver, String) {
     (FsResolver::for_instrument(path).stat_only(), name)
 }
 
-/// The **door-side** `expect`-hash write guard (`agent-mcp.md#expect-guard-is-a-door-concern`):
-/// core's write stays unguarded last-write-wins, and here the door compares the caller's `expect`
-/// to the source's current content hash. `Some` is the ready-to-return ordinary result for a miss
-/// (nothing written, the real hash returned **and the current node index in `zoom`**, so "re-read it
-/// and reconcile" costs no extra round trip — the door already read and minted the document to
-/// compute the hash); `None` means proceed. A read/mint failure here is not the guard's business —
-/// it returns `None` and lets the verb surface it.
+/// The **door-side** `expect`-hash write guard: compare the caller's `expect` against the source's
+/// current content hash.
+///
+/// `Some` is the ready-to-return ordinary result for a miss — nothing written, the real hash and the
+/// current node index returned, so reconciling costs no extra round trip. `None` means proceed, and
+/// is also what a read/mint failure returns: that is the verb's to surface, not the guard's.
+///
+/// see rules: agent-mcp
 fn edit_expect_conflict(
     expect: &Option<String>,
     name: &str,
@@ -1968,9 +1883,7 @@ fn edit_expect_conflict(
     if &actual == expected {
         return None;
     }
-    // The guard fires exactly when the caller's picture of the document is stale, so hand back the
-    // view it must reconcile against. The index (not a zoom) because no verb ran: nothing was
-    // touched, so there is no narrower thing to show.
+    // The index, not a zoom: no verb ran, so there is no narrower thing to show.
     let zoom = match Projector::new(&json, &registry, resolver) {
         Ok(p) => p.index().render(),
         Err(e) => format!("(projection unavailable: {e})"),
@@ -2000,9 +1913,8 @@ fn edit_expect_conflict(
 }
 
 /// Run one document-manipulation verb: interpret the `source`, apply the `expect` guard, invoke the
-/// core verb, and map its outcome. A rejected *edit* (invalid document) is an ORDINARY result — the
-/// verb worked, the report is the deliverable; only a can't-do-the-job [`EditError`] (unreadable
-/// source, precondition unmet) is `isError`.
+/// core verb, and map its outcome — a rejected edit is an ordinary result, an [`EditError`] is
+/// `isError`. Every mutating tool body is one call to this. see rules: agent-mcp
 fn run_edit(
     source: &str,
     expect: &Option<String>,
@@ -2101,14 +2013,11 @@ mod tests {
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    /// A [`StructureTransport`] answering with canned NDJSON instead of dialing a socket — the
-    /// seam the engine-tool unit tests inject.
+    /// A [`StructureTransport`] answering with canned NDJSON instead of dialing a socket.
     ///
-    /// It substitutes only the *bytes on the wire*, so everything above it runs for real: the tool
-    /// body serializes a genuine [`Request`] (parsed here, so a malformed one is a failed test),
-    /// [`StructureClient`] parses a genuine [`Response`], and an unconfigured verb returns the same
-    /// [`io::Error`] a dead socket would — taking the real path to
-    /// [`StructureError::Unreachable`] rather than a hand-written stand-in for it.
+    /// It substitutes only the *bytes on the wire*: the request line is parsed here, so a malformed
+    /// one fails the test, and an unconfigured verb returns the same [`io::Error`] a dead socket
+    /// would. see rules: agent-mcp
     #[derive(Debug, Default)]
     struct FakeTransport {
         ping: Option<Response>,
@@ -2155,8 +2064,8 @@ mod tests {
         }
 
         /// A reachable engine that acks whatever batch it is handed, plus the shared log of what
-        /// actually crossed the wire — so a `send` test asserts on the *serialized* batch rather
-        /// than on the tool's own inputs.
+        /// crossed the wire — so a `send` test asserts on the *serialized* batch, not on the tool's
+        /// own inputs.
         fn recording_send() -> (Self, Arc<Mutex<Vec<ControlMessage>>>) {
             let sent = Arc::new(Mutex::new(Vec::new()));
             let transport = Self {
@@ -2171,9 +2080,8 @@ mod tests {
         fn round_trip(&self, line: &str, _read_timeout: Duration) -> io::Result<String> {
             let request = Request::from_ndjson(line)
                 .expect("the tool body must put a well-formed request line on the wire");
-            // A `send` on a live engine is answered from the batch that actually arrived — parsed
-            // back off the wire, so the ack can only be right if the serialization was. On a down
-            // engine it falls through to the refused-connect branch like every other verb.
+            // Answered from the batch that actually arrived, parsed back off the wire — so the ack
+            // can only be right if the serialization was.
             if let Request::Send { messages } = request {
                 if self.serves_send {
                     self.sent.lock().expect("sent log").extend(messages);
@@ -2193,8 +2101,8 @@ mod tests {
             };
             match configured {
                 Some(response) => Ok(response.to_ndjson()),
-                // An unconfigured verb models a down engine, delivered exactly as a dead port
-                // does: an io::Error the client classifies, not a pre-classified StructureError.
+                // An unconfigured verb models a down engine the way a dead port does: an io::Error
+                // for the client to classify, not a pre-classified StructureError.
                 None => Err(io::Error::new(
                     io::ErrorKind::ConnectionRefused,
                     "connection refused",
@@ -2215,12 +2123,8 @@ mod tests {
             .block_on(future)
     }
 
-    /// A server whose one engine channel answers from `transport`.
-    ///
-    /// Every engine tool — `send` included, now that control rides the structure channel — runs
-    /// through this single seam, so there is no second plane for a test to stand in for and no UDP
-    /// socket to bind. The fake sits at the *socket*, below the NDJSON framing, so a tool body still
-    /// exercises real serialization, real parsing, and the real unreachable classification.
+    /// A server whose one engine channel answers from `transport` — the single seam every engine
+    /// tool runs through, so there is no second plane to stand in for and no socket to bind.
     fn server_with(transport: FakeTransport) -> ReubenServer {
         ReubenServer::with_engine(EngineLink::from_client(StructureClient::with_transport(
             transport,
@@ -2581,11 +2485,8 @@ mod tests {
 
     #[test]
     fn resolve_checkout_path_prefers_the_override_then_the_default() {
-        // #496 (folding #374 + R9 #466): the pure override-vs-default logic, tested by calling
-        // `resolve_checkout_path` directly with explicit args — no process-env mutation, so it can't
-        // flake and it keeps a genuine direct caller for the function's "unit-testable without racing
-        // on real env vars" rationale honest. A present override wins for a non-checkout deploy; an
-        // absent one falls back to the compile-time checkout default.
+        // Called with explicit args, so no process env is mutated: this cannot flake, and it keeps
+        // a genuine direct caller for the pure signature that makes that possible.
         assert_eq!(
             resolve_checkout_path(
                 Some(std::ffi::OsString::from("/opt/reuben/override.md")),
@@ -2603,18 +2504,14 @@ mod tests {
 
     #[test]
     fn every_resource_env_field_drives_its_resolve_path() {
-        // #496: for every row, prove the row's OWN `entry.env` field is what `entry.resolve_path()`
-        // reads — a `resolve_path` that read a hardcoded var instead of `self.env`, or a row with a
-        // cross-wired `env`, fails here. Driven through the production method (not the pure fn).
+        // Driven through the production method, so a `resolve_path` reading a hardcoded var instead
+        // of `self.env`, or a row with a cross-wired `env`, fails here.
         //
         // `set_var`/`remove_var` are process-global and cargo runs tests as threads in one process,
-        // so this is only safe because these three REUBEN_* resource vars are read by NO other inline
-        // test. Per row the env is mutated panic-safely: set, capture BOTH outcomes into locals, and
-        // `remove_var` BEFORE any assertion runs — so a failed assert can never leak a var into a
-        // sibling test.
+        // so this is only safe because these three REUBEN_* vars are read by NO other inline test.
+        // Per row the env is mutated panic-safely: set, capture BOTH outcomes into locals, and
+        // `remove_var` BEFORE any assertion runs, so a failed assert cannot leak a var sideways.
         for (i, entry) in RESOURCES.iter().enumerate() {
-            // Fixture path independent of any entry field — the override just has to differ from the
-            // default and round-trip through `resolve_path` unchanged.
             let override_path = format!("/opt/reuben/resource-{i}.md");
 
             std::env::set_var(entry.env, &override_path);
@@ -2622,7 +2519,6 @@ mod tests {
             std::env::remove_var(entry.env);
             let got_default = entry.resolve_path();
 
-            // Only now, with the env already cleaned, do the assertions.
             assert_eq!(
                 got_override,
                 std::path::PathBuf::from(&override_path),
@@ -2641,10 +2537,8 @@ mod tests {
 
     #[test]
     fn resource_table_is_self_consistent() {
-        // #496 the "new resource = one row" guard: no duplicate URIs, env overrides, or default
-        // paths (a copy-pasted row that forgot to update any of them would silently alias another
-        // resource's wire URI, REUBEN_* override, or served file), and every MIME is text/markdown
-        // (all three resources are CommonMark prose).
+        // The "new resource = one row" guard: a copy-pasted row that forgot to update its URI, env
+        // override, or default path would silently alias another resource's.
         use std::collections::HashSet;
         let mut uris = HashSet::new();
         let mut envs = HashSet::new();
@@ -2675,10 +2569,8 @@ mod tests {
 
     #[test]
     fn served_resource_uris_reads_as_an_oxford_list() {
-        // #496: the unknown-resource guidance names every served URI. The list is single-sourced
-        // from RESOURCES, but the assembled prose is unguarded by stdio_resources.rs (which only
-        // does substring `.contains()` checks), so pin the exact 3-resource wording bit-for-bit —
-        // an Oxford comma before the final `and`, matching the pre-refactor message.
+        // The assembled prose is unguarded by the integration tests, which only do substring
+        // `.contains()` checks — so pin the exact 3-resource wording here.
         assert_eq!(
             served_resource_uris(),
             format!(
@@ -3114,9 +3006,8 @@ mod tests {
 
     #[test]
     fn get_current_instrument_projects_the_installed_graph_and_never_returns_it() {
-        // #604's last doc-in-context arm: the tool answers "what is playing?" with a projection of
-        // what the ENGINE holds, plus the source and hash to reconcile against. The document the
-        // structure channel handed back reaches this door and stops here.
+        // The tool answers "what is playing?" with a projection of what the ENGINE holds, plus the
+        // source and hash to reconcile against — the document itself stops at this door.
         let doc = serde_json::json!({
             "format_version": 3,
             "instrument": "warm",
@@ -3184,15 +3075,10 @@ mod tests {
 
     #[test]
     fn no_advertised_schema_carries_an_instrument_document() {
-        // #604's whole claim, as a build-time property rather than a cleanup that happened once:
-        // *no* arm on this roster takes or returns an instrument document. A document is named by an
-        // opaque `source` and read back as a projection, so instrument JSON cannot reach a model's
-        // context through this door at all.
-        //
-        // It bites on the field NAME, walked over every input and output schema including `$defs`,
-        // because that is how the retired arms spelled it (`validate(document=…)`,
-        // `describe_instrument(document=…)`, `scaffold_instrument -> { document }`,
-        // `get_current_instrument -> { document }`) and how a re-introduction would spell it too.
+        // The no-document-in-context claim as a build-time property rather than a cleanup that
+        // happened once. It bites on the field NAME, walked over every input and output schema
+        // including `$defs`, because that is how the retired arms spelled it and how a
+        // re-introduction would spell it too. see rules: agent-mcp
         fn walk(node: &serde_json::Value, tool: &str, whose: &str, path: &str) {
             match node {
                 serde_json::Value::Object(map) => {
@@ -3200,9 +3086,9 @@ mod tests {
                         for name in props.keys() {
                             assert_ne!(
                                 name, "document",
-                                "{tool}'s {whose} schema carries a `document` field at {path} — \
-                                 #604 retired every arm that moves instrument JSON; name the \
-                                 document by `source` and answer with a projection"
+                                "{tool}'s {whose} schema carries a `document` field at {path} — no \
+                                 arm moves instrument JSON; name the document by `source` and \
+                                 answer with a projection (see rules: agent-mcp)"
                             );
                         }
                     }

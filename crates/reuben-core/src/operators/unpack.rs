@@ -1,14 +1,9 @@
 //! `unpack` — the census of `unpack_<type>` operators.
 //!
-//! Each `unpack_op!` line generates one operator that **destructures a product vocab type into its
-//! held fields on the wire**: it reads the whole value as a `Note` **event** stream on `in` and
-//! emits each field as a held **`Value`** (the Event→Value latch). This is the one
-//! greppable, auditable file of the unpackable surface — adding a product type to the
-//! wire's decompose surface is a one-line edit here, no central match, `inventory` discovers the op.
+//! `unpack_note` turns a `Note` event into held `pitch` (a `Pitch` leaf) and `velocity` (`f32`),
+//! patchable as `unpack_note.pitch -> resolve -> osc` / `unpack_note.velocity -> envelope`.
 //!
-//! `unpack_note` is the first: it turns a `Note` event into held `pitch` (a `Pitch` leaf)
-//! and `velocity` (`f32`), the operator the mono-voice unbundling test (#518) patches as
-//! `unpack_note.pitch -> resolve -> osc` / `unpack_note.velocity -> envelope`.
+//! see rules: composition-operators
 
 use crate::vocab::Note;
 

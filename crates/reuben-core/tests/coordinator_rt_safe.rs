@@ -1,16 +1,13 @@
-//! RT-safety invariant: the render side of the swap mailbox
-//! pair — `take_install` and `post_retiree` — performs **zero** heap allocation and
-//! **zero** frees. Both directions are pure atomic pointer exchanges; `Box::into_raw`/
-//! `Box::from_raw` are pointer conversions, and the displaced payload is handed back to
-//! the Coordinator to drop off-thread (deferred free). The same window also
-//! proves the ops take no locks by construction: the module's only synchronization is
-//! the two `AtomicPtr`s (no `Mutex`/`Condvar`/syscall anywhere in `coordinator`), and a
-//! blocking op could not complete 100k single-threaded round trips.
+//! RT-safety invariant: the render side of the swap mailbox pair — `take_install` and
+//! `post_retiree` — performs **zero** heap allocation and **zero** frees. Both directions are
+//! pure atomic pointer exchanges; `Box::into_raw`/`Box::from_raw` are pointer conversions, and
+//! the displaced payload is handed back to the Coordinator to drop off-thread. The same window
+//! also proves the ops take no locks by construction: the only synchronization is two
+//! `AtomicPtr`s, and a blocking op could not complete 100k single-threaded round trips.
 //!
-//! Like `rt_safe.rs`, this file is its own test binary with a single test. Allocation
-//! counting is armed per-thread by the shared [`rt_alloc`] harness, so the measured
-//! window sees only what the render/coordinator ops themselves do on this thread — never
-//! a stray allocation from a libtest harness thread interleaving under parallel load.
+//! Like `rt_safe.rs`, this file is its own test binary with one test. Allocation counting is
+//! armed per-thread by the shared [`rt_alloc`] harness, so the measured window sees only what
+//! this thread does — never a stray allocation from a libtest thread under parallel load.
 
 mod rt_alloc;
 

@@ -18,7 +18,12 @@ Two structural consequences hold today. The pure functions descend into `reuben_
 (they already import only core types, so core gains zero MCP awareness) and the MCP adapter is a
 **new bin crate `reuben-mcp`** — the first workspace member allowed an async runtime, with rmcp +
 tokio (measured at ~34 lock packages, `transport-io` only, a `current_thread` runtime, no network
-stack) **fenced there** so every play/CLI/web build stays std-only. rmcp earns its weight by
+stack) **fenced there** so every play/CLI/web build stays std-only. The fence shows up at the transport: with
+no `net` feature there is no OS reactor, so the structure channel is blocking `std::net` bounded by
+explicit connect and read timeouts rather than async I/O. That is not a compromise — one short loopback
+round trip per exchange is cheap enough to run directly, and it keeps the two failure modes distinct: a
+dead port is refused at once, while a *wedged* engine (accepts, never answers) trips the read timeout
+instead of hanging the sidecar forever. rmcp earns its weight by
 measurement, not by default: hand-rolling ~5 methods wins only for code discarded before the next
 protocol break, and this shim is the epic's durable surface. The separate engine path this implies —
 one loopback structure channel carrying both structure edits *and* control — is the seam the engine
@@ -28,4 +33,5 @@ clear the sidecar and the engine are peers who already speak core's types, and t
 between them bought a wire format the engine immediately decoded again. OSC-the-binary-protocol is `reuben play`'s
 **foreign** edge — external controllers in, `osc_out` nodes out — not an internal hop.
 
-Distilled from: ADR-0044
+Distilled from: ADR-0044. The blocking-transport consequence was harvested from `reuben-mcp` code
+comments in issue #635, where it was the only copy.

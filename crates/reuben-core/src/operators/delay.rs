@@ -18,6 +18,8 @@
 //! interpolation, write `input + feedback*delayed` at the head, and output the dry/wet
 //! mix. The ring buffer and head index are continuous across calls / block slices, and
 //! `process` allocates nothing in steady state.
+//!
+//! see rules: signal-time-dsp
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};

@@ -3,28 +3,18 @@
 //! A *stateless pointwise* math op (output sample = fn of this sample's inputs only) whose operands
 //! are numbers (and optionally held enum modes) is pure boilerplate apart from its scalar function
 //! and its operand defaults. This macro takes that one scalar function plus an operand list and emits
-//! the **whole** family from one `variants:` list.
+//! the **whole** family from one `variants:` list. see rules: composition-operators
 //!
 //! Each entry is `<number type> [-> <number type>] <carrier>` and names exactly one operator to
-//! emit:
+//! emit: the **number type** (`f32`, `i32`) fixes the ports' scalar type and the type the scalar fn
+//! is instantiated at; the optional **`-> <number type>`** names a **converter** whose output type
+//! differs from its input's (omitted means "out is in"); the **carrier** is `value` (held scalars,
+//! output `set` once) or `signal` (per-sample buffers, output looped).
 //!
-//! - the **number type** (`f32`, `i32`) fixes the ports' scalar type and the type the scalar fn is
-//!   instantiated at,
-//! - the optional **`-> <number type>`** gives the *output* type where it differs from the input's
-//!   — a **converter** (`f32 -> i32`), the one shape a single-type entry cannot express. Omitting
-//!   it means "out is in", so no op whose arithmetic stays in one type writes one,
-//! - the **carrier** is `value` (held scalars, output `set` once) or `signal` (per-sample buffers,
-//!   output looped).
-//!
-//! It is a written list rather than a `numbers × carriers` cross product because the product is
-//! **not** full: `i32` has no dense buffer form (`PortTy` has `F32Buffer` and no `I32Buffer` —
-//! issue #560), so `i32 signal` does not exist and is rejected. A cross product would have to carry
-//! a per-number carrier table to say so, and could not name a converter at all — a converter is not
-//! a cell of `numbers × carriers` but a *pair* of number types. Listing the instantiations says
-//! both directly, and a missing entry is a missing operator rather than a silently-skipped cell.
-//!
-//! The same rule rejects a bufferless type in **either** position, which is one statement covering
-//! two facts: integer operators are value-only, and so is every converter that produces one.
+//! **Operand kinds.** A `number` operand follows the carrier (a per-sample buffer in `signal`, a
+//! held scalar in `value`). An `enum(VocabType)` operand is *always held* (enums have no buffer
+//! form), in both carriers. The scalar fn receives every operand by the names in the `function:`
+//! call-shape.
 //!
 //! For each entry it emits a submodule (isolating the `IN_`/`OUT_` consts) with the contract, a
 //! stateless op carrier (`AddF32SignalOp`) whose `ValueOp`/`SignalOp` impl names the contract's
@@ -35,9 +25,7 @@
 //! (Plain code spans, not intra-doc links: this crate cannot depend on `reuben-core`, where
 //! `operator::shell` lives — the dependency runs the other way.)
 //!
-//! **`process` is not emitted.** It belongs to the shell, written once per carrier — so the
-//! per-sample loop exists in one place, where hoisting each operand's slice out of it lets LLVM
-//! vectorize every signal-carrier op (issue #556).
+//! **`process` is not emitted.** It belongs to the shell, written once per carrier.
 //!
 //! ```ignore
 //! number_operator_contract!(Add {
@@ -58,27 +46,6 @@
 //! // -> round::RoundF32Value + round::RoundF32Signal
 //! //  + round::RoundF32I32Value ("round_f32_i32_value")
 //! ```
-//!
-//! The out fragment appears in the name **only where the types differ**, so `add_f32_value` does
-//! not become `add_f32_f32_value`. The type name is the operator's identity on the wire; restating
-//! the matching case would migrate every instrument document in existence.
-//!
-//! **Operand kinds.** A `number` operand follows the carrier (a per-sample buffer in `signal`, a held
-//! scalar in `value`). An `enum(VocabType)` operand is *always held* (enums have no buffer form), in
-//! both carriers. The scalar fn receives every operand by the names in the `function:` call-shape.
-//!
-//! **One operand declaration serves every variant.** A declared range or `default` is written
-//! type-neutrally and projected per number type, so an operand's `default 1` is `1.0` in the `f32`
-//! instantiations and `1` in the `i32` ones. A value that cannot survive the projection — a
-//! fractional `default 0.5` on an op that also lists an `i32` variant — is a compile error at the
-//! operand, not a silent truncation.
-//!
-//! **What restricts an op to a subset of the number types is the scalar fn's own bounds.** `power`
-//! lists only `f32` entries because its `shape` is a concrete `f32` fn; listing `i32 value` for it
-//! fails to compile at the call, which is the point (issue #556). The same holds across the arrow:
-//! a converter entry is legal only where the fn can *produce* the output type, so `round`'s
-//! `f32 -> i32` compiles because `RoundInto<i32> for f32` exists, and an unimplemented pairing is
-//! a missing-impl error rather than a wrongly-typed operator.
 
 use proc_macro2::{Span, TokenStream};
 use quote::quote;
@@ -148,7 +115,7 @@ impl NumKind {
     }
 
     /// Whether this type has a dense per-sample buffer form, and so a `signal` carrier. Only `f32`
-    /// does: [`PortTy`] has `F32Buffer` and no integer counterpart (issue #560).
+    /// does: [`PortTy`] has `F32Buffer` and no integer counterpart.
     fn has_buffer(self) -> bool {
         matches!(self, NumKind::F32)
     }
@@ -184,8 +151,7 @@ impl NumKind {
 }
 
 /// A declared operand bound/default, narrowed to `i32` only if it lands exactly on one. The
-/// alternative — `as i32` — turns a `default 0.5` into `0` with no diagnostic, which is precisely
-/// the class of silent miscompile the `numbers:` axis used to produce (issue #556).
+/// alternative — `as i32` — turns a `default 0.5` into `0` with no diagnostic.
 fn exact_i32(at: Span, v: f64) -> syn::Result<i32> {
     if v.fract() != 0.0 || v < f64::from(i32::MIN) || v > f64::from(i32::MAX) {
         return Err(Error::new(
@@ -419,12 +385,8 @@ impl NumberOpInput {
 
     /// The per-variant [`OperatorSpec`] — ports typed for **this variant's number type and
     /// carrier** — reusing the shared validator + builder so the contract is identical to a
-    /// hand-written `operator_contract!`.
-    ///
-    /// This is where the declared number type reaches the ports. It used to hardcode `F32Meta` /
-    /// `PortTy::F32` / `PortTy::F32Buffer` and never read the declared type at all, so a
-    /// non-`f32` entry generated an operator *named* for that type whose every port was `f32` —
-    /// a well-formed contract, wrong on the wire, caught by nothing (issue #556).
+    /// hand-written `operator_contract!`. This is where the declared number type reaches the
+    /// ports (see rules: composition-operators).
     fn to_spec(&self, type_name: &str, v: Variant) -> syn::Result<OperatorSpec> {
         let inputs = self
             .inputs
@@ -632,8 +594,8 @@ fn parse_variants(input: ParseStream) -> syn::Result<Vec<Variant>> {
                         kw.span(),
                         format!(
                             "`{kw}` has no `signal` carrier: it has no dense buffer form, so \
-                             there is nothing for a per-sample port to carry (issue #560). \
-                             Integer operators — and every converter producing one — are \
+                             there is nothing for a per-sample port to carry. Integer \
+                             operators — and every converter producing one — are \
                              value-only; drop this entry and keep the `value` one."
                         ),
                     ));
@@ -719,7 +681,7 @@ fn parse_operands(input: ParseStream) -> syn::Result<Vec<Operand>> {
 /// The optional `{ [LO..=HI,] [default D] }` on a `number` operand. Missing range -> type-wide
 /// [`NUMBER_MIN`]/[`NUMBER_MAX`]; missing default -> `0` (the number type's zero). A range endpoint
 /// may be written `min`/`max` (the type-wide sentinel), and `default` may be written `default max` /
-/// `default min` to park the operand at its own range edge (issue #127) — e.g. `min`'s no-op `b`.
+/// `default min` to park the operand at its own range edge.
 ///
 /// Answers in the type-neutral `f64`: this one declaration serves every entry in `variants:`, so
 /// the number type is not known here. An omitted range falls back to the `f32` sentinel and stays
@@ -861,7 +823,7 @@ mod tests {
 
     // The carriers differ only in their operands' declared *form* and the shell that reads them:
     // a value operand is a held scalar, a signal operand a per-sample buffer. Neither variant
-    // emits a `process` — that is the shell's, written once (issue #556).
+    // emits a `process` — that is the shell's, written once.
     #[test]
     fn carriers_differ_only_in_form_and_shell() {
         let out = render(
@@ -946,8 +908,7 @@ mod tests {
     }
 
     // `default max` / `default min` on a `number` operand park it at its own range edge — for a
-    // range-less operand that is the type-wide ±1e6 sentinel (issue #127), so `min`/`max`'s no-op
-    // `b` needs no raw literal.
+    // range-less operand that is the type-wide ±1e6 sentinel, so no raw literal is needed.
     #[test]
     fn default_sentinel_parks_at_the_range_edge() {
         let out = render(
@@ -979,11 +940,9 @@ mod tests {
         assert!(!out.contains("thing_f32_value"), "{out}");
     }
 
-    // **The bug this macro had**: the declared number type reached the struct name and nothing
-    // else, so an `i32` entry emitted an operator *named* `add_i32_value` whose every port was
-    // `f32` — a well-formed contract, wrong on the wire, caught by nothing (issue #556). Pin the
-    // whole path from the declaration to the ports: the port type, the handle form, the emitted
-    // default literal, and the type the scalar fn is called at.
+    // Regression coverage for the declared number type reaching the ports (see rules:
+    // composition-operators): pin the whole path from the declaration to the ports — the port
+    // type, the handle form, the emitted default literal, and the type the scalar fn is called at.
     #[test]
     fn i32_variant_types_its_ports_i32() {
         let out = render(
@@ -1035,8 +994,7 @@ mod tests {
     }
 
     // A declared bound/default that is not a whole number cannot be an `i32` port's. Erroring
-    // beats `as i32`, which would turn `default 0.5` into `0` with no diagnostic — the same class
-    // of silent miscompile the axis used to produce.
+    // beats `as i32`, which would turn `default 0.5` into `0` with no diagnostic.
     #[test]
     fn fractional_default_is_rejected_for_an_i32_variant() {
         let out = render(

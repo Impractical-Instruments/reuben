@@ -1,12 +1,11 @@
 //! The engine's agent-tool **contract roster** — the single source of truth for *which* contracts
 //! the tool surface exposes, and in what order.
 //!
-//! This declares the roster *identity* — names and channel kind — and nothing else. Descriptions,
-//! input/output schemas, and the tool bodies stay per-door (they are host-flavoured and, for the
-//! MCP door, carry rmcp/schemars machinery reuben-core must never depend on). "Contracts live in
-//! core": the roster is OS-free and depends on no engine or protocol type, so every
-//! door can derive its name-set and count from [`CONTRACTS`] instead of hand-typing a parallel
-//! literal. Adding a verb becomes one entry here rather than a roster edit in every door.
+//! Roster *identity* only: names and channel kind. Descriptions and the tool bodies stay per-door;
+//! output schemas derive from the contract types behind core's optional `schemars` feature. Adding
+//! a verb is one entry here rather than a roster edit in every door.
+//!
+//! see rules: agent-mcp
 
 /// Which channel a contract is served over. Roster metadata only — it does not carry
 /// the tool's behaviour, just how the door reaches it.
@@ -19,7 +18,7 @@ pub enum ContractKind {
     /// (`send_live_controls`/`get_engine_status`/`swap_instrument`/`get_current_instrument`/
     /// `get_engine_diagnostics`).
     Engine,
-    /// A **document-manipulation** contract (#603): a pure, engine-free *mutator* over an
+    /// A **document-manipulation** contract: a pure, engine-free *mutator* over an
     /// instrument document through the resolver seam — read, apply one surgical edit, re-validate
     /// the whole document, write iff valid ([`crate::edit`]). Distinct from [`Pure`](Self::Pure),
     /// which is read-only introspection: a door hosts both in-process, but only these write.
@@ -40,13 +39,11 @@ pub struct Contract {
 /// engine contracts, then the document vocabulary. This is the authority every door derives its
 /// advertised name-set and count from; the order here is the order on the wire.
 ///
-/// Every name follows the #611 `verb_instrument_object` convention, and **no contract carries an
-/// instrument document by value** (#604): a document is named by an opaque `source` the door's
-/// resolver interprets, and read back as a [`projection`](crate::projection). That is what makes
-/// `#no-resource-bytes` a property of this roster rather than a capability of it — there is no
-/// longer an arm through which instrument JSON can reach a model's context. `scaffold_instrument`
-/// retired here: it returned a seed *by value*, and [`crate::edit::new_instrument`] lands the same
-/// seed at a source instead.
+/// Every name follows the `verb_instrument_object` convention, and no contract carries an
+/// instrument document by value: a document is named by an opaque `source` the door's resolver
+/// interprets, and read back as a [`projection`](crate::projection) — see rules: agent-mcp.
+/// `scaffold_instrument` retired here: it returned a seed *by value*, and
+/// [`crate::edit::new_instrument`] lands the same seed at a source instead.
 pub const CONTRACTS: &[Contract] = &[
     Contract {
         name: "describe_operators",
@@ -80,9 +77,9 @@ pub const CONTRACTS: &[Contract] = &[
         name: "get_engine_diagnostics",
         kind: ContractKind::Engine,
     },
-    // The document-manipulation vocabulary (#603): the closed set of engine-free mutators an agent
-    // authors a document through, in the #611 group order (document · nodes · inputs · config ·
-    // interface · resources).
+    // The document-manipulation vocabulary: the closed set of engine-free mutators an agent
+    // authors a document through, grouped document · nodes · inputs · config · interface ·
+    // resources.
     Contract {
         name: "new_instrument",
         kind: ContractKind::Document,

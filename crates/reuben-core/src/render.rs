@@ -516,7 +516,7 @@ pub(crate) fn held_arg(p: &Port, arg: &Arg) -> Option<Arg> {
 #[derive(Clone, Copy)]
 enum EventSrc {
     /// Index into the block `messages` slice. The event delivers by the wired input port, so only
-    /// the payload (and frame) are carried forward — the external address is not (step 7).
+    /// the payload (and frame) are carried forward — the external address is not.
     External { msg: usize },
     /// Index into the per-block emit pool.
     Emitted(usize),
@@ -637,8 +637,8 @@ fn route_messages(routes: &mut Vec<NodeRoute>, plan: &Plan, messages: &[Message]
 /// Resolve an inbound address to its destination — `(node index, input port index, port)` —
 /// by matching a node address prefix ([`local_address`]) and then an input port by name. The
 /// **single** "address → node + port" rule: both [`route_messages`] and the boundary's
-/// [`Plan::osc_in_message`] call it, so the two inbound paths cannot diverge (issue #165 —
-/// a diverged copy silently dropped messages to nested nodes).
+/// [`Plan::osc_in_message`] call it, so the two inbound paths cannot diverge — a diverged
+/// copy would silently drop messages to nested nodes.
 ///
 /// A node whose address prefix-matches but has **no** matching port does not decide the
 /// outcome — keep scanning. Node addresses may be ancestors of one another (`/fx` beside an
@@ -820,7 +820,6 @@ fn process_node(
         }
         let stream_refs: SmallVec<[&[Event]; 24]> = per_port.iter().map(|v| v.as_slice()).collect();
 
-        // Input slices for this segment.
         let inputs = node
             .inputs
             .iter()
@@ -892,7 +891,7 @@ mod tests {
         Plan::instantiate(graph, AudioConfig::new(48_000.0, 64)).expect("instantiate")
     }
 
-    /// Issue #165: inbound OSC to a nested node must not be dropped because a shallower
+    /// Inbound OSC to a nested node must not be dropped because a shallower
     /// prefix-matching node that lacks the port sits earlier in `plan.nodes`.
     #[test]
     fn osc_in_message_reaches_a_node_shadowed_by_a_portless_ancestor() {
@@ -922,7 +921,7 @@ mod tests {
 
     /// Parity guard: the boundary conversion (`osc_in_message`) and the render routing
     /// (`route_messages`) agree on the destination node. Both call [`resolve_port`]; this
-    /// pins them together behaviorally if either ever re-inlines the rule (issue #165).
+    /// pins them together behaviorally if either ever re-inlines the rule.
     #[test]
     fn osc_in_message_and_route_messages_agree_on_the_destination() {
         let plan = shadowed_plan();

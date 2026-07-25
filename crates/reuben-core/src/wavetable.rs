@@ -1,12 +1,11 @@
 //! Reusable single-cycle wavetable with linear interpolation.
 //!
 //! A [`Wavetable`] stores one cycle of a periodic waveform sampled into a fixed table and read by
-//! phase (turns in `[0, 1)`) with linear interpolation between the two neighbouring samples. It
-//! owns its data and is built on the **cold** path (operator constructors / resource binding), so
-//! the audio render thread only ever reads it — [`Wavetable::lookup`] does no allocation, no trig
-//! call, and no branch on the phase wrap. This is the shared primitive behind the [`Oscillator`]'s
-//! sine (via [`shared_sine`]) and, later, a wavetable oscillator that loads arbitrary band-limited
-//! cycles from a resource.
+//! phase (turns in `[0, 1)`) with linear interpolation between the two neighbouring samples. Built
+//! on the **cold** path (operator constructors / resource binding); the audio thread only ever
+//! reads it — [`Wavetable::lookup`] does no allocation, no trig call, no branch on the phase wrap.
+//! Shared primitive behind the [`Oscillator`]'s sine ([`shared_sine`]) and, later, a wavetable
+//! oscillator loading arbitrary band-limited cycles from a resource.
 //!
 //! [`Oscillator`]: crate::operators::oscillator
 

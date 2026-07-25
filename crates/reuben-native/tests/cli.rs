@@ -1,7 +1,6 @@
 //! Integration: the shipped stereo examples and their device profile, driven through the
 //! `reuben_native::cli` re-export of core's introspection with the
-//! real filesystem resolver — proving the re-export preserves the CLI surface. The pure
-//! introspection tests moved with the code to `reuben_core::introspect` (issue #309).
+//! real filesystem resolver — proving the re-export preserves the CLI surface.
 
 use std::path::PathBuf;
 

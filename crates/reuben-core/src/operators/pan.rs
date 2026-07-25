@@ -13,6 +13,8 @@
 //!   Unwired default 0 (center).
 //! - output 0: `left` (Signal) — `audio · cos(θ)`.
 //! - output 1: `right` (Signal) — `audio · sin(θ)`, where `θ = (pan + 1)·π/4`.
+//!
+//! see rules: composition-operators
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};

@@ -1,14 +1,9 @@
 //! Test scaffolding shared by this crate's unit tests and its integration tests.
 //!
-//! `#[doc(hidden)] pub` rather than `#[cfg(test)]`: an integration test in `tests/` compiles against
-//! the crate's *public* surface, so `cfg(test)` scaffolding is invisible to it. Without this module
-//! the only way to drive a `StructureServer` from both levels is to write the harness twice — which
-//! is what used to happen, and it put two copies of the render-callback mirror in the tree. A change
-//! to how `audio.rs` drains control then has to land in both, or one copy quietly stops mirroring
-//! production while still claiming to.
-//!
-//! Nothing here is part of the crate's API. It exists so there is exactly **one** stand-in for the
-//! cpal callback.
+//! `#[doc(hidden)] pub`, not `#[cfg(test)]`: an integration test in `tests/` compiles against the
+//! crate's *public* surface only, so `cfg(test)` scaffolding is invisible to it. This is the one
+//! stand-in for the cpal render callback, so a change to how `audio.rs` drains control lands in
+//! one place instead of drifting between two mirrors.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Receiver;

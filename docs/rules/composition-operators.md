@@ -85,6 +85,11 @@ the patch — maps onto the rig.
 
 [why](rationale/composition-operators/message-arg-substrate.md)
 
+<a id="audio-element-named-once"></a>
+### The audio element type and its buffer forms are named in exactly one site, every genuinely-audio buffer elsewhere spells those aliases, and a text linter enforces it — the point being the boundary it draws between audio and incidental `f32`, not the abstraction.
+
+[why](rationale/composition-operators/audio-element-named-once.md)
+
 <a id="declared-port-forms"></a>
 ### Every port carries one of three forms — Value (latched, held, sparse), Event (unlatched, multi-valued), or Signal (dense per-sample buffer) — fixed at authoring by the port's declared type, not inferred from the graph.
 

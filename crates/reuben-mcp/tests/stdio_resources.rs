@@ -1,13 +1,12 @@
-//! Integration test for the MCP stdio resource surface (#319 verification, extended by R9 #466 to
-//! the vocabulary + library-index resources): spawn the real shim binary, complete the
+//! Integration test for the MCP stdio resource surface: spawn the real shim binary, complete the
 //! `initialize` handshake, and drive `resources/list` + `resources/read` over newline-delimited
-//! JSON-RPC — the actual protocol boundary the client sees, not an in-process shortcut. Mirrors the
-//! tool-surface harness in `stdio_tools_list.rs`, with the same watchdog so a regression fails
-//! loudly instead of hanging CI.
+//! JSON-RPC. Mirrors the harness in `stdio_tools_list.rs`, with the same watchdog so a regression
+//! fails loudly instead of hanging CI.
 //!
-//! The tier-2 acceptance this file rides: resources served byte-equal to the
-//! checkout, the retired instrument-JSON-Schema resource absent, and every
-//! `INSTRUCTIONS` pointer resolves.
+//! What it holds: every resource is served byte-equal to the checkout, and every `INSTRUCTIONS`
+//! pointer resolves to one that exists.
+//!
+//! see rules: agent-mcp
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};

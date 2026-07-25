@@ -1,27 +1,13 @@
 //! Shared RT-safety allocation-counting harness for the `*_rt_safe` test binaries.
 //!
-//! A `#[global_allocator]` sees **every** allocation in the process — on any thread, at
-//! any time — so a naive counter wrapped around a measured window also tallies stray
-//! allocations made by the libtest harness threads (result plumbing, output capture,
-//! timing) that happen to interleave with the window. Under a loaded, parallel
-//! `cargo test --workspace` run those strays land inside the window often enough to
-//! flip a `assert_eq!(allocs, 0)` red on code that never allocated (they are counted on
-//! a *different* thread than the one running the ops under test).
+//! A `#[global_allocator]` sees every allocation on every thread, so a naive counter over a
+//! measured window also tallies stray libtest-harness allocations that interleave under a
+//! parallel `cargo test --workspace` run. The fix: arm counting **per-thread**, only for the
+//! duration of the measured ops on the measuring thread (see [`measure`]) — an allocation on
+//! any other thread is never counted.
 //!
-//! The fix is to **arm counting per-thread**: the allocator only touches the counters
-//! while the *current* thread is armed, and a window is armed on exactly the thread that
-//! runs the measured ops, only for the duration of those ops (see [`measure`]). An
-//! allocation on any other thread — the harness, a sibling test, setup/teardown — is
-//! never counted, so the assertion measures only the ops under test and is immune to
-//! cross-thread interleaving under load.
-//!
-//! The armed flag is a `const`-initialised, `Copy`, destructor-free thread-local, so
-//! reading it inside `alloc` neither allocates nor registers a TLS destructor: no
-//! re-entrancy into the allocator, no teardown panic.
-//!
-//! Each test binary is its own crate, so it declares its own `#[global_allocator]`
-//! (`static GLOBAL: Counting = Counting;`) and gets a private copy of these counters —
-//! nothing is shared across binaries.
+//! The armed flag is a `const`-initialised, `Copy`, destructor-free thread-local, so reading it
+//! inside `alloc` neither allocates nor registers a TLS destructor.
 #![allow(dead_code)] // not every test binary reads every item (frees, `Counts` fields).
 
 use std::alloc::{GlobalAlloc, Layout, System};

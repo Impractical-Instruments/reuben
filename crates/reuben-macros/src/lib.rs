@@ -2,14 +2,8 @@
 //!
 //! An operator declares its ports/params **once**, inside `operator_contract!`. The macro plants,
 //! at module scope, the `IN_`/`OUT_`/`P_` index consts *and* an inherent `fn contract() ->
-//! Descriptor`; the author's `impl Operator` delegates `fn descriptor()` to it with a one-liner.
-//! Because the consts and the descriptor come from the **same tokens**, name↔slot drift is
-//! impossible by construction — the disease this macro exists to cure.
-//!
-//! Shape A (delegate), forced by Rust: `descriptor()` and `process()` are both required methods of
-//! one `impl Operator` block, and a macro can't inject a method into a hand-written impl. So the
-//! macro emits an *inherent* `impl T { fn contract() }` at module scope, and the trait impl reads
-//! `fn descriptor() -> Descriptor { Self::contract() }`.
+//! Descriptor`; the author's `impl Operator` delegates `fn descriptor()` to it with a one-liner —
+//! `fn descriptor() -> Descriptor { Self::contract() }`. see rules: composition-operators
 //!
 //! ```ignore
 //! operator_contract!(Oscillator {
@@ -80,7 +74,7 @@ fn expand(input: TokenStream) -> TokenStream {
 // --- Parsed AST (spans retained so validation errors point at the offending token) ---
 
 /// One parsed port: the grammar's `name: <ty>` entry. The type parses **straight into the
-/// shared contract [`PortTy`]** (issue #217) — there is no AST-side taxonomy or meta copy to
+/// shared contract [`PortTy`]** — there is no AST-side taxonomy or meta copy to
 /// plumb field-by-field. The struct survives only because [`ContractInput::error_at`] needs the
 /// name's `Span` to underline the offending port.
 struct PortAst {
@@ -156,7 +150,7 @@ fn curve_tokens(c: Curve) -> TokenStream {
 /// The [`form`] marker type for a port's declared type — the single source of the port-type →
 /// form-marker mapping, shared by the input and output handle emitters so the two can't drift.
 /// (`arg` maps to `Raw`; the validator rejects `arg` *outputs*, so [`output_handle`] never reaches
-/// that arm.) Exhaustive over [`PortTy`] — no unreachable fallback arm (issue #217).
+/// that arm.) Exhaustive over [`PortTy`] — no unreachable fallback arm.
 fn port_form(p: &model::PortModel) -> TokenStream {
     match &p.spec.ty {
         PortTy::F32Buffer(_) => quote! { SignalF32 },
@@ -202,7 +196,7 @@ fn input_handle(p: &model::PortModel) -> TokenStream {
         }
         PortTy::Harmony => quote! { ::reuben_core::vocab::Harmony::DEFAULT },
         // A held `Pitch` leaf carries its declared default (tonic, `Degree(0)`) as data, exactly
-        // like `Harmony` above — the read fallback for a `pitch` input (`resolve`, #523).
+        // like `Harmony` above — the read fallback for a `pitch` input (`resolve`).
         PortTy::Pitch => quote! { ::reuben_core::vocab::pitch::Pitch::DEFAULT },
         // Defaultless forms (events, the raw pass-through) store `()`.
         PortTy::Note | PortTy::Arg => quote! { () },
@@ -261,12 +255,9 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
                 .iter()
                 .map(|p| {
                     let name = &p.spec.name;
-                    // Exhaustive over [`PortTy`] with the payload in hand — the stringly-era
-                    // `expect("validate() guarantees…")` calls and the unreachable
-                    // `compile_error!` fallback are gone (issue #217).
+                    // Exhaustive over [`PortTy`] with the payload in hand — no `expect` call and
+                    // no unreachable `compile_error!` fallback needed.
                     match &p.spec.ty {
-                        // A dense per-sample signal — `Port::f32_buffer`, or `f32_buffer_meta`
-                        // when it carries a scalar default + knob.
                         PortTy::F32Buffer(None) => {
                             quote! { ::reuben_core::descriptor::Port::f32_buffer(#name) }
                         }
@@ -276,24 +267,18 @@ pub(crate) fn render_contract(struct_ident: &Ident, model: &ContractModel) -> To
                                 ::reuben_core::descriptor::Port::f32_buffer_meta(#name, #meta)
                             }
                         }
-                        // A `Note` event port — `Port::note`.
                         PortTy::Note => quote! { ::reuben_core::descriptor::Port::note(#name) },
-                        // A `Harmony` held port — `Port::harmony`.
                         PortTy::Harmony => {
                             quote! { ::reuben_core::descriptor::Port::harmony(#name) }
                         }
-                        // A held `Pitch` leaf port — `Port::pitch`.
                         PortTy::Pitch => {
                             quote! { ::reuben_core::descriptor::Port::pitch(#name) }
                         }
-                        // A type-agnostic pass-through — `Port::arg` (issue #141).
                         PortTy::Arg => quote! { ::reuben_core::descriptor::Port::arg(#name) },
-                        // A materialized scalar control — `Port::f32` with its meta.
                         PortTy::F32(m) => {
                             let meta = f32_meta_toks(m);
                             quote! { ::reuben_core::descriptor::Port::f32(#name, #meta) }
                         }
-                        // A bounded integer control / constant — `Port::i32` with its meta.
                         PortTy::I32(m) => {
                             let (min, max, default) = (m.min, m.max, m.default);
                             quote! {
@@ -391,7 +376,7 @@ impl Parse for ContractInput {
 
 /// A brace-wrapped, comma-separated port list. Each entry is `name: <ty>` where `<ty>` is the
 /// port's [`Arg`] type: `f32_buffer`, `f32 { .. }`, `enum(VocabType)`, `note`,
-/// `harmony`, or `arg` — parsed straight into the shared [`PortTy`] (issue #217), so an unknown
+/// `harmony`, or `arg` — parsed straight into the shared [`PortTy`], so an unknown
 /// type keyword is a parse error here and unrepresentable past this point.
 fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
     let body;
@@ -446,8 +431,7 @@ fn parse_ports(input: ParseStream) -> syn::Result<Vec<PortAst>> {
 /// `curve` are each optional (an omitted curve defaults to `linear`), unlike the all-required
 /// legacy `params` block. A range endpoint may be the `min`/`max` sentinel (the type-wide `±1e6`
 /// bound), and `default` may be `default max` / `default min` (the port's own range edge) — so the
-/// sentinel is never a raw literal (issue #127). Parses straight into the shared contract
-/// [`F32Meta`] (issue #217).
+/// sentinel is never a raw literal. Parses straight into the shared contract [`F32Meta`].
 fn parse_f32_meta(input: ParseStream) -> syn::Result<F32Meta> {
     let meta;
     braced!(meta in input);
@@ -498,7 +482,7 @@ fn parse_f32_meta(input: ParseStream) -> syn::Result<F32Meta> {
 }
 
 /// `lin`/`linear` → [`Curve::Linear`], `exp`/`exponential` → [`Curve::Exponential`]; anything
-/// else is an error — a bad curve never survives the parse (issue #217).
+/// else is an error — a bad curve never survives the parse.
 fn parse_curve_ident(input: ParseStream) -> syn::Result<Curve> {
     let curve_ident: Ident = input.parse()?;
     match curve_ident.to_string().as_str() {
@@ -513,7 +497,7 @@ fn parse_curve_ident(input: ParseStream) -> syn::Result<Curve> {
 
 /// `{ LO..=HI, default D }` — the meta on an `i32 { .. }` port / constant. Integer
 /// bounds + default; no unit/curve (a count is not a swept knob). Parses straight into the
-/// shared contract [`I32Meta`] (issue #217).
+/// shared contract [`I32Meta`].
 fn parse_i32_meta(input: ParseStream) -> syn::Result<I32Meta> {
     let meta;
     braced!(meta in input);
@@ -614,8 +598,6 @@ mod tests {
         );
         assert!(out.contains("type_name : \"sample\""), "{out}");
         assert!(out.contains("ResourceSlot :: new (\"sample\")"), "{out}");
-        // A bare `f32_buffer` handle carries 0.0 — literally what an unwired bare input
-        // materializes (the buffer-presence invariant).
         assert!(
             out.contains("pub const IN_GATE : :: reuben_core :: operator :: In < :: reuben_core :: operator :: form :: SignalF32 > = :: reuben_core :: operator :: In :: new (1 , 0f32)"),
             "{out}"
@@ -635,7 +617,7 @@ mod tests {
             }"#,
         );
         // An Event handle stores no default (`()`); a held `Harmony` carries the const C-major
-        // default. Constants stay bare `usize` ordinals (no handle — never read in `process`).
+        // default.
         assert!(
             out.contains("pub const IN_NOTES : :: reuben_core :: operator :: In < :: reuben_core :: operator :: form :: Event < :: reuben_core :: vocab :: pitch :: Note > > = :: reuben_core :: operator :: In :: new (0 , ())"),
             "{out}"
@@ -695,12 +677,9 @@ mod tests {
         );
         assert!(!out.contains("compile_error !"), "{out}");
         assert!(out.contains("Curve :: Exponential"), "{out}");
-        // The omitted unit defaults to the empty string.
         assert!(out.contains("unit : \"\""), "{out}");
     }
 
-    // The filter target contract: a buffer audio in/out, float-with-meta controls, and
-    // an `enum(FilterMode)` naming its shared vocab type — sequential input ordinals.
     #[test]
     fn emits_filter_contract() {
         let out = render(
@@ -748,7 +727,6 @@ mod tests {
         assert!(!out.contains("pub enum"), "{out}");
     }
 
-    // The oscillator target contract: a materialized `freq` and a `waveform` vocab enum.
     #[test]
     fn emits_oscillator_contract() {
         let out = render(
@@ -786,12 +764,10 @@ mod tests {
         assert!(out.contains("Port :: f32_buffer_meta (\"freq\""), "{out}");
         assert!(out.contains("default : 440"), "{out}");
         assert!(out.contains("Curve :: Exponential"), "{out}");
-        // Not the bare-buffer ctor and not the Value `f32` ctor.
         assert!(!out.contains("Port :: f32_buffer (\"freq\")"), "{out}");
         assert!(!out.contains("Port :: f32 ("), "{out}");
     }
 
-    // A bare `f32_buffer` (no meta) still emits the plain ctor — the meta block is optional.
     #[test]
     fn bare_f32_buffer_emits_plain_ctor() {
         let out =
@@ -801,8 +777,8 @@ mod tests {
     }
 
     // The `min`/`max` range sentinels resolve to the type-wide ±1e6 bound, and `default max` /
-    // `default min` to the port's own range edge — no raw literal in the contract (issue #127). A
-    // half-sentinel range (`0.0..=max`, m2s's `rate`) keeps its real lower bound.
+    // `default min` to the port's own range edge. A half-sentinel range (`0.0..=max`, m2s's
+    // `rate`) keeps its real lower bound.
     #[test]
     fn min_max_sentinels_resolve_to_type_wide_bounds() {
         let out = render(
@@ -814,12 +790,9 @@ mod tests {
                 outputs: { out: f32_buffer },
             }"#,
         );
-        // Type-wide bounds materialize as the shared ±1e6 sentinel.
         assert!(out.contains("min : - 1000000f32"), "{out}");
         assert!(out.contains("max : 1000000f32"), "{out}");
-        // `rate` keeps its real 0.0 floor next to the `max` sentinel ceiling.
         assert!(out.contains("min : 0f32 , max : 1000000f32"), "{out}");
-        // `default max` parks at the ceiling, `default min` at the floor.
         assert!(out.contains("default : 1000000f32"), "{out}");
         assert!(out.contains("default : - 1000000f32"), "{out}");
     }
@@ -868,7 +841,6 @@ mod tests {
         );
     }
 
-    // An unknown port type is rejected with a span, as a compile_error.
     #[test]
     fn unknown_port_type_is_a_spanned_error() {
         let out = render(r#"Bad { inputs: { mode: signal } }"#);

@@ -1,35 +1,15 @@
-//! The #247 P2 rewrite guard: every shipped control-block instrument, rewritten
-//! to interface pipes + a surface doc, renders **bit-identically** to its pre-rewrite v2
-//! original — at rest (a pipe with a declared default is the old literal) and under driven
-//! input (the same gesture, sent to the old node address on the original and the pipe's
-//! `/<name>/in` address on the rewrite). The pre-rewrite originals are snapshotted verbatim
-//! under `tests/fixtures/pre-v3/`; voice/patch refs resolve against the live `instruments/`
-//! tree (voices are not rewritten). This is the format_v2.rs shipped-corpus discipline.
+//! The P2 rewrite guard (see rules: authoring-library): every shipped
+//! control-block instrument, rewritten to interface pipes and a surface doc, renders
+//! **bit-identically** to its pre-rewrite v2 original — at rest (a pipe with a declared default
+//! is the old literal) and under driven input (the same gesture, sent to the old node address on
+//! the original and the pipe's `/<name>/in` address on the rewrite). Pre-rewrite originals are
+//! snapshotted under `tests/fixtures/pre-v3/`; voice/patch refs resolve against the live
+//! `instruments/` tree (voices are not rewritten).
 //!
-//! The corpus is "shipped instruments still sonically identical to their pre-v3 snapshots".
-//! An instrument **exits** the guard when its sound is later evolved on purpose — the premise
-//! ("the live file is a pure presentation rewrite of this snapshot") stops holding and no
-//! honest fixture can restore it (a back-ported v2 doc would be a fabrication, not a
-//! snapshot). First exit: groovebox, when its master chain gained the saturator + DJ filter +
-//! volume knob (PR #266). Second exit: strum-harp, when its master chain gained the `/vtrim`
-//! -> `/trim` headroom stage — its 8 resonator voices now pluck at full level and the raw sum
-//! clipped without it, so the live file is louder *and* differently shaped than the snapshot
-//! by design. Its sound is pinned instead by `tests/strum_harp.rs`, which asserts the level
-//! directly. The v2→v3 *loader migration* stays covered by the remaining rows.
-//!
-//! Pipe naming (pinned here; the rewrite implements to it): the pipe keeps the *public*
-//! control name; an internal node colliding with a minted pipe address is renamed
-//! (the ref-integrity discipline, applied as a JSON-structural ref sweep):
-//! - euclidean-drums: `tempo`, per channel (kick/snare/tom/hat): `<ch>_pulses`, `<ch>_steps`,
-//!   `<ch>_rotation`, `<ch>_decay`, `<ch>_filter` (m2s → `/<ch>_filter_cv`), `<ch>_level`
-//!   (m2s → `/<ch>_level_cv`)
-//! - chord-player: `chord` (note pipe; chord node → `/triads`), `key`, `brightness`
-//!   (m2s → `/brightness_cv`)
-//! - strum-harp: `strum` (strum node → `/strummer`), `octaves`, `key`, `brightness`
-//!   (m2s → `/brightness_cv`)
-//!
-//! (good-button, djfilter-demo, and granulator-demo were covered here until the library cull
-//! removed them; the rewrite path stays pinned by euclidean-drums and chord-player.)
+//! An instrument exits the guard once its sound is later evolved on purpose, since no honest
+//! fixture can keep pinning a sound the live file no longer produces: groovebox (master chain
+//! gained new stages) and strum-harp (gained a headroom stage; its level is pinned instead by
+//! `tests/strum_harp.rs`). The remaining two rows still cover the v2→v3 loader migration.
 
 mod common;
 

@@ -14,21 +14,22 @@
 //! two-way control-surface feedback works without new machinery. Sending a live Signal value out
 //! needs the deferred Signal→Message sampler; v1 OSC-out does not.
 //!
-//! - input 0: `in` (`arg` — the type-agnostic pass-through, issue #141) — values to send out. The
+//! - input 0: `in` (`arg` — a type-agnostic pass-through) — values to send out. The
 //!   sink forwards **any** [`Arg`](crate::message::Arg) verbatim: a `Note`, a scalar echo, a
 //!   vocab enum, a string —
 //!   whatever Message-domain source is wired in. The type-driven expansion to the flat OSC form
 //!   happens past the boundary ([`osc_out_args`](crate::boundary::osc_out_args)); legality is
 //!   capability-keyed ([`has_osc_form`](crate::boundary::has_osc_form)), so a no-OSC-form source
 //!   (`Harmony`) and a Signal source are both rejected at load/plan time. The port is also
-//!   externally addressable — the OSC echo/loopback path: a **single** numeric or string atom
-//!   crosses back in verbatim (the string since `Arg::Str` went `Arc<str>`-backed, issues
-//!   #206/#207), while a multi-arg list drops ([`osc_in_arg`](crate::boundary::osc_in_arg)'s
-//!   pass-through arm). In
+//!   externally addressable — the OSC echo/loopback path: a **single** numeric or `Arc<str>`-backed
+//!   string atom crosses back in verbatim, while a multi-arg list drops
+//!   ([`osc_in_arg`](crate::boundary::osc_in_arg)'s pass-through arm). In
 //!   the unified model the sink simply **emits** each received Message; the engine's
 //!   outbound tap (`Plan.outbound_taps`) drains an `osc_out` node's emissions past the boundary,
 //!   where the flat OSC form is encoded. The incoming event's local address is dropped; the node's
 //!   address is stamped on drain.
+//!
+//! see rules: signal-time-dsp
 
 use crate::descriptor::Descriptor;
 use crate::operator::form::Raw;
@@ -61,11 +62,11 @@ impl Operator for OscOut {
 
     fn process(&mut self, io: &mut Io) {
         // Each received Message is re-emitted verbatim and addressless — the raw `Arg`, no vocab
-        // decode (issue #141) — so the boundary's type-driven expansion sees exactly what arrived.
+        // decode — so the boundary's type-driven expansion sees exactly what arrived.
         // The engine's outbound tap stamps the node's OSC address and drains these past the
         // boundary. Cloning an `Arg` is alloc-free for every payload that
-        // can arrive here: `Str` is `Arc<str>`-backed (issue #206), so a string — echoed in from
-        // outside through the `arg` port (issue #207) or internally wired — clones as a refcount
+        // can arrive here: `Str` is `Arc<str>`-backed, so a string — echoed in from
+        // outside through the `arg` port or internally wired — clones as a refcount
         // bump, never a heap clone. `frame` is segment-relative; the writer adds the segment
         // offset so the tap sees block-absolute frames.
         for ev in io.read(IN_IN) {
@@ -114,7 +115,7 @@ mod tests {
         assert_eq!(out[1].frame, 20);
     }
 
-    /// The sink is type-agnostic (issue #141): any `Arg` family — a scalar, a string, a
+    /// The sink is type-agnostic: any `Arg` family — a scalar, a string, a
     /// type-erased vocab enum — forwards verbatim, not just `Note`. This is what lets vocab enums
     /// and control-value echoes reach the outbound boundary at all.
     #[test]

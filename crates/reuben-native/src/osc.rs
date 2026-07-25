@@ -1,24 +1,16 @@
 //! OSC codec — decode external OSC/UDP datagrams into the **flat primitive form**, and encode
 //! outbound Messages back out.
 //!
-//! OSC is reuben's lingua franca, but an internal [`Message`](reuben_core::message::Message)
-//! carries exactly **one** [`Arg`], whereas an OSC message is a flat list of args. So this layer
-//! stays *untyped*: [`decode`] yields each datagram's address plus a flat `Vec<Arg>` of OSC
-//! **primitives** ([`Arg::F32`]/[`Arg::I32`]/[`Arg::Str`]); turning that flat list into the single
-//! typed `Arg` a destination port carries is **dest-port-type-driven** and lives in
-//! [`reuben_core::boundary::osc_in_arg`] — driven by the descriptor, applied where the Plan is
-//! known (the engine), not here. [`encode`] is the inverse: it takes the already-flattened OSC
-//! args (produced by [`reuben_core::boundary::osc_out_args`]) and packs one datagram.
+//! An internal [`Message`](reuben_core::message::Message) carries exactly **one** [`Arg`], while an
+//! OSC message is a flat list of args. [`decode`] yields each datagram's address plus a flat
+//! `Vec<Arg>` of OSC **primitives** ([`Arg::F32`]/[`Arg::I32`]/[`Arg::Str`]); converting that list to
+//! the destination port's single typed `Arg` happens downstream, in
+//! [`reuben_core::boundary::osc_in_arg`]. [`encode`] is the inverse: it packs the already-flattened
+//! args produced by [`reuben_core::boundary::osc_out_args`] into one datagram. see rules:
+//! signal-time-dsp
 //!
-//! **External OSC is block-quantized by design.** Reconstructing a sub-block sample position from a
-//! UDP datagram's arrival time is pointless: network + scheduler jitter on that arrival (often well
-//! over a block) already dwarfs sample resolution, so a `frame` derived from it would be precise-
-//! looking noise. Sample-accurate timing is an *internal* property — events generated inside the
-//! graph (the Clock and what it drives) sit on the deterministic sample timeline. Incoming OSC is
-//! stamped `frame = 0` ("now") when the engine builds Messages. Bundle timetags are likewise
-//! ignored; explicit musical-time scheduling resolves against the Clock, not wall-clock.
-//!
-//! see rules: signal-time-dsp
+//! Incoming OSC is stamped `frame = 0` ("now") and bundle timetags are ignored — block-quantized
+//! by design. see rules: execution-runtime
 
 use reuben_core::message::Arg;
 use rosc::{OscMessage, OscPacket, OscType};
@@ -194,8 +186,6 @@ mod tests {
 
     #[test]
     fn encode_round_trips_through_decode() {
-        // encode is the inverse of decode for every primitive arg: floats, ints in i32
-        // range, and symbols all survive the boundary out-and-back.
         let addr = "/fb/level";
         let args = [Arg::F32(0.5), Arg::I32(7), Arg::Str("hi".into())];
         let bytes = encode(addr, &args).expect("encode");

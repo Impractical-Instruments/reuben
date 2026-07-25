@@ -12,7 +12,7 @@
 // it works for any embedder. Inside this crate, that name must resolve to *us* — hence the alias.
 extern crate self as reuben_core;
 
-/// Crate-private `Io`-construction bridge for the per-operator micro benchmarks (#30).
+/// Crate-private `Io`-construction bridge for the per-operator micro benchmarks.
 /// Gated behind the non-default `bench` feature so the bridge never leaks into the public API:
 /// the `[[bench]]` micro targets declare `required-features = ["bench"]`, and CI runs them (plus
 /// the forcing-function test below) with `--features bench`. A normal build/publish never compiles
@@ -87,7 +87,7 @@ pub use reuben_macros::ArgValue;
 // `crate::register_operator!(..)` regardless of module declaration order.
 pub(crate) use registry::register_operator;
 // Its boundary sibling: `crate::register_osc_form!(..)` submits a struct vocab type's external
-// OSC form from its definition site (issue #204, the same pattern).
+// OSC form from its definition site, the same pattern.
 pub(crate) use boundary::register_osc_form;
 pub use render::{render_plan, RenderScratch, Renderer, SerialExecutor};
 pub use resources::{

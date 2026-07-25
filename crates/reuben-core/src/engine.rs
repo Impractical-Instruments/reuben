@@ -182,7 +182,7 @@ impl Engine {
     /// to the pointer-swap primitive that lives on [`Plan`] (which owns its nodes). See
     /// [`Plan::transplant_survivors`] for the box-move semantics, the pairing invariant, and the
     /// RT-safety guarantee (a bounded `mem::swap` loop — no alloc/drop/lock). Runs at the
-    /// render-side install slot's callback top (ticket #321).
+    /// render-side install slot's callback top.
     pub fn transplant_survivors(&mut self, retiring: &mut Engine, pairs: &[(usize, usize)]) {
         self.plan.transplant_survivors(&mut retiring.plan, pairs);
     }
@@ -406,7 +406,7 @@ mod tests {
     fn outbound_messages_drain_after_fill() {
         // A value addressed to the sink's node routes in and comes back out on the outbound
         // route, stamped with the node address. The sink's input is the type-agnostic
-        // pass-through (issue #141): a single primitive atom crosses the inbound boundary
+        // pass-through: a single primitive atom crosses the inbound boundary
         // verbatim and echoes out unchanged — the OSC loopback path.
         let mut e = Engine::new(osc_out_plan());
         e.queue_osc("/fb/in", &[Arg::F32(0.5)]);
@@ -424,7 +424,7 @@ mod tests {
 
     #[test]
     fn outbound_string_echoes_intact_after_fill() {
-        // The first externally-admitted string on the engine path (issues #206/#207): a single
+        // The first externally-admitted string on the engine path: a single
         // `Str` atom queued at the inbound boundary crosses verbatim, routes through the sink's
         // pass-through input, and drains outbound with the string intact and the sink's node
         // address stamped — the end-to-end string loopback.

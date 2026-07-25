@@ -1,31 +1,13 @@
 //! Operator — the authoring contract.
 //!
-//! An Operator is mono and single-voice: the author writes one stream a (sub)block at a time;
-//! polyphony comes from the Voicer hosting voice sub-patches, not from the operator.
-//! The process function is allocation-free and sees held values constant for the whole call
-//! (the engine block-slices at Message boundaries), so the author simply reads "my
-//! current value".
+//! An operator is authored as one single-voice, single-channel stream: `process` is
+//! allocation-free and sees held values constant for the whole (sub)block — see rules:
+//! composition-operators.
 //!
-//! Reads and writes go through **typed handles**, extending "the form is
-//! the type" to "the form is the port": `operator_contract!` emits one [`In`]/[`Out`] const per
-//! port whose *type parameter* (a [`form`] marker) fixes the port's read/write shape and whose
-//! value carries the declared default. [`Io::read`] and [`Io::write`] dispatch on the handle:
-//!
-//! - `io.read(IN_FREQ)` on an `In<SignalF32>` → an [`BlockView`], always exactly [`Io::frames`] samples
-//!   (the buffer-presence invariant — index directly, no `.get(i).unwrap_or(..)` guard);
-//! - `io.read(IN_SUSTAIN)` on an `In<Held<f32>>` (or a held enum / `Harmony`) → the held (ZOH)
-//!   value, **defaulted to the declared descriptor default** — the contract's `default` is the
-//!   read fallback by construction, so no second literal can drift;
-//! - `io.read(IN_NOTES)` on an `In<Event<Note>>` → the sparse, frame-stamped [`EventStream`];
-//! - `io.write(OUT_AUDIO)` on an `Out<SignalF32>` → an [`BlockMut`] to fill in place;
-//!   `io.write(OUT_ACTIVE)` on an `Out<Held<f32>>` → a [`MsgWriter`];
-//!   `io.write(OUT_NOTES)` on an `Out<Event<Note>>` → an [`EventWriter`].
-//!
-//! A wrong-form read no longer compiles: the handle *is* the declared form, so
-//! `io.read(IN_FREQ)` cannot return an event stream for a Signal port. Each [`form`] impl reads
-//! the private `Io` state directly — one dispatch per form (issue #216 folded the former
-//! `Io::input`/`Io::output` primitives into the impls that were their only callers). The one
-//! type-erased held read left is [`Io::latch_arg`], the interface pipe's forwarding seam.
+//! Reads and writes go through typed handles: `operator_contract!` emits one [`In`]/[`Out`]
+//! const per port whose [`form`] marker fixes what [`Io::read`]/[`Io::write`] return and carries
+//! the declared default, so a wrong-form read does not compile. The one type-erased held read
+//! left is [`Io::latch_arg`], the interface pipe's forwarding seam.
 
 pub mod shell;
 
@@ -331,7 +313,7 @@ pub mod form {
     /// Reads as an [`EventStream`]; writes as an [`EventWriter`].
     pub struct Event<T>(PhantomData<T>);
 
-    /// The type-agnostic pass-through form (issue #141): the port carries any [`Arg`] verbatim.
+    /// The type-agnostic pass-through form: the port carries any [`Arg`] verbatim.
     /// Reads as `EventStream<&Arg>` — the `osc_out` sink's input.
     pub struct Raw;
 
@@ -616,27 +598,20 @@ pub trait Operator: Send {
     }
 
     /// Called on a **surviving** operator box just after it is transplanted into a freshly built
-    /// Plan across a Swap
-    /// ([`Plan::transplant_survivors`](crate::plan::Plan::transplant_survivors)). A Swap rebuilds
-    /// every input latch from the *new* document (the new Plan's latches win), so a
-    /// downstream consumer's held-input latch is reset to its declared default. An operator that
-    /// publishes a held output **on change** (emit-on-change) — comparing against a
-    /// dedup baseline it keeps **in its box** — would therefore see no change and stay silent,
-    /// stranding that consumer on the default (issue: a Swap silently retransposes a
-    /// `harmony`-driven voice). Such an operator clears its baseline here so the first post-swap
-    /// block re-asserts the current value. Default no-op — only on-change held publishers need it;
-    /// signal outputs (refreshed every block) and event outputs (append-only) do not.
+    /// Plan across a Swap — see rules: execution-runtime. A Swap resets every consumer's
+    /// held-input latch to its declared default, so an operator that publishes a held output only
+    /// **on change** (comparing against a dedup baseline it keeps in its box) must clear that
+    /// baseline here, or the first post-swap block stays silent and strands the consumer on the
+    /// default. Default no-op — only on-change held publishers need it; signal outputs (refreshed
+    /// every block) and event outputs (append-only) do not.
     ///
-    /// **RT-safe:** runs at the render-callback top inside the transplant loop (ticket #321), so it
+    /// **RT-safe:** runs at the render-callback top inside the transplant loop, so it
     /// must not allocate — resetting a small dedup baseline (an `Option`) is the intended shape.
     fn on_transplant(&mut self) {}
 }
 
 #[cfg(test)]
 mod typed_handles {
-    //! The handle verbs `io.read(port)` / `io.write(port)`: the [`form`] marker in the
-    //! handle's type fixes the shape, the handle's stored default is the held-read fallback, and
-    //! each form impl reads the `Io` state directly (issue #216 — one dispatch per form).
     use super::form::{Event, Held, Raw, SignalF32};
     use super::*;
     use crate::vocab::pitch::{Note, Pitch};

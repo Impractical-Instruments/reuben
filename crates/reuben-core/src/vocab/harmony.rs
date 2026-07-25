@@ -1,17 +1,8 @@
-//! Tonal context — the latched harmony value followers resolve against.
+//! Tonal context — the latched harmony value followers resolve against. see rules: signal-time-dsp
 //!
-//! A [`Harmony`] is the current key/scale/chord, a small **`Copy`** value so the engine can
-//! snapshot it onto the Message wire allocation-free: the slicing model *forces*
-//! the `Copy` shape. It owns the resolver — `hz` (degree → Hz), `snap` (arbitrary pitch →
-//! nearest in-scale degree), `chord_tone` — so the Scale∘Tuning composition lives in one
-//! correct place and followers stay dumb (`io.read(IN_HARMONY).hz(p)`).
-//!
-//! Representation: a **Scale** is ordered **step**-offsets within the tuning's
-//! period (12-EDO major = `[0,2,4,5,7,9,11]`) plus a root; `degree d → root + scale[d mod
-//! len] + octave*period`. A **Chord** is a tagged union — scale-relative (re-spells with the
-//! key) or absolute (frozen). This v1.1 slice is **12-TET only** (period 12); Scala/EDO
-//! tunings ride the same step-space seam (the shared vocab registry) and land with the
-//! "Format & library" thread.
+//! A [`Harmony`] is a small **`Copy`** value so the engine can snapshot it onto the Message wire
+//! allocation-free. It owns the resolver — `hz` (degree → Hz), `snap` (arbitrary pitch →
+//! nearest in-scale degree), `chord_tone` — so followers stay dumb (`io.read(IN_HARMONY).hz(p)`).
 
 use crate::vocab::pitch::Pitch;
 

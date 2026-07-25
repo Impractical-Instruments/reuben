@@ -50,6 +50,7 @@ not by hope:
 <!-- derived — collated from each topic's `> summary`; do not hand-edit out of sync. -->
 - **[Agent framework & MCP](agent-mcp.md)** — How AI agents author reuben — authorability as a first-class constraint, the introspect/validate loop, the authoring skills, and the MCP sidecar whose tool contracts are one OS-free source behind every door.
 - **[Authoring surface & instrument library](authoring-library.md)** — How authoring surfaces and the instrument library sit on top of the graph — decoupled surface docs over interface pipes, Good Buttons, the sample/resource store, library resolution and format versioning, and the launch Toys.
+- **[Code as a grounding surface](code-as-grounding.md)** — How this repo's own source text is governed as grounding an agent reads — comment discipline that points at rules instead of restating them, LSP-first navigation, and pre-scoped search.
 - **[Composition & operator model](composition-operators.md)** — The one recursive graph — how operators declare and register their contract, how all data flows as one Message/Arg substrate in Value, Event, and Signal forms, and how instruments nest and expose interface pipes.
 - **[Execution & runtime](execution-runtime.md)** — How the unified block graph is scheduled, threaded, swapped, and rendered in real time — the Plan lifecycle, RT boundary, determinism, latch service, and the embed surface.
 - **[Signal, OSC, musical time & DSP](signal-time-dsp.md)** — How signal and musical meaning are carried, timed, and shaped — the OSC-only Message model, the Clock and musical time, symbolic pitch and Tuning, the tonal-context bus, and the envelope/curve/math DSP families.
@@ -85,6 +86,7 @@ not by hope:
 - **latch** — the engine-held per-port zero-order-hold of an input's last Message, read by an operator as its constant current value. · [execution-runtime](execution-runtime.md)
 - **library index** — the generated one-signature-line-per-instrument projection of the available-set (name + recipe-role + interface face). · [authoring-library](authoring-library.md)
 - **logical channel** — the device-independent channel index a signal pipe binds; a device profile, not the patch, maps it to hardware. · [composition-operators](composition-operators.md)
+- **Mechanics** — the one kind of prose a comment may carry: the local, non-obvious fact the code cannot state itself (a `SAFETY:` justification, a caller-upheld invariant, why a constant is this number). · [code-as-grounding](code-as-grounding.md)
 - **Message** — the one data unit: `{ address, frame, Arg }`, carrying exactly one `Arg`. · [composition-operators](composition-operators.md)
 - **NormalizedDoc** — the type minted exactly once at the parse gate (refuse the future, migrate the past, strip retired presentation, stamp) that every build and load path accepts, proving a document is current-shaped and migrated exactly once. · [authoring-library](authoring-library.md)
 - **Operator** — the smallest node: a unit of DSP behavior, authored as one single-voice, single-channel block-at-a-time stream that the engine schedules. · [composition-operators](composition-operators.md)
@@ -96,6 +98,7 @@ not by hope:
 - **recipe-role** — an instrument's reuse story: the first sentence of its `doc` field, trusted for selection only, never for wiring. · [authoring-library](authoring-library.md)
 - **Render** — the hard-realtime, allocation-free per-block execution of the current Plan on the audio thread. · [execution-runtime](execution-runtime.md)
 - **ResourceStore** — the central store of decoded resource bytes, built by the Coordinator at load and read immutably by Render through one pure `(id, range)` accessor, keyed by logical id. · [authoring-library](authoring-library.md)
+- **Restatement** — comment prose that re-describes the code or answers what LSP or a search would answer; the third comment kind, deleted outright rather than moved to a rule. · [code-as-grounding](code-as-grounding.md)
 - **Rig** — the outermost graph, the one actually played at top level. · [composition-operators](composition-operators.md)
 - **Scale** — ordered step-offsets within a Tuning's period plus a root, mapping a scale degree to a step index (symbolic → symbolic). · [signal-time-dsp](signal-time-dsp.md)
 - **SDK** — this (BSD-3-Clause) repo: the engine core, native CLI, MCP sidecar, and instrument/surface library that the product consumes. · [web-product-process](web-product-process.md)

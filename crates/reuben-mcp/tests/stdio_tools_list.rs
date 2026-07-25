@@ -1,8 +1,9 @@
-//! Integration test for the MCP stdio wire surface (#313 verification): spawn the real shim
-//! binary, complete the `initialize` handshake, and assert `tools/list` advertises exactly the
-//! declared contract roster over newline-delimited JSON-RPC — the actual protocol
-//! boundary the client sees, not an in-process shortcut. The expected set is derived from the
-//! single-source `reuben_core::tools::CONTRACTS` roster (#157), not hand-typed here.
+//! Integration test for the MCP stdio wire surface: spawn the real shim binary, complete the
+//! `initialize` handshake, and assert `tools/list` advertises exactly the declared contract roster
+//! over newline-delimited JSON-RPC. The expected set is derived from the single-source
+//! `reuben_core::tools::CONTRACTS` roster, not hand-typed here.
+//!
+//! see rules: agent-mcp
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};

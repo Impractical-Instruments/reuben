@@ -1,4 +1,4 @@
-//! Integration: resource resolution identity + the non-file library seam (nesting P7, #122).
+//! Integration: resource resolution identity + the non-file library seam (nesting P7).
 //!
 //! Two spellings of one source must be **one identity** to the cycle guard and
 //! the per-load dedup caches, and that judgment belongs to the resolver seam

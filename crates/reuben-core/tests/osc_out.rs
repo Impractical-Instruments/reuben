@@ -40,10 +40,10 @@ fn forwards_input_to_outbound_stamped_with_node_address() {
     assert_eq!(outbound[0].arg, Arg::Note(note));
 }
 
-/// The sink is type-agnostic (issue #141): a **wired Value source** — the two-way
-/// control-surface case, a Good Button's `map` output echoing a control value — reaches the
-/// outbound route too, not just a `Note`. The Value's emission delivers to the pass-through
-/// input as a raw Event and forwards verbatim, stamped with the sink's address.
+/// The sink is type-agnostic: a **wired Value source** — the two-way control-surface case, a
+/// Good Button's `map` output echoing a control value — reaches the outbound route too, not just
+/// a `Note`. The Value's emission delivers to the pass-through input as a raw Event and forwards
+/// verbatim, stamped with the sink's address.
 #[test]
 fn forwards_a_wired_value_source_for_control_feedback() {
     let cfg = AudioConfig::new(48_000.0, 256);

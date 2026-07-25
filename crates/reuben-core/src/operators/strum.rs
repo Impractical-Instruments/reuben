@@ -25,6 +25,8 @@
 //! followed by a note-off `PLUCK_SAMPLES` later, so the downstream percussive envelope opens and
 //! then rings out on its own decay/release. The pending note-offs are held across blocks (a
 //! fixed-capacity queue, allocation-free). Emits one note stream, upstream of the Voicer.
+//!
+//! see rules: signal-time-dsp
 
 use smallvec::SmallVec;
 

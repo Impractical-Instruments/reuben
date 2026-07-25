@@ -17,6 +17,8 @@
 //! - input 2: `resonance` (`Float`) — per-sample resonance 0..1 (materialized default 0.2).
 //! - input 3: `mode` (`Enum` [`FilterMode`] {Lp, Hp, Bp}) — output tap; default `Lp`.
 //! - output 0: `audio` (`Buffer`) — the selected response (lowpass / highpass / bandpass).
+//!
+//! see rules: signal-time-dsp
 
 use crate::descriptor::Descriptor;
 use crate::dsp::svf::{Svf, SvfCoeffs, SvfTaps};
@@ -38,7 +40,7 @@ crate::operator_contract!(Filter {
 #[derive(Default)]
 pub struct Filter {
     /// Shared SVF core (`dsp::svf`), continuous across calls / block slices. `process`
-    /// copies it to a local, ticks that, and writes it back once per block (#169).
+    /// copies it to a local, ticks that, and writes it back once per block.
     svf: Svf,
 }
 
@@ -72,7 +74,7 @@ fn const_block(
 /// costs one compare per sample instead of a `tan()`. [`SvfCoeffs::new`] is pure, so
 /// reusing the cache on an unchanged input is bit-identical to recomputing every sample. A
 /// genuinely audio-rate sweep still recomputes per sample; a coarser control-rate recompute
-/// is tracked in #24. Generic over the tap selector for the same per-mode monomorphization
+/// is a possible future optimization. Generic over the tap selector for the same per-mode monomorphization
 /// as [`const_block`]. The `NaN` seeds force a compute on the first sample (NaN ≠ anything).
 #[inline]
 #[allow(clippy::too_many_arguments)]
@@ -113,7 +115,7 @@ impl Operator for Filter {
         // end. Ticking `self.svf` directly would write the two integrators to memory every
         // sample (LLVM won't promote fields behind `&mut self` across the loop); the local
         // is register-promoted, dropping `process` to ~1 data-write per sample — just the
-        // output store (#169).
+        // output store.
         let mut svf = self.svf;
 
         // `cutoff`/`resonance` are Signal inputs — always a buffer (wired source or materialized

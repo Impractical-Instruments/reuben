@@ -21,6 +21,8 @@
 //! - input 2: `warmth` — 0..1 even-harmonic amount.
 //! - input 3: `level` (x) — output trim.
 //! - output 0: `audio` — the saturated signal.
+//!
+//! see rules: signal-time-dsp
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};

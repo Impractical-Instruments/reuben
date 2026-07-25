@@ -1,14 +1,12 @@
-//! Integration: the V1.3 Strum harp end-to-end — dragging the strum bar
-//! across the string bands plucks degrees, which the Voicer resolves through the tonal context and
-//! hands to 8 hosted `resonator` voices.
+//! Integration: the V1.3 Strum harp end-to-end — dragging the strum bar across the string bands
+//! plucks degrees, which the Voicer resolves through the tonal context and hands to 8 hosted
+//! `resonator` voices.
 //!
-//! The assertion that earns its keep here is the **level**. The resonator's modal bank has two
-//! excitation paths that need different input gains (a sustained tone is normalized against the
-//! bank's resonant gain, a struck ping against its impulse response). Sharing one gain across both
-//! made every pluck come out scaled by `(1 - r²)` — about 1e-4 at the default ring time — so the
-//! harp loaded, validated, and rendered a perfectly correct signal roughly 43 dB below anything you
-//! could hear. Nothing in the graph was wrong, so no graph-level test could see it: only rendering
-//! the shipped instrument and looking at the actual amplitude catches it.
+//! The assertion that earns its keep here is the **level**: the resonator's modal bank has two
+//! excitation paths needing different input gains (sustained tone vs. struck ping), and sharing one
+//! gain once made every pluck land ~43 dB below audible while the graph loaded, validated, and
+//! rendered a perfectly correct signal — no graph-level test could see it, only amplitude on the
+//! rendered instrument.
 
 use reuben_core::message::{Arg, Message};
 use reuben_core::plan::Plan;

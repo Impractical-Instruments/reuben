@@ -1,36 +1,12 @@
 //! `reuben` — the command-line entry point.
 //!
-//! Five subcommands:
-//! - `reuben play [path] [--io-map <file>]` — render an instrument live, driven by OSC over UDP.
-//!   With no path it plays the built-in default rig. `--io-map` loads a device profile:
-//!   logical↔device channel maps, device selection by name substring, and sample-rate/
-//!   buffer-size preferences — see docs/device-profile.md. Omit it for the default device and
-//!   identity map, bit-identical to before. Send notes with:
+//! Five subcommands — `play`, `describe`, `validate`, `scaffold-operator`, `new-instrument` —
+//! each documented on its own `--help`. Send notes to a playing instrument with:
 //!
-//!   ```text
-//!   /voicer/notes  [69.0, 1.0]   # note-on  (MIDI 69 = A4, gate 1)
-//!   /voicer/notes  [69.0, 0.0]   # note-off (gate 0)
-//!   ```
-//!
-//! - `reuben describe [op|patch.json] [--json] [--compact] [--view V] [--select …|--select-type T]`
-//!   — print the operator set, one operator's ports/params/resource slots, or — given an instrument
-//!   JSON path — a structural view of that instrument. The introspection half of the Patcher skill.
-//!   `--compact` is the generated signature-line mode of the operator view: one line per operator,
-//!   legend first — the bundle-able grounding artifact the web build consumes. `--view` picks
-//!   between the four projection views (`index` — the default — `nodes`, `pipes`, `resources`) and
-//!   `boundary`, the `interface` face a *host* wires against. The same views `describe_instrument`
-//!   serves over MCP; `--json` emits each one's structured shape, since this door's consumers are
-//!   programs (the control-surface tooling reads `--view boundary --json`).
-//! - `reuben validate <path> [--json]` — load + plan an instrument with no audio device and
-//!   report structural/wiring errors. Exit 1 if invalid; warnings alone stay exit 0.
-//! - `reuben scaffold-operator --spec <path> [--json]` — generate a new Operator's Rust skeleton
-//!   from a contract spec and wire its registration. The codegen half of the create-operator
-//!   skill.
-//! - `reuben new-instrument <path> [--name <name>] [--json]` — create a guaranteed-valid minimal
-//!   instrument document (`{format_version, instrument, nodes:[]}`) **at that path** — the
-//!   first-creation start move (#146). Refuses to overwrite. It replaces `scaffold-instrument`,
-//!   which printed the seed to stdout: #604 retired every arm that hands instrument JSON to an
-//!   agent, and a CLI printing a document is that arm wearing a shell.
+//! ```text
+//! /voicer/notes  [69.0, 1.0]   # note-on  (MIDI 69 = A4, gate 1)
+//! /voicer/notes  [69.0, 0.0]   # note-off (gate 0)
+//! ```
 
 use std::net::UdpSocket;
 use std::path::{Path, PathBuf};
@@ -225,13 +201,10 @@ fn selection(names: &[String], type_name: Option<&str>) -> Result<Selection, Str
     Selection::from_terms(names, type_name)
 }
 
-/// `new-instrument`: land a guaranteed-valid minimal instrument document (#146) **at a path** — the
-/// first-creation start move.
+/// `new-instrument`: land a guaranteed-valid minimal instrument document **at a path** — the
+/// first-creation start move. see rules: agent-mcp
 ///
-/// It replaces `scaffold-instrument`, which printed the document to stdout. That was the same
-/// doc-in-context arm #604 retired on the MCP door, wearing a shell: an agent driving the CLI paid
-/// for the whole seed in its context and then had to re-emit it to write it. The seed is unchanged —
-/// this is [`edit::new_instrument`], the very verb the sidecar calls, so both doors create a
+/// This is [`edit::new_instrument`], the very verb the sidecar calls, so both doors create a
 /// document by exactly one procedure and the result is validated and written by the same code.
 fn cmd_new_instrument(path: &Path, name: Option<&str>, json: bool) -> ExitCode {
     let (resolver, source) = edit_resolver(path);
@@ -524,7 +497,7 @@ fn cmd_describe_patch(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCod
 
 /// `describe <patch.json> --view index|nodes|pipes|resources`: the structural
 /// [`projection`](reuben_core::projection) — the agent's whole view of a document, and the CLI
-/// door's mirror of what `describe_instrument` serves over MCP (#604, #608).
+/// door's mirror of what `describe_instrument` serves over MCP.
 ///
 /// A document that fails to load still projects (`loadable: false` in the header): `validate` is
 /// the single authority on validity, and going blind is the worst way to report invalidity. So this
@@ -618,12 +591,10 @@ fn cmd_validate(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCode {
 
 /// `play`: the live audio path — load an instrument and render it, driven by incoming OSC.
 ///
-/// M2 (#323): the structure channel's `swap` verb is now a **gapless mailbox swap**,
-/// not M1's stop-the-world restart. Streams are opened once here and fixed for the session:
-/// a swap fills the install mailbox, the RT callback drains it and box-transplants survivors
-/// under a master-gain ramp, and this process — the OSC socket, the structure channel, the
-/// streams — is never torn down. The [`Coordinator`] the structure channel owns is the single
-/// writer of graph structure.
+/// Streams are opened once here and fixed for the session: a swap fills the install mailbox, the
+/// RT callback drains it and box-transplants survivors under a master-gain ramp, and this
+/// process — the OSC socket, the structure channel, the streams — is never torn down. The
+/// [`Coordinator`] the structure channel owns is the single writer of graph structure.
 ///
 /// see rules: execution-runtime
 fn play(
@@ -655,8 +626,7 @@ fn play(
     // The control ingress feeding the audio callback. Streams are fixed for the session
     // — a swap installs via the mailbox and never reopens the callback — so this single
     // receiver lives in the callback for the whole run and each producer forwards straight through
-    // its own `osc_tx` clone. No swappable sink, no lock anywhere near the audio path (M1's restart
-    // is gone).
+    // its own `osc_tx` clone. No swappable sink, no lock anywhere near the audio path.
     //
     // **Two producers, one ingress**: the UDP decode thread below (the foreign edge, where external
     // controllers arrive) and the structure channel's `send` verb (the loopback authoring door).
@@ -706,7 +676,7 @@ fn play(
 
     // OSC/UDP receiver thread: decode datagrams and forward Messages straight to the audio callback
     // through `udp_tx`. The callback (and its receiver) live for the whole session now, so a forward
-    // never races a swap — the mailbox swap keeps the same callback alive (M2, #323).
+    // never races a swap — the mailbox swap keeps the same callback alive.
     // Host `0.0.0.0` (all interfaces) on the engine's own OSC-in port. This is the FOREIGN edge —
     // hardware knobs, TouchOSC, anything speaking OSC-the-binary-protocol. The reuben-mcp sidecar is
     // not among them: its `send` rides the loopback structure channel below, so this port has one
@@ -747,7 +717,7 @@ fn play(
     // resolve through this `resolver`, anchored at the instrument file's directory (the embedded
     // default roots at the current directory) with the optional library `root` fallback. The
     // Coordinator owns this resolver for the session; a by-path swap resolves its resources through
-    // it too — M2 does not re-anchor per swap source, so a by-path document's
+    // it too — the session does not re-anchor per swap source, so a by-path document's
     // relative resources resolve against the initial anchor + the library root.
     // The source name `get_document` reports for the run's first document, so an agent joining a
     // session it did not start can still tell *which file* is playing. The built-in default rig has
@@ -851,9 +821,8 @@ fn play(
 /// `libc` (already in the tree, not async — the tokio fence is untouched). The signal
 /// handler itself only stores into an atomic (all that is async-signal-safe); a small watcher
 /// thread bridges that atomic to a unit message on `tx`, waking `play`'s blocked shutdown receiver
-/// without the handler ever touching a channel or lock. M2 (#323): swaps no longer ride this
-/// channel — they install via the mailbox on the structure threads — so it now carries only the
-/// one shutdown signal.
+/// without the handler ever touching a channel or lock. Swaps do not ride this channel — they
+/// install via the mailbox on the structure threads — so it carries only the one shutdown signal.
 #[cfg(unix)]
 fn install_shutdown_handler(tx: mpsc::Sender<()>) {
     use std::sync::atomic::{AtomicBool, Ordering};

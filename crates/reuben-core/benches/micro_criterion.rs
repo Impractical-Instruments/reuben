@@ -1,4 +1,4 @@
-//! Local wall-clock per-operator micro benchmark (#30): each operator's `process` driven directly
+//! Local wall-clock per-operator micro benchmark: each operator's `process` driven directly
 //! for the fixed 1 s schedule, reported as samples/sec (÷ 48 000 == ×realtime). The diagnostic
 //! companion to `macro_criterion` — when the macro layer flags a graph got slower, this attributes
 //! it to an operator. Dev-facing; never runs in CI (the gate is `micro_iai`).

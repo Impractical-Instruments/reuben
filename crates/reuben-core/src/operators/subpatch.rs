@@ -1,28 +1,28 @@
-//! `subpatch` — a nested instrument referenced as a node (nesting P4).
+//! `subpatch` — a nested instrument referenced as a node.
 //!
 //! A `subpatch` node names another instrument patch (an instrument-resource, via a
-//! `patch` resource slot). At build the referenced patch is loaded recursively and **inlined**
-//! (§2): its nodes are spliced into the parent graph under the subpatch's address prefix, parent
-//! wires resolve through the boundary face synthesized from the child's `interface` (§4), and the
-//! node **dissolves** — no `subpatch` ever reaches the built [`Graph`](crate::graph::Graph), the
-//! `Plan`, or the renderer. That is the split: the Voicer **hosts** its voice
-//! sub-patches at runtime (runtime-varying cardinality), whereas a static nest inlines at build
-//! (fixed cardinality) for zero runtime cost (see rules: composition-operators).
+//! `patch` resource slot). At build the referenced patch is loaded recursively and inlined: its
+//! nodes are spliced into the parent graph under the subpatch's address prefix, parent wires
+//! resolve through the boundary face synthesized from the child's `interface`, and the node
+//! **dissolves** — no `subpatch` ever reaches the built [`Graph`](crate::graph::Graph), the
+//! `Plan`, or the renderer.
 //!
 //! This registered operator is therefore a *format anchor*, not a DSP unit: it exists so `type`
-//! keeps its "registered operator" invariant (§1) and so the registry/schema/introspection know
+//! keeps its "registered operator" invariant and so the registry/schema/introspection know
 //! the node form. It declares **no ports** — the boundary face is synthesized per reference at
 //! load, never registered here — and its [`process`](Operator::process) is an unreachable no-op
 //! (the graph API could still instantiate one by hand; it renders nothing).
 //!
 //! - resource `patch` — the referenced instrument patch (instrument-resource).
+//!
+//! see rules: composition-operators
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
 
 // Single-source contract: the only surface a `subpatch` declares is its `patch` resource
 // slot — the third `(slot, ref)` entry alongside `sample`/`voice`. No inputs/outputs: the
-// boundary face is synthesized from the referenced patch's `interface`, not registered here (§1, §4).
+// boundary face is synthesized from the referenced patch's `interface`, not registered here.
 crate::operator_contract!(Subpatch {
     resources: { patch },
 });

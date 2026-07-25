@@ -1,28 +1,11 @@
-//! Per-operator micro-benchmark bridge (#30, follow-up to #19; unified model).
+//! Per-operator micro-benchmark bridge.
 //!
 //! The macro layer ([`benches/macro_*`](../../benches)) benches end-to-end `render_block` of a
-//! real instrument. This module is the deferred *micro* layer: it drives a single operator's
-//! [`Operator::process`] directly, bypassing the graph, so a regression in one operator's
-//! per-sample loop is attributable to that operator.
-//!
-//! The operator is driven through the **real engine** by [`OpDriver`](crate::op_driver): the harness
-//! applies its recipe with `set`/`push`/`drive`/`bind`, and [`OpHarness::render`] times
-//! `Renderer::step_node` over the fixed schedule. So this layer can never drift from how the engine
-//! actually seeds and steps a node — and the engine per-node overhead it now includes (edge clear,
-//! routing, materialize, `Io` build) is a *constant* per-operator offset, so regression detection
-//! survives the shift from "process cost" to "per-node cost" (the OpDriver reframe).
-//! That constant offset is also measured *by itself*: the bench-only [`overhead`] case is a no-op
-//! operator behind a typical port shape, so a change to the engine's stepping cost fails one case
-//! whose name says so instead of smearing small deltas across every cheap operator.
-//! The external bench crate constructs an `OpHarness` by operator kind and never touches raw `Io`.
-//!
-//! The single source of truth for *which* operators are benched and *how* each is driven is
-//! [`WORKLOADS`]. The criterion layer iterates it at runtime; the iai layer references entries by
-//! kind. The [`tests::every_operator_has_a_micro_bench_workload`] forcing function asserts
-//! `WORKLOADS` covers every registered operator, so adding an operator without a workload reds CI.
-//!
-//! Determinism: every workload is a fixed function of constants — no clock, no entropy
-//! (the one RNG operator, `noise`, is seeded) — so iai instruction counts are byte-stable.
+//! real instrument; this module drives one operator's [`Operator::process`] directly, through the
+//! real engine via [`OpDriver`](crate::op_driver), bypassing the graph, so a regression is
+//! attributable to that operator. [`WORKLOADS`] is the single source of truth for which operators
+//! are benched and how; [`tests`] forces it to stay in sync with the registry and with
+//! `micro_iai.rs`'s CI census.
 
 use crate::descriptor::{Descriptor, PortType};
 use crate::op_driver::OpDriver;
@@ -271,8 +254,8 @@ impl OpHarness {
     pub fn for_kind(kind: &str) -> Self {
         use crate::operator::Operator;
         // `overhead` is bench-only and deliberately absent from `Registry::builtin` (see
-        // [`overhead`]) — layer it onto this local lookup copy through the embedder seam
-        // through the embedder seam, so every kind resolves through one uniform path.
+        // [`overhead`]) — layer it onto this local lookup copy through the embedder seam,
+        // so every kind resolves through one uniform path.
         let mut reg = Registry::builtin();
         reg.register(
             || Box::new(overhead::Overhead::new()),
@@ -402,8 +385,8 @@ mod tests {
     use super::*;
     use std::collections::BTreeSet;
 
-    /// Forcing function, half 1 (#30): every registered operator must have a [`WORKLOADS`] entry,
-    /// so a new operator can't silently escape the micro layer. Runs in the `check` job under
+    /// Forcing function: every registered operator must have a [`WORKLOADS`] entry, so a new
+    /// operator can't silently escape the micro layer. Runs in the `check` job under
     /// `--features bench`.
     #[test]
     fn every_operator_has_a_micro_bench_workload() {
@@ -482,10 +465,10 @@ mod tests {
             .collect()
     }
 
-    /// Forcing function, half 2 (#30): the iai CI gate must cover every workload, so a new operator
-    /// can't be benched locally (criterion auto-iterates `WORKLOADS`) yet escape the gate. Lives
-    /// here, not beside the iai bench, because a `harness = false` bench can't host a libtest. On
-    /// failure: add the missing `<id> => "<kind>",` line to `micro_iai.rs`'s `micro_bench_ops!`.
+    /// Forcing function: the iai CI gate must cover every workload, so a new operator can't be
+    /// benched locally (criterion auto-iterates `WORKLOADS`) yet escape the gate. Lives here, not
+    /// beside the iai bench, because a `harness = false` bench can't host a libtest. On failure:
+    /// add the missing `<id> => "<kind>",` line to `micro_iai.rs`'s `micro_bench_ops!`.
     #[test]
     fn iai_list_covers_every_workload() {
         let benched: BTreeSet<&str> = WORKLOADS.iter().map(|w| w.kind).collect();

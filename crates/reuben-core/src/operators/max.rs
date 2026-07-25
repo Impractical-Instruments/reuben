@@ -1,22 +1,19 @@
 //! `max` — `out = max(a, b)`, per sample.
 //!
-//! The sanctioned way to **take the higher of two streams**: a floor on CV, the lower half of a
-//! clamp, half-wave rectification (`max(x, 0)`). A dense `Float`→`Float` op whose arithmetic is the
-//! f32 [`max_fn`], called once per sample by the signal shell and once per change by the value shell
-//! (issue #83).
+//! A floor on CV, the lower half of a clamp, half-wave rectification (`max(x, 0)`).
 //!
 //! Unlike add/mul there is no finite identity, so `b`'s unwired default is the **range minimum**
-//! (`-1e6`): `max(a, -1e6) == a` for any in-range signal, so wiring only `a` passes it through. The
-//! comparison needs only `PartialOrd`, so [`max_fn`] is generic over the number type (the
-//! pure-fn seam).
+//! (`-1e6`): `max(a, -1e6) == a` for any in-range signal, so wiring only `a` passes it through.
 //!
 //! - input 0: `a` (`Float`) — first operand. Unwired default `0`.
 //! - input 1: `b` (`Float`) — second operand. Unwired default `-1e6` (the range min — a no-op).
 //! - output 0: `out` — `max(a, b)`.
+//!
+//! see rules: composition-operators
 
-/// The op's scalar math, written once (the pure-fn seam) and generic over any `PartialOrd`
-/// number: the greater of the two operands (ties return `a`). Hand-written rather than [`Ord::max`]
-/// so it covers `f32`, which is only `PartialOrd`.
+/// The op's scalar math, generic over any `PartialOrd` number: the greater of the two operands
+/// (ties return `a`). Hand-written rather than [`Ord::max`] so it covers `f32`, which is only
+/// `PartialOrd`.
 #[inline]
 fn max_fn<T: PartialOrd>(a: T, b: T) -> T {
     if b > a {

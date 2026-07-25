@@ -2,15 +2,11 @@
 //!
 //! It owns the [`Registry`] handle, the resolver, the installed-Plan [`Manifest`], the canonical
 //! [`NormalizedDoc`], and the Coordinator-side mailbox endpoint. [`Coordinator::swap_document`]
-//! validates and builds a **whole new Engine off-thread** ([`Engine::from_document`]'s chain),
-//! computes the migration table by diffing the installed manifest against the new one, fills the
-//! install mailbox with the [`InstallBundle`] (new Engine + table), and returns a real
-//! [`SwapReport`]. [`Coordinator::reclaim`] drops the retired bundle off-thread.
-//!
-//! "Off-thread build" is a property of the *caller*, not this code: everything here is a plain
-//! function with no clock, threads, or I/O, so the native shell runs [`swap_document`] on a worker
-//! thread and the render side never blocks. Single-writer discipline is enforced by `&mut self`.
-//! The Coordinator **never touches devices**.
+//! validates and builds a whole new Engine off-thread, diffs the migration table, fills the install
+//! mailbox with an [`InstallBundle`], and returns a [`SwapReport`]. [`Coordinator::reclaim`] drops
+//! the retired bundle off-thread. "Off-thread" is a property of the *caller* — this module is a
+//! plain OS-free function with no clock, threads, or I/O — and single-writer discipline is enforced
+//! by `&mut self`.
 //!
 //! see rules: execution-runtime
 
@@ -27,8 +23,8 @@ use super::manifest::{build_manifest, Manifest, MigrationTable};
 
 /// What crosses the install mailbox: a complete [`Engine`] — the Plan's runtime
 /// vessel, so the callback allocates nothing post-install — plus the precomputed
-/// [`MigrationTable`] the render side transplants by. This is the payload type ticket #321's RT
-/// install slot drains and applies; the retiree posted back is the same type (its `migration` is
+/// [`MigrationTable`] the render side transplants by. This is the payload type the RT install slot
+/// drains and applies; the retiree posted back is the same type (its `migration` is
 /// then irrelevant — a reclaimed Engine has nothing to migrate).
 pub struct InstallBundle {
     /// The freshly built Engine to install at the next callback top.
@@ -39,9 +35,9 @@ pub struct InstallBundle {
 }
 
 /// The render side's half of a fresh Coordinator: the **initial** Engine (installed directly into
-/// the callback, not through the mailbox) and the [`RenderMailbox`] the callback drains. Ticket
-/// #321 builds the production RT slot that owns these; [`Coordinator::install_initial`] hands them
-/// out so the shell can wire its audio callback.
+/// the callback, not through the mailbox) and the [`RenderMailbox`] the callback drains. The
+/// production RT slot ([`super::slot::RenderSlot`]) owns these; [`Coordinator::install_initial`]
+/// hands them out so the shell can wire its audio callback.
 pub struct RenderSide {
     pub engine: Engine,
     pub mailbox: RenderMailbox<InstallBundle>,
@@ -281,12 +277,13 @@ mod tests {
         AudioConfig::new(48_000.0, 128)
     }
 
-    /// A **test-only** render slot standing in for ticket #321's production RT install slot. It
-    /// owns the live Engine + the render-side mailbox and, at each `poll_install`, drains a pending
-    /// swap and applies the **same migration-table semantics** the RT slot will: box-transplant the
-    /// survivors, install the new Engine, post the retiree. It applies them *synchronously* (no
-    /// callback, no atomics timing) purely so a Coordinator-driven swap's survivor-vs-reset
-    /// behavior can be OBSERVED in rendered audio. It is NOT the RT path — #321 owns that.
+    /// A **test-only** render slot standing in for the production RT install slot
+    /// ([`super::super::slot::RenderSlot`]). It owns the live Engine + the render-side mailbox and,
+    /// at each `poll_install`, drains a pending swap and applies the **same migration-table
+    /// semantics** the RT slot will: box-transplant the survivors, install the new Engine, post the
+    /// retiree. It applies them *synchronously* (no callback, no atomics timing) purely so a
+    /// Coordinator-driven swap's survivor-vs-reset behavior can be OBSERVED in rendered audio. It is
+    /// NOT the RT path.
     struct RenderRig {
         engine: Engine,
         mailbox: RenderMailbox<InstallBundle>,
@@ -361,11 +358,8 @@ mod tests {
 
     #[test]
     fn a_survivor_keeps_state_a_reset_starts_fresh() {
-        // The behavioral heart of survivor migration. Warm the envelope to its sustain level, then swap.
-        // Swapping to the identical document keeps `/env` a survivor (address + type + fingerprint
-        // all match): the transplanted box carries its held level, so the first post-swap block is
-        // still ringing at sustain. Swapping to a document that *renames* the node makes it a
-        // remove+add: the fresh box restarts its attack from zero.
+        // Survivor identity is address + type + fingerprint (see rules: execution-runtime); a
+        // rename is a remove+add, not a survivor. Warm the envelope to sustain, then swap.
         let base = envelope_doc("/env");
 
         let survived = {
@@ -422,13 +416,9 @@ mod tests {
 
     #[test]
     fn a_changed_runtime_param_leaves_the_survivor_ringing() {
-        // The load-bearing survivor half of the asymmetry: a runtime
-        // `inputs` param is NOT part of the survivor key, so editing one leaves the node a survivor
-        // — the box (with its warmed state) transplants and the new Plan's latch supplies the new
-        // value. Warm the envelope to sustain, then swap to a document that differs ONLY in `attack`
-        // (a pure runtime param, inert while the gate is held): the transplanted box keeps its held
-        // level, so it is still ringing at sustain on the first post-swap block. The counterpart to
-        // `a_survivor_keeps_state_a_reset_starts_fresh` — here the edited node must NOT reset.
+        // A runtime `inputs` param is never part of the survivor key (see rules:
+        // execution-runtime), so editing only `attack` here must leave the node a survivor — the
+        // counterpart to `a_survivor_keeps_state_a_reset_starts_fresh`, where it must NOT reset.
         let (mut coord, side, _w) = Coordinator::install_initial(
             &envelope_doc_attack(0.5),
             Registry::builtin(),
@@ -500,10 +490,9 @@ mod tests {
 
     #[test]
     fn bumping_voices_resets_the_voicer_unchanged_survives() {
-        // The voicer's `voices` pool size is an instantiate-time Constant. Swapping to
-        // an identical `voices` keeps the voicer a survivor — its held note keeps ringing across
-        // the swap. Bumping `voices` 4→8 is a different instantiation (the box carries a 4-voice
-        // pool): the voicer resets to a fresh, silent 8-voice pool and the note is gone.
+        // `voices` is an instantiate-time Constant, part of the survivor fingerprint (see rules:
+        // execution-runtime): bumping it 4→8 is a different instantiation, so the voicer resets to
+        // a fresh, silent pool rather than surviving.
         let ringing = voicer_peak_after_swap(4);
         let reset = voicer_peak_after_swap(8);
         assert!(
@@ -574,10 +563,9 @@ mod tests {
 
     #[test]
     fn reresolving_a_sample_to_different_bytes_resets_the_player() {
-        // A sample's identity is its decoded bytes, not its path. Swapping
-        // the identical document with the *same* bytes keeps the player a survivor — the one-shot
-        // keeps playing across the swap. Re-uploading different bytes at the same path is a
-        // different instantiation: the player resets to a fresh, un-triggered box and falls silent.
+        // A sample's survivor identity is its decoded bytes, not its path (see rules:
+        // execution-runtime): re-uploading different bytes at the same path is a different
+        // instantiation, so the player resets rather than surviving.
         let same_bytes = sample_peak_after_swap(false);
         let changed_bytes = sample_peak_after_swap(true);
         assert!(

@@ -1,18 +1,13 @@
 //! Shared numeric-literal parsing for both contract macros (`operator_contract!` and
 //! `number_operator_contract!`).
 //!
-//! A range endpoint or `default` may be written as a literal *or* as the `min`/`max` sentinel
-//! keyword (issue #127), so the `±1e6` type-wide range never appears as a raw literal in an operator
-//! contract. In a **range endpoint** the sentinel resolves to the shared
-//! [`NUMBER_MIN`]/[`NUMBER_MAX`] type-wide bound; in a **`default`** it resolves to the operand's own
-//! declared range extreme (already parsed), so `default max` parks an operand at its ceiling
-//! regardless of what that ceiling is.
+//! A range endpoint or `default` may be written as a literal or as the `min`/`max` sentinel
+//! keyword, resolving in a range endpoint to the shared [`NUMBER_MIN`]/[`NUMBER_MAX`] bound and in
+//! a `default` to the operand's own declared range extreme — so the `±1e6` type-wide range never
+//! appears as a raw literal, and a default can park at its ceiling/floor without repeating it.
 //!
-//! Everything here answers in `f64` — the **type-neutral** form, not the port's type. A literal is
-//! parsed once and projected by the caller onto whatever type the port turned out to be: `f32` for
-//! `parse_f32_meta`, and per-variant for `number_operator_contract!`, whose one operand declaration
-//! serves instantiations at more than one number type (issue #556). `f64` holds every `f32` literal
-//! and every `i32` exactly, so the projection is the only place precision is ever at stake.
+//! Everything here answers in `f64`, parsed once and projected by the caller onto whatever type
+//! the port turned out to be: `f64` holds every `f32`/`i32` literal exactly.
 
 use reuben_contract::{NUMBER_MAX, NUMBER_MIN};
 use syn::parse::ParseStream;
@@ -42,7 +37,7 @@ pub(crate) fn peek_range_sentinel(input: ParseStream) -> bool {
 }
 
 /// A range endpoint: a signed literal, or the `min`/`max` sentinel resolving to the type-wide
-/// [`NUMBER_MIN`]/[`NUMBER_MAX`] bound (issue #127).
+/// [`NUMBER_MIN`]/[`NUMBER_MAX`] bound.
 pub(crate) fn parse_float_or_sentinel(input: ParseStream) -> syn::Result<f64> {
     if input.peek(Ident) {
         let id: Ident = input.parse()?;
@@ -60,7 +55,7 @@ pub(crate) fn parse_float_or_sentinel(input: ParseStream) -> syn::Result<f64> {
 
 /// A `default` value: a signed literal, or `max`/`min` resolving to the operand's **own** range
 /// extreme (`hi`/`lo` — the endpoints parsed for this same operand). Parks an operand at its ceiling
-/// (`min`'s no-op `b`) or floor (`max`'s) without repeating the bound (issue #127).
+/// or floor without repeating the bound.
 pub(crate) fn parse_default_value(input: ParseStream, lo: f64, hi: f64) -> syn::Result<f64> {
     if input.peek(Ident) {
         let id: Ident = input.parse()?;

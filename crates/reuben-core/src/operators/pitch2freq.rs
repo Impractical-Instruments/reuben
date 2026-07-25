@@ -17,12 +17,10 @@
 //!   (a sparse change), not a per-sample Signal. An oscillator's `freq` Signal input accepts it
 //!   through the standard ZOH bridge; portamento is a downstream `m2s` in Glide mode.
 //!
-//! see rules: signal-time-dsp
+//! `process` is a pure lookup (`freq = harmony.hz(pitch)`) on `Copy` inputs — stateless,
+//! allocation-free, hot-path-trivial.
 //!
-//! Pitch-only by design: velocity and gate never enter it — in the unbundling chain
-//! they flow on the separate `velocity` wire out of `unpack_note`. Folding them in would re-bundle
-//! what the map dissolved and give the operator a second responsibility. `process` is a pure lookup
-//! (`freq = harmony.hz(pitch)`) on `Copy` inputs — stateless, allocation-free, hot-path-trivial.
+//! see rules: signal-time-dsp
 
 use crate::descriptor::Descriptor;
 use crate::operator::{Io, Operator};
