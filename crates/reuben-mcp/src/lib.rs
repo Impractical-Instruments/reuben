@@ -303,10 +303,9 @@ pub struct InstrumentSourceParams {
     pub source: String,
 }
 
-/// Which view of a document `describe_instrument` cuts. The four
-/// [`projection`](reuben_core::projection) views (#608), plus the host-facing boundary — the one
-/// question the projection does not answer, because it needs the *resolved* face of nested children
-/// rather than what this document declares.
+/// Which view of a document `describe_instrument` cuts. The four projection views, plus the
+/// host-facing boundary — the one question the projection does not answer, because it needs the
+/// *resolved* face of nested children rather than what this document declares.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize, schemars::JsonSchema)]
 #[serde(rename_all = "snake_case")]
 pub enum InstrumentView {
@@ -424,7 +423,7 @@ pub struct StatusEndpoints {
 pub struct SidecarInfo {
     /// The reuben-mcp crate version.
     pub version: String,
-    /// The instrument document `format_version` this sidecar loads (`reuben_core::format`).
+    /// The instrument document `format_version` this sidecar loads.
     pub format_version: u32,
 }
 
