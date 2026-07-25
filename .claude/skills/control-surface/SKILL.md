@@ -86,8 +86,8 @@ Run from the repo root; the script is `gen_surface.py` in this skill's directory
 `python3 <skilldir>/gen_surface.py emit instruments/<name>.json` with no `surfaces/<stem>.json`
 present resolves the auto-derived default and tells you exactly what surfaced (control count) and
 what didn't (one warning per skipped pipe). For the *live-engine* view — metadata read from
-`reuben describe --json` rather than the instrument file, which doubles as the drift guard on the
-describe contract —
+`reuben describe --view boundary --json` rather than the instrument file, which doubles as the
+drift guard on the describe contract —
 
 ```
 python3 <skilldir>/gen_surface.py boundary instruments/patches/space.json
