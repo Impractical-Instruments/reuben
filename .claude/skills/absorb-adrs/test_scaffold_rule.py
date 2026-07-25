@@ -28,7 +28,14 @@ class ScaffoldRuleTest(unittest.TestCase):
         rules = self.tmp / "docs" / "rules"
         rules.mkdir(parents=True)
         shutil.copytree(REPO / "docs" / "rules" / "_templates", rules / "_templates")
-        shutil.copy(REPO / "docs" / "rules" / "README.md", rules / "README.md")
+        # A MINIMAL README, not the repo's. The links guard resolves every link in the corpus,
+        # README included — and the real one's hand-authored prose (Design ethos, the status line)
+        # names all eight topics and the repo root, which a fixture holding one scaffolded topic can
+        # never satisfy. What the scaffolder's guards actually need from README is the two headings
+        # `check_rules_derive` splices into. The real README's own links are guarded where they are
+        # real: CI's rules-guards job, over the real tree.
+        (rules / "README.md").write_text(
+            "# reuben rules index\n\n## Topics\n\n## Glossary\n", encoding="utf-8")
 
     def scaffold(self, **kw) -> int:
         argv = []
@@ -44,7 +51,7 @@ class ScaffoldRuleTest(unittest.TestCase):
         return rc
 
     def assert_guards_green(self):
-        # links guard must pass on the topic docs the scaffold produced
+        # links guard must pass on the whole tree the scaffold produced — topic, rationale, README
         links = run_guard(LINKS, str(self.tmp))
         self.assertEqual(links.returncode, 0, f"links guard failed:\n{links.stderr}")
         # derive: collate README from the topics (--write), then the CI backstop (--check) must pass

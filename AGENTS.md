@@ -61,10 +61,10 @@ Five crates. `reuben-core` is ~35k lines — enter through the module that owns 
 | `reuben-contract` | The single source of an Operator's port/constant contract, shared by the macro and scaffold. |
 | `reuben-macros` | `operator_contract!` — emits the index consts *and* the `Descriptor` from one declaration. |
 
-Inside `reuben-core` (the full version is the `src/lib.rs` doc comment): data model `signal`
-(audio-rate) + `message` (OSC-shaped) · authoring `operator` + `descriptor` · composition
-`graph` → `plan` (Instantiate) → `render` (per-block) · musical `vocab` + `tuning` · the
-Operator set in `operators/`.
+Inside `reuben-core` (the full version is the `crates/reuben-core/src/lib.rs` doc comment):
+data model `signal` (audio-rate) + `message` (OSC-shaped) · authoring `operator` +
+`descriptor` · composition `graph` → `plan` (Instantiate) → `render` (per-block) · musical
+`vocab` + `tuning` · the Operator set in `operators/`.
 
 Most-wanted specifics: Swap lifecycle `coordinator/` · instrument JSON `format/` · the agent's
 whole view of a document `projection.rs` · type name → constructor `registry.rs`.
@@ -83,9 +83,9 @@ Use Grep only for non-code text: comments, string literals, config values.
 **Never use Grep to find a function or type definition.**
 
 These files punish a whole-file Read — `documentSymbol` first, then read only the range you need:
-`reuben-core/src/format/mod.rs` (4.8k lines) · `reuben-mcp/src/lib.rs` (3.3k) ·
-`reuben-core/src/projection.rs` (2.5k) · `reuben-native/src/audio.rs` (1.5k) ·
-`reuben-core/src/plan.rs` (1.5k).
+`crates/reuben-core/src/format/mod.rs` (4.8k lines) · `crates/reuben-mcp/src/lib.rs` (3.3k) ·
+`crates/reuben-core/src/projection.rs` (2.5k) · `crates/reuben-native/src/audio.rs` (1.5k) ·
+`crates/reuben-core/src/plan.rs` (1.5k).
 
 Search is pre-scoped by [`.ignore`](.ignore) — build output, `.git`, caches, binary fixtures.
 Don't bypass it with `--no-ignore`; nothing it hides is a source of truth.

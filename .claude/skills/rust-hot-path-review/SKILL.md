@@ -29,7 +29,7 @@ design inches from an alloc-free `process`).
   (`render_block` / `render_into` / `process_node` in `crates/reuben-core/src/render.rs`), *and* the
   message drain/route that runs on the audio thread.
 - **COLD** = everything else: `descriptor()` / `operator_contract!`, `new` / `Default` / `spawn` /
-  `bind_resources`, `RenderContext::new` preallocation, the whole **Coordinator** region (Instantiate,
+  `bind_resources`, `RenderScratch::new` preallocation, the whole **Coordinator** region (Instantiate,
   Swap-construction, (de)serialization, reclaim), and patcher / schema / registry / CLI.
 
 Show the buckets before any finding, so the lens is auditable.
