@@ -110,6 +110,11 @@ jobs:
               - 'scripts/check_rules_refs.py'
               - 'scripts/test_check_rules_*.py'
               - 'scripts/hooks/**'
+              # absorb-adrs runs these guards over a fixture tree and asserts they go green, so a
+              # guard change can break it. Its suite otherwise runs only in `check`, whose filter is
+              # *workspace — which `scripts/**` does not match. That gap let a corpus-wide widening
+              # of the links guard reach dev with the skill red.
+              - '.claude/skills/absorb-adrs/**'
               - '.github/workflows/ci.yml'
 
   lockstep:
@@ -401,6 +406,12 @@ jobs:
       # all code, not just docs/rules.)
       - name: Rule<->rationale link guard
         run: python3 scripts/check_rules_links.py .
+
+      # The guards' one in-repo consumer: absorb-adrs scaffolds a rule into a fixture tree and
+      # asserts these same scripts go green over it. Run it on a guard change, which is the change
+      # that can break it — `check` only runs it when the Rust workspace moves.
+      - name: Guard-consumer skill tests (absorb-adrs)
+        run: cd .claude/skills/absorb-adrs && python3 -m unittest -v
 
   # The rules reference-linter (check_rules_refs.py, S01 + wired in S19/#185): no ADR-NNNN survives in
   # code, and every `see rules: <topic>` comment resolves to a real topic doc and stops there. Unlike the derive/link
