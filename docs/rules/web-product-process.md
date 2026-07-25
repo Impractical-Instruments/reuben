@@ -61,6 +61,8 @@ installer-free release archives cut from a `v*` tag.
 
 [why](rationale/web-product-process/static-link-operator-registration.md)
 
+Superseded by: ADR-0067 (pending absorption)
+
 <a id="sample-bytes-trust-boundary"></a>
 ### Externally-sourced sample bytes are untrusted: the WAV decoder must bounds-check its declared data-chunk length before any sample-bearing share bundle can carry them.
 

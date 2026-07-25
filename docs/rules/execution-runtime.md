@@ -95,6 +95,8 @@ enforces regardless of what any door advertises.
 
 [why](rationale/execution-runtime/render-is-allocation-free.md)
 
+Superseded by: ADR-0067 (pending absorption)
+
 <a id="block-loop-runs-on-locals"></a>
 ### A `process` block loop runs on flat locals — per-call DSP state is copied in and written back once, and each `io.read`/`io.write` resolves to a slice before the loop — because `&mut self` fields and the handle layer's per-access table lookup each defeat LLVM's register promotion.
 
@@ -124,6 +126,8 @@ enforces regardless of what any door advertises.
 ### The portable Engine bridge (queue_osc, fill, drain_outbound) lives in reuben-core as the one embed surface every host shell wraps.
 
 [why](rationale/execution-runtime/embed-surface.md)
+
+Superseded by: ADR-0067 (pending absorption)
 
 <a id="engine-swap-unit"></a>
 ### The unit of a Swap is the whole Engine, handed across the RT boundary through two single-slot atomic mailboxes with one swap in flight.
