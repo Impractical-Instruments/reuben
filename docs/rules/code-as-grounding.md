@@ -35,7 +35,7 @@ convenience; it is a second copy competing with them.
 
 The discipline is **guarded, not merely documented**: an unenforced convention decays back to the
 level it started at. `scripts/check_rules_refs.py` fails the build on a module doc long enough to be
-carrying rationale that names no topic, crate by crate as each is swept.
+carrying rationale that names no topic, in every crate in the workspace.
 
 ## Rules
 

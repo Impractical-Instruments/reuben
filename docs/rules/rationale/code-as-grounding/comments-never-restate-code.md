@@ -42,8 +42,9 @@ if `hover` is how the code gets read.
 
 Guarding it is not optional. The pointer convention reached 17% on discipline alone and stopped there,
 so the rule ships with a build-time check: a `//!` module doc past a length threshold that names no
-topic is failing the build, applied crate-by-crate as each is swept so the gate is never green by
-exemption. A length heuristic cannot classify prose — it only catches the shape rationale takes when
+topic is failing the build. It was rolled out crate-by-crate, each crate joining the gate in the PR
+that swept it, so it was never green by exemption; with the workspace swept it simply runs on every
+crate. A length heuristic cannot classify prose — it only catches the shape rationale takes when
 it accumulates — but it is enough to keep the ratchet from slipping backwards, which is the failure
 the 17% documents.
 

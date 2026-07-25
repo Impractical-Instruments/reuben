@@ -5,8 +5,8 @@ Fixture trees are built with tempfile; the guard is imported as a bare module (t
 `scripts/`, mirroring the sibling link-guard tests). Each test asserts the exact problem count so a
 regression that over- or under-reports is caught, not just pass/fail.
 
-`module_doc_problems` is exercised directly on source text — no tree needed — and the swept-crate
-gating is exercised through `main`, since which paths check 3 reaches is the part that can regress.
+`module_doc_problems` is exercised directly on source text — no tree needed — and `main` is
+exercised through a tree, since which paths check 3 reaches is the part that can regress.
 """
 from __future__ import annotations
 import tempfile
@@ -111,27 +111,22 @@ class CommentRefGuard(unittest.TestCase):
         self.assertIn("rule-level pointer", problems[0])
 
 
-class SweptCrateGating(unittest.TestCase):
+class WholeTree(unittest.TestCase):
     def run_main(self, files: dict[str, str]) -> int:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             build(root, files)
             return check_rules_refs.main(str(root))
 
-    def test_an_unswept_crate_is_not_checked(self):
-        over = doc(BUDGET + 5)
-        self.assertEqual(self.run_main({"crates/reuben-core/src/lib.rs": over}), 0)
-
-    def test_a_swept_crate_is_checked(self):
+    def test_a_rust_file_anywhere_is_checked(self):
         over = doc(BUDGET + 5)
         self.assertEqual(self.run_main({"crates/reuben-mcp/src/lib.rs": over}), 1)
 
-    def test_the_swept_set_names_crates_that_exist(self):
-        # A typo'd or renamed crate silently disables the gate for it, which is the one failure
-        # this ratchet cannot survive — so pin the set against the real tree.
-        repo = Path(__file__).resolve().parent.parent
-        for crate in check_rules_refs.SWEPT_CRATES:
-            self.assertTrue((repo / crate / "Cargo.toml").is_file(), f"no such crate: {crate}")
+    def test_a_non_rust_file_is_not_module_doc_checked(self):
+        # Checks 3 and 4 read Rust comment syntax; the same leading `//!` run in a .ts file is not
+        # a module doc, and checks 1 and 2 still scan it.
+        over = doc(BUDGET + 5)
+        self.assertEqual(self.run_main({"web/src/app.ts": over}), 0)
 
 
 if __name__ == "__main__":

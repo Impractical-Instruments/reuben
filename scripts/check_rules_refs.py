@@ -11,15 +11,15 @@ Four checks:
      slug; for the same-repo form, docs/rules/<topic>.md must exist. For the cross-repo form,
      the topic is resolved against the pinned engine submodule's engine/docs/rules/<topic>.md
      (the SHA web is built against) — a no-op in the engine repo, active once web bumps the pin.
-  3. In a SWEPT_CRATES crate, a `//!` module doc longer than MAX_UNPOINTED_MODULE_DOC lines
-     names a topic. Length is a proxy for carrying rationale: a doc that long is arguing
-     something, and an argument in code has to point at the rule it belongs to.
-  4. In a SWEPT_CRATES crate, no `//` or `//!` comment cites an issue (`#123`, `reuben#123`) or a
-     rule anchor (`agent-mcp.md#some-rule`). An issue number is provenance, and provenance lives in
-     a rationale file's `Decided in:` / `Distilled from:` line — the same reason check 1 bans
-     `ADR-<n>`. In code it is an unresolvable pointer to a closed argument, and it reliably marks a
-     comment that is retelling history rather than stating mechanics. A rule anchor is the deeper
-     half of the same mistake: code points at topics only.
+  3. A `//!` module doc longer than MAX_UNPOINTED_MODULE_DOC lines names a topic. Length is a
+     proxy for carrying rationale: a doc that long is arguing something, and an argument in code
+     has to point at the rule it belongs to.
+  4. No `//` or `//!` comment cites an issue (`#123`, `reuben#123`) or a rule anchor
+     (`agent-mcp.md#some-rule`). An issue number is provenance, and provenance lives in a rationale
+     file's `Decided in:` / `Distilled from:` line — the same reason check 1 bans `ADR-<n>`. In code
+     it is an unresolvable pointer to a closed argument, and it reliably marks a comment that is
+     retelling history rather than stating mechanics. A rule anchor is the deeper half of the same
+     mistake: code points at topics only.
 
      `///` is deliberately out of reach here: a FIELD doc on a `JsonSchema`-deriving type becomes
      that field's advertised schema `description` — model-facing wire surface, not comment prose —
@@ -49,25 +49,11 @@ ADR_RE  = re.compile(r"\bADR-\d+\b")
 SEE_RE  = re.compile(r"\bsee (engine )?rules: ([A-Za-z0-9-]+)")
 SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
-# Crates whose comments have been swept to the rationale/mechanics/restatement split.
-# Checks 3 and 4 run only here, so the gate is a ratchet: a crate joins this set in the PR that
-# sweeps it, and the unswept remainder is a shrinking crate list, not a rotting file allowlist.
-#
-# To sweep the next crate: add it here, run this linter, and work the list it prints — each entry is
-# one comment to point, cut, or delete. That list is the worklist; nothing about the sweep needs to
-# be discovered by reading. see rules: code-as-grounding
-SWEPT_CRATES = {
-    "crates/reuben-mcp",
-    "crates/reuben-contract",
-    "crates/reuben-macros",
-    "crates/reuben-native",
-    "crates/reuben-core",
-}
-
 # The unpointed `//!` budget. Ten lines is room for what a module doc legitimately owes a reader —
 # what this file is, and the local facts the code cannot state — before the length itself says
-# rationale accumulated. Tuned on the reuben-mcp pilot: every swept module lands well under it,
-# and the pre-sweep docs (25 lines in engine.rs, 42 in lib.rs) were all over.
+# rationale accumulated. Every module in the tree lands well under it; the docs that exceeded it
+# were each carrying an argument (25 lines in reuben-mcp's engine.rs, 42 in its lib.rs, 31 in
+# reuben-core's signal.rs) that now lives in a rules topic.
 MAX_UNPOINTED_MODULE_DOC = 10
 
 # An issue citation in a comment: `#123`, or the cross-repo `reuben#123`. Two digits minimum, so
@@ -140,7 +126,7 @@ def main(root_arg: str = ".") -> int:
             text = path.read_text(encoding="utf-8", errors="ignore")
         except OSError:
             continue
-        if path.suffix == ".rs" and any(rel.startswith(f"{c}/") for c in SWEPT_CRATES):
+        if path.suffix == ".rs":
             errors.extend(module_doc_problems(rel, text))
             errors.extend(comment_ref_problems(rel, text))
         for i, line in enumerate(text.splitlines(), 1):

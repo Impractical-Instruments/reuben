@@ -41,7 +41,7 @@ comment, decide which of the three it is:
   don't write it. It is a second copy that can go stale while the build stays green.
 
 Never cite an issue or ADR number in a comment; provenance lives in the rationale file. Guarded
-per swept crate by `scripts/check_rules_refs.py`. Full rule:
+across every crate by `scripts/check_rules_refs.py`. Full rule:
 [Code as a grounding surface](docs/rules/code-as-grounding.md).
 
 ## Language
