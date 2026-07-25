@@ -51,6 +51,13 @@ spawns the real sidecar and scans every description it advertises across `tools/
 `resources/list`, and the server `instructions`, so the check reads the door's own output and cannot
 drift from what a client actually receives.
 
+The tests are grounding too, and one shape of test says more than it appears to. A test whose job is
+that **two lists match** is evidence that generation was not attempted — there are two lists, and
+nothing but that assertion holds them level — yet a green parity check reads as reassurance and the
+list it guards reads as safe. Sometimes the two genuinely cannot be generated from each other,
+because one is produced at runtime behind a boundary the other cannot cross; the requirement is that
+the test **says which case it is**, where someone reads it before trusting it.
+
 ## Rules
 
 <a id="comments-never-restate-code"></a>
@@ -72,6 +79,11 @@ drift from what a client actually receives.
 ### Every search inherits the scope `.ignore` pre-declares, and bypassing it to reach build output, caches, or binary fixtures is a smell rather than a technique — nothing it hides is a source of truth.
 
 [why](rationale/code-as-grounding/search-is-pre-scoped.md)
+
+<a id="parity-test-is-a-defect-marker"></a>
+### A test whose job is that two lists match is a defect marker rather than a solution: it carries a `Parity:` line recording why one list cannot be generated from the other, and a marker recording no reason fails the build.
+
+[why](rationale/code-as-grounding/parity-test-is-a-defect-marker.md)
 
 ## Terms
 

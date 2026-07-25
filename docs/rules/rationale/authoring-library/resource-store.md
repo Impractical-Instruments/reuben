@@ -4,7 +4,7 @@
 
 The sample player is the first operator that is not a pure function of params + edges: it depends
 on **external bytes** — an audio file that must be resolved, decoded, and held in memory before
-render. Three standing contracts made that awkward, and the design reconciled them rather than
+render. Three standing constraints made that awkward, and the design reconciled them rather than
 bolting on a special case. Construction is zero-arg and type-erased (`fn() -> Box<dyn Operator>`),
 so there is no constructor slot for a decoded buffer; params are `f32`-only, so a sample *reference*
 is a string; and `process` is allocation-free on the audio thread, so decoding a WAV — none of

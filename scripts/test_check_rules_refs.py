@@ -210,6 +210,56 @@ class PointerGuard(unittest.TestCase):
         )
 
 
+class ParityGuard(unittest.TestCase):
+    """Check 6: a parity marker that exists records a substantive reason.
+
+    The marker is assembled rather than written literally — this guard scans its own tree, and a
+    fixture spelled out in a `#` comment here would be a real finding in `scripts/`.
+    """
+
+    MARK = "Parity" + ":"
+
+    def problems(self, text: str) -> list[str]:
+        return check_rules_refs.parity_problems("a.rs", text + "\n")
+
+    def test_a_marker_with_a_real_reason_is_clean(self):
+        self.assertEqual(self.problems(
+            f"/// {self.MARK} the door builds this list at runtime, so the test is the only "
+            f"place both exist."), [])
+
+    def test_parity_marker_without_a_reason_fails(self):
+        # The rubber stamp this check exists to reject: a marker, and nothing recorded.
+        problems = self.problems(f"    // {self.MARK} n/a")
+        self.assertEqual(len(problems), 1)
+        self.assertIn("records no reason", problems[0])
+
+    def test_a_bare_marker_fails(self):
+        self.assertEqual(len(self.problems(f"    // {self.MARK}")), 1)
+
+    def test_a_mis_cased_marker_is_flagged_not_skipped(self):
+        # Same posture as check 5's capitalised pointer: the wrong spelling is unvalidated, which
+        # reads as a clean file unless it is reported.
+        problems = self.problems(f"    // {self.MARK.lower()} the wire response only exists here")
+        self.assertEqual(len(problems), 1)
+        self.assertIn("mis-cased", problems[0])
+
+    def test_a_reason_wrapped_across_lines_is_counted_whole(self):
+        # rustfmt breaks the line wherever the column runs out; the reason is still one sentence.
+        self.assertEqual(self.problems(f"    // {self.MARK} the door builds\n"
+                                       f"    // this list at runtime"), [])
+
+    def test_a_marker_in_a_string_literal_is_not_prose(self):
+        self.assertEqual(self.problems(f'    let s = "{self.MARK} n/a";'), [])
+
+    def test_a_file_with_no_marker_is_clean(self):
+        self.assertEqual(self.problems("pub fn f() {}"), [])
+
+    def test_an_unmarked_parity_test_is_not_a_finding(self):
+        # The undecidable half, asserted so the guard's reach stays honest: this shape is a
+        # round-trip everywhere it appears in this workspace, and flagging it would be noise.
+        self.assertEqual(self.problems("#[test]\nfn t() { assert_eq!(a.len(), b.len()); }"), [])
+
+
 class WholeTree(unittest.TestCase):
     def run_main(self, files: dict[str, str]) -> int:
         with tempfile.TemporaryDirectory() as tmp:

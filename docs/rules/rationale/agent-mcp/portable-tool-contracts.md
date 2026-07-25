@@ -16,7 +16,7 @@ identity is one authority.
 
 This is why **web parity ports the contract, not the protocol.** No MCP reaches the browser: a tab
 can only dial out, so the sidecar's dial-in shape cannot be copied, and every candidate desktop→tab
-bridge answered a persona that does not exist. Instead the browser binds the same eight contracts
+bridge answered a persona that does not exist. Instead the browser binds the same contracts
 directly over the C-ABI worklet, same report shapes — MCP stays native-only, the cheapest layer in
 the stack to swap because nothing beneath it is MCP-shaped. The one surviving line from the
 (otherwise product-owned, now-private) web-chat host decision is exactly this invariant seen from a

@@ -3,7 +3,7 @@
 **Why the harness ships file tools at all.** It used to be a necessity: `swap` was path-only and the
 roster had no document-read tool, so a real authoring client necessarily brought its own filesystem
 access. #603 and #604 removed that necessity — the roster now reads a document (`describe_instrument`)
-and writes one (the nineteen verbs) without the model ever seeing its bytes. They stay for the
+and writes one (the document verbs) without the model ever seeing its bytes. They stay for the
 opposite reason: a real client *still has* `Read`/`Write`, so leaving them on the namespace is what
 lets the harness see a model reach for them anyway. Their presence is now a measurement, not a
 crutch — and #624 carries the open call about whether the reference solutions should still use them.

@@ -209,6 +209,13 @@ One file per rule at `rationale/<topic>/<rule>.md`.
 `// see rules: <topic>` in-repo, `// see engine rules: <topic>` cross-repo. Grammar:
 `/\bsee (engine )?rules: ([a-z0-9-]+)/`; the slug must resolve to a topic doc.
 
+**Parity marker** — a test whose job is that two lists match records why one cannot be generated
+from the other: `Parity: <reason>` in a comment on it. The test is evidence that generation was not
+attempted, and a green check reads as reassurance unless it says which case it is.
+`check_rules_refs.py` holds every marker to a substantive reason; finding the tests that carry none
+is judgment, and is left to a reader. See
+[the rule](code-as-grounding.md#parity-test-is-a-defect-marker).
+
 **Progressive-disclosure ladder** — index → topic → rule → rationale. Stop at the shallowest
 level that answers the question; open a rationale only when you need the why.
 
@@ -218,6 +225,16 @@ carries its provenance line. A rule anchor is therefore a **public identity** �
 each other and link back up to their rule, so renaming or deleting an anchor is a corpus-wide edit,
 and the guard fails until it is one. This is what stops an absorption pass from leaving live prose
 pointing at a rule that no longer exists.
+
+**Supersession marker** — an ADR that overturns a rule adds `Superseded by: ADR-00xx (pending
+absorption)` to that rule **in the same change**. Absorption runs on a human's cadence, so without
+the marker the corpus states the old now in the present tense for however long the gap lasts, with
+nothing to notice it. `check_rules_links.py` holds both ends: an ADR naming a rule anchor whose rule
+carries no marker fails, and so does a marker naming an ADR that no longer exists — which is what
+makes an absorption pass clear the marker it just satisfied. Naming the anchor **is** the trigger,
+because no machine can tell overturning from citing; an ADR that only wants context names the topic,
+as every other pointer does. This and the rationale's `Distilled from:` line are the only two places
+in the corpus an ADR number is written down.
 
 **Claim ledger** — `extract_doc_claims.py` reads the governed docs (this corpus, `docs/agents/`, the
 root Markdown, the skills) and types every statement that could be *wrong*. Paths, code identifiers

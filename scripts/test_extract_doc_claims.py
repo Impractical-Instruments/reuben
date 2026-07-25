@@ -166,10 +166,41 @@ class ClaimLedgerTest(unittest.TestCase):
              "crates/core/tests/wire.rs": "#[test]\nfn schemas_match() {}\n"}, "guard")
         self.assertEqual((claim.decidable, claim.status), (True, "unresolved"))
 
+    # --- roster counts ---
+
+    def test_roster_count_fails_the_build(self):
+        claim = self._one({"docs/agents/g.md": "The browser binds the same eight contracts.\n"},
+                          "roster-count")
+        self.assertEqual((claim.decidable, claim.status), (True, "unresolved"))
+
+    def test_roster_count_is_caught_through_backticks(self):
+        # Docs write "across 27 `tools`"; the markup must not hide the number from the ban.
+        claim = self._one({"docs/agents/g.md": "Across 27 `tools` the schemas agree.\n"},
+                          "roster-count")
+        self.assertEqual(claim.status, "unresolved")
+
+    def test_roster_count_survives_one_adjective(self):
+        claim = self._one({"docs/agents/g.md": "It advertises nineteen document verbs.\n"},
+                          "roster-count")
+        self.assertEqual(claim.status, "unresolved")
+
+    def test_a_pair_is_architecture_not_a_roster(self):
+        # "the two verbs over typed handles" names a design, not a roster that grows.
+        self.assertEqual(
+            [c for c in self._claims({"docs/agents/g.md": "Two verbs read and write: `io` does it.\n"})
+             if c.kind == "roster-count"],
+            [])
+
+    def test_roster_count_inside_a_fenced_block_is_not_a_claim(self):
+        self.assertEqual(
+            [c for c in self._claims({"docs/agents/g.md": "```sh\n# 27 tools listed\n```\n"})
+             if c.kind == "roster-count"],
+            [])
+
     # --- routed claims ---
 
     def test_count_next_to_code_is_routed(self):
-        claim = self._one({"docs/agents/g.md": "It binds the same eight `contracts` today.\n"},
+        claim = self._one({"docs/agents/g.md": "It ships the same eight `resources` today.\n"},
                           "count")
         self.assertEqual((claim.decidable, claim.status), (False, "needs-review"))
 
