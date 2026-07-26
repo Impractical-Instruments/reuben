@@ -19,8 +19,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use reuben_api::engine::{
-    Conflict, ControlArg, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot,
-    EngineState, Request, Response,
+    Conflict, ControlArg, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot, Request,
+    Response, StructureState,
 };
 use reuben_core::coordinator::Coordinator;
 use reuben_core::resources::MemoryResolver;
@@ -63,7 +63,7 @@ const MIC_PASSTHRU: &str = r#"{ "format_version": 3, "instrument": "mic-passthru
         "outputs": { "out": { "from": "/mic" } } },
     "nodes": [] }"#;
 
-/// A Coordinator-backed [`EngineState`] over `doc`, a live [`FakeCallback`] draining its mailbox
+/// A Coordinator-backed [`StructureState`] over `doc`, a live [`FakeCallback`] draining its mailbox
 /// and its control ingress, and the base document's content hash. `opened_input_channels` is the
 /// headless render config's input-stream geometry (`0` = output-only, so an input-binding swap
 /// dark-degrades).
@@ -71,7 +71,17 @@ const MIC_PASSTHRU: &str = r#"{ "format_version": 3, "instrument": "mic-passthru
 /// The control sink is wired exactly as `play` wires it — one [`ControlBatch`] channel with the
 /// structure server on the producing end and the callback draining it. The harness is the crate's
 /// [`FakeCallback`], shared with the unit tests, so one mirror of the real callback serves both.
-fn wired(doc: &str, opened_input_channels: usize) -> (EngineState, FakeCallback, String) {
+fn wired(doc: &str, opened_input_channels: usize) -> (StructureState, FakeCallback, String) {
+    wired_watching(doc, opened_input_channels, Diagnostics::new())
+}
+
+/// [`wired`] with the counter surface passed in, for the one test that has to still hold a handle
+/// to it after the host has taken its own — `play` holds one the same way.
+fn wired_watching(
+    doc: &str,
+    opened_input_channels: usize,
+    diagnostics: Arc<Diagnostics>,
+) -> (StructureState, FakeCallback, String) {
     let (coordinator, side, _warnings) = Coordinator::install_initial(
         doc,
         Registry::builtin(),
@@ -81,12 +91,12 @@ fn wired(doc: &str, opened_input_channels: usize) -> (EngineState, FakeCallback,
     .expect("initial install");
     let base_hash = coordinator.installed_hash();
     let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
-    let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
+    let host = NativeHost::new(diagnostics, control_tx).with_render_config(Arc::new(
         HeadlessRenderConfig {
             opened_input_channels,
         },
     ));
-    let state = EngineState::new(coordinator, Arc::new(host));
+    let state = StructureState::new(coordinator, Arc::new(host));
     (state, FakeCallback::spawn(side, control_rx), base_hash)
 }
 
@@ -214,7 +224,7 @@ fn get_diagnostics_reflects_live_counter_bumps() {
     let diagnostics = Diagnostics::new();
     // This verb never touches control, but the ingress is a constructor parameter now.
     let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
-    let state = EngineState::new(
+    let state = StructureState::new(
         coordinator,
         Arc::new(NativeHost::new(Arc::clone(&diagnostics), control_tx)),
     );
@@ -632,19 +642,7 @@ fn shuts_down_cleanly_with_an_idle_client_still_connected() {
     // `play` holds its own handle to the counter surface — the host takes a clone — so the
     // exit-time flush below outlives the state the server consumed.
     let diagnostics = Diagnostics::new();
-    let (coordinator, side, _w) = Coordinator::install_initial(
-        BASE_DOC,
-        Registry::builtin(),
-        Box::new(MemoryResolver::new()),
-        cfg(),
-    )
-    .expect("install");
-    let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
-    let state = EngineState::new(
-        coordinator,
-        Arc::new(NativeHost::new(Arc::clone(&diagnostics), control_tx)),
-    );
-    let cb = FakeCallback::spawn(side, control_rx);
+    let (state, cb, _) = wired_watching(BASE_DOC, 0, Arc::clone(&diagnostics));
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
     let _idle = TcpStream::connect(server.local_addr()).expect("connect");
 

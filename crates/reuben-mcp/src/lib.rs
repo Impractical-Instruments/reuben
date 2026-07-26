@@ -652,32 +652,34 @@ impl ReubenServer {
 ///
 /// see rules: agent-mcp
 fn stamp_window_prose(router: &mut ToolRouter<ReubenServer>) {
-    // The direction that bites later: a route the table does not name keeps rmcp's rustdoc
+    // The direction that bites later: a route the roster does not name keeps rmcp's rustdoc
     // fallback and advertises Rust-reader prose to a model, with the roster test and the schema
     // test both still green — each iterates a list the new verb is present in. Refuse to start
-    // instead. (The other direction — a roster entry with no sentence — is the window's own test.)
+    // instead. (The other direction cannot happen: a contract carries its sentence in the roster.)
     let unstamped: Vec<String> = router
         .map
         .keys()
         .filter(|name| {
-            !reuben_api::tools::DESCRIPTIONS
+            !reuben_api::tools::CONTRACTS
                 .iter()
-                .any(|(described, _)| described == &name.as_ref())
+                .any(|contract| contract.name == name.as_ref())
         })
         .map(|name| name.to_string())
         .collect();
     assert!(
         unstamped.is_empty(),
-        "these tools have no sentence in the window's table and would advertise their rustdoc: \
+        "these tools are not on the window's roster and would advertise their rustdoc: \
          {unstamped:?}"
     );
 
-    for (name, sentence) in reuben_api::tools::DESCRIPTIONS {
-        let route = router
-            .map
-            .get_mut(*name)
-            .unwrap_or_else(|| panic!("the window serves `{name}`, but no tool advertises it"));
-        route.attr.description = Some((*sentence).into());
+    for contract in reuben_api::tools::CONTRACTS {
+        let route = router.map.get_mut(contract.name).unwrap_or_else(|| {
+            panic!(
+                "the window serves `{}`, but no tool advertises it",
+                contract.name
+            )
+        });
+        route.attr.description = Some(contract.description.into());
     }
 }
 

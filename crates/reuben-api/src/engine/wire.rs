@@ -57,6 +57,22 @@ pub enum DocSource {
 /// batch. Shared here so the door advertising a `maxItems` and the engine enforcing it cannot drift.
 pub const MAX_SEND_BATCH: usize = 256;
 
+/// Why an empty batch is refused. Stated once because both ends check it — the client so a bad
+/// batch never reaches the wire, the server because it cannot trust that a client did — and a
+/// caller reading two wordings for one condition has to work out whether they mean the same thing.
+pub const EMPTY_BATCH_REFUSAL: &str = "`send` needs at least one message; an empty batch does \
+                                       nothing, and acking it as success would let a client that \
+                                       drops its messages read as a working send.";
+
+/// Why a batch over [`MAX_SEND_BATCH`] is refused, given how many it carried. The counterpart to
+/// [`EMPTY_BATCH_REFUSAL`]: one sentence for the condition, both ends.
+pub fn over_long_batch_refusal(len: usize) -> String {
+    format!(
+        "`send` takes at most {MAX_SEND_BATCH} messages ({len} given); split the gesture across \
+         several sends."
+    )
+}
+
 /// One control atom on this channel: the **flat primitive form** — a number or a string, and
 /// nothing else.
 ///

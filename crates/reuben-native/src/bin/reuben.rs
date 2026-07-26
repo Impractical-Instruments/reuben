@@ -781,7 +781,7 @@ fn play(
     // Its control sink is a clone of the very sender the UDP thread holds, so `send` converges with
     // external OSC at the callback's `queue_osc` and this door needs no wire format of its own.
     let host = NativeHost::new(diagnostics.clone(), osc_tx).with_render_config(render_config);
-    let state = reuben_api::engine::EngineState::new(coordinator, std::sync::Arc::new(host))
+    let state = reuben_api::engine::StructureState::new(coordinator, std::sync::Arc::new(host))
         .with_installed_source(initial_source);
     let structure_server = match structure::StructureServer::bind(STRUCTURE_BIND, state) {
         Ok(server) => {

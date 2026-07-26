@@ -28,8 +28,8 @@ use reuben_core::coordinator::Coordinator;
 use crate::authoring::{Diag, Report};
 
 use super::wire::{
-    Conflict, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot, Request, Response,
-    SwapReport, MAX_SEND_BATCH,
+    over_long_batch_refusal, Conflict, ControlMessage, DiagnosticsReport, DocSource,
+    DocumentSnapshot, Request, Response, SwapReport, EMPTY_BATCH_REFUSAL, MAX_SEND_BATCH,
 };
 
 /// What a host must provide for the window to serve the engine verbs — the device, the clock and
@@ -58,13 +58,16 @@ pub trait EngineHost: Send + Sync {
     /// and reports what a geometry mismatch degraded; a headless one has no map to build.
     fn publish_render_config(&self, logical: usize, input_channels: usize) -> Vec<Diag>;
 
-    /// Reclaim the retired Engine the render side posted back, and drop it **off the audio
-    /// thread** — the deferred free.
+    /// The wait half of the deferred free: a fresh gate for one swap's reclaim poll. Each call to
+    /// the returned closure waits one poll interval and answers whether to **give up**.
     ///
-    /// The host's because the polling it needs is the host's: a clock, a sleep, and whatever it
-    /// knows about whether its render callback is still ticking. A host that gives up leaves the
-    /// retiree in flight for the next swap's reclaim; the swap has already committed either way.
-    fn reclaim_retired(&self, coordinator: &mut Coordinator);
+    /// Only the waiting is the host's — it needs a clock, a sleep, and whatever the host knows
+    /// about whether its render callback is still ticking, none of which the window has. The
+    /// protocol around it stays here: the window polls the Coordinator, drops the retiree off the
+    /// audio thread, and treats giving up as a non-event, since the swap has already committed and
+    /// the next swap's reclaim will find the retiree still in flight. A host that reimplemented
+    /// that protocol could get it wrong; a host that returns a gate cannot.
+    fn retire_poll(&self) -> Box<dyn FnMut() -> bool + Send + '_>;
 }
 
 /// The engine's control ingress is gone: the render callback has stopped for good, so nothing
@@ -75,7 +78,7 @@ pub struct IngressClosed;
 /// Everything the channel answers with, cheap to clone (`Arc`-backed) so a host can hand one to
 /// every connection it serves.
 #[derive(Clone)]
-pub struct EngineState {
+pub struct StructureState {
     coordinator: Arc<Mutex<Coordinator>>,
     host: Arc<dyn EngineHost>,
     /// Where the playing document came from: the `source` of the last successful swap, or what the
@@ -88,7 +91,7 @@ pub struct EngineState {
     installed_source: Arc<Mutex<Option<String>>>,
 }
 
-impl EngineState {
+impl StructureState {
     /// Wrap a Coordinator the host built (with `install_initial`) and the seam it serves through.
     pub fn new(coordinator: Coordinator, host: Arc<dyn EngineHost>) -> Self {
         Self {
@@ -111,13 +114,13 @@ impl EngineState {
     }
 }
 
-/// Dispatch one request line to its response. Pure over [`EngineState`], so a host can drive it
+/// Dispatch one request line to its response. Pure over [`StructureState`], so a host can drive it
 /// without a socket and the framing loop stays the host's.
 ///
 /// An unreadable line is a channel-level [`Response::Error`] (distinct from a domain answer that
 /// reports failure), so a malformed request still gets exactly one framed reply and the
 /// one-response-per-request invariant holds.
-pub fn dispatch(state: &EngineState, line: &str) -> Response {
+pub fn dispatch(state: &StructureState, line: &str) -> Response {
     match Request::from_ndjson(line) {
         Ok(Request::Ping) => Response::Pong,
         Ok(Request::GetDocument) => {
@@ -158,23 +161,19 @@ pub fn dispatch(state: &EngineState, line: &str) -> Response {
 ///
 /// The Coordinator is untouched: control is not structure, so a `send` never contends for the
 /// single-writer lock and cannot be starved by an in-flight swap's bounded reclaim poll.
-fn handle_send(state: &EngineState, messages: Vec<ControlMessage>) -> Response {
+fn handle_send(state: &StructureState, messages: Vec<ControlMessage>) -> Response {
     // Bound the batch before it is queued. Its whole cost lands in one render callback, so an
-    // unbounded batch is an RT hazard, not merely a large request. An EMPTY batch is rejected for a
-    // different reason: acking a no-op as success would let a client bug that drops its messages
-    // read as a working send.
+    // unbounded batch is an RT hazard, not merely a large request. The client checks both bounds
+    // too and saves the round trip; this is the check that has to hold, because a door is not
+    // obliged to have made the first one. Both say it in the same words.
     if messages.is_empty() {
         return Response::Error {
-            message: "`send` needs at least one message; an empty batch does nothing".to_string(),
+            message: EMPTY_BATCH_REFUSAL.to_string(),
         };
     }
     if messages.len() > MAX_SEND_BATCH {
         return Response::Error {
-            message: format!(
-                "`send` batch of {} exceeds the {MAX_SEND_BATCH}-message limit; split it across \
-                 several sends",
-                messages.len()
-            ),
+            message: over_long_batch_refusal(messages.len()),
         };
     }
 
@@ -205,7 +204,7 @@ fn handle_send(state: &EngineState, messages: Vec<ControlMessage>) -> Response {
 ///    report — BEFORE the reclaim, so the map is in flight before the callback installs the new
 ///    engine and the two mailboxes stay in lockstep.
 /// 5. **Reclaim** the retired Engine off-thread, clearing the mailbox for the next swap.
-fn handle_swap(state: &EngineState, source: DocSource, expect: Option<String>) -> Response {
+fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>) -> Response {
     // Name the source before resolving consumes it — recorded only if the install below succeeds, so
     // a rejected swap leaves `get_document` still naming what is actually playing. An install by
     // value has no source to name.
@@ -251,9 +250,23 @@ fn handle_swap(state: &EngineState, source: DocSource, expect: Option<String>) -
             .warnings
             .extend(state.host.publish_render_config(logical, input_channels));
 
-        state.host.reclaim_retired(&mut coordinator);
+        reclaim_retired(&mut coordinator, state.host.as_ref());
     }
     Response::SwapReport(report)
+}
+
+/// Take the retired Engine back from the render side and **drop it here, off the audio thread** —
+/// the deferred free — polling over the gate the host supplies.
+///
+/// A timeout is not fatal and deliberately not reported: the swap has already committed, so giving
+/// up only leaves the retiree in flight for the next swap's reclaim (the "audio isn't consuming
+/// swaps" case). The drop is what frees the retired Engine, and it happens on this thread.
+fn reclaim_retired(coordinator: &mut Coordinator, host: &dyn EngineHost) {
+    let mut give_up = host.retire_poll();
+    match coordinator.reclaim(&mut give_up) {
+        Ok(retiree) => drop(retiree),
+        Err(_) => { /* audio not consuming yet; the next swap or shutdown reclaims it */ }
+    }
 }
 
 /// A rejected swap that never reached the Coordinator (a source read failure): `ok: false`, the

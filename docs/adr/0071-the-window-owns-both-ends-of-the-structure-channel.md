@@ -31,14 +31,16 @@ report, the empty/over-long batch rejections, the "queued, not applied" ack.
 
 **What a host still supplies is what only a host can know**, declared as one seam
 (`engine::EngineHost`) beside the resource seam: what a path resolves to, where a control batch
-goes, what the counters read, how the device output map is republished after a swap, and when the
-retired Engine can be freed. The native crate keeps its listener, its threads, its cpal device map
+goes, what the counters read, how the device output map is republished after a swap, and how long
+the deferred free waits for the retired Engine to come home — a gate the host returns, not the
+Coordinator handed back to it, so the reclaim protocol is not something a second host re-derives.
+The native crate keeps its listener, its threads, its cpal device map
 and its render-callback liveness gate — all of which are host-shell concerns and none of which the
 window could hold without becoming a host itself.
 
 **The advertised roster moves with the verbs.** `tools::CONTRACTS` was in the engine, which
-advertises nothing; the sentence table is a lookup over it, and the two now sit together in the
-window. That closes ADR-0068's "the one source becomes `reuben-api`" for the last surface still
+advertises nothing; it now sits in the window and carries the sentence each verb is advertised by
+as a field, so a contract without a sentence does not compile. That closes ADR-0068's "the one source becomes `reuben-api`" for the last surface still
 outside it, and it is what lets `reuben-mcp` drop `reuben-core` from its manifest entirely — the
 checkbox phase 1 could not tick, because the engine half was still reaching past the window.
 

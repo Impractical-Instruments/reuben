@@ -18,8 +18,9 @@
 //!   render mailbox, so the callback installs Engine + map together. A swapped-in engine binding
 //!   input channels no open stream provides **dark-degrades to silence** with a loud swap-report
 //!   warning, never an error or a crash;
-//! - [`NativeHost::reclaim_retired`] frees the retired Engine on this thread, bounded by a poll
-//!   gate that tells a running device from a stopped one.
+//! - [`NativeHost::retire_poll`] supplies the wait the window's deferred free polls over — a gate
+//!   that tells a running device from a stopped one, so a reclaim that will never land gives up at
+//!   the liveness grace instead of holding the Coordinator lock to the full timeout.
 //!
 //! reuben-native stays **tokio-free** (the async runtime is fenced to reuben-mcp): the server is a
 //! dedicated std thread doing blocking line I/O, never an async runtime.
@@ -36,9 +37,8 @@ use std::time::{Duration, Instant};
 
 use reuben_api::authoring::Diag;
 use reuben_api::engine::{
-    dispatch, ControlMessage, DiagnosticsReport, EngineHost, EngineState, IngressClosed,
+    dispatch, ControlMessage, DiagnosticsReport, EngineHost, IngressClosed, StructureState,
 };
-use reuben_core::coordinator::Coordinator;
 
 use crate::diagnostics::{Diagnostics, Snapshot};
 use crate::osc::{ControlBatch, OscIn};
@@ -183,7 +183,7 @@ impl SwapPollGate {
 pub trait RenderConfigPublisher: Send + Sync {
     /// Publish the render config for the just-installed engine with `logical` output channels and
     /// `input_channels` input channels, and return any dark-degrade warnings to fold into the
-    /// [`SwapReport`].
+    /// [`SwapReport`](reuben_api::engine::SwapReport).
     fn publish(&self, logical: usize, input_channels: usize) -> Vec<Diag>;
 
     /// The render callback's [`RenderLiveness`] (callback counter + period), or `None` if this
@@ -325,8 +325,18 @@ impl EngineHost for NativeHost {
         self.render_config.publish(logical, input_channels)
     }
 
-    fn reclaim_retired(&self, coordinator: &mut Coordinator) {
-        reclaim_retired_engine(coordinator, || self.render_config.render_liveness());
+    /// Polls the retire slot with a 1ms back-off (the window is OS-free; the clock is ours),
+    /// bounded by a [`SwapPollGate`]: at most [`SWAP_RECLAIM_TIMEOUT`] while the callback keeps
+    /// ticking, but only the liveness grace once the render callback has stopped ticking. With a
+    /// live callback the retiree comes home in one master-gain ramp (~20ms), so the bound only
+    /// bites when audio has genuinely stopped.
+    fn retire_poll(&self) -> Box<dyn FnMut() -> bool + Send + '_> {
+        let liveness = || self.render_config.render_liveness();
+        let mut gate = SwapPollGate::start(liveness(), SWAP_RECLAIM_TIMEOUT);
+        Box::new(move || {
+            std::thread::sleep(Duration::from_millis(1));
+            gate.give_up(liveness().map(|l| l.callbacks))
+        })
     }
 }
 
@@ -355,31 +365,9 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
     }
 }
 
-/// Reclaim the retired [`InstallBundle`](reuben_core::coordinator::InstallBundle) the RT callback
-/// posted back and **drop it here, off the audio thread** — the deferred free. Polls the
-/// retire slot with a 1ms back-off (the caller supplies the clock; core is OS-free), bounded by the
-/// [`SwapPollGate`]: at most [`SWAP_RECLAIM_TIMEOUT`] while the callback keeps ticking, but only the
-/// liveness grace once `liveness` shows audio has stopped ticking. A timeout is
-/// not fatal: the swap already committed, so it just leaves the retiree in flight for the next swap's
-/// opportunistic reclaim — the "audio isn't consuming swaps" case.
-fn reclaim_retired_engine(
-    coordinator: &mut Coordinator,
-    liveness: impl Fn() -> Option<RenderLiveness>,
-) {
-    let mut gate = SwapPollGate::start(liveness(), SWAP_RECLAIM_TIMEOUT);
-    match coordinator.reclaim(|| {
-        std::thread::sleep(Duration::from_millis(1));
-        gate.give_up(liveness().map(|l| l.callbacks))
-    }) {
-        // Dropping the reclaimed bundle frees the retired Engine here, off the render thread.
-        Ok(retiree) => drop(retiree),
-        Err(_) => { /* audio not consuming yet; the next swap or shutdown reclaims it */ }
-    }
-}
-
 /// A running loopback structure server: a std thread accepting connections, one handler thread
 /// per connection, all joined on [`shutdown`](Self::shutdown) (or `Drop`). Holds no audio state
-/// — it only reads the shared [`EngineState`] — so it starts and stops independently of the
+/// — it only reads the shared [`StructureState`] — so it starts and stops independently of the
 /// audio device, which is what lets it be exercised end-to-end in tests.
 pub struct StructureServer {
     local_addr: SocketAddr,
@@ -392,7 +380,7 @@ impl StructureServer {
     /// an ephemeral port (read it back with [`local_addr`](Self::local_addr)); this is how tests
     /// avoid port collisions. Binding a non-loopback address is the caller's mistake — the
     /// structure channel must not be network-exposed — but not enforced here.
-    pub fn bind<A: ToSocketAddrs>(addr: A, state: EngineState) -> std::io::Result<Self> {
+    pub fn bind<A: ToSocketAddrs>(addr: A, state: StructureState) -> std::io::Result<Self> {
         let listener = TcpListener::bind(addr)?;
         // Non-blocking so the accept loop can poll its shutdown flag with no client connected.
         listener.set_nonblocking(true)?;
@@ -453,7 +441,7 @@ fn wake_and_join(handle: JoinHandle<()>, wake: Option<TcpStream>) {
 /// blocking handler per connection. On shutdown, wake each live handler (a socket `shutdown`
 /// unblocks its `read_line`) and join it, so no idle client keeps the process alive — the exact
 /// hang `play`'s old `loop { thread::park() }` had, removed.
-fn accept_loop(listener: TcpListener, state: EngineState, shutdown: Arc<AtomicBool>) {
+fn accept_loop(listener: TcpListener, state: StructureState, shutdown: Arc<AtomicBool>) {
     // (join handle, a clone of the socket used only to wake the handler at shutdown).
     let mut handlers: Vec<(JoinHandle<()>, Option<TcpStream>)> = Vec::new();
     while !shutdown.load(Ordering::SeqCst) {
@@ -501,7 +489,7 @@ fn accept_loop(listener: TcpListener, state: EngineState, shutdown: Arc<AtomicBo
 /// order, until the client closes or shutdown wakes the blocked read. Blocking
 /// reads keep the framing exact; a blank line is framing noise, not a request, so it draws no
 /// response.
-fn handle_connection(stream: TcpStream, state: EngineState, shutdown: Arc<AtomicBool>) {
+fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<AtomicBool>) {
     // Time-bound each read so the handler wakes to observe `shutdown` itself, rather than
     // depending on the accept thread's `shutdown(Shutdown::Both)` to unblock it — a wake that
     // does not reach a blocked recv on Windows (see [`READ_POLL`]). A timeout on a stream socket
@@ -557,7 +545,9 @@ fn handle_connection(stream: TcpStream, state: EngineState, shutdown: Arc<Atomic
 mod tests {
     use super::*;
     use crate::test_support::FakeCallback;
-    use reuben_api::engine::{ControlArg, DocSource, Request, Response, MAX_SEND_BATCH};
+    use reuben_api::engine::{
+        ControlArg, Coordinator, DocSource, Request, Response, MAX_SEND_BATCH,
+    };
     use reuben_core::resources::MemoryResolver;
     use reuben_core::{Arg, AudioConfig, Registry};
 
@@ -598,7 +588,7 @@ mod tests {
     const BAD_DOC: &str = r#"{"format_version":3,"instrument":"bad",
         "nodes":[{"type":"no_such_operator","address":"/x"}]}"#;
 
-    /// A Coordinator-backed [`EngineState`] with a live [`FakeCallback`] draining its mailbox
+    /// A Coordinator-backed [`StructureState`] with a live [`FakeCallback`] draining its mailbox
     /// and its control ingress, plus the base document's content hash. `opened_input_channels` sets
     /// the headless render config's input-stream geometry (`0` = output-only, so an input-binding
     /// swap dark-degrades).
@@ -608,7 +598,7 @@ mod tests {
     fn swap_fixture(
         base: &str,
         opened_input_channels: usize,
-    ) -> (EngineState, FakeCallback, String) {
+    ) -> (StructureState, FakeCallback, String) {
         let (coordinator, side, _warnings) = Coordinator::install_initial(
             base,
             Registry::builtin(),
@@ -623,7 +613,7 @@ mod tests {
                 opened_input_channels,
             },
         ));
-        let state = EngineState::new(coordinator, Arc::new(host));
+        let state = StructureState::new(coordinator, Arc::new(host));
         (state, FakeCallback::spawn(side, control_rx), base_hash)
     }
 
@@ -677,7 +667,7 @@ mod tests {
     /// `get_document` never names a document that is not playing.
     #[test]
     fn installed_source_follows_the_install_and_a_rejected_swap_leaves_it_alone() {
-        fn source_of(state: &EngineState) -> Option<String> {
+        fn source_of(state: &StructureState) -> Option<String> {
             match dispatch(state, &Request::GetDocument.to_ndjson()) {
                 Response::Document(snapshot) => snapshot.source,
                 other => panic!("expected Document, got {other:?}"),
@@ -708,7 +698,7 @@ mod tests {
                 opened_input_channels: 0,
             },
         ));
-        let state = EngineState::new(coordinator, Arc::new(host))
+        let state = StructureState::new(coordinator, Arc::new(host))
             .with_installed_source(Some("initial.json".to_string()));
         let cb = FakeCallback::spawn(side, control_rx);
 
@@ -780,7 +770,7 @@ mod tests {
         // This verb never touches control, but the ingress is a constructor parameter now — there
         // is no such thing as a host that cannot serve `send`.
         let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
-        let state = EngineState::new(
+        let state = StructureState::new(
             coordinator,
             Arc::new(NativeHost::new(Arc::clone(&diagnostics), control_tx)),
         );
@@ -1242,7 +1232,7 @@ mod tests {
                 opened_input_channels: 0,
             },
         ));
-        let state = EngineState::new(coordinator, Arc::new(host));
+        let state = StructureState::new(coordinator, Arc::new(host));
 
         let start = Instant::now();
         let resp = dispatch(

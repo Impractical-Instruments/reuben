@@ -22,8 +22,8 @@ use super::result::{
     CurrentInstrument, EngineStatus, SendOutput, SidecarInfo, StatusEndpoints, SwapResult,
 };
 use super::wire::{
-    ControlArg, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot, SwapReport,
-    MAX_SEND_BATCH,
+    over_long_batch_refusal, ControlArg, ControlMessage, DiagnosticsReport, DocSource,
+    DocumentSnapshot, SwapReport, EMPTY_BATCH_REFUSAL, MAX_SEND_BATCH,
 };
 
 /// Audition a batch of control values on the running engine.
@@ -34,17 +34,14 @@ pub fn send_live_controls(
     args: &SendLiveControls,
     channel: &Channel,
 ) -> Result<Answer<SendOutput>, Refusal> {
-    // Belt-and-braces against a client that skips schema validation. The engine enforces both
-    // bounds too — this only makes the message one the caller can act on.
+    // Belt-and-braces against a client that skips schema validation: refusing here costs no round
+    // trip. The server enforces both bounds too, in the same words — it cannot trust that a client
+    // checked.
     if args.messages.is_empty() {
-        return Err(Refusal::new("`send` requires at least one message."));
+        return Err(Refusal::new(EMPTY_BATCH_REFUSAL));
     }
     if args.messages.len() > MAX_SEND_BATCH {
-        return Err(Refusal::new(format!(
-            "`send` takes at most {MAX_SEND_BATCH} messages ({} given); split the gesture \
-             across several sends.",
-            args.messages.len()
-        )));
+        return Err(Refusal::new(over_long_batch_refusal(args.messages.len())));
     }
     let mut messages = Vec::with_capacity(args.messages.len());
     for (i, message) in args.messages.iter().enumerate() {

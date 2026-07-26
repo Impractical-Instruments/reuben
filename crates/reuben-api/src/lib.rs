@@ -21,7 +21,7 @@
 //! bytes, so the engine calls back out through [`authoring::Resources`], and [`fs_resolver`] is a
 //! filesystem implementation to share rather than reimplement, behind a default-off feature. The
 //! other is [`engine::EngineHost`]: the device map, the counters, the control ingress and the
-//! deferred free that only a host can know about.
+//! clock the deferred free waits on — what only a host can know.
 //!
 //! see rules: agent-mcp
 
