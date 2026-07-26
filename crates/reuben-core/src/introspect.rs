@@ -19,7 +19,6 @@ use serde::Serialize;
 
 /// One operator's self-description, flattened from its descriptor for agent grounding.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct OperatorInfo {
     pub type_name: String,
     /// The whole input surface as one list: runtime inputs first, then plan-time `Constant` ports
@@ -37,7 +36,6 @@ pub struct OperatorInfo {
 /// appears only where the port's type carries it: `default`/`min`/`max`/`unit`/`curve` for a swept
 /// scalar, `default`/`min`/`max` for an integer, `default`/`variants` for an enum.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct PortInfo {
     pub name: String,
     /// The port's type as the glossary's word: `"value"` (a held `f32` Value),
@@ -302,7 +300,6 @@ pub fn describe_compact(registry: &Registry, which: Option<&str>) -> Result<Vec<
 /// presentational fields (label/unit/widget). This is the introspection view of the boundary face a
 /// `subpatch` node presents.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct PatchBoundary {
     /// The document's `instrument` name.
     pub instrument: String,
@@ -1239,37 +1236,6 @@ decay:f32 s=0.1, gate:f32=0, release:f32 s=0.08, sustain:f32=0, sweep:f32 Hz=220
         let err = library_index_line(json, &Registry::builtin(), &MemoryResolver::new())
             .expect_err("a broken document must not index");
         assert!(err.contains("oscilllator"), "names the bad type: {err}");
-    }
-
-    /// rmcp derives tool `outputSchema`s from these view types via
-    /// schemars, under the same default-off feature as the contract types. Run with
-    /// `--features schemars`.
-    #[cfg(feature = "schemars")]
-    #[test]
-    fn view_types_expose_json_schemas_under_the_feature() {
-        let schema = serde_json::to_value(schemars::schema_for!(OperatorInfo)).expect("schema");
-        let props = schema["properties"]
-            .as_object()
-            .expect("OperatorInfo schema has properties");
-        for field in ["type_name", "inputs", "outputs", "resources"] {
-            assert!(props.contains_key(field), "missing {field}: {schema}");
-        }
-        // The port lists reference the shared PortInfo shape.
-        let port = &schema["$defs"]["PortInfo"]["properties"];
-        for field in ["name", "kind", "default", "min", "max", "variants"] {
-            assert!(
-                port.as_object().is_some_and(|p| p.contains_key(field)),
-                "PortInfo schema missing {field}: {schema}"
-            );
-        }
-
-        let schema = serde_json::to_value(schemars::schema_for!(PatchBoundary)).expect("schema");
-        let props = schema["properties"]
-            .as_object()
-            .expect("PatchBoundary schema has properties");
-        for field in ["instrument", "inputs", "outputs", "warnings"] {
-            assert!(props.contains_key(field), "missing {field}: {schema}");
-        }
     }
 
     #[test]

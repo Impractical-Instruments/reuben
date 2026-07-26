@@ -10,7 +10,6 @@
 //! [`remove_instrument_interface_input`] delete an address the rest of the document may still name,
 //! so they cascade: they auto-unwire every consumer and report exactly what they broke in
 //! [`EditResult::notes`]; [`rename_instrument_node`] rewrites those refs instead of dropping them.
-//! [`VERB_COVERAGE`] proves every leaf field of the format has a verb that can write it.
 //!
 //! see rules: agent-mcp
 
@@ -30,12 +29,9 @@ use crate::projection::{Projector, Selection};
 use crate::resources::{ResolveError, ResourceResolver};
 use crate::Registry;
 
-/// The shape every document-manipulation verb returns.
-///
-/// Derives `schemars::JsonSchema` behind the default-off `schemars` feature so a door can advertise
-/// it as one `outputSchema`; the play/CLI build never compiles schemars.
+/// The shape every document-manipulation verb returns — internal, and not the shape a door
+/// advertises: the window declares its own, and only that one is serialized onto a wire.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct EditResult {
     /// The whole-document validation report. `ok` is the write decision: `true` means the edit
     /// passed and was persisted; `false` means nothing was written and `errors` says why.
@@ -880,164 +876,6 @@ pub fn remove_instrument_resource(
         Ok(Applied::clean(Echo::Resources))
     })
 }
-
-// --- the completeness guard ----------------------------------------------------------------------
-
-/// The write-side coverage table: every leaf field of the instrument format, dispositioned into the
-/// verb (or verbs) that can write it — or an explicit `omit:` reason for a field no verb reaches
-/// (stamped by the writer, a v1-only migration form, or retired presentation). This is the write-side
-/// mirror of the projection's [`FIELD_COVERAGE`](crate::projection::FIELD_COVERAGE): the guard below
-/// walks the real [`InstrumentDoc`] schema and fails the build when the format grows a field no verb
-/// can reach, making "the vocabulary is complete" a mechanical fact rather than a claim.
-///
-/// The interface maps enumerate **one untagged union** ([`InterfaceEntry`]) under both `inputs` and
-/// `outputs`, so each map lists every variant's fields; a field belonging only to the *other*
-/// variant appears here as an `omit:` — the input map can never carry a `Feed`'s `from`, nor the
-/// output map a `Pipe`'s `type`/`default`/`curve`.
-pub const VERB_COVERAGE: &[(&str, &str)] = &[
-    // --- the document itself ---
-    (
-        "format_version",
-        "omit:stamped as the current FORMAT_VERSION on every save; never agent-set",
-    ),
-    ("instrument", "new_instrument, set_instrument_name"),
-    ("doc", "set_instrument_description"),
-    (
-        "resources{}",
-        "add_instrument_resource, remove_instrument_resource",
-    ),
-    // --- nodes ---
-    ("nodes[].type", "add_instrument_node"),
-    (
-        "nodes[].address",
-        "add_instrument_node, rename_instrument_node",
-    ),
-    (
-        "nodes[].doc",
-        "add_instrument_node, set_instrument_node_description",
-    ),
-    (
-        "nodes[].config{}",
-        "add_instrument_node, set_instrument_constant",
-    ),
-    (
-        "nodes[].inputs{}",
-        "add_instrument_node, set_instrument_input, unwire_instrument_input",
-    ),
-    (
-        "nodes[].inputs{}.from",
-        "add_instrument_node, wire_instrument_input",
-    ),
-    ("nodes[].sample", "add_instrument_node"),
-    ("nodes[].voice", "add_instrument_node"),
-    ("nodes[].patch", "add_instrument_node"),
-    (
-        "nodes[].control",
-        "omit:retired deserialize-only sink (drained to a deprecation warning at the mint)",
-    ),
-    // --- v1-only master-tap list: migrated into interface.outputs, never written back ---
-    (
-        "outputs[].node",
-        "omit:v1-only, migrated into interface.outputs",
-    ),
-    (
-        "outputs[].port",
-        "omit:v1-only, migrated into interface.outputs",
-    ),
-    (
-        "outputs[].channel",
-        "omit:v1-only, migrated into interface.outputs",
-    ),
-    // --- interface inputs (the Pipe variant is the real one here) ---
-    (
-        "interface.inputs{}",
-        "omit:v1-only bare Target string form (migrated at the mint)",
-    ),
-    ("interface.inputs{}.type", "add_instrument_interface_input"),
-    (
-        "interface.inputs{}.channel",
-        "add_instrument_interface_input, set_instrument_interface_input_meta",
-    ),
-    (
-        "interface.inputs{}.default",
-        "add_instrument_interface_input, set_instrument_interface_input_meta",
-    ),
-    (
-        "interface.inputs{}.min",
-        "add_instrument_interface_input, set_instrument_interface_input_meta",
-    ),
-    (
-        "interface.inputs{}.max",
-        "add_instrument_interface_input, set_instrument_interface_input_meta",
-    ),
-    (
-        "interface.inputs{}.curve",
-        "add_instrument_interface_input, set_instrument_interface_input_meta",
-    ),
-    (
-        "interface.inputs{}.unit",
-        "add_instrument_interface_input, set_instrument_interface_input_meta",
-    ),
-    (
-        "interface.inputs{}.from",
-        "omit:Feed-variant field; an input pipe never carries `from` (untagged-union artifact)",
-    ),
-    ("interface.inputs{}.target", "omit:v1-only migration form"),
-    (
-        "interface.inputs{}.label",
-        "omit:retired presentation, lives in a surface doc",
-    ),
-    (
-        "interface.inputs{}.widget",
-        "omit:retired presentation, lives in a surface doc",
-    ),
-    // --- interface outputs (the Feed variant is the real one here) ---
-    (
-        "interface.outputs{}",
-        "omit:v1-only bare Target string form (migrated at the mint)",
-    ),
-    (
-        "interface.outputs{}.type",
-        "omit:Pipe-variant field; an output pipe never carries `type` (untagged-union artifact)",
-    ),
-    (
-        "interface.outputs{}.channel",
-        "add_instrument_interface_output, set_instrument_interface_output_meta",
-    ),
-    (
-        "interface.outputs{}.default",
-        "omit:Pipe-variant field; an output pipe never carries `default` (untagged-union artifact)",
-    ),
-    (
-        "interface.outputs{}.min",
-        "add_instrument_interface_output, set_instrument_interface_output_meta",
-    ),
-    (
-        "interface.outputs{}.max",
-        "add_instrument_interface_output, set_instrument_interface_output_meta",
-    ),
-    (
-        "interface.outputs{}.curve",
-        "omit:Pipe-variant field; an output pipe never carries `curve` (untagged-union artifact)",
-    ),
-    (
-        "interface.outputs{}.unit",
-        "add_instrument_interface_output, set_instrument_interface_output_meta",
-    ),
-    (
-        "interface.outputs{}.from",
-        "add_instrument_interface_output",
-    ),
-    ("interface.outputs{}.target", "omit:v1-only migration form"),
-    (
-        "interface.outputs{}.label",
-        "omit:retired presentation, lives in a surface doc",
-    ),
-    (
-        "interface.outputs{}.widget",
-        "omit:retired presentation, lives in a surface doc",
-    ),
-];
 
 #[cfg(test)]
 mod tests;

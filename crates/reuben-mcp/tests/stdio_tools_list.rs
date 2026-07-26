@@ -1,10 +1,14 @@
 //! Integration test for the MCP stdio wire surface: spawn the real shim binary, complete the
-//! `initialize` handshake, and assert `tools/list` advertises exactly the declared contract roster
-//! over newline-delimited JSON-RPC, then scan every advertised description for markup that only a
-//! Rust reader can resolve. The expected set is derived from the single-source
-//! `reuben_api::tools::CONTRACTS` roster, not hand-typed here.
+//! `initialize` handshake, and read `tools/list` over newline-delimited JSON-RPC to assert what only
+//! the wire can answer — every roster verb carries an `outputSchema` and the window's own sentence —
+//! then scan every advertised description for markup that only a Rust reader can resolve.
 //!
-//! see rules: agent-mcp
+//! What is *not* here is a roster parity test. It used to be, and it is the door's construction that
+//! replaced it: `stamp_window_prose` walks the built router against
+//! `reuben_api::tools::CONTRACTS` in both directions and refuses to start on a mismatch, so a
+//! surface that is not the roster cannot reach this wire to be observed.
+//!
+//! see rules: agent-mcp, code-as-grounding
 
 use std::io::{Read, Write};
 use std::process::{Command, Stdio};
@@ -68,43 +72,8 @@ fn response_with_id(out: &str, id: u64) -> serde_json::Value {
 }
 
 #[test]
-fn advertises_the_declared_roster_over_stdio() {
-    let out = drive(&[TOOLS_LIST]);
-    let response = response_with_id(&out, 2);
-
-    let advertised: Vec<String> = response["result"]["tools"]
-        .as_array()
-        .unwrap_or_else(|| panic!("tools/list result missing a tools array:\n{response}"))
-        .iter()
-        .map(|tool| {
-            tool["name"]
-                .as_str()
-                .expect("each tool advertises a string name")
-                .to_string()
-        })
-        .collect();
-
-    for expected in reuben_mcp::tool_names() {
-        assert!(
-            advertised.iter().any(|name| name == expected),
-            "tools/list is missing `{expected}`; advertised: {advertised:?}"
-        );
-    }
-    // Parity: the advertised list is produced by a separate process over stdio, so it can only be
-    // observed and never generated — this is the one place both sides exist at once. What that
-    // buys is narrower than the green check suggests: the expected names come from the
-    // single-source roster, so this proves the door advertises them, not that anything behind a
-    // name agrees across doors.
-    assert_eq!(
-        advertised.len(),
-        reuben_mcp::tool_names().len(),
-        "tools/list must advertise exactly the declared contract roster, got: {advertised:?}"
-    );
-}
-
-#[test]
 fn every_tool_advertises_an_output_schema() {
-    // Every tool declares an `outputSchema` (rmcp derives it from the contract types
+    // Every tool declares an `outputSchema` (rmcp derives it from the window's own result types
     // via schemars). Asserting the whole roster over the wire also proves the shim STARTS — the
     // engine tools' `schema_for_output` calls run at router construction, so a schema that failed
     // to derive would panic the binary before it could answer this request.

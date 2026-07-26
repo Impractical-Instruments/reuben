@@ -1,7 +1,7 @@
-//! The contract serde types every conversational door serializes: [`Diag`]/[`Report`], the swap
-//! [`DiffSummary`] and [`SwapReport`], and the [`content_hash`] over a document's canonical
-//! bytes. Every type derives serde both ways, plus `schemars::JsonSchema` behind the default-off
-//! `schemars` feature so rmcp can emit `outputSchema` without the play/CLI build paying for it.
+//! The engine's own report types: [`Diag`]/[`Report`], the swap [`DiffSummary`] and [`SwapReport`],
+//! and the [`content_hash`] over a document's canonical bytes. They still derive serde both ways for
+//! core's own round-trip tests, but none of them is a wire type any more and no schema is derived
+//! here: the window declares the shape a door advertises and converts these into it.
 //! see rules: agent-mcp
 
 use serde::{Deserialize, Serialize};
@@ -36,7 +36,6 @@ fn fnv1a_64(bytes: &[u8]) -> u64 {
 /// One diagnostic — an error or a warning — with the offending node/port when the loader
 /// localized it, so an agent can jump straight to the offending node.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Diag {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub node: Option<String>,
@@ -116,7 +115,6 @@ impl Diag {
 // tools, so a model reads it. Keep it prose a model can act on — no pointers, no rustdoc links, and
 // nothing added here that you would not say to a model. see rules: code-as-grounding
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Report {
     pub ok: bool,
     pub errors: Vec<Diag>,
@@ -136,7 +134,6 @@ pub struct Report {
 //
 // see rules: execution-runtime
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DiffSummary {
     pub survived: usize,
     pub state_reset: Vec<String>,
@@ -149,7 +146,6 @@ pub struct DiffSummary {
 /// still names what keeps playing), and, on success, the [`DiffSummary`]. The `Report`
 /// flattens so the wire shape is one flat object — see rules: agent-mcp.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct SwapReport {
     #[serde(flatten)]
     pub report: Report,
@@ -310,35 +306,6 @@ mod tests {
         );
         let back: SwapReport = serde_json::from_value(v).expect("deserialize");
         assert_eq!(back, report);
-    }
-
-    /// rmcp derives each tool's `outputSchema` from these types via schemars,
-    /// so contract drift is a compile-time concern. Run with `--features schemars`.
-    #[cfg(feature = "schemars")]
-    #[test]
-    fn report_schema_has_ok_errors_warnings() {
-        let schema = serde_json::to_value(schemars::schema_for!(Report)).expect("schema");
-        let props = schema["properties"]
-            .as_object()
-            .expect("Report schema has properties");
-        for field in ["ok", "errors", "warnings"] {
-            assert!(props.contains_key(field), "missing {field}: {schema}");
-        }
-        let required = schema["required"].as_array().expect("required list");
-        for field in ["ok", "errors", "warnings"] {
-            assert!(
-                required.contains(&serde_json::json!(field)),
-                "{field} must be required: {schema}"
-            );
-        }
-        // The Diag items localize on optional node/port.
-        let diag = &schema["$defs"]["Diag"]["properties"];
-        for field in ["node", "port", "message"] {
-            assert!(
-                diag.as_object().is_some_and(|p| p.contains_key(field)),
-                "Diag schema missing {field}: {schema}"
-            );
-        }
     }
 
     #[test]
