@@ -167,7 +167,8 @@ impl SwapPollGate {
 /// Publish the render-side config for a freshly-installed engine and report any dark-degrade
 /// warnings — the **native device seam** of the mailbox swap.
 ///
-/// After [`Coordinator::swap_document`] commits, this rebuilds the device **output map**
+/// After [`Coordinator::swap_document`](reuben_api::engine::Coordinator::swap_document) commits,
+/// this rebuilds the device **output map**
 /// off-thread against the *retained* device channel count (streams are fixed at `play` start)
 /// and ships it across the render mailbox to the RT callback, so the callback
 /// installs Engine + map together. It also decides the **input dark-degrade**: a swapped-in
@@ -217,7 +218,7 @@ impl RenderConfigPublisher for HeadlessRenderConfig {
     }
 
     /// No device, no render callback: report no liveness, so a swap's reclaim bails at the floor
-    /// grace instead of spinning the full timeout (the [`FakeCallback`] tests drive real consumption,
+    /// grace instead of spinning the full timeout (the `FakeCallback` tests drive real consumption,
     /// so their reclaims complete before the gate is ever consulted).
     fn render_liveness(&self) -> Option<RenderLiveness> {
         None
@@ -349,7 +350,7 @@ impl EngineHost for NativeHost {
 /// (non-exhaustive, no `..`); add a field to [`DiagnosticsReport`] and the struct literal stops
 /// compiling (missing field). Either drift is a build break here, not a runtime surprise. The
 /// behavioral half — that each counter maps to the *right* field — is
-/// [`tests::diagnostics_report_maps_every_counter_field_for_field`].
+/// `tests::diagnostics_report_maps_every_counter_field_for_field`.
 pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
     let Snapshot {
         output_xruns,
