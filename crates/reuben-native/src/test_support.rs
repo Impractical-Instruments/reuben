@@ -11,8 +11,8 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use reuben_api::authoring::{ResolveError, Resources, SampleBuffer};
 use reuben_api::render::{RenderSide, RenderSlot};
+use reuben_api::resources::{ResolveError, Resources, SampleBuffer};
 
 use crate::osc::{ControlBatch, OscIn};
 

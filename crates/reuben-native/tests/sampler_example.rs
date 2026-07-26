@@ -6,8 +6,8 @@
 
 use std::path::PathBuf;
 
-use reuben_api::authoring::{ResolveError, Resources, SampleBuffer};
 use reuben_api::render::{install_initial, Arg, AudioConfig, RenderSlot};
+use reuben_api::resources::{ResolveError, Resources, SampleBuffer};
 use reuben_api::FsResolver;
 
 /// Absolute path to this crate's frozen test fixtures, independent of test CWD.
@@ -25,8 +25,9 @@ fn sampler_loads_resolves_wav_and_plays_a_note() {
     let dir = fixtures_dir();
     let json = std::fs::read_to_string(dir.join("sampler.json")).expect("read sampler.json");
 
+    let cfg = cfg();
     let (_coordinator, side, warnings) =
-        install_initial(&json, FsResolver::new(&dir), cfg()).expect("install sampler.json");
+        install_initial(&json, FsResolver::new(&dir), cfg).expect("install sampler.json");
     // The blip resolves cleanly — no warnings on the worked example.
     assert!(
         warnings.is_empty(),
@@ -38,8 +39,8 @@ fn sampler_loads_resolves_wav_and_plays_a_note() {
     // an OSC datagram arrives in; the slot types it against the destination port.
     slot.queue_osc("/voicer/notes", &[Arg::F32(57.0), Arg::F32(1.0)]);
 
-    let blocks = (cfg().sample_rate * 0.25) as usize / cfg().block_size;
-    let mut buf = vec![0.0f32; cfg().block_size * slot.channels()];
+    let blocks = (cfg.sample_rate * 0.25) as usize / cfg.block_size;
+    let mut buf = vec![0.0f32; cfg.block_size * slot.channels()];
     let mut peak = 0.0f32;
     for _ in 0..blocks {
         slot.fill(&mut buf);
@@ -60,8 +61,9 @@ fn sampler_arp_self_plays_a_sequenced_arpeggio() {
     let json =
         std::fs::read_to_string(dir.join("sampler-arp.json")).expect("read sampler-arp.json");
 
+    let cfg = cfg();
     let (_coordinator, side, warnings) =
-        install_initial(&json, FsResolver::new(&dir), cfg()).expect("install sampler-arp.json");
+        install_initial(&json, FsResolver::new(&dir), cfg).expect("install sampler-arp.json");
     assert!(
         warnings.is_empty(),
         "unexpected load warnings: {warnings:?}"
@@ -69,8 +71,8 @@ fn sampler_arp_self_plays_a_sequenced_arpeggio() {
 
     // ~1 s at 132 BPM is ~2.2 beats — several arpeggio steps fire with no input.
     let mut slot = RenderSlot::new(side);
-    let blocks = cfg().sample_rate as usize / cfg().block_size;
-    let mut buf = vec![0.0f32; cfg().block_size * slot.channels()];
+    let blocks = cfg.sample_rate as usize / cfg.block_size;
+    let mut buf = vec![0.0f32; cfg.block_size * slot.channels()];
     let mut peak = 0.0f32;
     for _ in 0..blocks {
         slot.fill(&mut buf);
@@ -133,12 +135,13 @@ fn missing_sample_warns_but_still_loads() {
     }"#;
     let store = GhostVoiceStore(FsResolver::new(fixtures_dir()));
 
-    let (_coordinator, side, warnings) = install_initial(json, store, cfg()).expect("loads anyway");
+    let cfg = cfg();
+    let (_coordinator, side, warnings) = install_initial(json, store, cfg).expect("loads anyway");
     assert_eq!(warnings.len(), 1, "expected one resolve warning");
 
     let mut slot = RenderSlot::new(side);
     slot.queue_osc("/voicer/notes", &[Arg::F32(60.0), Arg::F32(1.0)]);
-    let mut buf = vec![0.0f32; cfg().block_size * slot.channels()];
+    let mut buf = vec![0.0f32; cfg.block_size * slot.channels()];
     slot.fill(&mut buf);
     assert!(
         buf.iter().all(|&s| s == 0.0),

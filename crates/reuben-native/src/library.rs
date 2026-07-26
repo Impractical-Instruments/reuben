@@ -34,8 +34,7 @@ pub fn generate_library_index(instruments_dir: &Path) -> Result<String, String> 
         // Document-scoped: the store answers for the document itself by the source as spelled, and
         // for its references from the document's own directory.
         let store = FsResolver::for_document(&source).stat_only();
-        let line =
-            library_index_line(&source, &store).map_err(|e| format!("{}: {e}", path.display()))?;
+        let line = library_index_line(&source, &store).map_err(|e| format!("{source}: {e}"))?;
         lines.push(line);
     }
     // Every line leads with its instrument name, so sorting lines is sorting by name — the

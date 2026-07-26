@@ -53,6 +53,16 @@ def _dependency_tables(table: dict, trail: str = "") -> list[tuple[str, dict]]:
     return found
 
 
+def _renamed_package(spec: object) -> str | None:
+    """The real crate behind a renamed dependency (`engine = { package = "reuben-core", … }`).
+
+    A key match alone is not the check: Cargo's rename is one line and reintroduces the edge under
+    a name of the author's choosing, which is exactly the shape a guard that reads keys would wave
+    through.
+    """
+    return spec.get("package") if isinstance(spec, dict) else None
+
+
 def collect_problems(root_arg: str = ".") -> list[str]:
     root = Path(root_arg)
     problems: list[str] = []
@@ -71,11 +81,15 @@ def collect_problems(root_arg: str = ".") -> list[str]:
             continue
         # The engine's own manifest names itself in `[package]`, which is not a build edge.
         for table_name, deps in _dependency_tables(manifest):
-            if PRIVATE_CRATE in deps:
+            for key, spec in deps.items():
+                if key != PRIVATE_CRATE and _renamed_package(spec) != PRIVATE_CRATE:
+                    continue
+                spelling = key if key == PRIVATE_CRATE else f'{key} = {{ package = "{PRIVATE_CRATE}" }}'
                 problems.append(
-                    f"{rel}: [{table_name}] names {PRIVATE_CRATE} — every consumer reaches the "
-                    f"engine through reuben-api, so take the window's dependency instead (add "
-                    f"what is missing to reuben-api rather than reaching past it)"
+                    f"{rel}: [{table_name}] names {PRIVATE_CRATE} (as `{spelling}`) — every "
+                    f"consumer reaches the engine through reuben-api, so take the window's "
+                    f"dependency instead (add what is missing to reuben-api rather than "
+                    f"reaching past it)"
                 )
     return problems
 

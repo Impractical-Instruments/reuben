@@ -129,6 +129,18 @@ fn within<F: FnOnce() + Send + 'static>(secs: u64, f: F) {
     );
 }
 
+/// The content hash `doc` should carry, computed **off the wire**: a second install of the same
+/// document in this process, read back through the window.
+///
+/// Independent of the responses under test, which is the point — comparing a served hash against
+/// another served hash only proves two answers agree, and would pass a channel that reported the
+/// wrong document's hash consistently.
+fn expected_hash(doc: &str) -> String {
+    let (coordinator, _side, _warnings) =
+        render::install_initial(doc, NoResources, cfg()).expect("install for the expected hash");
+    coordinator.installed_hash()
+}
+
 #[test]
 fn serves_the_three_verbs_over_loopback_ndjson_in_order() {
     let (state, cb, base_hash) = wired(BASE_DOC, 0);
@@ -300,8 +312,9 @@ fn swap_over_the_wire_installs_via_the_mailbox_with_real_survivor_stats() {
                 "a by-value swap leaves no source behind either"
             );
             assert_eq!(document["instrument"], serde_json::json!("eg"));
-            // The hash the swap reported is the hash the served document carries: two responses
-            // over one wire, agreeing about what is installed.
+            assert_eq!(hash, expected_hash(&envelope_doc("/eg")));
+            // …and the swap that installed it reported that same hash, so the two responses agree
+            // with each other *and* with what the document actually hashes to.
             assert_eq!(hash, renamed_hash);
             assert_ne!(hash, base_hash, "the swap changed the installed document");
         }

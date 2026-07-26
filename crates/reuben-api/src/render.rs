@@ -19,7 +19,6 @@
 //!
 //! see rules: execution-runtime
 
-use reuben_core::coordinator::Coordinator as CoreCoordinator;
 use reuben_core::Registry;
 
 use crate::resources::{OwnedAdapter, Resources};
@@ -66,7 +65,7 @@ pub fn install_initial<R: Resources + Send + 'static>(
     resources: R,
     config: AudioConfig,
 ) -> Result<(Coordinator, RenderSide, Vec<LoadWarning>), FromDocumentError> {
-    CoreCoordinator::install_initial(
+    Coordinator::install_initial(
         doc_json,
         Registry::builtin(),
         Box::new(OwnedAdapter(resources)),

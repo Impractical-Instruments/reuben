@@ -52,6 +52,44 @@ class CorePrivacyGuardTest(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("[dependencies]", problems[0])
 
+    def test_a_renamed_dependency_is_flagged(self):
+        # Cargo's rename is one line and reintroduces the edge under any name the author likes —
+        # the one legal spelling a key-matching guard would wave through.
+        problems = self._problems({
+            "crates/reuben-native/Cargo.toml":
+                '[package]\nname = "reuben-native"\n\n'
+                '[dependencies]\nengine = { package = "reuben-core", path = "../reuben-core" }\n',
+        })
+        self.assertEqual(len(problems), 1)
+        self.assertIn('engine = { package = "reuben-core" }', problems[0])
+
+    def test_a_dependency_that_merely_shares_a_key_name_is_not_flagged(self):
+        # `reuben-core` as a *rename target* of something else is a different crate entirely.
+        problems = self._problems({
+            "crates/x/Cargo.toml":
+                '[package]\nname = "x"\n\n'
+                '[dependencies]\nother = { package = "reuben-contract", path = "../y" }\n',
+        })
+        self.assertEqual(problems, [])
+
+    def test_build_dependencies_count(self):
+        problems = self._problems({
+            "crates/x/Cargo.toml":
+                '[package]\nname = "x"\n\n'
+                '[build-dependencies]\nreuben-core = { path = "../reuben-core" }\n',
+        })
+        self.assertEqual(len(problems), 1)
+        self.assertIn("[build-dependencies]", problems[0])
+
+    def test_a_clean_workspace_is_green(self):
+        problems = self._problems({
+            "Cargo.toml": '[workspace]\nmembers = ["crates/reuben-native"]\n',
+            "crates/reuben-native/Cargo.toml":
+                '[package]\nname = "reuben-native"\n\n'
+                '[dependencies]\nreuben-api = { path = "../reuben-api" }\n',
+        })
+        self.assertEqual(problems, [])
+
     def test_dev_dependencies_count(self):
         # A test that reaches the engine directly is exactly the case this guard exists for.
         problems = self._problems({

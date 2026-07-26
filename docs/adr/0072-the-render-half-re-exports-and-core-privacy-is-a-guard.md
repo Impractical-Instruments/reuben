@@ -54,6 +54,12 @@ being filed. Four of `reuben-native`'s integration tests were rewritten to insta
 `render::install_initial` and drive a `RenderSlot` — which is what a device does, so they now prove
 what a device would play rather than what the load path returns.
 
+**A key match is not the check.** Cargo's rename — `engine = { package = "reuben-core", … }` — is
+one line, reintroduces the edge under a name of the author's choosing, and is invisible to a guard
+that reads dependency keys. The guard reads the `package` field too. A guard that *is* the claim
+has to be checked against the spellings that would defeat it, not only the one that announces
+itself.
+
 ## Consequences
 
 **`reuben-native` names the window and nothing behind it**, and its `pub use reuben_core` — the
@@ -78,9 +84,17 @@ had no caller — `play` reads the embedded JSON and resolves its voice through 
 and they existed only to hold a `load_instrument` call. Deleting them beat routing the engine's
 whole load path through the window to serve nothing.
 
-**One test assertion changed shape.** `nested_resolution` proved a nested patch had spliced by
-looking up `/m/inner/osc` in the graph; the window serves no graph, and the projection shows the
-document's nodes rather than the spliced ones. It now renders a block and asserts the leaf
-**sounds** — a stronger claim about the same fact, and the dissolved case asserts silence, so the
-two cannot both pass vacuously. Node-splice addressing stays covered where it belongs, in the
-engine's own `nesting.rs`.
+**One test assertion changed shape, and one nearly lost its independence.** `nested_resolution`
+proved a nested patch had spliced by looking up `/m/inner/osc` in the graph; the window serves no
+graph, and the projection shows the document's nodes rather than the spliced ones. It now renders a
+block and asserts the leaf **sounds** — a stronger claim about the same fact, and the dissolved case
+asserts silence, so the two cannot both pass vacuously. Node-splice addressing stays covered where
+it belongs, in the engine's own `nesting.rs`.
+
+`structure_server`'s hash check is the one to learn from. It computed the expected hash by calling
+the engine's `content_hash` directly; the first migration replaced it with a comparison between two
+*served* responses, which proves only that the channel agrees with itself and would pass a channel
+that reported the wrong document's hash consistently. Reaching around the window is not the only way
+to lose a test — quietly lowering its claim is the other, and it leaves no dependency edge for a
+guard to catch. The helper now installs the document a second time through the window and reads
+`installed_hash()`, which is off the wire under test and independent of it.

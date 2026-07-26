@@ -38,16 +38,21 @@ fn write(path: &Path, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 
+/// The block [`peak`] sizes its buffer for, so the two cannot drift apart.
+const BLOCK: usize = 256;
+
+/// Install `doc` through the window. The Coordinator is dropped: these cases never swap, and the
+/// render side alone is what carries the resolved graph.
 fn install(doc: &str, store: FsResolver) -> (RenderSide, Vec<LoadWarning>) {
     let (_coordinator, side, warnings) =
-        install_initial(doc, store, AudioConfig::new(48_000.0, 256)).expect("install");
+        install_initial(doc, store, AudioConfig::new(48_000.0, BLOCK)).expect("install");
     (side, warnings)
 }
 
 /// Render a block and report the peak: a spliced oscillator hums, a dissolved nest is silent.
 fn peak(side: RenderSide) -> f32 {
     let mut slot = RenderSlot::new(side);
-    let mut buf = vec![0.0f32; 256 * slot.channels().max(1)];
+    let mut buf = vec![0.0f32; BLOCK * slot.channels().max(1)];
     slot.fill(&mut buf);
     buf.iter().fold(0.0f32, |m, &s| m.max(s.abs()))
 }

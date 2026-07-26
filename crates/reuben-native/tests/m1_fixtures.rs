@@ -32,7 +32,7 @@ fn assert_valid(name: &str) {
         },
         &FsResolver::for_document(&source),
     )
-    .unwrap_or_else(|refusal| panic!("read fixture {source}: {refusal}"))
+    .unwrap_or_else(|refusal| panic!("M1 fixture {source} could not be validated: {refusal}"))
     .output;
     assert!(
         report.ok,
