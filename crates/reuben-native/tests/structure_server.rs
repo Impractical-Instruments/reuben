@@ -18,15 +18,16 @@ use std::sync::mpsc;
 use std::sync::Arc;
 use std::time::Duration;
 
-use reuben_core::coordinator::{
-    Conflict, ControlArg, ControlMessage, Coordinator, DiagnosticsReport, DocSource,
-    DocumentSnapshot, Request, Response,
+use reuben_api::engine::{
+    Conflict, ControlArg, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot, Request,
+    Response, StructureState,
 };
+use reuben_core::coordinator::Coordinator;
 use reuben_core::resources::MemoryResolver;
 use reuben_core::{content_hash, Arg, AudioConfig, NormalizedDoc, Registry};
 use reuben_native::diagnostics::Diagnostics;
 use reuben_native::osc::{ControlBatch, OscIn};
-use reuben_native::structure::{HeadlessRenderConfig, StructureServer, StructureState};
+use reuben_native::structure::{HeadlessRenderConfig, NativeHost, StructureServer};
 use reuben_native::test_support::FakeCallback;
 
 fn cfg() -> AudioConfig {
@@ -71,6 +72,16 @@ const MIC_PASSTHRU: &str = r#"{ "format_version": 3, "instrument": "mic-passthru
 /// structure server on the producing end and the callback draining it. The harness is the crate's
 /// [`FakeCallback`], shared with the unit tests, so one mirror of the real callback serves both.
 fn wired(doc: &str, opened_input_channels: usize) -> (StructureState, FakeCallback, String) {
+    wired_watching(doc, opened_input_channels, Diagnostics::new())
+}
+
+/// [`wired`] with the counter surface passed in, for the one test that has to still hold a handle
+/// to it after the host has taken its own — `play` holds one the same way.
+fn wired_watching(
+    doc: &str,
+    opened_input_channels: usize,
+    diagnostics: Arc<Diagnostics>,
+) -> (StructureState, FakeCallback, String) {
     let (coordinator, side, _warnings) = Coordinator::install_initial(
         doc,
         Registry::builtin(),
@@ -80,10 +91,12 @@ fn wired(doc: &str, opened_input_channels: usize) -> (StructureState, FakeCallba
     .expect("initial install");
     let base_hash = coordinator.installed_hash();
     let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
-    let state = StructureState::from_coordinator(coordinator, Diagnostics::new(), control_tx)
-        .with_render_config(Arc::new(HeadlessRenderConfig {
+    let host = NativeHost::new(diagnostics, control_tx).with_render_config(Arc::new(
+        HeadlessRenderConfig {
             opened_input_channels,
-        }));
+        },
+    ));
+    let state = StructureState::new(coordinator, Arc::new(host));
     (state, FakeCallback::spawn(side, control_rx), base_hash)
 }
 
@@ -211,7 +224,10 @@ fn get_diagnostics_reflects_live_counter_bumps() {
     let diagnostics = Diagnostics::new();
     // This verb never touches control, but the ingress is a constructor parameter now.
     let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
-    let state = StructureState::from_coordinator(coordinator, Arc::clone(&diagnostics), control_tx);
+    let state = StructureState::new(
+        coordinator,
+        Arc::new(NativeHost::new(Arc::clone(&diagnostics), control_tx)),
+    );
     let cb = FakeCallback::spawn(side, control_rx);
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
     let client = TcpStream::connect(server.local_addr()).expect("connect");
@@ -623,8 +639,10 @@ fn concurrent_sends_never_interleave_into_each_others_gestures() {
 #[test]
 fn shuts_down_cleanly_with_an_idle_client_still_connected() {
     // A handler blocked on `read_line` for an idle client must not keep the server alive.
-    let (state, cb, _) = wired(BASE_DOC, 0);
-    let diagnostics = state.diagnostics();
+    // `play` holds its own handle to the counter surface — the host takes a clone — so the
+    // exit-time flush below outlives the state the server consumed.
+    let diagnostics = Diagnostics::new();
+    let (state, cb, _) = wired_watching(BASE_DOC, 0, Arc::clone(&diagnostics));
     let server = StructureServer::bind("127.0.0.1:0", state).expect("bind");
     let _idle = TcpStream::connect(server.local_addr()).expect("connect");
 

@@ -1,40 +1,26 @@
-//! The structure channel: a loopback-TCP / NDJSON server.
+//! The structure channel's **host side**: a loopback-TCP / NDJSON server, and the native seams the
+//! window's verbs are served over.
 //!
-//! This is the engine-side half of the sidecar↔engine structure channel:
-//! **TCP on `127.0.0.1`** (loopback-only — structure edits are more powerful than
-//! control, unlike OSC's `0.0.0.0:9000`), carrying **newline-delimited JSON**, one
-//! [`Response`] per [`Request`] in order. A thread in `reuben play` owns it; the client lives
-//! in `reuben-mcp`. Zero new dependencies beyond std, cross-platform, netcat-debuggable.
+//! **TCP on `127.0.0.1`** (loopback-only — structure edits are more powerful than control, unlike
+//! OSC's `0.0.0.0:9000`), carrying **newline-delimited JSON**, one response per request in order.
+//! A thread in `reuben play` owns it.
 //!
-//! The `swap` verb rides the
-//! [`Coordinator`](reuben_core::coordinator::Coordinator)/mailbox path. The five verbs:
-//! - [`Request::Ping`] → [`Response::Pong`] — liveness of the channel itself.
-//! - [`Request::GetDocument`] → the Coordinator's canonical document + its
-//!   [`content_hash`](reuben_core::content_hash). It changes only when a
-//!   [`Request::Swap`] installs a new document.
-//! - [`Request::GetDiagnostics`] → a [`DiagnosticsReport`] built from a live [`Snapshot`] of
-//!   the [`Diagnostics`] `audio::start` owns. **RT-safety:** the
-//!   snapshot is [`Diagnostics::snapshot`]'s `Relaxed` atomic loads into an owned copy — the
-//!   query thread never forces the audio callback to synchronize.
-//! - [`Request::Swap`] → a **mailbox swap**: [`Coordinator::swap_document`]
-//!   validates + builds a whole new Engine off-thread, fills the install mailbox, and returns a
-//!   real [`SwapReport`] with survivor/reset stats. The RT callback drains the mailbox and
-//!   box-transplants the survivors gaplessly (under the master-gain ramp) — **no stream teardown**;
-//!   the streams are fixed at `play` start. This server thread then reclaims the
-//!   retired Engine off-thread, and publishes the freshly-validated device output map
-//!   for the new engine through the injected [`RenderConfigPublisher`] seam. A swapped-in engine
-//!   binding input channels no open stream provides **dark-degrades to silence** with a loud
-//!   swap-report warning, never an error or a crash.
-//! - [`Request::Send`] → control traffic: the batch is handed as **one**
-//!   [`ControlBatch`](crate::osc::ControlBatch) to the same mpsc the UDP decode thread feeds,
-//!   converging at the render callback's `queue_osc`. This channel therefore carries no wire format
-//!   of its own past the envelope's flat atoms, and OSC-the-binary-protocol stays at `play`'s
-//!   foreign edge. It is the one verb that does **not** touch the Coordinator — control is not
-//!   structure.
+//! What each verb *means* is not here: the envelope, the dispatch, the `expect` guard and the
+//! retain-prior report are the window's, so this door and the sidecar cannot disagree about them.
+//! What is here is what only a native host can supply — the listener and its threads, the device
+//! output map, the render callback's liveness, the counters, and the control ingress:
 //!
-//! The Coordinator is single-writer: the structure server holds it behind one
-//! [`Mutex`] so concurrent connections serialize, and the whole `expect`-compare → swap →
-//! publish → reclaim runs as one critical section (a correct compare-and-swap).
+//! - the control ingress is a producer on the same [`ControlBatch`](crate::osc::ControlBatch)
+//!   channel the UDP decode thread feeds, so a `send` and an external datagram are
+//!   indistinguishable downstream and OSC-the-binary-protocol stays at `play`'s foreign edge;
+//! - [`NativeHost::publish_render_config`] rebuilds the device output map off-thread against the
+//!   *retained* device channel count (streams are fixed at `play` start) and ships it across the
+//!   render mailbox, so the callback installs Engine + map together. A swapped-in engine binding
+//!   input channels no open stream provides **dark-degrades to silence** with a loud swap-report
+//!   warning, never an error or a crash;
+//! - [`NativeHost::retire_poll`] supplies the wait the window's deferred free polls over — a gate
+//!   that tells a running device from a stopped one, so a reclaim that will never land gives up at
+//!   the liveness grace instead of holding the Coordinator lock to the full timeout.
 //!
 //! reuben-native stays **tokio-free** (the async runtime is fenced to reuben-mcp): the server is a
 //! dedicated std thread doing blocking line I/O, never an async runtime.
@@ -45,15 +31,14 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::{Shutdown, SocketAddr, TcpListener, TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::Sender;
-use std::sync::{Arc, Mutex};
+use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use reuben_core::coordinator::{
-    Conflict, ControlMessage, Coordinator, DiagnosticsReport, DocSource, DocumentSnapshot, Request,
-    Response, MAX_SEND_BATCH,
+use reuben_api::authoring::Diag;
+use reuben_api::engine::{
+    dispatch, ControlMessage, DiagnosticsReport, EngineHost, IngressClosed, StructureState,
 };
-use reuben_core::{Diag, SwapReport};
 
 use crate::diagnostics::{Diagnostics, Snapshot};
 use crate::osc::{ControlBatch, OscIn};
@@ -182,7 +167,8 @@ impl SwapPollGate {
 /// Publish the render-side config for a freshly-installed engine and report any dark-degrade
 /// warnings — the **native device seam** of the mailbox swap.
 ///
-/// After [`Coordinator::swap_document`] commits, this rebuilds the device **output map**
+/// After [`Coordinator::swap_document`](reuben_api::engine::Coordinator::swap_document) commits,
+/// this rebuilds the device **output map**
 /// off-thread against the *retained* device channel count (streams are fixed at `play` start)
 /// and ships it across the render mailbox to the RT callback, so the callback
 /// installs Engine + map together. It also decides the **input dark-degrade**: a swapped-in
@@ -198,7 +184,7 @@ impl SwapPollGate {
 pub trait RenderConfigPublisher: Send + Sync {
     /// Publish the render config for the just-installed engine with `logical` output channels and
     /// `input_channels` input channels, and return any dark-degrade warnings to fold into the
-    /// [`SwapReport`].
+    /// [`SwapReport`](reuben_api::engine::SwapReport).
     fn publish(&self, logical: usize, input_channels: usize) -> Vec<Diag>;
 
     /// The render callback's [`RenderLiveness`] (callback counter + period), or `None` if this
@@ -215,7 +201,7 @@ pub trait RenderConfigPublisher: Send + Sync {
     fn render_liveness(&self) -> Option<RenderLiveness>;
 }
 
-/// The default [`RenderConfigPublisher`] for a headless [`StructureState`]: no
+/// The default [`RenderConfigPublisher`] for a headless [`NativeHost`]: no
 /// device, so no output map is built or shipped, but the **input dark-degrade** warning is still
 /// computed from the retained input-stream geometry — the device-independent half the integration
 /// and unit tests drive. `opened_input_channels` is how many logical input channels the input
@@ -232,7 +218,7 @@ impl RenderConfigPublisher for HeadlessRenderConfig {
     }
 
     /// No device, no render callback: report no liveness, so a swap's reclaim bails at the floor
-    /// grace instead of spinning the full timeout (the [`FakeCallback`] tests drive real consumption,
+    /// grace instead of spinning the full timeout (the `FakeCallback` tests drive real consumption,
     /// so their reclaims complete before the gate is ever consulted).
     fn render_liveness(&self) -> Option<RenderLiveness> {
         None
@@ -266,66 +252,33 @@ pub(crate) fn dark_degrade_warning(
     }
 }
 
-/// Everything the structure server answers with, cheap to clone (`Arc`-backed) so every
-/// connection-handler thread holds its own handle.
+/// The native seams the window's engine verbs are served over: the control ingress, the counters,
+/// the device map and the deferred free.
 ///
-/// The [`Coordinator`] behind one [`Mutex`] is the single writer of graph structure:
-/// it owns the canonical document + hash (`swap` advances them, `get_document`/`expect` read
-/// them) and the install mailbox. The `render_config` seam publishes the device output map + the
-/// dark-degrade warning after each swap; `diagnostics` is the live counter surface the callback
-/// feeds (fixed at `play` start — streams are never reopened, so it never re-points); `control` is
-/// the [`Request::Send`] ingress into the render callback.
-#[derive(Clone)]
-pub struct StructureState {
-    coordinator: Arc<Mutex<Coordinator>>,
+/// Cheap to hold behind an `Arc` and shared by every connection handler — the `Sender` is the
+/// multi-producer half of the same channel `play`'s UDP decode thread holds, so a `send` converges
+/// with external OSC at the callback's `queue_osc`.
+pub struct NativeHost {
     diagnostics: Arc<Diagnostics>,
-    render_config: Arc<dyn RenderConfigPublisher>,
-    /// The control ingress: a producer on the same [`ControlBatch`] channel the UDP decode thread
-    /// feeds, so `send` converges with external OSC at the callback's `queue_osc`.
-    ///
-    /// A bare `Sender` — no `Arc<Mutex<_>>` — because this state is never shared by reference
-    /// across threads: [`accept_loop`] *clones* it per connection and moves the clone in, which is
-    /// exactly std's multi-producer idiom (`play`'s UDP thread takes its producer the same way).
-    ///
-    /// **Required, not a builder step.** Unlike `render_config` there is no working default to fall
-    /// back to, so an unwired ingress could only ever be a wiring mistake reported to a user at
-    /// runtime. Taking it in the constructor makes that mistake a compile error instead.
     control: Sender<ControlBatch>,
-    /// Where the playing document came from: the `source` of the last successful swap, or the path
-    /// `play` started on. `None` for an install by value and for the built-in default rig, which
-    /// have no source to name.
-    ///
-    /// Door-side state, not the Coordinator's: core installs *document text* and has no notion of
-    /// where it came from, and giving it one would put a door's addressing scheme inside the
-    /// OS-free engine. Its own `Mutex` rather than a field behind the Coordinator's, because it is
-    /// only ever written under the Coordinator lock (so the pair still advances together) and read
-    /// beside it — no path takes this lock first, so the ordering cannot invert.
-    installed_source: Arc<Mutex<Option<String>>>,
+    render_config: Arc<dyn RenderConfigPublisher>,
 }
 
-impl StructureState {
-    /// Wrap a [`Coordinator`] `play` (or a test) built with [`Coordinator::install_initial`],
-    /// alongside the live [`Diagnostics`] surface and the control ingress the render callback
-    /// drains — `play` passes a clone of the very sender its UDP decode thread holds, so a `send`
-    /// and an external datagram are indistinguishable downstream.
+impl NativeHost {
+    /// The seam `play` (or a test) fills: the live [`Diagnostics`] surface the callback feeds, and
+    /// the control ingress it drains.
     ///
     /// Built with the headless [`HeadlessRenderConfig`] (output-only: any input-binding swap
     /// dark-degrades) — production wires the real native map publisher with
-    /// [`with_render_config`](Self::with_render_config). That one *is* a builder step because it has
-    /// a working default; the control ingress has none, so it is a parameter.
-    pub fn from_coordinator(
-        coordinator: Coordinator,
-        diagnostics: Arc<Diagnostics>,
-        control: Sender<ControlBatch>,
-    ) -> Self {
+    /// [`with_render_config`](Self::with_render_config). That one *is* a builder step because it
+    /// has a working default; the control ingress has none, so it is a parameter.
+    pub fn new(diagnostics: Arc<Diagnostics>, control: Sender<ControlBatch>) -> Self {
         Self {
-            coordinator: Arc::new(Mutex::new(coordinator)),
             diagnostics,
+            control,
             render_config: Arc::new(HeadlessRenderConfig {
                 opened_input_channels: 0,
             }),
-            control,
-            installed_source: Arc::new(Mutex::new(None)),
         }
     }
 
@@ -336,31 +289,60 @@ impl StructureState {
         self.render_config = render_config;
         self
     }
+}
 
-    /// Name the source the *initial* document was installed from — `play`'s path argument. A
-    /// builder step because it has a working default (`None`, the built-in rig): every later swap
-    /// re-points it from the `source` it installed, so this only ever answers for the run's first
-    /// document.
-    ///
-    /// **Replaces the cell rather than writing through it**, so the "only ever written under the
-    /// Coordinator lock" invariant on that field has no exception to carve out. Writing through the
-    /// lock would be correct only by argument — that this runs before `bind`, on a state nobody has
-    /// cloned yet — and `StructureState` is `Clone` and this is `pub`, so the argument is one call
-    /// site away from being false. Taking `self` by value makes it structurally true instead: a
-    /// builder step can only run before there is anyone to race.
-    pub fn with_installed_source(mut self, source: Option<String>) -> Self {
-        self.installed_source = Arc::new(Mutex::new(source));
-        self
+impl EngineHost for NativeHost {
+    /// A by-path swap reads the file as spelled. Resource paths *inside* the document resolve
+    /// through the Coordinator's own resolver, anchored once at `play` start against the initial
+    /// instrument's directory + the library root — so a by-path swap does not re-anchor at the
+    /// swapped file's own directory, and an unresolvable relative resource dark-degrades to a load
+    /// warning rather than a crash.
+    fn read_document(&self, path: &str) -> Result<String, String> {
+        std::fs::read_to_string(path).map_err(|e| format!("read {path}: {e}"))
     }
 
-    /// The live diagnostics surface, so `play` can flush a final exit-time snapshot.
-    pub fn diagnostics(&self) -> Arc<Diagnostics> {
-        Arc::clone(&self.diagnostics)
+    /// **One `send` on the channel, not one per message.** That single push is what makes the
+    /// documented atomicity true rather than aspirational: concurrent handler threads cannot
+    /// interleave message-by-message into each other's gestures, and the callback cannot apply half
+    /// a gesture to one block and half to the next.
+    fn deliver_control(&self, messages: Vec<ControlMessage>) -> Result<(), IngressClosed> {
+        let batch: ControlBatch = messages
+            .into_iter()
+            .map(|message| OscIn {
+                address: message.address,
+                args: message.args.into_iter().map(Into::into).collect(),
+            })
+            .collect();
+        self.control.send(batch).map_err(|_| IngressClosed)
+    }
+
+    /// **RT-safety:** [`Diagnostics::snapshot`] is `Relaxed` atomic loads into an owned copy, so
+    /// this query thread never forces the audio callback to synchronize.
+    fn diagnostics(&self) -> DiagnosticsReport {
+        diagnostics_report(&self.diagnostics.snapshot())
+    }
+
+    fn publish_render_config(&self, logical: usize, input_channels: usize) -> Vec<Diag> {
+        self.render_config.publish(logical, input_channels)
+    }
+
+    /// Polls the retire slot with a 1ms back-off (the window is OS-free; the clock is ours),
+    /// bounded by a [`SwapPollGate`]: at most [`SWAP_RECLAIM_TIMEOUT`] while the callback keeps
+    /// ticking, but only the liveness grace once the render callback has stopped ticking. With a
+    /// live callback the retiree comes home in one master-gain ramp (~20ms), so the bound only
+    /// bites when audio has genuinely stopped.
+    fn retire_poll(&self) -> Box<dyn FnMut() -> bool + Send + '_> {
+        let liveness = || self.render_config.render_liveness();
+        let mut gate = SwapPollGate::start(liveness(), SWAP_RECLAIM_TIMEOUT);
+        Box::new(move || {
+            std::thread::sleep(Duration::from_millis(1));
+            gate.give_up(liveness().map(|l| l.callbacks))
+        })
     }
 }
 
-/// Map a diagnostics [`Snapshot`] (reuben-native's counter surface) to the wire
-/// [`DiagnosticsReport`] (reuben-core's contract type).
+/// Map a diagnostics [`Snapshot`] (this crate's counter surface) to the window's wire
+/// [`DiagnosticsReport`].
 ///
 /// The two structs are duplicated across the crate boundary with no shared definition, so they
 /// could silently drift. The **exhaustive destructure** below is the compile-time coupling that
@@ -368,7 +350,7 @@ impl StructureState {
 /// (non-exhaustive, no `..`); add a field to [`DiagnosticsReport`] and the struct literal stops
 /// compiling (missing field). Either drift is a build break here, not a runtime surprise. The
 /// behavioral half — that each counter maps to the *right* field — is
-/// [`tests::diagnostics_report_maps_every_counter_field_for_field`].
+/// `tests::diagnostics_report_maps_every_counter_field_for_field`.
 pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
     let Snapshot {
         output_xruns,
@@ -381,257 +363,6 @@ pub fn diagnostics_report(snapshot: &Snapshot) -> DiagnosticsReport {
         input_ring_underruns,
         input_ring_overruns,
         input_ring_producer_drops,
-    }
-}
-
-/// Dispatch one parsed request line to its response. Pure over [`StructureState`]
-/// so it is unit-testable without a socket; the connection loop only frames it.
-///
-/// An unreadable line is a channel-level [`Response::Error`] (distinct from a
-/// domain answer that reports failure), so a malformed request still gets exactly one framed
-/// reply and the one-response-per-request invariant holds.
-fn dispatch(state: &StructureState, line: &str) -> Response {
-    match Request::from_ndjson(line) {
-        Ok(Request::Ping) => Response::Pong,
-        Ok(Request::GetDocument) => {
-            // The Coordinator owns the canonical document; serialize it + its hash
-            // under the lock so `get_document` never sees a half-installed pair.
-            let coordinator = state
-                .coordinator
-                .lock()
-                .expect("coordinator mutex poisoned");
-            let document = serde_json::to_value(&**coordinator.document())
-                .expect("canonical instrument document serializes to JSON");
-            Response::Document(DocumentSnapshot {
-                document,
-                content_hash: coordinator.installed_hash(),
-                // Read under the Coordinator lock too, so the source and the hash a caller compares
-                // it against can never come from different installs.
-                source: state
-                    .installed_source
-                    .lock()
-                    .expect("installed-source mutex poisoned")
-                    .clone(),
-            })
-        }
-        // RT-safe read: `Relaxed` loads into an owned copy off this (non-audio) thread.
-        Ok(Request::GetDiagnostics) => {
-            Response::Diagnostics(diagnostics_report(&state.diagnostics.snapshot()))
-        }
-        Ok(Request::Swap { source, expect }) => handle_swap(state, source, expect),
-        Ok(Request::Send { messages }) => handle_send(state, messages),
-        Err(e) => Response::Error {
-            message: format!("unreadable request: {e}"),
-        },
-    }
-}
-
-/// Control traffic: hand the batch to the engine's ingress **as one unit** and ack it.
-///
-/// Deliberately thin — there is **no routing logic here**. The batch becomes one
-/// [`ControlBatch`] on the same channel `play`'s UDP decode thread feeds, so the render callback's
-/// `queue_osc` types and routes each message against its destination port exactly as it would an
-/// external datagram. An address matching no node/port is dropped there, silently, which is why the
-/// ack is "queued", never "applied".
-///
-/// **One `send` on the channel, not one per message.** That single push is what makes the whole
-/// documented atomicity true rather than aspirational: concurrent handler threads (one per
-/// connection) cannot interleave message-by-message into each other's gestures, the callback cannot
-/// apply half a gesture to one block and half to the next, and there is no partial-failure window
-/// where some messages are queued but the client is told the batch failed.
-///
-/// The Coordinator is untouched: control is not structure, so a `send` never contends for the
-/// single-writer lock and cannot be starved by an in-flight swap's bounded reclaim poll.
-fn handle_send(state: &StructureState, messages: Vec<ControlMessage>) -> Response {
-    // Bound the batch before it is queued. Its whole cost lands in one render callback, so an
-    // unbounded batch is an RT hazard, not merely a large request. An EMPTY batch is rejected for a
-    // different reason: acking a no-op as success would let a client bug that drops its messages
-    // read as a working send.
-    if messages.is_empty() {
-        return Response::Error {
-            message: "`send` needs at least one message; an empty batch does nothing".to_string(),
-        };
-    }
-    if messages.len() > MAX_SEND_BATCH {
-        return Response::Error {
-            message: format!(
-                "`send` batch of {} exceeds the {MAX_SEND_BATCH}-message limit; split it across \
-                 several sends",
-                messages.len()
-            ),
-        };
-    }
-
-    let batch: ControlBatch = messages
-        .into_iter()
-        .map(|message| OscIn {
-            address: message.address,
-            args: message.args.into_iter().map(Into::into).collect(),
-        })
-        .collect();
-
-    if state.control.send(batch).is_err() {
-        // The receiver is gone: the render callback has stopped for good (audio torn down), so
-        // nothing downstream will ever apply this batch. Say so rather than ack a lie. Nothing was
-        // queued — the batch was one send — so this is a clean all-or-nothing failure.
-        return Response::Error {
-            message: "the engine's control ingress is closed; is audio still running?".to_string(),
-        };
-    }
-    Response::Sent
-}
-
-/// The mailbox-swap install path, device-free up to the
-/// [`RenderConfigPublisher`] call. Everything runs under the Coordinator lock so the
-/// `expect`-compare and the swap are one atomic critical section (a compare-and-swap)
-/// — concurrent swaps from multiple connections serialize, and neither `get_document` nor another
-/// swap sees a half-installed document. In order:
-///
-/// 1. **Resolve** the [`DocSource`] to its JSON text — inline JSON re-serialized, or a file read.
-///    Resources resolve through the Coordinator's own resolver (anchored at `play`
-///    start). A read failure is a rejected [`SwapReport`] (no install, prior retained), not a
-///    channel `Error`.
-/// 2. **Arbitration**: a stale `expect` rejects with the real installed hash as
-///    [`Response::Conflict`] and does **not** swap. Absent `expect` is last-write-wins. Done here,
-///    not inside `swap_document`, so the wire keeps its own distinct `Conflict` response shape — and
-///    core's swap owns no guard at all, by design (see rules: agent-mcp).
-/// 3. **Swap**: [`Coordinator::swap_document`] validates + builds a whole new Engine off-thread,
-///    fills the install mailbox, and returns the real [`SwapReport`] (survivor/reset stats). A
-///    load/plan error aborts with `ok: false` and the prior hash — the old engine keeps playing
-///    (retain-prior). The RT callback installs it gaplessly at the next ramp.
-/// 4. **Publish** the render config: rebuild the device output map off-thread for the new engine's
-///    geometry and ship it across the render mailbox; fold any input dark-degrade warning
-///    into the report.
-/// 5. **Reclaim** the retired Engine off-thread (deferred free), clearing the mailbox for
-///    the next swap.
-fn handle_swap(state: &StructureState, source: DocSource, expect: Option<String>) -> Response {
-    // Name the source before resolving consumes it — recorded only if the install below succeeds, so
-    // a rejected swap leaves `get_document` still naming what is actually playing. An install by
-    // value has no source to name.
-    let installed_from = match &source {
-        DocSource::Path(path) => Some(path.clone()),
-        DocSource::Document(_) => None,
-    };
-
-    // 1. Resolve the source to JSON text. A read failure is a domain rejection (no install).
-    let json = match resolve_source(source) {
-        Ok(json) => json,
-        Err(message) => return rejected_swap(&state.coordinator, message),
-    };
-
-    let mut coordinator = state
-        .coordinator
-        .lock()
-        .expect("coordinator mutex poisoned");
-
-    // 2. Optimistic-concurrency guard: a stale expect is a Conflict, no swap. THE guard for this
-    //    door — core's `swap_document` has none — and it lives inside the lock so the compare and
-    //    the swap below are one critical section.
-    if let Some(expected) = &expect {
-        let actual = coordinator.installed_hash();
-        if expected != &actual {
-            return Response::Conflict(Conflict {
-                expected: expected.clone(),
-                actual,
-            });
-        }
-    }
-
-    // 3. Swap via the mailbox. Unguarded by construction: arbitration was settled in step 2.
-    let mut report = coordinator.swap_document(&json);
-    if report.report.ok {
-        // The installed document advanced, so the source that named it does too — under the
-        // Coordinator lock, so the two never disagree about which install a reader is looking at.
-        *state
-            .installed_source
-            .lock()
-            .expect("installed-source mutex poisoned") = installed_from;
-
-        // 4. Publish the new engine's device output map + fold the dark-degrade warning — BEFORE the
-        //    engine reclaim. `publish` fills the output-map mailbox (never dropping the map),
-        //    so the map is in flight *before* the callback installs the new engine; the callback
-        //    then promotes it the moment the engine reaches the new width, keeping the two mailboxes
-        //    in lockstep with no desync window. Publishing after the reclaim would leave a block
-        //    where the engine has widened but its map has not arrived yet.
-        let logical = coordinator.installed_channels();
-        let input_channels = coordinator.installed_input_channels();
-        report
-            .report
-            .warnings
-            .extend(state.render_config.publish(logical, input_channels));
-
-        // 5. Reclaim the retired Engine off-thread (this structure thread, never the callback). This
-        //    also proves the callback is consuming — the retiree comes home at the ramp
-        //    zero-crossing — so `publish`'s bounded install poll above can never wedge. The render
-        //    liveness lets the reclaim bail early if audio has genuinely stopped rather than hold
-        //    this lock to the full deadline.
-        reclaim_retired_engine(&mut coordinator, || state.render_config.render_liveness());
-    }
-    Response::SwapReport(report)
-}
-
-/// A rejected swap that never reached [`Coordinator::swap_document`] (a source read failure):
-/// `ok: false`, the message, no diff, and the still-installed hash — the report names what keeps
-/// playing (retain-prior).
-fn rejected_swap(coordinator: &Arc<Mutex<Coordinator>>, message: String) -> Response {
-    let content_hash = coordinator
-        .lock()
-        .expect("coordinator mutex poisoned")
-        .installed_hash();
-    Response::SwapReport(SwapReport {
-        report: reuben_core::Report {
-            ok: false,
-            errors: vec![Diag {
-                node: None,
-                port: None,
-                message,
-            }],
-            warnings: Vec::new(),
-        },
-        content_hash,
-        diff: None,
-    })
-}
-
-/// Reclaim the retired [`InstallBundle`](reuben_core::coordinator::InstallBundle) the RT callback
-/// posted back and **drop it here, off the audio thread** — the deferred free. Polls the
-/// retire slot with a 1ms back-off (the caller supplies the clock; core is OS-free), bounded by the
-/// [`SwapPollGate`]: at most [`SWAP_RECLAIM_TIMEOUT`] while the callback keeps ticking, but only the
-/// liveness grace once `liveness` shows audio has stopped ticking. A timeout is
-/// not fatal: the swap already committed, so it just leaves the retiree in flight for the next swap's
-/// opportunistic reclaim — the "audio isn't consuming swaps" case.
-fn reclaim_retired_engine(
-    coordinator: &mut Coordinator,
-    liveness: impl Fn() -> Option<RenderLiveness>,
-) {
-    let mut gate = SwapPollGate::start(liveness(), SWAP_RECLAIM_TIMEOUT);
-    match coordinator.reclaim(|| {
-        std::thread::sleep(Duration::from_millis(1));
-        gate.give_up(liveness().map(|l| l.callbacks))
-    }) {
-        // Dropping the reclaimed bundle frees the retired Engine here, off the render thread.
-        Ok(retiree) => drop(retiree),
-        Err(_) => { /* audio not consuming yet; the next swap or shutdown reclaims it */ }
-    }
-}
-
-/// Resolve a [`DocSource`] to its JSON text: inline JSON re-serialized to a string,
-/// or a file read. Resource paths inside the document resolve through **the Coordinator's own
-/// resolver**, anchored once at `play` start against the initial instrument's directory + the
-/// library root — the single-writer Coordinator owns one resolver, so a by-*path* swap does
-/// **not** re-anchor at the swapped file's own directory. By-*value* swaps (the MCP primary flow)
-/// are unaffected: their resources always resolved against the play-start anchor. A by-*path*
-/// swap's *relative* resources resolve against that anchor + the library root rather than the
-/// file's own directory; an unresolvable one dark-degrades to a `LoadWarning` (or, if structurally
-/// required, a clean `ok:false` reject), never a crash. A read/serialize failure here is a human
-/// message the caller turns into a rejected swap.
-fn resolve_source(source: DocSource) -> Result<String, String> {
-    match source {
-        DocSource::Document(value) => serde_json::to_string(&value)
-            .map_err(|e| format!("serialize inline swap document: {e}")),
-        DocSource::Path(path) => {
-            std::fs::read_to_string(&path).map_err(|e| format!("read {path}: {e}", path = path))
-        }
     }
 }
 
@@ -815,7 +546,9 @@ fn handle_connection(stream: TcpStream, state: StructureState, shutdown: Arc<Ato
 mod tests {
     use super::*;
     use crate::test_support::FakeCallback;
-    use reuben_core::coordinator::ControlArg;
+    use reuben_api::engine::{
+        ControlArg, Coordinator, DocSource, Request, Response, MAX_SEND_BATCH,
+    };
     use reuben_core::resources::MemoryResolver;
     use reuben_core::{Arg, AudioConfig, Registry};
 
@@ -876,10 +609,12 @@ mod tests {
         .expect("initial install");
         let base_hash = coordinator.installed_hash();
         let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
-        let state = StructureState::from_coordinator(coordinator, Diagnostics::new(), control_tx)
-            .with_render_config(Arc::new(HeadlessRenderConfig {
+        let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
+            HeadlessRenderConfig {
                 opened_input_channels,
-            }));
+            },
+        ));
+        let state = StructureState::new(coordinator, Arc::new(host));
         (state, FakeCallback::spawn(side, control_rx), base_hash)
     }
 
@@ -959,10 +694,12 @@ mod tests {
         )
         .expect("initial install");
         let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
-        let state = StructureState::from_coordinator(coordinator, Diagnostics::new(), control_tx)
-            .with_render_config(Arc::new(HeadlessRenderConfig {
+        let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
+            HeadlessRenderConfig {
                 opened_input_channels: 0,
-            }))
+            },
+        ));
+        let state = StructureState::new(coordinator, Arc::new(host))
             .with_installed_source(Some("initial.json".to_string()));
         let cb = FakeCallback::spawn(side, control_rx);
 
@@ -1032,10 +769,12 @@ mod tests {
         .expect("install");
         let diagnostics = Diagnostics::new();
         // This verb never touches control, but the ingress is a constructor parameter now — there
-        // is no such thing as a StructureState that cannot serve `send`.
+        // is no such thing as a host that cannot serve `send`.
         let (control_tx, control_rx) = std::sync::mpsc::channel::<ControlBatch>();
-        let state =
-            StructureState::from_coordinator(coordinator, Arc::clone(&diagnostics), control_tx);
+        let state = StructureState::new(
+            coordinator,
+            Arc::new(NativeHost::new(Arc::clone(&diagnostics), control_tx)),
+        );
         let cb = FakeCallback::spawn(side, control_rx);
         // Fresh: zeroed.
         assert_eq!(
@@ -1489,10 +1228,12 @@ mod tests {
         )
         .expect("initial install");
         let (control_tx, _control_rx) = std::sync::mpsc::channel::<ControlBatch>();
-        let state = StructureState::from_coordinator(coordinator, Diagnostics::new(), control_tx)
-            .with_render_config(Arc::new(HeadlessRenderConfig {
+        let host = NativeHost::new(Diagnostics::new(), control_tx).with_render_config(Arc::new(
+            HeadlessRenderConfig {
                 opened_input_channels: 0,
-            }));
+            },
+        ));
+        let state = StructureState::new(coordinator, Arc::new(host));
 
         let start = Instant::now();
         let resp = dispatch(

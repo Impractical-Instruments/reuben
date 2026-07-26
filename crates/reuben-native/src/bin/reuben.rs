@@ -26,16 +26,15 @@ use reuben_core::message::Message;
 use reuben_core::Registry;
 use reuben_native::profile::DeviceProfile;
 use reuben_native::rigs::DEFAULT_JSON;
-use reuben_native::structure::StructureState;
+use reuben_native::structure::NativeHost;
 use reuben_native::{audio, osc, scaffold, structure};
 
 const BLOCK_SIZE: usize = 256;
-/// The structure channel's default loopback bind, hoisted to a shared const in
-/// `reuben_core::coordinator` so this server and the reuben-mcp client dial the *same* address
-/// and can never drift. `127.0.0.1` only — structure edits are more powerful than OSC control,
-/// so unlike OSC's `0.0.0.0:9000` this must never be network-exposed; a taken port is non-fatal
-/// (see `play`).
-use reuben_core::coordinator::DEFAULT_STRUCTURE_ADDR as STRUCTURE_BIND;
+/// The structure channel's default loopback bind, hoisted to a shared const in the window so this
+/// server and the sidecar's client dial the *same* address and can never drift. `127.0.0.1` only —
+/// structure edits are more powerful than OSC control, so unlike OSC's `0.0.0.0:9000` this must
+/// never be network-exposed; a taken port is non-fatal (see `play`).
+use reuben_api::engine::DEFAULT_STRUCTURE_ADDR as STRUCTURE_BIND;
 use reuben_native::osc::DEFAULT_OSC_PORT;
 
 #[derive(Parser)]
@@ -781,8 +780,8 @@ fn play(
     //
     // Its control sink is a clone of the very sender the UDP thread holds, so `send` converges with
     // external OSC at the callback's `queue_osc` and this door needs no wire format of its own.
-    let state = StructureState::from_coordinator(coordinator, diagnostics.clone(), osc_tx)
-        .with_render_config(render_config)
+    let host = NativeHost::new(diagnostics.clone(), osc_tx).with_render_config(render_config);
+    let state = reuben_api::engine::StructureState::new(coordinator, std::sync::Arc::new(host))
         .with_installed_source(initial_source);
     let structure_server = match structure::StructureServer::bind(STRUCTURE_BIND, state) {
         Ok(server) => {

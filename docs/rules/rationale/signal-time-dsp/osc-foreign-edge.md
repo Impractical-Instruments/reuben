@@ -30,4 +30,4 @@ vanishing into a silent port. What it does not change: concurrent senders remain
 control, exactly as two physical controllers behave.
 
 Distilled from: ADR-0065. The three-primitives and converge-at-one-ingress reasoning was harvested from
-the `coordinator::wire` control types, where it also lives as mechanics.
+the window's `engine::wire` control types, where it also lives as mechanics.

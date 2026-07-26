@@ -13,9 +13,9 @@ prove, reusing conventions the repo already has:
   **field-by-field**. This proves the actual framing and verb dispatch, not just that the serde types
   round-trip — a types-only test would pass a protocol bug like NDJSON line-splitting. The wire
   framing and `reply`-tag names are additionally pinned as literals at the unit level in
-  `coordinator/wire.rs`, where a rename reds a fast test with no live server to stand up.
+  `reuben-api/src/engine/wire.rs`, where a rename reds a fast test with no live server to stand up.
 - **A test double substitutes the lowest layer it can.** For the sidecar's engine tools that is the
-  socket itself (`StructureTransport`), below the NDJSON framing — so everything above the fake runs
+  socket itself (the window's `Transport`), below the NDJSON framing — so everything above the fake runs
   for real: a tool body serializes a genuine request, the client parses a genuine response, and an
   unreachable engine is reached through the real classification path. A fake placed higher, at an
   engine-facing trait, would replace exactly the code most worth exercising — framing, parsing, and

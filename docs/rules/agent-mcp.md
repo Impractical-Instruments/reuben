@@ -78,6 +78,8 @@ authoring guide, the intent vocabulary, the library index), and code, skills, an
 
 [why](rationale/agent-mcp/expect-guard-is-a-door-concern.md)
 
+Superseded by: ADR-0071 (pending absorption)
+
 <a id="contract-holds-what-core-produces"></a>
 ### A serde type belongs to the contract if core itself produces it and to a door's wire module if it exists only because that door exists — the test being whether the type would still mean anything with the door deleted.
 

@@ -32,4 +32,4 @@ messages read as a working send. "Queued", not "applied", throughout — an addr
 node/port is dropped at the ingress, exactly as a stale external datagram is.
 
 Distilled from: ADR-0065. The RT justification for the batch bound was harvested from the
-`coordinator::wire` constant, where it also lives as mechanics.
+window's `engine::wire` constant, where it also lives as mechanics.

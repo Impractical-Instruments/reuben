@@ -55,7 +55,7 @@ pub struct OscIn {
 ///
 /// **Producers must bound what they push.** A batch's whole cost lands in one callback, so an
 /// unbounded one would blow a render deadline; `send` is capped at
-/// [`MAX_SEND_BATCH`](reuben_core::coordinator::MAX_SEND_BATCH) and a UDP datagram is capped by the
+/// [`MAX_SEND_BATCH`](reuben_api::engine::MAX_SEND_BATCH) and a UDP datagram is capped by the
 /// receive buffer it arrived in.
 pub type ControlBatch = Vec<OscIn>;
 

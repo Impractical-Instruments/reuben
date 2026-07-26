@@ -1,6 +1,6 @@
-//! Integration test for the reuben-mcp structure-channel client: stand up a
-//! minimal loopback NDJSON stub speaking the shared `reuben_core::coordinator` wire envelope, and
-//! drive the client's four verbs over the real TCP boundary — the same socket a live `reuben play`
+//! Integration test for this door's structure-channel transport: stand up a minimal loopback NDJSON
+//! stub speaking the window's wire envelope, and drive the channel's four verbs over the real TCP
+//! boundary — the same socket a live `reuben play`
 //! server presents. `ping` returns Pong; `swap` (by value AND by path) and `get_document`
 //! round-trip a document; a connect against a dead port fails fast with the "start `reuben play`"
 //! guidance, not a hang or panic. Every case is bounded by a watchdog so a wedged
@@ -14,12 +14,29 @@ use std::sync::mpsc;
 use std::thread;
 use std::time::{Duration, Instant};
 
-use reuben_core::coordinator::{
-    Conflict, DiagnosticsReport, DocSource, DocumentSnapshot, Request, Response,
+use reuben_api::authoring::{Diag, Report};
+use reuben_api::engine::{
+    Conflict, DiagnosticsReport, DiffSummary, DocSource, DocumentSnapshot, Request, Response,
+    SwapReport,
 };
-use reuben_core::{Diag, DiffSummary, Report, SwapReport};
 
-use reuben_mcp::{EngineLink, StructureClient, SwapOutcome};
+use reuben_mcp::{Channel, EngineLink, SwapOutcome, TcpTransport, DEFAULT_CONNECT_TIMEOUT};
+
+/// A channel over this door's real TCP transport, on the window's default read budget — the
+/// composition `EngineLink::new` performs, spelled out so a test can name the address it dials.
+fn channel(addr: impl Into<String>) -> Channel {
+    Channel::new(TcpTransport::new(addr, DEFAULT_CONNECT_TIMEOUT))
+}
+
+/// The same, with both budgets explicit: the connect one belongs to the transport, the read one to
+/// the channel above it — which is exactly the split under test in the wedged-server cases.
+fn channel_with_timeouts(
+    addr: impl Into<String>,
+    connect_timeout: Duration,
+    read_timeout: Duration,
+) -> Channel {
+    Channel::with_read_timeout(TcpTransport::new(addr, connect_timeout), read_timeout)
+}
 
 /// A running loopback NDJSON stub: the address the client dials, plus a receiver of every request
 /// the stub parsed off the wire (so a test can assert the client sent the *right* envelope — e.g.
@@ -123,7 +140,7 @@ fn ping_returns_pong() {
             message: format!("unexpected {other:?}"),
         },
     });
-    let client = StructureClient::new(stub.addr.to_string());
+    let client = channel(stub.addr.to_string());
     within(Duration::from_secs(5), "ping", move || {
         client.ping().expect("ping resolves to Pong");
     });
@@ -134,7 +151,7 @@ fn swap_by_value_round_trips_a_document() {
     let report = sample_swap_report();
     let expected = report.clone();
     let stub = spawn_stub(move |_req| Response::SwapReport(report.clone()));
-    let client = StructureClient::new(stub.addr.to_string());
+    let client = channel(stub.addr.to_string());
 
     let doc = serde_json::json!({ "format_version": 3, "instrument": "t", "nodes": [] });
     let outcome = within(Duration::from_secs(5), "swap by value", {
@@ -163,7 +180,7 @@ fn swap_by_path_round_trips_with_expect_guard() {
     let report = sample_swap_report();
     let expected = report.clone();
     let stub = spawn_stub(move |_req| Response::SwapReport(report.clone()));
-    let client = StructureClient::new(stub.addr.to_string());
+    let client = channel(stub.addr.to_string());
 
     let outcome = within(Duration::from_secs(5), "swap by path", move || {
         client
@@ -194,7 +211,7 @@ fn swap_conflict_is_a_reconcilable_outcome_not_an_error() {
             actual: "00c0ffee00c0ffee".to_string(),
         })
     });
-    let client = StructureClient::new(stub.addr.to_string());
+    let client = channel(stub.addr.to_string());
     let outcome = within(Duration::from_secs(5), "swap conflict", move || {
         client
             .swap(
@@ -223,7 +240,7 @@ fn get_document_round_trips_the_doc_and_hash() {
             source: Some("voices/warm.json".to_string()),
         })
     });
-    let client = StructureClient::new(stub.addr.to_string());
+    let client = channel(stub.addr.to_string());
     let snapshot = within(Duration::from_secs(5), "get_document", move || {
         client.get_document().expect("get_document resolves")
     });
@@ -246,7 +263,7 @@ fn get_diagnostics_round_trips_the_four_counters() {
         input_ring_producer_drops: 96,
     };
     let stub = spawn_stub(move |_req| Response::Diagnostics(report));
-    let client = StructureClient::new(stub.addr.to_string());
+    let client = channel(stub.addr.to_string());
     let got = within(Duration::from_secs(5), "get_diagnostics", move || {
         client.get_diagnostics().expect("get_diagnostics resolves")
     });
@@ -260,7 +277,7 @@ fn dead_port_fails_fast_with_start_reuben_play_guidance() {
     // means the client hung, which is itself the failure this test guards against.
     let addr = dead_addr();
     let err = within(Duration::from_secs(5), "dead-port connect", move || {
-        StructureClient::new(addr)
+        channel(addr)
             .ping()
             .expect_err("a dead port must fail, not succeed")
     });
@@ -288,7 +305,7 @@ fn wedged_server_read_times_out_instead_of_hanging() {
         }
     });
     // A short read timeout keeps the test fast; the watchdog is comfortably longer.
-    let client = StructureClient::with_timeouts(
+    let client = channel_with_timeouts(
         addr.to_string(),
         Duration::from_millis(500),
         Duration::from_millis(300),
@@ -322,7 +339,7 @@ fn ping_fails_fast_even_when_the_general_read_budget_is_generous() {
         }
     });
     // General read timeout is 10s; the ping budget is capped far below it (DEFAULT_PING_READ_TIMEOUT).
-    let client = StructureClient::with_timeouts(
+    let client = channel_with_timeouts(
         addr.to_string(),
         Duration::from_millis(500),
         Duration::from_secs(10),

@@ -1,28 +1,25 @@
-//! The structure channel's NDJSON wire envelope: the shared `Request`/
-//! `Response` types the native server (in `reuben play`) and the reuben-mcp client both
-//! serialize, one JSON object per line, one response per request in order.
+//! The structure channel's NDJSON wire envelope: the `Request`/`Response` types a server and a
+//! client both serialize, one JSON object per line, one response per request in order.
 //!
-//! No engine, no threads, no sockets — and the TCP server is reuben-native's, the client
-//! reuben-mcp's.
+//! No engine, no threads, no sockets. Both ends are doors — `reuben play` serves it, the MCP
+//! sidecar dials it — so the envelope is the window's, and neither door can move it alone.
 //!
-//! # What lives here versus in `contract`
-//!
-//! This module owns the envelope (verbs, `reply` tags, framing) plus the payloads that exist only
-//! because this channel exists: [`DiagnosticsReport`], [`Conflict`], and [`DocumentSnapshot`].
-//! Door-agnostic types core itself produces — [`SwapReport`](crate::contract::SwapReport),
-//! `Report`, `Diag`, `DiffSummary`, [`content_hash`](crate::contract::content_hash) — live in
-//! [`crate::contract`]. see rules: agent-mcp
-//!
-//! That split governs *payload types*; [`DEFAULT_STRUCTURE_ADDR`] is a deliberate exception.
+//! Every payload here is declared rather than borrowed from the engine, [`SwapReport`] included:
+//! the swap's report is the flat object a model reads out of the `swap` tool, and the engine's own
+//! is the shape its Coordinator finds convenient. The two are converted at
+//! [`SwapReport::from_core`], once per swap and never on a block.
 //!
 //! Framing is newline-delimited JSON
 //! ([`Request::to_ndjson`]/[`Request::from_ndjson`] and the `Response` pair) so the channel
 //! stays netcat-debuggable and std-only.
+//!
+//! see rules: agent-mcp
 
 use serde::{Deserialize, Serialize};
 
-use crate::contract::SwapReport;
-use crate::message::Arg;
+use reuben_core::message::Arg;
+
+use crate::authoring::Report;
 
 /// The structure channel's default loopback bind/target: `127.0.0.1` only, shared here so the
 /// reuben-native server (`reuben play`) and the reuben-mcp client bind and dial the *same*
@@ -60,6 +57,22 @@ pub enum DocSource {
 /// batch. Shared here so the door advertising a `maxItems` and the engine enforcing it cannot drift.
 pub const MAX_SEND_BATCH: usize = 256;
 
+/// Why an empty batch is refused. Stated once because both ends check it — the client so a bad
+/// batch never reaches the wire, the server because it cannot trust that a client did — and a
+/// caller reading two wordings for one condition has to work out whether they mean the same thing.
+pub const EMPTY_BATCH_REFUSAL: &str = "`send` needs at least one message; an empty batch does \
+                                       nothing, and acking it as success would let a client that \
+                                       drops its messages read as a working send.";
+
+/// Why a batch over [`MAX_SEND_BATCH`] is refused, given how many it carried. The counterpart to
+/// [`EMPTY_BATCH_REFUSAL`]: one sentence for the condition, both ends.
+pub fn over_long_batch_refusal(len: usize) -> String {
+    format!(
+        "`send` takes at most {MAX_SEND_BATCH} messages ({len} given); split the gesture across \
+         several sends."
+    )
+}
+
 /// One control atom on this channel: the **flat primitive form** — a number or a string, and
 /// nothing else.
 ///
@@ -68,9 +81,9 @@ pub const MAX_SEND_BATCH: usize = 256;
 /// immediately have to forbid. Every door ships `{address, [Arg]}` in its **own local framing**
 /// (reuben-web hand-rolls a flat codec, `reuben play`'s foreign edge speaks OSC-the-binary-protocol);
 /// this is the structure channel's, and each converges at
-/// [`Engine::queue_osc`](crate::engine::Engine::queue_osc), where the destination port's declared
+/// [`Engine::queue_osc`](reuben_core::engine::Engine::queue_osc), where the destination port's declared
 /// type drives the conversion to the single typed `Arg` it carries
-/// ([`osc_in_arg`](crate::boundary::osc_in_arg)). So the primitives are all this type needs to
+/// ([`osc_in_arg`](reuben_core::boundary::osc_in_arg)). So the primitives are all this type needs to
 /// spell.
 ///
 /// **Untagged**, so an atom rides the wire as its bare JSON value — `[800.0, "up", 3]`, not
@@ -128,7 +141,7 @@ pub enum Request {
     Swap {
         /// The document, by value or by path.
         source: DocSource,
-        /// The opt-in concurrency guard: the [`content_hash`](crate::contract::content_hash)
+        /// The opt-in concurrency guard: the [`content_hash`](reuben_core::content_hash)
         /// the client believes is installed. A mismatch rejects the swap with
         /// `Response::Conflict` — no sessions, no leases, one off-thread hash compare.
         /// `None` is last-write-wins, the default arbitration.
@@ -180,11 +193,9 @@ impl Request {
 // tool's advertised outputSchema — so it stays about what the model should DO. Notes for humans go
 // below this line, where schemars will not pick them up.
 //
-// One type, three doors: `Response::Conflict`, the reuben-mcp client's `SwapOutcome::Conflict`, and
-// the `swap` tool's `conflict` field all carry this struct, so the shapes cannot drift. It is the
-// worked example of the contract-versus-wire split — see the module header.
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+// One type, three doors: `Response::Conflict`, the channel client's `SwapOutcome::Conflict`, and
+// the `swap` tool's `conflict` field all carry this struct, so the shapes cannot drift.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
 pub struct Conflict {
     /// The content hash the client asserted was installed.
     pub expected: String,
@@ -209,10 +220,9 @@ pub struct Conflict {
 // `get_current_instrument`'s outputSchema root description is null and this block ships nowhere.
 // (`Conflict` is the opposite case — it is referenced from `$defs`, so its block does ship.)
 //
-// One type, three doors: `Response::Document`, the reuben-mcp client's return, and the
-// `get_current_instrument` tool's `structuredContent` are all this struct.
+// The snapshot itself is advertised nowhere: `get_current_instrument` answers with a projection cut
+// from it, so this type reaches a door and stops there. Hence no schema derive.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DocumentSnapshot {
     /// The document the engine is currently playing, as raw JSON.
     pub document: serde_json::Value,
@@ -227,6 +237,73 @@ pub struct DocumentSnapshot {
     /// existed still deserializes.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub source: Option<String>,
+}
+
+/// What happened to the sounding graph across a swap, keyed by the survivor fingerprint.
+/// `state_reset` lists addresses present in both documents whose node did **not** survive (a type
+/// change, or an instantiate-time fingerprint change) — those nodes were rebuilt cold and lost
+/// their state. `added`/`removed` are relative to what was playing, so a param tweak that reports
+/// `removed: ["/voice1"]` means the address was mistyped. A door that rebuilds every node reports
+/// `survived: 0`.
+///
+// Everything above ships to models as the `$defs.DiffSummary` description in the `swap` tool's
+// advertised outputSchema, so it stays about what the fields mean. Notes for humans go below this
+// line, where schemars will not pick them up.
+//
+// see rules: execution-runtime
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct DiffSummary {
+    pub survived: usize,
+    pub state_reset: Vec<String>,
+    pub added: Vec<String>,
+    pub removed: Vec<String>,
+}
+
+/// What a `swap` returns: the validation report, the **installed** document's content hash (on
+/// `ok: false` nothing installed — the hash still names what keeps playing), and, on success, the
+/// diff summary. The report flattens so the wire shape is one flat object.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema)]
+pub struct SwapReport {
+    #[serde(flatten)]
+    pub report: Report,
+    pub content_hash: String,
+    /// Present on a successful install; a rejected swap (`ok: false`) has no old-vs-new to
+    /// summarize.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub diff: Option<DiffSummary>,
+}
+
+impl SwapReport {
+    /// The nothing-was-installed report, defined once — see rules: agent-mcp for why a door needs
+    /// this shape even when it rejects a swap before the loader runs.
+    ///
+    /// `content_hash` is **what keeps playing** — the conflict's `actual`, never the `expected` the
+    /// client asked for.
+    pub fn rejected(content_hash: String) -> Self {
+        Self {
+            report: Report {
+                ok: false,
+                errors: vec![],
+                warnings: vec![],
+            },
+            content_hash,
+            diff: None,
+        }
+    }
+
+    /// The window's reading of what the engine's Coordinator reported for a swap.
+    pub fn from_core(report: reuben_core::SwapReport) -> Self {
+        Self {
+            report: Report::from_core(report.report),
+            content_hash: report.content_hash,
+            diff: report.diff.map(|d| DiffSummary {
+                survived: d.survived,
+                state_reset: d.state_reset,
+                added: d.added,
+                removed: d.removed,
+            }),
+        }
+    }
 }
 
 /// One structure-channel response (one per request, in order), serialized as
@@ -291,8 +368,9 @@ impl Response {
 /// ring counters count **frames**. New counters
 /// land as new fields here — this stays the one wire surface mirroring reuben-native's
 /// `diagnostics.rs`, never a second parallel shape.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
+#[derive(
+    Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize, schemars::JsonSchema,
+)]
 pub struct DiagnosticsReport {
     /// Output render callbacks that missed their real-time budget (events).
     pub output_xruns: u64,
@@ -317,7 +395,7 @@ fn to_ndjson_line<T: Serialize>(value: &T) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::contract::{Diag, DiffSummary, Report};
+    use crate::authoring::{Diag, Report};
 
     /// A populated SwapReport exercising every field, so the round-trip proves the envelope
     /// carries the contract type intact (shapes must not drift).
@@ -712,10 +790,8 @@ mod tests {
         assert_one_line_round_trip(&req);
     }
 
-    /// `get_diagnostics` is a tool whose `outputSchema` rmcp derives from this
-    /// payload type via schemars, exactly as the contract types do. Run with
-    /// `--features schemars`.
-    #[cfg(feature = "schemars")]
+    /// `get_diagnostics` is a tool whose `outputSchema` a door derives from this payload type via
+    /// schemars, exactly as the result shapes are.
     #[test]
     fn diagnostics_report_schema_has_the_four_counters() {
         let schema =
