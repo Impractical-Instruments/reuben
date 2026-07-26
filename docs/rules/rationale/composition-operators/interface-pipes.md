@@ -23,19 +23,12 @@ width lives at the graph boundary, never inside the Signal, which keeps every ex
 `process` untouched forever. This is the modular-synth precedent (one channel per edge).
 
 Hardware binding stays **out of the patch** for portability — the same patch should play on any rig. A
-signal pipe may carry an optional **`channel: k`** logical index, honored *only* on the graph played at
-top level (nested or Voicer-hosted, the binding is inert — the parent's edge feeds the pipe like any
-boundary wire; an unfed nested pipe renders silence + a warning: a graph's inputs are pipes, never a
-magic hardware tap from inside a nest). A small **device profile** loaded with `--io-map`, not the
-patch, maps logical↔device channels; with no profile, the identity map plus today's implicit
-broadcast/downmix/zero-fill policy holds, bit-identical. The device layer that honors those logical
-channels resolves the rest of the I/O story — request→grant→adopt rate negotiation, a lock-free SPSC
-ring resampling live input into the engine rate, and warn-plus-zeros **dark-degrade** on any reality
-mismatch (never fatal; structural errors in the document still fail loudly). Live input is a sanctioned
-nondeterministic boundary — the offline path injects known buffers, so render stays reproducible. The
-pipe type set is `f32_buffer`/`f32`/`i32`/`note`/`harmony`/enum; an `i32` pipe is an integer control
+signal pipe may carry an optional **`channel: k`** logical index; how that index is read, and what
+happens when the channel is absent, is [logical-input-master](logical-input-master.md). A small
+**device profile** loaded with `--io-map`, not the patch, maps logical↔device channels; with no
+profile the identity map plus the implicit broadcast/downmix/zero-fill policy holds, bit-identical.
+The pipe type set is `f32_buffer`/`f32`/`i32`/`note`/`harmony`/enum; an `i32` pipe is an integer control
 that wires into a consumer's `i32` port — or widens losslessly into an `f32` one
-([per-wire-form-check](per-wire-form-check.md)). The flip was
-a breaking change, taken as format v2 with in-loader v1→v2 auto-migration that renders bit-identically.
+([per-wire-form-check](per-wire-form-check.md)).
 
 Distilled from: ADR-0038, ADR-0032, ADR-0034

@@ -7,13 +7,9 @@ every handle to the right slot — is one of the more intricate things the engin
 in exactly two places on purpose: the Plan's instantiate does the real seeding, and Render's
 per-node step does the real per-block wiring.
 
-An operator's unit tests need to feed it inputs and read its outputs, and the shortest path there is
-a hand-rolled `run()` that builds an `Io` directly. It is genuinely tempting: a dozen lines, no
-graph, no Plan, and the operator under test is the only thing in scope. The problem is that those
-dozen lines are a **third implementation** of the same wiring, and three implementations drift. The
-failure mode is the expensive one — the test harness diverges from production seeding, and the tests
-keep passing while describing an `Io` the engine never actually builds. A test suite that is green
-against a fiction is worse than no suite, because it is trusted.
+An operator's unit tests want a hand-rolled `run()` that builds an `Io` directly — a dozen lines, no
+graph, no Plan. Those dozen lines are a **third implementation** of the same wiring, and it drifts
+silently: the tests stay green while describing an `Io` the engine never builds.
 
 So the harness builds a one-node graph, instantiates a real Plan, and steps it with a real Renderer.
 It is purely **injection and observation** over the production substrate: it decides what goes in and

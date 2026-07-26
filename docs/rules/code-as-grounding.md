@@ -5,58 +5,32 @@
 ## Now
 
 The source tree is **read far more often than it is written, and mostly by agents.** That makes the
-comments, the navigation path an agent takes through the code, and the search scope it inherits into a
-grounding surface in their own right — one governed by the same anti-drift mechanism as every other
-grounding surface here: single-source it, point at it, guard it. The [agent framework &
-MCP](agent-mcp.md) topic governs grounding for the agent *authoring instruments*; this topic governs
-grounding for the agent *working on this repo*.
+comments, the navigation path an agent takes, and the search scope it inherits grounding surfaces in
+their own right, governed like every other one here: single-source it, point at it, guard it. The
+[agent framework & MCP](agent-mcp.md) topic governs grounding for the agent *authoring instruments*;
+this topic governs grounding for the agent *working on this repo*.
 
-Comments carry **three** kinds of prose, and only one of them belongs in the code.
-**Rationale** — why the system is this way: a position argued, a tradeoff explained, a constraint
-that binds beyond this file — is a rule in the wrong place. It moves to a topic under `docs/rules/`
-and the comment becomes a `// see rules: <topic>` pointer, because a pointer cannot drift and a copy
-always does. **Mechanics** — the local, non-obvious fact the code itself cannot state: a `SAFETY:`
-justification, an invariant a caller must uphold, why a constant is *this* number, a
-non-obvious algorithm step, and the signature-level `///` on a public item — stays, because that is
-what `hover` and `cargo doc` serve. **Restatement** — prose that re-describes what the code says, or
-answers what `goToDefinition`, `findReferences`, or a `grep` would answer — is deleted outright. It
-is not moved and it is not harvested: there is nothing there that the code does not already say, and
-every copy of it is a line that can go stale while the build stays green.
+Comments carry **three** kinds of prose and only one belongs in the code. **Rationale** — a position
+argued, a tradeoff explained, a constraint binding beyond the file — moves to a topic and leaves a
+`// see rules: <topic>` pointer, because a pointer cannot drift and a copy always does. **Mechanics**
+— the local fact the code cannot state itself — stays, because that is what `hover` and `cargo doc`
+serve. **Restatement** is deleted rather than moved. Restatement is the largest bucket and the most
+dangerous: one that has drifted from the line beneath it is indistinguishable from one that has not,
+and agents read comments in preference to the code they sit on. So the reading posture is the other
+half of the discipline — navigation is **LSP-first**, and every search runs inside the scope
+[`.ignore`](../../.ignore) pre-declares.
 
-The three-way split classifies what prose *says*; a second axis classifies where it *goes*. A doc
-comment on a field of a `JsonSchema`-deriving type **is** that field's advertised `description`, and
-the same sentence that serves a Rust reader through `cargo doc` is shipped verbatim to a model in
-every turn that loads the schema. That makes it model-facing prose, and it must read as prose:
-rustdoc link syntax the model cannot resolve, an issue number pointing at a closed argument, and an
-internal crate path naming a module it has no access to are all noise it pays tokens to skip. Nothing
-is lost for the Rust reader — plain backticks render fine in `cargo doc`. The kind is orthogonal to
-the split: a wire description is usually **mechanics** and stays, but how it is *worded* is governed
-here.
+A doc comment a `JsonSchema` derive turns into an advertised `description` is model-facing prose as
+well as a comment. Rustdoc link syntax, an issue number, and an internal crate path are tokens the
+model pays for and cannot resolve, and plain backticks cost the Rust reader nothing. The kind is
+orthogonal to the split: such a description is usually mechanics and stays, but how it is *worded* is
+governed here.
 
-Restatement is the largest of the three and the most expensive, because it is invisible. A wrong
-rationale comment at least contradicts a rule someone might check; a restatement that has drifted from
-the code beside it looks exactly like a restatement that has not, and agents read comments in
-preference to the code they sit on. So the reading posture is the other half of the discipline:
-navigation is **LSP-first** — definitions, references, symbols, and types come from the language
-server, and text search is reserved for the things it cannot see — and every search runs inside the
-scope [`.ignore`](../../.ignore) pre-declares, so build output, caches, and binary fixtures cannot
-answer a question about the source. A comment that duplicates what those two tools return is not a
-convenience; it is a second copy competing with them.
-
-The discipline is **guarded, not merely documented**: an unenforced convention decays back to the
-level it started at. `scripts/check_rules_refs.py` fails the build on a module doc long enough to be
-carrying rationale that names no topic, and on a pointer that reaches past its topic to a rule — in
-every crate in the workspace. The wire half is guarded from the other side: an integration test
-spawns the real sidecar and scans every description it advertises across `tools/list`,
-`resources/list`, and the server `instructions`, so the check reads the door's own output and cannot
-drift from what a client actually receives.
-
-The tests are grounding too, and one shape of test says more than it appears to. A test whose job is
-that **two lists match** is evidence that generation was not attempted — there are two lists, and
-nothing but that assertion holds them level — yet a green parity check reads as reassurance and the
-list it guards reads as safe. Sometimes the two genuinely cannot be generated from each other,
-because one is produced at runtime behind a boundary the other cannot cross; the requirement is that
-the test **says which case it is**, where someone reads it before trusting it.
+The discipline is **guarded, not merely documented**: `scripts/check_rules_refs.py` fails the build
+across every crate, and the wire half is checked from the door's own `tools/list`, `resources/list`,
+and `instructions` output rather than from what a type declares. Tests are grounding too — a test
+whose job is that **two lists match** is evidence that generation was not attempted, and the
+requirement is that it says which case it is, where someone reads it before trusting it.
 
 ## Rules
 
@@ -87,6 +61,6 @@ the test **says which case it is**, where someone reads it before trusting it.
 
 ## Terms
 
-- **Advertised description** — prose a door hands a model over the wire: a tool or schema `description`, a resource description, the server `instructions`. Generated from a doc comment, but governed as model-facing prose rather than as a comment.
+- **Advertised description** — prose a door hands a model over the wire (a tool or schema `description`, the server `instructions`); generated from a doc comment, governed as model-facing prose.
 - **Mechanics** — the one kind of prose a comment may carry: the local, non-obvious fact the code cannot state itself (a `SAFETY:` justification, a caller-upheld invariant, why a constant is this number).
 - **Restatement** — comment prose that re-describes the code or answers what LSP or a search would answer; the third comment kind, deleted outright rather than moved to a rule.

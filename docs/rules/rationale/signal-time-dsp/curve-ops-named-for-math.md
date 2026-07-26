@@ -15,11 +15,10 @@ but `x^k` maps `0 → 0` and `1 → 1` exactly, so a release reaches **true sile
 is perceptually close to an exponential decay across the audible range. A true `e^{kx}` never reaches
 0 and would need a −60 dB-style floor plus renormalization to be usable as a release; the power curve
 avoids that entirely. `power` is unipolar with an **op-local** NaN guard — negatives clamp to 0 so a
-fractional exponent can't yield NaN — living in the op's own scalar fn, inherited by nobody. Its
-`exponent` is a materialized operand read block-rate (the curve shape is held for the call;
-audio-rate exponent modulation is not worth a per-sample `powf`) that keeps its range guard, default,
-and UI knob while staying wire-able. This is the template every curve op follows: a dense `Float` op,
-one file, a metadata-bearing shaping operand, op-local guards. (The old param-vs-input fork this op
-once reasoned about is gone — every operand is now a materialized `Float`, a knob *and* a wire.)
+fractional exponent can't yield NaN — living in the op's own scalar fn, inherited by nobody.
+`exponent` is a materialized operand carrying its range guard, default, and UI knob while staying
+wire-able; in the signal carrier it is read per sample as a uniform buffer operand, which is
+functionally identical for a held control. This is the template every curve op follows: one file, a
+metadata-bearing shaping operand, op-local guards.
 
 Distilled from: ADR-0027, ADR-0029

@@ -25,15 +25,9 @@ gestures (fetch from the asset base, a file picker later). The same posture hold
 bytes ride the agent's context on any lane; the agent references by key, and the host moves the
 bytes.
 
-The principle later **widened to cover the instrument document itself**, which it had never addressed
-only because documents were assumed to be the model's own output. They are not: a document is now
-named by an opaque source, read back as a projection, and written by the door's resolver
-([document-verbs](document-verbs.md), [document-projection](document-projection.md)). That was already
-half-true — voices and subpatches are documents referenced as resources — and it retires one clause
-here: the sidecar's old "a filesystem write is the *agent's* own gesture" stance holds for samples and
-not for documents, where the write is the door's. The **sample gesture is unchanged**, and the stated
-revival condition for byte-upload is untouched: what widened the rule was a document joining the
-sample as "a resource the agent references, never carries", not the persona becoming a packaged
-non-dev client.
+The rule covers the instrument document as well as the sample, but the two are moved differently: a
+sample the agent writes with its own file tools; a document is named by an opaque source and written
+by the **door's** resolver ([document-verbs](document-verbs.md),
+[document-projection](document-projection.md)). Byte-upload's revival condition is unchanged.
 
 Distilled from: ADR-0049, ADR-0066

@@ -17,14 +17,8 @@ connection layer, not an operator; panning / channel spread is a boundary constr
 centralization: the engine carries the fan-out machinery *once* instead of smearing it across every
 operator's `process`.
 
-The mechanism that used to deliver this — the per-Lane replication the engine spread across the whole
-downstream graph — is **retired**. It broke the moment per-voice `freq`/`gate` became held Values: a
-node-global latch would broadcast one voice's value to all, and emission was Lane-0-only
-([declared-port-forms](declared-port-forms.md)). Polyphony is now the Voicer
-hosting standalone voice patches, so an operator is a plain single-stream node with no Lane awareness
-at all ([operator.rs](../../../../crates/reuben-core/src/operator.rs): "An Operator is mono and
-single-voice … polyphony comes from the Voicer hosting voice sub-patches, not from the operator").
-The surviving decision is the authoring principle — one stream in the operator, cross-cutting work
-above it — not the fan-out machinery that once implemented it.
+Polyphony is the Voicer hosting standalone voice patches, so an operator is a plain single-stream
+node with no voice awareness at all
+([operator.rs](../../../../crates/reuben-core/src/operator.rs)).
 
 Distilled from: ADR-0010, ADR-0032

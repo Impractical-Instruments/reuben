@@ -12,10 +12,9 @@ nonsense, so the set is closed at three. Slicing is *derived*, not declared: sli
 single-valued = Value.
 
 The decision that matters is that the numeric form is **declared at authoring, not inferred from the
-graph**. An earlier design resolved each `f32` port's form with a plan-time topological propagation
-pass — a forward solver, a feedback back-edge rule, a two-arm read API — all complexity spent to avoid
-ever asking the author which form a port is. Scrubbing it against real DSP showed that avoidance *was*
-the single thing making the model hard to hold. So the author writes one keyword: **`f32` = Value,
+graph**. Inferring the form from the graph was rejected: it needs a plan-time propagation solver, a
+feedback back-edge rule, and a two-arm read API, all to avoid asking the author one question. So the
+author writes one keyword: **`f32` = Value,
 `f32_buffer` = Signal** (`enum`/`harmony` are Value-only, `note` Event-only). The numeric type is the
 only one with a choice, and it is a one-keyword fact about what the port *is*, not something to
 discover: declare `f32_buffer` where stepped values would sound wrong (a swept `filter.cutoff`, an
@@ -23,10 +22,7 @@ discover: declare `f32_buffer` where stepped values would sound wrong (a swept `
 `tempo` knob, a `gate`/trigger, a pitch latched once per hit). The discriminator throughout: *does the
 value vary per-sample in a musically required way?*
 
-This corrects a real mistake — the prior "a `Float` is always materialized into a buffer" was carried
-forward without weighing the cost, and it made a rarely-changing knob pay a per-sample price it does
-not owe (a `frames`-length buffer allocated and filled every block, 48k iterations/second for a value
-that changes twice). Now buffers are allocated only for a declared-Signal port or a materialized
+Buffers are allocated only for a declared-Signal port or a materialized
 Value→Signal edge; a Value port gets a latch slot and does **zero** per-sample work. A port that must
 be modulatable is simply declared `f32_buffer` — it accepts both a Signal source and a materialized
 constant, so nothing is lost. The library *does* fork for math ops (value-math vs signal-math nodes),

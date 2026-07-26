@@ -1,4 +1,4 @@
-# Why: Every shell-edge failure degrades to defined silence, is counted on the one diagnostics surface, and is never configurable.
+# Why: Every shell-edge failure degrades to defined silence, is accounted for on the one diagnostics surface, and is never configurable.
 
 [Rule](../../host-shell-io.md#degradation-is-fixed-and-counted)
 

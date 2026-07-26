@@ -11,13 +11,11 @@ clock — is converted to and from that shape by an isolated, removable **bounda
 operator ever branches on protocol and each adapter detaches with the native layer. OSC-*shaped* is a
 claim about the data, not about a socket: **OSC-the-binary-protocol lives only at the engine's foreign
 edge** — external controllers in, `osc_out` nodes out. Every door reaching the engine from inside our
-own system (the loopback authoring channel, the browser's in-page layer) ships the same flat
-`{address, args}` form in whatever framing suits it, and all of them converge at the one control
-ingress, where the destination port's declared type drives the conversion to the single typed `Arg`.
-Addresses are
-hierarchical: every operator, port, and param is auto-addressable by its **structural path** through
-the graph nesting (`/lead-synth/filter/cutoff`), and an instrument additionally publishes a curated
-set of **exposed** named addresses — its public control surface — that survive internal rewiring.
+own system frames the same flat `{address, args}` form to suit itself, and all of them converge at one
+control ingress. Addresses are
+hierarchical: every operator and input port is auto-addressable by its **structural path** through
+the graph nesting (`/lead-synth/filter/cutoff`), and an instrument additionally mints stable named
+addresses from its **interface pipes** — its public control surface — that survive internal rewiring.
 OSC wildcard/pattern dispatch (`/drums/*/decay`) is the *designed* meta-effect mechanism but is **not
 yet implemented as internal routing** — internal edges are statically wired and port-bound today, and
 wildcards remain a boundary-layer intention (see the [execution-runtime](execution-runtime.md) topic's
@@ -26,10 +24,13 @@ operator-message-emission rule for why internal routing is addressless).
 Musical time is a **hybrid Clock**: one default Clock makes any two Toys dropped in a Rig groove
 together out of the box, but a Clock is itself an Operator (a sample-accurate beat phasor), so
 polytempo, clock division, and independent timing are patched when wanted. The Clock provides *base
-timing only* — tempo, meter, the beat grid; **groove, swing, and feel are separate Operators** that
-re-time Message streams per-stream. Message timetags default to musical time and resolve to a sample
-offset against the active Clock at dispatch, so a tempo change re-times everything for free; absolute
-sample-time tags stay available for transport-independent events.
+timing only* — tempo and the beat grid; groove, swing, and feel belong in **separate Operators** that
+re-time Message streams per-stream, never in the Clock. *(Not built: no groove operator exists yet —
+what the rule fixes today is that the Clock does not grow a swing knob.)* Message timetags are
+designed to default to musical time and resolve to a sample offset against the active Clock at
+dispatch, so a tempo change re-times everything for free, with absolute sample-time tags available for
+transport-independent events. *(Not built: a Message carries only a block-relative sample `frame`
+today, and inbound OSC is stamped frame 0 — bundle timetags are ignored.)*
 
 Pitch is **two layers**: a symbolic degree within the active Scale (with float MIDI as an always-
 available 12-TET coordinate) that a **Tuning** resolves to Hz — 12-TET is merely the default Tuning,
@@ -39,8 +40,10 @@ pitch is *explicitly typed* (an absolute pitch versus a scale degree, distinguis
 role and type-checked at load); the Signal domain stays untyped so audio-rate weirdness patches
 freely. The current key/scale/chord/tuning is the **tonal context**, and — exactly like the Clock, and
 for the same polytonality reason — it is an **Operator**, not a global: a default context node grooves
-a Rig into one key, multiple nodes give polytonality. The context node owns the resolver (`hz`,
-`snap`, `chord_tone`) as a deep module, so followers stay dumb and read `io.context().hz(p)`; its
+a Rig into one key, multiple nodes give polytonality *(today the on-ramp is the per-port default: an
+unwired `harmony` input reads `Harmony::DEFAULT` — C major, 12-TET — rather than a Rig-level node
+being auto-inserted)*. The context node owns the resolver (`hz`,
+`snap`, `chord_tone`) as a deep module, so followers stay dumb and read `io.read(IN_HARMONY).hz(p)`; its
 value is a small `Copy` struct of optional fields written per-field last-write-wins. That resolver
 also has a wire-exposed form: **`pitch2freq`** is the single operator that *exits* the symbolic domain,
 a pure `pitch`+`harmony` → held-`freq` lookup wrapping `harmony.hz` — everything upstream
@@ -53,8 +56,8 @@ sample-accurate-timing rules); this topic only fixes *what* rides that wire and 
 DSP is authored as small, composable operators. An **envelope** is a pure generator emitting a linear
 CV contour in `[0, 1]`; downstream ops decide what it means, and the VCA is an explicit `mul` — so the
 same contour drives amplitude, pitch, or filter motion. **Curve ops** are named for their exact math
-(`power` = `x^exponent`), never a generic "curve" knob. The **math family** is dense `Float`→`Float`
-ops, one operator per module, with the old shared `Number`-trait core retired; the calculus ops
+(`power` = `x^exponent`), never a generic "curve" knob. The **math family** is one module per op over
+a pure scalar fn, with the old shared `math.rs`/`Number`-trait core deleted; the calculus ops
 (`differentiate`, `integrate`) are dense with a constant one-sample `dt`, which is what keeps
 higher-order calculus valid.
 
@@ -66,7 +69,7 @@ higher-order calculus valid.
 [why](rationale/signal-time-dsp/osc-only-core.md)
 
 <a id="structural-and-exposed-addressing"></a>
-### Every operator, port, and param is auto-addressable by its structural path through the graph, and an instrument additionally exposes a curated set of stable named addresses as its refactor-safe control surface.
+### Every operator and input port is auto-addressable by its structural path through the graph, and an instrument additionally mints stable named addresses from its interface pipes as its refactor-safe control surface.
 
 [why](rationale/signal-time-dsp/structural-and-exposed-addressing.md)
 
@@ -80,15 +83,17 @@ higher-order calculus valid.
 
 [why](rationale/signal-time-dsp/groove-is-separate-operators.md)
 
+*(Designed, not built: no groove/swing/feel operator exists yet. What the rule fixes today is the
+negative — the Clock does not grow a swing knob.)*
+
 <a id="musical-timetags"></a>
 ### Message timetags default to musical time, resolved to a sample offset against the active Clock at dispatch, with absolute sample-time tags available for transport-independent events.
 
 [why](rationale/signal-time-dsp/musical-timetags.md)
 
-<a id="outbound-frames-are-block-absolute"></a>
-### An outbound Message carries a block-absolute frame: the render loop stamps each operator emission by adding its segment's start, and the outbound drain forwards that frame verbatim — never re-stamping it and never losing the offset.
-
-[why](rationale/signal-time-dsp/outbound-frames-are-block-absolute.md)
+*(Designed, not built: a Message carries only a block-relative sample `frame` today, and inbound OSC
+is stamped frame 0 — bundle timetags are ignored. The musical-time default and its dispatch-time
+resolution are the unbuilt half.)*
 
 <a id="two-layer-pitch"></a>
 ### Pitch is a two-layer model — a symbolic degree within the active Scale (with float MIDI available as a 12-TET coordinate) resolved to Hz by a Tuning — and 12-TET is just the default Tuning.
@@ -101,7 +106,7 @@ higher-order calculus valid.
 [why](rationale/signal-time-dsp/scala-tuning-import.md)
 
 <a id="typed-pitch-in-messages"></a>
-### In the Message domain pitch is explicitly typed — an absolute pitch versus a scale degree, distinguished by port and address role and type-checked at load — while the Signal domain stays untyped.
+### In the Message domain pitch is explicitly typed — the `Pitch` enum's own case distinguishes an absolute MIDI coordinate from a scale degree, so no operator has to guess what a number means — while the Signal domain stays untyped.
 
 [why](rationale/signal-time-dsp/typed-pitch-in-messages.md)
 
@@ -111,7 +116,7 @@ higher-order calculus valid.
 [why](rationale/signal-time-dsp/tonal-context-is-an-operator.md)
 
 <a id="context-owns-resolution"></a>
-### The tonal-context node owns pitch resolution and snap as a deep module — degree to step via the symbolic Scale, step to Hz via the Tuning — so followers read Hz through io.context() rather than composing the chain themselves.
+### The tonal-context node owns pitch resolution and snap as a deep module — degree to step via the symbolic Scale, step to Hz via the Tuning — so a follower reads Hz off the `Harmony` value it latches (`io.read(IN_HARMONY).hz(p)`) rather than composing the chain itself.
 
 [why](rationale/signal-time-dsp/context-owns-resolution.md)
 
@@ -136,7 +141,7 @@ higher-order calculus valid.
 [why](rationale/signal-time-dsp/curve-ops-named-for-math.md)
 
 <a id="math-family-dense-float"></a>
-### Every math op is a dense Float-to-Float operator authored as one operator per module, and the shared Number-trait core is retired.
+### Every arithmetic op is its own module over a pure scalar fn, and the shared `math.rs`/`Number`-trait core is deleted rather than re-bounded.
 
 [why](rationale/signal-time-dsp/math-family-dense-float.md)
 
@@ -159,11 +164,13 @@ higher-order calculus valid.
 
 <!-- Each term this topic defines. Collated into the rules index glossary. One per topic. -->
 - **Boundary adapter** — a removable I/O-edge component that converts a foreign protocol (MIDI, Ableton Link, external OSC) to and from the core's OSC-shaped Messages.
-- **Clock** — the Operator providing base musical timing — tempo, meter, the beat grid — as a sample-accurate beat phasor; a default instance syncs a Rig.
+- **Clock** — the Operator providing base musical timing — tempo and the beat grid — as a sample-accurate beat phasor; a default instance syncs a Rig.
 - **Groove** — a per-stream re-timing of a Message stream (swing/feel), applied by a separate Operator, distinct from the Clock's base grid.
 - **Tuning** — the resolution layer mapping a symbolic pitch (a scale step) to a frequency in Hz; 12-TET is the default, Scala-importable.
 - **Scale** — ordered step-offsets within a Tuning's period plus a root, mapping a scale degree to a step index (symbolic → symbolic).
 - **Tonal context** — the latched key/scale/chord/tuning value, owned by a context Operator, that followers resolve pitch against.
+- **Pitch** — a symbolic scale degree or an absolute 12-TET coordinate, carried as one enum case; the resolved Hz is the result, not the Pitch.
+- **Harmony** — the `Arg` leaf carrying a tonal-context value on a wire; the latched value itself is the Tonal context.
 - **Snap** — quantizing an arbitrary pitch to the nearest in-scale degree under a caller-supplied policy, upstream of resolution.
 - **CV** — a linear control signal in a normalized range (e.g. an envelope's `[0, 1]` contour), carried untyped on the Signal domain and interpreted by downstream ops.
 - **Foreign edge** — the only place OSC-the-binary-protocol appears: external controllers arriving at `reuben play` and `osc_out` nodes leaving it; every internal door frames the same flat `{address, args}` form its own way.

@@ -9,15 +9,13 @@ and enumerating the types it accepts would mean editing the sink every time the 
 `arg` is a port type that commits to nothing, classified as an Event stream so routing delivers the
 raw `Arg` unlatched and uncoerced, with the type-driven expansion happening at the boundary instead.
 
-That flexibility has to be bounded in two directions, and the bounds are the interesting part.
-
 **Where it may be declared** is restricted to operators that treat the payload as opaque — a pure
 carrier. The contract validator closes `arg` outputs and constants, leaving it input-only. The
 reason is that the wired *source* port stays the type authority: an `arg` input asserts "I will not
 look at this," and an operator that inspected the payload would be doing type dispatch that the
 graph cannot see and the planner cannot check.
 
-**What may wire into it** is the part worth stating as a rule, because the obvious answer is wrong.
+**What may wire into it** is where the obvious answer is wrong.
 "Any Message-domain source" would admit types that have no external representation — `Harmony`
 registers no OSC form — producing a wire that validates cleanly and can never send anything. That is
 worse than a rejected patch: it is a patch that looks connected and is silently inert. So legality

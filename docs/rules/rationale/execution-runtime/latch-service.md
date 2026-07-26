@@ -31,8 +31,4 @@ change would re-enter a String-keyed O(nodes) match; the statically-wired edge i
 case ([operator-message-emission](operator-message-emission.md)), wildcards layer on later for the
 boundary, not under the audio-rate latch.
 
-(Originally the "context read" service with its own arena; that dedicated arena has since folded
-into the one per-port latch, and "context" is now the `Harmony` value — the latch + `Copy` resolver
-struct are what survive and what this rule fixes.)
-
 Distilled from: ADR-0015

@@ -7,18 +7,10 @@ The surface is a **fixed roster** against a fixed process model: the pure tools
 available, as do the document verbs; the engine tools (`send_live_controls`, `get_engine_status`,
 `swap_instrument`, `get_current_instrument`, `get_engine_diagnostics`) reach the user-owned engine and
 fail fast when it is absent ([mcp-stdio-sidecar](mcp-stdio-sidecar.md),
-[user-owned-engine](user-owned-engine.md)). The roster is stable across milestones by design — M1 vs
-M2 change what stands *behind* the swap, never any tool's name, schema, or result shape — so an
-agent's contract does not move under it.
-
-Two later amendments arrived together, when the edit contract became the closed document vocabulary
-([document-verbs](document-verbs.md)): the roster gained that vocabulary — nineteen engine-free
-mutators, a **third** channel kind beside pure and engine — and it **stopped carrying documents**. No
-arm takes or returns instrument JSON: a document is named by an opaque `source` and read back as a
-projection, `scaffold_instrument` (which returned a seed by value) is retired in favour of
-`new_instrument` writing that seed to a source, and the names moved to the `verb_instrument_object`
-convention. The stability claim above survives it because that was one deliberate, recorded break,
-not drift.
+[user-owned-engine](user-owned-engine.md)). The roster's third kind is the document vocabulary —
+nineteen engine-free mutators ([document-verbs](document-verbs.md)) — and no arm takes or returns
+instrument JSON: a document is named by an opaque `source` and read back as a projection. Names
+follow the `verb_instrument_object` convention.
 
 The load-bearing discipline is the **error layering**, because models act on it. Three layers:
 protocol errors for malformed calls; `isError: true` only when the tool **could not do its job**

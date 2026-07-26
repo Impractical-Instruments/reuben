@@ -9,8 +9,9 @@ Clock exists so any two Toys dropped in a Rig groove together out of the box (th
 Clocks are ordinary Operators, so polytempo, clock division, and independent timing are patched when
 wanted. Default sync, optional divergence.
 
-The Clock provides **base timing only** — tempo, meter, position — and nothing else; that minimalism
-is what lets groove and feel be separate, composable operators rather than knobs buried in transport.
+The Clock provides **base timing only** — tempo, beat grid, position — and nothing else; meter,
+groove and feel are separate concerns, and that minimalism is what lets them be separate, composable
+operators rather than knobs buried in transport.
 Making the Clock an Operator (not an ambient global) is also the precedent the tonal-context node
 follows for the identical reason: polytonality is the polytempo analog, and both resolve the same way
 ([tonal-context-is-an-operator](tonal-context-is-an-operator.md)). In the engine the Clock is where

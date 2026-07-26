@@ -9,9 +9,7 @@ loads, who cleans up orphans — even behind an opt-in flag (two documented beha
 the MVP persona is a dev with a checkout and a terminal). So a tool that needs the engine and finds
 none **fails fast with an actionable error** — it names the fix (`start reuben play`) rather than
 guessing. Every engine tool acts-then-maps the unreachable error: one connection, no
-time-of-check/time-of-use window. `send` used to be the exception, probing liveness first because
-its fire-and-forget UDP transport would swallow a dead port silently; now that control rides the
-structure channel too, its own exchange reports the dead engine and the rule has no exceptions.
+time-of-check/time-of-use window, no exceptions.
 
 **Multi-client is tolerated, not arbitrated.** Any number of shims may target one engine — two
 conversations sharing one engine is a supported workflow from day one — and concurrent `send`s are

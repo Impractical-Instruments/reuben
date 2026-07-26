@@ -6,10 +6,8 @@ full playable system). Beginners start with **Toys**: ready-made instruments tha
 The same engine that makes music can drive lights, video, or a game engine, because the data flowing
 through it is general.
 
-This file is the **front door** to how reuben works — the single index that absorbed the old
-end-to-end design narrative (`ARCHITECTURE.md`) and the glossary (`CONTEXT.md`). It is the now-state
-architecture, as rules. Read top-down and **stop at the shallowest level that answers your
-question**:
+This file is the **front door** to how reuben works — the now-state architecture, as rules. Read
+top-down and **stop at the shallowest level that answers your question**:
 
     index (this file)  →  topic doc   →  a rule         →  its rationale
     summaries+glossary     now-story +    present-tense     condensed "why",
@@ -60,17 +58,17 @@ not by hope:
 ## Glossary
 
 <!-- derived — collated from each topic's `## Terms`, linking the defining topic. -->
-- **Advertised description** — prose a door hands a model over the wire: a tool or schema `description`, a resource description, the server `instructions`. Generated from a doc comment, but governed as model-facing prose rather than as a comment. · [code-as-grounding](code-as-grounding.md)
+- **Advertised description** — prose a door hands a model over the wire (a tool or schema `description`, the server `instructions`); generated from a doc comment, governed as model-facing prose. · [code-as-grounding](code-as-grounding.md)
 - **Arg** — the single closed-enum payload a Message carries: OSC primitives, shared vocab types (`Note`, `Harmony`), an erased enum index, or the dense `Buffer`. · [composition-operators](composition-operators.md)
 - **available-set** — the set of instruments a session can reference. · [authoring-library](authoring-library.md)
 - **Block** — the fixed-size processing quantum; each block computes message- and signal-domain data in one dependency-ordered pass. · [execution-runtime](execution-runtime.md)
 - **Boundary adapter** — a removable I/O-edge component that converts a foreign protocol (MIDI, Ableton Link, external OSC) to and from the core's OSC-shaped Messages. · [signal-time-dsp](signal-time-dsp.md)
 - **C-ABI worklet boundary** — the documented raw `extern "C"`, `(ptr, len)`-over-linear-memory interface a browser host drives per audio quantum, carrying no `wasm-bindgen` glue and shipped as a contract to rebuild against, not a maintained binding. · [web-product-process](web-product-process.md)
-- **Clock** — the Operator providing base musical timing — tempo, meter, the beat grid — as a sample-accurate beat phasor; a default instance syncs a Rig. · [signal-time-dsp](signal-time-dsp.md)
+- **Clock** — the Operator providing base musical timing — tempo and the beat grid — as a sample-accurate beat phasor; a default instance syncs a Rig. · [signal-time-dsp](signal-time-dsp.md)
 - **Constant** — a plan-time immutable port whose value is fixed at instantiate; changing it rebuilds the graph. · [composition-operators](composition-operators.md)
 - **Coordinator** — the single non-RT writer of graph structure; owns the canonical graph and instrument library and performs every Swap. · [execution-runtime](execution-runtime.md)
 - **CV** — a linear control signal in a normalized range (e.g. an envelope's `[0, 1]` contour), carried untyped on the Signal domain and interpreted by downstream ops. · [signal-time-dsp](signal-time-dsp.md)
-- **Dark degrade** — a shell edge's fixed response to a reality mismatch: play defined silence, count it, warn once, never fail and never improvise. · [host-shell-io](host-shell-io.md)
+- **Dark degrade** — a shell edge's fixed response to a reality mismatch: play defined silence, then count it if it can recur or warn once if it cannot; never fail and never improvise. · [host-shell-io](host-shell-io.md)
 - **Delivery lane** — a grounding consumer (repo skills, MCP clients, web chat), each reducing to transport bindings plus host furniture plus the shared base sauce, fed by push or pull. · [agent-mcp](agent-mcp.md)
 - **Document verb** — one member of the closed, format-derived vocabulary an agent authors with: a stateless `(source, …)` mutator that applies one surgical edit, re-validates the whole document, and writes iff valid. · [agent-mcp](agent-mcp.md)
 - **Door** — one surface over the OS-free contract types (native CLI, MCP sidecar, web in-page layer, web proxy); no verb means different things behind different doors. · [agent-mcp](agent-mcp.md)
@@ -84,9 +82,10 @@ not by hope:
 - **Gist-and-point** — the anti-drift posture for prose that must live in code: carry the one-breath gist and point at the single canonical doc, never restate it. · [agent-mcp](agent-mcp.md)
 - **Good Button** — a curated player-facing control that is hard to make sound bad, built from composition (a fan of `map`s) rather than from new instrument-format machinery. · [authoring-library](authoring-library.md)
 - **Groove** — a per-stream re-timing of a Message stream (swing/feel), applied by a separate Operator, distinct from the Clock's base grid. · [signal-time-dsp](signal-time-dsp.md)
-- **Host shell** — the removable per-platform layer wrapping the embed surface: it owns devices, foreign protocols, and the callback that hosts Render, and owes the engine blocks on time and an honest account when it cannot deliver them. · [host-shell-io](host-shell-io.md)
+- **Harmony** — the `Arg` leaf carrying a tonal-context value on a wire; the latched value itself is the Tonal context. · [signal-time-dsp](signal-time-dsp.md)
+- **Host shell** — the removable per-platform layer wrapping the embed surface; it owns devices, foreign protocols, and the callback that hosts Render. · [host-shell-io](host-shell-io.md)
 - **Input handling** — interpreting musical, mood, or abstract language as patching moves; the shared base grounding identical in every lane. · [agent-mcp](agent-mcp.md)
-- **Instantiate** — the off-thread construction of a Plan (topo sort, cluster, allocate the delta); the first half of every Swap, where all allocation lives. · [execution-runtime](execution-runtime.md)
+- **Instantiate** — the off-thread construction of a Plan (topo sort, allocate the delta); the first half of every Swap, where all allocation lives. · [execution-runtime](execution-runtime.md)
 - **Instrument** — a named subgraph that exposes an interface and is reused inside another graph as if it were an operator, with its own identity and state per use. · [composition-operators](composition-operators.md)
 - **Intent vocabulary** — the one curated, registry-keyed word→move table that grounds musical/mood words (warmer, busier, sadder) as operator-type parameter moves. · [agent-mcp](agent-mcp.md)
 - **interface pipe** — a named boundary entry, the one boundary mechanism at every graph level: an input pipe mints an address, an output pipe is fed from an internal port. · [composition-operators](composition-operators.md)
@@ -95,16 +94,17 @@ not by hope:
 - **logical channel** — the device-independent channel index a signal pipe binds; a device profile, not the patch, maps it to hardware. · [composition-operators](composition-operators.md)
 - **Mechanics** — the one kind of prose a comment may carry: the local, non-obvious fact the code cannot state itself (a `SAFETY:` justification, a caller-upheld invariant, why a constant is this number). · [code-as-grounding](code-as-grounding.md)
 - **Message** — the one data unit: `{ address, frame, Arg }`, carrying exactly one `Arg`. · [composition-operators](composition-operators.md)
-- **NormalizedDoc** — the type minted exactly once at the parse gate (refuse the future, migrate the past, strip retired presentation, stamp) that every build and load path accepts, proving a document is current-shaped and migrated exactly once. · [authoring-library](authoring-library.md)
+- **NormalizedDoc** — the type minted once at the parse gate that every build and load path accepts, proving a document is current-shaped and migrated exactly once. · [authoring-library](authoring-library.md)
 - **Operator** — the smallest node: a unit of DSP behavior, authored as one single-voice, single-channel block-at-a-time stream that the engine schedules. · [composition-operators](composition-operators.md)
 - **Output filter** — the host-owned persona: what the person is shown (sound-not-machine subject, hidden diagnostics, register), maximal on web and absent at skills/MCP. · [agent-mcp](agent-mcp.md)
-- **perf gate** — the CI iai-callgrind instruction-count check that fails a PR on a >10% regression of the render hot path, base-ref-relative so toolchain drift cancels. · [web-product-process](web-product-process.md)
-- **Plan** — the runtime artifact: the immutable, already-allocated static parallel schedule (topo-ordered, clustered) that Render executes per block. · [execution-runtime](execution-runtime.md)
+- **perf gate** — the CI iai-callgrind instruction-count check over the render hot path, measured base-ref-relative so toolchain drift cancels. · [web-product-process](web-product-process.md)
+- **Pitch** — a symbolic scale degree or an absolute 12-TET coordinate, carried as one enum case; the resolved Hz is the result, not the Pitch. · [signal-time-dsp](signal-time-dsp.md)
+- **Plan** — the runtime artifact: the immutable, already-allocated, topologically ordered schedule that Render executes per block. · [execution-runtime](execution-runtime.md)
 - **product repo** — the separate private AGPL repo holding the browser shell, player app, share-link codec, and chat-authoring agent, which pins this repo as a submodule. · [web-product-process](web-product-process.md)
-- **promotion** — the fast-forward-only advance of `dev` onto `main` that ships production, run as a workflow so commit SHAs are preserved and the branches never diverge. · [web-product-process](web-product-process.md)
+- **promotion** — the fast-forward-only advance of `dev` onto `main` that ships production. · [web-product-process](web-product-process.md)
 - **recipe-role** — an instrument's reuse story: the first sentence of its `doc` field, trusted for selection only, never for wiring. · [authoring-library](authoring-library.md)
 - **Render** — the hard-realtime, allocation-free per-block execution of the current Plan on the audio thread. · [execution-runtime](execution-runtime.md)
-- **ResourceStore** — the central store of decoded resource bytes, built by the Coordinator at load and read immutably by Render through one pure `(id, range)` accessor, keyed by logical id. · [authoring-library](authoring-library.md)
+- **ResourceStore** — the central store of decoded resource bytes, built by the Coordinator at load and read immutably by Render through one pure `(id, channel, frame)` accessor, keyed by logical id. · [authoring-library](authoring-library.md)
 - **Restatement** — comment prose that re-describes the code or answers what LSP or a search would answer; the third comment kind, deleted outright rather than moved to a rule. · [code-as-grounding](code-as-grounding.md)
 - **Rig** — the outermost graph, the one actually played at top level. · [composition-operators](composition-operators.md)
 - **Scale** — ordered step-offsets within a Tuning's period plus a root, mapping a scale degree to a step index (symbolic → symbolic). · [signal-time-dsp](signal-time-dsp.md)
@@ -123,13 +123,15 @@ not by hope:
 - **Toy** — a launch beginner instrument assembled from existing operators plus a generated surface, one per distinct player gesture. · [authoring-library](authoring-library.md)
 - **Tuning** — the resolution layer mapping a symbolic pitch (a scale step) to a frequency in Hz; 12-TET is the default, Scala-importable. · [signal-time-dsp](signal-time-dsp.md)
 - **Value** — a latched, held, single-valued port form (`f32`/`enum`/`harmony`/`i32`), read as a constant within a `process` call via zero-order-hold. · [composition-operators](composition-operators.md)
+- **Voice** — one instance of a voice instrument the Voicer runs; what sounds a note, distinct from the note Message itself. · [composition-operators](composition-operators.md)
+- **Voice instrument** — an ordinary instrument whose interface makes it hostable by a Voicer; a role read off the interface, never a separate kind. · [composition-operators](composition-operators.md)
+- **Voicer** — the sole runtime host: it builds N standalone voice patches and renders only the active ones per block. · [composition-operators](composition-operators.md)
 
 ## Avoid these synonyms
 
-<!-- HAND-AUTHORED — preserved verbatim from the retired CONTEXT.md. NOT derived: the collated
-     Glossary above holds one canonical term per topic, but this synonym guidance covers more terms
-     than the topic `## Terms` expose, so it lives here in full. The derive script leaves this
-     section alone (it only rewrites `## Topics` and `## Glossary`). -->
+<!-- HAND-AUTHORED, not derived. The Glossary above holds one canonical term per topic; this list
+     covers near-misses for more terms than the topic `## Terms` expose. `check_rules_derive.py`
+     only rewrites `## Topics` and `## Glossary`. -->
 
 Each domain term has one canonical spelling. These are the near-misses to keep out of code, issues,
 and prose:
@@ -144,11 +146,10 @@ and prose:
 - **Plan** — avoid: schedule, graph image, compiled graph.
 - **Swap** — avoid: hot-swap (describes how, not the phase), re-plan, recompile, reload.
 - **Survivor** — avoid: carried node, kept node, matched node.
-- **Restart-swap** — avoid: reload, hot restart.
 - **Structure channel** — avoid: control channel, admin port, command socket. It carries control traffic as well as structure edits, but "control channel" still names the wrong thing: the distinction is loopback authoring door vs. OSC-the-wire foreign edge, not structure vs. control.
 - **Gist-and-point** — avoid: duplicate-then-sync (the sweep is a backstop, not the mechanism), summary copy.
 - **Render** — avoid: block time, process, audio callback (the callback is the host of Render, not Render itself).
-- **Lane** _(retired)_ — don't use it for new work; say Voice, Channel, or Voice instrument. It survives only in frozen ADRs.
+- **Lane** — bare "lane" means **Delivery lane** (grounding). For polyphony say Voice, Channel, or Voice instrument — never "lane".
 - **Voice** — avoid: channel, note (a note is a Message; a Voice is what sounds it).
 - **Channel** — avoid: voice, bus.
 - **Voicer** — avoid: allocator, poly, note manager.
@@ -168,7 +169,7 @@ and prose:
 - **Harmony** — avoid: tonal context, context, harmony bus, key signature.
 - **Clock** — avoid: transport, master clock, conductor.
 - **Good Button** — avoid: meta param, meta-control, macro (all name the artifact — say Good Button).
-- **Signal** — avoid: CV, audio buffer / control buffer (as distinct types), wire, carrier, read-view of a Float.
+- **Signal** — avoid: audio buffer / control buffer (as distinct types), wire, carrier, read-view of a Float. (CV is a legitimate *use* of a Signal, not a competing type — see the glossary.)
 - **Value** — avoid: param, scalar, control (as a distinct type), Float.
 - **Event** — avoid: trigger, stream (as a type), notes (plural, as a type).
 - **Buffer** — avoid: arena, sample array, f32 slice (as the domain term).
@@ -209,15 +210,9 @@ One file per rule at `rationale/<topic>/<rule>.md`.
 `// see rules: <topic>` in-repo, `// see engine rules: <topic>` cross-repo. Grammar:
 `/\bsee (engine )?rules: ([a-z0-9-]+)/`; the slug must resolve to a topic doc.
 
-**Parity marker** — a test whose job is that two lists match records why one cannot be generated
-from the other: `Parity: <reason>` in a comment on it. The test is evidence that generation was not
-attempted, and a green check reads as reassurance unless it says which case it is.
-`check_rules_refs.py` holds every marker to a substantive reason; finding the tests that carry none
-is judgment, and is left to a reader. See
-[the rule](code-as-grounding.md#parity-test-is-a-defect-marker).
-
-**Progressive-disclosure ladder** — index → topic → rule → rationale. Stop at the shallowest
-level that answers the question; open a rationale only when you need the why.
+**Parity marker** — a test whose job is that two lists match carries `Parity: <reason>` recording why
+one cannot be generated from the other; `check_rules_refs.py` holds every marker to a substantive
+reason. See [the rule](code-as-grounding.md#parity-test-is-a-defect-marker).
 
 **Structural integrity** — `check_rules_links.py` walks the whole corpus in CI, not just the topic
 docs: every link resolves (file *and* `#anchor`), rationale↔rule is a bijection, and every rationale
@@ -226,30 +221,20 @@ each other and link back up to their rule, so renaming or deleting an anchor is 
 and the guard fails until it is one. This is what stops an absorption pass from leaving live prose
 pointing at a rule that no longer exists.
 
-**Supersession marker** — an ADR that overturns a rule adds `Superseded by: ADR-00xx (pending
-absorption)` to that rule **in the same change**. Absorption runs on a human's cadence, so without
-the marker the corpus states the old now in the present tense for however long the gap lasts, with
-nothing to notice it. `check_rules_links.py` holds both ends: an ADR naming a rule anchor whose rule
-carries no marker fails, and so does a marker naming an ADR that no longer exists — which is what
-makes an absorption pass clear the marker it just satisfied. Naming the anchor **is** the trigger,
-because no machine can tell overturning from citing; an ADR that only wants context names the topic,
-as every other pointer does. This and the rationale's `Distilled from:` line are the only two places
-in the corpus an ADR number is written down.
-
-**Claim ledger** — `extract_doc_claims.py` reads the governed docs (this corpus, `docs/agents/`, the
-root Markdown, the skills) and types every statement that could be *wrong*. Paths, code identifiers
-and `Guarded by:` lines are decided mechanically and gate CI on every commit — a rename is what
-falsifies them, so the check cannot be filtered on doc paths. Counts and single-sourcing claims are
-extracted, ranked and routed to a reviewer (`--review`); they never gate, because a gate that
-guesses at them is one people learn to ignore. Two asymmetries are deliberate: a rationale *argues*,
-and an argument names what it **rejected**, so an identifier absent from source is a finding in a
-rule and routine in a rationale; and the entry docs (`AGENTS.md`, `README.md`) must name every path
-in full, because that surface is read as navigation and an agent opens what it names — elsewhere a
-prose-relative `format/normalize.rs` resolves by suffix and is fine.
+**Claim ledger** — `extract_doc_claims.py` types every statement in the governed docs (this corpus,
+`docs/agents/`, the root Markdown, the skills) that could be *wrong*. Paths, code identifiers and
+`Guarded by:` lines are decided mechanically and gate CI on every commit; counts and single-sourcing
+claims are ranked and routed to a reviewer (`--review`) and never gate, because a gate that guesses
+at them is one people learn to ignore. Two asymmetries are deliberate: an identifier absent from
+source is a finding in a rule and routine in a rationale (a rationale *argues*, and an argument names
+what it **rejected**); and the entry docs (`AGENTS.md`, `README.md`) must name every path in full,
+because that surface is read as navigation and an agent opens what it names.
 
 **Derived index** — the Topics list and Glossary above are collated from the topic docs; do not
 hand-edit them. The `pre-commit` hook regenerates them (`check_rules_derive.py --write`) whenever a
 commit touches `docs/rules/`, and CI runs `--check` as a backstop. Run `scripts/install-hooks.sh`
 once per clone.
 
-**ADR lifecycle** — see [docs/adr/README.md](../adr/README.md).
+**ADR lifecycle & the supersession marker** — see [docs/adr/README.md](../adr/README.md). An ADR
+number is written down in exactly two places in this corpus: a rule's `Superseded by:` marker and a
+rationale's `Distilled from:` line.

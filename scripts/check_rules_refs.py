@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Reference-linter for the rules-doc system. Runs in both engine and web repos.
 
-Five checks:
+Six checks:
   1. No `ADR-<n>` references survive in CODE. The only legitimate ADR mentions are
      `Distilled from:` lines in docs/rules/rationale/** and the live ADRs in docs/adr/**
      (both are Markdown, which this linter does not scan as code), plus the `absorb-adrs`

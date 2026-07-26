@@ -24,9 +24,4 @@ recipe ([instrument-is-the-unit-of-reuse](instrument-is-the-unit-of-reuse.md)). 
 naming it is prescriptive: it tells an author the unit of a good playable control is a *curated,
 range-shaped* control assembled from the graph, not a raw internal parameter thrown onto a fader.
 
-(The carrier-era scaffolding around the original Good Button — the Message-vs-Signal control domain,
-the `m2s` converter, the one-port-one-type sweep — is retired to
-[composition-operators](../../composition-operators.md); what survives here is the curated-control principle
-and its composition-not-format-machinery construction.)
-
 Distilled from: ADR-0017

@@ -2,13 +2,12 @@
 
 [Rule](../../composition-operators.md#pointwise-number-operators)
 
-Once a numeric operator has both a Value form (held scalars) and a Signal form (per-sample buffers)
-([declared-port-forms](declared-port-forms.md)), the two variants of `add`/`mul`/`power`/`map` are
-near-identical boilerplate — contract, empty struct, `new`/`spawn`, a test harness — differing only in
-the scalar op and the operand defaults. The scalar math was already a pure fn; what was duplicated was
-everything *around* it, ~90 lines per carrier. With four ops sharing one shape (read each operand,
-call a scalar fn, write the output) and a stated future of more number types (`i32`, …), the right
-abstraction is a **declaration macro that emits the whole family**, not a call helper.
+A numeric operator has a Value form (held scalars) and a Signal form (per-sample buffers)
+([declared-port-forms](declared-port-forms.md)), and today an `i32` value form too. Everything around
+the scalar math — contract, empty struct, `new`/`spawn`, test harness — is identical per carrier
+(~90 lines), and only the scalar op and the operand defaults differ. With one shape shared across
+seventeen families, the right abstraction is a **declaration macro that emits the whole family**, not
+a call helper.
 
 `number_operator_contract!` takes a base name, a `variants:` list, an operand list, and a scalar-fn
 call-shape, and for each variant emits a submodule (isolating the `IN_`/`OUT_` consts) with the
@@ -50,9 +49,8 @@ type-specific (`power`'s `powf`) writes a concrete `f32` fn and lists only `f32`
 fn's own signature, not a macro flag. The same holds across the arrow: the rounding family's fns are
 generic over their *output* type (`RoundInto<Out>`), so `f32 -> i32` compiles exactly because that
 impl exists, and an unimplemented pairing is a missing-impl error rather than a wrongly-typed
-operator. That is a real guarantee rather than a claim: it holds because
-the declared number type reaches the ports and the instantiation, which it did not before issue #556,
-when the type was consumed at the struct name alone and every generated port was `f32` regardless.
+operator. That is a real guarantee rather than a claim: it holds because the declared number type
+reaches the ports and the instantiation, not just the generated struct name.
 
 Generic bounds are chosen for **totality across the instantiated types**, not just for what compiles.
 The five operations that can leave a type's range — add, sub, mul, neg, abs — are bound on

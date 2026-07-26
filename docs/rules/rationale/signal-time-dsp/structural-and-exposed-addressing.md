@@ -1,16 +1,16 @@
-# Why: Every operator, port, and param is auto-addressable by its structural path through the graph, and an instrument additionally exposes a curated set of stable named addresses as its refactor-safe control surface.
+# Why: Every operator and input port is auto-addressable by its structural path through the graph, and an instrument additionally mints stable named addresses from its interface pipes as its refactor-safe control surface.
 
 [Rule](../../signal-time-dsp.md#structural-and-exposed-addressing)
 
 Messages are OSC-shaped and composition is recursive, so something must define what an address
 *names*. Two needs pull in opposite directions: an agent authoring a patch wants **zero-config,
 predictable** addresses for everything, while an external controller mapping wants a **stable** target
-that does not move when internals are refactored. The hybrid serves both. Every operator, port, and
-param is auto-addressable by its **structural path** through the graph nesting
+that does not move when internals are refactored. The hybrid serves both. Every operator and input
+port is auto-addressable by its **structural path** through the graph nesting
 (`/lead-synth/filter/cutoff`) — nothing to declare, and predictable for a machine reading the tree.
-On top of that an instrument **exposes a curated set of named addresses** — its public control
+On top of that an instrument **mints named addresses from its interface pipes** — its public control
 surface — and exposing a control is the same act as exposing a boundary port: publishing the
-instrument's public API. External mappings bind to the exposed address and survive internal rewiring,
+instrument's public API. External mappings bind to the minted address and survive internal rewiring,
 which is exactly what the structural path cannot promise (renaming or moving an operator changes its
 path). Names must be unique within a parent scope so structural paths stay unambiguous.
 

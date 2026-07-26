@@ -23,11 +23,9 @@ there is no internal producer to point at, so the consumer's own materialize/lat
 and the pipe's rest seed is transferred to it as a value-override so an unfed pipe still starts at
 the value the author declared.
 
-That second case is why dissolution is a **behavior-preserving** transform rather than a deletion:
-the pipe carries state (its declared default, its rest value) that has to land somewhere, and the
-pass moves it rather than dropping it. Where it cannot — where a pipe's removal would change what
-the graph does — the pipe stays a node. Keeping those exceptions is what makes the optimization safe
-to apply without the author having to know it happens.
+Dissolution is therefore a **behavior-preserving** transform, not a deletion: the pipe's declared
+default and rest value are moved, not dropped, and where they cannot be — where removal would change
+what the graph does — the pipe stays a node.
 
 Doing this at Instantiate rather than at load keeps the **document** honest: the canonical graph the
 Coordinator owns still has the pipes in it, so the document round-trips, the projection shows the

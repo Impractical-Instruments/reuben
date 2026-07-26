@@ -17,9 +17,8 @@ recorded as a rule, not a feature. Four mechanisms serve it, and each is load-be
 - **An agent-native canonical format.** The document is JSON — models write it natively and
   tool-calling is JSON — with comments allowed so agents and humans can annotate. The human-first
   alternatives (RON, a bespoke patching DSL) were rejected: optimize the *text* format for the
-  agent and carry human authoring in the GUI. (The JSON *Schema* once generated from descriptors was
-  later dropped as agent grounding — see [grounding-not-schema](grounding-not-schema.md) — but the
-  agent-native JSON *document* stands.)
+  agent and carry human authoring in the GUI. There is no JSON *Schema* over it — see
+  [grounding-not-schema](grounding-not-schema.md).
 - **A referenced library.** Documents reference reusable instruments by id/path, so an agent
   composes by pulling in an existing part rather than regenerating it.
 

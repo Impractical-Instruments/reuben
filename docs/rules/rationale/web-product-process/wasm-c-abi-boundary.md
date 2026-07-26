@@ -18,7 +18,8 @@ detaches views). A small `format_version()` export lets JS tell a document-from-
 an envelope-from-the-future without guessing.
 
 What changed is *where the shell lives*, not the contract. The concrete `cdylib` shell left with the
-product repo, so this repo no longer exports those symbols — but `reuben-core` still compiles to
+product repo, so no crate here exports these symbols — the boundary is a described contract, not
+built code. `reuben-core` still compiles to
 `wasm32-unknown-unknown` untouched, and the C-ABI is now **the** public browser story: a third party
 who wants reuben in a browser does not get a maintained binding from us, they get core-to-wasm plus
 the documented boundary (one `Engine::fill` per quantum, fetch-on-miss resource staging, a flat

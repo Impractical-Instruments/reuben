@@ -17,7 +17,7 @@ starves converts a latency saving into a counted underrun and an audible dropout
 
 The distinction the rule exists to protect is **capacity versus latency**, because conflating them
 is the standard way this path silently acquires delay nobody chose. The ring is allocated far larger
-than the floor — seconds of headroom — so that a stalled output callback has somewhere to put
+than the floor — half a second of headroom — so that a stalled output callback has somewhere to put
 arriving audio instead of dropping it. If fill were simply allowed to sit wherever a stall left it,
 that headroom would become permanent added latency: the ring would run deep forever, the servo would
 happily hold it there, and the only symptom would be that input feels late.

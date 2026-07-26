@@ -8,9 +8,8 @@ the conversational edit-while-playing loop is the product, a hard glitch on ever
 undermine what the swap exists to enable, so the real swap ships with its rail from day one. The
 rail is an **engine-side master-gain ramp**: the callback sees the pending Engine in the install
 slot but does not consume it immediately — it ramps a master output scalar to zero, installs at
-zero, and ramps back up. This amends "install at the callback top" to "*begin* the ramp at the
-callback top; install when it reaches zero" — still bounded, still allocation-free, still one
-mailbox and one swap in flight, and install still lands at a device block boundary. The audible
+zero, and ramps back up — still bounded, still allocation-free, still one mailbox and one swap in
+flight, and install still lands at a device block boundary. The audible
 result is a short duck to silence, not a click. The ramp lives with the core RT-side install slot,
 so both the native callback and the web worklet inherit it; RT cost is one multiply per output
 sample while ramping, nothing at steady state.

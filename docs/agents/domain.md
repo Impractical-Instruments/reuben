@@ -18,8 +18,8 @@ index: topic summaries    the topic's "now"          present-tense    condensed 
 - **[`docs/rules/README.md`](../rules/README.md)** — the front door: a short summary per topic, the
   derived glossary (the ubiquitous language), and the "Avoid these synonyms" list. Start here.
 - **[`docs/rules/<topic>.md`](../rules/)** — the "now" story plus the rules for the area you're about
-  to work in. There are six topics (execution-runtime, composition-operators, signal-time-dsp,
-  authoring-library, agent-mcp, web-product-process).
+  to work in. The index lists them; that list is derived from the topic docs, so it cannot go stale
+  the way a copy here would.
 - A rule's **rationale** (`docs/rules/rationale/<topic>/<rule>.md`) — open it only when you need the
   *why* behind a rule; its `Distilled from:` line is the sole surviving pointer to the ADR history.
 

@@ -15,7 +15,7 @@ rather than to maximize count — groove box (rhythm/auto), chord player (tap-ha
 (continuous drag). Melody-player and meta-effects were deferred because they overlap the chosen
 gestures and existing fx instruments; breadth is cheap to add once the toy-construction pattern is
 proven. One hard constraint shaped every gesture decision: the surface generator draws only
-fader/stepper/button widgets, so any gesture a Toy needs must reduce to those (a strum is a fader
+faders and buttons, so any gesture a Toy needs must reduce to those (a strum is a fader
 whose position stream an operator turns into notes; a chord is a button sending a degree payload) or
 pay for a generator extension the disposable surface does not justify.
 

@@ -4,8 +4,9 @@
 
 The authoring-skill suite is a product deliverable, not an internal aid
 ([ai-authorability](ai-authorability.md)), serving three audiences — patchers (build/modify
-instruments and rigs), developers (author a new Rust operator), and end users (natural language →
-Toy). What each audience actually needed was never more *capability* but **a closed feedback loop**:
+instruments and rigs) and developers (author a new Rust operator), each with a skill in this repo,
+and end users (natural language → Toy), served by the product repo's chat host rather than by a
+skill here. What each audience actually needed was never more *capability* but **a closed feedback loop**:
 a way to draft, check without ears, and iterate. So every skill has the same spine — introspect or
 scaffold to learn the ground truth, draft, run the check loop until it passes, report — differing
 only in what its check is:

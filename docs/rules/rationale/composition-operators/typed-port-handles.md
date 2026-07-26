@@ -20,17 +20,14 @@ cannot return an event stream, and a wrong-form read does not compile. **S2 shut
 read's fallback is the default the handle carries — one datum from the same contract tokens as the
 descriptor, so `.unwrap_or(..)` disappears and no second literal can drift. (Defaults apply to held
 reads only; a Signal read stays raw `&[f32]` — its old `.get(i).unwrap_or(0.0)` was a defensive length
-guard, not a musical default.) The names are `In`/`Out` — not `InPort`/`OutPort` — because the
-[rules index](../../README.md#avoid-these-synonyms) lists "port" as a term to avoid, and the consts keep `IN_*`/`OUT_*` (an operator like `filter` has both
-an `audio` input and an `audio` output, so prefix-less names would collide).
+guard, not a musical default.) The names are `In`/`Out` rather than `InPort`/`OutPort` because the
+handle's type already says which port it is, and the consts keep `IN_*`/`OUT_*` (an operator like
+`filter` has both an `audio` input and an `audio` output, so prefix-less names would collide).
 
 The enabling engine invariant, landed atomically with the handles, is **buffer-presence**: every
 declared `f32_buffer` input handed to `process` is a dense buffer of exactly `frames` samples —
 materialization is total over Signal inputs, and an unwired *bare* buffer fills with silence, so no
 operator ever sees `&[]` or a short slice and `io.read(SIG)[i]` is safe by construction, the per-read
-guards gone. Migration exposed and deleted real dead dual-form reads (`harmony` scanned per-sample
-buffers its held inputs never had; `filter` re-read a materialized buffer's latch through a second
-form). This is an authoring-surface change only — the descriptor, JSON schema, wire format, and
-rendered output are all bit-identical.
+guards gone.
 
 Distilled from: ADR-0037

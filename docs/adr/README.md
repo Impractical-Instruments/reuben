@@ -33,6 +33,12 @@ been absorbed away, so the fold has to clear it. Naming the anchor is what trigg
 can tell overturning from citing, so an ADR that only wants context names the **topic**, the way
 code does.
 
+The marker covers the rule line and nothing else, so it is not the whole obligation: the same claim
+is usually restated in the topic's `## Now` prose and its `## Terms` entry, and the `## Terms` entry
+is republished into the index glossary by the derive. An ADR that overturns a rule strikes or hedges
+those restatements in the same change too — the guard cannot see them, and left alone they state the
+old now in the present tense with nothing to notice it.
+
 **Do not** cite ADR numbers from code. Code points at topics: `// see rules: <topic>`. The only
 surviving ADR mentions anywhere are (a) `Distilled from:` lines in rationale docs and (b) the
 live ADRs here.
