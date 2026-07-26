@@ -468,6 +468,22 @@ jobs:
       - name: Sample-alias guard (single naming site for the audio element type)
         run: python3 scripts/check_sample_alias.py .
 
+  # The core-privacy guard (check_core_privacy.py, #650 phase 4): `reuben-core` is named by
+  # `reuben-api` alone. Rust has no crate-level visibility, so the engine being private *is* the
+  # absence of a dependency edge — one that a single manifest line reintroduces, in any change, at
+  # which point the window stops being the one way through. Always on for the same reason as
+  # `ref-guard` and `sample-guard`; stdlib-only Python, so no toolchain setup. Its unit suite runs
+  # here too so the guard can't silently rot. Gates merges via `ci-passed`'s `needs`.
+  core-privacy:
+    name: reuben-core is private (window guard)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - name: Guard unit test
+        run: cd scripts && python3 -m unittest test_check_core_privacy -v
+      - name: Core-privacy guard (only reuben-api depends on reuben-core)
+        run: python3 scripts/check_core_privacy.py .
+
   # Always-green aggregate merge gate. A ruleset can't require the per-path-filtered jobs above
   # directly: when a job is Skipped (nothing it gates changed) the ruleset reads it as "expected but
   # never reported" and wedges the PR (see the comment at the top of this file). So the `dev` ruleset
@@ -483,7 +499,7 @@ jobs:
     runs-on: ubuntu-latest
     needs:
       [changes, lockstep, check, windows, bench, eval-gate, rules-guards, ref-guard, sample-guard,
-       doc-claims]
+       doc-claims, core-privacy]
     if: always()
     steps:
       - name: Fail if any required job failed or was cancelled (skipped is OK)

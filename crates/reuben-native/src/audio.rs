@@ -44,12 +44,10 @@ use std::time::{Duration, Instant};
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, SupportedBufferSize};
 use reuben_api::authoring::Diag;
-use reuben_core::coordinator::{
-    swap_pair, Coordinator, CoordinatorMailbox, RenderMailbox, RenderSide, RenderSlot, SwapInFlight,
+use reuben_api::render::{
+    swap_pair, AudioConfig, Coordinator, CoordinatorMailbox, LoadWarning, Message, RenderMailbox,
+    RenderSide, RenderSlot, SwapInFlight,
 };
-use reuben_core::format::LoadWarning;
-use reuben_core::message::Message;
-use reuben_core::AudioConfig;
 
 use crate::diagnostics::Diagnostics;
 use crate::osc::ControlBatch;
@@ -477,8 +475,8 @@ where
 /// for a swapped-in engine, tagged with the engine's **logical output width** so the callback
 /// installs it only once the live engine has caught up to that width (map and buffer widths then
 /// always agree; the transition block is ducked by the master-gain ramp). This is the
-/// native dual of core's [`InstallBundle`](reuben_core::coordinator::InstallBundle); it stays in
-/// reuben-native so core never learns the device's channel count.
+/// native dual of the engine's own install bundle; it stays in reuben-native so nothing behind the
+/// window ever learns the device's channel count.
 struct RenderConfig {
     /// The logical→device output map, validated against the retained device channel count.
     map: OutputMap,
@@ -1321,8 +1319,7 @@ mod tests {
         // with the total read, a stale-width misroute). The fake callback flags any block where the
         // active map width disagrees with the live engine width. With the fix (publish never drops;
         // total `apply_output_map`) there is no desync and no panic.
-        use reuben_core::resources::MemoryResolver;
-        use reuben_core::Registry;
+        use crate::test_support::NoResources;
         use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
         let device_channels = 6usize;
@@ -1330,10 +1327,9 @@ mod tests {
         profile_map.insert(0usize, 0usize);
         profile_map.insert(3usize, 3usize); // valid only when the logical width exceeds 3
 
-        let (mut coordinator, side, _w) = Coordinator::install_initial(
+        let (mut coordinator, side, _w) = reuben_api::render::install_initial(
             &width_doc(1),
-            Registry::builtin(),
-            Box::new(MemoryResolver::new()),
+            NoResources,
             AudioConfig::new(48_000.0, 128),
         )
         .expect("initial install");

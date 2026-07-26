@@ -15,8 +15,8 @@ use reuben_core::resources::ResourceResolver;
 use reuben_core::{content_hash, NormalizedDoc, Registry};
 
 use super::args::*;
-use super::resources::{Adapter, Resources};
 use super::result::{Boundary, Diag, DocumentView, EditResult, OperatorInfo, Operators, Report};
+use crate::resources::{Adapter, Resources};
 
 /// A verb's answer: the payload a door advertises to its caller, and the one-line gloss it shows a
 /// human reading the transcript.
@@ -200,6 +200,20 @@ pub fn validate_instrument(
         output: report,
         summary,
     })
+}
+
+/// Project one document to its **library-index signature line** — name, role, `(inputs) → outputs`
+/// — through the same load path [`describe_instrument`] uses, so a line never advertises a face the
+/// document does not have.
+///
+/// Not a roster verb: no door serves it to a caller. It is the per-document half of a generated
+/// artifact (`instruments/index.md`), and the sweep that walks a library and orders the lines is a
+/// host's, because only a host knows what its library *is*.
+pub fn library_index_line(source: &str, resources: &dyn Resources) -> Result<String, Refusal> {
+    let resolver = Adapter(resources);
+    let json = read_document(source, resources)?;
+    core_introspect::library_index_line(&json, &Registry::builtin(), &resolver)
+        .map_err(Refusal::new)
 }
 
 // --- document verbs -------------------------------------------------------------------------------
@@ -651,8 +665,8 @@ fn edit_summary(result: &EditResult) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::super::resources::{ResolveError, SampleBuffer};
     use super::*;
+    use crate::resources::{ResolveError, SampleBuffer};
     use std::cell::RefCell;
     use std::collections::BTreeMap;
 

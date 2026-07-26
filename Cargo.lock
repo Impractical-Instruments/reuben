@@ -1257,7 +1257,6 @@ dependencies = [
  "libc",
  "reuben-api",
  "reuben-contract",
- "reuben-core",
  "rosc",
  "rtrb",
  "serde",

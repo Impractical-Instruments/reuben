@@ -739,8 +739,10 @@ class LiveEngineBoundaryTest(unittest.TestCase):
                           "toolchain to build a current `reuben` (guards pipe drift)")
         # `--features reuben-core/bench` mirrors CI's clippy/test steps so this shares their
         # compiled artifacts instead of forcing a featureless rebuild (the `bench` feature is inert
-        # for `describe`).
-        cmd = ["cargo", "run", "-q", "-p", "reuben-native", "--bin", "reuben",
+        # for `describe`). Selected by `--bin` rather than `-p reuben-native`: a feature path is
+        # resolved against the selected package's dependencies, and reuben-native does not depend
+        # on reuben-core — only reuben-api does. Workspace-wide, the member's feature still names.
+        cmd = ["cargo", "run", "-q", "--bin", "reuben",
                "--features", "reuben-core/bench", "--",
                "describe", str(self.SPACE), "--view", "boundary", "--json"]
         try:
@@ -778,8 +780,8 @@ class LiveEngineBoundaryTest(unittest.TestCase):
         if shutil.which("cargo") is None:
             self.skipTest("cargo not on PATH — needs the Rust toolchain to build `reuben`")
         build = subprocess.run(
-            ["cargo", "build", "-q", "-p", "reuben-native", "--bin", "reuben",
-             "--features", "reuben-core/bench"],
+            # `--bin` rather than `-p`, for the reason `_live_describe` gives.
+            ["cargo", "build", "-q", "--bin", "reuben", "--features", "reuben-core/bench"],
             cwd=self.REPO_ROOT, capture_output=True, text=True, timeout=self.CARGO_TIMEOUT,
         )
         self.assertEqual(build.returncode, 0, f"cargo build failed:\n{build.stderr}")

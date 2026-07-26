@@ -13,14 +13,17 @@ This repo is the **engine and its SDK**:
 
 - **`reuben-core`** — the portable engine and its **embed surface**
   ([execution-runtime](docs/rules/execution-runtime.md)): construct from a document, push
-  OSC in, pull audio out. No OS dependency; compiles to `wasm32-unknown-unknown` untouched. This
-  is what you link against to put reuben inside something else.
+  OSC in, pull audio out. No OS dependency; compiles to `wasm32-unknown-unknown` untouched. You
+  reach it through `reuben-api`, which is the only crate that depends on it.
 - **`reuben-api`** — the one window between the engine and every consumer, in two feature halves:
-  `authoring` (document work and reaching a running engine, off-thread) and `render` (what a host
-  drives per block), so a host compiles only the one it drives. It owns the tool roster, the
-  sentence each verb is advertised by, and both ends of the structure channel. Ships a default-off
-  filesystem resolver to share rather than reimplement.
-- **`reuben-native`** — the `reuben` CLI and its audio/OSC/filesystem host.
+  `authoring` (document work and reaching a running engine, off-thread) and `render` (the
+  Coordinator + RenderSlot pair a host drives per block), so a host compiles only the one it
+  drives. It owns the tool roster, the sentence each verb is advertised by, both ends of the
+  structure channel, and the resource seam a host fills. This is what you link against to put
+  reuben inside something else. Ships a default-off filesystem resolver to share rather than
+  reimplement.
+- **`reuben-native`** — the `reuben` CLI and its audio/OSC/filesystem host, built on the window
+  like any other consumer.
 - **`reuben-mcp`** — a stdio MCP sidecar, so an agent can author instruments against a live engine
   ([agent-mcp](docs/rules/agent-mcp.md)).
 - **`instruments/`** + **`surfaces/`** — the instrument library and the presentation docs over

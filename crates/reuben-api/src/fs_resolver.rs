@@ -1,14 +1,15 @@
 //! Filesystem + WAV resource resolution — the reference implementation of the resource seam, for a
 //! host whose sources are files. see rules: authoring-library
 //!
-//! Fills the [`ResourceResolver`] seam with a filesystem resolver that decodes **WAV**
+//! Fills the [`Resources`] seam with a filesystem resolver that decodes **WAV**
 //! (`hound`; PCM int + float); compressed formats and non-file sources drop in behind the same
 //! trait later. [`FsResolver::canonical`] lexically normalizes the winning absolute path, so
 //! `a.json`, `./a.json`, and `x/../a.json` are one cycle-guard/dedup key.
 
 use std::path::{Component, Path, PathBuf};
 
-use reuben_core::resources::{ResolveError, ResourceResolver, SampleBuffer};
+use crate::resources::Resources;
+use reuben_core::resources::{ResolveError, SampleBuffer};
 
 /// Resolves resource sources as filesystem paths relative to a base directory, decoding WAV.
 pub struct FsResolver {
@@ -31,7 +32,7 @@ pub struct FsResolver {
 
 impl FsResolver {
     /// A resolver rooted at `base_dir` (typically the instrument file's parent directory).
-    /// The base is made absolute up front so [`canonical`](ResourceResolver::canonical) ids
+    /// The base is made absolute up front so [`canonical`](Resources::canonical) ids
     /// are absolute — one identity regardless of how the caller spelled the base.
     pub fn new(base_dir: impl Into<PathBuf>) -> Self {
         Self {
@@ -117,8 +118,8 @@ fn normalize(p: &Path) -> PathBuf {
     out
 }
 
-impl ResourceResolver for FsResolver {
-    fn resolve(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+impl Resources for FsResolver {
+    fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
         let path = self.base_dir.join(source);
         if self.stat_only {
             return match std::fs::metadata(&path) {
@@ -135,14 +136,14 @@ impl ResourceResolver for FsResolver {
 
     /// Read a patch path (an instrument-kind resource) to its JSON text, relative to
     /// the base dir like a sample. Core then builds it into a sub-`Graph`.
-    fn resolve_text(&self, source: &str) -> Result<String, ResolveError> {
+    fn read_text(&self, source: &str) -> Result<String, ResolveError> {
         let path = self.locate(source);
         std::fs::read_to_string(&path)
             .map_err(|e| ResolveError::NotFound(format!("{}: {e}", path.display())))
     }
 
     /// Write JSON text back to a document path — the write half of the seam, resolving
-    /// `source` to the same location [`resolve_text`](Self::resolve_text) reads from
+    /// `source` to the same location [`read_text`](Self::read_text) reads from
     /// (`base_dir.join`, through which the loader's canonical absolute path passes
     /// unchanged). Missing parent directories are created so a new document lands where the
     /// author addressed it.
@@ -212,31 +213,6 @@ impl ResourceResolver for FsResolver {
     }
 }
 
-/// The same resolver seen through the window's own seam, so a door that drives
-/// [`authoring`](crate::authoring) never has to name the engine's.
-///
-/// Two impls of the same four methods for two more phases: `reuben-native` still calls the engine
-/// directly and resolves through this same type. The engine-side impl goes when it comes through
-/// the window.
-#[cfg(feature = "authoring")]
-impl crate::authoring::Resources for FsResolver {
-    fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
-        self.resolve(source)
-    }
-
-    fn read_text(&self, source: &str) -> Result<String, ResolveError> {
-        ResourceResolver::resolve_text(self, source)
-    }
-
-    fn write_text(&self, source: &str, text: &str) -> Result<(), ResolveError> {
-        ResourceResolver::write_text(self, source, text)
-    }
-
-    fn canonical(&self, source: &str, referrer: Option<&str>) -> String {
-        ResourceResolver::canonical(self, source, referrer)
-    }
-}
-
 /// Decode a WAV file into a planar [`SampleBuffer`] at its native sample rate. Integer PCM
 /// is normalized to `[-1, 1)`; float PCM passes through.
 pub fn decode_wav(path: &Path) -> Result<SampleBuffer, ResolveError> {
@@ -274,7 +250,6 @@ pub fn decode_wav(path: &Path) -> Result<SampleBuffer, ResolveError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use reuben_core::resources::ResourceResolver;
 
     /// Write a tiny 2-channel int WAV to a temp path and read it back through the resolver.
     #[test]
@@ -299,7 +274,9 @@ mod tests {
         }
 
         let resolver = FsResolver::new(&dir);
-        let buf = resolver.resolve("reuben_test_stereo.wav").expect("resolve");
+        let buf = resolver
+            .read_samples("reuben_test_stereo.wav")
+            .expect("resolve");
         assert_eq!(buf.channel_count(), 2);
         assert_eq!(buf.frame_count(), 2);
         assert_eq!(buf.sample_rate(), 44_100.0);
@@ -314,12 +291,12 @@ mod tests {
     fn missing_file_is_not_found() {
         let resolver = FsResolver::new(".");
         assert!(matches!(
-            resolver.resolve("does_not_exist_xyz.wav"),
+            resolver.read_samples("does_not_exist_xyz.wav"),
             Err(ResolveError::NotFound(_))
         ));
     }
 
-    /// The write half round-trips through `resolve_text`, creating a missing parent directory
+    /// The write half round-trips through `read_text`, creating a missing parent directory
     /// so a brand-new document lands where the author addressed it.
     #[test]
     fn write_text_creates_parents_and_round_trips() {
@@ -332,9 +309,7 @@ mod tests {
             .write_text("nested/patch.json", "{\"version\":3}")
             .expect("write");
         assert_eq!(
-            resolver
-                .resolve_text("nested/patch.json")
-                .expect("read back"),
+            resolver.read_text("nested/patch.json").expect("read back"),
             "{\"version\":3}"
         );
         // An overwrite replaces in place — one source, one identity.
@@ -342,9 +317,7 @@ mod tests {
             .write_text("nested/patch.json", "{\"version\":4}")
             .expect("overwrite");
         assert_eq!(
-            resolver
-                .resolve_text("nested/patch.json")
-                .expect("read back"),
+            resolver.read_text("nested/patch.json").expect("read back"),
             "{\"version\":4}"
         );
 
@@ -376,7 +349,7 @@ mod tests {
     }
 
     /// The loader hands both halves a **canonical absolute** source (it canonicalizes before
-    /// calling `resolve_text`), and `base_dir.join` passes an absolute path through unchanged —
+    /// calling `read_text`), and `base_dir.join` passes an absolute path through unchanged —
     /// so a write addressed by the canonical id lands where a read by that same id looks.
     #[test]
     fn write_text_round_trips_a_canonical_absolute_source() {
@@ -391,10 +364,7 @@ mod tests {
             "canonical ids are absolute"
         );
         resolver.write_text(&canon, "{\"v\":3}").expect("write abs");
-        assert_eq!(
-            resolver.resolve_text(&canon).expect("read abs"),
-            "{\"v\":3}"
-        );
+        assert_eq!(resolver.read_text(&canon).expect("read abs"), "{\"v\":3}");
 
         let _ = std::fs::remove_dir_all(&base);
     }
@@ -417,7 +387,7 @@ mod tests {
         let source = format!("{}/kit/inst.json", base.display());
         let resolver = FsResolver::for_document(&source);
 
-        assert_eq!(resolver.resolve_text(&source).expect("read"), "{\"v\":3}");
+        assert_eq!(resolver.read_text(&source).expect("read"), "{\"v\":3}");
         resolver.write_text(&source, "{\"v\":4}").expect("write");
         assert_eq!(
             std::fs::read_to_string(base.join("kit/inst.json")).unwrap(),
@@ -426,7 +396,7 @@ mod tests {
         );
         // A sibling still resolves from the document's directory, not from the source's spelling.
         assert_eq!(
-            resolver.resolve_text("voice.json").expect("sibling"),
+            resolver.read_text("voice.json").expect("sibling"),
             "{\"v\":9}"
         );
         // Identity agrees with location. If it did not, a self-referencing document would be keyed
@@ -474,10 +444,12 @@ mod tests {
         std::fs::write(&path, b"not a wav").unwrap();
 
         let resolver = FsResolver::new(&dir).stat_only();
-        let buf = resolver.resolve("reuben_test_stat_only.wav").expect("stat");
+        let buf = resolver
+            .read_samples("reuben_test_stat_only.wav")
+            .expect("stat");
         assert_eq!(buf.frame_count(), 0);
         assert!(matches!(
-            resolver.resolve("does_not_exist_xyz.wav"),
+            resolver.read_samples("does_not_exist_xyz.wav"),
             Err(ResolveError::NotFound(_))
         ));
 
@@ -548,7 +520,7 @@ mod tests {
     }
 
     #[test]
-    fn resolve_text_reads_a_patch_file_and_builds_a_subgraph() {
+    fn read_text_reads_a_patch_file_and_builds_a_subgraph() {
         let dir = std::env::temp_dir();
         let path = dir.join("reuben_test_voice.json");
         std::fs::write(
@@ -564,7 +536,9 @@ mod tests {
         let loaded = reuben_core::resolve_instrument(
             "reuben_test_voice.json",
             &reuben_core::Registry::builtin(),
-            &resolver,
+            // The engine seam this store is *presented* through, since the load path is the one
+            // consumer that still names it — one adapter, not a second impl on the resolver.
+            &crate::resources::Adapter(&resolver),
         )
         .expect("resolve patch");
         assert!(loaded.warnings.is_empty());

@@ -6,13 +6,11 @@
 
 use std::path::Path;
 
-use reuben_core::registry::Registry;
 use reuben_native::library::generate_library_index;
 
 fn main() {
     let instruments = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../instruments");
-    let index =
-        generate_library_index(&instruments, &Registry::builtin()).expect("generate library index");
+    let index = generate_library_index(&instruments).expect("generate library index");
     let out = instruments.join("index.md");
     std::fs::write(&out, index).expect("write index");
     println!("wrote {}", out.display());

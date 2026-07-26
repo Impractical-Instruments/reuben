@@ -20,7 +20,8 @@
 //!   above the floor on purpose, so normal jitter never trips the trim.
 //!
 //! Added latency is floor + 1 input frame of resampler lookahead + 1 core block of staging in
-//! [`reuben_core::engine::Engine::fill_duplex`] ≈ 3 core blocks (~16 ms at defaults). The ring's
+//! [`RenderSlot::fill_duplex`](reuben_api::render::RenderSlot::fill_duplex) ≈ 3 core blocks (~16 ms
+//! at defaults). The ring's
 //! capacity is much larger ([`RING_HEADROOM_SECS`]) and is headroom, not latency.
 
 use std::collections::BTreeMap;

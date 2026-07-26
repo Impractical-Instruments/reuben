@@ -11,9 +11,23 @@ use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::{Duration, Instant};
 
-use reuben_core::coordinator::{RenderSide, RenderSlot};
+use reuben_api::render::{RenderSide, RenderSlot};
+use reuben_api::resources::{ResolveError, Resources, SampleBuffer};
 
 use crate::osc::{ControlBatch, OscIn};
+
+/// A store with nothing in it, for the self-contained documents these tests install: no samples, no
+/// nested children, so every source is a miss.
+///
+/// The seam is not optional even when a document needs nothing from it — a host always answers
+/// "what does this source name?", and answering "nothing" is an answer.
+pub struct NoResources;
+
+impl Resources for NoResources {
+    fn read_samples(&self, source: &str) -> Result<SampleBuffer, ResolveError> {
+        Err(ResolveError::NotFound(source.to_string()))
+    }
+}
 
 /// How long [`FakeCallback::await_queued`] waits for a batch to reach `queue_osc` before giving up.
 /// Bounded so a regression fails as a red test rather than hanging CI.
