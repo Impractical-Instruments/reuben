@@ -9,8 +9,11 @@ An incremental edit surface has to answer two objections, and both are answered 
   through the engine's own load-plus-instantiate path — [loader-single-authority](loader-single-authority.md)
   is untouched.
 - **The vocabulary is derived, not invented.** The document format is already the spec; the verbs
-  are cut from it, and a CI completeness guard walks the real format types and fails the build when
-  a leaf field lands that no verb can write.
+  are cut from it, and a gap is caught by measurement rather than by a guard — the authoring eval
+  counts freehand JSON, which is exactly what an agent emits when no verb reaches what it wants. A
+  hand-written table of format leaves against the verbs that write them was rejected for the reason
+  any completeness test of one's own surface is: it is maintained by the same hand it checks, and
+  the consumer that needed the missing verb was always the better witness.
 
 What forced the change is cost, measured rather than assumed. The whole-document read is lossless
 **by obligation** — a model on the hook to re-emit every byte it is not changing must hold every byte
@@ -37,8 +40,8 @@ handle-addressed `docID` workspace needs a session, core is stateless, and the C
 per invocation. A value-addressed `(document, …) -> {document, …}` form was rejected outright — the
 document rides the context *both ways*, scoring worse than a plain re-emit. And there is deliberately
 no `replace_document(source, json)` escape hatch: every vocabulary gap would quietly route through it
-and the API would never get finished. Closing that hatch is what makes completeness a correctness
-requirement a CI guard can enforce.
+and the API would never get finished. Closing that hatch is what makes a missing verb visible at all
+— a gap has nowhere to hide but the eval's freehand-JSON count.
 
 A verb's `source` is **opaque and door-resolved** ([portable-tool-contracts](portable-tool-contracts.md)):
 the resolver's read half already loaded a nested voice patch door-abstractly, and the write half joins

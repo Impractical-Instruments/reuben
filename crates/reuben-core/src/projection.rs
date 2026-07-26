@@ -168,7 +168,6 @@ impl Selection {
 /// A literal value in a document: a number or a vocab-enum/`Symbol` name. The one shape
 /// [`InputValue`], [`ConfigValue`] and [`PipeDefault`] all collapse to for reading.
 #[derive(Debug, Clone, PartialEq, Serialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 #[serde(untagged)]
 pub enum Scalar {
     Number(f64),
@@ -191,7 +190,6 @@ impl Scalar {
 /// Everything true of the **document** rather than of any node: its identity, its two versions, its
 /// size, and its `doc` — the authorial intent that explains every pipe below it.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct DocHeader {
     pub instrument: String,
     pub format_version: u32,
@@ -268,7 +266,6 @@ impl DocHeader {
 
 /// One node's line in the index: what it is, and the single marker the index carries.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct IndexEntry {
     pub address: String,
     #[serde(rename = "type")]
@@ -289,7 +286,6 @@ pub struct IndexEntry {
 
 /// The **node index**: the agent's map of a document.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct NodeIndex {
     pub header: DocHeader,
     pub nodes: Vec<IndexEntry>,
@@ -311,7 +307,6 @@ impl NodeIndex {
 
 /// One of a node's inputs: the name plus what is bound to it — a wire, or a literal.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct InputEdge {
     pub name: String,
     /// The wire-ref feeding this input, verbatim as the document spells it (`"/clock.gate"`, or
@@ -339,7 +334,6 @@ impl InputEdge {
 /// otherwise derivable only by scanning every node, which the index deliberately does not carry,
 /// so without this the agent cannot see what a `remove_node` would break.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct OutEdge {
     /// The output port this edge leaves from. `None` only when the consumer used the sole-output
     /// sugar and the port could be resolved from neither the source's descriptor nor, for a nested
@@ -369,7 +363,6 @@ impl OutEdge {
 
 /// A node's resource reference, and whether it resolved this load.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ResourceRef {
     /// The descriptor slot the reference targets: `"sample"`, `"voice"` or `"patch"`.
     pub slot: String,
@@ -405,7 +398,6 @@ impl ResourceRef {
 
 /// One node, zoomed.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct NodeZoom {
     pub address: String,
     #[serde(rename = "type")]
@@ -469,7 +461,6 @@ impl NodeZoom {
 
 /// A **node zoom**: the selected nodes, plus the document header when the selection asked for it.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct Zoom {
     /// Present iff the selection named [`DOC_ADDRESS`].
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -530,7 +521,6 @@ impl Zoom {
 /// misfiled entry today, a reader that hard-assumes direction is one gate change away from lying
 /// about a document rather than merely omitting from it.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct PipeInfo {
     pub name: String,
     /// The declared `Arg` type — input pipes only; an output pipe inherits the type of the port
@@ -601,7 +591,6 @@ impl PipeInfo {
 /// in a real instrument (90 pipes and a sixth of the bytes in `acid-techno.json`), which is why it
 /// takes a [`Selection`] rather than only ever dumping flat.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct PipeView {
     pub inputs: Vec<PipeInfo>,
     pub outputs: Vec<PipeInfo>,
@@ -650,7 +639,6 @@ impl PipeView {
 
 /// One node's use of a resource id: which node, through which slot.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ResourceUse {
     pub slot: String,
     pub node: String,
@@ -664,7 +652,6 @@ impl ResourceUse {
 
 /// One `resources` entry: what it points at, who references it, and whether it resolved.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ResourceEntry {
     pub id: String,
     /// The source the id names — a filesystem path natively, a store key on web. **Opaque**: only
@@ -684,7 +671,6 @@ pub struct ResourceEntry {
 /// The **resources view**: the `id → source` table plus the per-node references and resolved/dark
 /// state that the index compresses to a single marker.
 #[derive(Debug, Clone, Serialize)]
-#[cfg_attr(feature = "schemars", derive(schemars::JsonSchema))]
 pub struct ResourcesView {
     pub entries: Vec<ResourceEntry>,
     /// References to an id the `resources` table does not carry — a dangling ref has no table row
@@ -1409,10 +1395,11 @@ fn render_boundary(b: &PatchBoundary) -> String {
 /// The **completeness table**: every leaf field of the instrument document format, and the view it
 /// is dispositioned into — a projection view, or an explicit, reasoned `omit:`.
 ///
-/// This is the written form of "lossless in aggregate", and the coverage guard
-/// (`tests/projection_coverage.rs`) walks the real format types with schemars and fails the build
-/// if enumeration and this table disagree in either direction: a new format field with no view is
-/// **undispositioned**, a table row for a field the format no longer has is **stale**. Silent
+/// This is the written form of "lossless in aggregate", and the coverage guard below
+/// (`tests::coverage`, behind the `schemars` feature — the one thing left that needs it) walks the
+/// real format types and fails the build if enumeration and this table disagree in either direction:
+/// a new format field with no view is **undispositioned**, a table row for a field the format no
+/// longer has is **stale**. Silent
 /// omission — the one failure mode a hand-maintained read surface cannot be trusted on, and the one
 /// this surface is permanent enough to be ruined by — becomes a red build.
 ///

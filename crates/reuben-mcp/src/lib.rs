@@ -652,10 +652,12 @@ impl ReubenServer {
 ///
 /// see rules: agent-mcp
 fn stamp_window_prose(router: &mut ToolRouter<ReubenServer>) {
-    // The direction that bites later: a route the roster does not name keeps rmcp's rustdoc
-    // fallback and advertises Rust-reader prose to a model, with the roster test and the schema
-    // test both still green — each iterates a list the new verb is present in. Refuse to start
-    // instead. (The other direction cannot happen: a contract carries its sentence in the roster.)
+    // These two assertions are also what makes the advertised surface *be* the roster, in both
+    // directions and at construction: a route the roster does not name keeps rmcp's rustdoc
+    // fallback and hands Rust-reader prose to a model, and a roster verb no route serves is
+    // advertised by nobody. Refuse to start rather than let either reach the wire — a test that
+    // read the wire back could only report it afterwards, and a schema or prose test iterating one
+    // of the two lists would stay green through it.
     let unstamped: Vec<String> = router
         .map
         .keys()
@@ -1946,10 +1948,12 @@ mod tests {
 
         let server = ReubenServer::new();
         let tools = server.tool_router.list_all();
-        assert_eq!(
-            tools.len(),
-            tool_names().len(),
-            "the walk below must cover the whole roster"
+        // The walk below proves nothing over an empty router. That the router *is* the roster is
+        // not asserted here — `stamp_window_prose` refuses to construct this server otherwise, so
+        // a length comparison would be a tautology dressed as a check.
+        assert!(
+            !tools.is_empty(),
+            "the walk below must have a roster to cover"
         );
         for tool in tools {
             let name = tool.name.to_string();
@@ -1968,29 +1972,6 @@ mod tests {
                 );
             }
         }
-    }
-
-    #[test]
-    fn the_declared_roster_is_registered() {
-        // The router advertises exactly the declared roster (derived from
-        // the window's roster via tool_names) — the same surface the stdio integration
-        // test asserts over the wire, checked here without spawning a process.
-        let server = ReubenServer::new();
-        let mut advertised: Vec<String> = server
-            .tool_router
-            .list_all()
-            .into_iter()
-            .map(|tool| tool.name.to_string())
-            .collect();
-        advertised.sort();
-
-        let mut expected: Vec<String> = tool_names().iter().map(|n| n.to_string()).collect();
-        expected.sort();
-
-        assert_eq!(
-            advertised, expected,
-            "the tool surface must be the declared roster"
-        );
     }
 
     /// A minimal valid instrument the document-tool door tests edit on disk.

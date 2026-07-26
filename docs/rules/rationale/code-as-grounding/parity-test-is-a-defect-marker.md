@@ -13,7 +13,10 @@ It says: there are two lists, and nothing but this assertion keeps them equal. T
 The problem is that it does not read that way — a green parity test reads as reassurance, and the
 list it guards reads as safe. `stdio_tools_list.rs` asserting the advertised roster against
 `CONTRACTS` was the standing evidence that the argument surface behind those names was *not*
-single-sourced, and it was read for years as proof the tool surface was fine.
+single-sourced, and it was read for years as proof the tool surface was fine. That marker was
+eventually cashed rather than renewed: once the door had no list of its own left, the roster
+assertion moved into the door's construction — refuse to start on a mismatch — and the test it
+replaced was deleted. Cashing one is the outcome the marker exists to make available.
 
 So the marker is not a warning label on a bad test. Some parity tests are correct and permanent: two
 lists genuinely cannot be generated from each other when one lives behind a boundary the other
