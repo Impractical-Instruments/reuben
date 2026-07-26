@@ -81,15 +81,6 @@ class CorePrivacyGuardTest(unittest.TestCase):
         self.assertEqual(len(problems), 1)
         self.assertIn("[build-dependencies]", problems[0])
 
-    def test_a_clean_workspace_is_green(self):
-        problems = self._problems({
-            "Cargo.toml": '[workspace]\nmembers = ["crates/reuben-native"]\n',
-            "crates/reuben-native/Cargo.toml":
-                '[package]\nname = "reuben-native"\n\n'
-                '[dependencies]\nreuben-api = { path = "../reuben-api" }\n',
-        })
-        self.assertEqual(problems, [])
-
     def test_dev_dependencies_count(self):
         # A test that reaches the engine directly is exactly the case this guard exists for.
         problems = self._problems({
@@ -120,7 +111,10 @@ class CorePrivacyGuardTest(unittest.TestCase):
         self.assertIn("workspace.dependencies", problems[0])
 
     def test_a_source_path_naming_the_crate_directory_is_not_an_edge(self):
-        # The operator scaffold writes into `crates/reuben-core/src`; a path is not a build edge.
+        # The operator scaffold writes into `crates/reuben-core/src`, and `bin/reuben.rs` defaults a
+        # flag to it. A parser never opens a `.rs` file, so what this really guards is a rewrite to
+        # a text scan — which is what this repo's sibling guards are, so it is a live risk rather
+        # than a hypothetical one. It doubles as the clean-tree baseline.
         problems = self._problems({
             "crates/reuben-native/Cargo.toml":
                 '[package]\nname = "reuben-native"\n\n'
