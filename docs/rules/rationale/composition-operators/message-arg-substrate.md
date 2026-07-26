@@ -2,13 +2,10 @@
 
 [Rule](../../composition-operators.md#message-arg-substrate)
 
-The north star is that the core speaks only **OSC-shaped Messages**. Everything after that drifted:
-the engine accreted seven distinct internal carriers — a dense f32 arena, a sparse emit pool, a
-`Harmony` struct arena, an enum latch, a param lane, materialized-float buffers, the outbound lane.
-The insight that collapses them: most are not different *kinds of data*, they are different *read
-styles over one thing*. A held enum is "the last `/mode` message's arg"; Harmony is "the last
-`/harmony` message's args, decoded"; a control float is "the zero-order-hold of the last `/cutoff`
-message." One carrier — an OSC-shaped Message stream — read three ways.
+The core speaks only **OSC-shaped Messages**. The insight that gets it there: a held enum, a decoded
+`Harmony`, and a control float are not different *kinds of data*, they are different *read styles
+over one thing* — "the last `/mode` message's arg", "the last `/harmony` message's args, decoded",
+"the zero-order-hold of the last `/cutoff` message". One carrier, read three ways.
 
 So there is one type: `Message = { address, frame, Arg }`. Three divergences from OSC are deliberate
 and recorded so a future reader does not "fix" them
@@ -21,8 +18,9 @@ primitives (`F32`/`I32`/`Str`), shared *vocab* types (`Note`, `Harmony`, and eve
 type-erased to one `Enum(index)` variant — type identity moves to the port descriptor's `EnumMeta`, so
 adding a unit enum touches no central engine file; a payload-carrying enum instead rides its own named
 leaf variant, see [payload-enum-arg-leaves](payload-enum-arg-leaves.md)), and the dense `Buffer`. A **`Signal` is just a Message whose Arg
-is a `Buffer`** — shorthand, not a second type; `Buffer` is the only Arg with no OSC form, which is
-how audio is kept off the wire *by construction*.
+is a `Buffer`** — shorthand, not a second type. `Buffer` has no OSC form — which is how audio is kept
+off the wire *by construction* — as do the wire-internal vocab types (`Harmony`, `Pitch`) that
+register no converter.
 
 The **address is boundary-only**. It is kept for OSC shape, boundary routing, and debug — **never**
 internal dispatch. Address routing as the internal primitive would put a `String` and an O(nodes)

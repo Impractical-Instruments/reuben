@@ -8,24 +8,21 @@ reuben is one dataflow graph that mixes non-audio data (notes, chords, timing, g
 and audio, and runs it in real time. There is no separate control rate: sub-audio-rate control
 travels as timestamped, OSC-shaped **Messages**, dense audio travels as float **Signal** buffers,
 and both are computed together, one fixed-size **block** at a time, in a single dependency-ordered
-pass. That order is a single static topological schedule, computed once when the graph changes and
-coalesced into cost-weighted clusters so independent branches run concurrently. The core does not
-own threads — it emits a task-and-dependency plan and hands it to a pluggable executor, so the same
-graph runs under the native worker pool, a game engine's job system, or a WebAudio worklet. *(The
-MVP ships a serial executor; the parallel executor is designed to slot in behind the same interface
-and is not built yet.)* Output is bit-identical no matter how those tasks interleave; determinism is
-a hard invariant, held by fixed fan-in order and a unit delay on real feedback cycles. The one
-sanctioned exception is a boundary that is nondeterministic by nature — live audio input, like
-OSC-in — so a patch with no input pipes gains no new nondeterminism, and offline render injects
-known buffers into the input pipes to stay bit-reproducible. The whole stack is Rust exposing a
-C ABI — chosen because its two hardest subsystems, lock-free plan swap and deterministic parallel
-execution, are exactly what Rust checks at compile time.
+pass. That order is a single static topological schedule, computed once when the graph changes, with
+independent branches free to run concurrently. The core does not own threads — it emits a
+task-and-dependency plan and hands it to a pluggable executor, so the same graph runs under a game
+engine's job system or a WebAudio worklet. *(The core ships a serial executor; the parallel executor
+is designed to slot in behind the same interface and is not built yet.)* Output is bit-identical no
+matter how those tasks interleave; determinism is a hard invariant, held by fixed fan-in order and a
+unit delay on real feedback cycles. The one boundary that is nondeterministic by nature — live audio
+input — is scoped in [composition & operators](composition-operators.md#logical-input-master). The
+whole stack is Rust.
 
 The runtime artifact is the **Plan**: the immutable, already-allocated schedule the audio thread
 executes. Its lifecycle is **Build → Swap ⇄ Render**. Render runs each block on the audio thread,
 hard-realtime and allocation-free — it only ever reads the current Plan. Every change to the graph,
 including the very first build, is a **Swap**: off the audio thread a single-writer **Coordinator**
-instantiates a new Plan (topo sort, cluster, allocate the delta), the whole **Engine** vessel
+instantiates a new Plan (topo sort, allocate the delta), the whole **Engine** vessel
 crosses the RT boundary through a pair of single-slot atomic mailboxes, surviving operators keep
 their state by pointer-transplant, and the retired Engine is reclaimed off-thread. Because the swap
 is audibly abrupt, install is wrapped in a fixed ~20 ms master-gain duck. Nothing but the Coordinator
@@ -43,10 +40,7 @@ be re-processed (sequencer → voicer, transposers, tonal-context snap) rather t
 
 Control arriving from outside — an external controller, an authoring door — enters through the embed
 surface's one queueing ingress, and it enters as a **batch**: one gesture crosses and is pushed as a
-single unit, so it cannot be interleaved by another producer, cannot straddle a block boundary, and
-cannot land half-applied. Because a whole batch lands in one render callback, its size is an RT
-property rather than a request-size preference, and it is bounded at a fixed maximum the engine
-enforces regardless of what any door advertises.
+single unit, bounded at a fixed maximum the engine enforces.
 
 ## Rules
 
@@ -56,7 +50,7 @@ enforces regardless of what any door advertises.
 [why](rationale/execution-runtime/unified-block-graph.md)
 
 <a id="static-parallel-schedule"></a>
-### Execution order is one static topological schedule, recomputed only when the graph changes and coalesced into cost-weighted clusters that run concurrently.
+### Execution order is one static topological schedule, recomputed only when the graph changes, whose independent branches a parallel executor may run concurrently.
 
 [why](rationale/execution-runtime/static-parallel-schedule.md)
 
@@ -71,7 +65,7 @@ enforces regardless of what any door advertises.
 [why](rationale/execution-runtime/pluggable-executor.md)
 
 <a id="rust-core"></a>
-### The core and native layer are written in Rust exposing a C ABI.
+### The core and native layer are written in Rust.
 
 [why](rationale/execution-runtime/rust-core.md)
 
@@ -122,6 +116,11 @@ Superseded by: ADR-0067 (pending absorption)
 
 [why](rationale/execution-runtime/operator-message-emission.md)
 
+<a id="outbound-frames-are-block-absolute"></a>
+### An outbound Message carries a block-absolute frame: the render loop stamps each operator emission by adding its segment's start, and the outbound drain forwards that frame verbatim — never re-stamping it and never losing the offset.
+
+[why](rationale/execution-runtime/outbound-frames-are-block-absolute.md)
+
 <a id="embed-surface"></a>
 ### The portable Engine bridge (queue_osc, fill, drain_outbound) lives in reuben-core as the one embed surface every host shell wraps.
 
@@ -152,8 +151,8 @@ Superseded by: ADR-0067 (pending absorption)
 ## Terms
 
 - **Block** — the fixed-size processing quantum; each block computes message- and signal-domain data in one dependency-ordered pass.
-- **Plan** — the runtime artifact: the immutable, already-allocated static parallel schedule (topo-ordered, clustered) that Render executes per block.
-- **Instantiate** — the off-thread construction of a Plan (topo sort, cluster, allocate the delta); the first half of every Swap, where all allocation lives.
+- **Plan** — the runtime artifact: the immutable, already-allocated, topologically ordered schedule that Render executes per block.
+- **Instantiate** — the off-thread construction of a Plan (topo sort, allocate the delta); the first half of every Swap, where all allocation lives.
 - **Swap** — the single off-thread transition that installs a new Plan/Engine at a block boundary, migrating survivor state and reclaiming the old vessel.
 - **Render** — the hard-realtime, allocation-free per-block execution of the current Plan on the audio thread.
 - **Coordinator** — the single non-RT writer of graph structure; owns the canonical graph and instrument library and performs every Swap.

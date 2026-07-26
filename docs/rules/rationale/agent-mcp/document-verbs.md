@@ -2,11 +2,7 @@
 
 [Rule](../../agent-mcp.md#document-verbs)
 
-The contract used to be the **whole document in, a report out** — the model emits every byte, the
-loader validates, the Coordinator swaps. That contract rejected an incremental surface on two
-grounds: per-command validation semantics would be a second authority free to drift from the loader,
-and a command vocabulary would be invented ahead of need. Both are answered here rather than waved
-away, which is what makes the reversal legitimate.
+An incremental edit surface has to answer two objections, and both are answered by construction:
 
 - **No second authority.** A verb is a way to *produce the next document*, not a way to check one.
   Every verb reads the source, applies one surgical edit, and re-validates the **whole** document
@@ -46,8 +42,9 @@ requirement a CI guard can enforce.
 
 A verb's `source` is **opaque and door-resolved** ([portable-tool-contracts](portable-tool-contracts.md)):
 the resolver's read half already loaded a nested voice patch door-abstractly, and the write half joins
-it, so the native resolver writes a file and the browser's memory resolver writes the host store and
-the verb means one thing behind every door. Two consequences follow and are accepted: the resolver
+it, so the native resolver writes a file and the browser's memory resolver is designed to write the
+host store — not yet built, so the web door still takes documents by value. Two consequences follow
+for the native lane and are accepted: the resolver
 stops being read-only, and the MCP sidecar formally becomes a process that writes to disk. `expect`
 stays optional per [expect-guard-is-a-door-concern](expect-guard-is-a-door-concern.md) — mandatory
 would force a read before every write and double the call count — and the clobber window in fact

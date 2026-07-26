@@ -3,21 +3,19 @@
 [Rule](../../authoring-library.md#normalized-doc-gate)
 
 The version invariant is simple to state — "a document past the gate is current-shaped, migrated
-exactly once" — but it was held by **prose**, and the prose sprang leaks. Two entry points migrated
-the same document differently (a resolver-less `from_json` typed a re-exported child pipe `"f32"` as
-a fallback while the resolver-fed one typed it for real). The load path then defensively re-checked
-the version, re-migrated on a clone, and — once a presentation-strip migration landed — grew a
-`carries_retired_presentation` probe to catch leftovers hiding under a current stamp. Every bypass
-hazard was patched by another re-check funneled through the same untyped seam.
+exactly once" — but it was held by **prose**, and the prose sprang leaks: two entry points migrated
+the same document differently (a resolver-less parse typed a re-exported child pipe `"f32"` as a
+fallback while the resolver-fed one typed it for real), and every further bypass hazard was patched
+by another defensive re-check funneled through the same untyped seam.
 
 In Rust the invariant can be held by a **type** instead — but only across a module boundary: a
 newtype declared inside the 5,000-line `format.rs` is prose-guarded against its own neighbours. So a
 minimal `format/normalize.rs` extraction carries the whole pipeline (gate + v1→v2 migrate + v2→v3
 presentation strip + stamp) and **`NormalizedDoc`**, whose field is private to that module. Only the
-pipeline can mint one; the compiler enforces it everywhere else. There is **one mint entry**,
-resolver optional (`None` is behaviourally an always-failing resolver keeping the documented
-degrade-dark `"f32"` fallback), so there is one migration to reason about — parameterized by
-resolver — never two entry points to diverge through. A raw hand-deserialized document gets a
+pipeline can mint one; the compiler enforces it everywhere else. There is **one normalization path**
+every mint funnels through, resolver optional (`None` is behaviourally an always-failing resolver
+keeping the documented degrade-dark `"f32"` fallback), so there is one migration to reason about —
+parameterized by resolver — never two entry points to diverge through. A raw hand-deserialized document gets a
 **visible door** (`from_doc`) that replaces the old defensive clone-and-re-migrate, and `from_graph`
 routes the flatten's current-shaped output back through the one real gate.
 

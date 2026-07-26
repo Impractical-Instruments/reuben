@@ -21,10 +21,4 @@ a static nest is inlined and dissolved into the one flat schedule, so recursion 
 render ([nesting-inline-or-host](nesting-inline-or-host.md)). Beginners are shielded from pathological
 nesting by the Toy layer and good defaults, not by a hard cap.
 
-The one deliberate divergence from the original conception: it assumed *all* nesting inlines at
-plan-build. Polyphony needs instances that come and go at runtime, so the Voicer **hosts** its voice
-sub-patches rather than inlining them — the split is now drawn on cardinality
-([nesting-inline-or-host](nesting-inline-or-host.md)). The recursion itself — one concept at every
-scale, reused-as-operator, own identity and state — is untouched.
-
 Distilled from: ADR-0003

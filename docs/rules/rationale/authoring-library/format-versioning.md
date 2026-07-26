@@ -25,7 +25,4 @@ typo detection is worth more than it to a hand-authored format. A bare policy do
 rejected — tools could not then distinguish "old file" from "file that predates versioning," and the
 field costs one optional integer.
 
-(§4's defensive "load path re-checks the version" mechanism this ADR described is retired: the
-invariant is now held by a type — see [normalized-doc-gate](normalized-doc-gate.md).)
-
 Distilled from: ADR-0036

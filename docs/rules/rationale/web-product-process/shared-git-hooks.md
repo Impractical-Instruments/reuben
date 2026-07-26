@@ -2,8 +2,7 @@
 
 [Rule](../../web-product-process.md#shared-git-hooks)
 
-A prior pre-commit hook lived in `.git/hooks/` — unversioned, single-machine, invisible to anyone
-cloning the repo. reuben is open source; a newcomer's first contribution shouldn't trip a CI fmt gate
+reuben is open source; a newcomer's first contribution shouldn't trip a CI fmt gate
 that a one-line setup could have caught. So hooks live in version-controlled `.githooks/`, wired via
 a single `git config core.hooksPath .githooks` line. **pre-commit** runs `cargo fmt --all --check`,
 skipped on docs-only commits so commits stay cheap; **pre-push** runs

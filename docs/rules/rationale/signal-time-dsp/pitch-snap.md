@@ -22,7 +22,8 @@ Crucially, **policy is a caller argument**, not baked into the context: auto-tun
 `Scale/Nearest`, an arp wants `Chord`, a melody wants `ChordThenScale`. Baking a policy into the
 context would force one snap behavior on every follower of that context; supplying it per call lets one
 shared context serve all three. Keeping the resolver (`hz`) and the quantizer (`snap`) as distinct
-operations — snap upstream, resolve at the Voicer — is what makes the symbolic-return trick pay off.
+operations — snap upstream, resolve downstream at `pitch2freq` or inside a Voicer — is what makes the
+symbolic-return trick pay off.
 Snap *strength/gravity* (partial pull) and *hysteresis* (sticky degree under a slow drag) are
 follower/UX concerns, explicitly deferred.
 

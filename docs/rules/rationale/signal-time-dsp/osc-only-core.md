@@ -15,11 +15,8 @@ one Message shape, full stop. And **each protocol is an isolated, removable adap
 lets the same core embed behind a native shell, a web worklet, or a game host with the whole native
 I/O layer detached — the removable-native-layer goal. The cost is honest and bounded: some
 protocol-specific nuance (MIDI CC → an address + value) must be mapped into an OSC convention, and that
-mapping lives in the adapter, never in the core. In the engine this seam is `boundary.rs`: the native
-layer decodes a datagram into an address plus a flat list of primitive `Arg`s, and the boundary's
-typed half turns that flat list into the single `Arg` the destination **port's declared type** wants
-(a primitive wraps directly, a vocab enum resolves via its metadata, a struct type unpacks via the
-converter it registered) — dest-port-type-driven, so the port is the authority and no protocol
-knowledge leaks inward.
+mapping lives in the adapter, never in the core. Where the flat protocol form becomes the single typed
+`Arg` — and why the destination port is the authority — is
+[osc-foreign-edge](osc-foreign-edge.md).
 
 Distilled from: ADR-0007

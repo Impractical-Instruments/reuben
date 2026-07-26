@@ -3,16 +3,15 @@
 [Rule](../../execution-runtime.md#embed-surface)
 
 The `Engine` — the bridge between the fixed block-size core render and a host's arbitrary-length
-audio pull (`queue_osc` → `fill`/`fill_duplex` → `drain_outbound`) — was born in `reuben-native`
-only because cpal's callback was its first caller. Three embedders now want exactly that bridge:
-native (cpal + UDP/OSC + fs), web (a WebAudio `AudioWorkletProcessor` quantum), and a game-engine
-mix step. A P1 spike proved it is not native-specific — it had to hand-rewrite the Plan + Renderer +
-scratch glue, and its only imports were `reuben_core::{message, plan, render}`. So `Engine`
-descends into `reuben_core::engine`: a curated **module**, not a new crate — a crate boundary would
-fence off nothing (every consumer of Engine already depends on all of core) at the cost of another
-workspace member, version, and docs surface (the same shape rejected for a `reuben-coordinator`
-crate). The hard constraint holds: no non-portable dependency enters `reuben-core`, so it keeps
-compiling to `wasm32-unknown-unknown` untouched.
+audio pull (`queue_osc` → `fill`/`fill_duplex` → `drain_outbound`) — is not native-specific. Three
+embedders want exactly that bridge: native (cpal + UDP/OSC + fs), web (a WebAudio
+`AudioWorkletProcessor` quantum), and a game-engine mix step, and it needs nothing beyond
+`reuben_core::{message, plan, render}`. So `Engine` lives in `reuben_core::engine`: a curated
+**module**, not a new crate — a crate boundary would fence off nothing (every consumer of Engine
+already depends on all of core) at the cost of another workspace member, version, and docs surface
+(the same shape rejected for a `reuben-coordinator` crate). The hard constraint holds: no
+non-portable dependency enters `reuben-core`, so it keeps compiling to `wasm32-unknown-unknown`
+untouched.
 
 The surface is drawn to keep protocol decode in the shells and Plan-aware typing in the engine:
 `queue_osc(&mut self, address, &[Arg])` takes the already-decoded flat primitive form every shell's

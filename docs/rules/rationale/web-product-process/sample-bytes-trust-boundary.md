@@ -15,8 +15,10 @@ So the exclusion of sample resources from a shareable bundle is a **trust bounda
 limit** — the decision most likely to be "fixed" by someone who sees a small sampler fit under the
 fragment cap and lifts the exclusion. It reads as ergonomics; it is actually the only thing keeping
 zero hostile bytes out of an unhardened parser. The share-link codec itself now lives in the product
-repo, but the obligation it leaned on stays owed by **public core**: `decode_wav` must bounds-check
-the declared chunk length against the buffer before any sample-bearing link can exist. Until then,
+repo, but the obligation it leaned on stays owed by whatever turns a stranger's bytes into samples:
+this repo ships exactly one WAV path — `reuben-api`'s `fs_resolver::decode_wav`, behind the
+default-off `fs-resolver` feature — and any host shell decoding in-memory bytes must check the
+declared data-chunk length against the bytes actually present before allocating. Until then,
 sample-free instruments lose nothing and sample-bearing ones simply have no link. The general
 discipline — validate every declared length against bytes remaining before trusting it — is exactly
 what the (now-private) envelope's TLV reader did and what `hound` lacks.

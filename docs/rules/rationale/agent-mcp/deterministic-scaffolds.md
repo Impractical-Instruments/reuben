@@ -14,13 +14,11 @@ time, behind a first-class `reuben` verb that a human authoring by hand benefits
   the author starts Stage B (behavior, test-first) with "make this pass" as the obvious first step; a
   green-on-arrival stub would invite shipping a silent operator. The error-prone part is *editing
   Rust source*, which is far more robust as tested Rust than as a regex script outside the crate.
-- **new-instrument** (spelled `scaffold-instrument` until the by-value return was retired)
-  mints a guaranteed-valid minimal document by **serializing an `InstrumentDoc`** (so the emitted
-  field spelling can only match the real serde contract — there is no parallel hand-written JSON
-  literal to drift). First-creation stalled because a fresh top-level document easily omits the
-  required `instrument` name and validate then rejects it; a valid seed removes the stall. The seed
-  is unchanged; what changed is where it lands — **written to the `source` the author names**, rather
-  than handed back for the author to write, since an agent may no longer hold document bytes.
+- **new-instrument** mints a guaranteed-valid minimal document by **serializing an `InstrumentDoc`**
+  (so the emitted field spelling can only match the real serde contract — there is no parallel
+  hand-written JSON literal to drift). First-creation stalled because a fresh top-level document
+  easily omits the required `instrument` name and validate then rejects it; a valid seed removes the
+  stall. It writes the seed to the `source` the author names.
 
 Both are proven valid by round-tripping through the same `validate` path, not by asserting their
 shape in prose — the loader is the authority ([loader-single-authority](loader-single-authority.md)).

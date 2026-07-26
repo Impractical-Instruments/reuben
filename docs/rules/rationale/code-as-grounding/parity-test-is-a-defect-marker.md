@@ -2,12 +2,11 @@
 
 [Rule](../../code-as-grounding.md#parity-test-is-a-defect-marker)
 
-Single-sourcing did not erode here through bad discipline. `operator_contract!` emits the index
-consts **and** the `Descriptor` from one declaration, and operator contracts do not drift — not
-because a rule forbids hand-writing a descriptor, but because the macro is cheaper than hand-writing
-one. The same discipline, applied where generation got expensive (per-door schema derives, each
-flavoured by its own host's machinery), produced a second list and a test to hold it level. What
-varied was the mechanism, not the care.
+Single-sourcing erodes where generation gets expensive, not where discipline lapses.
+`operator_contract!` emits the index consts **and** the `Descriptor` from one declaration, and
+operator contracts do not drift — because the macro is cheaper than hand-writing a descriptor. The
+same care, applied where generation got expensive (per-door schema derives, each flavoured by its
+own host's machinery), produced a second list and a test to hold it level.
 
 A test asserting two lists match is therefore **evidence about the design, not a property of it**.
 It says: there are two lists, and nothing but this assertion keeps them equal. That is worth knowing.

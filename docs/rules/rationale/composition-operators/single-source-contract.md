@@ -23,12 +23,11 @@ because a proc-macro crate can only export macros (the scaffold could not call v
 `reuben-macros`) and the macro cannot depend on `reuben-core` without a cycle. One validator, imported
 by both the macro and the scaffold, so they cannot themselves drift — the disease, recursively.
 
-The contract has since **grown** rather than been replaced: it emits typed port *handles*, not bare
-consts ([typed-port-handles](typed-port-handles.md)), and `params:` was swapped for a `constants:`
-block ([constants-are-immutable-ports](constants-are-immutable-ports.md)) — but the single-source
-principle, and its greppability trade (`grep IN_FREQ` lands on the `operator_contract!` call, the
-census of an operator's ports), are what endure. The stateless-pointwise math family single-sources
-even further, generating a whole operator family from one scalar fn
+The contract now emits typed port *handles* rather than bare consts
+([typed-port-handles](typed-port-handles.md)), and a `constants:` block rather than `params:`
+([constants-are-immutable-ports](constants-are-immutable-ports.md)); the single-source principle and
+its greppability trade (`grep IN_FREQ` lands on the `operator_contract!` call, the census of an
+operator's ports) are unchanged. The stateless-pointwise math family single-sources further still
 ([pointwise-number-operators](pointwise-number-operators.md)).
 
 Distilled from: ADR-0025

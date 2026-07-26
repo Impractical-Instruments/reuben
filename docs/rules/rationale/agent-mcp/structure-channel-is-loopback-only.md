@@ -25,9 +25,7 @@ kept in one place is agreement that cannot be half-updated. It is a deliberate e
 [the contract-versus-wire split](contract-holds-what-core-produces.md), which is otherwise about
 payload types.
 
-There is precedent for the exception expiring cleanly: the engine's OSC-in port sat beside it for
-the same reason while the sidecar dialed OSC, and moved out to the module owning that edge once
-control started riding this channel instead and that module became its only consumer. Sharing a
-constant is justified by two ends needing to agree, and it ends when they no longer do.
+Sharing a constant is justified by two ends needing to agree, and the exception ends when they no
+longer do.
 
 Decided in: issue #639 — settled directly, no ADR.

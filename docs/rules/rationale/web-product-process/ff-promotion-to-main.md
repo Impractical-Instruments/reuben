@@ -16,9 +16,9 @@ disqualifying reasons: `main`'s ruleset restricts pushes to a bypass list that `
 on; and a push authored by `GITHUB_TOKEN` does not trigger downstream workflows, so the production
 deploy chain would silently never fire. The App is the sole entry on the bypass list, so its push
 both lands and triggers downstream. This model is unchanged by the web extraction — only what
-"downstream" deploys changed. The `main`-keyed perf-history and release machinery ride on it
-untouched: they key on `refs/heads/main`, so the perf trend records one point per promotion batch,
-not one per `dev` push. See [dev-integration-branch](dev-integration-branch.md) for the bake stage
-this promotes from.
+"downstream" deploys changed. The `main`-keyed release machinery rides on it untouched. The perf
+trend is per-branch — `main` pushes append to `bench-history`, `dev` pushes to `bench-history-dev` —
+so watching dev's series before promoting never touches main's. See
+[dev-integration-branch](dev-integration-branch.md) for the bake stage this promotes from.
 
 Distilled from: ADR-0055

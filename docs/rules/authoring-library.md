@@ -18,15 +18,11 @@ canonicalizes identity so two spellings of one path are one thing. The document 
 `format_version`; absent means 1, save writes the current version, breaking shape changes bump it
 and ship a parse-time migration, and only a *newer-than-known* document is refused. That whole
 version invariant — refuse the future, migrate the past, strip retired presentation, stamp — is
-held not by prose but by a **type**: a `NormalizedDoc` mints exactly once at the parse gate, and
-every build and load path accepts it, so a document past the gate is provably current-shaped and
-migrated exactly once.
+held by a type rather than by prose.
 
 Instruments depend on more than params. A sample player needs **external bytes** — an audio file
-resolved and decoded before render — so decoded audio lives in a central `ResourceStore` the
-Coordinator builds at load and Render reads immutably, referenced by a logical id in a top-level
-`resources` table and read on the RT path through one pure `(id, range)` accessor that a future
-streaming bank can back without the operator changing. Load failures follow a settled discipline:
+resolved and decoded before render — so decoded audio lives in a `ResourceStore` outside the
+operator, off the RT path and behind one pure accessor. Load failures follow a settled discipline:
 a missing or malformed resource **degrades the node to silence** with a surfaced warning, while
 structural and wiring errors stay fatal — the "dark-degrade" philosophy the surface layer inherits.
 
@@ -38,7 +34,9 @@ every surface follows. With no surface file at all, a default is auto-derived st
 wireable pipes, so a new instrument is instantly playable with zero configuration. One surface
 format and one resolver semantics project to two targets — the live web renderer and a disposable
 TouchOSC `.tosc` — over a superset widget vocabulary each target renders its subset of, skipping the
-rest loudly. A curated control that is hard to make sound bad is a **Good Button**, built from
+rest loudly. Five kinds ship in both targets (`fader`, `radial`, `param-toggle`, `note-toggle`,
+`chord-button`); `xy-pad`, `grid`, `visualizer`, and `keyboard` are reserved in the format and
+**not built in either target**. A curated control that is hard to make sound bad is a **Good Button**, built from
 composition (a fan of `map`s to enumerated targets), never from new format machinery.
 
 Reuse rides the same machinery. The one unit of reuse is a validated instrument document consumed
@@ -70,7 +68,7 @@ generated surface, one per distinct player gesture, never new format machinery.
 [why](rationale/authoring-library/surface-docs.md)
 
 <a id="advertised-range-is-a-subset"></a>
-### An interface override may narrow what a port advertises but never widen it past what the engine enforces: a range override must be a non-inverted subset of the inner port's range, while label, unit, and widget rename freely because they cannot lie about a value the engine will accept.
+### An interface override may narrow what a port advertises but never widen it past what the engine enforces: a range override must be a non-inverted subset of the inner port's range, while `unit` renames freely because it cannot lie about a value the engine will accept.
 
 [why](rationale/authoring-library/advertised-range-is-a-subset.md)
 
@@ -126,10 +124,10 @@ generated surface, one per distinct player gesture, never new format machinery.
 
 ## Terms
 
-- **ResourceStore** — the central store of decoded resource bytes, built by the Coordinator at load and read immutably by Render through one pure `(id, range)` accessor, keyed by logical id.
+- **ResourceStore** — the central store of decoded resource bytes, built by the Coordinator at load and read immutably by Render through one pure `(id, channel, frame)` accessor, keyed by logical id.
 - **Good Button** — a curated player-facing control that is hard to make sound bad, built from composition (a fan of `map`s) rather than from new instrument-format machinery.
 - **surface doc** — the presentation-only document that binds an instrument's interface input-pipe names to widgets, decoupled from the instrument itself.
-- **NormalizedDoc** — the type minted exactly once at the parse gate (refuse the future, migrate the past, strip retired presentation, stamp) that every build and load path accepts, proving a document is current-shaped and migrated exactly once.
+- **NormalizedDoc** — the type minted once at the parse gate that every build and load path accepts, proving a document is current-shaped and migrated exactly once.
 - **format_version** — the document's integer shape marker; absent means 1, save writes the current version, and only a breaking shape change bumps it.
 - **recipe-role** — an instrument's reuse story: the first sentence of its `doc` field, trusted for selection only, never for wiring.
 - **available-set** — the set of instruments a session can reference.

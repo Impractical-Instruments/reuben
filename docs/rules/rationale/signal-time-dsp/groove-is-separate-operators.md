@@ -9,9 +9,7 @@ and expressing feel as **separate Operators that re-time Message streams** makes
 insert one on the stream you want to bend, leave the others alone. A default global groove is a fine
 on-ramp, but it is an *operator you can remove*, not a property of the transport.
 
-This is the same modular instinct that runs through the whole DSP surface — a contour generator is
-separate from the thing that applies it ([envelope-emits-cv](envelope-emits-cv.md)), a curve is its
-own op ([curve-ops-named-for-math](curve-ops-named-for-math.md)) — timing feel is one more thing you
-patch, not a mode.
+No groove/swing/feel operator is built yet; what this rule holds today is the negative — the Clock
+does not grow a swing knob.
 
 Distilled from: ADR-0006

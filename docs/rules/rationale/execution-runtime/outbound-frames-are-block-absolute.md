@@ -1,6 +1,6 @@
 # Why: An outbound Message carries a block-absolute frame, stamped once by the render loop and forwarded verbatim by the drain.
 
-[Rule](../../signal-time-dsp.md#outbound-frames-are-block-absolute)
+[Rule](../../execution-runtime.md#outbound-frames-are-block-absolute)
 
 An operator does not see the whole block. When a held input changes partway through, the render loop
 splits the block into segments and calls `process` once per segment, so the operator's own notion of
@@ -23,12 +23,7 @@ stamping — adding an offset again at the drain — double-counts and pushes em
 the block. Either one breaks sample-accurate outbound timing and, worse, breaks it only under
 conditions a casual test does not reproduce.
 
-That is why the test pins it with two held changes that split a block at a specific frame and checks
-that the second emission surfaces at the split point rather than at zero. A regression that dropped
-`seg_start` would put it at 0, and a single-segment test would never catch it.
-
-The same block-absolute frame is what makes outbound Messages usable as feedback into the system,
-not just as output: a frame that means the same thing to the sender and the receiver is the whole
-basis of [sample-accurate timing](../execution-runtime/sample-accurate-timing.md).
+A single-segment block — the common case — makes segment-relative and block-absolute identical, so
+only a test that splits a block at a known frame can see the difference; that is what pins it.
 
 Decided in: issue #639 — settled directly, no ADR.
