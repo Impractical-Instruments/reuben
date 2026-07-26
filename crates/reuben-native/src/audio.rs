@@ -43,12 +43,13 @@ use std::time::{Duration, Instant};
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
 use cpal::{SampleFormat, Stream, SupportedBufferSize};
+use reuben_api::authoring::Diag;
 use reuben_core::coordinator::{
     swap_pair, Coordinator, CoordinatorMailbox, RenderMailbox, RenderSide, RenderSlot, SwapInFlight,
 };
 use reuben_core::format::LoadWarning;
 use reuben_core::message::Message;
-use reuben_core::{AudioConfig, Diag};
+use reuben_core::AudioConfig;
 
 use crate::diagnostics::Diagnostics;
 use crate::osc::ControlBatch;

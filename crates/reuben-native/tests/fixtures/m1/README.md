@@ -11,7 +11,7 @@ to run.
 structure-channel server in-process (device-free, no cpal) and drives all four verbs over a raw TCP
 NDJSON client, asserting each response's behavior field-by-field. This is the self-verifying
 deliverable; it runs in `cargo test --workspace`. (The wire framing and `reply`-tag contract are
-pinned at the unit level in `reuben-core`'s `coordinator/wire.rs`.)
+pinned at the unit level in the window's `engine/wire.rs`.)
 
 **(b) Scripted human — the restart-swap device-gap ritual.** `docs/mcp-swap-ritual.md` scripts the
 one thing CI cannot see: the actual cpal stream teardown/reopen and the audible ~100 ms restart gap.

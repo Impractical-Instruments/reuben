@@ -41,7 +41,7 @@ pub struct Refusal {
 }
 
 impl Refusal {
-    fn new(message: impl Into<String>) -> Self {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
         Refusal {
             message: message.into(),
         }

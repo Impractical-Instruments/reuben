@@ -2,7 +2,7 @@
 //! `initialize` handshake, and assert `tools/list` advertises exactly the declared contract roster
 //! over newline-delimited JSON-RPC, then scan every advertised description for markup that only a
 //! Rust reader can resolve. The expected set is derived from the single-source
-//! `reuben_core::tools::CONTRACTS` roster, not hand-typed here.
+//! `reuben_api::tools::CONTRACTS` roster, not hand-typed here.
 //!
 //! see rules: agent-mcp
 
@@ -127,36 +127,31 @@ fn every_tool_advertises_an_output_schema() {
 }
 
 #[test]
-fn the_prose_table_covers_the_authoring_roster() {
+fn the_door_advertises_exactly_the_roster_it_has_sentences_for() {
     // In-process and spawning nothing, because the wire test below cannot report this well: the
     // door asserts the same coverage at construction, so a missing sentence stops the shim from
     // starting and every stdio test fails with "no response" instead of naming the verb.
     //
-    // The roster is the authority on which contracts exist; the window's table is a lookup over it.
-    // The engine half is not here yet — that is phase 3. see rules: agent-mcp
-    let expected: std::collections::BTreeSet<&str> = reuben_core::tools::CONTRACTS
+    // The roster is the authority on which contracts exist; the window's table is a lookup over it,
+    // and it covers every kind now that the engine half comes through the window too.
+    // see rules: agent-mcp
+    let expected: std::collections::BTreeSet<&str> = reuben_api::tools::CONTRACTS
         .iter()
-        .filter(|c| {
-            matches!(
-                c.kind,
-                reuben_core::tools::ContractKind::Pure | reuben_core::tools::ContractKind::Document
-            )
-        })
         .map(|c| c.name)
         .collect();
-    let advertised: std::collections::BTreeSet<&str> = reuben_api::authoring::prose::DESCRIPTIONS
+    let advertised: std::collections::BTreeSet<&str> = reuben_api::tools::DESCRIPTIONS
         .iter()
         .map(|(name, _)| *name)
         .collect();
     assert_eq!(
         expected, advertised,
-        "every authoring contract needs a sentence in the window's prose table, and only those"
+        "every contract needs a sentence in the window's table, and only those"
     );
 }
 
 #[test]
 fn advertises_the_window_prose() {
-    // The window owns each authoring verb's sentence, and the door stamps it onto the built router
+    // The window owns every verb's sentence, and the door stamps it onto the built router
     // because rmcp's `#[tool]` takes only a literal. Left unstamped, the macro falls back to the
     // method's rustdoc — prose written for a Rust reader, and a silent regression the roster and
     // schema tests would both pass through. So this reads the real wire and demands the window's
@@ -167,7 +162,7 @@ fn advertises_the_window_prose() {
         .as_array()
         .unwrap_or_else(|| panic!("tools/list result missing a tools array:\n{response}"));
 
-    for (name, sentence) in reuben_api::authoring::prose::DESCRIPTIONS {
+    for (name, sentence) in reuben_api::tools::DESCRIPTIONS {
         let tool = tools
             .iter()
             .find(|t| t["name"] == serde_json::json!(name))
@@ -176,19 +171,6 @@ fn advertises_the_window_prose() {
             tool["description"].as_str(),
             Some(*sentence),
             "`{name}` must advertise the window's sentence, not a door-local copy"
-        );
-    }
-
-    // Every remaining tool still says something: the engine half keeps its own `description` until
-    // its verbs come through the window, and this is what would notice one going missing.
-    for name in reuben_mcp::tool_names() {
-        let tool = tools
-            .iter()
-            .find(|t| t["name"] == serde_json::json!(name))
-            .unwrap_or_else(|| panic!("tools/list missing `{name}`"));
-        assert!(
-            tool["description"].as_str().is_some_and(|d| !d.is_empty()),
-            "`{name}` advertises no description: {tool}"
         );
     }
 }

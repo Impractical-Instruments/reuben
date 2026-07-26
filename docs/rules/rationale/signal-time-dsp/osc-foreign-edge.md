@@ -40,4 +40,4 @@ change: concurrent senders remain last-write-wins per control, exactly as two ph
 behave.
 
 Distilled from: ADR-0065. The three-primitives and converge-at-one-ingress reasoning was harvested from
-the `coordinator::wire` control types, where it also lives as mechanics.
+the window's `engine::wire` control types, where it also lives as mechanics.

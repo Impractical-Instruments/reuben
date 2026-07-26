@@ -7,22 +7,32 @@
 //! Two halves with opposite cost profiles, each behind its own feature so a host compiles only the
 //! one it drives:
 //!
-//! - [`authoring`] — called from anywhere, off-thread, where the budget is irrelevant and every
-//!   type is serialized to a consumer.
+//! - the **authoring/control** half — called from anywhere, off-thread, where the budget is
+//!   irrelevant and every type is serialized to a consumer. [`authoring`] is document work,
+//!   [`engine`] is reaching a *running* engine (swap, control, status, diagnostics) from either end
+//!   of the structure channel, and [`tools`] is the roster the two are advertised through.
 //! - [`render`] — called from the audio callback, where a conversion per block *is* the cost.
 //!
 //! A browser worklet takes `default-features = false, features = ["render"]` and never compiles the
 //! authoring surface.
 //!
-//! The resource resolver is the one call *in*: samples and nested documents are never handed to the
-//! engine as bytes, so the engine calls back out through a seam the host provides.
-//! [`fs_resolver`] is a filesystem implementation to share rather than reimplement, behind a
-//! default-off feature — the seam is the contract, and this is one implementation of it.
+//! Two seams face the other way — things a host must **provide** rather than call. The resource
+//! resolver is the one call *in*: samples and nested documents are never handed to the engine as
+//! bytes, so the engine calls back out through [`authoring::Resources`], and [`fs_resolver`] is a
+//! filesystem implementation to share rather than reimplement, behind a default-off feature. The
+//! other is [`engine::EngineHost`]: the device map, the counters, the control ingress and the
+//! deferred free that only a host can know about.
 //!
 //! see rules: agent-mcp
 
 #[cfg(feature = "authoring")]
 pub mod authoring;
+
+#[cfg(feature = "authoring")]
+pub mod engine;
+
+#[cfg(feature = "authoring")]
+pub mod tools;
 
 #[cfg(feature = "fs-resolver")]
 pub mod fs_resolver;

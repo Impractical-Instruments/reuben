@@ -13,11 +13,11 @@ description = "Portable, OS-free realtime core for reuben: graph, plan, render."
 # `required-features = ["bench"]`, and CI runs the micro layer + its forcing-function test with
 # `--features bench` (locally: `cargo reuben-core-bench`, see .cargo/config.toml).
 bench = []
-# Derives `schemars::JsonSchema` on the contract types (src/contract.rs) so rmcp can emit
-# each MCP tool's `outputSchema`, and on the instrument-format types (src/format) so the
-# projection's completeness guard can enumerate every format field mechanically (#608).
-# Default-off: reuben-mcp turns it on, and CI names it on the test step so the guard cannot
-# stop running by accident; the play/CLI build never compiles schemars (feature fencing).
+# Derives `schemars::JsonSchema` on the instrument-format types (src/format) so the projection's
+# completeness guard can enumerate every format field mechanically (#608), and on the contract
+# types (src/contract.rs), which no longer have a consumer — every advertised schema derives from
+# reuben-api's own types now. Default-off and enabled by NO crate: CI names it on the test step,
+# which is the only thing keeping the format guard running.
 schemars = ["dep:schemars"]
 
 [dependencies]

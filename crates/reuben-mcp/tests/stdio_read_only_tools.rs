@@ -78,6 +78,21 @@ fn is_error(result: &serde_json::Value) -> bool {
     result["isError"] == serde_json::json!(true)
 }
 
+/// How many operators the registry holds, asked through the window rather than the engine — the
+/// same question `describe_operators` answers, so the expectation cannot drift from the verb by
+/// reaching around it.
+fn registered_operator_count() -> usize {
+    reuben_api::authoring::describe_operators(&reuben_api::authoring::DescribeOperators {
+        name: None,
+        compact: true,
+    })
+    .expect("listing every operator is not a refusal")
+    .output
+    .signatures
+    .expect("compact mode answers with signatures")
+    .len()
+}
+
 #[test]
 fn describe_operators_unknown_name_is_iserror() {
     // An unknown operator name is a can't-do-the-job error — the tool cannot
@@ -106,7 +121,7 @@ fn describe_operators_no_filter_lists_all() {
         .unwrap_or_else(|| {
             panic!("describe_operators must return {{ operators: [...] }}: {result}")
         });
-    let expected = reuben_core::Registry::builtin().entries().count();
+    let expected = registered_operator_count();
     assert_eq!(
         operators.len(),
         expected,
@@ -134,7 +149,7 @@ fn describe_operators_compact_returns_signatures() {
         .unwrap_or_else(|| {
             panic!("compact describe_operators must return {{ signatures: [...] }}: {result}")
         });
-    let expected = reuben_core::Registry::builtin().entries().count();
+    let expected = registered_operator_count();
     assert_eq!(
         signatures.len(),
         expected,
@@ -352,9 +367,9 @@ fn read_only_tools_advertise_output_schemas() {
     // The read-only tools are exactly the Pure contracts, derived from the single-source roster
     // rather than a hand-typed list — so a new tool is a CONTRACTS entry rather
     // than editing a parallel literal here.
-    let read_only = reuben_core::tools::CONTRACTS
+    let read_only = reuben_api::tools::CONTRACTS
         .iter()
-        .filter(|c| c.kind == reuben_core::tools::ContractKind::Pure)
+        .filter(|c| c.kind == reuben_api::tools::ContractKind::Pure)
         .map(|c| c.name);
     for name in read_only {
         let tool = tools

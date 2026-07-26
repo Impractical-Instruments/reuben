@@ -1240,7 +1240,6 @@ name = "reuben-mcp"
 version = "0.0.0"
 dependencies = [
  "reuben-api",
- "reuben-core",
  "rmcp",
  "schemars",
  "serde",

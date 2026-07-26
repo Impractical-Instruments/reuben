@@ -1,29 +1,26 @@
-//! The sidecar's half of the sidecar↔engine structure channel: one [`Request`] line out, one
-//! [`Response`] line back over the shared [`reuben_core::coordinator`] NDJSON envelope.
+//! The client side of the structure channel: NDJSON framing out, one response line back,
+//! classified into the verb's answer.
 //!
-//! Two module-wide invariants a caller may rely on: every exchange is bounded (blocking
-//! [`std::net`] under an explicit [`connect_timeout`](TcpStream::connect_timeout) plus read/write
-//! timeouts), and every transport failure becomes a [`StructureError::Unreachable`] carrying
-//! [`crate::ENGINE_UNREACHABLE_GUIDANCE`] — so this module never hangs and never panics.
+//! Two invariants a caller may rely on: every exchange is bounded (the door's [`Transport`] holds
+//! the socket and the budget it is handed), and every transport failure becomes a
+//! [`ChannelError::Unreachable`] carrying the window's start-the-engine guidance — so this module
+//! never hangs and never panics.
+//!
+//! What is *not* here is the socket. A door supplies the [`Transport`]: loopback TCP for the MCP
+//! sidecar, whatever an in-process host has instead. The framing, the timeout policy and the
+//! response classification are the window's, so two doors cannot disagree about what a reply means.
 //!
 //! see rules: agent-mcp
 
 use std::fmt;
-use std::io::{self, BufRead, BufReader, Write};
-use std::net::{TcpStream, ToSocketAddrs};
+use std::io;
 use std::time::Duration;
 
-use reuben_core::coordinator::{
+use super::prose::ENGINE_UNREACHABLE_GUIDANCE;
+use super::wire::{
     Conflict, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot, Request, Response,
+    SwapReport,
 };
-use reuben_core::SwapReport;
-
-use crate::ENGINE_UNREACHABLE_GUIDANCE;
-
-/// How long to wait for the loopback connect before declaring the engine unreachable. Loopback
-/// connects resolve in well under a millisecond when a server is up; this ceiling only bounds the
-/// firewalled/unresponsive case so the probe never blocks the sidecar.
-const DEFAULT_CONNECT_TIMEOUT: Duration = Duration::from_millis(500);
 
 /// How long to wait for the one response line before giving up on a *wedged* server (connected but
 /// silent). Generous enough for a real swap's off-thread engine rebuild, tight enough that a hung
@@ -39,7 +36,7 @@ const DEFAULT_PING_READ_TIMEOUT: Duration = Duration::from_secs(1);
 
 /// A failed structure-channel exchange.
 #[derive(Debug)]
-pub enum StructureError {
+pub enum ChannelError {
     /// The engine could not be reached (connect refused, address unresolved, or a read/write
     /// timeout on a wedged server). Carries the "start `reuben play`" guidance.
     Unreachable(String),
@@ -50,33 +47,33 @@ pub enum StructureError {
     Protocol(String),
 }
 
-impl StructureError {
+impl ChannelError {
     /// Build the unreachable error, prefixing the shared guidance so any caller that surfaces the
     /// message is actionable. Keeps the cause for debugging.
     fn unreachable(cause: impl fmt::Display) -> Self {
-        StructureError::Unreachable(format!("{ENGINE_UNREACHABLE_GUIDANCE} (cause: {cause})"))
+        ChannelError::Unreachable(format!("{ENGINE_UNREACHABLE_GUIDANCE} (cause: {cause})"))
     }
 
     /// Whether this is the unreachable-engine case. see rules: agent-mcp
     pub fn is_unreachable(&self) -> bool {
-        matches!(self, StructureError::Unreachable(_))
+        matches!(self, ChannelError::Unreachable(_))
     }
 }
 
-impl fmt::Display for StructureError {
+impl fmt::Display for ChannelError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            StructureError::Unreachable(m) => write!(f, "{m}"),
-            StructureError::Channel(m) => write!(f, "structure channel error: {m}"),
-            StructureError::Protocol(m) => write!(f, "structure channel protocol error: {m}"),
+            ChannelError::Unreachable(m) => write!(f, "{m}"),
+            ChannelError::Channel(m) => write!(f, "structure channel error: {m}"),
+            ChannelError::Protocol(m) => write!(f, "structure channel protocol error: {m}"),
         }
     }
 }
 
-impl std::error::Error for StructureError {}
+impl std::error::Error for ChannelError {}
 
 /// The outcome of a `swap` that reached the engine — both arms are answers, not failures
-/// (transport failures are [`StructureError`]). see rules: agent-mcp
+/// (transport failures are [`ChannelError`]). see rules: agent-mcp
 #[derive(Debug, Clone, PartialEq)]
 pub enum SwapOutcome {
     /// The engine processed the swap and returned its [`SwapReport`] (success or load-failure).
@@ -90,10 +87,11 @@ pub enum SwapOutcome {
 ///
 /// **The injectable seam**, and deliberately the lowest one: everything above it — framing,
 /// parsing, the unreachable/protocol split — is exercised rather than replaced by a test double.
-/// Below it live the socket mechanics, which `tests/structure_client.rs` drives over real TCP.
+/// Below it live the socket mechanics, which are the door's — a loopback TCP one ships with the
+/// MCP sidecar and is driven over a real socket there.
 ///
 /// see rules: agent-mcp
-pub trait StructureTransport: Send + Sync + fmt::Debug {
+pub trait Transport: Send + Sync + fmt::Debug {
     /// One request line out, one response line back. `read_timeout` is per-call because `ping`
     /// runs on a tighter budget than the other verbs. Any I/O failure — refused connect,
     /// unresolved address, timeout, or a peer that closed before answering — is an
@@ -104,91 +102,25 @@ pub trait StructureTransport: Send + Sync + fmt::Debug {
     fn endpoint(&self) -> &str;
 }
 
-/// The shipping [`StructureTransport`]: a fresh, bounded, blocking loopback TCP connection per
-/// exchange, retaining nothing between calls.
-#[derive(Debug, Clone)]
-pub struct TcpTransport {
-    addr: String,
-    connect_timeout: Duration,
-}
-
-impl TcpTransport {
-    /// A transport dialing `addr` (e.g. `127.0.0.1:9124`) with the given connect budget.
-    pub fn new(addr: impl Into<String>, connect_timeout: Duration) -> Self {
-        Self {
-            addr: addr.into(),
-            connect_timeout,
-        }
-    }
-}
-
-impl StructureTransport for TcpTransport {
-    fn round_trip(&self, line: &str, read_timeout: Duration) -> io::Result<String> {
-        // Resolve to a concrete SocketAddr — connect_timeout needs one (and is what bounds the
-        // connect; a plain `connect` could block far longer than our budget).
-        let addr = self.addr.to_socket_addrs()?.next().ok_or_else(|| {
-            io::Error::other(format!("no socket address resolved for {}", self.addr))
-        })?;
-
-        let stream = TcpStream::connect_timeout(&addr, self.connect_timeout)?;
-        stream.set_read_timeout(Some(read_timeout))?;
-        stream.set_write_timeout(Some(read_timeout))?;
-        let _ = stream.set_nodelay(true);
-
-        // Write the one request line. `&TcpStream: Write`, so no try_clone is needed to split the
-        // socket — the reader below borrows the same stream.
-        (&stream).write_all(line.as_bytes())?;
-        (&stream).flush()?;
-
-        // Read exactly one response line (one response per request).
-        let mut reader = BufReader::new(&stream);
-        let mut response = String::new();
-        if reader.read_line(&mut response)? == 0 {
-            return Err(io::Error::new(
-                io::ErrorKind::UnexpectedEof,
-                "the structure channel closed before answering",
-            ));
-        }
-        Ok(response)
-    }
-
-    fn endpoint(&self) -> &str {
-        &self.addr
-    }
-}
-
-/// A client for one engine's loopback structure channel: the NDJSON framing, the response-variant
-/// classification, and the timeout policy, over an injectable [`StructureTransport`].
+/// One engine's structure channel: the NDJSON framing, the response-variant classification, and
+/// the timeout policy, over the door's [`Transport`].
 #[derive(Debug)]
-pub struct StructureClient {
-    transport: Box<dyn StructureTransport>,
+pub struct Channel {
+    transport: Box<dyn Transport>,
     read_timeout: Duration,
     /// The tighter read budget `ping` uses (its pong is immediate) — never longer than the general
     /// `read_timeout`, and capped at [`DEFAULT_PING_READ_TIMEOUT`]. See [`Self::ping`].
     ping_read_timeout: Duration,
 }
 
-impl StructureClient {
-    /// A client dialing `addr` (e.g. `127.0.0.1:9124`) over real TCP with the default timeouts.
-    pub fn new(addr: impl Into<String>) -> Self {
-        Self::with_timeouts(addr, DEFAULT_CONNECT_TIMEOUT, DEFAULT_READ_TIMEOUT)
+impl Channel {
+    /// A channel over the door's transport, on the default per-verb read budget.
+    pub fn new(transport: impl Transport + 'static) -> Self {
+        Self::with_read_timeout(transport, DEFAULT_READ_TIMEOUT)
     }
 
-    /// A client with explicit connect/read timeouts.
-    pub fn with_timeouts(
-        addr: impl Into<String>,
-        connect_timeout: Duration,
-        read_timeout: Duration,
-    ) -> Self {
-        Self::with_transport(TcpTransport::new(addr, connect_timeout), read_timeout)
-    }
-
-    /// A client over an explicit transport — the injection point for tests. `read_timeout` is the
-    /// general per-verb budget; `ping`'s tighter budget is derived from it.
-    pub fn with_transport(
-        transport: impl StructureTransport + 'static,
-        read_timeout: Duration,
-    ) -> Self {
+    /// A channel with an explicit general read budget; `ping`'s tighter one is derived from it.
+    pub fn with_read_timeout(transport: impl Transport + 'static, read_timeout: Duration) -> Self {
         Self {
             transport: Box::new(transport),
             read_timeout,
@@ -199,14 +131,14 @@ impl StructureClient {
         }
     }
 
-    /// The address this client dials.
-    pub fn addr(&self) -> &str {
+    /// The endpoint this channel reaches.
+    pub fn endpoint(&self) -> &str {
         self.transport.endpoint()
     }
 
     /// Liveness: `Ok(())` iff the channel answered [`Response::Pong`]. The only probe on the
     /// channel — every other verb acts and maps its own failure. see rules: agent-mcp
-    pub fn ping(&self) -> Result<(), StructureError> {
+    pub fn ping(&self) -> Result<(), ChannelError> {
         match self.exchange_with(&Request::Ping, self.ping_read_timeout)? {
             Response::Pong => Ok(()),
             other => Err(unexpected("ping", "pong", &other)),
@@ -219,20 +151,20 @@ impl StructureClient {
         &self,
         source: DocSource,
         expect: Option<String>,
-    ) -> Result<SwapOutcome, StructureError> {
+    ) -> Result<SwapOutcome, ChannelError> {
         match self.exchange(&Request::Swap { source, expect })? {
             Response::SwapReport(report) => Ok(SwapOutcome::Installed(report)),
             Response::Conflict(conflict) => Ok(SwapOutcome::Conflict(conflict)),
-            Response::Error { message } => Err(StructureError::Channel(message)),
+            Response::Error { message } => Err(ChannelError::Channel(message)),
             other => Err(unexpected("swap", "swap_report/conflict", &other)),
         }
     }
 
     /// Read the canonical installed document and its content hash.
-    pub fn get_document(&self) -> Result<DocumentSnapshot, StructureError> {
+    pub fn get_document(&self) -> Result<DocumentSnapshot, ChannelError> {
         match self.exchange(&Request::GetDocument)? {
             Response::Document(snapshot) => Ok(snapshot),
-            Response::Error { message } => Err(StructureError::Channel(message)),
+            Response::Error { message } => Err(ChannelError::Channel(message)),
             other => Err(unexpected("get_document", "document", &other)),
         }
     }
@@ -241,28 +173,28 @@ impl StructureClient {
     ///
     /// `Ok` means "received and queued", NOT "applied": a message whose address routes nowhere is
     /// dropped at the engine's ingress. An empty or over-long batch is refused by the engine as a
-    /// [`Channel`](StructureError::Channel) error rather than acked.
+    /// [`Channel`](ChannelError::Channel) error rather than acked.
     ///
     /// see rules: agent-mcp
-    pub fn send(&self, messages: Vec<ControlMessage>) -> Result<(), StructureError> {
+    pub fn send(&self, messages: Vec<ControlMessage>) -> Result<(), ChannelError> {
         match self.exchange(&Request::Send { messages })? {
             Response::Sent => Ok(()),
-            Response::Error { message } => Err(StructureError::Channel(message)),
+            Response::Error { message } => Err(ChannelError::Channel(message)),
             other => Err(unexpected("send", "sent", &other)),
         }
     }
 
     /// Read the engine's running diagnostics counters.
-    pub fn get_diagnostics(&self) -> Result<DiagnosticsReport, StructureError> {
+    pub fn get_diagnostics(&self) -> Result<DiagnosticsReport, ChannelError> {
         match self.exchange(&Request::GetDiagnostics)? {
             Response::Diagnostics(report) => Ok(report),
-            Response::Error { message } => Err(StructureError::Channel(message)),
+            Response::Error { message } => Err(ChannelError::Channel(message)),
             other => Err(unexpected("get_diagnostics", "diagnostics", &other)),
         }
     }
 
     /// One request → one response on the general budget, which every verb but `ping` uses.
-    fn exchange(&self, request: &Request) -> Result<Response, StructureError> {
+    fn exchange(&self, request: &Request) -> Result<Response, ChannelError> {
         self.exchange_with(request, self.read_timeout)
     }
 
@@ -274,18 +206,18 @@ impl StructureClient {
         &self,
         request: &Request,
         read_timeout: Duration,
-    ) -> Result<Response, StructureError> {
+    ) -> Result<Response, ChannelError> {
         let line = self
             .transport
             .round_trip(&request.to_ndjson(), read_timeout)
-            .map_err(StructureError::unreachable)?;
-        Response::from_ndjson(&line).map_err(|e| StructureError::Protocol(e.to_string()))
+            .map_err(ChannelError::unreachable)?;
+        Response::from_ndjson(&line).map_err(|e| ChannelError::Protocol(e.to_string()))
     }
 }
 
 /// The wrong-response-variant protocol error, spelled once so every verb reports it the same way.
-fn unexpected(verb: &str, want: &str, got: &Response) -> StructureError {
-    StructureError::Protocol(format!("{verb} expected {want}, got {got:?}"))
+fn unexpected(verb: &str, want: &str, got: &Response) -> ChannelError {
+    ChannelError::Protocol(format!("{verb} expected {want}, got {got:?}"))
 }
 
 #[cfg(test)]
@@ -294,7 +226,7 @@ mod tests {
 
     #[test]
     fn unreachable_error_carries_the_start_reuben_play_guidance() {
-        let err = StructureError::unreachable("connection refused");
+        let err = ChannelError::unreachable("connection refused");
         assert!(err.is_unreachable());
         let shown = err.to_string();
         assert!(
@@ -309,7 +241,7 @@ mod tests {
 
     #[test]
     fn channel_and_protocol_errors_are_not_unreachable() {
-        assert!(!StructureError::Channel("unreadable request".to_string()).is_unreachable());
-        assert!(!StructureError::Protocol("bad json".to_string()).is_unreachable());
+        assert!(!ChannelError::Channel("unreadable request".to_string()).is_unreachable());
+        assert!(!ChannelError::Protocol("bad json".to_string()).is_unreachable());
     }
 }

@@ -8,7 +8,8 @@ pointer convention already present in 29 of 171 `.rs` files — established, and
 Nothing checked any of it. Nothing ever could, because prose about a design sitting in code has no
 build-time relationship to the design.
 
-The exemplar was nine lines atop `reuben-core/src/tools.rs` arguing that the tool schemas and bodies
+The exemplar was nine lines atop the contract roster (`reuben-api/src/tools.rs`, then still in
+`reuben-core`) arguing that the tool schemas and bodies
 stay per-door because they need "rmcp/schemars machinery reuben-core must never depend on" — a
 position that had been **false** since core gained an optional `schemars` feature and `EditResult`
 began deriving `JsonSchema` behind it. It stayed green, read authoritative, and was cited as

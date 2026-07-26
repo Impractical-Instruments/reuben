@@ -1,9 +1,10 @@
 //! reuben-mcp — the per-conversation MCP stdio sidecar.
 //!
-//! A [`ServerHandler`] with a tool router over the [`reuben_core::tools::CONTRACTS`] roster, in
+//! A [`ServerHandler`] with a tool router over the [`reuben_api::tools::CONTRACTS`] roster, in
 //! three families: the pure introspection tools and the document verbs answer in-process through
 //! [`reuben_api::authoring`], over a [`reuben_api::FsResolver`] filling its resource seam, while
-//! the engine tools reach a user-owned `reuben play` through [`EngineLink`].
+//! the engine tools reach a user-owned `reuben play` through [`reuben_api::engine`], over the
+//! loopback transport in [`EngineLink`].
 //!
 //! What is left here is the MCP-shaped part and only that: the roster, the transport, and the
 //! two-way map between a window answer and a `CallToolResult`. The argument shapes, the result
@@ -14,6 +15,10 @@
 //! does take a string **literal** there and cannot name a const, so the attribute is left off and
 //! [`stamp_window_prose`] writes the window's sentence onto the built router instead — the same
 //! prose the CLI and the browser read, rather than a copy per door.
+//!
+//! The one thing left that is genuinely this door's is the socket: `reuben-mcp` reaches a
+//! *separate process*, so it supplies a loopback TCP transport where an in-process host supplies
+//! none at all.
 //!
 //! see rules: agent-mcp
 
@@ -30,30 +35,25 @@ use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{tool, tool_handler, tool_router, ErrorData as McpError, ServerHandler, ServiceExt};
 
 use reuben_api::authoring::{self, Answer, EditResult, Refusal};
+use reuben_api::engine;
 use reuben_api::FsResolver;
-use reuben_core::coordinator::{
-    ControlArg, ControlMessage, DiagnosticsReport, DocSource, MAX_SEND_BATCH,
-};
-use reuben_core::projection::Projector;
-use reuben_core::tools::ContractKind;
-use reuben_core::{Registry, SwapReport};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 
-mod client;
-mod engine;
-pub use client::{StructureClient, StructureError, StructureTransport, SwapOutcome, TcpTransport};
-pub use engine::EngineLink;
-pub use reuben_core::coordinator::{Conflict, DocumentSnapshot};
+mod engine_link;
+pub use engine_link::{EngineLink, TcpTransport, DEFAULT_CONNECT_TIMEOUT};
+
+/// The window's engine-half surface, re-exported for a test or a caller driving this door: the
+/// channel a fake transport plugs into, and the payloads it carries.
+pub use reuben_api::engine::{
+    Channel, ChannelError, Conflict, DocumentSnapshot, SwapOutcome, Transport,
+    ENGINE_UNREACHABLE_GUIDANCE,
+};
 
 /// The tool surface this door advertises, in roster order — the exact spellings on `tools/list`,
 /// so the wire surface can only change by changing the roster. see rules: agent-mcp
 pub fn tool_names() -> Vec<&'static str> {
-    reuben_core::tools::names()
+    reuben_api::tools::names()
 }
-
-/// The actionable guidance an engine tool returns when the engine is unreachable.
-pub const ENGINE_UNREACHABLE_GUIDANCE: &str =
-    "The reuben engine is not reachable. Start it in another terminal with `reuben play`, then retry.";
 
 /// The `reuben://guide/authoring` resource URI: the authoring guide, `docs/agents/authoring.md`.
 /// The authority for what `resources/list` advertises.
@@ -261,162 +261,6 @@ fn served_resource_uris() -> String {
     }
 }
 
-/// The fail-fast result for an unreachable engine: `isError: true`
-/// carrying the "start `reuben play`" guidance. `isError` tells the model the call could not do
-/// its job and to act on the guidance rather than treat the payload as a deliverable.
-pub fn engine_unreachable() -> CallToolResult {
-    CallToolResult::error(vec![ContentBlock::text(ENGINE_UNREACHABLE_GUIDANCE)])
-}
-
-/// One control message in a `send` batch: an address and its primitive args.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct ControlSendMessage {
-    /// The address, e.g. `/voice1/cutoff`.
-    pub address: String,
-    /// The arguments — numbers or strings.
-    #[serde(default)]
-    pub args: Vec<serde_json::Value>,
-}
-
-/// Input for `send`: a batch of control messages (the natural authoring gesture is multi-control),
-/// bounded at both ends.
-///
-/// The `length` bounds put `minItems`/`maxItems` in the advertised input schema. The upper bound is
-/// [`MAX_SEND_BATCH`] and is an **RT** limit, not a request-size one: the engine applies a batch to
-/// a single render callback, so an unbounded one could blow a deadline. Advertising it here is a
-/// courtesy that lets a model split its own gesture; the engine enforces it regardless, for a client
-/// that skips schema validation — as the tool body does for both bounds.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SendParams {
-    /// The control messages to apply, in order.
-    // The literal must equal MAX_SEND_BATCH; schemars takes a literal, not a const. Pinned by
-    // `send_schema_advertises_the_shared_batch_limit`.
-    #[schemars(length(min = 1, max = 256))]
-    pub messages: Vec<ControlSendMessage>,
-}
-
-/// Input for `swap`: a `path` (path-only — you can only install what exists on
-/// disk) plus an optional `expect` content-hash guard.
-#[derive(Debug, Deserialize, schemars::JsonSchema)]
-pub struct SwapParams {
-    /// Path to the instrument document to install.
-    pub path: String,
-    /// The content hash the client believes is installed; a mismatch rejects the swap.
-    #[serde(default)]
-    pub expect: Option<String>,
-}
-
-/// Output for `send`: how many messages were queued.
-///
-/// The engine acks the batch as a unit, so this is the batch's own size — there is no partial
-/// outcome to report, which is why the wire's ack carries no count of its own. "Queued for the next
-/// block", not "applied": an address matching no node/port is dropped at the engine's ingress,
-/// exactly as an external OSC datagram naming a stale address is.
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub struct SendOutput {
-    /// The number of control messages the engine queued.
-    pub sent: usize,
-}
-
-/// The endpoint `engine_status` reports. One field, because the sidecar now talks to the engine
-/// over exactly one channel; the engine's OSC-in port is its foreign edge, which this sidecar
-/// neither dials nor owns (`reuben play` prints it at startup for whoever points a controller at
-/// it).
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub struct StatusEndpoints {
-    /// The structure channel address — every engine tool speaks it
-    /// (`ping`/`send`/`swap`/`get_document`/`get_diagnostics`).
-    pub structure: String,
-}
-
-/// The sidecar identity `engine_status` reports: its own version and the instrument
-/// `format_version` it supports (kept here, out of per-call reports).
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub struct SidecarInfo {
-    /// The reuben-mcp crate version.
-    pub version: String,
-    /// The instrument document `format_version` this sidecar loads.
-    pub format_version: u32,
-}
-
-/// Output for `engine_status`. **Never `isError`** for a dead engine — `reachable`
-/// and the `guidance` (present only when unreachable) ARE the deliverable.
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub struct EngineStatusOutput {
-    /// Whether a live `reuben play` answered `ping` on the structure channel.
-    pub reachable: bool,
-    /// The endpoint this sidecar talks to.
-    pub endpoints: StatusEndpoints,
-    /// The sidecar's own identity.
-    pub sidecar: SidecarInfo,
-    /// The "start `reuben play`" guidance — present only when the engine is unreachable.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub guidance: Option<String>,
-}
-
-/// Output for `swap`: the shared [`SwapReport`] shape (ok, errors, warnings,
-/// content_hash, and on success the diff summary) plus, on an `expect`-guard miss, `conflict`.
-/// One `outputSchema` spans the install, validation-failure, and guard-miss cases; both the
-/// flattened [`SwapReport`] and the [`Conflict`] are the same serde types the structure channel
-/// serializes, so the tool shape and the wire shape cannot drift.
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub struct SwapToolOutput {
-    /// The install report: `ok`, `errors`, `warnings`, the installed (or still-playing) content
-    /// hash, and — on a successful install only — the diff summary.
-    #[serde(flatten)]
-    pub report: SwapReport,
-    /// Present only on an `expect`-guard miss: nothing was installed.
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub conflict: Option<Conflict>,
-}
-
-impl SwapToolOutput {
-    /// The engine processed the swap (success or `ok: false` load failure): the report is the whole
-    /// story, no conflict.
-    fn installed(report: SwapReport) -> Self {
-        Self {
-            report,
-            conflict: None,
-        }
-    }
-
-    /// The `expect` guard missed: nothing installed. The report is
-    /// [`SwapReport::rejected`] — which owns the "`content_hash` names what keeps playing"
-    /// contract — and the channel's own [`Conflict`] rides along verbatim for the model to
-    /// reconcile against.
-    fn conflict(conflict: Conflict) -> Self {
-        Self {
-            report: SwapReport::rejected(conflict.actual.clone()),
-            conflict: Some(conflict),
-        }
-    }
-}
-
-/// Output for `get_current_instrument`: what the engine is playing, without the document.
-///
-/// The tool's question — "what is the engine playing?" — used to be answered with the document
-/// itself, the last and largest doc-in-context arm (#604). It cannot simply answer `{ source, hash }`
-/// either: `swap` installs *from* a source, and the agent may have edited that source since, so
-/// re-reading it would answer a different question. So the projection here is cut from **what is
-/// actually installed** — the document the engine handed back over the structure channel, which
-/// reaches this door and stops here.
-///
-/// The drift signal then comes free: compare `content_hash` against the hash any document verb
-/// returns for `source`. Equal means the file and the sound agree; different means the source has
-/// moved on and a `swap_instrument` would change what you hear.
-#[derive(Debug, Serialize, schemars::JsonSchema)]
-pub struct CurrentInstrumentOutput {
-    /// Where the playing document was installed from, when the engine knows it. Absent after an
-    /// install by value and for `reuben play`'s built-in default rig.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub source: Option<String>,
-    /// The installed document's content hash — the token a later `swap_instrument`'s `expect` guard
-    /// compares, and the drift signal against `source`'s current hash.
-    pub content_hash: String,
-    /// The node index of the **installed** graph, rendered in the projection's line grammar.
-    pub projection: String,
-}
-
 /// The reuben MCP server: the declared-roster tool router plus the engine link.
 ///
 /// Pure tools (`describe_operators`, `describe_instrument`, `validate`) are always available;
@@ -431,7 +275,7 @@ pub struct ReubenServer {
 #[tool_router]
 impl ReubenServer {
     /// A server backed by an [`EngineLink`] on the shared default endpoint
-    /// (`reuben_core::coordinator::DEFAULT_STRUCTURE_ADDR`): the engine tools reach a live
+    /// (the window's `DEFAULT_STRUCTURE_ADDR`): the engine tools reach a live
     /// `reuben play` over the real structure channel. The binary's composition root (`main`)
     /// injects the link via [`with_engine`](Self::with_engine); this is the sensible default.
     pub fn new() -> Self {
@@ -493,227 +337,69 @@ impl ReubenServer {
 
     // --- Engine tools: reach a user-owned `reuben play` through the channel seam ----------------
 
-    /// Audition a batch of control values over the structure channel. Act-then-map: the
-    /// batch is validated locally first (a bad argument is a can't-do-the-job error, caught even
-    /// when the engine is down), then one exchange delivers the whole batch; an unreachable engine
-    /// ⇒ `isError`.
+    // Each is one delegation, like the document verbs above: the batch bounds, the argument
+    // conversion, the unreachable/other split, the guard-miss shape and the glosses all live behind
+    // `engine`. What this door still owns is the socket under the channel, the advertised schema,
+    // and the isError decision. see rules: agent-mcp
+
     #[tool(
         name = "send_live_controls",
-        description = "Send a batch of control messages to audition a change on the running engine. \
-                       Ephemeral by design: these values live in render state only and are \
-                       CLOBBERED at the next swap — fold any you want to keep into the instrument document \
-                       and swap. The ack means the engine received the batch and queued it for the next \
-                       rendered block — not that it took effect: an address matching no node/port is \
-                       dropped silently, exactly as it would be arriving from an external controller. \
-                       Fails fast if no engine is reachable.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<SendOutput>()
+        output_schema = rmcp::handler::server::tool::schema_for_output::<engine::SendOutput>()
             .expect("SendOutput is an object schema")
     )]
     async fn send_live_controls(
         &self,
-        Parameters(params): Parameters<SendParams>,
+        Parameters(p): Parameters<engine::SendLiveControls>,
     ) -> Result<CallToolResult, McpError> {
-        // Belt-and-braces against a client that skips schema validation. The engine enforces both
-        // bounds too — this only makes the message a tool-shaped one the model can act on.
-        if params.messages.is_empty() {
-            return Ok(CallToolResult::error(vec![ContentBlock::text(
-                "`send` requires at least one message.".to_string(),
-            )]));
-        }
-        if params.messages.len() > MAX_SEND_BATCH {
-            return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                "`send` takes at most {MAX_SEND_BATCH} messages ({} given); split the gesture \
-                 across several sends.",
-                params.messages.len()
-            ))]));
-        }
-        // Convert the whole batch first: a bad argument is a can't-do-the-job error, caught before
-        // anything reaches the engine and even when the engine is down.
-        let mut messages = Vec::with_capacity(params.messages.len());
-        for (i, message) in params.messages.iter().enumerate() {
-            match control_args_from_json(&message.args) {
-                Ok(args) => messages.push(ControlMessage {
-                    address: message.address.clone(),
-                    args,
-                }),
-                Err(why) => {
-                    return Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                        "message {i} (`{}`) has an unsupported argument: {why}",
-                        message.address
-                    ))]))
-                }
-            }
-        }
-        // Act-then-map: one exchange carries the batch and reports a dead engine itself, so there
-        // is no separate probe and no window between checking and acting.
-        let sent = messages.len();
-        match self.engine.structure().send(messages) {
-            Ok(()) => structured_ok(
-                &SendOutput { sent },
-                format!("the engine queued {sent} control message(s)"),
-            ),
-            Err(e) if e.is_unreachable() => Ok(engine_unreachable()),
-            Err(e) => Ok(CallToolResult::error(vec![ContentBlock::text(format!(
-                "the engine is reachable but the control messages were not accepted: {e}"
-            ))])),
-        }
+        answered(engine::send_live_controls(&p, self.engine.structure()))
     }
 
-    /// Liveness probe exposed as a tool. **Never `isError` for a dead engine** —
-    /// answering "reachable?" is its job; `guidance` appears when the engine is down. Wraps the
-    /// structure-channel `ping` and reports the endpoints and sidecar identity.
+    /// The one engine tool that is **never** `isError` for a dead engine — answering "reachable?"
+    /// is its job, so the window hands back an answer and never a refusal.
     #[tool(
         name = "get_engine_status",
-        description = "Report whether the reuben engine is reachable, with the structure endpoint and the \
-                       sidecar version + supported instrument format_version. Never an error — a dead engine is \
-                       reported as reachable:false with guidance to start it.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<EngineStatusOutput>()
-            .expect("EngineStatusOutput is an object schema")
+        output_schema = rmcp::handler::server::tool::schema_for_output::<engine::EngineStatus>()
+            .expect("EngineStatus is an object schema")
     )]
     async fn get_engine_status(&self) -> Result<CallToolResult, McpError> {
-        let reachable = self.engine.structure().ping().is_ok();
-        let output = EngineStatusOutput {
-            reachable,
-            endpoints: StatusEndpoints {
-                structure: self.engine.structure_endpoint(),
-            },
-            sidecar: SidecarInfo {
-                version: env!("CARGO_PKG_VERSION").to_string(),
-                format_version: reuben_core::format::FORMAT_VERSION,
-            },
-            guidance: if reachable {
-                None
-            } else {
-                Some(ENGINE_UNREACHABLE_GUIDANCE.to_string())
-            },
-        };
-        let summary = if reachable {
-            format!("engine reachable on {}", output.endpoints.structure)
-        } else {
-            "engine not reachable — start `reuben play`".to_string()
-        };
-        // NEVER isError: the reachable/guidance payload IS the deliverable.
-        structured_ok(&output, summary)
+        // The door names itself: its own version is the one identity the window cannot know.
+        let answer = engine::get_engine_status(self.engine.structure(), env!("CARGO_PKG_VERSION"));
+        structured_ok(&answer.output, answer.summary)
     }
 
-    /// Install an instrument document from disk. Path-only (you can
-    /// only install what exists on disk). Act-then-map: an unreachable engine ⇒ `isError`; an
-    /// `ok: false` load report or an `expect` conflict is an ORDINARY result (the guard guarding,
-    /// not the tool failing).
     #[tool(
         name = "swap_instrument",
-        description = "Install an instrument document from disk as the playing engine (path-only). A gapless \
-                       mailbox swap: the new Engine is built and validated off-thread, then \
-                       installed under a ~20ms master-gain duck — no silent gap. A node at the same \
-                       address with the same operator type survives with its live state, so the diff summary \
-                       reports how many survived and which reset. Returns the validation report + content_hash \
-                       + (on success) that diff summary; ok:false installs nothing and the old sound keeps \
-                       playing. Pass `expect` (a content_hash) to guard against a stale swap — a mismatch \
-                       returns a conflict, no install.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<SwapToolOutput>()
-            .expect("SwapToolOutput is an object schema")
+        output_schema = rmcp::handler::server::tool::schema_for_output::<engine::SwapResult>()
+            .expect("SwapResult is an object schema")
     )]
     async fn swap_instrument(
         &self,
-        Parameters(params): Parameters<SwapParams>,
+        Parameters(p): Parameters<engine::SwapInstrument>,
     ) -> Result<CallToolResult, McpError> {
-        match self
-            .engine
-            .structure()
-            .swap(DocSource::Path(params.path), params.expect)
-        {
-            // An install report — success OR ok:false load failure — is an ORDINARY result: the
-            // channel worked, the report is the deliverable.
-            Ok(SwapOutcome::Installed(report)) => {
-                let summary = swap_summary(&report);
-                structured_ok(&SwapToolOutput::installed(report), summary)
-            }
-            // An `expect`-guard miss is the guard guarding, not the tool failing:
-            // nothing installed, ordinary result carrying the conflict to reconcile.
-            Ok(SwapOutcome::Conflict(conflict)) => {
-                let summary = format!(
-                    "swap rejected by the expect guard: the engine is playing {}, not the \
-                     expected {} — re-read with get_current_instrument and reconcile",
-                    conflict.actual, conflict.expected
-                );
-                structured_ok(&SwapToolOutput::conflict(conflict), summary)
-            }
-            Err(why) => Ok(map_structure_err("the swap could not be completed", why)),
-        }
+        answered(engine::swap_instrument(&p, self.engine.structure()))
     }
 
-    /// Report what the engine is playing, as a projection of the **installed** graph: the snapshot
-    /// the structure channel hands back reaches this door and stops here.
-    ///
-    /// Projected from engine memory, never by re-reading `source` — the two can differ, and which
-    /// one is playing is exactly the question. A projection failure degrades to a note in place of
-    /// the view rather than failing the call; the hash is the load-bearing half.
-    ///
-    /// see rules: agent-mcp
     #[tool(
         name = "get_current_instrument",
-        description = "Report what the engine is playing: the source it was installed from, the installed content \
-                       hash, and the node index of the live graph. Compare the hash against the one a document \
-                       verb returns for that source to see whether your edits have been swapped in yet. Fails \
-                       fast if no engine is reachable.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<CurrentInstrumentOutput>()
-            .expect("CurrentInstrumentOutput is an object schema")
+        output_schema =
+            rmcp::handler::server::tool::schema_for_output::<engine::CurrentInstrument>()
+                .expect("CurrentInstrument is an object schema")
     )]
     async fn get_current_instrument(&self) -> Result<CallToolResult, McpError> {
-        match self.engine.structure().get_document() {
-            Ok(snapshot) => {
-                let summary = match &snapshot.source {
-                    Some(source) => {
-                        format!("playing {source} (content_hash {})", snapshot.content_hash)
-                    }
-                    None => format!(
-                        "playing an instrument installed by value (content_hash {})",
-                        snapshot.content_hash
-                    ),
-                };
-                structured_ok(
-                    &CurrentInstrumentOutput {
-                        projection: project_installed(&snapshot),
-                        source: snapshot.source,
-                        content_hash: snapshot.content_hash,
-                    },
-                    summary,
-                )
-            }
-            Err(why) => Ok(map_structure_err(
-                "could not read the current instrument",
-                why,
-            )),
-        }
+        answered(engine::get_current_instrument(
+            self.engine.structure(),
+            installed_store,
+        ))
     }
 
-    /// Read the engine diagnostics counters. Act-then-map: an unreachable engine ⇒
-    /// `isError`. Forwards the structure-channel `get_diagnostics` and returns the four counters.
     #[tool(
         name = "get_engine_diagnostics",
-        description = "Return the engine's running diagnostics counters since start: output_xruns (events) plus \
-                       input_ring underruns/overruns/producer_drops (frames). Fails fast if no engine is reachable.",
-        output_schema = rmcp::handler::server::tool::schema_for_output::<DiagnosticsReport>()
-            .expect("DiagnosticsReport is an object schema")
+        output_schema =
+            rmcp::handler::server::tool::schema_for_output::<engine::DiagnosticsReport>()
+                .expect("DiagnosticsReport is an object schema")
     )]
     async fn get_engine_diagnostics(&self) -> Result<CallToolResult, McpError> {
-        match self.engine.structure().get_diagnostics() {
-            Ok(report) => {
-                let summary = format!(
-                    "output_xruns={} input_ring_underruns={} input_ring_overruns={} \
-                     input_ring_producer_drops={}",
-                    report.output_xruns,
-                    report.input_ring_underruns,
-                    report.input_ring_overruns,
-                    report.input_ring_producer_drops
-                );
-                structured_ok(&report, summary)
-            }
-            Err(why) => Ok(map_structure_err(
-                "could not read the engine diagnostics",
-                why,
-            )),
-        }
+        answered(engine::get_engine_diagnostics(self.engine.structure()))
     }
 
     // --- Document tools: engine-free mutators over an instrument document -------------------------
@@ -955,55 +641,44 @@ impl ReubenServer {
     }
 }
 
-/// Write the window's sentence onto every authoring tool the router carries.
+/// Write the window's sentence onto every tool the router carries.
 ///
-/// The sentences belong to [`reuben_api::authoring::prose`] with the argument and result types
-/// they describe, but rmcp's `#[tool]` takes a string **literal** for `description` and so cannot
-/// name a const. Stamping the built router is the way to hold both: the attribute is left off
-/// entirely, and what the door advertises is decided in one place for every door. Without this the
-/// macro falls back to each method's rustdoc, which is written for a Rust reader — so
-/// `advertises_the_window_prose` asserts the stamp actually landed rather than trusting it.
+/// The sentences belong to the window with the argument and result types they describe, but rmcp's
+/// `#[tool]` takes a string **literal** for `description` and so cannot name a const. Stamping the
+/// built router is the way to hold both: the attribute is left off entirely, and what the door
+/// advertises is decided in one place for every door. Without this the macro falls back to each
+/// method's rustdoc, which is written for a Rust reader — so `advertises_the_window_prose` asserts
+/// the stamp actually landed rather than trusting it.
 ///
-/// The engine tools keep their own `description` until their half comes through the window.
 /// see rules: agent-mcp
 fn stamp_window_prose(router: &mut ToolRouter<ReubenServer>) {
-    for (name, sentence) in reuben_api::authoring::prose::DESCRIPTIONS {
+    // The direction that bites later: a route the table does not name keeps rmcp's rustdoc
+    // fallback and advertises Rust-reader prose to a model, with the roster test and the schema
+    // test both still green — each iterates a list the new verb is present in. Refuse to start
+    // instead. (The other direction — a roster entry with no sentence — is the window's own test.)
+    let unstamped: Vec<String> = router
+        .map
+        .keys()
+        .filter(|name| {
+            !reuben_api::tools::DESCRIPTIONS
+                .iter()
+                .any(|(described, _)| described == &name.as_ref())
+        })
+        .map(|name| name.to_string())
+        .collect();
+    assert!(
+        unstamped.is_empty(),
+        "these tools have no sentence in the window's table and would advertise their rustdoc: \
+         {unstamped:?}"
+    );
+
+    for (name, sentence) in reuben_api::tools::DESCRIPTIONS {
         let route = router
             .map
             .get_mut(*name)
             .unwrap_or_else(|| panic!("the window serves `{name}`, but no tool advertises it"));
         route.attr.description = Some((*sentence).into());
     }
-
-    // The other direction, and the one that bites later. The roster is the authority on which
-    // contracts exist; the prose table is a lookup over it, so a `Pure` or `Document` contract
-    // added without a sentence keeps rmcp's rustdoc fallback and advertises Rust-reader prose to a
-    // model — with the stamp loop above, the roster test and the schema test all still green,
-    // because each of them iterates a list the new verb is absent from. Refuse to start instead.
-    for contract in reuben_core::tools::CONTRACTS {
-        let served_by_the_window = matches!(
-            contract.kind,
-            ContractKind::Pure | ContractKind::Document // the engine half is phase 3's
-        );
-        let has_sentence = reuben_api::authoring::prose::DESCRIPTIONS
-            .iter()
-            .any(|(name, _)| *name == contract.name);
-        assert!(
-            !served_by_the_window || has_sentence,
-            "`{}` is an authoring contract with no sentence in the window's prose table",
-            contract.name
-        );
-    }
-}
-
-/// The one place a failed structure exchange becomes a tool result, so no two tools classify it
-/// differently: unreachable ⇒ the shared fail-fast guidance, anything else ⇒ `isError` under
-/// `context`, which names *which* call died. see rules: agent-mcp
-fn map_structure_err(context: &str, why: StructureError) -> CallToolResult {
-    if why.is_unreachable() {
-        return engine_unreachable();
-    }
-    CallToolResult::error(vec![ContentBlock::text(format!("{context}: {why}"))])
 }
 
 impl Default for ReubenServer {
@@ -1071,66 +746,6 @@ impl ServerHandler for ReubenServer {
     }
 }
 
-/// Convert a `send` message's JSON args into the wire's flat [`ControlArg`] atoms. The engine
-/// re-types each against the destination port at its boundary
-/// ([`reuben_core::boundary::osc_in_arg`]'s contract).
-///
-/// Hand-written rather than typing `SendParams::args` as `Vec<ControlArg>`, so a non-scalar argument
-/// is this tool's own `isError` naming the offending value, not an rmcp deserialization failure the
-/// model cannot act on.
-fn control_args_from_json(args: &[serde_json::Value]) -> Result<Vec<ControlArg>, String> {
-    args.iter()
-        .map(|value| match value {
-            serde_json::Value::String(s) => Ok(ControlArg::Str(s.clone())),
-            serde_json::Value::Number(n) => {
-                if let Some(i) = n.as_i64() {
-                    if let Ok(i) = i32::try_from(i) {
-                        return Ok(ControlArg::I32(i));
-                    }
-                }
-                // Guard the f32 narrowing, not just the JSON type: a magnitude past f32 range
-                // saturates to infinity, which serde_json writes as `null` — a value no
-                // `ControlArg` accepts, so the engine would reject the whole batch with an opaque
-                // "did not match any variant".
-                match n.as_f64() {
-                    Some(f) if (f as f32).is_finite() => Ok(ControlArg::F32(f as f32)),
-                    Some(_) => Err(format!(
-                        "number {value} is outside the range a control value can carry (f32)"
-                    )),
-                    None => Err(format!("number {value} is not a usable control value")),
-                }
-            }
-            other => Err(format!(
-                "{other} is not a control argument (expected a number or a string)"
-            )),
-        })
-        .collect()
-}
-
-/// One-line human gloss of a swap outcome: what installed (with diff counts) or why nothing did.
-fn swap_summary(report: &SwapReport) -> String {
-    if report.report.ok {
-        match &report.diff {
-            Some(diff) => format!(
-                "swapped (content_hash {}): {} survived, {} state-reset, {} added, {} removed",
-                report.content_hash,
-                diff.survived,
-                diff.state_reset.len(),
-                diff.added.len(),
-                diff.removed.len()
-            ),
-            None => format!("swapped (content_hash {})", report.content_hash),
-        }
-    } else {
-        format!(
-            "swap rejected: {} error(s), {} warning(s) — nothing installed; {} keeps playing",
-            report.report.errors.len(),
-            report.report.warnings.len(),
-            report.content_hash
-        )
-    }
-}
-
 /// Build an ordinary (non-error) result carrying BOTH a structured payload — what the model acts on
 /// — and a one-line text gloss for a human reading the transcript. A serialization failure is an
 /// internal fault, so it surfaces as a protocol error, not as an `isError` deliverable.
@@ -1175,25 +790,16 @@ fn store(source: &str) -> FsResolver {
     FsResolver::for_document(source).stat_only()
 }
 
-/// The node index of what the engine is actually playing, cut from the snapshot the structure
-/// channel handed back.
-///
-/// Resolver rooting is best-effort: nested references anchor at the installed `source`'s directory
-/// when the engine named one, else the sidecar cwd. A projection failure comes back as a note in
-/// place of the view rather than as an error.
-fn project_installed(snapshot: &DocumentSnapshot) -> String {
-    let json = match serde_json::to_string(&snapshot.document) {
-        Ok(json) => json,
-        Err(e) => return format!("(projection unavailable: {e})"),
-    };
-    let resolver = match snapshot.source.as_deref() {
+/// The FS door's store for projecting what the engine handed back, rooted at the installed
+/// `source`'s directory when the engine named one and at the sidecar cwd when it did not (an
+/// install by value has no directory to anchor against). Best-effort: an unresolvable nested
+/// reference degrades the projection rather than failing the call.
+fn installed_store(source: Option<&str>) -> FsResolver {
+    match source {
         Some(source) => FsResolver::for_instrument(Path::new(source)).stat_only(),
-        None => FsResolver::new(".").stat_only(),
-    };
-    match Projector::new(&json, &Registry::builtin(), &resolver) {
-        Ok(p) => p.index().render(),
-        Err(e) => format!("(projection unavailable: {e})"),
+        None => FsResolver::new("."),
     }
+    .stat_only()
 }
 
 /// Serve the MCP protocol over stdio until the client closes the connection. The
@@ -1211,12 +817,16 @@ pub async fn serve_stdio(engine: EngineLink) -> Result<(), Box<dyn std::error::E
 mod tests {
     use super::*;
 
-    use reuben_core::coordinator::{Request, Response, DEFAULT_STRUCTURE_ADDR};
+    use reuben_api::authoring::{Diag, Report};
+    use reuben_api::engine::{
+        ControlArg, ControlMessage, DiagnosticsReport, DiffSummary, Request, Response, SwapReport,
+        DEFAULT_STRUCTURE_ADDR,
+    };
     use std::io;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
 
-    /// A [`StructureTransport`] answering with canned NDJSON instead of dialing a socket.
+    /// A [`Transport`] answering with canned NDJSON instead of dialing a socket.
     ///
     /// It substitutes only the *bytes on the wire*: the request line is parsed here, so a malformed
     /// one fails the test, and an unconfigured verb returns the same [`io::Error`] a dead socket
@@ -1279,7 +889,7 @@ mod tests {
         }
     }
 
-    impl StructureTransport for FakeTransport {
+    impl Transport for FakeTransport {
         fn round_trip(&self, line: &str, _read_timeout: Duration) -> io::Result<String> {
             let request = Request::from_ndjson(line)
                 .expect("the tool body must put a well-formed request line on the wire");
@@ -1329,7 +939,7 @@ mod tests {
     /// A server whose one engine channel answers from `transport` — the single seam every engine
     /// tool runs through, so there is no second plane to stand in for and no socket to bind.
     fn server_with(transport: FakeTransport) -> ReubenServer {
-        ReubenServer::with_engine(EngineLink::from_client(StructureClient::with_transport(
+        ReubenServer::with_engine(EngineLink::from_channel(Channel::with_read_timeout(
             transport,
             Duration::from_secs(5),
         )))
@@ -1594,20 +1204,20 @@ mod tests {
     #[test]
     fn engine_tool_payloads_conform_to_their_advertised_output_schemas() {
         // Every engine tool that returns a structured payload, in every shape it can return one.
-        // The SwapToolOutput branches are checked separately because `flatten` +
+        // The engine::SwapResult branches are checked separately because `flatten` +
         // `skip_serializing_if` make them structurally different objects, and `engine_status` is
         // checked both ways because `guidance` is its skip_serializing_if field.
         assert_payload_conforms(
             "swap_instrument",
             "clean install",
-            &SwapToolOutput::installed(SwapReport {
-                report: reuben_core::Report {
+            &engine::SwapResult::installed(SwapReport {
+                report: Report {
                     ok: true,
                     errors: vec![],
                     warnings: vec![],
                 },
                 content_hash: "00c0ffee".to_string(),
-                diff: Some(reuben_core::DiffSummary {
+                diff: Some(DiffSummary {
                     survived: 1,
                     state_reset: vec!["/osc".to_string()],
                     added: vec![],
@@ -1618,10 +1228,10 @@ mod tests {
         assert_payload_conforms(
             "swap_instrument",
             "validation failure",
-            &SwapToolOutput::installed(SwapReport {
-                report: reuben_core::Report {
+            &engine::SwapResult::installed(SwapReport {
+                report: Report {
                     ok: false,
-                    errors: vec![reuben_core::Diag {
+                    errors: vec![Diag {
                         node: Some("/osc".to_string()),
                         port: None,
                         message: "unknown operator".to_string(),
@@ -1635,7 +1245,7 @@ mod tests {
         assert_payload_conforms(
             "swap_instrument",
             "expect-guard miss",
-            &SwapToolOutput::conflict(Conflict {
+            &engine::SwapResult::conflict(Conflict {
                 expected: "0badc0de".to_string(),
                 actual: "00c0ffee".to_string(),
             }),
@@ -1643,7 +1253,7 @@ mod tests {
         assert_payload_conforms(
             "get_current_instrument",
             "installed document",
-            &CurrentInstrumentOutput {
+            &engine::CurrentInstrument {
                 source: Some("voices/t.json".to_string()),
                 content_hash: "00c0ffee".to_string(),
                 projection: "instrument t · format 3 · 0 nodes".to_string(),
@@ -1654,7 +1264,11 @@ mod tests {
             "counters",
             &DiagnosticsReport::default(),
         );
-        assert_payload_conforms("send_live_controls", "queued", &SendOutput { sent: 2 });
+        assert_payload_conforms(
+            "send_live_controls",
+            "queued",
+            &engine::SendOutput { sent: 2 },
+        );
         for (case, guidance) in [
             ("unreachable", Some(ENGINE_UNREACHABLE_GUIDANCE.to_string())),
             ("reachable", None),
@@ -1662,14 +1276,14 @@ mod tests {
             assert_payload_conforms(
                 "get_engine_status",
                 case,
-                &EngineStatusOutput {
+                &engine::EngineStatus {
                     reachable: guidance.is_none(),
-                    endpoints: StatusEndpoints {
+                    endpoints: engine::StatusEndpoints {
                         structure: DEFAULT_STRUCTURE_ADDR.to_string(),
                     },
-                    sidecar: SidecarInfo {
+                    sidecar: engine::SidecarInfo {
                         version: env!("CARGO_PKG_VERSION").to_string(),
-                        format_version: reuben_core::format::FORMAT_VERSION,
+                        format_version: authoring::FORMAT_VERSION,
                     },
                     guidance,
                 },
@@ -1790,20 +1404,20 @@ mod tests {
         // FLATTENS the contract SwapReport, so the tool's structuredContent and the structure
         // channel's response are the same serde type and cannot drift.
         let report = SwapReport {
-            report: reuben_core::Report {
+            report: Report {
                 ok: true,
                 errors: vec![],
                 warnings: vec![],
             },
             content_hash: "00c0ffee".to_string(),
-            diff: Some(reuben_core::DiffSummary {
+            diff: Some(DiffSummary {
                 survived: 0,
                 state_reset: vec!["/osc".to_string()],
                 added: vec!["/delay".to_string()],
                 removed: vec![],
             }),
         };
-        let v = serde_json::to_value(SwapToolOutput::installed(report)).expect("serialize");
+        let v = serde_json::to_value(engine::SwapResult::installed(report)).expect("serialize");
         assert_eq!(
             v,
             serde_json::json!({
@@ -1858,7 +1472,7 @@ mod tests {
         );
         assert_eq!(
             s["sidecar"]["format_version"],
-            serde_json::json!(reuben_core::format::FORMAT_VERSION),
+            serde_json::json!(authoring::FORMAT_VERSION),
             "the sidecar reports the supported instrument format_version: {s}"
         );
     }
@@ -1899,7 +1513,7 @@ mod tests {
         // (b) The body rejects an empty batch as isError, for a client that skips schema validation.
         let result = block_on(
             server_with(FakeTransport::reachable())
-                .send_live_controls(Parameters(SendParams { messages: vec![] })),
+                .send_live_controls(Parameters(engine::SendLiveControls { messages: vec![] })),
         )
         .expect("send returns a result");
         assert_eq!(
@@ -1935,10 +1549,12 @@ mod tests {
             expected: "0badc0de".to_string(),
             actual: "00c0ffee".to_string(),
         }));
-        let result = block_on(server_with(fake).swap_instrument(Parameters(SwapParams {
-            path: "instruments/pad.json".to_string(),
-            expect: Some("0badc0de".to_string()),
-        })))
+        let result = block_on(server_with(fake).swap_instrument(Parameters(
+            engine::SwapInstrument {
+                path: "instruments/pad.json".to_string(),
+                expect: Some("0badc0de".to_string()),
+            },
+        )))
         .expect("swap returns a result");
         assert_ne!(
             result.is_error,
@@ -1977,13 +1593,13 @@ mod tests {
         // (nothing survived), which is what the web lane always reports and what a native swap
         // reports when no node survives.
         let report = SwapReport {
-            report: reuben_core::Report {
+            report: Report {
                 ok: true,
                 errors: vec![],
                 warnings: vec![],
             },
             content_hash: "00c0ffee".to_string(),
-            diff: Some(reuben_core::DiffSummary {
+            diff: Some(DiffSummary {
                 survived: 0,
                 state_reset: vec!["/osc".to_string()],
                 added: vec![],
@@ -1991,10 +1607,12 @@ mod tests {
             }),
         };
         let fake = FakeTransport::reachable().with_swap(Response::SwapReport(report));
-        let result = block_on(server_with(fake).swap_instrument(Parameters(SwapParams {
-            path: "instruments/pad.json".to_string(),
-            expect: None,
-        })))
+        let result = block_on(server_with(fake).swap_instrument(Parameters(
+            engine::SwapInstrument {
+                path: "instruments/pad.json".to_string(),
+                expect: None,
+            },
+        )))
         .expect("swap returns a result");
         assert_ne!(
             result.is_error,
@@ -2017,7 +1635,7 @@ mod tests {
     fn swap_instrument_unreachable_is_iserror() {
         // Act-then-map on the mutating verb: a down engine is the fail-fast isError.
         let result = block_on(server_with(FakeTransport::unreachable()).swap_instrument(
-            Parameters(SwapParams {
+            Parameters(engine::SwapInstrument {
                 path: "instruments/pad.json".to_string(),
                 expect: None,
             }),
@@ -2033,17 +1651,17 @@ mod tests {
         // what the fake parsed back OFF THE WIRE, so a serialization regression is caught rather
         // than a counter being trusted. The JSON args re-type on the way: `1200.0` is a float atom,
         // `69`/`1` are integers, `"up"` a symbol.
-        let params = SendParams {
+        let params = engine::SendLiveControls {
             messages: vec![
-                ControlSendMessage {
+                engine::ControlSendMessage {
                     address: "/voice1/cutoff".to_string(),
                     args: vec![serde_json::json!(1200.0)],
                 },
-                ControlSendMessage {
+                engine::ControlSendMessage {
                     address: "/voice1/notes".to_string(),
                     args: vec![serde_json::json!(69), serde_json::json!(1)],
                 },
-                ControlSendMessage {
+                engine::ControlSendMessage {
                     address: "/lfo/shape".to_string(),
                     args: vec![serde_json::json!("up")],
                 },
@@ -2092,13 +1710,13 @@ mod tests {
         // `ControlArg` accepts, so an unguarded conversion would put an unparseable line on the wire
         // and take the WHOLE batch down with an opaque "did not match any variant". The guard turns
         // that into a named error about the one bad argument, and nothing is sent.
-        let params = SendParams {
+        let params = engine::SendLiveControls {
             messages: vec![
-                ControlSendMessage {
+                engine::ControlSendMessage {
                     address: "/voice1/cutoff".to_string(),
                     args: vec![serde_json::json!(1e39)],
                 },
-                ControlSendMessage {
+                engine::ControlSendMessage {
                     address: "/voice1/gain".to_string(),
                     args: vec![serde_json::json!(0.5)],
                 },
@@ -2123,9 +1741,9 @@ mod tests {
     fn send_live_controls_rejects_a_batch_over_the_shared_limit() {
         // The engine applies a batch inside one render callback, so the cap is an RT bound. The tool
         // stops an over-long batch before it reaches the wire, naming the limit so a model can split.
-        let params = SendParams {
-            messages: (0..MAX_SEND_BATCH + 1)
-                .map(|i| ControlSendMessage {
+        let params = engine::SendLiveControls {
+            messages: (0..engine::MAX_SEND_BATCH + 1)
+                .map(|i| engine::ControlSendMessage {
                     address: format!("/voice1/p{i}"),
                     args: vec![serde_json::json!(0.5)],
                 })
@@ -2136,7 +1754,7 @@ mod tests {
             .expect("result");
         assert_eq!(result.is_error, Some(true), "{result:?}");
         assert!(
-            first_text(&result).contains(&MAX_SEND_BATCH.to_string()),
+            first_text(&result).contains(&engine::MAX_SEND_BATCH.to_string()),
             "the error names the limit: {}",
             first_text(&result)
         );
@@ -2158,7 +1776,7 @@ mod tests {
         let messages = &schema["properties"]["messages"];
         assert_eq!(
             messages["maxItems"],
-            serde_json::json!(MAX_SEND_BATCH),
+            serde_json::json!(engine::MAX_SEND_BATCH),
             "advertised maxItems must equal the engine-enforced limit: {schema}"
         );
         assert_eq!(messages["minItems"], serde_json::json!(1), "{schema}");
@@ -2168,8 +1786,8 @@ mod tests {
     fn send_live_controls_unreachable_is_iserror() {
         // Act-then-map, no probe: the batch converts fine, and the exchange ITSELF reports the down
         // engine — there is no separate ping to fail first.
-        let params = SendParams {
-            messages: vec![ControlSendMessage {
+        let params = engine::SendLiveControls {
+            messages: vec![engine::ControlSendMessage {
                 address: "/voice1/cutoff".to_string(),
                 args: vec![serde_json::json!(1.0)],
             }],
@@ -2187,8 +1805,8 @@ mod tests {
         // Args are number | string; a nested array is a can't-do-the-job error, caught before
         // anything reaches the engine (and without needing one). Kept as the tool's own crafted
         // error rather than an rmcp deserialization failure, so the model is told what was wrong.
-        let params = SendParams {
-            messages: vec![ControlSendMessage {
+        let params = engine::SendLiveControls {
+            messages: vec![engine::ControlSendMessage {
                 address: "/voice1/cutoff".to_string(),
                 args: vec![serde_json::json!([1, 2, 3])],
             }],
@@ -2353,7 +1971,7 @@ mod tests {
     #[test]
     fn the_declared_roster_is_registered() {
         // The router advertises exactly the declared roster (derived from
-        // reuben_core::tools::CONTRACTS via tool_names) — the same surface the stdio integration
+        // the window's roster via tool_names) — the same surface the stdio integration
         // test asserts over the wire, checked here without spawning a process.
         let server = ReubenServer::new();
         let mut advertised: Vec<String> = server

@@ -8,11 +8,12 @@ diverging is that the serde types the contracts are made of — the report/diag 
 summary, the swap report, the content hash — and the introspection behind them live **OS-free in
 `reuben-core`**, not in the native crate or the MCP crate. So the wasm lane reuses the exact types
 the native lane serializes, and every door **generates its schema from that one source** rather than
-hand-authoring a parallel copy that is free to drift. In the shipping code the roster itself is
-single-sourced: `reuben_core::tools::CONTRACTS` declares the name-set and channel kind once, and each
-door derives its advertised names from it — the descriptions and schemas stay per-door (they are
-host-flavored and, for MCP, carry rmcp/schemars machinery core must never depend on), but the
-identity is one authority.
+hand-authoring a parallel copy that is free to drift. In the shipping code the roster itself was
+single-sourced in core: `tools::CONTRACTS` declared the name-set and channel kind once, and each door
+derived its advertised names from it — the descriptions and schemas stayed per-door (held to be
+host-flavored and, for MCP, to carry rmcp/schemars machinery core must never depend on), but the
+identity was one authority. That last carve-out is what ADR-0068 overturned: the roster, the
+sentences and the schemas are all one authority now, and it is `reuben-api` rather than core.
 
 This is why **web parity ports the contract, not the protocol.** No MCP reaches the browser: a tab
 can only dial out, so the sidecar's dial-in shape cannot be copied, and every candidate desktop→tab
