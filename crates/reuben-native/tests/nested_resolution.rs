@@ -5,11 +5,14 @@
 //!   directory, transitively — a library patch can bundle private sub-patches next to itself.
 //! - **Library-root fallback**: a reference that doesn't exist next to its referencing
 //!   document comes from the configured instrument root instead (sibling-first).
+//!
+//! Both are read the way a host reads them: install the document through the window and render it.
+//! A leaf that spliced is a leaf that makes sound; one that dissolved is silence with a warning.
 
 use std::path::Path;
 
+use reuben_api::render::{install_initial, AudioConfig, LoadWarning, RenderSide, RenderSlot};
 use reuben_api::FsResolver;
-use reuben_core::{load_instrument, Registry};
 
 const LEAF: &str = r#"{
     "instrument": "leaf",
@@ -35,6 +38,20 @@ fn write(path: &Path, text: &str) {
     std::fs::write(path, text).unwrap();
 }
 
+fn install(doc: &str, store: FsResolver) -> (RenderSide, Vec<LoadWarning>) {
+    let (_coordinator, side, warnings) =
+        install_initial(doc, store, AudioConfig::new(48_000.0, 256)).expect("install");
+    (side, warnings)
+}
+
+/// Render a block and report the peak: a spliced oscillator hums, a dissolved nest is silent.
+fn peak(side: RenderSide) -> f32 {
+    let mut slot = RenderSlot::new(side);
+    let mut buf = vec![0.0f32; 256 * slot.channels().max(1)];
+    slot.fill(&mut buf);
+    buf.iter().fold(0.0f32, |m, &s| m.max(s.abs()))
+}
+
 #[test]
 fn nested_patch_references_resolve_relative_to_the_nested_file() {
     let dir = std::env::temp_dir().join("reuben_nested_res/proj");
@@ -51,12 +68,11 @@ fn nested_patch_references_resolve_relative_to_the_nested_file() {
         "outputs": [ { "node": "/m", "port": "audio" } ]
     }"#;
 
-    let resolver = FsResolver::new(&dir);
-    let loaded = load_instrument(TOP, &Registry::builtin(), &resolver).expect("load");
-    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
+    let (side, warnings) = install(TOP, FsResolver::new(&dir));
+    assert!(warnings.is_empty(), "{warnings:?}");
     assert!(
-        loaded.graph.find("/m/inner/osc").is_some(),
-        "leaf spliced through two nesting levels"
+        peak(side) > 0.0,
+        "the leaf spliced through two nesting levels and is sounding"
     );
 
     let _ = std::fs::remove_dir_all(std::env::temp_dir().join("reuben_nested_res"));
@@ -77,16 +93,14 @@ fn missing_sibling_reference_comes_from_the_instrument_root() {
     }"#;
 
     // Without the root: unresolved — the nest dissolves dark with a warning.
-    let bare = FsResolver::new(&base);
-    let loaded = load_instrument(TOP, &Registry::builtin(), &bare).expect("load");
-    assert!(!loaded.warnings.is_empty(), "no root: must warn unresolved");
-    assert!(loaded.graph.find("/t/osc").is_none());
+    let (side, warnings) = install(TOP, FsResolver::new(&base));
+    assert!(!warnings.is_empty(), "no root: must warn unresolved");
+    assert_eq!(peak(side), 0.0, "a dissolved nest sounds nothing");
 
     // With the root: the library copy resolves and splices.
-    let rooted = FsResolver::new(&base).with_root(&root);
-    let loaded = load_instrument(TOP, &Registry::builtin(), &rooted).expect("load");
-    assert!(loaded.warnings.is_empty(), "{:?}", loaded.warnings);
-    assert!(loaded.graph.find("/t/osc").is_some());
+    let (side, warnings) = install(TOP, FsResolver::new(&base).with_root(&root));
+    assert!(warnings.is_empty(), "{warnings:?}");
+    assert!(peak(side) > 0.0, "the library copy spliced and is sounding");
 
     let _ = std::fs::remove_dir_all(std::env::temp_dir().join("reuben_root_fallback"));
 }

@@ -235,7 +235,7 @@ fn project_installed(snapshot: &DocumentSnapshot, store: &dyn Resources) -> Stri
     match Projector::new(
         &json,
         &Registry::builtin(),
-        &crate::authoring::resources::Adapter(store),
+        &crate::resources::Adapter(store),
     ) {
         Ok(p) => p.index().render(),
         Err(e) => format!("(projection unavailable: {e})"),

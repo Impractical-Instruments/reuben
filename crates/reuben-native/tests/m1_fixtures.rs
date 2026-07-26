@@ -11,9 +11,8 @@
 
 use std::path::{Path, PathBuf};
 
+use reuben_api::authoring::{validate_instrument, ValidateInstrument};
 use reuben_api::FsResolver;
-use reuben_core::introspect::validate;
-use reuben_core::Registry;
 
 /// Absolute path into this crate's `tests/fixtures/m1/` tree.
 fn fixture(name: &str) -> PathBuf {
@@ -22,14 +21,19 @@ fn fixture(name: &str) -> PathBuf {
         .join(name)
 }
 
-/// Load + plan a fixture instrument through the real loader authority (the same `validate` the
-/// structure channel's swap verb runs), asserting it is valid with no errors.
+/// Load + plan a fixture instrument through the window's own validate verb — the same one the
+/// structure channel's swap runs and the CLI's `validate` serves — asserting it is valid with no
+/// errors.
 fn assert_valid(name: &str) {
-    let path = fixture(name);
-    let json = std::fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("read fixture {}: {e}", path.display()));
-    let resolver = FsResolver::for_instrument(&path);
-    let report = validate(&json, &Registry::builtin(), &resolver);
+    let source = fixture(name).display().to_string();
+    let report = validate_instrument(
+        &ValidateInstrument {
+            source: source.clone(),
+        },
+        &FsResolver::for_document(&source),
+    )
+    .unwrap_or_else(|refusal| panic!("read fixture {source}: {refusal}"))
+    .output;
     assert!(
         report.ok,
         "M1 fixture {name} must load + plan cleanly, got errors: {:?}",

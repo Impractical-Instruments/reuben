@@ -1,18 +1,18 @@
 //! OSC codec — decode external OSC/UDP datagrams into the **flat primitive form**, and encode
 //! outbound Messages back out.
 //!
-//! An internal [`Message`](reuben_core::message::Message) carries exactly **one** [`Arg`], while an
+//! An internal [`Message`](reuben_api::render::Message) carries exactly **one** [`Arg`], while an
 //! OSC message is a flat list of args. [`decode`] yields each datagram's address plus a flat
 //! `Vec<Arg>` of OSC **primitives** ([`Arg::F32`]/[`Arg::I32`]/[`Arg::Str`]); converting that list to
-//! the destination port's single typed `Arg` happens downstream, in
-//! [`reuben_core::boundary::osc_in_arg`]. [`encode`] is the inverse: it packs the already-flattened
-//! args produced by [`reuben_core::boundary::osc_out_args`] into one datagram. see rules:
-//! signal-time-dsp
+//! the destination port's single typed `Arg` happens downstream, at the render slot's
+//! [`queue_osc`](reuben_api::render::RenderSlot::queue_osc). [`encode`] is the inverse: it packs the
+//! already-flattened args produced by [`reuben_api::render::osc_out_args`] into one datagram.
+//! see rules: signal-time-dsp
 //!
 //! Incoming OSC is stamped `frame = 0` ("now") and bundle timetags are ignored — block-quantized
 //! by design. see rules: execution-runtime
 
-use reuben_core::message::Arg;
+use reuben_api::render::Arg;
 use rosc::{OscMessage, OscPacket, OscType};
 
 /// The UDP port `reuben play` binds for OSC-in — the engine's **foreign edge**, where external
@@ -20,7 +20,7 @@ use rosc::{OscMessage, OscPacket, OscType};
 /// unlike the loopback-only structure channel.
 ///
 /// It lives here, in the OSC codec, because this module *is* that edge and `play` is its only
-/// consumer. It used to live beside `DEFAULT_STRUCTURE_ADDR` in `reuben_core`'s wire envelope, back
+/// consumer. It used to live beside `DEFAULT_STRUCTURE_ADDR` in the wire envelope, back
 /// when the reuben-mcp sidecar dialed it to deliver `send` — two ends that had to agree on one
 /// literal. The sidecar's control now rides the structure channel, so there is no second end left
 /// to drift from, and core carries no network plumbing.
@@ -28,8 +28,7 @@ pub const DEFAULT_OSC_PORT: u16 = 9000;
 
 /// One inbound control message in **flat primitive form**: an address plus its args as primitive
 /// [`Arg`]s, *before* dest-port-type-driven conversion to the single typed `Arg`. The engine routes
-/// `address` to a node/port and calls [`reuben_core::boundary::osc_in_arg`] with that port's type
-/// to produce the Message.
+/// `address` to a node/port and converts against that port's type to produce the Message.
 ///
 /// **Two producers feed this, not one.** [`decode`] mints them from external UDP datagrams (the
 /// foreign edge), and the structure channel's `send` verb mints them from its own NDJSON framing
@@ -89,7 +88,7 @@ fn flatten(packet: OscPacket, out: &mut Vec<OscIn>) {
 }
 
 /// Encode an outbound datagram: a full OSC address plus the **flat OSC args** already
-/// expanded by [`reuben_core::boundary::osc_out_args`]. Every `Arg` here is a primitive; a non-
+/// expanded by [`reuben_api::render::osc_out_args`]. Every `Arg` here is a primitive; a non-
 /// primitive (it should never reach this point) is dropped. Errors only if the encoder itself
 /// rejects the packet.
 pub fn encode(addr: &str, args: &[Arg]) -> Result<Vec<u8>, rosc::OscError> {
@@ -113,8 +112,8 @@ fn arg_to_osc(a: &Arg) -> Option<OscType> {
 }
 
 /// Map an OSC argument onto a primitive core [`Arg`], or `None` if unsupported. OSC has no carrier
-/// for the typed vocab forms — those are reconstructed from these primitives at the boundary
-/// ([`reuben_core::boundary::osc_in_arg`]). A `Bool` maps to `I32` 0/1.
+/// for the typed vocab forms — those are reconstructed from these primitives at the destination
+/// port. A `Bool` maps to `I32` 0/1.
 fn arg_from_osc(t: &OscType) -> Option<Arg> {
     match t {
         OscType::Int(i) => Some(Arg::I32(*i)),

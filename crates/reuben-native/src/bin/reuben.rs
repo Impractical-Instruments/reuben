@@ -19,11 +19,8 @@ use clap::{Parser, Subcommand};
 use reuben_api::authoring::{
     self, Diag, PortInfo, Refusal, COMPACT_DESCRIBE_LEGEND, SCAFFOLD_DEFAULT_NAME,
 };
+use reuben_api::render::{self, Message};
 use reuben_api::FsResolver;
-use reuben_core::boundary;
-use reuben_core::coordinator::Coordinator;
-use reuben_core::message::Message;
-use reuben_core::Registry;
 use reuben_native::profile::DeviceProfile;
 use reuben_native::rigs::DEFAULT_JSON;
 use reuben_native::structure::NativeHost;
@@ -594,7 +591,8 @@ fn cmd_validate(path: &Path, json: bool, root: Option<PathBuf>) -> ExitCode {
 /// Streams are opened once here and fixed for the session: a swap fills the install mailbox, the
 /// RT callback drains it and box-transplants survivors under a master-gain ramp, and this
 /// process — the OSC socket, the structure channel, the streams — is never torn down. The
-/// [`Coordinator`] the structure channel owns is the single writer of graph structure.
+/// [`Coordinator`](render::Coordinator) the structure channel owns is the single writer of graph
+/// structure.
 ///
 /// see rules: execution-runtime
 fn play(
@@ -657,7 +655,7 @@ fn play(
                 flat.clear();
                 // `false` means the Arg has no OSC form and expanded to nothing — skip the
                 // datagram (the rule is `osc_out_args`' contract, see its docs).
-                if !boundary::osc_out_args(&m.arg, &mut flat) {
+                if !render::osc_out_args(&m.arg, &mut flat) {
                     continue;
                 }
                 match osc::encode(&m.address, &flat) {
@@ -748,13 +746,7 @@ fn play(
             "audio out @ {} Hz, block {}",
             cfg.sample_rate, cfg.block_size
         );
-        Coordinator::install_initial(
-            &instrument_json,
-            Registry::builtin(),
-            Box::new(resolver),
-            cfg,
-        )
-        .expect("load instrument")
+        render::install_initial(&instrument_json, resolver, cfg).expect("load instrument")
     })
     .unwrap_or_else(|e| panic!("start audio: {e}"));
 

@@ -8,18 +8,19 @@
 //! one-line gloss — is the window's.
 //!
 //! The types a door serializes are the window's own, not the engine's; the two types crossing the
-//! resource seam are the engine's, re-exported. [`resources`] states that split and why.
+//! resource seam are the engine's, re-exported. [`crate::resources`] states that split and why.
 //!
 //! see rules: agent-mcp
 
 mod args;
 pub mod prose;
-pub(crate) mod resources;
 mod result;
 mod verbs;
 
+/// The resource seam, which is neither half's: a door that only drives this one still names it
+/// here. [`crate::resources`] holds it, because the render half calls the same trait.
+pub use crate::resources::{ResolveError, Resources, SampleBuffer};
 pub use args::*;
-pub use resources::{ResolveError, Resources, SampleBuffer};
 pub use result::{
     Boundary, Diag, DocumentView, EditResult, OperatorInfo, Operators, PortInfo, Report,
 };

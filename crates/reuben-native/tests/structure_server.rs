@@ -1,5 +1,5 @@
 //! Integration: the structure channel end-to-end over a real loopback TCP socket. Starts a
-//! [`StructureServer`] wired to a real [`Coordinator`] — everything `reuben play` wires up except
+//! [`StructureServer`] wired to a real Coordinator — everything `reuben play` wires up except
 //! the cpal device (there is none in CI) — binds an **ephemeral** port (`127.0.0.1:0`,
 //! OS-assigned, so parallel CI jobs never collide), then drives a plain `TcpStream` client
 //! speaking NDJSON. The device half is stood in for by [`FakeCallback`] (`crate::test_support`,
@@ -22,20 +22,18 @@ use reuben_api::engine::{
     Conflict, ControlArg, ControlMessage, DiagnosticsReport, DocSource, DocumentSnapshot, Request,
     Response, StructureState,
 };
-use reuben_core::coordinator::Coordinator;
-use reuben_core::resources::MemoryResolver;
-use reuben_core::{content_hash, Arg, AudioConfig, NormalizedDoc, Registry};
+use reuben_api::render::{self, Arg, AudioConfig};
 use reuben_native::diagnostics::Diagnostics;
 use reuben_native::osc::{ControlBatch, OscIn};
 use reuben_native::structure::{HeadlessRenderConfig, NativeHost, StructureServer};
-use reuben_native::test_support::FakeCallback;
+use reuben_native::test_support::{FakeCallback, NoResources};
 
 fn cfg() -> AudioConfig {
     AudioConfig::new(48_000.0, 128)
 }
 
 /// A minimal output-only rig: one oscillator through a master output. Self-contained (no
-/// resources), so a bare [`MemoryResolver`] loads it.
+/// resources), so an empty store loads it.
 const BASE_DOC: &str = r#"{"format_version":3,"instrument":"t",
     "interface":{"outputs":{"out":{"from":"/osc.audio"}}},
     "nodes":[{"type":"oscillator","address":"/osc"}]}"#;
@@ -82,13 +80,8 @@ fn wired_watching(
     opened_input_channels: usize,
     diagnostics: Arc<Diagnostics>,
 ) -> (StructureState, FakeCallback, String) {
-    let (coordinator, side, _warnings) = Coordinator::install_initial(
-        doc,
-        Registry::builtin(),
-        Box::new(MemoryResolver::new()),
-        cfg(),
-    )
-    .expect("initial install");
+    let (coordinator, side, _warnings) =
+        render::install_initial(doc, NoResources, cfg()).expect("initial install");
     let base_hash = coordinator.installed_hash();
     let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
     let host = NativeHost::new(diagnostics, control_tx).with_render_config(Arc::new(
@@ -134,10 +127,6 @@ fn within<F: FnOnce() + Send + 'static>(secs: u64, f: F) {
         rx.recv_timeout(Duration::from_secs(secs)).is_ok(),
         "operation did not complete within {secs}s — it hung"
     );
-}
-
-fn expected_hash(doc: &str) -> String {
-    content_hash(&NormalizedDoc::from_json(doc, &Registry::builtin(), None).expect("mint"))
 }
 
 #[test]
@@ -214,13 +203,8 @@ fn responses_come_back_one_per_request_in_pipelined_order() {
 #[test]
 fn get_diagnostics_reflects_live_counter_bumps() {
     // The endpoint reads the live Arc audio::start owns, not a copy frozen at startup.
-    let (coordinator, side, _w) = Coordinator::install_initial(
-        BASE_DOC,
-        Registry::builtin(),
-        Box::new(MemoryResolver::new()),
-        cfg(),
-    )
-    .expect("install");
+    let (coordinator, side, _w) =
+        render::install_initial(BASE_DOC, NoResources, cfg()).expect("install");
     let diagnostics = Diagnostics::new();
     // This verb never touches control, but the ingress is a constructor parameter now.
     let (control_tx, control_rx) = mpsc::channel::<ControlBatch>();
@@ -293,14 +277,15 @@ fn swap_over_the_wire_installs_via_the_mailbox_with_real_survivor_stats() {
             expect: None,
         },
     );
-    match read_response(&mut reader) {
+    let renamed_hash = match read_response(&mut reader) {
         Response::SwapReport(report) => {
             assert!(report.report.ok, "{report:?}");
             let diff = report.diff.expect("diff");
             assert_eq!(diff.survived, 1, "only /out survives a rename: {diff:?}");
+            report.content_hash
         }
         other => panic!("expected SwapReport, got {other:?}"),
-    }
+    };
 
     // get_document reflects the last installed document.
     send(&mut writer, &Request::GetDocument);
@@ -315,7 +300,9 @@ fn swap_over_the_wire_installs_via_the_mailbox_with_real_survivor_stats() {
                 "a by-value swap leaves no source behind either"
             );
             assert_eq!(document["instrument"], serde_json::json!("eg"));
-            assert_eq!(hash, expected_hash(&envelope_doc("/eg")));
+            // The hash the swap reported is the hash the served document carries: two responses
+            // over one wire, agreeing about what is installed.
+            assert_eq!(hash, renamed_hash);
             assert_ne!(hash, base_hash, "the swap changed the installed document");
         }
         other => panic!("expected Document, got {other:?}"),

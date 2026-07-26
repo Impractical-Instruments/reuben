@@ -5,7 +5,6 @@
 
 use std::path::PathBuf;
 
-use reuben_core::registry::Registry;
 use reuben_native::library::generate_library_index;
 
 /// The committed artifact — compile-time bound so a deleted file fails as loudly as a stale one.
@@ -18,8 +17,7 @@ fn instruments_dir() -> PathBuf {
 
 #[test]
 fn library_index_is_in_sync() {
-    let fresh =
-        generate_library_index(&instruments_dir(), &Registry::builtin()).expect("generate index");
+    let fresh = generate_library_index(&instruments_dir()).expect("generate index");
     assert_eq!(
         fresh, COMMITTED_INDEX,
         "instruments/index.md is stale — run `cargo run -p reuben-native --example gen_library_index`"
@@ -30,9 +28,8 @@ fn library_index_is_in_sync() {
 fn generation_is_deterministic() {
     // The index is a build artifact consumed byte-for-byte (bundled web prefix, MCP resource):
     // two generations over the same checkout must be identical bytes.
-    let reg = Registry::builtin();
-    let a = generate_library_index(&instruments_dir(), &reg).expect("first generation");
-    let b = generate_library_index(&instruments_dir(), &reg).expect("second generation");
+    let a = generate_library_index(&instruments_dir()).expect("first generation");
+    let b = generate_library_index(&instruments_dir()).expect("second generation");
     assert_eq!(a, b, "generation must be byte-deterministic");
 }
 
@@ -42,7 +39,7 @@ fn every_available_instrument_has_a_line() {
     // document under instruments/, keyed by the document's own `instrument` name, wherever the
     // file lives (roles are never read off a path).
     let dir = instruments_dir();
-    let index = generate_library_index(&dir, &Registry::builtin()).expect("generate index");
+    let index = generate_library_index(&dir).expect("generate index");
 
     let mut documents = Vec::new();
     let mut pending = vec![dir];

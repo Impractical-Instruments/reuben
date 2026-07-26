@@ -1,7 +1,7 @@
 //! The generated **library index** over the available-set. see rules: authoring-library
 //!
-//! This module is the IO glue around the pure projection
-//! [`reuben_core::introspect::library_index_line`]: sweep every instrument document under a
+//! This module is the IO glue around the window's pure projection
+//! [`reuben_api::authoring::library_index_line`]: sweep every instrument document under a
 //! directory (the repo's `instruments/`, today's whole available-set), project each line through
 //! the real load path, and aggregate deterministically.
 //!
@@ -12,9 +12,7 @@
 
 use std::path::{Path, PathBuf};
 
-use reuben_core::introspect::library_index_line;
-use reuben_core::registry::Registry;
-
+use reuben_api::authoring::library_index_line;
 use reuben_api::FsResolver;
 
 /// Generate the library index over every `*.json` instrument document under `instruments_dir`
@@ -25,21 +23,19 @@ use reuben_api::FsResolver;
 /// instrument name; output is byte-deterministic. Any document that fails to load fails the
 /// whole generation — a broken instrument in the available-set is a broken index, never a
 /// silently missing line.
-pub fn generate_library_index(
-    instruments_dir: &Path,
-    registry: &Registry,
-) -> Result<String, String> {
+pub fn generate_library_index(instruments_dir: &Path) -> Result<String, String> {
     let mut files = Vec::new();
     collect_documents(instruments_dir, &mut files)?;
     files.sort();
 
     let mut lines = Vec::with_capacity(files.len());
     for path in &files {
-        let json = std::fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let base = path.parent().unwrap_or(instruments_dir);
-        let resolver = FsResolver::new(base).stat_only();
-        let line = library_index_line(&json, registry, &resolver)
-            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let source = path.display().to_string();
+        // Document-scoped: the store answers for the document itself by the source as spelled, and
+        // for its references from the document's own directory.
+        let store = FsResolver::for_document(&source).stat_only();
+        let line =
+            library_index_line(&source, &store).map_err(|e| format!("{}: {e}", path.display()))?;
         lines.push(line);
     }
     // Every line leads with its instrument name, so sorting lines is sorting by name — the

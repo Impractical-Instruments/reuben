@@ -1,13 +1,14 @@
 //! End-to-end stereo proof on a frozen fixture: load `stereo-autopan.json`,
 //! play a note, and confirm the engine serves two interleaved channels whose content differs
 //! over time (the LFO is sweeping the voice across the field).
+//!
+//! Driven through the window's render pair exactly as `audio.rs` drives it — install, then
+//! `queue_osc` + `fill` on the slot — so what this proves is what a device would play.
 
 use std::path::PathBuf;
 
+use reuben_api::render::{install_initial, Arg, AudioConfig, RenderSlot};
 use reuben_api::FsResolver;
-use reuben_core::vocab::pitch::{Note, Pitch};
-use reuben_core::{load_instrument, AudioConfig, Message, Plan};
-use reuben_native::Engine;
 
 fn fixtures_dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures")
@@ -17,29 +18,28 @@ fn fixtures_dir() -> PathBuf {
 fn stereo_autopan_plays_in_motion_across_two_channels() {
     let json = std::fs::read_to_string(fixtures_dir().join("stereo-autopan.json"))
         .expect("read stereo-autopan.json");
-    let graph = load_instrument(
+    let (_coordinator, side, warnings) = install_initial(
         &json,
-        &reuben_core::Registry::builtin(),
-        &FsResolver::new(fixtures_dir()),
+        FsResolver::new(fixtures_dir()),
+        AudioConfig::new(48_000.0, 256),
     )
-    .expect("load")
-    .graph;
-    let plan = Plan::instantiate(graph, AudioConfig::new(48_000.0, 256)).expect("instantiate");
-    assert_eq!(plan.config.channels, 2, "left+right taps -> stereo master");
+    .expect("install");
+    assert!(
+        warnings.is_empty(),
+        "unexpected load warnings: {warnings:?}"
+    );
 
-    let mut engine = Engine::new(plan);
-    assert_eq!(engine.channels(), 2);
-    engine.queue(Message::new(
-        "/voicer/notes",
-        Note::new(Pitch::Absolute(69.0), 1.0),
-        0,
-    ));
+    let mut slot = RenderSlot::new(side);
+    assert_eq!(slot.channels(), 2, "left+right taps -> stereo master");
+    // The flat primitive form an OSC datagram arrives in; the slot types it against the
+    // destination port, which is where a note is reconstructed.
+    slot.queue_osc("/voicer/notes", &[Arg::F32(69.0), Arg::F32(1.0)]);
 
     // ~0.5 s of interleaved stereo. The autopan LFO runs at 0.5 Hz, so half a second sweeps
     // a quarter cycle — plenty for the L/R balance to shift.
     let frames = 24_000;
     let mut out = vec![0.0f32; frames * 2];
-    engine.fill(&mut out);
+    slot.fill(&mut out);
 
     let left: Vec<f32> = out.iter().step_by(2).copied().collect();
     let right: Vec<f32> = out.iter().skip(1).step_by(2).copied().collect();

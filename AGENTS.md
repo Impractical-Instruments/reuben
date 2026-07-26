@@ -56,9 +56,9 @@ Six crates. `reuben-core` is ~35k lines — enter through the module that owns t
 
 | Crate | Owns |
 | --- | --- |
-| `reuben-core` | The portable, OS-free engine. No OS dependencies. |
-| `reuben-api` | The one window every consumer goes through: the authoring verbs, the engine verbs (swap/control/status/diagnostics) and both ends of the structure channel, plus the tool roster and its advertised prose. Two feature halves — `authoring` (off-thread, serialized) and `render` (what a host drives per block) — plus the default-off `fs-resolver` reference implementation of the resource seam. |
-| `reuben-native` | The removable native layer: cpal audio + input, OSC/UDP decode, the `reuben` CLI. |
+| `reuben-core` | The portable, OS-free engine. No OS dependencies. **Private**: `reuben-api` is the only crate that may name it, guarded by `scripts/check_core_privacy.py`. |
+| `reuben-api` | The one window every consumer goes through: the authoring verbs, the engine verbs (swap/control/status/diagnostics) and both ends of the structure channel, plus the tool roster and its advertised prose. Two feature halves — `authoring` (off-thread, serialized) and `render` (the Coordinator + RenderSlot pair a host drives per block) — plus the resource seam both halves call and the default-off `fs-resolver` reference implementation of it. |
+| `reuben-native` | The removable native layer: cpal audio + input, OSC/UDP decode, the `reuben` CLI. Reaches the engine through nothing but the window, render half included. |
 | `reuben-mcp` | The per-conversation MCP stdio sidecar: the roster, the stdio transport, the loopback socket. Reaches `reuben-core` through nothing but the window. The only member allowed an async runtime (rmcp + tokio). |
 | `reuben-contract` | The single source of an Operator's port/constant contract, shared by the macro and scaffold. |
 | `reuben-macros` | `operator_contract!` — emits the index consts *and* the `Descriptor` from one declaration. |

@@ -18,7 +18,7 @@
 //!
 //! Two seams face the other way — things a host must **provide** rather than call. The resource
 //! resolver is the one call *in*: samples and nested documents are never handed to the engine as
-//! bytes, so the engine calls back out through [`authoring::Resources`], and [`fs_resolver`] is a
+//! bytes, so the engine calls back out through [`resources::Resources`], and [`fs_resolver`] is a
 //! filesystem implementation to share rather than reimplement, behind a default-off feature. The
 //! other is [`engine::EngineHost`]: the device map, the counters, the control ingress and the
 //! clock the deferred free waits on — what only a host can know.
@@ -39,6 +39,8 @@ pub mod fs_resolver;
 
 #[cfg(feature = "render")]
 pub mod render;
+
+pub mod resources;
 
 #[cfg(feature = "fs-resolver")]
 pub use fs_resolver::FsResolver;

@@ -1,12 +1,15 @@
 //! reuben-native — the removable native layer. see rules: execution-runtime
 //!
-//! Wraps the portable [`reuben_core`] embed surface (construct, `queue_osc`, `fill`/`fill_duplex`,
-//! `drain_outbound`) with OS-specific I/O: [`osc`] decodes external OSC/UDP into
-//! [`Message`](reuben_core::Message)s, [`audio`] drives a cpal output stream, [`input`] is the
+//! Wraps the window's render surface ([`reuben_api::render`]: the Coordinator + RenderSlot pair,
+//! `queue_osc`, `fill`/`fill_duplex`, `drain_outbound`) with OS-specific I/O: [`osc`] decodes
+//! external OSC/UDP into flat control args, [`audio`] drives a cpal output stream, [`input`] is the
 //! cpal input ring feeding it, [`diagnostics`] is the shared xrun/ring counter surface,
 //! [`structure`] is the loopback structure channel the MCP sidecar talks to, [`rigs`] holds the
 //! default playable rig, and [`profile`] is the device profile (`--io-map`). Sample data resolves
 //! through [`reuben_api::FsResolver`].
+//!
+//! It reaches the engine through [`reuben_api`] and nowhere else: this crate is a door, and a door
+//! that could also reach past the window would be a second surface to keep honest.
 
 pub mod audio;
 pub mod diagnostics;
@@ -19,8 +22,3 @@ pub mod scaffold;
 pub mod structure;
 #[doc(hidden)]
 pub mod test_support;
-
-pub use reuben_core::Engine;
-
-/// Re-export so embedders only depend on this crate.
-pub use reuben_core;
