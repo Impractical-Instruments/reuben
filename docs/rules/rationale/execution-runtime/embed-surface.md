@@ -13,10 +13,11 @@ member, version, and docs surface (the same shape rejected for a `reuben-coordin
 hard constraint holds: no non-portable dependency enters `reuben-core`, so it keeps compiling to
 `wasm32-unknown-unknown` untouched.
 
-**A host no longer wraps this module directly** (ADR-0067, ADR-0072, pending absorption). No crate
-but `reuben-api` depends on `reuben-core` — a guard, `scripts/check_core_privacy.py`, is what makes
-that a fact — so a host wraps the window's render half, which re-exports these handles by identity
-rather than converting them. The bridge is still one surface and still lives here; what changed is
+**A host no longer wraps this module directly**, and the rule above carries the marker until the
+decision that moved it is absorbed. No crate but `reuben-api` depends on `reuben-core`
+([core-is-private-to-the-window](../web-product-process/core-is-private-to-the-window.md)), so a host
+wraps [the window's render half](render-half-is-re-exported.md), which re-exports these handles by
+identity rather than converting them. The bridge is still one surface and still lives here; what changed is
 that the fence the paragraph above says a crate boundary "would fence off nothing" now fences off
 something, and the boundary drawn was the window's rather than a second engine crate's.
 

@@ -11,10 +11,18 @@ core, `reuben-api` (the one window every consumer goes through, including the fi
 resolver), the native CLI and its audio/OSC host, the stdio MCP sidecar, and the
 instrument/surface library those tests load. The actual **product** — the browser player, its app
 shell, the WASM C-ABI shell, the share-link codec, and the chat-authoring agent — lives in a
-separate **private, AGPL** repo that pins this one as a git submodule and builds against
-`reuben-core` through a path dependency. The seam was drawn by support surface, not licence; the
+separate **private, AGPL** repo that pins this one as a git submodule and builds against the
+**window** through a path dependency. The seam was drawn by support surface, not licence; the
 two boundaries simply coincide. The submodule pin is the version boundary — the engine version is
 a property of a cross-repo SHA, adopted when the product bumps its pin.
+
+The window is where the engine ends and a consumer begins, and that is a checked fact rather than a
+habit: no manifest in this workspace but `reuben-api`'s names `reuben-core`, dev-dependencies
+included, because a test that reaches around the window is a report that the window is missing
+something. The crate is one dependency with two feature halves — an off-thread `authoring` half that
+declares its own types and a `render` half that re-exports what a block touches — both on by default,
+plus an off-by-default filesystem resolver, with CI building the render-only configuration the
+browser worklet takes so that fence is exercised in tree.
 
 Because the shell left, the browser story this repo tells is a **contract, not a binding**:
 `reuben-core` compiles to `wasm32-unknown-unknown` untouched, and the documented raw C-ABI worklet
@@ -34,13 +42,23 @@ headless CLI whose primary product is the crate.
 
 ## Rules
 
-**Where this repo ends** — the five rules that answer what is in the SDK and what it owes across the
+**Where this repo ends** — the seven rules that answer what is in the SDK and what it owes across the
 boundary.
 
 <a id="sdk-product-split"></a>
 ### This repo is the reuben SDK — engine core, the `reuben-api` window, native CLI, MCP sidecar, and the instrument/surface library — while the browser shell, player app, and authoring agent live in a separate private product repo that consumes this one as a submodule.
 
 [why](rationale/web-product-process/sdk-product-split.md)
+
+<a id="core-is-private-to-the-window"></a>
+### `reuben-core` is named by `reuben-api` alone: no other manifest in the workspace declares a dependency on it, dev-dependencies included, and a guard that reads the renamed `package` field as well as the key keeps it that way.
+
+[why](rationale/web-product-process/core-is-private-to-the-window.md)
+
+<a id="window-is-two-feature-halves"></a>
+### The window is one crate split by feature rather than into two crates — an off-thread authoring half that declares its own types and a render half that re-exports — both on by default, with CI building the render-only configuration so the fence is a fact rather than an intention.
+
+[why](rationale/web-product-process/window-is-two-feature-halves.md)
 
 <a id="license-boundary"></a>
 ### The licence boundary is the repo boundary: this repo is BSD-3-Clause, the private product repo is AGPL-3.0, and no file is dual-licensed.

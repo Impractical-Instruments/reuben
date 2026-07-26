@@ -28,7 +28,17 @@ their state by pointer-transplant, and the retired Engine is reclaimed off-threa
 is audibly abrupt, install is wrapped in a fixed ~20 ms master-gain duck. Nothing but the Coordinator
 writes structure, and nothing crosses the RT boundary except by lock-free message passing — a shape
 Rust's `Send`/`Sync` enforces — which is also the seam where the removable native I/O layer detaches
-from the portable core and its **embed surface**, the `Engine` bridge shared by every host shell.
+from the portable core and its **embed surface**, the `Engine` bridge. *(A host shell reaches that
+bridge through the `reuben-api` window rather than wrapping it directly; the embed-surface rule below
+still states the older arrangement and carries the marker until the decision behind it is absorbed.)*
+
+A host drives Render through the window and pays nothing for it: everything a block touches crosses
+as a re-export by identity, and the window owns one real function — the constructor that builds the
+Coordinator/RenderSide pair — because that cost is per session rather than per block. The other
+direction is a seam: a host that serves the structure channel fills in what only a host can know
+(what a path resolves to, where a control batch goes, what the counters read, the device-map
+republish after a Swap, the gate the deferred free waits on), and the window decides what every verb
+means.
 
 Inside a block, timing is sample-accurate without asking single-node authors to juggle sample
 offsets: the engine holds a per-port zero-order-hold **latch** of each input's last Message, so a
@@ -128,6 +138,16 @@ Superseded by: ADR-0067 (pending absorption)
 
 Superseded by: ADR-0067 (pending absorption)
 
+<a id="render-half-is-re-exported"></a>
+### Everything a block touches crosses the window as a re-export by identity, so nothing sits between the audio callback and the engine; the window owns a real function only where the cost is per session rather than per block.
+
+[why](rationale/execution-runtime/render-half-is-re-exported.md)
+
+<a id="engine-host-seam"></a>
+### A host serving the structure channel fills one seam for what only a host can know — what a path resolves to, where a control batch goes, what the counters read, how the device map is republished after a swap, and when the retired Engine may be freed — and the window decides everything else the verbs mean.
+
+[why](rationale/execution-runtime/engine-host-seam.md)
+
 <a id="engine-swap-unit"></a>
 ### The unit of a Swap is the whole Engine, handed across the RT boundary through two single-slot atomic mailboxes with one swap in flight.
 
@@ -158,6 +178,7 @@ Superseded by: ADR-0067 (pending absorption)
 - **Coordinator** — the single non-RT writer of graph structure; owns the canonical graph and instrument library and performs every Swap.
 - **Engine** — the portable bridge in reuben-core (`queue_osc` → `fill` → `drain_outbound`) a host shell drives, and the whole vessel (Plan + Renderer + scratch) that a Swap crosses.
 - **Embed surface** — the portable rim of reuben-core (the `Engine` bridge) that each host shell wraps; the native I/O layer is the removable other side.
+- **EngineHost** — the seam a host serving the structure channel fills with what only a host can know: path resolution, control ingress, the counters, the device-map republish after a Swap, and the gate the deferred free waits on.
 - **frame** — a sample offset within a block; the unit of sample-accurate Message timing.
 - **latch** — the engine-held per-port zero-order-hold of an input's last Message, read by an operator as its constant current value.
 - **survivor** — an operator that persists across a Swap (matched on address + type + instantiate-time fingerprint) and keeps its state via box transplant.
