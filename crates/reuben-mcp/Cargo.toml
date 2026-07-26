@@ -34,5 +34,6 @@ rmcp = { workspace = true, features = ["server", "macros", "transport-io"] }
 tokio = { workspace = true, features = ["sync", "rt", "time", "io-std"] }
 serde = { workspace = true }
 serde_json = { workspace = true }
-# JSON Schema derive for the tool input/output types — the same schemars the contract types use.
+# JSON Schema derive for the tool input/output types — the same schemars the window derives its own
+# argument and result shapes with. Nothing behind the window derives one.
 schemars = { workspace = true }

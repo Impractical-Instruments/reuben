@@ -1948,10 +1948,12 @@ mod tests {
 
         let server = ReubenServer::new();
         let tools = server.tool_router.list_all();
-        assert_eq!(
-            tools.len(),
-            tool_names().len(),
-            "the walk below must cover the whole roster"
+        // The walk below proves nothing over an empty router. That the router *is* the roster is
+        // not asserted here — `stamp_window_prose` refuses to construct this server otherwise, so
+        // a length comparison would be a tautology dressed as a check.
+        assert!(
+            !tools.is_empty(),
+            "the walk below must have a roster to cover"
         );
         for tool in tools {
             let name = tool.name.to_string();

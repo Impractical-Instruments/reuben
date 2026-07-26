@@ -3,10 +3,9 @@
 //! the wire can answer — every roster verb carries an `outputSchema` and the window's own sentence —
 //! then scan every advertised description for markup that only a Rust reader can resolve.
 //!
-//! What is *not* here is a roster parity test. It used to be, and it is the door's construction that
-//! replaced it: `stamp_window_prose` walks the built router against
-//! `reuben_api::tools::CONTRACTS` in both directions and refuses to start on a mismatch, so a
-//! surface that is not the roster cannot reach this wire to be observed.
+//! There is no roster check here: `stamp_window_prose` refuses to construct the server unless the
+//! router and the roster are the same name-set, so a surface that is not the roster never reaches
+//! this wire to be observed.
 //!
 //! see rules: agent-mcp, code-as-grounding
 

@@ -1,5 +1,5 @@
-//! Behavioural tests for the document-manipulation vocabulary, plus the **completeness guard** that
-//! makes the vocabulary's derivation from the format mechanical rather than a claim.
+//! Behavioural tests for the document-manipulation vocabulary: what each verb writes, and what a
+//! removal or a rename cascades into.
 
 use super::*;
 use crate::resources::MemoryResolver;
