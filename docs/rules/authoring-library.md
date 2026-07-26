@@ -22,7 +22,12 @@ held by a type rather than by prose.
 
 Instruments depend on more than params. A sample player needs **external bytes** — an audio file
 resolved and decoded before render — so decoded audio lives in a `ResourceStore` outside the
-operator, off the RT path and behind one pure accessor. Load failures follow a settled discipline:
+operator, off the RT path and behind one pure accessor. Nothing is handed to the engine as bytes:
+resolving a `source` is the **resource seam**, the one call *in*, and the host implements it. The
+window ships a filesystem implementation to share rather than reimplement, off by default because a
+resolver a host inherits rather than chooses is exactly what the seam exists to prevent; the seam
+itself sits above both halves of the window, since a document verb and the load behind a render
+install call the same four methods. Load failures follow a settled discipline:
 a missing or malformed resource **degrades the node to silence** with a surfaced warning, while
 structural and wiring errors stay fatal — the "dark-degrade" philosophy the surface layer inherits.
 
@@ -56,6 +61,11 @@ generated surface, one per distinct player gesture, never new format machinery.
 ### Decoded resource bytes live in a central Coordinator-built ResourceStore, are referenced by logical id from a top-level resources table, and are read on the RT path through one pure accessor.
 
 [why](rationale/authoring-library/resource-store.md)
+
+<a id="resource-seam-is-host-implemented"></a>
+### The resource seam is the one call in and the host implements it: the trait is the contract, the filesystem implementation this repo ships is one implementation behind a default-off feature, and the seam sits above both halves of the window because both call it.
+
+[why](rationale/authoring-library/resource-seam-is-host-implemented.md)
 
 <a id="load-errors-degrade-dark"></a>
 ### A missing or malformed resource degrades the node to silence with a surfaced warning, while structural and wiring errors stay fatal.
@@ -125,6 +135,7 @@ generated surface, one per distinct player gesture, never new format machinery.
 ## Terms
 
 - **ResourceStore** — the central store of decoded resource bytes, built by the Coordinator at load and read immutably by Render through one pure `(id, channel, frame)` accessor, keyed by logical id.
+- **resource seam** — the one call *in*: the host-implemented trait through which the engine resolves a document's samples and nested children from opaque sources.
 - **Good Button** — a curated player-facing control that is hard to make sound bad, built from composition (a fan of `map`s) rather than from new instrument-format machinery.
 - **surface doc** — the presentation-only document that binds an instrument's interface input-pipe names to widgets, decoupled from the instrument itself.
 - **NormalizedDoc** — the type minted once at the parse gate that every build and load path accepts, proving a document is current-shaped and migrated exactly once.

@@ -71,10 +71,11 @@ not by hope:
 - **Dark degrade** — a shell edge's fixed response to a reality mismatch: play defined silence, then count it if it can recur or warn once if it cannot; never fail and never improvise. · [host-shell-io](host-shell-io.md)
 - **Delivery lane** — a grounding consumer (repo skills, MCP clients, web chat), each reducing to transport bindings plus host furniture plus the shared base sauce, fed by push or pull. · [agent-mcp](agent-mcp.md)
 - **Document verb** — one member of the closed, format-derived vocabulary an agent authors with: a stateless `(source, …)` mutator that applies one surgical edit, re-validates the whole document, and writes iff valid. · [agent-mcp](agent-mcp.md)
-- **Door** — one surface over the OS-free contract types (native CLI, MCP sidecar, web in-page layer, web proxy); no verb means different things behind different doors. · [agent-mcp](agent-mcp.md)
+- **Door** — one surface over the window's contract types (native CLI, MCP sidecar, web in-page layer, web proxy); no verb means different things behind different doors. · [agent-mcp](agent-mcp.md)
 - **Drift servo** — the control loop steering the input resample ratio to hold the ring's post-drain residual at a fixed floor, so the loop is independent of the host's variable callback size. · [host-shell-io](host-shell-io.md)
 - **Embed surface** — the portable rim of reuben-core (the `Engine` bridge) that each host shell wraps; the native I/O layer is the removable other side. · [execution-runtime](execution-runtime.md)
 - **Engine** — the portable bridge in reuben-core (`queue_osc` → `fill` → `drain_outbound`) a host shell drives, and the whole vessel (Plan + Renderer + scratch) that a Swap crosses. · [execution-runtime](execution-runtime.md)
+- **EngineHost** — the seam a host serving the structure channel fills with what only a host can know: path resolution, control ingress, the counters, the device-map republish after a Swap, and the gate the deferred free waits on. · [execution-runtime](execution-runtime.md)
 - **Event** — an unlatched, multi-valued, frame-stamped port form (`note`), read as a stream and never sliced. · [composition-operators](composition-operators.md)
 - **Foreign edge** — the only place OSC-the-binary-protocol appears: external controllers arriving at `reuben play` and `osc_out` nodes leaving it; every internal door frames the same flat `{address, args}` form its own way. · [signal-time-dsp](signal-time-dsp.md)
 - **format_version** — the document's integer shape marker; absent means 1, save writes the current version, and only a breaking shape change bumps it. · [authoring-library](authoring-library.md)
@@ -104,6 +105,7 @@ not by hope:
 - **promotion** — the fast-forward-only advance of `dev` onto `main` that ships production. · [web-product-process](web-product-process.md)
 - **recipe-role** — an instrument's reuse story: the first sentence of its `doc` field, trusted for selection only, never for wiring. · [authoring-library](authoring-library.md)
 - **Render** — the hard-realtime, allocation-free per-block execution of the current Plan on the audio thread. · [execution-runtime](execution-runtime.md)
+- **resource seam** — the one call *in*: the host-implemented trait through which the engine resolves a document's samples and nested children from opaque sources. · [authoring-library](authoring-library.md)
 - **ResourceStore** — the central store of decoded resource bytes, built by the Coordinator at load and read immutably by Render through one pure `(id, channel, frame)` accessor, keyed by logical id. · [authoring-library](authoring-library.md)
 - **Restatement** — comment prose that re-describes the code or answers what LSP or a search would answer; the third comment kind, deleted outright rather than moved to a rule. · [code-as-grounding](code-as-grounding.md)
 - **Rig** — the outermost graph, the one actually played at top level. · [composition-operators](composition-operators.md)
@@ -126,6 +128,7 @@ not by hope:
 - **Voice** — one instance of a voice instrument the Voicer runs; what sounds a note, distinct from the note Message itself. · [composition-operators](composition-operators.md)
 - **Voice instrument** — an ordinary instrument whose interface makes it hostable by a Voicer; a role read off the interface, never a separate kind. · [composition-operators](composition-operators.md)
 - **Voicer** — the sole runtime host: it builds N standalone voice patches and renders only the active ones per block. · [composition-operators](composition-operators.md)
+- **Window** — the `reuben-api` crate: the one thing between the engine and every consumer, declaring the types a door serializes, the roster and its advertised sentences, and both ends of the structure channel. · [agent-mcp](agent-mcp.md)
 
 ## Avoid these synonyms
 

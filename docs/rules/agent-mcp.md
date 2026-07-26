@@ -27,12 +27,16 @@ reuben-owned bytes ride the agent's context — though not yet on every lane: th
 whole document vocabulary and still takes documents by value, so its verbs there are designed, not
 built.
 
-The load-bearing invariant under all of this is **one source, many doors**: the contract types and
-introspection live OS-free in `reuben-core`, so the native CLI, the MCP sidecar, the web in-page tool
-layer, and the web proxy all generate their schemas from that one source and no verb means different
-things behind different doors. *(ADR-0068 moves that one source to `reuben-api`, which already
-declares its own authoring types; pending absorption, the two rules below carry the marker.)* MCP is one door, not the contract — web parity ports the contracts,
-not the protocol. Grounding is **single-sourced** the same way: normative prose lives once (the
+The load-bearing invariant under all of this is **one source, many doors**, and the source is the
+`reuben-api` **window**. It declares the argument and result types every door serializes, the one
+sentence each verb is advertised by, the roster that names them, the `expect` guard, and both ends of
+the structure channel the engine verbs cross — so the native CLI, the MCP sidecar, the web in-page
+tool layer, and the web proxy all generate their schemas from that one source and no verb means
+different things behind different doors. MCP is one door, not the contract — web parity ports the
+contracts, not the protocol. What a door still decides is what the window cannot know for it: its own
+transport, the shape of its surface when it merges or omits verbs, and the resource store it hands in.
+The window's own surface carries no completeness test — the consumer that needed a verb is the report
+that one is missing. Grounding is **single-sourced** the same way: normative prose lives once (the
 authoring guide, the intent vocabulary, the library index), and code, skills, and server
 `instructions` **gist-and-point** at it rather than restating it.
 
@@ -73,31 +77,45 @@ authoring guide, the intent vocabulary, the library index), and code, skills, an
 
 [why](rationale/agent-mcp/user-owned-engine.md)
 
-<a id="expect-guard-is-a-door-concern"></a>
-### The optimistic-concurrency expect guard belongs to each door, not to core: a core swap is unguarded last-write-wins, and a door with concurrent clients compares the content hash its client holds against the installed one and answers in its own shape before calling in.
+<a id="window-declares-its-own-types"></a>
+### The window declares the types every consumer sees and their serialization, and the engine's equivalents stay internal — the API is not a projection of the engine's surface and owes it no mirror.
 
-[why](rationale/agent-mcp/expect-guard-is-a-door-concern.md)
+[why](rationale/agent-mcp/window-declares-its-own-types.md)
 
-Superseded by: ADR-0071 (pending absorption)
+<a id="portable-tool-contracts"></a>
+### The tool contract types, the argument and result shapes they carry, and the introspection behind them live once in reuben-api, so every door — native CLI, MCP sidecar, web in-page layer, web proxy — generates its schemas from that one source and no verb means different things behind different doors.
 
-<a id="contract-holds-what-core-produces"></a>
-### A serde type belongs to the contract if core itself produces it and to a door's wire module if it exists only because that door exists — the test being whether the type would still mean anything with the door deleted.
+[why](rationale/agent-mcp/portable-tool-contracts.md)
 
-[why](rationale/agent-mcp/contract-holds-what-core-produces.md)
+<a id="window-owns-advertised-prose"></a>
+### Every sentence a model reads — a tool's description, a field's, a `$defs` entry's — lives once in the window beside the type it describes, and a door that advertises the roster verb-for-verb carries that sentence rather than writing one.
 
-Superseded by: ADR-0068 (pending absorption)
+[why](rationale/agent-mcp/window-owns-advertised-prose.md)
+
+<a id="consumers-are-the-completeness-test"></a>
+### The window's surface carries no completeness test of its own: the consumer that needed a verb is the report that it is missing, and the authoring eval's freehand-JSON count is the measurement that stands in for one.
+
+[why](rationale/agent-mcp/consumers-are-the-completeness-test.md)
+
+<a id="door-owned-shape-and-store"></a>
+### A door decides only what the window cannot know for it: the shape of its own surface, so a door that merges or omits verbs writes its own help, and the resource store it hands in, so the door that will play a document decodes what a door that only authors it stats.
+
+[why](rationale/agent-mcp/door-owned-shape-and-store.md)
 
 <a id="structure-channel-is-loopback-only"></a>
 ### The structure channel binds loopback only, because structure edits are strictly more powerful than OSC control — and its one default address is shared with the wire types both ends serialize so the server and client can never drift apart.
 
 [why](rationale/agent-mcp/structure-channel-is-loopback-only.md)
 
-<a id="portable-tool-contracts"></a>
-### The tool contract types and introspection live OS-free in reuben-core, so every door — native CLI, MCP sidecar, web in-page layer, web proxy — generates its schemas from that one source and no verb means different things behind different doors.
+<a id="structure-channel-envelope"></a>
+### Both ends of the structure channel are the window's — the verbs, their payloads, the framing, the default address and the batch bound — so what a swap means is written once rather than on whichever side happened to serve it.
 
-[why](rationale/agent-mcp/portable-tool-contracts.md)
+[why](rationale/agent-mcp/structure-channel-envelope.md)
 
-Superseded by: ADR-0068 (pending absorption)
+<a id="optimistic-concurrency-guard"></a>
+### The optimistic-concurrency expect guard is the window's, applied inside the Coordinator lock so the compare and the swap are one critical section — every door with a Coordinator behind it shares that one implementation, and only a lane with no Coordinator writes its own.
+
+[why](rationale/agent-mcp/optimistic-concurrency-guard.md)
 
 <a id="document-verbs"></a>
 ### The agent authors through a closed vocabulary of path-addressed, stateless, engine-free document verbs, each applying one surgical edit to the named source, re-validating the whole document through the loader, and writing only if it is valid.
@@ -108,6 +126,11 @@ Superseded by: ADR-0068 (pending absorption)
 ### The agent never loads a reuben-owned document into its context: its whole view is a set of partial structural projections — index, node zoom with reverse edges, pipes, resources — single-sourced in reuben-core and lossless only in aggregate.
 
 [why](rationale/agent-mcp/document-projection.md)
+
+<a id="one-serialization-per-view"></a>
+### A door serves the rendered projection rather than a second encoding of it, and a view stays structured only where a program parses it.
+
+[why](rationale/agent-mcp/one-serialization-per-view.md)
 
 <a id="try-then-commit"></a>
 ### `send` is ephemeral live audition, clobbered at the next swap, and the document is the durable truth — so the authoring loop is try-then-commit.
@@ -157,7 +180,8 @@ Superseded by: ADR-0068 (pending absorption)
 ## Terms
 
 - **Sidecar** — the disposable per-conversation MCP stdio process the client spawns: pure tools in-process, engine tools forwarded to the user-owned engine.
-- **Door** — one surface over the OS-free contract types (native CLI, MCP sidecar, web in-page layer, web proxy); no verb means different things behind different doors.
+- **Window** — the `reuben-api` crate: the one thing between the engine and every consumer, declaring the types a door serializes, the roster and its advertised sentences, and both ends of the structure channel.
+- **Door** — one surface over the window's contract types (native CLI, MCP sidecar, web in-page layer, web proxy); no verb means different things behind different doors.
 - **Gist-and-point** — the anti-drift posture for prose that must live in code: carry the one-breath gist and point at the single canonical doc, never restate it.
 - **Intent vocabulary** — the one curated, registry-keyed word→move table that grounds musical/mood words (warmer, busier, sadder) as operator-type parameter moves.
 - **Input handling** — interpreting musical, mood, or abstract language as patching moves; the shared base grounding identical in every lane.

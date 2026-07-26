@@ -49,7 +49,7 @@ it, so the native resolver writes a file and the browser's memory resolver is de
 host store — not yet built, so the web door still takes documents by value. Two consequences follow
 for the native lane and are accepted: the resolver
 stops being read-only, and the MCP sidecar formally becomes a process that writes to disk. `expect`
-stays optional per [expect-guard-is-a-door-concern](expect-guard-is-a-door-concern.md) — mandatory
+stays optional per [optimistic-concurrency-guard](optimistic-concurrency-guard.md) — mandatory
 would force a read before every write and double the call count — and the clobber window in fact
 *shrinks*: whole-document edit held the file across an entire turn; per-call read-modify-write holds
 it for one call.

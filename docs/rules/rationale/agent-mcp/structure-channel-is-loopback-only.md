@@ -20,12 +20,13 @@ The second half of the rule is about drift rather than security. The server that
 client that dials are in different crates, and an address duplicated across them is an address that
 can disagree — a failure that presents as "the sidecar cannot reach the engine" with two plausible
 and equally wrong explanations. So the one literal is shared, and shared *next to the wire types
-both ends serialize*, because that module is already the place both ends must agree, and agreement
-kept in one place is agreement that cannot be half-updated. It is a deliberate exception to
-[the contract-versus-wire split](contract-holds-what-core-produces.md), which is otherwise about
-payload types.
+both ends serialize*, because that is the place both ends must already agree, and agreement kept in
+one place is agreement that cannot be half-updated. Sharing a constant is justified by two ends
+needing to agree, and it ends when they no longer do.
 
-Sharing a constant is justified by two ends needing to agree, and the exception ends when they no
-longer do.
+Only the *address of the address* has moved since: it is not a constant two doors both reach into
+the engine for, but one [the window owns and both doors are handed](structure-channel-envelope.md).
+The rule is unchanged by that, which is the point — a relocation that leaves a rule true is not an
+overturn.
 
 Decided in: issue #639 — settled directly, no ADR.
